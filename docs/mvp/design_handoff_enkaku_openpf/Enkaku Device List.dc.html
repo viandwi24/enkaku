@@ -1,0 +1,2612 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
+<style>
+  :root {
+    --bg: #f1f1f2; --panel: #ffffff; --panel-2: #fbfbfc; --panel-a: #ffffffee; --panel-a0: #ffffff00;
+    --muted: #f6f6f7; --muted-2: #f4f4f5; --hover: #fafafa;
+    --line: #f0f0f1; --line-2: #eeeef0; --border: #e8e8ea; --border-2: #e4e4e7; --border-3: #d4d4d8;
+    --text: #18181b; --text-2: #3f3f46; --text-3: #52525b; --dim: #71717a; --faint: #a1a1aa; --faint-2: #c4c4c8;
+    --accent: #16803c; --accent-2: #12652f; --accent-soft: #ecf6ef; --on-accent: #ffffff;
+    --accent-a1: #16803c14; --accent-a2: #16803c1f; --accent-a3: #16803c40;
+    --ok: #16a34a; --warn: #b45309; --warn-2: #d97706; --warn-soft: #fef6e7;
+    --danger: #dc2626; --danger-soft: #fdeceb;
+    --avatar-bg: #fde8ea; --avatar-fg: #b4405a;
+    --tooltip-bg: #18181b; --tooltip-fg: #fafafa; --scrim: #18181b33;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c0c0e; --panel: #16161a; --panel-2: #1a1a1f; --panel-a: #16161aee; --panel-a0: #16161a00;
+    --muted: #202027; --muted-2: #1d1d23; --hover: #1e1e25;
+    --line: #26262d; --line-2: #26262d; --border: #2a2a32; --border-2: #32323b; --border-3: #3c3c46;
+    --text: #f4f4f5; --text-2: #d4d4d8; --text-3: #b0b0b8; --dim: #8e8e98; --faint: #71717a; --faint-2: #55555f;
+    --accent: #4ade80; --accent-2: #86efac; --accent-soft: #16281d; --on-accent: #08130c;
+    --accent-a1: #4ade8014; --accent-a2: #4ade801f; --accent-a3: #4ade8040;
+    --ok: #4ade80; --warn: #fbbf24; --warn-2: #f59e0b; --warn-soft: #2a2110;
+    --danger: #f87171; --danger-soft: #2b1616;
+    --avatar-bg: #34212a; --avatar-fg: #f0a3b4;
+    --tooltip-bg: #f4f4f5; --tooltip-fg: #18181b; --scrim: #00000080;
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); }
+  * { box-sizing: border-box; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-2); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-3); border-radius: 99px; border: 3px solid var(--panel); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--faint-2); }
+  @keyframes enkakuPulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+  @keyframes enkakuSpin { to { transform: rotate(360deg) } }
+</style>
+</helmet>
+<div style="height: 100vh; min-height: 460px; display: flex; gap: 10px; padding: 10px; background: var(--bg); color: var(--text); font-family: 'Geist', system-ui, sans-serif; font-size: 13px; overflow: hidden;">
+
+  <div style="width: 60px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px;">
+    <sc-for list="{{ rail }}" as="ico" hint-placeholder-count="5">
+      <div style="{{ ico.style }}" style-hover="background:var(--muted-2); color:var(--text)" title="{{ ico.title }}" onClick="{{ ico.onClick }}"><i class="{{ ico.icon }}" style="font-size: 17px;"></i></div>
+    </sc-for>
+    <div style="flex: 1;"></div>
+    <div style="width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer;" style-hover="background:var(--muted-2); color:var(--text)" title="{{ themeTitle }}" onClick="{{ onToggleTheme }}"><i class="{{ themeIcon }}" style="font-size: 17px;"></i></div>
+    <div style="width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer;" style-hover="background:var(--muted-2); color:var(--text)" title="Settings" onClick="{{ onOpenSettings }}"><i class="ph ph-gear" style="font-size: 17px;"></i></div>
+    <div style="width: 30px; height: 30px; margin-top: 6px; border-radius: 999px; background: var(--avatar-bg); color: var(--avatar-fg); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600;">RZ</div>
+  </div>
+
+  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px;">
+
+    <sc-if value="{{ isDevicesPage }}" hint-placeholder-val="{{ true }}">
+    <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; position: relative; overflow: hidden;">
+
+      <div style="flex: none; height: 58px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); position: relative; z-index: 30;">
+        <div style="flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-start; gap: 6px; position: relative;" data-menu-root="1">
+          <div style="flex: 0 1 auto; min-width: 0; overflow-x: auto; display: flex; align-items: center; gap: 4px; padding: 4px; background: var(--muted); border-radius: 999px;">
+            <sc-for list="{{ groupFilters }}" as="g" hint-placeholder-count="6">
+              <div style="{{ g.style }}" onClick="{{ g.onClick }}" onContextMenu="{{ g.onContext }}">{{ g.label }}<span style="{{ g.countStyle }}">{{ g.count }}</span></div>
+            </sc-for>
+          </div>
+          <div style="width: 30px; height: 30px; flex: none; border-radius: 999px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--border-3); color: var(--faint); cursor: pointer;" style-hover="border-color:var(--accent); color:var(--accent)" title="Add group" onClick="{{ onAddGroup }}"><i class="ph ph-plus" style="font-size: 14px;"></i></div>
+
+          <sc-if value="{{ groupFormOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="{{ groupFormStyle }}">
+              <div style="font-size: 11px; color: var(--faint); padding: 2px 2px 8px;">{{ groupFormTitle }}</div>
+              <input type="text" value="{{ groupDraft }}" onChange="{{ onGroupDraft }}" onKeyDown="{{ onGroupKey }}" placeholder="Group name" style="{{ groupInputStyle }}" />
+              <div style="display: flex; gap: 6px; margin-top: 8px;">
+                <div style="flex: 1; text-align: center; padding: 8px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 12.5px; font-weight: 500; cursor: pointer;" onClick="{{ onGroupSave }}">{{ groupFormAction }}</div>
+                <div style="flex: none; padding: 8px 12px; border-radius: 9px; background: var(--muted); color: var(--text-3); font-size: 12.5px; font-weight: 500; cursor: pointer;" onClick="{{ onGroupCancel }}">Cancel</div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ groupMenuOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="{{ groupMenuStyle }}">
+              <div style="font-size: 11px; color: var(--faint); padding: 6px 10px 8px;">{{ groupMenuTitle }}</div>
+              <sc-for list="{{ groupMenuItems }}" as="m" hint-placeholder-count="2">
+                <div style="{{ m.style }}" style-hover="background:var(--muted)" onClick="{{ m.onClick }}"><i class="{{ m.icon }}" style="font-size: 15px; width: 17px;"></i>{{ m.label }}</div>
+              </sc-for>
+            </div>
+          </sc-if>
+        </div>
+
+        <div style="flex: none; display: flex; align-items: center; gap: 6px;">
+          <div style="{{ discPillStyle }}" style-hover="border-color:var(--accent); color:var(--accent)" onClick="{{ onOpenDisc }}"><i class="ph ph-tray-arrow-down" style="font-size: 15px;"></i>Discovered ({{ discCount }})</div>
+          <div style="position: relative;" data-menu-root="1">
+            <div style="{{ btn.search }}" style-hover="background:var(--muted-2); color:var(--text)" onClick="{{ onMenuSearch }}" title="Search devices"><i class="ph ph-magnifying-glass" style="font-size: 16px;"></i></div>
+            <sc-if value="{{ menuSearch }}" hint-placeholder-val="{{ false }}">
+              <div style="position: absolute; top: 44px; right: 0; width: 300px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 12px; box-shadow: 0 16px 40px #0000001f;">
+                <div style="font-size: 11px; color: var(--faint); margin-bottom: 8px;">Search devices</div>
+                <div style="display: flex; align-items: center; gap: 8px; background: var(--muted); border-radius: 10px; padding: 9px 11px;">
+                  <i class="ph ph-magnifying-glass" style="font-size: 14px; color: var(--faint);"></i>
+                  <input type="text" value="{{ query }}" onChange="{{ onQuery }}" placeholder="serial, label, model, task" style="flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-family: inherit; font-size: 13px;" />
+                </div>
+                <div style="margin-top: 10px; display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--faint);">
+                  <span>{{ shownLabel }} matched</span>
+                  <span style="cursor: pointer; color: var(--accent); font-weight: 500;" onClick="{{ onClearQuery }}">Clear</span>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+
+          <div style="position: relative;" data-menu-root="1">
+            <div style="{{ btn.status }}" style-hover="background:var(--muted-2); color:var(--text)" onClick="{{ onMenuStatus }}" title="Filter by status"><i class="ph ph-funnel" style="font-size: 16px;"></i></div>
+            <sc-if value="{{ menuStatus }}" hint-placeholder-val="{{ false }}">
+              <div style="position: absolute; top: 44px; right: 0; width: 216px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 6px; box-shadow: 0 16px 40px #0000001f;">
+                <div style="font-size: 11px; color: var(--faint); padding: 6px 10px 8px;">Status</div>
+                <sc-for list="{{ statusFilters }}" as="f" hint-placeholder-count="5">
+                  <div style="{{ f.style }}" style-hover="background:var(--muted)" onClick="{{ f.onClick }}">
+                    <div style="{{ f.dotStyle }}"></div>
+                    <span style="flex: 1;">{{ f.label }}</span>
+                    <span style="color: var(--faint); font-size: 12px;">{{ f.count }}</span>
+                    <i class="{{ f.check }}" style="font-size: 14px; width: 16px; color: var(--accent);"></i>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+
+          <div style="position: relative;" data-menu-root="1">
+            <div style="{{ btn.view }}" style-hover="background:var(--muted-2); color:var(--text)" onClick="{{ onMenuView }}" title="View mode"><i class="{{ viewIcon }}" style="font-size: 16px;"></i></div>
+            <sc-if value="{{ menuView }}" hint-placeholder-val="{{ false }}">
+              <div style="position: absolute; top: 44px; right: 0; width: 200px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 6px; box-shadow: 0 16px 40px #0000001f;">
+                <div style="font-size: 11px; color: var(--faint); padding: 6px 10px 8px;">View</div>
+                <sc-for list="{{ views }}" as="v" hint-placeholder-count="2">
+                  <div style="{{ v.style }}" style-hover="background:var(--muted)" onClick="{{ v.onClick }}">
+                    <i class="{{ v.icon }}" style="font-size: 15px;"></i>
+                    <span style="flex: 1;">{{ v.label }}</span>
+                    <i class="{{ v.check }}" style="font-size: 14px; width: 16px; color: var(--accent);"></i>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ isCards }}" hint-placeholder-val="{{ false }}">
+                  <div style="margin-top: 4px; padding: 10px 10px 8px; border-top: 1px solid var(--line);">
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px;">
+                      <span style="font-size: 11px; color: var(--faint);">Card width</span>
+                      <span style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--text);">{{ cardWidth }}</span>
+                    </div>
+                    <div style="display: flex; gap: 4px;">
+                      <sc-for list="{{ cardSizes }}" as="c" hint-placeholder-count="4">
+                        <div style="{{ c.style }}" onClick="{{ c.onClick }}">{{ c.label }}</div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-if>
+          </div>
+
+          <div style="{{ btn.rescan }}" style-hover="background:var(--muted-2); color:var(--text)" onClick="{{ onRescan }}" title="Rescan ADB devices"><i class="ph ph-arrows-clockwise" style="{{ rescanIconStyle }}"></i></div>
+        </div>
+      </div>
+
+      <div style="flex: 1; min-height: 0; overflow: auto;">
+
+        <sc-if value="{{ isTable }}" hint-placeholder-val="{{ true }}">
+          <div style="min-width: 1324px; position: relative; user-select: none;" ref="{{ gridRef }}" onMouseDown="{{ onGridDown }}">
+            <sc-if value="{{ marqueeOn }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ marqueeStyle }}"></div>
+            </sc-if>
+            <div style="display: grid; grid-template-columns: 38px 44px 1.3fr 108px 92px 138px 70px 74px 62px 62px 62px 76px 1.1fr; align-items: center; height: 38px; position: sticky; top: 0; background: var(--panel-2); border-bottom: 1px solid var(--line); font-size: 11px; color: var(--faint); z-index: 10;">
+              <div style="display: flex; align-items: center; justify-content: center;">
+                <div style="{{ allCheckStyle }}" onClick="{{ onToggleAll }}"><i class="{{ allCheckIcon }}" style="font-size: 11px;"></i></div>
+              </div>
+              <div style="padding-left: 2px;">#</div>
+              <div>Device</div>
+              <div>Serial</div>
+              <div>OS</div>
+              <div>Endpoint</div>
+              <div style="text-align: right; padding-right: 14px;">Batt</div>
+              <div style="text-align: right; padding-right: 14px;">Temp</div>
+              <div style="text-align: right; padding-right: 14px;">CPU</div>
+              <div style="text-align: right; padding-right: 14px;">Mem</div>
+              <div style="text-align: right; padding-right: 14px;">Disk</div>
+              <div style="text-align: right; padding-right: 16px;">Uptime</div>
+              <div>Task</div>
+            </div>
+            <sc-for list="{{ rows }}" as="d" hint-placeholder-count="14">
+              <div style="{{ d.rowStyle }}" style-hover="background:var(--hover)" data-dev-id="{{ d.devId }}" onClick="{{ d.onCardClick }}" onDoubleClick="{{ d.onOpenControl }}">
+                <div style="display: flex; align-items: center; justify-content: center;">
+                  <div style="{{ d.checkStyle }}" onClick="{{ d.onCheck }}"><i class="{{ d.checkIcon }}" style="font-size: 11px;"></i></div>
+                </div>
+                <div style="padding-left: 2px; font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--faint);">{{ d.no }}</div>
+                <div style="display: flex; align-items: center; gap: 10px; min-width: 0; padding-right: 12px;">
+                  <div style="{{ d.dotStyle }}"></div>
+                  <div style="min-width: 0;">
+                    <div style="font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ d.name }}</div>
+                    <div style="font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">{{ d.model }}</div>
+                  </div>
+                </div>
+                <div style="font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--text-3);">{{ d.serial }}</div>
+                <div style="font-size: 12px; color: var(--text-3);">{{ d.os }}</div>
+                <div style="font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--dim);">{{ d.endpoint }}</div>
+                <div style="{{ d.battText }}">{{ d.batt }}</div>
+                <div style="{{ d.tempStyle }}">{{ d.temp }}</div>
+                <div style="font-size: 12px; color: var(--text-3); text-align: right; padding-right: 14px;">{{ d.cpu }}</div>
+                <div style="font-size: 12px; color: var(--text-3); text-align: right; padding-right: 14px;">{{ d.mem }}</div>
+                <div style="font-size: 12px; color: var(--text-3); text-align: right; padding-right: 14px;">{{ d.disk }}</div>
+                <div style="font-size: 12px; color: var(--dim); text-align: right; padding-right: 16px;">{{ d.uptime }}</div>
+                <div style="min-width: 0; padding-right: 12px;">
+                  <div style="{{ d.taskStyle }}">{{ d.task }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isCards }}" hint-placeholder-val="{{ false }}">
+          <div style="{{ cardGridStyle }}" ref="{{ gridRef }}" onMouseDown="{{ onGridDown }}">
+            <sc-if value="{{ marqueeOn }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ marqueeStyle }}"></div>
+            </sc-if>
+            <sc-for list="{{ rows }}" as="d" hint-placeholder-count="18">
+              <div style="{{ d.cardStyle }}" data-dev-id="{{ d.devId }}" onClick="{{ d.onCardClick }}" onDoubleClick="{{ d.onOpenControl }}">
+                <div style="{{ d.screenStyle }}">
+                  <div style="position: absolute; top: 0; left: 0; right: 0; padding: 8px 8px 12px; display: flex; flex-direction: column; align-items: center; gap: 2px; background: linear-gradient(to bottom, var(--panel-a), var(--panel-a0)); pointer-events: none;">
+                    <div style="font-size: 12px; font-weight: 500; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ d.name }}</div>
+                    <div style="font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--faint);">{{ d.serial }}</div>
+                  </div>
+                  <div style="{{ d.screenTextStyle }}">{{ d.screenText }}</div>
+                  <div style="{{ d.cardDotStyle }}" onMouseEnter="{{ d.onDotEnter }}" onMouseLeave="{{ d.onDotLeave }}"></div>
+                  <sc-if value="{{ d.showTip }}" hint-placeholder-val="{{ false }}">
+                    <div style="position: absolute; bottom: 28px; left: 8px; right: 8px; padding: 6px 8px; background: var(--tooltip-bg); border-radius: 8px; font-size: 10px; color: var(--tooltip-fg); z-index: 5; text-align: center; box-shadow: 0 6px 18px #0000002e;">{{ d.tipText }}</div>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+          <div style="padding: 72px; text-align: center; color: var(--faint); font-size: 13px;">No device matches this filter</div>
+        </sc-if>
+      </div>
+
+      <sc-if value="{{ logOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="position: absolute; left: 14px; right: 14px; bottom: 14px; height: 190px; max-height: calc(100% - 90px); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; display: flex; flex-direction: column; box-shadow: 0 20px 50px #00000024; z-index: 25; overflow: hidden;">
+          <div style="height: 40px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line);">
+            <i class="ph ph-terminal-window" style="font-size: 15px; color: var(--accent);"></i>
+            <span style="font-size: 12px; font-weight: 500;">Console</span>
+            <span style="font-size: 11px; color: var(--faint);">{{ logCountLabel }}</span>
+            <div style="flex: 1;"></div>
+            <span style="font-size: 11px; color: var(--faint);">adb · logcat stream</span>
+            <div style="width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer;" style-hover="background:var(--muted-2); color:var(--text)" onClick="{{ onToggleLog }}"><i class="ph ph-x" style="font-size: 14px;"></i></div>
+          </div>
+          <div style="flex: 1; min-height: 0; overflow: auto; padding: 8px 12px 12px; font-family: 'Geist Mono', monospace;">
+            <sc-for list="{{ logs }}" as="l" hint-placeholder-count="6">
+              <div style="display: flex; gap: 12px; padding: 3px 0; font-size: 11px; line-height: 1.6;">
+                <span style="color: var(--faint); flex: none;">{{ l.time }}</span>
+                <span style="{{ l.levelStyle }}">{{ l.level }}</span>
+                <span style="color: var(--dim); flex: none;">{{ l.serial }}</span>
+                <span style="color: var(--text-2);">{{ l.msg }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ hasSelection }}" hint-placeholder-val="{{ false }}">
+        <div style="position: absolute; right: 16px; bottom: 16px; z-index: 45; display: flex; flex-direction: column; align-items: flex-end; gap: 10px;" data-menu-root="1">
+          <sc-if value="{{ bulkOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="width: 226px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 6px; box-shadow: 0 20px 50px #00000026;">
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 10px 9px;">
+                <span style="font-size: 11px; color: var(--faint);">Bulk action</span>
+                <span style="font-size: 11px; color: var(--accent); font-weight: 500; cursor: pointer;" onClick="{{ onClearSelection }}">Clear</span>
+              </div>
+              <sc-for list="{{ bulkActions }}" as="b" hint-placeholder-count="12">
+                <div style="{{ b.rowStyle }}" style-hover="background:var(--muted)" onClick="{{ b.onClick }}"><i class="{{ b.icon }}" style="font-size: 16px; width: 18px;"></i>{{ b.label }}</div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="{{ bulkPillStyle }}" onClick="{{ onToggleBulk }}">
+              <span style="font-size: 13px; font-weight: 500;">{{ selectedCount }} selected</span>
+              <i class="{{ bulkCaret }}" style="font-size: 14px; opacity: .85;"></i>
+            </div>
+            <div style="width: 40px; height: 40px; flex: none; border-radius: 999px; display: flex; align-items: center; justify-content: center; background: var(--panel); border: 1px solid var(--border-2); color: var(--dim); cursor: pointer; box-shadow: 0 10px 24px #00000024;" style-hover="color:var(--danger); border-color:var(--danger)" title="Clear selection" onClick="{{ onClearSelection }}"><i class="ph ph-x" style="font-size: 15px;"></i></div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ isJobsPage }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+        <div style="flex: none; display: flex; align-items: center; gap: 3px; padding: 10px 14px; border-bottom: 1px solid var(--line);">
+          <sc-for list="{{ jp.pageTabs }}" as="t" hint-placeholder-count="2">
+            <div style="{{ t.style }}" onClick="{{ t.onClick }}">{{ t.label }}<span style="{{ t.countStyle }}">{{ t.count }}</span></div>
+          </sc-for>
+        </div>
+        <div style="flex: 1; min-height: 0; display: flex;">
+
+        <div style="width: 268px; flex: none; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0;">
+          <div style="flex: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 10px;">
+            <sc-for list="{{ jp.filters }}" as="j" hint-placeholder-count="5">
+              <div style="{{ j.style }}" onClick="{{ j.onClick }}">{{ j.label }}</div>
+            </sc-for>
+          </div>
+          <div style="flex: 1; min-height: 0; overflow: auto; padding: 0 8px 10px;">
+            <sc-for list="{{ jp.list }}" as="j" hint-placeholder-count="8">
+              <div style="{{ j.rowStyle }}" style-hover="background:var(--muted)" onClick="{{ j.onClick }}">
+                <div style="flex: 1; min-width: 0;">
+                  <div style="display: flex; align-items: center; gap: 7px; min-width: 0;">
+                    <div style="{{ j.dotStyle }}"></div>
+                    <span style="font-family: 'Geist Mono', monospace; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ j.name }}</span>
+                  </div>
+                  <div style="font-size: 11px; color: var(--faint); margin-top: 4px; padding-left: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ j.sub }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line);">
+            <span style="flex: 1; min-width: 0; font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ jp.pageNote }}</span>
+            <div style="{{ jp.prevStyle }}" onClick="{{ jp.onPrev }}"><i class="ph ph-caret-left" style="font-size: 13px;"></i></div>
+            <div style="{{ jp.nextStyle }}" onClick="{{ jp.onNext }}"><i class="ph ph-caret-right" style="font-size: 13px;"></i></div>
+          </div>
+        </div>
+
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+          <div style="flex: none; min-height: 58px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 10px 14px; border-bottom: 1px solid var(--line);">
+            <div style="flex: 1 1 240px; min-width: 0;">
+              <div style="display: flex; align-items: center; gap: 9px; min-width: 0;">
+                <span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ jp.job.name }}</span>
+                <span style="{{ jp.job.badge }}">{{ jp.job.state }}</span>
+              </div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ jp.job.meta }}</div>
+            </div>
+            <div style="flex: none; display: flex; align-items: center; gap: 6px; margin-left: auto;">
+              <sc-for list="{{ jp.job.actions }}" as="a" hint-placeholder-count="3">
+                <div style="{{ a.style }}" style-hover="background:var(--muted-2)" onClick="{{ a.onClick }}"><i class="{{ a.icon }}" style="font-size: 14px;"></i>{{ a.label }}</div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="flex: none; display: flex; align-items: center; gap: 3px; padding: 8px 12px 6px; border-bottom: 1px solid var(--line);">
+            <sc-for list="{{ jp.tabs }}" as="t" hint-placeholder-count="5">
+              <div style="{{ t.style }}" onClick="{{ t.onClick }}"><i class="{{ t.icon }}" style="font-size: 14px;"></i>{{ t.label }}</div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 1; min-height: 0; overflow: auto;">
+
+            <sc-if value="{{ jp.isIo }}" hint-placeholder-val="{{ true }}">
+              <div style="padding: 14px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 10px;">
+                  <span style="font-size: 12px; font-weight: 600;">{{ jp.io.title }}</span>
+                  <div style="display: flex; align-items: center; gap: 12px; font-size: 11.5px;">
+                    <span style="color: var(--faint);">{{ jp.io.size }}</span>
+                    <span style="color: var(--accent); font-weight: 500; cursor: pointer;">Copy JSON</span>
+                  </div>
+                </div>
+                <div style="border: 1px solid var(--line-2); border-radius: 12px; background: var(--panel-2); padding: 10px 4px 12px;">
+                  <sc-for list="{{ jp.io.nodes }}" as="n" hint-placeholder-count="10">
+                    <div style="{{ n.style }}">
+                      <i class="{{ n.icon }}" style="{{ n.iconStyle }}"></i>
+                      <span style="{{ n.keyStyle }}">{{ n.key }}</span>
+                      <span style="{{ n.valStyle }}">{{ n.value }}</span>
+                      <span style="{{ n.typeStyle }}">{{ n.type }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ jp.isLogs }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 12px 14px 16px;">
+                <div style="display: flex; align-items: center; gap: 3px; padding-bottom: 10px;">
+                  <sc-for list="{{ jp.logLevels }}" as="l" hint-placeholder-count="4">
+                    <div style="{{ l.style }}" onClick="{{ l.onClick }}">{{ l.label }}<span style="margin-left: 6px; opacity: .65;">{{ l.count }}</span></div>
+                  </sc-for>
+                </div>
+                <div style="border: 1px solid var(--line-2); border-radius: 12px; overflow: hidden;">
+                  <sc-for list="{{ jp.logs }}" as="l" hint-placeholder-count="12">
+                    <div style="{{ l.rowStyle }}">
+                      <span style="flex: none; width: 74px; font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--faint);">{{ l.time }}</span>
+                      <span style="{{ l.lvlStyle }}">{{ l.level }}</span>
+                      <span style="flex: none; width: 92px; font-size: 11px; color: var(--dim);">{{ l.scope }}</span>
+                      <span style="flex: 1; font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--text-3);">{{ l.msg }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ jp.isTimeline }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px;">
+
+                <div style="border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 12px 12px;">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 30px; height: 30px; border-radius: 9px; background: var(--accent); color: var(--on-accent); display: flex; align-items: center; justify-content: center; cursor: pointer;" onClick="{{ jp.tl.onPlay }}"><i class="{{ jp.tl.playIcon }}" style="font-size: 15px;"></i></div>
+                    <div style="display: flex; gap: 2px; padding: 2px; background: var(--muted); border-radius: 8px;">
+                      <sc-for list="{{ jp.tl.speeds }}" as="s" hint-placeholder-count="3">
+                        <div style="{{ s.style }}" onClick="{{ s.onClick }}">{{ s.label }}</div>
+                      </sc-for>
+                    </div>
+                    <div style="flex: 1; min-width: 0; text-align: center; font-size: 11.5px; color: var(--dim);"><span style="font-family: 'Geist Mono', monospace; color: var(--text);">{{ jp.tl.at }}</span> · {{ jp.tl.label }}</div>
+                    <span style="flex: none; font-size: 11.5px; color: var(--faint);">{{ jp.tl.pos }}</span>
+                  </div>
+                  <div style="margin-top: 10px; height: 6px; border-radius: 99px; background: var(--muted-2); position: relative; cursor: pointer;" onClick="{{ jp.tl.onScrub }}">
+                    <div style="{{ jp.tl.fill }}"></div>
+                    <div style="{{ jp.tl.knob }}"></div>
+                  </div>
+                </div>
+
+                <div style="border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 12px 12px;">
+                  <div style="display: flex; align-items: center; justify-content: space-between; font-family: 'Geist Mono', monospace; font-size: 10.5px; color: var(--faint); padding-bottom: 8px;">
+                    <span>+0ms</span><span>{{ jp.tl.total }}</span>
+                  </div>
+                  <sc-for list="{{ jp.tl.lanes }}" as="ln" hint-placeholder-count="3">
+                    <div style="display: flex; align-items: center; gap: 10px; padding: 3px 0;">
+                      <span style="flex: none; width: 58px; font-size: 10px; letter-spacing: .4px; color: var(--faint); text-transform: uppercase;">{{ ln.label }}</span>
+                      <div style="flex: 1; position: relative; height: 18px; border-radius: 6px; background: var(--muted-2);">
+                        <sc-for list="{{ ln.items }}" as="it" hint-placeholder-count="5">
+                          <div style="{{ it.style }}" title="{{ it.title }}" onClick="{{ it.onClick }}">{{ it.label }}</div>
+                        </sc-for>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+
+                <div style="border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 12px 12px;">
+                  <div style="font-size: 11px; color: var(--faint); padding-bottom: 8px;">Frames · {{ jp.tl.frameNote }}</div>
+                  <div style="display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;">
+                    <sc-for list="{{ jp.tl.frames }}" as="fr" hint-placeholder-count="8">
+                      <div style="{{ fr.style }}" onClick="{{ fr.onClick }}">
+                        <div style="{{ fr.shotStyle }}"><span style="font-family: 'Geist Mono', monospace; font-size: 9px; color: var(--faint);">{{ fr.at }}</span></div>
+                        <div style="{{ fr.capStyle }}">{{ fr.label }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+
+                <div style="display: flex; gap: 10px; align-items: stretch;">
+                  <div style="width: 168px; flex: none; border: 1px solid var(--line-2); border-radius: 12px; padding: 10px;">
+                    <div style="font-size: 11px; color: var(--faint); padding-bottom: 8px;">Frame</div>
+                    <div style="{{ jp.tl.bigShotStyle }}"><span style="font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--faint);">{{ jp.tl.at }}</span></div>
+                  </div>
+                  <div style="flex: 1; min-width: 0; border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 12px 12px;">
+                    <div style="display: flex; align-items: center; gap: 9px; padding-bottom: 8px;">
+                      <span style="font-family: 'Geist Mono', monospace; font-size: 13px; font-weight: 500;">{{ jp.tl.ev.name }}</span>
+                      <span style="{{ jp.tl.ev.badge }}">{{ jp.tl.ev.status }}</span>
+                      <span style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--faint);">{{ jp.tl.at }}</span>
+                    </div>
+                    <sc-for list="{{ jp.tl.ev.rows }}" as="r" hint-placeholder-count="5">
+                      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--muted-2);">
+                        <span style="font-size: 11.5px; color: var(--faint);">{{ r.label }}</span>
+                        <span style="{{ r.valStyle }}">{{ r.value }}</span>
+                      </div>
+                    </sc-for>
+                    <div style="padding: 10px 0 6px; font-size: 11px; color: var(--faint);">Arguments</div>
+                    <div style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--text-3); line-height: 1.7;">{{ jp.tl.ev.args }}</div>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ jp.isArtifacts }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 14px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; padding-bottom: 10px;">
+                  <span style="font-size: 12px; font-weight: 600;">Artifacts</span>
+                  <span style="font-size: 11.5px; color: var(--faint);">{{ jp.artNote }}</span>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(164px, 1fr)); gap: 10px;">
+                  <sc-for list="{{ jp.artifacts }}" as="a" hint-placeholder-count="6">
+                    <div style="border: 1px solid var(--line-2); border-radius: 12px; overflow: hidden; cursor: pointer;" style-hover="background:var(--muted)">
+                      <div style="{{ a.thumbStyle }}"><i class="{{ a.icon }}" style="font-size: 22px; color: var(--faint);"></i></div>
+                      <div style="padding: 8px 10px 10px;">
+                        <div style="font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ a.name }}</div>
+                        <div style="font-size: 11px; color: var(--faint); margin-top: 3px;">{{ a.sub }}</div>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isScriptsPage }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+        <div style="flex: none; display: flex; align-items: flex-start; gap: 12px; padding: 14px 14px 0;">
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 15px; font-weight: 600;">Scripts &amp; workflows</div>
+            <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">{{ sp.subtitle }}</div>
+          </div>
+          <sc-if value="{{ sp.isWorkflows }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 10px; background: var(--accent); color: var(--on-accent); font-size: 12.5px; font-weight: 500; cursor: pointer;"><i class="ph ph-flow-arrow" style="font-size: 15px;"></i>New workflow</div>
+          </sc-if>
+        </div>
+        <div style="flex: none; display: flex; align-items: center; gap: 3px; padding: 12px 14px 0;">
+          <sc-for list="{{ sp.tabs }}" as="t" hint-placeholder-count="2">
+            <div style="{{ t.style }}" onClick="{{ t.onClick }}">{{ t.label }}<span style="{{ t.countStyle }}">{{ t.count }}</span></div>
+          </sc-for>
+        </div>
+        <div style="flex: none; display: flex; align-items: center; gap: 10px; margin: 12px 14px 0; padding: 9px 12px; background: var(--muted); border-radius: 10px;">
+          <i class="ph ph-magnifying-glass" style="font-size: 14px; color: var(--faint);"></i>
+          <input type="text" value="{{ sp.query }}" onChange="{{ sp.onQuery }}" placeholder="{{ sp.placeholder }}" style="flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-family: inherit; font-size: 12.5px;" />
+          <span style="font-size: 11.5px; color: var(--faint);">{{ sp.matchNote }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 14px;">
+          <sc-if value="{{ sp.isScripts }}" hint-placeholder-val="{{ true }}">
+            <div style="min-width: 780px;">
+              <div style="display: grid; grid-template-columns: 1.6fr 92px 104px 104px 78px 86px; align-items: center; height: 34px; font-size: 11px; color: var(--faint); border-bottom: 1px solid var(--line);">
+                <div>Name</div><div>Latest</div><div>Versions</div><div>Published</div><div>Enabled</div>
+                <div style="text-align: right;">Actions</div>
+              </div>
+              <sc-for list="{{ sp.scripts }}" as="s" hint-placeholder-count="12">
+                <div style="display: grid; grid-template-columns: 1.6fr 92px 104px 104px 78px 86px; align-items: center; height: 48px; border-bottom: 1px solid var(--muted-2);" style-hover="background:var(--hover)">
+                  <div style="min-width: 0; padding-right: 12px;">
+                    <div style="font-family: 'Geist Mono', monospace; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ s.name }}</div>
+                  </div>
+                  <div style="font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--text-3);">{{ s.latest }}</div>
+                  <div style="font-size: 12px; color: var(--dim);">{{ s.versions }}</div>
+                  <div style="font-size: 12px; color: var(--faint);">{{ s.published }}</div>
+                  <div><div style="{{ s.toggleStyle }}" onClick="{{ s.onToggle }}"><div style="{{ s.knobStyle }}"></div></div></div>
+                  <div style="display: flex; align-items: center; justify-content: flex-end; gap: 6px;">
+                    <div style="display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 500; color: var(--accent); cursor: pointer;" style-hover="background:var(--accent-soft)"><i class="ph ph-play" style="font-size: 13px;"></i>Run</div>
+                  </div>
+                </div>
+              </sc-for>
+              <div style="display: flex; align-items: center; gap: 8px; padding: 12px 2px 0;">
+                <span style="flex: 1; font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--faint);">{{ sp.loadedNote }}</span>
+                <div style="{{ sp.prevStyle }}" onClick="{{ sp.onPrev }}"><i class="ph ph-caret-left" style="font-size: 13px;"></i></div>
+                <span style="font-size: 11.5px; color: var(--dim);">{{ sp.pageLabel }}</span>
+                <div style="{{ sp.nextStyle }}" onClick="{{ sp.onNext }}"><i class="ph ph-caret-right" style="font-size: 13px;"></i></div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ sp.isWorkflows }}" hint-placeholder-val="{{ false }}">
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(276px, 1fr)); gap: 10px;">
+              <sc-for list="{{ sp.workflows }}" as="w" hint-placeholder-count="6">
+                <div style="border: 1px solid var(--line-2); border-radius: 14px; padding: 12px 13px 13px; cursor: pointer;" style-hover="background:var(--hover)">
+                  <div style="display: flex; align-items: center; gap: 9px;">
+                    <span style="flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ w.name }}</span>
+                    <span style="{{ w.badge }}">{{ w.state }}</span>
+                  </div>
+                  <div style="font-size: 11.5px; color: var(--dim); line-height: 1.55; margin-top: 6px;">{{ w.desc }}</div>
+                  <div style="display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px;">
+                    <sc-for list="{{ w.steps }}" as="p" hint-placeholder-count="4">
+                      <span style="{{ p.style }}">{{ p.label }}</span>
+                    </sc-for>
+                  </div>
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--muted-2); font-size: 11.5px; color: var(--faint);">
+                    <span>{{ w.meta }}</span>
+                    <span style="color: var(--accent); font-weight: 500;">Run</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isPluginsPage }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+        <div style="flex: none; display: flex; align-items: flex-start; gap: 12px; padding: 14px;">
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 15px; font-weight: 600;">Plugins</div>
+            <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">Everything this farm can run — installed plugins and the scripts they register</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 10px; background: var(--muted); color: var(--text-3); font-size: 12.5px; font-weight: 500; cursor: pointer;" style-hover="background:var(--muted-2)"><i class="ph ph-arrows-clockwise" style="font-size: 15px;"></i>Reload all</div>
+          <div style="display: flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 10px; background: var(--accent); color: var(--on-accent); font-size: 12.5px; font-weight: 500; cursor: pointer;"><i class="ph ph-plus" style="font-size: 15px;"></i>Install plugin</div>
+        </div>
+        <div style="flex: none; display: flex; align-items: center; gap: 10px; margin: 0 14px; padding: 9px 12px; background: var(--muted); border-radius: 10px;">
+          <i class="ph ph-magnifying-glass" style="font-size: 14px; color: var(--faint);"></i>
+          <input type="text" value="{{ pp.query }}" onChange="{{ pp.onQuery }}" placeholder="Search plugins, scripts, versions" style="flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-family: inherit; font-size: 12.5px;" />
+          <span style="font-size: 11.5px; color: var(--faint);">{{ pp.matchNote }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 14px;">
+          <div style="min-width: 940px;">
+            <div style="display: grid; grid-template-columns: 1.7fr 100px 160px 88px 132px; align-items: center; height: 34px; font-size: 11px; color: var(--faint); border-bottom: 1px solid var(--line);">
+              <div>Plugin</div><div>Status</div><div>Scripts</div><div>Verified</div>
+              <div style="text-align: right;">Actions</div>
+            </div>
+            <sc-for list="{{ pp.plugins }}" as="p" hint-placeholder-count="6">
+              <div style="display: grid; grid-template-columns: 1.7fr 100px 160px 88px 132px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--muted-2);" style-hover="background:var(--hover)">
+                <div style="min-width: 0; padding-right: 16px;">
+                  <div style="font-size: 13px; font-weight: 600;">{{ p.title }}</div>
+                  <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                    <span style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--dim); white-space: nowrap;">{{ p.slug }}</span>
+                    <span style="{{ p.versionStyle }}">{{ p.version }}</span>
+                    <sc-for list="{{ p.tags }}" as="t" hint-placeholder-count="1">
+                      <span style="{{ t.style }}">{{ t.label }}</span>
+                    </sc-for>
+                  </div>
+                  <div style="font-size: 11.5px; color: var(--faint); line-height: 1.6; margin-top: 6px; max-width: 460px;">{{ p.desc }}</div>
+                </div>
+                <div><span style="{{ p.statusStyle }}"><span style="{{ p.statusDot }}"></span>{{ p.status }}</span></div>
+                <div style="font-size: 12px; color: var(--text-3);">{{ p.scripts }}</div>
+                <div style="font-size: 12px; color: var(--faint);">{{ p.verified }}</div>
+                <div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px;">
+                  <sc-for list="{{ p.actions }}" as="a" hint-placeholder-count="3">
+                    <div style="{{ a.style }}" onClick="{{ a.onClick }}">{{ a.label }}</div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isSimplePage }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; display: flex; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+
+        <div style="width: 236px; flex: none; border-right: 1px solid var(--line); overflow: auto; padding: 12px 10px 16px;">
+          <sc-for list="{{ sg.nav }}" as="n" hint-placeholder-count="14">
+            <div style="{{ n.style }}" style-hover="background:var(--muted)" onClick="{{ n.onClick }}"><i class="{{ n.icon }}" style="{{ n.iconStyle }}"></i>{{ n.label }}</div>
+          </sc-for>
+        </div>
+
+        <div style="flex: 1; min-width: 0; overflow: auto;">
+          <div style="max-width: 720px; padding: 18px 22px 28px;">
+            <sc-for list="{{ sg.sections }}" as="sec" hint-placeholder-count="4">
+              <div style="padding-bottom: 26px;">
+                <div style="font-size: 19px; font-weight: 600; padding-bottom: 9px; border-bottom: 1px solid var(--line);">{{ sec.title }}</div>
+                <sc-if value="{{ sec.hasNote }}" hint-placeholder-val="{{ false }}">
+                  <div style="font-size: 12.5px; color: var(--dim); line-height: 1.65; padding-top: 12px;">{{ sec.note }}</div>
+                </sc-if>
+                <sc-for list="{{ sec.fields }}" as="fd" hint-placeholder-count="3">
+                  <div style="padding-top: 14px;">
+                    <sc-if value="{{ fd.isText }}" hint-placeholder-val="{{ false }}">
+                      <div>
+                        <div style="font-size: 12.5px; font-weight: 600; padding-bottom: 7px;">{{ fd.label }}</div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                          <input type="text" value="{{ fd.value }}" onChange="{{ fd.onChange }}" style="{{ fd.inputStyle }}" />
+                          <sc-for list="{{ fd.buttons }}" as="b" hint-placeholder-count="1">
+                            <div style="{{ b.style }}" style-hover="background:var(--muted-2)">{{ b.label }}</div>
+                          </sc-for>
+                        </div>
+                        <sc-if value="{{ fd.hasHint }}" hint-placeholder-val="{{ false }}">
+                          <div style="font-size: 11.5px; color: var(--faint); padding-top: 6px;">{{ fd.hint }}</div>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ fd.isCheck }}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; align-items: flex-start; gap: 10px;">
+                        <div style="{{ fd.boxStyle }}" onClick="{{ fd.onToggle }}"><i class="{{ fd.checkIcon }}" style="font-size: 11px;"></i></div>
+                        <div style="min-width: 0;">
+                          <div style="font-size: 12.5px; font-weight: 600;">{{ fd.label }}</div>
+                          <div style="font-size: 11.5px; color: var(--faint); line-height: 1.6; margin-top: 3px;">{{ fd.hint }}</div>
+                        </div>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ fd.isSelect }}" hint-placeholder-val="{{ false }}">
+                      <div>
+                        <div style="font-size: 12.5px; font-weight: 600; padding-bottom: 7px;">{{ fd.label }}</div>
+                        <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+                          <sc-for list="{{ fd.options }}" as="o" hint-placeholder-count="3">
+                            <div style="{{ o.style }}" onClick="{{ o.onClick }}">{{ o.label }}</div>
+                          </sc-for>
+                        </div>
+                        <sc-if value="{{ fd.hasHint }}" hint-placeholder-val="{{ false }}">
+                          <div style="font-size: 11.5px; color: var(--faint); padding-top: 7px;">{{ fd.hint }}</div>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+
+
+    <div style="flex: none; height: 44px; display: flex; align-items: center; gap: 2px; padding: 0 8px 0 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px;">
+      <div style="flex: none; display: flex; align-items: center; gap: 8px; padding-right: 14px;">
+        <div style="width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: enkakuPulse 2.6s infinite;"></div>
+        <span style="font-size: 12px; color: var(--text-3);">System OK</span>
+      </div>
+      <div style="width: 1px; height: 18px; background: var(--line-2); flex: none;"></div>
+      <div style="flex: 1; min-width: 0; overflow-x: auto; display: flex; align-items: center;">
+        <sc-for list="{{ footStats }}" as="s" hint-placeholder-count="2">
+          <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 0 14px;">
+            <span style="font-size: 12px; color: var(--faint);">{{ s.label }}</span>
+            <span style="{{ s.valStyle }}">{{ s.value }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="width: 1px; height: 18px; background: var(--line-2); flex: none;"></div>
+      <div style="flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px;">
+        <div style="{{ btn.log }}" style-hover="background:var(--muted-2); color:var(--text)" onClick="{{ onToggleLog }}" title="Console"><i class="ph ph-terminal-window" style="font-size: 16px;"></i></div>
+        <div style="width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer; position: relative;" style-hover="background:var(--muted-2); color:var(--text)" title="Alerts">
+          <i class="ph ph-bell" style="font-size: 16px;"></i>
+          <span style="position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--danger);"></span>
+        </div>
+      </div>
+      <div style="width: 1px; height: 18px; background: var(--line-2); flex: none;"></div>
+      <div style="flex: none; padding: 0 12px; font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--text-3);">{{ clock }}</div>
+    </div>
+  </div>
+
+  <sc-if value="{{ discOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position: fixed; inset: 0; z-index: 70; display: flex; justify-content: flex-end; background: var(--scrim);" onClick="{{ onCloseDisc }}">
+      <div style="width: 452px; max-width: 100%; height: 100%; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column;" onClick="{{ stop }}">
+        <div style="flex: none; padding: 16px 18px 0;">
+          <div style="display: flex; align-items: flex-start; gap: 12px;">
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 16px; font-weight: 600;">Discovered</div>
+              <div style="font-size: 12.5px; color: var(--dim); line-height: 1.6; margin-top: 6px;">Phones adb can see that are not part of the farm. Add one to make it schedulable, or dismiss it — a dismissed phone is not blocked, it just comes back here the next time it connects.</div>
+            </div>
+            <div style="width: 30px; height: 30px; flex: none; border-radius: 9px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer;" style-hover="background:var(--muted-2); color:var(--text)" onClick="{{ onCloseDisc }}"><i class="ph ph-x" style="font-size: 15px;"></i></div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 14px 0 14px; border-bottom: 1px solid var(--line);">
+            <span style="flex: 1; font-size: 11.5px; color: var(--faint);">Missing a phone? Rescan checks adb directly, right now.</span>
+            <div style="flex: none; display: flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border-2); background: var(--muted); font-size: 12.5px; font-weight: 500; color: var(--text); cursor: pointer;" style-hover="background:var(--muted-2)" onClick="{{ onRescan }}"><i class="ph ph-arrows-clockwise" style="{{ rescanIconStyle }}"></i>Rescan</div>
+          </div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow: auto; padding: 12px 18px 20px; display: flex; flex-direction: column; gap: 10px;">
+          <sc-for list="{{ discovered }}" as="d" hint-placeholder-count="6">
+            <div style="border: 1px solid var(--border-2); border-radius: 14px; padding: 12px 13px 13px;">
+              <div style="display: flex; align-items: flex-start; gap: 10px;">
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 13px; font-weight: 600;">{{ d.model }}</div>
+                  <div style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--dim); margin-top: 5px;">{{ d.endpoint }}</div>
+                </div>
+                <div style="width: 26px; height: 26px; flex: none; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer;" style-hover="background:var(--muted-2); color:var(--text)" title="Dismiss" onClick="{{ d.onDismiss }}"><i class="ph ph-x" style="font-size: 14px;"></i></div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px;">
+                <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--faint);">{{ d.meta }}</span>
+                <div style="{{ d.addStyle }}" onClick="{{ d.onAdd }}">{{ d.addLabel }}</div>
+              </div>
+            </div>
+          </sc-for>
+          <sc-if value="{{ discEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 40px 10px; text-align: center; font-size: 12.5px; color: var(--faint);">Nothing waiting — every phone adb can see is already on the farm.</div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ ctrlOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ ctrlBoxStyle }}" onClick="{{ stop }}">
+
+        <div style="width: 52px; flex: none; border-right: 1px solid var(--line); background: var(--panel-2); display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 3px;">
+          <sc-for list="{{ ctrl.shortcuts }}" as="s" hint-placeholder-count="10">
+            <div style="{{ s.style }}" style-hover="background:var(--muted-2); color:var(--text)" title="{{ s.title }}"><i class="{{ s.icon }}" style="font-size: 16px;"></i></div>
+          </sc-for>
+        </div>
+
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--muted);">
+          <div style="flex: none; height: 40px; display: flex; align-items: center; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--line-2); background: var(--panel); font-size: 11px; color: var(--dim); cursor: grab;" onMouseDown="{{ onCtrlDragStart }}" title="Drag to move · click canvas to tap, drag to swipe, Esc closes">
+            <span style="flex: none; display: flex; align-items: center; gap: 7px; color: var(--accent); font-weight: 500;"><span style="width: 6px; height: 6px; border-radius: 50%; background: var(--ok);"></span>{{ ctrl.streamState }}</span>
+            <span style="flex: none; white-space: nowrap;">{{ ctrl.fps }} fps</span>
+            <span style="flex: none; white-space: nowrap; font-family: 'Geist Mono', monospace;">{{ ctrl.res }}</span>
+            <span style="flex: none;">{{ ctrl.codec }}</span>
+            <div style="flex: 1; min-width: 4px;"></div>
+            <span style="flex: none; white-space: nowrap; font-family: 'Geist Mono', monospace;">{{ ctrl.latency }} ms</span>
+          </div>
+          <div style="flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 18px;">
+            <div style="{{ ctrl.castStyle }}">
+              <div style="{{ ctrl.castTextStyle }}">{{ ctrl.castText }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="width: 274px; flex: none; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0;">
+          <div style="flex: none; height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--line); cursor: grab; position: relative;" data-menu-root="1" onMouseDown="{{ onCtrlDragStart }}">
+            <div style="position: relative; display: flex; align-items: center;" onMouseEnter="{{ onCtrlDotEnter }}" onMouseLeave="{{ onCtrlDotLeave }}">
+              <div style="{{ ctrl.dotStyle }}"></div>
+              <sc-if value="{{ ctrl.dotTipOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="position: absolute; top: 18px; left: -6px; white-space: nowrap; padding: 6px 9px; background: var(--tooltip-bg); color: var(--tooltip-fg); border-radius: 8px; font-size: 11px; box-shadow: 0 8px 20px #00000029; z-index: 22;">{{ ctrl.stateTip }}</div>
+              </sc-if>
+            </div>
+            <span style="font-size: 11px; color: var(--faint);">{{ ctrl.index }}</span>
+            <span style="font-size: 14px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ ctrl.nameUpper }}</span>
+            <div style="flex: 1;"></div>
+            <div style="{{ ctrl.infoBtnStyle }}" style-hover="background:var(--muted-2); color:var(--text)" title="Device info" onClick="{{ onToggleInfo }}" onMouseDown="{{ stop }}"><i class="ph ph-info" style="font-size: 15px;"></i></div>
+            <div style="width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer;" style-hover="background:var(--muted-2); color:var(--text)" title="Close" onClick="{{ onCloseControl }}"><i class="ph ph-x" style="font-size: 15px;"></i></div>
+
+            <sc-if value="{{ ctrl.infoOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="position: absolute; top: 40px; right: 8px; width: 306px; background: var(--panel); border: 1px solid var(--border-2); border-radius: 14px; padding: 12px; box-shadow: 0 20px 50px #00000026; z-index: 20; cursor: default;" onMouseDown="{{ stop }}" onClick="{{ stop }}">
+                <div style="font-size: 11px; color: var(--faint); padding: 2px 2px 8px;">This device</div>
+                <sc-for list="{{ ctrl.infoSpecs }}" as="s" hint-placeholder-count="7">
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 2px; border-bottom: 1px solid var(--muted-2);">
+                    <span style="font-size: 12px; color: var(--dim); flex: none;">{{ s.label }}</span>
+                    <span style="{{ s.valStyle }}">{{ s.value }}</span>
+                  </div>
+                </sc-for>
+                <div style="font-size: 11px; color: var(--faint); padding: 14px 2px 8px;">Active engines</div>
+                <sc-for list="{{ ctrl.engines }}" as="s" hint-placeholder-count="4">
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 2px; border-bottom: 1px solid var(--muted-2);">
+                    <span style="font-size: 12px; color: var(--dim); flex: none;">{{ s.label }}</span>
+                    <span style="{{ s.valStyle }}">{{ s.value }}</span>
+                  </div>
+                </sc-for>
+                <div style="margin-top: 12px; padding: 9px; text-align: center; border-radius: 10px; background: var(--muted); font-size: 12.5px; font-weight: 500; color: var(--accent); cursor: pointer;" style-hover="background:var(--accent-soft)">Change</div>
+              </div>
+            </sc-if>
+          </div>
+
+          <div style="flex: none; display: flex; align-items: center; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 12px;" title="{{ ctrl.info }}">
+            <span style="{{ ctrl.battStyle }}">{{ ctrl.batt }}</span>
+            <span style="{{ ctrl.tempStyle }}">{{ ctrl.temp }}</span>
+            <span style="color: var(--dim);">{{ ctrl.os }}</span>
+            <div style="flex: 1;"></div>
+            <span style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--faint);">{{ ctrl.serial }}</span>
+          </div>
+
+          <sc-if value="{{ ctrl.isHost }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: none; display: flex; align-items: flex-start; gap: 9px; margin: 10px 12px 0; padding: 9px 11px; background: var(--warn-soft); border-radius: 10px;">
+              <i class="ph ph-broadcast" style="font-size: 15px; color: var(--warn); margin-top: 1px;"></i>
+              <div style="min-width: 0;">
+                <div style="font-size: 12px; font-weight: 600; color: var(--warn);">Host device</div>
+                <div style="font-size: 11.5px; color: var(--dim); line-height: 1.5; margin-top: 2px;">{{ ctrl.hostNote }}</div>
+              </div>
+            </div>
+          </sc-if>
+
+          <div style="flex: none; display: flex; align-items: center; gap: 3px; padding: 6px 10px 4px;">
+            <sc-for list="{{ ctrl.tabs }}" as="t" hint-placeholder-count="2">
+              <div style="{{ t.style }}" onClick="{{ t.onClick }}">{{ t.label }}</div>
+            </sc-for>
+          </div>
+
+          <sc-if value="{{ ctrl.isDevice }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: none; display: flex; gap: 3px; padding: 0 12px 6px;">
+              <sc-for list="{{ ctrl.deviceSections }}" as="s" hint-placeholder-count="2">
+                <div style="{{ s.style }}" onClick="{{ s.onClick }}"><i class="{{ s.icon }}" style="font-size: 13px;"></i>{{ s.label }}</div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <div style="flex: 1; min-height: 0; overflow: auto; padding: 0 8px 12px;">
+            <sc-if value="{{ ctrl.isJobs }}" hint-placeholder-val="{{ false }}">
+              <sc-if value="{{ ctrl.jobDetailOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="padding: 2px 6px 8px;">
+                  <div style="display: flex; align-items: center; gap: 7px; padding: 6px 0 10px; font-size: 12px; color: var(--accent); font-weight: 500; cursor: pointer;" onClick="{{ ctrl.onJobBack }}"><i class="ph ph-caret-left" style="font-size: 14px;"></i>All jobs</div>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-family: 'Geist Mono', monospace; font-size: 13px; font-weight: 500; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ ctrl.job.name }}</span>
+                    <span style="{{ ctrl.job.badge }}">{{ ctrl.job.state }}</span>
+                  </div>
+                  <sc-if value="{{ ctrl.job.hasProgress }}" hint-placeholder-val="{{ false }}">
+                    <div style="margin-top: 12px;">
+                      <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); margin-bottom: 5px;"><span>{{ ctrl.job.step }}</span><span>{{ ctrl.job.pct }}</span></div>
+                      <div style="height: 5px; border-radius: 99px; background: var(--muted-2); overflow: hidden;"><div style="{{ ctrl.job.fill }}"></div></div>
+                    </div>
+                  </sc-if>
+                  <div style="margin-top: 14px;">
+                    <sc-for list="{{ ctrl.job.meta }}" as="s" hint-placeholder-count="4">
+                      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--muted-2);">
+                        <span style="font-size: 11px; color: var(--faint); flex: none;">{{ s.label }}</span>
+                        <span style="{{ s.valStyle }}">{{ s.value }}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+                  <div style="display: flex; gap: 6px; margin-top: 14px;">
+                    <sc-for list="{{ ctrl.job.actions }}" as="a" hint-placeholder-count="2">
+                      <div style="{{ a.style }}" onClick="{{ a.onClick }}"><i class="{{ a.icon }}" style="font-size: 14px;"></i>{{ a.label }}</div>
+                    </sc-for>
+                  </div>
+                  <div style="display: flex; align-items: center; justify-content: center; gap: 7px; margin-top: 6px; padding: 9px; border-radius: 10px; border: 1px solid var(--line-2); font-size: 12.5px; font-weight: 500; color: var(--text-3); cursor: pointer;" style-hover="background:var(--muted)" onClick="{{ ctrl.job.onDetails }}"><i class="ph ph-arrow-square-out" style="font-size: 14px;"></i>Open full detail</div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ ctrl.jobListOpen }}" hint-placeholder-val="{{ true }}">
+                <div style="padding: 2px 6px 8px;">
+                  <sc-for list="{{ ctrl.jobs }}" as="j" hint-placeholder-count="7">
+                    <div style="{{ j.rowStyle }}" style-hover="background:var(--muted)" onClick="{{ j.onClick }}">
+                      <div style="{{ j.dotStyle }}"></div>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-family: 'Geist Mono', monospace; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ j.name }}</div>
+                        <div style="font-size: 11px; color: var(--faint); margin-top: 2px;">{{ j.sub }}</div>
+                      </div>
+                      <i class="ph ph-caret-right" style="font-size: 13px; color: var(--faint-2);"></i>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </sc-if>
+            <sc-if value="{{ ctrl.isFiles }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 2px 6px 8px;">
+                <div style="display: flex; align-items: center; gap: 6px; padding: 4px 2px 10px; overflow-x: auto; font-size: 11.5px;">
+                  <sc-for list="{{ ctrl.crumbs }}" as="c" hint-placeholder-count="3">
+                    <div style="{{ c.style }}" onClick="{{ c.onClick }}">{{ c.label }}</div>
+                  </sc-for>
+                </div>
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px 8px;">
+                  <span style="font-size: 11px; color: var(--faint);">{{ ctrl.fileCount }}</span>
+                  <div style="display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; color: var(--accent); cursor: pointer;"><i class="ph ph-upload-simple" style="font-size: 13px;"></i>Upload file</div>
+                </div>
+                <sc-for list="{{ ctrl.files }}" as="f" hint-placeholder-count="8">
+                  <div style="{{ f.rowStyle }}" style-hover="background:var(--muted)" onClick="{{ f.onClick }}">
+                    <i class="{{ f.icon }}" style="{{ f.iconStyle }}"></i>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ f.name }}</div>
+                      <div style="font-size: 11px; color: var(--faint); margin-top: 2px;">{{ f.sub }}</div>
+                    </div>
+                    <i class="{{ f.trail }}" style="font-size: 13px; color: var(--faint-2);"></i>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+            <sc-if value="{{ ctrl.isActions }}" hint-placeholder-val="{{ true }}">
+              <sc-for list="{{ genericActions }}" as="a" hint-placeholder-count="12">
+                <div style="{{ a.rowStyle }}" style-hover="background:var(--muted)" onClick="{{ a.onClick }}">
+                  <i class="{{ a.icon }}" style="font-size: 16px; width: 18px;"></i>
+                  <span>{{ a.label }}</span>
+                </div>
+              </sc-for>
+            </sc-if>
+            <sc-if value="{{ ctrl.isInspector }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 2px 6px 8px;">
+                <div style="display: flex; align-items: center; gap: 8px; padding: 6px 0 8px;">
+                  <span style="flex: 1; font-size: 11px; color: var(--faint);">Snapshot</span>
+                  <div style="display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--accent); font-weight: 500; cursor: pointer;"><i class="ph ph-arrows-clockwise" style="font-size: 13px;"></i>Capture</div>
+                </div>
+                <div style="{{ ctrl.snapStyle }}">
+                  <div style="{{ ctrl.snapBoxStyle }}">
+                    <div style="{{ ctrl.snapNodeStyle }}"></div>
+                    <div style="position: absolute; bottom: 5px; left: 6px; font-family: 'Geist Mono', monospace; font-size: 8px; color: var(--faint);">{{ ctrl.res }}</div>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 8px; padding: 14px 0 8px;">
+                  <span style="flex: 1; font-size: 11px; color: var(--faint);">UI nodes</span>
+                  <span style="font-size: 11px; color: var(--faint);">{{ ctrl.nodeCount }}</span>
+                </div>
+                <div style="max-height: 174px; overflow: auto; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2); padding: 5px 0;">
+                  <sc-for list="{{ ctrl.nodes }}" as="n" hint-placeholder-count="9">
+                    <div style="{{ n.style }}" style-hover="background:var(--bg)" onClick="{{ n.onClick }}"><i class="{{ n.icon }}" style="font-size: 12px; opacity: .6;"></i><span style="white-space: nowrap; font-family: 'Geist Mono', monospace;">{{ n.label }}</span></div>
+                  </sc-for>
+                </div>
+
+                <div style="padding: 14px 0 6px; font-size: 11px; color: var(--faint);">Node details</div>
+                <sc-for list="{{ ctrl.nodeDetail }}" as="s" hint-placeholder-count="8">
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--muted-2);">
+                    <span style="font-size: 11px; color: var(--faint); flex: none;">{{ s.label }}</span>
+                    <span style="{{ s.valStyle }}">{{ s.value }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+  </sc-if>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;defaultView&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;table&quot;,&quot;cards&quot;],&quot;default&quot;:&quot;table&quot;,&quot;tsType&quot;:&quot;'table'|'cards'&quot;},&quot;cardWidth&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:146,&quot;min&quot;:100,&quot;max&quot;:260,&quot;step&quot;:2,&quot;unit&quot;:&quot;px&quot;,&quot;tsType&quot;:&quot;number&quot;},&quot;deviceCount&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:64,&quot;min&quot;:8,&quot;max&quot;:200,&quot;step&quot;:4,&quot;tsType&quot;:&quot;number&quot;},&quot;logOpen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      view: props.defaultView || 'table',
+      query: '',
+      status: 'ALL',
+      group: 'ALL',
+      selected: {},
+      active: 0,
+      hoverDot: null,
+      menu: null,
+      ctrl: null,
+      ctrlTab: 'Actions',
+      ctrlNode: 0,
+      ctrlJob: null,
+      ctrlJobFilter: 'All',
+      ctrlPath: [],
+      ctrlSection: 'Jobs',
+      cardW: props.cardWidth || 146,
+      page: 'devices',
+      jpJob: 0,
+      jpFilter: 'All',
+      jpTab: 'Inputs',
+      jpEvent: 9,
+      jpSpeed: 1,
+      jpPlaying: false,
+      ctrlInfo: false,
+      ctrlDotTip: false,
+      marquee: null,
+      ctrlPos: { x: 0, y: 0 },
+      logOpen: props.logOpen === true,
+      theme: 'light',
+      scanning: false,
+      clock: this.fmtClock(new Date())
+    };
+    this.gridRef = React.createRef();
+    this.devices = this.buildDevices(props.deviceCount || 64);
+    this.logs = this.buildLogs();
+  }
+
+  componentDidMount() {
+    this.timer = setInterval(() => this.setState({ clock: this.fmtClock(new Date()) }), 1000);
+    let saved = null;
+    try { saved = localStorage.getItem('enkaku-theme'); } catch (err) { saved = null; }
+    const theme = saved === 'dark' || saved === 'light' ? saved : 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+    this.setState({ theme });
+    this.away = e => {
+      const outside = !e.target.closest('[data-menu-root]');
+      if (!outside) return;
+      const next = {};
+      if (this.state.menu) next.menu = null;
+      if (this.state.ctrlInfo) next.ctrlInfo = false;
+      if (this.state.groupMenu) next.groupMenu = null;
+      if (this.state.groupForm) { next.groupForm = null; next.groupDraft = ''; }
+      if (Object.keys(next).length) this.setState(next);
+    };
+    document.addEventListener('click', this.away, true);
+    this.onKey = e => {
+      const s = this.state;
+      if ((e.key === 'a' || e.key === 'A') && (e.ctrlKey || e.metaKey)) {
+        if (s.ctrl !== null) return;
+        const tag = (e.target.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea') return;
+        e.preventDefault();
+        const sel = {};
+        this.filtered().forEach(d => { sel[d.id] = true; });
+        this.setState({ selected: sel });
+        return;
+      }
+      if (e.key !== 'Escape') return;
+      if (s.ctrl !== null || s.ctrlInfo || s.menu) {
+        this.setState({ ctrl: null, ctrlInfo: false, menu: null });
+      } else if (Object.keys(s.selected).length) {
+        this.setState({ selected: {} });
+      }
+    };
+    document.addEventListener('keydown', this.onKey);
+  }
+  componentWillUnmount() {
+    clearInterval(this.timer);
+    clearTimeout(this.scanTimer);
+    document.removeEventListener('click', this.away, true);
+    document.removeEventListener('keydown', this.onKey);
+  }
+
+  fmtClock(d) {
+    const p = n => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  rnd(seed) { const x = Math.sin(seed * 12.9898) * 43758.5453; return x - Math.floor(x); }
+
+  buildDevices(n) {
+    const models = [
+      ['Redmi 9A', 'Xiaomi', '10'], ['POCO M3', 'Xiaomi', '11'], ['Galaxy A03', 'Samsung', '12'],
+      ['C11', 'realme', '10'], ['Hot 10', 'Infinix', '11'], ['Redmi Note 8', 'Xiaomi', '11'],
+      ['Galaxy M12', 'Samsung', '13'], ['Y15s', 'vivo', '12'], ['A16', 'OPPO', '11'],
+      ['G21', 'Nokia', '13']
+    ];
+    const tasks = [
+      ['tiktok_warmup.py', 'run'], ['ig_scroll_v3.js', 'run'], ['acc_register.py', 'run'],
+      ['idle', 'idle'], ['idle', 'idle'], ['device_reboot', 'sys'], ['apk_install: shopee', 'sys'],
+      ['fb_feed_farm.py', 'run'], ['queued: warmup', 'queue'], ['idle', 'idle']
+    ];
+    const groups = ['FARM-A', 'FARM-B', 'FARM-C', 'RACK-01', 'RACK-02'];
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const r = k => this.rnd(i * 7.31 + k * 3.17);
+      const m = models[Math.floor(r(1) * models.length)];
+      const sr = r(2);
+      let status = sr > 0.93 ? 'OFFLINE' : sr > 0.86 ? 'UNAUTH' : 'ONLINE';
+      const t = status === 'ONLINE' ? tasks[Math.floor(r(3) * tasks.length)] : ['—', 'none'];
+      if (status === 'ONLINE' && (t[1] === 'run' || t[1] === 'sys')) status = 'BUSY';
+      const off = status === 'OFFLINE';
+      out.push({
+        id: i,
+        name: 'dev-' + String(i + 1).padStart(3, '0'),
+        model: m[1] + ' ' + m[0],
+        serial: (m[1].slice(0, 2).toUpperCase() + Math.floor(r(4) * 9e6 + 1e6)).slice(0, 10),
+        os: 'Android ' + m[2],
+        endpoint: '192.168.1.' + (20 + i) + ':5555',
+        batt: off ? 0 : Math.floor(18 + r(5) * 82),
+        temp: off ? 0 : Math.round((26 + r(6) * 18) * 10) / 10,
+        cpu: off ? 0 : Math.floor(r(7) * (status === 'BUSY' ? 95 : 40)),
+        mem: off ? 0 : Math.floor(28 + r(8) * 62),
+        disk: off ? 0 : Math.floor(30 + r(9) * 60),
+        uptimeH: off ? 0 : Math.floor(r(10) * 190) + 1,
+        task: t[0], taskKind: t[1],
+        group: groups[Math.floor(r(11) * groups.length)],
+        proxy: r(12) > 0.35 ? 'SG-' + (100 + Math.floor(r(13) * 40)) : 'direct',
+        res: r(14) > 0.5 ? '720x1600' : '1080x2400',
+        status,
+        controlledBy: status === 'ONLINE' && r(16) > 0.72 ? (r(17) > 0.5 ? 'rz@studio' : 'ops@nuc-2') : null,
+        lastSeen: off ? Math.floor(r(15) * 40) + 2 + 'm ago' : 'now'
+      });
+    }
+    return out;
+  }
+
+  buildLogs() {
+    return [
+      ['20:50:04', 'INFO', 'dev-014', 'device authorized · adb connect 192.168.1.34:5555 ok'],
+      ['20:50:02', 'TASK', 'dev-007', 'tiktok_warmup.py step 4/12 · dwell 8.2s'],
+      ['20:49:58', 'WARN', 'dev-041', 'temperature 44.1°C · throttling task queue'],
+      ['20:49:51', 'INFO', 'dev-022', 'screenshot captured → /captures/dev-022_204951.png'],
+      ['20:49:44', 'ERR', 'dev-058', 'unauthorized · waiting for USB debugging prompt'],
+      ['20:49:39', 'TASK', 'dev-031', 'apk install shopee_v3.2.1.apk · 82%'],
+      ['20:49:30', 'INFO', 'host', 'rescan complete · 64 devices, 58 reachable'],
+      ['20:49:22', 'TASK', 'dev-003', 'ig_scroll_v3.js finished · 143 impressions']
+    ].map(l => ({
+      time: l[0], level: l[1], serial: l[2], msg: l[3],
+      levelStyle: {
+        flex: 'none', width: '36px', fontWeight: 500,
+        color: l[1] === 'ERR' ? 'var(--danger)' : l[1] === 'WARN' ? 'var(--warn)' : l[1] === 'TASK' ? 'var(--accent)' : 'var(--dim)'
+      }
+    }));
+  }
+
+  fill(pct, color) { return { width: Math.max(0, Math.min(100, pct)) + '%', height: '100%', background: color }; }
+  battColor(b) { return b < 20 ? 'var(--danger)' : b < 45 ? 'var(--warn)' : 'var(--accent)'; }
+
+  filtered() {
+    const q = this.state.query.trim().toLowerCase();
+    return this.devices.filter(d => {
+      if (this.state.status !== 'ALL' && d.status !== this.state.status) return false;
+      if (this.state.group !== 'ALL' && d.group !== this.state.group) return false;
+      if (!q) return true;
+      return (d.name + ' ' + d.serial + ' ' + d.model + ' ' + d.group + ' ' + d.task).toLowerCase().indexOf(q) >= 0;
+    });
+  }
+
+  toggle(id, e) {
+    if (e && e.stopPropagation) e.stopPropagation();
+    this.setState(s => {
+      const sel = Object.assign({}, s.selected);
+      if (sel[id]) delete sel[id]; else sel[id] = true;
+      const next = { selected: sel };
+      if (!Object.keys(sel).length && s.menu === 'bulk') next.menu = null;
+      return next;
+    });
+  }
+
+  gridDown(e) {
+    const host = this.gridRef && this.gridRef.current;
+    if (!host || e.button !== 0) return;
+    const add = e.shiftKey || e.ctrlKey || e.metaKey;
+    const base = add ? Object.assign({}, this.state.selected) : {};
+    const sx = e.clientX, sy = e.clientY;
+    this.marqMoved = false;
+
+    const move = ev => {
+      if (!this.marqMoved && Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 5) return;
+      this.marqMoved = true;
+      const box = {
+        left: Math.min(sx, ev.clientX), right: Math.max(sx, ev.clientX),
+        top: Math.min(sy, ev.clientY), bottom: Math.max(sy, ev.clientY)
+      };
+      const hostRect = host.getBoundingClientRect();
+      const sel = Object.assign({}, base);
+      host.querySelectorAll('[data-dev-id]').forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top) {
+          sel[el.getAttribute('data-dev-id')] = true;
+        }
+      });
+      this.setState({
+        selected: sel,
+        marquee: {
+          left: box.left - hostRect.left, top: box.top - hostRect.top,
+          width: box.right - box.left, height: box.bottom - box.top
+        }
+      });
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      this.setState({ marquee: null });
+      setTimeout(() => { this.marqMoved = false; }, 0);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }
+
+  startDrag(e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const s0 = { x: e.clientX, y: e.clientY }, p0 = this.state.ctrlPos;
+    const move = ev => this.setState({ ctrlPos: { x: p0.x + (ev.clientX - s0.x), y: p0.y + (ev.clientY - s0.y) } });
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }
+
+  saveGroup() {
+    const st = this.state;
+    const raw = (st.groupDraft || '').trim();
+    if (!raw) return;
+    const key = raw.toUpperCase().replace(/\s+/g, '-');
+    this.setState(p => {
+      const list = (p.groups || ['FARM-A', 'FARM-B', 'FARM-C', 'RACK-01', 'RACK-02']).slice();
+      if (p.groupForm === 'rename') {
+        const at = list.indexOf(p.groupTarget);
+        if (at >= 0) list[at] = key;
+        return { groups: list, group: p.group === p.groupTarget ? key : p.group, groupForm: null, groupDraft: '' };
+      }
+      if (list.indexOf(key) < 0) list.push(key);
+      return { groups: list, group: key, groupForm: null, groupDraft: '' };
+    });
+  }
+
+  openMenu(name, e) {
+    if (e && e.stopPropagation) e.stopPropagation();
+    this.setState(s => ({ menu: s.menu === name ? null : name }));
+  }
+
+  iconBtn(active) {
+    return {
+      width: '32px', height: '32px', borderRadius: '10px', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', cursor: 'pointer',
+      background: active ? 'var(--accent-soft)' : 'transparent',
+      color: active ? 'var(--accent)' : 'var(--faint)'
+    };
+  }
+
+  discoveries() {
+    if (this._disc) return this._disc;
+    const models = ['SM-G965U', 'SM-A035F', 'Redmi 9A', 'POCO M3', 'Infinix Hot 10', 'realme C11'];
+    this._disc = [];
+    for (let i = 0; i < 20; i++) {
+      const r = this.rnd(i * 3.77 + 1.13);
+      this._disc.push({
+        id: 'disc-' + i,
+        model: models[Math.floor(r * models.length)],
+        endpoint: '192.168.10.' + (200 + i) + ':5555',
+        os: 'Android ' + [10, 11, 12, 13][Math.floor(r * 4)],
+        since: i % 3 === 0 ? '13d ago' : i % 3 === 1 ? '4h ago' : '12m ago'
+      });
+    }
+    return this._disc;
+  }
+
+  jobEvents() {
+    if (this._events) return this._events;
+    const raw = [
+      [0, 'reset', 'device.wake', 'ok', 120], [180, 'reset', 'app.clearData', 'ok', 340],
+      [620, 'prepare', 'proxy.attach', 'ok', 210], [980, 'prepare', 'app.launch', 'ok', 640],
+      [1820, 'prepare', 'ui.waitFor', 'ok', 480], [2460, 'prepare', 'ui.tap', 'ok', 160],
+      [3181, 'prepare', 'app.forceStop', 'ok', 163], [3620, 'run', 'app.launch', 'ok', 720],
+      [4560, 'run', 'ui.scroll', 'ok', 880], [5720, 'run', 'ui.waitFor', 'retry', 1240],
+      [7180, 'run', 'ui.tap', 'ok', 190], [7620, 'run', 'text.type', 'ok', 420],
+      [8300, 'run', 'ui.scroll', 'ok', 910], [9480, 'run', 'capture.screen', 'ok', 260],
+      [10020, 'run', 'ui.tap', 'ok', 170], [10520, 'run', 'metrics.flush', 'ok', 305],
+      [11240, 'run', 'proxy.release', 'ok', 240], [12922, 'run', 'session.end', 'ok', 110]
+    ];
+    this._events = raw.map((r, i) => ({
+      i, at: r[0], phase: r[1], name: r[2], status: r[3], dur: r[4],
+      attempt: r[3] === 'retry' ? 2 : 1
+    }));
+    return this._events;
+  }
+
+  buildJobsPage(st, jobColor, jobSoft, deviceJobs) {
+    const chip = (active, extra) => Object.assign({
+      flex: 'none', padding: '5px 10px', borderRadius: '8px', fontSize: '11.5px', cursor: 'pointer',
+      fontWeight: active ? 600 : 500,
+      background: active ? 'var(--accent-soft)' : 'var(--muted)',
+      color: active ? 'var(--accent)' : 'var(--dim)'
+    }, extra || {});
+
+    const kind = st.jpKind || 'Jobs';
+    const base = deviceJobs.map((j, i) => Object.assign({}, j, { dev: 'dev-' + String(11 + i * 7).padStart(3, '0') }));
+    const list = [];
+    for (let rep = 0; rep < (kind === 'Jobs' ? 9 : 3); rep++) {
+      base.forEach((j, bi) => {
+        list.push(Object.assign({}, j, {
+          id: rep * 100 + j.id,
+          jid: kind === 'Jobs' ? j.jid.slice(0, -2) + String(20 + rep * 7 + bi).toString(16) : 'batch_' + String(1204 - rep * 7 - bi),
+          name: kind === 'Jobs' ? j.name : ['Morning warmup', 'Account registration', 'Proxy health sweep', 'Nightly maintenance'][bi % 4] + ' · ' + (12 + bi) + ' devices'
+        }));
+      });
+    }
+    const filtered = list.filter(j => st.jpFilter === 'All' || j.state === st.jpFilter);
+    const perPage = 12;
+    const pages = Math.max(1, Math.ceil(filtered.length / perPage));
+    const page = Math.min(st.jpPage || 0, pages - 1);
+    const shown = filtered.slice(page * perPage, page * perPage + perPage);
+    const job = list.find(j => j.id === st.jpJob) || list[0];
+    const events = this.jobEvents();
+    const ev = events[Math.min(st.jpEvent, events.length - 1)];
+    const total = events[events.length - 1].at;
+    const phaseColor = p => p === 'reset' ? 'var(--warn-2)' : p === 'prepare' ? 'var(--faint)' : 'var(--accent)';
+
+    const inputNodes = [
+      [0, 'profile', '"warm_a"', 'string'], [0, 'target', '', 'object'],
+      [1, 'app', '"com.zhiliaoapp.musically"', 'string'], [1, 'deeplink', 'null', 'null'],
+      [0, 'steps', '12 items', 'array'], [1, '[0]', '"open_feed"', 'string'],
+      [1, '[1]', '"dwell 8.2s"', 'string'], [0, 'proxy', '', 'object'],
+      [1, 'pool', '"SG"', 'string'], [1, 'sticky', 'true', 'boolean'],
+      [0, 'retries', '2', 'number'], [0, 'redact_text', 'true', 'boolean']
+    ];
+    const outputNodes = [
+      [0, 'status', '"ok"', 'string'], [0, 'impressions', '143', 'number'],
+      [0, 'interactions', '', 'object'], [1, 'likes', '9', 'number'], [1, 'follows', '2', 'number'],
+      [1, 'comments', '0', 'number'], [0, 'session', '', 'object'],
+      [1, 'duration_ms', '12922', 'number'], [1, 'proxy_used', '"SG-124"', 'string'],
+      [0, 'artifacts', '5 items', 'array'], [0, 'warnings', '1 item', 'array'],
+      [1, '[0]', '"captcha retry"', 'string']
+    ];
+    const nodes = (st.jpTab === 'Output' ? outputNodes : inputNodes).map(n => ({
+      key: n[1], value: n[2], type: n[3],
+      style: {
+        display: 'flex', alignItems: 'center', gap: '9px', padding: '4px 12px 4px ' + (12 + n[0] * 16) + 'px'
+      },
+      icon: n[3] === 'object' || n[3] === 'array' ? 'ph ph-caret-down' : 'ph ph-dot-outline',
+      iconStyle: { fontSize: '11px', width: '13px', color: 'var(--faint-2)' },
+      keyStyle: { flex: 'none', fontFamily: "'Geist Mono', monospace", fontSize: '11.5px', color: 'var(--text)' },
+      valStyle: {
+        flex: 1, minWidth: 0, fontFamily: "'Geist Mono', monospace", fontSize: '11.5px',
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        color: n[3] === 'string' ? 'var(--accent)' : n[3] === 'number' ? 'var(--warn)' : n[3] === 'boolean' ? 'var(--warn-2)' : 'var(--faint)'
+      },
+      typeStyle: { flex: 'none', fontSize: '10px', color: 'var(--faint-2)' }
+    }));
+
+    const logRows = [
+      ['20:47:12', 'info', 'session', 'session start · profile warm_a'],
+      ['20:47:14', 'info', 'proxy', 'attached SG-124 · sticky'],
+      ['20:47:16', 'info', 'app', 'launch com.zhiliaoapp.musically'],
+      ['20:48:03', 'debug', 'ui', 'scroll feed · dwell 8.2s'],
+      ['20:48:44', 'info', 'metrics', 'impressions=61 likes=4'],
+      ['20:49:41', 'warn', 'ui', 'captcha check · retry 1'],
+      ['20:49:52', 'debug', 'ui', 'waitFor id/feed_item · 1240ms'],
+      ['20:50:02', 'info', 'capture', 'screen → frame_014.png'],
+      ['20:50:04', 'info', 'metrics', 'flush 143 impressions'],
+      ['20:50:05', 'error', 'net', 'socket timeout · retried ok'],
+      ['20:50:06', 'info', 'proxy', 'released SG-124'],
+      ['20:50:07', 'info', 'session', 'session end · exit 0']
+    ];
+    const lvlColor = l => l === 'error' ? 'var(--danger)' : l === 'warn' ? 'var(--warn)' : l === 'debug' ? 'var(--faint)' : 'var(--accent)';
+    const shownLogs = logRows.filter(l => st.jpLogLevel === 'All' || !st.jpLogLevel || l[1] === st.jpLogLevel);
+
+    return {
+      count: list.length + ' total',
+      pageNote: filtered.length ? (page * perPage + 1) + '–' + (page * perPage + shown.length) + ' of ' + filtered.length : 'none',
+      prevStyle: {
+        width: '26px', height: '26px', flex: 'none', borderRadius: '8px', display: 'flex', alignItems: 'center',
+        justifyContent: 'center', border: '1px solid var(--border-2)', cursor: page > 0 ? 'pointer' : 'default',
+        color: page > 0 ? 'var(--text-3)' : 'var(--faint-2)', background: 'var(--panel-2)'
+      },
+      nextStyle: {
+        width: '26px', height: '26px', flex: 'none', borderRadius: '8px', display: 'flex', alignItems: 'center',
+        justifyContent: 'center', border: '1px solid var(--border-2)',
+        cursor: page < pages - 1 ? 'pointer' : 'default',
+        color: page < pages - 1 ? 'var(--text-3)' : 'var(--faint-2)', background: 'var(--panel-2)'
+      },
+      onPrev: () => this.setState({ jpPage: Math.max(0, page - 1) }),
+      onNext: () => this.setState({ jpPage: Math.min(pages - 1, page + 1) }),
+      pageTabs: [['Jobs', 63], ['Batches', 21]].map(t => ({
+        label: t[0], count: String(t[1]),
+        style: {
+          flex: 'none', display: 'flex', alignItems: 'center', gap: '7px', padding: '7px 12px', borderRadius: '9px',
+          fontSize: '13px', cursor: 'pointer',
+          fontWeight: (st.jpKind || 'Jobs') === t[0] ? 600 : 500,
+          background: (st.jpKind || 'Jobs') === t[0] ? 'var(--accent-soft)' : 'transparent',
+          color: (st.jpKind || 'Jobs') === t[0] ? 'var(--accent)' : 'var(--faint)'
+        },
+        countStyle: { fontSize: '11px', fontWeight: 400, opacity: .65 },
+        onClick: () => this.setState({ jpKind: t[0], jpPage: 0, jpJob: 0 })
+      })),
+      filters: ['All', 'Running', 'Queued', 'Success', 'Failed'].map(k => ({
+        label: k, style: chip(st.jpFilter === k), onClick: () => this.setState({ jpFilter: k, jpPage: 0 })
+      })),
+      list: shown.map(j => ({
+        name: j.name,
+        sub: j.dev + ' · ' + (j.state === 'Running' ? j.step : j.state === 'Queued' ? 'position ' + j.pos : j.when + ' · ' + j.dur),
+        dotStyle: { width: '7px', height: '7px', flex: 'none', borderRadius: '50%', background: jobColor(j.state) },
+        rowStyle: {
+          display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 8px', borderRadius: '10px', cursor: 'pointer',
+          background: j.id === st.jpJob ? 'var(--accent-soft)' : 'transparent'
+        },
+        onClick: () => this.setState({ jpJob: j.id })
+      })),
+      job: {
+        name: job.name, state: job.state,
+        badge: { flex: 'none', fontSize: '10.5px', fontWeight: 600, padding: '4px 10px', borderRadius: '999px', color: jobColor(job.state), background: jobSoft(job.state) },
+        meta: job.jid + ' · ' + job.dev + ' · ' + job.trigger + ' · ' + (job.state === 'Running' ? 'running ' + job.dur : job.dur),
+        actions: [
+          ['Re-run', 'ph ph-play'], ['Open device', 'ph ph-device-mobile'], ['Export', 'ph ph-export']
+        ].map((a, ai) => ({
+          label: a[0], icon: a[1],
+          style: {
+            flex: 'none', display: 'flex', alignItems: 'center', gap: '7px', padding: '8px 12px', borderRadius: '10px',
+            fontSize: '12.5px', fontWeight: 500, cursor: 'pointer',
+            background: ai === 0 ? 'var(--accent-soft)' : 'var(--muted)',
+            color: ai === 0 ? 'var(--accent)' : 'var(--text-3)'
+          },
+          onClick: () => {}
+        }))
+      },
+      tabs: [['Inputs', 'ph ph-sign-in'], ['Output', 'ph ph-sign-out'], ['Logs', 'ph ph-list-dashes'], ['Timeline', 'ph ph-film-strip'], ['Artifacts', 'ph ph-images']].map(t => ({
+        label: t[0], icon: t[1],
+        style: {
+          flex: 'none', display: 'flex', alignItems: 'center', gap: '7px', padding: '6px 11px', borderRadius: '9px',
+          fontSize: '12.5px', cursor: 'pointer',
+          fontWeight: st.jpTab === t[0] ? 600 : 500,
+          background: st.jpTab === t[0] ? 'var(--accent-soft)' : 'transparent',
+          color: st.jpTab === t[0] ? 'var(--accent)' : 'var(--faint)'
+        },
+        onClick: () => this.setState({ jpTab: t[0] })
+      })),
+      isIo: st.jpTab === 'Inputs' || st.jpTab === 'Output',
+      isLogs: st.jpTab === 'Logs',
+      isTimeline: st.jpTab === 'Timeline',
+      isArtifacts: st.jpTab === 'Artifacts',
+      io: {
+        title: st.jpTab === 'Output' ? 'Output snapshot' : 'Input snapshot',
+        size: st.jpTab === 'Output' ? '2.1 KB · captured at exit' : '1.4 KB · captured at start',
+        nodes
+      },
+      logLevels: ['All', 'info', 'debug', 'warn', 'error'].map(k => ({
+        label: k,
+        count: String(k === 'All' ? logRows.length : logRows.filter(l => l[1] === k).length),
+        style: chip((st.jpLogLevel || 'All') === k),
+        onClick: () => this.setState({ jpLogLevel: k })
+      })),
+      logs: shownLogs.map((l, li) => ({
+        time: l[0], level: l[1], scope: l[2], msg: l[3],
+        rowStyle: {
+          display: 'flex', alignItems: 'center', gap: '12px', padding: '7px 12px',
+          borderBottom: li === shownLogs.length - 1 ? 'none' : '1px solid var(--muted-2)',
+          background: li % 2 ? 'var(--panel-2)' : 'transparent'
+        },
+        lvlStyle: { flex: 'none', width: '52px', fontSize: '11px', fontWeight: 600, color: lvlColor(l[1]) }
+      })),
+      tl: {
+        onPlay: () => this.setState(s => ({ jpPlaying: !s.jpPlaying })),
+        playIcon: st.jpPlaying ? 'ph ph-pause' : 'ph ph-play',
+        speeds: [1, 2, 4].map(sp => ({
+          label: sp + '×',
+          style: {
+            padding: '4px 9px', borderRadius: '6px', fontSize: '11.5px', cursor: 'pointer',
+            fontWeight: st.jpSpeed === sp ? 600 : 500,
+            background: st.jpSpeed === sp ? 'var(--panel)' : 'transparent',
+            color: st.jpSpeed === sp ? 'var(--text)' : 'var(--faint)'
+          },
+          onClick: () => this.setState({ jpSpeed: sp })
+        })),
+        at: '+' + (ev.at / 1000).toFixed(3) + 's',
+        label: ev.phase + ' · ' + ev.name,
+        pos: 'event ' + (ev.i + 1) + ' of ' + events.length,
+        total: '+' + (total / 1000).toFixed(3) + 's',
+        fill: { position: 'absolute', left: 0, top: 0, bottom: 0, width: (ev.at / total * 100) + '%', borderRadius: '99px', background: 'var(--accent)' },
+        knob: {
+          position: 'absolute', top: '-4px', left: 'calc(' + (ev.at / total * 100) + '% - 7px)',
+          width: '14px', height: '14px', borderRadius: '50%', background: 'var(--panel)',
+          border: '2px solid var(--accent)', boxShadow: '0 2px 6px #00000024'
+        },
+        onScrub: e => {
+          const r = e.currentTarget.getBoundingClientRect();
+          const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * total;
+          let best = 0;
+          events.forEach((x, xi) => { if (Math.abs(x.at - t) < Math.abs(events[best].at - t)) best = xi; });
+          this.setState({ jpEvent: best });
+        },
+        lanes: [
+          {
+            label: 'Phase',
+            items: ['reset', 'prepare', 'run'].map(p => {
+              const inP = events.filter(x => x.phase === p);
+              const a = inP[0].at, b = inP[inP.length - 1].at;
+              return {
+                label: p, title: p,
+                style: {
+                  position: 'absolute', left: (a / total * 100) + '%', width: Math.max(((b - a) / total * 100), 4) + '%',
+                  top: 0, bottom: 0, borderRadius: '6px', display: 'flex', alignItems: 'center', paddingLeft: '8px',
+                  fontSize: '9.5px', letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--panel)',
+                  background: phaseColor(p), overflow: 'hidden'
+                },
+                onClick: () => {}
+              };
+            })
+          },
+          {
+            label: 'Actions',
+            items: events.map(x => ({
+              label: '', title: x.name + ' · +' + (x.at / 1000).toFixed(3) + 's',
+              style: {
+                position: 'absolute', left: 'calc(' + (x.at / total * 100) + '% - 2px)', top: '3px', bottom: '3px',
+                width: '4px', borderRadius: '99px', cursor: 'pointer',
+                background: x.i === ev.i ? 'var(--text)' : x.status === 'retry' ? 'var(--warn)' : 'var(--accent)'
+              },
+              onClick: () => this.setState({ jpEvent: x.i })
+            }))
+          },
+          {
+            label: 'Logs',
+            items: [560, 1900, 3400, 5900, 7600, 9500, 11300].map((at, ai) => ({
+              label: '', title: 'log cluster ' + (ai + 1),
+              style: {
+                position: 'absolute', left: (at / total * 100) + '%', top: '6px', bottom: '6px', width: '4.5%',
+                borderRadius: '4px', background: 'var(--border-3)'
+              },
+              onClick: () => {}
+            }))
+          }
+        ],
+        frameNote: events.length + ' events · ' + events.length + ' frames captured per action',
+        frames: events.map(x => ({
+          label: x.name, at: '+' + (x.at / 1000).toFixed(1) + 's',
+          style: { flex: 'none', width: '76px', cursor: 'pointer' },
+          shotStyle: {
+            width: '76px', aspectRatio: '9 / 19.5', borderRadius: '8px', display: 'flex',
+            alignItems: 'flex-end', justifyContent: 'center', paddingBottom: '5px',
+            background: 'repeating-linear-gradient(135deg, var(--muted) 0 5px, var(--muted-2) 5px 10px)',
+            border: '2px solid ' + (x.i === ev.i ? 'var(--accent)' : 'var(--line-2)')
+          },
+          capStyle: {
+            marginTop: '5px', fontSize: '10px', textAlign: 'center', whiteSpace: 'nowrap',
+            overflow: 'hidden', textOverflow: 'ellipsis',
+            color: x.i === ev.i ? 'var(--accent)' : 'var(--faint)'
+          },
+          onClick: () => this.setState({ jpEvent: x.i })
+        })),
+        bigShotStyle: {
+          width: '100%', aspectRatio: '9 / 19.5', borderRadius: '10px', border: '1px solid var(--line-2)',
+          display: 'flex', alignItems: 'flex-end', justifyContent: 'center', paddingBottom: '8px',
+          background: 'repeating-linear-gradient(135deg, var(--muted) 0 6px, var(--muted-2) 6px 12px)'
+        },
+        ev: {
+          name: 'action ' + ev.name,
+          status: ev.status,
+          badge: {
+            flex: 'none', fontSize: '10px', fontWeight: 600, padding: '3px 8px', borderRadius: '999px',
+            color: ev.status === 'retry' ? 'var(--warn)' : 'var(--accent)',
+            background: ev.status === 'retry' ? 'var(--warn-soft)' : 'var(--accent-soft)'
+          },
+          rows: [
+            ['phase', ev.phase], ['attempt', String(ev.attempt)], ['duration', ev.dur + ' ms'],
+            ['seq', String(ev.i + 1)], ['ui nodes', '184 captured']
+          ].map(r => ({
+            label: r[0], value: r[1],
+            valStyle: { fontFamily: "'Geist Mono', monospace", fontSize: '11.5px', color: 'var(--text)' }
+          })),
+          args: 'Recorded already redacted — typed text and clipboard writes store only a length.'
+        }
+      },
+      artNote: '5 files · 44.1 MB',
+      artifacts: [
+        ['frame_014.png', 'screenshot · 1.2 MB', 'img'], ['ui_dump_014.xml', 'ui tree · 84 KB', 'file'],
+        ['session.mp4', 'replay video · 38.4 MB', 'vid'], ['metrics.json', 'output copy · 2.1 KB', 'file'],
+        ['captcha_hit.png', 'screenshot · 0.9 MB', 'img']
+      ].map(a => ({
+        name: a[0], sub: a[1],
+        icon: a[2] === 'img' ? 'ph ph-image' : a[2] === 'vid' ? 'ph ph-film-slate' : 'ph ph-file-code',
+        thumbStyle: {
+          height: '92px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'repeating-linear-gradient(135deg, var(--muted) 0 6px, var(--muted-2) 6px 12px)',
+          borderBottom: '1px solid var(--line-2)'
+        }
+      }))
+    };
+  }
+
+  buildScriptsPage(st) {
+    const pillTab = (active, extra) => Object.assign({
+      flex: 'none', display: 'flex', alignItems: 'center', gap: '7px', padding: '7px 12px', borderRadius: '9px',
+      fontSize: '13px', cursor: 'pointer',
+      fontWeight: active ? 600 : 500,
+      background: active ? 'var(--accent-soft)' : 'transparent',
+      color: active ? 'var(--accent)' : 'var(--faint)'
+    }, extra || {});
+
+    const scripts = [
+      ['mikrotik-routing/activate-group', '0.11.0', '6 versions', '7d ago', true],
+      ['mikrotik-routing/check', '0.11.0', '8 versions', '7d ago', true],
+      ['mikrotik-routing/discover-lan-ip', '0.11.0', '6 versions', '7d ago', true],
+      ['mikrotik-routing/verify-egress', '0.11.0', '6 versions', '7d ago', true],
+      ['networking/leak-test', '3.0.0', '1 version', '13d ago', true],
+      ['proxy-manager/check', '0.11.0', '3 versions', '8d ago', true],
+      ['tiktok/auto-scroll', '1.12.0', '1 version', '13d ago', true],
+      ['tiktok/enqueue-video', '1.12.0', '1 version', '13d ago', true],
+      ['tiktok/list-accounts', '1.12.0', '1 version', '13d ago', false],
+      ['tiktok/post-video', '1.12.0', '1 version', '13d ago', true],
+      ['tiktok/search-follow', '1.12.0', '1 version', '13d ago', true],
+      ['tiktok/switch-account', '1.12.0', '1 version', '13d ago', true]
+    ];
+    const workflows = [
+      ['Morning warmup', 'active', 'Wake the cluster, rotate proxy, then run a feed warmup on every free device.',
+        ['device.wake', 'proxy-manager/check', 'tiktok/auto-scroll'], '12 devices · daily 07:00'],
+      ['Account registration', 'active', 'Register new accounts in batches of five, capture credentials as artifacts.',
+        ['tiktok/switch-account', 'acc_register', 'capture.screen'], '5 per batch · manual'],
+      ['Proxy health sweep', 'paused', 'Verify egress on every routed device and flag any leak before jobs start.',
+        ['mikrotik-routing/verify-egress', 'networking/leak-test'], '64 devices · hourly'],
+      ['Nightly maintenance', 'active', 'Clear app data, reclaim storage and reboot anything that drifted.',
+        ['app.clearData', 'device.reboot'], 'whole farm · daily 03:00'],
+      ['Post queue drain', 'draft', 'Publish whatever sits in the upload queue, oldest first.',
+        ['tiktok/enqueue-video', 'tiktok/post-video'], 'unscheduled']
+    ];
+
+    const q = (st.spQuery || '').trim().toLowerCase();
+    const matched = scripts.filter(s => !q || s[0].toLowerCase().indexOf(q) >= 0 || s[1].indexOf(q) >= 0);
+    const sPer = 10;
+    const sPages = Math.max(1, Math.ceil(matched.length / sPer));
+    const sPage = Math.min(st.spPage || 0, sPages - 1);
+    const shownScripts = matched.slice(sPage * sPer, sPage * sPer + sPer);
+    const shownFlows = workflows.filter(w => !q || w[0].toLowerCase().indexOf(q) >= 0);
+    const isScripts = (st.spTab || 'Scripts') === 'Scripts';
+    const off = st.spOff || {};
+
+    return {
+      subtitle: isScripts ? 'Every script the plugins registered, newest version first' : 'Chains of scripts that run as one job across a cluster',
+      newLabel: isScripts ? 'New script' : 'New workflow',
+      newIcon: isScripts ? 'ph ph-file-plus' : 'ph ph-flow-arrow',
+      tabs: [['Scripts', scripts.length], ['Workflows', workflows.length]].map(t => ({
+        label: t[0], count: String(t[1]),
+        style: pillTab((st.spTab || 'Scripts') === t[0]),
+        countStyle: { fontSize: '11px', fontWeight: 400, opacity: .65 },
+        onClick: () => this.setState({ spTab: t[0] })
+      })),
+      isScripts, isWorkflows: !isScripts,
+      query: st.spQuery || '',
+      onQuery: e => this.setState({ spQuery: e.target.value }),
+      placeholder: isScripts ? 'Search scripts — plugin/script' : 'Search workflows',
+      matchNote: (isScripts ? shownScripts.length : shownFlows.length) + ' shown',
+      loadedNote: (sPage * sPer + 1) + '–' + (sPage * sPer + shownScripts.length) + ' of ' + matched.length,
+      pageLabel: (sPage + 1) + ' / ' + sPages,
+      prevStyle: {
+        width: '26px', height: '26px', flex: 'none', borderRadius: '8px', display: 'flex', alignItems: 'center',
+        justifyContent: 'center', border: '1px solid var(--border-2)', background: 'var(--panel-2)',
+        cursor: sPage > 0 ? 'pointer' : 'default', color: sPage > 0 ? 'var(--text-3)' : 'var(--faint-2)'
+      },
+      nextStyle: {
+        width: '26px', height: '26px', flex: 'none', borderRadius: '8px', display: 'flex', alignItems: 'center',
+        justifyContent: 'center', border: '1px solid var(--border-2)', background: 'var(--panel-2)',
+        cursor: sPage < sPages - 1 ? 'pointer' : 'default', color: sPage < sPages - 1 ? 'var(--text-3)' : 'var(--faint-2)'
+      },
+      onPrev: () => this.setState({ spPage: Math.max(0, sPage - 1) }),
+      onNext: () => this.setState({ spPage: Math.min(sPages - 1, sPage + 1) }),
+      scripts: shownScripts.map(s => {
+        const on = off[s[0]] === undefined ? s[4] : !off[s[0]];
+        return {
+          name: s[0], latest: s[1], versions: s[2], published: s[3],
+          toggleStyle: {
+            width: '34px', height: '19px', borderRadius: '999px', padding: '2px', cursor: 'pointer',
+            display: 'flex', justifyContent: on ? 'flex-end' : 'flex-start',
+            background: on ? 'var(--accent)' : 'var(--border-3)'
+          },
+          knobStyle: { width: '15px', height: '15px', borderRadius: '50%', background: 'var(--panel)' },
+          onToggle: () => this.setState(p => {
+            const n = Object.assign({}, p.spOff || {});
+            n[s[0]] = !(n[s[0]] === undefined ? !s[4] : !n[s[0]]);
+            return { spOff: n };
+          })
+        };
+      }),
+      workflows: shownFlows.map(w => ({
+        name: w[0], state: w[1], desc: w[2], meta: w[4],
+        badge: {
+          flex: 'none', fontSize: '10.5px', fontWeight: 600, padding: '3px 9px', borderRadius: '999px',
+          color: w[1] === 'active' ? 'var(--accent)' : w[1] === 'paused' ? 'var(--warn)' : 'var(--faint)',
+          background: w[1] === 'active' ? 'var(--accent-soft)' : w[1] === 'paused' ? 'var(--warn-soft)' : 'var(--muted-2)'
+        },
+        steps: w[3].map(p => ({
+          label: p,
+          style: {
+            fontFamily: "'Geist Mono', monospace", fontSize: '10.5px', padding: '3px 7px', borderRadius: '6px',
+            background: 'var(--muted)', color: 'var(--dim)'
+          }
+        }))
+      }))
+    };
+  }
+
+  buildPluginsPage(st) {
+    const plugins = [
+      ['Google automation pack', 'google', '0.2.0', ['latest'], 'staged', '0 registered / 2 declared', '5d ago',
+        'Account and device automation for the Google apps on a farm device.'],
+      ['MikroTik routing', 'mikrotik-routing', '0.11.0 · active', ['9 versions', 'service'], 'active', '4 registered', '7d ago',
+        'Assigns a farm device its own internet egress by writing policy routing rules on a MikroTik router. Activate a whole group at once, and every write is refused while a device is not provably reachable over adb.'],
+      ['Networking', 'networking', '3.0.0', ['latest'], 'active', '1 registered', '13d ago',
+        'Leak and egress checks driven through a real browser on the device.'],
+      ['Proxy manager', 'proxy-manager', '0.11.0 · active', ['3 versions', 'service'], 'active', '1 registered', '8d ago',
+        'Keeps a catalogue of proxies and runs a local bridge for each record. Every bridge writes to one log, and upstream passwords are stored encrypted and never shown again.'],
+      ['TikTok automation pack', 'tiktok', '1.12.0', ['latest', 'service'], 'active', '6 registered', '13d ago',
+        'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.'],
+      ['YouTube automation pack', 'youtube', '0.4.3', ['latest'], 'staged', '0 registered / 1 declared', '5d ago',
+        'Search and browse the YouTube app on a farm device.']
+    ];
+    const q = (st.ppQuery || '').trim().toLowerCase();
+    const shown = plugins.filter(p => !q || (p[0] + p[1] + p[2] + p[7]).toLowerCase().indexOf(q) >= 0);
+    const btn = (label, primary) => ({
+      label,
+      style: {
+        flex: 'none', padding: '6px 9px', borderRadius: '8px', fontSize: '12px', fontWeight: 500, cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        background: primary ? 'var(--muted)' : 'transparent',
+        border: primary ? '1px solid var(--border-2)' : '1px solid transparent',
+        color: label === 'Remove' ? 'var(--danger)' : primary ? 'var(--text)' : 'var(--dim)'
+      },
+      onClick: e => { if (e && e.stopPropagation) e.stopPropagation(); }
+    });
+
+    return {
+      query: st.ppQuery || '',
+      onQuery: e => this.setState({ ppQuery: e.target.value }),
+      matchNote: shown.length + ' of ' + plugins.length,
+      plugins: shown.map(p => ({
+        title: p[0], slug: p[1], version: p[2], status: p[4], scripts: p[5], verified: p[6], desc: p[7],
+        versionStyle: {
+          fontFamily: "'Geist Mono', monospace", fontSize: '11px', padding: '2px 7px', borderRadius: '6px',
+          background: 'var(--muted)', color: 'var(--text-3)', whiteSpace: 'nowrap', flex: 'none'
+        },
+        tags: p[3].map(t => ({
+          label: t,
+          style: {
+            fontSize: '10.5px', padding: '2px 7px', borderRadius: '999px', whiteSpace: 'nowrap', flex: 'none',
+            background: t === 'service' ? 'var(--warn-soft)' : 'var(--muted-2)',
+            color: t === 'service' ? 'var(--warn)' : 'var(--faint)'
+          }
+        })),
+        statusStyle: {
+          display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: 500,
+          padding: '3px 9px', borderRadius: '999px',
+          background: p[4] === 'active' ? 'var(--accent-soft)' : 'var(--muted-2)',
+          color: p[4] === 'active' ? 'var(--accent)' : 'var(--faint)'
+        },
+        statusDot: {
+          width: '6px', height: '6px', borderRadius: '50%',
+          background: p[4] === 'active' ? 'var(--ok)' : 'var(--faint-2)'
+        },
+        actions: (p[4] === 'active' ? [['Disable', true], ['⋯', false]] : [['Activate', true], ['⋯', false]])
+          .map(a => btn(a[0], a[1]))
+      }))
+    };
+  }
+
+  buildSettingsPage(st) {
+    const nav = [
+      ['General', 'ph ph-gear', null],
+      ['Connection', null, 'group'],
+      ['Host & daemon', 'ph ph-hard-drives', null],
+      ['ADB transport', 'ph ph-usb', null],
+      ['Network scan', 'ph ph-broadcast', null],
+      ['Automation', null, 'group'],
+      ['Job runner', 'ph ph-lightning', null],
+      ['Capture & replay', 'ph ph-film-strip', null],
+      ['Scripts', 'ph ph-code', null],
+      ['Storage', null, 'group'],
+      ['Artifacts', 'ph ph-images', null],
+      ['Retention', 'ph ph-clock-counter-clockwise', null],
+      ['Farm', null, 'group'],
+      ['Clusters', 'ph ph-folders', null],
+      ['Privacy', 'ph ph-shield-check', null],
+      ['Appearance', 'ph ph-palette', null]
+    ];
+    const active = st.setNav || 'General';
+    const set = (k, v) => this.setState(p => ({ setVals: Object.assign({}, p.setVals || {}, { [k]: v }) }));
+    const get = (k, d) => {
+      const v = (st.setVals || {})[k];
+      return v === undefined ? d : v;
+    };
+
+    const btn = label => ({
+      label,
+      style: {
+        flex: 'none', padding: '8px 13px', borderRadius: '9px', border: '1px solid var(--border-2)',
+        background: 'var(--muted)', color: 'var(--text)', fontSize: '12.5px', fontWeight: 500, cursor: 'pointer'
+      }
+    });
+    const text = (key, label, value, hint, buttons, mono) => ({
+      isText: true, label, hint, hasHint: !!hint,
+      value: get(key, value),
+      onChange: e => set(key, e.target.value),
+      inputStyle: {
+        flex: 1, minWidth: 0, padding: '9px 12px', borderRadius: '9px', border: '1px solid var(--border-2)',
+        background: 'var(--panel-2)', color: 'var(--text)', outline: 'none',
+        fontFamily: mono ? "'Geist Mono', monospace" : 'inherit', fontSize: '12.5px'
+      },
+      buttons: (buttons || []).map(btn)
+    });
+    const check = (key, label, hint, on) => {
+      const v = get(key, on);
+      return {
+        isCheck: true, label, hint,
+        boxStyle: {
+          width: '16px', height: '16px', flex: 'none', marginTop: '1px', borderRadius: '5px',
+          border: '1.5px solid ' + (v ? 'var(--accent)' : 'var(--border-3)'),
+          background: v ? 'var(--accent)' : 'var(--panel)', color: 'var(--on-accent)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer'
+        },
+        checkIcon: v ? 'ph ph-check' : '',
+        onToggle: () => set(key, !v)
+      };
+    };
+    const select = (key, label, options, def, hint) => {
+      const v = get(key, def);
+      return {
+        isSelect: true, label, hint, hasHint: !!hint,
+        options: options.map(o => ({
+          label: o,
+          style: {
+            flex: 'none', padding: '7px 12px', borderRadius: '9px', fontSize: '12.5px', cursor: 'pointer',
+            fontWeight: v === o ? 600 : 500,
+            border: '1px solid ' + (v === o ? 'var(--accent)' : 'var(--border-2)'),
+            background: v === o ? 'var(--accent-soft)' : 'var(--panel-2)',
+            color: v === o ? 'var(--accent)' : 'var(--dim)'
+          },
+          onClick: () => set(key, o)
+        }))
+      };
+    };
+
+    const pages = {
+      General: [
+        { title: 'General', fields: [
+          text('farmName', 'Farm name', 'studio-jakarta', 'Shown in the title bar and in every job record.', ['Rename']),
+          check('autoStart', 'Start daemon on login', 'Enkaku claims the ADB server as soon as the machine is up.', true)
+        ] },
+        { title: 'Devices', note: 'How a device behaves the moment it appears on the farm.', fields: [
+          check('autoAuth', 'Trust new devices automatically', 'Accept the USB debugging prompt for devices on this host key.', true),
+          check('autoName', 'Name devices by slot', 'New devices are labelled dev-001, dev-002 … instead of their serial.', true),
+          select('defaultCluster', 'Default cluster', ['Farm A', 'Farm B', 'Rack 01', 'Unassigned'], 'Unassigned')
+        ] },
+        { title: 'Danger zone', fields: [
+          check('wipeOnForget', 'Wipe app data when forgetting a device', 'Cannot be undone once the device is removed from the farm.', false)
+        ] }
+      ],
+      'Host & daemon': [
+        { title: 'Host & daemon', fields: [
+          text('host', 'Listen address', '192.168.1.10:8787', 'Clients and the web UI connect here.', ['Test'], true),
+          text('token', 'Access token', 'enk_live_••••••••••', 'Rotating the token disconnects every client.', ['Rotate'], true),
+          check('remote', 'Allow remote clients', 'Off means only this machine can reach the daemon.', true)
+        ] },
+        { title: 'Logging', fields: [
+          select('logLevel', 'Daemon log level', ['error', 'warn', 'info', 'debug'], 'info'),
+          text('logPath', 'Log directory', '/var/log/enkaku', null, ['Open'], true)
+        ] }
+      ],
+      'ADB transport': [
+        { title: 'ADB transport', note: 'Enkaku talks to every phone through these platform tools.', fields: [
+          text('adbPath', 'ADB binary', '/usr/local/bin/adb', 'Version 34.0.5 detected.', ['Browse'], true),
+          select('mode', 'Preferred transport', ['USB', 'Wi-Fi', 'USB then Wi-Fi'], 'USB then Wi-Fi'),
+          check('keepAwake', 'Keep devices awake while connected', 'Sets stay_on_while_plugged_in on connect.', true),
+          check('restart', 'Restart the ADB server on stall', 'Recovers a hung transport without touching the phones.', true)
+        ] }
+      ],
+      'Network scan': [
+        { title: 'Network scan', fields: [
+          text('subnet', 'Subnet', '192.168.1.0/24', 'Scanned when you press Rescan on the devices page.', ['Scan now'], true),
+          text('ports', 'Ports', '5555, 5037', null, null, true),
+          select('scanEvery', 'Scan interval', ['manual', '1 min', '5 min', '15 min'], '5 min')
+        ] }
+      ],
+      'Job runner': [
+        { title: 'Job runner', fields: [
+          text('maxJobs', 'Max concurrent jobs', '12', 'Across the whole farm, all clusters combined.', null, true),
+          text('perDevice', 'Max jobs per device', '1', null, null, true),
+          select('onFail', 'On failure', ['stop batch', 'skip device', 'retry twice'], 'retry twice'),
+          check('queuePause', 'Pause the queue when a cluster goes offline', 'Prevents burning a batch against unreachable devices.', true)
+        ] }
+      ],
+      'Capture & replay': [
+        { title: 'Capture & replay', note: 'Frames and UI trees are what make the Jobs timeline replayable.', fields: [
+          select('capture', 'Capture frames', ['off', 'per action', 'per second'], 'per action'),
+          check('uiTree', 'Capture the UI tree with every frame', 'Adds about 80 KB per action.', true),
+          select('quality', 'Frame quality', ['low', 'medium', 'high'], 'medium'),
+          check('video', 'Record a replay video per job', 'Stored as an artifact next to the frames.', false)
+        ] }
+      ],
+      Scripts: [
+        { title: 'Scripts', fields: [
+          check('autoUpdate', 'Update plugin scripts automatically', 'New versions become the default when they verify.', true),
+          check('pinVersions', 'Pin the version a workflow was built on', 'Workflows keep running the version they were saved with.', true),
+          select('runAs', 'Run scripts as', ['shell', 'ui-server', 'auto'], 'auto')
+        ] }
+      ],
+      Artifacts: [
+        { title: 'Artifacts', fields: [
+          text('artPath', 'Artifact directory', '/var/lib/enkaku/artifacts', 'Currently 44.1 GB across 1,204 jobs.', ['Open'], true),
+          check('compress', 'Compress screenshots', 'PNG to WebP, roughly 60% smaller.', true)
+        ] }
+      ],
+      Retention: [
+        { title: 'Retention', fields: [
+          select('keepFrames', 'Keep frames for', ['3 days', '7 days', '14 days', 'forever'], '14 days'),
+          select('keepLogs', 'Keep job logs for', ['7 days', '30 days', '90 days', 'forever'], '30 days'),
+          check('keepFailed', 'Never delete failed jobs', 'Failed runs are exempt from every retention rule.', true)
+        ] }
+      ],
+      Clusters: [
+        { title: 'Clusters', note: 'Cluster tabs on the devices page come from this list.', fields: [
+          text('clusters', 'Clusters', 'Farm A, Farm B, Farm C, Rack 01, Rack 02', 'Comma separated, in tab order.', ['Add']),
+          check('autoAssign', 'Assign new devices by USB hub', 'A device inherits the cluster of the hub it is plugged into.', true)
+        ] }
+      ],
+      Privacy: [
+        { title: 'Privacy', fields: [
+          check('redact', 'Redact typed text', 'Text and clipboard writes store only a length, never the content.', true),
+          check('maskProxy', 'Mask proxy credentials in logs', 'Upstream passwords are encrypted and never shown again.', true),
+          check('telemetry', 'Send anonymous crash reports', 'No device serials, no script contents.', false)
+        ] }
+      ],
+      Appearance: [
+        { title: 'Appearance', fields: [
+          select('theme', 'Theme', ['light', 'dark'], st.theme || 'light', 'Also toggled by the moon button in the sidebar.'),
+          select('density', 'Table density', ['compact', 'default', 'roomy'], 'default'),
+          check('monoNumbers', 'Monospace numbers', 'Keeps columns aligned in the device table.', true)
+        ] }
+      ]
+    };
+
+    const sections = (pages[active] || pages.General).map(sec => ({
+      title: sec.title, note: sec.note || '', hasNote: !!sec.note, fields: sec.fields
+    }));
+
+    return {
+      nav: nav.map(n => n[2] === 'group' ? {
+        label: n[0], icon: '',
+        iconStyle: { display: 'none' },
+        style: {
+          padding: '14px 10px 6px', fontSize: '11px', fontWeight: 600, color: 'var(--faint)',
+          borderTop: '1px solid var(--line)', marginTop: '8px', cursor: 'default'
+        },
+        onClick: () => {}
+      } : {
+        label: n[0], icon: n[1],
+        iconStyle: { fontSize: '15px', width: '18px' },
+        style: {
+          display: 'flex', alignItems: 'center', gap: '9px', padding: '8px 10px', borderRadius: '9px',
+          fontSize: '12.5px', cursor: 'pointer',
+          fontWeight: active === n[0] ? 600 : 500,
+          background: active === n[0] ? 'var(--accent-soft)' : 'transparent',
+          color: active === n[0] ? 'var(--accent)' : 'var(--text-3)'
+        },
+        onClick: () => this.setState({ setNav: n[0] })
+      }),
+      sections
+    };
+  }
+
+  renderVals() {
+    const st = this.state;
+    const rows = this.filtered();
+    const on = this.devices.filter(d => d.status === 'ONLINE').length;
+    const busy = this.devices.filter(d => d.status === 'BUSY').length;
+    const unauth = this.devices.filter(d => d.status === 'UNAUTH').length;
+    const off = this.devices.filter(d => d.status === 'OFFLINE').length;
+    const jobsRunning = this.devices.filter(d => d.taskKind === 'run' || d.taskKind === 'sys').length;
+    const jobsQueued = this.devices.filter(d => d.taskKind === 'queue').length;
+    const selectedIds = Object.keys(st.selected);
+
+    const statusColor = s => s === 'ONLINE' ? 'var(--ok)' : s === 'BUSY' ? 'var(--warn-2)' : s === 'UNAUTH' ? 'var(--warn)' : 'var(--faint-2)';
+
+    const tab = active => ({
+      flex: 'none', display: 'flex', alignItems: 'center', gap: '2px', padding: '7px 14px', fontSize: '12.5px',
+      fontWeight: active ? 600 : 500, cursor: 'pointer', borderRadius: '999px',
+      background: active ? 'var(--panel)' : 'transparent',
+      boxShadow: active ? '0 1px 3px #00000014' : 'none',
+      color: active ? 'var(--text)' : 'var(--dim)'
+    });
+
+    const menuRow = active => ({
+      display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 10px', cursor: 'pointer',
+      borderRadius: '10px', fontSize: '13px',
+      fontWeight: active ? 500 : 400,
+      color: active ? 'var(--accent)' : 'var(--text-2)'
+    });
+
+    const check = sel => ({
+      width: '16px', height: '16px', flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      borderRadius: '5px', border: '1.5px solid ' + (sel ? 'var(--accent)' : 'var(--border-3)'),
+      background: sel ? 'var(--accent)' : 'var(--panel)', color: 'var(--on-accent)', cursor: 'pointer'
+    });
+
+    const taskStyle = kind => ({
+      display: 'inline-flex', alignItems: 'center', maxWidth: '100%', padding: kind === 'none' ? '0' : '3px 9px',
+      borderRadius: '999px', fontSize: '11.5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      background: kind === 'run' ? 'var(--accent-soft)' : kind === 'sys' ? 'var(--warn-soft)' : kind === 'queue' ? 'var(--muted-2)' : 'transparent',
+      color: kind === 'run' ? 'var(--accent)' : kind === 'sys' ? 'var(--warn)' : kind === 'queue' ? 'var(--dim)' : 'var(--faint-2)'
+    });
+
+    const cardState = d => {
+      if (d.status === 'OFFLINE') return { color: 'var(--faint-2)', text: 'Disconnected', tip: 'Last seen ' + d.lastSeen, live: false };
+      if (d.status === 'UNAUTH') return { color: 'var(--warn)', text: 'Unauthorized', tip: 'Waiting for USB debugging prompt', live: false };
+      if (d.taskKind === 'run' || d.taskKind === 'sys') return { color: 'var(--danger)', text: '', tip: 'Job · ' + d.task, live: true };
+      if (d.controlledBy) return { color: 'var(--warn-2)', text: '', tip: 'Controlled by ' + d.controlledBy, live: true };
+      return { color: 'var(--ok)', text: '', tip: 'Free · idle', live: true };
+    };
+
+    const baseGroups = p => (p.groups || ['FARM-A', 'FARM-B', 'FARM-C', 'RACK-01', 'RACK-02']).slice();
+    const groupNames = ['ALL'].concat(baseGroups(st));
+    const groupLabel = g => {
+      if (g === 'ALL') return 'All';
+      const p = g.split('-');
+      const head = p[0].charAt(0) + p[0].slice(1).toLowerCase();
+      return p.length > 1 ? head + ' ' + p.slice(1).join(' ') : head;
+    };
+    const statusDef = [['ALL', 'All', this.devices.length], ['ONLINE', 'Free', on], ['BUSY', 'Running job', busy], ['UNAUTH', 'Unauthorized', unauth], ['OFFLINE', 'Disconnected', off]];
+    const viewDef = [['table', 'Table', 'ph ph-rows'], ['cards', 'Screens', 'ph ph-squares-four']];
+
+    const generic = [
+      ['Reconnect', 'ph ph-arrows-clockwise'], ['Disconnect', 'ph ph-plugs'], ['Install apk', 'ph ph-download-simple'],
+      ['Adb command', 'ph ph-terminal'], ['Run script', 'ph ph-play'], ['Screenshot', 'ph ph-camera'],
+      ['Sleep', 'ph ph-moon'], ['Move group', 'ph ph-folder-simple'], ['Upload file', 'ph ph-upload-simple'],
+      ['Clear cache', 'ph ph-broom'], ['Settings', 'ph ph-gear'], ['Forget', 'ph ph-trash']
+    ].map(a => ({
+      label: a[0], icon: a[1],
+      rowStyle: {
+        display: 'flex', alignItems: 'center', gap: '11px', padding: '9px 10px', cursor: 'pointer',
+        borderRadius: '10px', fontSize: '13px',
+        color: a[0] === 'Forget' ? 'var(--danger)' : 'var(--text-2)'
+      },
+      onClick: e => { if (e && e.stopPropagation) e.stopPropagation(); }
+    }));
+
+    const nodes = [
+      { cls: 'FrameLayout', rid: 'android:id/content', text: '—', depth: 0, box: [0, 0, 100, 100], bounds: '[0,0][1080,2400]', clickable: false, pkg: 'com.android.systemui' },
+      { cls: 'LinearLayout', rid: 'id/root', text: '—', depth: 1, box: [0, 4, 100, 88], bounds: '[0,96][1080,2208]', clickable: false, pkg: 'com.zhiliaoapp.musically' },
+      { cls: 'RecyclerView', rid: 'id/feed_list', text: '—', depth: 2, box: [0, 8, 100, 74], bounds: '[0,192][1080,1968]', clickable: false, pkg: 'com.zhiliaoapp.musically' },
+      { cls: 'ViewGroup', rid: 'id/feed_item', text: '—', depth: 3, box: [2, 12, 96, 58], bounds: '[24,288][1056,1680]', clickable: true, pkg: 'com.zhiliaoapp.musically' },
+      { cls: 'ImageView', rid: 'id/avatar', text: '—', depth: 4, box: [80, 44, 14, 6], bounds: '[864,1056][1016,1200]', clickable: true, pkg: 'com.zhiliaoapp.musically', leaf: true },
+      { cls: 'TextView', rid: 'id/caption', text: 'summer drop', depth: 4, box: [4, 62, 70, 5], bounds: '[48,1488][804,1608]', clickable: false, pkg: 'com.zhiliaoapp.musically', leaf: true },
+      { cls: 'Button', rid: 'id/btn_like', text: 'Like', depth: 4, box: [82, 54, 12, 5], bounds: '[886,1296][1016,1416]', clickable: true, pkg: 'com.zhiliaoapp.musically', leaf: true },
+      { cls: 'BottomNavigationView', rid: 'id/tab_bar', text: '—', depth: 2, box: [0, 88, 100, 8], bounds: '[0,2112][1080,2304]', clickable: false, pkg: 'com.zhiliaoapp.musically' },
+      { cls: 'ImageButton', rid: 'id/tab_home', text: 'Home', depth: 3, box: [4, 89, 14, 6], bounds: '[43,2136][194,2280]', clickable: true, pkg: 'com.zhiliaoapp.musically', leaf: true }
+    ];
+    const nodeIdx = Math.min(st.ctrlNode || 0, nodes.length - 1);
+
+    const jobColor = s => s === 'Running' ? 'var(--accent)' : s === 'Queued' ? 'var(--faint)' : s === 'Failed' ? 'var(--danger)' : 'var(--ok)';
+    const jobSoft = s => s === 'Running' ? 'var(--accent-soft)' : s === 'Queued' ? 'var(--muted-2)' : s === 'Failed' ? 'var(--danger-soft)' : 'var(--accent-soft)';
+    const deviceJobs = [
+      { id: 0, state: 'Running', name: 'tiktok_warmup.py', step: 'step 4 of 12', pct: 34, jid: 'job_8f21c4', trigger: 'schedule · 20:40', started: '20:47:12', dur: '3m 08s', exit: '—',
+        output: [['', '[20:47:12] session start · profile warm_a'], ['', '[20:48:03] scroll feed 8.2s dwell'], ['warn', '[20:49:41] captcha check · retry 1'], ['', '[20:50:02] step 4/12 running']] },
+      { id: 1, state: 'Running', name: 'proxy_rotate.sh', step: 'step 1 of 2', pct: 72, jid: 'job_8f21d0', trigger: 'manual · rz@studio', started: '20:49:50', dur: '0m 24s', exit: '—',
+        output: [['', '[20:49:50] releasing SG-118'], ['', '[20:50:04] acquiring SG-124']] },
+      { id: 2, state: 'Queued', name: 'acc_register.py', pos: 1, eta: '4m', jid: 'job_8f2201', trigger: 'batch · morning_reg', started: '—', dur: '—', exit: '—',
+        output: [['', 'waiting for a free slot on this device']] },
+      { id: 3, state: 'Queued', name: 'apk_install: shopee', pos: 2, eta: '6m', jid: 'job_8f2208', trigger: 'bulk action', started: '—', dur: '—', exit: '—',
+        output: [['', 'queued behind acc_register.py']] },
+      { id: 4, state: 'Success', name: 'ig_scroll_v3.js', when: '19:58', dur: '12m 41s', jid: 'job_8f1c92', trigger: 'schedule · 19:45', started: '19:45:19', exit: '0',
+        output: [['', '[19:58:00] 143 impressions · 9 likes'], ['', '[19:58:00] exit 0']] },
+      { id: 5, state: 'Success', name: 'device_reboot', when: '18:20', dur: '1m 02s', jid: 'job_8f1a04', trigger: 'manual · ops@nuc-2', started: '18:19:11', exit: '0',
+        output: [['', '[18:20:13] boot completed']] },
+      { id: 6, state: 'Failed', name: 'fb_feed_farm.py', when: '17:32', dur: '2m 15s', err: 'element not found', jid: 'job_8f18b7', trigger: 'schedule · 17:30', started: '17:30:02', exit: '1',
+        output: [['', '[17:31:40] opening feed'], ['err', '[17:32:17] UiObject not found: id/feed_item'], ['err', '[17:32:17] exit 1']] }
+    ];
+
+    const fileTree = {
+      '': [['DCIM', 'dir', '3 items'], ['Download', 'dir', '6 items'], ['Android', 'dir', '2 items'], ['enkaku', 'dir', '4 items'],
+        ['screen_204951.png', 'img', '1.2 MB · 20:49'], ['ui_dump.xml', 'file', '84 KB · 20:50']],
+      'DCIM': [['Camera', 'dir', '0 items'], ['Screenshots', 'dir', '12 items'], ['thumb_cache.db', 'file', '2.4 MB · 19:12']],
+      'Download': [['shopee_v3.2.1.apk', 'apk', '38.4 MB · 20:49'], ['tiktok_v34.apk', 'apk', '112 MB · yesterday'],
+        ['profile_pack.zip', 'file', '9.1 MB · 18:02'], ['warmup_notes.txt', 'file', '3 KB · 17:40'],
+        ['clip_001.mp4', 'vid', '24.8 MB · 16:55'], ['clip_002.mp4', 'vid', '31.2 MB · 16:58']],
+      'Android': [['data', 'dir', 'restricted'], ['obb', 'dir', '1 item']],
+      'enkaku': [['agent.log', 'file', '412 KB · now'], ['scripts', 'dir', '7 items'],
+        ['captures', 'dir', '23 items'], ['config.json', 'file', '1 KB · 20:31']]
+    };
+    const fileList = fileTree[(st.ctrlPath || []).slice(-1)[0] || ''] || [['(empty)', 'file', 'no items']];
+
+    const jobsPage = this.buildJobsPage(st, jobColor, jobSoft, deviceJobs);
+
+    const discList = this.discoveries().filter(d => !(st.discGone || {})[d.id]);
+
+    const ctrlDev = st.ctrl === null ? null : (this.devices.find(d => d.id === st.ctrl) || null);
+    const ctrlPanel = ctrlDev ? (() => {
+      const cs = cardState(ctrlDev);
+      const w = parseInt(ctrlDev.res.split('x')[0], 10), h = parseInt(ctrlDev.res.split('x')[1], 10);
+      const pillTab = active => ({
+        flex: 'none', padding: '4px 10px', fontSize: '12px', cursor: 'pointer', borderRadius: '7px',
+        fontWeight: active ? 600 : 500,
+        background: active ? 'var(--accent-soft)' : 'transparent',
+        color: active ? 'var(--accent)' : 'var(--faint)'
+      });
+      return {
+        index: '#' + (ctrlDev.id + 1),
+        name: ctrlDev.name,
+        nameUpper: ctrlDev.name.toUpperCase(),
+        infoOpen: st.ctrlInfo,
+        infoBtnStyle: {
+          width: '28px', height: '28px', borderRadius: '8px', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', cursor: 'pointer',
+          background: st.ctrlInfo ? 'var(--accent-soft)' : 'transparent',
+          color: st.ctrlInfo ? 'var(--accent)' : 'var(--faint)'
+        },
+        infoSpecs: [
+          ['cluster', ctrlDev.group, 'var(--text)'],
+          ['stable id', ctrlDev.serial, 'var(--text)'],
+          ['endpoint', ctrlDev.endpoint, 'var(--text)'],
+          ['api level', String(parseInt(ctrlDev.os.replace(/\D/g, ''), 10) + 19), 'var(--text)'],
+          ['screen', ctrlDev.res.replace('x', '×'), 'var(--text)'],
+          ['density', (ctrlDev.res.indexOf('1080') === 0 ? '480' : '320') + ' dpi', 'var(--text)'],
+          ['guest agent', '0.1.8', 'var(--text)']
+        ].map(s => ({ label: s[0], value: s[1], valStyle: { fontFamily: "'Geist Mono', monospace", fontSize: '12px', color: s[2], textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } })),
+        engines: [
+          ['transport', 'ADB (USB)'],
+          ['video', 'scrcpy (H.264, low latency)'],
+          ['input', 'scrcpy UHID (hardware-like)'],
+          ['inspection', 'UI server (persistent)']
+        ].map(s => ({ label: s[0], value: s[1], valStyle: { fontSize: '12px', color: 'var(--text)', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } })),
+        streamState: cs.live ? 'Streaming' : 'No stream',
+        fps: cs.live ? '5.3' : '0.0',
+        res: ctrlDev.res.replace('x', ' × '),
+        codec: 'H.264',
+        latency: cs.live ? '524' : '—',
+        batt: ctrlDev.batt + '%',
+        temp: ctrlDev.temp + '°C',
+        os: ctrlDev.os,
+        info: ctrlDev.model + ' · ' + ctrlDev.os + ' · ' + ctrlDev.endpoint,
+        battStyle: { color: this.battColor(ctrlDev.batt), fontWeight: 500 },
+        tempStyle: { color: ctrlDev.temp > 42 ? 'var(--danger)' : 'var(--dim)' },
+        dotStyle: { width: '8px', height: '8px', flex: 'none', borderRadius: '50%', background: cs.color },
+        serial: ctrlDev.serial,
+        isHost: selectedIds.length > 1 && !!st.selected[ctrlDev.id],
+        hostNote: 'Mirroring input to ' + (selectedIds.length - 1) + ' other selected device' + (selectedIds.length - 1 === 1 ? '' : 's') + ' · ' + selectedIds.length + ' under control',
+        dotTipOpen: st.ctrlDotTip,
+        stateTip: !cs.live ? cs.text + ' · ' + cs.tip
+          : (ctrlDev.taskKind === 'run' || ctrlDev.taskKind === 'sys') ? 'Job running · ' + ctrlDev.task
+          : ctrlDev.controlledBy ? 'Controlled by ' + ctrlDev.controlledBy + ' · 4:55' : 'Free · idle',
+        boxWidth: Math.round(Math.max(560 * (w / h) + 36, 380) + 52 + 274) + 'px',
+        castStyle: {
+          position: 'relative', height: '100%', maxHeight: '100%', maxWidth: '100%',
+          aspectRatio: w + ' / ' + h, borderRadius: '18px', overflow: 'hidden',
+          border: '1px solid var(--border-2)', boxShadow: '0 8px 24px #00000014',
+          background: cs.live ? 'var(--panel)' : 'repeating-linear-gradient(135deg, var(--muted-2) 0 6px, var(--line-2) 6px 12px)'
+        },
+        castTextStyle: {
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '12px', textAlign: 'center', padding: '0 14px',
+          color: ctrlDev.status === 'UNAUTH' ? 'var(--warn)' : 'var(--faint)'
+        },
+        castText: cs.live ? 'Android cast · ' + ctrlDev.res : cs.text,
+        shortcuts: [
+          ['ph ph-power', 'Power'], ['ph ph-speaker-high', 'Volume up'], ['ph ph-speaker-low', 'Volume down'],
+          ['ph ph-speaker-slash', 'Mute'], ['ph ph-caret-left', 'Back'], ['ph ph-circle', 'Home'],
+          ['ph ph-square', 'Recents'], ['ph ph-clock-counter-clockwise', 'Rotate'], ['ph ph-sun', 'Brightness'],
+          ['ph ph-clipboard', 'Clipboard']
+        ].map(s => ({
+          icon: s[0], title: s[1],
+          style: {
+            width: '34px', height: '34px', flex: 'none', borderRadius: '10px', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', color: 'var(--dim)', cursor: 'pointer'
+          }
+        })),
+        tabs: ['Actions', 'Inspector', 'Device'].map(t => ({
+          label: t, style: pillTab(st.ctrlTab === t), onClick: () => this.setState({ ctrlTab: t, ctrlJob: null })
+        })),
+        isActions: st.ctrlTab === 'Actions',
+        isInspector: st.ctrlTab === 'Inspector',
+        isDevice: st.ctrlTab === 'Device',
+        deviceSections: ['Jobs', 'Files'].map(k => ({
+          label: k,
+          icon: k === 'Jobs' ? 'ph ph-list-checks' : 'ph ph-folder-open',
+          style: {
+            flex: 'none', display: 'flex', alignItems: 'center', gap: '6px',
+            padding: '4px 9px', borderRadius: '7px', fontSize: '11.5px', cursor: 'pointer',
+            fontWeight: st.ctrlSection === k ? 600 : 500,
+            background: st.ctrlSection === k ? 'var(--accent-soft)' : 'transparent',
+            color: st.ctrlSection === k ? 'var(--accent)' : 'var(--faint)'
+          },
+          onClick: () => this.setState({ ctrlSection: k, ctrlJob: null })
+        })),
+        isJobs: st.ctrlTab === 'Device' && st.ctrlSection === 'Jobs',
+        isFiles: st.ctrlTab === 'Device' && st.ctrlSection === 'Files',
+        crumbs: (() => {
+          const segs = ['sdcard'].concat(st.ctrlPath.filter(Boolean));
+          const out = [];
+          segs.forEach((s, si) => {
+            out.push({
+              label: s,
+              style: {
+                flex: 'none', padding: '3px 7px', borderRadius: '6px', cursor: 'pointer',
+                background: si === segs.length - 1 ? 'var(--muted)' : 'transparent',
+                color: si === segs.length - 1 ? 'var(--text)' : 'var(--accent)',
+                fontWeight: si === segs.length - 1 ? 500 : 400
+              },
+              onClick: () => this.setState({ ctrlPath: segs.slice(1, si + 1) })
+            });
+            if (si < segs.length - 1) out.push({ label: '/', style: { flex: 'none', color: 'var(--faint-2)' }, onClick: () => {} });
+          });
+          return out;
+        })(),
+        fileCount: fileList.length + ' items · ' + (100 - ctrlDev.disk) + '% free',
+        files: fileList.map(fi => ({
+          name: fi[0], sub: fi[2],
+          icon: fi[1] === 'dir' ? 'ph ph-folder-simple' : fi[1] === 'img' ? 'ph ph-image' : fi[1] === 'apk' ? 'ph ph-package' : fi[1] === 'vid' ? 'ph ph-film-slate' : 'ph ph-file',
+          iconStyle: { fontSize: '17px', width: '20px', color: fi[1] === 'dir' ? 'var(--warn-2)' : 'var(--faint)' },
+          trail: fi[1] === 'dir' ? 'ph ph-caret-right' : 'ph ph-dots-three',
+          rowStyle: { display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '10px', cursor: 'pointer' },
+          onClick: () => { if (fi[1] === 'dir') this.setState({ ctrlPath: st.ctrlPath.concat([fi[0]]) }); }
+        })),
+        jobListOpen: st.ctrlTab === 'Device' && st.ctrlSection === 'Jobs' && st.ctrlJob === null,
+        jobDetailOpen: st.ctrlTab === 'Device' && st.ctrlSection === 'Jobs' && st.ctrlJob !== null,
+        jobs: deviceJobs.map(j => ({
+          name: j.name,
+          sub: j.state === 'Running' ? j.step + ' · ' + j.pct + '%'
+            : j.state === 'Queued' ? 'position ' + j.pos + ' · est ' + j.eta
+            : j.state === 'Failed' ? j.err + ' · ' + j.when : 'finished ' + j.when + ' · ' + j.dur,
+          dotStyle: { width: '7px', height: '7px', flex: 'none', borderRadius: '50%', background: jobColor(j.state) },
+          rowStyle: { display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 8px', borderRadius: '10px', cursor: 'pointer' },
+          onClick: () => this.setState({ ctrlJob: j.id })
+        })),
+        onJobBack: () => this.setState({ ctrlJob: null }),
+        job: (() => {
+          const j = deviceJobs.find(x => x.id === st.ctrlJob) || deviceJobs[0];
+          const c = jobColor(j.state);
+          return {
+            name: j.name, state: j.state,
+            badge: { flex: 'none', fontSize: '10.5px', fontWeight: 600, padding: '3px 9px', borderRadius: '999px', color: c, background: jobSoft(j.state) },
+            hasProgress: j.state === 'Running',
+            step: j.step, pct: j.pct + '%',
+            fill: { width: j.pct + '%', height: '100%', background: c },
+            meta: [
+              ['Job id', j.jid], ['Trigger', j.trigger],
+              ['Started', j.state === 'Queued' ? 'queued · position ' + j.pos : j.started],
+              ['Duration', j.dur]
+            ].map(s2 => ({ label: s2[0], value: s2[1], valStyle: { fontFamily: "'Geist Mono', monospace", fontSize: '11.5px', color: 'var(--text)', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } })),
+            onDetails: () => this.setState({ page: 'jobs', jpJob: j.id, jpTab: 'Timeline' }),
+            actions: (j.state === 'Running' ? [['Stop', 'ph ph-stop']] : j.state === 'Queued' ? [['Cancel', 'ph ph-x']] : [['Re-run', 'ph ph-play']])
+              .concat([['Logs', 'ph ph-list-dashes']])
+              .map((a, li) => ({
+                label: a[0], icon: a[1],
+                style: {
+                  flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '7px',
+                  padding: '9px 8px', borderRadius: '10px', fontSize: '12.5px', fontWeight: 500, cursor: 'pointer',
+                  background: li === 0 ? 'var(--accent-soft)' : 'var(--muted)',
+                  color: li === 0 ? 'var(--accent)' : 'var(--text-3)'
+                },
+                onClick: e2 => { if (e2 && e2.stopPropagation) e2.stopPropagation(); }
+              }))
+          };
+        })(),
+        snapStyle: { display: 'flex', justifyContent: 'center', background: 'var(--panel-2)', border: '1px solid var(--line-2)', borderRadius: '12px', padding: '10px' },
+        snapBoxStyle: {
+          position: 'relative', width: '86px', aspectRatio: w + ' / ' + h, borderRadius: '8px',
+          background: 'repeating-linear-gradient(135deg, var(--muted-2) 0 5px, var(--line-2) 5px 10px)', border: '1px solid var(--border-2)'
+        },
+        snapNodeStyle: {
+          position: 'absolute', left: nodes[nodeIdx].box[0] + '%', top: nodes[nodeIdx].box[1] + '%',
+          width: nodes[nodeIdx].box[2] + '%', height: nodes[nodeIdx].box[3] + '%',
+          border: '1.5px solid var(--accent)', background: 'var(--accent-a2)', borderRadius: '3px'
+        },
+        nodeCount: nodes.length + ' nodes',
+        nodes: nodes.map((n, ni) => ({
+          label: n.cls,
+          icon: n.leaf ? 'ph ph-dot-outline' : 'ph ph-caret-down',
+          style: {
+            display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '11.5px',
+            padding: '4px 8px 4px ' + (8 + n.depth * 12) + 'px',
+            color: ni === nodeIdx ? 'var(--accent)' : 'var(--text-3)',
+            background: ni === nodeIdx ? 'var(--accent-soft)' : 'transparent',
+            fontWeight: ni === nodeIdx ? 500 : 400
+          },
+          onClick: () => this.setState({ ctrlNode: ni })
+        })),
+        nodeDetail: [
+          ['Class', nodes[nodeIdx].cls, 'var(--text)'],
+          ['Resource id', nodes[nodeIdx].rid, 'var(--accent)'],
+          ['Text', nodes[nodeIdx].text, 'var(--text-2)'],
+          ['Bounds', nodes[nodeIdx].bounds, 'var(--dim)'],
+          ['Clickable', nodes[nodeIdx].clickable ? 'true' : 'false', nodes[nodeIdx].clickable ? 'var(--accent)' : 'var(--faint)'],
+          ['Enabled', 'true', 'var(--accent)'],
+          ['Package', nodes[nodeIdx].pkg, 'var(--dim)'],
+          ['Depth', String(nodes[nodeIdx].depth), 'var(--dim)']
+        ].map(s => ({
+          label: s[0], value: s[1],
+          valStyle: { fontFamily: "'Geist Mono', monospace", fontSize: '11.5px', color: s[2], textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
+        }))
+      };
+    })() : { tabs: [], shortcuts: [], nodes: [], nodeDetail: [] };
+
+    const mapRow = (d, i) => {
+      const sel = !!st.selected[d.id];
+      const cs = cardState(d);
+      return {
+        devId: String(d.id),
+        no: String(i + 1).padStart(2, '0'),
+        name: d.name, model: d.model, serial: d.serial, os: d.os, endpoint: d.endpoint,
+        batt: d.status === 'OFFLINE' ? '—' : d.batt + '%',
+        temp: d.status === 'OFFLINE' ? '—' : d.temp + '°',
+        cpu: d.status === 'OFFLINE' ? '—' : d.cpu + '%',
+        mem: d.status === 'OFFLINE' ? '—' : d.mem + '%',
+        disk: d.status === 'OFFLINE' ? '—' : d.disk + '%',
+        uptime: d.status === 'OFFLINE' ? d.lastSeen : d.uptimeH + 'h',
+        task: d.task,
+        rowStyle: {
+          display: 'grid',
+          gridTemplateColumns: '38px 44px 1.3fr 108px 92px 138px 70px 74px 62px 62px 62px 76px 1.1fr',
+          alignItems: 'center', height: '54px', borderBottom: '1px solid var(--muted-2)', cursor: 'pointer',
+          background: sel ? 'var(--accent-soft)' : 'transparent',
+          opacity: d.status === 'OFFLINE' ? 0.6 : 1,
+          boxShadow: sel ? 'inset 2px 0 0 var(--accent)' : 'none'
+        },
+        cardStyle: {
+          padding: '6px', borderRadius: '16px', cursor: 'pointer',
+          background: sel ? 'var(--accent-soft)' : 'var(--panel)',
+          border: '1px solid ' + (sel ? 'var(--accent)' : 'var(--line-2)'),
+          opacity: d.status === 'OFFLINE' ? 0.7 : 1
+        },
+        screenStyle: {
+          position: 'relative', aspectRatio: '9 / 19.5', overflow: 'hidden', borderRadius: '12px',
+          background: cs.live ? 'var(--muted-2)' : 'repeating-linear-gradient(135deg, var(--muted-2) 0 6px, var(--line-2) 6px 12px)'
+        },
+        screenText: cs.text,
+        screenTextStyle: {
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '11px', textAlign: 'center', padding: '0 10px',
+          color: d.status === 'UNAUTH' ? 'var(--warn)' : 'var(--faint)', pointerEvents: 'none'
+        },
+        cardDotStyle: {
+          position: 'absolute', bottom: '9px', left: '9px', width: '9px', height: '9px', borderRadius: '50%',
+          background: cs.color, cursor: 'help', zIndex: 6, boxShadow: '0 0 0 3px var(--panel-a)'
+        },
+        showTip: st.hoverDot === d.id,
+        tipText: cs.tip,
+        onDotEnter: () => this.setState({ hoverDot: d.id }),
+        onDotLeave: () => this.setState({ hoverDot: null }),
+        dotStyle: { width: '8px', height: '8px', flex: 'none', borderRadius: '50%', background: cs.color },
+        checkStyle: check(sel), checkIcon: sel ? 'ph ph-check' : '',
+        battText: {
+          fontSize: '12px', textAlign: 'right', paddingRight: '14px', fontWeight: 500,
+          color: d.status === 'OFFLINE' ? 'var(--faint)' : this.battColor(d.batt)
+        },
+        tempStyle: {
+          fontSize: '12px', textAlign: 'right', paddingRight: '14px',
+          color: d.temp > 42 ? 'var(--danger)' : 'var(--text-3)'
+        },
+        taskStyle: taskStyle(d.taskKind),
+        onCardClick: e => {
+          if (e && e.stopPropagation) e.stopPropagation();
+          if (this.marqMoved) return;
+          clearTimeout(this.clickTimer);
+          this.clickTimer = setTimeout(() => {
+            this.setState({ active: d.id });
+            this.toggle(d.id);
+          }, 200);
+        },
+        onOpenControl: e => {
+          if (e && e.stopPropagation) e.stopPropagation();
+          clearTimeout(this.clickTimer);
+          this.setState(s => {
+            const sel = s.selected[d.id] ? Object.assign({}, s.selected) : {};
+            sel[d.id] = true;
+            return { ctrl: d.id, ctrlTab: 'Actions', ctrlInfo: false, ctrlJob: null, menu: null, selected: sel, active: d.id };
+          });
+        },
+        onCheck: e => this.toggle(d.id, e)
+      };
+    };
+
+    return {
+      clock: st.clock,
+      themeIcon: st.theme === 'dark' ? 'ph ph-sun' : 'ph ph-moon',
+      themeTitle: st.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
+      onToggleTheme: () => {
+        const next = this.state.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('enkaku-theme', next); } catch (err) {}
+        this.setState({ theme: next });
+      },
+      isDevicesPage: st.page === 'devices',
+      isJobsPage: st.page === 'jobs',
+      isScriptsPage: st.page === 'scripts',
+      isPluginsPage: st.page === 'plugins',
+      isSimplePage: st.page === 'settings',
+      onOpenSettings: () => this.setState({ page: 'settings' }),
+      sp: this.buildScriptsPage(st),
+      pp: this.buildPluginsPage(st),
+      sg: this.buildSettingsPage(st),
+      rail: [
+        ['ph ph-devices', 'Devices', 'devices'], ['ph ph-code', 'Scripts & workflows', 'scripts'],
+        ['ph ph-lightning', 'Jobs', 'jobs'], ['ph ph-puzzle-piece', 'Plugins', 'plugins']
+      ].map(r => ({
+        icon: r[0], title: r[1],
+        style: {
+          width: '36px', height: '36px', borderRadius: '10px', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', cursor: 'pointer',
+          color: r[2] === st.page ? 'var(--accent)' : 'var(--faint)',
+          background: r[2] === st.page ? 'var(--accent-soft)' : 'transparent'
+        },
+        onClick: () => { if (r[2]) this.setState({ page: r[2] }); }
+      })),
+      jp: jobsPage,
+      groupFilters: groupNames.map(g => ({
+        label: groupLabel(g),
+        count: g === 'ALL' ? String(this.devices.length) : String(this.devices.filter(d => d.group === g).length),
+        style: tab(st.group === g),
+        countStyle: { marginLeft: '7px', fontSize: '11px', fontWeight: 400, color: st.group === g ? 'var(--accent)' : 'var(--faint)' },
+        onClick: () => this.setState({ group: g }),
+        onContext: e => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (g === 'ALL') return;
+          const host = e.currentTarget.parentElement.getBoundingClientRect();
+          const r = e.currentTarget.getBoundingClientRect();
+          this.setState({ groupMenu: g, groupMenuX: r.left - host.left, menu: null });
+        }
+      })),
+      groupMenuOpen: !!st.groupMenu,
+      groupMenuTitle: st.groupMenu ? groupLabel(st.groupMenu) : '',
+      groupMenuStyle: {
+        position: 'absolute', top: '40px', left: Math.max(0, st.groupMenuX || 0) + 'px', width: '188px',
+        background: 'var(--panel)', border: '1px solid var(--border-2)', borderRadius: '12px', padding: '6px',
+        boxShadow: '0 16px 40px #0000001f', zIndex: 40
+      },
+      groupMenuItems: [['Rename group', 'ph ph-pencil-simple'], ['Delete group', 'ph ph-trash']].map(m => ({
+        label: m[0], icon: m[1],
+        style: {
+          display: 'flex', alignItems: 'center', gap: '9px', padding: '8px 10px', borderRadius: '9px',
+          fontSize: '12.5px', cursor: 'pointer',
+          color: m[0] === 'Delete group' ? 'var(--danger)' : 'var(--text-2)'
+        },
+        onClick: e => {
+          if (e && e.stopPropagation) e.stopPropagation();
+          const target = st.groupMenu;
+          if (m[0] === 'Delete group') {
+            this.setState(p => ({
+              groups: baseGroups(p).filter(x => x !== target),
+              group: p.group === target ? 'ALL' : p.group,
+              groupMenu: null
+            }));
+          } else {
+            this.setState({ groupMenu: null, groupForm: 'rename', groupTarget: target, groupDraft: groupLabel(target), groupFormX: st.groupMenuX || 0 });
+          }
+        }
+      })),
+      groupFormOpen: !!st.groupForm,
+      groupFormTitle: st.groupForm === 'rename' ? 'Rename group' : 'New group',
+      groupFormAction: st.groupForm === 'rename' ? 'Rename' : 'Create',
+      groupDraft: st.groupDraft || '',
+      onGroupDraft: e => this.setState({ groupDraft: e.target.value }),
+      onGroupKey: e => {
+        if (e.key === 'Enter') this.saveGroup();
+        if (e.key === 'Escape') { e.stopPropagation(); this.setState({ groupForm: null, groupDraft: '' }); }
+      },
+      onGroupSave: e => { if (e && e.stopPropagation) e.stopPropagation(); this.saveGroup(); },
+      onGroupCancel: e => { if (e && e.stopPropagation) e.stopPropagation(); this.setState({ groupForm: null, groupDraft: '' }); },
+      groupFormStyle: {
+        position: 'absolute', top: '40px',
+        left: st.groupForm === 'rename' ? Math.max(0, st.groupFormX || 0) + 'px' : 'auto',
+        right: st.groupForm === 'rename' ? 'auto' : '0',
+        width: '224px', background: 'var(--panel)', border: '1px solid var(--border-2)', borderRadius: '12px',
+        padding: '10px', boxShadow: '0 16px 40px #0000001f', zIndex: 41
+      },
+      groupInputStyle: {
+        width: '100%', padding: '9px 11px', borderRadius: '9px', border: '1px solid var(--border-2)',
+        background: 'var(--panel-2)', color: 'var(--text)', outline: 'none', fontFamily: 'inherit', fontSize: '12.5px'
+      },
+      onAddGroup: e => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        this.setState({ groupForm: 'new', groupTarget: null, groupDraft: '', groupMenu: null });
+      },
+      btn: {
+        search: this.iconBtn(st.menu === 'search' || !!st.query.trim()),
+        status: this.iconBtn(st.menu === 'status' || st.status !== 'ALL'),
+        view: this.iconBtn(st.menu === 'view'),
+        rescan: this.iconBtn(st.scanning),
+        log: this.iconBtn(st.logOpen)
+      },
+      menuSearch: st.menu === 'search',
+      menuStatus: st.menu === 'status',
+      menuView: st.menu === 'view',
+      onMenuSearch: e => this.openMenu('search', e),
+      onMenuStatus: e => this.openMenu('status', e),
+      onMenuView: e => this.openMenu('view', e),
+      query: st.query,
+      onQuery: e => this.setState({ query: e.target.value }),
+      onClearQuery: () => this.setState({ query: '' }),
+      statusFilters: statusDef.map(s => ({
+        label: s[1], count: String(s[2]),
+        style: menuRow(st.status === s[0]),
+        dotStyle: { width: '7px', height: '7px', flex: 'none', borderRadius: '50%', background: s[0] === 'ALL' ? 'var(--faint-2)' : statusColor(s[0]) },
+        check: st.status === s[0] ? 'ph ph-check' : '',
+        onClick: () => this.setState({ status: s[0], menu: null })
+      })),
+      views: viewDef.map(v => ({
+        label: v[1], icon: v[2],
+        style: menuRow(st.view === v[0]),
+        check: st.view === v[0] ? 'ph ph-check' : '',
+        onClick: () => this.setState({ view: v[0], menu: null })
+      })),
+      viewIcon: (viewDef.find(v => v[0] === st.view) || viewDef[0])[2],
+      cardWidth: st.cardW + 'px',
+      cardSizes: [['S', 112], ['M', 146], ['L', 190], ['XL', 240]].map(c => ({
+        label: c[0],
+        style: {
+          flex: 1, textAlign: 'center', padding: '6px 4px', borderRadius: '8px', fontSize: '11.5px', cursor: 'pointer',
+          fontWeight: st.cardW === c[1] ? 600 : 500,
+          background: st.cardW === c[1] ? 'var(--accent-soft)' : 'var(--muted)',
+          color: st.cardW === c[1] ? 'var(--accent)' : 'var(--dim)'
+        },
+        onClick: e => { if (e && e.stopPropagation) e.stopPropagation(); this.setState({ cardW: c[1] }); }
+      })),
+      cardGridStyle: {
+        position: 'relative', display: 'grid', gap: '12px', padding: '14px', userSelect: 'none',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(' + st.cardW + 'px, 1fr))'
+      },
+      rescanIconStyle: { fontSize: '16px', animation: st.scanning ? 'enkakuSpin .9s linear infinite' : 'none' },
+      discOpen: !!st.discOpen,
+      discCount: String(discList.filter(d => !(st.discAdded || {})[d.id]).length),
+      discEmpty: discList.length === 0,
+      discPillStyle: {
+        flex: 'none', display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 13px', borderRadius: '999px',
+        border: '1px solid ' + (st.discOpen ? 'var(--accent)' : 'var(--border-2)'),
+        background: st.discOpen ? 'var(--accent-soft)' : 'var(--panel-2)',
+        color: st.discOpen ? 'var(--accent)' : 'var(--text-3)',
+        fontSize: '12.5px', fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap'
+      },
+      onOpenDisc: e => { if (e && e.stopPropagation) e.stopPropagation(); this.setState({ discOpen: true, menu: null }); },
+      onCloseDisc: () => this.setState({ discOpen: false }),
+      discovered: discList.map(d => {
+        const added = !!(st.discAdded || {})[d.id];
+        return {
+          model: d.model, endpoint: d.endpoint,
+          meta: d.os + ' · waiting since ' + d.since,
+          addLabel: added ? 'Added' : 'Add to farm',
+          addStyle: {
+            flex: 'none', padding: '8px 13px', borderRadius: '10px', fontSize: '12.5px', fontWeight: 500,
+            cursor: added ? 'default' : 'pointer',
+            border: '1px solid ' + (added ? 'transparent' : 'var(--border-2)'),
+            background: added ? 'var(--accent-soft)' : 'var(--muted)',
+            color: added ? 'var(--accent)' : 'var(--text)'
+          },
+          onAdd: e => {
+            if (e && e.stopPropagation) e.stopPropagation();
+            if (added) return;
+            this.setState(p => ({ discAdded: Object.assign({}, p.discAdded || {}, { [d.id]: true }) }));
+          },
+          onDismiss: e => {
+            if (e && e.stopPropagation) e.stopPropagation();
+            this.setState(p => ({ discGone: Object.assign({}, p.discGone || {}, { [d.id]: true }) }));
+          }
+        };
+      }),
+      onRescan: () => {
+        this.setState({ scanning: true, menu: null });
+        clearTimeout(this.scanTimer);
+        this.scanTimer = setTimeout(() => this.setState({ scanning: false }), 1400);
+      },
+      hasSelection: selectedIds.length > 0,
+      selectedCount: String(selectedIds.length),
+      bulkOpen: st.menu === 'bulk',
+      bulkCaret: st.menu === 'bulk' ? 'ph ph-caret-down' : 'ph ph-caret-up',
+      onToggleBulk: e => this.openMenu('bulk', e),
+      bulkPillStyle: {
+        display: 'flex', alignItems: 'center', gap: '10px', height: '40px', padding: '0 16px', cursor: 'pointer',
+        background: 'var(--accent)', color: 'var(--on-accent)', borderRadius: '999px', boxShadow: '0 10px 24px var(--accent-a3)'
+      },
+      bulkActions: generic,
+      genericActions: generic,
+      onClearSelection: e => { if (e && e.stopPropagation) e.stopPropagation(); this.setState({ selected: {}, menu: null }); },
+      allCheckStyle: check(selectedIds.length > 0 && selectedIds.length === rows.length),
+      allCheckIcon: selectedIds.length > 0 && selectedIds.length === rows.length ? 'ph ph-check' : '',
+      onToggleAll: () => this.setState(s => {
+        if (Object.keys(s.selected).length >= rows.length) return { selected: {}, menu: s.menu === 'bulk' ? null : s.menu };
+        const sel = {}; rows.forEach(d => { sel[d.id] = true; }); return { selected: sel };
+      }),
+      gridRef: this.gridRef,
+      onGridDown: e => this.gridDown(e),
+      marqueeOn: !!st.marquee,
+      marqueeStyle: st.marquee ? {
+        position: 'absolute', zIndex: 20, pointerEvents: 'none', borderRadius: '6px',
+        left: st.marquee.left + 'px', top: st.marquee.top + 'px',
+        width: st.marquee.width + 'px', height: st.marquee.height + 'px',
+        border: '1px solid var(--accent)', background: 'var(--accent-a1)'
+      } : {},
+      isTable: st.view === 'table' && rows.length > 0,
+      isCards: st.view === 'cards' && rows.length > 0,
+      isEmpty: rows.length === 0,
+      rows: rows.map(mapRow),
+      logOpen: st.logOpen,
+      logs: this.logs,
+      logCountLabel: this.logs.length + ' events',
+      onToggleLog: e => { if (e && e.stopPropagation) e.stopPropagation(); this.setState(s => ({ logOpen: !s.logOpen })); },
+      footStats: [
+        { label: 'Devices', value: (on + busy) + '/' + this.devices.length, valStyle: { fontSize: '12.5px', fontWeight: 600, color: 'var(--accent)' } },
+        { label: 'Jobs', value: jobsRunning + '/' + (jobsRunning + jobsQueued), valStyle: { fontSize: '12.5px', fontWeight: 600, color: 'var(--text)' } }
+      ],
+      shownLabel: rows.length + '/' + this.devices.length,
+      ctrlOpen: ctrlDev !== null,
+      ctrlBoxStyle: {
+        position: 'fixed', zIndex: 60, top: '50%', left: '50%',
+        width: ctrlPanel.boxWidth || '900px', maxWidth: 'calc(100vw - 32px)', height: 'calc(100vh - 48px)', maxHeight: '640px',
+        transform: 'translate(calc(-50% + ' + st.ctrlPos.x + 'px), calc(-50% + ' + st.ctrlPos.y + 'px))',
+        background: 'var(--panel)', border: '1px solid var(--border-2)', borderRadius: '18px',
+        boxShadow: '0 30px 80px #00000033', display: 'flex', overflow: 'hidden'
+      },
+      onCtrlDotEnter: () => this.setState({ ctrlDotTip: true }),
+      onCtrlDotLeave: () => this.setState({ ctrlDotTip: false }),
+      onToggleInfo: e => { if (e && e.stopPropagation) e.stopPropagation(); this.setState(s => ({ ctrlInfo: !s.ctrlInfo })); },
+      onCtrlDragStart: e => this.startDrag(e),
+      onCloseControl: () => this.setState({ ctrl: null, ctrlInfo: false, ctrlPos: { x: 0, y: 0 } }),
+      stop: e => { if (e && e.stopPropagation) e.stopPropagation(); },
+      ctrl: ctrlPanel
+    };
+  }
+}
+
+</script>
+</body>
+</html>
