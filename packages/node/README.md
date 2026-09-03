@@ -11,7 +11,7 @@ Renamed from `@enkaku/agent` in plan 61 — the word "agent" is reserved for the
 | **M8a** | State plus enrollment token, outbound tunnel (auth, keepalive, full-jitter backoff), multi-device binary frames, device reporting from `track-devices`; on the control plane side: node registry, router, `orchestrator` mode | ✅ |
 | **M8b** | A UDP video path (signalling and an H.264 → RTP packetizer) | deleted by plan 201; cloud video stays on the WebSocket tunnel, and `git log -- packages/core/src/relay` holds the code |
 | **M8c** | `IsolationProvider`: child-process (local) and container (`--network=none`, cap-drop, optional gVisor via `--runtime=runsc`); a `tenantId` column on devices and nodes | ✅ |
-| **M8d** | Opt-in Appium engine, `scrcpy-aoa` (registered but `available: false`), redroid over the `adb-tcp` transport | ✅ |
+| **M8d** | Opt-in Appium engine, redroid over the `adb-tcp` transport | ✅ |
 
 The `session.start`, `session.stop`, and `job.dispatch` messages are defined in the protocol and accepted by the tunnel, but their node-side handlers are deliberately not implemented yet — they are logged rather than failing silently.
 

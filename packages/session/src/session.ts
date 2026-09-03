@@ -326,7 +326,7 @@ export interface CreateSessionOpts {
   inspection?: string | null
   apiLevel?: number | null
   /** DeviceSettings.input.preferredMode. */
-  preferredInputMode?: 'uhid' | 'sdk' | 'aoa'
+  preferredInputMode?: 'uhid' | 'sdk'
   /** DeviceSettings.prep.keepAwake — replaces the old `stayAwake` boolean (Plan 17 §3.4). */
   keepAwake?: KeepAwakeMode
   /** DeviceSettings.prep.standbyScreenOff — dark panel, mirroring stays alive (Plan 17 §3.5). */

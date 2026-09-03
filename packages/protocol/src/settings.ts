@@ -411,7 +411,7 @@ export const DeviceSettingsSchema = z
     input: z
       .object({
         preferredMode: z
-          .enum(['uhid', 'sdk', 'aoa'])
+          .enum(['uhid', 'sdk'])
           .default('uhid')
           .describe('uhid looks like real hardware to the device; sdk is the widest-compatibility fallback')
           .meta({ title: 'Injection mode' }),

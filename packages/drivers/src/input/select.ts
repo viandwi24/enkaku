@@ -1,6 +1,6 @@
 import { UHID_MIN_API } from '@enkaku/scrcpy'
 
-export type InputModePreference = 'uhid' | 'sdk' | 'aoa'
+export type InputModePreference = 'uhid' | 'sdk'
 export type ResolvedInputEngine = 'scrcpy-uhid' | 'scrcpy-sdk' | 'adb-input'
 
 export interface InputSelectionResult {
@@ -23,9 +23,6 @@ export function selectInputEngine(opts: {
       engine: 'adb-input',
       degradedReason: 'no active scrcpy session — using the adb-input fallback',
     }
-  }
-  if (opts.preferred === 'aoa') {
-    return { engine: 'scrcpy-uhid', degradedReason: 'AOA mode is not available yet (M8) — using UHID' }
   }
   if (opts.preferred === 'sdk') return { engine: 'scrcpy-sdk' }
   if (opts.apiLevel !== null && opts.apiLevel < UHID_MIN_API) {

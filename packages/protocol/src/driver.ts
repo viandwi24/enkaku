@@ -106,7 +106,7 @@ export interface GestureSample {
 
 export interface InputSink {
   id: string
-  mode: 'sdk' | 'uhid' | 'aoa'
+  mode: 'sdk' | 'uhid'
   /**
    * `opts.holdMs` (spec §9.3, §17): the down→up hold duration, sampled from a
    * `[min, max]` range rather than fixed — this is test realism (a real

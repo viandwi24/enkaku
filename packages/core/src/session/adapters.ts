@@ -40,8 +40,7 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
         input: row.input,
         inspection: row.inspection,
         preferredInputMode:
-          (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' | 'aoa' } } | null)?.input?.preferredMode ??
-          'uhid',
+          (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' } } | null)?.input?.preferredMode ?? 'uhid',
         keepAwake: prep.keepAwake,
         standbyScreenOff: prep.standbyScreenOff,
         rotation: prep.rotation,
