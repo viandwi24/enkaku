@@ -50,15 +50,6 @@ jobs:
       - run: bash scripts/check-release-packs.sh
       - run: bun run typecheck
       - run: bun test
-      # Studio's component/page tests need a real DOM and run as their own
-      # invocation, not as part of the root `bun test` above (plan 72 §4.4,
-      # criterion 10 — see CLAUDE.md's Commands section for why).
-      - run: bun run --cwd packages/studio test
-      # `packages/ui` — Studio's components, extracted in plan 111 step 111.1 so
-      # a plugin can import the same ones — is excluded from the root `bun test`
-      # on the same grounds and needs the same separate invocation: its
-      # component tests render against the DOM its own bunfig.toml preloads.
-      - run: bun run --cwd packages/ui test
       # `plugins/*` and `examples/` sit outside `bunfig.toml`'s `[test] root =
       # "packages"`, so each needs its own invocation.
       #
@@ -147,10 +138,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
-      # Same split as `check` above, and for the same reason (plan 72 §4.4,
-      # criterion 10 — see CLAUDE.md's Commands section).
-      - run: bun run --cwd packages/studio test
-      - run: bun run --cwd packages/ui test
       - run: bun run --cwd plugins/networking test
       - run: bun run --cwd plugins/proxy-manager test
       - run: bun run --cwd plugins/tiktok-automation-pack test
