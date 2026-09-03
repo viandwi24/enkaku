@@ -42,7 +42,6 @@ import {
 } from './messages/tool'
 import { AdbHealthMessage } from './messages/adb-health'
 import { AdbServerPhaseMessage } from './messages/adb-server-control'
-import { ScanProgressMessage } from './messages/scan'
 import { DeviceCutoverMessage } from './messages/cutover'
 import { BatchStatusMessage } from './messages/batch'
 import { ScheduleFiredMessage } from './messages/schedule'
@@ -393,10 +392,6 @@ export {
   type AdbServerPhase,
   type AdbServerPhaseEvent,
 } from './messages/adb-server-control'
-export {
-  ScanProgressMessage,
-  type ScanProgressEvent,
-} from './messages/scan'
 export {
   NormPointSchema,
   INPUT_ACTION_BODIES,
@@ -988,7 +983,6 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ToolChangedMessage,
   AdbHealthMessage,
   AdbServerPhaseMessage,
-  ScanProgressMessage,
   DeviceCutoverMessage,
   StreamStartedMessage,
   StreamMetaMessage,

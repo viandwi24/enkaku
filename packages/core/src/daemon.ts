@@ -4399,7 +4399,6 @@ let blobGc: BlobGc | null = null
           endpoints,
           registry,
           settings: () => settingsStore.get().discovery,
-          hub: { broadcast: (msg) => hub.broadcast(msg) },
           log: log.child('sweep'),
         })
         sweeperRef = sweeper
