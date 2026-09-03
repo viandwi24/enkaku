@@ -8,6 +8,11 @@ import searchFollow from './search-follow'
 import listAccounts from './list-accounts'
 import postVideo from './post-video'
 import enqueueVideo from './enqueue-video'
+import searchKeyword from './search-keyword'
+import keywordVideos from './keyword-videos'
+import liveBrowse from './live-browse'
+import shopBrowse from './shop-browse'
+import notificationActivity from './notification-activity'
 import { ACCOUNTS_KEY } from './accounts'
 import { QUEUE_PREFIX } from './queue'
 
@@ -745,10 +750,33 @@ async function maybeRunAutoPostTick(ctx: PluginServiceContext): Promise<void> {
 
 export default definePlugin({
   id: 'tiktok',
-  version: '1.12.0',
+  // 1.13.0 — five new members, every anchor measured on this device 2026-09-03:
+  // `search-keyword`, `keyword-videos`, `live-browse`, `shop-browse`,
+  // `notification-activity`, plus `gesture.ts` (verified randomised swipes — no
+  // two alike, each one proven by a screenshot byte-diff). The measured facts
+  // they carry: search result GRIDS and LIVE ROOMS expose nothing to the
+  // inspector (verified swipes and screenshot motion, never anchor taps); the
+  // shop's first-run Tokopedia gate reads "Lanjutkan" and is passed AND REPORTED;
+  // the inbox badge `99+` is a nav text node; the query-input id rotated from
+  // `hhu` to `ho3` (the `search.ts` geometry fallback exists for that); and the
+  // "Simpan info login" sheet's refusal "Tidak sekarang" joined ACK_SELECTORS.
+  // The house rule holds: nothing writes — no likes, follows, comments, or
+  // purchases — the only taps are navigational and named in each member.
+  // 1.14.0 — `live-browse` learned the hard way what happens INSIDE a live room:
+  // two consecutive jobs (f2f45632, dd278a4c) both had the device ui-server die
+  // the moment a room opened (`/screenshot/0` answering, then refusing). The run
+  // now treats every screenshot in the room as optional, distinguishes "stream
+  // moving" from "inspector dead" from "room still" as three separate honest
+  // outcomes, leaves by BACK (a key event needs no inspector), and polls for
+  // recovery before touching anything else.
+  // 1.15.0 — touch AIM now jitters too: the 1.13/1.14 members tap nodes at a
+  // random point inside their middle 70% (`gesture.ts` `jitteredPoint`, same
+  // rule as `youtube-automation-pack`'s `insetPoint`) and grid-cell taps carry
+  // a ±4% offset — the farm's `tapJitterMs` jitters the tap; this jitters where.
+  version: '1.15.0',
   title: 'TikTok automation pack',
-  description: 'Watch-and-scroll automation for the TikTok feed, with human-shaped timing.',
-  scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript],
+  description: 'Watch, scroll, search, browse shop and live, and read notifications on the TikTok feed, with human-shaped timing.',
+  scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript, searchKeyword, keywordVideos, liveBrowse, shopBrowse, notificationActivity],
 
   /**
    * Plan 113 §3.7, §4.6, §5 steps 113.5/113.10. `permissions` grew from `['fs.read']` to exactly

@@ -11,6 +11,11 @@ import searchFollow from './search-follow'
 import listAccounts from './list-accounts'
 import postVideo from './post-video'
 import enqueueVideo from './enqueue-video'
+import searchKeyword from './search-keyword'
+import keywordVideos from './keyword-videos'
+import liveBrowse from './live-browse'
+import shopBrowse from './shop-browse'
+import notificationActivity from './notification-activity'
 
 /**
  * Plan 97 §3.2, §5 step 97.8's own verifiable result — every member's
@@ -216,6 +221,11 @@ describe('every member is presentable (plan 108 P8)', () => {
     postVideo,
     enqueueVideo,
     autoScrollScript,
+    searchKeyword,
+    keywordVideos,
+    liveBrowse,
+    shopBrowse,
+    notificationActivity,
   ]
 
   test('the spelled-out list is exactly the plugin\'s own members', () => {

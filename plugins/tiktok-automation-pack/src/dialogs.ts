@@ -53,6 +53,11 @@ export const ACK_SELECTORS: Selector[] = [
   { text: 'OK' },
   { text: 'Oke' },
   { text: 'Nanti saja' },
+  // Measured 2026-09-03: the system "Simpan info login untuk lain waktu?" sheet that answers
+  // navigating to Kotak Masuk offers exactly two buttons — "Simpan info login" (a grant, never
+  // tapped) and "Tidak sekarang" (the refusal this rung is). The English half of the pair was
+  // already here; the Indonesian half was not.
+  { text: 'Tidak sekarang' },
   { text: 'Lewati' },
   { text: 'Skip' },
   { text: 'Not now' },

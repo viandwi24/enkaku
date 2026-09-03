@@ -73,7 +73,8 @@ describe('clearBlockingDialog — allowBack gating (plan 86 root-cause fix)', ()
   test('every ACK selector is tried before any DENY selector, regardless of allowBack', async () => {
     const { ctx, calls } = mkCtx()
     await clearBlockingDialog(ctx, { allowBack: false })
-    // 12 ACK selectors + 7 DENY selectors tried, in that order, before giving up.
-    expect(calls.find.length).toBe(19)
+    // 13 ACK selectors + 7 DENY selectors tried, in that order, before giving up.
+    // (13th: "Tidak sekarang", measured 2026-09-03 against the login-save sheet.)
+    expect(calls.find.length).toBe(20)
   })
 })

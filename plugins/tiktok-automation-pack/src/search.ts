@@ -42,9 +42,11 @@ export function findSearchIcon(tree: UiNode): UiNode | null {
   return all(tree, (n) => n.desc === 'Cari' && n.bounds.top < SEARCH_ICON_MAX_TOP)[0] ?? null
 }
 
-/** The query input's own node, located by its (obfuscated, rotating) id — bounds only, never text. */
+/** The query input, located by id first and — since 1.13.0 — by geometry second. Measured 2026-09-03: the obfuscated id this app used to carry here (`hhu`) had rotated (`ho3` now), exactly the drift this file's own header warns about; the bar is meanwhile still "the clickable thing at the top of the search page that is wide and not the submit button", and that never rotates. */
 export function findQueryInput(tree: UiNode): UiNode | null {
-  return all(tree, (n) => n.resourceId === QUERY_INPUT_ID_SHORT || n.resourceId.endsWith(`:id/${QUERY_INPUT_ID_SHORT}`))[0] ?? null
+  const byId = all(tree, (n) => n.resourceId === QUERY_INPUT_ID_SHORT || n.resourceId.endsWith(`:id/${QUERY_INPUT_ID_SHORT}`))[0]
+  if (byId) return byId
+  return all(tree, (n) => n.clickable && n.bounds.top < SEARCH_ICON_MAX_TOP && n.bounds.right - n.bounds.left > 300 && n.bounds.left > 40)[0] ?? null
 }
 
 /** `id:"tv_search_textview"` first; a bounds-filtered `text:"Cari"` fallback (plan §4.4 B3). */
