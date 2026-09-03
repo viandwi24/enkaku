@@ -45,21 +45,13 @@ const ZERO_ADB_HEALTH: AdbHealthStats = {
   symptoms: [],
   restartAdvised: false,
 }
-/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. `queueWaitMs` zero-fills to the arbiter's own shipped default rather than `0`, so a probe hitting this brief window never reports a nonsensical "budget is 0ms". */
+/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. Narrowed to `lanes` only by plan 205 (MVP 04) — the subordinate-grant and client-fanout fields this used to carry had no producer once the activity model replaced their source subsystems. */
 const ZERO_INPUT: InputStats = {
   lanes: {
     pointer: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
     keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
     text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
   },
-  assistsActive: 0,
-  mirrorGroups: 0,
-  mirrorMembers: 0,
-  mirrorFanoutMsP50: 0,
-  mirrorFanoutMsP95: 0,
-  queueWaitMs: 5_000,
-  uncollectedGrants: 0,
-  orphanedMirrorGroups: 0,
 }
 /** Same zero-fill contract (plan 92 §3.3, §4.5, §5 step 92.3) — reported before `sessions()` returns a manager (e.g. under the orchestrator, or the brief window before `daemon.ts` constructs one) or before `deps.video` is wired at all. */
 const ZERO_VIDEO: VideoStats = {
@@ -81,7 +73,6 @@ const ZERO_COMMAND_CONSOLE: NonNullable<AdbStatsResponse['commandConsole']> = {
   membersInFlight: 0,
   coalescedFramesPerSec: 0,
   distinctOutputRatio: 0,
-  leaseChangedPerMinute: 0,
 }
 
 /**
