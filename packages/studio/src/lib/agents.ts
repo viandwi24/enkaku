@@ -1,10 +1,10 @@
 /**
  * Shared types and small constants for the AI agents screens (plan 65).
- * `Agent`/`Connector`/`ModelInfo` mirror `@enkaku/protocol`'s `AgentSchema`/
+ * `Agent`/`Connector`/`ModelInfo` copy `@enkaku/protocol`'s `AgentSchema`/
  * `ConnectorSchema`/`ModelInfoSchema` field-for-field — Studio does not
  * import `@enkaku/core` (server-only), so the ACL's `Permission` union has
  * no shared type to import either; `ALL_PERMISSIONS` below is a plain
- * mirror of `packages/core/src/auth/acl.ts`'s own list, kept in the same
+ * copy of `packages/core/src/auth/acl.ts`'s own list, kept in the same
  * order. The SERVER is the authority either way — this list is only a
  * convenience for building checkboxes, never a validator.
  */

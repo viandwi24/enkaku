@@ -118,7 +118,7 @@ export function BulkForgetDialog({
           </DialogTitle>
           <DialogDescription>
             Removes each from the fleet — its row, tags, and cluster membership. Jobs, artifacts, and events are kept.
-            A device that is busy, has an active manual lease, or is still connected and idle is refused and named
+            A device that is busy, has an active manual control marker, or is still connected and idle is refused and named
             below, exactly as a single Forget would be — block it instead from its own device page.
           </DialogDescription>
         </DialogHeader>

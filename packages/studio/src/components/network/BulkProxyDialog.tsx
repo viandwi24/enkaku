@@ -75,7 +75,7 @@ type Placement = 'direct' | 'farm'
  */
 const CODE_LABEL: Record<string, string> = {
   E_DEVICE_OFFLINE: 'Offline',
-  E_DEVICE_HELD: 'Someone is using it',
+  E_DEVICE_CONFLICT: 'Someone is using it',
   E_AGENT_NOT_READY: 'Guest agent not ready',
   E_UNSUPPORTED: 'Not supported on this phone',
   E_SETTING_NOT_ACCEPTED: 'The phone declined the setting',

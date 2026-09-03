@@ -80,9 +80,9 @@ interface AuditEntry {
    * Plan 91 §3.5, F24 — written by `AuditLogger.record` since M7, but
    * dropped by this table until now: `AuditEntrySchema` gained `meta` in
    * plan 91 §4.4 step 91.3, and this is the first render of it. Notably,
-   * this is exactly what makes `device.assist`'s `jobId` legible here — the
-   * part of the row that answers "assisted which JOB", not just "which
-   * device".
+   * this is exactly what makes an action's extra context (e.g. `job.cancel`'s
+   * device id) legible here — the part of the row that answers "in relation
+   * to WHAT", not just "which device".
    */
   meta: unknown
 }

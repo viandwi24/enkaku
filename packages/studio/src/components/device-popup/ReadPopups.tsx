@@ -157,7 +157,7 @@ export function FilesPopup({
   onOpenChange,
 }: {
   deviceId: string
-  /** `iHoldControl && !busy` — the same server-authoritative gate the device page's own Files tab uses; a convenience only, the server checks the lease itself on every request. */
+  /** `iHoldControl && !busy` — the same server-authoritative gate the device page's own Files tab uses; a convenience only, the server checks the control activity itself on every request. */
   canUse: boolean
   open: boolean
   onOpenChange: (open: boolean) => void

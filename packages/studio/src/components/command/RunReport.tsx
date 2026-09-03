@@ -28,7 +28,7 @@ import { groupMembers, type OutcomeGroup } from './run-grouping'
  *    name from a group, never only a count (`renderGroup`'s device chips).
  * 2. The acknowledgement is a scale confirmation, not a safety net — this
  *    component does not re-litigate it; `ConfirmFanout` owns that entirely.
- * 3. Staged rollout waits without holding leases — the `awaiting-continue`
+ * 3. Staged rollout waits without holding control activities — the `awaiting-continue`
  *    banner says so explicitly, in the operator's own words.
  * 4. Output is subscriber-scoped — this component never assumes it is
  *    watching; the console page owns subscribe/unsubscribe, this only

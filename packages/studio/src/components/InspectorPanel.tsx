@@ -24,25 +24,24 @@ import { newId, ws } from '@/lib/ws'
  * a ranked, match-counted selector an operator can test on the device and
  * paste into a script.
  *
- * **The attachment follows the lease, not the mode** (plan 59 §3.3). Plan 56
- * §3.2 was right that an attached inspector holds an on-device engine — the
- * `instrumentation` lock and an `adb.maxConcurrent` slot — and that the cost
- * has to be paid consciously. What it missed is that this panel already
- * requires a *manual lease* (§3.7, and plan 59 §3.1 keeps that), and a manual
- * lease has already made the device exclusively one operator's: the scheduler
- * will not pick it and nobody else can take it. Holding the instrumentation
- * lock for the duration of a lease you are already holding therefore costs
- * nobody anything, while unmounting on every `Live ⇄ Inspect` flip cost a full
- * cold start each time. So the panel now stays mounted for as long as the
- * device page does (the same `hidden` treatment `LiveView` has had since plan
- * 42 §3.1) and detaches when the lease goes, not when the mode does.
+ * **The attachment follows whether the device is online, not the mode**
+ * (plan 59 §3.3; reworded by plan 205 §4.9 — device activities replaced the
+ * old manual-hold model, so this panel now gates on `canUse` (device online)
+ * rather than a manual hold). Plan 56 §3.2 was right that an attached inspector
+ * holds an on-device engine — the `instrumentation` lock and an
+ * `adb.maxConcurrent` slot — and that the cost has to be paid consciously.
+ * Holding the instrumentation lock for as long as the device stays online
+ * therefore costs nobody anything, while unmounting on every `Live ⇄ Inspect`
+ * flip cost a full cold start each time. So the panel now stays mounted for
+ * as long as the device page does (the same `hidden` treatment `LiveView` has
+ * had since plan 42 §3.1) and detaches when the device goes offline, not when
+ * the mode does.
  *
- * The lease requirement itself is *not* presentational politeness that could
- * be dropped: a dump carries whatever is on screen, including text already
- * typed into a field, and it seizes an instrumentation lock. Only the way the
- * panel *says* so changed — a precondition an operator can satisfy in one
- * click is not a failure, so it is no longer rendered through `ErrorState`
- * (plan 59 §3.1).
+ * The gate itself is *not* presentational politeness that could be dropped: a
+ * dump carries whatever is on screen, including text already typed into a
+ * field, and it seizes an instrumentation lock. Only the way the panel *says*
+ * so changed — an offline device is a plain fact, not a failure, so it is no
+ * longer rendered through `ErrorState` (plan 59 §3.1).
  */
 
 /** `follow` polls at a stated interval (plan 59 §3.5) — a dump costs 334–584 ms on hardware, so it is never faster than this. */
@@ -168,10 +167,10 @@ export function seedExpanded(root: UiNode, depth: number, previous?: ReadonlySet
 /**
  * Whether `follow` may fire another dump right now (plan 59 §3.5).
  *
- * Every term is a reason not to spend 334–584 ms of a real phone's time: no
- * lease means the server would refuse anyway; `Live` showing or the Control
- * tab hidden means nobody is reading the tree; a backgrounded browser tab is
- * the same fact one level up (§9 Q1).
+ * Every term is a reason not to spend 334–584 ms of a real phone's time: the
+ * device being offline means the server would refuse anyway; `Live` showing
+ * or the Control tab hidden means nobody is reading the tree; a backgrounded
+ * browser tab is the same fact one level up (§9 Q1).
  */
 export function shouldPoll(o: {
   follow: boolean
@@ -316,21 +315,16 @@ interface DumpEntry {
 export function InspectorPanel({
   deviceId,
   canUse,
-  onTakeControl,
-  takeControlDisabledReason,
   visible,
 }: {
   deviceId: string
   /**
-   * The manual lease this panel requires (plan 56 §3.7). Attaching, dumping
-   * and finding all need it, and the server checks it on every message — this
-   * only decides what the panel says and when it holds an engine.
+   * `online` (plan 205 §4.9) — the device must be reachable at all for
+   * attaching, dumping and finding to mean anything, and the server checks
+   * it on every message; this only decides what the panel says and when it
+   * holds an engine.
    */
   canUse: boolean
-  /** Offered inline while `canUse` is false, so the fix is where the problem was found (plan 59 §3.1). */
-  onTakeControl: () => void
-  /** Why control cannot be taken right now (offline, held by someone else) — the button is then genuinely disabled and says so. */
-  takeControlDisabledReason?: string
   /** False while `Live` is showing or the Control tab is hidden: stay mounted and attached, stop polling (§3.3, §3.5). */
   visible: boolean
 }) {
@@ -415,8 +409,8 @@ export function InspectorPanel({
   }
 
   // ---- everything that belongs to *this device* is dropped when the device
-  // changes, and only then. Losing the lease detaches the engine (below) but
-  // must not throw the tree away: the operator takes control again and the
+  // changes, and only then. Going offline detaches the engine (below) but
+  // must not throw the tree away: the device comes back online and the
   // previous dump is there while the re-attach happens behind it (§3.3). ----
   useEffect(() => {
     setEngineId('')
@@ -433,15 +427,15 @@ export function InspectorPanel({
     setDumpError(null)
   }, [deviceId])
 
-  // ---- attach / detach lifecycle — keyed on the LEASE, not on the mode
-  // (§3.3). Gaining control attaches; losing it detaches and releases the
-  // engine, which is what keeps acceptance #6 true. ----
+  // ---- attach / detach lifecycle — keyed on whether the device is ONLINE,
+  // not on the mode (§3.3). Coming online attaches; going offline detaches
+  // and releases the engine, which is what keeps acceptance #6 true. ----
   const autoRefreshedFor = useRef<string | null>(null)
   useEffect(() => {
     setAttachError(null)
     if (!canUse) {
-      // Nothing to release: without a lease nothing was ever attached. The
-      // panel simply says what it needs (§3.1).
+      // Nothing to release: while offline nothing was ever attached. The
+      // panel simply says so (§3.1).
       setState('detached')
       autoRefreshedFor.current = null
       return
@@ -743,13 +737,10 @@ export function InspectorPanel({
 
   // ---- render ----
 
-  // A precondition, not a failure (§3.1). Nothing has gone wrong: control has
-  // simply not been taken yet, and the thing that fixes it is one click away
-  // from where it was discovered.
+  // A precondition, not a failure (§3.1). Nothing has gone wrong: the device
+  // is simply offline, so there is nothing to attach an inspector to.
   if (!canUse) {
-    return (
-      <InspectorNeedsControl onTakeControl={onTakeControl} {...(takeControlDisabledReason ? { disabledReason: takeControlDisabledReason } : {})} />
-    )
+    return <InspectorOffline />
   }
 
   // Real failures keep the red box. A server refusal is still a refusal.
@@ -1096,53 +1087,23 @@ function usePageVisible(): boolean {
 }
 
 /**
- * The panel with no lease (plan 59 §3.1).
+ * The panel while the device is offline (plan 59 §3.1; reworded by plan 205
+ * §4.9 — a device with no manual-hold precondition left to satisfy is simply
+ * unreachable, not blocked on a click).
  *
- * What used to be here was `ErrorState` — a warning triangle, a danger border,
- * "Could not load", and underneath it the *server's* wording for the input
- * path, `take control (lease.acquire) before sending input`. Nothing had
- * failed, and `lease.acquire` is an internal message name that means nothing
- * to the person reading it.
- *
- * The requirement is not the problem and does not move: a dump carries
- * whatever is on screen, text already typed into a field included, and it
- * seizes an instrumentation lock. Reading someone's screen is not a passive
- * act. So this says what is needed, says why, and offers it — the next action
- * is a click away from where the operator found out they needed it.
+ * What used to be here was `ErrorState` — a warning triangle, a danger
+ * border, "Could not load". Nothing has failed: the device is offline, which
+ * is a plain fact, not an error.
  *
  * No hooks, so it can be called directly in a test (the workspace has no DOM
  * renderer — see `TileChips.test.tsx`).
  */
-export function InspectorNeedsControl({
-  onTakeControl,
-  disabledReason,
-}: {
-  onTakeControl: () => void
-  /** Set when control cannot be taken at all right now — the button is then genuinely disabled and names the state it needs. */
-  disabledReason?: string
-}) {
+export function InspectorOffline() {
   return (
     <EmptyState
       icon={<Hand className="size-4" aria-hidden />}
-      title="Take control to inspect this screen"
-      description={
-        <>
-          Reading the UI tree copies whatever is on screen — including text already typed into a field — and holds the
-          device&apos;s instrumentation lock while it does. So it needs control of the device, the same as sending input.
-          {disabledReason && <span className="mt-1.5 block text-fg-subtle">{disabledReason}</span>}
-        </>
-      }
-      action={
-        <Button
-          size="sm"
-          onClick={onTakeControl}
-          disabled={Boolean(disabledReason)}
-          {...(disabledReason ? { title: disabledReason } : {})}
-        >
-          <Hand className="size-4" aria-hidden />
-          Take control
-        </Button>
-      }
+      title="This device is offline"
+      description="Reading the UI tree needs the device to be reachable — reconnect it from the device page to inspect its screen."
     />
   )
 }

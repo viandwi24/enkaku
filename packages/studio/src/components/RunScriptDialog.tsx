@@ -527,7 +527,7 @@ export function RunScriptDialog({
    */
   onLaunched?: (result: { jobId?: string; batchId?: string }) => void
   onClose: () => void
-  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Run script" row); see `AssistDialog`'s own doc comment on the same prop for why. */
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Run script" row): when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
   // The Workflow | Script segmented filter (plan 99 §4.11, step 99.10) — the
@@ -566,9 +566,10 @@ export function RunScriptDialog({
   // script must never silently ride along onto a different one.
   const [runtimeOverride, setRuntimeOverride] = useState<unknown>(undefined)
   // Plan 95 §3.7, §4.3, §5 step 95.6 (fixes F12, F14) — `serverErrors` maps
-  // straight onto `SchemaForm`; `formCanSubmit` is the callback's mirror,
-  // ANDed into the Run button below so a form the server just rejected (or
-  // one the client already knows is invalid) cannot be resubmitted as-is.
+  // straight onto `SchemaForm`; `formCanSubmit` tracks the same validity the
+  // callback reports, ANDed into the Run button below so a form the server
+  // just rejected (or one the client already knows is invalid) cannot be
+  // resubmitted as-is.
   const [serverIssues, setServerIssues] = useState<Record<string, string> | undefined>(undefined)
   const [formCanSubmit, setFormCanSubmit] = useState(true)
   const { run, isPending } = useAction()

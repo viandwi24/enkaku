@@ -120,12 +120,12 @@ export function PhysicalLabellingPanel({
   return (
     <div className="space-y-5">
       {/* §3.6, §3.8 — stated where the choice is made, not only in a doc:
-          this writes to the phone and outlives the session, the lease, and
-          the core process, and clearing it later is a separate, explicit
-          action. */}
+          this writes to the phone and outlives the session, the control
+          marker, and the core process, and clearing it later is a separate,
+          explicit action. */}
       <p className="rounded-lg border bg-surface-2/40 px-3 py-2.5 text-[12px] leading-relaxed text-fg-muted">
         Turning this on writes to the phone itself, not just to this session — it stays on screen after you close
-        this tab, after the lease ends, even across a restart of Enkaku. "Wallpaper" replaces the phone's wallpaper
+        this tab, after the control marker ends, even across a restart of Enkaku. "Wallpaper" replaces the phone's wallpaper
         and needs the guest agent; "Lock screen" writes one line of text under the lock-screen clock and needs
         nothing installed, but a device without the guest agent cannot use "Wallpaper" and will report so rather
         than quietly using the lesser tier.

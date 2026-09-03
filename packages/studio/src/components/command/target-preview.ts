@@ -1,5 +1,6 @@
 import type { ClusterInfo, CommandTarget, DeviceInfo } from '@enkaku/protocol'
 import { formatDeviceName } from '@enkaku/ui'
+import { hasJob, isControlled } from '@/lib/activity'
 
 /**
  * The command console's target-resolution PREVIEW (plan 93 §3.14 guard 1,
@@ -14,11 +15,12 @@ import { formatDeviceName } from '@enkaku/ui'
  * fleet page already render — mirroring `resolveTarget`'s own exclusion rule
  * (`packages/core/src/clusters/resolve.ts`, plan 93 §0 finding F30): only
  * `offline`/`quarantined` devices are excluded outright, with the identical
- * short reason words that function uses. A `busy`/`manual` device is NOT
- * excluded here — the runner attempts it and skips it live if the lease
- * cannot be admitted (plan 93 §3.8's `admitMember`), so this preview shows
- * those as ATTEMPTED WITH A CAUTION rather than promising an outcome this
- * client cannot know in advance (a lease can change between this preview and
+ * short reason words that function uses. A device with a live job, or a live
+ * control marker held by someone else, is NOT excluded here — the runner
+ * attempts it and skips it live if activity admission refuses it (plan 93
+ * §3.8's `admitMember`, plan 205 §4.9), so this preview shows those as
+ * ATTEMPTED WITH A CAUTION rather than promising an outcome this client
+ * cannot know in advance (an activity can change between this preview and
  * the moment the run actually reaches that device).
  */
 
@@ -64,11 +66,14 @@ export function computeTargetPreview(devices: DeviceInfo[], target: CommandTarge
       continue
     }
     willAttempt.push(d)
-    if (d.status === 'busy') {
+    if (hasJob(d)) {
       caution.push({ device: d, reason: 'an automation job is running — may be skipped' })
-    } else if (d.status === 'manual' && !(d.heldBy?.kind === 'user' && d.heldBy.id === mySessionId)) {
-      const who = d.heldBy ? `held by ${d.heldBy.label}` : 'held by another client'
-      caution.push({ device: d, reason: `${who} — may be skipped` })
+    } else if (isControlled(d)) {
+      const control = d.activities.find((a) => a.kind === 'control')
+      if (!(control?.actor.kind === 'user' && control.actor.id === mySessionId)) {
+        const who = control ? `held by ${control.actor.label}` : 'held by another client'
+        caution.push({ device: d, reason: `${who} — may be skipped` })
+      }
     }
   }
 

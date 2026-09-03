@@ -10,7 +10,6 @@ import {
   Copy,
   EthernetPort,
   Eye,
-  Hand,
   Info,
   MoreVertical,
   Play,
@@ -22,7 +21,7 @@ import {
   Undo2,
   Unplug,
 } from 'lucide-react'
-import type { BatteryState, DeviceInfo, DeviceLabelState, DeviceStatus, LeaseHolder, RegistryResponse, Viewer } from '@enkaku/protocol'
+import type { BatteryState, DeviceInfo, DeviceLabelState, DeviceStatus, RegistryResponse, Viewer } from '@enkaku/protocol'
 import {
   Button,
   DropdownMenu,
@@ -46,8 +45,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { ViewerList } from '@/components/ViewerList'
 import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
 import { AskAnAgentDialog } from '@/components/AskAnAgentDialog'
-import { HolderBadge } from '@/components/HolderBadge'
-import { TakeControlDialog } from '@/components/TakeControlDialog'
+import { ActivityBadge } from '@/components/ActivityBadge'
 
 /**
  * The device page's header (plan 57 §4.1).
@@ -263,29 +261,18 @@ export function DeviceHeader({
   hoveredSessionId,
   onHoverSession,
   now,
-  secondsLeft,
-  holder,
-  heldBy,
-  iHoldControl,
-  acquiring,
   canRunScript,
   onRunScript,
-  onTakeControl,
-  onControlTaken,
-  onReleaseControl,
   onDisconnect,
   onReconnect,
   onReleaseQuarantine,
   canReleaseQuarantine = false,
   onOpenCutover,
   onRemove,
-  takeOverOpen,
-  onTakeOverOpenChange,
   askAgentOpen,
   onAskAgentOpenChange,
   agentVersion,
   labelState,
-  assistGrantTtlSec,
 }: {
   device: DeviceDetailInfo
   status: DeviceStatus
@@ -299,21 +286,8 @@ export function DeviceHeader({
   hoveredSessionId: string | null
   onHoverSession: (sessionId: string | null) => void
   now: number
-  /** Seconds before an idle lease is released, or null when we hold none. */
-  secondsLeft: number | null
-  /** The Plan 31 presence viewer who holds control, when it is a WS-connected browser tab — used only to highlight it in the viewer popover on hover. */
-  holder: Viewer | null
-  /** Who holds the device's manual lease, server-published (plan 71 §3.2) — a person, an agent, or a job, or null when free. The single source of truth for the take-control button and dialog, replacing `heldByOther`/`agentHolder`. */
-  heldBy: LeaseHolder | null
-  iHoldControl: boolean
-  acquiring: boolean
   canRunScript: boolean
   onRunScript: () => void
-  /** Acquire an unheld device directly — no confirmation needed (nobody is displaced). */
-  onTakeControl: () => void
-  /** A takeover succeeded via the confirmation dialog — the new lease's expiry. */
-  onControlTaken: (expiresAt: number) => void
-  onReleaseControl: () => void
   /** Opens the disconnect confirmation for this device (plan 88 §3.7, §3.8, §4.6, §5 step 88.4) — a `tcp` device only; the menu item itself disables on USB. */
   onDisconnect: () => void
   /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — fires directly, no confirmation (it is not destructive). */
@@ -332,18 +306,7 @@ export function DeviceHeader({
   /** Opens the USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) — a `usb` device only; the menu item itself hides on a device already on the network. */
   onOpenCutover: () => void
   onRemove: () => void
-  /**
-   * Whether the takeover confirmation dialog is open, and how to change that
-   * — lifted to the CALLER rather than kept as this component's own
-   * `useState` (this file's own doc comment: "No hooks of its own... so it
-   * can be called directly like any other function", which
-   * `DeviceHeader.test.tsx` relies on literally — a hook call inside a
-   * plain, un-rendered function call throws "Invalid hook call").
-   */
-  takeOverOpen: boolean
-  onTakeOverOpenChange: (open: boolean) => void
-  /** Plan 73 §3.5, §4.6 — "Ask an agent" dialog visibility, lifted for the same reason as
-   * `takeOverOpen` above: this component keeps no hooks of its own. */
+  /** Plan 73 §3.5, §4.6 — "Ask an agent" dialog visibility, lifted to the caller: this component keeps no hooks of its own. */
   askAgentOpen: boolean
   onAskAgentOpenChange: (open: boolean) => void
   /**
@@ -363,17 +326,7 @@ export function DeviceHeader({
    * an existing test fixture predating this field keeps compiling.
    */
   labelState?: DeviceLabelState | null
-  /**
-   * `coControl.grantTtlSec`, the real farm setting (plan 105 §3.2) — passed
-   * to the `assistedBy` badge below so its "Assisting"/"May assist" split
-   * (`HolderBadge`'s own `deriveAssistActivity`) is computed from the actual
-   * TTL rather than the component's shipped-default fallback. Optional so an
-   * existing test fixture (or a caller before this plan) keeps compiling —
-   * `HolderBadge` itself falls back to the same default either way.
-   */
-  assistGrantTtlSec?: number
 }) {
-  const canTakeControl = status === 'idle'
   const settingsHref = `/device?id=${encodeURIComponent(device.id)}&tab=settings`
   // `?? null` guards a hand-built test fixture that omits the field
   // entirely (undefined) — `DeviceInfoSchema.number` is `.default(null)` on
@@ -399,19 +352,11 @@ export function DeviceHeader({
         <div className="flex flex-wrap items-center gap-2.5">
           <DeviceStatusBadge status={status} />
 
-          {/* "A device says who holds it" (plan 71 §3.2) — the lease already knows the holder;
-              this renders it (person, agent, or job) instead of leaving a `manual`/`busy` status
-              badge to speak for an actor nobody can identify. */}
-          {heldBy && !iHoldControl && <HolderBadge holder={heldBy} />}
-
-          {/* Who is ASSISTING this device (plan 91 §3.4 item 4, §4.4, F25) —
-              orthogonal to `heldBy` above: an assist grant never moves the
-              lease, so it is shown regardless of `iHoldControl`. `?? []`
-              covers a caller that predates the field (an existing test
-              fixture, the same guard `DeviceCard`/`WallTile` use). */}
-          {(device.assistedBy ?? []).map((a) => (
-            <HolderBadge key={a.id} holder={a} variant="assists" {...(assistGrantTtlSec ? { grantTtlSec: assistGrantTtlSec } : {})} />
-          ))}
+          {/* "A device says what is happening to it" (plan 71 §3.2; plan 205
+              §4.11) — the activity registry already knows every live marker;
+              this renders them instead of leaving a status badge to speak
+              for an actor nobody can identify. */}
+          <ActivityBadge activities={device.activities} lastControl={device.lastControl} />
 
           {/* Plan 90 §5 step 90.6 (fixes F10) — quiet for `ready`/`absent`/
               `provisioning`/`unsupported`, the same restraint every other
@@ -504,84 +449,6 @@ export function DeviceHeader({
             </Button>
           )}
 
-          {iHoldControl ? (
-            <span className="flex items-center gap-2">
-              {/* The idle countdown, kept when the banner it used to live in was
-                  deleted (§3.2): the lease going quiet is the one thing here
-                  nothing else on the page reports. */}
-              {secondsLeft !== null && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span tabIndex={0} className="readout cursor-help text-[11.5px] text-fg-muted">
-                      {mmss(secondsLeft)}
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>Control is released automatically after this long without activity.</TooltipContent>
-                </Tooltip>
-              )}
-              <Button size="sm" variant="secondary" onClick={onReleaseControl}>
-                Release control
-              </Button>
-            </span>
-          ) : heldBy && heldBy.takeable ? (
-            // Reads a fact the server published (`DeviceInfo.heldBy`, plan 71
-            // §3.2), not a local inference — the same reasoning that makes the
-            // reported two-browser symptom impossible by construction (plan
-            // 31 §4.3), now covering a person, an agent, or a job alike.
-            // ENABLED and visible (§3.6) — the button being disabled here was
-            // the actual defect: it presented an operator's own phone as
-            // unavailable to them. Clicking opens the confirmation dialog,
-            // never takes over silently.
-            <span onMouseEnter={() => holder && onHoverSession(holder.sessionId)} onMouseLeave={() => onHoverSession(null)}>
-              <Button size="sm" variant="outline" onClick={() => onTakeOverOpenChange(true)}>
-                <Hand className="size-4" aria-hidden />
-                Take control
-              </Button>
-            </span>
-          ) : heldBy && !heldBy.takeable ? (
-            // A job's hold is never takeable, whatever is passed (plan 71
-            // §3.4) — genuinely disabled, naming the job and its script, with
-            // a link to it (where Cancel lives) rather than a dead end.
-            <span className="flex items-center gap-1.5">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span tabIndex={0}>
-                    <Button size="sm" variant="outline" disabled>
-                      <Hand className="size-4" aria-hidden />
-                      Take control
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {heldBy.label} is running on this device — wait for it to finish or cancel it.
-                </TooltipContent>
-              </Tooltip>
-              <Button asChild size="sm" variant="ghost">
-                <Link href={`/jobs/detail?id=${encodeURIComponent(heldBy.id)}`}>View job</Link>
-              </Button>
-            </span>
-          ) : canTakeControl ? (
-            <Button size="sm" disabled={acquiring} onClick={onTakeControl}>
-              <Hand className="size-4" aria-hidden />
-              {acquiring ? 'Taking…' : 'Take control'}
-            </Button>
-          ) : (
-            // A lit-up primary button that cannot be pressed is a trap — when
-            // control genuinely is not available, show a clearly disabled
-            // button and say why.
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span tabIndex={0}>
-                  <Button size="sm" variant="outline" disabled>
-                    <Hand className="size-4" aria-hidden />
-                    Take control
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>{UNAVAILABLE_REASON[status] ?? 'The device is unavailable'}</TooltipContent>
-            </Tooltip>
-          )}
-
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${deviceName}`}>
@@ -672,18 +539,6 @@ export function DeviceHeader({
         </>
       }
       />
-      {heldBy && (
-        <TakeControlDialog
-          deviceId={device.id}
-          // Plan 124 §4.4 — `deviceLabel: string` props are not widened into
-          // objects; the caller composes.
-          deviceLabel={deviceName}
-          holder={heldBy}
-          open={takeOverOpen}
-          onOpenChange={onTakeOverOpenChange}
-          onTaken={onControlTaken}
-        />
-      )}
       <AskAnAgentDialog deviceId={device.id} deviceLabel={deviceName} open={askAgentOpen} onOpenChange={onAskAgentOpenChange} />
     </>
   )

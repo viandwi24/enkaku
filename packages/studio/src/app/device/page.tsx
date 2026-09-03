@@ -15,12 +15,10 @@ import {
   ScriptListItemSchema,
   SettingsResponseSchema,
   type BatteryState,
-  type CoControlMode,
   type DeviceLabelState,
   type DeviceStatus,
   type FarmSettings,
   type JobInfo,
-  type LeaseHolder,
   type RegistryResponse,
   type ShellMode,
   type Viewer,
@@ -42,10 +40,7 @@ import { DeviceNumberField } from '@/components/device/DeviceNumberField'
 import { PhysicalLabellingPanel } from '@/components/device/PhysicalLabellingPanel'
 import { RotationQuickAction } from '@/components/device/RotationQuickAction'
 import { ScreenCard, type ScreenMode } from '@/components/device/ScreenCard'
-import { AssistDialog } from '@/components/device/AssistDialog'
-import { assistEndCopy } from '@/components/device-popup/ControlState'
 import { EntityTabs } from '@/components/layout/EntityTabs'
-import { UNAVAILABLE_REASON } from '@/components/DevicePicker'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { TagEditor } from '@/components/TagEditor'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
@@ -55,6 +50,7 @@ import { PaginatedTable, type PaginatedTableHandle } from '@/components/Paginate
 import { TableCell, TableHead, Button, formatDeviceName, relativeTime, duration, ErrorState, LoadingRows, api, useAction } from '@enkaku/ui'
 import { isAdmin, useAuth } from '@/lib/auth'
 import { useNow } from '@/lib/useNow'
+import { applyActivityEvent, hasJob } from '@/lib/activity'
 import { fetchRegistry } from '@/components/schema-form/useEnumSource'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import { narrowSchema } from '@/components/schema-form/narrowSchema'
@@ -63,7 +59,7 @@ import { SectionNav, type SettingsSection } from '@/components/settings/SectionN
 import { deviceSections } from '@/components/settings/deviceSections'
 import { DeviceVideoFields } from '@/components/video/DeviceVideoFields'
 import { fetchAllPages, fetchDeviceRefs, fetchGuestAgentStatus, type DeviceRef } from '@/lib/api'
-import { newId, ws } from '@/lib/ws'
+import { ws } from '@/lib/ws'
 
 function DeviceDetail() {
   // A query param rather than a dynamic route, because a static export cannot
@@ -88,26 +84,24 @@ function DeviceDetail() {
   const [device, setDevice] = useState<DeviceDetailInfo | null>(null)
   const [registry, setRegistry] = useState<RegistryResponse | null>(null)
   const [status, setStatus] = useState<DeviceStatus | null>(null)
-  const [expiresAt, setExpiresAt] = useState<number | null>(null)
-  // Lifted out of `DeviceHeader` (plan 71 §3.6) — that component keeps no
-  // hooks of its own, so it can be called directly in its own test.
-  const [takeOverOpen, setTakeOverOpen] = useState(false)
-  // Plan 73 §3.5, §4.6 — "Ask an agent" dialog visibility, the same lifted-to-the-caller pattern
-  // `takeOverOpen` already uses (`DeviceHeader` keeps no hooks of its own).
+  // Plan 73 §3.5, §4.6 — "Ask an agent" dialog visibility, lifted to the
+  // caller: `DeviceHeader` keeps no hooks of its own.
   const [askAgentOpen, setAskAgentOpen] = useState(false)
-  // Presence (plan 31): who is watching, and who — server-published, not
-  // inferred locally — actually holds control.
+  // Presence (plan 31): who is watching this device.
   const [viewers, setViewers] = useState<Viewer[]>([])
   const [mySessionId, setMySessionId] = useState<string | null>(() => ws.getSessionId())
   const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null)
   const [battery, setBattery] = useState<BatteryState | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // A `device.activity.warning` broadcast (plan 205 §4.9, MVP 04 §3) — a
+  // concurrent-activity heads-up, shown for 5s then cleared, never a refusal.
+  const [warning, setWarning] = useState<string | null>(null)
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [error, setError] = useState<string | null>(null)
   // A link into this page can outlive the device it points at (plan 47 §3.4)
   // — resolved only when the device fetch itself fails, so the common case
   // pays nothing extra.
   const [deletedRef, setDeletedRef] = useState<DeviceRef | null>(null)
-  const [acquiring, setAcquiring] = useState(false)
   const [jobsCount, setJobsCount] = useState<number | null>(null)
   const jobsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
   const [scripts, setScripts] = useState<ScriptRow[]>([])
@@ -160,52 +154,17 @@ function DeviceDetail() {
   // the panel's own status row can never disagree about what was last
   // checked. `null` until the first `GET .../label` resolves.
   const [labelState, setLabelState] = useState<DeviceLabelState | null>(null)
-  const idleTimeoutRef = useRef(300)
   const { run, isPending } = useAction()
-  // The lease countdown and the jobs tab tick without a refresh (Plan 17 §4.6).
+  // The jobs tab ticks without a refresh (Plan 17 §4.6).
   const now = useNow()
-  // Who holds the device's manual lease — a person, an agent, or a job, or
-  // null when free (plan 71 §3.2). Server-published on `DeviceInfo.heldBy`
-  // and kept live by `lease.changed` below; this is what makes an agent
-  // driving the phone visible here without polling (plan 69 §3.5's old
-  // `lib/agent-holders.ts`, deleted).
-  const [heldBy, setHeldBy] = useState<LeaseHolder | null>(null)
-  // Assist (plan 91 §3.2, §3.4, §3.12) — a narrow, subordinate grant to touch
-  // a device someone/something else already controls, WITHOUT taking `heldBy`
-  // away from them. `assisting` is THIS TAB's own grant (null when we hold
-  // none); `expiresAt` is ms epoch, the same unit `expiresAt`/`secondsLeft`
-  // above already use for the lease countdown, so both can tick off the same
-  // `now`.
-  const [assisting, setAssisting] = useState<{ expiresAt: number; primary: LeaseHolder } | null>(null)
-  const [assistOpen, setAssistOpen] = useState(false)
-  // The farm-wide switch and the grant TTL (plan 91 §4.5) — read from
-  // `/api/settings` exactly like `shellMode`/`transferEnabled` above.
-  // `grantTtlSec` is named in the confirmation dialog's own copy (§3.12), so
-  // an operator knows how long their grant lasts before they confirm it.
-  const [coControlMode, setCoControlMode] = useState<CoControlMode>('operator')
-  const [assistGrantTtlSec, setAssistGrantTtlSec] = useState(300)
   // The farm's own video settings (plan 92 §3.9, §5 step 92.8) — read from
-  // the SAME `/api/settings` fetch `shellMode`/`coControlMode` above already
-  // use, not a second request: `DeviceVideoFields`' effective-profile
+  // the SAME `/api/settings` fetch `shellMode`/`transferEnabled` above
+  // already use, not a second request: `DeviceVideoFields`' effective-profile
   // readout needs it to name "the farm" as the source for any empty field
   // (this step's own acceptance criterion 3). `null` until that fetch
   // resolves, or if it fails — the readout shows a loading/neutral state
   // rather than guessing.
   const [farmVideo, setFarmVideo] = useState<FarmSettings['video'] | null>(null)
-
-  /**
-   * The published fact (plan 31 §4.3), not an inference from local state: the
-   * viewer list is the single thing the header's button and its viewer popover
-   * both read, so there is no way for this tab to render "release control" for
-   * a lease it does not hold — the button reads what the server published.
-   */
-  const holder = viewers.find((v) => v.holdsControl) ?? null
-  const iHoldControl = holder !== null && holder.sessionId === mySessionId
-  // Kept in sync every render (not just on the events that flip it) so the
-  // ws.on callback below — created once per deviceId, not per render — can
-  // still ask "was I the one who just lost control" without a stale closure.
-  const iHoldControlRef = useRef(iHoldControl)
-  iHoldControlRef.current = iHoldControl
   /** The battery readings the core has pushed since load, else the first fetch. */
   const liveBattery = battery ?? device?.battery ?? null
 
@@ -215,7 +174,6 @@ function DeviceDetail() {
       .then((b) => {
         setDevice(b.device)
         setStatus(b.device.status)
-        setHeldBy(b.device.heldBy)
         setSavedSettings(b.device.settings ?? undefined)
         setDraftSettings(b.device.settings ?? undefined)
         // A fresh load has no session-scoped fallback to report yet.
@@ -265,10 +223,6 @@ function DeviceDetail() {
         setEndpointEnabled(b.settings.shell.endpointEnabled)
         setTransferEnabled(b.settings.transfer.enabled)
         setFarmVideo(b.settings.video)
-        // Assist (plan 91 §4.5) — `mode` decides whether the button is even
-        // offered; `grantTtlSec` is named in the confirmation dialog's copy.
-        setCoControlMode(b.settings.coControl.mode)
-        setAssistGrantTtlSec(b.settings.coControl.grantTtlSec)
       })
       .catch(() => undefined)
     // `ScriptListItemSchema` (plan 95 §5 step 95.5, fixes F8): a
@@ -317,46 +271,29 @@ function DeviceDetail() {
         setViewers(msg.payload.viewers)
       } else if (msg.type === 'device.status' && msg.payload.id === deviceId) {
         setStatus(msg.payload.status)
-        if (msg.payload.status !== 'manual') setExpiresAt(null)
-      } else if (msg.type === 'lease.changed' && msg.payload.deviceId === deviceId) {
-        // The single source of truth for who holds control (plan 71 §3.2) —
-        // live, for a person, an agent, or a job alike, replacing the old
-        // agent-only poll.
-        setHeldBy(msg.payload.heldBy)
+      } else if (msg.type === 'device.activity' && msg.payload.deviceId === deviceId) {
+        // What is happening to this device (plan 205 §4.11) — a control
+        // marker starting/ending, a job claiming/releasing it, and
+        // everything else the activity registry tracks, all through this
+        // ONE broadcast. Replaces the four separate per-holder/secondary-
+        // operator live-patch messages this used to need, and the per-client
+        // "was I the one who lost it" tracking those needed — under the
+        // activity model any operator may act on an online device
+        // immediately, so there is no per-client hold left to lose.
+        setDevice((d) => (d ? applyActivityEvent(d, msg.payload) : d))
+      } else if (msg.type === 'device.activity.warning' && msg.payload.deviceId === deviceId) {
+        // Unicast to the client whose input was accepted with `warn` (MVP 04
+        // §3, at most one per device per minute per connection) — a
+        // concurrent-activity heads-up, never a refusal. Shown for 5s, the
+        // same one-line, non-blocking treatment `ScreenCard`'s own `warning`
+        // prop renders it with.
+        setWarning(msg.payload.message)
+        if (warningTimerRef.current) clearTimeout(warningTimerRef.current)
+        warningTimerRef.current = setTimeout(() => setWarning(null), 5_000)
       } else if (msg.type === 'device.battery' && msg.payload.deviceId === deviceId) {
         // The panel used to show whatever the first fetch returned; a device
         // that heats up or drains while you watch it looked frozen.
         setBattery(msg.payload.battery)
-      } else if (msg.type === 'assist.changed' && msg.payload.deviceId === deviceId) {
-        // "Everyone else sees it" (plan 91 §3.4 item 4, F25) — broadcast to
-        // every viewer, live, the same shape `lease.changed` already
-        // established for `heldBy` above. Kept on `device.assistedBy` itself
-        // (rather than a second piece of state) so `DeviceHeader`/the header
-        // badge read one source, exactly like `heldBy`.
-        setDevice((d) => (d ? { ...d, assistedBy: msg.payload.assistedBy } : d))
-      } else if (msg.type === 'assist.stopped' && msg.payload.deviceId === deviceId) {
-        // Unicast to the (former) assisting connection only
-        // (`AssistStoppedMessage`'s own doc comment, `@enkaku/protocol`) —
-        // receiving this at all means it is about OUR OWN grant, whatever
-        // the reason. `released` is the operator's own "Stop assisting"
-        // click (or this dialog's own success path already closed) and
-        // needs no notice, the same restraint `releaseControl` shows for a
-        // deliberate release.
-        setAssisting(null)
-        // Plan 105 (M70) §3.4/§5 step 105.3 — the same wording
-        // `DevicePopup.tsx` uses, from the one place it is written
-        // (`assistEndCopy`, `@/components/device-popup/ControlState`), so
-        // this legacy page and the popup can never disagree about what an
-        // `AssistEndReason` says. `null` for `released` — "they stopped, no
-        // message needed" (§3.4's own words). This page's `notice` is a
-        // plain string (shared with `lease.revoked` below, a different
-        // message entirely) rather than the popup's richer
-        // `{ message, offerTakeControl }` shape, so `primary_ended`'s "take
-        // control in place" affordance is not rendered here — the header's
-        // own Take control button already appears the moment the device
-        // becomes free, one small step away rather than inline.
-        const copy = assistEndCopy(msg.payload.reason, assistGrantTtlSec)
-        if (copy) setNotice(copy.message)
       } else if (msg.type === 'device.inspector.fallback' && msg.payload.deviceId === deviceId) {
         // The effective engine for the CURRENT session dropped to the
         // fallback (plan 34 §4.6) — reported until the next session start.
@@ -369,89 +306,14 @@ function DeviceDetail() {
         // A new session is negotiating its inspector from scratch — any
         // fallback reported for the previous session no longer applies.
         setInspectorFallback(null)
-      } else if (msg.type === 'lease.revoked' && msg.payload.deviceId === deviceId) {
-        setExpiresAt(null)
-        // Scoped to the actual former holder (plan 31 §3.1): this broadcast
-        // itself carries no identity, but the ref tracks whether THIS tab was
-        // the one holding control the instant before the revoke arrived —
-        // a bystander tab no longer sees a notice about a lease it never had.
-        if (iHoldControlRef.current) {
-          setNotice(
-            msg.payload.reason === 'idle_timeout'
-              ? 'Control was released automatically after a period of inactivity. Take it again to continue.'
-              : msg.payload.reason === 'taken-over'
-                ? `${msg.payload.takenBy ?? 'Someone else'} took control from you.`
-                : msg.payload.reason === 'adb-server-restart'
-                  ? 'Control was released — the adb server just restarted. Take it again once the device reconnects.'
-                  : msg.payload.reason === 'app-restart'
-                    ? 'Control was released — Enkaku itself just restarted. Take it again once it is back.'
-                    : `Control was released automatically (${msg.payload.reason}).`,
-          )
-        }
       }
     })
     return off
   }, [deviceId])
 
-  // Idle-timeout countdown. The server drops the lease when no input arrives;
-  // people deserve to see that coming rather than have the screen go dead.
-  // Derived from the shared `now` tick rather than its own interval (Plan 17 §4.6).
-  const secondsLeft = expiresAt === null ? null : Math.max(0, Math.round((expiresAt - now) / 1000))
-  // The assist grant's own countdown (plan 91 §3.4 item 2) — the SAME shape
-  // as `secondsLeft` above, ticked off the same shared `now`, rendered in
-  // `ScreenCard`'s amber `.readout` beside its `.rack-label`.
-  const assistSecondsLeft = assisting === null ? null : Math.max(0, Math.round((assisting.expiresAt - now) / 1000))
-
-  async function takeControl() {
-    if (!deviceId) return
-    setError(null)
-    setNotice(null)
-    setAcquiring(true)
-    try {
-      const res = await ws.request({ type: 'lease.acquire', id: newId(), payload: { deviceId } })
-      if (res.type === 'lease.acquired') {
-        const ms = res.payload.expiresAt * 1000
-        idleTimeoutRef.current = Math.max(30, Math.round((ms - Date.now()) / 1000))
-        setExpiresAt(ms)
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setAcquiring(false)
-    }
-  }
-
-  function releaseControl() {
-    if (!deviceId) return
-    ws.send({ type: 'lease.release', payload: { deviceId } })
-    setExpiresAt(null)
-  }
-
-  /** A takeover succeeded via `TakeControlDialog` (plan 71 §3.4) — the same bookkeeping `takeControl`'s own success branch does. */
-  function onControlTaken(expiresAtSec: number) {
-    setError(null)
-    setNotice(null)
-    const ms = expiresAtSec * 1000
-    idleTimeoutRef.current = Math.max(30, Math.round((ms - Date.now()) / 1000))
-    setExpiresAt(ms)
-  }
-
-  // Every input refreshes the lease on the server (touchManual); mirror that
-  // here so the countdown stays honest instead of alarming for no reason.
-  // Plan 91 §3.6: the assist path calls `coControl.touch` instead — this
-  // refreshes ITS OWN countdown the same way, so a working assist never
-  // alarms either.
-  const noteActivity = () => {
-    if (expiresAt !== null) setExpiresAt(Date.now() + idleTimeoutRef.current * 1000)
-    if (assisting !== null) setAssisting((a) => (a ? { ...a, expiresAt: Date.now() + assistGrantTtlSec * 1000 } : a))
-  }
-
-  /** Ends this tab's own assist grant early (plan 91 §3.12's own dialog never mentions a stop button, but `AssistStopMessage` exists for exactly this — "ending your own help early is always allowed", `ws-handlers.ts`'s own comment on `assist.stop`). No confirmation: it only gives something back, the same reasoning `releaseControl` above needs none. */
-  function stopAssisting() {
-    if (!deviceId) return
-    ws.send({ type: 'assist.stop', payload: { deviceId } })
-    setAssisting(null)
-  }
+  useEffect(() => () => {
+    if (warningTimerRef.current) clearTimeout(warningTimerRef.current)
+  }, [])
 
   const saveSettings = () =>
     // Not one of the call sites the plan named for this file — found while
@@ -477,7 +339,6 @@ function DeviceDetail() {
       .then((b) => {
         setDevice(b.device)
         setStatus(b.device.status)
-        setHeldBy(b.device.heldBy)
       })
       .catch(() => undefined)
 
@@ -555,33 +416,12 @@ function DeviceDetail() {
   }
 
   const currentStatus = status ?? device.status
-  const busy = currentStatus === 'busy'
-  // Assist (plan 91 §3.4, §5 step 91.6): a co-control grant authorises input
-  // WITHOUT taking control away from whoever holds the lease — `busy` keeps
-  // meaning exactly what it always has (F3/F4 unchanged), so this is an `||`
-  // widening the existing rule, never a replacement of it. Spec §10.1's own
-  // amendment (plan 91 §3.4): "unless that client holds a co-control grant
-  // on the device, which authorises the five manual input verbs and nothing
-  // else."
-  const iAmAssisting = assisting !== null
-  const inputEnabled = (iHoldControl && !busy) || iAmAssisting
-  /**
-   * Why `Take control` cannot be pressed right now, or null when it can — the
-   * same rule the header's own button follows, so a panel that offers the
-   * action inline (plan 59 §3.1) never offers one that would bounce. A
-   * precondition the operator can satisfy stays a live button; one they
-   * cannot is genuinely disabled and names the state it needs.
-   */
-  const takeControlReason = iHoldControl
-    ? null
-    : heldBy
-      ? // The full takeover flow lives on the header's own button (plan 71
-        // §3.4) — this inline one only explains why it cannot be pressed
-        // here, naming who holds it exactly as the header's badge does.
-        `Control is held by ${heldBy.label}. Use "Take control" above to take it over.`
-      : currentStatus === 'idle'
-        ? null
-        : (UNAVAILABLE_REASON[currentStatus] ?? 'The device is unavailable')
+  // Plan 205 §4.9 — the one precondition every control surface on this page
+  // checks now: a device is either online or it is not. Replaces
+  // `online`/`iAmAssisting`.
+  const online = currentStatus === 'online'
+  const busy = hasJob(device)
+  const inputEnabled = online
   // A node-owned device has no local inspector to attach to, so it can never
   // be in `Inspect` — not even by way of an old `tab=inspect` link.
   const screenMode: ScreenMode = device.nodeId ? 'live' : mode
@@ -696,33 +536,22 @@ function DeviceDetail() {
         hoveredSessionId={hoveredSessionId}
         onHoverSession={setHoveredSessionId}
         now={now}
-        secondsLeft={secondsLeft}
-        holder={holder}
-        heldBy={heldBy}
-        iHoldControl={iHoldControl}
-        acquiring={acquiring}
         canRunScript={scripts.length > 0}
         // The dialog picks the script now. This used to hand it `scripts[0]` —
         // whichever the API happened to sort first — so every other published
         // script was unreachable from a device's own page, and the version
         // moved on its own whenever anything was republished.
         onRunScript={() => setRunOpen(true)}
-        onTakeControl={() => void takeControl()}
-        onControlTaken={onControlTaken}
-        onReleaseControl={releaseControl}
         onDisconnect={() => setDisconnectOpen(true)}
         onReconnect={reconnectDevice}
         onReleaseQuarantine={() => void releaseQuarantine()}
         canReleaseQuarantine={isAdmin(user)}
         onOpenCutover={() => setCutoverOpen(true)}
         onRemove={() => setForgetOpen(true)}
-        takeOverOpen={takeOverOpen}
-        onTakeOverOpenChange={setTakeOverOpen}
         askAgentOpen={askAgentOpen}
         onAskAgentOpenChange={setAskAgentOpen}
         agentVersion={agentVersion}
         labelState={labelState}
-        assistGrantTtlSec={assistGrantTtlSec}
       />
 
       <EntityTabs
@@ -809,27 +638,15 @@ function DeviceDetail() {
             jobRunning={busy}
             inputEnabled={inputEnabled}
             // The same server-published fact every other panel on this page
-            // reads (plan 31 §4.3) — the inspector needs a manual lease
-            // (plan 56 §3.7), and the core checks it on every message
+            // reads (plan 31 §4.3; plan 205 §4.9) — the inspector needs the
+            // device to be online, and the core checks it on every message
             // regardless. This only decides what the panel says (plan 59 §3.1)
             // and whether it holds an engine (§3.3).
-            canInspect={iHoldControl && !busy}
-            onTakeControl={() => void takeControl()}
-            {...(takeControlReason ? { takeControlDisabledReason: takeControlReason } : {})}
-            onActivity={noteActivity}
+            canInspect={online}
             autoReconnect={Boolean((device.settings as { autoReconnect?: boolean } | null)?.autoReconnect)}
             configuredDisplay={device.display}
             visible={tab === 'control'}
-            // Assist (plan 91 §3.4, §3.12, §5 step 91.6) — `heldBy?.label` is
-            // the running script's `name@version` (F25's `LeaseHolder.label`),
-            // named in the pre-assist banner so the operator knows exactly
-            // what they would be reaching into before they even open the
-            // dialog.
-            assistPrimaryLabel={heldBy?.label ?? null}
-            onAssist={() => setAssistOpen(true)}
-            {...(coControlMode === 'off' ? { assistDisabledReason: 'Assisting is turned off for this farm.' } : {})}
-            assisting={assisting && assistSecondsLeft !== null ? { secondsLeft: assistSecondsLeft } : null}
-            onStopAssisting={stopAssisting}
+            warning={warning}
           />
         </div>
       </TabPanel>
@@ -872,8 +689,8 @@ function DeviceDetail() {
                 clientId={mySessionId}
                 // Same gate as the terminal's own input box (plan 27 §3.4) —
                 // Studio hiding the card is a convenience, the server checks
-                // `device.adb` plus the lease itself on every request.
-                canOpen={iHoldControl && !busy}
+                // `device.adb` and admission itself on every request.
+                canOpen={online}
               />
             )}
           </div>
@@ -884,7 +701,7 @@ function DeviceDetail() {
             // server re-checks this itself on every `shell.exec` regardless
             // (spec §10.1); this only decides whether Studio shows the input
             // box at all.
-            canType={iHoldControl && !busy}
+            canType={online}
             onRunAsStream={() => router.replace(`/device?id=${encodeURIComponent(device.id)}&tab=monitor`)}
           />
         </TabPanel>
@@ -892,12 +709,12 @@ function DeviceDetail() {
 
       {transferEnabled && (
         <TabPanel active={tab === 'files'}>
-          <FilesPanel deviceId={device.id} clientId={mySessionId} canUse={iHoldControl && !busy} />
+          <FilesPanel deviceId={device.id} clientId={mySessionId} canUse={online} />
         </TabPanel>
       )}
 
       <TabPanel active={tab === 'network'}>
-        <NetworkPanel deviceId={device.id} canUse={iHoldControl && !busy} />
+        <NetworkPanel deviceId={device.id} canUse={online} />
       </TabPanel>
 
       <TabPanel active={tab === 'agent'}>
@@ -906,11 +723,11 @@ function DeviceDetail() {
             callers compose instead (§4.4's own note). `AgentPanel` puts this
             straight into toasts and a confirm title, all of which need a
             plain string. */}
-        <AgentPanel deviceId={device.id} deviceLabel={formatDeviceName(device.number, device.label)} canUse={iHoldControl && !busy} />
+        <AgentPanel deviceId={device.id} deviceLabel={formatDeviceName(device.number, device.label)} canUse={online} />
       </TabPanel>
 
       <TabPanel active={tab === 'identity'}>
-        <IdentityPanel deviceId={device.id} canUse={iHoldControl && !busy} />
+        <IdentityPanel deviceId={device.id} canUse={online} />
       </TabPanel>
 
       <TabPanel active={tab === 'logs'}>
@@ -991,22 +808,6 @@ function DeviceDetail() {
         onOpenChange={setCutoverOpen}
         onDone={reloadDevice}
       />
-
-      {/* Assist (plan 91 §3.2, §3.12, §5 step 91.6) — a WARNING the operator
-          acknowledges, never a takeover: `heldBy` (the job or user this
-          targets) is untouched by confirming it, the same guard
-          `TakeControlDialog` above uses for its own `heldBy`. */}
-      {heldBy && (
-        <AssistDialog
-          deviceId={device.id}
-          deviceLabel={formatDeviceName(device.number, device.label)}
-          primary={heldBy}
-          grantTtlSec={assistGrantTtlSec}
-          open={assistOpen}
-          onOpenChange={setAssistOpen}
-          onAssisted={(expiresAtMs, primary) => setAssisting({ expiresAt: expiresAtMs, primary })}
-        />
-      )}
     </>
   )
 }

@@ -80,6 +80,7 @@ import { summariseSweepReport } from '@/lib/network-scan'
 import { PAGE_SIZE_OPTIONS, readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type PageSize, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { setWallpaperLabelMode, summariseLabelApply } from '@/lib/labelling'
 import { setDeviceReadiness } from '@/lib/readiness'
+import { applyActivityEvent, hasJob, isControlled } from '@/lib/activity'
 import { ws } from '@/lib/ws'
 
 type Filter = 'all' | 'ready' | 'inUse' | 'attention'
@@ -130,11 +131,10 @@ const PILL =
 type View = 'list' | 'wall'
 type GroupBy = 'none' | 'cluster' | 'status' | 'tag'
 
-const STATUS_ORDER: DeviceStatus[] = ['idle', 'busy', 'manual', 'quarantined', 'offline']
+/** Plan 205 §4.9 — `DeviceStatus` shrank to `offline`/`online`/`quarantined`; what used to be `idle`/`busy`/`manual` is now the live `activities` list, not a groupable status. */
+const STATUS_ORDER: DeviceStatus[] = ['online', 'quarantined', 'offline']
 const STATUS_LABEL: Record<DeviceStatus, string> = {
-  idle: 'Idle',
-  busy: 'Busy',
-  manual: 'Controlled',
+  online: 'Online',
   quarantined: 'Quarantined',
   offline: 'Offline',
 }
@@ -358,8 +358,8 @@ function DashboardView() {
   /**
    * The name and number of one selected device, for a bulk report row. The
    * label stays BARE and the number rides beside it (plan 124 §4.4 Group F,
-   * and §10's `MirrorMember` note): `SkippedGroups` composes the two itself,
-   * so pre-composing here would print `#7` twice.
+   * and §10's own lesson from a similarly-shaped row type): `SkippedGroups`
+   * composes the two itself, so pre-composing here would print `#7` twice.
    */
   const outcomeNameOf = (id: string) => {
     const found = devices?.find((d) => d.id === id)
@@ -576,35 +576,15 @@ function DashboardView() {
             ? prev.map((d) => (d.id === m.payload.deviceId ? { ...d, readiness: m.payload.readiness } : d))
             : prev,
         )
-      } else if (m.type === 'lease.changed') {
-        // Who holds a device (plan 71 §3.2, §3.8) — an ordinary acquire or
-        // release also flips `status` (idle↔manual), which already triggers
-        // a full `load()` above; a TAKEOVER does not (the device stays
-        // `manual` throughout, only the holder changes), so this is the only
-        // path that keeps the fleet card and wall tile live for that case —
-        // without it, an agent taking a device over from another agent (or a
-        // person) would show the DISPLACED holder until something unrelated
-        // happened to trigger a reload. No polling anywhere (replaces
+      } else if (m.type === 'device.activity') {
+        // What is happening to a device (plan 205 §4.11) — a control marker
+        // starting/ending, a job claiming/releasing it, and everything else
+        // the activity registry tracks, all through this ONE broadcast; the
+        // two separate per-holder/secondary-operator live-patch messages
+        // this replaced are gone along with the subsystem they described.
+        // No polling anywhere (replaces
         // `lib/agent-holders.ts`, deleted).
-        setDevices((prev) =>
-          prev
-            ? prev.map((d) => (d.id === m.payload.deviceId ? { ...d, heldBy: m.payload.heldBy } : d))
-            : prev,
-        )
-      } else if (m.type === 'assist.changed') {
-        // Who is ASSISTING a device (plan 91 §3.4 item 4, F25) — the same
-        // live-patch treatment `lease.changed` gets above, just for
-        // `assistedBy` instead of `heldBy`. Without this branch the devices
-        // list and the Wall (this page feeds both) only picked up a NEW
-        // assist grant on the next `/api/devices` fetch or an unrelated
-        // `device.added`/`device.status` refresh — not the instant a grant
-        // starts, is released, expires (`ttl`), or ends with the primary
-        // hold (`primary_ended`).
-        setDevices((prev) =>
-          prev
-            ? prev.map((d) => (d.id === m.payload.deviceId ? { ...d, assistedBy: m.payload.assistedBy } : d))
-            : prev,
-        )
+        setDevices((prev) => (prev ? prev.map((d) => (d.id === m.payload.deviceId ? applyActivityEvent(d, m.payload) : d)) : prev))
       }
     })
     // The live merge above has no way to know about a `job.status` message
@@ -628,8 +608,8 @@ function DashboardView() {
     const list = devices ?? []
     return {
       all: list.length,
-      ready: list.filter((d) => d.status === 'idle').length,
-      inUse: list.filter((d) => d.status === 'busy' || d.status === 'manual').length,
+      ready: list.filter((d) => d.status === 'online' && !hasJob(d) && !isControlled(d)).length,
+      inUse: list.filter((d) => d.status === 'online' && (hasJob(d) || isControlled(d))).length,
       attention: list.filter(needsAttention).length,
     }
   }, [devices])
@@ -648,8 +628,8 @@ function DashboardView() {
 
   const filtered = useMemo(() => {
     let list = devices ?? []
-    if (filter === 'ready') list = list.filter((d) => d.status === 'idle')
-    else if (filter === 'inUse') list = list.filter((d) => d.status === 'busy' || d.status === 'manual')
+    if (filter === 'ready') list = list.filter((d) => d.status === 'online' && !hasJob(d) && !isControlled(d))
+    else if (filter === 'inUse') list = list.filter((d) => d.status === 'online' && (hasJob(d) || isControlled(d)))
     else if (filter === 'attention') list = list.filter(needsAttention)
     const q = query.trim().toLowerCase()
     // The address joins the search (plan 92 §4.8): an operator chasing a
@@ -1729,7 +1709,8 @@ function DashboardView() {
           §4.1, §5 step 103.2) — only on the Wall, only once a tile has
           actually been double-clicked. `devices` is the FULL, unfiltered
           list (not `filtered`): a selected device that has scrolled out of
-          the current filter must still be a valid Mirror candidate. */}
+          the current filter must still be a valid bulk-action candidate for
+          `ActionsList` (plan 104 §3.2). */}
       {view === 'wall' && focusId && (
         <DevicePopup deviceId={focusId} devices={devices ?? []} selectedIds={selectedIds} onClose={clearFocus} />
       )}

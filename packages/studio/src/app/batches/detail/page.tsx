@@ -122,14 +122,14 @@ function BatchDetail() {
   // field, so it is derived here from the already-loaded `jobs` array
   // rather than a second endpoint). `JobsList`'s own `PaginatedTable` is
   // still the single owner of the RENDERED rows (plan 30 §3.4) — this is a
-  // read-only mirror, never written back into.
+  // read-only copy, never written back into.
   const [jobs, setJobs] = useState<JobInfo[]>([])
   // Plan 94 §4.9, §4.10, F25 — `job.waiting`'s `reason`/`remainingSec`
   // (94.6's own wire addition), keyed by jobId, for whichever of THIS
   // batch's jobs a push has touched. `job.waiting` carries no `batchId`, so
   // membership is checked against `jobs` (above) rather than the message
   // itself.
-  const [waiting, setWaiting] = useState<Record<string, { reason: 'quiet' | 'paced'; remainingSec: number }>>({})
+  const [waiting, setWaiting] = useState<Record<string, { reason: 'control' | 'paced'; remainingSec: number }>>({})
   /**
    * The member whose result is open in the sheet, or `null`.
    *
@@ -212,7 +212,7 @@ function BatchDetail() {
         .then((r) => setRefs((prev) => ({ ...prev, ...r })))
         .catch(() => undefined)
     }
-    // Plan 94 §4.10 — the "Repeat pacing" aside's own read-only mirror (see
+    // Plan 94 §4.10 — the "Repeat pacing" aside's own read-only copy (see
     // the `jobs` state's own doc comment above).
     setJobs(sorted)
     return { items: sorted, nextCursor: null, total: sorted.length }
@@ -470,7 +470,7 @@ function BatchDetail() {
                     : w
                       ? w.reason === 'paced'
                         ? `next repetition in ${w.remainingSec}s`
-                        : `waiting — quiet period, ${w.remainingSec}s`
+                        : `waiting — device is controlled, ${w.remainingSec}s`
                       : next.notBefore !== null
                         ? next.notBefore - Math.floor(now / 1000) > 0
                           ? `starts in ~${next.notBefore - Math.floor(now / 1000)}s`

@@ -135,7 +135,7 @@ export function HttpProxyFields({
   onChooseVpn,
 }: {
   deviceId: string
-  /** Same server-authoritative gate as every other mutating control on the page — the server checks the lease itself regardless. */
+  /** Same server-authoritative gate as every other mutating control on the page — the server checks the control activity itself regardless. */
   canUse: boolean
   status: NetworkStatus
   onApplied: (next: NetworkStatus) => void

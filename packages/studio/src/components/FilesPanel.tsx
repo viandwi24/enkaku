@@ -82,9 +82,9 @@ export function FilesPanel({
   canUse,
 }: {
   deviceId: string
-  /** The WS session id — install/push/pull are lease-scoped, exactly like the terminal and the adb endpoint (plan §3.7). */
+  /** The WS session id — install/push/pull are scoped to the caller's own control activity, exactly like the terminal and the adb endpoint (plan §3.7). */
   clientId: string | null
-  /** Same server-authoritative gate every other input control on this page uses — a convenience only, the server checks the lease and `device.files` itself on every request. */
+  /** Same server-authoritative gate every other input control on this page uses — a convenience only, the server checks the control activity and `device.files` itself on every request. */
   canUse: boolean
 }) {
   const { run, isPending } = useAction()

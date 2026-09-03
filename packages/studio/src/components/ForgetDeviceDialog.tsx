@@ -22,9 +22,9 @@ function isApiError(err: unknown): err is Error & ApiError {
  * events — unless "also delete history" is ticked, which shows the exact
  * counts before its own confirm enables, per §3.4).
  *
- * A refusal (§3.5 — busy, an active manual lease, still connected) shows the
- * server's own reason rather than a generic failure, and for the "still
- * connected" case offers Block instead in the same dialog, since that
+ * A refusal (§3.5 — busy, an active manual control marker, still connected)
+ * shows the server's own reason rather than a generic failure, and for the
+ * "still connected" case offers Block instead in the same dialog, since that
  * refusal IS the intended next step, not a dead end.
  */
 export function ForgetDeviceDialog({
@@ -39,7 +39,7 @@ export function ForgetDeviceDialog({
   onOpenChange: (open: boolean) => void
   /** Called after a successful Forget OR Block — either way the device just left the fleet. */
   onDone: () => void
-  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path; see `AssistDialog`'s own doc comment on the same prop for why. */
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path: when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
   const [deleteHistory, setDeleteHistory] = useState(false)

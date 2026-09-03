@@ -14,7 +14,7 @@ import { EmptyState, ErrorState, LoadingRows, Button, Table, TableBody, TableHea
 /**
  * The one keyset envelope every list endpoint returns (plan 30 §3.3, §4.1).
  * Kept in sync with `packages/core/src/api/pagination.ts` — this is the
- * client-side mirror of the same shape, not a re-export, because Studio
+ * client-side copy of the same shape, not a re-export, because Studio
  * cannot import across the core/studio package boundary.
  */
 export interface Page<T> {

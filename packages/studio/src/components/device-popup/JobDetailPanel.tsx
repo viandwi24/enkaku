@@ -26,8 +26,8 @@ import { useNow } from '@/lib/useNow'
  * `oversize` banners), params, logs, and artifacts. Nothing here is a
  * thinner re-derivation: it is the identical `ResultView`/`planResult`
  * resolver, the identical three-way log merge, the identical artifact
- * split. What stays page-only (workflow node timeline, lineage, assist
- * history, the farm memory-limit row) is named, not silently dropped — a
+ * split. What stays page-only (workflow node timeline, lineage,
+ * the farm memory-limit row) is named, not silently dropped — a
  * device's own job history is short and mostly about what the run did, not
  * its place in a trigger chain.
  */

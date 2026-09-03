@@ -24,8 +24,8 @@ import {
  * The interactive device terminal (plan 26 §4.5). Beside the Monitor pane:
  * arbitrary `adb shell` commands, gated server-side (the input box being
  * enabled here is a convenience, never the control — spec §10.1). Everyone
- * viewing this device sees the transcript live; only the lease holder can
- * type (§3.8).
+ * viewing this device sees the transcript live; only the control-marker
+ * holder can type (§3.8).
  *
  * No xterm.js (§4.5): there is no pty here, so there is nothing for a
  * terminal emulator to emulate — no cursor addressing, no colours, no
@@ -60,7 +60,7 @@ export function TerminalPane({
   onRunAsStream,
 }: {
   deviceId: string
-  /** Only the lease holder may type (plan 26 §3.8) — everyone else watches. */
+  /** Only the control-marker holder may type (plan 26 §3.8) — everyone else watches. */
   canType: boolean
   /** The `stream_suggested` hint (§3.6): opens the Monitor pane on the same command. */
   onRunAsStream: (cmd: string) => void
@@ -161,7 +161,7 @@ export function TerminalPane({
     setHistoryIndex(null)
     setDraft('')
     const id = newId()
-    // A refusal (no lease, no permission, mode off, ...) arrives as `error`
+    // A refusal (no control marker, no permission, mode off, ...) arrives as `error`
     // with this id — success is NOT replied to the sender alone, it is
     // broadcast as `shell.echo`/`shell.result` to every viewer (§3.8), so
     // this listener only needs to catch the immediate-refusal case.

@@ -8,7 +8,6 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Hourglass, RotateCcw } from 'lucide-react'
 import { z } from 'zod'
 import {
-  JobAssistsResponseSchema,
   JobCancelResponseSchema,
   JobCreateResponseSchema,
   JobDeleteResponseSchema,
@@ -17,19 +16,17 @@ import {
   resolveRuntime,
   SettingsResponseSchema,
   type ArtifactInfo,
-  type DeviceEvent,
+  type DeviceActivity,
   type GateOutcome,
   type JobInfo,
   type JobNodeStatus,
   type JobSettings,
-  type LeaseHolder,
   type Predicate,
   type ValueExpr,
   type WorkflowDoc,
   type WorkflowNode,
 } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
-import { HolderBadge } from '@/components/HolderBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { JobArtifactsPanel } from '@/components/jobs/JobArtifactsPanel'
@@ -525,26 +522,23 @@ function JobDetail() {
   // file header names exactly what stayed here and why).
   const [chainNodes, setChainNodes] = useState<JobInfo[]>([])
   const [rootInfo, setRootInfo] = useState<JobInfo | null>(null)
-  // Plan 91 §3.5, §4.9 — every non-job input action recorded against this
-  // job's device while it ran. Page-only, same reasoning as `chainNodes`.
-  const [assists, setAssists] = useState<DeviceEvent[]>([])
   // Plan 98 §3.9 item 4, §5 step 98.8 — the Summary tab's "Peak memory" row
   // gains a "/ N limit" half. `farmJobSettings` is fetched once,
   // independently — a job page has no other reason to load farm settings,
   // so this is its own small round trip rather than piggy-backing on an
   // unrelated fetch. Page-only: the popup's Jobs tab has no memory-limit row.
   const [farmJobSettings, setFarmJobSettings] = useState<JobSettings | null>(null)
-  // Waiting for the device to go quiet before claiming it (plan 71 §3.7), OR
-  // (plan 94 §3.7, §4.9, F25, step 94.10) waiting on the PACER for its next
-  // repetition's drawn delay to elapse — visible, not silent: a wait nobody
-  // can see is indistinguishable from a hang. `null` means "not currently
-  // waiting" (never started, or already claimed/expired past the cap).
-  const [waiting, setWaiting] = useState<{ heldBy: LeaseHolder | null; remainingSec: number; reason: 'quiet' | 'paced' } | null>(
+  // Waiting for a live control marker to go quiet before claiming the device
+  // (plan 71 §3.7; plan 205 §3.2 item 6), OR (plan 94 §3.7, §4.9, F25, step
+  // 94.10) waiting on the PACER for its next repetition's drawn delay to
+  // elapse — visible, not silent: a wait nobody can see is indistinguishable
+  // from a hang. `null` means "not currently waiting" (never started, or
+  // already claimed/expired past the cap).
+  const [waiting, setWaiting] = useState<{ conflicting: DeviceActivity | null; remainingSec: number; reason: 'control' | 'paced' } | null>(
     null,
   )
   // The node timeline (plan 99 §3.5, §4.9, step 99.10) — `[]`/`false` for
-  // every non-workflow job, the same "empty, not missing" convention
-  // `assists` above already uses. `workflowDoc` (from the hook) is the
+  // every non-workflow job. `workflowDoc` (from the hook) is the
   // parsed pipeline, read for the gate verdict sentence's `when`/`then`/
   // `else` and the resume dialog's "what will be skipped" preview.
   const [nodes, setNodes] = useState<JobNodeInfo[]>([])
@@ -605,16 +599,9 @@ function JobDetail() {
     } else {
       setRootInfo(null)
     }
-    // Plan 91 §3.5, §4.9 — who touched this job's device while it ran, and
-    // when. Failing quietly to an empty list (an old core without this
-    // route, or a job with none) rather than surfacing a fetch error for
-    // what is a supplementary panel, not the job itself.
-    void api(`/api/jobs/${jobId}/assists`, JobAssistsResponseSchema)
-      .then((r) => setAssists(r.items))
-      .catch(() => setAssists([]))
   }
 
-  // The node timeline and the lineage/assists panels each need the job to
+  // The node timeline and the lineage panel each need the job to
   // exist first (`rootJobId`/`depth` for the latter) — both re-run once
   // `job` first resolves for THIS jobId (not on every in-place `job.status`
   // update, which would over-fetch on every progress tick).
@@ -641,7 +628,7 @@ function JobDetail() {
   // the hook's OWN `ws.on` (inside `useJobDetail`) already merges `job`
   // itself and reloads on a terminal status; this second, independent
   // listener is what re-reads the node timeline on every node transition and
-  // re-reads lineage/assists once a job actually finishes, matching what the
+  // re-reads lineage once a job actually finishes, matching what the
   // single combined handler on this page used to do before the extraction.
   useEffect(() => {
     if (!jobId) return
@@ -655,7 +642,7 @@ function JobDetail() {
       } else if (m.type === 'job.waiting' && m.payload.jobId === jobId) {
         setWaiting(
           m.payload.waiting
-            ? { heldBy: m.payload.heldBy, remainingSec: m.payload.remainingSec, reason: m.payload.reason }
+            ? { conflicting: m.payload.conflicting, remainingSec: m.payload.remainingSec, reason: m.payload.reason }
             : null,
         )
       }
@@ -876,8 +863,13 @@ function JobDetail() {
       {waiting && job.status === 'queued' && (
         <div className="mx-5 mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-led-warn/35 bg-led-warn/5 px-3.5 py-2.5 text-[12.5px]">
           <Hourglass className="size-3.5 shrink-0 text-led-warn" aria-hidden />
-          <span>{waiting.reason === 'paced' ? 'Waiting for the next repetition' : 'Waiting for the device to be free'}</span>
-          {waiting.heldBy && <HolderBadge holder={waiting.heldBy} />}
+          <span>
+            {waiting.reason === 'paced'
+              ? 'Waiting for the next repetition'
+              : waiting.conflicting
+                ? `Waiting for ${waiting.conflicting.label}`
+                : 'Waiting for the device to be free'}
+          </span>
           <span className="readout text-fg-subtle">
             — {waiting.reason === 'paced' ? 'starting' : 'proceeding'} in {waiting.remainingSec}s
             {waiting.remainingSec === 0 ? ' (any moment now)' : ' at the latest'}
@@ -903,10 +895,10 @@ function JobDetail() {
 
             {/* The node timeline (plan 99 §3.5, §3.7, §4.9, §4.11) — hidden
                 entirely for an ordinary (non-workflow) job, the same
-                "nothing extra for the common case" rule the lineage and
-                Assisted-by cards below already follow. This is the surface
-                this step's own verifiable result names: which node failed
-                and why, without opening the log. */}
+                "nothing extra for the common case" rule the lineage card
+                below already follows. This is the surface this step's own
+                verifiable result names: which node failed and why, without
+                opening the log. */}
             {nodes.length > 0 && (
               <NodeTimeline
                 nodes={nodes}
@@ -1094,29 +1086,6 @@ function JobDetail() {
                 </div>
               )}
             </div>
-
-            {/* Plan 91 §1, §3.5 — "a job that mysteriously succeeded because
-                someone tapped a modal is a lie in the history." Hidden
-                entirely for the common, un-assisted case, matching the
-                `hasLineage` card above and `docs/design.md`'s "no disabled
-                placeholders" rule. */}
-            {assists.length > 0 && (
-              <div className="rounded-lg border border-led-warn/35 bg-led-warn/5 p-3.5">
-                <h2 className="rack-label mb-2.5 text-led-warn">
-                  assisted by {assists.length} action{assists.length === 1 ? '' : 's'}
-                </h2>
-                <ul className="space-y-1.5">
-                  {assists.map((e) => (
-                    <li key={e.id} className="flex items-baseline justify-between gap-3 text-[12px]">
-                      <span className="min-w-0 truncate text-fg-muted">
-                        {e.kind.replace('input.', '')} — {e.actor ?? 'an unauthenticated client'}
-                      </span>
-                      <span className="readout shrink-0 text-fg-subtle">{relativeTime(e.at, now)}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </aside>
         </div>
       )}

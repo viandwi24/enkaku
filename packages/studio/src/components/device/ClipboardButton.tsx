@@ -24,10 +24,10 @@ import { newId, ws } from '@/lib/ws'
  * sits with those buttons instead. It needs a text field, so it cannot be a
  * bare icon button like the rest: it opens a popover.
  *
- * Read needs no lease; Send is disabled with the same rule as every other
- * input control here (`canSend`, the caller's `iHoldControl && !busy`) — a
- * convenience only, the server checks the lease itself on every
- * `clipboard.set` regardless (spec §10.1).
+ * Read needs no control activity; Send is disabled with the same rule as
+ * every other input control here (`canSend`, the caller's `iHoldControl &&
+ * !busy`) — a convenience only, the server checks the control activity
+ * itself on every `clipboard.set` regardless (spec §10.1).
  */
 export function ClipboardButton({ deviceId, canSend }: { deviceId: string; canSend: boolean }) {
   const [value, setValue] = useState<string | null>(null)

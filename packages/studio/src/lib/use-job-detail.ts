@@ -35,8 +35,8 @@ import { coreBase, ws } from './ws'
  *
  * **What stayed on the page, deliberately not folded in here**: the
  * workflow node timeline (`nodes`/`workflowDoc`'s OWN gate-verdict
- * rendering), lineage (`chainNodes`/`rootInfo`), assist history
- * (`assists`), and the farm's memory-limit setting (`farmJobSettings`).
+ * rendering), lineage (`chainNodes`/`rootInfo`), and the farm's
+ * memory-limit setting (`farmJobSettings`).
  * None of those are among the four surfaces plan 103's own gap named
  * ("result, response, input params, logs, artifact") — they stay page-only,
  * a narrower scope named here rather than silently ported, the same
