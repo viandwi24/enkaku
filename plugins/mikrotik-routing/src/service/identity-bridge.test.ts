@@ -27,7 +27,7 @@ function makeDevice(overrides: { id?: string; stableId?: string; label?: string;
     screenW: null,
     screenH: null,
     density: null,
-    status: 'idle',
+    status: 'online',
     lastSeen: null,
     connection: overrides.connection,
   })

@@ -174,8 +174,8 @@ async function setUp(role: 'admin' | 'operator' | null = 'operator'): Promise<Ha
   await runtime.verify(staged.id)
   runtime.activate(staged.id)
 
-  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ser-1', label: 'Pixel 1', status: 'idle' }).run()
-  db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'ser-2', label: 'Pixel 2', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ser-1', label: 'Pixel 1', status: 'online' }).run()
+  db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'ser-2', label: 'Pixel 2', status: 'online' }).run()
 
   const enqueued: EnqueueCall[] = []
   const resolved: { ref: ScriptRef; allowDev: boolean }[] = []
@@ -242,7 +242,7 @@ async function setUp(role: 'admin' | 'operator' | null = 'operator'): Promise<Ha
 }
 
 const actor = { id: 'u1', role: 'operator' as const }
-const row = { username: 'alice', $device: { id: 'd1', stableId: 's1', label: 'Pixel 1', status: 'idle', clusterId: null } }
+const row = { username: 'alice', $device: { id: 'd1', stableId: 's1', label: 'Pixel 1', status: 'online', clusterId: null } }
 
 describe('a `job` action', () => {
   test('passes the declared REF through to the registry and enqueues the concrete id it resolved', async () => {

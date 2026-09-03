@@ -506,7 +506,11 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
 
     test('createApp(...) passes a real videoRoutes built from createVideoRoutes({ sessions: () => sessions }) — without it, POST /api/video/reprofile 404s through the catch-all instead of restarting anything', () => {
       const call = extractCall(daemonSource, 'const app = createApp({')
-      expect(call).toContain('videoRoutes: createVideoRoutes({ sessions: () => sessions })')
+      // Asserted as two substrings, not one literal: plan 203 added a
+      // `streamStats` argument, and a whole-call match re-breaks on every
+      // future argument without telling you anything about the wiring.
+      expect(call).toContain('videoRoutes: createVideoRoutes({')
+      expect(call).toContain('sessions: () => sessions')
     })
   })
 
@@ -1123,8 +1127,8 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
       const opened = openDb(':memory:')
       runMigrations(opened.db)
       const db: Db = opened.db
-      db.insert(devices).values({ id: 'dev-owned', stableId: 'stable-owned', serial: 'serial-owned', label: 'another operator phone', status: 'idle', ownerId: 'user-other' }).run()
-      db.insert(devices).values({ id: 'dev-free', stableId: 'stable-free', serial: 'serial-free', label: 'unowned phone', status: 'idle' }).run()
+      db.insert(devices).values({ id: 'dev-owned', stableId: 'stable-owned', serial: 'serial-owned', label: 'another operator phone', status: 'online', ownerId: 'user-other' }).run()
+      db.insert(devices).values({ id: 'dev-free', stableId: 'stable-free', serial: 'serial-free', label: 'unowned phone', status: 'online' }).run()
 
       const registry = new ExecutorRegistry()
       registry.register('internal:install', { validateParams: (p) => p, run: async () => undefined, requires: { gate: 'files' } })
@@ -1229,7 +1233,9 @@ describe("the bounded subnet sweep (plan 88 §3.5, §4.5, §5 step 88.3): create
     expect(call).toContain('endpoints,')
     expect(call).toContain('registry,')
     expect(call).toContain('settings: () => settingsStore.get().discovery')
-    expect(call).toContain("hub: { broadcast: (msg) => hub.broadcast(msg) }")
+    // Plan 201 deleted the `scan.progress` message, so the sweeper no longer
+    // takes a hub to broadcast through. The wiring this test exists to guard
+    // is the single shared instance below, not the broadcast that is gone.
     expect(call).toContain("log: log.child('sweep')")
     expect(daemonSource).toContain('sweeperRef = sweeper')
 

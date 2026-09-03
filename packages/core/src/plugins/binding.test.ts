@@ -20,7 +20,7 @@ const scope: BindingScope = {
     nul: null,
   },
   form: { label: 'Renamed', count: 7 },
-  device: { id: 'd1', stableId: 's1', label: 'Pixel 7', status: 'idle', clusterId: null, number: 7 },
+  device: { id: 'd1', stableId: 's1', label: 'Pixel 7', status: 'online', clusterId: null, number: 7 },
   entry: { key: 'accounts', version: 3, updatedAt: 1_700_000_000 },
 }
 
@@ -59,7 +59,7 @@ describe('every declared form', () => {
    * operator is looking at right now.
    */
   test('$device.number is undefined, never a throw, for a device that has none', () => {
-    const noNumber: BindingScope = { device: { id: 'd2', stableId: 's2', label: 'Pixel 4a', status: 'idle', clusterId: null, number: null } }
+    const noNumber: BindingScope = { device: { id: 'd2', stableId: 's2', label: 'Pixel 4a', status: 'online', clusterId: null, number: null } }
     expect(evaluateBinding({ $device: 'number' }, noNumber)).toBe(null)
     // And a scope that does not carry the key at all — an older row, or a caller that sent less.
     const absent: BindingScope = { device: { id: 'd3' } }
