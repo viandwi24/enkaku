@@ -8,7 +8,9 @@ import type { OperationTransfer } from '@/lib/operations'
  * own `ProgressBar` already renders for a single-device install/push,
  * reused here (not re-invented) for a re-attached ephemeral transfer inside
  * `InstallBatchDialog`/`BulkTransferDialog`, and for a transfer row inside
- * `OperationTray`.
+ * the farm-wide operations tray (deleted by plan 213 §3.6 with the rest of
+ * the old shell's floating surfaces; this component itself stays, owned by
+ * plan 216).
  */
 export function TransferProgressBar({ transfer, label }: { transfer: OperationTransfer; label: string }) {
   const pct = transfer.total ? Math.min(100, Math.round((transfer.sent / transfer.total) * 100)) : null

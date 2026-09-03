@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useState, type ReactNode } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { AppShell } from './AppShell'
+import { AppShell } from '@/components/shell/AppShell'
 import { Spinner } from '@enkaku/ui'
 import { AuthContext, fetchMe, logout as requestLogout, type AuthMode, type AuthState, type AuthUser } from '@/lib/auth'
 import { ws } from '@/lib/ws'

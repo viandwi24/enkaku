@@ -53,6 +53,10 @@ jobs:
       # their gate instead — the palette, the icon set, and the barrel
       # exports plan 204 depends on (plan 204 §12).
       - run: bun run scripts/check-design-tokens.ts
+      # The orphan-route rule (plan 213 §3.7): every top-level `src/app`
+      # route is either a rail entry or a named exemption, and a listed
+      # exemption must still exist on disk (a stale row fails the build).
+      - run: bun run scripts/check-routes.ts
       - run: bun test
       # `plugins/*` and `examples/` sit outside `bunfig.toml`'s `[test] root =
       # "packages"`, so each needs its own invocation.

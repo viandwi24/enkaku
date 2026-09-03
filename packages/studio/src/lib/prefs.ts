@@ -72,20 +72,11 @@ const LocalPrefsSchema = z.object({
    */
   tileSize: z.enum(['s', 'm', 'l']).default('l'),
   /**
-   * Plan 101 (M66) §3.4, step 101.2 — the sidebar's collapsed/expanded
-   * state (222px / 72px). Unlike `view` above, there is no "must always be
-   * this on a fresh tab" rule here — collapse is a property of the SCREEN
-   * an operator is sitting in front of, the same reasoning `tileSize`
-   * already uses, so it belongs beside it in `localStorage` rather than in
-   * the per-tab `sessionStorage` store.
-   */
-  sidebarCollapsed: z.boolean().default(false),
-  /**
    * Plan 102 (M67) §5 step 102.6 — the workflow editor's List <-> Canvas
    * toggle. The list stays the default and the editor of record (§3.5); a
    * property of the screen someone is sitting in front of, not a "must
-   * always start this way" rule, so it belongs beside `sidebarCollapsed`
-   * above rather than in the per-tab session store.
+   * always start this way" rule, so it belongs beside `tileSize` above
+   * rather than in the per-tab session store.
    */
   workflowEditorView: z.enum(['list', 'canvas']).default('list'),
   /**

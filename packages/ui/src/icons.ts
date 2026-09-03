@@ -78,3 +78,12 @@ export {
   WarningIcon,
   XCircleIcon,
 } from '@phosphor-icons/react'
+
+/**
+ * Group 3: names added after the handoff was drawn, each with the reason.
+ * A name belongs here only when a screen the handoff does not draw needs it.
+ *
+ * - `RobotIcon` for the Agents rail entry (MVP 03 §1; the handoff draws no
+ *   Agents item because MVP 15 §4.1 left it open). Plan 213 §3.4.
+ */
+export { RobotIcon } from '@phosphor-icons/react'
