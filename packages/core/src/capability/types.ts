@@ -56,7 +56,7 @@ export interface AnyCoreCapability {
   input: z.ZodType
   output: z.ZodType
   permission: Permission
-  /** `undefined` for a device-less capability (plan 205 §4.4, §5 step 205.7) — replaces the old `lease: 'none' | 'device' | 'control'`. */
+  /** `undefined` for a device-less capability (plan 205 §4.4, §5 step 205.7) — replaces the old three-value hold field this used to declare. */
   activity?: CapabilityActivity
   deadline: number
   effect: CapabilityEffect

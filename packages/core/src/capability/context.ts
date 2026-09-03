@@ -2,15 +2,17 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { DeviceCall } from '@enkaku/session'
 import { createDeviceExecutor, type TimingSettings, type TransferPort } from '@enkaku/session'
 import { newSession, type Session } from '@enkaku/harness'
-import { JobTraceEventSchema, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type LeaseHolder, type UiNode } from '@enkaku/protocol'
+import { JobTraceEventSchema, type ActivityActor, type ActivityKind, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type PolicyDecision, type UiNode } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
 import { can, canUseDevice, type Permission } from '../auth/acl'
 import type { Role } from '../auth/service'
 import type { Db } from '../db'
 import { devices, jobEvents } from '../db/schema'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import { evaluate, type ControlPolicySettings } from '../activity/policy'
 import type { DeviceNetworkPort } from '../network/route-service'
 import { createDeviceNetworkService, type DeviceNetworkCapabilityService } from './device-network'
+import { pluginNameFromPrincipal } from '../plugins/principal'
 import type { DeviceStateMachine } from '../device/state-machine'
 import type { ReadinessManager } from '../device/readiness'
 import { resolveScriptRef } from '../scripts/resolve'
@@ -61,7 +63,7 @@ export interface ScriptCapabilityService {
  * file's comment for why the split exists.
  *
  * `invoke` (`./invoke.ts`) is the only caller that reads
- * `hasPermission`/`canReachDevice`/`controlLeaseBlockedBy`/`isDeviceOnline`
+ * `hasPermission`/`canReachDevice`/`evaluateActivity`/`isDeviceOnline`
  * directly; a handler never re-checks them; a handler only ever calls the
  * service accessors below (`deviceCall`, `readiness`, `jobService`,
  * `scripts`, `resolveScriptRef`, `listDevices`/`getDevice`) — exactly the
@@ -74,11 +76,17 @@ export interface CapabilityContext {
    * the human-only body with an agent's device grant list. `invoke` calls
    * this and does not care which (plan 63 §3.4 step 3). */
   canReachDevice(deviceId: string): boolean
-  /** `null` when the caller already holds the manual lease (or the device
-   * has none and that is fine); otherwise a display name for who does, so a
-   * refusal can NAME the holder (plan 63 §3.4 step 4, acceptance #5) rather
-   * than just saying "no". */
-  controlLeaseBlockedBy(deviceId: string): string | null
+  /** The activity policy's verdict for starting `kind` on `deviceId` against
+   * whatever is already live there (plan 63 §3.4 step 4, plan 205 §4.4,
+   * acceptance #5) — `forbid` names the conflicting activity so `invoke`'s
+   * refusal can say who/what is blocking, `warn` carries a sentence `invoke`
+   * returns as the success `warning`. `exclusiveWith` is the capability's own
+   * declared extra exclusions, when it has any. */
+  evaluateActivity(deviceId: string, kind: ActivityKind, exclusiveWith?: ActivityKind[]): PolicyDecision
+  /** Refreshes this caller's `control:<id>` marker on `deviceId` (plan 205
+   * §4.4) — called by `invoke` only after a `control`-kind capability's
+   * handler succeeds, never before. */
+  touchActivity(deviceId: string, kind: ActivityKind): void
   isDeviceOnline(deviceId: string): boolean
   /** Wakes the device through Plan 45's `readiness.hold`, before a
    * capability's deadline clock effectively matters (plan 63 §3.4 step 5). */
@@ -90,7 +98,7 @@ export interface CapabilityContext {
    * capability handler calls, so no handler reimplements driver behaviour
    * (plan 63 §4.3, non-goal §2, step 63.4).
    *
-   * `quality` defaults to `'control'`; a read-only `lease: 'device'`
+   * `quality` defaults to `'control'`; a read-only `activity: { kind: 'read' }`
    * capability (`device.screenshot`, `.find`, `.dump`, `.clipboard.get`,
    * `.push`, `.pull`) passes `'wall'` instead, so a plain read never forces
    * `SessionManager.acquire`'s quality-upgrade restart (`manager.ts`'s
@@ -153,8 +161,8 @@ export interface CapabilityContext {
    */
   fileToolsSession?: Session
   /**
-   * The device network layer's one door, with this caller's lease admission and
-   * principal bound in (plan 114 §3.3, step 114.9) — what
+   * The device network layer's one door, with this caller's activity admission and
+   * principal bound in (plan 114 §3.3, step 114.9; plan 205 §5 step 205.8) — what
    * `device.network.get`/`.set`/`.clear` delegate to, and therefore what a
    * plugin holding `device.network` reaches through `ctx.farm.call`.
    *
@@ -336,7 +344,8 @@ export interface AgentTreeOps {
 
 export interface CapabilityContextDeps {
   db: Db
-  leases: LeaseManager
+  activities: ActivityRegistry
+  controlSettings: () => ControlPolicySettings
   states: DeviceStateMachine
   /** Lazy, like every other adb-dependent accessor in `daemon.ts` — null
    * until the local adb subsystem is up, or permanently null in orchestrator
@@ -378,24 +387,9 @@ export interface CapabilityContextDeps {
    */
   declaredMedia?: () => Map<string, ConnectionMedium | null> | undefined
   /**
-   * Who is currently assisting a device (plan 91 §3.4 item 4, §4.4) — the
-   * same producer gap `networks`/`declaredMedia` above already document:
-   * step 91.4 wired this into `api/devices.ts` alone and named this file as
-   * a known gap (see docs/plans/96-m61-hotfixes.md's continuation of
-   * §96.5–96.9). Without this, an agent script's `ctx.listDevices()`/
-   * `ctx.getDevice()` would read `assistedBy: []` even while a human is
-   * genuinely assisting the device it is running on. Resolved from the
-   * co-control manager's `assistedBy` (`lease/co-control.ts`), the same
-   * `heldByOf`-shaped per-device accessor `deps.leases.getHolder` already
-   * is. Optional, defaulting to `[]` per device — an unknown assist state is
-   * "nobody is assisting", never a guess — so every pre-existing test that
-   * hand-builds a `CapabilityContextDeps` literal keeps compiling unedited.
-   */
-  assistedByOf?: (deviceId: string) => LeaseHolder[]
-  /**
    * Plan 114 §3.3, step 114.9 — the network layer's one door, threaded in from
    * `createGuestAgentRoutes`'s handle exactly the way `jobService`/`workspace`
-   * are. `createCapabilityContext` wraps it with this caller's lease admission
+   * are. `createCapabilityContext` wraps it with this caller's activity admission
    * and principal; the raw port has neither and is never handed to a handler.
    *
    * Optional, so orchestrator mode and every pre-existing
@@ -445,6 +439,27 @@ export function buildScriptService(db: Db): ScriptCapabilityService {
   }
 }
 
+/**
+ * The activity-registry client id a `CapabilityActor` touches its control
+ * marker under (plan 205 §4.4): `user:<id>` for a person, `plugin:<name>`
+ * for a plugin call (`actor.id` is already `plugin:<name>` for those —
+ * `farm-broker.ts`'s `actorFor` — so this only strips the prefix to rebuild
+ * it consistently), `anonymous` for no actor at all.
+ */
+function clientIdOf(actor: CapabilityActor | null): string {
+  if (!actor) return 'anonymous'
+  const pluginName = pluginNameFromPrincipal(actor.id)
+  return pluginName ? `plugin:${pluginName}` : `user:${actor.id}`
+}
+
+/** The `ActivityActor` a `CapabilityActor`'s marker is attributed to — the label a viewer of the device actually reads. */
+function activityActorOf(actor: CapabilityActor | null): ActivityActor {
+  if (!actor) return { kind: 'user', id: 'anonymous', label: 'a signed-out client' }
+  const pluginName = pluginNameFromPrincipal(actor.id)
+  if (pluginName) return { kind: 'plugin', id: actor.id, label: pluginName }
+  return { kind: 'user', id: actor.id, label: actor.id }
+}
+
 /** One `CapabilityContext` per invocation (plan 63 §3.4) — cheap to build,
  * so `invoke` callers (REST, MCP, the script bridge) construct a fresh one
  * per call rather than sharing mutable state across callers. */
@@ -460,11 +475,12 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     currentRunId: null,
     agentTree: null,
     notify: deps.notify,
-    // Plan 114 step 114.9 — bound to THIS actor, so the transient lease a
-    // network write takes is held under the caller's own principal and the
-    // route's `setBy` names them. A context with no network port simply has no
-    // `network`, and the capabilities say so by name.
-    ...(deps.network ? { network: createDeviceNetworkService({ port: deps.network, leases: deps.leases }, actor) } : {}),
+    // Plan 114 step 114.9, reworked by plan 205 §5 step 205.8 — bound to THIS
+    // actor, so a transient network-apply activity is started under the
+    // caller's own principal and the route's `setBy` names them. A context
+    // with no network port simply has no `network`, and the capabilities say
+    // so by name.
+    ...(deps.network ? { network: createDeviceNetworkService({ port: deps.network, activities: deps.activities, controlSettings: deps.controlSettings }, actor) } : {}),
     fileToolsSession: fileToolsSessionFor(actor, null),
     hasPermission: (permission) => (actor ? can(actor.role, permission) : false),
 
@@ -475,11 +491,17 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
       return canUseDevice(actor, { ownerId: row.ownerId })
     },
 
-    controlLeaseBlockedBy(deviceId) {
-      const lease = deps.leases.getLease(deviceId)
-      if (!lease || lease.type !== 'manual') return 'nobody — no manual lease is held; acquire it first'
-      if (actor && lease.holderUserId === actor.id) return null
-      return lease.holderUserId ?? lease.holder
+    evaluateActivity(deviceId, kind, exclusiveWith) {
+      return evaluate(kind, deps.activities.list(deviceId), deps.controlSettings(), { selfIds: [`control:${clientIdOf(actor)}`], ...(exclusiveWith ? { exclusiveWith } : {}) })
+    },
+
+    touchActivity(deviceId, kind) {
+      // Only `control` maintains a marker this way (`invoke.ts`'s own step 6
+      // never calls this for any other kind, plan 205 §4.4) — the clause is
+      // still here, not assumed, so a future caller cannot silently touch a
+      // `job`/`transfer`/... marker it does not own.
+      if (kind !== 'control') return
+      deps.activities.touchControl(deviceId, clientIdOf(actor), activityActorOf(actor))
     },
 
     isDeviceOnline(deviceId) {
@@ -520,42 +542,35 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
       const readiness = deps.readiness()
       // `listDevicesWithTags` itself falls back to `staticReadinessFallback`
       // per row when `readinessOf` is omitted — same as `getDevice` below.
-      // `heldBy` (plan 71 §4.4) is always available — `deps.leases` exists in
-      // every mode, unlike `readiness`. `networks`/`declaredMedia` (plan 88
-      // §5 step 88.5) are resolved ONCE here, never per row — the same N+1
-      // rule `device-registry.ts:171-175` already states.
-      // `assistedBy` (plan 91 §3.4 item 4, §4.4) — `listDevicesWithTags` has
-      // no `assistedByOf` parameter of its own, so this maps over its
-      // result and overrides the `[]` default with the real, live answer,
-      // the same override-after-build shape `api/devices.ts` established.
+      // The activity state (plan 205 §4.10) is always available —
+      // `deps.activities` exists in every mode, unlike `readiness`.
+      // `networks`/`declaredMedia` (plan 88 §5 step 88.5) are resolved ONCE
+      // here, never per row — the same N+1 rule `device-registry.ts:171-175`
+      // already states.
       return listDevicesWithTags(
         deps.db,
         readiness ? (deviceId) => readiness.get(deviceId) : undefined,
-        (deviceId) => deps.leases.getHolder(deviceId),
+        (deviceId) => ({ activities: deps.activities.list(deviceId), lastControl: deps.activities.lastControl(deviceId) }),
         deps.networks?.() ?? [],
         deps.declaredMedia?.(),
-      ).map((info) => ({ ...info, assistedBy: deps.assistedByOf?.(info.id) ?? [] }))
+      )
     },
 
     getDevice(deviceId) {
       const row = getDeviceRow(deviceId)
       if (!row) return null
       const cluster = row.clusterId ? clusterRefFor(deps.db, row.clusterId) : null
-      return {
-        ...rowToDeviceInfo(
-          row,
-          loadDeviceTags(deps.db, [deviceId]).get(deviceId) ?? [],
-          cluster,
-          null,
-          deps.readiness()?.get(deviceId) ?? null,
-          deps.leases.getHolder(deviceId),
-          deps.networks?.() ?? [],
-          deps.declaredMedia?.(),
-          lookupDeviceNumber(deps.db, row.stableId),
-        ),
-        // Plan 91 §3.4 item 4, §4.4 — same override as `listDevices` above.
-        assistedBy: deps.assistedByOf?.(deviceId) ?? [],
-      }
+      return rowToDeviceInfo(
+        row,
+        loadDeviceTags(deps.db, [deviceId]).get(deviceId) ?? [],
+        cluster,
+        null,
+        deps.readiness()?.get(deviceId) ?? null,
+        { activities: deps.activities.list(deviceId), lastControl: deps.activities.lastControl(deviceId) },
+        deps.networks?.() ?? [],
+        deps.declaredMedia?.(),
+        lookupDeviceNumber(deps.db, row.stableId),
+      )
     },
 
     jobService: deps.jobService,
