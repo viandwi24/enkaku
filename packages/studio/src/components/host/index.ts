@@ -26,4 +26,4 @@
  * project to import types from — so it has to be kept in sync with this
  * barrel BY HAND. Update both together.
  */
-export { DeviceWallWithPicker, type DeviceWallPickerProps } from './DeviceWallWithPicker'
+export { DeviceWallWithPicker } from './DeviceWallWithPicker'

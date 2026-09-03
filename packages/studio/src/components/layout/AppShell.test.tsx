@@ -421,7 +421,6 @@ describe('every top-level page has a way in', () => {
     '/device', // opened from the device list and the wall
     '/login', // auth route, AuthGate redirects here
     '/setup', // first-run only
-    '/dev', // /dev/tools, a development-only surface
     // `/topology` is a 22-line `router.replace('/?view=wall&group=cluster')`
     // — a compatibility redirect kept so an old bookmark still resolves
     // (plan 47 §3.6), not a page with content of its own. Hotfix §96.29 read

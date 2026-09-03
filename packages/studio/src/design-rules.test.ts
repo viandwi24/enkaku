@@ -114,7 +114,6 @@ describe('Studio — design system rules (docs/design.md; plan 69 §3.6, plan 73
     const perDeviceFiles = [
       join(root, 'components/wall/WallTile.tsx'),
       join(root, 'components/DeviceCard.tsx'),
-      join(root, 'components/topology/DeviceTile.tsx'),
       join(root, 'components/LiveView.tsx'),
     ]
     for (const f of perDeviceFiles) expect(files).toContain(f) // the list itself must not silently go stale
@@ -159,7 +158,6 @@ describe('Studio — design system rules (docs/design.md; plan 69 §3.6, plan 73
       join(root, 'components/device-popup/DevicePopup.tsx'),
       join(root, 'components/device-popup/ActionsList.tsx'),
       join(root, 'components/device-popup/SettingsPopup.tsx'),
-      join(root, 'components/topology/DeviceTile.tsx'),
       join(root, 'components/ForgetDeviceDialog.tsx'),
       join(root, 'components/DisconnectDeviceDialog.tsx'),
       join(root, 'components/ClusterMembersDialog.tsx'),

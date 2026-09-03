@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import * as ui from './index'
-import { coreBase, setCoreBase } from './lib/core-base'
+import { coreBase } from './lib/core-base'
 
 /**
  * The guard that would have caught plan 111's one broken promise.
@@ -28,7 +28,6 @@ describe('the barrel keeps the behaviour layer §3.3 promises', () => {
     'api',
     'useAction',
     'coreBase',
-    'setCoreBase',
     'describeApiError',
     'issuesFromError',
     'BadResponseError',
@@ -70,19 +69,6 @@ describe('the barrel keeps the behaviour layer §3.3 promises', () => {
 })
 
 describe('coreBase', () => {
-  afterEach(() => setCoreBase(null))
-
-  test('an explicit base wins over everything, trailing slash trimmed', () => {
-    setCoreBase('http://farm.example/')
-    expect(coreBase()).toBe('http://farm.example')
-  })
-
-  test('setCoreBase(null) restores the derived answer', () => {
-    setCoreBase('http://farm.example')
-    setCoreBase(null)
-    expect(coreBase()).not.toBe('http://farm.example')
-  })
-
   /**
    * `"null"` is the OPAQUE origin — a `file:` document, a sandboxed iframe,
    * and happy-dom's default. It is a string, so a naive `location.origin`

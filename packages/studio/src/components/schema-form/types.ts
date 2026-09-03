@@ -39,13 +39,3 @@ export type FieldKind =
   | 'object'
   | 'array'
   | 'unsupported'
-
-export interface FieldProps {
-  schema: JsonSchemaNode
-  /** Dot-notation path, used for server errors and tests. */
-  path: string
-  label: string
-  value: unknown
-  errors: Record<string, string>
-  onChange(path: string, value: unknown): void
-}

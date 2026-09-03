@@ -67,7 +67,7 @@ function cannotTakeJob(status: DeviceStatus | undefined): boolean {
  * "idle" badge that nobody had checked. Optional fields say "unknown"
  * honestly; invented ones say something false confidently.
  */
-export interface PickableDevice {
+interface PickableDevice {
   id: string
   /** `string`, not `string | null` — this is what `SearchableDevice` already requires, and `DeviceInfo` satisfies it. */
   label: string

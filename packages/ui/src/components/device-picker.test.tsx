@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { DevicePicker, type PickableDevice } from './device-picker'
+import type { ComponentProps } from 'react'
+import { DevicePicker } from './device-picker'
+
+type PickableDevice = ComponentProps<typeof DevicePicker>['devices'][number]
 
 /**
  * The picker moved here from `packages/studio` on 2026-08-26 (see the

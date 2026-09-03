@@ -61,7 +61,7 @@ const SCAFFOLD_CSS = `@import 'tailwindcss/theme.css' theme(reference);
 
 const VIEW_TSX = `export function View() {
   return (
-    <div className="bg-surface text-fg-muted rounded-card p-6 grid-cols-[200px_1fr]">
+    <div className="bg-surface text-fg-muted p-6 grid-cols-[200px_1fr]">
       <button className="opacity-0 hover-none:opacity-100">b</button>
     </div>
   )

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { BatchResultsResponseSchema, type BatchMemberResult, type JsonSchemaNode } from '@enkaku/protocol'
-import { api, Badge, Button, EmptyState, ErrorState, LoadingRows, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, DeviceName } from '@enkaku/ui'
+import { api, Button, EmptyState, ErrorState, LoadingRows, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, DeviceName } from '@enkaku/ui'
 import { planResult } from '@/components/result-view/plan-result'
 import { renderCell } from '@/components/result-view/ResultView'
 import { JobStatusBadge } from '@/components/StatusBadge'
@@ -366,15 +366,5 @@ export function BatchResults({
         </div>
       )}
     </div>
-  )
-}
-
-/** A quiet chip for a result that failed its own schema — kept beside the table's own status column rather than replacing it. */
-export function ResultStatusChip({ status }: { status: BatchMemberResult['resultStatus'] }) {
-  if (status === null || status === 'valid') return null
-  return (
-    <Badge variant="outline" className="text-led-warn">
-      {status}
-    </Badge>
   )
 }
