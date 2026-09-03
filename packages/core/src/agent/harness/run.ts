@@ -1,5 +1,6 @@
 import { streamText, type LanguageModel, type ModelMessage, type ToolSet } from 'ai'
 import { compact, detectLoop, summarizeStep, runAgentLoop, type StepSummary } from '@enkaku/harness'
+import { E_DEVICE_CONFLICT } from '@enkaku/protocol'
 import type {
   Agent,
   AgentContentBlock,
@@ -18,7 +19,8 @@ import { extractDeviceId, invoke, type CapabilityContext } from '../../capabilit
 import type { CapabilityRegistry } from '../../capability/registry'
 import type { AnyCoreCapability } from '../../capability/types'
 import type { AuditLogger } from '../../auth/audit'
-import type { LeaseManager } from '../../lease/lease-manager'
+import type { ActivityRegistry } from '../../activity/registry'
+import { evaluate, type ControlPolicySettings } from '../../activity/policy'
 import type { ApprovalStore } from '../approval/store'
 import type { ThreadStore } from '../thread/store'
 import type { BlobStore } from '../blob/store'
@@ -32,7 +34,7 @@ import { toModelMessages, assistantBlocksFromModelMessage, type ResolveBlob } fr
  * The loop (plan 66 §3.2, plan 76 §3.7 — replaces `agent/loop/run.ts`, which
  * is deleted). This module and nothing else decides what an agent does
  * next; every side effect on the world goes through `invoke()` (plan 63
- * §3.4) — there is no permission, lease, or grant check written here, only
+ * §3.4) — there is no permission, activity, or grant check written here, only
  * the control flow the plans' pseudocode describes, now driving the model
  * through the harness's `runAgentLoop` instead of a hand-rolled provider
  * stream parser (plan 76's whole point).
@@ -111,7 +113,8 @@ export interface ExecuteRunDeps {
   capabilityContext: CapabilityContext
   threads: ThreadStore
   approvals: ApprovalStore
-  leases: LeaseManager
+  activities: ActivityRegistry
+  controlSettings: () => ControlPolicySettings
   markConnectorUnauthenticated?: (message: string) => void
   emit: (event: RunEmitEvent) => void
   isCancelled: () => boolean
@@ -191,7 +194,7 @@ export function extractPendingToolCalls(messages: AgentMessage[]): PendingToolCa
 export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
   const nowMs = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
-  const { thread, agent, config, provider, toolSet, toolPolicy, registry, capabilityContext, threads, approvals, leases, audit } = deps
+  const { thread, agent, config, provider, toolSet, toolPolicy, registry, capabilityContext, threads, approvals, activities, controlSettings, audit } = deps
 
   let run = deps.run
   if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') {
@@ -204,9 +207,17 @@ export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
   }
   const runStartedAtSec = run.startedAt!
 
-  const leaseClientId = `agent-run:${deps.rootRunId ?? run.id}`
-  const acquiredLeaseDeviceIds = new Set<string>()
-  const lostLeaseDeviceIds = new Set<string>()
+  // Plan 205 §4.4, §5 step 205.8 — one activity id for this whole run TREE
+  // (every descendant run of the same root shares it, which is exactly why
+  // ending it is refcounted through `deps.deviceLock` below, never a bare
+  // `activities.end`): `agent:<rootRunId>`, not `agent:<run.id>`, so a
+  // sibling run started later recognises the SAME marker as "mine" through
+  // `selfIds` rather than tripping its own policy's `agent` row.
+  const agentActivityId = `agent:${deps.rootRunId ?? run.id}`
+  /** Devices this run has started (or refreshed) the activity on — release/end targets at finish. */
+  const agentDeviceIds = new Set<string>()
+  /** A `warn` decision is surfaced in the tool result once per device, not on every call that touches it. */
+  const warnedDevices = new Set<string>()
   const stepSummaries: StepSummary[] = []
 
   const resolveBlob: ResolveBlob | undefined = deps.blobs
@@ -216,40 +227,48 @@ export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
       }
     : undefined
 
-  function releaseAcquiredLeases(): void {
-    for (const deviceId of acquiredLeaseDeviceIds) {
+  function releaseAcquiredActivities(): void {
+    for (const deviceId of agentDeviceIds) {
       if (deps.deviceLock) {
         deps.deviceLock.release(deviceId)
       } else {
-        leases.releaseManual(deviceId, leaseClientId)
+        activities.end(deviceId, agentActivityId)
       }
     }
-    acquiredLeaseDeviceIds.clear()
+    agentDeviceIds.clear()
   }
 
-  function ensureControlLease(deviceId: string): void {
-    if (lostLeaseDeviceIds.has(deviceId)) return
-    if (acquiredLeaseDeviceIds.has(deviceId)) {
-      leases.touchManual(deviceId, leaseClientId)
-      return
+  /**
+   * Evaluates the `agent` row of the activity policy for `deviceId`, refuses
+   * on `forbid` (naming the conflicting activity), and otherwise starts/
+   * refreshes the shared `agent:<rootRunId>` marker there — the harness's
+   * counterpart to `invoke`'s own admission for the capability's OWN
+   * declared kind, which still runs separately inside `invoke` itself.
+   * Returns the tool-result text to refuse with, or `null` to proceed.
+   */
+  function admitAgentActivity(deviceId: string): string | null {
+    const decision = evaluate('agent', activities.list(deviceId), controlSettings(), { selfIds: [agentActivityId] })
+    if (decision.decision === 'forbid') {
+      return `${E_DEVICE_CONFLICT}: ${decision.message}`
     }
-    try {
-      leases.acquireManual(deviceId, leaseClientId, agent.id)
-      acquiredLeaseDeviceIds.add(deviceId)
-    } catch {
-      // Already held (by a human, or another run) — invoke()'s own controlLeaseBlockedBy check
-      // refuses and names the real holder; this function never duplicates that check.
+    if (decision.decision === 'warn' && !warnedDevices.has(deviceId)) {
+      warnedDevices.add(deviceId)
+      pendingActivityWarning = decision.message
     }
+    activities.start(deviceId, {
+      id: agentActivityId,
+      kind: 'agent',
+      label: `${agent.name} is working`,
+      actor: { kind: 'agent', id: agent.id, label: agent.name },
+      href: `/agents/detail?id=${agent.id}`,
+    })
+    activities.touch(deviceId, agentActivityId)
+    agentDeviceIds.add(deviceId)
+    return null
   }
 
-  function checkLeaseRevoked(deviceId: string): string | null {
-    if (!acquiredLeaseDeviceIds.has(deviceId) || lostLeaseDeviceIds.has(deviceId)) return null
-    const current = leases.getLease(deviceId)
-    if (current && current.holder === leaseClientId) return null
-    acquiredLeaseDeviceIds.delete(deviceId)
-    lostLeaseDeviceIds.add(deviceId)
-    return `E_LEASE_REVOKED: control of ${deviceId} was taken over by someone else — this run no longer holds it and will not try to reacquire it`
-  }
+  /** Set by `admitAgentActivity` for the CURRENT tool call only, consumed once the call's result is known. */
+  let pendingActivityWarning: string | null = null
 
   function statusFor(stopReason: AgentStopReason): AgentRunStatus {
     if (stopReason === 'done') return 'succeeded'
@@ -258,7 +277,7 @@ export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
   }
 
   function finish(stopReason: AgentStopReason, errorClass: AgentErrorClass | null, error: string | null, usage: AgentUsage | null): RunOutcome {
-    releaseAcquiredLeases()
+    releaseAcquiredActivities()
     const status = statusFor(stopReason)
     threads.updateRun(run.id, { status, stopReason, errorClass, error, usage: usage ?? run.usage, finishedAt: new Date(nowMs()) })
     return { status, stopReason, errorClass, error, usage: usage ?? run.usage }
@@ -342,7 +361,7 @@ export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
   }
 
   // ---------------------------------------------------------------------
-  // Tool-call resolution — approval gate, lease acquisition, invoke().
+  // Tool-call resolution — approval gate, activity admission, invoke().
   // Moved from `agent/loop/run.ts`'s `processPendingCalls`, unchanged: every
   // tool call the harness's own step left unresolved (ALL of them —
   // `harness/tools.ts` gives every tool no `execute`) is resolved here.
@@ -397,13 +416,13 @@ export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
       }
 
       const deviceId = extractDeviceId(call.input)
-      if (deviceId && cap.lease === 'control') {
-        const revokedMessage = checkLeaseRevoked(deviceId)
-        if (revokedMessage) {
-          appendToolResult(call.id, textResult(revokedMessage), true)
+      pendingActivityWarning = null
+      if (deviceId && cap.activity?.kind === 'control') {
+        const refusal = admitAgentActivity(deviceId)
+        if (refusal) {
+          appendToolResult(call.id, textResult(refusal), true)
           continue
         }
-        ensureControlLease(deviceId)
       }
 
       const startedAt = nowMs()
@@ -413,7 +432,11 @@ export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
       deps.emit({ type: 'tool.finished', callId: call.id, capabilityId, ok: result.ok, durationMs })
       if (result.ok) {
         const { content, isError } = buildToolResultContent(cap, result.output)
-        appendToolResult(call.id, content, isError)
+        // Either warning — the tree-level `agent` row above, or `invoke`'s own
+        // check of the capability's OWN declared kind — is surfaced once, as
+        // an extra line, never silently dropped (plan 205 §4.4).
+        const warning = pendingActivityWarning ?? result.warning ?? null
+        appendToolResult(call.id, warning ? [...content, { type: 'text', text: warning }] : content, isError)
       } else {
         appendToolResult(call.id, textResult(`${result.error.code}: ${result.error.message}`), true)
       }
@@ -605,7 +628,7 @@ export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
     if (pending.length > 0) {
       const result = await processPendingCalls(pending)
       if (result.kind === 'paused') {
-        releaseAcquiredLeases()
+        releaseAcquiredActivities()
         return { status: 'paused', stopReason: null, errorClass: null, error: null, usage: run.usage }
       }
       if (result.kind === 'stop') return result.outcome
