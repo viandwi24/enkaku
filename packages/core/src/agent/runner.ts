@@ -4,7 +4,8 @@ import type { CapabilityRegistry } from '../capability/registry'
 import type { CapabilityContextDeps, AgentSpawnInput, AgentSpawnResult, AgentStatusResult, AgentCancelResult, AgentTreeOps } from '../capability/context'
 import type { AuditLogger } from '../auth/audit'
 import type { Role } from '../auth/service'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import type { AgentStore } from './agent-store'
@@ -96,7 +97,8 @@ export interface RunnerDeps {
   connectors: ConnectorStore
   registry: CapabilityRegistry
   capContextDeps: CapabilityContextDeps
-  leases: LeaseManager
+  activities: ActivityRegistry
+  controlSettings: () => ControlPolicySettings
   settings: () => FarmSettings
   modelListCache: ModelListCache
   audit?: AuditLogger
@@ -144,7 +146,7 @@ interface ActiveRun {
 }
 
 export function createAgentRunner(deps: RunnerDeps): AgentRunner {
-  const { threads, approvals, agents, connectors, registry, capContextDeps, leases, settings, modelListCache, tree, audit, log } = deps
+  const { threads, approvals, agents, connectors, registry, capContextDeps, activities, controlSettings, settings, modelListCache, tree, audit, log } = deps
 
   // In-memory only — meaningful exactly as long as the run's own executeRun call is alive in
   // THIS process, which is precisely when `agent_runs.status` is 'running' or 'paused'-about-to-run.
@@ -213,12 +215,15 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
   }
 
   // -----------------------------------------------------------------------
-  // Plan 67 §3.7 — the tree's shared device lock (claim/release on top of the
-  // real `LeaseManager`, which by itself cannot distinguish siblings sharing
-  // one `leaseClientId`).
+  // Plan 67 §3.7, reworked by plan 205 §4.4, §5 step 205.8 — the tree's shared
+  // device lock (claim/release on top of the activity registry, which by
+  // itself has no notion of "two DIFFERENT trees" — every run in one tree
+  // shares the SAME `agent:<rootRunId>` marker, so the registry's own policy
+  // table cannot tell an ancestor/descendant pair using it together from two
+  // unrelated trees fighting over it).
   // -----------------------------------------------------------------------
 
-  /** Returns null (granted, and claimed) or a label naming the unrelated run that already holds it. */
+  /** Returns null (granted, and claimed) or a label naming the unrelated run that already drives it. */
   function claimDevice(deviceId: string, runId: string): string | null {
     const holders = deviceHolders.get(deviceId)
     if (!holders || holders.size === 0) {
@@ -232,23 +237,23 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
     return null
   }
 
-  /** Releases THIS run's claim; the underlying real lease is freed only once no related run holds
-   * one anymore (an ancestor may still be using the device). */
-  function releaseDevice(deviceId: string, runId: string, leaseClientId: string): void {
+  /** Releases THIS run's claim; the shared `agent:<rootRunId>` activity is ended only once no
+   * related run is still using it (an ancestor may still be using the device). */
+  function releaseDevice(deviceId: string, runId: string, agentActivityId: string): void {
     const holders = deviceHolders.get(deviceId)
     if (!holders) return
     holders.delete(runId)
     if (holders.size === 0) {
       deviceHolders.delete(deviceId)
-      leases.releaseManual(deviceId, leaseClientId)
+      activities.end(deviceId, agentActivityId)
     }
   }
 
   function buildDeviceLock(runId: string, rootRunId: string): { claim(deviceId: string): string | null; release(deviceId: string): void } {
-    const leaseClientId = `agent-run:${rootRunId}`
+    const agentActivityId = `agent:${rootRunId}`
     return {
       claim: (deviceId) => claimDevice(deviceId, runId),
-      release: (deviceId) => releaseDevice(deviceId, runId, leaseClientId),
+      release: (deviceId) => releaseDevice(deviceId, runId, agentActivityId),
     }
   }
 
@@ -307,7 +312,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
     const ownerRole = ownerRoleOf(agent)
     const treeContext: TreeRunContext = {
       runId: run.id,
-      leaseClientId: `agent-run:${run.rootRunId}`,
+      agentActivityId: `agent:${run.rootRunId}`,
       lookup: authorityDeps,
       deviceIdsOverride: run.deviceGrantsOverride,
       deviceLock: buildDeviceLock(run.id, run.rootRunId),
@@ -413,7 +418,8 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
           capabilityContext: env.capabilityContext,
           threads,
           approvals,
-          leases,
+          activities,
+          controlSettings,
           markConnectorUnauthenticated: env.markConnectorUnauthenticated,
           emit: (event) => deps.emit(thread, threads.getRun(run.id) ?? run, event),
           isCancelled: () => controller.cancelled,
@@ -552,7 +558,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
     queues.set(agentId, queue)
   }
 
-  /** Settles a run that never actually started executing in this process (still `queued`, or `paused` with no live invocation) — the SAME truthful shape a mid-run cancel produces, minus a lease to release (none was ever acquired). */
+  /** Settles a run that never actually started executing in this process (still `queued`, or `paused` with no live invocation) — the SAME truthful shape a mid-run cancel produces, minus an activity to end (none was ever started). */
   function settleNeverRanAsCancelled(run: AgentRun, cancelledBy: string | null): void {
     threads.appendMessage({ threadId: run.threadId, runId: run.id, role: 'system', content: [{ type: 'text', text: `Cancelled by ${cancelledBy ?? 'unknown'} before it started.` }] })
     threads.updateRun(run.id, { status: 'cancelled', stopReason: 'cancelled', finishedAt: new Date() })

@@ -128,7 +128,12 @@ export interface ExecuteRunDeps {
   rootRunId?: string
   treeBudget?: TreeBudget
   inbox?: InboxDrain
-  deviceLock?: { release(deviceId: string): void }
+  /** Plan 67 §3.7 — the tree's shared device lock: `claim` returns null (granted) or a label naming
+   * the unrelated run that already drives the device (criterion 14, checked ALONGSIDE the `agent`
+   * policy row, not instead of it — the registry's own policy table has no notion of "two different
+   * trees"); `release` decides whether the shared `agent:<rootRunId>` activity can actually be ended
+   * yet. Optional so every test that only exercises a single, tree-less run keeps compiling. */
+  deviceLock?: { claim(deviceId: string): string | null; release(deviceId: string): void }
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   blobs?: BlobStore
@@ -250,6 +255,14 @@ export async function executeRun(deps: ExecuteRunDeps): Promise<RunOutcome> {
     const decision = evaluate('agent', activities.list(deviceId), controlSettings(), { selfIds: [agentActivityId] })
     if (decision.decision === 'forbid') {
       return `${E_DEVICE_CONFLICT}: ${decision.message}`
+    }
+    // Checked ALONGSIDE the policy row above, not instead of it (plan 67 §3.7, criterion 14): the
+    // registry's own policy table has no notion of "two different trees" — every run in one tree
+    // shares this exact `agentActivityId`, so an unrelated tree's run driving the same device would
+    // otherwise read as an ordinary, unrelated `agent` activity and never conflict.
+    const claimBlockedBy = deps.deviceLock?.claim(deviceId)
+    if (claimBlockedBy) {
+      return `${E_DEVICE_CONFLICT}: ${claimBlockedBy} is already driving ${deviceId}`
     }
     if (decision.decision === 'warn' && !warnedDevices.has(deviceId)) {
       warnedDevices.add(deviceId)
