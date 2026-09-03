@@ -2588,7 +2588,7 @@ let blobGc: BlobGc | null = null
         tree: agentTreeStore,
         // Plan 70 §4.1, §4.4 — threaded straight through to every `executeRun` call.
         blobs: agentBlobStore,
-        // Plan 67 §3.3, §4.4 — `agent.message.queued`/`agent.child.started`/`.finished` are
+        // Plan 67 §3.3, §4.4 — `agent.child.started`/`.finished` are
         // addressed to a DIFFERENT run's thread than the one whose execution produced them.
         publishToThread: (threadId, msg) => agentWsHandler.publishRaw(threadId, msg),
         audit,

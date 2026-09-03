@@ -84,8 +84,6 @@ import {
   AgentApprovalResolvedMessage,
   AgentChildStartedMessage,
   AgentChildFinishedMessage,
-  AgentMessageQueuedMessage,
-  AgentMessageDeliveredMessage,
 } from './messages/agent'
 import { NotificationCreatedMessage } from './messages/notify'
 // Plan 91 §4.4, §5 step 91.4 (Task B.2) — the twelve co-control messages
@@ -709,8 +707,6 @@ export {
   AgentTreeResponseSchema,
   AgentChildStartedMessage,
   AgentChildFinishedMessage,
-  AgentMessageQueuedMessage,
-  AgentMessageDeliveredMessage,
   type AgentMessageRole,
   type AgentImageMediaType,
   type AgentImageRef,
@@ -1036,8 +1032,6 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   AgentApprovalResolvedMessage,
   AgentChildStartedMessage,
   AgentChildFinishedMessage,
-  AgentMessageQueuedMessage,
-  AgentMessageDeliveredMessage,
   NotificationCreatedMessage,
   // Plan 91 §4.4, §5 step 91.4 (Task B.2) — the seven server→client halves of
   // the twelve co-control messages (§4.4's table): `assist.started`,

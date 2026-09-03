@@ -45,7 +45,7 @@ export function createAgentWsHandler(deps: AgentWsHandlerDeps): AgentWsHandler {
 
   const targets = (threadId: string): ServerWebSocket<unknown>[] => [...(subsByThread.get(threadId) ?? [])]
 
-  function toServerMessage(thread: AgentThread, run: AgentRun, event: RunEmitEvent): ServerMessage {
+  function toServerMessage(thread: AgentThread, run: AgentRun, event: RunEmitEvent): ServerMessage | null {
     switch (event.type) {
       case 'delta':
         return { type: 'agent.delta', payload: { runId: run.id, threadId: thread.id, seq: run.steps, kind: event.kind, text: event.text } }
@@ -60,7 +60,7 @@ export function createAgentWsHandler(deps: AgentWsHandlerDeps): AgentWsHandler {
       case 'approval.resolved':
         return { type: 'agent.approval.resolved', payload: { approvalId: event.approvalId, runId: run.id, threadId: thread.id, status: event.status, decidedBy: null } }
       case 'inbox.delivered':
-        return { type: 'agent.message.delivered', payload: { inboxId: event.inboxId, targetRunId: run.id, fromRunId: event.fromRunId, kind: event.kind } }
+        return null
     }
   }
 
@@ -99,6 +99,7 @@ export function createAgentWsHandler(deps: AgentWsHandlerDeps): AgentWsHandler {
 
     publish(thread, run, event) {
       const msg = toServerMessage(thread, run, event)
+      if (msg === null) return
       for (const ws of targets(thread.id)) send(ws, msg)
     },
 

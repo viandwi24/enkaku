@@ -375,15 +375,3 @@ export const AgentChildFinishedMessage = z.object({
     stopReason: AgentStopReasonSchema.nullable(),
   }),
 })
-
-/** Written the instant `agent.send`/`agent.reply` append to the inbox (§3.3) — before delivery. */
-export const AgentMessageQueuedMessage = z.object({
-  type: z.literal('agent.message.queued'),
-  payload: z.object({ inboxId: z.string(), targetRunId: z.string(), fromRunId: z.string().nullable(), kind: z.enum(['message', 'child-result']) }),
-})
-
-/** Written when the target's loop actually drains it, at its next turn boundary (§3.3). */
-export const AgentMessageDeliveredMessage = z.object({
-  type: z.literal('agent.message.delivered'),
-  payload: z.object({ inboxId: z.string(), targetRunId: z.string(), fromRunId: z.string().nullable(), kind: z.enum(['message', 'child-result']) }),
-})
