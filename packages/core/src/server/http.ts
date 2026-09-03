@@ -118,7 +118,7 @@ export interface HttpDeps {
   threadRoutes: Hono<AuthEnv>
   /** `POST /api/v1/blobs`, `GET /api/v1/blobs/:id` (plan 70 §4.6) — content-addressed image storage; the only way base64 ever reaches Studio. */
   blobRoutes: Hono<AuthEnv>
-  /** `GET /api/notifications`, `.../unread-count`, `.../:id/read`, `.../read-all` (plan 68 §4.5). */
+  /** `GET /api/notifications`, `.../:id/read`, `.../read-all` (plan 68 §4.5). */
   notificationRoutes: Hono<AuthEnv>
   /** `GET/POST/PATCH/DELETE /api/webhooks` (plan 68 §4.1, §4.5). */
   webhookRoutes: Hono<AuthEnv>

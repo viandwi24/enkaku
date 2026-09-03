@@ -26,8 +26,6 @@ export function createNotificationRoutes(deps: NotificationRoutesDeps): Hono<Aut
     return typedJson(c, NotificationsResponseSchema, { items: store.list({ unreadOnly, ...(limit && Number.isFinite(limit) ? { limit } : {}) }), unreadCount: store.unreadCount() })
   })
 
-  app.get('/unread-count', (c) => c.json({ unreadCount: store.unreadCount() }))
-
   app.post('/:id/read', (c) => c.json({ notification: store.markRead(c.req.param('id')) }))
 
   app.post('/read-all', (c) => c.json({ count: store.markAllRead() }))

@@ -49,13 +49,6 @@ describe('notification routes', () => {
     expect((body.items as unknown[]).length).toBe(1)
   })
 
-  test('GET /unread-count', async () => {
-    const { store, app } = setUp()
-    store.create({ level: 'info', title: 'a', source: 'system' })
-    const res = await app.request('/unread-count')
-    expect(await jsonBody(res)).toEqual({ unreadCount: 1 })
-  })
-
   test('POST /:id/read marks one notification read and is reflected in unreadCount', async () => {
     const { store, app } = setUp()
     const a = store.create({ level: 'info', title: 'a', source: 'system' })
