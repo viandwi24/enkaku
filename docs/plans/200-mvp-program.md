@@ -216,18 +216,27 @@ Added by the MVP, equally immutable for this series:
 
 Derived from §4's dependency column. A stage starts when every plan it waits on is `implemented` or `implemented (software)` on `mvp`.
 
-| Stage | Runs in parallel | Waits on |
+| Round | Runs in parallel | Agents busy |
 |---|---|---|
-| 1 | 201, 202, 203, 204 | nothing |
-| 2 | 205 | 201 |
-| 3 | 206, 207, 213 | 205 |
-| 4 | 208, 209, 210, 221 | 206, 207 |
-| 5 | 211, 214, 222 | 210, 213, 221 |
-| 6 | 212, 215, 216, 217, 218 | 211, 214 |
-| 7 | 219, 223, 220 (once its design exists) | 212 |
-| 8 | 224 | 202, 219 |
+| R1 | 201, 202, 203, 204 | 4 |
+| R2 | 205 | 1 |
+| R3 | 206, 207, 213 | 3 |
+| R4 | 208, 209, 210, 214 | 4 |
+| R5 | 211, 215, 216, 221, 223 | **5 (peak)** |
+| R6 | 212, 217, 218, 222 | 4 |
+| R7 | 219, 220 | 2 |
+| R8 | 224 | 1 |
 
-Width: at most five executors at once. Critical path: 201 → 205 → 207 → 210 → 211 → 212 → 219 → 224. Calendar time is set by that chain, not by the plan count.
+Computed from §4's dependency column, not assigned by hand: a plan enters the earliest round in which every plan it waits on has finished. **The peak is five concurrent plans, at R5.** More than five executors cannot be kept busy at any point, and at R2 and R8 only one plan is eligible at all.
+
+**The graph is deep, not wide.** Two plans are the reason:
+
+- **205 is the first chokepoint.** Plans 206, 207, 213 and 221 all wait on the activity model, so R2 runs one plan while everything else idles.
+- **213 is the second.** All eight Studio plans render inside the shell, so none of 214 to 220 can start before it lands.
+
+Widening past five means re-cutting those two plans (for example splitting 205 into "the schemas and registry others import" and "the deletion sweep across the twelve gates", so R3 could start a round earlier). That is a real option, but it buys one or two rounds and adds an integration seam to the riskiest plan in the series, so it is not proposed.
+
+**The practical limit is lower than five anyway.** Five concurrent executors all edit `packages/protocol/src/`, `packages/core/src/server/ws-handlers.ts`, `packages/core/src/db/schema.ts` and `packages/core/src/daemon.ts`. §8.1's merge order is what keeps that survivable; adding agents past five would multiply conflicts without shortening the chain.
 
 ### 8.1 Worktrees and merging
 
