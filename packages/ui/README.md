@@ -60,15 +60,20 @@ adds them by reflex:
 
 ## Where the styling lives
 
-**The design tokens live here**, in `src/theme.css`, exported as
-`@enkaku/ui/theme.css` (plan 111 step 111.9). Two compilers read that one file:
+**The design tokens live here**: the values in `src/palette.css` (exported as
+`@enkaku/ui/palette.css`, imported by Studio only) and the utility names in
+`src/theme.css` (exported as `@enkaku/ui/theme.css`, imported by Studio and by
+every plugin stylesheet with `theme(reference)`). Tailwind refuses a plain
+rule in a `theme(reference)` import, which is why the two are separate files
+(plan 204 §3.4).
 
-- **Studio** does `@import '@enkaku/ui/theme.css'` in
-  `packages/studio/src/app/globals.css` and **emits** the variables onto the
-  document.
-- **A plugin's own stylesheet** imports it with `theme(reference)` and emits
-  nothing — `bg-surface` compiles to `var(--color-surface, <build-time value>)`,
-  so Studio's live token wins and the plugin can never repaint the farm with a
+- **Studio** does `@import '@enkaku/ui/palette.css'` then
+  `@import '@enkaku/ui/theme.css'` in `packages/studio/src/app/globals.css`,
+  putting the values on the document and generating the utilities.
+- **A plugin's own stylesheet** imports only `theme.css`, with
+  `theme(reference)`, and emits nothing — `bg-panel` compiles to
+  `var(--panel)` (the mapping is `@theme inline`), so Studio's live value is
+  the only value there is, and the plugin can never repaint the farm with a
   palette frozen on the day it was built.
 
 That indirection is the whole point: a plugin installed from a `.enkaku` archive
@@ -97,33 +102,14 @@ and 9 of them survive a Studio build with the `@source` line removed. A plugin
 needs no equivalent: Studio has already generated every class these components
 use, so a plugin drawn only from `@enkaku/ui` ships no stylesheet at all.
 
-## Adding a component from shadcn
+## Adding a component
 
-`components.json` lives here rather than in Studio, because this is the library
-it manages. Run the CLI from this directory:
-
-```bash
-bunx shadcn@latest add <component>
-```
-
-Then **two manual steps, both required**:
-
-1. **Rewrite the `@/` imports to relative ones.** shadcn writes
-   `import { cn } from "@/lib/utils"`; this package uses `../lib/utils`. Every
-   existing component does, and there is deliberately no `paths` entry in
-   `tsconfig.json` to make `@/` work.
-
-   That absence is a choice. Studio resolves `@/*` to *its own* `src/`, and
-   because Studio compiles this package's source through `transpilePackages`,
-   Next resolves aliases with the **application's** tsconfig, not this one. A
-   `@/lib/utils` left in here would therefore point at
-   `packages/studio/src/lib/utils`, which does not exist. Leaving the path
-   unmapped makes that break immediately in `bun run typecheck`, in the package
-   you just edited, instead of later in a Studio build far from the cause.
-
-2. **Export it from `src/index.ts`.** The barrel is the only entry point
-   (`exports` declares just `"."`), so a component missing from it is invisible
-   to both Studio and every plugin.
+Components are hand-written against `docs/design.md` and `theme.css`'s names;
+there is no shadcn configuration to resync from (`components.json` was
+deleted by plan 204, because a resync would undo the handoff's skin). Import
+icons from `../icons`, never from `@phosphor-icons/react` directly, so the
+barrel stays the one list of the set. Export the new file from `src/index.ts`;
+`index.test.ts`'s REQUIRED list is where a plugin-facing name is pinned.
 
 ## Tests
 

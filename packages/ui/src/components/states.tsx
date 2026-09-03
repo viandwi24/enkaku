@@ -1,7 +1,7 @@
 'use client'
 
 import type { ReactNode } from 'react'
-import { AlertTriangle, Inbox } from 'lucide-react'
+import { TrayIcon, WarningIcon } from '../icons'
 import { Button } from './button'
 import { Skeleton } from './skeleton'
 
@@ -22,7 +22,7 @@ export function LoadingRows({ rows = 3 }: { rows?: number }) {
   return (
     <div className="space-y-2" aria-busy="true" aria-live="polite">
       {Array.from({ length: rows }, (_, i) => (
-        <Skeleton key={i} className="h-14 w-full rounded-md" />
+        <Skeleton key={i} className="h-14 w-full rounded-inner" />
       ))}
     </div>
   )
@@ -40,12 +40,12 @@ export function EmptyState({
   icon?: ReactNode
 }) {
   return (
-    <div className="rounded-lg border border-dashed px-6 py-12 text-center">
-      <div className="mx-auto mb-3 grid size-9 place-items-center rounded-full bg-surface-2 text-fg-muted">
-        {icon ?? <Inbox className="size-4" aria-hidden />}
+    <div className="rounded-card border border-dashed border-border-3 px-6 py-12 text-center">
+      <div className="mx-auto mb-3 grid size-9 place-items-center rounded-pill bg-muted text-faint">
+        {icon ?? <TrayIcon className="size-4" aria-hidden />}
       </div>
-      <p className="text-[13px] font-medium">{title}</p>
-      <div className="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-fg-muted">{description}</div>
+      <p className="text-row font-medium text-text">{title}</p>
+      <div className="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-faint">{description}</div>
       {action && <div className="mt-4 flex justify-center">{action}</div>}
     </div>
   )
@@ -53,12 +53,12 @@ export function EmptyState({
 
 export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
-    <div className="rounded-lg border border-led-danger/40 bg-led-danger/5 px-4 py-4">
+    <div className="rounded-card border border-danger/30 bg-danger-soft px-4 py-4">
       <div className="flex items-start gap-2.5">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-led-danger" aria-hidden />
+        <WarningIcon className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-medium">Could not load</p>
-          <p className="mt-0.5 break-words text-[12px] text-fg-muted">{message}</p>
+          <p className="text-row font-medium text-text">Could not load</p>
+          <p className="mt-0.5 break-words text-[12px] text-text-3">{message}</p>
         </div>
         {onRetry && (
           <Button variant="outline" size="sm" onClick={onRetry}>

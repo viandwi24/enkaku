@@ -1422,7 +1422,7 @@ export function DevicePopup({
                   </p>
                   <label className="flex items-center justify-between gap-2 text-[11px] text-fg-muted">
                     Focused only
-                    <Switch size="sm" checked={solo} disabled={altHeld} onCheckedChange={setSoloToggle} />
+                    <Switch checked={solo} disabled={altHeld} onCheckedChange={setSoloToggle} />
                   </label>
                   <p className="text-[11px] text-fg-subtle">Hold Alt to send to just this device for a moment.</p>
                   {mirrorLastResults && mirrorLastResults.length > 0 && (

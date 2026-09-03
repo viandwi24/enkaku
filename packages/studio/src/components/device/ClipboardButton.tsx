@@ -120,7 +120,7 @@ export function ClipboardButton({ deviceId, canSend }: { deviceId: string; canSe
           />
           <div className="mt-2 flex items-center justify-between gap-2">
             <label className="flex items-center gap-1.5 text-[11.5px] text-fg-muted">
-              <Switch size="sm" checked={paste} onCheckedChange={setPaste} disabled={!canSend || sending} />
+              <Switch checked={paste} onCheckedChange={setPaste} disabled={!canSend || sending} />
               Paste into focused field
             </label>
             <Button

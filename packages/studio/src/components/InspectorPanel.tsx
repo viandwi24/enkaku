@@ -814,7 +814,7 @@ export function InspectorPanel({
           </span>
         )}
         <label className="ml-auto flex items-center gap-1.5 text-[11.5px] text-fg-muted">
-          <Switch size="sm" checked={follow} onCheckedChange={setFollow} />
+          <Switch checked={follow} onCheckedChange={setFollow} />
           follow (every {FOLLOW_INTERVAL_MS / 1000}s)
         </label>
         <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={dumpLoading || state !== 'ready'}>

@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState, type ReactNode } from 'react'
-import { Check, Search } from 'lucide-react'
+import { CheckIcon, MagnifyingGlassIcon } from '../icons'
 import type { DeviceStatus } from '@enkaku/protocol'
 import { DeviceName } from './device-name'
 import { Input } from './input'
@@ -201,7 +201,7 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
   return (
     <div className="space-y-2">
       <div className="relative">
-        <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden />
+        <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden />
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -274,7 +274,7 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
               selected ? 'border-accent bg-accent text-accent-fg' : 'border-line',
             )}
           >
-            {selected && <Check className="size-3" />}
+            {selected && <CheckIcon className="size-3" />}
           </span>
         )}
         <div className="min-w-0 flex-1">

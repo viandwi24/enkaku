@@ -108,7 +108,12 @@ gonew studio-module-names "ClusterSection|DevToolsPage" packages/studio plugins
 gone  proxy-record  "from '\./record'" plugins/proxy-manager
 gonew proxy-record-names "SECRET_PREFIX_IS_DISJOINT|ProxyRecordSchema|ProxySecretSchema|ProxyListenSchema|ProxyUpstreamSchema|ProxyFailoverSchema" plugins/proxy-manager
 gone  scripts       "scripts/guest-agent\.ts|delete-unowned-scripts" "${CODE[@]}" README.md
-gone  tokens        "radius-card|rounded-card|destructive-foreground" "${CODE[@]}"
+# `radius-card`/`rounded-card` were dead when plan 201 ran and are ALIVE after
+# plan 204: the design handoff defines a 14px card radius, so `--radius-card`
+# has a real definition in `packages/ui/src/theme.css` and the sdk scaffold and
+# README use `rounded-card` again. Narrowed at the 201-into-204 merge
+# (plan 200 §8.5). `destructive-foreground` is still dead.
+gone  tokens        "destructive-foreground" "${CODE[@]}"
 gonew core-exports  "assertApiKey|assertOpenRouterApiKey|RecordingCreateResponseSchema|RecordingPatchResponseSchema|tagPluginPromise|ownedPromises|scriptNamesByIds" "${CODE[@]}"
 gonew studio-exports "fetchHealth|HealthResponse|fetchTopology|TopologyResponse|TopologyCluster|TopologyActiveJob|OnGeoFail|computeImageInContext|defaultVersion|declaredScriptIds|ResultStatusChip|FieldProps|LeafPlan|setCoreBase" packages/studio packages/ui
 gonew host-barrel-type "DeviceWallPickerProps" packages/studio/src/components/host/index.ts
