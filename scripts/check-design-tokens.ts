@@ -323,7 +323,11 @@ async function checkIcons(): Promise<void> {
 /** `index.test.ts`'s REQUIRED list, plus this plan's G9 additions. */
 const REQUIRED_BARREL = [
   'EmptyState', 'ErrorState', 'LoadingRows', 'ConfirmDialog',
-  'api', 'useAction', 'coreBase', 'setCoreBase', 'describeApiError', 'issuesFromError', 'BadResponseError', 'z',
+  // `setCoreBase` was in plan 204's required list and was deleted by plan 201
+  // as a zero-reference export in the same round. Both were right alone; only
+  // the combination demanded an export that correctly no longer exists.
+  // Removed at the R1/R3 gate (plan 200 §8.5).
+  'api', 'useAction', 'coreBase', 'describeApiError', 'issuesFromError', 'BadResponseError', 'z',
   'relativeTime', 'duration', 'fileSize', 'formatFieldValue', 'formatTokens', 'formatUsd', 'cn',
   'formatDeviceName', 'deviceSearchTerms', 'matchesDeviceQuery', 'DeviceName', 'Combobox',
   // plan 204 G9
