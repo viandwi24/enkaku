@@ -105,7 +105,7 @@ The token is needed only once; after that `bun run dev:node` is enough. Full gui
 
 ### Guest agent smoke test
 
-`scripts/smoke-guest-agent.ts` drives one real phone through the guest agent's install, bootstrap, token-rotation, routing, and uninstall lifecycle over adb, asserting on what the device reports. It exists because the six defects it checks for were all found by hand on hardware and none of them showed up in `bun test` (docs/plans/50-m24a-ci-and-device-smoke-test.md).
+`scripts/smoke-guest-agent.ts` drives one real phone through the guest agent's install, bootstrap, token-rotation, routing, and uninstall lifecycle over adb, asserting on what the device reports. It exists because the six defects it checks for were all found by hand on hardware and none of them showed up in `bun test` (docs/archive/plans/50-m24a-ci-and-device-smoke-test.md).
 
 ```bash
 ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <SERIAL>

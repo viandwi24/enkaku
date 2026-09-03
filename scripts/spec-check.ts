@@ -10,7 +10,13 @@
  *
  * It fails — reports, for now; see FAIL_ON_GAP below — when a table, route,
  * or `page.tsx` screen exists whose name appears NOWHERE in `docs/spec.md`
- * and has NO `DIV-` row in `docs/spec-divergences.md`.
+ * (the MVP specification, rewritten by plan 202) and has NO `DIV-` row in
+ * `docs/spec-divergences.md`. That register was archived by plan 202 to
+ * `docs/archive/spec-divergences.md` and is not read; the path below is
+ * kept so plan 224 can decide whether the MVP spec gets a register of its
+ * own or this pass is deleted. Until then every gap is reported against the
+ * spec alone, which during the MVP rebuild is the intended signal: a table
+ * or route the spec no longer names is one a plan still has to delete.
  *
  * It is deliberately dumb: a name-presence check, not comprehension. Plan 84
  * §4.4 says this in so many words — a dumb check that runs is worth more
@@ -47,10 +53,10 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join, relative } from 'node:path'
 
 // ---------------------------------------------------------------------------
-// The switch. Exit code 0 today: 29+ divergence rows are open (plan 84 §3),
-// so a hard failure would block every commit on day one (plan 84 §4.4). Flip
-// this to `true` — and ONLY this — once `docs/spec-divergences.md` has zero
-// open (undecided) rows and the register itself is complete (plan 84 §9 Q4).
+// The switch. Exit code 0 today: the MVP spec is a skeleton (plan 202) and
+// the code still carries every prototype table and route the MVP removes, so
+// a hard failure would block every commit until wave 3 lands. Plan 224 flips
+// this to `true` — and ONLY this — once the spec is final and the gap is zero.
 // ---------------------------------------------------------------------------
 const FAIL_ON_GAP = false
 
@@ -228,8 +234,8 @@ function main() {
   console.log('')
 
   if (registerMissing) {
-    console.log(`  NOTE: ${relative(ROOT, DIVERGENCES_PATH)} does not exist yet.`)
-    console.log('        Treating it as zero rows — nothing is recorded as a known divergence yet.')
+    console.log(`  NOTE: ${relative(ROOT, DIVERGENCES_PATH)} does not exist; the prototype register is archived at docs/archive/spec-divergences.md and does not count.`)
+    console.log('        Treating it as zero rows: every gap below is against the MVP spec alone.')
     console.log('')
   }
 

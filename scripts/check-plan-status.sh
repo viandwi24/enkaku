@@ -105,6 +105,8 @@ FAIL_ON_UNDECLARED_SHIPS=true
 # actually caught anything real for one that stops catching bug narration.
 ADMISSION_REGEX='(was not built|were not built|not built|not done|scope cut|cut for scope|was skipped|were skipped)'
 
+# Non-recursive on purpose: docs/archive/plans/ holds the prototype series
+# (archived by plan 202) and is history, not a set of status claims to check.
 for plan in docs/plans/*.md; do
   ships=$(grep -m1 '^> Ships: ' "$plan" | sed 's/^> Ships: //' | tr -d '\r')
   status=$(grep -m1 '^> Status: ' "$plan" | sed 's/^> Status: //' | tr -d '\r')

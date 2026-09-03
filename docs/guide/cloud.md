@@ -45,7 +45,7 @@ Video travels through the WebSocket tunnel. For a node on a healthy network that
 
 ## The adb endpoint on a cloud device
 
-The same lease-scoped `adb connect` endpoint described in `docs/guide/install.md` works for a node-owned device too (plan 28, `docs/plans/28-m12g-cloud-adb-endpoint.md`). Nothing about the workflow changes: enable `shell.endpointEnabled`, hold the device's manual lease, open the endpoint from the device page, then run `adb connect <control-plane-host>:<port>` from your own machine.
+The same lease-scoped `adb connect` endpoint described in `docs/guide/install.md` works for a node-owned device too (plan 28, `docs/archive/plans/28-m12g-cloud-adb-endpoint.md`). Nothing about the workflow changes: enable `shell.endpointEnabled`, hold the device's manual lease, open the endpoint from the device page, then run `adb connect <control-plane-host>:<port>` from your own machine.
 
 The path is longer than the local case — every byte of `shell`, `logcat`, `install`, and `push`/`pull` traffic now relays through the control plane to the node and back:
 
