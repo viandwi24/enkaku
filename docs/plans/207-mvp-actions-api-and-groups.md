@@ -53,7 +53,7 @@ Every command runs from the repo root. `GREP_207_CLUSTER` and `GREP_207_CONSOLE`
 | The rest of the settings reduction (`shell.mode`, endpoint fields, `execTimeoutMs`, `maxOutputBytes` stay; only the fleet-command fields and `retention.commandRunDays` go here) | plan 212 |
 | The Devices page with group tabs, the Devices strip CRUD, the discovery sheet, the bulk pill with the generic set | plan 214 (this plan renames the old Groups page and its dialogs so they keep working) |
 | The new shell and status bar (no Console toggle) | plan 213 |
-| `Cluster*` to `Group*` in `docs/plans/01..129` and `docs/spec.md` | plan 202 (archive and rewrite; this plan adds one `DIV-` row) |
+| `Cluster*` to `Group*` in `docs/archive/plans/01..129` and `docs/spec.md` | plan 202 (archive and rewrite; this plan adds one `DIV-` row) |
 | Plugin-declared verbs `<plugin>/<verb>` through the broker | deferred, §9 Q1 |
 | The guest agent's own `LabelRenderer.kt:44` comment ("Grapheme-cluster cap", a different word) | plan 221's tree; excluded from the gate like plan 205's four Kotlin lines |
 | Cloud mode parity for the actions router in `packages/node` | post-MVP (MVP 16 §1); the node keeps compiling through the field rename only |
@@ -827,7 +827,7 @@ Every step: read the file before editing, match on the quoted content, run only 
 
 - Files changed: `packages/core/README.md` (207.6's section; also `:10` and the other nine group mentions), `packages/protocol/README.md:36` and the deleted section, `packages/studio/README.md:108` (if plan 201 left a group mention), `packages/sdk/README.md:640`, `CLAUDE.md` (no rule changes; the "Rules" section does not name clusters or the console), `docs/spec-divergences.md` (207.6).
 - Verifiable result: `GREP_207_CLUSTER` and `GREP_207_CONSOLE` for `packages/*/README.md` print nothing.
-- Do not: edit `docs/plans/01..129` or `docs/mvp/` in place.
+- Do not: edit `docs/archive/plans/01..129` or `docs/mvp/` in place.
 
 ### 207.11 Gate and handoff
 

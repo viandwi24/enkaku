@@ -31,11 +31,11 @@
 
 ## 1. Goals
 
-1. The device presentation timestamp scrcpy already sends (`packages/scrcpy/src/demuxer.ts:123`, `const ptsUs = ptsAndFlags & PTS_MASK`) reaches the browser inside every video frame, together with the unix millisecond at which the host parsed that access unit. Today the display driver discards it (`packages/drivers/src/display/scrcpy.ts:73`, `capturedAt: Date.now(),`), which is why H-8 (`docs/plans/100-*.md` line 529) has stayed open (MVP 01 §1.2).
+1. The device presentation timestamp scrcpy already sends (`packages/scrcpy/src/demuxer.ts:123`, `const ptsUs = ptsAndFlags & PTS_MASK`) reaches the browser inside every video frame, together with the unix millisecond at which the host parsed that access unit. Today the display driver discards it (`packages/drivers/src/display/scrcpy.ts:73`, `capturedAt: Date.now(),`), which is why H-8 (`docs/archive/plans/100-*.md` line 529) has stayed open (MVP 01 §1.2).
 2. The WebCodecs decoder is fed the device PTS as the chunk timestamp instead of `performance.now() * 1000` (`packages/studio/src/lib/h264-decoder.ts:142`), so the decoder's output frame can be paired with the input chunk and every leg after the socket can be timed.
 3. Studio has a latency overlay an operator can toggle on any Device Control cast (never on a Screens tile), showing per-leg medians and p95s, decode queue depth, fps, dropped frames and keyframe requests. Its numbers feed the "524 ms" readout the design handoff places in the Device Control stats strip (`docs/mvp/design_handoff_enkaku_openpf/README.md:254-256`), which plan 215 builds; this plan ships the overlay, not the strip.
 4. The core exposes the server-side leg per device (`GET /api/video/latency?deviceId=`): time to first frame, PTS interval, arrival jitter, keyframe requests, congestion drops.
-5. The two hardware measurements MVP 01 §4 step 1 asks for are written as scripted procedures with result tables the owner fills: the H-9 experiment (30 fps against 60 fps) and the camera-and-stopwatch glass-to-glass procedure from `docs/plans/08-m6-scrcpy.md:539-548`.
+5. The two hardware measurements MVP 01 §4 step 1 asks for are written as scripted procedures with result tables the owner fills: the H-9 experiment (30 fps against 60 fps) and the camera-and-stopwatch glass-to-glass procedure from `docs/archive/plans/08-m6-scrcpy.md:539-548`.
 6. The four `TODO-verify` markers in `packages/scrcpy` (`version.ts:18`, `version.ts:29`, `demuxer.ts:6`, `control/messages.ts:5`, `session.ts:154`) are closed against the pinned scrcpy v3.3.1 Java source, as plan 200 R1 requires.
 7. `scripts/bench-device-nfrs.ts` gains a `--latency` mode (server-side leg numbers) and a `--warmup` placeholder that plan 206 fills.
 
@@ -100,7 +100,7 @@ Its output callback (`:67-78`) paints synchronously and never reads `decodeQueue
 
 **D3. `ptsUs === 0n` means "no device clock".** PNG frames (`screencap-loop.ts:60`), the join primer (`ws-handlers.ts:1080-1087`), the config packet (SPS/PPS carries no PTS: `demuxer.ts:120-121`), and every frame relayed from a node (`device-proxy.ts`) carry `0n`. Every consumer that estimates time skips `0n` samples; every consumer that timestamps a decoder chunk substitutes `lastTimestampUs + 1` so WebCodecs still sees a monotonic sequence.
 
-**D4. The device→host leg is min-anchored, and the overlay says so.** The device PTS is on the device's clock; `hostReceivedAt` is on the host's. The per-session offset is the minimum over the first 60 samples of `hostReceivedAt - Number(ptsUs) / 1000`, so `device→host` reads as transit relative to the fastest frame in the window, never as an absolute figure. The same rule applies to `host→browser` (`browserReceivedAt - hostReceivedAt`, min-anchored over the first 60 samples) because the browser may be on another machine. `decode` (submit→output) and `decode→paint` (output→next animation frame) are on one clock and absolute. The only absolute end-to-end number is the camera's (§5 step 203.14), exactly as `docs/plans/08-m6-scrcpy.md:546` item 5 already ruled: "angka acceptance tetap dari metode kamera" (the acceptance number still comes from the camera method).
+**D4. The device→host leg is min-anchored, and the overlay says so.** The device PTS is on the device's clock; `hostReceivedAt` is on the host's. The per-session offset is the minimum over the first 60 samples of `hostReceivedAt - Number(ptsUs) / 1000`, so `device→host` reads as transit relative to the fastest frame in the window, never as an absolute figure. The same rule applies to `host→browser` (`browserReceivedAt - hostReceivedAt`, min-anchored over the first 60 samples) because the browser may be on another machine. `decode` (submit→output) and `decode→paint` (output→next animation frame) are on one clock and absolute. The only absolute end-to-end number is the camera's (§5 step 203.14), exactly as `docs/archive/plans/08-m6-scrcpy.md:546` item 5 already ruled: "angka acceptance tetap dari metode kamera" (the acceptance number still comes from the camera method).
 
 **D5. The overlay reuses today's classes; it does not wait for plan 204.** Plan 204 (tokens, fonts) runs in the same wave. The overlay uses the `readout` and `rack-label` classes Studio already has (`packages/studio/src/app/globals.css:160-176`) and Tailwind v4 token classes (`bg-surface`, `text-fg-muted`); plan 204 restyles it with everything else. The handoff's own measurements for numeric readouts are quoted here so plan 215 can lift the numbers straight into the strip: "`Geist Mono` (400/500) for serials, endpoints, paths, versions, script names, timestamps and numeric readouts" and "11px column labels and hints, 10.5px badges, 10px tooltips and frame captions" (README lines 513-517).
 
@@ -781,11 +781,11 @@ Results (owner fills; medians from the overlay, `ptsIntervalMsP50` from the rout
 | overlay `queue` median (frames) | | | |
 | device model / Android / host / browser | | | |
 
-Reading, per plan 100 H-9 (`docs/plans/100-*.md` line 530): if the sum of the overlay medians falls by roughly one frame interval (about 17 ms) when the interval halves, the encoder frame interval dominates; if it barely moves, the browser does. Write the reading as one sentence under the table.
+Reading, per plan 100 H-9 (`docs/archive/plans/100-*.md` line 530): if the sum of the overlay medians falls by roughly one frame interval (about 17 ms) when the interval halves, the encoder frame interval dominates; if it barely moves, the browser does. Write the reading as one sentence under the table.
 
 ### 203.14 Camera-and-stopwatch glass-to-glass (owner, lab device, camera)
 
-The procedure, quoted from `docs/plans/08-m6-scrcpy.md:541-546` (Indonesian in the original; the one dash in item 3 is rendered as a hyphen here):
+The procedure, quoted from `docs/archive/plans/08-m6-scrcpy.md:541-546` (Indonesian in the original; the one dash in item 3 is rendered as a hyphen here):
 
 > **Glass-to-glass < 150 ms (LAN):**
 > 1. Di device, tampilkan stopwatch milidetik (app clock dengan centiseconds, atau halaman web `requestAnimationFrame` timer di Chrome Android).

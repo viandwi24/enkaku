@@ -335,3 +335,21 @@ Two classes of finding recur and are worth naming, because both were found this 
 
 - **A `Ships:` path that already exists.** `check-plan-status.sh` fails a `draft` plan whose artefact is on disk (§3.0.1). Two plans shipped that defect before it was caught.
 - **An amendment that contradicts its own document's body.** Ten plans carry a §12 testing amendment; nine of them still named Studio tests in §5 or §7, which a literal executor would have created. Fixed on 2026-09-03 by banner plus in-place strike, and this is why step 3 above exists.
+
+### 8.6 Round R1 reconciliation, 2026-09-03
+
+The first application of §8.5, recorded so the next round has a worked example.
+
+**Merged into `mvp` in plan order:** 201, 202, 203, 204. Two conflicts needed a judgement, three were mechanical.
+
+| Finding | Where it came from | What was reconciled |
+|---|---|---|
+| Prototype plans moved to `docs/archive/plans/`, so 32 citations in the MVP series pointed at nothing | plan 202 | Every citation in six MVP plans repointed. The one that mattered was plan 208's reference to plan 129's measured API 36 attach times, which an executor is meant to read. |
+| `--radius-card` was dead when 201 ran and alive after 204 | the 201-into-204 merge | 201's `check-dead-code.sh` forbade `radius-card` and `rounded-card`. Narrowed to `destructive-foreground`, with the reason written into the script. Neither plan was wrong; only their combination was. |
+| WebRTC deleted by 201, but 203's edit of the same component kept `transport !== 'webrtc'` | the merged branch | Fixed in the merge. **Each plan was green alone**; together they referenced a deleted binding. `bun run typecheck` and `check-dead-code.sh` on the merged branch are what caught it, which is why both run at the round gate and not only per plan. |
+| A plan's code block omitted `'use client'` and the build failed | plan 204 | Added as §2.6, applying to all eight Studio plans rather than editing eight documents. |
+| `AGENTS.md` is tracked, not untracked as plan 202 §9 Q4 assumed | plan 202 | The assumption was wrong because the programme owner had committed the file by accident. Left untouched as the plan required; the record corrected. |
+| A plan's own `rg` list of call sites was short by one | plan 204 | Added to §2.6: re-run the plan's grep, do not trust its list. |
+| Plan 59's `Ships:` pointed at a Studio test 201 deleted | plan 201 | Resolved by the merge order: 202 archives plans 01 to 129, so the stale citation left the checked set. Worth knowing that merge order can close a finding without an edit. |
+
+**The lesson worth carrying:** three of these seven were invisible to the plans and to the executors, and only appeared when two green branches met. A per-plan green is necessary and not sufficient; the round gate is where the product is actually checked.
