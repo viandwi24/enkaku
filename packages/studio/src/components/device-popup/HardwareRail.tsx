@@ -1,6 +1,5 @@
 'use client'
 
-import { useRef } from 'react'
 import { ChevronLeft, Circle, MoonStar, Power, Square, Sun, Volume2, VolumeOff, VolumeX } from 'lucide-react'
 import { KEYCODES } from '@enkaku/protocol'
 import { ClipboardButton } from '@/components/device/ClipboardButton'
@@ -21,9 +20,9 @@ const AKEYCODE = KEYCODES
  * explicitly repeat. Every keycode button sends the SAME scrcpy keycode
  * `LiveView`'s own (now-suppressed, `rail={false}`) rail sent — this
  * component does not invent a transport, it duplicates `LiveView.tsx`'s own
- * small `sendKey` (a few lines: `ws.send({ type: 'input.key', ... })`, or
- * `input.mirror` when a Mirror group is active) rather than reaching into
- * that component's internals, so both stay independently readable. Rotate
+ * small `sendKey` (a few lines: `ws.send({ type: 'input.key', ... })`)
+ * rather than reaching into that component's internals, so both stay
+ * independently readable. Rotate
  * is `RotationQuickAction`, reused unchanged (it is a settings write, not a
  * keycode). Clipboard is `ClipboardButton`, reused unchanged — `LiveView`'s
  * own footer suppresses ITS copy whenever `rail={false}` (the same file's
@@ -41,33 +40,20 @@ export function HardwareRail({
   deviceId,
   inputEnabled,
   onActivity,
-  mirror,
   settings,
   onSettingsSaved,
 }: {
   deviceId: string
   inputEnabled: boolean
-  /** Called on every key sent — the caller uses it to refresh the lease/assist countdown, same as `LiveView`'s own prop. */
+  /** Called on every key sent — the caller uses it to refresh its own idle clock, same as `LiveView`'s own prop. */
   onActivity?: () => void
-  /** Plan 91 §3.8, §3.9 — the SAME shape `LiveView`'s own `mirror` prop takes, so a rail press fans out to the group exactly like a canvas tap does. `onResult` is deliberately not threaded here: `LiveView`'s own listener already receives every `input.mirror.result` for this `groupId` regardless of which component sent the request (server broadcasts by group, not by sender), so the popup's one result strip stays the only place results are shown. */
-  mirror?: { groupId: string; solo: boolean }
   /** `DeviceDetailInfo.settings`, passed straight through to `RotationQuickAction`. */
   settings: unknown
   onSettingsSaved: (settings: unknown) => void
 }) {
-  const mirrorSeqRef = useRef(0)
-
   function sendKey(keycode: number) {
     if (!inputEnabled) return
-    if (mirror) {
-      const seq = ++mirrorSeqRef.current
-      ws.send({
-        type: 'input.mirror',
-        payload: { groupId: mirror.groupId, seq, action: { verb: 'key', keycode }, ...(mirror.solo ? { soloDeviceId: deviceId } : {}) },
-      })
-    } else {
-      ws.send({ type: 'input.key', payload: { deviceId, keycode } })
-    }
+    ws.send({ type: 'input.key', payload: { deviceId, keycode } })
     onActivity?.()
   }
 

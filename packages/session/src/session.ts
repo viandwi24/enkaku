@@ -23,15 +23,13 @@ import { resolveVideoProfile, type VideoProfile } from './video-profile'
 import { wakeDevice } from './wake'
 
 /**
- * Plan 91 §4.1, §4.5 — the arbiter's bounded-queue budget, mirroring
- * `coControl.queueWaitMs`/`coControl.maxQueueDepth`'s own schema defaults
- * (`packages/protocol/src/settings.ts`). `daemon.ts`'s `createSessionManager({...})`
- * call threads the real, live farm setting through `SessionManagerDeps` →
- * `CreateSessionDeps` (fixed 2026-08-13 — `docs/plans/96-m61-hotfixes.md`
- * §96.13); these constants remain the fallback for any caller that supplies
- * no accessor at all — a test/fixture `SessionManager`, or the node
- * package's own mini-core, which does not run co-control (`00-overview.md`
- * §4.1's `node` boundary).
+ * Plan 91 §4.1, §4.5 — the arbiter's bounded-queue budget. `daemon.ts`'s
+ * `createSessionManager({...})` call threads the real, live farm setting
+ * through `SessionManagerDeps` → `CreateSessionDeps` (fixed 2026-08-13 —
+ * `docs/plans/96-m61-hotfixes.md` §96.13); these constants remain the
+ * fallback for any caller that supplies no accessor at all — a test/fixture
+ * `SessionManager`, or the node package's own mini-core, which runs no
+ * input arbiter at all (`00-overview.md` §4.1's `node` boundary).
  */
 const DEFAULT_ARBITER_QUEUE_WAIT_MS = 5_000
 const DEFAULT_ARBITER_MAX_QUEUE_DEPTH = 32
@@ -79,8 +77,8 @@ export interface DeviceSession {
    * Every input write goes through this (plan 91 §3.3, §4.1): three
    * independent, non-preemptive priority lanes (`pointer`/`keys`/`text`)
    * over the SAME `input` sink above, so two input sources on one device
-   * (a job and an assisting human, plan 91's whole premise) never interleave
-   * one pointer's down/move/up.
+   * (a job and a person controlling it, plan 91's whole premise) never
+   * interleave one pointer's down/move/up.
    */
   arbiter: InputArbiter
   /** The effective display and input engines (possibly degraded). */
@@ -293,9 +291,8 @@ export interface CreateSessionDeps {
    * `DEFAULT_ARBITER_QUEUE_WAIT_MS`/`DEFAULT_ARBITER_MAX_QUEUE_DEPTH`.
    * `SessionManagerDeps.arbiterQueueWaitMs`/`arbiterMaxQueueDepth`
    * (`packages/session/src/manager.ts`) forward these two straight through
-   * from `daemon.ts`'s live `coControl.queueWaitMs`/`coControl.maxQueueDepth`
-   * settings accessors (fixed 2026-08-13 — `docs/plans/96-m61-hotfixes.md`
-   * §96.13).
+   * from `daemon.ts`'s own live settings accessors (fixed 2026-08-13 —
+   * `docs/plans/96-m61-hotfixes.md` §96.13).
    */
   arbiterQueueWaitMs?: () => number
   arbiterMaxQueueDepth?: () => number

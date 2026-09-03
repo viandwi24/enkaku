@@ -197,7 +197,7 @@ describe('createToolsRoutes without an `audit` dep (backward compatibility)', ()
 function fakeAdbControlDeps(
   overrides: Partial<{
     binaryPath: string | null
-    busyFarm: { runningJobs: Array<{ id: string; label: string }>; heldDevices: Array<{ deviceId: string; label: string }> }
+    busyFarm: { runningJobs: Array<{ id: string; label: string }>; controlledDevices: Array<{ deviceId: string; label: string }> }
     preview: { devicesTotal: number; sessionsActive: number; networkDevicesWithEndpoint: number }
     restartCooldownSec: number
     cycle: (opts: AdbCycleOpts) => Promise<AdbCycleReport>
@@ -208,7 +208,7 @@ function fakeAdbControlDeps(
     reason: 'restart',
     durationMs: 1234,
     sessionsClosed: 0,
-    leasesReleased: 0,
+    controlsEnded: 0,
     jobsFailed: [],
     devicesBefore: 5,
     devicesAfter: 5,
@@ -228,7 +228,7 @@ function fakeAdbControlDeps(
     control,
     binaryPath: () => (overrides.binaryPath === undefined ? '/bin/adb' : overrides.binaryPath),
     preview: () => overrides.preview ?? { devicesTotal: 5, sessionsActive: 2, networkDevicesWithEndpoint: 3 },
-    busyFarm: () => overrides.busyFarm ?? { runningJobs: [], heldDevices: [] },
+    busyFarm: () => overrides.busyFarm ?? { runningJobs: [], controlledDevices: [] },
     restartCooldownSec: () => overrides.restartCooldownSec ?? 60,
   }
   return { deps, cycleCalls }
@@ -257,7 +257,7 @@ describe('GET /adb/restart-preview — live counts before the confirmation dialo
   test('reports this farm\'s live numbers, not a placeholder', async () => {
     const { deps } = fakeAdbControlDeps({
       preview: { devicesTotal: 20, sessionsActive: 2, networkDevicesWithEndpoint: 12 },
-      busyFarm: { runningJobs: [{ id: 'job-1', label: 'a script on Phone One' }], heldDevices: [{ deviceId: 'd2', label: 'Phone Two' }] },
+      busyFarm: { runningJobs: [{ id: 'job-1', label: 'a script on Phone One' }], controlledDevices: [{ deviceId: 'd2', label: 'Phone Two' }] },
       restartCooldownSec: 90,
     })
     const app = withUser('admin', createToolsRoutes(fakeManager(), { adb: deps }))
@@ -267,7 +267,7 @@ describe('GET /adb/restart-preview — live counts before the confirmation dialo
     expect(body).toEqual({
       devicesTotal: 20,
       sessionsActive: 2,
-      leasesHeld: 1,
+      controlled: 1,
       jobsRunning: 1,
       networkDevicesWithEndpoint: 12,
       restartCooldownSec: 90,
@@ -297,23 +297,23 @@ describe('POST /adb/restart (plan 88 §3.10, §4.8, §5 step 88.8)', () => {
     expect((await asJson<{ error: { code: string } }>(res)).error.code).toBe('E_ADB_UNAVAILABLE')
   })
 
-  test('a busy farm (running jobs, held leases) refuses with E_ADB_BUSY_FARM (409) and never calls cycle()', async () => {
+  test('a busy farm (running jobs, controlled devices) refuses with E_ADB_BUSY_FARM (409) and never calls cycle()', async () => {
     const { deps, cycleCalls } = fakeAdbControlDeps({
-      busyFarm: { runningJobs: [{ id: 'job-1', label: 'a script on Phone One' }], heldDevices: [{ deviceId: 'd2', label: 'Phone Two' }] },
+      busyFarm: { runningJobs: [{ id: 'job-1', label: 'a script on Phone One' }], controlledDevices: [{ deviceId: 'd2', label: 'Phone Two' }] },
     })
     const app = withUser('admin', createToolsRoutes(fakeManager(), { adb: deps }))
     const res = await app.request('/adb/restart', { method: 'POST' })
     expect(res.status).toBe(409)
-    const body = await asJson<{ error: { code: string }; runningJobs: unknown; heldDevices: unknown }>(res)
+    const body = await asJson<{ error: { code: string }; runningJobs: unknown; controlledDevices: unknown }>(res)
     expect(body.error.code).toBe('E_ADB_BUSY_FARM')
     expect(body.runningJobs).toEqual([{ id: 'job-1', label: 'a script on Phone One' }])
-    expect(body.heldDevices).toEqual([{ deviceId: 'd2', label: 'Phone Two' }])
+    expect(body.controlledDevices).toEqual([{ deviceId: 'd2', label: 'Phone Two' }])
     expect(cycleCalls).toEqual([])
   })
 
   test('force:true bypasses the busy-farm guard and calls cycle() with force:true', async () => {
     const { deps, cycleCalls } = fakeAdbControlDeps({
-      busyFarm: { runningJobs: [{ id: 'job-1', label: 'a script on Phone One' }], heldDevices: [] },
+      busyFarm: { runningJobs: [{ id: 'job-1', label: 'a script on Phone One' }], controlledDevices: [] },
     })
     const app = withUser('admin', createToolsRoutes(fakeManager(), { adb: deps }))
     const res = await app.request('/adb/restart', {
@@ -395,7 +395,7 @@ function fakeAppRestartDeps(
     outcome: 'verified',
     durationMs: 42,
     sessionsClosed: 0,
-    leasesReleased: 0,
+    controlsEnded: 0,
     jobsFailed: [],
   }
   const control: AppRestartControl = {
@@ -407,7 +407,7 @@ function fakeAppRestartDeps(
   }
   const deps: AppRestartRouteDeps = {
     control,
-    preview: () => overrides.preview ?? { mode: 'bare' as SupervisionMode, devicesTotal: 5, sessionsActive: 2, leasesHeld: 0, jobsRunning: 0 },
+    preview: () => overrides.preview ?? { mode: 'bare' as SupervisionMode, devicesTotal: 5, sessionsActive: 2, controlled: 0, jobsRunning: 0 },
   }
   return { deps, restartCalls }
 }
@@ -433,11 +433,11 @@ describe('GET /app/restart-preview — live counts and supervision mode before t
   })
 
   test('reports this farm\'s live numbers AND the detected supervision mode, not a placeholder', async () => {
-    const { deps } = fakeAppRestartDeps({ preview: { mode: 'systemd', devicesTotal: 20, sessionsActive: 4, leasesHeld: 1, jobsRunning: 2 } })
+    const { deps } = fakeAppRestartDeps({ preview: { mode: 'systemd', devicesTotal: 20, sessionsActive: 4, controlled: 1, jobsRunning: 2 } })
     const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps }))
     const res = await app.request('/app/restart-preview')
     expect(res.status).toBe(200)
-    expect(await asJson<Record<string, unknown>>(res)).toEqual({ mode: 'systemd', devicesTotal: 20, sessionsActive: 4, leasesHeld: 1, jobsRunning: 2 })
+    expect(await asJson<Record<string, unknown>>(res)).toEqual({ mode: 'systemd', devicesTotal: 20, sessionsActive: 4, controlled: 1, jobsRunning: 2 })
   })
 })
 
@@ -463,9 +463,9 @@ describe('POST /app/restart (plan 120 §4)', () => {
     expect((await asJson<{ error: { code: string } }>(res)).error.code).toBe('E_APP_RESTART_UNAVAILABLE')
   })
 
-  test('a busy farm (running jobs or held leases) refuses with E_APP_BUSY_FARM (409) and never calls restart()', async () => {
+  test('a busy farm (running jobs or controlled devices) refuses with E_APP_BUSY_FARM (409) and never calls restart()', async () => {
     const { deps, restartCalls } = fakeAppRestartDeps({
-      preview: { mode: 'bare', devicesTotal: 5, sessionsActive: 0, leasesHeld: 1, jobsRunning: 2 },
+      preview: { mode: 'bare', devicesTotal: 5, sessionsActive: 0, controlled: 1, jobsRunning: 2 },
     })
     const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps }))
     const res = await app.request('/app/restart', { method: 'POST' })
@@ -476,7 +476,7 @@ describe('POST /app/restart (plan 120 §4)', () => {
 
   test('force:true bypasses the busy-farm guard and calls restart() with force:true', async () => {
     const { deps, restartCalls } = fakeAppRestartDeps({
-      preview: { mode: 'bare', devicesTotal: 5, sessionsActive: 0, leasesHeld: 0, jobsRunning: 1 },
+      preview: { mode: 'bare', devicesTotal: 5, sessionsActive: 0, controlled: 0, jobsRunning: 1 },
     })
     const app = withUser('admin', createToolsRoutes(fakeManager(), { app: deps }))
     const res = await app.request('/app/restart', {

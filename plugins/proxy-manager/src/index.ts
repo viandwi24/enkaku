@@ -284,8 +284,14 @@ export default definePlugin({
    * since plan 112; reworded two comments that named the deleted
    * `plugin.log` broadcast. Patch, not minor: nothing an operator meets
    * changes.
+   *
+   * **0.11.2, plan 205 (MVP wave 0): vocabulary sweep.** `service.permissions`
+   * UNCHANGED. `service/apply.ts` reworded three doc comments that named the
+   * deleted per-device manual-hold concept plan 205 replaced with the device
+   * activity model — "admission" and "conflict", not the old term. No
+   * behaviour change. Patch: invisible to an operator.
    */
-  version: '0.11.1',
+  version: '0.11.2',
   title: 'Proxy manager',
   description: PLUGIN_NOT_BUILT,
   scripts: [checkScript],

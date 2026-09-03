@@ -33,7 +33,7 @@ function asSchemaNode(value: unknown): Record<string, unknown> | undefined {
  * (`def.params.parse`) and is still the only place a `.refine()`/
  * `.superRefine()` constraint is enforced (§3.6) — but every representable
  * constraint (types, bounds, enums, required, ordered ranges) now fails
- * BEFORE a device is leased instead of after, because `validateScriptForRun`
+ * BEFORE a device is claimed instead of after, because `validateScriptForRun`
  * (`jobs/validate-script.ts`) calls this before the job row is written and
  * `createBatch` (`clusters/dispatch.ts`) calls it before resolving targets.
  *
@@ -85,10 +85,6 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
       // settles as `APP_CRASHED` (script-class, never blames the device)
       // rather than as a plain cancel.
       ctx.onCrash?.((e) => deps.runner.abort(job.id, 'crashed', `${e.package} crashed: ${e.exception}`))
-      // A human sent input to this job's device while it was running (plan 91
-      // §3.6, §4.8) — NOT an abort, forwarded to the child so a script that
-      // registered `ctx.onAssist` can react; one that never did is unaffected.
-      ctx.onAssist?.((e) => deps.runner.notifyAssist(job.id, e))
 
       // The bundle is materialised in the core (which has DB access); the runner only gets a path.
       const bundlePath = await deps.registry.bundlePath(entry)

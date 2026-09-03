@@ -5,8 +5,7 @@ import { LiveView } from '@/components/LiveView'
 import { InspectorPanel } from '@/components/InspectorPanel'
 import { RecordPanel } from '@/components/recording/RecordPanel'
 import { useRecording } from '@/components/recording/useRecording'
-import { Button, Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
-import { mmss } from '@/components/device/DeviceHeader'
+import { Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
 
 export type ScreenMode = 'live' | 'inspect' | 'record'
 
@@ -31,13 +30,12 @@ export type ScreenMode = 'live' | 'inspect' | 'record'
  * The inspector used to be the exception — mounted on demand, because an
  * attached inspector holds an on-device engine (`instrumentation` lock, an
  * `adb.maxConcurrent` slot) and plan 56 §3.2 did not want that running for a
- * panel nobody was looking at. The gap in that reasoning is that the inspector
- * requires a *manual lease*, and a manual lease has already made the device
- * exclusively one operator's: the scheduler will not pick it and nobody else
- * can take it. So the engine was never being held *from* anyone — while every
- * `Live ⇄ Inspect` flip paid a full cold start. The attachment now follows the
- * lease instead of the mode, inside `InspectorPanel`; releasing control still
- * detaches, which is what plan 56's acceptance #8 was actually protecting.
+ * panel nobody was looking at. The gap in that reasoning is that reading the
+ * UI tree needs the device to be reachable at all — while every
+ * `Live ⇄ Inspect` flip paid a full cold start. The attachment now follows
+ * whether the device is online instead of the mode, inside `InspectorPanel`;
+ * going offline still detaches, which is what plan 56's acceptance #8 was
+ * actually protecting.
  *
  * **`record` is a third mode, not a second thing bolted beside the first two**
  * (plan 94 §4.10, F17, §5 step 94.4). Recording tees the operator's own
@@ -46,9 +44,10 @@ export type ScreenMode = 'live' | 'inspect' | 'record'
  * mode keeps the video mounted and visible (`videoVisible` below covers both)
  * and only adds a step strip alongside it. `useRecording` is called at THIS
  * component's own top level, not inside a child that only renders while
- * `mode === 'record'`, for the same reason the inspector's attachment follows
- * the lease rather than the mode: flipping to `Live` to check something and
- * back must not lose a step already captured, or the video underneath it.
+ * `mode === 'record'`, for the same reason the inspector's attachment
+ * follows whether the device is online rather than the mode: flipping to
+ * `Live` to check something and back must not lose a step already captured,
+ * or the video underneath it.
  */
 export function ScreenCard({
   deviceId,
@@ -59,16 +58,10 @@ export function ScreenCard({
   jobRunning,
   inputEnabled,
   canInspect,
-  onTakeControl,
-  takeControlDisabledReason,
   onActivity,
   autoReconnect,
   visible,
-  assistPrimaryLabel = null,
-  assistDisabledReason,
-  onAssist,
-  assisting = null,
-  onStopAssisting,
+  warning,
   configuredDisplay,
 }: {
   deviceId: string
@@ -76,36 +69,24 @@ export function ScreenCard({
   onModeChange: (mode: ScreenMode) => void
   /** Why `Inspect` cannot be used here — a node-owned device has no local inspector (plan 56 §2). */
   inspectDisabledReason?: string
-  /** Why `Record` cannot be used here — today, that is only a node-owned device (`recording.start`'s own `E_NOT_SUPPORTED` refusal, `ws-handlers.ts`); `Start recording` inside the panel is separately disabled while `!inputEnabled`, with its own reason, so this prop is for a STRUCTURAL block rather than "no lease right now". */
+  /** Why `Record` cannot be used here — today, that is only a node-owned device (`recording.start`'s own `E_NOT_SUPPORTED` refusal, `ws-handlers.ts`); `Start recording` inside the panel is separately disabled while `!inputEnabled`, with its own reason, so this prop is for a STRUCTURAL block rather than "the device is offline". */
   recordDisabledReason?: string
   jobRunning: boolean
   inputEnabled: boolean
-  /** The manual lease the inspector needs (plan 56 §3.7) — the same server-published fact the other panels read. */
+  /** `online` (plan 205 §4.9) — the same server-published fact the other panels read. */
   canInspect: boolean
-  /** Offered by the inspector itself while control is missing (plan 59 §3.1). */
-  onTakeControl: () => void
-  /** Why control cannot be taken right now, if it cannot. */
-  takeControlDisabledReason?: string
-  onActivity: () => void
+  onActivity?: () => void
   autoReconnect: boolean
   /** Whether the Control tab itself is the one on screen — the video asks for a fresh keyframe when this or the mode brings it back into view. */
   visible: boolean
   /**
-   * Assist (plan 91 §3.4, §3.12, §5 step 91.6) — the running job's own
-   * `name@version` (`LeaseHolder.label`), named in the pre-assist banner so
-   * an operator knows exactly what they are about to reach into before they
-   * even open the confirmation. `null` while `heldBy` has not loaded yet —
-   * the banner still renders, with generic wording, rather than waiting.
+   * A one-line, non-blocking notice above the screen (plan 205 §4.9) — the
+   * server's own `device.activity.warning` broadcast (a concurrent-activity
+   * heads-up from the admission policy), shown for as long as the caller
+   * keeps it. Replaces the old secondary-operator banner/badge pair — never
+   * an overlay, never a confirmation.
    */
-  assistPrimaryLabel?: string | null
-  /** Why Assist cannot be offered right now (the farm switch is off) — the button stays on screen, disabled, with a reason (design.md's quality floor), rather than vanishing. */
-  assistDisabledReason?: string
-  /** Opens the Assist confirmation (plan 91 §3.12). Omitted hides the affordance entirely — no assist manager wired on this host — rather than offering a dead button. */
-  onAssist?: () => void
-  /** THIS TAB's own assist grant, or null when not assisting — switches the pre-assist banner into the amber "assisting" chrome (§3.4 item 2). */
-  assisting?: { secondsLeft: number } | null
-  /** Ends the grant early (plan 91 §3.2's "ending your own help is always allowed"). Omitted hides the "Stop assisting" action. */
-  onStopAssisting?: () => void
+  warning?: string | null
   /** Plan 100 §3.7 item 1, step 100.6 — `DeviceDetailInfo.display`, forwarded to `LiveView` so it can tell a deliberate screencap-loop configuration apart from a degraded fallback. */
   configuredDisplay?: string
 }) {
@@ -123,7 +104,7 @@ export function ScreenCard({
   // and only while it is mounted (`mode === 'record'`), so a device page
   // left on `Live` never pays for a duration timer nobody is looking at.
   const recording = useRecording(deviceId)
-  const startRecordingDisabledReason = inputEnabled ? undefined : (takeControlDisabledReason ?? 'Take control to record.')
+  const startRecordingDisabledReason = inputEnabled ? undefined : 'The device is offline.'
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -158,67 +139,22 @@ export function ScreenCard({
         {/* The one status the deleted banner (§3.2) genuinely said on its own:
             input is off even for whoever holds control, and only a running job
             explains that. Everything else it used to say is already in the
-            video's own footer, one screen region closer to its subject.
-            Plan 91 §3.4 item 1 — while NOT assisting, this is also where
-            Assist is offered: a non-blocking banner, not an overlay that
-            eats clicks on the video underneath it, naming the running
-            script so the operator knows what they would be interrupting. */}
-        {jobRunning && !assisting && (
+            video's own footer, one screen region closer to its subject. */}
+        {jobRunning && !warning && (
           <span className="flex flex-wrap items-center gap-2 rounded-full border border-led-active/35 bg-led-active/10 py-0.5 pl-2.5 pr-1 text-[11.5px] text-led-active">
-            <span>
-              {assistPrimaryLabel ? <span className="readout">{assistPrimaryLabel}</span> : 'A job'} is running on this
-              device.
-            </span>
-            {onAssist &&
-              (assistDisabledReason ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span tabIndex={0}>
-                      <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled>
-                        Assist
-                      </Button>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>{assistDisabledReason}</TooltipContent>
-                </Tooltip>
-              ) : (
-                <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onAssist}>
-                  Assist
-                </Button>
-              ))}
+            <span>A job is running on this device.</span>
           </span>
         )}
+        {/* Plan 205 §4.9 — a `device.activity.warning` from the server's own
+            admission policy: something else is concurrently using the
+            device (a `warn`-tier conflict), not a hard refusal. Never an
+            overlay, never a confirmation — one muted line for as long as
+            the caller keeps it. */}
+        {warning && <span className="rack-label text-led-warn">{warning}</span>}
       </div>
 
       <div hidden={!videoVisible} aria-hidden={!videoVisible}>
-        <div
-          className={cn(
-            assisting && 'space-y-1.5 rounded-lg border border-led-warn p-1.5',
-          )}
-        >
-          {/* The assisting chrome (§3.4 item 2): a persistent amber
-              `.rack-label` and the grant's own remaining time in `.readout`
-              — the same `mmss` helper the lease countdown already uses
-              (`DeviceHeader.tsx`). The status rail itself is untouched
-              (§3.4 item 3) — this border lives on the video card, never on
-              the device's signature element. */}
-          {assisting && (
-            <div className="flex items-center justify-between px-0.5">
-              <span className="rack-label text-led-warn">Assisting — the job still has control</span>
-              <span className="flex items-center gap-2.5">
-                <span className="readout text-[11px] text-led-warn">{mmss(assisting.secondsLeft)}</span>
-                {onStopAssisting && (
-                  <button
-                    type="button"
-                    onClick={onStopAssisting}
-                    className="text-[11px] text-fg-muted underline-offset-2 hover:text-fg hover:underline"
-                  >
-                    Stop assisting
-                  </button>
-                )}
-              </span>
-            </div>
-          )}
+        <div>
           <LiveView
             deviceId={deviceId}
             inputEnabled={inputEnabled}
@@ -268,8 +204,6 @@ export function ScreenCard({
           <InspectorPanel
             deviceId={deviceId}
             canUse={canInspect}
-            onTakeControl={onTakeControl}
-            {...(takeControlDisabledReason ? { takeControlDisabledReason } : {})}
             visible={visible && inspectVisible}
           />
         </div>

@@ -7,16 +7,17 @@ import { ws } from './ws'
 /**
  * Set a device's `desired` readiness (plan 43 §4.5) — server-authoritative:
  * every refusal in §3.4, corrected by plan 49 §3.1 (offline/quarantined for a
- * Wake, a running job or another operator's manual lease for a Sleep —
- * watching never blocks it) is enforced by the core itself, so a rejected
- * request throws with the server's own reason (`ApiError`, via `api()`),
- * meant to be shown verbatim (the same pattern `useAction` already uses for
- * every other action in this app).
+ * Wake, a running job or another operator's manual control activity for a
+ * Sleep — watching never blocks it) is enforced by the core itself, so a
+ * rejected request throws with the server's own reason (`ApiError`, via
+ * `api()`), meant to be shown verbatim (the same pattern `useAction` already
+ * uses for every other action in this app).
  *
  * `clientId` carries this tab's WS session id, when one exists yet, so the
- * server can tell "I already hold the lease" apart from "someone else does"
- * for the Sleep permission check (§3.4's "you hold the lease" clause) — the
- * same `clientId` convention the adb-endpoint and transfer routes use.
+ * server can tell "I already hold the control activity" apart from "someone
+ * else does" for the Sleep permission check (§3.4's "you hold the control
+ * activity" clause) — the same `clientId` convention the adb-endpoint and
+ * transfer routes use.
  */
 export function setDeviceReadiness(deviceId: string, desired: Readiness): Promise<DeviceReadiness> {
   return api(`/api/devices/${encodeURIComponent(deviceId)}/readiness`, DeviceReadinessResponseSchema, {

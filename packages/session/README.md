@@ -26,11 +26,12 @@ device's `InputSink` and the sink itself. It exists because the sink has
 both run against one shared virtual pointer with one position and one touch
 bit. Two overlapping callers writing to it directly do not produce two taps;
 they produce one incoherent gesture, because nothing in the byte stream
-identifies which caller a given `write()` belongs to. Plan 91 (co-control,
-letting a human reach into a device a job is driving) made two callers
-possible for the first time, so an arbiter had to exist before authorisation
-did — shipping the grant without it would have shipped the feature and a
-silent input-corruption defect in the same commit.
+identifies which caller a given `write()` belongs to. Plan 91 (letting a
+human reach into a device a job is driving — since superseded by plan 205's
+activity model) made two callers possible for the first time, so an arbiter
+had to exist before authorisation did — shipping the grant without it would
+have shipped the feature and a silent input-corruption defect in the same
+commit.
 
 **Why three lanes, and not one queue.** The obvious fix — a single per-device
 mutex around all input — is correct and badly wrong for the product: a
@@ -52,12 +53,12 @@ running, because they are different lanes.
 
 **Rules inside each lane:**
 
-- **FIFO, non-preemptive, priority by source.** `assist` (a human helping a
-  job or another operator) jumps ahead of *queued* `job`/`agent` actions, but
+- **FIFO, non-preemptive, priority by source.** A `user` (the operator
+  actually driving the device — plan 205 §5 step 205.10 reworked this from
+  the old three-way split) jumps ahead of *queued* `job`/`agent` actions, but
   never interrupts one already running — preempting mid-gesture would
-  reintroduce exactly the corruption the arbiter exists to prevent. `lease`
-  (the ordinary manual operator) sits between `assist` and `job`/`agent`,
-  which share a priority and settle by arrival order.
+  reintroduce exactly the corruption the arbiter exists to prevent. `job` and
+  `agent` share a priority and settle by arrival order.
 - **Bounded, and every refusal names what it waited for.** `queueWaitMs`
   (read fresh on every submission, so a farm setting change takes effect on
   the very next action) and `maxQueueDepth` cap how long and how deep a lane
@@ -65,25 +66,25 @@ running, because they are different lanes.
   with a message like *"the job's swipe is still running (waited 5.0 s)"* —
   never silently dropped, never queued forever.
 - **`for(source): InputSink`** returns a façade bound to one `InputSource`
-  (`{ kind: 'lease' | 'assist' | 'job' | 'agent', id, userId }`) — every
-  existing production caller of the raw sink migrated to
+  (`{ kind: 'user' | 'job' | 'agent', id, userId }`, `id` matching the
+  activity registry's own marker id — plan 205 §4.2) — every existing
+  production caller of the raw sink migrated to
   `session.arbiter.for(source).*` in the same commit that added the arbiter
   (per `00-overview.md` §4.3, "replace, never version"); `session.input`
   remains the raw sink, touched only by the arbiter itself.
 - **`stats()`** reports `{ depth, running, waitMsP50, waitMsP95, refusals }`
-  per lane, the source `GET /api/adb/stats`'s `input` block and `enkaku
-  doctor`'s co-control check both read from (`packages/core/README.md`).
+  per lane, the source `GET /api/adb/stats`'s `input` block reads from
+  (`packages/core/README.md`).
 
 **No `onAction` callback.** The arbiter's constructor originally sketched an
-`onAction` hook meant to feed the attribution work (`jobs.assistCount`, the
-`device_events` `meta.assist`/`meta.jobId`, the `device.assist` audit row).
-It shipped with no producer wired to it and nothing reading its output:
-attribution ended up going through `ws-handlers.ts`'s own `input.*` branch
-directly, at the exact call site that already has the verb-specific payload
-(tap position, swipe endpoints, redacted text) a generic completion event
-never carried, and the mirror path (`packages/core/src/mirror/group.ts`'s
-`dispatch`) does the identical thing independently for a mirrored action. The
-dead callback was found and removed 2026-08-13
+`onAction` hook meant to feed the attribution work — a subordinate-grant
+mechanism plan 205 §3.2 item 8 deleted outright rather than renamed. It
+shipped with no producer wired to it and nothing reading its output:
+attribution instead goes through `ws-handlers.ts`'s own `input.*` branch,
+which records the control marker directly, inline, at the exact call site
+that already has the verb-specific payload (tap position, swipe endpoints,
+redacted text) a generic completion event never carried. The dead callback
+was found and removed 2026-08-13
 (`docs/plans/96-m61-hotfixes.md` §96.13) rather than left wired to nothing —
 see `src/input-arbiter.ts`'s own header comment for the full account.
 `adb-input` (the crude fallback engine) needs no lane logic of its own: it is
@@ -97,15 +98,14 @@ existing `input: InputSink`. The arbiter's `queueWaitMs`/`maxQueueDepth` are
 threaded through from `SessionManagerDeps.arbiterQueueWaitMs`/
 `arbiterMaxQueueDepth` (both `() => number`, optional — omitted falls back to
 `DEFAULT_ARBITER_QUEUE_WAIT_MS` = 5000 / `DEFAULT_ARBITER_MAX_QUEUE_DEPTH` =
-32) down through `CreateSessionDeps`, read fresh on every submission so a
-farm setting edited mid-session (`coControl.queueWaitMs`/`maxQueueDepth`,
-`packages/protocol/src/settings.ts`) takes effect for that same session
-immediately, with no restart and no re-open. `daemon.ts` wires both to
-`() => settingsStore.get().coControl.{queueWaitMs,maxQueueDepth}` — closed
-2026-08-13 (`docs/plans/96-m61-hotfixes.md` §96.13), after shipping for a
-time with only the hardcoded defaults actually enforced regardless of what an
-operator configured; that gap is what `daemon-wiring.test.ts`'s "input
-arbiter settings" block now pins against a regression.
+32) down through `CreateSessionDeps`, read fresh on every submission so a farm
+setting edited mid-session would take effect for that same session
+immediately, with no restart and no re-open — **but there is no such farm
+setting any more**: the old second-operator-grant subsystem these two
+accessors were fed from is gone (plan 205 §2.4), and nothing replaced it, so
+`daemon.ts` now leaves both accessors unset and every session runs on the two
+hardcoded defaults above regardless of farm size (`daemon.ts`'s own comment
+beside `deviceIsAwake` has the full account).
 
 ## Video profiles: two quality profiles, one resolver (plan 92 §3.5, §3.6, §4.2)
 

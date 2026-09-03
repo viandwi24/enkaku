@@ -646,7 +646,7 @@ describe('createDeviceExecutor — swipeNorm (plan 94 §3.4, §4.4, F6, F7): the
  * read per call matters" — a farm/device setting changed WHILE a script is
  * still running must reach its very next device call, on the SAME executor
  * instance, not merely a future one. This is the exact class of defect the
- * brief calls out by name: a co-control queue budget read once at
+ * brief calls out by name: an input-arbiter queue budget read once at
  * construction and never again.
  */
 describe('createDeviceExecutor — timing is a getter, read fresh on every call (plan 94 §4.5, F10)', () => {

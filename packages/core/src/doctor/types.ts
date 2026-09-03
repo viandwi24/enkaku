@@ -125,27 +125,6 @@ export interface AdbServerHealthProbe {
  * core answering with a subtly different shape is a schema mismatch this
  * file's own probe schema (`context.ts`) catches, not a compile error here.
  */
-export interface InputLaneStatsProbe {
-  depth: number
-  waitMsP50: number
-  waitMsP95: number
-  refusals: number
-}
-export interface InputStatsProbe {
-  lanes: Record<string, InputLaneStatsProbe>
-  assistsActive: number
-  mirrorGroups: number
-  mirrorMembers: number
-  mirrorFanoutMsP50: number
-  mirrorFanoutMsP95: number
-  /** The farm's currently-configured `coControl.queueWaitMs` — the budget the `co-control` check compares each lane's OBSERVED `waitMsP95` against. */
-  queueWaitMs: number
-  /** Leak detector: grants whose `expiresAt` is well past due despite the reaper's sweep. */
-  uncollectedGrants: number
-  /** Leak detector: mirror groups whose owner's WS connection is no longer open. */
-  orphanedMirrorGroups: number
-}
-
 /**
  * Everything a check may read. Each namespace maps to exactly one row in
  * §4.3's table; a check only touches the namespace(s) it needs, which is
@@ -208,10 +187,5 @@ export interface DoctorContext {
   adbHealth: {
     /** The live core's own `adb-health.ts` verdict, when a running core reports it — `null` when no core is running, or an older core does not yet expose this block (same degrade-gracefully rule as `streams.probe`/`hostAdb.probeCoreStats` above). */
     probe(): Promise<AdbServerHealthProbe | null>
-  }
-  /** Co-control observability (plan 91 §4.10, §5 step 91.10) — read-only, same degrade-gracefully rule as `streams`/`hostAdb`/`adbHealth` above. */
-  coControl: {
-    /** The live core's own `ws-handlers.ts` `inputStats()`, when a running core reports it — `null` when no core is running, or an older core does not yet expose this block. */
-    probe(): Promise<InputStatsProbe | null>
   }
 }

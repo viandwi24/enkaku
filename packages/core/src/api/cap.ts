@@ -16,15 +16,15 @@ import { typedJson } from './typed-json'
  *
  * Every request runs through the SAME `invoke` (`capability/invoke.ts`) the
  * MCP server and (once 63.7 lands) the script IPC bridge use — this route
- * file does not check permission, lease, or readiness itself; `invoke` is
- * the only door.
+ * file does not check permission, the activity policy, or readiness itself;
+ * `invoke` is the only door.
  */
 
 const REFUSAL_STATUS: Record<string, number> = {
   E_BAD_INPUT: 400,
   E_FORBIDDEN: 403,
   E_NO_GRANT: 403,
-  E_NEEDS_LEASE: 409,
+  E_DEVICE_CONFLICT: 409,
   E_DEVICE_OFFLINE: 409,
   E_DEADLINE: 504,
   E_INTERNAL: 500,
@@ -90,7 +90,7 @@ export function createCapRoutes(deps: CapRoutesDeps): Hono<AuthEnv> {
       input: toJsonSchema(cap.input),
       output: toJsonSchema(cap.output),
       permission: cap.permission,
-      lease: cap.lease,
+      activity: cap.activity ?? null,
       deadline: cap.deadline,
       effect: cap.effect,
     }))

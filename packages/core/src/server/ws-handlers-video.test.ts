@@ -5,8 +5,7 @@ import { SessionError, type DeviceSession, type SessionManager } from '@enkaku/s
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
-import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
@@ -37,7 +36,7 @@ function setUpDb(): Db {
 }
 
 function seedDevice(db: Db, id: string): void {
-  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'idle' }).run()
+  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'online' }).run()
 }
 
 /**
@@ -133,19 +132,13 @@ function fakeConn(): { ws: ServerWebSocket<unknown>; sent: ServerMessage[]; bina
 function setUpHandler(db: Db, session: DeviceSession, sessions: SessionManager = fakeSessionManager(session)): ReturnType<typeof createWsMessageHandler> {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
-  const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const deps = {
     sessions,
     db,
     log,
-    leases,
+    activities,
+    controlSettings: () => ({ overControl: 'allow' as const, idleSec: 30 }),
     states,
     recorder: { record: () => {} },
     auth: null,

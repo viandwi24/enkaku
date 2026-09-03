@@ -7,13 +7,13 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
 /**
  * `input.tap`'s `holdMs` (plan 94 §4.4, closes F4/F5, step 94.2) — exercised
- * against the REAL `createWsMessageHandler` and REAL `LeaseManager`, with
+ * against the REAL `createWsMessageHandler` and REAL `ActivityRegistry`, with
  * only the session's input sink faked (mirrors `ws-handlers-clipboard.test.ts`'s
  * own harness shape), so this proves the production `input.tap` branch, not a
  * hand-shaped stand-in for it.
@@ -25,7 +25,7 @@ function setUpDb(): Db {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' | 'offline' = 'idle'): void {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status }).run()
 }
 
@@ -52,7 +52,7 @@ function fakeInputSink(): { sink: InputSink; tapCalls: TapCall[] } {
   }
 }
 
-/** Mirrors `ws-handlers.assist.test.ts`'s own `fakeSession` — a REAL arbiter (plan 91 §4.1) wrapping the spy sink above, so `input.tap` exercises the actual production code path. */
+/** A REAL arbiter (plan 91 §4.1) wrapping the spy sink above, so `input.tap` exercises the actual production code path. */
 function fakeSession(deviceId: string, sink: InputSink): DeviceSession {
   const log = createLogger('test')
   return {
@@ -117,13 +117,7 @@ function setUpHandler(db: Db, session: DeviceSession | null, tapJitterMs?: WsHan
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const deps: WsHandlerDeps = {
     sessions: fakeSessionManager(session),
     pairing: {
@@ -134,7 +128,9 @@ function setUpHandler(db: Db, session: DeviceSession | null, tapJitterMs?: WsHan
         throw new Error('not used')
       },
     },
-    leases,
+    activities,
+    controlSettings: () => ({ overControl: 'allow' as const, idleSec: 30 }),
+    states,
     jobs: {
       enqueue: () => {
         throw new Error('not used')
@@ -144,7 +140,6 @@ function setUpHandler(db: Db, session: DeviceSession | null, tapJitterMs?: WsHan
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-      assists: () => [],
       nodes: () => ({ items: [], finalized: false }),
       resume: () => {
         throw new Error('not used')
@@ -168,20 +163,14 @@ function setUpHandler(db: Db, session: DeviceSession | null, tapJitterMs?: WsHan
   return createWsMessageHandler(deps)
 }
 
-async function acquireLease(handler: ReturnType<typeof createWsMessageHandler>, ws: ServerWebSocket<unknown>, deviceId: string): Promise<void> {
-  await handler.handleMessage(ws, JSON.stringify({ type: 'lease.acquire', id: 'l1', payload: { deviceId } }))
-}
-
 describe('input.tap — holdMs (plan 94 §4.4, closes F4/F5, step 94.2)', () => {
   test('a client-measured holdMs reaches sink.tap as an EXACT [holdMs, holdMs] range', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink, tapCalls } = fakeInputSink()
     const handler = setUpHandler(db, fakeSession('dev-1', sink))
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
-
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 }, holdMs: 650 } }))
 
     expect(tapCalls).toHaveLength(1)
@@ -190,13 +179,11 @@ describe('input.tap — holdMs (plan 94 §4.4, closes F4/F5, step 94.2)', () => 
 
   test('with no holdMs and no tapJitterMs dep wired, falls back to DEFAULT_TIMING.tapJitterMs (closes F5)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink, tapCalls } = fakeInputSink()
     const handler = setUpHandler(db, fakeSession('dev-1', sink))
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
-
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
 
     expect(tapCalls).toHaveLength(1)
@@ -205,13 +192,11 @@ describe('input.tap — holdMs (plan 94 §4.4, closes F4/F5, step 94.2)', () => 
 
   test('with no holdMs, a wired tapJitterMs dep is used INSTEAD of DEFAULT_TIMING — read per device id', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink, tapCalls } = fakeInputSink()
     const handler = setUpHandler(db, fakeSession('dev-1', sink), (deviceId) => (deviceId === 'dev-1' ? [777, 888] : [1, 1]))
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
-
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
 
     expect(tapCalls[0]!.opts?.holdMs).toEqual([777, 888])
@@ -219,13 +204,11 @@ describe('input.tap — holdMs (plan 94 §4.4, closes F4/F5, step 94.2)', () => 
 
   test('an explicit holdMs still wins over a wired tapJitterMs dep — the client\'s measured duration is authoritative', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink, tapCalls } = fakeInputSink()
     const handler = setUpHandler(db, fakeSession('dev-1', sink), () => [1, 1])
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
-
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 }, holdMs: 42 } }))
 
     expect(tapCalls[0]!.opts?.holdMs).toEqual([42, 42])

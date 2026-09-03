@@ -5,13 +5,12 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
 import { artifacts, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobEvents, jobs } from '../db/schema'
-import { createJobStore } from '../queue/job-store'
+import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import { createKvStore } from '../kv/store'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
 import { EnkakuError } from '../util/errors'
 import { createLogger } from '../util/logger'
-import { createDeviceStateMachine } from './state-machine'
-import { checkRemovable, createDeviceLifecycle, type DeviceLifecycle } from './lifecycle'
+import { checkRemovable, createDeviceLifecycle, type Actor, type DeviceLifecycle } from './lifecycle'
 
 interface Recorded {
   deviceId: string
@@ -19,90 +18,100 @@ interface Recorded {
   meta?: unknown
 }
 
-function setUp(): { db: Db; lifecycle: DeviceLifecycle; leases: LeaseManager; events: Recorded[] } {
+const fakeControlSettings = (): ControlPolicySettings => ({ overControl: 'allow', idleSec: 30 })
+
+function fakeActivities(): ActivityRegistry {
+  return createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+}
+
+function setUp(): { db: Db; lifecycle: DeviceLifecycle; activities: ActivityRegistry; events: Recorded[] } {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
   const log = createLogger('test')
-  const states = createDeviceStateMachine({ db, log })
-  const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = fakeActivities()
   const events: Recorded[] = []
   const lifecycle = createDeviceLifecycle({
     db,
-    leases,
+    activities,
+    controlSettings: fakeControlSettings,
     record: (e) => events.push({ deviceId: e.deviceId, kind: e.kind, meta: e.meta }),
     log,
   })
-  return { db, lifecycle, leases, events }
+  return { db, lifecycle, activities, events }
 }
 
-function seedDevice(db: Db, id: string, status: string, clusterId: string | null = null): void {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' | 'quarantined', clusterId: string | null = null): void {
   db.insert(devices)
     .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `Phone ${id}`, status, clusterId })
     .run()
 }
 
 describe('checkRemovable — the §3.5 safety matrix', () => {
+  const actor: Actor = { userId: 'u1' }
+
   test('device busy (a job is running): refused for forget AND block', () => {
-    const { db, leases } = setUp()
-    seedDevice(db, 'd1', 'busy')
+    const { db, activities } = setUp()
+    seedDevice(db, 'd1', 'online')
+    activities.start('d1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
-    expect(checkRemovable('forget', row, leases)).toEqual({
+    expect(checkRemovable('forget', row, activities, fakeControlSettings, actor)).toEqual({
       ok: false,
       code: 'device_busy',
       message: expect.stringContaining('running a job'),
     })
-    expect(checkRemovable('block', row, leases).ok).toBe(false)
+    expect(checkRemovable('block', row, activities, fakeControlSettings, actor).ok).toBe(false)
   })
 
-  test('an active manual lease: refused for forget AND block', () => {
-    const { db, leases } = setUp()
-    seedDevice(db, 'd1', 'idle')
-    leases.acquireManual('d1', 'client-1')
+  test('a control marker held by SOMEONE ELSE: refused for forget AND block', () => {
+    const { db, activities } = setUp()
+    seedDevice(db, 'd1', 'online')
+    activities.touchControl('d1', 'user:someone-else', { kind: 'user', id: 'someone-else', label: 'someone-else' })
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
-    expect(row.status).toBe('manual')
-    expect(checkRemovable('forget', row, leases)).toEqual({
+    expect(checkRemovable('forget', row, activities, fakeControlSettings, actor)).toEqual({
       ok: false,
       code: 'device_in_use',
-      message: expect.stringContaining('manual lease'),
+      message: expect.stringContaining('controlling'),
     })
-    expect(checkRemovable('block', row, leases).ok).toBe(false)
+    expect(checkRemovable('block', row, activities, fakeControlSettings, actor).ok).toBe(false)
   })
 
-  test('device online, idle: BOTH forget and block are allowed (plan 56 §3.2)', () => {
+  test("a control marker held by the CALLING actor's own id: allowed — no separate release-control step", () => {
+    const { db, activities } = setUp()
+    seedDevice(db, 'd1', 'online')
+    activities.touchControl('d1', 'user:u1', { kind: 'user', id: 'u1', label: 'u1' })
+    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
+    expect(checkRemovable('forget', row, activities, fakeControlSettings, actor)).toEqual({ ok: true })
+    expect(checkRemovable('block', row, activities, fakeControlSettings, actor)).toEqual({ ok: true })
+  })
+
+  test('device online, nothing live: BOTH forget and block are allowed (plan 56 §3.2)', () => {
     // This used to refuse forget and offer block instead, because the registry
     // would have re-enrolled the device immediately. Plan 56 removed that
     // premise — an unadmitted phone falls into the Discovered tray — so an
     // operator who wants a device out of the farm no longer has to declare it
     // permanently unwelcome to get there.
-    const { db, leases } = setUp()
-    seedDevice(db, 'd1', 'idle')
+    const { db, activities } = setUp()
+    seedDevice(db, 'd1', 'online')
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
-    expect(checkRemovable('forget', row, leases)).toEqual({ ok: true })
-    expect(checkRemovable('block', row, leases)).toEqual({ ok: true })
+    expect(checkRemovable('forget', row, activities, fakeControlSettings, actor)).toEqual({ ok: true })
+    expect(checkRemovable('block', row, activities, fakeControlSettings, actor)).toEqual({ ok: true })
   })
 
   test('device offline: both allowed', () => {
-    const { db, leases } = setUp()
+    const { db, activities } = setUp()
     seedDevice(db, 'd1', 'offline')
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
-    expect(checkRemovable('forget', row, leases)).toEqual({ ok: true })
-    expect(checkRemovable('block', row, leases)).toEqual({ ok: true })
+    expect(checkRemovable('forget', row, activities, fakeControlSettings, actor)).toEqual({ ok: true })
+    expect(checkRemovable('block', row, activities, fakeControlSettings, actor)).toEqual({ ok: true })
   })
 
   test('device quarantined: both allowed', () => {
-    const { db, leases } = setUp()
+    const { db, activities } = setUp()
     seedDevice(db, 'd1', 'quarantined')
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
-    expect(checkRemovable('forget', row, leases)).toEqual({ ok: true })
-    expect(checkRemovable('block', row, leases)).toEqual({ ok: true })
+    expect(checkRemovable('forget', row, activities, fakeControlSettings, actor)).toEqual({ ok: true })
+    expect(checkRemovable('block', row, activities, fakeControlSettings, actor)).toEqual({ ok: true })
   })
 })
 
@@ -139,7 +148,7 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
 
   test('forgetting an online device returns it to the tray instead of demanding a block (plan 56 §3.2)', async () => {
     const { db, lifecycle } = setUp()
-    seedDevice(db, 'd1', 'idle')
+    seedDevice(db, 'd1', 'online')
 
     await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: null } })
 
@@ -173,23 +182,17 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    const states = createDeviceStateMachine({ db, log })
-    const leases = createLeaseManager({
-      states,
-      jobStore: createJobStore(db),
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-      log,
-      onJobLeaseExpired: () => {},
-    })
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
     const lifecycle = createDeviceLifecycle({
       db,
-      leases,
+      activities,
+      controlSettings: fakeControlSettings,
       log,
       revertNetwork: async (deviceId) => {
         calls.push({ deviceId, rowStillThere: db.select().from(devices).where(eq(devices.id, deviceId)).get() !== undefined })
       },
     })
-    seedDevice(db, 'd1', 'idle')
+    seedDevice(db, 'd1', 'online')
 
     await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
 
@@ -202,23 +205,17 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    const states = createDeviceStateMachine({ db, log })
-    const leases = createLeaseManager({
-      states,
-      jobStore: createJobStore(db),
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-      log,
-      onJobLeaseExpired: () => {},
-    })
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
     const lifecycle = createDeviceLifecycle({
       db,
-      leases,
+      activities,
+      controlSettings: fakeControlSettings,
       log,
       clearLabel: async (deviceId) => {
         calls.push({ deviceId, rowStillThere: db.select().from(devices).where(eq(devices.id, deviceId)).get() !== undefined })
       },
     })
-    seedDevice(db, 'd1', 'idle')
+    seedDevice(db, 'd1', 'online')
 
     await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
 
@@ -230,25 +227,19 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    const states = createDeviceStateMachine({ db, log })
-    const leases = createLeaseManager({
-      states,
-      jobStore: createJobStore(db),
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-      log,
-      onJobLeaseExpired: () => {},
-    })
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
     const events: Recorded[] = []
     const lifecycle = createDeviceLifecycle({
       db,
-      leases,
+      activities,
+      controlSettings: fakeControlSettings,
       log,
       record: (e) => events.push({ deviceId: e.deviceId, kind: e.kind, meta: e.meta }),
       clearLabel: async () => {
         throw new Error('agent unreachable')
       },
     })
-    seedDevice(db, 'd1', 'idle')
+    seedDevice(db, 'd1', 'online')
 
     await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
 
@@ -262,16 +253,9 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    const states = createDeviceStateMachine({ db, log })
-    const leases = createLeaseManager({
-      states,
-      jobStore: createJobStore(db),
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-      log,
-      onJobLeaseExpired: () => {},
-    })
-    const lifecycle = createDeviceLifecycle({ db, leases, log, revertNetwork: async (id) => void calls.push(id) })
-    seedDevice(db, 'd1', 'idle')
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
+    const lifecycle = createDeviceLifecycle({ db, activities, controlSettings: fakeControlSettings, log, revertNetwork: async (id) => void calls.push(id) })
+    seedDevice(db, 'd1', 'online')
 
     await lifecycle.block('d1', { actor: { userId: 'u1' } })
 
@@ -284,16 +268,9 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    const states = createDeviceStateMachine({ db, log })
-    const leases = createLeaseManager({
-      states,
-      jobStore: createJobStore(db),
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-      log,
-      onJobLeaseExpired: () => {},
-    })
-    const lifecycle = createDeviceLifecycle({ db, leases, log, clearLabel: async (id) => void calls.push(id) })
-    seedDevice(db, 'd1', 'idle')
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
+    const lifecycle = createDeviceLifecycle({ db, activities, controlSettings: fakeControlSettings, log, clearLabel: async (id) => void calls.push(id) })
+    seedDevice(db, 'd1', 'online')
 
     await lifecycle.block('d1', { actor: { userId: 'u1' } })
 
@@ -310,25 +287,19 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    const states = createDeviceStateMachine({ db, log })
-    const leases = createLeaseManager({
-      states,
-      jobStore: createJobStore(db),
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-      log,
-      onJobLeaseExpired: () => {},
-    })
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
     const events: Recorded[] = []
     const lifecycle = createDeviceLifecycle({
       db,
-      leases,
+      activities,
+      controlSettings: fakeControlSettings,
       log,
       record: (e) => events.push({ deviceId: e.deviceId, kind: e.kind, meta: e.meta }),
       revertNetwork: async () => {
         throw new Error('device unreachable')
       },
     })
-    seedDevice(db, 'd1', 'idle')
+    seedDevice(db, 'd1', 'online')
 
     await lifecycle.forget('d1', { deleteHistory: false, actor: { userId: 'u1' } })
 
@@ -338,18 +309,19 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
   })
 
   test('forgetting a busy device is refused', async () => {
-    const { db, lifecycle } = setUp()
-    seedDevice(db, 'd1', 'busy')
+    const { db, lifecycle, activities } = setUp()
+    seedDevice(db, 'd1', 'online')
+    activities.start('d1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     await expect(lifecycle.forget('d1', { deleteHistory: false, actor: { userId: null } })).rejects.toMatchObject({
       code: 'device_busy',
     })
     expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()).toBeTruthy()
   })
 
-  test('forgetting a device with an active manual lease is refused', async () => {
-    const { db, lifecycle, leases } = setUp()
-    seedDevice(db, 'd1', 'idle')
-    leases.acquireManual('d1', 'client-1')
+  test('forgetting a device with an active control marker held by someone else is refused', async () => {
+    const { db, lifecycle, activities } = setUp()
+    seedDevice(db, 'd1', 'online')
+    activities.touchControl('d1', 'user:someone-else', { kind: 'user', id: 'someone-else', label: 'someone-else' })
     await expect(lifecycle.forget('d1', { deleteHistory: false, actor: { userId: null } })).rejects.toMatchObject({
       code: 'device_in_use',
     })
@@ -398,18 +370,10 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    const states = createDeviceStateMachine({ db, log })
-    const jobStore = createJobStore(db)
-    const leases = createLeaseManager({
-      states,
-      jobStore,
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-      log,
-      onJobLeaseExpired: () => {},
-    })
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
     const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-lifecycle-kv-'))
     const kv = createKvStore(db, dataDir, () => ({ maxValueBytes: 65_536, maxKeyLength: 256, maxEntriesPerNamespace: 1_000, maxEntriesPerDevice: 5_000 }))
-    const lifecycle = createDeviceLifecycle({ db, leases, log, kv })
+    const lifecycle = createDeviceLifecycle({ db, activities, controlSettings: fakeControlSettings, log, kv })
 
     seedDevice(db, 'd1', 'offline')
     kv.set({ kind: 'device', stableId: 'stable-d1' }, 'tiktok-login', 'session', { userId: 'u1' })
@@ -431,7 +395,7 @@ describe('forget (plan 47 §4.3, §4.4)', () => {
 describe('block (plan 47 §4.3, §4.4)', () => {
   test('blocking a connected device removes it from the fleet and lists it as blocked', async () => {
     const { db, lifecycle } = setUp()
-    seedDevice(db, 'd1', 'idle')
+    seedDevice(db, 'd1', 'online')
     const blocked = await lifecycle.block('d1', { reason: 'retired', actor: { userId: 'admin1' } })
     expect(blocked).toMatchObject({ stableId: 'stable-d1', label: 'Phone d1', reason: 'retired', blockedBy: 'admin1' })
 
@@ -440,13 +404,14 @@ describe('block (plan 47 §4.3, §4.4)', () => {
     expect(listed.map((b) => b.stableId)).toEqual(['stable-d1'])
   })
 
-  test('block is refused for a busy device or an active manual lease, same rules as forget', async () => {
-    const { db, lifecycle, leases } = setUp()
-    seedDevice(db, 'd1', 'busy')
+  test('block is refused for a busy device or one someone else is controlling, same rules as forget', async () => {
+    const { db, lifecycle, activities } = setUp()
+    seedDevice(db, 'd1', 'online')
+    activities.start('d1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     await expect(lifecycle.block('d1', { actor: { userId: null } })).rejects.toMatchObject({ code: 'device_busy' })
 
-    seedDevice(db, 'd2', 'idle')
-    leases.acquireManual('d2', 'client-1')
+    seedDevice(db, 'd2', 'online')
+    activities.touchControl('d2', 'user:someone-else', { kind: 'user', id: 'someone-else', label: 'someone-else' })
     await expect(lifecycle.block('d2', { actor: { userId: null } })).rejects.toMatchObject({ code: 'device_in_use' })
 
     // Neither attempt touched its row.
@@ -491,18 +456,10 @@ describe('forget with history — the shared cascade (plan 128 §4.5)', () => {
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    const states = createDeviceStateMachine({ db, log })
-    const jobStore = createJobStore(db)
-    const leases = createLeaseManager({
-      states,
-      jobStore,
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-      log,
-      onJobLeaseExpired: () => {},
-    })
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
     const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-lifecycle-'))
     dirs.push(dataDir)
-    return { db, lifecycle: createDeviceLifecycle({ db, leases, log, dataDir }), dataDir }
+    return { db, lifecycle: createDeviceLifecycle({ db, activities, controlSettings: fakeControlSettings, log, dataDir }), dataDir }
   }
 
   test('everything the inline version deleted, PLUS job_events, the trace directory, and the artifact files', async () => {

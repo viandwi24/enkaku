@@ -24,7 +24,7 @@
  *     benchmark: `packages/core/src/jobs/spawn-overhead.bench.test.ts`. This
  *     script does not attempt the full spawn→prepare number end to end
  *     because that requires `@enkaku/session`'s `JobRunner`/`SessionManager`
- *     (a whole session/lease/reset lifecycle owned by another workstream on
+ *     (a whole session/control-marker/reset lifecycle owned by another workstream on
  *     this branch) — reproducing it here would mean re-deriving that wiring
  *     from scratch with nothing to test it against, which is a worse kind of
  *     fake than not measuring at all.

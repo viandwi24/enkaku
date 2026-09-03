@@ -7,11 +7,10 @@ import { z } from 'zod'
  * compiles to; this file is only the live control channel while one is open.
  *
  * There is exactly one active recording per device, held by whoever holds
- * that device's manual lease — `recording.start`/`.stop`/`.cancel` are gated
- * by the SAME `checkInputAllowed` gate `input.*` already uses
- * (`packages/core/src/lease/lease-manager.ts`), never a parallel check (plan
- * 94's own brief: "if you find yourself writing a second permission check,
- * stop and report").
+ * that device's control marker — `recording.start`/`.stop`/`.cancel` are
+ * gated by the SAME admission helper `input.*` already uses (plan 205 §4.8's
+ * `admit`), never a parallel check (plan 94's own brief: "if you find
+ * yourself writing a second permission check, stop and report").
  */
 
 // ---- client -> server ----
@@ -19,9 +18,8 @@ import { z } from 'zod'
 /**
  * Opens a recording on `deviceId`. Refused `E_RECORDING_ACTIVE` when one is
  * already open on this device (plan 94 §4.6) — never silently joined or
- * restarted; refused with the lease's own codes (`no_lease`,
- * `not_lease_holder`, `device_busy`, `device_unavailable`) when the caller
- * does not hold input on this device at all.
+ * restarted; refused with `device_unavailable` (or `E_DEVICE_CONFLICT`) when
+ * the caller cannot be admitted to control this device at all.
  */
 export const RecordingStartMessage = z.object({
   type: z.literal('recording.start'),
@@ -54,12 +52,12 @@ export const RecordingCancelMessage = z.object({
  * (plan 94 §4.6's bounds, §4.9). Absent on a plain operator-requested stop —
  * a recording that ends because it was asked to has nothing to explain.
  */
-export const RecordingStoppedReasonSchema = z.enum(['max-steps', 'max-duration', 'lease-lost'])
+export const RecordingStoppedReasonSchema = z.enum(['max-steps', 'max-duration', 'disconnected'])
 export type RecordingStoppedReason = z.infer<typeof RecordingStoppedReasonSchema>
 
 /**
  * Reply to `recording.start`/`.stop`/`.cancel`, and a push whenever a bound
- * (§4.6) or a lease loss ends the recording without one. `startedAt` is null
+ * (§4.6) or the client disconnecting ends the recording without one. `startedAt` is null
  * exactly when `active` is false. `stepCount` is live — it is also pushed on
  * a cadence independent of `recording.step` (below) so a client that only
  * cares about the count/duration does not need to count `recording.step`
@@ -79,10 +77,8 @@ export const RecordingStateMessage = z.object({
 
 /**
  * A wire-owned copy of `RecordingStepSchema`'s `kind` literals
- * (`./recording.ts`) — the same "a wire message owns its own vocabulary,
- * independent of the internal type that happens to produce it today"
- * reasoning `AssistEndReasonSchema` (`./co-control.ts`) already documents for
- * its own duplicated enum.
+ * (`./recording.ts`) — a wire message owns its own vocabulary, independent of
+ * the internal type that happens to produce it today.
  */
 export const RecordingStepKindWireSchema = z.enum(['tap', 'longPress', 'gesture', 'swipe', 'key', 'text'])
 

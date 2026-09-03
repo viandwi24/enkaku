@@ -63,7 +63,7 @@ export default function WorkflowsPage() {
     <>
       <PageHeader
         title="Workflows"
-        description="Pipelines of scripts on one device, under one lease"
+        description="Pipelines of scripts on one device, under one job"
         actions={
           <Button asChild size="sm">
             <Link href="/workflows/editor">

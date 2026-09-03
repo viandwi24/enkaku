@@ -1,4 +1,4 @@
-import type { DeviceEvent, JobDetail, JobInfo, JobNodeInfo, JobSettings, JobStatus, RuntimeClamp, RuntimeEnvelope, ShellMode } from '@enkaku/protocol'
+import type { JobDetail, JobInfo, JobNodeInfo, JobSettings, JobStatus, RuntimeClamp, RuntimeEnvelope, ShellMode } from '@enkaku/protocol'
 import { checkRuntimeMajor, JobSettingsSchema, resolveRuntime, RuntimeEnvelopeSchema, unknownRuntimeKeys } from '@enkaku/protocol'
 import { canUseDevice } from '../auth/acl'
 import type { Role } from '../auth/service'
@@ -155,21 +155,13 @@ export interface JobService {
     total: number
   }
   /**
-   * `GET /api/jobs/:id/assists` (plan 91 §3.5, §4.9). Throws `job_not_found`
-   * for a missing job, the same convention `cancel()` uses — `jobStore.assists`
-   * itself returns `[]` rather than throwing, so this is the one place that
-   * distinguishes "no assists" from "no such job".
-   */
-  assists(jobId: string): DeviceEvent[]
-  /**
    * `GET /api/jobs/:id/nodes` (plan 99 §3.5, §4.9, step 99.8) — the node
    * timeline: one entry per node EXECUTION, including the ones the cursor
    * never reached (H4), plus `finalized` (has the PARENT job settled — the
    * same terminal check `resume()` gates on, so a "Resume from here" control
-   * knows when it may appear). Throws `job_not_found` for a missing job, the
-   * same convention `assists()` above uses — `jobStore.nodes()` itself
-   * returns `[]` either way, so this is the one place that distinguishes "no
-   * nodes yet" from "no such job".
+   * knows when it may appear). Throws `job_not_found` for a missing job —
+   * `jobStore.nodes()` itself returns `[]` either way, so this is the one
+   * place that distinguishes "no nodes yet" from "no such job".
    */
   nodes(jobId: string): { items: JobNodeInfo[]; finalized: boolean }
   /**
@@ -296,7 +288,7 @@ export function createJobService(deps: {
       // validation and before any device is claimed (F4's own reasoning
       // applied to a new gate): a bundle this core cannot run is refused by
       // name, naming the declared major and the supported range, and no
-      // device is ever leased for it. An older core meeting a newer script's
+      // device is ever claimed for it. An older core meeting a newer script's
       // envelope is a normal condition on a farm that updates in stages
       // (plan 59), never surprising — `undefined` (every pre-plan-98 script)
       // never refuses.
@@ -370,11 +362,6 @@ export function createJobService(deps: {
       const row = deps.jobStore.get(jobId)
       if (!row) return null
       return rowToJobDetail(row, deps.jobStore.scriptNames([row.scriptId]).get(row.scriptId) ?? null)
-    },
-
-    assists(jobId) {
-      if (!deps.jobStore.get(jobId)) throw new EnkakuError('job_not_found', `no such job: ${jobId}`)
-      return deps.jobStore.assists(jobId)
     },
 
     nodes(jobId) {

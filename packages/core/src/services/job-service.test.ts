@@ -27,7 +27,7 @@ function fakeRow(overrides: Partial<JobRow> = {}): JobRow {
     params: null,
     priority: 0,
     status: 'queued',
-    leaseExpiresAt: null,
+    heartbeatExpiresAt: null,
     result: null,
     error: null,
     createdAt: new Date(),
@@ -46,7 +46,6 @@ function fakeRow(overrides: Partial<JobRow> = {}): JobRow {
     depth: 0,
     triggerKey: null,
     peakRssBytes: null,
-    assistCount: 0,
     // Plan 98 §4.4, §4.6, step 98.5 — null here: a bare fixture row.
     maxConcurrent: null,
     // Plan 98 §3.8, §4.4, step 98.7 — null here: a bare fixture row, no
@@ -347,49 +346,6 @@ describe('createJobService — the script’s return value (plan 60 §3.3, §4.3
  * `opts.cancelDescendants`, defaulting to 0 when not asked for; it never
  * changes whether the CALLER'S OWN job can be cancelled.
  */
-/** Plan 91 §3.5, §4.9, §5 step 91.5 — `assists()` delegates to `jobStore.assists()`, but is the ONE place that distinguishes "no assists" from "no such job" (`jobStore.assists()` itself returns `[]` either way). */
-describe('createJobService.assists (plan 91 §3.5, §4.9)', () => {
-  test('delegates to jobStore.assists() for a job that exists', () => {
-    const row = fakeRow({ id: 'job-1' })
-    const assistsCalls: string[] = []
-    const service = createJobService({
-      jobStore: {
-        get: () => row,
-        assists: (jobId: string) => {
-          assistsCalls.push(jobId)
-          return [{ id: 'e1', deviceId: row.deviceId, stream: 'input', kind: 'input.tap', actor: 'operator-1', meta: null, at: 1000 }]
-        },
-      } as unknown as JobStore,
-      registry: fakeRegistry(),
-      scheduler: fakeScheduler(),
-      host: {} as ExecutorHost,
-      log: silentLog(),
-      onJobStatus: () => {},
-    })
-    const result = service.assists('job-1')
-    expect(assistsCalls).toEqual(['job-1'])
-    expect(result).toHaveLength(1)
-    expect(result[0]?.actor).toBe('operator-1')
-  })
-
-  test('throws job_not_found for a missing job — never a bare empty array standing in for "no such job"', () => {
-    const service = createJobService({
-      jobStore: {
-        get: () => null,
-        assists: () => {
-          throw new Error('assists() must never be reached for a missing job')
-        },
-      } as unknown as JobStore,
-      registry: fakeRegistry(),
-      scheduler: fakeScheduler(),
-      host: {} as ExecutorHost,
-      log: silentLog(),
-      onJobStatus: () => {},
-    })
-    expect(() => service.assists('no-such-job')).toThrow(EnkakuError)
-  })
-})
-
 describe('createJobService.cancel — cancelledDescendants (plan 81 §4.4)', () => {
   function serviceWithStore(row: JobRow, opts: { cancelDescendantsReturns?: number } = {}) {
     const calls: string[] = []
@@ -547,10 +503,9 @@ describe('createJobService.enqueue — invalid params are refused before any dev
 })
 
 /**
- * `nodes()` (plan 99 §3.5, §4.9, step 99.8) — `GET /api/jobs/:id/nodes`.
- * Mirrors `assists()`'s own split above: the store returns `[]` either way,
- * so this is the one place that distinguishes "no nodes yet" from "no such
- * job".
+ * `nodes()` (plan 99 §3.5, §4.9, step 99.8) — `GET /api/jobs/:id/nodes`. The
+ * store returns `[]` either way, so this is the one place that distinguishes
+ * "no nodes yet" from "no such job".
  */
 describe('createJobService.nodes (plan 99 §3.5, §4.9, step 99.8)', () => {
   test('delegates to jobStore.nodes() and maps each row through rowToJobNodeInfo, plus finalized from the job\'s own status', () => {
@@ -943,8 +898,6 @@ describe('createJobService.enqueue/resume — maxConcurrent resolution (plan 98 
         resetStrict: true,
         retry: { maxInfraAttempts: 9, backoffBaseMs: 500, backoffMaxMs: 5_000, timeoutIsInfra: true, rebindOnInfra: false },
         crashPolicy: 'any',
-        quietPeriodSec: 0,
-        maxWaitSec: 0,
         defaultTimeoutMs: 999_999,
         startupTimeoutMs: 5_000,
         maxTimeoutMs: 1_000,
@@ -1135,8 +1088,6 @@ describe('createJobService.enqueue/resume — the per-job override (plan 98 §3.
     resetStrict: false,
     retry: { maxInfraAttempts: 3, backoffBaseMs: 500, backoffMaxMs: 5_000, timeoutIsInfra: true, rebindOnInfra: true },
     crashPolicy: 'declared',
-    quietPeriodSec: 0,
-    maxWaitSec: 0,
     defaultTimeoutMs: 3_600_000,
     startupTimeoutMs: 5_000,
     maxTimeoutMs: 4_000_000, // the ceiling this describe block's timeoutMs tests exercise

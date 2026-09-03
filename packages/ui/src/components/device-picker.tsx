@@ -22,7 +22,7 @@ import { matchesDeviceQuery } from '../lib/device-name'
  * rule true rather than aspirational.
  *
  * The three things that kept it in Studio are now INJECTED rather than
- * imported: the status badge, the holder badges and the unavailable-reason
+ * imported: the status badge, the activity badges and the unavailable-reason
  * text all reach in through render props. Studio passes its own (see
  * `studio/src/components/DevicePicker.tsx`, now a thin wrapper) and loses
  * nothing; a plugin passes none and gets the same search, the same tag chips,
@@ -87,8 +87,8 @@ interface PickableDevice {
 export interface DevicePickerSlots<D extends PickableDevice = PickableDevice> {
   /** A status badge beside the device name — Studio's `DeviceStatusBadge`. */
   renderStatus?: (device: D) => ReactNode
-  /** Who holds or is assisting the device — Studio's `HolderBadge`, once per holder. */
-  renderHolders?: (device: D) => ReactNode
+  /** What is happening to the device right now — Studio's `ActivityBadge`. */
+  renderActivities?: (device: D) => ReactNode
   /**
    * Why a disabled row is disabled. Defaults to a plain sentence rather than
    * silence: a row that cannot be picked must always say why (plan 19 §4.4).
@@ -301,10 +301,11 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
                 <TagLabel tag={t} />
               </span>
             ))}
-            {/* A `manual`/`busy` device is still pickable — a job just waits
-                for it to go quiet (plan 71 §3.7) — so who holds it now is
-                worth showing here rather than only a status word. */}
-            {props.renderHolders?.(d)}
+            {/* A device with a live job is still pickable — a new one just
+                waits for it to go quiet (plan 71 §3.7) — so what is
+                happening to it now is worth showing here rather than only a
+                status word. */}
+            {props.renderActivities?.(d)}
             {/* An offline device is pickable (see `cannotTakeJob`), but the
                 status word alone reads as "this will not run". Say what
                 actually happens instead: the job is created now and sits in

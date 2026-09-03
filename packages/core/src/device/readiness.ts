@@ -15,7 +15,7 @@ import {
 import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import type { AwakePolicy } from './awake-policy'
-import type { Lease, LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
 import { mapWithConcurrency } from '../util/concurrency'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -26,7 +26,7 @@ import type { Logger } from '../util/logger'
  * device goes away (the tab closes, the job finishes, the endpoint idles
  * out, ...). NEVER changes `desired` (§3.6) — see `hold()` below.
  */
-export type HoldReason = 'viewer' | 'lease' | 'job' | 'monitor' | 'adb-endpoint' | 'transfer' | 'capability'
+export type HoldReason = 'viewer' | 'control' | 'job' | 'monitor' | 'adb-endpoint' | 'transfer' | 'capability'
 
 export interface Hold {
   readonly id: string
@@ -79,7 +79,7 @@ export interface ReadinessManagerDeps {
   client: () => AdbClient | null
   /** Plan 42's session manager — the ONLY place a grace-period timer lives (§3.7, acceptance #17). This module starts none of its own. */
   sessions: () => SessionManager | null
-  leases: LeaseManager
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
   /** `readiness.maxHot`, read fresh (the same freshness pattern every other farm setting in this codebase uses). */
   maxHot: () => number
   /**
@@ -204,7 +204,7 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
   const blockedReason = new Map<string, ReadinessBlockedReason | null>()
   /** deviceId → the last observed `actual` level and when it was first seen — drives `since`. */
   const lastActual = new Map<string, { level: Readiness; since: number }>()
-  /** deviceId → number of open holds (viewer/job/monitor/adb-endpoint/transfer/lease). */
+  /** deviceId → number of open holds (viewer/job/monitor/adb-endpoint/transfer/control). */
   const holdCounts = new Map<string, number>()
   /**
    * deviceId → the last thing the PHONE said about its own screen (plan 125
@@ -355,6 +355,15 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     if (rawActual(deviceId, row) !== 'asleep') return
     const transport = transportFor(row)
     if (!transport) return
+    // Plan 205 §4.9 — visible to any other viewer of the device exactly the
+    // way a job or an install already are, for the length of the wake
+    // sequence. Deliberately never refuses on a `forbid` decision (unlike
+    // every capability-facing admission point) — this function is called
+    // from deep inside `reconcile()`/`hold()`/the boot sweep, none of which
+    // expect it to throw, and `wakeDevice`'s own failures are already
+    // swallowed and logged below rather than propagated.
+    const wakeActivityId = `wake:${deviceId}`
+    deps.activities.start(deviceId, { id: wakeActivityId, kind: 'wake', label: 'Waking', actor: { kind: 'system', id: 'core', label: 'Readiness' } })
     await transport.connect()
     try {
       // Plan 125 §3.3, step 125.2 — the PERSISTED writes ride along with the
@@ -373,6 +382,7 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       log.warn(`readiness: wakeDevice failed for ${deviceId}: ${String(err)}`)
     } finally {
       await transport.disconnect()
+      deps.activities.end(deviceId, wakeActivityId)
     }
     keepAwakeApplied.add(deviceId)
     broadcast(deviceId)
@@ -582,25 +592,28 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
 
       const waking = RANK[desired] > RANK[currentDesired]
       if (waking) {
-        // §3.4: Wake is allowed for idle/manual/busy, refused for offline/quarantined.
+        // §3.4: Wake is allowed for online (whatever is currently live on it), refused for offline/quarantined.
         if (status === 'offline') throw new EnkakuError('device_offline', 'the device is offline')
         if (status === 'quarantined') throw new EnkakuError('device_quarantined', 'the device is quarantined')
       } else {
-        // §3.4, corrected by Plan 49 §3.1/§4.1: Sleep is refused only for
-        // ACTIVE use — a running job, or another operator's manual lease.
-        // Watching NEVER blocks it: the Wall tile is itself a viewer, so a
-        // viewer check made Sleep impossible from the one screen it belongs
-        // on — refusing the person pressing the button by telling them
-        // someone is watching, when that someone was them. Holding the
-        // lease YOURSELF does not block your own sleep — you are the one
-        // using it, and you are the one asking.
-        if (status === 'busy') throw new EnkakuError('job_running', 'a job is running')
-        const lease: Lease | null = deps.leases.getLease(deviceId)
-        const actorHoldsLease =
-          lease?.type === 'manual' &&
-          (lease.holder === actor.clientId || (actor.userId !== null && lease.holderUserId === actor.userId))
-        if (lease?.type === 'manual' && !actorHoldsLease) {
-          throw new EnkakuError('device_in_use', 'another operator holds the lease on this device')
+        // §3.4, corrected by Plan 49 §3.1/§4.1, reworked by plan 205 §4.9:
+        // Sleep is refused only for ACTIVE use — a running job, or another
+        // operator's control marker. Watching NEVER blocks it: the Wall
+        // tile is itself a viewer, so a viewer check made Sleep impossible
+        // from the one screen it belongs on — refusing the person pressing
+        // the button by telling them someone is watching, when that someone
+        // was them. Holding the control marker YOURSELF does not block your
+        // own sleep — you are the one using it, and you are the one asking.
+        const live = deps.activities.list(deviceId)
+        if (live.some((a) => a.kind === 'job' || a.kind === 'workflow-job' || a.kind === 'install')) {
+          throw new EnkakuError('job_running', 'a job is running')
+        }
+        const control = live.find((a) => a.kind === 'control')
+        const actorHoldsControl =
+          control !== undefined &&
+          (control.id === `control:${actor.clientId}` || (actor.userId !== null && control.actor.kind === 'user' && control.actor.id === actor.userId))
+        if (control && !actorHoldsControl) {
+          throw new EnkakuError('device_in_use', 'another operator is controlling this device')
         }
       }
 

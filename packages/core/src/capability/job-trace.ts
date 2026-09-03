@@ -56,7 +56,6 @@ export const jobTrace = defineCapability({
   }),
   output: z.object({ items: z.array(JobTraceEventSchema), nextCursor: z.string().nullable(), total: z.number().int().nonnegative() }),
   permission: 'job.view',
-  lease: 'none',
   deadline: 5_000,
   effect: 'read',
   description:
@@ -82,7 +81,6 @@ export const jobTraceUi = defineCapability({
   input: z.object({ jobId: z.string(), uiHash: z.string() }),
   output: UiNodeSchema,
   permission: 'job.view',
-  lease: 'none',
   deadline: 10_000,
   effect: 'read',
   description:
@@ -105,7 +103,6 @@ export const jobTraceFrame = defineCapability({
   input: z.object({ jobId: z.string(), frameHash: z.string() }),
   output: FrameOutput,
   permission: 'job.view',
-  lease: 'none',
   deadline: 10_000,
   effect: 'read',
   description:

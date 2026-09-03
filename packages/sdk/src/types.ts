@@ -414,7 +414,7 @@ export interface ScriptError {
  * criterion 2).
  *
  * Everything declared below is the honest asymmetry §3.1 names: it needs a
- * leased device and a job, and therefore exists in a script handler only.
+ * claimed device and a job, and therefore exists in a script handler only.
  */
 export interface ScriptContext<P = unknown> extends PluginContext {
   device: DeviceApi
@@ -438,14 +438,6 @@ export interface ScriptContext<P = unknown> extends PluginContext {
   kv: { device: KvApi; global: KvApi }
   /** A running script's own view of the queue on its own device (plan 80). */
   jobs: JobsApi
-  /**
-   * Called when a human sent input to this job's device while it was running
-   * (plan 91 §3.6). NOT an abort — the job keeps running exactly as before,
-   * and `finish()` is not invoked because of this. A script that never
-   * registers a callback is affected in NO way. `actor` is the assisting
-   * operator's userId, or null when they were unauthenticated (local mode).
-   */
-  onAssist?(cb: (e: { at: number; actor: string | null }) => void): void
   /**
    * A live, unpersisted snapshot of how the run is going (plan 97 §3.7).
    * Coalesced to at most one push per `job.progressIntervalMs`
@@ -551,13 +543,6 @@ export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny, R exten
     /** `pm clear` as well as force-stop. Destructive — opt in per script. */
     clearData?: boolean
   }
-  /**
-   * Whether an operator may assist this script's job (plan 91 §3.6) — reach
-   * into a `busy` device this job holds, without taking it. Default `'allow'`.
-   * `'deny'` disables the Assist button in Studio, naming this script; the
-   * job is still cancellable — refusing help is not refusing control.
-   */
-  assist?: 'allow' | 'deny'
   /**
    * Overrides the DEVICE's input-realism settings for this script's OWN
    * calls (plan 94 §3.6, §4.5, F10). Merged over `DeviceSettings.timing`

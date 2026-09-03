@@ -1,4 +1,4 @@
-import { asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { JobInfo, JobSettings, RuntimeClamp, RuntimeEnvelope } from '@enkaku/protocol'
 import { checkRuntimeMajor, JobSettingsSchema, resolveRuntime, RuntimeEnvelopeSchema } from '@enkaku/protocol'
 import type { Db } from '../db'
@@ -252,7 +252,7 @@ function toJobRow(input: {
     params: input.params ?? null,
     priority: input.priority,
     status: 'queued',
-    leaseExpiresAt: null,
+    heartbeatExpiresAt: null,
     result: null,
     error: null,
     createdAt: input.now,
@@ -274,9 +274,6 @@ function toJobRow(input: {
     depth: 0,
     triggerKey: null,
     peakRssBytes: null,
-    // Plan 91 §3.5, §4.9 — a freshly dispatched batch member has not been
-    // assisted yet, same as an ordinary `enqueue()` (`queue/job-store.ts`).
-    assistCount: 0,
     maxConcurrent: input.maxConcurrent,
     // Plan 98 §3.8, §4.4, step 98.7 (closed here) — the SAME validated
     // override every sibling member gets, pinned at dispatch exactly like
@@ -471,11 +468,14 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
  * batch came from a saved cluster or an ad-hoc device list, with no need to
  * re-resolve either.
  *
- * Picks the lowest-`batchSeq` sibling device that is currently `idle` and
- * not the device the job just failed on. Returns null when none is
- * available — the caller then requeues the job on its own current device,
- * exactly as plan 36 §3.6 describes ("if none is available it retries on
- * the same device after the backoff").
+ * Picks the lowest-`batchSeq` sibling device that is currently `online` with
+ * no running job of its own (plan 205 §4.6, §4.7 — "busy" is no longer a
+ * stored status; a device is only eligible when neither condition excludes
+ * it, the same pair `claimNext`'s SQL checks) and not the device the job
+ * just failed on. Returns null when none is available — the caller then
+ * requeues the job on its own current device, exactly as plan 36 §3.6
+ * describes ("if none is available it retries on the same device after the
+ * backoff").
  */
 export function pickRebindDevice(db: Db, job: JobRow): string | null {
   if (!job.batchId) return null
@@ -484,8 +484,16 @@ export function pickRebindDevice(db: Db, job: JobRow): string | null {
   if (candidateIds.length === 0) return null
   const rows = db.select().from(devices).where(inArray(devices.id, candidateIds)).all()
   const byId = new Map(rows.map((r) => [r.id, r]))
+  const runningDeviceIds = new Set(
+    db
+      .select({ deviceId: jobs.deviceId })
+      .from(jobs)
+      .where(and(inArray(jobs.deviceId, candidateIds), eq(jobs.status, 'running')))
+      .all()
+      .map((r) => r.deviceId),
+  )
   for (const id of candidateIds) {
-    if (byId.get(id)?.status === 'idle') return id
+    if (byId.get(id)?.status === 'online' && !runningDeviceIds.has(id)) return id
   }
   return null
 }

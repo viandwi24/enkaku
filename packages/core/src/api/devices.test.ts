@@ -13,7 +13,8 @@ import { artifacts, auditLog, blockedDevices, clusters, deletedDevices, deviceEv
 import type { BatteryMonitor } from '../device/battery'
 import { createDeviceLifecycle } from '../device/lifecycle'
 import type { LabellingService } from '../device/labelling'
-import type { Lease, LeaseManager, ManualReleaseReason } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { DeviceActivity } from '@enkaku/protocol'
 import { createJobStore, type JobStore } from '../queue/job-store'
 import type { CutoverManager } from '../registry/cutover'
 import { allocateDeviceNumber, lookupDeviceNumber, setDeviceNumber } from '../registry/device-number'
@@ -29,44 +30,40 @@ function emptyRegistry(): RegistryResponse {
   return { transports: [], displays: [], inputs: [], inspectors: [], networks: [], tools: [] }
 }
 
-/** No test in this file exercises a live manual lease — `getLease` always answers "none held". */
-function fakeLeases(): LeaseManager {
+/** A live `job` activity, the shape `checkRemovable`/`runningJobOf` look for (plan 205 §4.9) — used to make a device "busy" for a test without the deleted `devices.status: 'busy'` literal. */
+function jobActivity(deviceId: string): DeviceActivity {
   return {
-    acquireManual: (): Lease => {
-      throw new Error('not used in this test')
-    },
-    touchManual: () => {},
-    releaseManual: () => false,
-    releaseAllForClient: () => {},
-    noteJobLease: () => {},
-    clearJobLease: () => {},
-    getLease: () => null,
-    getHolder: () => null,
-    lastManualReleaseAt: () => null,
-    lastManualHolder: () => null,
-    checkInputAllowed: () => ({ ok: true }),
-    startReaper: () => {},
-    stopReaper: () => {},
+    id: `job:${deviceId}`,
+    kind: 'job',
+    label: 'running',
+    actor: { kind: 'system', id: 'core', label: 'Scheduler' },
+    startedAt: 0,
+    updatedAt: 0,
   }
 }
 
 /**
+ * No test in this file needs a live control/command marker on the fake
+ * itself — `activitiesOf` (wired separately, per test) is what a route reads
+ * to build `DeviceInfo.activities`/`.lastControl`; this is only the registry
+ * SLICE `createDeviceLifecycle` and the router's own `runningJobOf`/`endWhere`
+ * read (plan 205 §4.9, §4.10). `runningJobDeviceIds` makes `list` report a
+ * live `job` activity for exactly the devices a test names, the direct
+ * equivalent of the deleted `devices.status: 'busy'` literal.
+ *
  * The connection tests (plan 88 §5 step 88.4) need to OBSERVE the disconnect
- * route's ordering ("closes the session and releases the manual lease
- * FIRST") — `calls` is a single shared log every one of the three fakes
- * below pushes onto, so a test can assert both that each step ran AND the
- * order they ran in with one array, rather than three separate spies that
- * cannot be compared against each other.
+ * route's ordering ("closes the session and ends every control/command
+ * activity FIRST") — `calls`, when passed, is the SAME shared log the
+ * session/reconnector fakes below push onto, so a test can assert both that
+ * each step ran AND the order they ran in with one array, rather than
+ * separate spies that cannot be compared against each other.
  */
-function fakeLeasesRecording(calls: string[]): LeaseManager & { released: Array<{ deviceId: string; reason?: ManualReleaseReason }> } {
-  const released: Array<{ deviceId: string; reason?: ManualReleaseReason }> = []
+function fakeActivities(opts: { runningJobDeviceIds?: Set<string>; calls?: string[] } = {}): Pick<ActivityRegistry, 'list' | 'endWhere'> {
   return {
-    ...fakeLeases(),
-    released,
-    releaseDevice: (deviceId, reason) => {
-      calls.push('lease-released')
-      released.push({ deviceId, reason })
-      return true
+    list: (deviceId) => (opts.runningJobDeviceIds?.has(deviceId) ? [jobActivity(deviceId)] : []),
+    endWhere: () => {
+      opts.calls?.push('activity-ended')
+      return 0
     },
   }
 }
@@ -203,7 +200,7 @@ function fakeCutoverManager(overrides: { startState?: Partial<Parameters<Cutover
 
 function seedDevice(db: Db, id: string, tags: string[] = []): void {
   db.insert(devices)
-    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: 'Test Phone', status: 'idle' })
+    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: 'Test Phone', status: 'online' })
     .run()
   const now = new Date()
   for (const tag of tags) db.insert(deviceTags).values({ deviceId: id, tag, at: now }).run()
@@ -232,7 +229,10 @@ function makeApp(
     battery?: () => BatteryMonitor | null
     registry?: () => Promise<RegistryResponse>
     sweeper?: { sweep(opts?: { expect?: string[] }): Promise<SweepReport> }
-    leases?: LeaseManager
+    /** Makes `list`/`runningJobOf` report a live `job` activity for exactly these device ids (plan 205 §4.9) — the equivalent of the deleted `devices.status: 'busy'` literal. */
+    runningJobDeviceIds?: Set<string>
+    /** Shared call-order log for the disconnect-ordering test — see `fakeActivities`'s own comment. */
+    activityCalls?: string[]
     jobStore?: Pick<JobStore, 'list'>
     connection?: { reconnector: () => DeviceReconnector | null; sessions: () => Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get'> | null }
     endpoints?: Pick<EndpointStore, 'declare' | 'allWithEndpoints'>
@@ -251,8 +251,9 @@ function makeApp(
   const broadcast: Array<{ type: string; payload: unknown }> = []
   /** Every `deps.record?.(...)` call this router makes (plan 18 §4.2's device-event log) — collected the same way `broadcast` above is. */
   const records: Array<{ deviceId: string; stream: string; kind: string; actor?: string | null; meta?: Record<string, unknown> }> = []
-  const leases = opts.leases ?? fakeLeases()
-  const lifecycle = createDeviceLifecycle({ db, leases, log: createLogger('test') })
+  const activities = fakeActivities({ runningJobDeviceIds: opts.runningJobDeviceIds, calls: opts.activityCalls })
+  const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
+  const lifecycle = createDeviceLifecycle({ db, activities, controlSettings, log: createLogger('test') })
   const app = withUser(
     role,
     createDeviceRoutes({
@@ -262,15 +263,16 @@ function makeApp(
       audit,
       dataDir,
       lifecycle,
-      heldByOf: () => null,
+      activitiesOf: () => ({ activities: [], lastControl: null }),
       broadcast: (msg) => broadcast.push(msg),
       record: (e) => records.push(e),
-      // Every mode this router is mounted in has a real lease manager and job
-      // store (plan 88 §4.6, §5 step 88.4's own comment on why these two are
-      // required, not optional) — `createJobStore(db)` is the real thing, not
-      // a fake, since `jobStore.list` is plain SQL over the SAME in-memory db
-      // every other assertion in this file already reads.
-      leases,
+      // Every mode this router is mounted in has a real activity registry and
+      // job store (plan 88 §4.6, §5 step 88.4's own comment on why these two
+      // are required, not optional) — `createJobStore(db)` is the real
+      // thing, not a fake, since `jobStore.list` is plain SQL over the SAME
+      // in-memory db every other assertion in this file already reads.
+      activities,
+      runningJobOf: (deviceId) => opts.runningJobDeviceIds?.has(deviceId) ?? false,
       jobStore: opts.jobStore ?? createJobStore(db),
       ...(opts.connection ? { connection: opts.connection } : {}),
       ...(opts.endpoints ? { endpoints: opts.endpoints } : {}),
@@ -284,7 +286,7 @@ function makeApp(
   return { db, app, dataDir, broadcast, records }
 }
 
-/** Plan 89 §4.3, §4.6, §5 step 89.4/89.9 — a controllable fake `LabellingService`, mirroring `fakeLeases`' shape above: every call is recorded, so a test can assert both WHICH method ran and with what arguments. */
+/** Plan 89 §4.3, §4.6, §5 step 89.4/89.9 — a controllable fake `LabellingService`, mirroring `fakeActivities`' shape above: every call is recorded, so a test can assert both WHICH method ran and with what arguments. */
 type FakeLabellingCall =
   | { method: 'reconcile'; deviceId: string }
   | { method: 'apply'; deviceId: string; actor: { userId: string | null } }
@@ -359,7 +361,9 @@ describe('GET /api/devices tag filtering', () => {
     for (let i = 0; i < 50; i++) seedDevice(db, `dev-${i}`, ['pool:smoke'])
     const audit = createAuditLogger(db)
     const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-test-'))
-    const lifecycle = createDeviceLifecycle({ db, leases: fakeLeases(), log: createLogger('test') })
+    const activities = fakeActivities()
+    const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
+    const lifecycle = createDeviceLifecycle({ db, activities, controlSettings, log: createLogger('test') })
     const app = createDeviceRoutes({
       db,
       registry: async () => emptyRegistry(),
@@ -367,9 +371,10 @@ describe('GET /api/devices tag filtering', () => {
       audit,
       dataDir,
       lifecycle,
-      heldByOf: () => null,
+      activitiesOf: () => ({ activities: [], lastControl: null }),
       broadcast: () => {},
-      leases: fakeLeases(),
+      activities,
+      runningJobOf: () => false,
       jobStore: createJobStore(db),
     })
 
@@ -391,25 +396,38 @@ describe('GET /api/devices tag filtering', () => {
 })
 
 /**
- * Plan 71 §4.4, criterion 1 — `heldBy` on every `DeviceInfo` this router
- * builds: the list endpoint, the single-device endpoint, and everywhere else
- * `rowToDeviceInfo`/`listDevicesWithTags` are called from here.
+ * Plan 205 §4.10, criterion 1 — `activities`/`lastControl` on every
+ * `DeviceInfo` this router builds: the list endpoint, the single-device
+ * endpoint, and everywhere else `rowToDeviceInfo`/`listDevicesWithTags` are
+ * called from here. Replaces the old single-holder field and the old
+ * secondary-operators field from the two prototype-era plans that added
+ * them — both collapsed into the one `activitiesOf` accessor and the plain
+ * `DeviceActivity[]` it returns (MVP 04 §1.1, §1.2).
  */
-describe('GET /api/devices — heldBy (plan 71 §3.2, §4.4, criterion 1)', () => {
-  const holder = {
-    kind: 'agent' as const,
-    id: 'agent-7',
-    label: 'checkout-bot',
-    runId: 'run-1',
-    takeable: true,
-    acquiredAt: 100,
-    expiresAt: 200,
+describe('GET /api/devices — activities/lastControl (plan 205 §4.10, criterion 1)', () => {
+  const controlActivity: DeviceActivity = {
+    id: 'control:client-1',
+    kind: 'control',
+    label: 'Controlled by Rani',
+    actor: { kind: 'user', id: 'u-1', label: 'Rani' },
+    startedAt: 100,
+    updatedAt: 100,
+  }
+  const commandActivity: DeviceActivity = {
+    id: 'command:run-1',
+    kind: 'command',
+    label: 'Running a shell command',
+    actor: { kind: 'user', id: 'u-2', label: 'operator@enkaku' },
+    startedAt: 100,
+    updatedAt: 100,
   }
 
-  function appWithHeldBy(db: Db, heldByOf: (deviceId: string) => typeof holder | null) {
+  function appWithActivities(db: Db, activitiesOf: (deviceId: string) => { activities: DeviceActivity[]; lastControl: null }) {
     const audit = createAuditLogger(db)
     const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-test-'))
-    const lifecycle = createDeviceLifecycle({ db, leases: fakeLeases(), log: createLogger('test') })
+    const activities = fakeActivities()
+    const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
+    const lifecycle = createDeviceLifecycle({ db, activities, controlSettings, log: createLogger('test') })
     return createDeviceRoutes({
       db,
       registry: async () => emptyRegistry(),
@@ -417,133 +435,56 @@ describe('GET /api/devices — heldBy (plan 71 §3.2, §4.4, criterion 1)', () =
       audit,
       dataDir,
       lifecycle,
-      heldByOf,
+      activitiesOf,
       broadcast: () => {},
-      leases: fakeLeases(),
+      activities,
+      runningJobOf: () => false,
       jobStore: createJobStore(db),
     })
   }
 
-  test('a held device carries heldBy on the list endpoint; an unheld one carries null', async () => {
+  test('a device with a live activity carries it on the list endpoint; one with none carries []', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
     seedDevice(db, 'a')
     seedDevice(db, 'b')
-    const app = appWithHeldBy(db, (deviceId) => (deviceId === 'a' ? holder : null))
+    const app = appWithActivities(db, (deviceId) => (deviceId === 'a' ? { activities: [controlActivity], lastControl: null } : { activities: [], lastControl: null }))
 
     const res = await app.request('/')
-    const body = (await res.json()) as { items: Array<{ id: string; heldBy: unknown }> }
+    const body = (await res.json()) as { items: Array<{ id: string; activities: unknown }> }
     const a = body.items.find((d) => d.id === 'a')!
     const b = body.items.find((d) => d.id === 'b')!
-    expect(a.heldBy).toEqual(holder)
-    expect(b.heldBy).toBeNull()
+    expect(a.activities).toEqual([controlActivity])
+    expect(b.activities).toEqual([])
   })
 
-  test('the single-device endpoint carries the same heldBy', async () => {
+  test('the single-device endpoint carries the same activities', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
     seedDevice(db, 'a')
-    const app = appWithHeldBy(db, () => holder)
+    const app = appWithActivities(db, () => ({ activities: [controlActivity], lastControl: null }))
 
     const res = await app.request('/a')
-    const body = (await res.json()) as { device: { heldBy: unknown } }
-    expect(body.device.heldBy).toEqual(holder)
+    const body = (await res.json()) as { device: { activities: unknown } }
+    expect(body.device.activities).toEqual([controlActivity])
   })
-})
 
-/**
- * Plan 91 §3.4 item 4, §4.4, §5 step 91.4 — `assistedBy` alongside `heldBy`:
- * a device with an active assist grant must report it on both the list and
- * the single-device endpoint, and an unassisted device must report `[]`,
- * never a guess. Proven through the real HTTP routes, the same discipline
- * the `heldBy` describe block just above already established for the
- * sibling field.
- */
-describe('GET /api/devices — assistedBy (plan 91 §3.4 item 4, §4.4, §5 step 91.4)', () => {
-  const assistHolder = {
-    kind: 'user' as const,
-    id: 'u-assist',
-    label: 'operator@enkaku',
-    runId: null,
-    takeable: false,
-    acquiredAt: 100,
-    expiresAt: 200,
-  }
-
-  function appWithAssistedBy(db: Db, assistedByOf: (deviceId: string) => (typeof assistHolder)[]) {
-    const audit = createAuditLogger(db)
-    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-test-'))
-    const lifecycle = createDeviceLifecycle({ db, leases: fakeLeases(), log: createLogger('test') })
-    return createDeviceRoutes({
-      db,
-      registry: async () => emptyRegistry(),
-      battery: () => null,
-      audit,
-      dataDir,
-      lifecycle,
-      heldByOf: () => null,
-      assistedByOf,
-      broadcast: () => {},
-      leases: fakeLeases(),
-      jobStore: createJobStore(db),
-    })
-  }
-
-  test('an assisted device carries assistedBy on the list endpoint; an unassisted one carries []', async () => {
+  test('several concurrent activities on one device (a control marker AND a command run) all carry through, on both endpoints', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
     seedDevice(db, 'a')
-    seedDevice(db, 'b')
-    const app = appWithAssistedBy(db, (deviceId) => (deviceId === 'a' ? [assistHolder] : []))
+    const app = appWithActivities(db, () => ({ activities: [controlActivity, commandActivity], lastControl: null }))
 
-    const res = await app.request('/')
-    const body = (await res.json()) as { items: Array<{ id: string; assistedBy: unknown }> }
-    const a = body.items.find((d) => d.id === 'a')!
-    const b = body.items.find((d) => d.id === 'b')!
-    expect(a.assistedBy).toEqual([assistHolder])
-    expect(b.assistedBy).toEqual([])
-  })
+    const listRes = await app.request('/')
+    const listBody = (await listRes.json()) as { items: Array<{ id: string; activities: unknown }> }
+    expect(listBody.items.find((d) => d.id === 'a')?.activities).toEqual([controlActivity, commandActivity])
 
-  test('the single-device endpoint carries the same assistedBy', async () => {
-    const opened = openDb(':memory:')
-    runMigrations(opened.db)
-    const db = opened.db
-    seedDevice(db, 'a')
-    const app = appWithAssistedBy(db, () => [assistHolder])
-
-    const res = await app.request('/a')
-    const body = (await res.json()) as { device: { assistedBy: unknown } }
-    expect(body.device.assistedBy).toEqual([assistHolder])
-  })
-
-  test('an omitted assistedByOf dep falls back to [] rather than throwing or guessing', async () => {
-    const opened = openDb(':memory:')
-    runMigrations(opened.db)
-    const db = opened.db
-    seedDevice(db, 'a')
-    const audit = createAuditLogger(db)
-    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-test-'))
-    const lifecycle = createDeviceLifecycle({ db, leases: fakeLeases(), log: createLogger('test') })
-    const app = createDeviceRoutes({
-      db,
-      registry: async () => emptyRegistry(),
-      battery: () => null,
-      audit,
-      dataDir,
-      lifecycle,
-      heldByOf: () => null,
-      // assistedByOf deliberately omitted.
-      broadcast: () => {},
-      leases: fakeLeases(),
-      jobStore: createJobStore(db),
-    })
-
-    const res = await app.request('/a')
-    const body = (await res.json()) as { device: { assistedBy: unknown } }
-    expect(body.device.assistedBy).toEqual([])
+    const oneRes = await app.request('/a')
+    const oneBody = (await oneRes.json()) as { device: { activities: unknown } }
+    expect(oneBody.device.activities).toEqual([controlActivity, commandActivity])
   })
 })
 
@@ -738,7 +679,7 @@ describe('PUT /api/devices/:id/cluster (plan 22.0 §4.4, acceptance #1, #2)', ()
  * ACL until now): `PATCH /:id` let any authenticated operator set a
  * device's `ownerId` to themselves or anyone else, with no permission check
  * and no audit trail — defeating the ownership model `canUseDevice`
- * otherwise enforces for lease acquisition, job enqueue, and the adb
+ * otherwise enforces for control acquisition, job enqueue, and the adb
  * endpoint. Only the `ownerId` transition is gated; `label`/`settings`
  * stay ordinary operator work.
  */
@@ -880,7 +821,7 @@ describe('GET /api/devices?clusterId= (plan 22.0 §4.4, acceptance #4)', () => {
 
 describe('GET /api/devices keyset pagination (label ASC, id ASC)', () => {
   function seedLabelled(db: Db, id: string, label: string): void {
-    db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label, status: 'idle' }).run()
+    db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label, status: 'online' }).run()
   }
 
   test('pages through 5 devices with limit=2: the union is exactly the 5, no duplicates', async () => {
@@ -1404,19 +1345,17 @@ describe('POST /:id/connection/disconnect (plan 88 §3.7, §3.8, §4.6, §5 step
     expect(calls).toContain('transport-disconnected')
   })
 
-  test('closes the session and releases the manual lease BEFORE the transport disconnects (plan 88 §4.6\'s ordering)', async () => {
+  test('closes the session and ends every control/command activity BEFORE the transport disconnects (plan 88 §4.6\'s ordering, plan 205 §4.9)', async () => {
     const calls: string[] = []
-    const leases = fakeLeasesRecording(calls)
     const sessions = fakeSessions(calls)
     const reconnector = fakeReconnector(calls)
-    const { db, app } = makeApp('admin', { leases, connection: { reconnector: () => reconnector, sessions: () => sessions } })
+    const { db, app } = makeApp('admin', { activityCalls: calls, connection: { reconnector: () => reconnector, sessions: () => sessions } })
     seedTcpDevice(db)
 
     const res = await app.request('/a/connection/disconnect', { method: 'POST' })
     expect(res.status).toBe(200)
-    expect(calls).toEqual(['session-closed', 'lease-released', 'transport-disconnected'])
+    expect(calls).toEqual(['session-closed', 'activity-ended', 'transport-disconnected'])
     expect(sessions.closed).toEqual(['a'])
-    expect(leases.released).toEqual([{ deviceId: 'a', reason: 'disconnected' }])
     expect(reconnector.disconnectCalls).toEqual(['stable-a'])
   })
 
@@ -1952,7 +1891,7 @@ describe('DELETE /api/devices/:id — Forget (plan 47 §4.4, §6)', () => {
     // instead — the trap that made an operator declare a phone permanently
     // unwelcome just to take it out of the farm.
     const { db, app } = makeApp()
-    seedDevice(db, 'a') // seedDevice leaves status: 'idle'
+    seedDevice(db, 'a') // seedDevice leaves status: 'online'
 
     const res = await app.request('/a', { method: 'DELETE' })
 
@@ -2016,10 +1955,9 @@ describe('POST /api/devices/:id/block (plan 47 §4.4, §6)', () => {
     expect(auditRows).toHaveLength(1)
   })
 
-  test('block is refused for a busy device, exactly like forget', async () => {
-    const { db, app } = makeApp()
+  test('block is refused for a device with a live job activity, exactly like forget (plan 205 §4.9)', async () => {
+    const { db, app } = makeApp('admin', { runningJobDeviceIds: new Set(['a']) })
     seedDevice(db, 'a')
-    db.update(devices).set({ status: 'busy' }).where(eq(devices.id, 'a')).run()
     const res = await app.request('/a/block', { method: 'POST' })
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: { code: string } }
@@ -2114,7 +2052,7 @@ describe('GET /api/devices/refs — dangling-reference resolution (plan 47 §4.5
  */
 describe('the device number reaches the protocol and the API (plan 89 §4.2, §4.3, step 89.2)', () => {
   function seedLabelledNumber(db: Db, id: string, label: string): void {
-    db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label, status: 'idle' }).run()
+    db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label, status: 'online' }).run()
   }
 
   test('GET /:id carries the allocated number', async () => {

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import { ClusterMoveResponseSchema, ClusterResponseSchema, type ClusterInfo, type ConnectionMedium, type DeviceInfo, type LeaseHolder } from '@enkaku/protocol'
+import { ClusterMoveResponseSchema, ClusterResponseSchema, type ClusterInfo, type ConnectionMedium, type DeviceInfo } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
@@ -9,7 +9,7 @@ import type { Db } from '../db'
 import { clusters, type ClusterRow } from '../db/schema'
 import { assignDevices, clusterMembers, deleteClusterAndUnassign, unassignDevices } from '../clusters/membership'
 import { resolveCluster, resolveTarget } from '../clusters/resolve'
-import { loadClusterNames, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
+import { loadClusterNames, rowToDeviceInfo, type DeviceActivityState, type FarmNetwork } from '../registry/device-registry'
 import { loadDeviceNumbers } from '../registry/device-number'
 import { loadDeviceTags } from '../registry/device-tags'
 import { EnkakuError } from '../util/errors'
@@ -58,8 +58,8 @@ function rowToClusterInfo(db: Db, row: ClusterRow): ClusterInfo {
 export function createClusterRoutes(deps: {
   db: Db
   audit: AuditLogger
-  /** Lease holder (plan 71 §4.4) — omitted (as in tests that predate this plan) falls back to `null`. */
-  heldByOf?: (deviceId: string) => LeaseHolder | null
+  /** Live activities plus last-control tail (plan 205 §4.10) — omitted (as in tests that predate this plan) falls back to `{ activities: [], lastControl: null }`. */
+  activitiesOf?: (deviceId: string) => DeviceActivityState
   /**
    * Farm networks (plan 88 §3.6, §4.1) — `discovery.networks`, read fresh
    * per request, same "read settings live" discipline `api/devices.ts`'s own
@@ -79,19 +79,6 @@ export function createClusterRoutes(deps: {
    * discipline as `networks` above. Optional, same reasoning.
    */
   declaredMedia?: () => Map<string, ConnectionMedium | null> | undefined
-  /**
-   * Who is currently assisting a device (plan 91 §3.4 item 4, §4.4) — the
-   * same producer gap `networks`/`declaredMedia` above already document:
-   * step 91.4 wired this into `api/devices.ts` alone and flagged this router
-   * as a known gap (see docs/plans/96-m61-hotfixes.md's continuation of
-   * §96.5–96.9). Resolved from the co-control manager's `assistedBy`
-   * (`lease/co-control.ts`), the same `heldByOf`-shaped per-device accessor.
-   * Optional, defaulting to `[]` per device — an unknown assist state is
-   * "nobody is assisting", never a guess — so every existing caller
-   * (`clusters.test.ts`, and any caller that predates this field) keeps
-   * compiling and behaving exactly as before.
-   */
-  assistedByOf?: (deviceId: string) => LeaseHolder[]
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
   const { db } = deps
@@ -220,14 +207,9 @@ export function createClusterRoutes(deps: {
     // discipline as `tagMap`/`networks`/`media` above.
     const numbers = loadDeviceNumbers(db)
     const infos: DeviceInfo[] = rows
-      .map((r) => ({
-        ...rowToDeviceInfo(r, tagMap.get(r.id) ?? [], cluster, null, null, deps.heldByOf?.(r.id) ?? null, networks, media, numbers.get(r.stableId) ?? null),
-        // Plan 91 §3.4 item 4, §4.4 — `assistedBy` alongside `heldBy`, the
-        // same override-after-build shape `api/devices.ts` established:
-        // `rowToDeviceInfo` has no `assistedByOf` parameter of its own, so
-        // this overrides its `[]` default with the real, live answer.
-        assistedBy: deps.assistedByOf?.(r.id) ?? [],
-      }))
+      .map((r) =>
+        rowToDeviceInfo(r, tagMap.get(r.id) ?? [], cluster, null, null, deps.activitiesOf?.(r.id) ?? { activities: [], lastControl: null }, networks, media, numbers.get(r.stableId) ?? null),
+      )
       .sort((a, b) => (a.label === b.label ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.label < b.label ? -1 : 1))
 
     const { cursor: cursorParam, limit } = parsePageQuery(c)

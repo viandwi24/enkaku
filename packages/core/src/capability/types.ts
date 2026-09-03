@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { Capability, CapabilityEffect, CapabilityLease } from '@enkaku/protocol'
+import type { Capability, CapabilityActivity, CapabilityEffect } from '@enkaku/protocol'
 import type { Permission } from '../auth/acl'
 import type { CapabilityContext } from './context'
 
@@ -56,7 +56,8 @@ export interface AnyCoreCapability {
   input: z.ZodType
   output: z.ZodType
   permission: Permission
-  lease: CapabilityLease
+  /** `undefined` for a device-less capability (plan 205 §4.4, §5 step 205.7) — replaces the old three-value hold field this used to declare. */
+  activity?: CapabilityActivity
   deadline: number
   effect: CapabilityEffect
   description: string
@@ -66,7 +67,7 @@ export interface AnyCoreCapability {
   imageOutputs?: ImageOutputDeclaration[]
 }
 
-export type { CapabilityEffect, CapabilityLease }
+export type { CapabilityEffect, CapabilityActivity }
 
 /**
  * Identity function purely for generic inference (plan 63 §4.3): every

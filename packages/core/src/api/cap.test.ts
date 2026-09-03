@@ -8,7 +8,9 @@ import type { CapabilityContextDeps } from '../capability/context'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import type { JobService } from '../services/job-service'
+import { createActivityRegistry } from '../activity/registry'
 import { createWorkspaceStore } from '../workspace/store'
+import { createLogger } from '../util/logger'
 import { createCapRoutes } from './cap'
 
 function setUpDb(): Db {
@@ -28,11 +30,12 @@ const noopJobService = {
   list: () => ({ jobs: [], nextCursor: null, total: 0 }),
 } as unknown as JobService
 
-function contextDeps(db: Db): CapabilityContextDeps {
+function contextDeps(db: Db, overrides: Partial<Pick<CapabilityContextDeps, 'activities' | 'controlSettings'>> = {}): CapabilityContextDeps {
   return {
     db,
-    leases: { getLease: () => null } as unknown as CapabilityContextDeps['leases'],
-    states: { current: () => 'idle' } as unknown as CapabilityContextDeps['states'],
+    activities: overrides.activities ?? createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} }),
+    controlSettings: overrides.controlSettings ?? (() => ({ overControl: 'allow', idleSec: 30 })),
+    states: { current: () => 'online' } as unknown as CapabilityContextDeps['states'],
     sessions: () => null,
     readiness: () => null,
     transfer: null,
@@ -43,13 +46,13 @@ function contextDeps(db: Db): CapabilityContextDeps {
 
 /** Mounts `capRoutes` behind a tiny middleware that injects `user`, mirroring
  * how `authMiddleware` sets it in the real app (`server/http.ts`). */
-function appAs(user: AuthUser | null, db: Db): Hono<AuthEnv> {
+function appAs(user: AuthUser | null, db: Db, depsOverrides: Partial<Pick<CapabilityContextDeps, 'activities' | 'controlSettings'>> = {}): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
   app.use('*', async (c, next) => {
     if (user) c.set('user', user)
     await next()
   })
-  app.route('/', createCapRoutes({ registry: buildCoreCapabilityRegistry(), contextDeps: contextDeps(db) }))
+  app.route('/', createCapRoutes({ registry: buildCoreCapabilityRegistry(), contextDeps: contextDeps(db, depsOverrides) }))
   return app
 }
 
@@ -116,10 +119,15 @@ describe('POST /api/v1/cap/:id and GET /api/v1/cap (plan 63 §3.6, acceptance #8
     expect(body.error.code).toBe('E_BAD_INPUT')
   })
 
-  test('POST /:id device.tap without the lease is refused 409 E_NEEDS_LEASE, naming the holder (acceptance #5)', async () => {
+  test('POST /:id device.tap forbidden by the activity policy is refused 409 E_DEVICE_CONFLICT, naming the conflict (acceptance #5)', async () => {
     const db = setUpDb()
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ser1', label: 'Phone', status: 'idle' }).run()
-    const app = appAs({ id: 'u1', email: 'op@example.com', role: 'operator' }, db)
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ser1', label: 'Phone', status: 'online' }).run()
+    const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+    activities.touchControl('d1', 'user:other', { kind: 'user', id: 'other-user', label: 'other-user' })
+    const app = appAs({ id: 'u1', email: 'op@example.com', role: 'operator' }, db, {
+      activities,
+      controlSettings: () => ({ overControl: 'forbid', idleSec: 30 }),
+    })
     const res = await app.request('/device.tap', {
       method: 'POST',
       body: JSON.stringify({ deviceId: 'd1', target: { text: 'OK' } }),
@@ -127,7 +135,8 @@ describe('POST /api/v1/cap/:id and GET /api/v1/cap (plan 63 §3.6, acceptance #8
     })
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: { code: string; message: string } }
-    expect(body.error.code).toBe('E_NEEDS_LEASE')
+    expect(body.error.code).toBe('E_DEVICE_CONFLICT')
+    expect(body.error.message).toContain('other-user')
   })
 
   /**

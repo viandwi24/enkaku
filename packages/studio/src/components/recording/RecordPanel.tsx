@@ -35,7 +35,7 @@ const STEP_LABEL: Record<RecordedStepEntry['kind'], string> = {
 const STOPPED_REASON_TEXT: Record<RecordingStoppedReason, string> = {
   'max-steps': 'reached the maximum number of steps for one recording.',
   'max-duration': 'reached the maximum recording duration.',
-  'lease-lost': 'ended because control of this device was lost — released, taken over, or timed out.',
+  disconnected: 'ended because control of this device ended — an idle timeout, a takeover, or a disconnect.',
 }
 
 export function RecordPanel({
@@ -62,7 +62,7 @@ export function RecordPanel({
   startedAt: number | null
   endedAt: number | null
   stoppedReason: RecordingStoppedReason | null
-  /** The last `start()`/`stop()` refusal from the core (`E_RECORDING_ACTIVE`, a lease code, …) — shown, never thrown. */
+  /** The last `start()`/`stop()` refusal from the core (`E_RECORDING_ACTIVE`, a device-conflict code, …) — shown, never thrown. */
   error: string | null
   /** Why `Start recording` cannot be pressed right now — the same "genuinely disabled, with a reason" floor every other control on this card holds to. */
   disabledReason?: string

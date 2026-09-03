@@ -20,7 +20,7 @@ import type { ScriptRegistry } from './scripts/registry'
 import type { JobService } from './services/job-service'
 import type { WorkspaceStore } from './workspace/store'
 import { createJobStore } from './queue/job-store'
-import { createLeaseManager } from './lease/lease-manager'
+import { createActivityRegistry } from './activity/registry'
 import { createLogger } from './util/logger'
 import { createRecordingService } from './recording/service'
 import { createWsMessageHandler, type WsHandlerDeps } from './server/ws-handlers'
@@ -285,154 +285,6 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     expect(daemonSource.slice(forLoopStart, sweepCallStart + 600)).toContain('} catch (err) {')
   })
 
-  describe('co-control (plan 91 §4.2, §5 step 91.2): the grant store, its reaper, and its subordination wiring', () => {
-    test('createCoControlManager(...) is actually constructed, reading `leases` and the live coControl settings — not just declared and left uncalled', () => {
-      // `'createCoControlManager({'` is unambiguous in this file: the import
-      // line reads `import { createCoControlManager, type CoControlManager }
-      // from './lease/co-control'` — no `(` immediately follows the name
-      // there, so `indexOf` cannot land on the import and silently hand back
-      // an empty/wrong slice the way a comment containing the call-shaped
-      // string could (this file's own header comment explains that failure
-      // mode for a different marker).
-      const call = extractCall(daemonSource, 'createCoControlManager({')
-      expect(call).toContain('leases,')
-      expect(call).toContain('grantTtlSec: () => settingsStore.get().coControl.grantTtlSec')
-      expect(call).toContain('maxConcurrentPerDevice: () => settingsStore.get().coControl.maxConcurrentPerDevice')
-      expect(call).toContain('mode: () => settingsStore.get().coControl.mode')
-    })
-
-    test('the co-control reaper is started at boot and stopped in stop() — a leaked interval is a real defect (00-overview.md §7 item 7), not a nit', () => {
-      expect(daemonSource).toContain('coControl.startReaper()')
-      expect(daemonSource).toContain('stopCoControlReaper = () => coControl.stopReaper()')
-      // Inside the `async stop()` method, not merely declared somewhere else in the file.
-      const stopStart = daemonSource.indexOf('async stop() {')
-      expect(stopStart).toBeGreaterThan(-1)
-      // 500, not 400: plan 92 §5 step 92.2 added a `reprofileDebounceTimer`
-      // clear right after `heartbeatInterval`'s, near the top of this same
-      // method, pushing every fixed-offset check below it further out.
-      const stopBlock = daemonSource.slice(stopStart, stopStart + 500)
-      expect(stopBlock).toContain('stopCoControlReaper?.()')
-    })
-
-    test('lease-manager.ts\'s onPrimaryEnded hook is wired to the co-control manager — the safety property ("a grant can never outlive the hold it was subordinate to") is dead code otherwise', () => {
-      const call = extractCall(daemonSource, 'createLeaseManager({')
-      // Fires unconditionally from `release()`/`clearJobLease()` (voluntary
-      // release included, not just the automatic `onManualRevoked` paths).
-      expect(call).toContain('onPrimaryEnded: (deviceId) => coControlRef?.onPrimaryEnded(deviceId)')
-      // A takeover never calls `release()` (it is an atomic revoke-then-acquire),
-      // so `onPrimaryEnded` above never fires for it — the displaced holder's
-      // grants would silently survive the takeover without this second call
-      // inside `onManualTakenOver`.
-      expect(call).toContain('onManualTakenOver:')
-      const takenOverStart = call.indexOf('onManualTakenOver:')
-      // 2900, not 2500: plan 94 step 94.3's daemon.ts wiring (this file's own
-      // "the action recorder" describe block below) added a
-      // `stopRecordingForLeaseLost?.(deviceId)` call plus its doc comment
-      // inside this SAME `onManualTakenOver` block, ahead of
-      // `coControlRef?.onPrimaryEnded(deviceId)`, pushing it further out.
-      const takenOverBlock = call.slice(takenOverStart, takenOverStart + 2900)
-      expect(takenOverBlock).toContain('coControlRef?.onPrimaryEnded(deviceId)')
-    })
-
-    test('coControl IS threaded into createWsMessageHandler(...) (plan 91 §5 step 91.4) — the 91.2 marker comment pinning the gap is gone, replaced by the real wiring', () => {
-      // Step 91.2 left a "NOT WIRED YET ... step 91.4" comment directly above
-      // `attachWsRouter` and a test here pinning that the comment existed, so
-      // a future edit could not silently drop the gap. Step 91.4 closes the
-      // gap for real: this test now pins the OPPOSITE fact — the marker text
-      // is gone, and `createWsMessageHandler(...)`'s own call literally
-      // contains `coControl` and a live `coControlMode` accessor.
-      const attachStart = daemonSource.indexOf('const attachWsRouter = (localSessions: SessionManager | null) => {')
-      expect(attachStart).toBeGreaterThan(-1)
-      const precedingComment = daemonSource.slice(Math.max(0, attachStart - 900), attachStart)
-      expect(precedingComment).not.toContain('NOT WIRED YET')
-      const call = extractCall(daemonSource, 'createWsMessageHandler({')
-      expect(call).toContain('coControl,')
-      expect(call).toContain('coControlMode: () => settingsStore.get().coControl.mode')
-    })
-
-    test('the co-control manager broadcasts assist.changed on every grant/release (plan 91 §3.4 item 4, §5 step 91.4) — not only from the explicit assist.start/assist.stop WS messages, so TTL expiry, a WS disconnect, and the primary hold ending all reach every viewer too', () => {
-      const call = extractCall(daemonSource, 'createCoControlManager({')
-      expect(call).toContain('onGranted:')
-      expect(call).toContain('onReleased:')
-      const onGrantedStart = call.indexOf('onGranted:')
-      const onGrantedBlock = call.slice(onGrantedStart, onGrantedStart + 300)
-      expect(onGrantedBlock).toContain("hub.broadcast({ type: 'assist.changed'")
-      const onReleasedStart = call.indexOf('onReleased:')
-      const onReleasedBlock = call.slice(onReleasedStart, onReleasedStart + 300)
-      expect(onReleasedBlock).toContain("hub.broadcast({ type: 'assist.changed'")
-    })
-  })
-
-  describe('mirror groups (plan 91 §3.9, §4.7, §5 step 91.7): the WS-router construction and the F27 re-admit wiring', () => {
-    test('createWsMessageHandler(...) passes a live `states` accessor and a live `mirrorSettings` accessor — without them, MirrorManager is never constructed (`mirror.start`/`input.mirror` refuse E_NOT_SUPPORTED) and mirror.maxDevices/requireSameOrientation/aspectTolerance/dropAfterConsecutiveFailures are unconfigurable from Studio', () => {
-      const call = extractCall(daemonSource, 'createWsMessageHandler({')
-      expect(call).toContain('states,')
-      expect(call).toContain('mirrorSettings: () => settingsStore.get().mirror')
-    })
-
-    test('a `reconcileMirrorForDevice` forward-ref is declared and assigned inside attachWsRouter, the same pattern every other WS-router hook in this file already uses', () => {
-      expect(daemonSource).toContain('let reconcileMirrorForDevice: ((deviceId: string) => void) | null = null')
-      // Anchored extraction (plan 93 step 93.6 Task B), not a fixed-length
-      // slice. This test used to read `daemonSource.slice(attachStart,
-      // attachStart + 7500)` — a magic-number window that four separate
-      // workers had to widen in one day (6900→7300, 7200→7500) every time an
-      // edit landed ahead of the assignment inside `attachWsRouter`'s body.
-      // `extractCall` already brace-balances an object-literal call
-      // (`name({ ... })`) by counting `{`/`}` from its opening brace to the
-      // matching close; the SAME algorithm works unchanged here because this
-      // marker also ends in its own opening `{` (the arrow function's
-      // `(...) => {`), so it hands back the FULL `attachWsRouter` body no
-      // matter how it grows — no window to widen, ever again.
-      const attachBody = extractCall(daemonSource, 'const attachWsRouter = (localSessions: SessionManager | null) => {')
-      expect(attachBody).toContain('reconcileMirrorForDevice = handler.reconcileMirror')
-    })
-
-    test("host's onJobFinished calls reconcileMirrorForDevice — without this, an internal:install-skipped mirror member never rejoins its group when the install ends (F27)", () => {
-      // `extractCall`, not a fixed character window: this hook's body is the
-      // one every plan adds a settle-time line to, and the 1600-char window
-      // that used to be here broke the moment plan 128 inserted
-      // `traceRecorder?.flush(jobId)` (with its comment) two lines above the
-      // call being asserted — the same "widen the guess again" failure this
-      // file's own `extractCall` doc records.
-      const onFinishedBlock = extractCall(daemonSource, 'onJobFinished: (deviceId, jobId, status, durationMs) => {')
-      expect(onFinishedBlock).toContain('reconcileMirrorForDevice?.(deviceId)')
-    })
-  })
-
-  describe('attribution (plan 91 §3.6, §4.8, §5 step 91.5/91.10): the last line of the assist→child notification chain', () => {
-    /**
-     * `WsHandlerDeps.onAssist` was added by step 91.5 (`ws-handlers.ts`),
-     * called from the `input.*` branch on every accepted assist action so a
-     * running script's `ctx.onAssist` can ever fire at all. Step 91.5 could
-     * not wire the daemon.ts side itself (a concurrent worker owned this
-     * file at the time) — this test used to PIN THE GAP, failing on purpose
-     * until the line landed. Step 91.10 added the line (beside its own
-     * pre-existing `onJobCrash` neighbour) and flips this test to assert the
-     * real wiring, the same way the co-control/mirror blocks above do: it
-     * must still fail if a future edit drops the line again, exactly per
-     * `00-overview.md`'s "a failing test that fails while it is missing,
-     * naming the exact line" convention for a contested file — the failure
-     * mode just moved from "always fails until wired" to "fails only on a
-     * regression".
-     *
-     * Without this line, `ExecutorHost.notifyAssist`/`ctx.onAssist` are
-     * fully built and unit-tested in isolation (`executor-host.test.ts`,
-     * `job-runner.test.ts`) but structurally unreachable in a real boot — a
-     * running script's `ctx.onAssist` callback would never fire, silently,
-     * no error anywhere.
-     */
-    test('createWsMessageHandler(...) passes a live `onAssist` accessor reaching ExecutorHost.notifyAssist', () => {
-      const call = extractCall(daemonSource, 'createWsMessageHandler({')
-      expect(call).toContain('onAssist: (jobId, e) => host.notifyAssist(jobId, e)')
-      // Beside `onJobCrash`, not merely somewhere in the call — same
-      // neighbour-anchoring style `onManualTakenOver`'s block above uses.
-      const onJobCrashStart = call.indexOf('onJobCrash:')
-      expect(onJobCrashStart).toBeGreaterThan(-1)
-      const neighbourhood = call.slice(onJobCrashStart, onJobCrashStart + 900)
-      expect(neighbourhood).toContain('onAssist: (jobId, e) => host.notifyAssist(jobId, e)')
-    })
-  })
-
   describe('workflow executor (plan 99 §3.1, §4.7, step 99.7): constructed and registered as the kind: \'workflow\' fallback', () => {
     test('createWorkflowExecutor(...) is actually constructed and registered via executors.setFallback(workflowExecutor, \'workflow\') — not just imported and left uncalled', () => {
       // `DEFAULT_WORKFLOW_MAX_TOTAL_MS` was dropped from this import once
@@ -620,210 +472,6 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     })
   })
 
-  describe('assistedBy (plan 91 §3.4 item 4, §4.4, §5 step 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10): three more surfaces that read `[]` on a genuinely-assisted device until daemon.ts passed the accessor', () => {
-    test('createClusterRoutes(...) passes a live `assistedByOf` accessor — without it, GET /api/clusters/:id/devices reports assistedBy: [] on an assisted device', () => {
-      const call = extractCall(daemonSource, 'createClusterRoutes({')
-      expect(call).toContain('assistedByOf:')
-      expect(call).toContain('coControl.assistedBy(deviceId)')
-    })
-
-    test('createTopologyRoutes(...) passes a live `assistedByOf` accessor — without it, GET /api/topology reports assistedBy: [] on an assisted device', () => {
-      const call = extractCall(daemonSource, 'createTopologyRoutes({')
-      expect(call).toContain('assistedByOf:')
-      expect(call).toContain('coControl.assistedBy(deviceId)')
-    })
-
-    test('capContextDeps carries a live `assistedByOf` accessor — without it, ctx.listDevices()/ctx.getDevice() report assistedBy: [] on an assisted device', () => {
-      // Not a call-shaped marker (`capContextDeps` is a plain object literal, `const x: T = {`,
-      // not `name({`) — `extractCall`'s brace-balancer works identically once the marker itself
-      // ends in the opening `{`, which this one does.
-      const call = extractCall(daemonSource, 'const capContextDeps: CapabilityContextDeps = {')
-      expect(call).toContain('assistedByOf:')
-      expect(call).toContain('coControl.assistedBy(deviceId)')
-    })
-  })
-
-  describe('input arbiter settings (plan 91 §4.1, §4.5, §5 step 91.10; docs/plans/96-m61-hotfixes.md §96.13): coControl.queueWaitMs/maxQueueDepth reaching a real session', () => {
-    test('createSessionManager(...) passes live `arbiterQueueWaitMs`/`arbiterMaxQueueDepth` accessors — without them every session ran the plan\'s own hardcoded stand-in defaults (5000ms / 32) regardless of farm configuration', () => {
-      // Same disambiguation `withGuestAgentClient`'s own test above needed: a
-      // bare `'createSessionManager({'` marker matches the COMMENT above the
-      // real call first (`daemon.ts:544`, `// \`sessions = createSessionManager({
-      // onEvent, ... })\` below, well` — its own braces balance on one line).
-      const call = extractCall(daemonSource, '\n        sessions = createSessionManager({')
-      expect(call).toContain('arbiterQueueWaitMs: () => settingsStore.get().coControl.queueWaitMs')
-      expect(call).toContain('arbiterMaxQueueDepth: () => settingsStore.get().coControl.maxQueueDepth')
-    })
-
-    /**
-     * The static assertion above only proves `daemon.ts`'s TEXT contains the
-     * right accessor expressions — it would pass equally well if `manager.ts`
-     * quietly resolved the accessor to a plain number once at session-build
-     * time instead of forwarding the live function through to
-     * `createInputArbiter`, which would break the one property
-     * `input-arbiter.ts`'s own header comment promises: "read fresh on every
-     * submission", not "read once when the session opens". A helper-level
-     * test that the arbiter honours a `queueWaitMs`/`maxQueueDepth` it was
-     * directly handed already exists (`input-arbiter.test.ts`) and already
-     * passed throughout this defect's entire lifetime — it could never have
-     * caught "the one production call site never passed the accessor",
-     * because it never goes near `SessionManagerDeps` at all.
-     *
-     * This test proves the actual MECHANISM end to end instead: a real
-     * `SessionManager` (`packages/session/src/manager.ts`, unmodified — the
-     * exact module `daemon.ts` calls above), wired with the identical
-     * accessor SHAPE `daemon.ts` uses (a closure reading a mutable
-     * settings-like object, never a captured number), acquires a real
-     * session, and a setting mutated AFTER that session already exists
-     * changes the arbiter's observable behaviour on the SAME already-open
-     * session — never merely on a fresh one built after the change. That is
-     * the assertion that would have caught this gap.
-     */
-    test('a farm setting changed after a session is already open changes that SAME session\'s arbiter behaviour immediately', async () => {
-      const DEVICE_ID = 'dev-arbiter-wiring-1'
-      const snapshot: DeviceSnapshot = {
-        id: DEVICE_ID,
-        stableId: 'STABLE-ARBITER-1',
-        serial: 'SERIAL-ARBITER-1',
-        label: 'arbiter wiring test phone',
-        status: 'idle',
-        androidVersion: '15',
-        apiLevel: 35,
-        screenW: 720,
-        screenH: 1640,
-        transport: 'adb-usb',
-        display: 'screencap-loop',
-        input: 'adb-input',
-        inspection: 'uiautomator-dump',
-        preferredInputMode: 'uhid',
-        keepAwake: 'off',
-        standbyScreenOff: false,
-      }
-      const devices: DeviceSnapshotSource = { get: (id) => (id === DEVICE_ID ? snapshot : null) }
-      const silentLog = (): Logger => {
-        const l = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => l }
-        return l as unknown as Logger
-      }
-      /** Every shell command succeeds instantly; nothing touches a real device — the same `fakeClient` shape `manager.test.ts`/`session.test.ts` already use. */
-      const client = {
-        exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
-        execOut: async () => new Uint8Array(),
-      } as unknown as AdbClient
-
-      // Mutable, exactly the way `settingsStore.get()` is: a live read, not a
-      // value captured once. `daemon.ts`'s own accessors above have this SAME
-      // shape — `() => settingsStore.get().coControl.queueWaitMs` — closing
-      // over a store rather than a resolved number.
-      const farmSettings = { coControl: { queueWaitMs: 5_000, maxQueueDepth: 0 } }
-      const manager = createSessionManager({
-        client,
-        devices,
-        log: silentLog(),
-        arbiterQueueWaitMs: () => farmSettings.coControl.queueWaitMs,
-        arbiterMaxQueueDepth: () => farmSettings.coControl.maxQueueDepth,
-      })
-
-      const session = await manager.acquire(DEVICE_ID, () => {})
-      const opA = session.arbiter.for({ kind: 'job', id: 'job-1', userId: null })
-      const opB = session.arbiter.for({ kind: 'assist', id: 'op-1', userId: 'user-1' })
-
-      // maxQueueDepth: 0 right now (the current farm setting) — a second
-      // pointer-lane action arriving while one is already running must be
-      // refused immediately, never queued.
-      const blockerA = opA.tap({ x: 1, y: 1 }) // claims the pointer lane synchronously
-      await expect(opB.tap({ x: 2, y: 2 })).rejects.toMatchObject({ code: 'E_INPUT_BUSY' })
-      await blockerA
-
-      // The operator raises the setting from Studio. Nothing about this
-      // SESSION or its arbiter was rebuilt — only what the accessor above
-      // now returns.
-      farmSettings.coControl.maxQueueDepth = 5
-
-      // The identical call shape that was refused a moment ago now queues
-      // instead of being refused, on the SAME session object acquired above.
-      const blockerB = opA.tap({ x: 1, y: 1 })
-      await expect(opB.tap({ x: 2, y: 2 })).resolves.toBeUndefined()
-      await blockerB
-
-      await manager.closeAll()
-    })
-
-    test('arbiterQueueWaitMs is also read fresh on every submission — lowering it refuses a newly-queued action sooner, without rebuilding the session', async () => {
-      const DEVICE_ID = 'dev-arbiter-wiring-2'
-      const snapshot: DeviceSnapshot = {
-        id: DEVICE_ID,
-        stableId: 'STABLE-ARBITER-2',
-        serial: 'SERIAL-ARBITER-2',
-        label: 'arbiter wiring test phone 2',
-        status: 'idle',
-        androidVersion: '15',
-        apiLevel: 35,
-        screenW: 720,
-        screenH: 1640,
-        transport: 'adb-usb',
-        display: 'screencap-loop',
-        input: 'adb-input',
-        inspection: 'uiautomator-dump',
-        preferredInputMode: 'uhid',
-        keepAwake: 'off',
-        standbyScreenOff: false,
-      }
-      const devices: DeviceSnapshotSource = { get: (id) => (id === DEVICE_ID ? snapshot : null) }
-      const silentLog = (): Logger => {
-        const l = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => l }
-        return l as unknown as Logger
-      }
-      let tapCalls = 0
-      const client = {
-        exec: async (_serial: string, cmd: string) => {
-          if (cmd.startsWith('input tap')) {
-            tapCalls++
-            // The FIRST tap (the blocker) holds the pointer lane for ~150ms — long
-            // enough to comfortably observe the SECOND action's refusal land well
-            // before it, proving the short budget (not the original 10s one) was
-            // actually used.
-            if (tapCalls === 1) await Bun.sleep(150)
-          }
-          return { stdout: '', stderr: '', exitCode: 0 }
-        },
-        execOut: async () => new Uint8Array(),
-      } as unknown as AdbClient
-
-      const farmSettings = { coControl: { queueWaitMs: 10_000, maxQueueDepth: 32 } }
-      const manager = createSessionManager({
-        client,
-        devices,
-        log: silentLog(),
-        arbiterQueueWaitMs: () => farmSettings.coControl.queueWaitMs,
-        arbiterMaxQueueDepth: () => farmSettings.coControl.maxQueueDepth,
-      })
-
-      const session = await manager.acquire(DEVICE_ID, () => {})
-      const op = session.arbiter.for({ kind: 'job', id: 'job-1', userId: null })
-
-      const blocker = op.tap({ x: 1, y: 1 }) // holds the pointer lane for ~150ms
-
-      // The operator lowers the wait budget from Studio WHILE this second
-      // action is about to be submitted — `submit()` reads `queueWaitMs()`
-      // at the moment it queues a NEW action, so this must take effect for
-      // it even though the session (and the blocker already running) predate
-      // the change.
-      farmSettings.coControl.queueWaitMs = 20
-
-      const startedAt = Date.now()
-      await expect(op.tap({ x: 2, y: 2 })).rejects.toMatchObject({ code: 'E_INPUT_BUSY' })
-      const elapsedMs = Date.now() - startedAt
-      // Refused close to the LOWERED 20ms budget, well before the blocker's
-      // own ~150ms completion — proof the arbiter used the NEW value, not
-      // the original 10-second one (which would never have refused here at
-      // all: the queued action would simply have run once the blocker
-      // finished).
-      expect(elapsedMs).toBeLessThan(150)
-
-      await blocker
-      await manager.closeAll()
-    })
-  })
-
   describe('live video re-profile (plan 92 §3.8, §4.4, §5 step 92.2): the debounced settingsStore.onChange path and the manual /api/video/reprofile route', () => {
     test('settingsStore.onChange schedules a DEBOUNCED reprofile, not an immediate one — restarting a farm\'s video on every keystroke is worse than not honouring the setting at all (§3.8 rule 2)', () => {
       // Both `recomputeAdbConcurrency` (F23's own precedent, immediate — no
@@ -933,10 +581,10 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
   })
 
   describe('the command console runner (plan 93 §4.5, §5 step 93.3)', () => {
-    test('createCommandRunner(...) is actually constructed, wired to the SAME `leases` this file builds, a real shellPortFor, and the live shell settings — not just declared and left uncalled', () => {
+    test('createCommandRunner(...) is actually constructed, wired to the SAME `activities` this file builds, a real shellPortFor, and the live shell settings — not just declared and left uncalled', () => {
       const call = extractCall(daemonSource, 'createCommandRunner({')
       expect(call).toContain('store: commandRunStore')
-      expect(call).toContain('leases,')
+      expect(call).toContain('activities,')
       expect(call).toContain('shellPortFor: commandShellPortFor')
       expect(call).toContain('resolve: (target) => resolveCommandTarget(db, target)')
       expect(call).toContain('settings: () => settingsStore.get().shell')
@@ -1054,77 +702,78 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
       expect(call).toContain('recording: recordingService')
     })
 
-    test('a `stopRecordingForLeaseLost` forward-ref is declared and assigned inside attachWsRouter, the same pattern releaseLeaseHold/releaseShellSession already use', () => {
-      expect(daemonSource).toContain('let stopRecordingForLeaseLost: ((deviceId: string) => void) | null = null')
-      // Anchored extraction (plan 93 step 93.6 Task B) — see the identical
-      // comment on the `reconcileMirrorForDevice` test above for why this is
-      // `extractCall` against attachWsRouter's own opening brace, not a
-      // fixed-length slice (this one used to be `attachStart + 7300`).
+    /**
+     * Plan 205 §4.4, §4.9 replaced the deleted manual-hold subsystem's own
+     * onManualRevoked/onManualTakenOver hooks — the ONLY place the old
+     * per-holder recording-stop hook used to be called from for the automatic
+     * paths (idle timeout, quarantine, an operator's forced disconnect) —
+     * with the activity registry's own `onChange` callback, which already
+     * fires for every ended activity, for every reason. `releaseShellSession`
+     * (the terminal cwd reset, plan 26 §3.7) moved the SAME way, in the SAME
+     * place, for the SAME reason: a plain WS drop already reaches both
+     * through `handleClose` itself, but an idle-swept or quarantine-ended
+     * control marker leaves the WS connection open, so nothing else would
+     * ever call them.
+     */
+    test('a `stopRecordingForDisconnect` forward-ref is declared and assigned inside attachWsRouter, the same pattern releaseShellSession already uses', () => {
+      expect(daemonSource).toContain('let stopRecordingForDisconnect: ((deviceId: string) => void) | null = null')
       const attachBody = extractCall(daemonSource, 'const attachWsRouter = (localSessions: SessionManager | null) => {')
-      expect(attachBody).toContain('stopRecordingForLeaseLost = handler.stopRecordingForLeaseLost')
+      expect(attachBody).toContain('stopRecordingForDisconnect = handler.stopRecordingForDisconnect')
     })
 
-    test('onManualRevoked (idle timeout, quarantine, forced disconnect) calls stopRecordingForLeaseLost — without it, a recording started under a revoked lease keeps capturing whatever the NEXT holder does, with no record of where the handover happened', () => {
-      const call = extractCall(daemonSource, 'createLeaseManager({')
-      const revokedStart = call.indexOf('onManualRevoked: (deviceId, reason, holderUserId) => {')
-      expect(revokedStart).toBeGreaterThan(-1)
-      const takenOverStart = call.indexOf('onManualTakenOver:')
-      expect(takenOverStart).toBeGreaterThan(revokedStart)
-      const revokedBlock = call.slice(revokedStart, takenOverStart)
-      expect(revokedBlock).toContain('stopRecordingForLeaseLost?.(deviceId)')
-    })
-
-    test('onManualTakenOver ALSO calls stopRecordingForLeaseLost — a takeover revokes and acquires atomically without ever calling release(), so onManualRevoked never fires for it (the same reason this hook separately re-runs releaseShellSession/releaseLeaseReadinessHold/coControlRef.onPrimaryEnded above it)', () => {
-      const call = extractCall(daemonSource, 'createLeaseManager({')
-      const takenOverStart = call.indexOf('onManualTakenOver:')
-      expect(takenOverStart).toBeGreaterThan(-1)
-      const takenOverBlock = call.slice(takenOverStart, takenOverStart + 2000)
-      expect(takenOverBlock).toContain('stopRecordingForLeaseLost?.(deviceId)')
+    test("the activity registry's onChange calls releaseShellSession AND stopRecordingForDisconnect when a `control` marker ends — without this, an idle-swept or quarantine-ended marker leaves a stale emulated cwd and an open recording running forever, because the WS connection never closes for either path", () => {
+      const call = extractCall(daemonSource, 'const activities: ActivityRegistry = createActivityRegistry({')
+      const onChangeStart = call.indexOf('onChange: (deviceId, change, activity, lastControl) => {')
+      expect(onChangeStart).toBeGreaterThan(-1)
+      const onChangeBlock = call.slice(onChangeStart)
+      const guardStart = onChangeBlock.indexOf("change === 'ended' && activity.kind === 'control'")
+      expect(guardStart).toBeGreaterThan(-1)
+      const guardedBlock = onChangeBlock.slice(guardStart, guardStart + 300)
+      expect(guardedBlock).toContain('releaseShellSession?.(deviceId)')
+      expect(guardedBlock).toContain('stopRecordingForDisconnect?.(deviceId)')
     })
 
     /**
-     * The four static pins above only prove `daemon.ts`'s TEXT contains the
+     * The three static pins above only prove `daemon.ts`'s TEXT contains the
      * right wiring — this test proves the actual MECHANISM, the same
      * "surface, not the helper" standard `withGuestAgentClient`'s own
-     * end-to-end test above holds itself to: a real `LeaseManager`, wired
-     * with the identical forward-ref SHAPE `daemon.ts` uses (`onManualRevoked`
-     * calling a closure that is only assigned once the real `RecordingService`-
-     * backed WS router exists), starts a recording over the real WS surface
-     * and then loses its lease through `leases.releaseDevice(...)` — the
-     * operator-forced-disconnect/quarantine/idle-timeout path, deliberately
-     * NEVER `lease.release`, which already worked before this task (that path
-     * calls `deps.recording?.stopForLeaseLost` inline in `ws-handlers.ts` and
-     * proves nothing about the gap this task closes).
+     * end-to-end test above holds itself to: a real `ActivityRegistry`,
+     * wired with the identical forward-ref SHAPE `daemon.ts` uses
+     * (`onChange` calling a closure that is only assigned once the real
+     * `RecordingService`-backed WS router exists), starts a recording over
+     * the real WS surface and then loses its control marker through
+     * `activities.endWhere(...)` — the operator-forced-disconnect/
+     * quarantine/idle-timeout path, deliberately never a `recording.stop`
+     * WS message, which already worked before this task and proves nothing
+     * about the gap this task closes.
      */
-    test('a lease revoked through leases.releaseDevice (never lease.release) ends an open recording, wired the exact way daemon.ts wires it', async () => {
+    test('a control marker ended through activities.endWhere (never an explicit recording.stop) ends an open recording, wired the exact way daemon.ts wires it', async () => {
       const opened = openDb(':memory:')
       runMigrations(opened.db)
       const db: Db = opened.db
-      db.insert(devices).values({ id: 'dev-1', stableId: 'stable-dev-1', serial: 'serial-dev-1', label: 'recorder wiring phone', status: 'idle' }).run()
+      db.insert(devices).values({ id: 'dev-1', stableId: 'stable-dev-1', serial: 'serial-dev-1', label: 'recorder wiring phone', status: 'online' }).run()
 
       const log = createLogger('test')
       const states = createDeviceStateMachine({ db, log })
-      const jobStore = createJobStore(db)
 
       // The SAME forward-ref pattern `daemon.ts` uses for
-      // `releaseShellSession`/`releaseLeaseHold`/`stopRecordingForLeaseLost`:
-      // declared before the lease manager (which closes over it inside
-      // `onManualRevoked`) and assigned only once the WS router — which owns
-      // the real `RecordingService` handle — exists below.
-      let stopRecordingForLeaseLost: ((deviceId: string) => void) | null = null
+      // `releaseShellSession`/`stopRecordingForDisconnect`: declared before
+      // the activity registry (which closes over it inside `onChange`) and
+      // assigned only once the WS router — which owns the real
+      // `RecordingService` handle — exists below.
+      let stopRecordingForDisconnect: ((deviceId: string) => void) | null = null
 
-      const leases = createLeaseManager({
-        states,
-        jobStore,
-        config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
+      const activities = createActivityRegistry({
         log,
-        onJobLeaseExpired: () => {},
-        // Mirrors daemon.ts's real `onManualRevoked` for the ONE line this
-        // task adds — the other side effects it also performs (shell
-        // session, readiness hold, audit trail) are unrelated to this gap
-        // and are already covered by their own pre-existing tests.
-        onManualRevoked: (deviceId) => {
-          stopRecordingForLeaseLost?.(deviceId)
+        controlIdleSec: () => 30,
+        // Mirrors daemon.ts's real `onChange` for the ONE line this task
+        // adds — the broadcast/event-log side effects it also performs are
+        // unrelated to this gap and are already covered by their own
+        // pre-existing tests.
+        onChange: (deviceId, change, activity) => {
+          if (change === 'ended' && activity.kind === 'control') {
+            stopRecordingForDisconnect?.(deviceId)
+          }
         },
       })
 
@@ -1203,7 +852,9 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
             throw new Error('not used')
           },
         },
-        leases,
+        activities,
+        controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+        states,
         jobs: {
           enqueue: () => {
             throw new Error('not used')
@@ -1213,7 +864,6 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
           },
           get: () => null,
           list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-          assists: () => [],
           nodes: () => ({ items: [], finalized: false }),
           resume: () => {
             throw new Error('not used')
@@ -1236,7 +886,7 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
       }
       const handler = createWsMessageHandler(deps)
       // The exact assignment `daemon.ts`'s own `attachWsRouter` makes once the handler exists.
-      stopRecordingForLeaseLost = handler.stopRecordingForLeaseLost
+      stopRecordingForDisconnect = handler.stopRecordingForDisconnect
 
       const sent: ServerMessage[] = []
       const ws = {
@@ -1246,24 +896,23 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
         getBufferedAmount: () => 0,
       } as unknown as ServerWebSocket<unknown>
       handler.handleOpen(ws)
-      await handler.handleMessage(ws, JSON.stringify({ type: 'lease.acquire', id: 'l1', payload: { deviceId: 'dev-1' } }))
+      activities.touchControl('dev-1', 'client-1', { kind: 'user', id: 'u1', label: 'operator@enkaku' })
 
       await handler.handleMessage(ws, JSON.stringify({ type: 'recording.start', id: 'r1', payload: { deviceId: 'dev-1' } }))
       const startReply = sent.find((m) => m.type === 'recording.state' && m.id === 'r1')
       expect(startReply?.type === 'recording.state' ? startReply.payload : undefined).toMatchObject({ active: true, stepCount: 0 })
       expect(recordingService.get('dev-1')).not.toBeNull()
 
-      // NOT `lease.release` — the automatic-revocation path (idle timeout,
-      // quarantine, an operator's forced Disconnect), which real
-      // `LeaseManager` internals and `AdbCycleReport`'s drain both reach
-      // through `releaseDevice`/`release(..., reason)`, never through the WS
-      // `lease.release` message this gap's OWN feature already handled
-      // before this task.
-      const released = leases.releaseDevice?.('dev-1', 'quarantined')
-      expect(released).toBe(true)
+      // NOT a `recording.stop` WS message — the automatic-revocation path
+      // (idle timeout, quarantine, an operator's forced disconnect), which
+      // the real `ActivityRegistry`'s idle sweep and `AdbCycleReport`'s
+      // drain both reach through `endWhere`, never through an explicit
+      // client message.
+      const ended = activities.endWhere((deviceId) => deviceId === 'dev-1')
+      expect(ended).toBe(1)
 
       // The session is dropped from the registry SYNCHRONOUSLY inside
-      // `stopForLeaseLost` (`recording/service.ts`'s `finishAndReport`), but
+      // `stopForDisconnect` (`recording/service.ts`'s `finishAndReport`), but
       // building the finished `RecordingDoc` (`finishAndBuild()`) is async —
       // give its promise chain a few microtask turns to settle, the same
       // pattern `ws-handlers-recording.test.ts`'s own maxSteps-bound test uses.

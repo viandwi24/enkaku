@@ -10,7 +10,7 @@ import type { ExecutorContext, JobExecutor } from '../executor'
  * beside `internal:sleep`, so a batch install across a cluster reuses plan
  * 20's concurrency, ordering, reporting, and cancel with NO new
  * orchestration: the batch machinery already runs one job per target
- * device and already holds a job lease per device; this executor's only job
+ * device and already holds a job heartbeat per device; this executor's only job
  * is to turn `{ artifactId }` into one `TransferService.install` call and
  * honour `ctx.signal` the same way any other executor does.
  */

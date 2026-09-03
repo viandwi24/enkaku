@@ -27,11 +27,9 @@ export type NormGestureSample = z.infer<typeof NormGestureSampleSchema>
  * F28). `InputTapMessage` … `InputGestureMessage` below are rebuilt from
  * these fields, WIRE-IDENTICAL to what shipped before this plan — every
  * existing input-message test still passes unchanged against the rebuilt
- * schemas. `MirrorActionSchema` (plan 91 §3.8, §4.4) is the second consumer:
- * the same five bodies, minus `deviceId` — a mirrored action fans out to
- * every live member of a group from one message, so the device id belongs on
- * each `MirrorResult` (`./co-control.ts`), never repeated on the action
- * itself.
+ * schemas. `InputActionSchema` (MVP 15 §1) is the second consumer: the same
+ * five bodies, minus `deviceId` — one input action, verb-tagged, the shape a
+ * client-side fan-out sends per device (MVP 15 §1).
  *
  * Each value here is a plain field map (not a `z.object()`), spread directly
  * into a message's `payload`, because `input.*`'s wire payload is flat
@@ -119,18 +117,17 @@ export const InputGestureMessage = z.object({
 })
 
 /**
- * One mirrored input action (plan 91 §3.8, §4.4) — verb-tagged, built from
- * the SAME five bodies `InputTapMessage`…`InputGestureMessage` use above, so
- * a mirrored action can never accept something a single-device action would
- * refuse (or vice versa). No `deviceId` here: `input.mirror`'s envelope
- * (`./co-control.ts`) carries one `groupId` and fans the action out to every
- * live member; the per-device outcome comes back as a `MirrorResult`.
+ * One input action, verb-tagged, the shape a client-side fan-out sends per
+ * device (MVP 15 §1) — built from the SAME five bodies
+ * `InputTapMessage`…`InputGestureMessage` use above, so a fanned-out action
+ * can never accept something a single-device action would refuse (or vice
+ * versa).
  */
-export const MirrorActionSchema = z.discriminatedUnion('verb', [
+export const InputActionSchema = z.discriminatedUnion('verb', [
   z.object({ verb: z.literal('tap'), ...INPUT_ACTION_BODIES.tap }),
   z.object({ verb: z.literal('swipe'), ...INPUT_ACTION_BODIES.swipe }),
   z.object({ verb: z.literal('gesture'), ...INPUT_ACTION_BODIES.gesture }),
   z.object({ verb: z.literal('key'), ...INPUT_ACTION_BODIES.key }),
   z.object({ verb: z.literal('text'), ...INPUT_ACTION_BODIES.text }),
 ])
-export type MirrorAction = z.infer<typeof MirrorActionSchema>
+export type InputAction = z.infer<typeof InputActionSchema>

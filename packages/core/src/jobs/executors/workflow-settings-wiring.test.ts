@@ -140,7 +140,7 @@ describe('a changed farm setting reaches the workflow executor\'s clock, in a ma
       params: null,
       priority: 0,
       status: 'running',
-      leaseExpiresAt: null,
+      heartbeatExpiresAt: null,
       result: null,
       error: null,
       createdAt: new Date(),
@@ -159,7 +159,6 @@ describe('a changed farm setting reaches the workflow executor\'s clock, in a ma
       depth: 0,
       triggerKey: null,
       peakRssBytes: null,
-      assistCount: 0,
       maxConcurrent: null,
       // Plan 98 §3.8, §4.4, step 98.7 — null here: a bare fixture row, no
       // per-job override exercised by this file's own test.
@@ -254,7 +253,6 @@ describe('a changed farm setting reaches the workflow executor\'s clock, in a ma
           return { ok: true, value: null }
         },
         abort: () => true,
-        notifyAssist: () => false,
       }
       const executor = createWorkflowExecutor({ ...deps, runner })
 
@@ -283,7 +281,6 @@ describe('a changed farm setting reaches the workflow executor\'s clock, in a ma
           return { ok: true, value: null }
         },
         abort: () => true,
-        notifyAssist: () => false,
       }
       const executor = createWorkflowExecutor({ ...deps, runner })
       const result = await executor.run({ ...makeJobRow(), id: 'job-2' }, makeCtx())

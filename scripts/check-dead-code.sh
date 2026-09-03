@@ -133,7 +133,7 @@ gonew view-not-built "VIEW_NOT_BUILT" plugins
 gone  lockfile      "werift|reflect-metadata|tsyringe" bun.lock
 
 present networking-version '"version": "3.0.0"' plugins/networking/package.json
-present proxy-manager-version '"version": "0.11.1"' plugins/proxy-manager/package.json
+present proxy-manager-version '"version": "0.11.2"' plugins/proxy-manager/package.json
 
 # labelling.ts carried three raw control bytes (0x00, 0x1f, 0x7f) inside a
 # regex character class, which made `grep` skip the file as binary (docs/mvp/13 B.2).

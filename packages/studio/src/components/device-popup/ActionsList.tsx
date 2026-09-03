@@ -146,7 +146,7 @@ function Row({
 /**
  * The device popup's `Actions` tab (plan 103 §3.3, §4.2, §5 steps 103.3–
  * 103.6) — `Reconnect · Disconnect · [Move to the network…, USB only] ·
- * Install apk · Adb command · Run script · Wake/Sleep · Assist · Files ·
+ * Install apk · Adb command · Run script · Wake/Sleep · Files ·
  * Jobs · Settings · Forget · Open full device page`, in that exact order.
  * Every ACTION dialog opened from here goes through 103.1's non-modal path
  * (`nonModal` on each dialog) so the live screen beside this list stays
@@ -155,10 +155,8 @@ function Row({
  * sectioned Settings popup (step 103.6) are always non-modal, with no
  * toggle, since nothing else ever opens them.
  *
- * Every row is real. Eleven open their existing dialog/popup
- * (`RunScriptDialog`, `AssistDialog` — that ONE dialog instance is owned and
- * rendered by `DevicePopup` itself, since its countdown banner lives above
- * the tabs; this row only calls `onAssistSelect` — `DisconnectDeviceDialog`,
+ * Every row is real. Ten open their existing dialog/popup
+ * (`RunScriptDialog`, `DisconnectDeviceDialog`,
  * `CutoverDialog`, `ForgetDeviceDialog`, `InstallBatchDialog`, `JobsPopup`,
  * `FilesPopup`, `SettingsPopup`, `AdbCommandDialog`); two need no dialog at
  * all (Reconnect fires directly; Wake/Sleep reuses `ReadinessControl`
@@ -210,11 +208,10 @@ function Row({
  * `wakeOrSleepSelected` already used, moved here rather than reinvented),
  * and Forget opens `BulkForgetDialog` (fleet-wide typed confirmation)
  * instead of the single-device `ForgetDeviceDialog`. This also fixes a
- * latent gap in `DevicePopup` itself: opening the popup with a live Wall
- * selection behind it already arms Mirror and states "Input reaches N
- * devices" (plan 104 §3.3), but Wake/Sleep/Forget from the SAME Actions tab
- * silently touched only the one focused device until now — not a
- * context-menu-only fix.
+ * latent gap: a live Wall selection behind the popup used to change what
+ * Reconnect/Install/Run script offered but not Wake/Sleep/Forget from the
+ * SAME Actions tab, which silently touched only the one focused device until
+ * now — not a context-menu-only fix.
  *
  * **Not every old context-menu capability gained a row.** "Push file…" /
  * "Pull file…" (`BulkTransferDialog`) and "Apply labels" (`POST
@@ -259,20 +256,17 @@ export function ActionsList({
   device,
   devices,
   selectedIds = [],
-  assistState,
   canUseLive,
-  onAssistSelect,
   onDeviceReloaded,
   onForgotten,
 }: {
   deviceId: string
   device: DeviceDetailInfo
   /**
-   * Plan 104 (M69) §3.2 — the Wall's full (unfiltered) device list, the
-   * same pool `DevicePopup` already carries for Mirror's own candidate set.
-   * Every action dialog opened from this list that offers `devices`/
-   * `cluster` modes needs the WHOLE pool to pick from, not just this one
-   * focused device.
+   * Plan 104 (M69) §3.2 — the Wall's full (unfiltered) device list. Every
+   * action dialog opened from this list that offers `devices`/`cluster`
+   * modes needs the WHOLE pool to pick from, not just this one focused
+   * device.
    */
   devices: DeviceInfo[]
   /**
@@ -283,17 +277,8 @@ export function ActionsList({
    * single-device default until it is wired to the Wall's own state.
    */
   selectedIds?: readonly string[]
-  /**
-   * `'unavailable'` — nobody holds the device, Assist has nothing to do.
-   * `'off'` — the farm turned co-control off.
-   * `'busy'` — already assisting; the countdown/Stop-assisting control lives
-   *   in the banner above the tabs, not duplicated here.
-   * `'available'` — the row is a live button.
-   */
-  assistState: 'unavailable' | 'off' | 'busy' | 'available'
-  /** `iHoldControl && !busy` — the real manual lease, never an Assist grant. Gates the Files popup's own mutating controls, the same fact the device page's Files tab reads. */
+  /** `online` (plan 205 §4.9) — gates the Files popup's own mutating controls, the same fact the device page's Files tab reads. */
   canUseLive: boolean
-  onAssistSelect: () => void
   /** Called after Reconnect, Disconnect, Cutover, or a Settings save changes the device — the caller re-fetches it. */
   onDeviceReloaded: () => void
   /** Called after a successful Forget/Block — the device just left the fleet, so the caller closes the whole popup. */
@@ -408,7 +393,7 @@ export function ActionsList({
    * Group F). The label stays BARE and the number rides beside it, never a
    * pre-composed `#7 …` string: `SkippedGroups` renders the pair itself now
    * (`NamedOutcome.number`), so composing here would print the number twice —
-   * the same trap §10 records for `MirrorMember`.
+   * the same trap §10 records for a similarly-shaped row type.
    */
   const outcomeNameOf = (id: string) => {
     const found = devices.find((d) => d.id === id)
@@ -701,20 +686,6 @@ export function ActionsList({
                 : device.agent !== 'ready'
                   ? 'The Enkaku guest agent is not installed on this device — the wallpaper label needs it.'
                   : null
-        }
-      />
-      <Row
-        icon={ListChecks}
-        label={assistState === 'busy' ? 'Assisting' : 'Assist'}
-        onSelect={assistState === 'available' ? onAssistSelect : undefined}
-        disabledReason={
-          assistState === 'unavailable'
-            ? 'Only needed while someone else holds this device.'
-            : assistState === 'off'
-              ? 'Assisting is turned off for this farm.'
-              : assistState === 'busy'
-                ? 'Already assisting — see the banner above for the countdown and Stop assisting.'
-                : null
         }
       />
       <Row icon={FolderOpen} label="Files" onSelect={() => setFilesOpen(true)} />

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentStateSchema, ConnectionMediumSchema, DeviceConnectionSchema, DeviceInfoSchema, LeaseHolderSchema } from '../device'
+import { AgentStateSchema, ConnectionMediumSchema, DeviceConnectionSchema, DeviceInfoSchema } from '../device'
 import { DeviceEventSchema } from '../messages/device-event'
 import { DeviceReadinessSchema } from '../readiness'
 import { NetworkEngineIdSchema, RouteCheckSchema, tagUntaggedRouteConfig } from '../network'
@@ -489,7 +489,7 @@ export const DeviceNetworkStatusResponseSchema = z.object({
    * The full union as of step 114.6 (plan 114 §4.1), no longer the VPN arm
    * alone — Studio's `NetworkRouteForm` now switches on `config.engine`
    * instead of reading `config.host`/`config.udpMode` unconditionally, and
-   * its hand-written `NetworkConfig` mirror is gone in favour of the types
+   * its hand-written `NetworkConfig` reflection is gone in favour of the types
    * exported above.
    *
    * `Stored…` rather than the bare union on purpose: this is a RESPONSE, and
@@ -737,7 +737,7 @@ export type DeviceNetworkCredentialRevealResponse = z.infer<typeof DeviceNetwork
  *
  * Skips — nothing was written to the phone:
  * - `E_DEVICE_OFFLINE`   the phone is not reachable.
- * - `E_DEVICE_HELD`      somebody else is driving it; bulk never takes over (§9 Q2).
+ * - `E_DEVICE_CONFLICT`  a conflicting activity is already on the device; bulk never overrides it (§9 Q2, plan 205 §4.9).
  * - `E_AGENT_NOT_READY`  VPN was asked for and this phone's guest agent is not ready.
  * - `E_UNSUPPORTED`      this phone cannot run the agent at all (an old phone is not a broken one).
  *
@@ -747,7 +747,7 @@ export type DeviceNetworkCredentialRevealResponse = z.infer<typeof DeviceNetwork
  * - `E_ROUTE_LOCK_HELD`      an incumbent route could not be turned off first.
  * - anything else, carrying its own code and message.
  */
-export const DEVICE_NETWORK_APPLY_SKIP_CODES = ['E_DEVICE_OFFLINE', 'E_DEVICE_HELD', 'E_AGENT_NOT_READY', 'E_UNSUPPORTED'] as const
+export const DEVICE_NETWORK_APPLY_SKIP_CODES = ['E_DEVICE_OFFLINE', 'E_DEVICE_CONFLICT', 'E_AGENT_NOT_READY', 'E_UNSUPPORTED'] as const
 
 /**
  * `GET/POST/DELETE /api/devices/:id/guest-agent` — bare, no wrapper.

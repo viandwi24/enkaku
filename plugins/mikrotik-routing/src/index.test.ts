@@ -16,7 +16,7 @@ import verifyEgressScript from './verify-egress'
 describe('the plugin manifest', () => {
   test('definePlugin accepts it — id, version, and four member scripts (122.10 adds three)', () => {
     expect(plugin.id).toBe('mikrotik-routing')
-    expect(plugin.version).toBe('0.13.0')
+    expect(plugin.version).toBe('0.13.1')
     expect(plugin.scripts).toHaveLength(4)
     expect(plugin.scripts.map((s) => s.id)).toEqual(['check', 'verify-egress', 'discover-lan-ip', 'activate-group'])
   })

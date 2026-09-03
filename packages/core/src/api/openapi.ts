@@ -48,7 +48,7 @@ export function buildOpenApiDocument(registry: CapabilityRegistry, version: stri
         summary: cap.description.split('. ')[0] ?? cap.id,
         description: cap.description,
         'x-permission': cap.permission,
-        'x-lease': cap.lease,
+        'x-activity': cap.activity ?? null,
         'x-deadline-ms': cap.deadline,
         'x-effect': cap.effect,
         requestBody: {
@@ -71,7 +71,7 @@ export function buildOpenApiDocument(registry: CapabilityRegistry, version: stri
           '400': { description: 'Bad input, or a domain refusal.', content: { 'application/json': { schema: REFUSAL_RESPONSE_SCHEMA } } },
           '403': { description: 'Missing permission or device grant.', content: { 'application/json': { schema: REFUSAL_RESPONSE_SCHEMA } } },
           '404': { description: 'The referenced resource does not exist.', content: { 'application/json': { schema: REFUSAL_RESPONSE_SCHEMA } } },
-          '409': { description: 'Needs the control lease, or the device/job is not in a usable state.', content: { 'application/json': { schema: REFUSAL_RESPONSE_SCHEMA } } },
+          '409': { description: 'Conflicts with another live activity, or the device/job is not in a usable state.', content: { 'application/json': { schema: REFUSAL_RESPONSE_SCHEMA } } },
           '504': { description: 'Exceeded the capability\'s deadline.', content: { 'application/json': { schema: REFUSAL_RESPONSE_SCHEMA } } },
         },
       },

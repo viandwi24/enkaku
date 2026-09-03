@@ -53,8 +53,8 @@ const CreateBody = z.object({
   target: CommandTargetSchema,
   /**
    * The requesting browser tab's WS session id — same pattern and reasoning
-   * as `api/transfer.ts`'s `InstallBody.clientId` (plan 93 §3.17): a manual
-   * lease's holder IS a WS `clientId`, and HTTP has no native notion of one.
+   * as `api/transfer.ts`'s `InstallBody.clientId` (plan 93 §3.17): a control
+   * marker's actor IS a WS `clientId`, and HTTP has no native notion of one.
    */
   clientId: z.string().min(1),
   stageFirstN: z.number().int().min(0).optional(),

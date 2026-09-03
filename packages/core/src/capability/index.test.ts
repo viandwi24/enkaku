@@ -49,13 +49,15 @@ describe('the real capability registry (plan 63 §4.3, acceptance #1-3)', () => 
     }
   })
 
-  test('every capability has all eight fields non-empty (acceptance #1)', () => {
+  test('every capability has all seven required fields non-empty, and a well-formed activity when it declares one (acceptance #1)', () => {
     for (const { cap } of allCapabilitySources()) {
       expect(cap.id.length).toBeGreaterThan(0)
       expect(cap.permission.length).toBeGreaterThan(0)
       expect(cap.description.length).toBeGreaterThan(10)
       expect(cap.deadline).toBeGreaterThan(0)
-      expect(['none', 'device', 'control']).toContain(cap.lease)
+      if (cap.activity) {
+        expect(['control', 'job', 'workflow-job', 'install', 'transfer', 'prep', 'command', 'agent', 'network-apply', 'wake', 'read']).toContain(cap.activity.kind)
+      }
       expect(['read', 'write', 'destructive']).toContain(cap.effect)
     }
   })

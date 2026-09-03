@@ -26,7 +26,7 @@ export const deviceFind = defineCapability({
   // instead of the narrowed `{ ok:false, reason:'not-found' }` placeholder.
   output: FindOutcomeSchema,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 10_000,
   effect: 'read',
   description:
@@ -45,7 +45,7 @@ export const deviceDump = defineCapability({
   input: DumpArgsSchema.extend({ deviceId: z.string() }),
   output: UiNodeSchema,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 15_000,
   effect: 'read',
   description:
@@ -80,7 +80,7 @@ export const deviceWaitFor = defineCapability({
   input: WaitForArgsSchema.extend({ deviceId: z.string() }),
   output: WaitForOutput,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 65_000,
   effect: 'read',
   description:
@@ -117,7 +117,7 @@ export const deviceScreenshot = defineCapability({
   input: ScreenshotArgsSchema.extend({ deviceId: z.string() }),
   output: ScreenshotOutput,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 10_000,
   effect: 'read',
   description: 'Take a screenshot of the device right now. Returns a base64-encoded PNG.',

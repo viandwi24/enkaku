@@ -7,18 +7,15 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, cn } from '@e
  * Every screen uses this component instead of styling its own — that is what
  * keeps "busy" looking identical wherever it appears.
  */
+/** Plan 205 §4.9 — `DeviceStatus` shrank to `offline`/`online`/`quarantined`; what used to be `idle`/`manual`/`busy` is now the live `activities` list (`ActivityBadge`), not this status word. */
 const DEVICE_LABEL: Record<DeviceStatus, string> = {
-  idle: 'ready',
-  manual: 'controlled',
-  busy: 'running a job',
-  offline: 'disconnected',
+  offline: 'offline',
+  online: 'online',
   quarantined: 'quarantined',
 }
 
 const DEVICE_TONE: Record<DeviceStatus, string> = {
-  idle: 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  manual: 'text-led-active border-led-active/35 bg-led-active/10',
-  busy: 'text-led-active border-led-active/35 bg-led-active/10',
+  online: 'text-led-ok border-led-ok/35 bg-led-ok/10',
   offline: 'text-fg-subtle border-line bg-transparent',
   quarantined: 'text-led-danger border-led-danger/40 bg-led-danger/10',
 }

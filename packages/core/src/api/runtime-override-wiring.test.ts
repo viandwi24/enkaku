@@ -63,8 +63,6 @@ const CEILING_FARM: JobSettings = {
   resetStrict: false,
   retry: { maxInfraAttempts: 3, backoffBaseMs: 500, backoffMaxMs: 5_000, timeoutIsInfra: true, rebindOnInfra: true },
   crashPolicy: 'declared',
-  quietPeriodSec: 0,
-  maxWaitSec: 0,
   defaultTimeoutMs: 3_600_000,
   startupTimeoutMs: 5_000,
   maxTimeoutMs: 4_000_000, // the ceiling these tests exercise

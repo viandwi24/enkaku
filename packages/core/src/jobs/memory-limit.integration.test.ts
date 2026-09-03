@@ -6,8 +6,7 @@ import { createDevSlotStore } from '../plugins/dev-slots'
 import { createScriptRegistry } from '../scripts/registry'
 import { createJobStore } from '../queue/job-store'
 import type { DeviceHealth } from '../device/health'
-import type { DeviceStateMachine } from '../device/state-machine'
-import type { LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import type { Logger } from '../util/logger'
 import { ExecutorRegistry } from './executor'
 import { createExecutorHost } from './executor-host'
@@ -60,7 +59,7 @@ function setUpDb(): Db {
 }
 
 function seedDevice(db: Db, id: string) {
-  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'idle' }).run()
+  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'online' }).run()
 }
 
 /**
@@ -155,24 +154,7 @@ async function runOneMemoryHogJob(opts: {
   const executors = new ExecutorRegistry()
   executors.setFallback(createScriptExecutor({ registry, runner }))
 
-  const states: DeviceStateMachine = { apply: () => ({ changed: true, from: 'busy', to: 'idle' }), current: () => 'busy' }
-  const leases: LeaseManager = {
-    acquireManual: () => {
-      throw new Error('not used')
-    },
-    touchManual: () => {},
-    releaseManual: () => false,
-    releaseAllForClient: () => {},
-    noteJobLease: () => {},
-    clearJobLease: () => {},
-    getLease: () => null,
-    getHolder: () => null,
-    lastManualReleaseAt: () => null,
-    lastManualHolder: () => null,
-    checkInputAllowed: () => ({ ok: true }),
-    startReaper: () => {},
-    stopReaper: () => {},
-  }
+  const activities = createActivityRegistry({ log: silentLog() as never, controlIdleSec: () => 30, onChange: () => {} })
   // Plan 98 §3.6, acceptance #5 — a memory breach must NEVER feed plan 23's
   // health tracker. `note` pushes onto `opts.blamed`, asserted empty by the caller.
   const health: DeviceHealth = { note: (serial) => opts.blamed.push(serial), consecutiveFailures: () => 0, start: () => {}, stop: () => {} }
@@ -180,8 +162,7 @@ async function runOneMemoryHogJob(opts: {
   const host = createExecutorHost({
     registry: executors,
     jobStore,
-    states,
-    leases: () => leases,
+    activities: () => activities,
     log: silentLog(),
     jobTtlSec: 60,
     heartbeatMs: 5000,

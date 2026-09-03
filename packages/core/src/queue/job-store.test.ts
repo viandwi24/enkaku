@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb, runMigrations, type Db } from '../db'
-import { batches, deviceEvents, devices, jobNodes, jobs } from '../db/schema'
+import { batches, devices, jobNodes, jobs } from '../db/schema'
 import { createJobStore, parseJobRuntimeOverride, rowToJobInfo } from './job-store'
 
 /**
@@ -23,7 +23,7 @@ function setUp() {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' | 'offline' = 'idle') {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' | 'quarantined' = 'online') {
   db.insert(devices)
     .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status })
     .run()
@@ -90,6 +90,53 @@ describe('claimNext — standalone jobs', () => {
 
     const second = store.claimNext(60)
     expect(second).toBeNull()
+  })
+
+  /**
+   * Plan 205 §4.7, §5 step 205.4: the claim gate replaces `d.status = 'idle'`
+   * with `d.status = 'online'` plus `NOT EXISTS (running job on this
+   * device)`, so a device with a running job is never claimed twice even
+   * though `devices.status` itself no longer flips to "busy" (plan 205 §3.2
+   * item 5, one-job-per-device moves into SQL).
+   */
+  test('two queued jobs on one online device claim one at a time — a device with a running job is never claimed twice', () => {
+    const db = setUp()
+    const store = createJobStore(db)
+    seedDevice(db, 'd1')
+    const first = seedJob(db, { deviceId: 'd1', createdAt: new Date(1_700_000_000_000) })
+    const second = seedJob(db, { deviceId: 'd1', createdAt: new Date(1_700_000_001_000) })
+
+    const claimed1 = store.claimNext(60)
+    expect(claimed1?.job.id).toBe(first)
+    expect(claimed1?.job.status).toBe('running')
+
+    // devices.status is never flipped to "busy" any more; the device row
+    // itself stays 'online' the whole time (plan 205 §4.6).
+    const device = db.select().from(devices).where(eq(devices.id, 'd1')).get()
+    expect(device?.status).toBe('online')
+
+    // The second queued job cannot claim the SAME device while the first is running.
+    const claimed2 = store.claimNext(60)
+    expect(claimed2).toBeNull()
+
+    // Once the first job finishes, the second becomes claimable.
+    store.finish(first, 'success', { result: 'ok' })
+    const claimed3 = store.claimNext(60)
+    expect(claimed3?.job.id).toBe(second)
+  })
+
+  test('claiming writes heartbeat_expires_at, not the deleted lease_expires_at column', () => {
+    const db = setUp()
+    const store = createJobStore(db)
+    seedDevice(db, 'd1')
+    const jobId = seedJob(db, { deviceId: 'd1' })
+
+    const claimed = store.claimNext(60)
+    expect(claimed?.job.id).toBe(jobId)
+    expect(claimed?.job.heartbeatExpiresAt).not.toBeNull()
+
+    const row = store.get(jobId)
+    expect(row?.heartbeatExpiresAt).not.toBeNull()
   })
 })
 
@@ -186,101 +233,6 @@ describe('parseJobRuntimeOverride (plan 98 §3.8, §4.4, step 98.7)', () => {
   })
 })
 
-/**
- * Plan 91 §3.5, §4.9, §5 step 91.5 — the range query behind `GET
- * /api/jobs/:id/assists`, run against a REAL SQLite `device_events` table
- * (not a hand-shaped fixture), the same DB path the real endpoint uses.
- */
-describe('assists (plan 91 §3.5, §4.9)', () => {
-  test('finds a non-job input event on the job device within its run window, and excludes everything else', () => {
-    const db = setUp()
-    const store = createJobStore(db)
-    seedDevice(db, 'd1')
-    const jobId = seedJob(db, { deviceId: 'd1' })
-    db.update(jobs)
-      .set({ startedAt: new Date(1_700_000_000_000), finishedAt: new Date(1_700_000_100_000) })
-      .where(eq(jobs.id, jobId))
-      .run()
-
-    // Inside the window, human-attributed — a real assist.
-    db.insert(deviceEvents)
-      .values({ id: 'ev-1', deviceId: 'd1', stream: 'input', kind: 'input.tap', actor: 'user-1', meta: { assist: true, jobId }, at: new Date(1_700_000_050_000) })
-      .run()
-    // Inside the window, but job-attributed (F3: this cannot happen through
-    // the real recorder today, but the filter must still exclude it if it
-    // ever did — matching the plan's own literal query).
-    db.insert(deviceEvents)
-      .values({ id: 'ev-2', deviceId: 'd1', stream: 'input', kind: 'input.tap', actor: `job:${jobId}`, meta: null, at: new Date(1_700_000_060_000) })
-      .run()
-    // Outside the window entirely (before the job started).
-    db.insert(deviceEvents)
-      .values({ id: 'ev-3', deviceId: 'd1', stream: 'input', kind: 'input.tap', actor: 'user-1', meta: null, at: new Date(1_699_999_000_000) })
-      .run()
-    // Outside the window entirely (after the job finished).
-    db.insert(deviceEvents)
-      .values({ id: 'ev-4', deviceId: 'd1', stream: 'input', kind: 'input.tap', actor: 'user-1', meta: null, at: new Date(1_700_000_200_000) })
-      .run()
-    // Inside the window, but the MAIN stream — never an "assist action".
-    db.insert(deviceEvents)
-      .values({ id: 'ev-5', deviceId: 'd1', stream: 'main', kind: 'control.assist.started', actor: 'user-1', meta: null, at: new Date(1_700_000_050_000) })
-      .run()
-
-    const result = store.assists(jobId)
-    expect(result.map((e) => e.id)).toEqual(['ev-1'])
-    expect(result[0]?.meta).toEqual({ assist: true, jobId })
-  })
-
-  test('a job that never started has no assists', () => {
-    const db = setUp()
-    const store = createJobStore(db)
-    seedDevice(db, 'd1')
-    const jobId = seedJob(db, { deviceId: 'd1' })
-    expect(store.assists(jobId)).toEqual([])
-  })
-
-  test('a still-running job (no finishedAt) is bounded by now, not left open-ended', () => {
-    const db = setUp()
-    const store = createJobStore(db)
-    seedDevice(db, 'd1')
-    const jobId = seedJob(db, { deviceId: 'd1' })
-    db.update(jobs).set({ startedAt: new Date(Date.now() - 60_000) }).where(eq(jobs.id, jobId)).run()
-    db.insert(deviceEvents)
-      .values({ id: 'ev-1', deviceId: 'd1', stream: 'input', kind: 'input.tap', actor: 'user-1', meta: null, at: new Date() })
-      .run()
-
-    const result = store.assists(jobId)
-    expect(result.map((e) => e.id)).toEqual(['ev-1'])
-  })
-
-  test('three assists on a finished job come back in order, with the operator id on each', () => {
-    const db = setUp()
-    const store = createJobStore(db)
-    seedDevice(db, 'd1')
-    const jobId = seedJob(db, { deviceId: 'd1' })
-    db.update(jobs)
-      .set({ startedAt: new Date(1_700_000_000_000), finishedAt: new Date(1_700_000_100_000) })
-      .where(eq(jobs.id, jobId))
-      .run()
-    for (let i = 0; i < 3; i++) {
-      db.insert(deviceEvents)
-        .values({
-          id: `ev-${i}`,
-          deviceId: 'd1',
-          stream: 'input',
-          kind: 'input.tap',
-          actor: 'operator-1',
-          meta: { assist: true, jobId },
-          at: new Date(1_700_000_010_000 + i * 1000),
-        })
-        .run()
-    }
-
-    const result = store.assists(jobId)
-    expect(result.map((e) => e.id)).toEqual(['ev-0', 'ev-1', 'ev-2'])
-    expect(result.every((e) => e.actor === 'operator-1')).toBe(true)
-  })
-})
-
 describe('claimNext — batch concurrency gate (plan 20 §4.2)', () => {
   test('concurrency=1 never yields two running jobs in the same batch', () => {
     const db = setUp()
@@ -320,7 +272,7 @@ describe('claimNext — batch concurrency gate (plan 20 §4.2)', () => {
     store.finish(job0, 'success', {})
     // The device frees up independently of the batch gate (plan 20 §3.3 —
     // per-device idleness is a separate, pre-existing constraint).
-    db.update(devices).set({ status: 'idle' }).where(eq(devices.id, 'd1')).run()
+    db.update(devices).set({ status: 'online' }).where(eq(devices.id, 'd1')).run()
 
     const claim2 = store.claimNext(60)
     expect(claim2).not.toBeNull()
@@ -448,7 +400,7 @@ describe('claimNext — maxConcurrent gate (plan 98 §3.7, §4.6, step 98.5)', (
     expect(store.claimNext(60)).toBeNull()
 
     store.finish(job0, 'success', {})
-    db.update(devices).set({ status: 'idle' }).where(eq(devices.id, 'd1')).run()
+    db.update(devices).set({ status: 'online' }).where(eq(devices.id, 'd1')).run()
 
     const claim2 = store.claimNext(60)
     expect(claim2?.job.id).toBe(job1)
@@ -643,12 +595,12 @@ describe('claimNext — batch order (plan 20 §3.2, §4.2)', () => {
     const claim1 = store.claimNext(60)
     expect(claim1?.job.id).toBe(j0)
     store.finish(j0, 'success', {})
-    db.update(devices).set({ status: 'idle' }).where(eq(devices.id, 'd1')).run()
+    db.update(devices).set({ status: 'online' }).where(eq(devices.id, 'd1')).run()
 
     const claim2 = store.claimNext(60)
     expect(claim2?.job.id).toBe(j1)
     store.finish(j1, 'success', {})
-    db.update(devices).set({ status: 'idle' }).where(eq(devices.id, 'd2')).run()
+    db.update(devices).set({ status: 'online' }).where(eq(devices.id, 'd2')).run()
 
     const claim3 = store.claimNext(60)
     expect(claim3?.job.id).toBe(j2)
@@ -724,7 +676,7 @@ describe('claimNext — restart continuation (plan 20 §7)', () => {
     const c0 = store.claimNext(60)
     expect(c0?.job.id).toBe(j0)
     store.finish(j0, 'success', {})
-    db.update(devices).set({ status: 'idle' }).where(eq(devices.id, 'd1')).run()
+    db.update(devices).set({ status: 'online' }).where(eq(devices.id, 'd1')).run()
 
     // Simulate a fresh JobStore instance (as a core restart would create).
     const restarted = createJobStore(db)
@@ -906,7 +858,7 @@ describe('failOrphanRunning leaves job_nodes intact (plan 99 §3.5, §4.9, step 
   test('a workflow job orphaned mid-pipeline is failed, and its job_nodes rows survive untouched', () => {
     const db = setUp()
     const store = createJobStore(db)
-    seedDevice(db, 'd1', 'busy')
+    seedDevice(db, 'd1')
     const jobId = seedJob(db, { deviceId: 'd1' })
     db.update(jobs).set({ status: 'running' }).where(eq(jobs.id, jobId)).run()
     db.insert(jobNodes)

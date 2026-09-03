@@ -70,15 +70,14 @@ interface ConfirmState {
  *   house style multi-device reports already have (`docs/design.md`'s
  *   "Multi-device reports — outcome first, grouped by reason").
  *
- * `TerminalPane`'s own `canType` only ever reflects THIS popup's lease on
- * the FOCUSED device (`canUseLive`, `DevicePopup.tsx`'s `iHoldControl &&
- * !busy`) — switching `single` mode to a different device in the picker
- * still shows its transcript live (everyone watching a device sees it,
- * plan 26 §3.8) but the input box stays honestly disabled, since this
- * popup holds no lease on a device it never claimed.
+ * `TerminalPane`'s own `canType` only ever reflects whether the FOCUSED
+ * device is online (`canUseLive`, `DevicePopup.tsx`'s `online`) — switching
+ * `single` mode to a different device in the picker still shows its
+ * transcript live (everyone watching a device sees it, plan 26 §3.8) but the
+ * input box stays honestly disabled for a device that is offline.
  *
  * **`single` mode also carries `AdbEndpointCard` (plan 103 §5, closing step
- * 103.11's audit row 8, 2026-08-17)** — the lease-scoped `adb connect`
+ * 103.11's audit row 8, 2026-08-17)** — the activity-gated `adb connect`
  * endpoint, above `TerminalPane`, gated on the SAME `shell.endpointEnabled`
  * farm switch the device page's own Terminal tab reads. This is where the
  * card belongs now: it was always "beside the Terminal tab" (its own file
@@ -363,12 +362,12 @@ export function AdbCommandDialog({
               {target === 'single' ? (
                 singleDeviceId ? (
                   <div className="space-y-3">
-                    {/* Row 8 (audit) — the lease-scoped `adb connect`
+                    {/* Row 8 (audit) — the activity-gated `adb connect`
                         endpoint, gated on the farm's `shell.endpointEnabled`
                         exactly like the device page's own Terminal tab.
                         `canOpen` mirrors `TerminalPane`'s own `canType`
-                        below — a picked device this popup never claimed a
-                        lease on stays honestly closed, same reasoning. */}
+                        below — a picked device other than the popup's own
+                        focused one stays honestly closed, same reasoning. */}
                     {endpointEnabled && (
                       <AdbEndpointCard deviceId={singleDeviceId} clientId={ws.getSessionId()} canOpen={singleDeviceId === deviceId && canUseLive} />
                     )}

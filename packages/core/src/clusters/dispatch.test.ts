@@ -13,7 +13,7 @@ function setUp() {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'offline' = 'idle') {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online') {
   db.insert(devices)
     .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status })
     .run()
@@ -200,7 +200,7 @@ describe('createBatch — assertDeviceAllowed / canUseDevice (plan 34 §3.5, §4
 })
 
 describe('pickRebindDevice — moving a batch member after an infra failure (plan 36 §3.6)', () => {
-  test('picks an idle sibling device, never the one that just failed', () => {
+  test('picks an online sibling device with no running job, never the one that just failed', () => {
     const db = setUp()
     for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d)
     const audit = createAuditLogger(db)
@@ -209,15 +209,15 @@ describe('pickRebindDevice — moving a batch member after an infra failure (pla
       { db, scheduler, audit, onJobStatus: () => {} },
       { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] }, concurrency: 0, order: 'as-listed' },
     )
-    // d2 and d3 stay idle; d1 is the device the job just failed on.
+    // d2 and d3 stay queued (online, no running job); d1 is the device the job just failed on.
     const failing = created.find((j) => j.deviceId === 'd1')
     if (!failing) throw new Error('fixture: expected a job on d1')
 
     const picked = pickRebindDevice(db, failing)
-    expect(picked).toBe('d2') // lowest batchSeq among the idle siblings
+    expect(picked).toBe('d2') // lowest batchSeq among the eligible siblings
   })
 
-  test('returns null when every sibling device is busy (the caller then retries in place)', () => {
+  test('returns null when every sibling device already has a running job (the caller then retries in place)', () => {
     const db = setUp()
     for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d)
     const audit = createAuditLogger(db)
@@ -226,8 +226,8 @@ describe('pickRebindDevice — moving a batch member after an infra failure (pla
       { db, scheduler, audit, onJobStatus: () => {} },
       { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] }, concurrency: 0, order: 'as-listed' },
     )
-    db.update(devices).set({ status: 'busy' }).where(eq(devices.id, 'd2')).run()
-    db.update(devices).set({ status: 'busy' }).where(eq(devices.id, 'd3')).run()
+    db.update(jobs).set({ status: 'running' }).where(eq(jobs.deviceId, 'd2')).run()
+    db.update(jobs).set({ status: 'running' }).where(eq(jobs.deviceId, 'd3')).run()
     const failing = created.find((j) => j.deviceId === 'd1')
     if (!failing) throw new Error('fixture: expected a job on d1')
 
@@ -244,7 +244,7 @@ describe('pickRebindDevice — moving a batch member after an infra failure (pla
       params: null,
       priority: 0,
       status: 'running',
-      leaseExpiresAt: null,
+      heartbeatExpiresAt: null,
       result: null,
       error: null,
       createdAt: new Date(),
@@ -263,7 +263,6 @@ describe('pickRebindDevice — moving a batch member after an infra failure (pla
       depth: 0,
       triggerKey: null,
       peakRssBytes: null,
-      assistCount: 0,
       maxConcurrent: null,
       // Plan 98 §3.8, §4.4, step 98.7 — null here: a bare fixture row, no
       // per-job override exercised by this test.
@@ -325,12 +324,12 @@ describe('createBatch — an invalid params object is refused before any device 
       ),
     ).toThrow(EnkakuError)
 
-    // Nothing exists for a device to be leased against — the strongest form
-    // of "no device is leased" is "there is no job".
+    // Nothing exists for a device to be claimed against — the strongest form
+    // of "no device is claimed" is "there is no job".
     expect(db.select().from(jobs).all().length).toBe(0)
     expect(db.select().from(batches).all().length).toBe(0)
-    // Both devices are completely untouched — still `idle`, never targeted.
-    expect(db.select().from(devices).all().every((d) => d.status === 'idle')).toBe(true)
+    // Both devices are completely untouched — still `online`, never targeted.
+    expect(db.select().from(devices).all().every((d) => d.status === 'online')).toBe(true)
     // The scheduler — the thing that actually assigns a queued job to a
     // device — was never even kicked.
     expect(kicked).toBe(false)

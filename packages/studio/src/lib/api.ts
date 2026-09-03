@@ -228,7 +228,7 @@ export async function fetchDiscoveredDevices(): Promise<DiscoveredDevice[]> {
  * restated. This used to be a hand-written union kept "in sync by hand" with
  * that schema, and it drifted the moment the provisioner grew a seventh
  * state: `consent-required` reached the wire, every caller that narrowed on
- * this type stopped compiling, and the mirror had to be corrected by hand
+ * this type stopped compiling, and the copy had to be corrected by hand
  * again. A type that can only be wrong in one direction should not be a copy.
  * Deriving it means the next state the provisioner invents is a compile error
  * in the screens that must handle it, which is exactly where it belongs.
@@ -329,7 +329,7 @@ export interface GeoObservation {
  * §4.5, acceptance criterion 8) — and the two HTTP arms have nowhere to put
  * one at all (§3.8).
  *
- * Was a hand-written mirror of the VPN arm alone; step 114.6 replaced it with
+ * Was a hand-written reimplementation of the VPN arm alone; step 114.6 replaced it with
  * the protocol's own response-shaped union, which is where the "no
  * `username`, only a `credentialRef`" narrowing is documented.
  */

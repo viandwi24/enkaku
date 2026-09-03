@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import { JsonSchemaNodeSchema } from '../api/json-schema'
-import { LeaseHolderSchema } from '../device'
+import { DeviceActivitySchema } from '../activity'
 import { RESULT_LIMITS, ResultStatusSchema } from '../schema/result'
 import { ParamIssueSchema } from '../schema/validate'
 
-/** Jobs and leases (spec §10, §13). */
+/** Jobs (MVP 04, MVP 14). */
 
 /**
  * `expired` (plan 21 §3.3, §4.1) is distinct from `failed`: `failed` says the
@@ -20,7 +20,7 @@ export const SleepJobParamsSchema = z.object({
   durationMs: z.number().int().min(0).max(3_600_000),
   /** Simulate a job failing partway through. */
   failAfterMs: z.number().int().min(0).optional(),
-  /** Simulate a job that ignores cancellation — exercises the lease-expiry path. */
+  /** Simulate a job that ignores cancellation — exercises the heartbeat-expiry path. */
   ignoreCancel: z.boolean().default(false),
 })
 export type SleepJobParams = z.infer<typeof SleepJobParamsSchema>
@@ -42,30 +42,6 @@ export const JobCancelMessage = z.object({
   type: z.literal('job.cancel'),
   id: z.string().optional(),
   payload: z.object({ jobId: z.string() }),
-})
-
-export const LeaseAcquireMessage = z.object({
-  type: z.literal('lease.acquire'),
-  id: z.string().optional(),
-  payload: z.object({
-    deviceId: z.string(),
-    /**
-     * The id of the holder the CALLER BELIEVES currently holds the device
-     * (plan 71 §3.4) — a person's clientId/userId or an agent's root run id
-     * (`LeaseHolder.id`). Omitted for an ordinary acquire (device believed
-     * free). When present and the device is actually held by someone else,
-     * this is a takeover attempt: refused with `lease_holder_changed` if the
-     * real holder no longer matches (compare-and-swap, same reasoning as
-     * plan 64 §3.4's `ifMatch`), refused unconditionally for a job's lease.
-     */
-    takeOverFrom: z.string().optional(),
-  }),
-})
-
-export const LeaseReleaseMessage = z.object({
-  type: z.literal('lease.release'),
-  id: z.string().optional(),
-  payload: z.object({ deviceId: z.string() }),
 })
 
 // ---- server → client ----
@@ -125,14 +101,6 @@ export const JobInfoSchema = z.object({
    * from, not an enforcement of one.
    */
   peakRssBytes: z.number().int().nullable().default(null),
-  /**
-   * Plan 91 §3.5, §4.9 — how many times a human sent input to this job's
-   * device while it was running (a co-control/assist action). `0` for every
-   * job, including one written before this column existed — never null, so a
-   * job list can badge it with no guard. `GET /api/jobs/:id/assists` is the
-   * detail (who, when, what); this is just the headline count.
-   */
-  assistCount: z.number().int().min(0).default(0),
   /**
    * Plan 94 §3.7, §3.8, §4.8, step 94.7 — unix seconds; the queue will not
    * claim this job before it (`jobs.notBefore`). Null for every job written
@@ -347,7 +315,7 @@ export const ArtifactInfoSchema = z.object({
    * `.optional()` (unlike `jobId`/`deviceId` above) is deliberate, not an
    * oversight: dozens of PRE-EXISTING test files across `packages/core/src`
    * (several under concurrent edit by other workers this same day — the
-   * ws-handlers/mirror/presence/crash-watcher suites) build an `ArtifactInfo`
+   * ws-handlers/presence/crash-watcher suites) build an `ArtifactInfo`
    * literal by hand with no `nodeId` field at all. Making the FIELD required
    * would force every one of those to add `nodeId: null`, which is exactly
    * the wide, unrelated blast radius a workflow-scoped column must not have
@@ -364,72 +332,20 @@ export const JobArtifactMessage = z.object({
   payload: z.object({ jobId: z.string(), artifact: ArtifactInfoSchema }),
 })
 
-export const LeaseAcquiredMessage = z.object({
-  type: z.literal('lease.acquired'),
-  id: z.string().optional(),
-  payload: z.object({ deviceId: z.string(), expiresAt: z.number() }),
-})
-
-export const LeaseReleasedMessage = z.object({
-  type: z.literal('lease.released'),
-  id: z.string().optional(),
-  payload: z.object({ deviceId: z.string() }),
-})
-
-/**
- * Broadcast whenever manual control changes hands, to EVERY connected client.
- *
- * `lease.acquired` only reaches the client that asked, so a second person
- * watching the same device saw nothing: their page kept offering "Take
- * control", and the only feedback was an error after clicking. This carries no
- * identity — a viewer already knows whether the lease is its own — just the
- * fact that the device is being driven by someone.
- */
-export const LeaseChangedMessage = z.object({
-  type: z.literal('lease.changed'),
-  payload: z.object({
-    deviceId: z.string(),
-    /**
-     * The full holder (plan 71 §3.2), or `null` when the device is free —
-     * replaces the plain `held: boolean` this message used to carry. A
-     * consumer that only needs the boolean computes `heldBy !== null`;
-     * nothing is lost, and the wire stops carrying a fact ("held") that was
-     * never sufficient to draw a badge or a takeover dialog.
-     */
-    heldBy: LeaseHolderSchema.nullable(),
-    expiresAt: z.number().nullable(),
-  }),
-})
-
-export const LeaseRevokedMessage = z.object({
-  type: z.literal('lease.revoked'),
-  payload: z.object({
-    deviceId: z.string(),
-    reason: z.enum(['idle_timeout', 'disconnected', 'quarantined', 'taken-over', 'adb-server-restart', 'app-restart']),
-    /**
-     * Who took the lease (plan 71 §3.5) — a resolved label, e.g. "Rina" or
-     * "checkout-bot". Null for every reason other than `taken-over` (an idle
-     * timeout, a disconnect, or a quarantine has no taker).
-     */
-    takenBy: z.string().nullable().default(null),
-  }),
-})
-
 /**
  * A queued job is waiting before it can claim its target device — broadcast
  * while the wait is in progress so it is legible rather than looking stuck,
  * and once more with `waiting: false` the moment the job actually claims
- * the device (or, for `reason: 'quiet'`, the wait's own `maxWaitSec` cap
- * expires and the job proceeds anyway).
+ * the device (or, for `reason: 'control'`, the wait's own `MAX_CONTROL_WAIT_SEC`
+ * cap expires and the job proceeds anyway).
  *
- * Two distinct reasons share this one message, plan 94 §3.8, §4.8, step
- * 94.6 (`reason: 'paced'`) added alongside plan 71 §3.7's original
- * (`reason: 'quiet'`) rather than a second message type, because both are
- * the same shape of fact from a Studio job list's point of view: "this
- * queued job cannot claim its device yet, and here is how long that is
- * expected to last." `heldBy` is only ever non-null for `'quiet'` — a
- * paced wait has no lease holder to name, it is simply not due yet
- * (`jobs.not_before`, unix seconds).
+ * Two distinct reasons share this one message (plan 205 §3.2 item 6 renamed
+ * the original `'quiet'` reason to `'control'`; `'paced'` — plan 94 §3.8,
+ * §4.8, step 94.6 — is unchanged): both are the same shape of fact from a
+ * Studio job list's point of view: "this queued job cannot claim its device
+ * yet, and here is how long that is expected to last." `conflicting` is only
+ * ever non-null for `'control'` — a paced wait has no conflicting activity to
+ * name, it is simply not due yet (`jobs.not_before`, unix seconds).
  *
  * Rendering this (e.g. Studio's "waiting — next repetition in 4s" line) is
  * a LATER step's own surface (94.10) — this message only proves the reason
@@ -441,11 +357,11 @@ export const JobWaitingMessage = z.object({
     jobId: z.string(),
     deviceId: z.string(),
     waiting: z.boolean(),
-    /** 'quiet' (plan 71 §3.7 — waiting for a manually-held device to go quiet) | 'paced' (plan 94 §3.8, §4.8, step 94.6 — waiting on the job's own `notBefore`). */
-    reason: z.enum(['quiet', 'paced']),
-    /** Who the device is waiting to go quiet from — null once free, and always null for `reason: 'paced'` (no lease holder is involved). */
-    heldBy: LeaseHolderSchema.nullable(),
-    /** Seconds remaining before the wait is satisfied: the quiet gate (or its `maxWaitSec` cap) for `'quiet'`, `notBefore - now` for `'paced'`. */
+    /** 'control' (plan 205 §3.2 item 6 — waiting for a live control marker to go quiet) | 'paced' (plan 94 §3.8, §4.8, step 94.6 — waiting on the job's own `notBefore`). */
+    reason: z.enum(['control', 'paced']),
+    /** The live activity the device is waiting to go quiet from — null once free, and always null for `reason: 'paced'`. */
+    conflicting: DeviceActivitySchema.nullable(),
+    /** Seconds remaining before the wait is satisfied: the control wait (or its `MAX_CONTROL_WAIT_SEC` cap) for `'control'`, `notBefore - now` for `'paced'`. */
     remainingSec: z.number().int().min(0),
   }),
 })
@@ -508,7 +424,7 @@ export const JobProgressEventMessage = z.object({
  * One row of `job_events` (plan 128 §4.1, §4.2) — one thing that happened
  * during a job, on a single millisecond-resolution time axis: a phase
  * boundary, a device action the script took, a log line, an artifact, a
- * progress push, a human assist, or an error.
+ * progress push, or an error.
  *
  * **`atMs` is unix MILLISECONDS, not seconds** — the deliberate carve-out
  * from `00-overview.md` §4.2's seconds convention, stated in plan 128 §3.3
@@ -540,7 +456,7 @@ export const JobTraceEventSchema = z.object({
   phase: z.enum(['reset', 'prepare', 'run', 'finish']).nullable(),
   /** Plan 99's workflow node axis, mirroring `ArtifactInfo.nodeId`. Null for every non-workflow job. */
   nodeId: z.string().nullable(),
-  kind: z.enum(['phase', 'action', 'log', 'artifact', 'progress', 'assist', 'error']),
+  kind: z.enum(['phase', 'action', 'log', 'artifact', 'progress', 'error']),
   /** For `action`: the `DeviceCall` method. For `log`: the level. For `phase`: 'start' | 'end'. */
   name: z.string(),
   /** How long the action took. Null for an instantaneous event. */

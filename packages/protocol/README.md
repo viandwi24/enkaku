@@ -37,7 +37,7 @@ UI) is not built yet** — the shapes below exist and are exercised by
 | `SavedCommandSchema`, `SavedCommandListResponseSchema`, `SavedCommandResponseSchema`, `SavedCommandDeleteResponseSchema` | `command/saved.ts` | `GET/POST/PATCH/DELETE /api/saved-commands[/:id]`'s wire shapes. No `dangerous` field — see `packages/core/README.md`'s note on why. |
 | Five `command.*` server→client messages (`command.started`/`.progress`/`.output`/`.stage`/`.finished`) plus `command.subscribe`/`command.unsubscribe` client→server | `messages/command.ts`, appended to `ServerMessage`/`ClientMessage` in `index.ts` | The live surface. Subscriber-scoped by construction (`command.subscribe` names a `runId`) — a client watching one run never receives another's traffic, and `command.progress` is coalesced to at most one frame per 250ms carrying only that tick's deltas, never one frame per member. `POST /api/command-runs` (`api/command-runs.ts`, in `packages/core`) is the only way a run is ever started; these messages carry no way to start one. |
 | `PushJobParamsSchema`, `PullJobParamsSchema` | `messages/transfer.ts` | The two new `internal:push`/`internal:pull` job executors' params (step 93.9) — `{ artifactId, remotePath, mediaScan? }` and `{ remotePath }`, siblings of the existing install job's own params. |
-| `commandConsole` on `AdbStatsResponseSchema` | `api/adb.ts` | `GET /api/adb/stats`'s measurement block for H1/H2/H4 — `runsInFlight`, `membersInFlight`, `coalescedFramesPerSec`, `distinctOutputRatio`, `leaseChangedPerMinute`. `.optional()` on the wire, same convention as `input`/`video` beside it; the real core always sends it, zero-filled until `daemon.ts` wires the dependency (see `packages/core/README.md`'s note). |
+| `commandConsole` on `AdbStatsResponseSchema` | `api/adb.ts` | `GET /api/adb/stats`'s measurement block for H1/H2/H4 — `runsInFlight`, `membersInFlight`, `coalescedFramesPerSec`, `distinctOutputRatio`. `.optional()` on the wire, same convention as `input`/`video` beside it; the real core always sends it, zero-filled until `daemon.ts` wires the dependency (see `packages/core/README.md`'s note). |
 
 **The high-consequence guard is advisory, and says so wherever it appears.**
 `isHighConsequence` never blocks anything by itself — it names what a
@@ -51,7 +51,7 @@ device count and meant it"), never an authorisation decision.
 
 ## Workflows — the document, the grammar, and the rule that matters most (plan 99, M64)
 
-A **workflow** is a pipeline: an ordered list of **nodes**, each an ordinary published script reference, plus optional **gates** that branch on values the pipeline already has. It runs as one job, on one device, under one lease — see `packages/core/README.md`'s own Workflows section for the executor and the runtime side. This package owns the document shape, the two closed grammars a node can use, and the checks that make a document publishable.
+A **workflow** is a pipeline: an ordered list of **nodes**, each an ordinary published script reference, plus optional **gates** that branch on values the pipeline already has. It runs as one job, on one device, under one control marker — see `packages/core/README.md`'s own Workflows section for the executor and the runtime side. This package owns the document shape, the two closed grammars a node can use, and the checks that make a document publishable.
 
 ### The document — `workflow.ts`
 

@@ -12,7 +12,7 @@ const silentLogger: Logger = {
 
 function baseDeps(overrides: Partial<AppRestartDeps> = {}): AppRestartDeps {
   return {
-    drain: async () => ({ sessionsClosed: 0, leasesReleased: 0, jobsFailed: [] }),
+    drain: async () => ({ sessionsClosed: 0, controlsEnded: 0, jobsFailed: [] }),
     stopDaemon: async () => {},
     closeHttpPort: () => {},
     reopenHttpPort: async () => {},
@@ -38,7 +38,7 @@ describe('createAppRestartControl — docker mode', () => {
     const control = createAppRestartControl(
       baseDeps({
         detectMode: () => 'docker',
-        drain: async ({ force }) => ({ sessionsClosed: 3, leasesReleased: 1, jobsFailed: force ? ['job-1'] : [] }),
+        drain: async ({ force }) => ({ sessionsClosed: 3, controlsEnded: 1, jobsFailed: force ? ['job-1'] : [] }),
         stopDaemon: async () => {
           stopped = true
         },
@@ -52,7 +52,7 @@ describe('createAppRestartControl — docker mode', () => {
     )
 
     const report = await control.restart({})
-    expect(report).toEqual({ mode: 'docker', outcome: 'initiated', durationMs: report.durationMs, sessionsClosed: 3, leasesReleased: 1, jobsFailed: [] })
+    expect(report).toEqual({ mode: 'docker', outcome: 'initiated', durationMs: report.durationMs, sessionsClosed: 3, controlsEnded: 1, jobsFailed: [] })
     // The process has not been stopped or exited yet — that only happens once the deferred callback runs.
     expect(stopped).toBe(false)
     expect(exits).toEqual([])
@@ -195,7 +195,7 @@ describe('createAppRestartControl — bare mode, the health-verified handoff', (
         detectMode: () => 'bare',
         drain: async ({ force }) => {
           forceSeen.push(force)
-          return { sessionsClosed: 0, leasesReleased: 0, jobsFailed: force ? ['job-a'] : [] }
+          return { sessionsClosed: 0, controlsEnded: 0, jobsFailed: force ? ['job-a'] : [] }
         },
         spawnChild: () => ({ pid: 1, kill: () => {} }),
         pollHealth: async () => true,

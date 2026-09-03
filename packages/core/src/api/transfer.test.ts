@@ -3,7 +3,8 @@ import { Hono } from 'hono'
 import type { ShellMode } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import type { TransferService } from '../device/transfer'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { DeviceStateMachine } from '../device/state-machine'
 import { EnkakuError } from '../util/errors'
 import { createTransferRoutes, type TransferRoutesDeps } from './transfer'
 
@@ -16,10 +17,6 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
   })
   wrapper.route('/', inner)
   return wrapper
-}
-
-function fakeLeases(result: { ok: true } | { ok: false; code: string; message: string }): LeaseManager {
-  return { checkInputAllowed: () => result } as unknown as LeaseManager
 }
 
 function fakeTransfer(overrides: Partial<TransferService> = {}): TransferService {
@@ -35,15 +32,20 @@ function fakeTransfer(overrides: Partial<TransferService> = {}): TransferService
 
 function makeApp(opts: {
   role: 'admin' | 'operator' | null
-  leaseOk?: boolean
+  /** Defaults to `'online'`. `requireAdmission` refuses `offline`/`quarantined` outright — the only refusal left for these three routes (plan 205 §4.9). */
+  deviceStatus?: 'online' | 'offline' | 'quarantined' | null
   shellMode?: ShellMode
   transferEnabled?: boolean
   transfer?: TransferService
 }): Hono<AuthEnv> {
-  const leaseResult = opts.leaseOk === false ? ({ ok: false, code: 'no_lease', message: 'take control first' } as const) : ({ ok: true } as const)
+  const status = opts.deviceStatus === undefined ? 'online' : opts.deviceStatus
+  const activities: Pick<ActivityRegistry, 'list'> = { list: () => [] }
+  const states: Pick<DeviceStateMachine, 'current'> = { current: () => status }
   const deps: TransferRoutesDeps = {
     transfer: opts.transfer ?? fakeTransfer(),
-    leases: fakeLeases(leaseResult),
+    activities,
+    controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+    states,
     record: () => {},
     shellSettings: () => ({ mode: opts.shellMode ?? 'admin' }),
     transferSettings: () => ({ enabled: opts.transferEnabled ?? true }),
@@ -55,7 +57,7 @@ function makeApp(opts: {
 const jsonReq = (body: unknown) => ({ method: 'POST' as const, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 
 describe('POST /api/devices/:id/install (plan 39 §4.4, acceptance #7)', () => {
-  test('admin, holding the lease, transfer enabled → 200 with the parsed result', async () => {
+  test('admin, online device, transfer enabled → 200 with the parsed result', async () => {
     const app = makeApp({ role: 'admin' })
     const res = await app.request('/dev-1/install', jsonReq({ artifactId: 'art-1', clientId: 'client-a' }))
     expect(res.status).toBe(200)
@@ -63,7 +65,7 @@ describe('POST /api/devices/:id/install (plan 39 §4.4, acceptance #7)', () => {
     expect(body.result.package).toBe('com.example')
   })
 
-  test('transfer.enabled: false refuses even an admin holding the lease', async () => {
+  test('transfer.enabled: false refuses even an admin', async () => {
     const app = makeApp({ role: 'admin', transferEnabled: false })
     const res = await app.request('/dev-1/install', jsonReq({ artifactId: 'art-1', clientId: 'client-a' }))
     expect(res.status).toBe(403)
@@ -81,12 +83,12 @@ describe('POST /api/devices/:id/install (plan 39 §4.4, acceptance #7)', () => {
     expect(res.status).toBe(200)
   })
 
-  test('no lease held → the leases.checkInputAllowed code/message pass through', async () => {
-    const app = makeApp({ role: 'admin', leaseOk: false })
+  test('an offline device is refused — install/push/pull no longer require holding control at all (plan 205 §2.4, §4.9), only a reachable device', async () => {
+    const app = makeApp({ role: 'admin', deviceStatus: 'offline' })
     const res = await app.request('/dev-1/install', jsonReq({ artifactId: 'art-1', clientId: 'client-a' }))
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('no_lease')
+    expect(body.error.code).toBe('device_unavailable')
   })
 
   test('an unauthenticated request is refused', async () => {
@@ -188,7 +190,7 @@ describe('POST /api/devices/:id/push', () => {
 })
 
 describe('POST /api/devices/:id/pull', () => {
-  test('admin, holding the lease → 200 with { artifactId, bytes }', async () => {
+  test('admin, online device → 200 with { artifactId, bytes }', async () => {
     const app = makeApp({ role: 'admin' })
     const res = await app.request('/dev-1/pull', jsonReq({ remotePath: '/sdcard/x', clientId: 'c1' }))
     expect(res.status).toBe(200)

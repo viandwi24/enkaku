@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { BatteryStateSchema } from './settings'
 import { DeviceReadinessSchema, ReadinessSchema } from './readiness'
 import { GuestAgentCapabilitySchema } from './guest-agent'
+import { DeviceActivitySchema, LastControlSchema } from './activity'
 
 /** How a device's transport is reached — OBSERVED from adb (plan 88 §3.1, §4.1). */
 export const ConnectionKindSchema = z.enum(['usb', 'tcp'])
@@ -44,33 +45,12 @@ export function connectionBadge(c: DeviceConnection): 'USB' | 'WI-FI' | 'OTG' | 
 }
 
 /**
- * Device status (spec §12): M0 only ever produces 'offline' | 'idle'; the
- * full enum is declared now to avoid a schema migration in M3.
+ * Device status (MVP 04 §0.1, §4): a single-slot state machine plus an
+ * activity list. "busy" and "controlled" are derived from the activity list
+ * and never stored (plan 205 §3.2 item 5).
  */
-export const DeviceStatusSchema = z.enum(['offline', 'idle', 'manual', 'busy', 'quarantined'])
+export const DeviceStatusSchema = z.enum(['offline', 'online', 'quarantined'])
 export type DeviceStatus = z.infer<typeof DeviceStatusSchema>
-
-/**
- * Who holds a device's manual (control) lease — a person, an agent, or a job
- * (plan 71 §3.2). The lease manager already knew this (`Lease.holder`,
- * `Lease.holderUserId`); nothing propagated it past the lease manager itself,
- * so an agent driving a phone was invisible to every surface. One field
- * fixes the badge, the takeover dialog, and the wall.
- */
-export const LeaseHolderSchema = z.object({
-  kind: z.enum(['user', 'agent', 'job']),
-  /** clientId for a user (or the authenticated userId when known), agentId for an agent, jobId for a job. */
-  id: z.string(),
-  /** For display: a username, an agent's name, a script's `name@version` — resolved server-side (plan 71 §3.3). */
-  label: z.string(),
-  /** Agent only — the ROOT run id, so a whole tree reads as one holder (plan 67 §3.7). */
-  runId: z.string().nullable(),
-  /** Whether this hold can be taken over at all (plan 71 §3.4) — computed server-side, never derived by a client. */
-  takeable: z.boolean(),
-  acquiredAt: z.number(),
-  expiresAt: z.number().nullable(),
-})
-export type LeaseHolder = z.infer<typeof LeaseHolderSchema>
 
 /**
  * The on-device Enkaku guest agent's provisioning state (plan 90 §3.8, §4.3) —
@@ -132,7 +112,7 @@ export type AgentState = z.infer<typeof AgentStateSchema>
  *
  * `reason` is always verbatim, never summarised (§3.8) — `AgentProvisioner`
  * callers show it directly to an operator. `attempts`/`nextAttemptAt`
- * mirror the bounded-retry shape network route recovery already uses (plan
+ * match the bounded-retry shape network route recovery already uses (plan
  * 90 §3.7; `packages/core/src/device/bounded-retry.ts` since plan 106 §5
  * step 106.2).
  */
@@ -240,25 +220,21 @@ export const DeviceInfoSchema = z.object({
    */
   readiness: DeviceReadinessSchema.default(() => ({ desired: 'asleep' as const, actual: 'asleep' as const, blocked: null, since: 0 })),
   /**
-   * Who currently holds this device's manual lease, or `null` when nobody
-   * does (plan 71 §3.2) — replaces the three polling workarounds
-   * `packages/studio/src/lib/agent-holders.ts` used to need. Defaulted so a
-   * caller that constructs a `DeviceInfo` without it (existing tests, or a
-   * fallback with no lease manager to hand) still parses.
+   * The device's live activity list (MVP 04 §1.1) — everything touching it
+   * right now: a running job, a control marker, a transfer, an install, a
+   * preparation pass, an agent, a command, a network write, a wake sequence.
+   * Empty, never null, so callers need no guard (the same reasoning `tags`
+   * above uses). Defaulted so a caller that constructs a `DeviceInfo`
+   * without it (existing tests, or a fallback with no activity registry to
+   * hand) still parses; every production call site populates it for real.
    */
-  heldBy: LeaseHolderSchema.nullable().default(null),
+  activities: z.array(DeviceActivitySchema).default([]),
   /**
-   * Who is currently assisting this device — a narrow, subordinate grant to
-   * touch a device someone/something else already controls, never a
-   * takeover (plan 91 §3.2, §3.4 item 4, F25). Empty, never null, so callers
-   * need no guard (the same reasoning `tags` above uses). Every entry's
-   * `takeable` is `false`: an assist is granted or refused, never taken over
-   * (§3.2), so the takeover dialog must never target one. Defaulted so a
-   * caller that constructs a `DeviceInfo` without it (existing tests, or a
-   * fallback with no co-control manager to hand) still parses; every
-   * production call site populates it alongside `heldBy`.
+   * The "last controlled N seconds ago by X" tail (MVP 04 §1.2), kept for
+   * `LAST_CONTROL_TAIL_SEC` after a control marker ends; `null` when no
+   * marker has ever ended or the tail has expired.
    */
-  assistedBy: z.array(LeaseHolderSchema).default([]),
+  lastControl: LastControlSchema.nullable().default(null),
   /**
    * How this device is reached (plan 88 §3.1, §4.1) — computed by
    * `deriveConnection` (`packages/core/src/registry/device-registry.ts`),
@@ -345,8 +321,8 @@ export type DeviceStatusEvent = z.infer<typeof DeviceStatusMessage>
  * Client → server: set the operator's standing intent (plan 43 §4.1).
  * NEVER changes anything by itself — the server derives `actual` and reports
  * it back on the `device.readiness` broadcast below. Refused server-side per
- * §3.4 (offline/quarantined for a Wake; a running job or another viewer/lease
- * holder for a Sleep) — crafting this message directly is refused exactly
+ * §3.4 (offline/quarantined for a Wake; a running job or another live
+ * control marker for a Sleep) — crafting this message directly is refused exactly
  * the same way the UI's button would be (acceptance #7).
  */
 export const DeviceReadinessSetMessage = z.object({

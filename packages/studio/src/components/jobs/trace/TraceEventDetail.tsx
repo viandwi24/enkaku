@@ -13,7 +13,7 @@ import { formatOffset } from './TraceTimeline'
  *
  * **The tree is rendered here rather than through `InspectorPanel`**, which
  * §4.6 named. That component is a LIVE panel: it attaches an inspector over
- * `/ws`, requires a manual lease on the device, polls, and proposes
+ * `/ws`, requires the device to be online, polls, and proposes
  * selectors against a device that is still there. A stored snapshot from a
  * job that finished last week has none of those things, and the only pieces
  * of that file that are exported are pure helpers (`serialiseTree` is a
@@ -44,7 +44,6 @@ const KIND_TONE: Record<JobTraceEvent['kind'], string> = {
   log: 'text-fg-muted',
   artifact: 'text-led-ok',
   progress: 'text-fg-muted',
-  assist: 'text-led-warn',
   error: 'text-led-danger',
 }
 

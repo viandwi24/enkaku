@@ -1,9 +1,12 @@
 import { Hono } from 'hono'
-import { InstallResponseSchema, MediaScanModeSchema, PullResponseSchema, PushResponseSchema, type ShellMode } from '@enkaku/protocol'
+import { E_DEVICE_CONFLICT, InstallResponseSchema, MediaScanModeSchema, PullResponseSchema, PushResponseSchema, type ShellMode } from '@enkaku/protocol'
 import { z } from 'zod'
 import type { AuthEnv } from '../auth/middleware'
 import { canUseFiles } from '../auth/acl'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
+import { requireAdmission } from '../activity/admission'
+import type { DeviceStateMachine } from '../device/state-machine'
 import type { EventRecorder } from '../events/recorder'
 import type { TransferService } from '../device/transfer'
 import { runTransfer, type TransferBroadcast } from '../device/transfer-dispatch'
@@ -13,9 +16,7 @@ import { typedJson } from './typed-json'
 const ERROR_STATUS: Record<string, number> = {
   'auth.forbidden': 403,
   device_not_found: 404,
-  device_busy: 409,
-  no_lease: 409,
-  not_lease_holder: 409,
+  [E_DEVICE_CONFLICT]: 409,
   device_unavailable: 409,
   E_ADB_UNAVAILABLE: 503,
   E_UNSUPPORTED: 400,
@@ -30,13 +31,13 @@ const ERROR_STATUS: Record<string, number> = {
 }
 
 /**
- * The requesting browser tab's WS session id — same pattern and same
- * reasoning as plan 27's `AdbEndpointRoutes` `OpenBody.clientId` (see
- * `api/adb-endpoint.ts`): a manual lease's holder IS a WS `clientId`, and
- * there is no HTTP-native notion of "the client currently holding control",
- * so the browser tells us which WS session it is. Never trusted for
- * identity — only for "which lease" — `authMiddleware` still resolves the
- * real user.
+ * The requesting browser tab's WS session id — same shape plan 27's
+ * `AdbEndpointRoutes` `OpenBody.clientId` still carries (see
+ * `api/adb-endpoint.ts`). Kept on the wire for compatibility with every
+ * existing Studio build that already sends it, but no longer read for
+ * admission (plan 205 §4.9): `install`/`push`/`pull` no longer require the
+ * caller to be the device's control-marker holder at all, so there is
+ * nothing left to check it against.
  */
 const InstallBody = z.object({
   artifactId: z.string().min(1),
@@ -56,7 +57,11 @@ const PullBody = z.object({ remotePath: z.string().min(1), clientId: z.string().
 
 export interface TransferRoutesDeps {
   transfer: TransferService
-  leases: LeaseManager
+  /** The device activity registry (plan 205 §4.2, §4.9) — the one admission door `install`/`push`/`pull` take. */
+  activities: Pick<ActivityRegistry, 'list'>
+  /** `control.overControl`/`control.idleSec`, read fresh on every admission check (plan 205 §4.5). */
+  controlSettings: () => ControlPolicySettings
+  states: Pick<DeviceStateMachine, 'current'>
   /** Main/input-stream device events (plan 39 §4.4: `device.install`/`device.push`/`device.pull` on `input`). */
   record: EventRecorder['record']
   shellSettings: () => { mode: ShellMode }
@@ -70,29 +75,29 @@ export interface TransferRoutesDeps {
  * `POST /api/devices/:id/install|push|pull` (plan 39 §4.4). All three
  * require `transfer.enabled`, the `device.files` permission (widened by the
  * SAME `shell.mode` switch the terminal and the adb endpoint use), and the
- * manual lease — checked with the exact `leases.checkInputAllowed` call
- * plan 26/27 already use, so this is one policy, not a fourth
- * reimplementation of it.
+ * device activity policy (plan 205 §4.9) — `install` for `/install`,
+ * `transfer` for `/push`/`/pull`, both of which allow over a live `control`
+ * marker (MVP 04 §1.3): a transfer no longer waits for whoever is manually
+ * driving the phone to let go, the same liberalisation `network-apply` got.
  */
 export function createTransferRoutes(deps: TransferRoutesDeps): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
-  function authorize(user: { role: 'admin' | 'operator' } | undefined, deviceId: string, clientId: string): void {
+  function authorize(user: { role: 'admin' | 'operator' } | undefined, deviceId: string, kind: 'install' | 'transfer'): void {
     if (!deps.transferSettings().enabled) {
       throw new EnkakuError('auth.forbidden', 'file transfer is disabled for this farm (transfer.enabled)')
     }
     if (!user || !canUseFiles(user.role, deps.shellSettings().mode)) {
       throw new EnkakuError('auth.forbidden', 'you do not have permission to transfer files on this device')
     }
-    const allowed = deps.leases.checkInputAllowed(deviceId, clientId)
-    if (!allowed.ok) throw new EnkakuError(allowed.code, allowed.message)
+    requireAdmission(deps.activities, deps.controlSettings, deps.states, deviceId, kind)
   }
 
   app.post('/:id/install', async (c) => {
     const deviceId = c.req.param('id')
     const body = InstallBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { artifactId, clientId } is required')
-    authorize(c.get('user'), deviceId, body.data.clientId)
+    authorize(c.get('user'), deviceId, 'install')
     const userId = c.get('user')?.id ?? null
 
     try {
@@ -136,7 +141,7 @@ export function createTransferRoutes(deps: TransferRoutesDeps): Hono<AuthEnv> {
     const deviceId = c.req.param('id')
     const body = PushBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { artifactId, remotePath, clientId } is required')
-    authorize(c.get('user'), deviceId, body.data.clientId)
+    authorize(c.get('user'), deviceId, 'transfer')
     const userId = c.get('user')?.id ?? null
 
     try {
@@ -178,7 +183,7 @@ export function createTransferRoutes(deps: TransferRoutesDeps): Hono<AuthEnv> {
     const deviceId = c.req.param('id')
     const body = PullBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { remotePath, clientId } is required')
-    authorize(c.get('user'), deviceId, body.data.clientId)
+    authorize(c.get('user'), deviceId, 'transfer')
     const userId = c.get('user')?.id ?? null
 
     try {

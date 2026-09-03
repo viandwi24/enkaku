@@ -44,7 +44,6 @@ export const scriptList = defineCapability({
   input: z.object({}),
   output: z.object({ items: z.array(ScriptGroupSchema) }),
   permission: 'script.view',
-  lease: 'none',
   deadline: 5_000,
   effect: 'read',
   description: 'List every script, one entry per NAME (not per published version), with its latest resolvable version.',
@@ -56,7 +55,6 @@ export const scriptGet = defineCapability({
   input: z.object({ id: z.string() }),
   output: ScriptDetailSchema,
   permission: 'script.view',
-  lease: 'none',
   deadline: 5_000,
   effect: 'read',
   description: 'Get one published script version by its concrete id (not a name@version reference).',
@@ -119,7 +117,6 @@ export const scriptPublish = defineCapability({
   input: PublishInput,
   output: z.object({ id: z.string(), name: z.string(), version: z.string() }),
   permission: 'script.publish',
-  lease: 'none',
   // A bundle-form publish is fast; a path-form publish also bundles server-side,
   // bounded at 30s by `scripts/build.ts` — this deadline has to cover both.
   deadline: 40_000,

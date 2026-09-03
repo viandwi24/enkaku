@@ -268,7 +268,7 @@ function checkMemberSchemas(scripts: readonly { id: string; params?: unknown; re
       warnAboutRefinements(result, 'result', script.id)
       // A result schema always publishes with `io: 'output'`, never
       // `'input'` — a defaulted result FIELD is already applied by the time
-      // `run()` resolves, so it belongs in `required` (F24, the mirror image
+      // `run()` resolves, so it belongs in `required` (F24, the reciprocal
       // of why a params schema needs `'input'`).
       checkAndReportResultSchema(z.toJSONSchema(result, { io: 'output' }), script.id)
     }

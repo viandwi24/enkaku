@@ -93,7 +93,7 @@ export function useGuestAgentReadiness(deviceId: string): AgentReadiness {
  *
  * **False while the state is unknown**, deliberately. Blocking the one control
  * that could work, on the strength of a read that failed, would be the
- * mirror-image mistake of the one this step fixes: a phone whose agent is
+ * inverse mistake of the one this step fixes: a phone whose agent is
  * perfectly ready would be refused by Studio because Studio could not read a
  * record. The server checks the agent itself on every apply and refuses with a
  * real reason, so an unknown state costs at most one honest server error —
@@ -189,7 +189,7 @@ export function VpnAgentPrecondition({
   onChooseHttp,
 }: {
   deviceId: string
-  /** The same server-authoritative lease gate every other mutating control on this page reads. */
+  /** The same server-authoritative control-activity gate every other mutating control on this page reads. */
   canUse: boolean
   agent: AgentReadiness
   /**

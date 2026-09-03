@@ -1,8 +1,7 @@
 import { RESULT_LIMITS, type JobInfo, type ResultOutcome, type ResultStatus, type SummaryField } from '@enkaku/protocol'
 import type { JobRow } from '../db/schema'
 import type { DeviceHealth } from '../device/health'
-import type { DeviceStateMachine } from '../device/state-machine'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
 import { rowToJobInfo, type JobStore } from '../queue/job-store'
 import type { Logger } from '../util/logger'
 import type { ExecutorRegistry } from './executor'
@@ -12,9 +11,8 @@ import { recordResult } from './result-store'
 export interface ExecutorHostDeps {
   registry: ExecutorRegistry
   jobStore: JobStore
-  states: DeviceStateMachine
-  /** Lazy: LeaseManager and the host reference each other during wiring. */
-  leases: () => LeaseManager
+  /** Lazy: the activity registry and the host reference each other during wiring. */
+  activities: () => ActivityRegistry
   log: Logger
   jobTtlSec: number
   heartbeatMs: number
@@ -45,7 +43,7 @@ export interface ExecutorHostDeps {
   timeoutIsInfra: () => boolean
   /** `job.retry.rebindOnInfra` — read fresh per settle (plan 36 §3.6, §4.2). */
   rebindOnInfra: () => boolean
-  /** Lazy, like `leases` — the health tracker and the host are wired independently in daemon.ts. */
+  /** Lazy, like `activities` — the health tracker and the host are wired independently in daemon.ts. */
   health?: () => DeviceHealth | null
   /** The adb serial for a deviceId — `DeviceHealth.note` is keyed by serial, not deviceId (plan 23 §4.4). */
   deviceSerial: (deviceId: string) => string | null
@@ -124,15 +122,6 @@ export interface ExecutorHost {
    */
   notifyCrash(jobId: string, e: { package: string; exception: string; message: string }): boolean
   /**
-   * Delivers an assist notification to a running job's executor, IF one is
-   * running on this job and it registered an `ctx.onAssist` handler (plan 91
-   * §3.6, §4.8) — shaped exactly like `notifyCrash` above. Returns whether a
-   * handler was found and invoked; a job that finished (or was never
-   * running) between the assist action and this call simply drops the
-   * notification, which is correct — there is nothing left to tell.
-   */
-  notifyAssist(jobId: string, e: { at: number; actor: string | null }): boolean
-  /**
    * Plan 97 §3.7, §4.3, §5 step 97.7 — one coalesced `progress` push from a
    * running job's child (`@enkaku/session`'s `JobRunnerDeps.onProgress`,
    * wired to this in `daemon.ts`). A no-op for a job that already settled
@@ -153,8 +142,8 @@ export interface ExecutorHost {
 const CANCEL_GRACE_MS = 5000
 
 /**
- * Wraps every run: the lease heartbeat (spec §10.2), writing the final status,
- * releasing the device (JOB_FINISHED), broadcasting job.status, kicking the
+ * Wraps every run: the job heartbeat (spec §10.2), writing the final status,
+ * ending the job's activity marker, broadcasting job.status, kicking the
  * scheduler — and, since plan 36, classifying every `failed` settle so
  * `jobs.failureClass` is populated, the health tracker is fed only for
  * device-blaming failures, and a batch member can rebind to another device
@@ -171,15 +160,13 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
   const running = new Map<string, RunningEntry>()
   /** One crash handler per running job (plan 37 §4.4) — registered by `ctx.onCrash`, cleared on settle. */
   const crashHandlers = new Map<string, (e: { package: string; exception: string; message: string }) => void>()
-  /** One assist handler per running job (plan 91 §3.6, §4.8) — registered by `ctx.onAssist`, cleared on settle, mirroring `crashHandlers` exactly. */
-  const assistHandlers = new Map<string, (e: { at: number; actor: string | null }) => void>()
   /**
    * Plan 97 §3.7, §5 step 97.7 — "one `warn` per job, not per emit": a jobId
    * enters this set the FIRST time its progress is dropped for size, so
    * every push after the first from the same job is dropped silently.
-   * Cleared on settle, mirroring `crashHandlers`/`assistHandlers` exactly —
-   * a jobId is never reused, but this keeps the set from growing unbounded
-   * across a long-lived daemon regardless.
+   * Cleared on settle, mirroring `crashHandlers` exactly — a jobId is never
+   * reused, but this keeps the set from growing unbounded across a
+   * long-lived daemon regardless.
    */
   const warnedProgress = new Set<string>()
   const classify = deps.classify ?? ((err: unknown) => classifyFailure(err, { timeoutIsInfra: deps.timeoutIsInfra() }))
@@ -195,8 +182,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
   function requeueForRebind(job: JobRow, code: string) {
     const newDeviceId = deps.pickRebindDevice?.(job) ?? job.deviceId
     const requeued = deps.jobStore.requeueForRebind(job.id, newDeviceId)
-    deps.leases().clearJobLease(job.deviceId)
-    deps.states.apply(job.deviceId, 'JOB_FINISHED')
+    deps.activities().end(job.deviceId, `job:${job.id}`)
     if (requeued) deps.onJobStatus(rowToJobInfo(requeued))
     deps.log.info(`job ${job.id} requeued after an infra failure (${code}) — now targets device ${newDeviceId}`)
     deps.onJobRebound?.(job.deviceId, job.id, newDeviceId, code)
@@ -237,7 +223,6 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       entry.hold?.release()
     }
     crashHandlers.delete(job.id)
-    assistHandlers.delete(job.id)
     warnedProgress.delete(job.id)
 
     let failureClass: string | null = null
@@ -315,8 +300,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
           }
         : {}),
     })
-    deps.leases().clearJobLease(job.deviceId)
-    deps.states.apply(job.deviceId, 'JOB_FINISHED')
+    deps.activities().end(job.deviceId, `job:${job.id}`)
     if (updated) deps.onJobStatus(rowToJobInfo(updated))
     deps.log.info(`job ${job.id} finished: ${status}${data.error ? ` (${data.error})` : ''}`)
     const durationMs = job.startedAt ? Date.now() - job.startedAt.getTime() : 0
@@ -335,13 +319,13 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       }
       const controller = new AbortController()
       const heartbeat = setInterval(() => {
-        if (!deps.jobStore.renewLease(job.id, deps.jobTtlSec)) {
+        if (!deps.jobStore.renewHeartbeat(job.id, deps.jobTtlSec)) {
           deps.log.warn(`heartbeat for job ${job.id} failed (it is no longer running)`)
         }
+        deps.activities().touch(job.deviceId, `job:${job.id}`)
       }, deps.heartbeatMs)
       const entry: RunningEntry = { controller, heartbeat, hold: null }
       running.set(job.id, entry)
-      deps.leases().noteJobLease(job.deviceId, job.id, deps.jobTtlSec)
 
       // Plan 98 §4.8, H1 — captured by `ctx.onPeakRss` below (only the script
       // executor calls it today) and carried into BOTH settle branches further
@@ -353,13 +337,13 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       let resultOutcome: ResultOutcome | undefined
       const ctx = {
         signal: controller.signal,
-        heartbeat: () => void deps.jobStore.renewLease(job.id, deps.jobTtlSec),
+        heartbeat: () => {
+          void deps.jobStore.renewHeartbeat(job.id, deps.jobTtlSec)
+          deps.activities().touch(job.deviceId, `job:${job.id}`)
+        },
         log: deps.log.child(`job:${job.id.slice(0, 8)}`),
         onCrash: (cb: (e: { package: string; exception: string; message: string }) => void) => {
           crashHandlers.set(job.id, cb)
-        },
-        onAssist: (cb: (e: { at: number; actor: string | null }) => void) => {
-          assistHandlers.set(job.id, cb)
         },
         onPeakRss: (bytes: number) => {
           peakRssBytes = bytes
@@ -422,7 +406,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       if (!entry) return false
       entry.controller.abort()
       // A stubborn executor (no settle within the grace period) → stop the
-      // heartbeat and let the reaper expire its lease (an in-process M3 limit).
+      // heartbeat and let the reaper expire the job's own heartbeat (an in-process M3 limit).
       setTimeout(() => {
         const still = running.get(jobId)
         if (still) {
@@ -447,13 +431,6 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
 
     notifyCrash(jobId, e) {
       const handler = crashHandlers.get(jobId)
-      if (!handler) return false
-      handler(e)
-      return true
-    },
-
-    notifyAssist(jobId, e) {
-      const handler = assistHandlers.get(jobId)
       if (!handler) return false
       handler(e)
       return true
@@ -494,7 +471,6 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       }
       running.clear()
       crashHandlers.clear()
-      assistHandlers.clear()
       warnedProgress.clear()
     },
   }

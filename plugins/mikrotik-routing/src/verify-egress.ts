@@ -6,7 +6,7 @@ import { ASSIGNMENT_KEY, readAssignment, writeAssignment } from './shared'
 
 /**
  * `verify-egress` — plan 122 §4.8, step 122.10. Runs on the device under a
- * lease. Reads the public IP this device is actually egressing through, from
+ * job activity. Reads the public IP this device is actually egressing through, from
  * the device's own side, and compares it with the last public IP THIS SAME
  * assignment observed — see `network-probe.ts`'s `decideVerifyOutcome` for
  * why "expected" has to mean that rather than a declared-up-front value (no

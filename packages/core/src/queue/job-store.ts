@@ -1,11 +1,10 @@
-import type { DeviceEvent, JobDetail, JobInfo, JobNodeInfo, JobStatus, ParamIssue, ResultStatus, RuntimeEnvelope } from '@enkaku/protocol'
+import type { JobDetail, JobInfo, JobNodeInfo, JobStatus, ParamIssue, ResultStatus, RuntimeEnvelope } from '@enkaku/protocol'
 import { RuntimeEnvelopeSchema } from '@enkaku/protocol'
-import { and, asc, desc, eq, gte, inArray, isNull, lte, notLike, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { changedRows, type Db } from '../db'
-import { deviceEvents, devices, jobNodes, jobResumes, jobs, scripts, type JobNodeRow, type JobRow } from '../db/schema'
+import { devices, jobNodes, jobResumes, jobs, scripts, type JobNodeRow, type JobRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { keysetWhere } from '../api/pagination'
-import { toDeviceEvent } from '../api/device-events'
 
 export interface JobCursor {
   sortValue: number
@@ -53,7 +52,7 @@ export function rowToJobInfo(
     finishedAt: toSec(row.finishedAt),
     batchId: row.batchId,
     batchSeq: row.batchSeq,
-    // Plan 21 §4.1 — a plain integer column (unix seconds), like leaseExpiresAt,
+    // Plan 21 §4.1 — a plain integer column (unix seconds), like heartbeatExpiresAt,
     // not a Drizzle `timestamp` column, so no Date conversion here.
     expiresAt: row.expiresAt ?? null,
     /** Plan 60 §3.4 — where a failure happened, so Summary can say it. */
@@ -66,8 +65,6 @@ export function rowToJobInfo(
     depth: row.depth ?? 0,
     /** Plan 98 §4.4, H1 — always whatever the row has, whether or not a limit is configured. */
     peakRssBytes: row.peakRssBytes ?? null,
-    /** Plan 91 §3.5, §4.9 — never null; a pre-plan-91 row reads back 0 (the column's own default). */
-    assistCount: row.assistCount ?? 0,
     // Plan 94 §3.7, §3.8, §4.8, step 94.7 — straight from the row; the
     // pacer (`clusters/pacer.ts`) is the only writer of any of these three.
     notBefore: row.notBefore ?? null,
@@ -230,11 +227,12 @@ export interface JobStore {
    */
   scriptNames(scriptIds: string[]): Map<string, { name: string; version: string; resultSchema?: unknown | null }>
   /**
-   * Single-writer transaction: claim a queued job for an idle device (spec
-   * §10.3, plan 20 §4.2). `excludeDeviceIds` (plan 71 §3.7) skips a device
-   * still inside its post-manual-use quiet period — the job KEEPS its
-   * place; it is simply not eligible to claim THAT device yet, exactly like
-   * `d.status !== 'idle'` already excludes a manually-held one.
+   * Single-writer transaction: claim a queued job for an online device (spec
+   * §10.3, plan 20 §4.2, plan 205 §4.7 — the SQL claim itself now reads
+   * `d.status = 'online'` plus a `NOT EXISTS` running-job guard, not a
+   * separate "idle" status). `excludeDeviceIds` (plan 71 §3.7) skips a
+   * device still inside its post-control-use quiet period — the job KEEPS
+   * its place; it is simply not eligible to claim THAT device yet.
    */
   claimNext(jobTtlSec: number, excludeDeviceIds?: string[]): ClaimedJob | null
   /** Distinct device ids with at least one `queued` job — the quiet-period wait (plan 71 §3.7) only needs to evaluate these, not the whole fleet. */
@@ -274,7 +272,7 @@ export interface JobStore {
   /**
    * Plan 36 §3.6, §4.3 — a batch member's infra failure returns to the
    * queue instead of settling terminally: status back to `queued`, the new
-   * (or unchanged) device it should try next, the lease/lifecycle columns
+   * (or unchanged) device it should try next, the heartbeat/lifecycle columns
    * cleared as if it had never run, `infraAttempts` incremented — but
    * `priority` and `createdAt` untouched, so plan 21's ordering treats it as
    * the old job it is. Only affects a `running` row, mirroring `finish()`.
@@ -293,12 +291,12 @@ export interface JobStore {
    * Returns the number actually cancelled.
    */
   cancelQueuedDescendants(jobId: string): number
-  renewLease(jobId: string, ttlSec: number): boolean
+  renewHeartbeat(jobId: string, ttlSec: number): boolean
   expiredRunning(): JobRow[]
   /**
    * The expiry reaper (plan 21 §4.3): flip every `queued` job past its
    * `expiresAt` to `expired`, in one statement. Only ever touches `queued`
-   * jobs — a `running` job is governed by the job lease, which already has
+   * jobs — a `running` job is governed by the job heartbeat, which already has
    * its own reaper (`expiredRunning`/`failOrphanRunning`), never this one.
    * Returns the affected rows so the caller can recompute their batches.
    */
@@ -306,21 +304,6 @@ export interface JobStore {
   /** Recovery boot: job 'running' yatim → failed (plan 04 §4.6). */
   failOrphanRunning(): number
   runningByDevice(deviceId: string): JobRow | null
-  /**
-   * Plan 91 §3.5, §4.9 — every non-job input action recorded against this
-   * job's device while it ran: the indexed range scan over `device_events`
-   * the plan's own §3.5 SQL describes (`idx_device_events_tail(deviceId,
-   * stream, at)`), no JSON extraction (F18). `[]` for a job that never
-   * started. A still-running job (`finishedAt` null) is bounded by "now"
-   * rather than an open-ended upper bound. The `actor NOT LIKE 'job:%'`
-   * guard matches the plan's own literal query — every row that can reach
-   * this filter today already IS an assist by construction (F3: `busy`
-   * refuses ordinary input before the lease is even read, so the only
-   * `input.*` writes recorded while a job holds the device are the ones that
-   * went through the co-control fallback), but the guard is kept for the day
-   * a job's own actions are ever recorded here too.
-   */
-  assists(jobId: string): DeviceEvent[]
   /**
    * The node timeline for one job (plan 99 §3.5, §4.9, step 99.8) — every
    * `job_nodes` row, in execution order. `[]` for a job that never ran a
@@ -378,7 +361,7 @@ export function createJobStore(db: Db): ConcreteJobStore {
         params: input.params ?? null,
         priority: input.priority,
         status: 'queued',
-        leaseExpiresAt: null,
+        heartbeatExpiresAt: null,
         result: null,
         error: null,
         createdAt: new Date(),
@@ -403,9 +386,6 @@ export function createJobStore(db: Db): ConcreteJobStore {
         // Plan 98 §4.4, H1 — a freshly enqueued job has not run yet, so no
         // child has reported anything. `finish()` above is the only writer.
         peakRssBytes: null,
-        // Plan 91 §3.5, §4.9 — a freshly enqueued job has not been assisted
-        // yet. `ws-handlers.ts`'s `input.*` branch is the only writer.
-        assistCount: 0,
         // Plan 98 §3.7, §4.4, §4.6, step 98.5 — the one resolved runtime
         // value ever written to a row (see the column's own comment in
         // `db/schema.ts`). Pinned here, at enqueue, alongside `scriptName`/
@@ -488,11 +468,11 @@ export function createJobStore(db: Db): ConcreteJobStore {
       // the status flip), because anything enforced outside it can be raced
       // (plan 20 §3.3, §8 risk table). Do not add a TypeScript pre-filter.
       //
-      // Plan 71 §3.7 adds a THIRD exclusion, alongside `d.status = 'idle'`
-      // (a manually-held device) and the batch gate above: a device still
-      // inside its post-manual-use quiet period. Computed by the caller
-      // (`queue/scheduler.ts`, which owns the `quietPeriodSec`/`maxWaitSec`
-      // settings and the lease manager) and passed in as a plain id list —
+      // Plan 71 §3.7, reworked by plan 205 §4.7, adds a THIRD exclusion,
+      // alongside `d.status = 'online'` and the `NOT EXISTS` running-job
+      // guard below: a device with a live control marker. Computed by the
+      // caller (`queue/scheduler.ts`, which owns the activity registry
+      // through `computeControlBlocked`) and passed in as a plain id list —
       // this function stays settings-blind, the same reasoning the batch
       // gate above already follows for `concurrency`.
       //
@@ -550,14 +530,15 @@ export function createJobStore(db: Db): ConcreteJobStore {
             .all<JobRow>(sql`
               UPDATE jobs
               SET status = 'running',
-                  lease_expires_at = strftime('%s','now') + ${jobTtlSec},
+                  heartbeat_expires_at = strftime('%s','now') + ${jobTtlSec},
                   started_at = strftime('%s','now')
               WHERE id = (
                 SELECT j.id FROM jobs j
                 JOIN devices d ON d.id = j.device_id
                 LEFT JOIN batches b ON b.id = j.batch_id
                 WHERE j.status = 'queued'
-                  AND d.status = 'idle'
+                  AND d.status = 'online'
+                  AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.device_id = j.device_id AND r.status = 'running')
                   ${excludeClause}
                   AND (
                     j.batch_id IS NULL
@@ -581,13 +562,6 @@ export function createJobStore(db: Db): ConcreteJobStore {
           if (!claimed) return null
 
           const deviceId = (claimed as unknown as { device_id?: string }).device_id ?? claimed.deviceId
-          const deviceUpdated = changedRows(
-            tx.run(sql`UPDATE devices SET status = 'busy' WHERE id = ${deviceId} AND status = 'idle'`),
-          )
-          if (deviceUpdated === 0) {
-            // Someone took the device manually first → abandon the claim.
-            tx.rollback()
-          }
           const row = tx.select().from(jobs).where(eq(jobs.id, claimed.id)).get()
           return row ? { job: row, deviceId } : null
         },
@@ -617,7 +591,7 @@ export function createJobStore(db: Db): ConcreteJobStore {
           .set({
             status,
             finishedAt: new Date(),
-            leaseExpiresAt: null,
+            heartbeatExpiresAt: null,
             ...(data.result !== undefined ? { result: data.result } : {}),
             ...(data.error !== undefined ? { error: data.error } : {}),
             ...(data.failureClass !== undefined ? { failureClass: data.failureClass } : {}),
@@ -645,7 +619,7 @@ export function createJobStore(db: Db): ConcreteJobStore {
           .set({
             status: 'queued',
             deviceId: newDeviceId,
-            leaseExpiresAt: null,
+            heartbeatExpiresAt: null,
             startedAt: null,
             infraAttempts: sql`COALESCE(${jobs.infraAttempts}, 0) + 1`,
           })
@@ -717,12 +691,12 @@ export function createJobStore(db: Db): ConcreteJobStore {
       return cancelled
     },
 
-    renewLease(jobId, ttlSec) {
+    renewHeartbeat(jobId, ttlSec) {
       return (
         changedRows(
           db
             .update(jobs)
-            .set({ leaseExpiresAt: sql`strftime('%s','now') + ${ttlSec}` })
+            .set({ heartbeatExpiresAt: sql`strftime('%s','now') + ${ttlSec}` })
             .where(and(eq(jobs.id, jobId), eq(jobs.status, 'running')))
             .run(),
         ) > 0
@@ -733,7 +707,7 @@ export function createJobStore(db: Db): ConcreteJobStore {
       return db
         .select()
         .from(jobs)
-        .where(and(eq(jobs.status, 'running'), sql`${jobs.leaseExpiresAt} < strftime('%s','now')`))
+        .where(and(eq(jobs.status, 'running'), sql`${jobs.heartbeatExpiresAt} < strftime('%s','now')`))
         .all()
     },
 
@@ -762,7 +736,7 @@ export function createJobStore(db: Db): ConcreteJobStore {
           // — classified 'infra' directly rather than through
           // `classifyFailure` (plan 36 §3.2, acceptance #8), since this
           // recovery path (plan 04 §4.6) never runs the executor at all.
-          .set({ status: 'failed', error: 'core restarted', finishedAt: new Date(), leaseExpiresAt: null, failureClass: 'infra' })
+          .set({ status: 'failed', error: 'core restarted', finishedAt: new Date(), heartbeatExpiresAt: null, failureClass: 'infra' })
           .where(eq(jobs.status, 'running'))
           .run(),
       )
@@ -776,27 +750,6 @@ export function createJobStore(db: Db): ConcreteJobStore {
           .where(and(eq(jobs.deviceId, deviceId), eq(jobs.status, 'running')))
           .get() ?? null
       )
-    },
-
-    assists(jobId) {
-      const row = db.select().from(jobs).where(eq(jobs.id, jobId)).get()
-      if (!row || !row.startedAt) return []
-      const end = row.finishedAt ?? new Date()
-      return db
-        .select()
-        .from(deviceEvents)
-        .where(
-          and(
-            eq(deviceEvents.deviceId, row.deviceId),
-            eq(deviceEvents.stream, 'input'),
-            gte(deviceEvents.at, row.startedAt),
-            lte(deviceEvents.at, end),
-            or(isNull(deviceEvents.actor), notLike(deviceEvents.actor, 'job:%')),
-          ),
-        )
-        .orderBy(asc(deviceEvents.at))
-        .all()
-        .map(toDeviceEvent)
     },
 
     nodes(jobId) {

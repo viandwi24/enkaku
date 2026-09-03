@@ -20,7 +20,7 @@ import type { AgentRunner, RunEmitEvent } from '../agent/runner'
 export interface AgentWsHandler {
   subscribe(ws: ServerWebSocket<unknown>, threadId: string): void
   unsubscribe(ws: ServerWebSocket<unknown>, threadId: string): void
-  /** `agent.run.cancel` (plan 66 §3.7) — `cancelledBy` is this connection's user label, resolved by the caller (same pattern `lease.acquire`'s actor already uses). */
+  /** `agent.run.cancel` (plan 66 §3.7) — `cancelledBy` is this connection's user label, resolved by the caller (same pattern a control marker's actor already uses). */
   cancelRun(runId: string, cancelledBy: string | null): void
   handleClose(ws: ServerWebSocket<unknown>): void
   /** Wired to `AgentRunner`'s `emit` — fans one event out to every connection subscribed to its thread. */

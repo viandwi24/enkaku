@@ -141,7 +141,7 @@ function capOutput(value: unknown): { output: unknown; truncated: string | null 
 /**
  * The workflow executor (plan 99 §3.1, §3.2, §4.7) — the ONE place §3.1's
  * whole decision cashes out: a `kind: 'workflow'` job runs as ONE job under
- * ONE lease (F1–F6, inherited for free by never releasing it between
+ * ONE heartbeat (F1–F6, inherited for free by never releasing it between
  * nodes), holding ONE device session for its whole duration (F11, H1 — the
  * `sessions.acquire`/`release` pair below brackets the entire interpreter
  * loop, so every node's OWN inner acquire/release inside `JobRunner` is

@@ -20,8 +20,9 @@ import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
 import { ConnectionBadge } from '@/components/ConnectionBadge'
 import { DeviceStatusBadge, ReadinessBadge } from '@/components/StatusBadge'
 import { ReadinessControl } from '@/components/ReadinessControl'
-import { HolderBadge } from '@/components/HolderBadge'
+import { ActivityBadge } from '@/components/ActivityBadge'
 import { tileIdentityOf } from '@/components/wall/tile-identity'
+import { hasJob } from '@/lib/activity'
 
 /**
  * The device card as a "rack unit": status rail down the left edge, identity
@@ -119,7 +120,7 @@ export function DeviceCard({
       <span
         className="status-rail"
         data-status={device.status}
-        data-live={device.status === 'busy' ? 'true' : 'false'}
+        data-live={hasJob(device) ? 'true' : 'false'}
         aria-hidden
       />
 
@@ -253,35 +254,13 @@ export function DeviceCard({
           </div>
         </div>
 
-        {/* Who holds this device — a person, an agent, or a job (plan 71
-            §3.2, §3.8) — read straight off `DeviceInfo.heldBy`, server-
-            published and kept live by `device.added`/`device.status`, never
-            polled (replaces `lib/agent-holders.ts`, deleted). */}
-        {device.heldBy && (
+        {/* What is happening to this device — a control marker, a job, or
+            both (plan 71 §3.2, §3.8; plan 205 §4.11) — read straight off
+            `DeviceInfo.activities`, server-published and kept live by
+            `device.activity`, never polled. */}
+        {device.activities.length > 0 && (
           <div onClick={(e) => e.stopPropagation()}>
-            <HolderBadge holder={device.heldBy} />
-          </div>
-        )}
-
-        {/* Who is ASSISTING this device (plan 91 §3.4 item 4, §4.4, F25) —
-            a narrow, subordinate grant, never a takeover: `heldBy` above is
-            unaffected by it. `?? []` covers a caller that predates the
-            field (`assistedBy` defaults server-side, but a fixture built as
-            a plain object rather than parsed by `DeviceInfoSchema` has no
-            such default to fall back on). Plan 105 §3.2's "assisting" vs
-            "may assist" activity split is computed inside `HolderBadge`
-            itself (`deriveAssistActivity`, `device-popup/ControlState.tsx`)
-            — this card never derives it locally, and does not call the full
-            `useControlState` hook: a device card has no per-client "do I
-            hold this" signal of its own to build a `ControlState` from (it
-            only ever renders OTHER people's/jobs' holder facts), so there is
-            nothing that state would add here beyond what `heldBy`/
-            `assistedBy` already say. */}
-        {(device.assistedBy ?? []).length > 0 && (
-          <div onClick={(e) => e.stopPropagation()} className="flex flex-wrap gap-1">
-            {(device.assistedBy ?? []).map((a) => (
-              <HolderBadge key={a.id} holder={a} variant="assists" />
-            ))}
+            <ActivityBadge activities={device.activities} lastControl={device.lastControl} />
           </div>
         )}
 
@@ -345,7 +324,7 @@ export function DeviceCard({
         </dl>
 
         {/* A busy device explains WHY it cannot be used right now. */}
-        {device.status === 'busy' && runningJob && (
+        {hasJob(device) && runningJob && (
           <Link
             href={`/jobs/detail?id=${runningJob.jobId}`}
             className="block rounded border border-led-active/30 bg-led-active/5 px-2.5 py-1.5 text-[11.5px] hover:border-led-active/50"

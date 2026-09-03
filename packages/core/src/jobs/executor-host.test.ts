@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { DeviceHealth } from '../device/health'
-import type { DeviceStateMachine } from '../device/state-machine'
 import type { JobRow } from '../db/schema'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
 import type { JobStore } from '../queue/job-store'
 import type { Logger } from '../util/logger'
 import { ExecutorRegistry } from './executor'
@@ -28,7 +27,7 @@ function makeJob(overrides: Partial<JobRow> = {}): JobRow {
     params: null,
     priority: 0,
     status: 'running',
-    leaseExpiresAt: null,
+    heartbeatExpiresAt: null,
     result: null,
     error: null,
     createdAt: new Date(),
@@ -52,7 +51,6 @@ function makeJob(overrides: Partial<JobRow> = {}): JobRow {
     depth: 0,
     triggerKey: null,
     peakRssBytes: null,
-    assistCount: 0,
     // Plan 98 §4.4, §4.6, step 98.5 — null here: this helper builds a bare
     // row, and nothing in these tests exercises the claim's concurrency gate.
     maxConcurrent: null,
@@ -90,8 +88,9 @@ interface Recorded {
     }
   }>
   requeueCalls: Array<{ jobId: string; newDeviceId: string }>
-  stateEvents: Array<{ deviceId: string; event: string }>
-  clearedLeases: string[]
+  /** Plan 205 §4.7 — replaces the deleted lease manager's `clearJobLease`: the activity registry's `end()` calls, one per settle/rebind. */
+  activityEnds: Array<{ deviceId: string; id: string }>
+  activityTouches: Array<{ deviceId: string; id: string }>
   healthNotes: Array<{ serial: string; outcome: string; code?: string }>
   rebindEvents: Array<{ deviceId: string; jobId: string; newDeviceId: string; code: string }>
 }
@@ -100,7 +99,7 @@ function makeDeps(job: JobRow, opts: { rebindOnInfra?: boolean; timeoutIsInfra?:
   deps: ExecutorHostDeps
   recorded: Recorded
 } {
-  const recorded: Recorded = { finishCalls: [], requeueCalls: [], stateEvents: [], clearedLeases: [], healthNotes: [], rebindEvents: [] }
+  const recorded: Recorded = { finishCalls: [], requeueCalls: [], activityEnds: [], activityTouches: [], healthNotes: [], rebindEvents: [] }
 
   const jobStore: JobStore = {
     enqueue: () => job,
@@ -122,38 +121,32 @@ function makeDeps(job: JobRow, opts: { rebindOnInfra?: boolean; timeoutIsInfra?:
     cancelQueuedDescendants: () => 0,
     listByBatch: () => [],
     cancelQueuedInBatch: () => 0,
-    renewLease: () => true,
+    renewHeartbeat: () => true,
     expiredRunning: () => [],
     expireQueued: () => [],
     failOrphanRunning: () => 0,
     runningByDevice: () => null,
-    assists: () => [],
   }
 
-  const states: DeviceStateMachine = {
-    apply: (deviceId, event) => {
-      recorded.stateEvents.push({ deviceId, event })
-      return { changed: true, from: 'busy', to: 'idle' }
+  /** A minimal fake `ActivityRegistry` — only `end`/`touch` are exercised by `executor-host.ts`. */
+  const activities: ActivityRegistry = {
+    start: (_deviceId, input) => ({ id: input.id, kind: input.kind, label: input.label, actor: input.actor, startedAt: 0, updatedAt: 0 }),
+    update: () => null,
+    touch: (deviceId, id) => recorded.activityTouches.push({ deviceId, id }),
+    end: (deviceId, id) => {
+      recorded.activityEnds.push({ deviceId, id })
+      return true
     },
-    current: () => 'busy',
-  }
-
-  const leases: LeaseManager = {
-    acquireManual: () => {
-      throw new Error('not used')
-    },
-    touchManual: () => {},
-    releaseManual: () => false,
-    releaseAllForClient: () => {},
-    noteJobLease: () => {},
-    clearJobLease: (deviceId) => recorded.clearedLeases.push(deviceId),
-    getLease: () => null,
-    getHolder: () => null,
-    lastManualReleaseAt: () => null,
-    lastManualHolder: () => null,
-    checkInputAllowed: () => ({ ok: true }),
-    startReaper: () => {},
-    stopReaper: () => {},
+    endWhere: () => 0,
+    touchControl: (_deviceId, clientId, actor) => ({ id: `control:${clientId}`, kind: 'control', label: '', actor, startedAt: 0, updatedAt: 0 }),
+    controlOf: () => null,
+    liveControls: () => [],
+    list: () => [],
+    devicesWith: () => [],
+    lastControl: () => null,
+    rebuild: () => {},
+    startSweep: () => {},
+    stopSweep: () => {},
   }
 
   const health: DeviceHealth = {
@@ -166,8 +159,7 @@ function makeDeps(job: JobRow, opts: { rebindOnInfra?: boolean; timeoutIsInfra?:
   const deps: ExecutorHostDeps = {
     registry: new ExecutorRegistry(),
     jobStore,
-    states,
-    leases: () => leases,
+    activities: () => activities,
     log: silentLog(),
     jobTtlSec: 60,
     heartbeatMs: 1000,
@@ -263,9 +255,8 @@ describe('createExecutorHost — batch rebind on an infra failure (plan 36 §3.6
     // Requeued, not terminally failed.
     expect(recorded.requeueCalls).toEqual([{ jobId: 'job-1', newDeviceId: 'dev-2' }])
     expect(recorded.finishCalls).toEqual([])
-    // The OLD device is still freed exactly as a normal settle would free it.
-    expect(recorded.clearedLeases).toEqual(['dev-1'])
-    expect(recorded.stateEvents).toEqual([{ deviceId: 'dev-1', event: 'JOB_FINISHED' }])
+    // The OLD device's job activity is ended exactly as a normal settle would end it.
+    expect(recorded.activityEnds).toEqual([{ deviceId: 'dev-1', id: 'job:job-1' }])
     expect(recorded.rebindEvents).toEqual([{ deviceId: 'dev-1', jobId: 'job-1', newDeviceId: 'dev-2', code: 'DEVICE_DISCONNECTED' }])
     // Blamed the OLD device's health, same as any other infra failure.
     expect(recorded.healthNotes).toEqual([{ serial: 'serial-dev-1', outcome: 'timeout', code: 'DEVICE_DISCONNECTED' }])
@@ -367,47 +358,11 @@ describe('createExecutorHost — notifyCrash (plan 37 §4.4)', () => {
   })
 })
 
-describe('createExecutorHost — notifyAssist (plan 91 §3.6, §4.8, §5 step 91.5)', () => {
-  test('an assist is delivered to a running job that registered ctx.onAssist, and does NOT settle the job — mirrors notifyCrash\'s shape, but is never an abort', async () => {
-    const job = makeJob()
-    const { deps, recorded } = makeDeps(job)
-    const seen: Array<{ at: number; actor: string | null }> = []
-    let resolveRun: (() => void) | undefined
-    deps.registry.register('test-script', {
-      validateParams: (p) => p,
-      run: (_job, ctx) =>
-        new Promise((resolve) => {
-          ctx.onAssist?.((e) => seen.push(e))
-          resolveRun = () => resolve('unused')
-        }),
-    })
-    const host = createExecutorHost(deps)
-    host.start(job)
-    await Bun.sleep(5)
-
-    const handled = host.notifyAssist(job.id, { at: 1_700_000_000, actor: 'user-1' })
-    expect(handled).toBe(true)
-    expect(seen).toEqual([{ at: 1_700_000_000, actor: 'user-1' }])
-    // The job is still running — an assist is NOT an abort (plan 91 §3.6).
-    expect(recorded.finishCalls).toEqual([])
-    resolveRun?.()
-    await Bun.sleep(10)
-    expect(recorded.finishCalls[0]?.status).toBe('success')
-  })
-
-  test('notifyAssist for a job with no registered handler (or no longer running) is a harmless no-op', async () => {
-    const job = makeJob()
-    const { deps } = makeDeps(job)
-    const host = createExecutorHost(deps)
-    expect(host.notifyAssist('no-such-job', { at: 1_700_000_000, actor: 'user-1' })).toBe(false)
-
-    deps.registry.register('test-script', { validateParams: (p) => p, run: async () => 'ok' })
-    host.start(job)
-    await Bun.sleep(10)
-    // The job already finished, never having called ctx.onAssist — its handler entry is gone.
-    expect(host.notifyAssist(job.id, { at: 1_700_000_000, actor: 'user-1' })).toBe(false)
-  })
-})
+/**
+ * Plan 205 §3.2 item 8: co-control (Assist) and `ctx.onAssist`/`ExecutorHost.notifyAssist`
+ * are deleted, not renamed — the describe block that used to live here
+ * (plan 91 §3.6, §4.8, §5 step 91.5) is gone.
+ */
 
 describe('createExecutorHost — an unknown error code classifies script, not infra (acceptance #9)', () => {
   test('a totally unrecognised code fails the job as class "script" and never notes health', async () => {
@@ -638,5 +593,41 @@ describe('createExecutorHost — the result outcome reaches finish() (plan 97 §
 
     expect(recorded.finishCalls[0]?.status).toBe('failed')
     expect(recorded.finishCalls[0]?.data.resultStatus).toBeUndefined()
+  })
+})
+
+/**
+ * Plan 205 §4.7 — the heartbeat interval also touches the job's own
+ * `job:<id>` activity, so a long-running job's marker never looks stale to
+ * anything reading the registry (MVP 04 §1.1: "updatedAt: last heartbeat,
+ * last progress, or last input").
+ */
+describe('createExecutorHost — the heartbeat touches the job activity (plan 205 §4.7)', () => {
+  test('settle ends the job:<id> activity on the device it ran on', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', { validateParams: (p) => p, run: async () => 'ok' })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.activityEnds).toEqual([{ deviceId: 'dev-1', id: 'job:job-1' }])
+  })
+
+  test('ctx.heartbeat() touches the job activity', async () => {
+    const job = makeJob()
+    const { deps, recorded } = makeDeps(job)
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: async (_job, ctx) => {
+        ctx.heartbeat()
+        return 'ok'
+      },
+    })
+    const host = createExecutorHost(deps)
+    host.start(job)
+    await Bun.sleep(10)
+
+    expect(recorded.activityTouches).toContainEqual({ deviceId: 'dev-1', id: 'job:job-1' })
   })
 })

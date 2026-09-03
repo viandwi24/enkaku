@@ -6,7 +6,7 @@ import { z } from 'zod'
  * safeParse'd on both sides; unknown messages are ignored (forward-compatible).
  *
  * The child NEVER opens adb itself — every device action travels as a
- * `device.call` to the parent, so the per-device queue and lease still hold.
+ * `device.call` to the parent, so the per-device queue and activity policy still hold.
  *
  * Each variant's `args` shape comes from `@enkaku/protocol`'s
  * `DEVICE_CALL_ARGS` (plan 63 §3.7) — the SAME schema `@enkaku/core`'s
@@ -225,15 +225,6 @@ export const ChildToParentSchema = z.union([
         clearData: z.boolean().optional(),
       })
       .optional(),
-    /**
-     * `ScriptDefinition.assist` (plan 91 §3.6, §4.8) — whether an operator
-     * may assist this script's job. Undefined for a pre-plan-91 bundle,
-     * which the parent's `scriptAssistPolicy` hook reads as permissive
-     * (`co-control.ts`'s own default), the same "omitted means allowed"
-     * shape `reset` above already established for a field the child only
-     * learns from the bundle.
-     */
-    assist: z.enum(['allow', 'deny']).optional(),
   }),
   z.object({ t: z.literal('phase'), phase: z.enum(['prepare', 'run', 'finish']) }),
   z.intersection(z.object({ t: z.literal('device.call'), callId: z.string() }), DeviceCallSchema),
@@ -399,16 +390,5 @@ export const ParentToChildSchema = z.discriminatedUnion('t', [
   // it is not slow, it is broken, and this fires long before the run
   // timeout would.
   z.object({ t: z.literal('abort'), reason: z.enum(['timeout', 'cancelled', 'hung', 'crashed', 'startup-timeout']) }),
-  /**
-   * The SECOND unsolicited parent→child push ever (plan 91 §3.6, §4.8) —
-   * `abort` above is the first. A human sent input to this device while this
-   * job was running. NOT an abort: the job keeps its lease, keeps running,
-   * and `finish()` is not invoked because of this message. `actor` is
-   * `userId`, or null when the assisting client is unauthenticated (local
-   * mode) — the same "userId, or null when the core itself is the actor"
-   * convention `DeviceEvent.actor` already documents, minus the `'job:<id>'`
-   * form, which never applies here (a job cannot assist itself).
-   */
-  z.object({ t: z.literal('assist'), at: z.number().int(), actor: z.string().nullable() }),
 ])
 export type ParentToChild = z.infer<typeof ParentToChildSchema>

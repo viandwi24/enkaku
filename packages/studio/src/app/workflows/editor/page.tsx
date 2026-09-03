@@ -109,7 +109,7 @@ function WorkflowEditorView() {
     <>
       <PageHeader
         title={name ?? 'New workflow'}
-        description="A pipeline of scripts on one device, under one lease"
+        description="A pipeline of scripts on one device, under one job"
         actions={backAction}
         meta={
           name && versions.length > 1 ? (

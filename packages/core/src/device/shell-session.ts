@@ -8,17 +8,17 @@ import { shellQuote } from './monitors'
  * honest").
  *
  * Keyed by `deviceId` alone, not `(deviceId, clientId)` as §4.4 describes:
- * `shell.exec` is only ever reachable after `leases.checkInputAllowed`
- * passes, and that check already guarantees at most one `clientId` may run
- * commands on a given device at any moment (the manual lease holder). A
- * second dimension on the key would track a fact the lease manager already
- * enforces, for no behavioural difference — and it would need every
- * automatic lease revocation (idle timeout, quarantine, forced release) to
- * also thread the holder's `clientId` through to stay correct, which the
- * lease manager does not currently do (see `LeaseManagerDeps.onManualRevoked`
- * — it carries `holderUserId`, not `clientId`). Keying by `deviceId` alone
+ * `shell.exec` is only ever reachable after activity admission passes, and
+ * that check already guarantees at most one `clientId` may run commands on
+ * a given device at any moment (the controlling client). A second dimension
+ * on the key would track a fact the activity registry already enforces, for
+ * no behavioural difference — and it would need every automatic control-marker
+ * end (idle timeout, quarantine, forced disconnect) to also thread the
+ * controlling client's `clientId` through to stay correct, which the
+ * registry does not currently do (its `onChange` callback carries the
+ * activity's own actor, not a raw `clientId`). Keying by `deviceId` alone
  * needs none of that: `release(deviceId)` is correct regardless of WHY or
- * BY WHOM the lease was released.
+ * BY WHOM the control marker ended.
  */
 const DEFAULT_CWD = '/'
 
@@ -49,7 +49,7 @@ export interface ShellSessionStore {
   cdProbeCommand(deviceId: string, target: string | null): string
   /** Record a successful `cd`: store the printed absolute path as the new cwd. */
   commitCwd(deviceId: string, newCwd: string): void
-  /** Lease released, for any reason → the next controller starts at `/` (§3.7, §4.4, acceptance #11). */
+  /** Control marker ended, for any reason → the next controller starts at `/` (§3.7, §4.4, acceptance #11). */
   release(deviceId: string): void
 }
 

@@ -57,11 +57,8 @@ import { ActionsList } from './ActionsList'
  * `thermal` pane, `MonitorPane`, is a different surface — plan 24's
  * streaming-lane monitor — and is not one of the twelve rows or two tabs
  * this plan names, so it stays unreached from the popup for now). It gates
- * its own mutating affordances on `canUseLive` (the SAME `iHoldControl &&
- * !busy` fact the Actions tab's Assist row and rail buttons already read) —
- * an Assist grant does NOT extend to `inspect.*` (plan 91 §3.4 lists exactly
- * five input verbs, and it is not one of them), so someone assisting a job
- * sees the same "take control" prompt anyone else would.
+ * its own mutating affordances on `canUseLive` (the SAME `online` fact the
+ * rail buttons already read, plan 205 §4.9).
  *
  * **`tabs` (plan 103 §5 step 103.10, extended by step 103.11's audit
  * closure)** — which of `Actions | Inspector | Record` a caller wants,
@@ -103,9 +100,8 @@ import { ActionsList } from './ActionsList'
  * gives for calling the hook unconditionally. `RecordPanel` itself is reused
  * UNCHANGED (§4.2's own "reuse, never reimplement"); the ONLY new code here
  * is the disabled-reason plumbing `ScreenCard` already established
- * (`canUseLive` — the same manual-lease-only gate `recording.start`'s own
- * server check enforces, `ws-handlers.ts`: recording is a side-channel on
- * the LEASE holder's own input, never the Assist fallback) and a structural
+ * (`canUseLive` — the same online-only gate `recording.start`'s own
+ * server check enforces, `ws-handlers.ts`) and a structural
  * block for a node-owned (cloud) device, which has no local recorder to
  * attach to (the same `device.nodeId` check `app/device/page.tsx` uses for
  * its own `ScreenCard`).
@@ -115,13 +111,9 @@ export function SidePanel({
   device,
   devices,
   selectedIds,
-  assistState,
   canUseLive,
-  takeControlDisabledReason,
-  onAssistSelect,
   onDeviceReloaded,
   onForgotten,
-  onClaimControl,
   tabs = ['actions', 'inspector', 'record'],
 }: {
   deviceId: string
@@ -129,16 +121,10 @@ export function SidePanel({
   /** Plan 104 (M69) §3.2 — passed straight through to `ActionsList`'s own identically-named prop; see that file's doc comment. */
   devices: DeviceInfo[]
   selectedIds?: readonly string[]
-  assistState: 'unavailable' | 'off' | 'busy' | 'available'
-  /** `iHoldControl && !busy` — the real manual lease, never an Assist grant (see the file header). Gates Inspector's `canUse`; `ActionsList` reads the same fact for `AdbCommandDialog`'s own `TerminalPane` gate. */
+  /** `online` (plan 205 §4.9). Gates Inspector's `canUse`; `ActionsList` reads the same fact for `AdbCommandDialog`'s own `TerminalPane` gate. */
   canUseLive: boolean
-  /** Why the Inspector tab's inline "take control" cannot be pressed right now, or `null` when it can (plan 59 §3.1's pattern). Only read when `tabs` includes `'inspector'`. */
-  takeControlDisabledReason?: string | null
-  onAssistSelect: () => void
   onDeviceReloaded: () => void
   onForgotten: () => void
-  /** The Inspector tab's own inline "take control" — `DevicePopup`'s `claimControl`, the same `lease.acquire` request the popup's own auto-claim effect sends. Only read when `tabs` includes `'inspector'`. */
-  onClaimControl?: () => void
   /**
    * Which of `Actions | Inspector | Record` to render (plan 103 §5 step
    * 103.10, extended by step 103.11's audit closure) — defaults to all
@@ -162,12 +148,12 @@ export function SidePanel({
   // `ScreenCard.tsx` documents for calling this identical hook the same way.
   const recording = useRecording(deviceId)
   const recordingIndicatorActive = recording.phase === 'active' || recording.phase === 'stopping'
-  // Recording requires the SAME manual lease `recording.start`'s own server
-  // check enforces (`ws-handlers.ts`'s own `checkInputAllowed` — never the
-  // Assist fallback), the identical rule `ScreenCard.tsx`'s
+  // Recording requires the device to be online, the same fact
+  // `recording.start`'s own server check enforces (`ws-handlers.ts`'s own
+  // `checkInputAllowed`), the identical rule `ScreenCard.tsx`'s
   // `startRecordingDisabledReason` already applies for the device page's own
   // Record mode.
-  const recordDisabledReason = canUseLive ? undefined : (takeControlDisabledReason ?? 'Take control to record.')
+  const recordDisabledReason = canUseLive ? undefined : 'The device is offline.'
 
   return (
     <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1">
@@ -202,9 +188,7 @@ export function SidePanel({
           device={device}
           devices={devices}
           selectedIds={selectedIds}
-          assistState={assistState}
           canUseLive={canUseLive}
-          onAssistSelect={onAssistSelect}
           onDeviceReloaded={onDeviceReloaded}
           onForgotten={onForgotten}
         />
@@ -213,16 +197,12 @@ export function SidePanel({
           file header). `InspectorPanel` manages its own bounded internal
           scroll area already. Skipped entirely when `tabs` excludes
           `'inspector'` (the context menu's own stated decision, file
-          header) — there is then no trigger to select it, and no reason to
-          keep `onClaimControl`'s type non-optional for a caller that never
-          reads it. */}
+          header). */}
       {showInspector && (
         <TabsContent value="inspector" className="flex min-h-0 flex-1 flex-col">
           <InspectorPanel
             deviceId={deviceId}
             canUse={canUseLive}
-            onTakeControl={onClaimControl ?? (() => {})}
-            {...(takeControlDisabledReason ? { takeControlDisabledReason } : {})}
             // Always true: this whole element only mounts when the Inspector
             // tab is active (see the file header), so there is no "mounted
             // but hidden" state left for this prop to distinguish here.

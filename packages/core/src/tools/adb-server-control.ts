@@ -8,7 +8,7 @@ export type { AdbServerPhase }
 /** What the drain actually stopped, for the report (plan 88 §3.10, §4.8 — "the drain finally includes sessions"). */
 export interface DrainResult {
   sessionsClosed: number
-  leasesReleased: number
+  controlsEnded: number
   /** Job ids force-failed because the drain proceeded with them still running (only non-empty when the caller bypassed its own busy-farm guard with `force`). */
   jobsFailed: string[]
 }
@@ -19,7 +19,7 @@ export interface ReattachResult {
   succeeded: number
   /**
    * `number` travels beside `label`, never composed into it (plan 124 §3.1,
-   * §3.7 and §10's `MirrorMember` note): `AdbRestartDialog` is the one place
+   * §3.7 and §10's device-tile-member note): `AdbRestartDialog` is the one place
    * this list is rendered and it composes exactly once, so a pre-baked
    * `#7 …` here would double up the moment that dialog also holds a
    * `DeviceInfo`. `null` for a device whose reservation was released.
@@ -31,7 +31,7 @@ export interface AdbCycleReport {
   reason: 'swap' | 'restart'
   durationMs: number
   sessionsClosed: number
-  leasesReleased: number
+  controlsEnded: number
   jobsFailed: string[]
   devicesBefore: number
   devicesAfter: number
@@ -49,12 +49,13 @@ export interface AdbCycleOpts {
   /** Persist the new active version pointer — supplied ONLY by a version swap. A restart never touches which version is active. */
   commit?: () => Promise<void>
   /**
-   * The caller already decided to proceed despite running jobs / held leases
-   * (its own `E_ADB_BUSY_FARM` guard, ahead of ever calling `cycle()`) —
+   * The caller already decided to proceed despite running jobs / live control
+   * markers (its own `E_ADB_BUSY_FARM` guard, ahead of ever calling `cycle()`) —
    * threaded through to `drainSessions` so it, not `cycle()` itself, decides
    * whether a still-running job gets force-failed. `cycle()` never inspects
-   * this value itself; sessions and leases are always drained regardless,
-   * `force` only changes whether a running JOB is torn down too.
+   * this value itself; sessions and control/command activities are always
+   * drained regardless, `force` only changes whether a running JOB is torn
+   * down too.
    */
   force?: boolean
 }
@@ -65,10 +66,10 @@ export interface AdbServerControlDeps {
   stopTracker: () => Promise<void>
   startTracker: () => Promise<void>
   /**
-   * Drain live sessions, leases, and (if the caller proceeded despite them)
-   * running jobs BEFORE the server is killed. F19: this was an unwired
-   * optional dep since M1 — every caller of `cycle()` now gets a real drain,
-   * not a no-op comment.
+   * Drain live sessions, control/command activities, and (if the caller
+   * proceeded despite them) running jobs BEFORE the server is killed. F19:
+   * this was an unwired optional dep since M1 — every caller of `cycle()`
+   * now gets a real drain, not a no-op comment.
    */
   drainSessions?: (opts: { force: boolean }) => Promise<DrainResult>
   /**
@@ -103,8 +104,8 @@ export interface AdbServerControl {
    *   - the Toolchain Manager's adb version swap (`commit` supplied);
    *   - the operator's "Restart adb server" on the Tools page (`commit` absent).
    *
-   * Seven steps, always in this order: drain (queue, then sessions/leases/
-   * jobs) → stop the old binary → [swap the binary pointer] → start the new
+   * Seven steps, always in this order: drain (queue, then sessions/control
+   * activities/jobs) → stop the old binary → [swap the binary pointer] → start the new
    * binary → restart the tracker → resume the queue → reattach remembered
    * network addresses → reconcile once. A failed `start-server` brings the
    * OLD binary back up before rethrowing (F18's rollback, preserved
@@ -147,7 +148,7 @@ export function createAdbServerControl(deps: AdbServerControlDeps): AdbServerCon
     const devicesBefore = client ? await countOnline(client) : 0
 
     let sessionsClosed = 0
-    let leasesReleased = 0
+    let controlsEnded = 0
     let jobsFailed: string[] = []
 
     if (client) {
@@ -160,14 +161,14 @@ export function createAdbServerControl(deps: AdbServerControlDeps): AdbServerCon
         client.resumeQueue()
         throw new ToolchainError('E_TOOL_IN_USE', `the adb drain exceeded ${drainTimeoutMs}ms — ${opts.reason} cancelled`)
       }
-      // Sessions, leases, and (if the caller's own busy-farm guard was
-      // bypassed) running jobs — F19's fix. Every live wall tile and manual
-      // hold is released BEFORE the transport table is thrown away, instead
-      // of being silently orphaned by it.
+      // Sessions, control/command activities, and (if the caller's own
+      // busy-farm guard was bypassed) running jobs — F19's fix. Every live
+      // wall tile and control marker is released BEFORE the transport table
+      // is thrown away, instead of being silently orphaned by it.
       if (deps.drainSessions) {
         const result = await deps.drainSessions({ force: Boolean(opts.force) })
         sessionsClosed = result.sessionsClosed
-        leasesReleased = result.leasesReleased
+        controlsEnded = result.controlsEnded
         jobsFailed = result.jobsFailed
       }
       await deps.stopTracker()
@@ -245,7 +246,7 @@ export function createAdbServerControl(deps: AdbServerControlDeps): AdbServerCon
       reason: opts.reason,
       durationMs: Date.now() - started,
       sessionsClosed,
-      leasesReleased,
+      controlsEnded,
       jobsFailed,
       devicesBefore,
       devicesAfter,

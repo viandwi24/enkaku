@@ -14,7 +14,7 @@ const snapshot: DeviceSnapshot = {
   stableId: 'STABLE1',
   serial: 'SERIAL1',
   label: 'test phone',
-  status: 'idle',
+  status: 'online',
   androidVersion: '15',
   apiLevel: 35,
   screenW: 720,
@@ -1205,10 +1205,11 @@ describe('SessionManager.restartAt / reprofile (plan 92 §3.8, §4.3, §5 step 9
     await manager.closeAll()
   })
 
-  test('a device running a job (status: busy) is reported in skippedBusy and its session is never restarted (rule 4, the blast-radius bound)', async () => {
+  test('a device running a job is reported in skippedBusy and its session is never restarted (rule 4, the blast-radius bound)', async () => {
     let builds = 0
-    const { source, setStatus } = makeMutableDevicesSource(['dev-busy', 'dev-idle'])
+    const { source } = makeMutableDevicesSource(['dev-busy', 'dev-idle'])
     const wallFps = { current: 5 }
+    const runningJobDeviceIds = new Set<string>()
     const manager = createSessionManager({
       client: fakeClient(),
       devices: source,
@@ -1218,8 +1219,8 @@ describe('SessionManager.restartAt / reprofile (plan 92 §3.8, §4.3, §5 step 9
         return fakeScrcpy()
       },
       // Every device's resolved profile will "change" once `wallFps.current`
-      // moves below — proves the busy device is skipped for BEING busy, not
-      // because it happened to look unchanged.
+      // moves below — proves the busy device is skipped for HAVING A
+      // RUNNING JOB, not because it happened to look unchanged.
       resolveProfile: (_deviceId, quality) => ({
         quality,
         maxSize: 480,
@@ -1227,12 +1228,13 @@ describe('SessionManager.restartAt / reprofile (plan 92 §3.8, §4.3, §5 step 9
         bitRate: 800_000,
         source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
       }),
+      hasRunningJob: (deviceId) => runningJobDeviceIds.has(deviceId),
     })
 
     const busySession = await manager.acquire('dev-busy', () => {}, 'wall')
     await manager.acquire('dev-idle', () => {}, 'wall')
     expect(builds).toBe(2)
-    setStatus('dev-busy', 'busy')
+    runningJobDeviceIds.add('dev-busy')
     wallFps.current = 9
 
     const result = await manager.reprofile!('farm settings changed')

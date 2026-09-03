@@ -12,11 +12,11 @@ export interface ExpiryReaper {
 
 /**
  * The expiry reaper (plan 21 §4.3): a `queued` job past its `expiresAt`
- * becomes `expired` instead of waiting forever. It runs on the same cadence
- * as the existing lease reaper, but is its own module — a `running` job is
- * governed entirely by the job lease (`lease-manager.ts`'s reaper), which
- * already exists and already knows how to fail and free a device; this one
- * only ever touches jobs that never started (spec §10.2, plan 21 §4.3).
+ * becomes `expired` instead of waiting forever. Since plan 205 §4.7 it also
+ * sweeps the job heartbeat: a `running` job whose `heartbeatExpiresAt` has
+ * passed is finished externally with `HEARTBEAT_EXPIRED` — the manual-hold
+ * subsystem that used to run this sweep on its own interval is deleted, and
+ * this is the one reaper left standing (spec §10.2, plan 21 §4.3).
  */
 export function createExpiryReaper(deps: {
   jobStore: JobStore
@@ -32,6 +32,12 @@ export function createExpiryReaper(deps: {
    * of its schedule.
    */
   onBatchChanged: (batchId: string, deviceId?: string) => void
+  /**
+   * A running job's heartbeat expired (plan 205 §4.7) — wired to
+   * `host.finishExternally(jobId, 'failed', reason, 'HEARTBEAT_EXPIRED')` in
+   * `daemon.ts`, exactly as the deleted manual-hold subsystem's own reaper did.
+   */
+  onHeartbeatExpired: (jobId: string) => void
   /**
    * Expires overdue agent approvals on this SAME cadence (plan 66 §4.3:
    * "a sweeper expires overdue approvals on the same timer the job reaper
@@ -49,6 +55,10 @@ export function createExpiryReaper(deps: {
       deps.log.warn(`job ${row.id} expired: queue timeout (device ${row.deviceId})`)
       deps.onJobStatus(rowToJobInfo(row))
       if (row.batchId) deps.onBatchChanged(row.batchId, row.deviceId)
+    }
+    for (const row of deps.jobStore.expiredRunning()) {
+      deps.log.warn(`job ${row.id} heartbeat expired (device ${row.deviceId})`)
+      deps.onHeartbeatExpired(row.id)
     }
     return expired
   }

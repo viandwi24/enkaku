@@ -254,7 +254,7 @@ export interface JobRunnerDeps {
   onArtifact: (jobId: string, artifact: { kind: string; label: string; path: string; sizeBytes: number }) => void
   /** `reset` (plan 35 §3.5, §4.4) always precedes `prepare`, for a 'full' attempt only. */
   onPhase: (jobId: string, attempt: number, phase: 'reset' | 'prepare' | 'run' | 'finish') => void
-  /** Extend the job lease (child heartbeat or device activity). */
+  /** Extend the job heartbeat (child heartbeat or device activity). */
   heartbeat: (jobId: string) => void
   /**
    * Read fresh per attempt, not captured at daemon start (plan 35 §4.4) — the
@@ -333,8 +333,8 @@ export interface JobRunnerDeps {
   onProgress?: (jobId: string, value: unknown) => void
   /**
    * The job trace (plan 128 §3.1, §4.2, step 128.4) — one event per device
-   * action, log line, phase boundary, artifact, progress push and human
-   * assist, on one millisecond-resolution axis.
+   * action, log line, phase boundary, artifact and progress push, on one
+   * millisecond-resolution axis.
    *
    * Optional, exactly like `transfer`/`timing`/`kv`/`jobs` above: **a host
    * that does not wire it loses tracing and nothing else.** The tee it feeds
@@ -409,20 +409,11 @@ export type AbortReason = 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startu
 export interface RunningJob {
   /** `detail` is a human-readable cause, used only for `reason: 'crashed'` (plan 37 §4.4) — e.g. "com.example.app crashed: java.lang.NullPointerException". */
   abort(reason: AbortReason, detail?: string): void
-  /** Plan 91 §3.6, §4.8 — delivers `{t:'assist', at, actor}` to the running child. NOT an abort — no grace timer, no kill, the process is entirely unaffected beyond receiving the message. */
-  notifyAssist(e: { at: number; actor: string | null }): void
 }
 
 export interface JobRunner {
   execute(job: JobSpec): Promise<{ ok: boolean; value?: unknown; error?: ScriptFailure; peakRssBytes?: number; outcome?: ResultOutcome }>
   abort(jobId: string, reason: AbortReason, detail?: string): boolean
-  /**
-   * Plan 91 §3.6, §4.8 — the second unsolicited parent→child push ever
-   * (`abort` is the first). Returns whether a live child was found — a job
-   * that finished (or was never running) between the assist and this call is
-   * a harmless no-op, the same shape `abort` above already has.
-   */
-  notifyAssist(jobId: string, e: { at: number; actor: string | null }): boolean
 }
 
 const childEntryPath = join(import.meta.dir, 'child-entry.ts')
@@ -501,8 +492,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     logger: ReturnType<typeof createJobLogger>
     artifacts: ArtifactSink
     aborter: { current: ((reason: AbortReason, detail?: string) => void) | null }
-    /** Plan 91 §3.6, §4.8 — the `notifyAssist` counterpart to `aborter` above, same ref-cell shape. */
-    assistNotifier: { current: ((e: { at: number; actor: string | null }) => void) | null }
     /** Filled from the `ready` message — timeout and retries belong to ScriptDefinition. */
     meta?: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string; pluginId?: string }
     /**
@@ -528,7 +517,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
      * no memory budget of its own, deliberately) and for a farm/script that
      * declared no ceiling at all. `maxRssBytes: null` inside a defined object
      * never happens in practice (the caller only builds this when a ceiling
-     * resolved to a real number) but stays nullable here to mirror
+     * resolved to a real number) but stays nullable here, matching
      * `ResolvedRuntime.maxRssBytes`'s own shape rather than inventing a second one.
      */
     memory?: { maxRssBytes: number | null; enforce: 'kill' | 'warn' | 'off'; sampleIntervalMs: number }
@@ -545,7 +534,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     // silence watchdog) is decided purely by whether a CEILING NUMBER
     // resolved, never by `enforce`: even `enforce: 'off'` benefits from a
     // more accurate recorded peak, and sampling faster costs nothing extra
-    // (an `rss` message never triggers a lease-renewal write — see below).
+    // (an `rss` message never triggers a heartbeat-renewal write — see below).
     const memory = opts.memory
     const memoryLimitConfigured = memory !== undefined && memory.maxRssBytes !== null
     const effectiveRssSampleMs = memory !== undefined && memory.maxRssBytes !== null ? memory.sampleIntervalMs : RSS_SAMPLE_MS
@@ -570,9 +559,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       deps.onTargetPackages?.(job.id, declaredPackages.length > 0 ? declaredPackages : [...launchedPackages])
     }
     // Plan 91 §3.3, §4.1 — this attempt's identity for the input arbiter's
-    // attribution and priority lane. `id: job.id` (not `attempt`): an assist
-    // and a retry both belong to the SAME job for §3.5's attribution, and the
-    // arbiter's `job`/`agent` priority tier does not distinguish attempts.
+    // priority lane. `id: job.id` (not `attempt`): a retry belongs to the
+    // SAME job, and the arbiter's `job`/`agent` priority tier does not
+    // distinguish attempts.
     const source: InputSource = { kind: 'job', id: job.id, userId: null }
     const execDevice = createDeviceExecutor({
       session,
@@ -590,7 +579,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       // over "captured at daemon start" (still the comment's own point), but
       // a setting change made while THIS attempt's script was still running
       // never reached it — the same shape of bug this repo has shipped
-      // before (a co-control queue budget read once and never again).
+      // before (an input-arbiter queue budget read once and never again).
       ...(deps.timing ? { timing: deps.timing } : {}),
     })
 
@@ -649,7 +638,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         tee.closePhase()
         for (const t of [killTimer, timeoutTimer, startupTimer, graceTimer, silenceTimer]) if (t) clearTimeout(t)
         opts.aborter.current = null
-        opts.assistNotifier.current = null
         try {
           child.kill()
         } catch {
@@ -767,17 +755,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       }
 
       opts.aborter.current = doAbort
-      // Plan 91 §3.6, §4.8 — NOT gated on `settled`/`abortReason` the way
-      // `doAbort` is: an assist notification is not mutually exclusive with
-      // anything else that can happen to this attempt, and firing it after
-      // `finish()` already nulled the ref is exactly the harmless no-op
-      // `opts.assistNotifier.current?.(e)` at the call site expects.
-      opts.assistNotifier.current = (e) => {
-        // Plan 128 §0.1 — a human touching the device mid-run is delivered to
-        // the script and, until now, sat on no shared time axis at all.
-        tee.assist(e)
-        send({ t: 'assist', at: e.at, actor: e.actor })
-      }
 
       const sendInit = () => {
         if (settled) return
@@ -893,9 +870,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         const msg = parsed.data as ChildToParent
         resetSilenceTimer()
         // Plan 98 §4.7 — an `rss` sample is proof of life (the silence timer
-        // above still resets) but NOT lease-renewal activity: at a fast
+        // above still resets) but NOT heartbeat-renewal activity: at a fast
         // sample cadence, treating every sample as a heartbeat would multiply
-        // lease-renewal writes for no benefit.
+        // heartbeat-renewal writes for no benefit.
         if (msg.t !== 'rss') deps.heartbeat(job.id)
 
         if (msg.t === 'rss') {
@@ -981,7 +958,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           tee.progress(msg.value)
           deps.onProgress?.(job.id, msg.value)
         } else if (msg.t === 'heartbeat') {
-          // already handled by resetSilenceTimer and the lease heartbeat
+          // already handled by resetSilenceTimer and the job heartbeat
         } else if (msg.t === 'device.call') {
           const call = DeviceCallSchema.safeParse(msg)
           if (!call.success) {
@@ -1235,13 +1212,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       return true
     },
 
-    notifyAssist(jobId, e) {
-      const running = active.get(jobId)
-      if (!running) return false
-      running.notifyAssist(e)
-      return true
-    },
-
     async execute(job) {
       // timeout, retries, and the kv namespace (plan 79 §3.2) are only known
       // once the child has imported the bundle; it sends them in the `ready`
@@ -1327,14 +1297,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       })
       const artifacts = deps.artifacts(job.id)
       const aborter: { current: ((reason: AbortReason, detail?: string) => void) | null } = { current: null }
-      // Plan 91 §3.6, §4.8 — the `notifyAssist` counterpart to `aborter`
-      // above, same ref-cell indirection (`runAttempt` assigns the real
-      // sender once the child is actually spawned; `active` is populated
-      // here, before that happens).
-      const assistNotifier: { current: ((e: { at: number; actor: string | null }) => void) | null } = { current: null }
       active.set(job.id, {
         abort: (reason, detail) => aborter.current?.(reason, detail),
-        notifyAssist: (e) => assistNotifier.current?.(e),
       })
 
       let outcome: AttemptOutcome = { ok: false, finishRan: false, error: { code: 'NOT_RUN', message: 'not run yet', phase: 'run' } }
@@ -1473,7 +1437,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               logger,
               artifacts,
               aborter,
-              assistNotifier,
               meta,
               tee,
             })
@@ -1502,7 +1465,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               logger,
               artifacts,
               aborter,
-              assistNotifier,
               // `finish()` may call ctx.kv too — carry the namespace already learned from this job's
               // earlier `ready` message (plan 79 §3.2) rather than leaving a finish-only attempt with
               // no namespace at all.

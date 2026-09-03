@@ -146,12 +146,13 @@ export interface JobsListProps {
    * own wire addition), keyed by jobId. `reason: 'paced'` is a job the
    * pacer is holding back for its next repetition (F25 — this plan's whole
    * complaint was that a paced farm sits idle with no explanation);
-   * `'quiet'` is the pre-existing quiet-period hold. Absent (or missing a
-   * key) renders a queued row's plain `notBefore`-derived fallback instead
-   * of nothing — a caller that never wires the live push still gets an
-   * honest, if less immediate, answer to "why is this not running yet".
+   * `'control'` (plan 205 §3.2 item 6) is a job waiting for a live control
+   * marker to go quiet. Absent (or missing a key) renders a queued row's
+   * plain `notBefore`-derived fallback instead of nothing — a caller that
+   * never wires the live push still gets an honest, if less immediate,
+   * answer to "why is this not running yet".
    */
-  waiting?: Record<string, { reason: 'quiet' | 'paced'; remainingSec: number }>
+  waiting?: Record<string, { reason: 'control' | 'paced'; remainingSec: number }>
 }
 
 const DEFAULT_COLUMNS: JobsListColumns = { script: true, device: true, time: 'created', actions: true }
@@ -268,18 +269,6 @@ export function JobsList({
                   ) : (
                     <span className="font-medium">{scriptLabel(j)}</span>
                   )}
-                  {j.assistCount > 0 && (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-flex shrink-0 items-center rounded-full border border-led-warn/35 bg-led-warn/10 px-1.5 py-0.5 text-[10.5px] font-medium leading-none whitespace-nowrap text-led-warn">
-                          assisted
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {j.assistCount === 1 ? 'An operator assisted this job once' : `An operator assisted this job ${j.assistCount} times`}
-                      </TooltipContent>
-                    </Tooltip>
-                  )}
                 </span>
                 {/* Plan 97 §4.8 — the one operator-legible line `buildResultSummary`
                     computed at settle. Absent whenever the script declared no
@@ -357,7 +346,7 @@ export function JobsList({
                   if (j.status === 'queued' && w) {
                     return w.reason === 'paced'
                       ? `waiting — next repetition in ${w.remainingSec}s`
-                      : `waiting — quiet period, ${w.remainingSec}s`
+                      : `waiting — device is controlled, ${w.remainingSec}s`
                   }
                   if (j.status === 'queued' && j.notBefore !== null) {
                     const remaining = j.notBefore - Math.floor(now / 1000)

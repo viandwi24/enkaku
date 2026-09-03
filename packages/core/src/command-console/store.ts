@@ -155,7 +155,7 @@ export interface CommandRunStore {
    * over `create` + `updateMember`, not a second code path: builds a
    * `{ deviceIds: [deviceId] }` target, a one-member run, and moves that
    * member straight to `running` — `ws-handlers.ts`'s `shell.exec` case calls
-   * this only AFTER its own lease check already passed (F18), so unlike the
+   * this only AFTER its own admission check already passed (F18), so unlike the
    * runner's `runOneMember` there is no `admit`/`skipped` branch to record
    * here; the member either runs or the caller never reaches this call.
    * Returns the created run so the caller finishes it with `updateMember` +
@@ -349,7 +349,7 @@ export function createCommandRunStore(db: Db): CommandRunStore {
       })
       // `create` always writes a member as `pending` (it has no other caller
       // that would want otherwise). This one call site's member is about to
-      // execute immediately — the lease check already passed — so it moves
+      // execute immediately — the admission check already passed — so it moves
       // straight to `running`, matching the runner's own `runOneMember`
       // (`command-console/runner.ts`) rather than inventing a second
       // in-between state nothing else uses.

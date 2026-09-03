@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import {
-  JobAssistsResponseSchema,
   JobCancelResponseSchema,
   JobCreateResponseSchema,
   JobDeleteResponseSchema,
@@ -359,18 +358,6 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
   })
 
   /**
-   * Plan 91 §3.5, §4.9 — every non-job input action recorded against this
-   * job's device while it ran: `jobs.assistCount` (on `GET /:id` / the list)
-   * says HOW MANY, this says WHAT and BY WHOM. `service.assists()` does the
-   * actual indexed range scan over `device_events` (F18); `job_not_found` is
-   * mapped to 404 below, the same as every other job route.
-   */
-  app.get('/:id/assists', (c) => {
-    const items = service.assists(c.req.param('id'))
-    return typedJson(c, JobAssistsResponseSchema, { items })
-  })
-
-  /**
    * The node timeline for a workflow job (plan 99 §3.5, §4.9, step 99.8) —
    * one row per NODE EXECUTION, including the ones the cursor never reached
    * (`status: 'skipped'`) and, once a resumed job has actually run, the ones
@@ -378,7 +365,7 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
    * throws `job_not_found` for a missing job (mapped to 404 below); a job
    * that exists but has not run a node yet (every non-workflow job) answers
    * `{ items: [], finalized }`, the same "empty list, not a 404" convention
-   * `/logs` and `/assists` above already use. `finalized` says whether the
+   * `/logs` above already uses. `finalized` says whether the
    * PARENT job has settled — the same terminal check `/:id/resume` gates on.
    */
   app.get('/:id/nodes', requirePermission('job.view'), (c) => {
@@ -407,7 +394,7 @@ export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono
    *
    * `[]` for a job that recorded nothing, and for a host with no database
    * wired into these routes — never a 404 for either reason, matching
-   * `/logs`, `/assists` and `/nodes` above; only a missing JOB 404s.
+   * `/logs` and `/nodes` above; only a missing JOB 404s.
    */
   app.get('/:id/trace', requirePermission('job.view'), (c) => {
     const id = c.req.param('id')

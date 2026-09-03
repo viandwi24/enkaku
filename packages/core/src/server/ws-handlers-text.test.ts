@@ -7,7 +7,7 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
@@ -16,7 +16,7 @@ import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
  * `text-input.test.ts` (`@enkaku/session`) covers `resolveTextRoute`/`applyTextInput` themselves
  * in isolation; this proves `ws-handlers.ts` actually calls the resolver with the right facts,
  * dispatches to the rung it picked, and replies `input.text.result` (or refuses with a NAMED
- * precondition, plan 59) — against the REAL `createWsMessageHandler` and REAL `LeaseManager`,
+ * precondition, plan 59) — against the REAL `createWsMessageHandler` and REAL `ActivityRegistry`,
  * mirroring `ws-handlers-clipboard.test.ts`'s harness.
  */
 
@@ -26,7 +26,7 @@ function setUpDb(): Db {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' | 'offline' = 'idle'): void {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status }).run()
 }
 
@@ -131,17 +131,15 @@ interface RecordedEvent {
   meta?: Record<string, unknown>
 }
 
-function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnType<typeof createWsMessageHandler>; events: RecordedEvent[] } {
+function setUpHandler(
+  db: Db,
+  session: DeviceSession | null,
+  overControl: 'allow' | 'warn' | 'forbid' = 'allow',
+): { handler: ReturnType<typeof createWsMessageHandler>; events: RecordedEvent[]; activities: ReturnType<typeof createActivityRegistry> } {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const events: RecordedEvent[] = []
   const deps: WsHandlerDeps = {
     sessions: fakeSessionManager(session),
@@ -153,7 +151,9 @@ function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnT
         throw new Error('not used')
       },
     },
-    leases,
+    activities,
+    controlSettings: () => ({ overControl, idleSec: 30 }),
+    states,
     jobs: {
       enqueue: () => {
         throw new Error('not used')
@@ -163,7 +163,6 @@ function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnT
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-      assists: () => [],
       // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these text-input
       // tests; present only so this fixture keeps satisfying `JobService`.
       nodes: () => ({ items: [], finalized: false }),
@@ -185,17 +184,13 @@ function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnT
     db,
     log,
   }
-  return { handler: createWsMessageHandler(deps), events }
-}
-
-async function acquireLease(handler: ReturnType<typeof createWsMessageHandler>, ws: ServerWebSocket<unknown>, deviceId: string): Promise<void> {
-  await handler.handleMessage(ws, JSON.stringify({ type: 'lease.acquire', id: 'l1', payload: { deviceId } }))
+  return { handler: createWsMessageHandler(deps), events, activities }
 }
 
 describe('input.text — the text ladder over WS (plan 90 §3.3, §4.5, §5 step 90.5)', () => {
   test('rung 1 (agent-ime): a usable agent commits through the agent, not the driver, and via reads agent-ime', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { session, textCalls, commitCalls } = fakeSession({
       deviceId: 'dev-1',
       inputEngineId: 'scrcpy-uhid',
@@ -204,7 +199,6 @@ describe('input.text — the text ladder over WS (plan 90 §3.3, §4.5, §5 step
     })
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.text', id: 't1', payload: { deviceId: 'dev-1', text: 'こんにちは 👋' } }))
@@ -222,11 +216,10 @@ describe('input.text — the text ladder over WS (plan 90 §3.3, §4.5, §5 step
 
   test('rung 2 (scrcpy-text): no usable agent, but a scrcpy input engine — unicode text still lands via the driver', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { session, textCalls, commitCalls } = fakeSession({ deviceId: 'dev-1', inputEngineId: 'scrcpy-uhid' })
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.text', id: 't1', payload: { deviceId: 'dev-1', text: 'こんにちは' } }))
@@ -241,11 +234,10 @@ describe('input.text — the text ladder over WS (plan 90 §3.3, §4.5, §5 step
 
   test('rung 3 (adb-ascii): no agent, adb-input engine, plain ASCII text goes through unchanged', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { session, textCalls } = fakeSession({ deviceId: 'dev-1', inputEngineId: 'adb-input' })
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.text', id: 't1', payload: { deviceId: 'dev-1', text: 'hello world' } }))
@@ -259,11 +251,10 @@ describe('input.text — the text ladder over WS (plan 90 §3.3, §4.5, §5 step
 
   test('the named precondition (fixes F25): forcing adb-input on non-ASCII text refuses with E_TEXT_UNICODE_UNSUPPORTED and never reaches the driver', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { session, textCalls } = fakeSession({ deviceId: 'dev-1', inputEngineId: 'adb-input' })
     const { handler, events } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
 
@@ -285,24 +276,28 @@ describe('input.text — the text ladder over WS (plan 90 §3.3, §4.5, §5 step
     expect(events.map((e) => e.kind)).toEqual(['input.text'])
   })
 
-  test('no lease → refused before the resolver ever runs, and the driver is never touched', async () => {
+  test('control.overControl: forbid — a second client is refused before the resolver ever runs, and the driver is never touched', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { session, textCalls } = fakeSession({ deviceId: 'dev-1', inputEngineId: 'scrcpy-uhid' })
-    const { handler } = setUpHandler(db, session)
-    const a = fakeConn()
+    const { handler } = setUpHandler(db, session, 'forbid')
+    const holder = fakeConn()
+    const bystander = fakeConn()
 
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.text', id: 't1', payload: { deviceId: 'dev-1', text: 'hello' } }))
+    handler.handleOpen(holder.ws)
+    await handler.handleMessage(holder.ws, JSON.stringify({ type: 'input.text', id: 't0', payload: { deviceId: 'dev-1', text: 'mine' } }))
+    handler.handleOpen(bystander.ws)
+    await handler.handleMessage(bystander.ws, JSON.stringify({ type: 'input.text', id: 't1', payload: { deviceId: 'dev-1', text: 'hello' } }))
 
-    const err = a.sent.find((m) => m.type === 'error')
+    const err = bystander.sent.find((m) => m.type === 'error')
     expect(err).toBeDefined()
-    if (err?.type === 'error') expect(err.payload.code).toBe('no_lease')
-    expect(textCalls).toHaveLength(0)
+    if (err?.type === 'error') expect(err.payload.code).toBe('E_DEVICE_CONFLICT')
+    expect(textCalls).toEqual(['mine'])
   })
 
   test('prefer: "device" never routes through a usable agent, even when one is wired', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { session, textCalls, commitCalls } = fakeSession({
       deviceId: 'dev-1',
       inputEngineId: 'scrcpy-uhid',
@@ -312,7 +307,6 @@ describe('input.text — the text ladder over WS (plan 90 §3.3, §4.5, §5 step
     })
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.text', id: 't1', payload: { deviceId: 'dev-1', text: 'hello' } }))

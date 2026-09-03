@@ -7,9 +7,8 @@ import {
   decodeVideoFrame,
   KEYCODES,
   VIDEO_CODEC,
+  type InputAction,
   type LatencySummary,
-  type MirrorAction,
-  type MirrorResult,
   type Quality,
   type SessionPhase,
 } from '@enkaku/protocol'
@@ -179,13 +178,12 @@ export function LiveView({
   compact = false,
   rail = true,
   fitContainer = false,
-  mirror,
   configuredDisplay,
   provisioning,
 }: {
   deviceId: string
   inputEnabled?: boolean
-  /** Called on every input sent — the caller uses it to refresh the lease countdown. */
+  /** Called on every input sent — the caller refreshes its own idle clock. */
   onActivity?: () => void
   /** DeviceSettings.autoReconnect — one stream.stop + stream.start cycle when frames go stale (Plan 17 §4.8). */
   autoReconnect?: boolean
@@ -242,24 +240,6 @@ export function LiveView({
    */
   fitContainer?: boolean
   /**
-   * Fan-out mode (plan 91 §3.8, §3.9, §5 step 91.9) — set only by the focus
-   * overlay, and only while its own Mirror toggle is on. When present, every
-   * pointer/key/text action this canvas would otherwise send as a
-   * single-device `input.*` message is sent instead as ONE `input.mirror`
-   * envelope naming `groupId`, exactly per §3.8's "the browser sends one
-   * message regardless of member count." `clipboard.set` is deliberately
-   * NOT routed here — §3.10 forbids mirroring it structurally, and
-   * `pasteFromClipboard` below still calls it directly, unaffected by this
-   * prop entirely.
-   */
-  mirror?: {
-    groupId: string
-    /** Alt held, or the rail's "Focused only" toggle (§3.9's "Solo") — narrows this ONE action to `deviceId` alone via `soloDeviceId`, without leaving mirror mode. */
-    solo: boolean
-    /** Every `input.mirror.result` for THIS group, forwarded up so the rail's per-action strip (`18/20`) can render it — this component owns sending, not displaying, the outcome. */
-    onResult?: (results: MirrorResult[]) => void
-  }
-  /**
    * Plan 100 §3.7 item 1, §4.3, step 100.6 (closes G11/96.22) — the
    * CONFIGURED engine (`DeviceDetailInfo.display` from `GET /:id`), so this
    * component can tell a device deliberately set to `screencap-loop` apart
@@ -301,18 +281,6 @@ export function LiveView({
   const lastGestureSampleAtRef = useRef(0)
   const textBufferRef = useRef('')
   const textTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** `input.mirror`'s own sequence counter (plan 91 §4.4) — correlates each dispatch to its `input.mirror.result`, since that message carries no envelope `id`. */
-  const mirrorSeqRef = useRef(0)
-  /**
-   * Read inside the persistent `ws.on` subscription below, which is set up
-   * once per `[deviceId, retryTick]` (not on every `mirror` prop change) —
-   * without this ref the handler would close over a stale `mirror` and keep
-   * routing `input.mirror.result` to an old `onResult`/`groupId` after the
-   * rail toggled Mirror off and back on. Mirrors `iHoldControlRef`'s own
-   * reasoning in `app/device/page.tsx`.
-   */
-  const mirrorRef = useRef(mirror)
-  mirrorRef.current = mirror
 
   const rendererRef = useRef<H264Renderer | null>(null)
   /**
@@ -494,14 +462,6 @@ export function LiveView({
         setStopped(msg.payload.reason)
       } else if (msg.type === 'error') {
         setError(msg.payload.message)
-      } else if (msg.type === 'input.mirror.result' && mirrorRef.current && msg.payload.groupId === mirrorRef.current.groupId) {
-        // Unicast, correlated by `seq` rather than the envelope `id`
-        // (`InputMirrorResultMessage`'s own doc comment) — this canvas does
-        // not track which `seq` is "its own" beyond the groupId match,
-        // since every dispatch here belongs to the SAME operator's own
-        // mirror session; the popup (`DevicePopup`) is what actually reads
-        // `seq` if it ever needs to.
-        mirrorRef.current.onResult?.(msg.payload.results)
       }
     })
 
@@ -715,23 +675,13 @@ export function LiveView({
 
   /**
    * The one place a tap/swipe/gesture/key leaves this component (plan 91
-   * §3.8, §5 step 91.9) — `text` is excluded (it stays request/reply via
-   * `flushText`'s own `input.text`/`input.mirror` branch below, since only
-   * the single-device path has a ladder result worth showing). While `mirror`
-   * is set, this is the ENTIRE difference between driving one phone and
-   * driving the whole group: same action, same normalised coordinates
-   * (§3.7 — nothing here needs to know about any OTHER device's geometry),
-   * just one `input.mirror` envelope instead of one `input.<verb>` message.
+   * §3.8, §5 step 91.9; plan 205 §4.11 — fan-out mode was deleted along with
+   * the rest of MVP 04's replaced subsystem, so this now only ever sends the
+   * single-device path) — `text` is excluded (it stays request/reply via
+   * `flushText`'s own `input.text` branch below, since only the single-device
+   * path has a ladder result worth showing).
    */
-  function sendInputAction(action: Exclude<MirrorAction, { verb: 'text' }>) {
-    if (mirror) {
-      const seq = ++mirrorSeqRef.current
-      ws.send({
-        type: 'input.mirror',
-        payload: { groupId: mirror.groupId, seq, action, ...(mirror.solo ? { soloDeviceId: deviceId } : {}) },
-      })
-      return
-    }
+  function sendInputAction(action: Exclude<InputAction, { verb: 'text' }>) {
     switch (action.verb) {
       case 'tap':
         // `holdMs` (plan 94 §4.4, closes F4/F5) — the operator's real
@@ -814,21 +764,6 @@ export function LiveView({
     textBufferRef.current = ''
     if (text.length === 0) return
     onActivity?.()
-    if (mirror) {
-      // Fire-and-forget through the SAME `input.mirror` envelope every other
-      // verb uses here (plan 91 §3.8) — deliberately skips the single-device
-      // text ladder's request/reply (`via`, F23's precondition notice):
-      // `mirror.dispatch`'s per-member try/catch already reports a per-device
-      // outcome on the result strip, which is the honest answer for N
-      // devices that may resolve to N different rungs, not one shared notice.
-      const seq = ++mirrorSeqRef.current
-      ws.send({
-        type: 'input.mirror',
-        payload: { groupId: mirror.groupId, seq, action: { verb: 'text', text }, ...(mirror.solo ? { soloDeviceId: deviceId } : {}) },
-      })
-      setTextInputNotice(null)
-      return
-    }
     try {
       // `input.text` is now request/reply (plan 90 §3.3, §4.5, §5 step 90.5) — `via` names the
       // rung the core actually used (`agent-ime` / `scrcpy-text` / `adb-ascii`), so a resolved
@@ -1190,7 +1125,7 @@ export function LiveView({
           compact ? 'h-full items-start p-0' : fitContainer ? 'min-h-0 flex-1 items-center p-4' : 'items-start p-4',
         )}
       >
-        {/* Mirrors the button rail so the screen itself stays centred — omitted in compact mode and whenever `rail` is suppressed, since there is then nothing to mirror. */}
+        {/* A symmetric spacer matching the button rail's own width, so the screen itself stays centred — omitted in compact mode and whenever `rail` is suppressed, since there is then nothing to balance against. */}
         {!compact && rail && <div className="w-10 shrink-0" aria-hidden />}
         <canvas
           ref={canvasRef}

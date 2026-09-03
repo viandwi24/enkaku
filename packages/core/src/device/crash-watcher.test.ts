@@ -61,7 +61,7 @@ interface Harness {
   records: Array<{ deviceId: string; kind: string; meta?: Record<string, unknown> }>
   traces: Array<{ deviceId: string; jobId: string | null; label: string; text: string }>
   jobCrashes: Array<{ deviceId: string; jobId: string; e: { package: string; exception: string } }>
-  jobLease: { jobId: string } | null
+  runningJob: { jobId: string } | null
   policy: CrashPolicy
   targets: string[]
   /** `warn` calls captured in order — the whole point of the restart tests below (plan 85 §5 step 85.4). */
@@ -74,7 +74,7 @@ function setup(
   opts: {
     policy?: CrashPolicy
     targets?: string[]
-    jobLease?: { jobId: string } | null
+    runningJob?: { jobId: string } | null
     maxPerMinutePerDevice?: number
     /** Production is 2 s → 60 s; tests use milliseconds so the suite stays fast. */
     restartBackoffMs?: { initialMs: number; maxMs: number }
@@ -91,7 +91,7 @@ function setup(
     traces,
     jobCrashes,
     warns,
-    jobLease: opts.jobLease ?? null,
+    runningJob: opts.runningJob ?? null,
     policy: opts.policy ?? 'declared',
     targets: opts.targets ?? [],
     crashWatchMode: 'always',
@@ -104,7 +104,7 @@ function setup(
       traces.push(opts2)
       return { id: 'artifact-1', jobId: opts2.jobId, deviceId: opts2.jobId ? null : opts2.deviceId, kind: 'log', label: opts2.label, path: 'x', sizeBytes: opts2.text.length, createdAt: 0 } satisfies ArtifactInfo
     },
-    getJobLease: () => h.jobLease,
+    runningJobOf: () => h.runningJob,
     crashPolicy: () => h.policy,
     targetPackagesForJob: () => h.targets,
     log,
@@ -202,7 +202,7 @@ describe('createCrashWatcher — an unexpected end resubscribes instead of dying
       hub,
       record: () => {},
       saveTrace: async (o) => ({ id: 'a', jobId: o.jobId, deviceId: o.deviceId, kind: 'log', label: o.label, path: 'x', sizeBytes: 0, createdAt: 0 }),
-      getJobLease: () => null,
+      runningJobOf: () => null,
       crashPolicy: () => 'declared',
       targetPackagesForJob: () => [],
       log,
@@ -276,7 +276,7 @@ describe('createCrashWatcher — an unexpected end resubscribes instead of dying
 
 describe('createCrashWatcher — a crash is an event first, a job failure second (plan 37 §3.3, acceptance #1, #7)', () => {
   test('with no job running, the event is recorded and the trace saved device-scoped — no job callback fires', async () => {
-    const h = setup({ jobLease: null })
+    const h = setup({ runningJob: null })
     await h.watcher.watch('dev-1')
     h.watcher.handleStreamData('dev-1:crash', [...crashLines('com.example.app'), CLOSER])
     await sleep(10)
@@ -289,8 +289,8 @@ describe('createCrashWatcher — a crash is an event first, a job failure second
     expect(h.jobCrashes).toHaveLength(0)
   })
 
-  test('with a job lease held, the trace is job-scoped and the job callback can fire', async () => {
-    const h = setup({ jobLease: { jobId: 'job-1' }, policy: 'declared', targets: ['com.example.app'] })
+  test('with a job running, the trace is job-scoped and the job callback can fire', async () => {
+    const h = setup({ runningJob: { jobId: 'job-1' }, policy: 'declared', targets: ['com.example.app'] })
     await h.watcher.watch('dev-1')
     h.watcher.handleStreamData('dev-1:crash', [...crashLines('com.example.app'), CLOSER])
     await sleep(10)
@@ -313,7 +313,7 @@ describe('createCrashWatcher — a crash is an event first, a job failure second
 
 describe('createCrashWatcher — crash policy (plan 37 §3.4, acceptance #4, #5, #6)', () => {
   test('declared: the script\'s own target package fails the job', async () => {
-    const h = setup({ jobLease: { jobId: 'job-1' }, policy: 'declared', targets: ['com.example.app'] })
+    const h = setup({ runningJob: { jobId: 'job-1' }, policy: 'declared', targets: ['com.example.app'] })
     await h.watcher.watch('dev-1')
     h.watcher.handleStreamData('dev-1:crash', [...crashLines('com.example.app'), CLOSER])
     await sleep(10)
@@ -321,7 +321,7 @@ describe('createCrashWatcher — crash policy (plan 37 §3.4, acceptance #4, #5,
   })
 
   test('declared: an unrelated background app never fails the job', async () => {
-    const h = setup({ jobLease: { jobId: 'job-1' }, policy: 'declared', targets: ['com.example.app'] })
+    const h = setup({ runningJob: { jobId: 'job-1' }, policy: 'declared', targets: ['com.example.app'] })
     await h.watcher.watch('dev-1')
     h.watcher.handleStreamData('dev-1:crash', [...crashLines('com.example.other'), CLOSER])
     await sleep(10)
@@ -331,7 +331,7 @@ describe('createCrashWatcher — crash policy (plan 37 §3.4, acceptance #4, #5,
   })
 
   test('any: the same unrelated crash DOES fail the job (unless it is a system package)', async () => {
-    const h = setup({ jobLease: { jobId: 'job-1' }, policy: 'any', targets: ['com.example.app'] })
+    const h = setup({ runningJob: { jobId: 'job-1' }, policy: 'any', targets: ['com.example.app'] })
     await h.watcher.watch('dev-1')
     h.watcher.handleStreamData('dev-1:crash', [...crashLines('com.example.other'), CLOSER])
     await sleep(10)
@@ -339,7 +339,7 @@ describe('createCrashWatcher — crash policy (plan 37 §3.4, acceptance #4, #5,
   })
 
   test('any: a system package crash is excluded even under "any"', async () => {
-    const h = setup({ jobLease: { jobId: 'job-1' }, policy: 'any', targets: [] })
+    const h = setup({ runningJob: { jobId: 'job-1' }, policy: 'any', targets: [] })
     await h.watcher.watch('dev-1')
     h.watcher.handleStreamData('dev-1:crash', [...crashLines('com.android.systemui'), CLOSER])
     await sleep(10)
@@ -348,7 +348,7 @@ describe('createCrashWatcher — crash policy (plan 37 §3.4, acceptance #4, #5,
   })
 
   test('ignore: no job is ever failed, but the event is still recorded (acceptance #6)', async () => {
-    const h = setup({ jobLease: { jobId: 'job-1' }, policy: 'ignore', targets: ['com.example.app'] })
+    const h = setup({ runningJob: { jobId: 'job-1' }, policy: 'ignore', targets: ['com.example.app'] })
     await h.watcher.watch('dev-1')
     h.watcher.handleStreamData('dev-1:crash', [...crashLines('com.example.app'), CLOSER])
     await sleep(10)
@@ -408,7 +408,7 @@ describe('createCrashWatcher — shares one adb stream with a human Monitor view
       hub,
       record: () => {},
       saveTrace: async (o) => ({ id: 'a', jobId: o.jobId, deviceId: o.deviceId, kind: 'log', label: o.label, path: 'x', sizeBytes: 0, createdAt: 0 }),
-      getJobLease: () => null,
+      runningJobOf: () => null,
       crashPolicy: () => 'declared',
       targetPackagesForJob: () => [],
       log: createLogger('test'),

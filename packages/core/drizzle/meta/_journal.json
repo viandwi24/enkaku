@@ -456,6 +456,13 @@
       "when": 1787906881269,
       "tag": "0064_awake_on_connect",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "6",
+      "when": 1788454047938,
+      "tag": "0065_public_multiple_man",
+      "breakpoints": true
     }
   ]
 }

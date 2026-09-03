@@ -61,7 +61,7 @@ export function CutoverDialog({
   onOpenChange: (open: boolean) => void
   /** Called once the phone answers on the network — the caller reloads the device (its badge, address and mediumSource all just changed). */
   onDone: () => void
-  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path; see `AssistDialog`'s own doc comment on the same prop for why. */
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path: when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
   const [medium, setMedium] = useState<ConnectionMedium>('wired')

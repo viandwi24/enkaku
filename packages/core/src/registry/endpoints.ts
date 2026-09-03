@@ -102,8 +102,8 @@ function sortForLadder(rows: DeviceEndpointRow[]): DeviceEndpointRow[] {
  * `sortForLadder` uses) — a row that has never connected (a fresh `declare`)
  * is ranked by when it was DECLARED, not treated as infinitely old, so
  * declaring an address never evicts itself on the same call that created it.
- * A phone that has walked through five DHCP leases does not need the
- * fifth-oldest; an unbounded table is a slow leak on a farm that runs for
+ * A phone that has walked through five DHCP-assigned addresses does not need
+ * the fifth-oldest; an unbounded table is a slow leak on a farm that runs for
  * months (plan 88 §3.2, and its own "judgement" note on a farm that
  * re-enrols devices often).
  */

@@ -16,12 +16,6 @@ export type AuditAction =
   | 'device.quarantine'
   | 'device.unquarantine'
   | 'device.control'
-  // Co-control — Assist (plan 91 §3.5, §4.2, §4.6) — one row per grant,
-  // whether it started or ended; `meta` always carries `{ jobId, primaryKind
-  // }` and, on an end row, `reason` (an `AssistEndReason`). Distinct from
-  // `device.control` (`acquired`/`released`), which is about the LEASE —
-  // assisting never touches the lease at all (§3.2's table).
-  | 'device.assist'
   // `PATCH /:id`'s `ownerId` transition (plan 09 §4.4's `device.owner.set`,
   // `api/devices.ts`) — separate from `device.settings` (label/settings)
   // because reassigning ownership changes who `canUseDevice` admits, not a

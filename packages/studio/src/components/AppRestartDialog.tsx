@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { AppRestartPreviewSchema, AppRestartReportSchema, type SupervisionMode } from '@enkaku/protocol'
+import { AppRestartPreviewSchema, AppRestartReportSchema, type AppRestartPreview, type SupervisionMode } from '@enkaku/protocol'
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, api, describeApiError } from '@enkaku/ui'
 
 /**
@@ -26,14 +26,6 @@ import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogH
  * promising a guarantee only a supervisor could keep.
  */
 
-interface Preview {
-  mode: SupervisionMode
-  devicesTotal: number
-  sessionsActive: number
-  leasesHeld: number
-  jobsRunning: number
-}
-
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`
 }
@@ -51,7 +43,7 @@ function modeExplanation(mode: SupervisionMode): string {
 
 export function AppRestartDialog({ trigger }: { trigger: ReactNode }) {
   const [open, setOpen] = useState(false)
-  const [preview, setPreview] = useState<Preview | null>(null)
+  const [preview, setPreview] = useState<AppRestartPreview | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [force, setForce] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -70,7 +62,7 @@ export function AppRestartDialog({ trigger }: { trigger: ReactNode }) {
       .catch((e) => setLoadError(describeApiError(e)))
   }, [open])
 
-  const busyFarm = preview !== null && (preview.jobsRunning > 0 || preview.leasesHeld > 0)
+  const busyFarm = preview !== null && (preview.jobsRunning > 0 || preview.controlled > 0)
   const canConfirm = preview !== null && (!busyFarm || force)
 
   const confirm = async () => {
@@ -114,7 +106,7 @@ export function AppRestartDialog({ trigger }: { trigger: ReactNode }) {
                     {preview.sessionsActive > 0
                       ? `${plural(preview.sessionsActive, 'live screen')} stop and must be reopened.`
                       : 'No live screens are open right now.'}
-                    {preview.leasesHeld > 0 && ` Control is released on ${plural(preview.leasesHeld, 'device')}.`}
+                    {preview.controlled > 0 && ` Control is released on ${plural(preview.controlled, 'device')}.`}
                     {preview.jobsRunning > 0 && ` ${plural(preview.jobsRunning, 'running job')} fail${preview.jobsRunning === 1 ? 's' : ''}.`}
                   </p>
                   <p>{modeExplanation(preview.mode)}</p>
@@ -130,7 +122,7 @@ export function AppRestartDialog({ trigger }: { trigger: ReactNode }) {
                       />
                       <span>
                         Restart anyway — this fails {plural(preview.jobsRunning, 'running job')} and releases control on{' '}
-                        {plural(preview.leasesHeld, 'device')}.
+                        {plural(preview.controlled, 'device')}.
                       </span>
                     </label>
                   )}

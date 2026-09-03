@@ -9,8 +9,9 @@ import { MoonStar, Play, ScreenShare } from 'lucide-react'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
 import { LiveView, markLiveViewIntent } from '@/components/LiveView'
 import { explainQuarantine } from '@/components/DeviceCard'
-import { HolderBadge } from '@/components/HolderBadge'
+import { ActivityBadge } from '@/components/ActivityBadge'
 import { setDeviceReadiness } from '@/lib/readiness'
+import { hasJob } from '@/lib/activity'
 import { Button, cn, describeApiError, formatDeviceName } from '@enkaku/ui'
 
 /**
@@ -120,7 +121,7 @@ function isModifiedClick(e: React.MouseEvent): boolean {
  * The whole tile is a `next/link` — a plain `<a>` would remount everything
  * on click and kill the WS. Tiles are read-only: `LiveView` is given
  * `inputEnabled={false}` unconditionally, and the server refuses input
- * without a lease regardless. `href` still points at `/device?id=…` so
+ * from a client with no admitted activity regardless. `href` still points at `/device?id=…` so
  * keyboard activation (Enter), screen readers, and a modified click
  * (ctrl/cmd/middle-click — "open in a new tab") all keep working exactly as
  * a link should; only the PLAIN single click is repurposed, below.
@@ -362,7 +363,7 @@ export function WallTile({
   const agentAlert = agentState === 'failed' || agentState === 'outdated' ? agentState : null
   const showAgentAlertOnRail = agentAlert !== null && !offline && !quarantined
 
-  const showCaption = device.status === 'busy' && !!runningJob?.scriptName
+  const showCaption = hasJob(device) && !!runningJob?.scriptName
   // "node 2/4" (plan 99 §4.9, §4.11, step 99.10) — from `job.status`'s own
   // `node` block. `JobInfo` (`runningJob`'s declared type) carries no such
   // field; it only ever arrives on a row a live WS push has touched, read
@@ -441,7 +442,7 @@ export function WallTile({
       <span
         className="status-rail"
         data-status={device.status}
-        data-live={device.status === 'busy' ? 'true' : 'false'}
+        data-live={hasJob(device) ? 'true' : 'false'}
         data-agent-alert={showAgentAlertOnRail ? agentAlert : undefined}
         aria-hidden
       />
@@ -579,34 +580,17 @@ export function WallTile({
           {device.label}
         </span>
 
-        {/* Who holds (and who assists) this device — plan 92 §4.8, fixes
-            F31. */}
-        {(device.heldBy || (device.assistedBy ?? []).length > 0) && (
+        {/* What is happening to this device — plan 92 §4.8, fixes F31; plan
+            205 §4.11. */}
+        {device.activities.length > 0 && (
           <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col items-start gap-1 p-1.5">
-            {/* `asLink={false}` (plan 91 §3.4 item 4 gap 3): this tile's own
-                root IS a `next/link` already, so a `job`/`agent` holder
-                renders as a plain, non-interactive span here rather than a
-                second, nested `<Link>` — invalid HTML. */}
-            {device.heldBy && (
-              <span className="max-w-full truncate rounded bg-black/60 p-0.5">
-                <HolderBadge holder={device.heldBy} className="w-fit" asLink={false} />
-              </span>
-            )}
-            {/* Who is ASSISTING this device (plan 91 §3.4 item 4, §4.4, F25)
-                — a narrow, subordinate grant beside `heldBy` above, never a
-                takeover. `?? []` covers a caller that predates the field,
-                the same guard `DeviceCard` uses. Plan 105 §3.2/§4: the
-                "assisting" vs "may assist" split is computed inside
-                `HolderBadge` (`deriveAssistActivity`), never here — this
-                tile has no per-client control state of its own (F11: input
-                is unconditionally off), so it has nothing to feed the full
-                `useControlState` hook that `DevicePopup` reads; it shares
-                only the activity-derivation logic, via the badge. */}
-            {(device.assistedBy ?? []).map((a) => (
-              <span key={a.id} className="max-w-full truncate rounded bg-black/60 p-0.5">
-                <HolderBadge holder={a} variant="assists" className="w-fit" asLink={false} />
-              </span>
-            ))}
+            {/* `asLink={false}`: this tile's own root IS a `next/link`
+                already, so an activity chip renders as a plain,
+                non-interactive span here rather than a second, nested
+                `<Link>` — invalid HTML. */}
+            <span className="max-w-full truncate rounded bg-black/60 p-0.5">
+              <ActivityBadge activities={device.activities} lastControl={device.lastControl} className="w-fit" asLink={false} />
+            </span>
           </div>
         )}
 

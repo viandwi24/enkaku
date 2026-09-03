@@ -132,7 +132,7 @@ function sourceOf(deviceValue: number | undefined, farmValue: number, presetValu
 }
 
 /**
- * The Studio-side mirror of `resolveVideoProfile(farm, device, 'control')`.
+ * The Studio-side reimplementation of `resolveVideoProfile(farm, device, 'control')`.
  * Pure — no clock, no I/O — so the readout can call it on every keystroke of
  * an unsaved draft with no debounce needed. `device` is `null`/`undefined`
  * on the farm Settings page (there is no single device in view there); the
@@ -155,7 +155,7 @@ export function resolveControlProfile(farm: FarmVideoSettings, device?: DeviceVi
   }
 }
 
-/** The Studio-side mirror of `resolveVideoProfile(farm, device, 'wall')`. See `resolveControlProfile` above. */
+/** The Studio-side reimplementation of `resolveVideoProfile(farm, device, 'wall')`. See `resolveControlProfile` above. */
 export function resolveWallProfile(farm: FarmVideoSettings, device?: DeviceVideoSettings | null): VideoProfile {
   const preset = WALL_PRESETS[farm.wallPreset]
   const maxSize = device?.wallMaxSize ?? farm.wallMaxSize

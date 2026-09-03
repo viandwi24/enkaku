@@ -189,7 +189,6 @@ export interface TraceTee {
   /** One artifact. `frameBytes` is the artifact's own bytes for a screenshot (§3.2) — never a second capture. */
   artifact(a: { kind: string; label: string; sizeBytes: number; frameBytes?: unknown }): void
   progress(value: unknown): void
-  assist(e: { at: number; actor: string | null }): void
 }
 
 export interface TraceTeeDeps {
@@ -288,7 +287,6 @@ export function createNoopTraceTee(): TraceTee {
     log: () => {},
     artifact: () => {},
     progress: () => {},
-    assist: () => {},
   }
 }
 
@@ -379,7 +377,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
     }
   }
 
-  /** Every instantaneous event (log, artifact, progress, assist, phase) goes through here. */
+  /** Every instantaneous event (log, artifact, progress, phase) goes through here. */
   function emitInstant(kind: JobTraceEvent['kind'], name: string, opts: { atMs?: number; meta?: Record<string, unknown> | null; durationMs?: number | null } = {}): void {
     safeEmit(
       build({
@@ -616,13 +614,6 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
       }
     },
 
-    assist(e) {
-      try {
-        emitInstant('assist', 'assist', { atMs: e.at, meta: { actor: e.actor } })
-      } catch {
-        // observe, never alter
-      }
-    },
   }
 }
 

@@ -17,12 +17,6 @@ import {
   JobEnqueueMessage,
   JobLogMessage,
   JobStatusEventMessage,
-  LeaseAcquiredMessage,
-  LeaseAcquireMessage,
-  LeaseReleasedMessage,
-  LeaseReleaseMessage,
-  LeaseChangedMessage,
-  LeaseRevokedMessage,
   JobWaitingMessage,
 } from './messages/job'
 import {
@@ -85,31 +79,9 @@ import {
   AgentChildFinishedMessage,
 } from './messages/agent'
 import { NotificationCreatedMessage } from './messages/notify'
-// Plan 91 §4.4, §5 step 91.4 (Task B.2) — the twelve co-control messages
-// (`assist.*`, `mirror.*`, `input.mirror*`) were declared and re-exported
-// from `./messages/co-control` by step 91.3, but never imported for use in
-// `ClientMessageSchema`/`ServerMessageSchema` below — so the WS router could
-// not recognise a single one of them. Imported here, separately from the
-// re-export block further down, purely so the two union arrays can reference
-// them.
-import {
-  AssistStartMessage,
-  AssistStopMessage,
-  MirrorStartMessage,
-  MirrorStopMessage,
-  InputMirrorMessage,
-  AssistStartedMessage,
-  AssistStoppedMessage,
-  AssistChangedMessage,
-  MirrorStartedMessage,
-  MirrorStoppedMessage,
-  InputMirrorResultMessage,
-  MirrorChangedMessage,
-} from './messages/co-control'
 // Plan 94 (M59 — the action recorder), step 94.3. The recorder's five WS
 // messages (§4.9) — imported here, separately from the re-export block
-// further down, purely so the two union arrays below can reference them (the
-// same split `messages/co-control`'s own import block above already uses).
+// further down, purely so the two union arrays below can reference them.
 import {
   RecordingStartMessage,
   RecordingStopMessage,
@@ -121,8 +93,8 @@ import {
 // command console's five server→client events and two client→server
 // subscription messages (§3.17, §4.3) — imported here, separately from the
 // re-export block further down, purely so the two union arrays below can
-// reference them (the same split `messages/co-control`'s and `messages/
-// recording`'s own import blocks above already use).
+// reference them (the same split `messages/recording`'s own import block
+// above already uses).
 import {
   CommandStartedMessage,
   CommandProgressMessage,
@@ -135,9 +107,13 @@ import {
 // Plan 97 (M62 — the script output contract), step 97.7, §3.7, §4.6.
 // `ctx.progress()`'s live push — imported here, separately from the
 // re-export block further down, purely so `ServerMessageSchema` below can
-// reference it (the same split `messages/co-control`'s/`messages/recording`'s/
-// `messages/command`'s own import blocks above already use).
+// reference it (the same split `messages/recording`'s/`messages/command`'s
+// own import blocks above already use).
 import { JobProgressEventMessage } from './messages/job'
+// Plan 205 (MVP 04) — the device activity model's two broadcasts, imported
+// here for the same reason the blocks above are: the union arrays below need
+// to reference them.
+import { DeviceActivityMessage, DeviceActivityWarningMessage } from './activity'
 
 // Plan 128 (M93 — the job trace timeline), step 128.1, §4.2. `job.trace` — the
 // live tail of one job's event stream. Imported here, separately from the
@@ -147,6 +123,7 @@ import { JobTraceMessage } from './messages/job'
 
 export { EnvelopeSchema, type Envelope } from './envelope'
 export * from './api'
+export * from './activity'
 export {
   PARAM_KINDS,
   DURATION_UNITS,
@@ -240,7 +217,7 @@ export {
   type AnyCapability,
   type CapabilityResult,
   type CapabilityEffect,
-  type CapabilityLease,
+  type CapabilityActivity,
   type CapabilityRefusalCode,
   type CapabilityError,
   type DeviceCallMethod,
@@ -254,7 +231,6 @@ export {
   DeviceStatusMessage,
   DeviceReadinessSetMessage,
   DeviceReadinessMessage,
-  LeaseHolderSchema,
   ConnectionKindSchema,
   ConnectionMediumSchema,
   DeviceConnectionSchema,
@@ -272,7 +248,6 @@ export {
   type DeviceStatusEvent,
   type DeviceReadinessSet,
   type DeviceReadinessEvent,
-  type LeaseHolder,
   type ConnectionKind,
   type ConnectionMedium,
   type DeviceConnection,
@@ -333,7 +308,6 @@ export {
   TimingSettingsSchema,
   KeepAwakeModeSchema,
   ShellModeSchema,
-  CoControlModeSchema,
   RotationModeSchema,
   TextInputModeSchema,
   DeviceGpsSchema,
@@ -349,7 +323,6 @@ export {
   type BatteryState,
   type KeepAwakeMode,
   type ShellMode,
-  type CoControlMode,
   type RotationMode,
   type TextInputMode,
   type TimingSettings,
@@ -364,8 +337,7 @@ export {
   type WallSettings,
   type ReadinessSettings,
   type WorkspaceSettings,
-  type CoControlSettings,
-  type MirrorSettings,
+  type ControlSettings,
   type WorkflowJobSettings,
 } from './settings'
 export {
@@ -396,31 +368,11 @@ export {
   InputTextResultMessage,
   NormGestureSampleSchema,
   InputGestureMessage,
-  MirrorActionSchema,
+  InputActionSchema,
   type NormPoint,
   type NormGestureSample,
-  type MirrorAction,
+  type InputAction,
 } from './messages/input'
-export {
-  AssistEndReasonSchema,
-  MirrorMemberSchema,
-  MirrorResultSchema,
-  AssistStartMessage,
-  AssistStopMessage,
-  MirrorStartMessage,
-  MirrorStopMessage,
-  InputMirrorMessage,
-  AssistStartedMessage,
-  AssistStoppedMessage,
-  AssistChangedMessage,
-  MirrorStartedMessage,
-  MirrorStoppedMessage,
-  InputMirrorResultMessage,
-  MirrorChangedMessage,
-  type AssistEndReason,
-  type MirrorMember,
-  type MirrorResult,
-} from './messages/co-control'
 export {
   StreamStartMessage,
   StreamStartedMessage,
@@ -478,12 +430,6 @@ export {
   JobEnqueueMessage,
   JobCancelMessage,
   JobStatusEventMessage,
-  LeaseAcquireMessage,
-  LeaseReleaseMessage,
-  LeaseAcquiredMessage,
-  LeaseReleasedMessage,
-  LeaseChangedMessage,
-  LeaseRevokedMessage,
   JobWaitingMessage,
   /** Plan 99 §4.6, §4.9 — `job_nodes.status`'s domain, shared by `job.status`'s `node` block. */
   JobNodeStatusSchema,
@@ -996,10 +942,6 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   JobStatusEventMessage,
   JobLogMessage,
   JobArtifactMessage,
-  LeaseAcquiredMessage,
-  LeaseReleasedMessage,
-  LeaseChangedMessage,
-  LeaseRevokedMessage,
   JobWaitingMessage,
   BatchStatusMessage,
   ScheduleFiredMessage,
@@ -1030,18 +972,6 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   AgentChildStartedMessage,
   AgentChildFinishedMessage,
   NotificationCreatedMessage,
-  // Plan 91 §4.4, §5 step 91.4 (Task B.2) — the seven server→client halves of
-  // the twelve co-control messages (§4.4's table): `assist.started`,
-  // `assist.stopped` (unicast replies), `assist.changed` (broadcast), and
-  // the five `mirror.*`/`input.mirror.result` messages step 91.7 will start
-  // sending.
-  AssistStartedMessage,
-  AssistStoppedMessage,
-  AssistChangedMessage,
-  MirrorStartedMessage,
-  MirrorStoppedMessage,
-  InputMirrorResultMessage,
-  MirrorChangedMessage,
   ErrorMessage,
   // Plan 94 (M59 — the action recorder), step 94.3, §4.9 — appended after
   // `ErrorMessage` rather than interleaved among the entries above, so this
@@ -1066,6 +996,10 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   // same "never interleave, this file is contested" reason noted on every
   // entry above it.
   JobTraceMessage,
+  // Plan 205 (MVP 04) — the device activity model's two broadcasts, appended
+  // last for the same "never interleave, this file is contested" reason.
+  DeviceActivityMessage,
+  DeviceActivityWarningMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
 
@@ -1151,8 +1085,6 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   DevicePairingCodeMessage,
   JobEnqueueMessage,
   JobCancelMessage,
-  LeaseAcquireMessage,
-  LeaseReleaseMessage,
   LogSubscribeMessage,
   LogUnsubscribeMessage,
   MonitorStartMessage,
@@ -1167,17 +1099,6 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   InspectDumpMessage,
   InspectFindMessage,
   AgentRunCancelMessage,
-  // Plan 91 §4.4, §5 step 91.4 (Task B.2) — the five client→server halves of
-  // the twelve co-control messages (§4.4's table): `assist.start`/
-  // `assist.stop` (step 91.4, wired below in `ws-handlers.ts`) and
-  // `mirror.start`/`mirror.stop`/`input.mirror` (step 91.7 — declared here
-  // now so the whole set is reachable together, per this step's brief;
-  // their WS-handler cases do not exist yet).
-  AssistStartMessage,
-  AssistStopMessage,
-  MirrorStartMessage,
-  MirrorStopMessage,
-  InputMirrorMessage,
   // Plan 94 (M59 — the action recorder), step 94.3, §4.9 — appended last,
   // for the same "never interleave, this file is contested" reason noted on
   // `ServerMessageSchema` above.

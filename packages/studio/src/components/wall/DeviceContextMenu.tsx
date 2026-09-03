@@ -2,10 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { ScreenShare, X } from 'lucide-react'
-import { DeviceDetailResponseSchema, SettingsResponseSchema, type CoControlMode, type DeviceInfo } from '@enkaku/protocol'
-import { AssistDialog } from '@/components/device/AssistDialog'
+import { DeviceDetailResponseSchema, type DeviceInfo } from '@enkaku/protocol'
 import type { DeviceDetailInfo } from '@/components/device/DeviceHeader'
-import { assistRowState, useControlState } from '@/components/device-popup/ControlState'
 import { SidePanel } from '@/components/device-popup/SidePanel'
 import { LoadingRows, Button, DeviceName, api, formatDeviceName } from '@enkaku/ui'
 
@@ -63,25 +61,18 @@ const PANEL_MAX_HEIGHT_PX = 560
  * reached this way, "Open full device page" (row 12) and a double-click
  * (which opens the real popup, screen included) both still exist.
  *
- * **This surface never claims a lease or an assist grant of its own** —
- * unlike `DevicePopup`, which auto-claims an idle device on open (its own
- * "Quick control, not a takeover" rule). A right-click is a glance, often
- * dismissed with Escape or a click elsewhere without touching anything; a
- * menu that silently grabbed control of a device just by being opened would
- * be a real, unwanted side effect, and worse, would only ever grab the ONE
- * focused device even when several are selected — inconsistent with
- * everything else this surface does. `useControlState` is called with
- * `myLeaseExpiresAt`/`myAssistGrant` fixed at `null`, the SAME pattern
- * `ControlState.tsx`'s own file header documents for a Wall tile or a
- * `DeviceCard` badge ("a wall tile and a device card never acquire either").
- * `canUseLive` is therefore always `false` here: Files/Settings render
- * read-only and `AdbCommandDialog`'s `single` mode shows the device's live
- * transcript with its input box honestly disabled — the SAME "watching, not
- * holding" state the popup already shows for a device its own operator has
- * not taken control of.
+ * **This surface never claims control of a device on its own** — unlike
+ * `DevicePopup`, which historically auto-claimed an idle device on open;
+ * under the device activity model (plan 205 §4.9) there is nothing left to
+ * pre-claim at all, since any operator may act on an online device
+ * immediately. `canUseLive` is always `false` here regardless: Files/Settings
+ * render read-only and `AdbCommandDialog`'s `single` mode shows the device's
+ * live transcript with its input box honestly disabled — a glance, not a
+ * session, since a right-click is often dismissed with Escape or a click
+ * elsewhere without touching anything.
  *
  * **No live WS subscription for the fetched device.** `DevicePopup` tracks
- * `device.status`/`lease.changed`/`assist.changed` for its whole (often
+ * `device.status`/`device.activity` for its whole (often
  * minutes-long) session; this menu fetches the device's detail once on open
  * and again only after a mutating action explicitly asks for it
  * (`onDeviceReloaded`, the same re-fetch `DevicePopup` uses for the fields a
@@ -132,9 +123,6 @@ export function DeviceContextMenu({
 }) {
   const [deviceDetail, setDeviceDetail] = useState<DeviceDetailInfo | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
-  const [coControlMode, setCoControlMode] = useState<CoControlMode>('operator')
-  const [assistGrantTtlSec, setAssistGrantTtlSec] = useState(300)
-  const [assistOpen, setAssistOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -151,15 +139,6 @@ export function DeviceContextMenu({
       cancelled = true
     }
   }, [deviceId])
-
-  useEffect(() => {
-    void api('/api/settings', SettingsResponseSchema)
-      .then((b) => {
-        setCoControlMode(b.settings.coControl.mode)
-        setAssistGrantTtlSec(b.settings.coControl.grantTtlSec)
-      })
-      .catch(() => undefined)
-  }, [])
 
   // Escape closes this panel — but ONLY if nothing else already claimed the
   // key, the SAME rule 1 `DevicePopup.tsx`'s own precedence table documents:
@@ -196,19 +175,6 @@ export function DeviceContextMenu({
   // bare label, so this never flashes `#undefined` on open (criterion 7).
   const deviceName = formatDeviceName(deviceDetail?.number, label)
   const header = selectedIds.length > 1 ? `${selectedIds.length} devices selected` : deviceName
-
-  // Never `'i-hold'`/`'i-assist'` here (both fixed `null` above) — see the
-  // file header. `ControlState.tsx`'s own file header documents this exact
-  // call shape for a surface that only ever reads `state.holder`/`state.kind`
-  // (via `assistRowState` below), never `state.primary`.
-  const controlState = useControlState({
-    status: deviceDetail?.status ?? null,
-    heldBy: deviceDetail?.heldBy ?? null,
-    myLeaseExpiresAt: null,
-    myAssistGrant: null,
-    coControlMode,
-  })
-  const assistState = assistRowState(controlState)
 
   // Clamped to the viewport (plan 101's own `x+2/y+2` offset kept as the
   // starting point) — the old item list was small enough to never need
@@ -280,9 +246,7 @@ export function DeviceContextMenu({
               device={deviceDetail}
               devices={devices}
               selectedIds={selectedIds}
-              assistState={assistState}
               canUseLive={false}
-              onAssistSelect={() => setAssistOpen(true)}
               onDeviceReloaded={reloadDevice}
               onForgotten={onClose}
               tabs={['actions']}
@@ -292,24 +256,6 @@ export function DeviceContextMenu({
           )}
         </div>
       </div>
-
-      {/* Assist (plan 91 §3.2, §3.12) — reused unchanged, exactly like
-          `DevicePopup`'s own instance; non-modal for the same reason every
-          other action dialog here is. */}
-      {deviceDetail?.heldBy && (
-        <AssistDialog
-          deviceId={deviceId}
-          // Plan 124 §4.4's rule for the four `deviceLabel: string` props: the
-          // prop is NOT widened into an object — the caller composes.
-          deviceLabel={deviceName}
-          primary={deviceDetail.heldBy}
-          grantTtlSec={assistGrantTtlSec}
-          open={assistOpen}
-          onOpenChange={setAssistOpen}
-          onAssisted={() => setAssistOpen(false)}
-          nonModal
-        />
-      )}
     </>
   )
 }

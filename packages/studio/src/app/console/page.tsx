@@ -42,7 +42,7 @@ import { computeTargetPreview } from '@/components/command/target-preview'
  *    `submitGuarded` opens `ConfirmFanout` only above the threshold or for
  *    a high-consequence command targeting more than one device; a single
  *    device never sees it.
- * 3. Staged rollout holds no lease while it waits — `RunReport`'s own
+ * 3. Staged rollout holds no control activity while it waits — `RunReport`'s own
  *    `awaiting-continue` banner says so.
  * 4. Output is subscriber-scoped — this page sends `command.subscribe`
  *    only for the run it is actively showing, and unsubscribes on

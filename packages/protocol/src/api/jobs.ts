@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import { JobDetailSchema, JobInfoSchema, JobNodeStatusSchema, JobStatusSchema, JobTraceEventSchema } from '../messages/job'
-import { DeviceEventSchema } from '../messages/device-event'
 import { pageSchema } from './pagination'
 
 /**
@@ -56,15 +55,6 @@ export const JobLogLineSchema = z.object({
   fields: z.record(z.string(), z.unknown()).optional(),
 })
 export const JobLogsResponseSchema = z.object({ lines: z.array(JobLogLineSchema), truncated: z.boolean() })
-
-/**
- * `GET /api/jobs/:id/assists` (plan 91 §3.5, §4.9) — every non-job input
- * action recorded against this job's device while it ran: an indexed range
- * scan over `device_events` (`idx_device_events_tail(deviceId, stream, at)`),
- * no JSON extraction (F18). `jobs.assistCount` on `JobInfo` is the headline
- * number; this is the detail — who, when, and (in `meta`) exactly what.
- */
-export const JobAssistsResponseSchema = z.object({ items: z.array(DeviceEventSchema) })
 
 /**
  * One structured error on a `job_nodes` row (plan 99 §4.6, §4.9, step 99.8)
@@ -156,7 +146,7 @@ export type JobNodeInfo = z.infer<typeof JobNodeInfoSchema>
  * each run is its own row, and every node the cursor never reached is still
  * a row (`status: 'skipped'`), so `items` is never a blank gap (H4). `[]`
  * for a job that is not a workflow, or one that has not executed a node yet
- * — never a 404 for that reason, the same convention `/logs` and `/assists`
+ * — never a 404 for that reason, the same convention `/logs` and `/trace`
  * above already use on this same route group; only a missing JOB 404s.
  *
  * No `jobId` field here — the caller already has it, from the URL. `finalized`
@@ -186,8 +176,8 @@ export type JobNodesResponse = z.infer<typeof JobNodesResponseSchema>
  * The companion to the `job.trace` WS message rather than a replacement:
  * `/ws` has no snapshot replay, so the Timeline tab fetches this and then
  * subscribes, exactly as the Logs tab already does. `[]` for a job that
- * recorded nothing — never a 404 for that reason, matching `/logs`,
- * `/assists` and `/nodes` on this same route group; only a missing JOB 404s.
+ * recorded nothing — never a 404 for that reason, matching `/logs`
+ * and `/nodes` on this same route group; only a missing JOB 404s.
  */
 export const JobTraceResponseSchema = pageSchema(JobTraceEventSchema)
 

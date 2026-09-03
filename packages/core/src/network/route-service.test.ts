@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
-import type { NetworkEngineId, PersistedNetworkRoute } from '@enkaku/protocol'
+import { E_DEVICE_CONFLICT, type NetworkEngineId, type PersistedNetworkRoute } from '@enkaku/protocol'
 import { devices } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { assertNoHttpProxyAuth, ERROR_STATUS } from './route-service'
@@ -35,9 +35,15 @@ interface StatusBody {
 
 const checkOf = (body: StatusBody, id: string): CheckLike | undefined => body.checks.find((c) => c.id === id)
 
-/** Takes control of a device the way an operator at the device page does — every mutating network endpoint requires it (plan 44 §5.7). */
+/**
+ * Takes control of a device the way an operator at the device page does.
+ * No mutating network endpoint requires this any more (plan 205 §2.4, §4.4:
+ * `network-apply` allows over a live `control` marker) — kept, and still
+ * called throughout this file, purely so a route write's `setBy`/marker
+ * actor matches the same `userId` these tests already assert on.
+ */
 function hold(h: RouteHarness, deviceId: string, clientId = 'client-a', userId: string | null = 'u1'): void {
-  h.leases.acquireManual(deviceId, clientId, userId)
+  h.activities.touchControl(deviceId, clientId, userId ? { kind: 'user', id: userId, label: userId } : { kind: 'user', id: clientId, label: 'a signed-out client' })
 }
 
 async function put(h: RouteHarness, deviceId: string, body: unknown): Promise<Response> {
@@ -609,12 +615,12 @@ describe('the cold vpn-helper revert has to actually reach the agent', () => {
  * answered `409 device_unavailable`, so the operator's only route to "off" was
  * to wait for the phone, let the route re-arm, and turn it off afterwards.
  *
- * The gate (`requireHeldLease`) predates the `pendingClear` debt and was
+ * The gate (`requireNetworkAdmission`) predates the `pendingClear` debt and was
  * refusing the request before the machinery built for exactly this case could
- * run. `requireDisarmAdmission` lets the disarm direction through — and only
- * that direction, and only for a status no lease can be taken on.
+ * run. `requireNetworkDisarmAdmission` lets the disarm direction through — and only
+ * that direction, and only for a status no control marker can be taken on.
  */
-describe('disarming a route the device is not there to hear (requireDisarmAdmission)', () => {
+describe('disarming a route the device is not there to hear (requireNetworkDisarmAdmission)', () => {
   /** The device the farm can no longer reach: offline on the record AND unreachable over adb. */
   function goOffline(h: RouteHarness, deviceId: string): void {
     h.db.update(devices).set({ status: 'offline' }).where(eq(devices.id, deviceId)).run()
@@ -744,25 +750,28 @@ describe('disarming a route the device is not there to hear (requireDisarmAdmiss
     expect(((await put409.json()) as { error: { code: string } }).error.code).toBe('device_unavailable')
   })
 
-  test('the gate is not widened generally: an ONLINE device still needs the lease, and a busy one is still refused', async () => {
+  test('the gate is not widened generally: a job driving the phone is still refused, though a bare ONLINE device no longer needs a control marker at all', async () => {
     const h = makeRouteHarness()
     h.seed('dev-1')
     hold(h, 'dev-1')
     await put(h, 'dev-1', HTTP_PROXY)
-    h.leases.releaseManual('dev-1', 'client-a')
 
-    // Online and takeable: "take control first" is a real instruction, so it stands.
-    const noLease = await h.app.request('/dev-1/network', { method: 'DELETE' })
-    expect(noLease.status).toBe(409)
-    expect(((await noLease.json()) as { error: { code: string } }).error.code).toBe('no_lease')
+    // Plan 205 §2.4, §4.4: turning a route off no longer requires holding
+    // control at all — an online device with nothing else running just
+    // succeeds, unlike the pre-205 lease-based gate this test used to assert.
+    const noJob = await h.app.request('/dev-1/network', { method: 'DELETE' })
+    expect(noJob.status).toBe(200)
+
+    // Put it back so there is something to turn off again.
+    await put(h, 'dev-1', HTTP_PROXY)
 
     // A job is driving that phone right now. Pulling its route out from under it is not a disarm,
-    // it is a collision — and unlike offline/quarantined, this is a state a lease CAN be taken in
+    // it is a collision — and unlike offline/quarantined, this is a state the write CAN happen in
     // once the job ends, so the refusal is an instruction rather than a dead end.
-    h.db.update(devices).set({ status: 'busy' }).where(eq(devices.id, 'dev-1')).run()
+    h.activities.start('dev-1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const busy = await h.app.request('/dev-1/network/disable', { method: 'POST' })
     expect(busy.status).toBe(409)
-    expect(((await busy.json()) as { error: { code: string } }).error.code).toBe('device_busy')
+    expect(((await busy.json()) as { error: { code: string } }).error.code).toBe(E_DEVICE_CONFLICT)
   })
 })
 
@@ -873,10 +882,11 @@ describe('the one door — RouteService.device.set is PUT’s own body, not a se
     })
   })
 
-  test('device.set refuses when no lease is held — the same admission check the endpoint takes', async () => {
+  test('device.set refuses while a job is driving the device — the same activity policy the endpoint takes', async () => {
     const h = makeRouteHarness()
     h.seed('dev-1')
-    await expect(h.service.device.set('dev-1', HTTP_PROXY, 'u1')).rejects.toMatchObject({ code: 'no_lease' })
+    h.activities.start('dev-1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+    await expect(h.service.device.set('dev-1', HTTP_PROXY, 'u1')).rejects.toMatchObject({ code: E_DEVICE_CONFLICT })
     expect(persisted(h, 'dev-1')).toBeNull()
     expect(h.phone('dev-1').execs).toHaveLength(0)
   })

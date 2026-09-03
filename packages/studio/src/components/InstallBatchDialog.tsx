@@ -80,7 +80,7 @@ export function InstallBatchDialog({
   /** The whole pool `TargetPicker`'s Cluster/Multiple devices modes can choose from. Defaults to `devices` for a caller not yet updated to pass the whole fleet. */
   allDevices?: DeviceInfo[]
   clusters?: ClusterInfo[]
-  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Install apk" row, one device); see `AssistDialog`'s own doc comment on the same prop for why. */
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Install apk" row, one device): when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
   const pool = allDevices ?? devices

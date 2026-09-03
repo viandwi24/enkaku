@@ -78,7 +78,6 @@ function fakeRunner(outcomes: Record<string, () => Outcome>): { runner: JobRunne
       return fn()
     },
     abort: () => true,
-    notifyAssist: () => false,
   }
   return { runner, calls }
 }
@@ -105,7 +104,7 @@ function newRegistry(db: Db) {
 
 /** Runs a 3-node workflow (a, b succeed; c fails) through the REAL interpreter, then settles the job — mirroring what `ExecutorHost` would do, bypassed here for speed exactly as `workflow.test.ts` bypasses it. */
 async function runOriginalWorkflow(db: Db): Promise<{ jobStore: ConcreteJobStore; originalJobRow: JobRow; workflowId: string }> {
-  db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'device d1', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'device d1', status: 'online' }).run()
   publishScript(db, 'node-a', '1.0.0')
   publishScript(db, 'node-b', '1.0.0')
   publishScript(db, 'node-c', '1.0.0')
@@ -164,7 +163,7 @@ async function runOriginalWorkflow(db: Db): Promise<{ jobStore: ConcreteJobStore
   // idle, which a real settle always does and which `claimNext` for any
   // later job (including a resume) depends on.
   jobStore.finish(enqueued.id, 'failed', { error: 'node "c" failed: boom', failureClass: 'script' })
-  db.update(devices).set({ status: 'idle' }).where(eq(devices.id, 'd1')).run()
+  db.update(devices).set({ status: 'online' }).where(eq(devices.id, 'd1')).run()
 
   const originalJobRow = jobStore.get(enqueued.id)
   if (!originalJobRow) throw new Error('the job must still exist after finish()')

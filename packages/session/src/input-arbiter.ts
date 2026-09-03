@@ -17,14 +17,12 @@ import type { Logger } from './logger'
  *
  * **No `onAction` callback here.** §4.1's original design sketched one — a
  * generic `{lane, source, verb, waitedMs, ranMs}` completion event, meant to
- * feed step 91.5's attribution work (`jobs.assistCount`, the `device_events`
- * `meta.assist`/`meta.jobId`, the `device.assist` audit row). 91.5 shipped a
- * different mechanism instead: `ws-handlers.ts`'s `input.*` branch resolves
- * `assistJobId` and records attribution directly, inline, at the same call
- * site that already knows the verb-specific payload (tap position, swipe
- * endpoints, redacted text) this arbiter's generic event never carried; the
- * mirror path (`mirror/group.ts`'s `dispatch`) does the same, independently.
- * `SessionManagerDeps`/`CreateSessionDeps` briefly carried an `onAction`-style
+ * feed step 91.5's attribution work, a subordinate-grant mechanism plan 205
+ * §3.2 item 8 deleted outright rather than renamed. `ws-handlers.ts`'s `input.*`
+ * branch instead records the control marker directly, inline, at the same
+ * call site that already knows the verb-specific payload (tap position,
+ * swipe endpoints, redacted text) this arbiter's generic event never
+ * carried. `SessionManagerDeps`/`CreateSessionDeps` briefly carried an `onAction`-style
  * field (`onInputAction`) with no production caller EVER wired to it and
  * nothing anywhere reading its output — a callback nobody produced and nobody
  * consumed, investigated and removed 2026-08-13
@@ -36,11 +34,13 @@ import type { Logger } from './logger'
 export type InputLane = 'pointer' | 'keys' | 'text'
 
 /**
- * Who asked for this action. The `id` is the same identifier `Lease.holder`
- * uses, so an arbiter record and a lease record name the same thing.
+ * Who asked for this action. The `id` is the same id the activity registry
+ * keys a marker on (`control:<clientId>`/`job:<jobId>`/`agent:<rootRunId>`,
+ * plan 205 §4.2), so an arbiter record and an activity marker name the same
+ * thing.
  */
 export interface InputSource {
-  kind: 'lease' | 'assist' | 'job' | 'agent'
+  kind: 'user' | 'job' | 'agent'
   id: string
   userId: string | null
 }
@@ -70,13 +70,13 @@ export interface CreateInputArbiterOpts {
 const LANES: readonly InputLane[] = ['pointer', 'keys', 'text']
 
 /**
- * Non-preemptive priority (§3.3, §4.1): `assist` jumps every QUEUED `job`/
- * `agent` action, but never interrupts one already running — a human is
- * there to unstick, not to fight the thing they are unsticking. `lease`
- * (the ordinary manual operator) sits between the two. `job` and `agent`
- * share a priority: neither preempts the other, FIFO decides between them.
+ * Non-preemptive priority (§3.3, §4.1, reworked by plan 205 §5 step 205.10):
+ * a person (`user`) jumps every QUEUED `job`/`agent` action, but never
+ * interrupts one already running — a human is there to drive, not to fight
+ * something already in flight. `job` and `agent` share a priority: neither
+ * preempts the other, FIFO decides between them.
  */
-const PRIORITY_OF: Record<InputSource['kind'], number> = { assist: 0, lease: 1, job: 2, agent: 2 }
+const PRIORITY_OF: Record<InputSource['kind'], number> = { user: 0, job: 1, agent: 1 }
 
 /** Bounds each lane's wait-time sample buffer so `stats()` stays cheap forever on a long-lived session. */
 const MAX_WAIT_SAMPLES = 500

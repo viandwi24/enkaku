@@ -16,7 +16,9 @@ import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
 import type { DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
+import type { DeviceStateMachine } from '../device/state-machine'
 import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
 // Single source of truth for "is this device eligible for the guest agent"
@@ -27,7 +29,7 @@ import {
   ERROR_STATUS,
   createRouteService,
   mustGetDevice,
-  requireHeldLease,
+  withNetworkAdmission,
   type DeviceNetworkPort,
   type DeviceSession,
   type DeviceSessionCallOpts,
@@ -203,7 +205,11 @@ export interface GuestAgentRoutesDeps {
   exec: (serial: string, cmd: string, opts?: TransportExecOptions) => Promise<ShellResult>
   apkPath: () => Promise<string>
   ports: Pick<PortAllocator, 'claim' | 'release'>
-  leases: LeaseManager
+  /** The device activity registry (plan 205 §4.2, §4.8) — the one admission door every mutating endpoint here and in `route-service.ts` takes. */
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
+  /** `control.overControl`/`control.idleSec`, read fresh on every admission check (plan 205 §4.5). */
+  controlSettings: () => ControlPolicySettings
+  states: Pick<DeviceStateMachine, 'current'>
   /** Where the credential store's encryption key lives (plan 52 §4.2) — `<dataDir>/network-credentials.key`, created on first use with mode 0600. */
   dataDir: string
   /** Main-stream device events: guest-agent.installed/uninstalled, network.applied/reverted. */
@@ -263,11 +269,11 @@ export interface GuestAgentRoutesHandle {
   /**
    * Tears down any applied network route for a device, idempotently.
    *
-   * A route is a property of the DEVICE now, not of whoever holds the lease
+   * A route is a property of the DEVICE now, not of whoever is in control
    * (plan 52 §0, §3.1): this is called ONLY for an operator's explicit act —
    * `/disable`, `DELETE /network`, and `DELETE /guest-agent` (uninstall) —
-   * never automatically on lease release/expiry/disconnect, and never on the
-   * device going offline (see `handleDeviceOffline` for that case). `actor` is
+   * never automatically on a control marker ending or a disconnect, and never
+   * on the device going offline (see `handleDeviceOffline` for that case). `actor` is
    * `null` only for the uninstall path's own internal call.
    */
   revertNetwork: (deviceId: string, actor?: string | null) => Promise<void>
@@ -312,8 +318,8 @@ export interface GuestAgentRoutesHandle {
    * a plugin holding `device.network` reaches through `ctx.farm.call`.
    *
    * It is the SAME three functions the HTTP routes above call — not a parallel
-   * implementation — so a plugin's route change takes the same lease admission,
-   * the same lock, and writes the same attributed device event.
+   * implementation — so a plugin's route change takes the same activity
+   * admission, the same lock, and writes the same attributed device event.
    */
   deviceNetwork: DeviceNetworkPort
 }
@@ -581,7 +587,9 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     db,
     exec: deps.exec,
     apkPath: deps.apkPath,
-    leases: deps.leases,
+    activities: deps.activities,
+    controlSettings: deps.controlSettings,
+    states: deps.states,
     dataDir: deps.dataDir,
     log: deps.log,
     ...(deps.record ? { record: deps.record } : {}),
@@ -684,45 +692,46 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
 
   app.post('/:id/guest-agent', requirePermission('device.network'), async (c) => {
     const row = mustGet(c.req.param('id'))
-    requireHeldLease(deps.leases, row.id)
-    const result = await installAndProbe(row)
-    deps.record?.({
-      deviceId: row.id,
-      stream: 'main',
-      kind: 'guest-agent.installed',
-      actor: c.get('user')?.id ?? null,
-      meta: { state: result.state },
-    })
-    // Plan 90 §3.8, §4.7 — keeps `devices.agent`/the fleet summary in sync with an operator's
-    // explicit Install/Repair click. Fire-and-forget and tolerant: a failure here must never turn
-    // an otherwise-successful install+probe into a 500 for the operator who just watched it work.
-    void deps.agentProvisioner
-      ?.ensure(row.id, { force: true })
-      .catch((err) => deps.log.warn(`agent-provisioner ensure() after POST /:id/guest-agent failed, tolerated: ${String(err)}`))
-    return c.json(result)
+    const actor = c.get('user')?.id ?? null
+    return c.json(
+      await withNetworkAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, async () => {
+        const result = await installAndProbe(row)
+        deps.record?.({ deviceId: row.id, stream: 'main', kind: 'guest-agent.installed', actor, meta: { state: result.state } })
+        // Plan 90 §3.8, §4.7 — keeps `devices.agent`/the fleet summary in sync with an operator's
+        // explicit Install/Repair click. Fire-and-forget and tolerant: a failure here must never turn
+        // an otherwise-successful install+probe into a 500 for the operator who just watched it work.
+        void deps.agentProvisioner
+          ?.ensure(row.id, { force: true })
+          .catch((err) => deps.log.warn(`agent-provisioner ensure() after POST /:id/guest-agent failed, tolerated: ${String(err)}`))
+        return result
+      }),
+    )
   })
 
   app.delete('/:id/guest-agent', requirePermission('device.network'), async (c) => {
     const row = mustGet(c.req.param('id'))
-    requireHeldLease(deps.leases, row.id)
     const actor = c.get('user')?.id ?? null
-    // Any active route is torn down first (Studio's own uninstall confirm dialog already says so)
-    // — reinstalling later starts from scratch.
-    await service.revertNetwork(row.id, actor)
-    // Clear the PERSISTED route too, not just the live one — and stop the heartbeat if that was
-    // the last enabled VPN route. See `RouteService.clearRoute`'s doc comment for the defect this
-    // prevents.
-    service.clearRoute(row.id)
-    const launcher = makeLauncher(row)
-    await launcher.stop().catch(() => undefined)
-    await deps.hostAdb(['-s', row.serial, 'uninstall', GUEST_AGENT_PACKAGE]).catch(() => undefined)
-    deps.record?.({ deviceId: row.id, stream: 'main', kind: 'guest-agent.uninstalled', actor, meta: {} })
-    // Gap 2 fix's own follow-on: clears `devices.agent` so a GET right after this does not keep
-    // reporting a stale ready/outdated/failed state.
-    void deps.agentProvisioner
-      ?.remove?.(row.id, actor)
-      .catch((err) => deps.log.warn(`agent-provisioner remove() after DELETE /:id/guest-agent failed, tolerated: ${String(err)}`))
-    return c.json({ ok: true })
+    return c.json(
+      await withNetworkAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, async () => {
+        // Any active route is torn down first (Studio's own uninstall confirm dialog already says so)
+        // — reinstalling later starts from scratch.
+        await service.revertNetwork(row.id, actor)
+        // Clear the PERSISTED route too, not just the live one — and stop the heartbeat if that was
+        // the last enabled VPN route. See `RouteService.clearRoute`'s doc comment for the defect this
+        // prevents.
+        service.clearRoute(row.id)
+        const launcher = makeLauncher(row)
+        await launcher.stop().catch(() => undefined)
+        await deps.hostAdb(['-s', row.serial, 'uninstall', GUEST_AGENT_PACKAGE]).catch(() => undefined)
+        deps.record?.({ deviceId: row.id, stream: 'main', kind: 'guest-agent.uninstalled', actor, meta: {} })
+        // Gap 2 fix's own follow-on: clears `devices.agent` so a GET right after this does not keep
+        // reporting a stale ready/outdated/failed state.
+        void deps.agentProvisioner
+          ?.remove?.(row.id, actor)
+          .catch((err) => deps.log.warn(`agent-provisioner remove() after DELETE /:id/guest-agent failed, tolerated: ${String(err)}`))
+        return { ok: true }
+      }),
+    )
   })
 
   app.onError((err, c) => {

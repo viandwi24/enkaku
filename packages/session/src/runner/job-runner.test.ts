@@ -25,7 +25,7 @@ const silentLog = (): Logger => {
  * finish-only attempt must skip the reset entirely.
  *
  * No real subprocess is spawned: a fake `IsolationProvider` stands in for
- * child-entry.ts, scripted per test to mirror what the real child does
+ * child-entry.ts, scripted per test to match what the real child does
  * (self-import → `ready`, hold for `init`, then run).
  */
 
@@ -119,8 +119,6 @@ const HOME_SETTINGS: JobSettings = {
   resetStrict: false,
   retry: DEFAULT_RETRY,
   crashPolicy: 'declared',
-  quietPeriodSec: 10,
-  maxWaitSec: 120,
   defaultTimeoutMs: 3_600_000,
   startupTimeoutMs: 60_000,
   maxTimeoutMs: null,
@@ -238,8 +236,6 @@ describe('createJobRunner — the ready → reset → init ordering (plan 35 §4
         resetStrict: false,
         retry: DEFAULT_RETRY,
         crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
@@ -345,8 +341,6 @@ describe('createJobRunner — job.nodeId threaded into the child\'s init (plan 9
         resetStrict: false,
         retry: DEFAULT_RETRY,
         crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
@@ -388,8 +382,6 @@ describe('createJobRunner — job.nodeId threaded into the child\'s init (plan 9
         resetStrict: false,
         retry: DEFAULT_RETRY,
         crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
@@ -439,8 +431,6 @@ describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () =>
         resetStrict: true,
         retry: DEFAULT_RETRY,
         crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
@@ -480,8 +470,6 @@ describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () =>
         resetStrict: false,
         retry: DEFAULT_RETRY,
         crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
@@ -719,70 +707,6 @@ describe('createJobRunner — the contamination regression (plan 35 §5.5)', () 
   })
 })
 
-describe('createJobRunner — notifyAssist (plan 91 §3.6, §4.8, §5 step 91.5)', () => {
-  test('delivers {t:"assist", at, actor} to the running child — the second unsolicited push ever, NOT an abort', async () => {
-    const session = fakeSession(async () => '')
-    let finishChild: (() => void) | undefined
-    const { isolation, sentPerSpawn } = fakeIsolation([
-      {
-        ready: { t: 'ready', scriptId: 'test-script', version: '1.0.0' },
-        onInit: (_init, emit) => {
-          // Held open deliberately: `notifyAssist` must reach a child that
-          // is still mid-run, not merely one that already finished.
-          finishChild = () => emit({ t: 'result', ok: true, value: 'done', finishRan: true })
-        },
-      },
-    ])
-    const runner = createJobRunner({
-      isolation,
-      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
-      sessions: fakeSessions(session),
-      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
-      log: silentLog(),
-      onLog: () => {},
-      onArtifact: () => {},
-      onPhase: () => {},
-      heartbeat: () => {},
-      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
-    })
-
-    const resultPromise = runner.execute(JOB)
-    // Let `init` actually reach the (fake) child before asserting anything about it.
-    await Bun.sleep(5)
-
-    const handled = runner.notifyAssist(JOB.id, { at: 1_700_000_000, actor: 'user-1' })
-    expect(handled).toBe(true)
-    expect(sentPerSpawn[0]).toContainEqual({ t: 'assist', at: 1_700_000_000, actor: 'user-1' })
-    // Never an abort — no `{t:'abort'}` was ever sent, and the child is still alive.
-    expect(sentPerSpawn[0]?.some((m) => m.t === 'abort')).toBe(false)
-
-    finishChild?.()
-    const result = await resultPromise
-    expect(result.ok).toBe(true)
-  })
-
-  test('notifyAssist for an unknown job, or one that already finished, is a harmless no-op', async () => {
-    const session = fakeSession(async () => '')
-    const { isolation } = fakeIsolation([successBehavior()])
-    const runner = createJobRunner({
-      isolation,
-      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
-      sessions: fakeSessions(session),
-      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
-      log: silentLog(),
-      onLog: () => {},
-      onArtifact: () => {},
-      onPhase: () => {},
-      heartbeat: () => {},
-      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
-    })
-    expect(runner.notifyAssist('no-such-job', { at: 1, actor: null })).toBe(false)
-
-    await runner.execute(JOB)
-    expect(runner.notifyAssist(JOB.id, { at: 1, actor: null })).toBe(false)
-  })
-})
-
 describe('createJobRunner — the "crashed" abort reason (plan 37 §3.5, §4.4)', () => {
   test('runner.abort(id, "crashed", detail) settles APP_CRASHED with that detail as the message, and finish() still runs', async () => {
     let runnerHandle: ReturnType<typeof createJobRunner> | undefined
@@ -872,8 +796,6 @@ function settingsWithRetry(retry: Partial<JobSettings['retry']>): JobSettings {
     resetStrict: false,
     retry: { ...DEFAULT_RETRY, ...retry },
     crashPolicy: 'declared',
-    quietPeriodSec: 10,
-    maxWaitSec: 120,
     defaultTimeoutMs: 3_600_000,
     startupTimeoutMs: 60_000,
     maxTimeoutMs: null,
@@ -912,7 +834,7 @@ function attemptBehavior(result: 'success' | { failCode: string }, retries = 2):
   }
 }
 
-/** Records acquire/release ordering so backoff-vs-lease timing is observable (acceptance #4). */
+/** Records acquire/release ordering so backoff-vs-session timing is observable (acceptance #4). */
 function trackingSessions(session: DeviceSession, sequence: string[]): SessionManager {
   let n = 0
   return {
@@ -1671,7 +1593,7 @@ describe('createJobRunner — peak RSS accumulation (plan 98 §4.7, §4.8, H1)',
     expect(outcome.ok).toBe(true)
     // ready + phase + result = 3 heartbeat-triggering messages; the rss
     // sample must not add a 4th (plan 98 §4.7: a fast sample cadence must
-    // not multiply lease-renewal writes).
+    // not multiply heartbeat-renewal writes).
     expect(heartbeatCalls).toHaveLength(3)
   })
 
@@ -2310,7 +2232,7 @@ describe('createJobRunner — the per-job override (plan 98 §3.8, §4.4, §5 st
 })
 
 describe('createJobRunner — ctx.progress() forwarding (plan 97 §3.7, §4.3, §4.9, §5 step 97.7)', () => {
-  test('a `progress` message from the child reaches `deps.onProgress(jobId, value)` VERBATIM, and does not trip the lease heartbeat callback the way every other message does', async () => {
+  test('a `progress` message from the child reaches `deps.onProgress(jobId, value)` VERBATIM, and does not trip the job heartbeat callback the way every other message does', async () => {
     const heartbeats: string[] = []
     const progressCalls: Array<{ jobId: string; value: unknown }> = []
     let finishChild: (() => void) | undefined

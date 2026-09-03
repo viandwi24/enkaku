@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { AgentStateSchema, AgentStatusSchema, DEFAULT_AGENT_STATUS, DeviceInfoSchema, type AgentState, type AgentStatus, type LeaseHolder } from './device'
+import { AgentStateSchema, AgentStatusSchema, DEFAULT_AGENT_STATUS, DeviceInfoSchema, type AgentState, type AgentStatus } from './device'
 import { MAIN_EVENT_KINDS } from './messages/device-event'
+import type { DeviceActivity, LastControl } from './activity'
 
 const ALL_AGENT_STATES: AgentState[] = ['absent', 'provisioning', 'ready', 'outdated', 'failed', 'unsupported', 'consent-required']
 
@@ -59,7 +60,7 @@ describe('DeviceInfoSchema.agent', () => {
     screenW: 1080,
     screenH: 2400,
     density: 420,
-    status: 'idle',
+    status: 'online',
     lastSeen: 1_700_000_000,
   }
 
@@ -75,7 +76,7 @@ describe('DeviceInfoSchema.agent', () => {
   })
 })
 
-describe('DeviceInfoSchema.assistedBy (plan 91 §3.2, §3.4 item 4, F25)', () => {
+describe('DeviceInfoSchema.activities / lastControl (plan 205, MVP 04)', () => {
   const BASE = {
     id: 'dev-1',
     stableId: 'stable-1',
@@ -86,51 +87,54 @@ describe('DeviceInfoSchema.assistedBy (plan 91 §3.2, §3.4 item 4, F25)', () =>
     screenW: 1080,
     screenH: 2400,
     density: 420,
-    status: 'busy',
+    status: 'online',
     lastSeen: 1_700_000_000,
   }
 
-  test('defaults to an empty array when omitted — an existing test/fallback that constructs a DeviceInfo without it still parses', () => {
+  test('defaults to an empty activity list and a null lastControl when omitted — an existing test/fallback that constructs a DeviceInfo without them still parses', () => {
     const info = DeviceInfoSchema.parse(BASE)
-    expect(info.assistedBy).toEqual([])
+    expect(info.activities).toEqual([])
+    expect(info.lastControl).toBeNull()
   })
 
-  test('carries one or more assisting holders, each non-takeable', () => {
-    const holder: LeaseHolder = {
-      kind: 'user',
-      id: 'client-1',
-      label: 'Rina',
-      runId: null,
-      takeable: false,
-      acquiredAt: 1_700_000_000,
-      expiresAt: 1_700_000_300,
+  test('carries one or more live activities', () => {
+    const activity: DeviceActivity = {
+      id: 'control:client-1',
+      kind: 'control',
+      label: 'Controlled by Rina',
+      actor: { kind: 'user', id: 'client-1', label: 'Rina' },
+      startedAt: 1_700_000_000,
+      updatedAt: 1_700_000_300,
     }
-    const info = DeviceInfoSchema.parse({ ...BASE, assistedBy: [holder] })
-    expect(info.assistedBy).toEqual([holder])
+    const info = DeviceInfoSchema.parse({ ...BASE, activities: [activity] })
+    expect(info.activities).toEqual([activity])
   })
 
-  test('assistedBy and heldBy are independent — a busy device can be held by a job and assisted by a user at the same time', () => {
-    const job: LeaseHolder = {
+  test('a job activity and a control activity coexist independently', () => {
+    const job: DeviceActivity = {
+      id: 'job:job-1',
       kind: 'job',
-      id: 'job-1',
-      label: 'checkout@1.4.2',
-      runId: null,
-      takeable: false,
-      acquiredAt: 1_700_000_000,
-      expiresAt: null,
+      label: 'Running checkout@1.4.2',
+      actor: { kind: 'system', id: 'core', label: 'Scheduler' },
+      startedAt: 1_700_000_000,
+      updatedAt: 1_700_000_000,
     }
-    const assist: LeaseHolder = {
-      kind: 'user',
-      id: 'client-1',
-      label: 'Rina',
-      runId: null,
-      takeable: false,
-      acquiredAt: 1_700_000_100,
-      expiresAt: 1_700_000_400,
+    const control: DeviceActivity = {
+      id: 'control:client-1',
+      kind: 'control',
+      label: 'Controlled by Rina',
+      actor: { kind: 'user', id: 'client-1', label: 'Rina' },
+      startedAt: 1_700_000_100,
+      updatedAt: 1_700_000_400,
     }
-    const info = DeviceInfoSchema.parse({ ...BASE, heldBy: job, assistedBy: [assist] })
-    expect(info.heldBy).toEqual(job)
-    expect(info.assistedBy).toEqual([assist])
+    const info = DeviceInfoSchema.parse({ ...BASE, activities: [job, control] })
+    expect(info.activities).toEqual([job, control])
+  })
+
+  test('lastControl carries the tail after a control marker ends', () => {
+    const lastControl: LastControl = { actor: { kind: 'user', id: 'client-1', label: 'Rina' }, endedAt: 1_700_000_500 }
+    const info = DeviceInfoSchema.parse({ ...BASE, lastControl })
+    expect(info.lastControl).toEqual(lastControl)
   })
 })
 
@@ -145,7 +149,7 @@ describe('DeviceInfoSchema.number (plan 89 §3.1, §3.2, §3.3, §4.3)', () => {
     screenW: 1080,
     screenH: 2400,
     density: 420,
-    status: 'idle',
+    status: 'online',
     lastSeen: 1_700_000_000,
   }
 

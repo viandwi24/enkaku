@@ -45,10 +45,10 @@ const GRID_COLS: Record<number, string> = { 1: 'grid-cols-1', 2: 'grid-cols-2', 
  *
  * A caller with exactly one allowed mode still renders through this
  * component rather than being handed a bare `DevicePicker` — see
- * `SingleDeviceNotice` in the dialogs that are single-device ONLY (Assist,
- * Take control): they render a short, explicit sentence instead of this
- * component, per §3.4's "a single-device-only action must SAY it is
- * single-device rather than omitting the picker".
+ * `SingleDeviceNotice`, for a single-device-only action: it renders a short,
+ * explicit sentence instead of this component, per §3.4's "a
+ * single-device-only action must SAY it is single-device rather than
+ * omitting the picker".
  */
 export function TargetPicker({
   selection,
@@ -169,16 +169,14 @@ export function TargetPicker({
 
 /**
  * Plan 104 §3.4 — "a single-device-only action must SAY it is single-device
- * rather than omitting the picker". Assist and Take control are leases, one
- * device by definition (plan 91 §3.2); this is the sentence they render in
- * `TargetPicker`'s place, so the operator never has to guess whether a live
- * multi-selection applied to a lease that can only ever hold one phone.
+ * rather than omitting the picker". A caller whose action is structurally
+ * bound to one device renders this sentence in `TargetPicker`'s place, so
+ * the operator never has to guess whether a live multi-selection applies.
  */
 export function SingleDeviceNotice({ deviceLabel }: { deviceLabel: string }) {
   return (
     <p className="rounded-lg border bg-surface-2/40 px-3 py-2 text-[12.5px] text-fg-muted">
-      Single device only — <span className="text-fg">{deviceLabel}</span>. A lease can only ever hold one phone, even
-      while others are selected.
+      Single device only — <span className="text-fg">{deviceLabel}</span>, even while others are selected.
     </p>
   )
 }

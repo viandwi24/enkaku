@@ -197,7 +197,7 @@ describe('listDevicesWithTags — cluster (plan 22.0 §4.4, acceptance #10)', ()
           stableId: `stable-${i}`,
           serial: `serial-${i}`,
           label: `Phone ${i}`,
-          status: 'idle',
+          status: 'online',
           clusterId: i < 10 ? 'cl-1' : null,
         })
         .run()
@@ -297,9 +297,9 @@ describe('listDevicesWithTags — lastCrashAt, the device card badge (plan 37 §
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd-recent', stableId: 's1', serial: 'SER1', label: 'Recent', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd-old', stableId: 's2', serial: 'SER2', label: 'Old', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd-none', stableId: 's3', serial: 'SER3', label: 'None', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd-recent', stableId: 's1', serial: 'SER1', label: 'Recent', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd-old', stableId: 's2', serial: 'SER2', label: 'Old', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd-none', stableId: 's3', serial: 'SER3', label: 'None', status: 'online' }).run()
 
     const nowSec = Math.floor(Date.now() / 1000)
     db.insert(deviceEvents)
@@ -425,9 +425,9 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd-usb', stableId: 's-usb', serial: 'ZP2222RMBS', label: 'USB phone', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd-tcp-known', stableId: 's-tcp-known', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd-tcp-unknown', stableId: 's-tcp-unknown', serial: '192.168.1.51:5555', label: 'Mystery phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd-usb', stableId: 's-usb', serial: 'ZP2222RMBS', label: 'USB phone', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd-tcp-known', stableId: 's-tcp-known', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd-tcp-unknown', stableId: 's-tcp-unknown', serial: '192.168.1.51:5555', label: 'Mystery phone', status: 'online' }).run()
 
     const networks: FarmNetwork[] = [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]
     const infos = listDevicesWithTags(db, undefined, undefined, networks)
@@ -463,7 +463,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Phone', status: 'online' }).run()
     const infos = listDevicesWithTags(db)
     expect(infos[0]?.connection.kind).toBe('tcp')
     expect(infos[0]?.connection.mediumSource).toBe('unknown')
@@ -473,7 +473,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
     const info = rowToDeviceInfo(row)
     expect(info.connection.kind).toBe('usb')
@@ -491,7 +491,7 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
         stableId: 's1',
         serial: 'ZP2222RMBS',
         label: 'Phone',
-        status: 'idle',
+        status: 'online',
         preparation: { 'guest-agent': { state: 'outdated', version: '1.2.0', reason: 'update available', checkedAt: 1, attempts: 0, nextAttemptAt: null } },
         // A stale/absent devices.agent must not win — preparation is authoritative.
         agent: { appVersion: '1.2.0', versionCode: 3, androidSdkInt: 30, capabilities: [] },
@@ -512,7 +512,7 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
         stableId: 's1',
         serial: 'ZP2222RMBS',
         label: 'Phone',
-        status: 'idle',
+        status: 'online',
         agent: { state: 'failed', appVersion: null, versionCode: null, androidSdkInt: 30, capabilities: [], reason: 'device offline mid-install', checkedAt: 1, attempts: 3, nextAttemptAt: null },
         // No `preparation` column at all — exactly a row written before this migration.
       })
@@ -526,7 +526,7 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
     expect(deriveAgentState(row)).toBe('absent')
   })
@@ -545,8 +545,8 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone 1', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'ZP2222RMBT', label: 'Phone 2', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone 1', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'ZP2222RMBT', label: 'Phone 2', status: 'online' }).run()
     allocateDeviceNumber(db, 's1')
     allocateDeviceNumber(db, 's2')
 
@@ -568,7 +568,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const infos = listDevicesWithTags(db)
     expect(infos[0]?.number).toBeNull()
   })
@@ -577,7 +577,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
     const info = rowToDeviceInfo(row)
     expect(info.number).toBeNull()
@@ -587,9 +587,9 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
-    const info = rowToDeviceInfo(row, [], null, null, null, null, [], new Map(), 7)
+    const info = rowToDeviceInfo(row, [], null, null, null, undefined, [], new Map(), 7)
     expect(info.number).toBe(7)
   })
 
@@ -600,7 +600,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     db.insert(discoveredDevices).values({ stableId: 'sid-new', serial: 'serial-new', label: 'New Phone', firstSeen: new Date(), lastSeen: new Date() }).run()
     const row = admitDevice(db, 'sid-new')
     expect(row).not.toBeNull()
-    const info = rowToDeviceInfo(row!, [], null, null, null, null, [], new Map(), lookupDeviceNumber(db, row!.stableId))
+    const info = rowToDeviceInfo(row!, [], null, null, null, undefined, [], new Map(), lookupDeviceNumber(db, row!.stableId))
     expect(info.number).toBe(1)
   })
 })
@@ -620,7 +620,7 @@ describe('DeviceRegistry — networks (plan 88 §3.6, §4.1, residual gap)', () 
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'online' }).run()
 
     const registry = createDeviceRegistry({
       client: fakeAdb(),
@@ -641,7 +641,7 @@ describe('DeviceRegistry — networks (plan 88 §3.6, §4.1, residual gap)', () 
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'online' }).run()
 
     const registry = createDeviceRegistry({
       client: fakeAdb(),

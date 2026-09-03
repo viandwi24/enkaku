@@ -7,7 +7,7 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import type { Role } from '../auth/service'
 import { createCommandRunStore, type CommandRunStore } from '../command-console/store'
@@ -15,12 +15,14 @@ import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
 /**
  * The interactive terminal's WS wiring (plan 26 §4.3, §7; transport
- * migrated to the framed shell by plan 53): the refusal matrix (no lease /
- * busy / wrong holder / no permission / mode off), the record-ordering rule
- * (a refusal records nothing, an accepted command records exactly two
- * rows), redaction, and the exit-code/cd round trip — all exercised against
- * the REAL `createWsMessageHandler` and REAL `LeaseManager`, with only the
- * adb socket and the surrounding services faked.
+ * migrated to the framed shell by plan 53; admission reworked by plan 205
+ * §4.9): the refusal matrix (no permission / mode off — a live job only
+ * warns, and another controller no longer blocks `shell.exec` at all, since
+ * `command` allows over both), the record-ordering rule (a refusal records
+ * nothing, an accepted command records exactly two rows), redaction, and the
+ * exit-code/cd round trip — all exercised against the REAL
+ * `createWsMessageHandler` and REAL `ActivityRegistry`, with only the adb
+ * socket and the surrounding services faked.
  */
 
 function setUpDb(): Db {
@@ -29,7 +31,7 @@ function setUpDb(): Db {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' | 'offline' = 'idle'): void {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status }).run()
 }
 
@@ -128,17 +130,16 @@ function setUpHandler(
      */
     withoutCommandRunStore?: boolean
   },
-): { handler: ReturnType<typeof createWsMessageHandler>; events: RecordedEvent[]; commandRunStore: CommandRunStore } {
+): {
+  handler: ReturnType<typeof createWsMessageHandler>
+  events: RecordedEvent[]
+  commandRunStore: CommandRunStore
+  activities: ReturnType<typeof createActivityRegistry>
+} {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const events: RecordedEvent[] = []
   const commandRunStore = createCommandRunStore(db)
   const deps: WsHandlerDeps = {
@@ -151,7 +152,9 @@ function setUpHandler(
         throw new Error('not used')
       },
     },
-    leases,
+    activities,
+    controlSettings: () => ({ overControl: 'allow' as const, idleSec: 30 }),
+    states,
     jobs: {
       enqueue: () => {
         throw new Error('not used')
@@ -161,7 +164,6 @@ function setUpHandler(
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-      assists: () => [],
       // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these shell tests;
       // present only so this fixture keeps satisfying `JobService`.
       nodes: () => ({ items: [], finalized: false }),
@@ -188,11 +190,7 @@ function setUpHandler(
     db,
     log,
   }
-  return { handler: createWsMessageHandler(deps), events, commandRunStore }
-}
-
-async function acquireLease(handler: ReturnType<typeof createWsMessageHandler>, ws: ServerWebSocket<unknown>, deviceId: string): Promise<void> {
-  await handler.handleMessage(ws, JSON.stringify({ type: 'lease.acquire', id: 'l1', payload: { deviceId } }))
+  return { handler: createWsMessageHandler(deps), events, commandRunStore, activities }
 }
 
 /** A framed shell result — real `stdout`/`stderr`/`exitCode`, no marker involved (plan 53). */
@@ -200,63 +198,58 @@ function shellResult(stdout: string, exitCode: number | null, stderr = ''): Shel
   return { stdout, stderr, exitCode }
 }
 
-describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
-  test('no lease → refused with no_lease, even though the device is idle', async () => {
+describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7; admission reworked by plan 205 §4.9)', () => {
+  test('an online device with nothing else going on needs no admission at all', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
-    const { handler, events } = setUpHandler(db, client)
+    const { handler } = setUpHandler(db, client)
     const a = fakeConn()
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
 
-    const err = a.sent.find((m) => m.type === 'error')
-    expect(err).toBeDefined()
-    if (err?.type === 'error') expect(err.payload.code).toBe('no_lease')
-    expect(events).toHaveLength(0) // a refused command produces no event-log rows (acceptance #5)
+    expect(a.sent.some((m) => m.type === 'error')).toBe(false)
+    expect(a.sent.some((m) => m.type === 'shell.result')).toBe(true)
   })
 
-  test('device busy (a job is running) → refused with device_busy', async () => {
+  test('a running job only warns, never forbids — shell.exec still succeeds (the `command` policy row is `warn` against `job`)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'busy')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
-    const { handler, events } = setUpHandler(db, client)
+    const { handler, activities } = setUpHandler(db, client)
+    activities.start('dev-1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const a = fakeConn()
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
 
-    const err = a.sent.find((m) => m.type === 'error')
-    expect(err).toBeDefined()
-    if (err?.type === 'error') expect(err.payload.code).toBe('device_busy')
-    expect(events).toHaveLength(0)
+    expect(a.sent.some((m) => m.type === 'error')).toBe(false)
+    expect(a.sent.some((m) => m.type === 'shell.result')).toBe(true)
   })
 
-  test('another client holds the lease → refused (not the lease holder)', async () => {
+  test('another client already controlling the device does not block shell.exec — `command` allows over `control` (plan 205 §2.4)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
-    const { handler, events } = setUpHandler(db, client)
+    const { handler } = setUpHandler(db, client)
     const holder = fakeConn()
     const bystander = fakeConn()
 
-    await acquireLease(handler, holder.ws, 'dev-1')
-    events.length = 0 // drop the `control.acquired` row from the acquire above — not what this test checks
+    handler.handleOpen(holder.ws)
+    await handler.handleMessage(holder.ws, JSON.stringify({ type: 'input.tap', id: 't1', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
+    handler.handleOpen(bystander.ws)
     await handler.handleMessage(bystander.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
 
-    const err = bystander.sent.find((m) => m.type === 'error')
-    expect(err).toBeDefined()
-    if (err?.type === 'error') expect(['not_lease_holder', 'no_lease']).toContain(err.payload.code)
-    expect(events).toHaveLength(0)
+    expect(bystander.sent.some((m) => m.type === 'error')).toBe(false)
+    expect(bystander.sent.some((m) => m.type === 'shell.result')).toBe(true)
   })
 
   test('no device.shell permission (operator, mode "admin") → refused with auth.forbidden', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client, { role: 'operator', shellMode: 'admin' })
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
@@ -267,14 +260,13 @@ describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
     expect(events).toHaveLength(0)
   })
 
-  test('shell.mode "off" refuses even an admin holding the lease', async () => {
+  test('shell.mode "off" refuses even an admin', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client, { role: 'admin', shellMode: 'off' })
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
@@ -285,14 +277,13 @@ describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
     expect(events).toHaveLength(0)
   })
 
-  test('shell.mode "operator" admits an operator holding the lease', async () => {
+  test('shell.mode "operator" admits an operator', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client, { role: 'operator', shellMode: 'operator' })
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
@@ -305,7 +296,7 @@ describe('shell.exec refusal matrix (plan 26 acceptance #1-4, §7)', () => {
 describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
   test('echo hi → stdout "hi", exit 0, and exactly two event-log rows in order (shell.exec then shell.result)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async (_serial, cmd) => {
       expect(cmd).toContain('echo hi')
       return shellResult('hi', 0)
@@ -313,7 +304,6 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
@@ -332,12 +322,11 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('a non-zero exit (`false`) is reported as exitCode 1, not swallowed as an error', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('', 1))
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'false' } }))
@@ -349,12 +338,11 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('stderr travels to the terminal as its own field, never folded into stdout (plan 53)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('normal output', 1, 'the error text'))
     const { handler } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'a-command' } }))
 
@@ -368,14 +356,13 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('a failure raised by the core reports itself on stderr — stdout stays empty because the command printed nothing', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => {
       throw new AdbError('E_ADB_TIMEOUT', 'adb shell:sleep 99 exceeded 15000ms')
     })
     const { handler } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'sleep 99' } }))
 
@@ -389,7 +376,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('a command whose output exceeds the cap (E_ADB_OUTPUT_LIMIT) reports truncated: true and a null exit code', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => {
       // The local ShellPort has no partial-truncation return value — it
       // throws instead of resolving with a truncated flag (`shell-port.ts`).
@@ -398,7 +385,6 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'yes' } }))
@@ -414,12 +400,11 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('a device that could not report an exit code (killed shell, or an unframed fallback) reports exitCode null and truncated: false', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('partial output — the shell was killed before it could exit normally', null))
     const { handler } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'yes' } }))
 
@@ -432,7 +417,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('credential-bearing flags are redacted in the recorded shell.exec event, but not in what runs', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     let sentToDevice = ''
     const client = fakeAdbClient(async (_serial, cmd) => {
       sentToDevice = cmd
@@ -441,7 +426,6 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(
@@ -459,7 +443,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('cd to an existing path updates the cwd; the next command runs there', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async (_serial, cmd) => {
       if (cmd.includes('&& pwd')) return shellResult('/data/local/tmp', 0)
       return shellResult('ok', 0)
@@ -467,7 +451,6 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(
@@ -490,7 +473,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('a failed cd leaves the cwd unchanged (acceptance #9)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async (_serial, cmd) => {
       if (cmd.includes('&& pwd')) throw new AdbError('E_ADB_FAIL', 'No such file or directory')
       return shellResult('ok', 0)
@@ -498,7 +481,6 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(
@@ -513,9 +495,9 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     else throw new Error('no shell.echo for pwd')
   })
 
-  test('releasing the lease resets the cwd — the next holder starts at / (acceptance #11)', async () => {
+  test('a WS close resets the cwd — the next connection starts at / (acceptance #11)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async (_serial, cmd) => {
       if (cmd.includes('&& pwd')) return shellResult('/data/local/tmp', 0)
       return shellResult('ok', 0)
@@ -523,32 +505,31 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(
       a.ws,
       JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'cd /data/local/tmp' } }),
     )
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'lease.release', payload: { deviceId: 'dev-1' } }))
+    // A disconnect ends this connection's `command:*` marker and, with it, the emulated cwd
+    // (plan 205 §4.9's WS-close wiring) — no more `lease.release` message to send explicitly.
+    handler.handleClose(a.ws)
 
-    await acquireLease(handler, a.ws, 'dev-1')
-    a.sent.length = 0
+    const b = fakeConn()
     events.length = 0
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x2', payload: { deviceId: 'dev-1', cmd: 'pwd' } }))
-    const echo = a.sent.find((m) => m.type === 'shell.echo')
+    await handler.handleMessage(b.ws, JSON.stringify({ type: 'shell.exec', id: 'x2', payload: { deviceId: 'dev-1', cmd: 'pwd' } }))
+    const echo = b.sent.find((m) => m.type === 'shell.echo')
     if (echo?.type === 'shell.echo') expect(echo.payload.cwd).toBe('/')
     else throw new Error('no shell.echo for pwd')
   })
 
   test('a deadline (E_ADB_TIMEOUT) reports the coded error and the stream_suggested hint', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => {
       throw new AdbError('E_ADB_TIMEOUT', 'adb shell:logcat exceeded 15000ms')
     })
     const { handler, events } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     events.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'logcat' } }))
@@ -565,7 +546,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('every viewer of the device (not just the sender) receives shell.echo and shell.result', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, events } = setUpHandler(db, client)
     const holder = fakeConn()
@@ -574,7 +555,6 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     // Both "watch" the device the same way presence does: an open video stream.
     await handler.handleMessage(holder.ws, JSON.stringify({ type: 'stream.start', id: 's1', payload: { deviceId: 'dev-1' } }))
     await handler.handleMessage(viewer.ws, JSON.stringify({ type: 'stream.start', id: 's2', payload: { deviceId: 'dev-1' } }))
-    await acquireLease(handler, holder.ws, 'dev-1')
     viewer.sent.length = 0
 
     await handler.handleMessage(holder.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
@@ -585,7 +565,7 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('a viewer on the Terminal tab alone (no video open) still sees the transcript, via log.subscribe presence (acceptance #10)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler } = setUpHandler(db, client)
     const holder = fakeConn()
@@ -595,7 +575,6 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     // device's `input` event stream (plan 26 §3.8) — no video stream
     // required, unlike the Control tab.
     await handler.handleMessage(viewer.ws, JSON.stringify({ type: 'log.subscribe', payload: { deviceId: 'dev-1', streams: ['input'] } }))
-    await acquireLease(handler, holder.ws, 'dev-1')
     viewer.sent.length = 0
 
     await handler.handleMessage(holder.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
@@ -606,15 +585,14 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
 
   test('a bystander watching a DIFFERENT device sees nothing', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
-    seedDevice(db, 'dev-2', 'idle')
+    seedDevice(db, 'dev-1', 'online')
+    seedDevice(db, 'dev-2', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler } = setUpHandler(db, client)
     const holder = fakeConn()
     const bystander = fakeConn()
 
     await handler.handleMessage(bystander.ws, JSON.stringify({ type: 'log.subscribe', payload: { deviceId: 'dev-2', streams: ['input'] } }))
-    await acquireLease(handler, holder.ws, 'dev-1')
     bystander.sent.length = 0
 
     await handler.handleMessage(holder.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
@@ -622,33 +600,20 @@ describe('shell.exec accepted path (plan 26 acceptance #5-7, #9)', () => {
     expect(bystander.sent.some((m) => m.type === 'shell.echo' || m.type === 'shell.result')).toBe(false)
   })
 
-  test('a non-holder cannot type: sending shell.exec without the lease is refused even while another viewer watches', async () => {
-    const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
-    const client = fakeAdbClient(async () => shellResult('hi', 0))
-    const { handler, events } = setUpHandler(db, client)
-    const holder = fakeConn()
-    const viewer = fakeConn()
-
-    await acquireLease(handler, holder.ws, 'dev-1')
-    events.length = 0
-    await handler.handleMessage(viewer.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
-
-    const err = viewer.sent.find((m) => m.type === 'error')
-    expect(err).toBeDefined()
-    expect(events).toHaveLength(0)
-  })
+  // The old "a non-holder cannot type" refusal is gone (plan 205 §2.4, §4.4):
+  // `command` allows over a live `control` marker, so a second viewer typing
+  // without having "held" the device first now succeeds — proved above by
+  // "another client already controlling the device does not block shell.exec".
 })
 
 describe('shell.exec records through the command console history store (plan 93 §3.3, §3.17, step 93.5)', () => {
   test('an accepted, successful command becomes a one-member run with its exit code — one history, not two', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, commandRunStore } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
 
     const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
@@ -670,12 +635,11 @@ describe('shell.exec records through the command console history store (plan 93 
 
   test('a non-zero exit still records — a history that only remembers successes hides the command an operator is looking for', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('', 1, 'boom'))
     const { handler, commandRunStore } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'false' } }))
 
     const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
@@ -689,14 +653,13 @@ describe('shell.exec records through the command console history store (plan 93 
 
   test('a device-side failure (a thrown error, e.g. a deadline) records exitCode null with the real error text — property 1', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => {
       throw new AdbError('E_ADB_TIMEOUT', 'adb shell:sleep 99 exceeded 15000ms')
     })
     const { handler, commandRunStore } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'sleep 99' } }))
 
     const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
@@ -708,28 +671,28 @@ describe('shell.exec records through the command console history store (plan 93 
     expect(run?.members[0]?.status).toBe('failed')
   })
 
-  test('a refused command (no lease) writes NO history row, matching device_events (acceptance #5\'s own rule)', async () => {
+  test('a refused command (no device.shell permission) writes NO history row, matching device_events (acceptance #5\'s own rule)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
-    const { handler, commandRunStore } = setUpHandler(db, client)
+    const { handler, commandRunStore } = setUpHandler(db, client, { role: 'operator', shellMode: 'admin' })
     const a = fakeConn()
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
 
+    expect(a.sent.some((m) => m.type === 'error')).toBe(true)
     const page = commandRunStore.listPage({ createdBy: null, deviceId: null, q: null, status: null, cursor: null, limit: 10 })
     expect(page.items).toHaveLength(0)
   })
 
   test('createdBy is the acting user — "?mine=1" history is per-user', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, commandRunStore } = setUpHandler(db, client)
     const a = fakeConn()
     a.ws.data = { userId: 'user-alice' } as never
 
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
 
     const mine = commandRunStore.listPage({ createdBy: 'user-alice', deviceId: null, q: null, status: null, cursor: null, limit: 10 })
@@ -740,12 +703,11 @@ describe('shell.exec records through the command console history store (plan 93 
 
   test('recording adds a row, not a delay: durationMs on the wire matches the member row (no synchronous write on the hot path changes timing)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler, commandRunStore } = setUpHandler(db, client)
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
 
     const result = a.sent.find((m) => m.type === 'shell.result')
@@ -757,12 +719,11 @@ describe('shell.exec records through the command console history store (plan 93 
 
   test('when `commandRunStore` is not wired at all (an older host), shell.exec still runs and broadcasts normally', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const client = fakeAdbClient(async () => shellResult('hi', 0))
     const { handler } = setUpHandler(db, client, { withoutCommandRunStore: true })
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'shell.exec', id: 'x1', payload: { deviceId: 'dev-1', cmd: 'echo hi' } }))
 
     expect(a.sent.some((m) => m.type === 'error')).toBe(false)

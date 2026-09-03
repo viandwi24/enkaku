@@ -23,7 +23,6 @@ export const notifySend = defineCapability({
   input: NotifySendInputSchema,
   output: NotifySendOutputSchema,
   permission: 'notify.send',
-  lease: 'none',
   deadline: 10_000,
   effect: 'write',
   description:

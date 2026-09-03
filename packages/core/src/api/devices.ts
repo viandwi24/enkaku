@@ -40,7 +40,6 @@ import {
   validateEngineSelection,
   type DeviceSettings,
   type FarmDeviceDefaults,
-  type LeaseHolder,
   type Readiness,
   type ReconcileReport,
   type RegistryResponse,
@@ -63,13 +62,15 @@ import type { BatteryMonitor } from '../device/battery'
 import type { LabellingService } from '../device/labelling'
 import type { DeviceLifecycle } from '../device/lifecycle'
 import { staticReadinessFallback, type ReadinessManager } from '../device/readiness'
+import type { DeviceStateMachine } from '../device/state-machine'
 import type { EventRecorder } from '../events/recorder'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import type { JobStore } from '../queue/job-store'
 import { assignDevices, unassignDevices } from '../clusters/membership'
 import { admitDevice } from '../registry/admission'
 import type { CutoverManager } from '../registry/cutover'
-import { clusterRefFor, deriveConnection, loadClusterNames, loadDeclaredMedia, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
+import { clusterRefFor, deriveConnection, loadClusterNames, loadDeclaredMedia, rowToDeviceInfo, type DeviceActivityState, type FarmNetwork } from '../registry/device-registry'
 import { compactDeviceNumbers, formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber, releaseDeviceNumber, setDeviceNumber } from '../registry/device-number'
 import { loadDeviceTags, replaceDeviceTags } from '../registry/device-tags'
 import type { EndpointStore } from '../registry/endpoints'
@@ -166,7 +167,7 @@ const ERROR_STATUS: Record<string, number> = {
 /** `PUT /:id/readiness` (plan 43 §4.5). */
 const ReadinessSetBody = z.object({
   desired: ReadinessSchema,
-  /** The WS session id, when the caller is a browser tab that also holds a lease (plan 43 §3.4's "you hold the lease" check) — same pattern as plan 27/39's `clientId`. */
+  /** The WS session id, when the caller is a browser tab that also holds a control marker (plan 43 §3.4's "you are controlling it" check) — same pattern as plan 27/39's `clientId`. */
   clientId: z.string().min(1).optional(),
 })
 
@@ -193,14 +194,18 @@ export function createDeviceRoutes(deps: {
    */
   viewersOf?: (deviceId: string) => Viewer[]
   /**
-   * The lease-scoped adb endpoint (plan 27 §4.2, §4.3) — undefined when the
-   * adb subsystem is not up (orchestrator mode), same optionality as
-   * `record` above; the mounted routes handle a missing manager by refusing
-   * with `E_ADB_UNAVAILABLE` rather than the route simply not existing.
+   * The activity-gated adb endpoint (plan 27 §4.2, §4.3; plan 205 §4.9) —
+   * undefined when the adb subsystem is not up (orchestrator mode), same
+   * optionality as `record` above; the mounted routes handle a missing
+   * manager by refusing with `E_ADB_UNAVAILABLE` rather than the route
+   * simply not existing.
    */
   adbEndpoint?: {
     manager: AdbEndpointManager
-    leases: LeaseManager
+    activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
+    controlSettings: () => ControlPolicySettings
+    states: Pick<DeviceStateMachine, 'current'>
+    userLabel?: (userId: string | null) => string | null
     shellSettings: () => { mode: ShellMode; endpointEnabled: boolean }
   }
   /**
@@ -216,30 +221,18 @@ export function createDeviceRoutes(deps: {
    */
   readiness?: Pick<ReadinessManager, 'get' | 'set'>
   /**
-   * Who currently holds a device's manual lease (plan 71 §3.2, §4.4) — the
-   * lease manager's `getHolder`, threaded through so every `DeviceInfo` this
-   * router builds carries it (criterion 1). Required, unlike `readiness`:
-   * the lease manager exists in every mode this router is mounted in.
+   * A device's live activities plus its last-control tail (MVP 04 §1.1,
+   * §1.2, plan 205 §4.10) — the single accessor that replaced Plan 71's own
+   * holder field and Plan 91's secondary-operators field, threaded through so
+   * every `DeviceInfo` this router builds carries both (criterion 1).
+   * Required, unlike `readiness`: the activity registry exists in every mode
+   * this router is mounted in.
    */
-  heldByOf: (deviceId: string) => LeaseHolder | null
-  /**
-   * Who is currently assisting a device (plan 91 §3.2, §3.4 item 4, §4.4,
-   * §5 step 91.4) — reaches every `DeviceInfo` this router builds beside
-   * `heldBy`, the same "one accessor, no new plumbing" shape `heldByOf`
-   * already established (F25). `DeviceInfoSchema.assistedBy` defaults to
-   * `[]`, so `rowToDeviceInfo` (`registry/device-registry.ts`) already
-   * produces a well-formed `DeviceInfo` without this — this dep is what
-   * overrides that default with the real, live answer. Optional so an
-   * existing test harness that predates this plan (and orchestrator mode,
-   * which has no local co-control manager) keeps compiling and reading
-   * unchanged: omitted means "nobody is assisting anything", which is also
-   * correct in both of those cases.
-   */
-  assistedByOf?: (deviceId: string) => LeaseHolder[]
+  activitiesOf: (deviceId: string) => DeviceActivityState
   /**
    * Device lifecycle — Forget and Block (plan 47 §4.3, §4.4). Required
    * (unlike `adbEndpoint`/`transfer`/`readiness` above): it depends only on
-   * `db` and the lease manager, both of which exist in every mode,
+   * `db` and the activity registry, both of which exist in every mode,
    * including the orchestrator (constructed before that mode's early return
    * in daemon.ts).
    */
@@ -270,17 +263,23 @@ export function createDeviceRoutes(deps: {
    */
   sweeper?: { sweep(opts?: { expect?: string[] }): Promise<SweepReport> }
   /**
-   * Who currently holds each device's manual lease, and the means to force
-   * it free (plan 88 §3.7, §4.6, §5 step 88.4: "a successful disconnect ...
-   * releases the manual lease first"). Required, like `heldByOf` — the lease
-   * manager exists in every mode this router is mounted in.
+   * Ends every control/command activity on a device (plan 88 §3.7, §4.6, §5
+   * step 88.4: "a successful disconnect ... ends every control marker
+   * first"; reworded by plan 205 §4.9). Required, like `activitiesOf` — the
+   * activity registry exists in every mode this router is mounted in.
    */
-  leases: LeaseManager
+  activities: Pick<ActivityRegistry, 'endWhere'>
+  /**
+   * Whether a `job`/`workflow-job`/`install` activity is currently live on a
+   * device (plan 205 §4.9) — replaces the old `status === 'busy'` read.
+   * Required, like `activities` above — backed by the same registry.
+   */
+  runningJobOf: (deviceId: string) => boolean
   /**
    * The running-job guard for `POST /:id/connection/disconnect` (plan 88
    * §4.6, §5 step 88.4: "a device with a running job refuses unless force,
-   * and the error lists the jobs"). Required, like `leases` above — the job
-   * store exists in every mode, including the orchestrator.
+   * and the error lists the jobs"). Required, like `activities` above — the
+   * job store exists in every mode, including the orchestrator.
    */
   jobStore: Pick<JobStore, 'list'>
   /**
@@ -289,7 +288,7 @@ export function createDeviceRoutes(deps: {
    * built and wired into `daemon.ts` — NOT a second reconnect path: its own
    * `reconnect`/`disconnect` already run the ladder and the ordinary USB
    * refusal; this router adds the coded HTTP refusal, the running-job guard,
-   * and the session/lease teardown ordering on top. Both accessors are
+   * and the session/activity teardown ordering on top. Both accessors are
    * forward-refs (`daemon.ts` assigns `reconnector`/`sessions` later in boot
    * than this router is built, the same reason `rescan`/`onAdmitted` above
    * are functions rather than values) and both are `undefined` in
@@ -797,7 +796,7 @@ export function createDeviceRoutes(deps: {
     let rotation: RotationApplyResult | null = null
     if (patch.rotation !== undefined) {
       const mode = patch.rotation
-      if (row.status === 'busy') {
+      if (deps.runningJobOf(row.id)) {
         rotation = { mode, state: 'busy', reason: 'a job is running on this device — the setting is saved and the new rotation applies to the job’s next session' }
       } else {
         try {
@@ -930,14 +929,11 @@ export function createDeviceRoutes(deps: {
         clusterRefFor(db, row.clusterId),
         null,
         readinessOf(row),
-        deps.heldByOf(row.id),
+        deps.activitiesOf(row.id),
         farmNetworks(),
         declaredMedia(),
         lookupDeviceNumber(db, row.stableId),
       ),
-      // Plan 91 §3.4 item 4, §4.4, §5 step 91.4 — `assistedBy` alongside
-      // `heldBy`, everywhere `heldBy` is populated in this router.
-      assistedBy: deps.assistedByOf?.(id) ?? [],
     }
   }
 
@@ -980,13 +976,11 @@ export function createDeviceRoutes(deps: {
         r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null,
         null,
         readinessOf(r),
-        deps.heldByOf(r.id),
+        deps.activitiesOf(r.id),
         networks,
         media,
         numbers.get(r.stableId) ?? null,
       ),
-      // Plan 91 §3.4 item 4, §4.4, §5 step 91.4 — same as `infoWithTags` above.
-      assistedBy: deps.assistedByOf?.(r.id) ?? [],
     }))
 
     // `/api/devices` is the odd one (plan 30 §4.2): sorted in memory, not
@@ -1052,13 +1046,11 @@ export function createDeviceRoutes(deps: {
         clusterRefFor(db, row.clusterId),
         null,
         readinessOf(row),
-        deps.heldByOf(row.id),
+        deps.activitiesOf(row.id),
         farmNetworks(),
         declaredMedia(),
         lookupDeviceNumber(db, row.stableId),
       ),
-      // Plan 91 §3.4 item 4, §4.4, §5 step 91.4 — same as `infoWithTags` above.
-      assistedBy: deps.assistedByOf?.(row.id) ?? [],
       transport: row.transport,
       display: row.display,
       input: row.input,
@@ -1111,7 +1103,7 @@ export function createDeviceRoutes(deps: {
    * here, so this route refuses exactly the same way the WS
    * `device.readiness.set` message does (acceptance #7). `device.view` is
    * the permission both Wake and Sleep require per the plan's table; the
-   * finer distinction (job running, another viewer/lease holder) is
+   * finer distinction (job running, another viewer/control holder) is
    * `readiness.set`'s own job.
    */
   app.put('/:id/readiness', requirePermission('device.view'), async (c) => {
@@ -1152,7 +1144,7 @@ export function createDeviceRoutes(deps: {
     // check, and a PATCH that merely repeats the current owner is a no-op,
     // not a reassignment. Without this, any authenticated operator could
     // set a device's `ownerId` to themselves or anyone else, silently — the
-    // exact thing `canUseDevice` otherwise gates lease acquisition, job
+    // exact thing `canUseDevice` otherwise gates control admission, job
     // enqueue, and the adb endpoint on.
     const ownerChanged = body.data.ownerId !== undefined && body.data.ownerId !== row.ownerId
     if (ownerChanged && (!user || !can(user.role, 'device.owner.set'))) {
@@ -1231,10 +1223,12 @@ export function createDeviceRoutes(deps: {
     // otherwise reaches a device only on its NEXT cold-start (F18's exact
     // class: a setting saved, validated, rendered, and never read). Restart
     // this device's OPEN session at whatever quality it is already running,
-    // never mid-job (spec §10.1) — `row.status` here is the value read
-    // BEFORE this PATCH (the `settings` blob never changes `status`), so a
-    // running job is refused the same way `reprofile`'s rule 4 refuses one.
-    if (changedKeys.includes('video') && row.status !== 'busy') {
+    // never mid-job (spec §10.1) — `runningJobOf` reads the activity
+    // registry fresh, so a running job is refused the same way
+    // `reprofile`'s rule 4 refuses one (plan 205 §4.9 replaces the old
+    // `row.status !== 'busy'` read: `devices.status` never becomes `busy`
+    // any more).
+    if (changedKeys.includes('video') && !deps.runningJobOf(row.id)) {
       const sessionsApi = deps.connection?.sessions?.()
       const current = sessionsApi?.get(row.id)
       if (current) void sessionsApi?.restartAt?.(row.id, current.quality, 'applying new video settings')
@@ -1259,7 +1253,7 @@ export function createDeviceRoutes(deps: {
     let rotationResult: RotationApplyResult | undefined
     if (rotationChange) {
       const mode = rotationChange.to
-      if (row.status === 'busy') {
+      if (deps.runningJobOf(row.id)) {
         rotationResult = { mode, state: 'busy', reason: 'a job is running on this device — the new rotation applies to its next session' }
       } else {
         const outcome = (await deps.connection?.sessions?.()?.setRotation?.(row.id, mode)) ?? null
@@ -1399,8 +1393,8 @@ export function createDeviceRoutes(deps: {
    *    `force` — bypassing `EnkakuError`/`ERROR_STATUS` here (like
    *    `E_ADB_BUSY_FARM` in `tools/routes.ts`) because the refusal carries a
    *    structured `jobs` list alongside the coded message, not just prose.
-   * 3. Only once both guards pass: the session closes and the manual lease
-   *    is force-released BEFORE the transport actually drops, so an operator
+   * 3. Only once both guards pass: the session closes and every control/
+   *    command activity is ended BEFORE the transport actually drops, so an operator
    *    who asked for this sees it as their own action, not the device dying
    *    out from under them.
    */
@@ -1439,11 +1433,12 @@ export function createDeviceRoutes(deps: {
       }
     }
 
-    // Close first, release second, drop the transport LAST (plan 88 §4.6's
-    // ordering) — a device with no session and no lease disconnecting reads
-    // as "Enkaku did this on purpose", not as an unexplained drop.
+    // Close first, end second, drop the transport LAST (plan 88 §4.6's
+    // ordering, reworded by plan 205 §4.9) — a device with no session and
+    // no live activity disconnecting reads as "Enkaku did this on purpose",
+    // not as an unexplained drop.
     await deps.connection?.sessions?.()?.closeDevice(row.id)
-    deps.leases.releaseDevice?.(row.id, 'disconnected')
+    deps.activities.endWhere((deviceId, activity) => deviceId === row.id && (activity.kind === 'control' || activity.kind === 'command'))
 
     const outcome = await reconnector.disconnect(row.stableId)
     deps.record?.({
@@ -1708,7 +1703,7 @@ export function createDeviceRoutes(deps: {
 
   /**
    * `DELETE /:id?deleteHistory=true|false` (plan 47 §4.4) — Forget. Every
-   * refusal in §3.5 (busy, an active manual lease, still connected) is
+   * refusal in §3.5 (busy, an active control marker, still connected) is
    * enforced inside `lifecycle.forget` itself, server-authoritative exactly
    * like every other mutation here (spec §10.1, acceptance #12): calling
    * this directly is refused exactly as the Studio dialog is.
