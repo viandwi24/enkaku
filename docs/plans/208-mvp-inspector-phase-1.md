@@ -4,6 +4,7 @@
 > Depends on: plan 206 (always-on sessions: `DeviceSession.prewarmInspector()` and the builder's `INSPECTOR_PREWARM_DELAY_MS` call after the first frame; this plan replaces the no-op body 206 ships), plan 205 (device activities: nothing is consumed; the inspector is deliberately not an activity, plan 206 §3.3, and its progress rides on the existing `device.inspector.status` message), plan 200 (rules, format, references R1..R8).
 > Spec references: `docs/mvp/02-inspector-readiness.md` (entire; §2.1 to §2.7 are the root causes, §4 phase 1 is the scope and the exit criteria), `docs/mvp/13-removal-register.md` A.9 (the two rows this plan owns; the third row, the `instrumentation` lock conflict, is plan 222's), `docs/mvp/16-consolidated-plan.md` §1 "Mechanisms", §2 Inspector row, §3 wave 1. `docs/mvp/10-guest-agent.md` §1.1 is read for §9 Q4 only. External facts: R5 (plan 200 §5). `docs/spec.md` §7.4, §7.9 and §16 are superseded by `docs/mvp/16` for this series (plan 200 header).
 > Ships: packages/drivers/src/inspector/ui-server/lifecycle.ts
+> **Testing override, read before §5 and §7:** §12 supersedes every Studio and `@enkaku/ui` test named anywhere below. Create no test and run no test under `packages/studio` or `packages/ui`; delete a surviving one that breaks and list it in §11. Verification for UI is `bun run typecheck`, the design-token and route scripts, and the owner smoke.
 
 ---
 

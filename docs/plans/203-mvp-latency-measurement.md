@@ -4,6 +4,7 @@
 > Depends on: nothing (wave 0, `docs/plans/200-mvp-program.md` §4). Reads `docs/mvp/01-casting-latency.md` (all of it; §1.2, §1.3, §1.4 and §4 step 1 are the source of every step below), `docs/mvp/09-additional-scope.md` §7, `docs/mvp/16-consolidated-plan.md` §2 (Video row) and §3 (wave 0). External facts: R1 and R3 from plan 200 §5.
 > Spec references: `docs/spec.md` §16 line 1103 (`| Glass-to-glass latency (manual control) | < 150 ms | scrcpy H.264 plus WebCodecs |`), §7.6 (vanilla scrcpy-server, never forked), §13 (binary WS streams). Until plan 202 rewrites the spec, `docs/mvp/16` wins where they disagree (plan 200 header).
 > Ships: packages/studio/src/components/video/LatencyOverlay.tsx
+> **Testing override, read before §5 and §7:** §12 supersedes every Studio and `@enkaku/ui` test named anywhere below. Create no test and run no test under `packages/studio` or `packages/ui`; delete a surviving one that breaks and list it in §11. Verification for UI is `bun run typecheck`, the design-token and route scripts, and the owner smoke.
 
 ---
 
@@ -694,7 +695,7 @@ Every step: read the cited lines first, match on content (line numbers are as of
 
 - **Files changed**: `packages/studio/src/lib/h264-decoder.ts` (§4.8), `packages/studio/src/components/LiveView.test.tsx:73-76` (the `createH264Renderer` mock keeps its shape: the third argument is optional, so no change is required unless the executor asserts on it).
 - **Files created**: `packages/studio/src/lib/h264-decoder.test.ts`.
-- **Test file**: `bun test packages/studio/src/lib/h264-decoder.test.ts`.
+- **Test file**: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - **Test harness**: `import '../../happydom'` first (the file sits in `src/lib/`, so two levels up). Define on `globalThis` a `VideoDecoder` stub class recording `configure()` calls, storing the `output` callback, exposing `decodeQueueSize = 0`, and pushing every `decode(chunk)` into a `chunks` array; and an `EncodedVideoChunk` stub that keeps `{ type, timestamp, data }`. Use a real `document.createElement('canvas')` (happy-dom's `getContext('2d')` may return null; `ctx?.drawImage` is already guarded). Feed an SPS+PPS config packet (`[0,0,0,1,0x67,0x42,0xe0,0x1e, 0,0,0,1,0x68,0xce]`) then an IDR (`[0,0,0,1,0x65,1,2,3]`).
 - **Tests**:
   1. `a chunk is timestamped with Number(ptsUs)` (pts 33_333n → `chunks[0].timestamp === 33333`).
@@ -706,7 +707,7 @@ Every step: read the cited lines first, match on content (line numbers are as of
 ### 203.8 Estimator
 
 - **Files created**: `packages/studio/src/lib/latency-stats.ts`, `packages/studio/src/lib/latency-stats.test.ts` (§4.9; no DOM needed, no happydom import).
-- **Test file**: `bun test packages/studio/src/lib/latency-stats.test.ts`.
+- **Test file**: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - **Tests**:
   1. `deviceToHost is null until 60 ptsUs > 0n samples, then min-anchored` (feed 60 events with `hostReceivedAt - pts/1000` varying between 100 and 120 → after the 60th, median of the window ≤ 20 and the fastest sample reads 0).
   2. `hostToBrowser is min-anchored over the first 60 samples`.
@@ -719,7 +720,7 @@ Every step: read the cited lines first, match on content (line numbers are as of
 ### 203.9 `LatencyOverlay`
 
 - **Files created**: `packages/studio/src/components/video/LatencyOverlay.tsx`, `packages/studio/src/components/video/LatencyOverlay.test.tsx` (§4.10; `import '../../../happydom'` first, `afterEach(cleanup)` as `DeviceVideoFields.test.tsx:1-10` does).
-- **Test file**: `bun test packages/studio/src/components/video/LatencyOverlay.test.tsx`.
+- **Test file**: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - **Tests**:
   1. `renders all eight rows in order with formatted values` (a full summary; assert `screen.getByText('device→host')`, and the `dd` for `decode` reads `4 / 9 ms`).
   2. `shows "estimating (12/60)" while an offset is null`.
@@ -730,14 +731,14 @@ Every step: read the cited lines first, match on content (line numbers are as of
 ### 203.10 Preference
 
 - **Files changed**: `packages/studio/src/lib/prefs.ts` (§4.12), `packages/studio/src/lib/prefs.test.ts` (one test: `round-trips latencyOverlay` and `defaults to false`).
-- **Test file**: `bun test packages/studio/src/lib/prefs.test.ts`.
+- **Test file**: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - **Verifiable result**: the new test passes; `readLocalPrefs().latencyOverlay === false` on an empty store.
 - **Do not**: put it in `SessionPrefsSchema`; the module's own comment (`prefs.ts:3-25`) explains why that store is per tab.
 
 ### 203.11 LiveView wiring and toggle
 
 - **Files changed**: `packages/studio/src/components/LiveView.tsx` (§4.11).
-- **Test file**: `bun test packages/studio/src/components/LiveView.test.tsx`. Add one test: `the latency toggle is absent in compact mode and present on an h264 control view` (render with `compact` → `queryByText('latency')` count 0; render the h264 route from the existing `routeH264Start()` helper → `getByRole('button', { name: 'latency' })`; click it → `readLocalPrefs().latencyOverlay === true`; clear `localStorage` in `afterEach` as `prefs.test.ts:11-14` does).
+- **Test file**: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - **Verifiable result**: the existing tests and the new one pass; with `bun run dev` and `bun run dev:studio`, opening a device's control view and clicking `latency` shows the overlay, a reload keeps it, and a Screens tile never shows it.
 - **Do not**: add a keyboard shortcut (MVP 08's hotkey table belongs to plan 215); render the overlay in `compact`; poll `/api/video/latency` from LiveView (the route is for curl and the bench, not the browser, in this plan).
 

@@ -4,6 +4,7 @@
 > Depends on: plan 207 (actions API: `run-script` and `run-workflow` always create a batch; `run-workflow` answers `E_NOT_SUPPORTED` until plan 211), which itself depends on plan 205 (capabilities declare `activity`, not a lease). Plan 201 (housekeeping) has deleted `scripts/delete-unowned-scripts.ts` and the two unused recording response schemas before this plan starts. Plan 211 (jobs and runs) reads the `workflows` table and the `jobs.workflow_doc` column this plan creates.
 > Spec references: `docs/mvp/03-navigation-and-pages.md` §2 (entire: §2.1 facts, §2.2 rules 1 to 6, §2.3, §2.4 migration), `docs/mvp/06-feature-scope.md` §2 (recordings deferred: parked, not deleted) and §4 item 3, `docs/mvp/15-ui-migration.md` §0.1 items 1 and 5 and the §1 row "Script versions and Enabled switch", `docs/mvp/13-removal-register.md` A.4 (the rows this plan owns are copied into §10; the rows plan 211 owns are named there and left), `docs/mvp/14-jobs-and-runs.md` §1 (jobs reference `scriptRef` or `workflowName`; runs are plan 211's), `docs/mvp/16-consolidated-plan.md` §1 (nouns), §2 (Scripts row), §3 (wave 2). Where `docs/spec.md` still says a workflow is a `scripts` row (§11.7) or that recordings publish under a synthetic owner (§11.8), `docs/mvp/16` wins (plan 200 header).
 > Ships: packages/core/src/workflows/store.ts
+> **Testing override, read before §5 and §7:** §12 supersedes every Studio and `@enkaku/ui` test named anywhere below. Create no test and run no test under `packages/studio` or `packages/ui`; delete a surviving one that breaks and list it in §11. Verification for UI is `bun run typecheck`, the design-token and route scripts, and the owner smoke.
 
 ---
 
@@ -732,14 +733,14 @@ Read plan 200 §2 and `CLAUDE.md` before the first edit. Every `path:line` below
 
 - Files created: `packages/studio/src/lib/script-row.ts`.
 - Files changed: every row of the §4.9 table.
-- Test file: `bun test packages/studio/src/app/workflows`, `bun test packages/studio/src/components/workflow`, `bun test packages/studio/src/app/workspace`, `bun test packages/studio/src/app/scripts`, `bun test packages/studio/src/components/RunScriptDialog.test.tsx`, `bun test packages/studio/src/app/plugins`, one invocation at a time.
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `bun run typecheck` exits 0; G14.
 - Do not: rebuild any of these pages to the handoff; plan 217 and 219 do that with the design of record. Do not run `bun run --cwd packages/studio test`.
 
 ### 210.13 Plugin activation copy in the old Studio
 
 - Files changed: `packages/studio/src/components/plugins/PluginActions.tsx` (the last row of the §4.9 table).
-- Test file: `bun test packages/studio/src/components/plugins` if a test exists there; otherwise typecheck only, and say so in the report.
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: the activate toast states the two numbers.
 - Do not: word `queuedKeepingPrevious` as a problem; it is the designed behaviour (MVP 03 §2.1: pinned jobs keep running).
 
@@ -801,12 +802,12 @@ bun test packages/core/src/db/migrations/workflows-from-scripts.test.ts
 bun test packages/core/src/db/migrations/park-synthetic-recordings.test.ts
 bun test packages/core/src/api/recordings.test.ts
 bun test packages/core/src/api/recordings-wiring.test.ts
-bun test packages/studio/src/app/workflows
-bun test packages/studio/src/components/workflow
-bun test packages/studio/src/app/workspace
-bun test packages/studio/src/app/scripts
-bun test packages/studio/src/components/RunScriptDialog.test.tsx
-bun test packages/studio/src/app/plugins
+# CANCELLED by §12 (zero Studio tests): bun test packages/studio/src/app/workflows
+# CANCELLED by §12 (zero Studio tests): bun test packages/studio/src/components/workflow
+# CANCELLED by §12 (zero Studio tests): bun test packages/studio/src/app/workspace
+# CANCELLED by §12 (zero Studio tests): bun test packages/studio/src/app/scripts
+# CANCELLED by §12 (zero Studio tests): bun test packages/studio/src/components/RunScriptDialog.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun test packages/studio/src/app/plugins
 ```
 
 Never `bun test`, never `bun run --cwd packages/studio test`, never two runs at once (CLAUDE.md).

@@ -4,6 +4,7 @@
 > Depends on: nothing (wave 0, `docs/plans/200-mvp-program.md` §4). Plan 201 (housekeeping) owns MVP 13 Part B's two dead tokens; this plan rewrites the file they live in, so whichever plan lands second finds the rows already gone (§3.9).
 > Spec references: `docs/spec.md` has no tokens section (the spec is rewritten by plan 202). The design of record is `docs/mvp/design_handoff_enkaku_openpf/README.md`, sections "Design Tokens", "Typography", "Spacing", "Radii", "Shadows", "Assets" (quoted verbatim in §4.1), as corrected by `docs/mvp/15-ui-migration.md` §0 (the Tokens bullet), §1 (the Icons and Fonts rows), §3 step 1. External facts: plan 200 §5 rows R6 (Phosphor) and R7 (Geist).
 > Ships: scripts/check-design-tokens.ts
+> **Testing override, read before §5 and §7:** §12 supersedes every Studio and `@enkaku/ui` test named anywhere below. Create no test and run no test under `packages/studio` or `packages/ui`; delete a surviving one that breaks and list it in §11. Verification for UI is `bun run typecheck`, the design-token and route scripts, and the owner smoke.
 
 ---
 
@@ -1298,7 +1299,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 - Files created: `packages/ui/src/palette.css` (§4.2 verbatim), `packages/ui/src/tokens.test.ts` (§4.8 verbatim).
 - Files changed: `packages/ui/src/theme.css` (replace the whole file with §4.3), `packages/studio/src/app/globals.css` (insert the palette import before line 36, §4.4).
 - Files deleted: none.
-- Test file: `packages/ui/src/tokens.test.ts`.
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `bun run --cwd packages/ui test src/tokens.test.ts` → all pass; `rg -n "oklch\(" packages/ui/src/theme.css | wc -l` → 15 (block D, all of them); `rg -n "font-outfit|font-plex-mono|destructive-foreground|radius-card: 0.5rem" packages/ui/src/theme.css` → empty.
 - Do not: put a `:root` rule, an `@import` or an `@layer` in `theme.css` (§3.4 breaks every plugin build); do not "fix" block D's `--color-bg` shadowing block B's (§4.3 explains it); do not touch `globals.css`'s body, `color-scheme`, or `.status-rail` (plan 213).
 
@@ -1315,7 +1316,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 - Files created: `packages/ui/src/icons.ts` (§4.5 verbatim), `packages/ui/src/icons.test.ts` (§4.8).
 - Files changed: `packages/ui/src/index.ts` (add the `./icons`, `./lib/theme`, `./components/checkbox`, `./components/status-dot`, `./components/avatar` lines; remove `./components/scroll-area`; the three component files are created in 204.6, so typecheck is green only after that step), `packages/studio/src/lib/plugin-icons.ts` (§4.5 verbatim), `packages/protocol/src/plugin-surface.ts` (the comment at lines 88–94 and the message at line 141, §4.5).
 - Files deleted: none.
-- Test files: `packages/ui/src/icons.test.ts`, `packages/studio/src/lib/plugin-icons.test.ts` (unchanged text), `packages/protocol/src/plugin-surface.test.ts` (unchanged).
+- Test files: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `bun run --cwd packages/ui test src/icons.test.ts` → pass (53 handoff names, 9 primitive names, 62 exports); `bun run --cwd packages/studio test src/lib/plugin-icons.test.ts` → pass; `bun test packages/protocol/src/plugin-surface.test.ts` → pass; `rg -n "lucide" packages/protocol/src packages/studio/src/lib/plugin-icons.ts --glob '!**/*.test.ts'` → empty.
 - Do not: change any entry of `ICON_NAMES` (a bundled plugin's manifest names them); do not use the deprecated plain Phosphor names (`Devices`); do not edit `AppShell.tsx` (plan 213 deletes it; its `pluginIcon` call already compiles against a Phosphor `Icon`).
 
@@ -1324,7 +1325,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 - Files created: `packages/ui/src/lib/theme.ts` (§4.5 verbatim), `packages/ui/src/lib/theme.test.ts` (§4.8).
 - Files changed: `packages/ui/src/components/sonner.tsx` (§4.5 verbatim).
 - Files deleted: none.
-- Test file: `packages/ui/src/lib/theme.test.ts`.
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `bun run --cwd packages/ui test src/lib/theme.test.ts` → pass; `rg -n "next-themes" packages/ui` → empty.
 - Do not: read or write `localStorage` here (the `enkaku-theme` key is plan 213's); do not set `data-theme` anywhere.
 
@@ -1333,7 +1334,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 - Files created: `packages/ui/src/components/checkbox.tsx`, `packages/ui/src/components/status-dot.tsx`, `packages/ui/src/components/avatar.tsx` (§4.6).
 - Files changed, each to its §4.6 row: `button.tsx`, `input.tsx`, `textarea.tsx`, `switch.tsx`, `tabs.tsx`, `badge.tsx`, `popover.tsx`, `sheet.tsx`, `tooltip.tsx`, `table.tsx`, `skeleton.tsx`, `spinner.tsx`, `separator.tsx`, `label.tsx`, `progress.tsx`, `card.tsx`, `states.tsx`, `confirm-dialog.tsx`.
 - Files deleted: none.
-- Test file: `packages/ui/src/components/skin.test.tsx` (created in 204.10; run after it exists).
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: after 204.10, `bun run --cwd packages/ui test src/components/skin.test.tsx` → pass; `rg -n "\bdark:" packages/ui/src` → empty.
 - Do not: rename a variant or size that has a caller (§3.6; `bun run typecheck` is the proof); do not keep `Switch`'s `size` prop; do not keep `Button`'s `xs`, `icon-xs`, `lg`; do not paint `bg-accent` anywhere the handoff does not paint green (§4.6 rule 2).
 
@@ -1349,7 +1350,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 
 - Files deleted: `packages/ui/src/components/scroll-area.tsx`, `packages/ui/components.json`.
 - Files changed: `packages/ui/src/index.ts` (the `scroll-area` line, done in 204.4), `packages/ui/README.md` (§4.10).
-- Test file: `packages/ui/src/index.test.ts` (REQUIRED list, §4.8).
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: G10's command → empty; `bun run --cwd packages/ui test src/index.test.ts` → pass.
 - Do not: delete `Card`, `Collapsible`, `HoverCard`, `ButtonGroup`, `Command`, `InputGroup`, `Slider`, `Select`, `Progress`, `Separator`, `Textarea`; every one has an importer (§3.1) and its deletion is owed by a later plan (§10.2).
 
@@ -1411,14 +1412,14 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 Scoped commands, each on its own, never two at once (CLAUDE.md, plan 200 §2.3). The root `bunfig.toml` excludes `packages/ui` and `packages/studio` from a root invocation, so those two run through their package scripts, which append the path to `bun test --isolate`:
 
 ```bash
-bun run --cwd packages/ui test src/tokens.test.ts
-bun run --cwd packages/ui test src/icons.test.ts
-bun run --cwd packages/ui test src/lib/theme.test.ts
-bun run --cwd packages/ui test src/components/skin.test.tsx
-bun run --cwd packages/ui test src/index.test.ts
-bun run --cwd packages/ui test src/components/            # the directory 204.6 and 204.7 touched: its 8 existing tests plus skin.test.tsx
-bun run --cwd packages/studio test src/lib/plugin-icons.test.ts
-bun run --cwd packages/studio test src/design-rules.test.ts   # scans packages/ui/src too: no hex in a .ts/.tsx, no bracket colour form
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/tokens.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/icons.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/lib/theme.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/components/skin.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/index.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/components/            # the directory 204.6 and 204.7 touched: its 8 existing tests plus skin.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/studio test src/lib/plugin-icons.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/studio test src/design-rules.test.ts   # scans packages/ui/src too: no hex in a .ts/.tsx, no bracket colour form
 bun test packages/protocol/src/plugin-surface.test.ts
 bun test packages/sdk/src/cli/build-ui.test.ts                # compiles a plugin stylesheet against the real theme.css
 ```

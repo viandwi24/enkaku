@@ -307,3 +307,22 @@ Three things that make that number optimistic, in order of how likely they are t
 3. **Without a lab device (§1 of `docs/mvp/DECISIONS-PENDING.md`), the `owner` rows do not close.** That does not lengthen the schedule, but it means stage 8 finishes with the product's headline numbers unmeasured.
 
 **Critical path:** 201 → 205 → 207 → 210 → 211 → 212 → 219 → 224, eight plans, about 40 of the 55 days. Shortening anything off that path buys nothing.
+
+### 8.5 The round gate: reconcile the downstream plans before the next round starts
+
+Added 2026-09-03 at the CEO's request, after round R1's first finished plan produced three facts that contradicted plans not yet run.
+
+A plan is written against the codebase as it was on the day it was written. An executed plan changes that codebase, and an executor's §11 report is the only place the difference is recorded. **Between rounds, before any executor for the next round is launched, the programme owner reconciles the plans that have not run yet.** This is not optional cleanup; a plan that contradicts the tree it will run against is how a Sonnet-class executor produces confident, wrong work.
+
+The gate, in order:
+
+1. **Read every §11 finished in the round.** Four fields carry the reconciliation load: *Discrepancies between plan and code*, *Observed, not done*, *Open questions hit*, and the §10 proofs that did not come back empty.
+2. **For each discrepancy, find every unrun plan that repeats the same wrong assumption** and amend it. Amend, do not rewrite: append a dated `## 12. Amendment` (or a further one) stating what changed and which of the plan's own steps, §0 rows or §7 commands it supersedes.
+3. **Fix the contradiction where the executor will actually read it, not only in the amendment.** An amendment at the end of a 1 500-line document does not stop a step-by-step executor from following §5 or §7. Strike the superseded line in place, or put a banner in the header block above §0.
+4. **Re-run the cheap gates on the reconciled documents**: `bash scripts/check-plan-status.sh`, and a grep for whatever the round's findings made forbidden.
+5. **Record the reconciliation in the round's own commit message**, so the next reader can see which plans moved and why.
+
+Two classes of finding recur and are worth naming, because both were found this way rather than by reading:
+
+- **A `Ships:` path that already exists.** `check-plan-status.sh` fails a `draft` plan whose artefact is on disk (§3.0.1). Two plans shipped that defect before it was caught.
+- **An amendment that contradicts its own document's body.** Ten plans carry a §12 testing amendment; nine of them still named Studio tests in §5 or §7, which a literal executor would have created. Fixed on 2026-09-03 by banner plus in-place strike, and this is why step 3 above exists.

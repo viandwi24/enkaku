@@ -4,6 +4,7 @@
 > Depends on: plan 200 (the program: rules, format, references R1..R8), plan 205 (device activities: this plan emits `prep` and `wake` activities through the activity port §4.2 defines; if plan 205 has not landed, the port is wired to the no-op implementation this plan ships and §9 Q1 records it), plan 201 (housekeeping) for the tree it starts from.
 > Spec references: `docs/mvp/11-always-on.md` (entire; the model), `docs/mvp/01-casting-latency.md` §1.1 and §1.3 (join priming, backpressure), `docs/mvp/02-inspector-readiness.md` §2.1 (the measured reason for the lazy inspector start), `docs/mvp/13-removal-register.md` A.3 (the rows §10 copies), `docs/mvp/16-consolidated-plan.md` §1 "Mechanisms" and §3 wave 1 acceptance ("no Waking anywhere; 20 devices warm within 60 s of a core restart"). `docs/spec.md` §7 and §10.1 are superseded by `docs/mvp/16` for this series (plan 200 header).
 > Ships: packages/session/src/always-on.ts
+> **Testing override, read before §5 and §7:** §12 supersedes every Studio and `@enkaku/ui` test named anywhere below. Create no test and run no test under `packages/studio` or `packages/ui`; delete a surviving one that breaks and list it in §11. Verification for UI is `bun run typecheck`, the design-token and route scripts, and the owner smoke.
 
 ---
 
@@ -706,7 +707,7 @@ The `ENKAKU_TEST_DEVICE=1` gate (`:146`) stays in front of this mode.
 ### 206.9 Studio: `LiveView.tsx` minimal change and fixtures
 
 - Files changed: `packages/studio/src/components/LiveView.tsx` (§4.9), `packages/studio/src/components/LiveView.test.tsx` (delete the wake-panel and `session.progress` tests; add `a stream.start refused with E_SESSION_PREPARING shows the sentence and retries after 3 s`; `a stream.started with substitute wall paints without any banner`), `packages/studio/src/components/settings/farmSections.ts` (keys stay `['session', 'wall', 'readiness', 'display']`; delete the comment lines `:85-97` that explain `maxIdleSessions`), `packages/studio/src/app/settings/page.test.tsx:167`, `packages/studio/src/components/video/FarmVideoFields.test.tsx:29`, `packages/studio/src/components/video/useAdbVideoStatsPoll.test.ts:32`, `packages/studio/src/components/wall/Wall.test.tsx:186` (fixtures: `maxConcurrentBuilds: 2` → `buildsPerUsbRoot: 4, farmCeiling: 16`), `packages/studio/src/components/wall/useLiveSet.ts:48` and `packages/studio/src/components/wall/Wall.tsx:19` (comments no longer name a deleted setting)
-- Test file: `packages/studio/src/components/LiveView.test.tsx`
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `bun test packages/studio/src/components/LiveView.test.tsx` green (one file, never the Studio suite); `rg -n "Waking|WAKE_OFFER_AFTER_SEC|PHASE_STEPS|PHASE_HEADLINE|PHASE_COMPACT_LABEL|session\.progress|control_session_unavailable" packages/studio/src` empty
 - Do not: build the activity strip or the sharpness readout here (plans 214, 215). Do not keep `STALE_AFTER_SEC`'s tooltip wording about "the phone went to sleep" if it now contradicts always-on: change the sentence to `The picture is the last frame received. scrcpy sends nothing while the screen is static or off.`
 
@@ -752,7 +753,7 @@ bun test packages/core/src/db/migration-watermark.test.ts
 bun test packages/core/src/server/ws-handlers-video.test.ts
 bun test packages/core/src/api/video.test.ts
 bun test packages/core/src/api/adb-stats.test.ts
-bun test packages/studio/src/components/LiveView.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun test packages/studio/src/components/LiveView.test.tsx
 bun run typecheck
 ```
 
