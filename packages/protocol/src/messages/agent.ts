@@ -177,7 +177,7 @@ export const AgentTreeNodeSchema = z.object({
   steps: z.number().int(),
   startedAt: z.number().int().nullable(),
   finishedAt: z.number().int().nullable(),
-  /** Every device this run currently holds the tree's shared control lease on (plan 67 §3.7). */
+  /** Every device this run currently has a live `agent:<rootRunId>` activity on (plan 67 §3.7, plan 205). */
   drivingDeviceIds: z.array(z.string()),
 })
 export type AgentTreeNode = z.infer<typeof AgentTreeNodeSchema>

@@ -39,7 +39,7 @@ describe('NodeToControlSchema — node.hello/node.devices only, the pre-rename a
         screenW: null,
         screenH: null,
         density: null,
-        status: 'idle' as const,
+        status: 'online' as const,
         lastSeen: 1_700_000_000,
         battery: null,
         quarantineReason: null,

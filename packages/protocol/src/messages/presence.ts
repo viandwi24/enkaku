@@ -9,7 +9,7 @@ export const ViewerSchema = z.object({
   userLabel: z.string().nullable(),
   /** Unix seconds — when this viewer opened the stream. */
   since: z.number(),
-  /** Exactly one viewer in the list may be true. */
+  /** Whether this viewer's client has a live `control:<clientId>` activity marker on the device (plan 205, MVP 04) — several viewers may be true at once. */
   holdsControl: z.boolean(),
 })
 export type Viewer = z.infer<typeof ViewerSchema>

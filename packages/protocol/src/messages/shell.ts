@@ -100,10 +100,10 @@ export const MonitorSubscribersMessage = z.object({
  * The interactive terminal (plan 26 §4.2) — deliberately a SEPARATE trio of
  * message types from everything above: `shell.exec` carries a raw `cmd`
  * string, never a `MonitorKind` plus typed options. That is the whole
- * difference between "a fixed command builder" (plan 24, no lease, no
+ * difference between "a fixed command builder" (plan 24, no activity check, no
  * permission) and "free-form remote execution" (plan 26, both). The server
- * checks `device.shell` plus `leases.checkInputAllowed` before doing
- * anything with `cmd` — never trust that Studio only sent this because its
+ * checks `device.shell` plus the activity admission helper (plan 205 §4.9)
+ * before doing anything with `cmd` — never trust that Studio only sent this because its
  * own input box was enabled (spec §10.1).
  */
 

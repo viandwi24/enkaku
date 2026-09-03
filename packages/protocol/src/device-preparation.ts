@@ -30,7 +30,7 @@ export type PreparationState = z.infer<typeof PreparationStateSchema>
 /**
  * One component's persisted status for one device (plan 106 §3.1) — the
  * shape `AgentStatus` already proved for the guest agent, generalised.
- * `attempts`/`nextAttemptAt` mirror the SAME bounded-retry shape (plan 90
+ * `attempts`/`nextAttemptAt` match the SAME bounded-retry shape (plan 90
  * §3.7, `DEFAULT_RETRY_BACKOFF_S`) — `packages/core/src/device/bounded-retry.ts`
  * is the one place that arithmetic lives, shared by every component and by
  * the guest agent's own provisioner, rather than reimplemented per caller.

@@ -797,7 +797,7 @@ export const NetworkStatusSchema = z.object({
   engine: NetworkEngineIdSchema,
   capabilities: NetworkCapabilitiesSchema,
   /**
-   * What we asked for, lease-scoped — null when no route has been declared.
+   * What we asked for, activity-scoped — null when no route has been declared.
    * Still the SOCKS5 shape for the same reason, and with the same one-line
    * flip pending, as `PersistedNetworkRouteSchema.config` above: this is the
    * core↔node tunnel shape and its producer is the same VPN-only route
@@ -820,7 +820,8 @@ export const NetworkStatusSchema = z.object({
   health: z.enum(['ok', 'unverified', 'degraded', 'unknown']),
   /** The named facts `health` above was derived from (plan 51 §4.1) — always present, even when every check is `unknown`. */
   checks: z.array(RouteCheckSchema),
-  leaseId: z.string().nullable(),
+  /** The `network-apply` activity id the route was last applied under, or null (plan 205, MVP 04). */
+  activityId: z.string().nullable(),
   /** Unix epoch seconds, or null before any apply has succeeded. */
   appliedAt: z.number().int().nullable(),
   lastError: z.object({ code: z.string(), message: z.string() }).nullable(),

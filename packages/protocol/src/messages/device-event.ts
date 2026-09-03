@@ -16,9 +16,10 @@ export const MAIN_EVENT_KINDS = [
   'device.online',
   'device.offline',
   'device.unauthorized',
-  'control.acquired',
-  'control.released',
-  'control.revoked',
+  /** An activity started on the device (plan 205, MVP 04) — carries { id, kind, label, actor }. */
+  'activity.started',
+  /** An activity ended on the device (plan 205, MVP 04) — carries { id, kind, label, actor }. */
+  'activity.ended',
   'session.opened',
   'session.closed',
   'session.degraded',
@@ -80,10 +81,6 @@ export const MAIN_EVENT_KINDS = [
    * never took (`packages/session/src/orientation.ts`).
    */
   'device.rotation',
-  /** A co-control (Assist) grant started on this device (plan 91 §3.5, §3.4 item 4) — mirrors `control.acquired`/`control.released` for the SUBORDINATE grant rather than the lease. Carries { jobId, primaryKind }. */
-  'control.assist.started',
-  /** The bookend to `control.assist.started` — carries { jobId, primaryKind, reason }, `reason` one of `AssistEndReason` ('released' | 'ttl' | 'disconnected' | 'primary_ended' | 'mode_off'). */
-  'control.assist.ended',
   // `'clipboard.overwritten'` — the text ladder's clipboard-paste rung (plan 90 §3.3 rule 3) —
   // was added here for step 90.5's benefit and removed by the M61 hotfix pass
   // (docs/plans/96-m61-hotfixes.md §96.7, §96.8): the rung it recorded was proven

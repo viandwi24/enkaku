@@ -4,7 +4,7 @@ import { z } from 'zod'
  * Device clipboard get/set over WS (plan 38 §4.5).
  *
  * `clipboard.get`/`clipboard.set` are request/reply, correlated by `id` like
- * `monitor.oneshot` and `lease.acquire` — NOT broadcast to every viewer the
+ * `monitor.oneshot` and `input.text` — NOT broadcast to every viewer the
  * way `shell.echo`/`shell.result` are (plan 26 §3.8). Clipboard content is
  * very often a password or a one-time token, so `clipboard.value` goes ONLY
  * to the requesting connection (§4.5); fanning it out to every viewer of the
