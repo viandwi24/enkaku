@@ -353,3 +353,22 @@ The first application of §8.5, recorded so the next round has a worked example.
 | Plan 59's `Ships:` pointed at a Studio test 201 deleted | plan 201 | Resolved by the merge order: 202 archives plans 01 to 129, so the stale citation left the checked set. Worth knowing that merge order can close a finding without an edit. |
 
 **The lesson worth carrying:** three of these seven were invisible to the plans and to the executors, and only appeared when two green branches met. A per-plan green is necessary and not sufficient; the round gate is where the product is actually checked.
+
+### 8.7 Round R2 reconciliation, 2026-09-04
+
+Plan 205 merged into `mvp`; typecheck, `check-dead-code.sh` and `check-plan-status.sh` all clean. **345 files changed, 10 966 insertions, 14 646 deletions** — the series' first net-negative plan, which is what replacing a mechanism rather than adding one looks like.
+
+**The finding that matters, and it changes a rule.** Four test files were broken by R1 and R2 and stayed broken through two round gates, because **no plan's §7 named them**:
+
+| File | Broken by | Why nobody saw it |
+|---|---|---|
+| `plugins/mikrotik-routing/src/service/identity-bridge.test.ts` (9 of 10 failing) | plan 205 shrinking `DeviceStatus` | its fixture said `status: 'idle'`, which Zod now rejects; plan 205's executor flagged it as out of scope and moved on |
+| `packages/core/src/daemon-wiring.test.ts` (2 failing) | plan 203 adding a `streamStats` argument; plan 201 deleting the `scan.progress` broadcast | it asserts `daemon.ts`'s literal source text, so any wiring change breaks it, and no plan owns it |
+| `binding.test.ts`, `action-executor.test.ts` | plan 205 | stale `'idle'` fixtures that passed anyway, because those inserts bypass Zod. Latent, not failing |
+
+All four are fixed. Two lessons:
+
+1. **"Out of scope" is the wrong answer when your own change broke it.** A test that fails *because of* this plan is this plan's to fix, whatever its path. Added to §2.1.
+2. **Scoped testing has a real hole, and it is now named rather than discovered again.** Running only the files a plan lists means a change can break a test in a file nobody looks at. The round gate closes it: **before merging a round, run every test file that names a symbol the round deleted or renamed.** That is a grep, not a full suite, and it is cheap.
+
+The second lesson also exposes a policy question this programme should answer rather than drift on: `daemon-wiring.test.ts` asserts wiring by matching source text, which §8.3 explicitly lists under "not tested". It has now cost two false alarms and caught nothing a typecheck would not. Plan 224 should decide whether it survives the test-strategy reset; it is not deleted here, because deleting an 88-test file mid-merge is not a call to make at a round gate.
