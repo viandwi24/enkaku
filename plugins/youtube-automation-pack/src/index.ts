@@ -1,13 +1,23 @@
 import { definePlugin } from '@enkaku/sdk'
 import searchChannel from './search-channel'
+import scrollShorts from './scroll-shorts'
+import scrollLive from './scroll-live'
+import downloadHome from './download-home'
+import searchPlay from './search-play'
 
 /**
  * YouTube automation pack.
  *
  * ## Status
  *
- * One member: `search-channel`. Search for a channel by name, open its channel
- * page, hold, close. Nothing subscribes, likes, comments, or plays.
+ * Five members: `search-channel`, `scroll-shorts`, `scroll-live`,
+ * `download-home`, `search-play`. The three browse/watch members can, on an
+ * explicit operator-set probability, press YouTube's own like button and read
+ * its own comment section — writes the operator asked for, never a side
+ * effect: a signed-out device answers with the account sheet and every such
+ * attempt is reported as `not-signed-in`, not as a like. Nothing subscribes or
+ * comments; `download-home` only presses the app's own Download line and
+ * reports the account's real answer.
  *
  * ## The house rule this pack is built around
  *
@@ -36,13 +46,69 @@ import searchChannel from './search-channel'
  */
 export default definePlugin({
   id: 'youtube',
-  version: '0.4.3',
+  version: '0.9.0',
   title: 'YouTube automation pack',
-  description: 'Search and browse the YouTube app on a farm device.',
-  scripts: [searchChannel],
+  description: 'Search, browse, watch, like, read comments and download in the YouTube app on a farm device.',
+  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay],
 
   /**
    * ## Changelog
+   *
+   * **0.9.0 — a thumb that lands on the same pixel every time is the tell.**
+   * `tapNode` now aims at a uniform random point in the MIDDLE 70% of the node
+   * (`insetPoint`, youtube.ts) instead of its exact centre — an operator asked
+   * for touch placement to vary like a human's, and the farm's own
+   * `tapJitterMs` jitters the tap, not the aim. The inset can never leave the
+   * node, and sub-24px rails keep the plain centre so a tap cannot fall into
+   * the gap beside them.
+   *
+   * **0.8.0 — a list full of live streams read as having none.** `scroll-live`
+   * looked for the word LIVE on the `thumbnail_layout` nodes `resultRowsOf`
+   * returns — and thumbnails carry no description at all. The failing job's
+   * own artifact showed the truth: the badge is a `- Live -` SEGMENT of the
+   * whole row's description ("… 4 ribu sedang menonton - Live - putar video"),
+   * with a companion node "Ketuk untuk menonton livestream". Live detection now
+   * reads the row descriptions it actually measured.
+   *
+   * **0.7.0 — a Shorts search result played fine and the run still failed.**
+   * `search-play` tapped rank 2 of "drama komedi indonesia", the artifact
+   * showed the reel fully playing (`reel_watch_player`, its rail, its worded
+   * time bar "0 menit 29 detik dari 0 menit 35 detik"), and `playerEvidence`
+   * said *no player* — its ids, its transport ladder and its `a / b` clock all
+   * describe the regular watch page only, and a search result is free to be a
+   * Short. `playerEvidence` gained the reel ids and the spelled-out
+   * "N … dari M …" clock, both measured off that failing job's own artifact.
+   *
+   * **0.6.0 — the first hardware run of `scroll-shorts` caught a lie it was
+   * telling.** Three likes reported `already-liked` and `signedIn: true` on a
+   * device the probe had just proven signed out — because `likeState` read
+   * `suka video ini bersama 29 ribu orang lainnya` as "the user liked this",
+   * when it is the button's TOTAL COUNT, present on a never-liked video whose
+   * like press only ever raises the "Akun / Tambahkan akun" sheet. The liked
+   * spelling is the one that names the viewer ("Anda …", "Batalkan …",
+   * "Liked"); the count line now reads not-liked, and the fix's own evidence
+   * is a `not-signed-in` outcome on exactly the device that was reporting a
+   * false green. (measured 2026-09-03, job `1a61e76b`.)
+   *
+   * **0.5.0 — four new members, and the anchors are measured, not guessed.**
+   * `scroll-shorts`, `scroll-live`, `download-home`, `search-play`, plus
+   * `behavior.ts` — the shared human primitives (seeded RNG, heavy-tailed
+   * dwell, fully randomised verified swipes: corridor, start, distance, speed,
+   * drift and curvature all vary, and a swipe that left the screen
+   * byte-identical is retried harder and then REPORTED as stuck rather than
+   * counted). Every ladder in there was anchored on a live probe of the farm
+   * device (moto g06 power, Indonesian locale, signed out, 2026-09-03):
+   * the Shorts rail's "Sukai video ini" ↔ "suka video ini bersama N …" pair,
+   * the comment sheet's `close_button` "Tutup", the home rows'
+   * "Menu tindakan untuk <title>" overflow, its `list_item_text` "Download"
+   * line, and two traps found only by looking: a signed-out like is answered
+   * by the "Akun / Tambahkan akun" sheet (which every member now reports as
+   * `not-signed-in` instead of a fake like), and sponsored install cards carry
+   * their own "Download" call to action (which `download-home` excludes, and
+   * which answered the first real attempt with the measured snackbar
+   * "Download tidak tersedia" — an honest failure this pack now carries as a
+   * first-class outcome). `search-channel`'s `SEARCH_ENTRY`/`SEARCH_FIELD`/
+   * `clickableFor` gained `export` so the new members walk the same ladders.
    *
    * **0.4.3 — no behaviour change; republished to re-verify against a patched
    * runner.** `packages/session/src/runner/child-entry.ts` gained the four

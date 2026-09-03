@@ -51,6 +51,31 @@ export function centre(node: UiNode): { x: number; y: number } {
 }
 
 /**
+ * A point inside the node, but NOT always its centre.
+ *
+ * A thumb that lands on the exact same pixel every repetition is a sharper
+ * tell than no jitter at all; the farm's own `tapJitterMs` recentres the
+ * TAP (hold length, micro-offset), and this insets the AIM: a uniform point
+ * in the middle 70% of the node, so it can never escape the node onto the
+ * control next door. Nodes thinner than 24px on an axis keep the plain
+ * centre there — insetting a rail icon would risk the gap beside it.
+ */
+export function insetPoint(node: UiNode): { x: number; y: number } {
+  const { left, top, right, bottom } = node.bounds
+  const w = right - left
+  const h = bottom - top
+  const cx = Math.round((left + right) / 2)
+  const cy = Math.round((top + bottom) / 2)
+  if (w <= 0 || h <= 0) return { x: cx, y: cy }
+  const fx = w < 24 ? 0 : 0.15
+  const fy = h < 24 ? 0 : 0.15
+  return {
+    x: Math.round(left + w * (fx + Math.random() * (1 - 2 * fx))),
+    y: Math.round(top + h * (fy + Math.random() * (1 - 2 * fy))),
+  }
+}
+
+/**
  * Tap a node this script located by walking the tree.
  *
  * `tap({ point })` and NOT `tapNorm`, which is what this pack reached for
@@ -63,10 +88,11 @@ export function centre(node: UiNode): { x: number; y: number } {
  *
  * `{ point }` is a real selector (`SelectorSchema`, the last and most fragile
  * rung) and takes device pixels, which is what `bounds` are already in — so
- * nothing has to be normalised and un-normalised on the way.
+ * nothing has to be normalised and un-normalised on the way. The point itself
+ * comes from {@link insetPoint}: inside the node, never pixel-identical twice.
  */
 export async function tapNode(ctx: ScriptContext<unknown>, node: UiNode): Promise<void> {
-  await ctx.device.tap({ point: centre(node) })
+  await ctx.device.tap({ point: insetPoint(node) })
 }
 
 /** A node big enough to be a real target and not a zero-sized placeholder. RecyclerViews are full of the latter. */

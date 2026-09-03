@@ -153,7 +153,7 @@ function label(node: UiNode): string {
  * been the search button for many versions — "has been" is not "is", which is
  * why the description rungs follow it, in both languages this farm might be in.
  */
-const SEARCH_ENTRY = [
+export const SEARCH_ENTRY: readonly { via: string; test: (n: UiNode) => boolean }[] = [
   { via: 'id:menu_item_1', test: (n: UiNode) => hasId(n, 'menu_item_1') },
   { via: 'id:search_button', test: (n: UiNode) => hasId(n, 'search_button') },
   { via: 'desc:Search', test: (n: UiNode) => n.desc.trim().toLowerCase() === 'search' },
@@ -162,7 +162,7 @@ const SEARCH_ENTRY = [
 ] as const
 
 /** The search text field, once the search screen is open. */
-const SEARCH_FIELD = [
+export const SEARCH_FIELD: readonly { via: string; test: (n: UiNode) => boolean }[] = [
   { via: 'id:search_edit_text', test: (n: UiNode) => hasId(n, 'search_edit_text') },
   { via: 'class:EditText', test: (n: UiNode) => n.className.endsWith('EditText') },
 ] as const
@@ -433,7 +433,7 @@ function titleCaseFrom(node: UiNode, matched: string): string {
  * the label does nothing, which reads as "the script did not tap" rather than
  * "the script tapped the wrong thing" and is much harder to debug.
  */
-function clickableFor(tree: UiNode, node: UiNode): UiNode {
+export function clickableFor(tree: UiNode, node: UiNode): UiNode {
   const path: UiNode[] = []
   const walk = (current: UiNode, trail: UiNode[]): boolean => {
     const next = [...trail, current]
@@ -519,7 +519,7 @@ export function skipControlOf(tree: UiNode): UiNode | null {
 export function playerEvidence(tree: UiNode): { playing: boolean; via: string } {
   const nodes = flatten(tree).filter((n) => isVisible(n) && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE))
 
-  const byId = nodes.find((n) => hasId(n, 'player_view') || hasId(n, 'watch_player') || hasId(n, 'player_control_play_pause_replay_button') || hasId(n, 'time_bar_current_time'))
+  const byId = nodes.find((n) => hasId(n, 'player_view') || hasId(n, 'watch_player') || hasId(n, 'player_control_play_pause_replay_button') || hasId(n, 'time_bar_current_time') || hasId(n, 'reel_watch_player') || hasId(n, 'reel_recycler'))
   if (byId) return { playing: true, via: `id:${byId.resourceId.split('/').pop() ?? ''}` }
 
   // The transport control, in both languages this farm might be in. A player
@@ -530,6 +530,14 @@ export function playerEvidence(tree: UiNode): { playing: boolean; via: string } 
   // A timestamp pair like "0:12 / 11:10" only ever appears on a player.
   const clock = nodes.find((n) => /\d+:\d{2}\s*\/\s*\d+:\d{2}/.test(rawLabel(n)))
   if (clock) return { playing: true, via: 'timeline' }
+
+  // "0 menit 29 detik dari 0 menit 35 detik" — the SAME time bar, spelled out.
+  // Measured 2026-09-03 (job 04047e08, artifact 04-player): a search result
+  // that was a SHORT played perfectly while this function claimed no player,
+  // because the reel's ids and its worded clock were both missing from every
+  // rung above.
+  const spelled = nodes.find((n) => /\d+\s*(menit|detik|jam|minute|second)[^\n]*\bdari\b/i.test(rawLabel(n)))
+  if (spelled) return { playing: true, via: 'timeline(spelled)' }
 
   return { playing: false, via: 'none' }
 }
