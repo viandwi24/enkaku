@@ -18,11 +18,11 @@ export interface CapabilityRegistry {
   visibleTo(ctx: { hasPermission(permission: string): boolean }): AnyCoreCapability[]
 }
 
-const REQUIRED_FIELDS = ['id', 'input', 'output', 'permission', 'lease', 'deadline', 'effect', 'description'] as const
-const LEASE_VALUES = new Set(['none', 'device', 'control'])
+const REQUIRED_FIELDS = ['id', 'input', 'output', 'permission', 'deadline', 'effect', 'description'] as const
+const ACTIVITY_KIND_VALUES = new Set(['control', 'job', 'workflow-job', 'install', 'transfer', 'prep', 'command', 'agent', 'network-apply', 'wake', 'read'])
 const EFFECT_VALUES = new Set(['read', 'write', 'destructive'])
 
-/** Every capability has all eight declared fields, non-empty (plan 63 §6.1). */
+/** Every capability has all seven required fields, non-empty (plan 63 §6.1; `activity` is optional, plan 205 §5 step 205.7). */
 function assertWellFormed(cap: AnyCoreCapability, file: string): void {
   for (const field of REQUIRED_FIELDS) {
     const value = (cap as unknown as Record<string, unknown>)[field]
@@ -36,8 +36,8 @@ function assertWellFormed(cap: AnyCoreCapability, file: string): void {
   if (typeof cap.input?.parse !== 'function' || typeof cap.output?.parse !== 'function') {
     throw new Error(`capability "${cap.id}" (${file}) must declare Zod "input"/"output" schemas`)
   }
-  if (!LEASE_VALUES.has(cap.lease)) {
-    throw new Error(`capability "${cap.id}" (${file}) has an invalid lease value: ${String(cap.lease)}`)
+  if (cap.activity !== undefined && !ACTIVITY_KIND_VALUES.has(cap.activity.kind)) {
+    throw new Error(`capability "${cap.id}" (${file}) has an invalid activity kind: ${String(cap.activity.kind)}`)
   }
   if (!EFFECT_VALUES.has(cap.effect)) {
     throw new Error(`capability "${cap.id}" (${file}) has an invalid effect value: ${String(cap.effect)}`)
