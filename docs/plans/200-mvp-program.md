@@ -329,8 +329,16 @@ The gate, in order:
 1. **Read every §11 finished in the round.** Four fields carry the reconciliation load: *Discrepancies between plan and code*, *Observed, not done*, *Open questions hit*, and the §10 proofs that did not come back empty.
 2. **For each discrepancy, find every unrun plan that repeats the same wrong assumption** and amend it. Amend, do not rewrite: append a dated `## 12. Amendment` (or a further one) stating what changed and which of the plan's own steps, §0 rows or §7 commands it supersedes.
 3. **Fix the contradiction where the executor will actually read it, not only in the amendment.** An amendment at the end of a 1 500-line document does not stop a step-by-step executor from following §5 or §7. Strike the superseded line in place, or put a banner in the header block above §0.
-4. **Re-run the cheap gates on the reconciled documents**: `bash scripts/check-plan-status.sh`, and a grep for whatever the round's findings made forbidden.
-5. **Record the reconciliation in the round's own commit message**, so the next reader can see which plans moved and why.
+4. **Re-run every gate that exists, not the ones you remember.** As of round R3 that is
+   `bun run typecheck`, `bun run build:studio`, `bash scripts/check-dead-code.sh`,
+   `bun run scripts/check-design-tokens.ts`, `bun run scripts/check-routes.ts`,
+   `bash scripts/check-plan-status.sh`, and `bun run spec:check`. **A round creates new gates**:
+   plan 204 shipped `check-design-tokens.ts` and plan 213 shipped `check-routes.ts`, and the
+   design-token gate failed silently from the R1 merge until R3 because the programme owner ran
+   the three gates he could recall instead of listing what was on disk. Enumerate `scripts/check-*`
+   before every gate run.
+5. **Re-run the cheap gates on the reconciled documents**: `bash scripts/check-plan-status.sh`, and a grep for whatever the round's findings made forbidden.
+6. **Record the reconciliation in the round's own commit message**, so the next reader can see which plans moved and why.
 
 Two classes of finding recur and are worth naming, because both were found this way rather than by reading:
 
