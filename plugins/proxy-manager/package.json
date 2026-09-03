@@ -1,6 +1,6 @@
 {
   "name": "@enkaku/plugin-proxy-manager",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "private": true,
   "type": "module",
   "description": "Proxy manager — a catalogue of proxy records, a React screen with tabs to keep it with, and a service that runs a loopback HTTP or SOCKS5 bridge per enabled record, either through the upstream proxy it names or, for a direct record, bound to one of the farm's own host addresses",

@@ -135,7 +135,7 @@ import verifyEgressScript from './verify-egress'
  * `service.permissions` is UNCHANGED: `job.run` was already declared (0.1.0's
  * manifest names exactly this — "enqueuing verify-egress"), and none of the
  * three needs a NEW capability (`ctx.device.*` inside a script is the job
- * system's own device access, granted by the job's lease, not the plugin
+ * system's own device access, granted by the job's control marker, not the plugin
  * capability broker `ctx.farm` gates; `activate-group` calls
  * `groups-service.ts`'s `activateGroup` directly with `ctx` as the host,
  * reusing `storage`/`farm`/`log` a script already carries). So this is not a
@@ -226,6 +226,13 @@ import verifyEgressScript from './verify-egress'
  *     devices count; unverified ones are never grouped with each other.
  *
  * Minor, not patch: a new column, a new button, and two new warnings.
+ *
+ * **0.13.0 → 0.13.1 — plan 205 vocabulary sweep.** Three doc-comment
+ * reworks (`src/index.ts` here, `src/verify-egress.ts`,
+ * `src/ui/parts/settings.tsx`) that cited terms plan 205 retired core-side —
+ * a device job's control marker (the deleted per-device manual-hold
+ * concept), and a deleted device-list schema from the deleted screen-share
+ * feature — no behavior change. Patch: invisible to an operator.
  *
  * **0.11.0 → 0.12.0 — a down path says why (plan 133, M98).**
  *
@@ -426,7 +433,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.13.0',
+  version: '0.13.1',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',

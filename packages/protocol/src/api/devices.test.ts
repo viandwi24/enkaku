@@ -312,7 +312,7 @@ describe('classifyDeviceNetworkApply (plan 114 §3.9, step 114.8)', () => {
 
   test('SKIP WINS OVER ERROR — a skipped device may legally carry neither a status nor an error, and the check order says so', () => {
     const row = result({
-      skip: { code: 'E_DEVICE_HELD', message: 'somebody else is driving it' },
+      skip: { code: 'E_DEVICE_CONFLICT', message: 'somebody else is driving it' },
       error: { code: 'E_REVERSE_FAILED', message: 'adb reverse did not establish' },
     })
     expect(classifyDeviceNetworkApply(row)).toBe('skipped')
@@ -338,7 +338,7 @@ describe('the bulk apply envelope round-trips (plan 114 §3.9, step 114.8)', () 
       results: [
         { deviceId: 'ok-1', status, skip: null, error: null },
         { deviceId: 'offline-1', status: null, skip: { code: 'E_DEVICE_OFFLINE', message: 'not reachable' }, error: null },
-        { deviceId: 'held-1', status: null, skip: { code: 'E_DEVICE_HELD', message: 'in use' }, error: null },
+        { deviceId: 'held-1', status: null, skip: { code: 'E_DEVICE_CONFLICT', message: 'in use' }, error: null },
         { deviceId: 'broken-1', status: null, skip: null, error: { code: 'E_SETTING_NOT_ACCEPTED', message: 'declined' } },
       ],
     }
