@@ -707,8 +707,8 @@ What the scaffold writes, and what every line of it is for:
 ```
 
 - **Never `@import 'tailwindcss'` here.** That pulls in preflight, a *global* reset, and Studio's document already has one — a second copy restyles every other screen in the farm rather than your view. Publishing refuses a stylesheet that contains it, naming the declaration it found.
-- **`theme(reference)` on both theme imports.** It registers the tokens so `bg-surface` compiles, without writing a `:root` block. Your `<link>` is injected after Studio's, so a token you re-declared would win the cascade and repaint the whole farm with whatever the palette looked like the day you built. Referenced, `bg-surface` compiles to `background-color: var(--color-surface, <the value at build time>)`: Studio's live value wins, and the build-time value is only a fallback for a token Studio never emitted.
-- **`@enkaku/ui/theme.css` is the farm's design tokens** — `bg-surface`, `text-fg-muted`, `text-led-ok`, `rounded-card`, and the `hover-none:` variant — read from the same file Studio compiles against, so the two cannot drift.
+- **`theme(reference)` on both theme imports.** It registers the tokens so `bg-panel` compiles, without writing a `:root` block. Your `<link>` is injected after Studio's, so a token you re-declared would win the cascade and repaint the whole farm with whatever the palette looked like the day you built. Referenced, `bg-panel` compiles to `background-color: var(--panel)` (the mapping is `@theme inline`), so Studio's live value is the only value there is.
+- **`@enkaku/ui/theme.css` is the farm's design tokens** — `bg-panel`, `text-faint`, `text-ok`, `rounded-card`, and the `hover-none:` variant — read from the same file Studio compiles against, so the two cannot drift.
 
 Hand-written CSS in that file is allowed and is entirely your own risk. It becomes a stylesheet in Studio's document, so a bare `button { … }` restyles Studio's buttons too. Scope what you add. Do not import the file from your `.tsx`: it is compiled and linked for you, and importing it hands the raw source to a bundler that does not know what Tailwind is.
 

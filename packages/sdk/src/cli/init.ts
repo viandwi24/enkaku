@@ -327,7 +327,7 @@ function View() {
   return (
     <div className="p-6 space-y-4">
       <h1 className="text-xl font-semibold">${name}</h1>
-      <p className="text-sm text-fg-muted">
+      <p className="text-body text-faint">
         This screen is a React component shipped by the plugin. Edit
         <code className="mx-1">src/ui/index.tsx</code>, save, and reload.
       </p>
@@ -406,7 +406,7 @@ function uiStyles(name: string): string {
  * stylesheet that contains it.
  *
  * \`theme(reference)\` is the other half: it registers the tokens so
- * \`bg-surface\` compiles, without writing a \`:root\` block. Studio's live
+ * \`bg-panel\` compiles, without writing a \`:root\` block. Studio's live
  * values keep winning, and this plugin can never repaint the farm with a
  * palette frozen on the day it was built.
  *
@@ -423,7 +423,7 @@ function uiStyles(name: string): string {
 @import 'tailwindcss/theme.css' theme(reference);
 @import 'tailwindcss/utilities.css' layer(plugin);
 
-/* The farm's design tokens — bg-surface, text-fg-muted, text-led-ok, rounded-card. One definition, shared with Studio. */
+/* The farm's design tokens — bg-panel, text-faint, text-ok, rounded-card. One definition, shared with Studio. */
 @import '@enkaku/ui/theme.css' theme(reference);
 
 /*
