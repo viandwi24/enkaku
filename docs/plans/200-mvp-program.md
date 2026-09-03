@@ -65,7 +65,13 @@ New words for new concepts, so leftovers are greppable (`docs/mvp/README.md`, Ap
 
 A plan's §10 lists the forbidden words its area introduces; the report includes the grep proving they are gone from non-archived code.
 
-### 2.5 Commits and reporting
+### 2.5 Do the work yourself
+
+- **Do not delegate.** An executor implements the plan with its own tool calls. It does not spawn subagents, research helpers, or "verification" agents. This is not a style preference: on 2026-09-03 a plan author asked to write one document instead spawned four research agents, burned about 300 000 tokens on reports nobody read, and produced no file. The same failure during execution would produce no code and a confident summary.
+- **One executor, one plan, one worktree** (§8.1). If a plan is too large for one executor, that is a defect in the plan, reported in §11, not a reason to fan out.
+- **Never predict a result you have not seen.** Run the command, read the output, then write it down. A §0 row marked done without its command having been run is a false claim about the product.
+
+### 2.6 Commits and reporting
 
 - Conventional commits, one plan may span many: `feat(mvp-205): …`, `fix(mvp-205): …`, `chore(mvp-205): …`. No attribution lines.
 - Work on the `mvp` branch. `main` stays shippable for hotfixes until wave 3 lands (`docs/mvp/16` §3).
@@ -91,6 +97,12 @@ A table, one row per goal, every row verifiable by a command or a measurement, n
 ```
 
 Rules: a parameter is a number, a string, a file path, or a schema, never an adjective. "Verified by" is a command and its expected output, or a measurement and its threshold. A goal that depends on hardware says `owner` in its Done column instead of `[ ]`, and the plan's status can be `implemented (software)` with that row open, as plan 129 did.
+
+### 3.0.1 The `> Ships:` line
+
+`scripts/check-plan-status.sh` fails a plan whose declared status disagrees with whether its artefact exists on disk. A `draft` plan whose `Ships:` path already exists is therefore a build failure, and two plans in this series (217 and 219) shipped that mistake before it was caught.
+
+**Rule: `> Ships:` names a file the plan CREATES, which does not exist when the plan is written.** Verify it with `test -e <path>` before committing the plan. A plan that rebuilds an existing screen names one of the new components it extracts, never the page file it overwrites. A plan that genuinely creates no artefact writes `> Ships: none — <reason>`.
 
 ### 3.1 §10 — Removed
 
