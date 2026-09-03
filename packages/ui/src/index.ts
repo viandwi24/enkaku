@@ -20,10 +20,12 @@
  */
 
 export * from './components/alert-dialog'
+export * from './components/avatar'
 export * from './components/badge'
 export * from './components/button'
 export * from './components/button-group'
 export * from './components/card'
+export * from './components/checkbox'
 export * from './components/collapsible'
 export * from './components/combobox'
 export * from './components/confirm-dialog'
@@ -38,7 +40,6 @@ export * from './components/input-group'
 export * from './components/label'
 export * from './components/popover'
 export * from './components/progress'
-export * from './components/scroll-area'
 export * from './components/select'
 export * from './components/separator'
 export * from './components/sheet'
@@ -47,6 +48,7 @@ export * from './components/slider'
 export * from './components/sonner'
 export * from './components/spinner'
 export * from './components/states'
+export * from './components/status-dot'
 export * from './components/switch'
 export * from './components/table'
 export * from './components/tabs'
@@ -100,6 +102,16 @@ export * from './lib/format'
  * and Proxy Manager tabs name devices too.
  */
 export * from './lib/device-name'
+
+/**
+ * Which palette the document is showing, and the icon set (plan 204 §4.5,
+ * §4.5). `resolveTheme`/`useResolvedTheme` are the same rule `palette.css`'s
+ * three selectors implement in CSS; the icons are Phosphor's `*Icon` names
+ * re-exported so a plugin reaches them through `@enkaku/ui` rather than
+ * bundling its own copy.
+ */
+export * from './lib/theme'
+export * from './icons'
 
 /**
  * `z` — Zod itself, re-exported as one name.

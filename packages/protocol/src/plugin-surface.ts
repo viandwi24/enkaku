@@ -85,12 +85,13 @@ export const SURFACE_LIMITS = {
 export const PLUGIN_UI_API_VERSION = 1
 
 /**
- * The icons a nav entry may name — lucide names in their kebab-case form,
- * every one of them present in the `lucide-react` build Studio already
- * bundles. Closed on purpose: the icon is rendered by Studio, so an
- * unrecognised name would be a blank square in the operator's sidebar with
- * nothing to point at. An author who needs one that is missing asks for it
- * to be added here, which is a protocol change with a review attached.
+ * The icons a nav entry may name, as stable kebab-case ids. Studio maps each
+ * id to a Phosphor component (`packages/studio/src/lib/plugin-icons.ts`);
+ * the ids predate that mapping and never change with the icon library.
+ * Closed on purpose: the icon is rendered by Studio, so an unrecognised name
+ * would be a blank square in the operator's sidebar with nothing to point
+ * at. An author who needs one that is missing asks for it to be added here,
+ * which is a protocol change with a review attached.
  */
 export const ICON_NAMES = [
   'users',
@@ -138,7 +139,7 @@ export const ICON_NAMES = [
 export type IconName = (typeof ICON_NAMES)[number]
 
 export const IconNameSchema = z.enum(ICON_NAMES, {
-  error: (issue) => `unknown icon "${String(issue.input)}" — not one of the ${ICON_NAMES.length} allowed lucide names`,
+  error: (issue) => `unknown icon "${String(issue.input)}": not one of the ${ICON_NAMES.length} allowed icon names`,
 })
 
 /**

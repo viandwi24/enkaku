@@ -33,6 +33,7 @@
  * `@layer base` and `@layer components` below stay here on purpose: they style
  * Studio's page, they are not vocabulary a plugin could name.
  */
+@import '@enkaku/ui/palette.css';
 @import '@enkaku/ui/theme.css';
 
 /*
