@@ -705,3 +705,39 @@ Added after the CEO's decision that Studio has zero tests and backend tests cove
 | Every Studio and ui test file, the Studio test preload, the two `test` scripts | `packages/studio/**`, `packages/ui/**` | `find packages/studio packages/ui -name '*.test.*' \| wc -l` → `0` |
 | `happy-dom`, `@testing-library/*` devDependencies | both `package.json`s, `bun.lock` | `rg -n "happy-dom\|testing-library" packages/studio/package.json packages/ui/package.json bun.lock` → empty |
 | CI steps for the web suites; the root `pathIgnorePatterns` entry for `packages/studio/**` | `.github/workflows/ci.yml`, `bunfig.toml` | `rg -n "packages/studio" .github/workflows/ci.yml bunfig.toml` → only the `build:studio` step, if any |
+
+---
+
+## 13. Amendment 2026-09-03 — a repo-wide control-byte check
+
+§0 G8 already checks `packages/core/src/device/labelling.ts` for raw control bytes. Widen it: the same defect appeared a second time on 2026-09-03, in `docs/plans/213-mvp-studio-shell.md`, where a NUL sat between `${deviceId}` and `${activity.id}` in a composite key. It was fixed by replacing it with a colon, the repo's own separator convention (`packages/studio/src/components/bulk/SkippedGroups.tsx:104`).
+
+**Why this is not cosmetic.** `grep` and `rg` treat a file containing a NUL as binary and **skip it while reporting success**. Every §10 "Proof" in this series is a grep, so one stray byte can make a removal look complete when it is not. The check therefore belongs beside the dead-code gate, not in a plan's prose.
+
+### 13.1 Step 201.B — add the check to `scripts/check-dead-code.sh`
+
+- Files changed: `scripts/check-dead-code.sh` (this plan's own artefact).
+- Add, before the grep groups so a poisoned file fails first:
+
+```bash
+# A NUL or other C0 control byte makes grep/rg treat a text file as binary and
+# SKIP it silently, which would make every removal proof below meaningless.
+bad_bytes=$(LC_ALL=C grep -rlP '[\x00-\x08\x0B-\x1F\x7F]' \
+  --include='*.ts' --include='*.tsx' --include='*.md' --include='*.json' \
+  --include='*.css' --include='*.sh' --include='*.kt' --include='*.yml' \
+  packages apps plugins scripts docs examples 2>/dev/null || true)
+if [ -n "$bad_bytes" ]; then
+  echo "  CONTROL BYTES in text files (grep would skip these silently):"
+  echo "$bad_bytes" | sed 's/^/    /'
+  fail=1
+fi
+```
+
+- Verifiable result: the script prints nothing for this group on a clean tree; planting `printf 'a\0b' >> packages/core/src/index.ts` makes it exit non-zero and name that file; removing the byte makes it pass again.
+- Do not: filter the finding down to NUL only (a `\x1B` escape sequence pasted into a source file is the same class of defect); do not add `--text` or `-a` to any other grep in this series to work around a poisoned file, because that hides the cause.
+
+### 13.2 Added §0 row
+
+| # | Goal | Parameter | Verified by | Done |
+|---|---|---|---|---|
+| G14 | No tracked text file contains a C0 control byte other than tab or newline | 0 files | `bash scripts/check-dead-code.sh` prints no `CONTROL BYTES` group | [ ] |
