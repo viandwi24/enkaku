@@ -9,7 +9,6 @@ function fakeCap(overrides: Partial<AnyCoreCapability> = {}): AnyCoreCapability 
     input: z.object({}),
     output: z.object({ ok: z.literal(true) }),
     permission: 'device.view',
-    lease: 'none',
     deadline: 1_000,
     effect: 'read',
     description: 'a test capability',
@@ -38,8 +37,8 @@ describe('buildCapabilityRegistry (plan 63 §4.2, acceptance #1-3)', () => {
     expect(() => buildCapabilityRegistry([{ cap, file: 'a.ts' }])).toThrow()
   })
 
-  test('rejects an invalid lease value', () => {
-    const cap = fakeCap({ lease: 'bogus' as AnyCoreCapability['lease'] })
+  test('rejects an invalid activity kind', () => {
+    const cap = fakeCap({ activity: { kind: 'bogus' as never } })
     expect(() => buildCapabilityRegistry([{ cap, file: 'a.ts' }])).toThrow()
   })
 

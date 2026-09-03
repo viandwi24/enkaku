@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
+import type { PolicyDecision } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import { EnkakuError } from '../util/errors'
 import type { CapabilityContext } from './context'
 import { invoke } from './invoke'
 import type { AnyCoreCapability } from './types'
+
+const ALLOW: PolicyDecision = { decision: 'allow', message: '' }
 
 function fakeCtx(overrides: Partial<CapabilityContext> = {}): CapabilityContext {
   return {
@@ -13,7 +16,8 @@ function fakeCtx(overrides: Partial<CapabilityContext> = {}): CapabilityContext 
     agentTree: null,
     hasPermission: () => true,
     canReachDevice: () => true,
-    controlLeaseBlockedBy: () => null,
+    evaluateActivity: () => ALLOW,
+    touchActivity: () => {},
     isDeviceOnline: () => true,
     ensureAwake: async () => {},
     deviceCall: async () => undefined,
@@ -35,7 +39,6 @@ function fakeCap(overrides: Partial<AnyCoreCapability> = {}): AnyCoreCapability 
     input: z.object({ deviceId: z.string().optional() }),
     output: z.object({ ok: z.literal(true) }),
     permission: 'device.control',
-    lease: 'none',
     deadline: 1_000,
     effect: 'read',
     description: 'a test capability',
@@ -44,7 +47,7 @@ function fakeCap(overrides: Partial<AnyCoreCapability> = {}): AnyCoreCapability 
   }
 }
 
-describe('invoke (plan 63 §3.4, acceptance #4-7, #12)', () => {
+describe('invoke (plan 63 §3.4, plan 205 §4.4, acceptance #4-7, #12)', () => {
   test('1. bad input -> E_BAD_INPUT, refused before permission is checked', async () => {
     let permissionChecked = false
     const cap = fakeCap({ input: z.object({ deviceId: z.string() }) })
@@ -71,45 +74,111 @@ describe('invoke (plan 63 §3.4, acceptance #4-7, #12)', () => {
     if (!result.ok) expect(result.error.code).toBe('E_NO_GRANT')
   })
 
-  test('4. lease:control without the lease -> E_NEEDS_LEASE, names the holder (acceptance #5)', async () => {
-    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), lease: 'control' })
-    const ctx = fakeCtx({ controlLeaseBlockedBy: () => 'alice' })
+  test('4. activity forbid -> E_DEVICE_CONFLICT, naming the conflicting activity (acceptance #5)', async () => {
+    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), activity: { kind: 'control' } })
+    const ctx = fakeCtx({ evaluateActivity: () => ({ decision: 'forbid', message: 'Running tiktok/login (job #482); control cannot start until it ends' }) })
     const result = await invoke(cap, ctx, { deviceId: 'd1' })
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.error.code).toBe('E_NEEDS_LEASE')
-      expect(result.error.message).toContain('alice')
+      expect(result.error.code).toBe('E_DEVICE_CONFLICT')
+      expect(result.error.message).toContain('job #482')
     }
   })
 
-  test('lease:control never acquires the lease implicitly — controlLeaseBlockedBy is consulted, never mutated', async () => {
-    let acquireCalls = 0
-    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), lease: 'control' })
+  test('a warn decision still succeeds, carrying the sentence as the result warning', async () => {
+    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), activity: { kind: 'control' } })
+    const ctx = fakeCtx({ evaluateActivity: () => ({ decision: 'warn', message: 'Rani is controlling this device; your taps will interfere' }) })
+    const result = await invoke(cap, ctx, { deviceId: 'd1' })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.warning).toBe('Rani is controlling this device; your taps will interfere')
+  })
+
+  test('activity policy is never consulted implicitly — evaluateActivity is called, never mutated, and only once', async () => {
+    let calls = 0
+    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), activity: { kind: 'control' } })
     const ctx = fakeCtx({
-      controlLeaseBlockedBy: () => {
-        acquireCalls++
-        return null
+      evaluateActivity: () => {
+        calls++
+        return ALLOW
       },
     })
     await invoke(cap, ctx, { deviceId: 'd1' })
-    expect(acquireCalls).toBe(1)
+    expect(calls).toBe(1)
   })
 
-  test('5. offline device with lease != none -> E_DEVICE_OFFLINE', async () => {
-    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), lease: 'device' })
+  test("5. offline device with a declared activity -> E_DEVICE_OFFLINE", async () => {
+    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), activity: { kind: 'read' } })
     const ctx = fakeCtx({ isDeviceOnline: () => false })
     const result = await invoke(cap, ctx, { deviceId: 'd1' })
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error.code).toBe('E_DEVICE_OFFLINE')
   })
 
-  test('lease:none never checks device online, even with a deviceId present', async () => {
+  test('no declared activity never checks device online, even with a deviceId present', async () => {
     let onlineChecked = false
-    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), lease: 'none' })
+    const cap = fakeCap({ input: z.object({ deviceId: z.string() }) })
     const ctx = fakeCtx({ isDeviceOnline: () => ((onlineChecked = true), false) })
     const result = await invoke(cap, ctx, { deviceId: 'd1' })
     expect(result.ok).toBe(true)
     expect(onlineChecked).toBe(false)
+  })
+
+  test("'read' skips the policy entirely — no conflict, however busy the device, and no online check either", async () => {
+    let evaluated = false
+    let onlineChecked = false
+    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), activity: { kind: 'read' } })
+    const ctx = fakeCtx({
+      evaluateActivity: () => {
+        evaluated = true
+        return { decision: 'forbid', message: 'would refuse if ever consulted' }
+      },
+      isDeviceOnline: () => ((onlineChecked = true), true),
+    })
+    const result = await invoke(cap, ctx, { deviceId: 'd1' })
+    expect(result.ok).toBe(true)
+    expect(evaluated).toBe(false)
+    // `'read'` still requires the device online (plan 205 §4.4: "the device must be online, nothing
+    // is started and the policy is not consulted") — only the POLICY check is skipped.
+    expect(onlineChecked).toBe(true)
+  })
+
+  test('control touches the marker after the handler succeeds, never before', async () => {
+    const order: string[] = []
+    const cap = fakeCap({
+      input: z.object({ deviceId: z.string() }),
+      activity: { kind: 'control' },
+      handler: async () => {
+        order.push('handler')
+        return { ok: true as const }
+      },
+    })
+    const ctx = fakeCtx({ touchActivity: () => order.push('touch') })
+    const result = await invoke(cap, ctx, { deviceId: 'd1' })
+    expect(result.ok).toBe(true)
+    expect(order).toEqual(['handler', 'touch'])
+  })
+
+  test('control never touches the marker when the handler throws', async () => {
+    let touched = false
+    const cap = fakeCap({
+      input: z.object({ deviceId: z.string() }),
+      activity: { kind: 'control' },
+      handler: async () => {
+        throw new Error('boom')
+      },
+    })
+    const ctx = fakeCtx({ touchActivity: () => { touched = true } })
+    await invoke(cap, ctx, { deviceId: 'd1' })
+    expect(touched).toBe(false)
+  })
+
+  test('a non-control activity kind never touches the marker, even on success', async () => {
+    let touched = false
+    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), activity: { kind: 'command' } })
+    const ctx = fakeCtx({ touchActivity: () => { touched = true } })
+    const result = await invoke(cap, ctx, { deviceId: 'd1' })
+    expect(result.ok).toBe(true)
+    expect(touched).toBe(false)
   })
 
   test('6. exceeding the deadline -> E_DEADLINE', async () => {
@@ -176,9 +245,9 @@ describe('invoke (plan 63 §3.4, acceptance #4-7, #12)', () => {
     expect((records[0]?.meta as { outcome: string }).outcome).toBe('ok')
   })
 
-  test('invoke refuses in the fixed §3.4 order — permission before device grant before lease', async () => {
+  test('invoke refuses in the fixed §3.4 order — permission before device grant before the activity policy', async () => {
     const calls: string[] = []
-    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), lease: 'control' })
+    const cap = fakeCap({ input: z.object({ deviceId: z.string() }), activity: { kind: 'control' } })
     const ctx = fakeCtx({
       hasPermission: () => {
         calls.push('permission')
@@ -188,9 +257,9 @@ describe('invoke (plan 63 §3.4, acceptance #4-7, #12)', () => {
         calls.push('grant')
         return true
       },
-      controlLeaseBlockedBy: () => {
-        calls.push('lease')
-        return null
+      evaluateActivity: () => {
+        calls.push('activity')
+        return ALLOW
       },
     })
     const result = await invoke(cap, ctx, { deviceId: 'd1' })
