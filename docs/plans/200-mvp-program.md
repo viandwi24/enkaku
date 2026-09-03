@@ -271,3 +271,28 @@ The prototype's Studio suite is about 170 isolated processes, each building a DO
 Not tested: HTTP route wiring, UI copy, settings section lists, log wording, anything a typecheck already proves. An existing backend test outside the list is deleted by the plan that touches its module (listed in that plan's §10).
 
 **Target:** the full backend `bun test` under 60 s on the maintainer's laptop by plan 224, at which point `CLAUDE.md`'s "never run a full suite" rule is retired and executors run their package's suite instead of scoped files.
+
+### 8.4 Estimated duration per stage
+
+Added 2026-09-03 at the CEO's request. **These are the CTO's estimates and the least reliable numbers in this document.** Each figure is one executor working one plan, including reading the plan, writing the code, fixing typecheck fallout, running its scoped tests, proving its removal greps, and writing its §11 report. "Integration" is the merge into `mvp` plus re-running the stage's scoped tests after the merge.
+
+| Stage | Plans in parallel | Longest plan in the stage | Integration | Stage total |
+|---|---|---|---|---|
+| 1 | 201 (3d), 202 (2d), 203 (4d), 204 (4d) | 4d | 1d | **5d** |
+| 2 | 205 (6d) | 6d | 1d | **7d** |
+| 3 | 206 (5d), 207 (6d), 213 (5d) | 6d | 1d | **7d** |
+| 4 | 208 (4d), 209 (6d), 210 (5d), 221 (8d) | 8d (Android) | 1d | **9d** |
+| 5 | 211 (8d), 214 (6d), 222 (5d) | 8d (schema surgery) | 1d | **9d** |
+| 6 | 212 (5d), 215 (6d), 216 (5d), 217 (5d), 218 (7d) | 7d | 2d (five merges) | **9d** |
+| 7 | 219 (4d), 220 (4d), 223 (3d) | 4d | 1d | **5d** |
+| 8 | 224 (4d) | 4d | 0d | **4d** |
+
+**Total: about 55 working days, roughly 11 working weeks.**
+
+Three things that make that number optimistic, in order of how likely they are to bite:
+
+1. **Review is the real bottleneck, not execution.** Twenty-four plans produce far more code than one person can read carefully in eleven weeks. The estimate assumes the owner reviews a stage while the next one is being written; if review queues, every later stage slides by the same amount. Nothing about adding executors fixes this.
+2. **Two plans carry most of the risk.** Plan 205 (deleting leases across twelve gates, with a migration) and plan 211 (splitting thirty-four job columns and re-keying logs, traces and artifacts to runs) are the two where a mistake is expensive and quiet. Both sit on the critical path. Budget re-work, not just work.
+3. **Without a lab device (§1 of `docs/mvp/DECISIONS-PENDING.md`), the `owner` rows do not close.** That does not lengthen the schedule, but it means stage 8 finishes with the product's headline numbers unmeasured.
+
+**Critical path:** 201 → 205 → 207 → 210 → 211 → 212 → 219 → 224, eight plans, about 40 of the 55 days. Shortening anything off that path buys nothing.
