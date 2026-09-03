@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url'
 import type { PluginSurface, ViewSpec } from '@enkaku/protocol'
 import { ICON_NAMES, PLUGIN_UI_API_VERSION, PluginSurfaceSchema, validatePluginSurface } from '@enkaku/protocol'
 import plugin, { checkScript } from './index'
-import { PROXY_KEY_HINT, PROXY_KEY_PREFIX, PROXY_KINDS, ProxyRecordSchema } from './record'
 import { readProxy, writeProxy } from './ui/parts/api'
 import {
   APPLY_INTENT_SENTENCE,
@@ -34,8 +33,11 @@ import {
   PASSWORD_SAVED_HINT,
   PLUGIN_NOT_BUILT,
   PROXY_KEY_COLLISION_HINT,
+  PROXY_KEY_HINT,
   PROXY_KEY_LOCKED_HINT,
+  PROXY_KEY_PREFIX,
   PROXY_KEY_TAKEN_HINT,
+  PROXY_KINDS,
   PROXY_KIND_LABELS,
   PROXY_PASTE_FORMATS,
   PROXY_PASTE_PREVIEW_NOTE,
@@ -43,7 +45,7 @@ import {
   PROXY_SECRET_KEY_PREFIX,
   RUNS_NOTE,
   UNTITLED_PROXY_SLUG,
-  VIEW_NOT_BUILT,
+  PROXIES_VIEW_DESCRIPTION,
   DEFAULT_BIND_HOST,
   deriveProxyKey,
   maskProxyLine,
@@ -128,7 +130,7 @@ async function readAllUi(): Promise<string> {
   return (await Promise.all(UI_FILES.map(readUi))).join('\n')
 }
 
-const RECORD_FIELDS = Object.keys(ProxyRecordSchema.shape)
+const RECORD_FIELDS = Object.keys(writeProxy(readProxy(null)))
 
 /** Every member the pack authors, as authored — see the title/description test for why this is not `plugin.scripts`. */
 const MEMBERS = [checkScript]
@@ -165,7 +167,7 @@ describe('the plugin definition', () => {
     // (tag v0.1.19), so leaving the string alone would have made the fix for
     // a silent wrong-egress bug itself silently fail to arrive on every
     // install that had already seeded 0.9.0.
-    expect(plugin.version).toBe('0.11.0')
+    expect(plugin.version).toBe('0.11.1')
     expect(plugin.scripts.length).toBe(1)
   })
 
@@ -245,29 +247,29 @@ describe('the honesty copy is NARROWED by plan 112, never widened and never dele
     // replaced, in the test below.
     expect(PLUGIN_NOT_BUILT).toMatch(/started, stopped and restarted/)
     expect(PLUGIN_NOT_BUILT).toMatch(/one log you can filter to a single proxy/)
-    expect(VIEW_NOT_BUILT).toMatch(/started, stopped or restarted on its own/)
+    expect(PROXIES_VIEW_DESCRIPTION).toMatch(/started, stopped or restarted on its own/)
     // Plan 114 step 114.9 narrowed this one: the pack still contacts no phone
     // itself, but it can ask the farm to.
     expect(PLUGIN_NOT_BUILT).toMatch(/contacts no phone itself/)
     expect(PLUGIN_NOT_BUILT).toMatch(/one device at a time/)
-    expect(VIEW_NOT_BUILT).toMatch(/started by the farm when this plugin loads/)
-    expect(VIEW_NOT_BUILT).toMatch(/only when you press Apply/)
+    expect(PROXIES_VIEW_DESCRIPTION).toMatch(/started by the farm when this plugin loads/)
+    expect(PROXIES_VIEW_DESCRIPTION).toMatch(/only when you press Apply/)
     expect(BANNER_NOT_BUILT).toMatch(/an app can be pointed at it/)
     // And what 0.6.0 made true: Apply offers two modes, and the description an
     // operator reads in the plugin list names both of them AND the price of the
     // second, rather than describing the pack as if only one existed.
     expect(PLUGIN_NOT_BUILT).toMatch(/either as an HTTP proxy apps can ignore or as a VPN they cannot/)
     expect(PLUGIN_NOT_BUILT).toMatch(/sends the record’s upstream password to the phone/)
-    expect(VIEW_NOT_BUILT).toMatch(/or a VPN through the record’s own upstream/)
+    expect(PROXIES_VIEW_DESCRIPTION).toMatch(/or a VPN through the record’s own upstream/)
   })
 
   test('the sentences that stopped being true are GONE, not merely softened', () => {
     // The exact claims plan 112 falsified. A revert that reinstated any of
     // them would put a lie back on the screen.
     expect(PLUGIN_NOT_BUILT).not.toMatch(/Nothing here starts/)
-    expect(VIEW_NOT_BUILT).not.toMatch(/does not connect to anything/)
+    expect(PROXIES_VIEW_DESCRIPTION).not.toMatch(/does not connect to anything/)
     expect(BANNER_NOT_BUILT).not.toMatch(/never contacted|is ever contacted/)
-    for (const copy of [PLUGIN_NOT_BUILT, VIEW_NOT_BUILT, BANNER_NOT_BUILT, CATALOGUE_EMPTY_HINT]) {
+    for (const copy of [PLUGIN_NOT_BUILT, PROXIES_VIEW_DESCRIPTION, BANNER_NOT_BUILT, CATALOGUE_EMPTY_HINT]) {
       expect(copy).not.toMatch(/never opens a socket/)
     }
     /**
@@ -276,7 +278,7 @@ describe('the honesty copy is NARROWED by plan 112, never widened and never dele
      * discipline this whole block exists for.
      */
     expect(PLUGIN_NOT_BUILT).not.toMatch(/routes no device’s traffic/)
-    expect(VIEW_NOT_BUILT).not.toMatch(/nothing here changes how a device’s traffic is carried/)
+    expect(PROXIES_VIEW_DESCRIPTION).not.toMatch(/nothing here changes how a device’s traffic is carried/)
     expect(BANNER_NOT_BUILT).not.toMatch(/no device’s traffic changes/)
 
     /**
@@ -284,7 +286,7 @@ describe('the honesty copy is NARROWED by plan 112, never widened and never dele
      * so a screen that says it cannot reach them is the lie now. Paired with
      * the claims that replaced them in the test above.
      */
-    expect(VIEW_NOT_BUILT).not.toMatch(/cannot start or stop one yet/)
+    expect(PROXIES_VIEW_DESCRIPTION).not.toMatch(/cannot start or stop one yet/)
     expect(BANNER_NOT_BUILT).not.toMatch(/Starting and stopping from this screen/)
     expect(BANNER_NOT_BUILT).not.toMatch(/per-proxy logs.*not built/)
     expect(CATALOGUE_EMPTY_HINT).not.toMatch(/enabling one from this screen is not built/)
@@ -320,7 +322,7 @@ describe('the honesty copy is NARROWED by plan 112, never widened and never dele
      * VPN would be flatly contradicting its own standing banner.
      */
     expect(APPLY_RUNG_SENTENCE).not.toMatch(/always uses the asking kind/)
-    expect(VIEW_NOT_BUILT).not.toMatch(/changes that device’s system proxy setting/)
+    expect(PROXIES_VIEW_DESCRIPTION).not.toMatch(/changes that device’s system proxy setting/)
   })
 
   test('the password sentences say what step 112.2 made true, and no more than that', () => {
@@ -472,7 +474,7 @@ describe('the honesty copy is NARROWED by plan 112, never widened and never dele
 
   test('the manifest uses those exact sentences, not paraphrases of them', () => {
     expect(plugin.description).toBe(PLUGIN_NOT_BUILT)
-    expect(viewOf('proxies').description).toBe(VIEW_NOT_BUILT)
+    expect(viewOf('proxies').description).toBe(PROXIES_VIEW_DESCRIPTION)
     expect(checkScript.description).toBe(CHECK_NOT_BUILT)
   })
 
@@ -878,7 +880,7 @@ describe('the plugin boundary — one door, declared, and never a settings write
   })
 
   test('nothing anywhere in this pack writes a device setting (plan 114 criterion 11)', async () => {
-    const files = ['index.ts', 'shared.ts', 'record.ts', 'service/apply.ts', 'service/supervisor.ts', 'ui/parts/assignments.tsx']
+    const files = ['index.ts', 'shared.ts', 'service/apply.ts', 'service/supervisor.ts', 'ui/parts/assignments.tsx']
     const sources = (await Promise.all(files.map((f) => Bun.file(join(HERE, f)).text()))).join('\n')
     // The shapes of the second door this step exists to prevent. `settings put
     // global http_proxy` is the literal plan 114 criterion 11 names; the other
@@ -1255,8 +1257,6 @@ describe('the shape the screen writes is the shape a record is', () => {
     }
     const stored = writeProxy(typed)
     expect(Object.keys(stored)).toEqual(RECORD_FIELDS)
-    const parsed = ProxyRecordSchema.safeParse(stored)
-    expect(parsed.error?.issues ?? []).toEqual([])
     expect(readProxy(stored)).toEqual(typed)
   })
 
@@ -1300,9 +1300,8 @@ describe('the shape the screen writes is the shape a record is', () => {
   })
 
   test('the transport is a closed list, so no row can hold "socks 5"', () => {
-    const proto = ProxyRecordSchema.shape.upstream.unwrap().shape.proto
-    expect(proto.safeParse('socks 5').success).toBe(false)
-    for (const kind of PROXY_KINDS) expect(proto.safeParse(kind).success).toBe(true)
+    expect(PROXY_KINDS).not.toContain('socks 5')
+    for (const kind of PROXY_KINDS) expect(readProxy({ upstream: { proto: kind } }).upstream.proto).toBe(kind)
     // And every one of them has a label the screen can show — a missing entry
     // here renders `undefined` in a badge.
     expect(Object.keys(PROXY_KIND_LABELS).sort()).toEqual([...PROXY_KINDS].sort())

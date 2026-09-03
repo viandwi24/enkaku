@@ -528,7 +528,7 @@ export interface ProxyFailoverConfig {
   autoFailback: boolean
 }
 
-/** One proxy, as this plugin stores it. Field order is the storage order — `index.test.ts` holds it to `ProxyRecordSchema`'s. */
+/** One proxy, as this plugin stores it. Field order is the storage order; `index.test.ts` holds `writeProxy` to it. */
 export interface ProxyRecord {
   label: string
   listen: ProxyListen
@@ -826,7 +826,7 @@ export function readProxyRecord(value: unknown): ProxyRecord {
  * halves cannot disagree: a screen that writes `{ hostname }` into a reader
  * that looks for `{ host }` renders blank cells forever, the write succeeds,
  * and nothing anywhere reports a fault. `index.test.ts` runs a value through
- * both and checks the result against `ProxyRecordSchema`.
+ * both and checks the round trip.
  */
 /** One upstream → the exact object it is stored as — the write half of `readUpstream`, shared by the primary `upstream` and every entry of `fallbackUpstreams` (plan 121 §4.1). */
 function writeUpstream(upstream: ProxyUpstream): Record<string, unknown> {
@@ -2226,7 +2226,7 @@ export const PLUGIN_NOT_BUILT =
  * why the opening sentence is four words rather than a longer one: naming the
  * second mode is worth more than the prose it displaced.
  */
-export const VIEW_NOT_BUILT =
+export const PROXIES_VIEW_DESCRIPTION =
   'Proxy records this plugin keeps. A record marked enabled is started by the farm when this plugin loads, and each bridge can be started, stopped or restarted on its own from here. Applying one to a device sets a system proxy, or a VPN through the record’s own upstream, only when you press Apply.'
 
 /**
