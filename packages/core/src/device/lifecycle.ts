@@ -1,12 +1,12 @@
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { eq, inArray } from 'drizzle-orm'
-import type { DeviceStatus } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs, type DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
 import { deleteJobsWithHistory } from '../jobs/purge'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import { formatDeviceLabel, lookupDeviceNumber } from '../registry/device-number'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -66,14 +66,15 @@ export interface DeviceLifecycle {
 
 export interface DeviceLifecycleDeps {
   db: Db
-  leases: LeaseManager
+  activities: Pick<ActivityRegistry, 'list'>
+  controlSettings: () => ControlPolicySettings
   /** Main-stream device events: device.forgotten / device.blocked (plan 47 §3.5, §18 §4.2 pattern). No event for unblock — see the comment on `unblock` below. */
   record?: EventRecorder['record']
   /**
    * Tears down a network route because the OPERATOR explicitly removed this
    * device (plan 56 §3.6). `GuestAgentRoutesHandle.revertNetwork`, which is
    * documented for exactly this: an operator's explicit act, never an
-   * automatic reaction to a lease ending or a device going quiet.
+   * automatic reaction to a control marker ending or a device going quiet.
    *
    * That distinction is the whole safety argument. A core that crashes,
    * disconnects, or simply stops talking must leave the tunnel HELD CLOSED —
@@ -123,29 +124,32 @@ type LifecycleOp = 'forget' | 'block'
 
 /**
  * The §3.5 safety matrix, shared by `forget` and `block` — both read the
- * SAME device row and the SAME lease state, so the two operations can never
- * disagree about whether a device is busy or leased.
+ * SAME device row and the SAME live activities, so the two operations can
+ * never disagree about whether a device is busy or being controlled.
  *
- * `status` is checked directly rather than re-deriving it from the job store
- * or the session layer: `status` IS the state machine's own single source of
- * truth (spec §10.1) — `busy` only ever means "a job currently holds this
- * device", and `manual` only ever means "a manual lease is held" (plan 04
- * §4.1's transition table). `leases.getLease` is also consulted so a test or
- * caller that constructed a row directly (bypassing the lease manager) is
- * still caught: whichever source is more restrictive wins.
+ * Reworked by plan 205 §4.9: `device_busy` is a live `job`/`workflow-job`/
+ * `install` activity (never the device's `status`, which no longer encodes
+ * this at all — MVP 04 §1.1 shrank it to `offline`/`online`/`quarantined`);
+ * `device_in_use` is a live `control` marker NOT owned by the calling actor
+ * — an operator forgetting or blocking a device they are themselves
+ * currently driving needs no separate "release control first" step, unlike
+ * the old manual hold this replaced, which blocked unconditionally
+ * regardless of who held it.
  */
 function checkRemovable(
   op: LifecycleOp,
   row: DeviceRow,
-  leases: LeaseManager,
+  activities: Pick<ActivityRegistry, 'list'>,
+  controlSettings: () => ControlPolicySettings,
+  actor: Actor,
 ): { ok: true } | { ok: false; code: string; message: string } {
-  const status = (row.status ?? 'offline') as DeviceStatus
-  if (status === 'busy') {
+  const live = activities.list(row.id)
+  if (live.some((a) => a.kind === 'job' || a.kind === 'workflow-job' || a.kind === 'install')) {
     return { ok: false, code: 'device_busy', message: `${row.label} is running a job — wait for it to finish or cancel it first` }
   }
-  const lease = leases.getLease(row.id)
-  if (status === 'manual' || (lease && lease.type === 'manual')) {
-    return { ok: false, code: 'device_in_use', message: `${row.label} has an active manual lease — release control first` }
+  const control = live.find((a) => a.kind === 'control')
+  if (control && !(control.actor.kind === 'user' && control.actor.id === actor.userId)) {
+    return { ok: false, code: 'device_in_use', message: `someone is controlling ${row.label}; wait ${controlSettings().idleSec}s after their last input` }
   }
   // Forgetting a CONNECTED device used to be refused here, with a one-click
   // offer to block instead, because the registry would have re-enrolled it
@@ -190,7 +194,7 @@ function countArtifacts(db: Db, deviceId: string, jobIds: string[]): number {
 }
 
 export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycle {
-  const { db, leases, log } = deps
+  const { db, activities, controlSettings, log } = deps
 
   /**
    * Takes the device's network route down before it stops being a device.
@@ -271,7 +275,7 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
 
     async forget(deviceId, opts) {
       const row = mustGet(deviceId)
-      const check = checkRemovable('forget', row, leases)
+      const check = checkRemovable('forget', row, activities, controlSettings, opts.actor)
       if (!check.ok) throw new EnkakuError(check.code, check.message)
 
       // Before the row goes: hand the phone back its own network, and clear
@@ -381,7 +385,7 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
 
     async block(deviceId, opts) {
       const row = mustGet(deviceId)
-      const check = checkRemovable('block', row, leases)
+      const check = checkRemovable('block', row, activities, controlSettings, opts.actor)
       if (!check.ok) throw new EnkakuError(check.code, check.message)
 
       // Block removes the device too, so it strands a route exactly the same
