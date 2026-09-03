@@ -1131,12 +1131,12 @@ export function LiveView({
         )}
         {/* Plan 203 §4.11 — the latency overlay's own toggle. H.264 only:
             the estimator needs a device PTS, which PNG frames never carry.
-            Drops `ml-auto` when the webrtc badge above already rendered one
-            — a flex row only needs one auto-margin push. */}
+            Always carries `ml-auto`: the badge that used to compete for the
+            auto-margin push was the webrtc one, and plan 201 deleted it. */}
         {codec === 'h264' && (
           <button
             type="button"
-            className={cn('rack-label cursor-pointer', transport !== 'webrtc' && 'ml-auto')}
+            className="rack-label cursor-pointer ml-auto"
             aria-pressed={latencyOverlay}
             onClick={() => {
               const next = !latencyOverlay
