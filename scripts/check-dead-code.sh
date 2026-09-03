@@ -41,6 +41,9 @@ EXCLUDES=(
   --exclude-dir=out --exclude-dir=.next --exclude-dir=build --exclude-dir=src-tauri
   --exclude-dir=third_party --exclude-dir=packs --exclude-dir=harness
   --exclude='*.tsbuildinfo' --exclude=bun.lock
+  # This script's own source quotes every removed name as a grep pattern
+  # string, which would otherwise match itself on every run.
+  --exclude=check-dead-code.sh
 )
 CODE=(packages apps plugins scripts examples)
 
