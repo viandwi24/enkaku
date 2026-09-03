@@ -25,8 +25,6 @@ import { createTunnelRpc, type TunnelRpc } from './tunnel/rpc'
 import { createRemoteSessionManager, type RemoteSessionManager } from './tunnel/remote-sessions'
 import { createRemoteJobBridge } from './jobs/executors/remote'
 import { createJobLogBuffer } from './jobs/log-buffer'
-import { createWebRtcRelay } from './relay/webrtc-relay'
-import { createWeriftFactory } from './relay/werift-peer'
 import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
@@ -343,7 +341,6 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let adbHealthMonitor: AdbServerHealthMonitor | null = null
   let remoteSessions: RemoteSessionManager | null = null
   let tunnelRpc: TunnelRpc | null = null
-  let webrtcRelayRef: ReturnType<typeof createWebRtcRelay> | null = null
   let retention: RetentionGc | null = null
 let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
@@ -1731,9 +1728,9 @@ let blobGc: BlobGc | null = null
       // window that survives, and a limiter rebuilt with the router would reset
       // every count.
       const pluginWebhookLimiter = createWebhookRateLimiter()
-      // Plan 109 §4.5, step 109.8 — the per-plugin ring, the rotated file, the
-      // redactor, and the `plugin.log` broadcast. R3's shape (`jobs/log-buffer.ts`
-      // is the precedent), one ring per plugin with every line optionally
+      // Plan 109 §4.5, step 109.8 — the per-plugin ring, the rotated file, and
+      // the redactor. R3's shape (`jobs/log-buffer.ts` is the precedent),
+      // one ring per plugin with every line optionally
       // tagged, so "logs for one thing this plugin manages" is a filter rather
       // than a second stream.
       const pluginLogs = createPluginLogStore({
@@ -1757,7 +1754,6 @@ let blobGc: BlobGc | null = null
               return []
             }
           }),
-        broadcast: (plugin, line) => hub.broadcast({ type: 'plugin.log', payload: { plugin, ...line } }),
         log: log.child('plugin-logs'),
       })
       pluginHost = createRuntimeHost({
@@ -2166,24 +2162,6 @@ let blobGc: BlobGc | null = null
       // Node-owned devices use the remote executor; local devices use the
       // in-process runner (registered once adb is ready).
       executors.setFallback(remoteBridge.executor)
-
-      // The WebRTC relay serves node-owned devices (cloud mode). On a LAN,
-      // Studio stays on the simpler WS + WebCodecs path.
-      const webrtcRelay = createWebRtcRelay({
-        factory: createWeriftFactory(),
-        log: log.child('webrtc'),
-        subscribeVideo: (deviceId, cb) =>
-          tunnelRouter.subscribeVideo(deviceId, (payload) => cb(payload, BigInt(Date.now()) * 1000n)),
-        requestKeyframe: (deviceId) => {
-          // scrcpy 3.3.1: request a fresh IDR through the reset-video control message.
-          tunnelRouter.sendToDevice(deviceId, {
-            type: 'session.start',
-            payload: { deviceId, engines: {} },
-          } as never)
-        },
-      })
-
-      webrtcRelayRef = webrtcRelay
 
       // Plan 44 §5.7/§5.8: `guestAgent` needs `leases` (built above) and
       // `ports` (built earlier, unconditionally) but must exist before `adb`
@@ -2609,7 +2587,7 @@ let blobGc: BlobGc | null = null
         tree: agentTreeStore,
         // Plan 70 §4.1, §4.4 — threaded straight through to every `executeRun` call.
         blobs: agentBlobStore,
-        // Plan 67 §3.3, §4.4 — `agent.message.queued`/`agent.child.started`/`.finished` are
+        // Plan 67 §3.3, §4.4 — `agent.child.started`/`.finished` are
         // addressed to a DIFFERENT run's thread than the one whose execution produced them.
         publishToThread: (threadId, msg) => agentWsHandler.publishRaw(threadId, msg),
         audit,
@@ -3556,7 +3534,6 @@ let blobGc: BlobGc | null = null
         const handler = createWsMessageHandler({
           sessions: localSessions,
           ...(remoteSessions ? { remote: remoteSessions } : {}),
-          webrtc: webrtcRelay,
           pairing: pairingService,
           leases,
           jobs: jobService,
@@ -4421,7 +4398,6 @@ let blobGc: BlobGc | null = null
           endpoints,
           registry,
           settings: () => settingsStore.get().discovery,
-          hub: { broadcast: (msg) => hub.broadcast(msg) },
           log: log.child('sweep'),
         })
         sweeperRef = sweeper
@@ -4615,8 +4591,6 @@ let blobGc: BlobGc | null = null
       traceRecorder = null
       await remoteSessions?.closeAll()
       remoteSessions = null
-      await webrtcRelayRef?.closeAll()
-      webrtcRelayRef = null
       // Stopped before the registry it depends on (plan 85 §5 step 85.2) —
       // a pending reconcile pass calling into a torn-down registry would be
       // the exact kind of "process left running past stop()" 00-overview §7

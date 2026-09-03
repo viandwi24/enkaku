@@ -1,7 +1,8 @@
-// werift (via tsyringe) needs the Reflect polyfill before its module
-// initialisers run; in a compiled binary the bundler's module order no longer
-// guarantees that, so the entrypoint imports it first.
-import 'reflect-metadata'
+// No static import remains in this file (every dependency below is a dynamic
+// `import()`, deliberately, to keep `--version`/`--json` fast) — this empty
+// export is only so TypeScript treats the file as a module, which top-level
+// `await` requires.
+export {}
 
 /**
  * Starts the daemon and keeps the process alive until SIGINT/SIGTERM.

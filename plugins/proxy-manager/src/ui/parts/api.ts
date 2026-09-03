@@ -161,7 +161,7 @@ export const IgnoredSchema = z.unknown()
  * **The funnel did not move; its implementation did.** `readProxy` and
  * `writeProxy` are still the one pair every read and every write on this
  * screen goes through, and `index.test.ts` still runs a value through both and
- * parses the result against `ProxyRecordSchema`. What changed is that the
+ * checks the round trip. What changed is that the
  * service — which runs in the core's process and cannot import anything from
  * `@enkaku/ui` — reads the same records. Two implementations of "what a stored
  * proxy means", one in the browser and one in the core, would be exactly the

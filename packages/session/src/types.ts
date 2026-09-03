@@ -21,7 +21,7 @@ export interface DeviceSnapshot {
   display: string | null
   input: string | null
   inspection: string | null
-  preferredInputMode: 'uhid' | 'sdk' | 'aoa'
+  preferredInputMode: 'uhid' | 'sdk'
   /** DeviceSettings.prep.keepAwake (Plan 17 §3.4). */
   keepAwake?: KeepAwakeMode
   /** DeviceSettings.prep.standbyScreenOff (Plan 17 §3.5). */

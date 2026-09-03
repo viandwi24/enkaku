@@ -5,7 +5,7 @@ import { applyAssignment, type ApplyHost } from './service/apply'
 import { registerProxyRoutes } from './service/handlers'
 import { resetProxyManager } from './service/reset'
 import { createSupervisor } from './service/supervisor'
-import { CHECK_NOT_BUILT, PLUGIN_NOT_BUILT, PROXY_KEY_PREFIX, VIEW_NOT_BUILT, type ProxyApplyMode } from './shared'
+import { CHECK_NOT_BUILT, PLUGIN_NOT_BUILT, PROXIES_VIEW_DESCRIPTION, PROXY_KEY_PREFIX, type ProxyApplyMode } from './shared'
 
 /**
  * Proxy manager — a plugin that owns a screen and, deliberately, nothing else.
@@ -275,8 +275,17 @@ export default definePlugin({
    *
    * Minor, not patch: an operator meets it immediately, in a table they use
    * every day.
+   *
+   * **0.11.1, plan 201 (MVP wave 0): housekeeping.** `service.permissions`
+   * UNCHANGED. Deleted `record.ts`, a Zod re-declaration of the record that
+   * only tests imported (the service parses through `shared.ts`'s
+   * `readProxyRecord`); renamed the view's stale "not built" description
+   * constant to `PROXIES_VIEW_DESCRIPTION` because the view has been built
+   * since plan 112; reworded two comments that named the deleted
+   * `plugin.log` broadcast. Patch, not minor: nothing an operator meets
+   * changes.
    */
-  version: '0.11.0',
+  version: '0.11.1',
   title: 'Proxy manager',
   description: PLUGIN_NOT_BUILT,
   scripts: [checkScript],
@@ -525,7 +534,7 @@ export default definePlugin({
     views: {
       proxies: {
         title: 'Proxy manager',
-        description: VIEW_NOT_BUILT,
+        description: PROXIES_VIEW_DESCRIPTION,
         /**
          * Tier C. `entry` names a file inside the package's `ui/` directory,
          * and `enkaku publish` builds `src/ui/index.tsx` into exactly that —

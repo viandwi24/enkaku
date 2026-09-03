@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import type { AdbExecutor } from './session'
-import { parseScrcpyServerList, sweepStrayScrcpyServers, startScrcpySession, SCID_MARKER_PREFIX } from './session'
+import { parseScrcpyServerList, sweepStrayScrcpyServers, startScrcpySession } from './session'
+
+/** Mirrors session.ts's private marker (SCID_MARKER_BYTE = 0x7f); a test that pins the shipped value. */
+const SCID_MARKER_PREFIX = '7f'
 
 /**
  * The marker byte shipped as `0xec` for a short window and broke scrcpy on

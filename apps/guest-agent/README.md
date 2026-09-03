@@ -115,27 +115,13 @@ A human physically holding the phone during a session sees `EnkakuIme`'s own one
 
 `screen-label` gates `label.apply`/`label.status`/`label.clear` (`label/LabelRenderer.kt` draws the bitmap, `label/WallpaperFacet.kt` applies it through `WallpaperManager`) — a solid black wallpaper with the device's name above its number, both centred, so an operator standing in front of many identical phones can tell them apart. Built by plan 90 step 90.5+ (a facet plan 89 asked for and no numbered step in either plan had actually been assigned — see that plan's own note) against the exact contract plan 89 §4.5 specifies: `applied` reports what surface actually took (an OEM that swallows the lock screen produces `['home']`, never a lie); an unchanged fingerprint is a cheap no-op; the original wallpaper is captured once and `originalCaptured` is reported honestly; `label.clear` is idempotent; `rendererVersion` is an integer the agent owns.
 
-**The device side is complete; nothing on the host calls it yet.** `packages/core/src/device/labelling.ts` — the host-side service that computes the fingerprint and decides when to call these verbs — is plan 89 §4.6's own work and has not been built (plan 89 is still `not started`; only plan 90's on-device contract has shipped). Driving `label.apply` today needs a short script against `packages/drivers/src/network/guest-agent/client.ts`'s `createGuestAgentClient` directly.
+**Both halves exist.** `packages/core/src/device/labelling.ts` (plan 89 §4.6) is the host-side service that computes the fingerprint and calls these verbs; it is wired in `packages/core/src/daemon.ts` and Studio's label apply and clear actions drive it.
 
 `SET_WALLPAPER` is a normal, install-time permission (already in `AndroidManifest.xml`) — unlike the route facet's `ACTIVATE_VPN` or mock location's `android:mock_location`, it needs no `appops` step.
 
-## Driving it without Studio
-
-`scripts/guest-agent.ts` is the reproducible form of the device bring-up, useful when debugging the agent itself:
-
-```bash
-bun scripts/guest-agent.ts install  --serial <SERIAL>
-bun scripts/guest-agent.ts route    "socks5://user:pass@host:1337" --serial <SERIAL>
-bun scripts/guest-agent.ts status   --serial <SERIAL>
-bun scripts/guest-agent.ts stop     --serial <SERIAL>
-bun scripts/guest-agent.ts uninstall --serial <SERIAL>
-```
-
-It is a temporary developer tool, not part of the product — delete it once the Studio path is complete.
-
 ## Smoke test
 
-`scripts/smoke-guest-agent.ts` is the real test suite for this app: install, permissions, pre-grant, bootstrap, token rotation, an ANR check, routing, egress, an error-frame check, interleaving, fail-closed via the dead-man's switch, recovery, fail-closed via a dead upstream, uninstall, and teardown — fifteen stages, each asserting on what the device reports. It supersedes `scripts/guest-agent.ts` for anything beyond ad hoc debugging; see [`docs/plans/50-m24a-ci-and-device-smoke-test.md`](../../docs/plans/50-m24a-ci-and-device-smoke-test.md) and [`docs/plans/51-m24b-verified-egress-and-fail-closed.md`](../../docs/plans/51-m24b-verified-egress-and-fail-closed.md) §5.9 for why each stage exists.
+`scripts/smoke-guest-agent.ts` is the real test suite for this app: install, permissions, pre-grant, bootstrap, token rotation, an ANR check, routing, egress, an error-frame check, interleaving, fail-closed via the dead-man's switch, recovery, fail-closed via a dead upstream, uninstall, and teardown — fifteen stages, each asserting on what the device reports. See [`docs/plans/50-m24a-ci-and-device-smoke-test.md`](../../docs/plans/50-m24a-ci-and-device-smoke-test.md) and [`docs/plans/51-m24b-verified-egress-and-fail-closed.md`](../../docs/plans/51-m24b-verified-egress-and-fail-closed.md) §5.9 for why each stage exists.
 
 ```bash
 ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <SERIAL>

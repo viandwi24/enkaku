@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { compareSemver, isPrereleaseVersion, parseScriptRef, type RuntimeEnvelope, type ScriptRef } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { plugins, scripts, type ScriptKind, type ScriptRow } from '../db/schema'
@@ -398,12 +398,4 @@ export function findShadowedPublished(registry: ScriptRegistry, entry: ScriptEnt
   if (entry.origin !== 'dev') return null
   const candidates = registry.list({ name: entry.name }).items
   return candidates.find((e) => e.origin !== 'dev' && e.enabled) ?? null
-}
-
-/** Small helper for `queue/job-store.ts`'s `scriptNames()` — batch name/version lookup for a set of concrete `scripts.id`s, used to denormalise `jobs.script_name`/`script_version` at enqueue and as the fallback for a pre-existing row that has neither (plan 82 §3.4). */
-export function scriptNamesByIds(db: Db, ids: string[]): Map<string, { name: string; version: string }> {
-  const unique = [...new Set(ids)]
-  if (unique.length === 0) return new Map()
-  const rows = db.select().from(scripts).where(inArray(scripts.id, unique)).all()
-  return new Map(rows.map((r) => [r.id, { name: r.name, version: r.version }]))
 }

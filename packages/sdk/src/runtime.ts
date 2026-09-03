@@ -138,7 +138,8 @@ export interface PluginContext {
   /**
    * Plan 109 §4.5's logger. In a script handler these lines join the job log;
    * in a core handler, the plugin's runtime log — one ring, one rotated file
-   * at `<dataDir>/plugins/<you>/runtime.log`, and a `plugin.log` broadcast.
+   * at `<dataDir>/plugins/<you>/runtime.log`, readable at
+   * `GET /api/plugins/<you>/runtime/logs`.
    *
    * **Two things about the service side are worth knowing before you write a
    * log line** (step 109.8):

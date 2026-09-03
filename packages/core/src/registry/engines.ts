@@ -28,17 +28,6 @@ const PLANNED: EngineDescriptor[] = [
     },
     available: true,
   },
-  {
-    id: 'scrcpy-aoa',
-    displayName: 'scrcpy AOA/OTG (physical HID over USB — needs a cable, carries no video)',
-    kind: 'input',
-    capabilities: ['tap', 'swipe', 'key', 'hardware-like-input'],
-    locks: ['input-injection'],
-    requires: [],
-    configSchema: {},
-    available: false,
-    unavailableReason: 'Needs an AOA USB transport (libusb) — not implemented yet; use scrcpy-uhid',
-  },
 ]
 
 const all = (): EngineDescriptor[] => [

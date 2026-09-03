@@ -5,7 +5,6 @@ import {
   PLUGIN_UI_API_VERSION,
   PluginServiceDeclarationSchema,
   handlerViewsWithoutServiceMessage,
-  refusedPluginEventTypesMessage,
   unknownPluginEventTypesMessage,
   unsupportedIsolationMessage,
   validatePluginSurface,
@@ -271,13 +270,6 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
     // rather than accepting the subscription and never firing it.
     const unknownEvents = unknownPluginEventTypesMessage(parsed.data.events)
     if (unknownEvents) return failure(unknownEvents, 'E_PLUGIN_EVENT_UNKNOWN')
-    // Step 109.8's own addition to the same accept-then-refuse split. Unlike
-    // the check above this one is about a type that IS real: `plugin.log` is a
-    // broadcast, so nothing upstream would have caught it — and a plugin
-    // subscribed to its own log lines is an unbounded loop inside the core's
-    // process with nothing failing for the error budget to see.
-    const refusedEvents = refusedPluginEventTypesMessage(parsed.data.events)
-    if (refusedEvents) return failure(refusedEvents, 'E_PLUGIN_EVENT_REFUSED')
     // Step 109.7 — two things only the parent can decide about a declared
     // webhook, both refused here rather than at the first delivery.
     const duplicateWebhooks = duplicateWebhookIdsMessage(parsed.data.webhooks)

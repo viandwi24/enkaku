@@ -996,9 +996,10 @@ export type ScriptParamSetRow = typeof scriptParamSets.$inferSelect
  * never a blank gap" (spec §12.3) — applied here to a pipeline's steps
  * instead of a schedule's firings.
  *
- * No producer yet: nothing writes this table until 99.7's workflow executor
- * lands (plan 99 §4.7). Added now, alongside `scripts.kind`, because both are
- * read by the executor-selection seam this step also builds.
+ * Written only by `jobs/executors/workflow.ts`, which `daemon.ts` never
+ * wires (`scriptKind` is not passed to `createExecutorHost`, so the executor
+ * is unreachable in production). Plan 211 replaces this table with workflow
+ * runs and steps.
  */
 export const jobNodes = sqliteTable(
   'job_nodes',
@@ -1056,8 +1057,8 @@ export const artifacts = sqliteTable(
     /**
      * Plan 99 §3.2, §4.6 — the workflow node that produced this artifact.
      * Null for every artifact of a non-workflow job, which is every row
-     * before this plan. No producer yet: set only once 99.7's workflow
-     * executor stamps a node-scoped `ArtifactSink` wrapper (§4.6's own note).
+     * before this plan. Set only by the unreachable workflow executor (see
+     * `jobNodes`); plan 211 removes the column.
      */
     nodeId: text('node_id'),
     kind: text('kind').notNull(), // screenshot|log|file|video

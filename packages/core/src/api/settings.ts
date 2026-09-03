@@ -32,9 +32,6 @@ export function createSettingsRoutes(store: FarmSettingsStore): Hono<AuthEnv> {
     return typedJson(c, UpdateSettingsResponseSchema, { settings: store.update(body) })
   })
 
-  /** The DeviceSettings schema for per-device forms. */
-  app.get('/device-schema', (c) => c.json({ schema: z.toJSONSchema(DeviceSettingsSchema) }))
-
   app.onError((err, c) => {
     if (err instanceof EnkakuError) return c.json(err.toJSON(), 400)
     throw err

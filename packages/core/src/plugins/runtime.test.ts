@@ -1003,8 +1003,8 @@ describe('PluginRuntime — removeVersions (bulk) and the script_in_use guard', 
   })
 
   /**
-   * `scripts/delete-unowned-scripts.ts`'s header records the mistake its own
-   * first version made: deriving a delete list from a FILTERED listing that
+   * a one-off plan 110 migration script (since deleted) recorded the mistake
+   * its own first version made: deriving a delete list from a FILTERED listing that
    * hides the rows it means to act on, then reporting "nothing to delete" on a
    * farm holding five. A bulk remove that only saw healthy rows would leave
    * behind exactly the junk an operator ran it to clear.

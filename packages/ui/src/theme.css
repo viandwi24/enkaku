@@ -105,8 +105,6 @@
 
   --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, monospace;
-
-  --radius-card: 0.5rem;
 }
 
 
@@ -135,7 +133,6 @@
   --color-accent-foreground: var(--color-fg);
 
   --color-destructive: var(--color-led-danger);
-  --color-destructive-foreground: oklch(0.98 0 0);
 
   --color-border: var(--color-line);
   --color-input: var(--color-line-strong);

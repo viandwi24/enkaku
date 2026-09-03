@@ -423,7 +423,7 @@ function uiStyles(name: string): string {
 @import 'tailwindcss/theme.css' theme(reference);
 @import 'tailwindcss/utilities.css' layer(plugin);
 
-/* The farm's design tokens — bg-surface, text-fg-muted, text-led-ok, rounded-card. One definition, shared with Studio. */
+/* The farm's design tokens — bg-surface, text-fg-muted, text-led-ok. One definition, shared with Studio. */
 @import '@enkaku/ui/theme.css' theme(reference);
 
 /*

@@ -111,7 +111,7 @@ export interface RunnerDeps {
   /** Plan 70 §4.1, §4.4 — content-addressed image storage, threaded straight through to every `executeRun` call. Optional so every pre-plan-70 test keeps compiling unedited; `daemon.ts` always supplies it. */
   blobs?: BlobStore
   /** Broadcasts an already-built message to every subscriber of a THREAD (not necessarily the
-   * caller's own) — plan 67's `agent.message.queued`/`agent.child.started`/`.finished` are all
+   * caller's own) — plan 67's `agent.child.started`/`.finished` are
    * addressed to a DIFFERENT run's thread than the one whose execution produced them (the target's,
    * or the parent's), which `emit` above cannot express. Wired to `ws-handlers-agent.ts`'s
    * `publishRaw`, the same seam `POST /approvals/:id` already uses for the same reason. */
@@ -730,11 +730,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
     const childAgent = agentForRun(childRun)
     const output = extractFinalText(threads.messagesForRun(childRun.id))
     const body = { agentName: childAgent?.name ?? 'agent', status: childFinished.status, stopReason: childFinished.stopReason, output }
-    const item = tree.enqueue({ targetRunId: parentRun.id, fromRunId: childRun.id, kind: 'child-result', body })
-    deps.publishToThread(parentThread.id, {
-      type: 'agent.message.queued',
-      payload: { inboxId: item.id, targetRunId: parentRun.id, fromRunId: childRun.id, kind: 'child-result' },
-    })
+    tree.enqueue({ targetRunId: parentRun.id, fromRunId: childRun.id, kind: 'child-result', body })
     maybeWakeIfIdle(parentRun.id, 'child-result')
   }
 
@@ -813,13 +809,9 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
    * (or parent) check happens BEFORE any of that — refused before any state changes, matching §4.2's
    * "refused at input validation, not at delivery". */
   function enqueueTreeMessage(fromRun: AgentRun, targetRun: AgentRun, message: string): { queued: true; inboxId: string } {
-    const targetThread = threads.mustGetThread(targetRun.threadId)
+    threads.mustGetThread(targetRun.threadId)
     const fromAgent = agentForRun(fromRun)
     const item = tree.enqueue({ targetRunId: targetRun.id, fromRunId: fromRun.id, kind: 'message', body: { text: message, fromAgentName: fromAgent?.name ?? 'agent' } })
-    deps.publishToThread(targetThread.id, {
-      type: 'agent.message.queued',
-      payload: { inboxId: item.id, targetRunId: targetRun.id, fromRunId: fromRun.id, kind: 'message' },
-    })
     maybeWakeIfIdle(targetRun.id, 'message')
     return { queued: true, inboxId: item.id }
   }

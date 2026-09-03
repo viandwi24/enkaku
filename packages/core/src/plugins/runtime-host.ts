@@ -12,7 +12,6 @@ import {
   type ServiceResetData,
 } from '@enkaku/sdk'
 import {
-  refusedPluginEventTypesMessage,
   ReportedListenerSchema,
   PluginResetReportSchema,
   type PluginHandlerKind,
@@ -189,9 +188,9 @@ export interface PluginServiceView {
   disabledByBudget: boolean
   /**
    * How the most recent floating rejection was traced back to this plugin, and
-   * when. Surfaced rather than kept internal because the three tiers are not
-   * equally strong: `owned-promise` and `tagged-reason` are exact, while
-   * `module-stack` is a heuristic over a stack trace. An operator looking at a
+   * when. Surfaced rather than kept internal because the tiers are not
+   * equally strong: `tagged-reason` is exact, while `module-stack` is a
+   * heuristic over a stack trace. An operator looking at a
    * charge should be able to see which one decided it.
    */
   lastRejection: { how: RejectionAttributionHow; at: Date } | null
@@ -293,7 +292,7 @@ export interface RuntimeHostDeps {
   /**
    * One log line from plugin code. `daemon.ts` wires
    * `plugins/runtime-logs.ts` here (step 109.8) — the per-plugin ring, the
-   * rotated file, the redactor and the `plugin.log` broadcast. Absent ⇒ the
+   * rotated file and the redactor. Absent ⇒ the
    * core logger under `plugin.<id>`, unredacted, which is what every test that
    * does not care about logging gets.
    */
@@ -530,12 +529,11 @@ interface ServiceRecord {
  *
  * So the plan's stated mechanism is unavailable, and guessing is worse than
  * admitting (the criterion exists precisely so a floating rejection is not
- * written off as "some plugin"). What is built instead is three tiers, each
- * reporting HOW it decided, plus a fourth outcome that is a real answer:
+ * written off as "some plugin"). What is built instead is two tiers, each
+ * reporting HOW it decided, plus a third outcome that is a real answer:
  *
  * | tier | mechanism | confidence |
  * |---|---|---|
- * | `owned-promise` | the host handed this exact promise to plugin code and recorded it in a `WeakMap` | exact |
  * | `tagged-reason` | the host built this exact Error and stamped it with the plugin's id; the stamp rides the reason through any `.then()` chain, so a derived promise is still attributable | exact |
  * | `module-stack` | the reason is an `Error` whose stack names exactly ONE loaded plugin's bundle file | high, but a heuristic |
  * | *(none)* | reported as **unattributed**, with the reason verbatim and the loaded plugins listed | — |
@@ -547,18 +545,15 @@ interface ServiceRecord {
  *
  * **The known gap, stated:** a rejection whose reason is not an `Error` (a
  * string, a number, a bare object) created inside plugin code has no stack and
- * no stamp, and tier 3 cannot see it. Verified — `Promise.reject('a string')`
+ * no stamp, and tier 2 cannot see it. Verified — `Promise.reject('a string')`
  * from inside a plugin module is unattributable. It is reported as such.
  */
-export type RejectionAttributionHow = 'owned-promise' | 'tagged-reason' | 'module-stack'
+export type RejectionAttributionHow = 'tagged-reason' | 'module-stack'
 
-/** The stamp tier 2 reads. `Symbol.for` rather than a private symbol so it survives two copies of this module. */
+/** The stamp tier 1 reads. `Symbol.for` rather than a private symbol so it survives two copies of this module. */
 const PLUGIN_OWNER = Symbol.for('enkaku.plugin.owner')
 
-/** Tier 1's registry — promises the host itself handed to plugin code. */
-const ownedPromises = new WeakMap<object, string>()
-
-/** Tier 3's registry: bundle path → the plugin names loaded from it. A path claimed by two names attributes to neither. */
+/** Tier 2's registry: bundle path → the plugin names loaded from it. A path claimed by two names attributes to neither. */
 const modulePaths = new Map<string, Set<string>>()
 
 /** Every live host. A module-level set, because `process.on` is global and registering it twice would charge every rejection twice. */
@@ -584,23 +579,13 @@ export function tagPluginError(err: unknown, pluginId: string): unknown {
     try {
       Object.defineProperty(err, PLUGIN_OWNER, { value: pluginId, enumerable: false, configurable: true, writable: true })
     } catch {
-      // A frozen error object. Tier 3 may still reach it; nothing else breaks.
+      // A frozen error object. Tier 2 may still reach it; nothing else breaks.
     }
   }
   return err
 }
 
-/** Tier 1's other half — record a promise the host is handing to plugin code. */
-export function tagPluginPromise<T>(promise: Promise<T>, pluginId: string): Promise<T> {
-  ownedPromises.set(promise, pluginId)
-  return promise
-}
-
-function attributeRejection(reason: unknown, promise: unknown): { name: string; how: RejectionAttributionHow } | null {
-  if (typeof promise === 'object' && promise !== null) {
-    const owner = ownedPromises.get(promise)
-    if (owner) return { name: owner, how: 'owned-promise' }
-  }
+function attributeRejection(reason: unknown): { name: string; how: RejectionAttributionHow } | null {
   if (typeof reason === 'object' && reason !== null) {
     const tagged = (reason as Record<PropertyKey, unknown>)[PLUGIN_OWNER]
     if (typeof tagged === 'string') return { name: tagged, how: 'tagged-reason' }
@@ -619,8 +604,8 @@ function attributeRejection(reason: unknown, promise: unknown): { name: string; 
   return null
 }
 
-function onUnhandledRejection(reason: unknown, promise: unknown): void {
-  const attributed = attributeRejection(reason, promise)
+function onUnhandledRejection(reason: unknown): void {
+  const attributed = attributeRejection(reason)
   if (attributed) {
     for (const host of liveHosts) {
       if (!host.hasService(attributed.name)) continue
@@ -940,7 +925,7 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
       ...(deps.farm
         ? { farm: (id: string, input: unknown) => deps.farm!(rec.name, id, input, opts?.resetPass?.open === true ? { reset: true } : undefined) }
         : {}),
-      // Tier 2 of the rejection attribution: every error the core rejects one
+      // Tier 1 of the rejection attribution: every error the core rejects one
       // of this plugin's ports with carries the plugin's id, so a floating
       // `void ctx.storage.global.set(...)` is attributable however far down a
       // `.then()` chain it surfaces.
@@ -1017,13 +1002,6 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
               `which is the list the operator consented to at install. Declared: ${rec.declaration.events.length > 0 ? rec.declaration.events.join(', ') : '(none)'}`,
           )
         }
-        // Belt and braces over verify's own refusal (step 109.8): the
-        // declaration check above is exhaustive, and `plugin.log` cannot reach
-        // a published manifest — but the manifest is a persisted JSON column,
-        // and the one loop this farm cannot survive is not worth trusting a
-        // single gate with.
-        const refused = refusedPluginEventTypesMessage([type])
-        if (refused) throw new EnkakuError('E_PLUGIN_EVENT_REFUSED', `ctx.onEvent("${type}") (plugin "${rec.name}"): ${refused}`)
         if (stale('ctx.onEvent')) return
         rec.eventUnsubscribes.push(
           events.subscribe({

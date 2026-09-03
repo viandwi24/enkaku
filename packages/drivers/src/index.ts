@@ -39,7 +39,6 @@ export {
   type InputSelectionResult,
 } from './input/select'
 export { AppiumInspector, type AppiumInspectorOptions } from './inspector/appium'
-export { ScrcpyAoaInput } from './input/scrcpy-aoa'
 export {
   grantRuntimePermissions,
   installWithGrantFallback,

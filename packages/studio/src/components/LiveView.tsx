@@ -326,8 +326,6 @@ export function LiveView({
   const lastAutoRecoverRef = useRef(0)
   const [retryTick, setRetryTick] = useState(0)
   const [codec, setCodec] = useState<'png' | 'h264'>('png')
-  const [transport, setTransport] = useState<'ws' | 'webrtc'>('ws')
-  const [degradedReason, setDegradedReason] = useState<string | null>(null)
   /**
    * Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.5 — set when a `control`
    * request's dedicated second scrcpy session could not be built and the
@@ -336,10 +334,7 @@ export function LiveView({
    * `packages/protocol/src/messages/stream.ts`). Rendered with §4.4's exact
    * wording and a Retry action — never silently shown under the ordinary
    * Control label (§3.7's "two tiers, no silent fallback" rule). Holds the
-   * underlying reason text (or `''` when the server sent no detail), `null`
-   * when not in this state. A SEPARATE state from `degradedReason` above,
-   * which is specifically about the WebRTC transport falling back to WS —
-   * a different degrade, a different banner.
+   * reason text; null when not in this state.
    */
   const [controlUnavailable, setControlUnavailable] = useState<string | null>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -469,10 +464,6 @@ export function LiveView({
         setPhase(msg.payload.phase)
         setPhaseDetail(msg.payload.detail ?? null)
         phaseChangedAtRef.current = Date.now()
-      } else if (msg.type === 'video.webrtc.failed') {
-        // The WebRTC path failed → stay on WS, but say why.
-        setTransport('ws')
-        setDegradedReason(msg.payload.reason)
       } else if (msg.type === 'stream.ended' && msg.payload.deviceId === deviceId) {
         // The session died server-side: stop the fps counter so a stale number
         // cannot masquerade as a live stream.
@@ -1060,18 +1051,6 @@ export function LiveView({
                 </Tooltip>
               )
             })()}
-            {/* Only when it is NOT the default (owner's call, 2026-08-17).
-                This read `websocket` on every ordinary session — the path
-                every device takes unless WebRTC is configured — so it spent
-                a slot in a status line beside fps, resolution and codec to
-                restate the expected. `webrtc` is the notable one, and it
-                still says so.
-                Same rule the cursor badge (two-or-more) and the "Input
-                reaches" panel (more than one device) already follow: show it
-                when the answer is not already obvious, never always and
-                never not at all. Dropping it in BOTH cases would have hidden
-                the one transport worth naming. */}
-            {transport === 'webrtc' && <span className="rack-label ml-auto">webrtc</span>}
           </>
         )}
         {/* Click → first paint (plan 125 §4.7, §5 step 125.11).
@@ -1108,18 +1087,11 @@ export function LiveView({
           {error}
         </p>
       )}
-      {!compact && degradedReason && (
-        <p className="shrink-0 border-b px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
-          The WebRTC path is not in use ({degradedReason}). Video still runs over WebSocket, but it can stutter when
-          the network drops packets.
-        </p>
-      )}
       {/* Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.5 — a `control`
           request whose OWN dedicated second scrcpy session could not be
           built; this viewer is showing the wall entry's own frames instead.
           Never worded as ordinary Control (§3.7's "two tiers, no silent
-          fallback"), and never merged with `degradedReason` above — that
-          one is about the WebRTC transport, this is about video QUALITY. */}
+          fallback"); this is about video QUALITY. */}
       {!compact && controlUnavailable !== null && (
         <p className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-led-warn/30 bg-led-warn/5 px-3 py-2 text-[11.5px] leading-relaxed text-led-warn">
           <span>

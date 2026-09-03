@@ -74,24 +74,6 @@ export function groupPlugins(items: readonly PluginListRow[]): PluginGroup[] {
     })
 }
 
-/**
- * The version a group POINTS AT by default: the live one when there is one,
- * otherwise the newest. Shared by the row and the detail page so a link from
- * one lands on what the other was showing.
- */
-export function defaultVersion(group: PluginGroup): PluginListRow | undefined {
-  return group.versions.find((v) => v.status === 'active') ?? group.versions[0]
-}
-
-/** Every member script id any version of this plugin declared, deduplicated, in declaration order. */
-export function declaredScriptIds(group: PluginGroup): string[] {
-  const ids: string[] = []
-  for (const v of group.versions) {
-    for (const s of v.declaredScripts) if (!ids.includes(s.id)) ids.push(s.id)
-  }
-  return ids
-}
-
 function norm(s: string): string {
   return s.trim().toLowerCase()
 }

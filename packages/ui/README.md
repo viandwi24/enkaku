@@ -23,7 +23,7 @@ not copies:
 | `EmptyState`, `ErrorState`, `LoadingRows` | `src/components/states.tsx` — 49 Studio files import them |
 | `ConfirmDialog` | `src/components/confirm-dialog.tsx` — 19 Studio files |
 | `api`, `useAction`, `describeApiError`, `issuesFromError`, `BadResponseError` | `src/lib/actions.ts` — 79 Studio files |
-| `coreBase`, `setCoreBase` | `src/lib/core-base.ts` — re-exported by `@/lib/ws`, so Studio's 23 call sites are unchanged |
+| `coreBase` | `src/lib/core-base.ts` — re-exported by `@/lib/ws`, so Studio's 23 call sites are unchanged |
 | `relativeTime`, `duration`, `fileSize`, `formatFieldValue`, `formatTokens`, `formatUsd` | `src/lib/format.ts` — 51 Studio files |
 | `z` | Zod itself, one name, so `api()`'s required schema costs a plugin no bundle |
 | `PluginViewProps` and friends | re-exported from `@enkaku/protocol`; the type of a plugin view's props |

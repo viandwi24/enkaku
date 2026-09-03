@@ -69,7 +69,7 @@ export { cn } from './lib/utils'
  * now, and they are Studio's own — the SAME modules Studio's screens import,
  * not a parallel set:
  *
- * - `coreBase` / `setCoreBase` — where the farm is. The one question Studio
+ * - `coreBase` — where the farm is. The one question Studio
  *   could answer privately and a plugin could not (111.7's finding 4).
  * - `api` — a `fetch` with the farm's error envelope unwrapped and the
  *   response validated against a Zod schema, plus `describeApiError`,

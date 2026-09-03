@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "NEXT_PUBLIC_ENKAKU_CORE_URL=${NEXT_PUBLIC_ENKAKU_CORE_URL:-http://localhost:7700} next dev -p 3001",
     "build": "next build",
-    "start": "next start -p 3001",
-    "test": "bun test --isolate"
+    "start": "next start -p 3001"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.0",
@@ -32,10 +31,7 @@
   },
   "devDependencies": {
     "@enkaku/plugin-tiktok": "workspace:*",
-    "@happy-dom/global-registrator": "^15",
     "@tailwindcss/postcss": "^4.3.3",
-    "@testing-library/react": "^16",
-    "@testing-library/user-event": "^14",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

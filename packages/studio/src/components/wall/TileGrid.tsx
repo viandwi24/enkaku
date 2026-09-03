@@ -2,10 +2,9 @@ import type { ReactNode } from 'react'
 import { cn } from '@enkaku/ui'
 
 /**
- * The one responsive tile grid (Plan 42 §4.6): the fleet Wall and the
- * topology page's `ClusterSection` both lay tiles out with this component
- * instead of each carrying its own copy of the same Tailwind grid classes —
- * "one wall implementation rather than two," per the plan.
+ * The one responsive tile grid (Plan 42 §4.6): the fleet Wall lays tiles out
+ * with this component instead of carrying its own copy of the same Tailwind
+ * grid classes — "one wall implementation rather than two," per the plan.
  */
 export function TileGrid({
   minTileWidthPx = 200,
