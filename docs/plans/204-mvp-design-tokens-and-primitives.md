@@ -3,7 +3,7 @@
 > Status: draft — not started; written 2026-09-03 by the plan author for the MVP series
 > Depends on: nothing (wave 0, `docs/plans/200-mvp-program.md` §4). Plan 201 (housekeeping) owns MVP 13 Part B's two dead tokens; this plan rewrites the file they live in, so whichever plan lands second finds the rows already gone (§3.9).
 > Spec references: `docs/spec.md` has no tokens section (the spec is rewritten by plan 202). The design of record is `docs/mvp/design_handoff_enkaku_openpf/README.md`, sections "Design Tokens", "Typography", "Spacing", "Radii", "Shadows", "Assets" (quoted verbatim in §4.1), as corrected by `docs/mvp/15-ui-migration.md` §0 (the Tokens bullet), §1 (the Icons and Fonts rows), §3 step 1. External facts: plan 200 §5 rows R6 (Phosphor) and R7 (Geist).
-> Ships: packages/ui/src/tokens.test.ts
+> Ships: scripts/check-design-tokens.ts
 
 ---
 
@@ -1544,3 +1544,16 @@ Device-gated tests: none in this plan.
 - **Observed, not done**:
 - **Open questions hit**:
 - **Processes**:
+
+
+---
+
+## 12. Amendment 2026-09-03 — testing policy (plan 200 §8.3)
+
+`@enkaku/ui` and Studio have zero tests. This amendment overrides every test named above; the executor follows it where they differ. The plan's `> Ships:` line now names `scripts/check-design-tokens.ts`.
+
+- **Replaced by one CI script, not a test**: `scripts/check-design-tokens.ts` (run with `bun run scripts/check-design-tokens.ts`, wired into `.github/workflows/ci.yml`'s `check` job beside `check-dead-code.sh`). It performs, with plain assertions and a non-zero exit on failure, exactly what §4.8 specified for `tokens.test.ts` (every handoff token under the three selectors with the exact hex), `icons.test.ts` (the 53 handoff `ph-*` names and the 9 primitive names exported from `packages/ui/src/icons.ts`, derived from the handoff README), and `index.test.ts`'s REQUIRED list (the barrel exports). It reads files; it renders nothing and imports no DOM.
+- **Dropped**: `packages/ui/src/tokens.test.ts`, `icons.test.ts`, `lib/theme.test.ts`, `components/skin.test.tsx`, the `index.test.ts` edits, `packages/studio/src/lib/plugin-icons.test.ts`, `packages/studio/src/design-rules.test.ts`. Do not create or edit them; plan 201 deletes the existing ones. The design-rules assertions (no hex in a `.ts/.tsx`, no bracket colour form, no `dark:`) move into the same script as greps.
+- **Theme resolution and skin**: verified by `bun run typecheck` and by the owner smoke: toggle the theme in the shell, reload, confirm the attribute persists and both palettes render; open one dialog, one popover, one sheet and compare against the handoff measurements.
+- **§0 rows amended**: every row whose "Verified by" was a `bun run --cwd packages/ui test ...` or `bun run --cwd packages/studio test ...` command is verified by `bun run scripts/check-design-tokens.ts` printing `design tokens ok` (G1, G2, G4, G5, G8, G10) or by the owner smoke (G7, G9, G11).
+- **§7 amended**: the command list becomes `bun run typecheck` and `bun run scripts/check-design-tokens.ts`; the "Never ..." line stays.

@@ -908,3 +908,16 @@ No MVP 13 Part A row belongs to this plan.
 - **Observed, not done**:
 - **Open questions hit**:
 - **Processes**:
+
+
+---
+
+## 12. Amendment 2026-09-03 — testing policy (plan 200 §8.3)
+
+Studio has zero tests. This amendment overrides every Studio test named above; the executor follows it instead of the original step text where they differ.
+
+- **Moves**: the pure estimator `latency-stats.ts` (§4.9) is created at `packages/protocol/src/video-latency.ts` instead of `packages/studio/src/lib/latency-stats.ts`, exported from `@enkaku/protocol`, and imported by the overlay. Its test is `packages/protocol/src/video-latency.test.ts` (same cases as §4.9). This is on plan 200 §8.3's critical list (protocol contract) and is the only browser-side logic this plan tests.
+- **Dropped**: `packages/studio/src/lib/h264-decoder.test.ts`, `packages/studio/src/components/video/LatencyOverlay.test.tsx`, the `prefs.test.ts` change, and every `LiveView.test.tsx` change. Do not create or edit them. If `LiveView.test.tsx` still exists when this plan runs (plan 201 not yet merged), do not touch it; plan 201 deletes it.
+- **Replaced by**: `bun run typecheck` clean, and an owner smoke on the lab device added to §7: open Device Control, toggle the overlay, confirm all eight rows show numbers within 5 s, confirm `device→host` stays within ±20 ms of its own median over 60 s on a static screen, confirm `decode→paint` is below 16 ms at 30 fps.
+- **§0 rows amended**: G4 and G6 are verified by the owner smoke, not by a Studio test; G5 is verified by `bun test packages/protocol/src/video-latency.test.ts`; G7 is verified by reloading the page and observing the toggle state.
+- **§7 amended**: remove the five `bun test packages/studio/...` lines; add `bun test packages/protocol/src/video-latency.test.ts`. The `happydom` note (§7, "Studio test files import happydom") no longer applies.
