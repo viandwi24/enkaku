@@ -84,13 +84,12 @@ jobs:
       # local edit is invisible to typecheck and tests — only this catches it.
       - run: bash scripts/check-harness-provenance.sh
       # Plan 84 (M49) §4.4 "closing the loop": a deliberately dumb name-presence
-      # check for a table, route, or `page.tsx` screen that appears in neither
-      # docs/spec.md nor a DIV- row in docs/spec-divergences.md. Warning only —
-      # it always exits 0 today (see FAIL_ON_GAP in scripts/spec-check.ts);
-      # dozens of divergence rows are still open, and failing the build on day
-      # one would block every commit. It becomes a hard gate once that register
-      # reaches zero open rows (plan 84 §9 Q4) — flipping the single constant
-      # in the script is the only change that step needs.
+      # check for a table, route, or `page.tsx` screen that appears nowhere in
+      # docs/spec.md (the MVP spec, plan 202). Warning only — it always exits 0
+      # today (see FAIL_ON_GAP in scripts/spec-check.ts): the spec is a skeleton
+      # and the code still carries the prototype tables and routes the MVP
+      # deletes, so the gap list is the to-do list, not a failure. Plan 224
+      # flips the single constant once the spec is final.
       - run: bun run spec:check
       # scripts/ sits outside bunfig.toml's `[test] root = "packages"` — like
       # plugins/* and examples/ above — but has no package.json of its own for
