@@ -41,7 +41,7 @@ That node's devices are marked offline, its sessions are cancelled, and any runn
 
 ## Current limitation
 
-Video travels through the WebSocket tunnel. For a node on a healthy network that is fine, but on the internet with packet loss TCP holds the whole stream until the packet is retransmitted — the screen can freeze for a moment. The WebRTC path addresses this (see `docs/plans/13-m9-webrtc-backend.md`).
+Video travels through the WebSocket tunnel. For a node on a healthy network that is fine, but on the internet with packet loss TCP holds the whole stream until the packet is retransmitted — the screen can freeze for a moment. A UDP video path is a post-MVP decision; until then a lossy link can freeze the picture for a moment.
 
 ## The adb endpoint on a cloud device
 

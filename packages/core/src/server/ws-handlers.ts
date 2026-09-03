@@ -275,16 +275,7 @@ export interface RemoteSessions {
   get(deviceId: string): { frameSize: { width: number; height: number }; input: RemoteInput } | null
 }
 
-export interface WebRtcSignaling {
-  request(ws: ServerWebSocket<unknown>, deviceId: string): Promise<void>
-  answer(deviceId: string, sdp: string): Promise<void>
-  ice(deviceId: string, candidate: unknown): Promise<void>
-  stop(deviceId: string): Promise<void>
-}
-
 export interface WsHandlerDeps {
-  /** The WebRTC video path (cloud mode); unused on a LAN. */
-  webrtc?: WebRtcSignaling
   /** null under the orchestrator: the control plane holds no local devices. */
   sessions: SessionManager | null
   /** Sessions for node-owned devices (cloud mode); null in pure local mode. */
@@ -2475,33 +2466,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               meta: { deviceId: info.deviceId },
             })
             send(ws, { type: 'job.status', payload: info })
-            return
-          }
-
-          case 'video.webrtc.request': {
-            if (!deps.webrtc) {
-              send(ws, {
-                type: 'video.webrtc.failed',
-                payload: { deviceId: msg.payload.deviceId, reason: 'the WebRTC path is not active in this mode' },
-              })
-              return
-            }
-            await deps.webrtc.request(ws, msg.payload.deviceId)
-            return
-          }
-
-          case 'video.webrtc.answer': {
-            await deps.webrtc?.answer(msg.payload.deviceId, msg.payload.sdp)
-            return
-          }
-
-          case 'video.webrtc.ice': {
-            await deps.webrtc?.ice(msg.payload.deviceId, msg.payload.candidate)
-            return
-          }
-
-          case 'video.webrtc.stop': {
-            await deps.webrtc?.stop(msg.payload.deviceId)
             return
           }
 

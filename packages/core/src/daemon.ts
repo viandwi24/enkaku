@@ -25,8 +25,6 @@ import { createTunnelRpc, type TunnelRpc } from './tunnel/rpc'
 import { createRemoteSessionManager, type RemoteSessionManager } from './tunnel/remote-sessions'
 import { createRemoteJobBridge } from './jobs/executors/remote'
 import { createJobLogBuffer } from './jobs/log-buffer'
-import { createWebRtcRelay } from './relay/webrtc-relay'
-import { createWeriftFactory } from './relay/werift-peer'
 import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
@@ -343,7 +341,6 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   let adbHealthMonitor: AdbServerHealthMonitor | null = null
   let remoteSessions: RemoteSessionManager | null = null
   let tunnelRpc: TunnelRpc | null = null
-  let webrtcRelayRef: ReturnType<typeof createWebRtcRelay> | null = null
   let retention: RetentionGc | null = null
 let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
@@ -2167,24 +2164,6 @@ let blobGc: BlobGc | null = null
       // in-process runner (registered once adb is ready).
       executors.setFallback(remoteBridge.executor)
 
-      // The WebRTC relay serves node-owned devices (cloud mode). On a LAN,
-      // Studio stays on the simpler WS + WebCodecs path.
-      const webrtcRelay = createWebRtcRelay({
-        factory: createWeriftFactory(),
-        log: log.child('webrtc'),
-        subscribeVideo: (deviceId, cb) =>
-          tunnelRouter.subscribeVideo(deviceId, (payload) => cb(payload, BigInt(Date.now()) * 1000n)),
-        requestKeyframe: (deviceId) => {
-          // scrcpy 3.3.1: request a fresh IDR through the reset-video control message.
-          tunnelRouter.sendToDevice(deviceId, {
-            type: 'session.start',
-            payload: { deviceId, engines: {} },
-          } as never)
-        },
-      })
-
-      webrtcRelayRef = webrtcRelay
-
       // Plan 44 §5.7/§5.8: `guestAgent` needs `leases` (built above) and
       // `ports` (built earlier, unconditionally) but must exist before `adb`
       // is ready, since it is mounted into `createApp` below — the same
@@ -3556,7 +3535,6 @@ let blobGc: BlobGc | null = null
         const handler = createWsMessageHandler({
           sessions: localSessions,
           ...(remoteSessions ? { remote: remoteSessions } : {}),
-          webrtc: webrtcRelay,
           pairing: pairingService,
           leases,
           jobs: jobService,
@@ -4615,8 +4593,6 @@ let blobGc: BlobGc | null = null
       traceRecorder = null
       await remoteSessions?.closeAll()
       remoteSessions = null
-      await webrtcRelayRef?.closeAll()
-      webrtcRelayRef = null
       // Stopped before the registry it depends on (plan 85 §5 step 85.2) —
       // a pending reconcile pass calling into a torn-down registry would be
       // the exact kind of "process left running past stop()" 00-overview §7
