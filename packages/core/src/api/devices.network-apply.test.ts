@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
-import { classifyDeviceNetworkApply, DeviceNetworkApplyResponseSchema, type DeviceNetworkApplyOutcome, type DeviceNetworkApplyResult } from '@enkaku/protocol'
+import {
+  classifyDeviceNetworkApply,
+  DeviceNetworkApplyResponseSchema,
+  E_DEVICE_CONFLICT,
+  type DeviceNetworkApplyOutcome,
+  type DeviceNetworkApplyResult,
+} from '@enkaku/protocol'
 import { devices } from '../db/schema'
 import { listenOnLoopback, makeRouteHarness, preparation, type RouteHarness } from '../network/route-service.fixture'
 
@@ -54,7 +60,7 @@ describe('the envelope (plan 114 §3.9, F18/F19)', () => {
     const h = makeRouteHarness()
     const applied: string[] = []
     const offline: string[] = []
-    const held: string[] = []
+    const busy: string[] = []
     const declined: string[] = []
     for (let i = 0; i < 40; i++) {
       const id = `dev-${i}`
@@ -67,8 +73,11 @@ describe('the envelope (plan 114 §3.9, F18/F19)', () => {
         offline.push(id)
       } else if (i < 35) {
         h.seed(id)
-        h.leases.acquireManual(id, `other-client-${i}`, 'u2')
-        held.push(id)
+        // Plan 205 §2.4, §4.4: a live `control` marker no longer forbids
+        // `network-apply` at all — a live job does, so THAT is what a bulk
+        // apply can still be skipped by.
+        h.activities.start(id, { id: `job:j-${i}`, kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+        busy.push(id)
       } else {
         h.seed(id)
         h.phone(id).ignoreWrites = true
@@ -76,7 +85,7 @@ describe('the envelope (plan 114 §3.9, F18/F19)', () => {
       }
     }
 
-    const { status, body } = await apply(h, [...applied, ...offline, ...held, ...declined], HTTP_PROXY)
+    const { status, body } = await apply(h, [...applied, ...offline, ...busy, ...declined], HTTP_PROXY)
     expect(status).toBe(200)
     expect(body.total).toBe(40)
     expect(body.results).toHaveLength(40)
@@ -89,13 +98,13 @@ describe('the envelope (plan 114 §3.9, F18/F19)', () => {
     expect(groups.size).toBe(4)
     const named = (prefix: string): string[] => [...groups.entries()].filter(([k]) => k.startsWith(prefix)).flatMap(([, v]) => v)
     expect(named('E_DEVICE_OFFLINE').sort()).toEqual([...offline].sort())
-    expect(named('E_DEVICE_HELD').sort()).toEqual([...held].sort())
+    expect(named(E_DEVICE_CONFLICT).sort()).toEqual([...busy].sort())
     expect(named('E_SETTING_NOT_ACCEPTED').sort()).toEqual([...declined].sort())
     expect(groups.get('applied')?.sort()).toEqual([...applied].sort())
 
     // And the outcome classes agree with the codes.
     for (const id of applied) expect(outcomeOf(body, id)).toBe('applied')
-    for (const id of [...offline, ...held]) expect(outcomeOf(body, id)).toBe('skipped')
+    for (const id of [...offline, ...busy]) expect(outcomeOf(body, id)).toBe('skipped')
     for (const id of declined) expect(outcomeOf(body, id)).toBe('failed')
   })
 
@@ -115,14 +124,14 @@ describe('the four classes in one call (plan 114 acceptance criterion 9)', () =>
     h.seed('ok-1', { preparation: preparation('ready') })
     h.seed('off-1', { status: 'offline', preparation: preparation('ready') })
     h.phone('off-1').offline = true
-    h.seed('held-1', { preparation: preparation('ready') })
-    h.leases.acquireManual('held-1', 'other-client', 'u2')
+    h.seed('busy-1', { preparation: preparation('ready') })
+    h.activities.start('busy-1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     h.seed('agentless-1', { preparation: preparation('absent') })
 
-    const { body } = await apply(h, ['ok-1', 'off-1', 'held-1', 'agentless-1'], VPN)
+    const { body } = await apply(h, ['ok-1', 'off-1', 'busy-1', 'agentless-1'], VPN)
     expect(outcomeOf(body, 'ok-1')).toBe('applied')
     expect(body.results.find((r) => r.deviceId === 'off-1')?.skip?.code).toBe('E_DEVICE_OFFLINE')
-    expect(body.results.find((r) => r.deviceId === 'held-1')?.skip?.code).toBe('E_DEVICE_HELD')
+    expect(body.results.find((r) => r.deviceId === 'busy-1')?.skip?.code).toBe(E_DEVICE_CONFLICT)
     expect(body.results.find((r) => r.deviceId === 'agentless-1')?.skip?.code).toBe('E_AGENT_NOT_READY')
     // Four devices, four distinct outcomes.
     expect(new Set(body.results.map((r) => `${classifyDeviceNetworkApply(r)}:${r.skip?.code ?? ''}`)).size).toBe(4)
@@ -158,11 +167,11 @@ describe('the four classes in one call (plan 114 acceptance criterion 9)', () =>
   test('nothing is written to any skipped device, and no route row appears for one', async () => {
     const h = makeRouteHarness()
     h.seed('agentless-1', { preparation: preparation('absent') })
-    h.seed('held-1', { preparation: preparation('ready') })
-    h.leases.acquireManual('held-1', 'other-client', 'u2')
-    await apply(h, ['agentless-1', 'held-1'], VPN)
+    h.seed('busy-1', { preparation: preparation('ready') })
+    h.activities.start('busy-1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+    await apply(h, ['agentless-1', 'busy-1'], VPN)
     expect(rowOf(h, 'agentless-1')).toBeNull()
-    expect(rowOf(h, 'held-1')).toBeNull()
+    expect(rowOf(h, 'busy-1')).toBeNull()
     expect(h.phone('agentless-1').execs).toHaveLength(0)
   })
 })
@@ -228,8 +237,18 @@ describe('an offline phone (plan 114 §3.9)', () => {
   })
 })
 
-describe('the transient lease (plan 114 §3.9, §9 Q2)', () => {
-  test('acquired on an unheld device and released in a finally — even when the apply throws', async () => {
+/**
+ * Plan 205 §2.4, §4.4, §4.9 replaces the transient manual lease the bulk
+ * path used to acquire/release around an online device's write (plan 114
+ * §3.9, §9 Q2) with a `network-apply:<uuid>` activity marker, started and
+ * ended around the SAME call — and, because `network-apply` allows over a
+ * live `control` marker now, there is no more "somebody else is driving it,
+ * skip" branch: a device under a live JOB is the only thing left that can
+ * still skip a bulk apply (asserted above, in "the four classes" and the
+ * 40-device envelope test).
+ */
+describe('the network-apply marker (plan 205 §4.9)', () => {
+  test('started on the device and ended in a finally — even when the apply throws', async () => {
     const h = makeRouteHarness()
     h.seed('ok-1')
     h.seed('bad-1')
@@ -238,40 +257,36 @@ describe('the transient lease (plan 114 §3.9, §9 Q2)', () => {
     const { body } = await apply(h, ['ok-1', 'bad-1'], HTTP_PROXY)
     expect(outcomeOf(body, 'bad-1')).toBe('failed')
     for (const id of ['ok-1', 'bad-1']) {
-      const calls = h.leaseCalls.filter((c) => c.deviceId === id)
-      expect(calls.map((c) => c.op), id).toEqual(['acquire', 'release'])
-      expect(calls[0]?.clientId, id).toBe('bulk:network-apply')
-      // Nothing is left holding the device afterwards.
-      expect(h.leases.getHolder(id), id).toBeNull()
+      const calls = h.activityCalls.filter((c) => c.deviceId === id)
+      expect(calls.map((c) => c.op), id).toEqual(['start', 'end'])
+      expect(calls[0]?.id, id).toStartWith('network-apply:')
+      // Nothing is left running on the device afterwards.
+      expect(h.activities.list(id), id).toEqual([])
     }
   })
 
-  test('a device the caller ALREADY holds is applied without a second acquire', async () => {
+  test('a device the caller is already controlling still gets its own marker and applies normally', async () => {
     const h = makeRouteHarness()
     h.seed('mine-1')
-    h.leases.acquireManual('mine-1', 'client-a', 'u1')
-    h.leaseCalls.length = 0
+    h.activities.touchControl('mine-1', 'client-a', { kind: 'user', id: 'u1', label: 'u1' })
+    h.activityCalls.length = 0
 
     const { body } = await apply(h, ['mine-1'], HTTP_PROXY)
     expect(outcomeOf(body, 'mine-1')).toBe('applied')
-    expect(h.leaseCalls).toHaveLength(0)
-    // And the operator still holds it afterwards — bulk did not release somebody else's hold.
-    expect(h.leases.getHolder('mine-1')?.id).toBe('u1')
+    expect(h.activityCalls.map((c) => c.op)).toEqual(['start', 'end'])
+    // And the operator's own control marker is untouched afterwards — the network-apply
+    // marker is scoped to its own id and never ends somebody else's activity.
+    expect(h.activities.controlOf('mine-1', 'client-a')).not.toBeNull()
   })
 
-  test('a device held by ANOTHER user is skipped, named, and its row is untouched', async () => {
+  test('a device under ANOTHER user’s control is no longer skipped, and is applied like any other online device', async () => {
     const h = makeRouteHarness()
     h.seed('theirs-1')
-    h.leases.acquireManual('theirs-1', 'other-client', 'u2')
-    h.leaseCalls.length = 0
+    h.activities.touchControl('theirs-1', 'other-client', { kind: 'user', id: 'u2', label: 'u2' })
 
     const { body } = await apply(h, ['theirs-1'], HTTP_PROXY)
-    const skip = body.results[0]!.skip!
-    expect(skip.code).toBe('E_DEVICE_HELD')
-    expect(skip.message).toContain('never takes a device over from a live session')
-    expect(h.leaseCalls).toHaveLength(0)
-    expect(rowOf(h, 'theirs-1')).toBeNull()
-    expect(h.phone('theirs-1').execs).toHaveLength(0)
+    expect(outcomeOf(body, 'theirs-1')).toBe('applied')
+    expect(rowOf(h, 'theirs-1')).not.toBeNull()
   })
 })
 

@@ -90,7 +90,6 @@ function fakeJobInfo(scriptId: string, deviceId: string): JobInfo {
     rootJobId: null,
     depth: 0,
     peakRssBytes: null,
-    assistCount: 0,
     notBefore: null,
     batchRepeat: null,
     pacedDelayMs: null,

@@ -227,11 +227,12 @@ export interface JobStore {
    */
   scriptNames(scriptIds: string[]): Map<string, { name: string; version: string; resultSchema?: unknown | null }>
   /**
-   * Single-writer transaction: claim a queued job for an idle device (spec
-   * §10.3, plan 20 §4.2). `excludeDeviceIds` (plan 71 §3.7) skips a device
-   * still inside its post-manual-use quiet period — the job KEEPS its
-   * place; it is simply not eligible to claim THAT device yet, exactly like
-   * `d.status !== 'idle'` already excludes a manually-held one.
+   * Single-writer transaction: claim a queued job for an online device (spec
+   * §10.3, plan 20 §4.2, plan 205 §4.7 — the SQL claim itself now reads
+   * `d.status = 'online'` plus a `NOT EXISTS` running-job guard, not a
+   * separate "idle" status). `excludeDeviceIds` (plan 71 §3.7) skips a
+   * device still inside its post-control-use quiet period — the job KEEPS
+   * its place; it is simply not eligible to claim THAT device yet.
    */
   claimNext(jobTtlSec: number, excludeDeviceIds?: string[]): ClaimedJob | null
   /** Distinct device ids with at least one `queued` job — the quiet-period wait (plan 71 §3.7) only needs to evaluate these, not the whole fleet. */

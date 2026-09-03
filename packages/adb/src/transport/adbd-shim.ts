@@ -126,8 +126,8 @@ export function createAdbdShim(deps: AdbdShimDeps): AdbdShimHandlers {
       const first = await state.reader.readFrame()
       if (first.header.command === A_AUTH) {
         // Plan §3.4: this endpoint never authenticates a peer — it is not an
-        // adbd standing in for a real device's RSA trust, only a lease-scoped,
-        // loopback-by-default bridge. A peer that insists on AUTH first is
+        // adbd standing in for a real device's RSA trust, only a bridge scoped
+        // to one control marker, loopback-by-default. A peer that insists on AUTH first is
         // refused outright rather than answered with a fake challenge.
         deps.log('warn', 'adb endpoint: peer opened with AUTH — refusing (this endpoint never authenticates)')
         // `finishConnection` BEFORE `socket.end()`: ending the socket can
@@ -149,7 +149,7 @@ export function createAdbdShim(deps: AdbdShimDeps): AdbdShimHandlers {
       const peerVersion = first.header.arg0
       const peerMaxdata = first.header.arg1
       const ourMaxdata = clampMaxdata(peerMaxdata)
-      // Mirror the peer's own version (plan §27.1 spike measurement: every
+      // Match the peer's own version (plan §27.1 spike measurement: every
       // real adb client sends exactly `CONNECT_VERSION`) rather than always
       // forcing our own — a future/older client that sent something else at
       // least gets an answer at the version it asked for.
@@ -180,8 +180,8 @@ export function createAdbdShim(deps: AdbdShimDeps): AdbdShimHandlers {
         mux.handleFrame(frame.header, frame.payload)
       }
     } catch (err) {
-      // A clean disconnect (the user's `adb disconnect`, or the lease ending
-      // and this endpoint being torn down) surfaces here as a rejected
+      // A clean disconnect (the user's `adb disconnect`, or the control marker
+      // ending and this endpoint being torn down) surfaces here as a rejected
       // `readFrame()` — that is the normal way this loop ends, not a bug.
       deps.log('debug', `adb endpoint: connection ended: ${String(err)}`)
       finishConnection(socket, state, 'closed')

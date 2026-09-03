@@ -38,7 +38,7 @@ export {
   type AdbTimeoutProfile,
 } from './timeouts'
 // The local adb endpoint shim (plan 27) — an adbd-protocol impersonator so a
-// lease holder's own `adb connect` can reach a farm device directly.
+// control-marker holder's own `adb connect` can reach a farm device directly.
 export { createAdbdShim, type AdbdShimDeps, type AdbdShimHandlers } from './transport/adbd-shim'
 export { buildDeviceBanner, ADBD_SHIM_FEATURES, type BannerInfo } from './transport/banner'
 export { createStreamMux, type RawStream, type StreamMux, type StreamMuxDeps } from './transport/stream-mux'

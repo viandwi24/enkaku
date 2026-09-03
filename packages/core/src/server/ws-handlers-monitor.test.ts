@@ -7,7 +7,7 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
@@ -25,7 +25,7 @@ function setUpDb(): Db {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, serial: string, status: 'idle' | 'busy' | 'offline' = 'idle'): void {
+function seedDevice(db: Db, id: string, serial: string, status: 'online' | 'offline' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial, label: id, status }).run()
 }
 
@@ -137,13 +137,7 @@ function setUpHandler(db: Db, client: AdbClient) {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const deps: WsHandlerDeps = {
     sessions: fakeSessionManager(),
     pairing: {
@@ -154,7 +148,9 @@ function setUpHandler(db: Db, client: AdbClient) {
         throw new Error('not used')
       },
     },
-    leases,
+    activities,
+    controlSettings: () => ({ overControl: 'allow' as const, idleSec: 30 }),
+    states,
     jobs: {
       enqueue: () => {
         throw new Error('not used')
@@ -164,7 +160,6 @@ function setUpHandler(db: Db, client: AdbClient) {
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-      assists: () => [],
       // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these monitor
       // tests; present only so this fixture keeps satisfying `JobService`.
       nodes: () => ({ items: [], finalized: false }),
@@ -196,9 +191,11 @@ function setUpHandler(db: Db, client: AdbClient) {
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
 describe('Monitor WS wiring (plan 24 §4.4, §4.5)', () => {
-  test('monitor.start works while the device is busy and with no lease held (acceptance #9)', async () => {
+  test('monitor.start works while a job is running and with no admission check at all (acceptance #9)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'SER1', 'busy')
+    seedDevice(db, 'dev-1', 'SER1')
+    // Plan 24 §4.4: monitor.start deliberately takes no admission check at all — a live
+    // job/workflow-job/install on the device would not matter to this test even if simulated.
     const { client } = fakeAdbClient()
     const handler = setUpHandler(db, client)
     const a = fakeConn()

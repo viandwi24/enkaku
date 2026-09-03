@@ -72,7 +72,7 @@ function fakeRecordingService(lastFinishedByDevice: Record<string, RecordingDoc 
     stop: () => notImplemented('stop'),
     cancel: () => notImplemented('cancel'),
     lastFinished: (deviceId) => lastFinishedByDevice[deviceId] ?? null,
-    stopForLeaseLost: () => undefined,
+    stopForDisconnect: () => undefined,
     onStep: () => undefined,
     onBoundStopped: () => undefined,
   }

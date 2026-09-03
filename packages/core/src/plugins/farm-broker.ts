@@ -45,7 +45,7 @@ import type { PluginRuntime } from './runtime'
  *     ├─ 1. is `id` in this plugin's MANIFEST?   ── no ─→ E_FARM_UNDECLARED, audited, invoke() never entered
  *     ├─ 2. does `id` exist in the registry?     ── no ─→ E_FARM_UNKNOWN_CAPABILITY, audited, likewise
  *     └─ 3. invoke(cap, ctx-bound-to-plugin:<name>, input)
- *              └─ the REAL ACL, the real device grant, the real lease, the real deadline, the real audit row
+ *              └─ the REAL ACL, the real device grant, the real activity admission, the real deadline, the real audit row
  * ```
  *
  * Criterion 10's load-bearing half is that step 1 happens **before** `invoke()`
@@ -190,7 +190,7 @@ export interface FarmBroker {
    * Run one capability on a plugin's behalf. Resolves with the capability's
    * output; rejects with a coded `EnkakuError` for every refusal, whether it
    * came from this broker (`E_FARM_*`) or from `invoke()` itself
-   * (`E_FORBIDDEN`, `E_NO_GRANT`, `E_NEEDS_LEASE`, `E_DEVICE_OFFLINE`,
+   * (`E_FORBIDDEN`, `E_NO_GRANT`, `E_DEVICE_CONFLICT`, `E_DEVICE_OFFLINE`,
    * `E_BAD_INPUT`, `E_DEADLINE`, or a handler's own coded error).
    */
   call(call: FarmBrokerCall): Promise<unknown>
@@ -348,8 +348,8 @@ export function createFarmBroker(deps: FarmBrokerDeps): FarmBroker {
       }
 
       // 3. The real door. `invoke` re-checks EVERYTHING against the real ACL
-      // under the plugin principal — permission, device grant, lease,
-      // readiness, deadline — and writes the one audit row this accepted call
+      // under the plugin principal — permission, device grant, activity
+      // admission, readiness, deadline — and writes the one audit row this accepted call
       // gets (criterion 10: exactly one). The broker deliberately does not
       // write a second `plugin.capability` row beside it: `capability.invoke`
       // already carries the plugin (`userId`), the capability (`target`) and

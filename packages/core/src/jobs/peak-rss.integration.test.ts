@@ -5,8 +5,7 @@ import { createDevSlotStore } from '../plugins/dev-slots'
 import { createScriptRegistry } from '../scripts/registry'
 import { createJobStore } from '../queue/job-store'
 import type { DeviceHealth } from '../device/health'
-import type { DeviceStateMachine } from '../device/state-machine'
-import type { LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import type { Logger } from '../util/logger'
 import { ExecutorRegistry } from './executor'
 import { createExecutorHost } from './executor-host'
@@ -28,8 +27,8 @@ import { createScriptExecutor } from './executors/script'
  *
  * Modelled on `plugin-execution.integration.test.ts`'s own end-to-end
  * pattern (its own header explains why a mocked runner would not have proven
- * anything) — the only fakes here are `states`/`leases`/`health`, orthogonal
- * to "did the peak reach the row", the same scope that file already fakes at.
+ * anything) — the only fake here is `health`, orthogonal to "did the peak
+ * reach the row", the same scope that file already fakes at.
  *
  * No memory LIMIT is enforced anywhere in this test or in the code it
  * exercises — that is step 98.3. This proves only the measurement.
@@ -47,7 +46,7 @@ function setUpDb(): Db {
 }
 
 function seedDevice(db: Db, id: string) {
-  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'idle' }).run()
+  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'online' }).run()
 }
 
 // Deliberately does NOT sleep — the whole point of the "immediate first
@@ -101,31 +100,13 @@ describe('a real job records a real peakRssBytes end to end (plan 98 §4.4, §4.
     const executors = new ExecutorRegistry()
     executors.setFallback(createScriptExecutor({ registry, runner }))
 
-    const states: DeviceStateMachine = { apply: () => ({ changed: true, from: 'busy', to: 'idle' }), current: () => 'busy' }
-    const leases: LeaseManager = {
-      acquireManual: () => {
-        throw new Error('not used')
-      },
-      touchManual: () => {},
-      releaseManual: () => false,
-      releaseAllForClient: () => {},
-      noteJobLease: () => {},
-      clearJobLease: () => {},
-      getLease: () => null,
-      getHolder: () => null,
-      lastManualReleaseAt: () => null,
-      lastManualHolder: () => null,
-      checkInputAllowed: () => ({ ok: true }),
-      startReaper: () => {},
-      stopReaper: () => {},
-    }
+    const activities = createActivityRegistry({ log: silentLog() as never, controlIdleSec: () => 30, onChange: () => {} })
     const health: DeviceHealth = { note: () => {}, consecutiveFailures: () => 0, start: () => {}, stop: () => {} }
 
     const host = createExecutorHost({
       registry: executors,
       jobStore,
-      states,
-      leases: () => leases,
+      activities: () => activities,
       log: silentLog(),
       jobTtlSec: 60,
       heartbeatMs: 5000,

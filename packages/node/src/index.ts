@@ -34,7 +34,7 @@ function connectionFromSerial(serial: string): DeviceInfo['connection'] {
 /**
  * A mini-core for cloud mode (plan 11 §4.1): adb, toolchain, drivers, and
  * local sessions — with NO Studio, queue/scheduler, users, or script storage.
- * Scheduling and lease decisions stay with the control plane; the node holds
+ * Scheduling and activity-admission decisions stay with the control plane; the node holds
  * the devices and runs the runner (close to the device means a fast inspector).
  */
 export interface NodeOptions {
@@ -168,7 +168,7 @@ export function createNode(opts: NodeOptions): Node {
               stableId: probe.stableId,
               serial: ev.serial,
               label: probe.model ?? probe.stableId,
-              status: 'idle',
+              status: 'online',
               androidVersion: probe.androidVersion,
               apiLevel: probe.apiLevel,
               screenW: probe.screenW,
@@ -190,7 +190,7 @@ export function createNode(opts: NodeOptions): Node {
               screenW: snapshot.screenW,
               screenH: snapshot.screenH,
               density: null,
-              status: 'idle',
+              status: 'online',
               lastSeen: Math.floor(Date.now() / 1000),
               // Battery, quarantine, tags, and cluster are tracked by the
               // core, not the node — the node only reports the identity of
@@ -210,28 +210,25 @@ export function createNode(opts: NodeOptions): Node {
               // control plane's readiness manager never touches a device this
               // node owns.
               readiness: { desired: 'asleep', actual: 'asleep', blocked: null, since: Math.floor(Date.now() / 1000) },
-              // Who holds the manual lease (plan 71 §3.2) is control-plane
-              // state, exactly like battery/quarantine/tags/cluster above —
-              // the node only reports device IDENTITY. The control plane's
-              // own device registry (`tunnel/registry.ts`'s `syncDevices`)
-              // overwrites the DB row's lease-independent columns from this
-              // snapshot but never touches who holds it.
-              heldBy: null,
-              // Who is assisting this device (plan 91 §3.2, §4.4) is control-
-              // plane state, exactly like `heldBy` above — a node-owned
-              // device is refused from a mirror group by name (`node_owned`,
-              // plan 91 §2) and is never independently assistable through
-              // this snapshot, so this is always empty.
-              assistedBy: [],
+              // A device's live activities and its last-control tail (plan
+              // 205 §4.10, replacing the old per-holder/secondary-operator
+              // fields) are control-plane state, exactly like
+              // battery/quarantine/tags/cluster above — the node only
+              // reports device IDENTITY. The control plane's own device
+              // registry (`tunnel/registry.ts`'s `syncDevices`) overwrites
+              // the DB row's activity-independent columns from this
+              // snapshot but never touches its live activities.
+              activities: [],
+              lastControl: null,
               connection: connectionFromSerial(snapshot.serial),
               // The guest agent's provisioning state (plan 90 §3.8, §4.3) is
-              // local-core-only, exactly like readiness/heldBy above — a
+              // local-core-only, exactly like readiness/activities above — a
               // node-owned (cloud) device reports the schema's own default
               // rather than a live value; nothing here provisions an agent
               // for a device a node owns.
               agent: 'absent',
               // The device number (plan 89 §3.1, §3.2) is control-plane
-              // state, exactly like heldBy/agent above — `device_numbers` is
+              // state, exactly like activities/agent above — `device_numbers` is
               // a core-only table this node has no access to, so a
               // node-owned device always reports `null` here. The control
               // plane's own `/api/devices` response is (today) also `null`

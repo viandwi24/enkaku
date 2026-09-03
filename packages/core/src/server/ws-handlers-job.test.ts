@@ -4,7 +4,7 @@ import type { JobDetail, JobInfo, ServerMessage } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { Role } from '../auth/service'
 import { openDb, runMigrations, type Db } from '../db'
-import type { LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import type { JobService } from '../services/job-service'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
@@ -57,7 +57,6 @@ function fakeJobInfo(overrides: Partial<JobInfo> = {}): JobInfo {
     rootJobId: null,
     depth: 0,
     peakRssBytes: null,
-    assistCount: 0,
     notBefore: null,
     batchRepeat: null,
     pacedDelayMs: null,
@@ -79,26 +78,9 @@ function fakeJobDetail(overrides: Partial<JobDetail> = {}): JobDetail {
   }
 }
 
-/** Never used by `job.cancel` — thrown so a test that accidentally reaches it fails loudly. */
-function unusedLeaseManager(): LeaseManager {
-  const unused = (name: string) => () => {
-    throw new Error(`unexpected LeaseManager.${name} call from a job.cancel test`)
-  }
-  return {
-    acquireManual: unused('acquireManual'),
-    touchManual: () => {},
-    releaseManual: unused('releaseManual'),
-    releaseAllForClient: () => {},
-    noteJobLease: () => {},
-    clearJobLease: () => {},
-    getLease: () => null,
-    getHolder: () => null,
-    lastManualReleaseAt: () => null,
-    lastManualHolder: () => null,
-    checkInputAllowed: unused('checkInputAllowed'),
-    startReaper: () => {},
-    stopReaper: () => {},
-  }
+/** A real, empty registry — `job.cancel` never touches it, so a fake-with-throws would be over-engineering here. */
+function unusedActivityRegistry(): ReturnType<typeof createActivityRegistry> {
+  return createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
 }
 
 function setUpHandler(opts: {
@@ -125,7 +107,6 @@ function setUpHandler(opts: {
     },
     get: () => getResult,
     list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-    assists: () => [],
     // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these job-handler
     // tests; present only so this fixture keeps satisfying `JobService`.
     nodes: () => ({ items: [], finalized: false }),
@@ -143,7 +124,9 @@ function setUpHandler(opts: {
         throw new Error('not used')
       },
     },
-    leases: unusedLeaseManager(),
+    activities: unusedActivityRegistry(),
+    controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+    states: { current: () => null },
     jobs,
     adb: () => null,
     db,

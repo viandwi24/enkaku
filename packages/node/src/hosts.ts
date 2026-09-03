@@ -35,7 +35,7 @@ export interface NodeHosts {
  * Handling control-plane commands on the node side (plan 12 §4.3):
  * `session.start/stop`, `input.forward`, `job.dispatch`, `job.cancel.forward`.
  *
- * Every policy decision (leases, busy status, queue priority) was already made
+ * Every policy decision (control activities, busy status, queue priority) was already made
  * by the control plane before a message reaches here. The node re-checks only
  * what it alone knows — the device is still present, the session still alive —
  * as a second layer, never as a competing policy.
@@ -212,7 +212,7 @@ export function createNodeHosts(deps: {
     onPhase: (jobId, attempt, phase) =>
       send({ type: 'job.progress', payload: { jobId, kind: 'phase', phase, attempt } }),
     heartbeat: () => {
-      // The control plane holds the lease; every job.progress doubles as a heartbeat.
+      // The control plane owns the job heartbeat; every job.progress doubles as one.
     },
   })
 

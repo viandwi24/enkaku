@@ -3,7 +3,7 @@ import type { ServerWebSocket } from 'bun'
 import type { ServerMessage } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
-import type { LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import type { JobService } from '../services/job-service'
 import { createLogger } from '../util/logger'
 import type { AgentWsHandler } from './ws-handlers-agent'
@@ -37,25 +37,9 @@ function fakeConn(): { ws: ServerWebSocket<unknown>; sent: ServerMessage[] } {
   return { ws, sent }
 }
 
-function unusedLeaseManager(): LeaseManager {
-  const unused = (name: string) => () => {
-    throw new Error(`unexpected LeaseManager.${name} call from an agent.run.cancel test`)
-  }
-  return {
-    acquireManual: unused('acquireManual'),
-    touchManual: () => {},
-    releaseManual: unused('releaseManual'),
-    releaseAllForClient: () => {},
-    noteJobLease: () => {},
-    clearJobLease: () => {},
-    getLease: () => null,
-    getHolder: () => null,
-    lastManualReleaseAt: () => null,
-    lastManualHolder: () => null,
-    checkInputAllowed: unused('checkInputAllowed'),
-    startReaper: () => {},
-    stopReaper: () => {},
-  }
+/** A real, empty registry — `agent.run.cancel` never touches it (see the doc comment above), so a fake-with-throws would be over-engineering here. */
+function unusedActivityRegistry(): ReturnType<typeof createActivityRegistry> {
+  return createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
 }
 
 function unusedJobService(): JobService {
@@ -94,7 +78,10 @@ function setUpHandler(): {
         throw new Error('not used')
       },
     },
-    leases: unusedLeaseManager(),
+    activities: unusedActivityRegistry(),
+    controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+    // `agent.run.cancel` never reads a device's status either — see the doc comment above.
+    states: { current: () => null },
     jobs: unusedJobService(),
     adb: () => null,
     db,

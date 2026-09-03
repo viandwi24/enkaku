@@ -59,9 +59,6 @@ export function fakeDoctorContext(overrides: Partial<DoctorContext> = {}): Docto
     adbHealth: {
       probe: async () => null,
     },
-    coControl: {
-      probe: async () => null,
-    },
   }
   return { ...base, ...overrides }
 }

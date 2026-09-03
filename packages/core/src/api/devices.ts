@@ -1223,10 +1223,12 @@ export function createDeviceRoutes(deps: {
     // otherwise reaches a device only on its NEXT cold-start (F18's exact
     // class: a setting saved, validated, rendered, and never read). Restart
     // this device's OPEN session at whatever quality it is already running,
-    // never mid-job (spec §10.1) — `row.status` here is the value read
-    // BEFORE this PATCH (the `settings` blob never changes `status`), so a
-    // running job is refused the same way `reprofile`'s rule 4 refuses one.
-    if (changedKeys.includes('video') && row.status !== 'busy') {
+    // never mid-job (spec §10.1) — `runningJobOf` reads the activity
+    // registry fresh, so a running job is refused the same way
+    // `reprofile`'s rule 4 refuses one (plan 205 §4.9 replaces the old
+    // `row.status !== 'busy'` read: `devices.status` never becomes `busy`
+    // any more).
+    if (changedKeys.includes('video') && !deps.runningJobOf(row.id)) {
       const sessionsApi = deps.connection?.sessions?.()
       const current = sessionsApi?.get(row.id)
       if (current) void sessionsApi?.restartAt?.(row.id, current.quality, 'applying new video settings')

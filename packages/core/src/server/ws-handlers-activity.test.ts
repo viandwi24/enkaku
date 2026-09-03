@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import type { ServerWebSocket } from 'bun'
 import type { AdbClient } from '@enkaku/adb'
-import type { DisplaySource, InputSink, Point, ServerMessage, Transport } from '@enkaku/protocol'
-import { createInputArbiter, DEFAULT_TIMING, type DeviceSession, type SessionManager } from '@enkaku/session'
+import type { DisplaySource, InputSink, ServerMessage, Transport } from '@enkaku/protocol'
+import { createInputArbiter, type DeviceSession, type SessionManager } from '@enkaku/session'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
@@ -12,11 +12,13 @@ import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
 /**
- * `input.tap`'s `holdMs` (plan 94 §4.4, closes F4/F5, step 94.2) — exercised
- * against the REAL `createWsMessageHandler` and REAL `ActivityRegistry`, with
- * only the session's input sink faked (mirrors `ws-handlers-clipboard.test.ts`'s
- * own harness shape), so this proves the production `input.tap` branch, not a
- * hand-shaped stand-in for it.
+ * `device.activity.warning` (MVP 04 §3, plan 205 §4.8, G6) — `input.tap` on a
+ * device that already carries a conflicting activity (a running job, here)
+ * still reaches the driver: a `warn` decision proceeds and tells, it never
+ * blocks. Named `ws-handlers-activity.test.ts` per this plan's own §7.1 —
+ * exercised against the REAL `createWsMessageHandler` and REAL
+ * `ActivityRegistry`, mirroring `ws-handlers-tap-hold.test.ts`'s harness,
+ * with only the session's input sink faked.
  */
 
 function setUpDb(): Db {
@@ -29,21 +31,15 @@ function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online')
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status }).run()
 }
 
-interface TapCall {
-  p: Point
-  opts: { holdMs?: [number, number]; rng?: () => number } | undefined
-}
-
-/** A spy `InputSink` whose `tap` records the opts it was called with — the one thing the pre-plan-94 fixtures in this directory never needed to check. */
-function fakeInputSink(): { sink: InputSink; tapCalls: TapCall[] } {
-  const tapCalls: TapCall[] = []
+function fakeInputSink(): { sink: InputSink; taps: { count: number } } {
+  const taps = { count: 0 }
   return {
-    tapCalls,
+    taps,
     sink: {
       id: 'fake-input',
       mode: 'uhid',
-      tap: async (p, opts) => {
-        tapCalls.push({ p, opts })
+      tap: async () => {
+        taps.count++
       },
       swipe: async () => {},
       key: async () => {},
@@ -52,7 +48,6 @@ function fakeInputSink(): { sink: InputSink; tapCalls: TapCall[] } {
   }
 }
 
-/** A REAL arbiter (plan 91 §4.1) wrapping the spy sink above, so `input.tap` exercises the actual production code path. */
 function fakeSession(deviceId: string, sink: InputSink): DeviceSession {
   const log = createLogger('test')
   return {
@@ -113,7 +108,7 @@ function fakeConn(): { ws: ServerWebSocket<unknown>; sent: ServerMessage[] } {
   return { ws, sent }
 }
 
-function setUpHandler(db: Db, session: DeviceSession | null, tapJitterMs?: WsHandlerDeps['tapJitterMs']): ReturnType<typeof createWsMessageHandler> {
+function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnType<typeof createWsMessageHandler>; activities: ReturnType<typeof createActivityRegistry> } {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
@@ -158,59 +153,65 @@ function setUpHandler(db: Db, session: DeviceSession | null, tapJitterMs?: WsHan
     saveCrashTrace: async () => ({ id: 'a', jobId: null, deviceId: null, kind: 'log', label: 'x', path: 'x', sizeBytes: 0, createdAt: 0 }),
     db,
     log,
-    ...(tapJitterMs ? { tapJitterMs } : {}),
   }
-  return createWsMessageHandler(deps)
+  return { handler: createWsMessageHandler(deps), activities }
 }
 
-describe('input.tap — holdMs (plan 94 §4.4, closes F4/F5, step 94.2)', () => {
-  test('a client-measured holdMs reaches sink.tap as an EXACT [holdMs, holdMs] range', async () => {
+describe('device.activity.warning — tapping a device a job is running on (G6, plan 205 §4.8)', () => {
+  test('the server never refuses for lack of a control marker: the tap lands AND one warning is sent', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'online')
-    const { sink, tapCalls } = fakeInputSink()
-    const handler = setUpHandler(db, fakeSession('dev-1', sink))
+    const { sink, taps } = fakeInputSink()
+    const { handler, activities } = setUpHandler(db, fakeSession('dev-1', sink))
+    activities.start('dev-1', { id: 'job:job-1', kind: 'job', label: 'Running tiktok/login (job #1)', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 }, holdMs: 650 } }))
 
-    expect(tapCalls).toHaveLength(1)
-    expect(tapCalls[0]!.opts?.holdMs).toEqual([650, 650])
-  })
-
-  test('with no holdMs and no tapJitterMs dep wired, falls back to DEFAULT_TIMING.tapJitterMs (closes F5)', async () => {
-    const db = setUpDb()
-    seedDevice(db, 'dev-1', 'online')
-    const { sink, tapCalls } = fakeInputSink()
-    const handler = setUpHandler(db, fakeSession('dev-1', sink))
-    const a = fakeConn()
-    handler.handleOpen(a.ws)
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
 
-    expect(tapCalls).toHaveLength(1)
-    expect(tapCalls[0]!.opts?.holdMs).toEqual(DEFAULT_TIMING.tapJitterMs)
+    expect(a.sent.some((m) => m.type === 'error')).toBe(false)
+    expect(taps.count).toBe(1)
+    const warning = a.sent.find((m) => m.type === 'device.activity.warning')
+    expect(warning).toBeDefined()
+    if (warning?.type === 'device.activity.warning') {
+      expect(warning.payload.deviceId).toBe('dev-1')
+      expect(warning.payload.conflicting?.kind).toBe('job')
+    }
   })
 
-  test('with no holdMs, a wired tapJitterMs dep is used INSTEAD of DEFAULT_TIMING — read per device id', async () => {
+  test('five more taps within the same minute deliver five more times but send no further warning', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1', 'online')
-    const { sink, tapCalls } = fakeInputSink()
-    const handler = setUpHandler(db, fakeSession('dev-1', sink), (deviceId) => (deviceId === 'dev-1' ? [777, 888] : [1, 1]))
+    const { sink, taps } = fakeInputSink()
+    const { handler, activities } = setUpHandler(db, fakeSession('dev-1', sink))
+    activities.start('dev-1', { id: 'job:job-1', kind: 'job', label: 'Running tiktok/login (job #1)', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const a = fakeConn()
     handler.handleOpen(a.ws)
+
+    for (let i = 0; i < 6; i++) {
+      await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
+    }
+
+    expect(taps.count).toBe(6)
+    const warnings = a.sent.filter((m) => m.type === 'device.activity.warning')
+    expect(warnings).toHaveLength(1)
+  })
+
+  test('a bystander connection gets its own warning — the throttle is per connection, not farm-wide', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'online')
+    const { sink } = fakeInputSink()
+    const { handler, activities } = setUpHandler(db, fakeSession('dev-1', sink))
+    activities.start('dev-1', { id: 'job:job-1', kind: 'job', label: 'Running tiktok/login (job #1)', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+    const a = fakeConn()
+    const b = fakeConn()
+    handler.handleOpen(a.ws)
+    handler.handleOpen(b.ws)
+
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
+    await handler.handleMessage(b.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
 
-    expect(tapCalls[0]!.opts?.holdMs).toEqual([777, 888])
-  })
-
-  test('an explicit holdMs still wins over a wired tapJitterMs dep — the client\'s measured duration is authoritative', async () => {
-    const db = setUpDb()
-    seedDevice(db, 'dev-1', 'online')
-    const { sink, tapCalls } = fakeInputSink()
-    const handler = setUpHandler(db, fakeSession('dev-1', sink), () => [1, 1])
-    const a = fakeConn()
-    handler.handleOpen(a.ws)
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 }, holdMs: 42 } }))
-
-    expect(tapCalls[0]!.opts?.holdMs).toEqual([42, 42])
+    expect(a.sent.filter((m) => m.type === 'device.activity.warning')).toHaveLength(1)
+    expect(b.sent.filter((m) => m.type === 'device.activity.warning')).toHaveLength(1)
   })
 })

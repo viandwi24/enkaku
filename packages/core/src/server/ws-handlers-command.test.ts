@@ -5,7 +5,7 @@ import { FarmSettingsSchema, defaultFarmSettings, type ServerMessage } from '@en
 import { openDb, runMigrations, type Db } from '../db'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, MAX_BUFFERED, type WsHandlerDeps } from './ws-handlers'
 
@@ -40,13 +40,7 @@ function setUpHandler(db: Db) {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const deps: WsHandlerDeps = {
     sessions: null,
     pairing: {
@@ -57,7 +51,9 @@ function setUpHandler(db: Db) {
         throw new Error('not used')
       },
     },
-    leases,
+    activities,
+    controlSettings: () => ({ overControl: 'allow' as const, idleSec: 30 }),
+    states,
     jobs: {
       enqueue: () => {
         throw new Error('not used')
@@ -67,7 +63,6 @@ function setUpHandler(db: Db) {
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-      assists: () => [],
       nodes: () => ({ items: [], finalized: false }),
       resume: () => {
         throw new Error('not used')

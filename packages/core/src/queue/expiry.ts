@@ -14,9 +14,9 @@ export interface ExpiryReaper {
  * The expiry reaper (plan 21 §4.3): a `queued` job past its `expiresAt`
  * becomes `expired` instead of waiting forever. Since plan 205 §4.7 it also
  * sweeps the job heartbeat: a `running` job whose `heartbeatExpiresAt` has
- * passed is finished externally with `HEARTBEAT_EXPIRED` — the lease manager
- * that used to run this sweep on its own interval is deleted, and this is
- * the one reaper left standing (spec §10.2, plan 21 §4.3).
+ * passed is finished externally with `HEARTBEAT_EXPIRED` — the manual-hold
+ * subsystem that used to run this sweep on its own interval is deleted, and
+ * this is the one reaper left standing (spec §10.2, plan 21 §4.3).
  */
 export function createExpiryReaper(deps: {
   jobStore: JobStore
@@ -35,7 +35,7 @@ export function createExpiryReaper(deps: {
   /**
    * A running job's heartbeat expired (plan 205 §4.7) — wired to
    * `host.finishExternally(jobId, 'failed', reason, 'HEARTBEAT_EXPIRED')` in
-   * `daemon.ts`, exactly as the deleted lease manager's own reaper did.
+   * `daemon.ts`, exactly as the deleted manual-hold subsystem's own reaper did.
    */
   onHeartbeatExpired: (jobId: string) => void
   /**

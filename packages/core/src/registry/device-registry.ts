@@ -204,7 +204,7 @@ export interface FarmNetwork {
 /**
  * What `rowToDeviceInfo`/`listDevicesWithTags` need to fill `DeviceInfo.activities`/
  * `.lastControl` (plan 205 §4.10) — the single accessor that replaced the two
- * separate per-holder and per-assisting-user parameters this file carried before that plan.
+ * separate per-holder and secondary-operator parameters this file carried before that plan.
  * `activities` and `lastControl` come from the SAME `ActivityRegistry`, so they can
  * never disagree about whether a device is currently controlled.
  */
@@ -326,7 +326,7 @@ export function rowToDeviceInfo(
   /**
    * The device's live activities plus its last-control tail (MVP 04 §1.1,
    * §1.2, plan 205 §4.10) — the single accessor that replaced Plan 71's own
-   * holder field and Plan 91's assisting-users field. Empty/`null` when nobody has threaded
+   * holder field and Plan 91's secondary-operators field. Empty/`null` when nobody has threaded
    * an `ActivityRegistry` through (orchestrator mode, most tests), same as
    * those two defaulted before this plan.
    */
@@ -582,7 +582,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       }
       if (admission === 'discovered') {
         // Seen, identified, and deliberately NOT enrolled: no `devices` row
-        // means nothing to schedule, nothing to lease, and nothing for the
+        // means nothing to schedule, nothing to control, and nothing for the
         // wall to draw. It waits in the tray until someone admits it.
         const firstSighting = !db
           .select({ stableId: discoveredDevices.stableId })

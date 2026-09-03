@@ -10,7 +10,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceLifecycle } from '../device/lifecycle'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
 import { createJobStore } from '../queue/job-store'
 import { createLogger } from '../util/logger'
 import { createDeviceRoutes } from './devices'
@@ -55,34 +55,18 @@ function engineRegistry(): RegistryResponse {
   }
 }
 
-function fakeLeases(): LeaseManager {
-  return {
-    acquireManual: (): never => {
-      throw new Error('not used in this test')
-    },
-    touchManual: () => {},
-    releaseManual: () => false,
-    releaseAllForClient: () => {},
-    noteJobLease: () => {},
-    clearJobLease: () => {},
-    getLease: () => null,
-    getHolder: () => null,
-    lastManualReleaseAt: () => null,
-    lastManualHolder: () => null,
-    checkInputAllowed: () => ({ ok: true }),
-    startReaper: () => {},
-    stopReaper: () => {},
-  } as unknown as LeaseManager
+function fakeActivities(): Pick<ActivityRegistry, 'list' | 'endWhere'> {
+  return { list: () => [], endWhere: () => 0 }
 }
 
-function seedDevice(db: Db, id: string, opts: { status?: 'idle' | 'busy'; settings?: unknown } = {}): void {
+function seedDevice(db: Db, id: string, opts: { settings?: unknown } = {}): void {
   db.insert(devices)
     .values({
       id,
       stableId: `stable-${id}`,
       serial: `serial-${id}`,
       label: `Phone ${id}`,
-      status: opts.status ?? 'idle',
+      status: 'online',
       ...(opts.settings !== undefined ? { settings: opts.settings } : {}),
     })
     .run()
@@ -117,14 +101,15 @@ function fakeSessions(outcomes: Record<string, RotationOutcome | null>): Session
   }
 }
 
-function makeApp(opts: { sessions?: SessionsStub } = {}) {
+function makeApp(opts: { sessions?: SessionsStub; runningJobDeviceIds?: Set<string> } = {}) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
   const audit = createAuditLogger(db)
   const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-prep-apply-test-'))
-  const leases = fakeLeases()
-  const lifecycle = createDeviceLifecycle({ db, leases, log: createLogger('test') })
+  const activities = fakeActivities()
+  const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
+  const lifecycle = createDeviceLifecycle({ db, activities, controlSettings, log: createLogger('test') })
   const events: Array<{ deviceId: string; kind: string; meta: unknown }> = []
   const app = withAdmin(
     createDeviceRoutes({
@@ -134,9 +119,10 @@ function makeApp(opts: { sessions?: SessionsStub } = {}) {
       audit,
       dataDir,
       lifecycle,
-      heldByOf: () => null,
+      activitiesOf: () => ({ activities: [], lastControl: null }),
+      activities,
+      runningJobOf: (deviceId) => opts.runningJobDeviceIds?.has(deviceId) ?? false,
       broadcast: () => {},
-      leases,
       jobStore: createJobStore(db),
       record: (e) => {
         events.push({ deviceId: e.deviceId, kind: e.kind, meta: e.meta ?? null })
@@ -253,10 +239,10 @@ describe('POST /api/devices/prep/apply reports per device, honestly', () => {
       quiet: null,
       declined: { mode: 'lock-portrait', target: '0', applied: false, reason: 'user_rotation reads back "1", not "0"' },
     })
-    const { db, app } = makeApp({ sessions })
+    const { db, app } = makeApp({ sessions, runningJobDeviceIds: new Set(['busy']) })
     seedDevice(db, 'live')
     seedDevice(db, 'quiet')
-    seedDevice(db, 'busy', { status: 'busy' })
+    seedDevice(db, 'busy')
     seedDevice(db, 'declined')
 
     const res = await app.request(

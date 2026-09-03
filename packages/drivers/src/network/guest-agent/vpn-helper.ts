@@ -117,7 +117,7 @@ export interface CreateVpnHelperRouteOptions {
  * The `vpn-helper` `NetworkRoute` (plan 44 §4.4): a full-tunnel VPN on the device, driven over
  * the guest agent's control channel. `apply()` walks the whole bring-up chain — install, grant,
  * bootstrap, forward, handshake, start — so a caller only ever needs to hold one config and one
- * lease across the four device-side steps that chain has been proven to need (plan 44 §5.1).
+ * session client across the four device-side steps that chain has been proven to need (plan 44 §5.1).
  *
  * Every device-facing call below goes through `deps.session` — this file mints no token itself
  * (plan 44 §8b, "Bug 1"), and `observe()` never requires that THIS process is the one that called
@@ -220,12 +220,12 @@ export function createVpnHelperRoute(deps: CreateVpnHelperRouteOptions): Network
      * as a completion signal (known defect, plan 44 §8b #1): the agent replies `{ stopped: true
      * }` the instant it accepts the request, while its `teardown()` is still joining the tunnel
      * thread on-device — so a `route.status` read taken immediately after that reply can still
-     * report `up: true` even though Android already dropped the VPN underneath it. A lease
-     * teardown that trusted the acknowledgement would report success before the route was
+     * report `up: true` even though Android already dropped the VPN underneath it. A revert
+     * that trusted the acknowledgement would report success before the route was
      * actually gone, so this polls `route.status` and waits for the device itself to agree
      * `up === false` (bounded to ~5s) before doing anything else. Tolerates an already-gone
      * device, an unreachable agent, and being called twice — this never throws, because it runs
-     * from lease-teardown paths that may run twice or after a crash.
+     * from control-marker teardown paths that may run twice or after a crash.
      *
      * Only talks to the device at all when `deps.session.active` — a session that was never used
      * (e.g. `revert()` before any `observe()`/`apply()` ever ran) or one already closed by a

@@ -6,8 +6,7 @@ import { createDevSlotStore } from '../plugins/dev-slots'
 import { createScriptRegistry } from '../scripts/registry'
 import { createJobStore } from '../queue/job-store'
 import type { DeviceHealth } from '../device/health'
-import type { DeviceStateMachine } from '../device/state-machine'
-import type { LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import type { Logger } from '../util/logger'
 import { ExecutorRegistry } from './executor'
 import { createExecutorHost } from './executor-host'
@@ -28,9 +27,8 @@ import type { VerifyReport } from '../plugins/verify-child'
  * for real: `executors/script.ts` and `@enkaku/session`'s `job-runner.ts`.
  *
  * No mocked isolation, no mocked runner, no stubbed registry — the only
- * fakes here are `states`/`leases`/`health`, which are orthogonal to "did
- * the right script run" (the same scope `executor-host.test.ts` already
- * fakes them at).
+ * fake here is `health`, which is orthogonal to "did the right script run"
+ * (the same scope `executor-host.test.ts` already fakes it at).
  */
 
 const silentLog = (): Logger => {
@@ -45,7 +43,7 @@ function setUpDb(): Db {
 }
 
 function seedDevice(db: Db, id: string) {
-  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'idle' }).run()
+  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'online' }).run()
 }
 
 const PLUGIN_BUNDLE_V1 = `
@@ -112,30 +110,14 @@ describe('a plugin-published script runs end to end through a real queued job (p
     const executors = new ExecutorRegistry()
     executors.setFallback(createScriptExecutor({ registry, runner }))
 
-    const states: DeviceStateMachine = { apply: () => ({ changed: true, from: 'busy', to: 'idle' }), current: () => 'busy' }
-    const leases: LeaseManager = {
-      acquireManual: () => { throw new Error('not used') },
-      touchManual: () => {},
-      releaseManual: () => false,
-      releaseAllForClient: () => {},
-      noteJobLease: () => {},
-      clearJobLease: () => {},
-      getLease: () => null,
-      getHolder: () => null,
-      lastManualReleaseAt: () => null,
-      lastManualHolder: () => null,
-      checkInputAllowed: () => ({ ok: true }),
-      startReaper: () => {},
-      stopReaper: () => {},
-    }
+    const activities = createActivityRegistry({ log: silentLog() as never, controlIdleSec: () => 30, onChange: () => {} })
     const health: DeviceHealth = { note: () => {}, consecutiveFailures: () => 0, start: () => {}, stop: () => {} }
 
     const settled: JobRow[] = []
     const host = createExecutorHost({
       registry: executors,
       jobStore,
-      states,
-      leases: () => leases,
+      activities: () => activities,
       log: silentLog(),
       jobTtlSec: 60,
       heartbeatMs: 5000,
@@ -171,7 +153,7 @@ describe('a plugin-published script runs end to end through a real queued job (p
     expect(loginResult.result).toBe('login-ok-v1')
 
     // Free the device back up (host settle already released it, but be defensive for claimNext ordering).
-    db.update(devices).set({ status: 'idle' }).run()
+    db.update(devices).set({ status: 'online' }).run()
 
     const warmupResult = await runOne('s-warmup', 'tiktok/warmup')
     expect(warmupResult.status).toBe('success')
@@ -235,28 +217,12 @@ describe('a plugin-published script runs end to end through a real queued job (p
     const executors = new ExecutorRegistry()
     executors.setFallback(createScriptExecutor({ registry, runner }))
 
-    const states: DeviceStateMachine = { apply: () => ({ changed: true, from: 'busy', to: 'idle' }), current: () => 'busy' }
-    const leases: LeaseManager = {
-      acquireManual: () => { throw new Error('not used') },
-      touchManual: () => {},
-      releaseManual: () => false,
-      releaseAllForClient: () => {},
-      noteJobLease: () => {},
-      clearJobLease: () => {},
-      getLease: () => null,
-      getHolder: () => null,
-      lastManualReleaseAt: () => null,
-      lastManualHolder: () => null,
-      checkInputAllowed: () => ({ ok: true }),
-      startReaper: () => {},
-      stopReaper: () => {},
-    }
+    const activities = createActivityRegistry({ log: silentLog() as never, controlIdleSec: () => 30, onChange: () => {} })
     const health: DeviceHealth = { note: () => {}, consecutiveFailures: () => 0, start: () => {}, stop: () => {} }
     const host = createExecutorHost({
       registry: executors,
       jobStore,
-      states,
-      leases: () => leases,
+      activities: () => activities,
       log: silentLog(),
       jobTtlSec: 60,
       heartbeatMs: 5000,
@@ -343,28 +309,12 @@ describe('restart() does not disturb a running job (plan 82, criterion 26 — th
     })
     const executors = new ExecutorRegistry()
     executors.setFallback(createScriptExecutor({ registry, runner }))
-    const states: DeviceStateMachine = { apply: () => ({ changed: true, from: 'busy', to: 'idle' }), current: () => 'busy' }
-    const leases: LeaseManager = {
-      acquireManual: () => { throw new Error('not used') },
-      touchManual: () => {},
-      releaseManual: () => false,
-      releaseAllForClient: () => {},
-      noteJobLease: () => {},
-      clearJobLease: () => {},
-      getLease: () => null,
-      getHolder: () => null,
-      lastManualReleaseAt: () => null,
-      lastManualHolder: () => null,
-      checkInputAllowed: () => ({ ok: true }),
-      startReaper: () => {},
-      stopReaper: () => {},
-    }
+    const activities = createActivityRegistry({ log: silentLog() as never, controlIdleSec: () => 30, onChange: () => {} })
     const health: DeviceHealth = { note: () => {}, consecutiveFailures: () => 0, start: () => {}, stop: () => {} }
     const host = createExecutorHost({
       registry: executors,
       jobStore,
-      states,
-      leases: () => leases,
+      activities: () => activities,
       log: silentLog(),
       jobTtlSec: 60,
       heartbeatMs: 5000,

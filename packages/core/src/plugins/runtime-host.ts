@@ -283,7 +283,7 @@ export interface RuntimeHostDeps {
      *
      * Every other check is untouched. The broker still resolves the real
      * capability, `invoke()` still applies the real ACL under
-     * `plugin:<name>`, the lease admission still runs, and the call is still
+     * `plugin:<name>`, activity admission still runs, and the call is still
      * audited — a borrowed permission is permission to be CHECKED for
      * something, never permission to skip the checking.
      */

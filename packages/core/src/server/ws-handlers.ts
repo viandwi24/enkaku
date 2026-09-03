@@ -81,7 +81,7 @@ const INSPECT_DEADLINE_MS = 20_000
  *
  * `session.whenInspectorReady()` used to be awaited with NO deadline at all,
  * while every other inspect operation was bounded. On a 20-device farm the
- * ui-server cold start was measured at **32 s** (`control.acquired` 03:44:44 →
+ * ui-server cold start was measured at **32 s** (control taken 03:44:44 →
  * `inspect.attached` 03:45:16), which is longer than Studio's own 25 s WS
  * request budget: the browser gave up and painted a bare "timeout" while the
  * core went on to attach successfully seven seconds later. The inspector was
@@ -283,7 +283,7 @@ export interface WsHandlerDeps {
   broadcast: (msg: ServerMessage) => void
   /** Device event log (plan 18 §4.3) — buffered; never awaited on the input path. */
   recorder: EventRecorder
-  /** Security audit trail — control.acquired / control.revoked also land here (plan 18 §3.2, §18.4). */
+  /** Security audit trail (plan 18 §3.2, §18.4) — a control marker itself is never audited (only recorded to the device event log), just the actions this file already calls `audit.record` for. */
   audit: AuditLogger
   /** DeviceSettings.logInputText, read fresh on every input.text (plan 18 §3.4). */
   isLogInputTextEnabled: (deviceId: string) => boolean

@@ -121,7 +121,6 @@ function fakeRunner(outcomes: Record<string, () => Promise<Outcome> | Outcome>):
       return fn()
     },
     abort: () => true,
-    notifyAssist: () => false,
   }
   return { runner, calls }
 }
@@ -557,7 +556,7 @@ describe('createWorkflowExecutor — failure handling', () => {
     expect(cleanupRow?.scriptName).toBe('cleanup')
   })
 
-  test('a node failure runs on the SAME device/session/lease — no second sessions.acquire call happens around a failure', async () => {
+  test('a node failure runs on the SAME device/session — no second sessions.acquire call happens around a failure', async () => {
     const db = setUpDb()
     publishScript(db, 'node-a', '1.0.0')
     const doc = {

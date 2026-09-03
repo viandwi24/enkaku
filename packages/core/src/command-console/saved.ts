@@ -20,7 +20,7 @@ import { EnkakuError } from '../util/errors'
  *
  * Permission (owner-or-admin on edit/delete, `canUseShell` on create) is
  * enforced by the CALLER (`api/saved-commands.ts`), not here — exactly how
- * `command-console/store.ts` leaves lease/role checks to `runner.ts` and
+ * `command-console/store.ts` leaves activity/role checks to `runner.ts` and
  * `api/command-runs.ts`. This file only knows about names, the cap, and
  * rows.
  *

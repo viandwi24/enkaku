@@ -7,18 +7,23 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
 /**
- * `clipboard.get`/`clipboard.set` WS wiring (plan 38 §4.5, §6): `get` needs no
- * lease, `set` is refused server-side without one (acceptance #5); the reply
- * is unicast to the requesting connection only, never broadcast to every
- * viewer (acceptance #6); and the audit event for a `set` records only the
- * text LENGTH, never the text itself (acceptance #7). Exercised against the
- * REAL `createWsMessageHandler` and REAL `LeaseManager`, with only the
- * session and its clipboard faked — mirrors `ws-handlers-shell.test.ts`.
+ * `clipboard.get`/`clipboard.set` WS wiring (plan 38 §4.5, §6, reworked by
+ * plan 205 §4.9): `get` needs no admission at all; `set` takes the `control`
+ * activity policy row (the same "touch" op `input.*` gets) — a bare online
+ * device always passes, and a second controller only ever WARNS or FORBIDS
+ * depending on the farm's `control.overControl` setting, never on whether a
+ * job happens to be running (`control` warns, never forbids, against a live
+ * job). The reply is unicast to the requesting connection only, never
+ * broadcast to every viewer (acceptance #6); and the audit event for a `set`
+ * records only the text LENGTH, never the text itself (acceptance #7).
+ * Exercised against the REAL `createWsMessageHandler` and REAL
+ * `ActivityRegistry`, with only the session and its clipboard faked —
+ * mirrors `ws-handlers-shell.test.ts`.
  */
 
 function setUpDb(): Db {
@@ -27,7 +32,7 @@ function setUpDb(): Db {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' | 'offline' = 'idle'): void {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status }).run()
 }
 
@@ -118,17 +123,15 @@ interface RecordedEvent {
   meta?: Record<string, unknown>
 }
 
-function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnType<typeof createWsMessageHandler>; events: RecordedEvent[] } {
+function setUpHandler(
+  db: Db,
+  session: DeviceSession | null,
+  overControl: 'allow' | 'warn' | 'forbid' = 'allow',
+): { handler: ReturnType<typeof createWsMessageHandler>; events: RecordedEvent[]; activities: ReturnType<typeof createActivityRegistry> } {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const events: RecordedEvent[] = []
   const deps: WsHandlerDeps = {
     sessions: fakeSessionManager(session),
@@ -140,7 +143,9 @@ function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnT
         throw new Error('not used')
       },
     },
-    leases,
+    activities,
+    controlSettings: () => ({ overControl, idleSec: 30 }),
+    states,
     jobs: {
       enqueue: () => {
         throw new Error('not used')
@@ -150,7 +155,6 @@ function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnT
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-      assists: () => [],
       // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these clipboard
       // tests; present only so this fixture keeps satisfying `JobService`.
       nodes: () => ({ items: [], finalized: false }),
@@ -172,17 +176,13 @@ function setUpHandler(db: Db, session: DeviceSession | null): { handler: ReturnT
     db,
     log,
   }
-  return { handler: createWsMessageHandler(deps), events }
-}
-
-async function acquireLease(handler: ReturnType<typeof createWsMessageHandler>, ws: ServerWebSocket<unknown>, deviceId: string): Promise<void> {
-  await handler.handleMessage(ws, JSON.stringify({ type: 'lease.acquire', id: 'l1', payload: { deviceId } }))
+  return { handler: createWsMessageHandler(deps), events, activities }
 }
 
 describe('clipboard.get (plan 38 §4.5, acceptance #5)', () => {
-  test('works without a lease', async () => {
+  test('works with no admission at all', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { clipboard } = fakeClipboard({ value: 'on the device' })
     const { handler } = setUpHandler(db, fakeSession('dev-1', clipboard))
     const a = fakeConn()
@@ -195,9 +195,9 @@ describe('clipboard.get (plan 38 §4.5, acceptance #5)', () => {
     if (value?.type === 'clipboard.value') expect(value.payload.text).toBe('on the device')
   })
 
-  test('no active session → E_DEVICE_NOT_READY, not a lease error', async () => {
+  test('no active session → E_DEVICE_NOT_READY, not an admission error', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { handler } = setUpHandler(db, null)
     const a = fakeConn()
 
@@ -210,7 +210,7 @@ describe('clipboard.get (plan 38 §4.5, acceptance #5)', () => {
 
   test('the screencap-loop fallback (session.clipboard null) refuses reads with E_CLIPBOARD_UNAVAILABLE, never an empty string (plan 38 §3.5, acceptance #8)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { handler } = setUpHandler(db, fakeSession('dev-1', null))
     const a = fakeConn()
 
@@ -224,7 +224,7 @@ describe('clipboard.get (plan 38 §4.5, acceptance #5)', () => {
 
   test('the request id correlates the reply (clipboard.value carries the same id)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { clipboard } = fakeClipboard({ value: 'x' })
     const { handler } = setUpHandler(db, fakeSession('dev-1', clipboard))
     const a = fakeConn()
@@ -237,67 +237,50 @@ describe('clipboard.get (plan 38 §4.5, acceptance #5)', () => {
   })
 })
 
-describe('clipboard.set (plan 38 §4.5, acceptance #5, #7)', () => {
-  test('no lease → refused, and nothing is written to the device or recorded', async () => {
+describe('clipboard.set (plan 38 §4.5, acceptance #5, #7; admission reworked by plan 205 §4.9)', () => {
+  test('a running job only warns, never forbids — clipboard.set still succeeds', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { clipboard, setCalls } = fakeClipboard()
-    const { handler, events } = setUpHandler(db, fakeSession('dev-1', clipboard))
-    const a = fakeConn()
-
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'clipboard.set', id: 's1', payload: { deviceId: 'dev-1', text: 'secret-password' } }))
-
-    const err = a.sent.find((m) => m.type === 'error')
-    expect(err).toBeDefined()
-    if (err?.type === 'error') expect(err.payload.code).toBe('no_lease')
-    expect(setCalls).toHaveLength(0)
-    expect(events).toHaveLength(0)
-  })
-
-  test('device busy (a job is running) → refused with device_busy', async () => {
-    const db = setUpDb()
-    seedDevice(db, 'dev-1', 'busy')
-    const { clipboard, setCalls } = fakeClipboard()
-    const { handler, events } = setUpHandler(db, fakeSession('dev-1', clipboard))
+    const { handler, events, activities } = setUpHandler(db, fakeSession('dev-1', clipboard))
+    activities.start('dev-1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const a = fakeConn()
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'clipboard.set', id: 's1', payload: { deviceId: 'dev-1', text: 'x' } }))
 
-    const err = a.sent.find((m) => m.type === 'error')
-    if (err?.type === 'error') expect(err.payload.code).toBe('device_busy')
-    else throw new Error('expected a refusal')
-    expect(setCalls).toHaveLength(0)
-    expect(events).toHaveLength(0)
+    expect(a.sent.some((m) => m.type === 'error')).toBe(false)
+    expect(setCalls).toHaveLength(1)
+    expect(events).toHaveLength(1)
   })
 
-  test('another client holds the lease → refused, not the lease holder', async () => {
+  test('control.overControl: forbid — a second client is refused, named E_DEVICE_CONFLICT, and nothing is written or recorded', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { clipboard, setCalls } = fakeClipboard()
-    const { handler, events } = setUpHandler(db, fakeSession('dev-1', clipboard))
+    const { handler, events } = setUpHandler(db, fakeSession('dev-1', clipboard), 'forbid')
     const holder = fakeConn()
     const bystander = fakeConn()
 
-    await acquireLease(handler, holder.ws, 'dev-1')
+    handler.handleOpen(holder.ws)
+    await handler.handleMessage(holder.ws, JSON.stringify({ type: 'clipboard.set', id: 's0', payload: { deviceId: 'dev-1', text: 'mine' } }))
     events.length = 0
+    handler.handleOpen(bystander.ws)
     await handler.handleMessage(bystander.ws, JSON.stringify({ type: 'clipboard.set', id: 's1', payload: { deviceId: 'dev-1', text: 'x' } }))
 
     const err = bystander.sent.find((m) => m.type === 'error')
     expect(err).toBeDefined()
-    if (err?.type === 'error') expect(['not_lease_holder', 'no_lease']).toContain(err.payload.code)
-    expect(setCalls).toHaveLength(0)
+    if (err?.type === 'error') expect(err.payload.code).toBe('E_DEVICE_CONFLICT')
+    expect(setCalls).toHaveLength(1)
     expect(events).toHaveLength(0)
   })
 
-  test('with the lease held: the device receives the text, paste defaults to false, and clipboard.ok replies with the matching id', async () => {
+  test('the device receives the text, paste defaults to false, and clipboard.ok replies with the matching id', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { clipboard, setCalls } = fakeClipboard()
     const { handler } = setUpHandler(db, fakeSession('dev-1', clipboard))
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
-    a.sent.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'clipboard.set', id: 's1', payload: { deviceId: 'dev-1', text: 'hello clipboard' } }))
 
     expect(a.sent.some((m) => m.type === 'error')).toBe(false)
@@ -309,12 +292,11 @@ describe('clipboard.set (plan 38 §4.5, acceptance #5, #7)', () => {
 
   test('paste: true reaches the device unchanged', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { clipboard, setCalls } = fakeClipboard()
     const { handler } = setUpHandler(db, fakeSession('dev-1', clipboard))
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(
       a.ws,
       JSON.stringify({ type: 'clipboard.set', id: 's1', payload: { deviceId: 'dev-1', text: 'paste me', paste: true } }),
@@ -325,12 +307,11 @@ describe('clipboard.set (plan 38 §4.5, acceptance #5, #7)', () => {
 
   test('the audit event records the LENGTH, never the text (plan 38 §3.6, §4.5, acceptance #7)', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { clipboard } = fakeClipboard()
     const { handler, events } = setUpHandler(db, fakeSession('dev-1', clipboard))
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     events.length = 0
     const secret = 'hunter2-the-password'
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'clipboard.set', id: 's1', payload: { deviceId: 'dev-1', text: secret } }))
@@ -343,13 +324,12 @@ describe('clipboard.set (plan 38 §4.5, acceptance #5, #7)', () => {
     expect(JSON.stringify(rec?.meta)).not.toContain('hunter2')
   })
 
-  test('the screencap-loop fallback (session.clipboard null) still refuses even with the lease held', async () => {
+  test('the screencap-loop fallback (session.clipboard null) still refuses even with nothing else going on', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { handler } = setUpHandler(db, fakeSession('dev-1', null))
     const a = fakeConn()
 
-    await acquireLease(handler, a.ws, 'dev-1')
     a.sent.length = 0
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'clipboard.set', id: 's1', payload: { deviceId: 'dev-1', text: 'x' } }))
 
@@ -362,7 +342,7 @@ describe('clipboard.set (plan 38 §4.5, acceptance #5, #7)', () => {
 describe('clipboard.value is unicast — a second viewer of the same device receives nothing (plan 38 §4.5, acceptance #6)', () => {
   test('a bystander watching the same device via stream.start never sees clipboard.value or clipboard.ok', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { clipboard, setCalls } = fakeClipboard({ value: 'a private token' })
     const { handler } = setUpHandler(db, fakeSession('dev-1', clipboard))
     const holder = fakeConn()
@@ -373,7 +353,6 @@ describe('clipboard.value is unicast — a second viewer of the same device rece
     // §3.8). Clipboard must NOT reuse that broadcast.
     await handler.handleMessage(holder.ws, JSON.stringify({ type: 'stream.start', id: 'st1', payload: { deviceId: 'dev-1' } }))
     await handler.handleMessage(viewer.ws, JSON.stringify({ type: 'stream.start', id: 'st2', payload: { deviceId: 'dev-1' } }))
-    await acquireLease(handler, holder.ws, 'dev-1')
     viewer.sent.length = 0
     holder.sent.length = 0
 

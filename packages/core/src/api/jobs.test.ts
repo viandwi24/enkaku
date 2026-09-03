@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { afterEach, describe, expect, test } from 'bun:test'
-import type { DeviceEvent, JobDetail, JobInfo, JobNodeInfo, JobTraceEvent } from '@enkaku/protocol'
+import type { JobDetail, JobInfo, JobNodeInfo, JobTraceEvent } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
@@ -35,7 +35,6 @@ function fakeJobInfo(scriptId: string, overrides: Partial<JobInfo> = {}): JobInf
     rootJobId: null,
     depth: 0,
     peakRssBytes: null,
-    assistCount: 0,
     notBefore: null,
     batchRepeat: null,
     pacedDelayMs: null,
@@ -61,7 +60,6 @@ function fakeJobDetail(scriptId: string, overrides: Partial<JobDetail> = {}): Jo
 function fakeService(
   opts: {
     getResult?: JobDetail | null
-    assistsResult?: DeviceEvent[]
     nodesResult?: { items: JobNodeInfo[]; finalized: boolean }
     /** Returned by `resume()` on success; ignored when `resumeError` is set. */
     resumeResult?: JobInfo
@@ -72,14 +70,12 @@ function fakeService(
   calls: Parameters<JobService['enqueue']>[0][]
   cancelCalls: Array<{ jobId: string; opts?: { cancelDescendants?: boolean } }>
   listCalls: Parameters<JobService['list']>[0][]
-  assistsCalls: string[]
   nodesCalls: string[]
   resumeCalls: Array<{ jobId: string; input?: { fromNode?: string } }>
 } {
   const calls: Parameters<JobService['enqueue']>[0][] = []
   const cancelCalls: Array<{ jobId: string; opts?: { cancelDescendants?: boolean } }> = []
   const listCalls: Parameters<JobService['list']>[0][] = []
-  const assistsCalls: string[] = []
   const nodesCalls: string[] = []
   const resumeCalls: Array<{ jobId: string; input?: { fromNode?: string } }> = []
   const getResult = opts.getResult === undefined ? fakeJobDetail('x', { jobId: 'job-1', deviceId: 'd1' }) : opts.getResult
@@ -87,7 +83,6 @@ function fakeService(
     calls,
     cancelCalls,
     listCalls,
-    assistsCalls,
     nodesCalls,
     resumeCalls,
     enqueue(input) {
@@ -102,10 +97,6 @@ function fakeService(
     list: (filter) => {
       listCalls.push(filter)
       return { jobs: [], nextCursor: null, total: 0 }
-    },
-    assists: (jobId) => {
-      assistsCalls.push(jobId)
-      return opts.assistsResult ?? []
     },
     nodes: (jobId) => {
       nodesCalls.push(jobId)
@@ -245,35 +236,9 @@ describe('POST /api/jobs/:id/cancel — cancelDescendants (plan 81 §4.4)', () =
   })
 })
 
-describe('GET /api/jobs/:id/assists (plan 91 §3.5, §4.9, §5 step 91.5)', () => {
-  test('returns exactly what service.assists() reports, for the id in the URL', async () => {
-    const items: DeviceEvent[] = [
-      { id: 'e1', deviceId: 'd1', stream: 'input', kind: 'input.tap', actor: 'operator-1', meta: { assist: true, jobId: 'job-1' }, at: 1000 },
-    ]
-    const service = fakeService({ assistsResult: items })
-    const app = withUser(null, service)
-    const res = await app.request('/job-1/assists')
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { items: DeviceEvent[] }
-    expect(body.items).toEqual(items)
-    expect(service.assistsCalls).toEqual(['job-1'])
-  })
-
-  test('a missing job is a 404, matching service.assists()\'s own job_not_found (mirrors GET /:id\'s 404 shape)', async () => {
-    const service = fakeService()
-    // `assists()` on the real `JobService` throws `job_not_found` for a
-    // missing job — proven directly in `services/job-service.test.ts`; here
-    // the route's own `onError` mapping is what is under test.
-    service.assists = () => {
-      throw new EnkakuError('job_not_found', 'no such job: nope')
-    }
-    const app = withUser(null, service)
-    const res = await app.request('/nope/assists')
-    expect(res.status).toBe(404)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('job_not_found')
-  })
-})
+// The old second-operator-grant endpoint at this path is gone — plan 205
+// §2.4 deleted that whole subsystem, and with it this endpoint's own
+// producer on `JobService`. There is nothing left here to test.
 
 describe('POST /api/jobs/:id/cancel — ownership/permission check (security fix, plan 09 §4.4)', () => {
   test('a job that does not exist is a 404 and never reaches the service', async () => {
@@ -385,7 +350,7 @@ describe('GET /api/jobs/:id/nodes (plan 99 §3.5, §4.9, step 99.8)', () => {
     expect(service.nodesCalls).toEqual(['job-1'])
   })
 
-  test('requires job.view — no user in context is refused (403), unlike /assists on this same file', async () => {
+  test('requires job.view — no user in context is refused (403)', async () => {
     const service = fakeService()
     const app = withUser(null, service)
     const res = await app.request('/job-1/nodes')

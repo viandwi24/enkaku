@@ -155,8 +155,7 @@ import { sleepExecutor } from './jobs/executors/sleep'
 import { createInstallExecutor } from './jobs/executors/install'
 import { createPushExecutor } from './jobs/executors/push'
 import { createPullExecutor } from './jobs/executors/pull'
-import { createLeaseManager } from './lease/lease-manager'
-import { createCoControlManager, type CoControlManager } from './lease/co-control'
+import { createActivityRegistry, type ActivityRegistry } from './activity/registry'
 import { createCommandRunStore } from './command-console/store'
 import { createCommandRunner, resolveCommandTarget, type CommandRunner, type CommandRunnerEvent } from './command-console/runner'
 import { createCommandRunRoutes } from './api/command-runs'
@@ -166,7 +165,7 @@ import { createExpiryReaper } from './queue/expiry'
 import { createScheduler } from './queue/scheduler'
 import { createScheduleRunner } from './schedules/runner'
 import { validateScriptForRun } from './jobs/validate-script'
-import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type DeviceRegistry } from './registry/device-registry'
+import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type DeviceActivityState, type DeviceRegistry } from './registry/device-registry'
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
 import { createEndpointStore, type EndpointStore } from './registry/endpoints'
 import { createDeviceReconnector, type DeviceReconnector } from './registry/reconnect'
@@ -397,16 +396,14 @@ let blobGc: BlobGc | null = null
    * closure shape `onDeviceReady` already uses for `agentProvisionerRef`.
    */
   let labellingRef: LabellingService | null = null
-  /** Device readiness (plan 43) — constructed once `leases` exists (below), used by every module below that reconciles or holds on it. */
+  /** Device readiness (plan 43) — constructed once `activities` exists (below), used by every module below that reconciles or admits against it. */
   let readiness: ReadinessManager | null = null
-  /** The command console's runner (plan 93 §4.5, §5 step 93.3) — constructed right after `leases`, since `admitMember`'s lease policy needs it. `stop()` drains it before `recorder` (its own `record` dep) is torn down. */
+  /** The command console's runner (plan 93 §4.5, §5 step 93.3) — constructed right after `activities`, since admission policy needs it. `stop()` drains it before `recorder` (its own `record` dep) is torn down. */
   let commandRunner: CommandRunner | null = null
   let stopScheduler: (() => void) | null = null
   /** The batch pacer's dynamic timer (plan 94 §3.8, §4.8, step 94.7) — cleared in `stop()` like every other periodic timer here (`00-overview.md` §7 item 7). */
   let stopPacer: (() => void) | null = null
   let stopReaper: (() => void) | null = null
-  /** The co-control grant TTL reaper (plan 91 §4.2, §5 step 91.2) — stopped in `stop()` like every other periodic timer here (`00-overview.md` §7 item 7). */
-  let stopCoControlReaper: (() => void) | null = null
   let stopExpiryReaper: (() => void) | null = null
   let stopScheduleRunner: (() => void) | null = null
   let dataDirLock: DataDirLock | null = null
@@ -491,6 +488,51 @@ let blobGc: BlobGc | null = null
       // 2. WS hub + Toolchain Manager (emit → broadcast)
       const hub = new WsHub(log.child('ws'))
 
+      // The device activity registry (MVP 04, plan 205 §4.4, §5 step 205.9) —
+      // one in-memory registry per boot, replacing the whole deleted
+      // manual-hold/secondary-operator subsystem outright. Built here,
+      // immediately after `hub`, because — unlike what it replaces — it has
+      // no circular dependency on anything constructed later in this
+      // function (no agent label resolver, no secondary-operator
+      // cross-reference): `settingsStore`/`recorder` below are read fresh,
+      // through the same forward-ref
+      // pattern `adbServerControl`'s own `getClient: () => adb` already uses
+      // a few lines down, so declaring this before either exists is safe —
+      // neither closure runs until well after both are assigned.
+      const activities: ActivityRegistry = createActivityRegistry({
+        log: log.child('activity'),
+        controlIdleSec: () => settingsStore.get().control.idleSec,
+        onChange: (deviceId, change, activity, lastControl) => {
+          hub.broadcast({ type: 'device.activity', payload: { deviceId, change, activity, lastControl } })
+          // Only the two terminal transitions are worth a permanent row
+          // (plan 18 §3.5) — a marker refresh (`change === 'updated'`, a job
+          // heartbeat, a repeated tap) would flood the main stream with an
+          // event for every touch; the live broadcast above already carries
+          // that.
+          if (change === 'added' || change === 'ended') {
+            recorder?.record({
+              deviceId,
+              stream: 'main',
+              kind: change === 'ended' ? 'activity.ended' : 'activity.started',
+              actor: activity.actor.kind === 'user' ? activity.actor.id : null,
+              meta: { activityId: activity.id, kind: activity.kind, label: activity.label },
+            })
+          }
+          // A `control` marker ending for ANY reason — idle sweep,
+          // quarantine, an operator's forced disconnect, or an explicit
+          // release — must reset the terminal's emulated cwd and end any
+          // open recording (plan 26 §3.7, §4.4; plan 94 §4.6). A plain WS
+          // drop already reaches both through `handleClose` itself; this is
+          // what reaches the other paths, which leave the WS connection
+          // open (`releaseShellSession`/`stopRecordingForDisconnect` are
+          // both idempotent no-ops when there is nothing to reset).
+          if (change === 'ended' && activity.kind === 'control') {
+            releaseShellSession?.(deviceId)
+            stopRecordingForDisconnect?.(deviceId)
+          }
+        },
+      })
+
       // Notifications and webhooks (plan 68 §3.4, §4.1, §4.4) — built early: farm-wide, minimal
       // deps (db, dataDir), and needed by both the capability registry (`notify.send`), the
       // schedule runner (spend-cap refusals), and the agent runner (auto-denied approvals), all
@@ -522,7 +564,7 @@ let blobGc: BlobGc | null = null
       //
       // Every dependency below is a forward reference — the same pattern
       // `stopTracker`/`startTracker` already used for `registry` two lines
-      // down. `sessions`, `leases`, `jobStore`, `host`, `reconnector`,
+      // down. `sessions`, `activities`, `jobStore`, `host`, `reconnector`,
       // `reconciler` and `endpoints` do not exist yet at this point in
       // `start()`; `cycle()` itself is never CALLED until long after every
       // one of them does, because a version swap or a restart can only ever
@@ -537,14 +579,14 @@ let blobGc: BlobGc | null = null
         },
         // F19: `drainSessions` was an unwired optional dep since M1 ("a
         // no-op in M1 — filled in by Plan 04"). Plan 04 shipped long ago;
-        // the hook was never filled until now. Sessions and manual leases
-        // are always drained; a running JOB is force-failed only when the
+        // the hook was never filled until now. Sessions and manual control
+        // markers are always drained; a running JOB is force-failed only when the
         // caller already decided to proceed despite it (`force` — see the
         // route's own `E_ADB_BUSY_FARM` guard, which runs BEFORE `cycle()`
         // is ever called).
         drainSessions: async ({ force }) => {
           const sessionsClosed = (await sessions?.closeAll('adb-server-restart')) ?? 0
-          const leasesReleased = leases.releaseAll?.({ reason: 'adb-server-restart' }) ?? 0
+          const controlsEnded = activities.endWhere((_, a) => a.kind === 'control' || a.kind === 'command')
           const jobsFailed: string[] = []
           if (force) {
             const running = jobStore.list({ status: 'running', limit: 1000 })
@@ -553,7 +595,7 @@ let blobGc: BlobGc | null = null
               jobsFailed.push(job.id)
             }
           }
-          return { sessionsClosed, leasesReleased, jobsFailed }
+          return { sessionsClosed, controlsEnded, jobsFailed }
         },
         // Reattach every remembered network address (plan 88 §3.2, §3.10) —
         // after a stop, adb's transport table is empty and it will not go
@@ -570,8 +612,8 @@ let blobGc: BlobGc | null = null
           // than being composed into it here: the report is rendered by
           // `AdbRestartDialog`, and a pre-composed string would double up the
           // moment that dialog also holds a `DeviceInfo` — the failure plan
-          // 124 §10 records against `MirrorMember`. One row per failed
-          // reattach, so a per-row lookup is bounded by the failure count,
+          // 124 §10 records against a similarly-shaped row type. One row per
+          // failed reattach, so a per-row lookup is bounded by the failure count,
           // not by the fleet size.
           const namedFor = (stableId: string): { label: string; number: number | null } => {
             const row = db.select({ label: devices.label }).from(devices).where(eq(devices.stableId, stableId)).get()
@@ -615,7 +657,7 @@ let blobGc: BlobGc | null = null
 
       // "Restart Enkaku" (plan 120) — the whole core process, a materially
       // bigger blast radius than `adbServerControl` just above, so it gets
-      // the SAME draining discipline (sessions/leases always, a running job
+      // the SAME draining discipline (sessions/control markers always, a running job
       // only when the caller's own busy-farm guard already decided to
       // proceed) rather than a second, divergent one. Deliberately does NOT
       // touch adb's own lifecycle at all — `app-restart-control.ts` never
@@ -625,7 +667,7 @@ let blobGc: BlobGc | null = null
       const appRestartControl: AppRestartControl = createAppRestartControl({
         drain: async ({ force }) => {
           const sessionsClosed = (await sessions?.closeAll('app-restart')) ?? 0
-          const leasesReleased = leases.releaseAll?.({ reason: 'app-restart' }) ?? 0
+          const controlsEnded = activities.endWhere((_, a) => a.kind === 'control' || a.kind === 'command')
           const jobsFailed: string[] = []
           if (force) {
             const running = jobStore.list({ status: 'running', limit: 1000 })
@@ -634,7 +676,7 @@ let blobGc: BlobGc | null = null
               jobsFailed.push(job.id)
             }
           }
-          return { sessionsClosed, leasesReleased, jobsFailed }
+          return { sessionsClosed, controlsEnded, jobsFailed }
         },
         // `daemon.stop()` cannot be referenced as `this` from inside its own
         // construction (the returned object literal is not built yet) — the
@@ -830,11 +872,11 @@ let blobGc: BlobGc | null = null
       // router once it exists — the two reference each other, same forward-ref
       // pattern used below for the tunnel hooks.
       let publishDeviceEvent: ((deviceId: string, ev: DeviceEvent) => void) | null = null
-      // Same forward-ref pattern as `publishDeviceEvent`: the lease manager
-      // (below) and the device routes (further below) are both built before
-      // the WS router exists, but both need to reach into it once it does
-      // (plan 31 §4.2 — presence broadcast on lease revoke, and the
-      // GET /:id/viewers route).
+      // Same forward-ref pattern as `publishDeviceEvent`: the activity
+      // registry (below) and the device routes (further below) are both
+      // built before the WS router exists, but both need to reach into it
+      // once it does (plan 31 §4.2 — presence broadcast on a control marker
+      // ending, and the GET /:id/viewers route).
       let broadcastDeviceViewers: ((deviceId: string) => void) | null = null
       let viewersOfDevice: ((deviceId: string) => Viewer[]) | null = null
       // Same forward-ref pattern: a device going offline (below) must stop
@@ -843,40 +885,29 @@ let blobGc: BlobGc | null = null
       // further down.
       let stopMonitorsForDevice: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: the terminal's emulated cwd (plan 26 §3.7,
-      // §4.4) must reset to `/` whenever a manual lease is released — for
-      // ANY reason, including the automatic ones (idle timeout, quarantine)
-      // handled below in `onManualRevoked`, which fires before the WS router
-      // exists.
+      // §4.4) must reset to `/` whenever a client's control marker ends —
+      // for any reason, including the automatic ones (idle timeout,
+      // quarantine, disconnect) — before the WS router exists.
       let releaseShellSession: ((deviceId: string) => void) | null = null
+      // Same forward-ref pattern: an open recording (plan 94 §4.6) must end
+      // whenever a client's control marker ends for one of those SAME
+      // automatic reasons — a plain WS drop is already covered by
+      // `handleClose` itself, but an idle-swept or quarantine-ended marker
+      // leaves the WS connection open, so nothing else would ever call this.
+      // Resolved below, right beside `releaseShellSession`, once the WS
+      // router (which owns the real `RecordingService` handle) exists.
+      let stopRecordingForDisconnect: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: a device going offline must clear its
       // Inspect tab ref-count bookkeeping (plan 56 §4.2 step 7) — the
       // inspector itself is already released as part of the session's own
       // `close()`, this only resets what the WS router tracks so a later
       // `inspect.attach` does not inherit a stale count.
       let resetInspectForDevice: ((deviceId: string) => void) | null = null
-      // Same forward-ref pattern: a manual lease's readiness hold (plan 43
-      // §5 step 43.7) must not outlive the lease however it ends either —
-      // an explicit `lease.release`/WS disconnect already release it inline
-      // in `ws-handlers.ts`; this covers the automatic paths (idle timeout,
-      // quarantine) handled below in `onManualRevoked`.
-      let releaseLeaseReadinessHold: ((deviceId: string) => void) | null = null
-      // Same forward-ref pattern: an open recording (plan 94 §4.6) must not
-      // outlive the manual lease it was made under either — an explicit
-      // `lease.release`/WS disconnect already call `deps.recording?.stopForLeaseLost`
-      // inline in `ws-handlers.ts`; this covers the automatic paths (idle
-      // timeout, quarantine, a takeover) handled below in `onManualRevoked`/
-      // `onManualTakenOver`, which fire before the WS router exists. Without
-      // this, a recording started under one holder keeps capturing whatever
-      // the NEXT holder does after an automatic revoke, with no record of
-      // where the handover happened.
-      let stopRecordingForLeaseLost: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: a device going offline must mark its
       // `vpn-helper` network route's checks unknown (never tear the route
-      // down — plan 52 §4.1 reverses plan 44 §5.7's lease-scoped teardown),
+      // down — plan 52 §4.1 reverses plan 44 §5.7's activity-scoped teardown),
       // and a device coming back online must restore it, probe-first (plan
-      // 52 §3.2, §5.3). `createGuestAgentRoutes` needs `leases` itself,
-      // which does not exist until `createLeaseManager` below returns.
-      // Resolved once `guestAgent` is built further down.
+      // 52 §3.2, §5.3). Resolved once `guestAgent` is built further down.
       let handleNetworkDeviceOffline: ((deviceId: string) => Promise<void>) | null = null
       let restoreNetworkRoute: ((deviceId: string) => Promise<void>) | null = null
       // Same forward-ref pattern: crash detection (plan 37 §3.3) starts when
@@ -885,22 +916,14 @@ let blobGc: BlobGc | null = null
       // before the WS router (which owns the actual `CrashWatcher`) exists.
       let watchCrashesForDevice: ((deviceId: string) => void) | null = null
       let unwatchCrashesForDevice: ((deviceId: string) => void) | null = null
-      // Same forward-ref pattern: a job finishing must re-resolve any mirror
-      // group the job's device was skipped from (plan 91 §3.9, §4.7, §5 step
-      // 91.7) — F27's re-admit, most notably: an `internal:install` job
-      // ending is what lets that device rejoin a mirror it was `skipped:
-      // installing` from. `host`'s `onJobFinished` (below) fires long before
-      // `attachWsRouter` — the mirror manager it needs to re-resolve against
-      // lives inside the WS router — ever runs.
-      let reconcileMirrorForDevice: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: `/api/adb/stats`'s `transport` block (plan
       // 85 §3.6, §4.6) lives on the WS router's own connection bookkeeping,
       // but `createAdbStatsRoutes` is built (below, in step 4) before
       // `attachWsRouter` ever runs.
       let transportStats: (() => TransportSnapshot) | null = null
       // Same forward-ref pattern: `/api/adb/stats`'s `input` block (plan 91
-      // §4.10, §5 step 91.10) lives on the WS router's own arbiter/mirror/
-      // co-control bookkeeping, but `createAdbStatsRoutes` is built (below,
+      // §4.10, §5 step 91.10) lives on the WS router's own arbiter
+      // bookkeeping, but `createAdbStatsRoutes` is built (below,
       // in step 4) before `attachWsRouter` ever runs.
       let inputStats: (() => InputStatsBlock) | null = null
       // Same forward-ref pattern: `GET /api/video/latency`'s per-stream
@@ -911,7 +934,7 @@ let blobGc: BlobGc | null = null
         | ((deviceId: string) => Array<{ quality: Quality; keyframeRequests: number; congestionDrops: number }>)
         | null = null
       // Same forward-ref pattern: the command runner (plan 93 §3.17, §4.5,
-      // §5 step 93.4) is constructed right after `leases`, well before
+      // §5 step 93.4) is constructed right after `activities`, well before
       // `attachWsRouter` runs — but its `broadcast` dep needs
       // `commandTargets(runId)`'s subscriber bookkeeping, which lives on the
       // WS router's own connection state. Resolved once `attachWsRouter`
@@ -974,7 +997,7 @@ let blobGc: BlobGc | null = null
       // route a screenshot's bytes have out of `@enkaku/session`) and into
       // `createJobRoutes` (which reads the same files back out).
       const traceFrameStore = createTraceFrameStore({ dataDir: cfg.dataDir })
-      // The lease-scoped adb endpoint (plan 27 §4.2, cloud devices plan 28
+      // The activity-gated adb endpoint (plan 27 §4.2, cloud devices plan 28
       // §4.4). Constructed unconditionally, even before adb or the tunnel
       // layer are ready — `deps.adb`/`deps.rpc`/`deps.router` all read their
       // outer variables fresh on every `open()` call (the same forward-ref
@@ -1028,7 +1051,7 @@ let blobGc: BlobGc | null = null
 
       // `canUseDevice`'s device half (plan 34 §3.5, §4.4) — a minimal lookup
       // shared by every ownership check below (job enqueue, batch dispatch,
-      // lease acquire, the Plan 27 adb endpoint) so there is one query shape,
+      // control acquisition, the Plan 27 adb endpoint) so there is one query shape,
       // not four.
       const getDeviceOwner = (deviceId: string): { ownerId: string | null } | null => {
         const row = db.select({ ownerId: devices.ownerId }).from(devices).where(eq(devices.id, deviceId)).get()
@@ -1038,7 +1061,7 @@ let blobGc: BlobGc | null = null
       // Writes a crash trace as an artifact (plan 37 §3.6): job-scoped
       // (reusing the exact sink every other job artifact goes through, so it
       // shows up on the job detail page and broadcasts `job.artifact` like
-      // any other) when a job lease was held, device-scoped via
+      // any other) when a job was running, device-scoped via
       // `saveForDevice` (plan 24 §4.6) otherwise.
       const saveCrashTrace = async (opts: { deviceId: string; jobId: string | null; label: string; text: string }): Promise<ArtifactInfo> => {
         const data = new TextEncoder().encode(opts.text)
@@ -1145,7 +1168,7 @@ let blobGc: BlobGc | null = null
         `auth mode: ${authMode}${authMode === 'server' && !auth.hasAnyAdmin() ? ' (admin setup required)' : ''}`,
       )
 
-      // 3. Queue / lease / scheduler (M3)
+      // 3. Queue / heartbeat / scheduler (M3)
       const jobStore = createJobStore(db)
       const orphans = jobStore.failOrphanRunning()
       if (orphans > 0) log.warn(`recovery boot: ${orphans} job 'running' yatim ditandai failed (core restarted)`)
@@ -1174,8 +1197,8 @@ let blobGc: BlobGc | null = null
           if (status === 'quarantined') void sessions?.closeIfIdle(deviceId)
           // Every status transition can move readiness too (Plan 43 §5 step
           // 43.6): connect/disconnect and quarantine/unquarantine most
-          // obviously, but also JOB_CLAIMED/JOB_FINISHED and manual
-          // acquire/release, since any of them can change whether a standing
+          // obviously, but also a job's claim/finish and a control marker
+          // starting/ending, since any of them can change whether a standing
           // `desired: hot` device is still reachable. Cheap and idempotent —
           // reconciling on every transition is simplest to reason about.
           //
@@ -1323,21 +1346,11 @@ let blobGc: BlobGc | null = null
       }
 
       let scheduler: ReturnType<typeof createScheduler> | null = null
-      let leaseManager: ReturnType<typeof createLeaseManager> | null = null
       let scheduleRunner: ReturnType<typeof createScheduleRunner> | null = null
-      // Plan 91 §4.2, §5 step 91.2 — same forward-ref pattern as `leaseManager`
-      // just above: `createLeaseManager`'s own `onPrimaryEnded` hook (below)
-      // needs to call into the co-control grant store, but that store is not
-      // constructed until right after `leases` itself is (it reads `leases`
-      // back via `leases.getLease`), which is a few hundred lines further
-      // down this same function. Read fresh, so the wiring is correct the
-      // instant both sides exist, in either construction order.
-      let coControlRef: CoControlManager | null = null
-      // Plan 94 §3.8, §4.8, step 94.7 — same forward-ref pattern as
-      // `leaseManager`/`coControlRef` above: `onBatchChanged` (below) needs
-      // to call into the pacer, which is not constructed until right after
-      // `scheduler` itself is, a few hundred lines further down this same
-      // function (it needs `scheduler.kick`).
+      // Plan 94 §3.8, §4.8, step 94.7 — a forward ref: `onBatchChanged`
+      // (below) needs to call into the pacer, which is not constructed until
+      // right after `scheduler` itself is, a few hundred lines further down
+      // this same function (it needs `scheduler.kick`).
       let pacerRef: BatchPacer | null = null
       // A batch member job reached a terminal state (or was cancelled while
       // queued) → recompute the batch's cached status and broadcast it
@@ -1350,11 +1363,10 @@ let blobGc: BlobGc | null = null
       const host = createExecutorHost({
         registry: executors,
         jobStore,
-        states,
-        leases: () => leaseManager!,
+        activities: () => activities,
         log: log.child('executor'),
-        jobTtlSec: cfg.lease.jobTtlSec,
-        heartbeatMs: cfg.lease.heartbeatMs,
+        jobTtlSec: cfg.heartbeat.jobTtlSec,
+        heartbeatMs: cfg.heartbeat.heartbeatMs,
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
         onFinished: () => scheduler?.kick(),
         onBatchChanged,
@@ -1379,13 +1391,6 @@ let blobGc: BlobGc | null = null
           // `readinessHold` below was never wired (a host built without it,
           // e.g. some tests).
           void readiness?.reconcile(deviceId)
-          // F27's re-admit (plan 91 §3.9, §4.7, §5 step 91.7): a device
-          // running `internal:install` is `skipped: installing` in every
-          // mirror group that requested it — this is what lets it rejoin on
-          // its own the instant that job (or any other) settles, with no
-          // client asking. A harmless no-op for a device that belongs to no
-          // group, or before `attachWsRouter` has run.
-          reconcileMirrorForDevice?.(deviceId)
         },
         // Readiness hold (plan 43 §3.6, §5 step 43.7) — a job on a sleeping
         // device wakes it, then proceeds; never blocks a claim (§4.3
@@ -1395,7 +1400,7 @@ let blobGc: BlobGc | null = null
         // settle, the same pattern `adb.maxConcurrent` uses.
         timeoutIsInfra: () => settingsStore.get().job.retry.timeoutIsInfra,
         rebindOnInfra: () => settingsStore.get().job.retry.rebindOnInfra,
-        // Lazy, like `leases` above — `health` is created later, once adb is ready.
+        // Lazy, like `activities` above — `health` is created later, once adb is ready.
         health: () => health,
         deviceSerial: (deviceId) => db.select({ serial: devices.serial }).from(devices).where(eq(devices.id, deviceId)).get()?.serial ?? null,
         pickRebindDevice: (job) => pickRebindDevice(db, job),
@@ -1429,16 +1434,18 @@ let blobGc: BlobGc | null = null
         onProgress: (jobId, deviceId, value) => hub.broadcast({ type: 'job.progress', payload: { jobId, deviceId, value } }),
       })
 
-      // Resolves a lease holder's id to a display label (plan 71 §3.3) — the
-      // lease manager itself never learns about users, agents, or jobs
-      // directly; this closure is the one place that does. `agentStoreRef`
-      // is the same forward-ref pattern used throughout this function
-      // (`agentStore` is not built until later, well below this point) — by
-      // the time this is actually CALLED (a lease exists), boot has long
-      // finished and the ref is populated. A holder id this cannot resolve
-      // becomes a truthful, non-empty phrase — never an empty string, never
-      // the raw id (plan 71 §3.3, criterion 14).
-      const resolveLeaseLabel = (kind: 'user' | 'agent' | 'job', id: string): string => {
+      // Resolves an actor id to a display label (plan 71 §3.3, kept and
+      // renamed by plan 205 §5 step 205.9 — the manual-hold subsystem that
+      // used to be the only caller is gone, but the registry's own activity actors
+      // still need the SAME resolution for a `user`/`agent`/`job` id, so the
+      // one place that learns about users, agents, and jobs stays exactly
+      // one place). `agentStoreRef` is the same forward-ref pattern used
+      // throughout this function (`agentStore` is not built until later,
+      // well below this point) — by the time this is actually CALLED, boot
+      // has long finished and the ref is populated. An id this cannot
+      // resolve becomes a truthful, non-empty phrase — never an empty
+      // string, never the raw id (plan 71 §3.3, criterion 14).
+      const resolveActorLabel = (kind: 'user' | 'agent' | 'job', id: string): string => {
         if (kind === 'user') {
           const user = id ? auth.listUsers().find((u) => u.id === id) : null
           return user?.email ?? 'a signed-out client'
@@ -1453,125 +1460,15 @@ let blobGc: BlobGc | null = null
         return script ? `${script.name}@${script.version}` : 'a job'
       }
 
-      const leases = createLeaseManager({
-        states,
-        jobStore,
-        config: {
-          jobTtlSec: cfg.lease.jobTtlSec,
-          manualIdleTimeoutSec: cfg.lease.manualIdleTimeoutSec,
-          reaperIntervalMs: cfg.lease.reaperIntervalMs,
-        },
-        log: log.child('lease'),
-        resolveLabel: resolveLeaseLabel,
-        // Plan 36 §3.2: a force-expired job lease is the farm's problem, not
-        // the script's — coded so it classifies infra rather than falling to
-        // the (safer, but less specific) unknown-code default.
-        onJobLeaseExpired: (jobId, reason) => host.finishExternally(jobId, 'failed', reason, 'LEASE_FORCE_RELEASED'),
-        onManualRevoked: (deviceId, reason, holderUserId) => {
-          hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason, takenBy: null } })
-          // The holder learns why from lease.revoked; everyone else just needs
-          // to know the device is free again.
-          hub.broadcast({ type: 'lease.changed', payload: { deviceId, heldBy: null, expiresAt: null } })
-          broadcastDeviceViewers?.(deviceId)
-          recorder?.record({ deviceId, stream: 'main', kind: 'control.revoked', actor: holderUserId, meta: { reason } })
-          // A forced release is security-relevant, not just a device fact
-          // (plan 18 §3.2, §18.4) — it also lands in the audit trail.
-          audit.record({ userId: holderUserId, action: 'device.control', target: deviceId, meta: { action: 'revoked', reason } })
-          // The terminal's emulated cwd must not survive an automatic
-          // revocation either (plan 26 §3.7, §4.4) — only an explicit
-          // `lease.release` message is handled inline in `ws-handlers.ts`.
-          releaseShellSession?.(deviceId)
-          // Nor does the lease's readiness hold (plan 43 §5 step 43.7) — an
-          // automatic revocation must let the device drift back toward its
-          // `desired` readiness exactly like an explicit release does.
-          releaseLeaseReadinessHold?.(deviceId)
-          // Nor does an open recording (plan 94 §4.6) — an automatic
-          // revocation (idle timeout, quarantine) must end it exactly like
-          // `lease.release`/WS-close already do inline in `ws-handlers.ts`;
-          // otherwise it keeps capturing whatever the NEXT holder does,
-          // with no record of where the handover happened.
-          stopRecordingForLeaseLost?.(deviceId)
-          // Nor does an open adb endpoint (plan 27 §4.2, acceptance #5): the
-          // endpoint is created by the lease holder and dies with the
-          // lease, however the lease ends — idle timeout, disconnect, or
-          // quarantine, not just the explicit release ws-handlers.ts handles.
-          adbEndpointManager?.close(deviceId, reason)
-          // A `vpn-helper` route is deliberately left ALONE here (plan 52
-          // §0, §3.1, §4.1 — superseding plan 44 §5.7's lease-scoped
-          // teardown): a route is a property of the device, not of whoever
-          // held the lease, so an idle timeout, disconnect, or quarantine
-          // must not tear it down. Turning a route off is now an explicit
-          // act only (`/disable`, `DELETE /network`, agent uninstall).
-        },
-        // A takeover (plan 71 §3.4, §3.5) — the displaced holder is told (by
-        // name, of who took it) and it is recorded. Mirrors `onManualRevoked`
-        // above for every side effect that must not survive the lease ending,
-        // regardless of WHY it ended.
-        onManualTakenOver: ({ deviceId, from, toUserId, takenByLabel }) => {
-          // `lease.changed` (naming the NEW holder) is broadcast by the
-          // `lease.acquire` handler itself right after this call returns
-          // (`server/ws-handlers.ts`) — the same one unconditional broadcast
-          // a plain acquire already sends, so a takeover does not need a
-          // second copy of it here. `lease.revoked` (naming the reason and
-          // the taker) has no other sender, so it belongs here.
-          hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason: 'taken-over', takenBy: takenByLabel } })
-          broadcastDeviceViewers?.(deviceId)
-          recorder?.record({ deviceId, stream: 'main', kind: 'control.revoked', actor: toUserId, meta: { reason: 'taken-over', from: from?.label ?? null, to: takenByLabel } })
-          audit.record({
-            userId: toUserId,
-            action: 'device.control',
-            target: deviceId,
-            meta: { action: 'taken-over', from: from?.label ?? null, fromKind: from?.kind ?? null, to: takenByLabel },
-          })
-          releaseShellSession?.(deviceId)
-          releaseLeaseReadinessHold?.(deviceId)
-          // Nor does an open recording (plan 94 §4.6) survive a takeover —
-          // the displaced holder's in-progress recording must not go on
-          // capturing the NEW holder's actions (see `onManualRevoked` above
-          // for why this matters).
-          stopRecordingForLeaseLost?.(deviceId)
-          adbEndpointManager?.close(deviceId, 'taken-over')
-          // An agent whose lease was taken over does NOT get pushed a
-          // notification here (plan 71 §3.5, §3.6): its next attempt to use
-          // the device detects the loss itself (`agent/loop/run.ts`'s
-          // `ensureControlLease` re-checks the real lease on every step) and
-          // reports it as an error `tool_result` — the same "the loop
-          // discovers it, nothing pushes it" shape plan 63's `invoke()` uses
-          // for every other refusal.
-          //
-          // Plan 91 §3.2, §4.2 — a takeover never calls `release()` (it is
-          // an atomic revoke-then-acquire, `lease-manager.ts`'s own comment
-          // on this branch explains why), so it is the one way a manual
-          // hold can end that the `onPrimaryEnded` hook below never sees.
-          // Called directly here instead: any grant that was subordinate to
-          // the DISPLACED holder must not survive them being displaced.
-          coControlRef?.onPrimaryEnded(deviceId)
-        },
-        onDeviceFreed: () => scheduler?.kick(),
-        // Plan 91 §3.2, §4.2, §5 step 91.2 — a co-control grant "may only
-        // exist while somebody else holds the device"; this is the single
-        // wiring point that keeps that true for every OTHER way a manual or
-        // job hold can end (voluntary release, idle timeout, disconnect,
-        // quarantine, adb-server-restart, and `clearJobLease`) — fired
-        // unconditionally from inside `lease-manager.ts`'s own `release()`
-        // and `clearJobLease()`, regardless of whether a `reason` was given
-        // (unlike `onManualRevoked` above, which stays silent on a plain
-        // voluntary release because that hook's job is different: telling
-        // the ex-holder something was taken from them, not asking).
-        onPrimaryEnded: (deviceId) => coControlRef?.onPrimaryEnded(deviceId),
-      })
-      leaseManager = leases
-
       // The command console's runner (plan 93 §3.5-§3.8, §4.5, §5 step 93.3)
-      // — built right here, immediately after `leases`, because `admitMember`'s
-      // lease policy needs a live `LeaseManager` and nothing else below this
-      // point does. `sweepOrphans()` is called right away, one line down:
-      // the same boot-recovery phase ("3. Queue / lease / scheduler", above)
-      // `jobStore.failOrphanRunning()` already opened for jobs — a command
-      // run left `running`/`awaiting-continue` by a previous process's crash
-      // is exactly the same kind of orphan (plan 93 §3.7, mirroring F29), it
-      // is just discovered one step later in this file because it needs a
-      // lease manager to exist first and `jobStore`'s own sweep does not.
+      // — built right here, at the same point manual-hold construction used
+      // to sit, because `admitMember`'s activity policy needs the registry
+      // and nothing else below this point does. `sweepOrphans()` is called
+      // right away, one line down: the same boot-recovery phase ("3. Queue /
+      // heartbeat / scheduler", above) `jobStore.failOrphanRunning()` already opened
+      // for jobs — a command run left `running`/`awaiting-continue` by a
+      // previous process's crash is exactly the same kind of orphan (plan
+      // 93 §3.7, mirroring F29).
       const commandRunStore = createCommandRunStore(db)
       // The SAME local-vs-remote decision `ws-handlers.ts`'s own (module-
       // private, unexported) `shellPortFor` makes (plan 25 §3.4, §4.3),
@@ -1599,7 +1496,9 @@ let blobGc: BlobGc | null = null
       commandRunner = createCommandRunner({
         db,
         store: commandRunStore,
-        leases,
+        activities,
+        controlSettings: () => settingsStore.get().control,
+        states,
         shellPortFor: commandShellPortFor,
         resolve: (target) => resolveCommandTarget(db, target),
         settings: () => settingsStore.get().shell,
@@ -1631,51 +1530,20 @@ let blobGc: BlobGc | null = null
         log.warn(`recovery boot: ${orphanedCommandRuns} command run(s) orphaned by the previous process, marked cancelled`)
       }
 
-      // The co-control grant store (plan 91 §3.2, §4.2, §5 step 91.2) — the
-      // subordinate, short-lived authorisation that lets a second party
-      // touch a device someone/something else already holds, without ever
-      // moving the hold itself. Built right after `leases`, which it only
-      // ever READS (`leases.getLease`, to snapshot the primary holder a new
-      // grant is subordinate to) — it never acquires, releases, or otherwise
-      // mutates a lease. `resolveLeaseLabel` is the SAME resolver `leases`
-      // itself uses (built above, before `leases`), so an assisting
-      // operator's label and a lease holder's label are worded identically
-      // for the same id, never two different phrases for one person.
-      const coControl = createCoControlManager({
-        leases,
-        config: {
-          grantTtlSec: () => settingsStore.get().coControl.grantTtlSec,
-          maxConcurrentPerDevice: () => settingsStore.get().coControl.maxConcurrentPerDevice,
-          mode: () => settingsStore.get().coControl.mode,
-        },
-        log: log.child('co-control'),
-        resolveLabel: resolveLeaseLabel,
-        // Plan 91 §3.4 item 4, §4.2, §5 step 91.4 — "everyone else sees it":
-        // every viewer of a device needs to know who is assisting it, live,
-        // with no polling (F25), the exact broadcast shape `lease.changed`
-        // already gets from `onManualRevoked`/`onManualTakenOver` above.
-        // Wired HERE, at construction (through `hub.broadcast`, already in
-        // scope at this point in boot), rather than only inside
-        // `assist.start`/`assist.stop` in `ws-handlers.ts`, so EVERY
-        // termination path broadcasts — TTL expiry, a WS disconnect
-        // (`releaseAllForClient`), the primary hold ending
-        // (`onPrimaryEnded`) — not only the two explicit WS messages.
-        // `coControlRef` (not `coControl`) is used inside the closures
-        // because `onGranted`/`onReleased` are never invoked synchronously
-        // during this very construction call — only later, once `grant()`/
-        // `release()` run — by which time `coControlRef` below has already
-        // been assigned, the same forward-ref safety `onManualTakenOver`
-        // above already relies on for the same variable.
-        onGranted: (grant) =>
-          hub.broadcast({ type: 'assist.changed', payload: { deviceId: grant.deviceId, assistedBy: coControlRef?.assistedBy(grant.deviceId) ?? [] } }),
-        onReleased: (grant) =>
-          hub.broadcast({ type: 'assist.changed', payload: { deviceId: grant.deviceId, assistedBy: coControlRef?.assistedBy(grant.deviceId) ?? [] } }),
+      // The single accessor every device-listing route needs to fill
+      // `DeviceInfo.activities`/`.lastControl` (plan 205 §4.10) — replaces
+      // the separate primary-holder and secondary-operator accessors this file
+      // carried before that plan. Both fields come from the SAME
+      // `ActivityRegistry`, so they can never disagree about whether a
+      // device is currently controlled.
+      const activitiesOf = (deviceId: string): DeviceActivityState => ({
+        activities: activities.list(deviceId),
+        lastControl: activities.lastControl(deviceId),
       })
-      coControlRef = coControl
 
       // Device lifecycle — Forget and Block (plan 47 §4.3). Constructed
-      // unconditionally, right beside `leaseManager` itself: it depends only
-      // on `db` and `leases`, both of which exist in every mode, including
+      // unconditionally, right beside `activities` itself: it depends only
+      // on `db` and `activities`, both of which exist in every mode, including
       // the orchestrator (this line runs before that mode's early return,
       // further below in this function).
       /**
@@ -1884,7 +1752,8 @@ let blobGc: BlobGc | null = null
       })
       const deviceLifecycle = createDeviceLifecycle({
         db,
-        leases,
+        activities,
+        controlSettings: () => settingsStore.get().control,
         record: recorder!.record,
         log: log.child('device-lifecycle'),
         // Plan 128 §4.5, §10 item 8 — `forget(deleteHistory)` cascades through
@@ -1932,7 +1801,7 @@ let blobGc: BlobGc | null = null
       const awakePolicy = createAwakePolicy({ db, client: () => adb, log: log.child('awake-policy') })
 
       // Device readiness (plan 43): a second, orthogonal axis to
-      // `DeviceStatus` (§3.1) — constructed here, once `leases` exists,
+      // `DeviceStatus` (§3.1) — constructed here, once `activities` exists,
       // using the same lazy-accessor forward-ref pattern every other
       // adb-dependent module in this function already uses (`adb: () =>
       // adb`, `sessions: () => sessions`), since `sessions` itself is not
@@ -1941,7 +1810,7 @@ let blobGc: BlobGc | null = null
         db,
         client: () => adb,
         sessions: () => sessions,
-        leases,
+        activities,
         maxHot: () => settingsStore.get().readiness.maxHot,
         awakePolicy: () => awakePolicy,
         // Cloud/node-owned devices are out of scope for this plan (§2, §9
@@ -1958,11 +1827,13 @@ let blobGc: BlobGc | null = null
         jobStore,
         host,
         log: log.child('scheduler'),
-        jobTtlSec: cfg.lease.jobTtlSec,
+        jobTtlSec: cfg.heartbeat.jobTtlSec,
         fallbackIntervalMs: cfg.scheduler.fallbackIntervalMs,
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
-        onDeviceBusy: (deviceId) => {
-          broadcastDeviceStatus(deviceId, 'busy')
+        // Plan 205 §4.7 renames this from `onDeviceBusy` since `devices.status`
+        // is never flipped to `busy` any more — "busy" is now derived purely
+        // from the `job:<id>` activity the claim itself starts.
+        onJobClaimed: (deviceId) => {
           // A job claiming a device closes its idle session immediately
           // (Plan 42 §3.4, §4.4, acceptance #8) — an idle TTL must never hold
           // a device away from the scheduler, and the job starts a fresh
@@ -1970,21 +1841,17 @@ let blobGc: BlobGc | null = null
           void sessions?.closeIfIdle(deviceId)
           // Job claim (plan 43 §5 step 43.6, acceptance #11) — never blocked
           // by readiness; this just keeps the broadcast readiness in step
-          // with `busy`.
+          // with the device's derived busy state.
           void readiness?.reconcile(deviceId)
         },
         onJobStarted: (deviceId, jobId, scriptId) =>
           recorder?.record({ deviceId, stream: 'main', kind: 'job.started', actor: `job:${jobId}`, meta: { jobId, scriptId } }),
-        // A job waits for the device to go quiet before claiming it (plan 71
-        // §3.7) — both settings read fresh on every tick, the same pattern
-        // `adb.maxConcurrent` and every other settings-derived accessor in
-        // this function already uses.
-        quiet: {
-          quietPeriodSec: () => settingsStore.get().job.quietPeriodSec,
-          maxWaitSec: () => settingsStore.get().job.maxWaitSec,
-          lastManualReleaseAt: (deviceId) => leases.lastManualReleaseAt(deviceId),
-          lastManualHolder: (deviceId) => leases.lastManualHolder(deviceId),
-        },
+        // A queued job waits while a `control` marker is live on its device
+        // (plan 205 §3.2 item 6, MVP 12 §3) instead of interrupting whatever
+        // a person is mid-gesture on — read fresh on every loop tick, the
+        // same activity registry every other admission check in this file
+        // already shares.
+        activities,
         onJobWaiting: (info) => hub.broadcast({ type: 'job.waiting', payload: info }),
       })
 
@@ -2023,15 +1890,17 @@ let blobGc: BlobGc | null = null
       })
 
       // The expiry reaper (plan 21 §4.3): a `queued` job past its
-      // `expiresAt` becomes `expired` instead of waiting forever. It runs on
-      // the same cadence as the lease reaper but is its own module — a
-      // `running` job stays governed entirely by the job lease.
+      // `expiresAt` becomes `expired` instead of waiting forever. Since plan
+      // 205 §4.7 it also sweeps the job heartbeat — the deleted manual-hold
+      // subsystem's own reaper used to do that on its own interval; this is
+      // the one reaper left standing.
       const expiryReaper = createExpiryReaper({
         jobStore,
-        intervalMs: cfg.lease.reaperIntervalMs,
+        intervalMs: cfg.heartbeat.reaperIntervalMs,
         log: log.child('expiry'),
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
         onBatchChanged,
+        onHeartbeatExpired: (jobId) => host.finishExternally(jobId, 'failed', 'job heartbeat expired', 'HEARTBEAT_EXPIRED'),
         sweepApprovals: () => sweepAgentApprovals?.(),
       })
 
@@ -2135,7 +2004,7 @@ let blobGc: BlobGc | null = null
             // `hooks` only ever broadcast, and nothing here wrote a row.
             traceRecorder?.record({ jobId, kind: 'phase', name: phase ? 'start' : 'end', phase: phase ?? null, ...(attempt ? { attempt } : {}), meta: { remote: true } })
           },
-          heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
+          heartbeat: (jobId) => jobStore.renewHeartbeat(jobId, cfg.heartbeat.jobTtlSec),
         },
         saveArtifact: async (jobId, a) => {
           const sink = createDbArtifactSink({
@@ -2171,7 +2040,7 @@ let blobGc: BlobGc | null = null
       // in-process runner (registered once adb is ready).
       executors.setFallback(remoteBridge.executor)
 
-      // Plan 44 §5.7/§5.8: `guestAgent` needs `leases` (built above) and
+      // Plan 44 §5.7/§5.8: `guestAgent` needs `activities` (built above) and
       // `ports` (built earlier, unconditionally) but must exist before `adb`
       // is ready, since it is mounted into `createApp` below — the same
       // "lazy, adb-not-ready-yet-safe deps" pattern `adbEndpointManager`/
@@ -2244,7 +2113,9 @@ let blobGc: BlobGc | null = null
             onLog: (level, msg) => log.child('guest-agent')[level](msg),
           }),
         ports,
-        leases,
+        activities,
+        controlSettings: () => settingsStore.get().control,
+        states,
         dataDir: cfg.dataDir,
         record: recorder!.record,
         log: log.child('guest-agent'),
@@ -2422,7 +2293,9 @@ let blobGc: BlobGc | null = null
       const deviceIdentity = createDeviceIdentityRoutes({
         db,
         exec: guestAgentExec,
-        leases,
+        activities,
+        controlSettings: () => settingsStore.get().control,
+        states,
         record: recorder!.record,
         log: log.child('identity'),
         withGuestAgentClient: guestAgent.withGuestAgentClient,
@@ -2479,7 +2352,8 @@ let blobGc: BlobGc | null = null
       const modelListCache = createModelListCache()
       const capContextDeps: CapabilityContextDeps = {
         db,
-        leases,
+        activities,
+        controlSettings: () => settingsStore.get().control,
         states,
         sessions: () => sessions,
         readiness: () => readiness,
@@ -2516,16 +2390,10 @@ let blobGc: BlobGc | null = null
         // whether a phone reads OTG/WI-FI/TCP.
         networks: () => settingsStore.get().discovery.networks,
         declaredMedia: () => loadDeclaredMedia(endpoints),
-        // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
-        // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
-        // accessor `deviceRoutes`/`clusterRoutes`/`topologyRoutes` already get,
-        // so an agent script's `ctx.listDevices()`/`ctx.getDevice()` reports an
-        // assisting holder the same as every other surface.
-        assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
         // Plan 114 §3.3, step 114.9 — the network layer's one door. It is the
         // SAME three functions `PUT`/`DELETE /api/devices/:id/network` call, not
         // a parallel path, which is the whole point: a plugin reaching
-        // `device.network.set` through `ctx.farm` takes the same lease
+        // `device.network.set` through `ctx.farm` takes the same activity
         // admission, the same credential refusal and the same one-route lock an
         // operator's own click does, and the route it writes is stamped with the
         // plugin's principal rather than a person's.
@@ -2589,7 +2457,8 @@ let blobGc: BlobGc | null = null
         connectors: connectorStore,
         registry: capabilityRegistry,
         capContextDeps,
-        leases,
+        activities,
+        controlSettings: () => settingsStore.get().control,
         settings: () => settingsStore.get(),
         modelListCache,
         tree: agentTreeStore,
@@ -2633,8 +2502,7 @@ let blobGc: BlobGc | null = null
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithTags` call in this function gets.
-        listDevices: () =>
-          listDevicesWithTags(db, undefined, (deviceId) => leases.getHolder(deviceId), settingsStore.get().discovery.networks, loadDeclaredMedia(endpoints)),
+        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().discovery.networks, loadDeclaredMedia(endpoints)),
         deviceCount: () => db.select().from(devices).all().length,
         // Plan 126 §3.5, step 126.5 — the sidebar's farm-health badge, read
         // off the health poll Studio already makes instead of the whole
@@ -2704,13 +2572,12 @@ let blobGc: BlobGc | null = null
               id: j.id,
               label: `${j.scriptName ?? 'a script'} on ${deviceLabels.get(j.deviceId) ?? j.deviceId}`,
             }))
-            const heldDevices = db
-              .select({ id: devices.id, label: devices.label, stableId: devices.stableId })
-              .from(devices)
-              .where(eq(devices.status, 'manual'))
-              .all()
-              .map((d) => ({ deviceId: d.id, label: formatDeviceLabel(numbers.get(d.stableId) ?? null, d.label) }))
-            return { runningJobs, heldDevices }
+            // Plan 205 §4.7 — `devices.status` is never `manual` any more; "controlled" is a live
+            // `control` marker on the activity registry, not a stored status.
+            const controlledDevices = activities
+              .devicesWith('control')
+              .map((deviceId) => ({ deviceId, label: deviceLabels.get(deviceId) ?? deviceId }))
+            return { runningJobs, controlledDevices }
           },
           // `adbControl.restartCooldownSec` (plan 88 §4.2, promoted to a real
           // setting in step 88.9) — read fresh on every call, same as every
@@ -2729,7 +2596,9 @@ let blobGc: BlobGc | null = null
             mode: detectSupervisionMode(),
             devicesTotal: db.select().from(devices).all().length,
             sessionsActive: sessions?.activeDeviceIds?.().length ?? 0,
-            leasesHeld: db.select().from(devices).where(eq(devices.status, 'manual')).all().length,
+            // Plan 205 §4.7 — `devices.status` is never `manual` any more; "controlled" counts
+            // live `control` markers on the activity registry, not a stored status.
+            controlled: activities.devicesWith('control').length,
             jobsRunning: jobStore.list({ status: 'running', limit: 1000 }).rows.length,
           }),
         },
@@ -2741,7 +2610,7 @@ let blobGc: BlobGc | null = null
           logBuffer: jobLogBuffer,
           // `canCancelJob`'s ownership half (`auth/acl.ts`) — the same
           // `getDeviceOwner` closure `jobService`'s own `enqueue` check,
-          // `lease.acquire`, batch dispatch, and the adb endpoint already
+          // control acquisition, batch dispatch, and the adb endpoint already
           // share, so `POST /:id/cancel` gets the identical ownership answer
           // the WS `job.cancel` path (wired below) gets.
           getDeviceOwner,
@@ -2805,20 +2674,19 @@ let blobGc: BlobGc | null = null
           // Device readiness (plan 43 §4.5) — `readiness` is constructed
           // synchronously above, well before `createApp` is reached.
           readiness: readiness ?? undefined,
-          // Who holds a device's manual lease (plan 71 §4.4) — `leases` is
-          // constructed synchronously above too.
-          heldByOf: (deviceId) => leases.getHolder(deviceId),
-          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4,
-          // §5 step 91.4) — `coControl` is constructed synchronously above
-          // too, right after `leases`.
-          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
+          // A device's live activities and its last control tail (plan 205
+          // §4.10) — `activities` is constructed synchronously above too.
+          activitiesOf,
           // Per-device disconnect/reconnect (plan 88 §3.7, §4.6, §5 step
-          // 88.4) — `leases`/`endpoints`/`jobStore` are constructed
-          // synchronously above, the same reasoning as `heldByOf` just above.
+          // 88.4) — `activities`/`endpoints`/`jobStore` are constructed
+          // synchronously above, the same reasoning `activitiesOf` just above relies on.
           // `reconnector`/`sessions` are forward-refs: both are assigned
           // later in boot (or never, in orchestrator mode / if the adb
           // subsystem failed to start), same pattern as `rescan`/`onAdmitted`.
-          leases,
+          activities,
+          // Plan 205 §4.9 — replaces the old `status === 'busy'` read: a
+          // device with a live `job`/`workflow-job`/`install` activity.
+          runningJobOf: (deviceId) => activities.list(deviceId).some((a) => a.kind === 'job' || a.kind === 'workflow-job' || a.kind === 'install'),
           jobStore,
           connection: {
             reconnector: () => reconnector,
@@ -2837,15 +2705,24 @@ let blobGc: BlobGc | null = null
           // device's address against, and `mediumSource` could only ever
           // read `'declared'` or `'unknown'`.
           networks: () => settingsStore.get().discovery.networks,
-          // The lease-scoped adb endpoint (plan 27 §4.3) — `manager` is
-          // constructed unconditionally above, before this point is reached.
-          adbEndpoint: { manager: adbEndpointManager!, leases, shellSettings: () => settingsStore.get().shell },
+          // The activity-gated adb endpoint (plan 27 §4.3, plan 205 §4.9) —
+          // `manager` is constructed unconditionally above, before this
+          // point is reached.
+          adbEndpoint: {
+            manager: adbEndpointManager!,
+            activities,
+            controlSettings: () => settingsStore.get().control,
+            states,
+            shellSettings: () => settingsStore.get().shell,
+          },
           // File transfer and APK install (plan 39 §4.3, §4.4) —
           // `transferService`/`transferBroadcast` are constructed
           // unconditionally above too, the same reasoning as `adbEndpoint`.
           transfer: {
             transfer: transferService,
-            leases,
+            activities,
+            controlSettings: () => settingsStore.get().control,
+            states,
             record: recorder!.record,
             shellSettings: () => settingsStore.get().shell,
             transferSettings: () => settingsStore.get().transfer,
@@ -2853,7 +2730,7 @@ let blobGc: BlobGc | null = null
             holdFor: readinessHoldForTransfer,
           },
           // Device lifecycle — Forget and Block (plan 47 §4.4) — `deviceLifecycle`
-          // is constructed unconditionally above, beside `leaseManager`.
+          // is constructed unconditionally above, beside `activities`.
           lifecycle: deviceLifecycle,
           broadcast: (msg) => hub.broadcast(msg),
           // Physical labelling (plan 89 §4.3, §4.6, §5 step 89.6's own noted
@@ -2885,7 +2762,6 @@ let blobGc: BlobGc | null = null
         clusterRoutes: createClusterRoutes({
           db,
           audit,
-          heldByOf: (deviceId) => leases.getHolder(deviceId),
           // Plan 88 §3.6, §4.1, residual gap closed by plan 90 (also recorded at
           // docs/plans/96-m61-hotfixes.md §96.5): `createClusterRoutes` itself has carried
           // `networks`/`declaredMedia` since that entry's fix — only THIS call site never
@@ -2895,24 +2771,20 @@ let blobGc: BlobGc | null = null
           // `topologyRoutes` already get, a few lines away in this same function.
           networks: () => settingsStore.get().discovery.networks,
           declaredMedia: () => loadDeclaredMedia(endpoints),
-          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
-          // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
-          // accessor `deviceRoutes` above already gets; `coControl` is constructed
-          // synchronously above, well before this object literal.
-          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
+          // A device's live activities and its last control tail (plan 205 §4.10) —
+          // `activities` is constructed synchronously above, well before this object literal.
+          activitiesOf,
         }),
         topologyRoutes: createTopologyRoutes({
           db,
           readinessOf: (deviceId, row) => readiness?.get(deviceId) ?? staticReadinessFallback(row),
-          heldByOf: (deviceId) => leases.getHolder(deviceId),
           // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors `deviceRoutes` above gets, so the
           // fleet map's badges never disagree with the device list's.
           networks: () => settingsStore.get().discovery.networks,
           declaredMedia: () => loadDeclaredMedia(endpoints),
-          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
-          // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
-          // accessor `deviceRoutes` above already gets.
-          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
+          // A device's live activities and its last control tail (plan 205 §4.10) —
+          // same accessor `deviceRoutes` above already gets.
+          activitiesOf,
         }),
         batchRoutes: createBatchRoutes({
           db,
@@ -2957,7 +2829,7 @@ let blobGc: BlobGc | null = null
         }),
         // The fleet command console's REST surface (plan 93 §4.4, step
         // 93.4) — `commandRunStore`/`commandRunner` are both constructed
-        // unconditionally above, right after `leases`.
+        // unconditionally above, right after `activities`.
         commandRunRoutes: createCommandRunRoutes({
           db,
           store: commandRunStore,
@@ -3054,7 +2926,7 @@ let blobGc: BlobGc | null = null
           // runs (plan 91 §4.10, §5 step 91.10), same pattern as `transport`.
           input: () => inputStats?.() ?? null,
           // Plan 93 §5 step 93.12 — `commandRunner` is constructed
-          // unconditionally above (right after `leases`, same as
+          // unconditionally above (right after `activities`, same as
           // `batchRoutes`'s own `commandRunRoutes` wiring reads), well
           // before this call. Without this line `GET /api/adb/stats`
           // reports the whole `commandConsole` block zero-filled forever,
@@ -3361,7 +3233,7 @@ let blobGc: BlobGc | null = null
             if (url.pathname === '/ws') {
               // A WS handshake does not always carry cookies → support single-use tickets.
               // The resolved user rides along on `ws.data` (plan 18 §4.2, §18.4):
-              // control.acquired/control.revoked and input events need an actor,
+              // activity.started/activity.ended and input events need an actor,
               // not just an anonymous per-connection clientId.
               let userId: string | null = null
               if (authMode === 'server') {
@@ -3511,10 +3383,8 @@ let blobGc: BlobGc | null = null
       })
       blobGc.start()
 
-      leases.startReaper()
-      stopReaper = () => leases.stopReaper()
-      coControl.startReaper()
-      stopCoControlReaper = () => coControl.stopReaper()
+      activities.startSweep()
+      stopReaper = () => activities.stopSweep()
       expiryReaper.start()
       stopExpiryReaper = () => expiryReaper.stop()
       scheduler.start()
@@ -3543,26 +3413,17 @@ let blobGc: BlobGc | null = null
           sessions: localSessions,
           ...(remoteSessions ? { remote: remoteSessions } : {}),
           pairing: pairingService,
-          leases,
+          // The device activity registry (plan 205 §4.2) — the one door
+          // every gated case goes through via `admit()`. `controlSettings`
+          // is read fresh on every admission check, the same freshness
+          // discipline every other farm settings accessor here already
+          // follows.
+          activities,
+          controlSettings: () => settingsStore.get().control,
           jobs: jobService,
-          // Co-control — Assist (plan 91 §3.2, §4.6, §5 step 91.4): the
-          // `input.*` fallback and the `assist.start`/`assist.stop` handlers
-          // both live in `ws-handlers.ts`; `coControl` itself was constructed
-          // right after `leases`, above, and its reaper is already started/
-          // stopped alongside `leases.startReaper()`/`stopReaper()`.
-          coControl,
-          coControlMode: () => settingsStore.get().coControl.mode,
-          // `/api/adb/stats`'s `input.queueWaitMs` (plan 91 §4.10, §5 step
-          // 91.10) — the co-control doctor check's budget, read fresh like
-          // every other farm setting accessor here.
-          coControlQueueWaitMs: () => settingsStore.get().coControl.queueWaitMs,
-          // Mirror groups (plan 91 §3.9, §4.7, §5 step 91.7) — `states` is
-          // the SAME `DeviceStateMachine` `leases`/`host` above already
-          // read; `mirrorSettings` is read fresh, the same freshness
-          // discipline `shellSettings`/`crashPolicy` already give their own
-          // farm settings blocks.
+          // `states` is the SAME `DeviceStateMachine` `activities`/`host`
+          // above already read.
           states,
-          mirrorSettings: () => settingsStore.get().mirror,
           // The Monitor tab (plan 24) works on node-owned devices too now
           // (plan 25): `adb` still serves local devices; `rpc`/`router` are
           // what let `shellPortFor` build the remote `ShellPort` for the rest.
@@ -3589,28 +3450,27 @@ let blobGc: BlobGc | null = null
             authMode === 'local'
               ? () => 'admin'
               : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
-          // `canUseDevice` (plan 34 §3.5, §4.4) — `lease.acquire`'s ownership check.
+          // `canUseDevice` (plan 34 §3.5, §4.4) — control acquisition's ownership check.
           getDeviceOwner,
           shellSettings: () => settingsStore.get().shell,
           // Plan 93 §3.3, §3.17, §5 step 93.5 — `shell.exec` records through
           // the SAME store the fan-out runner writes to (`commandRunStore`,
-          // built right after `leases`, above), so `/console`'s History has
+          // built right after `activities`, above), so `/console`'s History has
           // one mechanism for both, not two. This is the store only; the
           // runner itself (`commandRunner`) is unrelated to `shell.exec` and
           // stays wired only into `commandRunRoutes` below.
           commandRunStore,
-          // The lease-scoped adb endpoint (plan 27 §4.2) — explicit
-          // `lease.release` and WS-disconnect teardown both live in
-          // `ws-handlers.ts` already (that is where the WS-level lease and
-          // connection lifecycle already are); the automatic-revocation and
-          // device-offline paths are wired directly above, outside the WS
-          // router, since those originate in the lease manager and the
-          // device registry rather than from a client message.
+          // The activity-gated adb endpoint (plan 27 §4.2) — WS-disconnect
+          // teardown already lives in `ws-handlers.ts` (that is where the
+          // WS-level control-marker and connection lifecycle already are);
+          // the automatic-expiry and device-offline paths are wired directly
+          // above, outside the WS router, since those originate in the
+          // activity registry and the device registry rather than from a
+          // client message.
           adbEndpoint: adbEndpointManager!,
           // Device readiness (plan 43 §5 step 43.7) — `readiness` is
           // constructed unconditionally above, before this point is reached
-          // (the same `leases`/`leaseManager` ordering this router already
-          // depends on).
+          // (the same `activities` ordering this router already depends on).
           readiness: readiness ?? undefined,
           // `transfer.cancel` (plan 39 §4.4, acceptance #9) — `transferService`
           // is constructed unconditionally above, the same as `adbEndpoint`.
@@ -3628,14 +3488,6 @@ let blobGc: BlobGc | null = null
           targetPackagesForJob: (jobId) => targetPackagesByJob.get(jobId) ?? [],
           saveCrashTrace,
           onJobCrash: (jobId, e) => host.notifyCrash(jobId, e),
-          // Plan 91 §3.6, §4.8, §5 step 91.5/91.10 — the last line of the
-          // assist→child notification chain (`WsHandlerDeps.onAssist` →
-          // `ExecutorHost.notifyAssist` → the runner's IPC → `ctx.onAssist`).
-          // Shaped identically to `onJobCrash` right above: a running
-          // script's `ctx.onAssist` was fully built and unit-tested in
-          // isolation by step 91.5 but structurally unreachable in a real
-          // boot until this line existed.
-          onAssist: (jobId, e) => host.notifyAssist(jobId, e),
           // The agent chat protocol's subscribe/unsubscribe/cancel half (plan 66 §4.4) — built
           // once, above, before `attachWsRouter` is even defined (it does not depend on `sessions`).
           agent: agentWsHandler,
@@ -3653,12 +3505,10 @@ let blobGc: BlobGc | null = null
         viewersOfDevice = handler.viewersOf
         stopMonitorsForDevice = handler.stopMonitorsForDevice
         releaseShellSession = handler.releaseShellSession
+        stopRecordingForDisconnect = handler.stopRecordingForDisconnect
         resetInspectForDevice = handler.resetInspectForDevice
-        releaseLeaseReadinessHold = handler.releaseLeaseHold
-        stopRecordingForLeaseLost = handler.stopRecordingForLeaseLost
         watchCrashesForDevice = handler.watchDevice
         unwatchCrashesForDevice = handler.unwatchDevice
-        reconcileMirrorForDevice = handler.reconcileMirror
         transportStats = handler.transportStats
         inputStats = handler.inputStats
         videoStreamStats = handler.videoStreamStats
@@ -3913,12 +3763,11 @@ let blobGc: BlobGc | null = null
           // boot, which would skip the wake on exactly the builds that most need it. A missing
           // readiness manager must mean "wake it", never "assume it is awake".
           deviceIsAwake: (deviceId) => (readiness ? readiness.actual(deviceId) !== 'asleep' : false),
-          // Plan 91 §4.1, §4.5 — the input arbiter's bounded-queue budget, read fresh on every
-          // submission (docs/plans/96-m61-hotfixes.md §96.13: before this fix `SessionManagerDeps`
-          // had no field to receive these at all, so every session ran the plan's own hardcoded
-          // stand-in defaults regardless of what an operator configured in Studio).
-          arbiterQueueWaitMs: () => settingsStore.get().coControl.queueWaitMs,
-          arbiterMaxQueueDepth: () => settingsStore.get().coControl.maxQueueDepth,
+          // The input arbiter's bounded-queue budget (plan 91 §4.1, §4.5) has no operator-facing
+          // setting any more — the old second-operator-grant subsystem is gone (plan 205 §2.4) and
+          // with it the only farm setting that ever fed these two accessors. Both are optional on
+          // `SessionManagerDeps`; omitting them falls back to `@enkaku/session`'s own
+          // `DEFAULT_ARBITER_QUEUE_WAIT_MS`/`DEFAULT_ARBITER_MAX_QUEUE_DEPTH`.
           // Plan 100 §4.3, step 100.6 — the screencap-loop fallback's background
           // retry budget, read fresh like every other settings accessor above.
           fallbackRetryCount: () => settingsStore.get().display.fallbackRetryCount,
@@ -4121,7 +3970,7 @@ let blobGc: BlobGc | null = null
             const info = jobService.get(jobId)
             if (info) hub.broadcast({ type: 'job.status', payload: { ...info, attempt, phase } })
           },
-          heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
+          heartbeat: (jobId) => jobStore.renewHeartbeat(jobId, cfg.heartbeat.jobTtlSec),
           // Read fresh per attempt, not captured here at daemon start (plan
           // 35 §4.4) — the same pattern `adb.maxConcurrent` uses (plan 23) —
           // so a Settings change applies to the very next job.
@@ -4310,8 +4159,8 @@ let blobGc: BlobGc | null = null
             // A dropped device must not leave a logcat/top/thermal stream
             // running against a socket that no longer exists (plan 24 §4.5).
             stopMonitorsForDevice?.(deviceId)
-            // Nor a stale emulated cwd for a lease the state machine just
-            // force-dropped outside the lease manager's own bookkeeping
+            // Nor a stale emulated cwd for a control marker the state machine
+            // just force-dropped outside the activity registry's own bookkeeping
             // (plan 26 §3.7, §4.4) — harmless if there was none.
             releaseShellSession?.(deviceId)
             // Nor a stale Inspect tab ref count (plan 56 §4.2 step 7) — the
@@ -4319,7 +4168,7 @@ let blobGc: BlobGc | null = null
             resetInspectForDevice?.(deviceId)
             // A device that just went offline cannot usefully carry an adb
             // endpoint either (plan 27 §4.2) — the smartsocket backend it
-            // bridges to is gone regardless of whether the lease itself
+            // bridges to is gone regardless of whether the control marker itself
             // survives the disconnect.
             adbEndpointManager?.close(deviceId, 'device_offline')
             // A `vpn-helper` route's stored config/enabled survives the
@@ -4552,7 +4401,6 @@ let blobGc: BlobGc | null = null
       stopScheduler?.()
       stopPacer?.()
       stopReaper?.()
-      stopCoControlReaper?.()
       stopExpiryReaper?.()
       stopScheduleRunner?.()
       // Plan 93 §5 step 93.3, `00-overview.md` §7 — every active fan-out run's

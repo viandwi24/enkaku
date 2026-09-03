@@ -7,17 +7,18 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createWsMessageHandler, type RemoteSessions, type WsHandlerDeps } from './ws-handlers'
 
 /**
- * The Inspect tab's WS wiring (plan 56 §4.2, §5.4, acceptance #6, #8, #9):
- * the refusal matrix (no lease / no session / node-owned / no dump
- * capability), ref-counting across two viewers of the same device, and
- * release-on-close. Exercised against the REAL `createWsMessageHandler` and
- * REAL `LeaseManager`, with only the session and its inspector faked —
- * mirrors `ws-handlers-shell.test.ts` / `ws-handlers-monitor.test.ts`.
+ * The Inspect tab's WS wiring (plan 56 §4.2, §5.4, acceptance #6, #8, #9;
+ * admission reworked by plan 205 §4.9): the refusal matrix (control conflict
+ * / no session / node-owned / no dump capability), ref-counting across two
+ * viewers of the same device, and release-on-close. Exercised against the
+ * REAL `createWsMessageHandler` and REAL `ActivityRegistry`, with only the
+ * session and its inspector faked — mirrors `ws-handlers-shell.test.ts` /
+ * `ws-handlers-monitor.test.ts`.
  */
 
 const NODE: UiNode = {
@@ -40,7 +41,7 @@ function setUpDb(): Db {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' | 'offline' = 'idle'): void {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status }).run()
 }
 
@@ -154,17 +155,11 @@ interface RecordedEvent {
   meta?: Record<string, unknown> | null
 }
 
-function setUpHandler(db: Db, session: DeviceSession | null, remote?: RemoteSessions) {
+function setUpHandler(db: Db, session: DeviceSession | null, remote?: RemoteSessions, overControl: 'allow' | 'warn' | 'forbid' = 'allow') {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const events: RecordedEvent[] = []
   const deps: WsHandlerDeps = {
     sessions: fakeSessionManager(session),
@@ -177,7 +172,9 @@ function setUpHandler(db: Db, session: DeviceSession | null, remote?: RemoteSess
         throw new Error('not used')
       },
     },
-    leases,
+    activities,
+    controlSettings: () => ({ overControl, idleSec: 30 }),
+    states,
     jobs: {
       enqueue: () => {
         throw new Error('not used')
@@ -187,7 +184,6 @@ function setUpHandler(db: Db, session: DeviceSession | null, remote?: RemoteSess
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-      assists: () => [],
       // Plan 99 §3.5, §4.9, step 99.8 — not exercised by these inspect
       // tests; present only so this fixture keeps satisfying `JobService`.
       nodes: () => ({ items: [], finalized: false }),
@@ -209,26 +205,27 @@ function setUpHandler(db: Db, session: DeviceSession | null, remote?: RemoteSess
     db,
     log,
   }
-  return { handler: createWsMessageHandler(deps), events }
-}
-
-async function acquireLease(handler: ReturnType<typeof createWsMessageHandler>, ws: ServerWebSocket<unknown>, deviceId: string): Promise<void> {
-  await handler.handleMessage(ws, JSON.stringify({ type: 'lease.acquire', id: 'l1', payload: { deviceId } }))
+  return { handler: createWsMessageHandler(deps), events, activities }
 }
 
 describe('inspect.* refusal matrix (plan 56 §4.2, §6 acceptance #6, #9)', () => {
-  test('no lease → refused, never an empty tree', async () => {
+  test('control.overControl: forbid — a second client is refused, never an empty tree', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1')
     const { session } = fakeSession('dev-1')
-    const { handler } = setUpHandler(db, session)
-    const a = fakeConn()
+    const { handler } = setUpHandler(db, session, undefined, 'forbid')
+    const holder = fakeConn()
+    const bystander = fakeConn()
 
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
+    handler.handleOpen(holder.ws)
+    await handler.handleMessage(holder.ws, JSON.stringify({ type: 'inspect.attach', id: 'i0', payload: { deviceId: 'dev-1' } }))
+    handler.handleOpen(bystander.ws)
+    await handler.handleMessage(bystander.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
 
-    const err = a.sent.find((m) => m.type === 'error')
+    const err = bystander.sent.find((m) => m.type === 'error')
     expect(err).toBeDefined()
-    expect(a.sent.some((m) => m.type === 'inspect.status')).toBe(false)
+    if (err?.type === 'error') expect(err.payload.code).toBe('E_DEVICE_CONFLICT')
+    expect(bystander.sent.some((m) => m.type === 'inspect.status')).toBe(false)
   })
 
   test('no session for the device → E_DEVICE_NOT_READY, not an empty tree', async () => {
@@ -236,7 +233,6 @@ describe('inspect.* refusal matrix (plan 56 §4.2, §6 acceptance #6, #9)', () =
     seedDevice(db, 'dev-1')
     const { handler } = setUpHandler(db, null)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
 
@@ -259,7 +255,6 @@ describe('inspect.* refusal matrix (plan 56 §4.2, §6 acceptance #6, #9)', () =
     }
     const { handler } = setUpHandler(db, session, remote)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
 
@@ -278,7 +273,6 @@ describe('inspect.* refusal matrix (plan 56 §4.2, §6 acceptance #6, #9)', () =
     const { session } = fakeSession('dev-1', { noDump: true })
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
 
@@ -293,7 +287,6 @@ describe('inspect.* refusal matrix (plan 56 §4.2, §6 acceptance #6, #9)', () =
     const { session } = fakeSession('dev-1', { startFails: true })
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
 
@@ -305,27 +298,28 @@ describe('inspect.* refusal matrix (plan 56 §4.2, §6 acceptance #6, #9)', () =
 
 describe('inspect.attach/detach ref-counting (plan 56 §3.2, §5.4, acceptance #8)', () => {
   /**
-   * Attach is control-grade (§3.7): it is gated by the SAME `checkInputAllowed`
-   * lease check `input.*` uses, so — unlike video, which any viewer can watch —
-   * only the current manual lease holder's connection can ever attach. A
-   * second connection therefore cannot become a second concurrent "viewer" of
-   * the inspector; it is refused outright, the ref count untouched.
+   * Attach is control-grade (§3.7): it takes the SAME `control` activity
+   * policy row `input.*` uses (plan 205 §4.9). A bare online device admits
+   * any number of attaches by default (`control.overControl: 'allow'`) — the
+   * refusal this test proves is the farm dialing `overControl` to `'forbid'`,
+   * not an inherent "only one viewer" rule.
    */
-  test('a connection that does not hold the lease is refused, not silently ignored — the holder\'s own attachment is unaffected', async () => {
+  test('with control.overControl: forbid, a second client is refused, not silently ignored — the holder\'s own attachment is unaffected', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1')
     const { session, calls } = fakeSession('dev-1')
-    const { handler, events } = setUpHandler(db, session)
+    const { handler, events } = setUpHandler(db, session, undefined, 'forbid')
     const holder = fakeConn()
     const bystander = fakeConn()
-    await acquireLease(handler, holder.ws, 'dev-1')
 
+    handler.handleOpen(holder.ws)
     await handler.handleMessage(holder.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
+    handler.handleOpen(bystander.ws)
     await handler.handleMessage(bystander.ws, JSON.stringify({ type: 'inspect.attach', id: 'i2', payload: { deviceId: 'dev-1' } }))
 
     const bystanderErr = bystander.sent.find((m) => m.type === 'error')
     expect(bystanderErr).toBeDefined()
-    if (bystanderErr?.type === 'error') expect(bystanderErr.payload.code).toBe('not_lease_holder')
+    if (bystanderErr?.type === 'error') expect(bystanderErr.payload.code).toBe('E_DEVICE_CONFLICT')
     expect(events.filter((e) => e.kind === 'inspect.attached')).toHaveLength(1) // only the holder's attach counted
 
     await handler.handleMessage(holder.ws, JSON.stringify({ type: 'inspect.detach', payload: { deviceId: 'dev-1' } }))
@@ -339,7 +333,6 @@ describe('inspect.attach/detach ref-counting (plan 56 §3.2, §5.4, acceptance #
     const { session, calls } = fakeSession('dev-1')
     const { handler, events } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.detach', payload: { deviceId: 'dev-1' } }))
@@ -359,7 +352,6 @@ describe('inspect.attach/detach ref-counting (plan 56 §3.2, §5.4, acceptance #
     const { session, calls } = fakeSession('dev-1')
     const { handler, events } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i2', payload: { deviceId: 'dev-1' } }))
@@ -375,7 +367,6 @@ describe('inspect.attach/detach ref-counting (plan 56 §3.2, §5.4, acceptance #
     const { session, calls } = fakeSession('dev-1')
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
     expect(calls.released).toBe(0)
@@ -393,7 +384,6 @@ describe('inspect.dump / inspect.find (plan 56 §4.2 steps 5-6, acceptance #1, #
     const { session } = fakeSession('dev-1')
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
 
     await handler.handleMessage(
@@ -417,7 +407,6 @@ describe('inspect.dump / inspect.find (plan 56 §4.2 steps 5-6, acceptance #1, #
     const { session, calls } = fakeSession('dev-1')
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
 
     await handler.handleMessage(
@@ -437,7 +426,6 @@ describe('inspect.dump / inspect.find (plan 56 §4.2 steps 5-6, acceptance #1, #
     const { session } = fakeSession('dev-1')
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
     // Attach populated `session.inspector` (the lazy real-session shape,
     // above) — now override `find` on the live instance for this one case.
@@ -458,7 +446,6 @@ describe('inspect.dump / inspect.find (plan 56 §4.2 steps 5-6, acceptance #1, #
     const { session } = fakeSession('dev-1')
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(
       a.ws,

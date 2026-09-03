@@ -17,7 +17,7 @@ import { EnkakuError } from '../util/errors'
  * executing tool can land its `tool_result` at a lower `seq` than the
  * `tool_use` that produced it. Every call is resolved one loop iteration
  * later by `harness/run.ts`'s `processPendingCalls`, which is also where
- * the approval gate, the lease, and the tree budget all live. Calling
+ * the approval gate, activity admission, and the tree budget all live. Calling
  * `agentUIResponse()` directly would stream text fine and then leave every
  * tool call permanently pending — approvals, screenshots, and child runs
  * would never appear. This file is the real bridge: it drives Enkaku's

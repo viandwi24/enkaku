@@ -9,7 +9,8 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import type { ShellExecResult, ShellPort } from '../device/shell-port'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import { createLogger } from '../util/logger'
 import { createCommandRunRoutes, type CommandRunRoutesDeps } from './command-runs'
 
@@ -17,8 +18,8 @@ import { createCommandRunRoutes, type CommandRunRoutesDeps } from './command-run
  * `POST/GET/DELETE /api/command-runs` and friends (plan 93 §3.8, §3.14,
  * §4.4, step 93.4) — the step's own verifiable result, verbatim: five
  * refusals, each proven. Built the same way `command-console/runner.test.ts`
- * (step 93.3) is: a REAL `CommandRunStore`, a REAL `LeaseManager` (backed by
- * a REAL `DeviceStateMachine` over an in-memory db), and a REAL
+ * (step 93.3) is: a REAL `CommandRunStore`, a REAL `ActivityRegistry` (backed
+ * by a REAL `DeviceStateMachine` over an in-memory db), and a REAL
  * `CommandRunner` — only `ShellPort` is faked.
  */
 
@@ -32,22 +33,22 @@ function withUser(role: Role | null, userId: string, inner: Hono<AuthEnv>): Hono
   return wrapper
 }
 
-function setUp(): { db: Db; store: CommandRunStore; leases: LeaseManager } {
+function setUp(): {
+  db: Db
+  store: CommandRunStore
+  activities: ActivityRegistry
+  controlSettings: () => ControlPolicySettings
+  states: ReturnType<typeof createDeviceStateMachine>
+} {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db as Db
+  const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
   const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-  const leases = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: createLogger('test'),
-    onJobLeaseExpired: () => {},
-  })
-  return { db, store: createCommandRunStore(db), leases }
+  return { db, store: createCommandRunStore(db), activities, controlSettings: () => ({ overControl: 'allow', idleSec: 30 }), states }
 }
 
-function insertDevice(db: Db, id: string, status: 'idle' | 'busy' | 'manual' | 'offline' | 'quarantined' = 'idle'): void {
+function insertDevice(db: Db, id: string, status: 'online' | 'offline' | 'quarantined' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `SER-${id}`, label: `Phone ${id}`, status }).run()
 }
 
@@ -86,14 +87,16 @@ function buildHarness(opts: {
   getDeviceOwner?: (deviceId: string) => { ownerId: string | null } | null
   execBehavior?: (deviceId: string, cmd: string) => Promise<ShellExecResult>
 }): Harness {
-  const { db, store, leases } = setUp()
+  const { db, store, activities, controlSettings, states } = setUp()
   const role = opts.role ?? 'admin'
   const userId = opts.userId ?? 'u1'
   const getDeviceOwner = opts.getDeviceOwner ?? (() => null)
   const runner = createCommandRunner({
     db,
     store,
-    leases,
+    activities,
+    controlSettings,
+    states,
     shellPortFor: fakeShellPort(opts.execBehavior),
     resolve: (target) => resolveCommandTarget(db, target),
     settings: () => shellSettings(opts.settings),

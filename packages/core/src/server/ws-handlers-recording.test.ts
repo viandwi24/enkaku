@@ -7,22 +7,21 @@ import { createBlobStore } from '../agent/blob/store'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
-import { createJobStore } from '../queue/job-store'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createRecordingService, type RecordingService } from '../recording/service'
 import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
 
 /**
  * The recorder's WS surface (plan 94 §4.6, §4.9, step 94.3) — exercised
- * against the REAL `createWsMessageHandler`, the REAL `LeaseManager`, and the
- * REAL `RecordingService`, with only the session's input sink faked (mirrors
- * `ws-handlers-tap-hold.test.ts`'s own harness). This is what proves the
- * step's own verifiable result end to end, with no device: "with a lease
- * held, recording.start then thirty taps and two drags produces a
- * RecordingDoc with thirty-two steps, real gapMs values, sampled gesture
- * traces... recording.start on a device that already has one open returns
- * E_RECORDING_ACTIVE."
+ * against the REAL `createWsMessageHandler`, the REAL `ActivityRegistry`, and
+ * the REAL `RecordingService`, with only the session's input sink faked
+ * (mirrors `ws-handlers-tap-hold.test.ts`'s own harness). This is what proves
+ * the step's own verifiable result end to end, with no device: on a
+ * controlled device, `recording.start` then thirty taps and two drags
+ * produces a `RecordingDoc` with thirty-two steps, real `gapMs` values,
+ * sampled gesture traces; `recording.start` on a device that already has one
+ * open returns `E_RECORDING_ACTIVE`.
  */
 
 function setUpDb(): Db {
@@ -31,7 +30,7 @@ function setUpDb(): Db {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' | 'offline' = 'idle'): void {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `Label ${id}`, status }).run()
 }
 
@@ -139,17 +138,15 @@ function makeRecordingService(overrides: Partial<RecordingSettings> = {}): Recor
   })
 }
 
-function setUpHandler(db: Db, session: DeviceSession | null, recording?: RecordingService): ReturnType<typeof createWsMessageHandler> {
+function setUpHandler(
+  db: Db,
+  session: DeviceSession | null,
+  recording?: RecordingService,
+  overControl: 'allow' | 'warn' | 'forbid' = 'allow',
+): ReturnType<typeof createWsMessageHandler> {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
-  const jobStore = createJobStore(db)
-  const leases = createLeaseManager({
-    states,
-    jobStore,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
   const deps: WsHandlerDeps = {
     sessions: fakeSessionManager(session),
     pairing: {
@@ -160,7 +157,9 @@ function setUpHandler(db: Db, session: DeviceSession | null, recording?: Recordi
         throw new Error('not used')
       },
     },
-    leases,
+    activities,
+    controlSettings: () => ({ overControl, idleSec: 30 }),
+    states,
     jobs: {
       enqueue: () => {
         throw new Error('not used')
@@ -170,8 +169,7 @@ function setUpHandler(db: Db, session: DeviceSession | null, recording?: Recordi
       },
       get: () => null,
       list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-      assists: () => [],
-      nodes: () => ({ items: [], finalized: false }),
+        nodes: () => ({ items: [], finalized: false }),
       resume: () => {
         throw new Error('not used')
       },
@@ -194,20 +192,15 @@ function setUpHandler(db: Db, session: DeviceSession | null, recording?: Recordi
   return createWsMessageHandler(deps)
 }
 
-async function acquireLease(handler: ReturnType<typeof createWsMessageHandler>, ws: ServerWebSocket<unknown>, deviceId: string): Promise<void> {
-  await handler.handleMessage(ws, JSON.stringify({ type: 'lease.acquire', id: 'l1', payload: { deviceId } }))
-}
-
 describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step 94.3)', () => {
   test('the verifiable result: 30 taps and 2 drags produce a 32-step RecordingDoc with real gaps and sampled gesture traces', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink } = fakeInputSink()
     const recording = makeRecordingService()
     const handler = setUpHandler(db, fakeSession('dev-1', sink), recording)
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'recording.start', id: 'r1', payload: { deviceId: 'dev-1' } }))
     const startReply = a.sent.find((m) => m.type === 'recording.state' && m.id === 'r1')
@@ -257,13 +250,12 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
 
   test('recording.start on a device that already has one open returns E_RECORDING_ACTIVE', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink } = fakeInputSink()
     const recording = makeRecordingService()
     const handler = setUpHandler(db, fakeSession('dev-1', sink), recording)
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'recording.start', id: 'r1', payload: { deviceId: 'dev-1' } }))
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'recording.start', id: 'r2', payload: { deviceId: 'dev-1' } }))
@@ -272,31 +264,32 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
     expect(err).toMatchObject({ type: 'error', payload: { code: 'E_RECORDING_ACTIVE' } })
   })
 
-  test('recording.start without the lease is refused by the SAME checkInputAllowed gate input.* uses — never a parallel check', async () => {
+  test('with control.overControl: forbid, recording.start for a second client is refused by the SAME `control` activity gate input.* uses — never a parallel check', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink } = fakeInputSink()
     const recording = makeRecordingService()
-    const handler = setUpHandler(db, fakeSession('dev-1', sink), recording)
-    const a = fakeConn()
-    handler.handleOpen(a.ws)
-    // No lease.acquire.
+    const handler = setUpHandler(db, fakeSession('dev-1', sink), recording, 'forbid')
+    const holder = fakeConn()
+    const bystander = fakeConn()
+    handler.handleOpen(holder.ws)
+    await handler.handleMessage(holder.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
+    handler.handleOpen(bystander.ws)
 
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'recording.start', id: 'r1', payload: { deviceId: 'dev-1' } }))
-    const reply = a.sent.find((m) => m.type === 'error' && m.id === 'r1')
-    expect(reply).toMatchObject({ type: 'error', payload: { code: 'no_lease' } })
+    await handler.handleMessage(bystander.ws, JSON.stringify({ type: 'recording.start', id: 'r1', payload: { deviceId: 'dev-1' } }))
+    const reply = bystander.sent.find((m) => m.type === 'error' && m.id === 'r1')
+    expect(reply).toMatchObject({ type: 'error', payload: { code: 'E_DEVICE_CONFLICT' } })
     expect(recording.get('dev-1')).toBeNull()
   })
 
   test('recording.cancel discards — no document, the device is free again', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink } = fakeInputSink()
     const recording = makeRecordingService()
     const handler = setUpHandler(db, fakeSession('dev-1', sink), recording)
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'recording.start', id: 'r1', payload: { deviceId: 'dev-1' } }))
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))
@@ -312,13 +305,12 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
 
   test('recording.stop with nothing open returns E_NO_RECORDING', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink } = fakeInputSink()
     const recording = makeRecordingService()
     const handler = setUpHandler(db, fakeSession('dev-1', sink), recording)
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'recording.stop', id: 'r1', payload: { deviceId: 'dev-1' } }))
     const reply = a.sent.find((m) => m.type === 'error' && m.id === 'r1')
@@ -327,12 +319,11 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
 
   test('recording.* refuses E_NOT_SUPPORTED when the host has not wired plan 94 at all', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink } = fakeInputSink()
     const handler = setUpHandler(db, fakeSession('dev-1', sink)) // no `recording` dep
     const a = fakeConn()
     handler.handleOpen(a.ws)
-    await acquireLease(handler, a.ws, 'dev-1')
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'recording.start', id: 'r1', payload: { deviceId: 'dev-1' } }))
     const reply = a.sent.find((m) => m.type === 'error' && m.id === 'r1')
@@ -341,21 +332,19 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
 
   test('property 1 — the tee observes, never alters: sink.tap receives byte-identical args whether recording is wired or not', async () => {
     const db1 = setUpDb()
-    seedDevice(db1, 'dev-1', 'idle')
+    seedDevice(db1, 'dev-1', 'online')
     const { sink: sinkOff, tapCalls: callsOff } = fakeInputSink()
     const handlerOff = setUpHandler(db1, fakeSession('dev-1', sinkOff)) // no recording dep at all
     const a1 = fakeConn()
     handlerOff.handleOpen(a1.ws)
-    await acquireLease(handlerOff, a1.ws, 'dev-1')
     await handlerOff.handleMessage(a1.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.37, y: 0.81 }, holdMs: 123 } }))
 
     const db2 = setUpDb()
-    seedDevice(db2, 'dev-1', 'idle')
+    seedDevice(db2, 'dev-1', 'online')
     const { sink: sinkOn, tapCalls: callsOn } = fakeInputSink()
     const handlerOn = setUpHandler(db2, fakeSession('dev-1', sinkOn), makeRecordingService())
     const a2 = fakeConn()
     handlerOn.handleOpen(a2.ws)
-    await acquireLease(handlerOn, a2.ws, 'dev-1')
     // Recording is not even started here — the tee is `deps.recording?.get(deviceId)?.observe(...)`,
     // a no-op with no active session, proving the CALL SITE itself adds nothing when idle.
     await handlerOn.handleMessage(a2.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.37, y: 0.81 }, holdMs: 123 } }))
@@ -365,12 +354,11 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
     // And WITH an active recording, still byte-identical — observe() never mutates what is sent.
     const recording = makeRecordingService()
     const db3 = setUpDb()
-    seedDevice(db3, 'dev-1', 'idle')
+    seedDevice(db3, 'dev-1', 'online')
     const { sink: sinkRec, tapCalls: callsRec } = fakeInputSink()
     const handlerRec = setUpHandler(db3, fakeSession('dev-1', sinkRec), recording)
     const a3 = fakeConn()
     handlerRec.handleOpen(a3.ws)
-    await acquireLease(handlerRec, a3.ws, 'dev-1')
     await handlerRec.handleMessage(a3.ws, JSON.stringify({ type: 'recording.start', payload: { deviceId: 'dev-1' } }))
     await handlerRec.handleMessage(a3.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.37, y: 0.81 }, holdMs: 123 } }))
 
@@ -379,7 +367,7 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
 
   test('maxSteps ends a recording cleanly, with a recording.state push naming the reason — never a silent truncation', async () => {
     const db = setUpDb()
-    seedDevice(db, 'dev-1', 'idle')
+    seedDevice(db, 'dev-1', 'online')
     const { sink } = fakeInputSink()
     const recording = makeRecordingService({ maxSteps: 3 })
     const handler = setUpHandler(db, fakeSession('dev-1', sink), recording)
@@ -389,14 +377,7 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
     const handlerWithBroadcast = (() => {
       const log = createLogger('test')
       const states = createDeviceStateMachine({ db, log })
-      const jobStore = createJobStore(db)
-      const leases = createLeaseManager({
-        states,
-        jobStore,
-        config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 5000 },
-        log,
-        onJobLeaseExpired: () => {},
-      })
+      const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
       const deps: WsHandlerDeps = {
         sessions: fakeSessionManager(fakeSession('dev-1', sink)),
         pairing: {
@@ -407,7 +388,9 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
             throw new Error('not used')
           },
         },
-        leases,
+        activities,
+        controlSettings: () => ({ overControl: 'allow' as const, idleSec: 30 }),
+        states,
         jobs: {
           enqueue: () => {
             throw new Error('not used')
@@ -417,8 +400,7 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
           },
           get: () => null,
           list: () => ({ jobs: [], nextCursor: null, total: 0 }),
-          assists: () => [],
-          nodes: () => ({ items: [], finalized: false }),
+                nodes: () => ({ items: [], finalized: false }),
           resume: () => {
             throw new Error('not used')
           },
@@ -441,7 +423,6 @@ describe('recording.* — the recorder\'s WS surface (plan 94 §4.6, §4.9, step
       return createWsMessageHandler(deps)
     })()
     handlerWithBroadcast.handleOpen(a.ws)
-    await acquireLease(handlerWithBroadcast, a.ws, 'dev-1')
     await handlerWithBroadcast.handleMessage(a.ws, JSON.stringify({ type: 'recording.start', payload: { deviceId: 'dev-1' } }))
     for (let i = 0; i < 5; i++) {
       await handlerWithBroadcast.handleMessage(a.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 } } }))

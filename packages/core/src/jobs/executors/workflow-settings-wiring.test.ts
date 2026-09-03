@@ -253,7 +253,6 @@ describe('a changed farm setting reaches the workflow executor\'s clock, in a ma
           return { ok: true, value: null }
         },
         abort: () => true,
-        notifyAssist: () => false,
       }
       const executor = createWorkflowExecutor({ ...deps, runner })
 
@@ -282,7 +281,6 @@ describe('a changed farm setting reaches the workflow executor\'s clock, in a ma
           return { ok: true, value: null }
         },
         abort: () => true,
-        notifyAssist: () => false,
       }
       const executor = createWorkflowExecutor({ ...deps, runner })
       const result = await executor.run({ ...makeJobRow(), id: 'job-2' }, makeCtx())
