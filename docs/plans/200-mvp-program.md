@@ -71,7 +71,16 @@ A plan's §10 lists the forbidden words its area introduces; the report includes
 - **One executor, one plan, one worktree** (§8.1). If a plan is too large for one executor, that is a defect in the plan, reported in §11, not a reason to fan out.
 - **Never predict a result you have not seen.** Run the command, read the output, then write it down. A §0 row marked done without its command having been run is a false claim about the product.
 
-### 2.6 Commits and reporting
+### 2.6 Studio rules a plan's code block may not carry
+
+Found by executing plan 204 on 2026-09-03: its `lib/theme.ts` code block omitted the `'use client'` directive and **the build failed until the executor added it**. A plan's code block is an excerpt written for a human reader; these rules hold whether or not the block shows them.
+
+- **`'use client'` is the first line of every file you create that uses a hook, an event handler, a browser API, or a context.** Next.js is in static-export mode: a component that reaches for `useState`, `useEffect`, `useRef`, `onClick` or `window` without it fails the build. If the plan's block omits it, add it and note the correction in §11 — do not restructure the component to avoid needing it.
+- **The prototype colour tokens still exist.** Plan 204 kept its "block D" verbatim because deleting it would unstyle 168 Studio files and 14 plugin views on `mvp` before wave 3 lands (plan 204 §9 Q1, the owner's call). Your new components use the handoff palette; the old block staying is not an invitation to use it, and not a bug to fix.
+- **A plan's `rg` list of call sites may be short.** Plan 204's own grep missed a fifth `Switch size="sm"` site. Re-run the plan's grep yourself before you assume its list is complete, and report any site it missed.
+- **`bun run build:studio` is part of your verification, not only `typecheck`.** A missing directive, a bad import path, or a server/client boundary error passes typecheck and fails the export.
+
+### 2.7 Commits and reporting
 
 - Conventional commits, one plan may span many: `feat(mvp-205): …`, `fix(mvp-205): …`, `chore(mvp-205): …`. No attribution lines.
 - Work on the `mvp` branch. `main` stays shippable for hotfixes until wave 3 lands (`docs/mvp/16` §3).
