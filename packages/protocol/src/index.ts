@@ -481,6 +481,15 @@ export {
   type DecodedSnapshot,
 } from './binary'
 export {
+  OFFSET_WINDOW,
+  SUMMARY_WINDOW,
+  createLatencyEstimator,
+  type LegSummary,
+  type LatencySummary,
+  type LatencyEvent,
+  type LatencyEstimator,
+} from './video-latency'
+export {
   JobStatusSchema,
   SleepJobParamsSchema,
   JobInfoSchema,

@@ -3,17 +3,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Circle, Loader2, MoonStar, Power, Square, Sun, Volume2, VolumeOff, VolumeX } from 'lucide-react'
 import {
+  createLatencyEstimator,
   decodeVideoFrame,
   KEYCODES,
   VIDEO_CODEC,
+  type LatencySummary,
   type MirrorAction,
   type MirrorResult,
   type Quality,
   type SessionPhase,
 } from '@enkaku/protocol'
 import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/lib/h264-decoder'
+import { LatencyOverlay } from '@/components/video/LatencyOverlay'
 import { ClipboardButton } from '@/components/device/ClipboardButton'
 import { Button, Tooltip, TooltipContent, TooltipTrigger, cn, duration } from '@enkaku/ui'
+import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 import { useNow } from '@/lib/useNow'
 import { newId, ws } from '@/lib/ws'
 
@@ -311,6 +315,18 @@ export function LiveView({
   mirrorRef.current = mirror
 
   const rendererRef = useRef<H264Renderer | null>(null)
+  /**
+   * Plan 203 §4.11 — the latency overlay's own state. `estimatorRef` is a
+   * single long-lived estimator per mounted view (reset on a fresh
+   * `stream.started`, never recreated), `latencySummary` is the 500ms-tick
+   * snapshot the overlay renders, and `lastPtsSeqRef` tracks the `seq` of
+   * the last device-clocked frame so a gap in it can be reported as dropped
+   * frames.
+   */
+  const [latencyOverlay, setLatencyOverlay] = useState(() => readLocalPrefs().latencyOverlay)
+  const estimatorRef = useRef(createLatencyEstimator())
+  const [latencySummary, setLatencySummary] = useState<LatencySummary | null>(null)
+  const lastPtsSeqRef = useRef<number | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [stopped, setStopped] = useState<string | null>(null)
   /**
@@ -442,9 +458,14 @@ export function LiveView({
             return
           }
           const canvas = canvasRef.current
-          if (canvas) rendererRef.current = createH264Renderer(canvas, (m) => setError(m))
+          if (canvas) rendererRef.current = createH264Renderer(canvas, (m) => setError(m), (e) => estimatorRef.current.push(e))
         }
         if (res.payload.width > 0) setSize({ width: res.payload.width, height: res.payload.height })
+        // Plan 203 §4.11 — a fresh stream means a fresh device/browser clock
+        // relationship; forget both offsets and every window rather than
+        // mixing this stream's samples with the previous one's.
+        estimatorRef.current.reset()
+        lastPtsSeqRef.current = null
         // Plan 100 §3.2, §3.7 item 2, §4.4 — a `control` request that got the
         // wall entry's own frames instead, honestly labelled. `''` (not
         // `null`) when the server sent no `degradedDetail`, so the banner
@@ -494,6 +515,10 @@ export function LiveView({
     })
 
     const offBinary = ws.onBinary((buf) => {
+      // Plan 203 §4.11 — read as early as possible, so it reflects the
+      // moment the WS message reached this browser, not the moment it was
+      // finally processed.
+      const browserReceivedAt = Date.now()
       let frame
       try {
         frame = decodeVideoFrame(buf)
@@ -515,14 +540,28 @@ export function LiveView({
           // nothing ever re-created it.
           const canvas = canvasRef.current
           if (!canvas) return
-          renderer = createH264Renderer(canvas, (m) => setError(m))
+          renderer = createH264Renderer(canvas, (m) => setError(m), (e) => estimatorRef.current.push(e))
           if (!renderer) return
           rendererRef.current = renderer
           setCodec('h264')
         }
+        // Plan 203 §4.11 — a gap in `seq` between two device-clocked frames
+        // (`ptsUs > 0n`) is a frame that never reached this browser. Primer
+        // frames (`ptsUs === 0n`, the join priming) never touch this chain:
+        // they carry no device clock and are not part of the encoder's own
+        // sequence.
+        if (frame.ptsUs > BigInt(0)) {
+          const last = lastPtsSeqRef.current
+          if (last !== null && frame.seq > last + 1) estimatorRef.current.noteSeqGap(frame.seq - last - 1)
+          lastPtsSeqRef.current = frame.seq
+        }
         // The keyframe flag rides in the header. It used to be inferred from
         // `seq === 0`, which only ever held for the very first packet.
-        renderer.decode(frame.data, frame.keyframe, frame.width, frame.height)
+        renderer.decode(frame.data, frame.keyframe, frame.width, frame.height, {
+          ptsUs: frame.ptsUs,
+          hostReceivedAt: frame.hostReceivedAt,
+          browserReceivedAt,
+        })
         markPainted()
         const now = performance.now()
         lastFrameRef.current = now
@@ -590,10 +629,21 @@ export function LiveView({
   const wasActiveRef = useRef(active)
   useEffect(() => {
     if (active && !wasActiveRef.current && streamIdRef.current !== null) {
+      estimatorRef.current.noteKeyframeRequest()
       ws.send({ type: 'stream.keyframe', payload: { streamId: streamIdRef.current } })
     }
     wasActiveRef.current = active
   }, [active])
+
+  // Plan 203 §4.11 — the overlay's own 500ms tick, running only while it is
+  // actually visible: off by default (`latencyOverlay` defaults to false),
+  // and never in `compact` (a Wall tile never renders it, see the toggle and
+  // the render below). Same start/stop discipline `useNow.ts` documents.
+  useEffect(() => {
+    if (!latencyOverlay || !streaming || compact) return
+    const id = setInterval(() => setLatencySummary(estimatorRef.current.summary(performance.now())), 500)
+    return () => clearInterval(id)
+  }, [latencyOverlay, streaming, compact])
 
   /**
    * Plan 103 step 103.9 — the `fitContainer` panel takes the PICTURE's own
@@ -1100,6 +1150,24 @@ export function LiveView({
             </TooltipContent>
           </Tooltip>
         )}
+        {/* Plan 203 §4.11 — the latency overlay's own toggle. H.264 only:
+            the estimator needs a device PTS, which PNG frames never carry.
+            Drops `ml-auto` when the webrtc badge above already rendered one
+            — a flex row only needs one auto-margin push. */}
+        {codec === 'h264' && (
+          <button
+            type="button"
+            className={cn('rack-label cursor-pointer', transport !== 'webrtc' && 'ml-auto')}
+            aria-pressed={latencyOverlay}
+            onClick={() => {
+              const next = !latencyOverlay
+              setLatencyOverlay(next)
+              writeLocalPrefs({ latencyOverlay: next })
+            }}
+          >
+            latency
+          </button>
+        )}
       </div>
       )}
 
@@ -1184,6 +1252,11 @@ export function LiveView({
             ...(compact ? {} : { cursor: inputEnabled && !stopped ? 'crosshair' : 'not-allowed' }),
           }}
         />
+
+        {/* Plan 203 §4.11 — the latency instrument itself. Never in `compact`
+            (a Wall tile is read-only and never shows it, regardless of the
+            stored preference), and only once the first summary exists. */}
+        {!compact && latencyOverlay && latencySummary && <LatencyOverlay summary={latencySummary} />}
 
         {/* Plan 100 §3.7 item 1, step 100.6 — compact mode (a Wall tile) has no
             toolbar for the badge above, so this is its own small, honest

@@ -10,6 +10,7 @@ import {
   type ArtifactInfo,
   type DeviceEvent,
   type DeviceStatus,
+  type Quality,
   type ServerMessage,
   type ShellResult,
   type TransportExecOptions,
@@ -905,6 +906,13 @@ let blobGc: BlobGc | null = null
       // co-control bookkeeping, but `createAdbStatsRoutes` is built (below,
       // in step 4) before `attachWsRouter` ever runs.
       let inputStats: (() => InputStatsBlock) | null = null
+      // Same forward-ref pattern: `GET /api/video/latency`'s per-stream
+      // counters (plan 203 §4.6) live on the WS router's own congestion/
+      // keyframe bookkeeping, but `createVideoRoutes` is built (below, in
+      // step 4) before `attachWsRouter` ever runs.
+      let videoStreamStats:
+        | ((deviceId: string) => Array<{ quality: Quality; keyframeRequests: number; congestionDrops: number }>)
+        | null = null
       // Same forward-ref pattern: the command runner (plan 93 §3.17, §4.5,
       // §5 step 93.4) is constructed right after `leases`, well before
       // `attachWsRouter` runs — but its `broadcast` dep needs
@@ -3121,7 +3129,7 @@ let blobGc: BlobGc | null = null
         // the manual "apply now" the settings section's own button (and
         // anyone with `settings.manage` from curl) calls; the automatic
         // debounced path above calls the exact same `sessions.reprofile()`.
-        videoRoutes: createVideoRoutes({ sessions: () => sessions }),
+        videoRoutes: createVideoRoutes({ sessions: () => sessions, streamStats: (id) => videoStreamStats?.(id) ?? null }),
         doctorRoutes: createDoctorRoutes({
           dataDir: cfg.dataDir,
           coreProbe: async () => ({
@@ -3676,6 +3684,7 @@ let blobGc: BlobGc | null = null
         reconcileMirrorForDevice = handler.reconcileMirror
         transportStats = handler.transportStats
         inputStats = handler.inputStats
+        videoStreamStats = handler.videoStreamStats
         broadcastCommandEvent = handler.broadcastCommand
         broadcastTransferEvent = handler.broadcastTransfer
       }

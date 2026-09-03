@@ -3,14 +3,28 @@ import { CODEC_ID } from './version'
 /**
  * Parser stream video scrcpy (plan 08 §4.3).
  *
- * Byte order on the video socket (tunnel_forward mode, TODO-verify against
- * source versi pinned):
+ * Byte order on the video socket (tunnel_forward mode).
+ * verified against v3.3.1 server/src/main/java/com/genymobile/scrcpy/device/{DesktopConnection,Streamer}.java
+ * on 2026-09-03:
  *   1. 1 dummy byte (tunnel_forward only) — marks the connection as valid
- *   2. 64 byte device name (NUL-padded)
- *   3. metadata codec: u32BE codecId, u32BE width, u32BE height
- *   4. repeating: a 12-byte frame header plus payload
- *        - u64BE ptsAndFlags: bit63 = config packet, bit62 = keyframe,
- *          the rest is the PTS in microseconds
+ *      (`DesktopConnection.open`'s `sendDummyByte`, written once on the
+ *      first socket accepted: video, then audio if enabled, then control)
+ *   2. 64 byte device name (NUL-padded) — `DEVICE_NAME_FIELD_LENGTH = 64`,
+ *      `DesktopConnection.sendDeviceMeta`, also sent on the first socket only
+ *   3. metadata codec: u32BE codecId, u32BE width, u32BE height —
+ *      `Streamer.writeVideoHeader`, a plain `ByteBuffer` (big-endian by
+ *      default)
+ *   4. repeating: a 12-byte frame header plus payload —
+ *      `Streamer.writeFrameMeta`/`writePacket`:
+ *        - u64BE ptsAndFlags: bit63 = config packet (`PACKET_FLAG_CONFIG =
+ *          1L << 63`), bit62 = keyframe (`PACKET_FLAG_KEY_FRAME = 1L << 62`),
+ *          the rest is the PTS in microseconds — the server's raw MediaCodec
+ *          `bufferInfo.presentationTimeUs` (`SurfaceEncoder.java`), NOT
+ *          rebased to any stream-start origin. It is a monotonic clock on
+ *          the device's own timeline with no defined relationship to the
+ *          host's clock, which is exactly why `packages/session/src` and the
+ *          browser estimator (plan 203 §3.2 D4) treat it with a min-anchored
+ *          offset rather than as an absolute wall-clock value.
  *        - u32BE packetSize
  *        - H.264 Annex-B payload (SPS/PPS for the config packet)
  */
@@ -27,9 +41,9 @@ export interface VideoMeta {
 }
 
 export type ScrcpyPacket =
-  | { kind: 'config'; data: Uint8Array }
-  | { kind: 'keyframe'; ptsUs: bigint; data: Uint8Array }
-  | { kind: 'frame'; ptsUs: bigint; data: Uint8Array }
+  | { kind: 'config'; receivedAt: number; data: Uint8Array }
+  | { kind: 'keyframe'; ptsUs: bigint; receivedAt: number; data: Uint8Array }
+  | { kind: 'frame'; ptsUs: bigint; receivedAt: number; data: Uint8Array }
 
 const codecName = (id: number): VideoMeta['codec'] => {
   if (id === CODEC_ID.H265) return 'h265'
@@ -53,6 +67,8 @@ export class VideoDemuxer {
       expectDummyByte: boolean
       onMeta: (meta: VideoMeta) => void
       onPacket: (packet: ScrcpyPacket) => void
+      /** Clock for `receivedAt`; tests inject one. Defaults to `Date.now`. */
+      now?: () => number
     },
   ) {
     this.stage = opts.expectDummyByte ? 'dummy' : 'name'
@@ -63,11 +79,12 @@ export class VideoDemuxer {
   }
 
   push(chunk: Uint8Array): void {
+    const receivedAt = (this.opts.now ?? Date.now)()
     const merged = new Uint8Array(this.buf.length + chunk.length)
     merged.set(this.buf, 0)
     merged.set(chunk, this.buf.length)
     this.buf = merged
-    this.drain()
+    this.drain(receivedAt)
   }
 
   private take(n: number): Uint8Array | null {
@@ -77,7 +94,7 @@ export class VideoDemuxer {
     return head
   }
 
-  private drain(): void {
+  private drain(receivedAt: number): void {
     for (;;) {
       if (this.stage === 'dummy') {
         if (!this.take(1)) return
@@ -118,12 +135,13 @@ export class VideoDemuxer {
       if (!data) return
       const copy = new Uint8Array(data) // detach from the shared buffer
       if ((ptsAndFlags & PTS_FLAG_CONFIG) !== 0n) {
-        this.opts.onPacket({ kind: 'config', data: copy })
+        this.opts.onPacket({ kind: 'config', receivedAt, data: copy })
       } else {
         const ptsUs = ptsAndFlags & PTS_MASK
         this.opts.onPacket({
           kind: (ptsAndFlags & PTS_FLAG_KEYFRAME) !== 0n ? 'keyframe' : 'frame',
           ptsUs,
+          receivedAt,
           data: copy,
         })
       }

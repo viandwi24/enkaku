@@ -73,3 +73,103 @@ describe('POST /api/video/reprofile (plan 92 §3.8, §4.5, §5 step 92.2)', () =
     expect(res.status).toBe(501)
   })
 })
+
+/**
+ * `GET /api/video/latency?deviceId=<id>` (plan 203 §4.7, §5 step 203.6) —
+ * the server-side leg of the latency picture: `SessionManager.videoLatency`
+ * joined with `ws-handlers.ts`'s keyframe/congestion counters.
+ */
+describe('GET /api/video/latency (plan 203 §4.7, §5 step 203.6)', () => {
+  test('without deviceId is 400 E_BAD_REQUEST', async () => {
+    const app = withUser('operator', createVideoRoutes({ sessions: () => ({ videoLatency: () => [] }) }))
+    const res = await app.request('/latency')
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_BAD_REQUEST')
+  })
+
+  test('with no sessions is 501 E_NOT_SUPPORTED', async () => {
+    const app = withUser('operator', createVideoRoutes({ sessions: () => null }))
+    const res = await app.request('/latency?deviceId=dev-1')
+    expect(res.status).toBe(501)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_NOT_SUPPORTED')
+  })
+
+  test('joins the session snapshot with the stream counters per quality', async () => {
+    const sessions: Pick<SessionManager, 'videoLatency'> = {
+      videoLatency: (deviceId) => {
+        expect(deviceId).toBe('dev-1')
+        return [
+          {
+            quality: 'control',
+            viewers: 1,
+            frames: 10,
+            firstFrameMs: 120,
+            ptsIntervalMsP50: 33,
+            ptsIntervalMsP95: 40,
+            arrivalJitterMsP95: 3,
+            lastFrameAgeMs: 12,
+          },
+        ]
+      },
+    }
+    const app = withUser(
+      'operator',
+      createVideoRoutes({
+        sessions: () => sessions,
+        streamStats: () => [{ quality: 'control', keyframeRequests: 2, congestionDrops: 5 }],
+      }),
+    )
+    const res = await app.request('/latency?deviceId=dev-1')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      deviceId: string
+      at: number
+      streams: Array<{ quality: string; keyframeRequests: number; congestionDrops: number }>
+    }
+    expect(body.deviceId).toBe('dev-1')
+    expect(body.streams).toHaveLength(1)
+    expect(body.streams[0]).toMatchObject({
+      quality: 'control',
+      viewers: 1,
+      frames: 10,
+      firstFrameMs: 120,
+      keyframeRequests: 2,
+      congestionDrops: 5,
+    })
+  })
+
+  test('a stream with no matching counters reads zero, never undefined', async () => {
+    const sessions: Pick<SessionManager, 'videoLatency'> = {
+      videoLatency: () => [
+        {
+          quality: 'wall',
+          viewers: 0,
+          frames: 0,
+          firstFrameMs: null,
+          ptsIntervalMsP50: 0,
+          ptsIntervalMsP95: 0,
+          arrivalJitterMsP95: 0,
+          lastFrameAgeMs: null,
+        },
+      ],
+    }
+    const app = withUser('operator', createVideoRoutes({ sessions: () => sessions }))
+    const res = await app.request('/latency?deviceId=dev-2')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { streams: Array<{ keyframeRequests: number; congestionDrops: number }> }
+    expect(body.streams[0]).toMatchObject({ keyframeRequests: 0, congestionDrops: 0 })
+  })
+
+  test('an operator may read it (device.view); unauthenticated is 403', async () => {
+    const sessions: Pick<SessionManager, 'videoLatency'> = { videoLatency: () => [] }
+    const authed = withUser('operator', createVideoRoutes({ sessions: () => sessions }))
+    const authedRes = await authed.request('/latency?deviceId=dev-1')
+    expect(authedRes.status).toBe(200)
+
+    const anon = withUser(null, createVideoRoutes({ sessions: () => sessions }))
+    const anonRes = await anon.request('/latency?deviceId=dev-1')
+    expect(anonRes.status).toBe(403)
+  })
+})

@@ -2,7 +2,16 @@ import { CONTROL_MSG, KEY_ACTION, MOTION_ACTION, POINTER_ID_GENERIC_FINGER } fro
 
 /**
  * Encoder control message host→device (plan 08 §4.2).
- * Byte layout is TODO-verify against the pinned version's source.
+ * verified against v3.3.1 server/src/main/java/com/genymobile/scrcpy/control/ControlMessageReader.java
+ * on 2026-09-03: every encoder below matches its `parse*` counterpart field
+ * for field and byte width for byte width — `parseInjectKeycode` (action,
+ * keycode, repeat, metaState), `parseInjectText` (u32 length + UTF-8),
+ * `parseInjectTouchEvent` (action, pointerId u64, position, u16 pressure,
+ * actionButton, buttons), `parseUhidCreate` (id/vendorId/productId u16 each,
+ * a 1-byte-length-prefixed name, a 2-byte-length-prefixed report),
+ * `parseUhidInput`/`parseUhidDestroy`, `RESET_VIDEO` (type byte only, no
+ * payload — `ControlMessageReader.read()`'s `createEmpty` branch),
+ * `parseGetClipboard`/`parseSetClipboard`, and `parseSetDisplayPower`.
  */
 
 const enc = new TextEncoder()

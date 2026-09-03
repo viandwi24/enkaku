@@ -97,6 +97,8 @@ function usage(): string {
   --fps-window-sec <N>   scrcpy capture window in seconds (default 5)
   --skip-inspector       skip the ui-server attach/find/dump stages
   --skip-video           skip the scrcpy FPS/time-to-first-frame stages
+  --latency              server-side latency leg: time to first packet, first keyframe, PTS interval, arrival jitter (needs --serial)
+  --warmup               reserved for plan 206 (always-on sessions); prints a placeholder and exits 2
   --help                 print this and exit, without touching adb or any device
 
 Env:
@@ -143,6 +145,13 @@ async function main() {
     console.log(usage())
     return
   }
+  // Plan 203 §4.13, §5 step 203.12 — checked before the `ENKAKU_TEST_DEVICE`
+  // gate: `--warmup` is a placeholder plan 206 (always-on sessions) fills,
+  // and saying so needs no device.
+  if (args.includes('--warmup')) {
+    console.log('warmup: not implemented in plan 203 - plan 206 (always-on sessions) fills this mode')
+    process.exit(2)
+  }
   if (process.env.ENKAKU_TEST_DEVICE !== '1') {
     console.error('✗ set ENKAKU_TEST_DEVICE=1 to run this against real hardware (repo convention, 00-overview.md §4.4)')
     process.exit(1)
@@ -159,6 +168,7 @@ async function main() {
   const fpsWindowSec = Number(flag(args, 'fps-window-sec') ?? 5)
   const skipInspector = args.includes('--skip-inspector')
   const skipVideo = args.includes('--skip-video')
+  const latency = args.includes('--latency')
 
   if (!existsSync(dataDir)) {
     console.error(`✗ data dir ${dataDir} does not exist — run \`bun run dev\` at least once first (see this script's own header comment)`)
@@ -329,6 +339,17 @@ async function main() {
       const sessionT0 = performance.now()
       let firstFrameMs: number | null = null
       const frameTimestamps: number[] = []
+      // Plan 203 §4.13 — `--latency`'s own samples, taken off the SAME
+      // `session.onPacket` subscription rather than a second one: `ttfp` is
+      // the existing measurement above, `firstKeyframeMs` the same idea
+      // scoped to `kind === 'keyframe'`, and `ptsIntervalMs`/`arrivalJitterMs`
+      // are per-consecutive-frame deltas (ptsUs > 0n frames only — a config
+      // packet carries no PTS).
+      let firstKeyframeMs: number | null = null
+      const ptsIntervalMs: number[] = []
+      const arrivalJitterMs: number[] = []
+      let lastPtsUs: bigint | null = null
+      let lastArrivalMs: number | null = null
       let session: Awaited<ReturnType<typeof startScrcpySession>> | undefined
       try {
         session = await startScrcpySession(adbExecutor, {
@@ -338,7 +359,20 @@ async function main() {
         session.onPacket((p: ScrcpyPacket) => {
           const now = performance.now()
           if (firstFrameMs === null) firstFrameMs = now - sessionT0
-          if (p.kind === 'frame' || p.kind === 'keyframe') frameTimestamps.push(now)
+          if (p.kind === 'frame' || p.kind === 'keyframe') {
+            frameTimestamps.push(now)
+            if (p.kind === 'keyframe' && firstKeyframeMs === null) firstKeyframeMs = now - sessionT0
+            if (latency) {
+              if (lastPtsUs !== null && lastArrivalMs !== null && p.ptsUs > lastPtsUs) {
+                const deltaPtsMs = Number(p.ptsUs - lastPtsUs) / 1000
+                const deltaArrivalMs = now - lastArrivalMs
+                ptsIntervalMs.push(deltaPtsMs)
+                arrivalJitterMs.push(Math.abs(deltaArrivalMs - deltaPtsMs))
+              }
+              lastPtsUs = p.ptsUs
+              lastArrivalMs = now
+            }
+          }
         })
 
         await Bun.sleep(fpsWindowSec * 1000)
@@ -373,6 +407,37 @@ async function main() {
           } else {
             console.log('  ✓ FPS within the 10x-regression bound')
           }
+        }
+
+        // Plan 203 §4.13, G12 — the server-side leg of latency, on demand
+        // only: no regression bound exists yet (no baseline to check
+        // against, plan 200 §3.0), so `--latency` never changes the exit
+        // code, only adds a line and four rows.
+        if (latency) {
+          const ptsSorted = ptsIntervalMs.slice().sort((a, b) => a - b)
+          const jitterSorted = arrivalJitterMs.slice().sort((a, b) => a - b)
+          const ptsP50 = percentile(ptsSorted, 50)
+          const ptsP95 = percentile(ptsSorted, 95)
+          const jitterP95 = percentile(jitterSorted, 95)
+          const ttfp = firstFrameMs === null ? -1 : Math.round(firstFrameMs)
+          const firstKeyframe = firstKeyframeMs === null ? -1 : Math.round(firstKeyframeMs)
+          const line =
+            `latency: ttfp=${ttfp} ms  first-keyframe=${firstKeyframe} ms  ` +
+            `pts-interval p50=${Math.round(ptsP50)} ms p95=${Math.round(ptsP95)} ms  ` +
+            `arrival-jitter p95=${Math.round(jitterP95)} ms  frames=${frameTimestamps.length}`
+          console.log(`  ${line}`)
+          rows.push({ metric: 'latency ttfp', value: `${ttfp} ms`, note: 'plan 203 §4.13 — server-side leg only' })
+          rows.push({ metric: 'latency first-keyframe', value: `${firstKeyframe} ms`, note: 'session start → first keyframe packet' })
+          rows.push({
+            metric: 'latency pts-interval',
+            value: `p50=${Math.round(ptsP50)} p95=${Math.round(ptsP95)} ms`,
+            note: 'consecutive device PTS deltas — the encoder’s real frame interval',
+          })
+          rows.push({
+            metric: 'latency arrival-jitter',
+            value: `p95=${Math.round(jitterP95)} ms`,
+            note: '|Δ arrival − Δ pts| between consecutive frames',
+          })
         }
       } finally {
         await session?.close().catch(() => undefined)

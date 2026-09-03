@@ -151,8 +151,12 @@ export interface ScrcpySession {
  *
  * With `tunnel_forward=true` the host opens a connection to the localabstract
  * socket via `adb forward`. The FIRST socket to connect is video, the second
- * is control (this ordering is part of the internal protocol — TODO-verify on
- * a real device).
+ * is control (this ordering is part of the internal protocol).
+ * verified against v3.3.1 server/src/main/java/com/genymobile/scrcpy/device/DesktopConnection.java
+ * on 2026-09-03: `DesktopConnection.open`'s `tunnelForward` branch accepts in
+ * the fixed order video, then audio (if enabled), then control — this
+ * package never enables audio, so the effective order is video then control,
+ * exactly as assumed.
  */
 /**
  * Reserved top byte of every `scid` this codebase mints. Cuts the random

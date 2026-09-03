@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { QualitySchema } from '../messages/stream'
 
 /**
  * `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2) — restarts
@@ -19,3 +20,33 @@ export const VideoReprofileResponseSchema = z.object({
   unchanged: z.number().int(),
 })
 export type VideoReprofileResponse = z.infer<typeof VideoReprofileResponseSchema>
+
+/**
+ * `GET /api/video/latency?deviceId=<id>` (plan 203 §4.7): the server-side
+ * leg of the latency picture, per open `(deviceId, quality)` entry. Nothing
+ * here is persisted; a core restart clears it. `streams` is empty for a
+ * device with no open session, never a 404: the question "what is open" has
+ * an answer either way.
+ */
+export const VideoLatencyStreamSchema = z.object({
+  quality: QualitySchema,
+  /** Subscribers on this entry (the entry's refcount). */
+  viewers: z.number().int(),
+  frames: z.number().int(),
+  firstFrameMs: z.number().nullable(),
+  ptsIntervalMsP50: z.number(),
+  ptsIntervalMsP95: z.number(),
+  arrivalJitterMsP95: z.number(),
+  lastFrameAgeMs: z.number().nullable(),
+  /** `RESET_VIDEO` requests sent for this stream: congestion recoveries, joins, and visibility keyframes. */
+  keyframeRequests: z.number().int(),
+  /** Frames dropped by the drop-to-keyframe backpressure rule. */
+  congestionDrops: z.number().int(),
+})
+export const VideoLatencyResponseSchema = z.object({
+  deviceId: z.string(),
+  /** Unix ms at which the snapshot was taken. */
+  at: z.number().int(),
+  streams: z.array(VideoLatencyStreamSchema),
+})
+export type VideoLatencyResponse = z.infer<typeof VideoLatencyResponseSchema>
