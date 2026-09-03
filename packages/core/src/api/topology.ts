@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
 import { eq, inArray } from 'drizzle-orm'
-import type { ConnectionMedium, DeviceInfo, DeviceReadiness, LeaseHolder } from '@enkaku/protocol'
+import type { ConnectionMedium, DeviceInfo, DeviceReadiness } from '@enkaku/protocol'
 import type { Db } from '../db'
 import type { DeviceRow } from '../db/schema'
 import { clusters, jobs, scripts } from '../db/schema'
 import { resolveCluster } from '../clusters/resolve'
-import { listDevicesWithTags, type FarmNetwork } from '../registry/device-registry'
+import { listDevicesWithTags, type DeviceActivityState, type FarmNetwork } from '../registry/device-registry'
 
 export interface TopologyCluster {
   id: string
@@ -38,8 +38,8 @@ export function buildTopology(
   db: Db,
   /** Readiness badge (plan 43 §4.6) — the same live accessor `/api/devices` uses; omitted call sites fall back per-row. */
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
-  /** Lease holder (plan 71 §4.4) — the same live accessor `/api/devices` uses; omitted call sites fall back to `null`. */
-  heldByOf?: (deviceId: string) => LeaseHolder | null,
+  /** Live activities plus last-control tail (plan 205 §4.10) — the same live accessor `/api/devices` uses; omitted call sites fall back to `{ activities: [], lastControl: null }`. */
+  activitiesOf?: (deviceId: string) => DeviceActivityState,
   /**
    * Farm networks (plan 88 §3.6, §4.1, §5 step 88.5) — the same live
    * accessor `/api/devices` uses; omitted call sites match no network,
@@ -50,29 +50,8 @@ export function buildTopology(
   networks: FarmNetwork[] = [],
   /** The address book's declared media (plan 88 §3.1, §3.2, §4.3, §5 step 88.5) — same accessor `/api/devices` uses. */
   declaredMedia?: Map<string, ConnectionMedium | null>,
-  /**
-   * Who is currently assisting a device (plan 91 §3.4 item 4, §4.4; producer
-   * gap closed by docs/plans/96-m61-hotfixes.md's continuation of §96.5–96.9
-   * — `api/devices.ts` got this in step 91.4, this router did not). The same
-   * `heldByOf`-shaped accessor, resolved from the co-control manager
-   * (`lease/co-control.ts`'s `assistedBy`). Appended as the LAST positional
-   * parameter (rather than beside `heldByOf`, where it conceptually belongs)
-   * so every existing positional call — `buildTopology(db)` throughout
-   * `topology.test.ts` — keeps compiling unedited. `listDevicesWithTags`
-   * (`registry/device-registry.ts`) has no `assistedByOf` parameter of its
-   * own (deliberately not threaded there — that file is outside this
-   * change's scope), so this maps over its result and OVERRIDES the
-   * `assistedBy` field `DeviceInfoSchema`'s own default (`[]`) already
-   * produced — the exact override-after-build shape `api/devices.ts`
-   * established for the same field. Omitted (or no grant) falls back to
-   * `[]` — an unknown assist state is "nobody is assisting", never a guess.
-   */
-  assistedByOf?: (deviceId: string) => LeaseHolder[],
 ): TopologyResponse {
-  const deviceInfos = listDevicesWithTags(db, readinessOf, heldByOf, networks, declaredMedia).map((info) => ({
-    ...info,
-    assistedBy: assistedByOf?.(info.id) ?? [],
-  }))
+  const deviceInfos = listDevicesWithTags(db, readinessOf, activitiesOf, networks, declaredMedia)
   const knownIds = new Set(deviceInfos.map((d) => d.id))
 
   // Membership is resolved with the SAME function a batch dispatch uses
@@ -116,24 +95,14 @@ export function buildTopology(
 export function createTopologyRoutes(deps: {
   db: Db
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness
-  heldByOf?: (deviceId: string) => LeaseHolder | null
+  activitiesOf?: (deviceId: string) => DeviceActivityState
   /** Plan 88 §3.6, §4.1, §5 step 88.5 — read fresh per request, same as `/api/devices`. */
   networks?: () => FarmNetwork[]
   declaredMedia?: () => Map<string, ConnectionMedium | null> | undefined
-  /**
-   * Who is currently assisting a device (plan 91 §3.4 item 4, §4.4) — see
-   * `buildTopology`'s own comment on its last parameter for the full
-   * rationale. Optional so every existing test (`topology.test.ts`) that
-   * predates this field keeps compiling unedited; omitted means every
-   * device's `assistedBy` reads `[]`, same as before this field existed.
-   */
-  assistedByOf?: (deviceId: string) => LeaseHolder[]
 }): Hono {
   const app = new Hono()
 
-  app.get('/', (c) =>
-    c.json(buildTopology(deps.db, deps.readinessOf, deps.heldByOf, deps.networks?.() ?? [], deps.declaredMedia?.(), deps.assistedByOf)),
-  )
+  app.get('/', (c) => c.json(buildTopology(deps.db, deps.readinessOf, deps.activitiesOf, deps.networks?.() ?? [], deps.declaredMedia?.())))
 
   return app
 }
