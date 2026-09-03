@@ -54,7 +54,7 @@ The CEO asked what these were. They are not product questions; they are loose en
 | # | In plain terms | Decision |
 |---|---|---|
 | 1 | **Which key is the shortcut key in Device Control?** Alt+H for Home, Alt+V to paste, and so on. On a Mac the natural choice is Cmd, but Cmd+A, Cmd+C and Cmd+V must reach the *phone*, not the browser | **Alt on every platform.** A user who wants Cmd can change it later; correctness first |
-| 2 | **Two API routes nobody calls.** They let one AI agent grant another the right to spawn a child agent. They exist, they work, and no screen ever calls them | **Give them a small surface on the Agents page.** Deleting a working authorisation feature to tidy a grep is the wrong trade |
+| 2 | **Two API routes nobody calls.** They let one AI agent grant another the right to spawn a child agent | **Delete the routes, keep the rule.** Corrected by the CTO after reading plan 220 §3.5: the enforcement is `canSpawn` in `agent/tree/store.ts`, checked by the `agent.spawn` capability in `agent/runner.ts`, and it is untouched by deleting the routes. An agent still may not spawn children by default. What goes is three HTTP endpoints no screen has ever called; `grantSpawn`/`revokeSpawn` stay in the store, ready to wire the day a screen needs them. The CTO's first answer, "give them a surface", was based on the wrong belief that the routes *were* the feature |
 | 3 | **Where the "add a device by IP" dialog lives** now that its old page is gone | **On the Devices screen**, beside the Discovered sheet. It is a device action, not a setting |
 | 4 | **One line in the guest agent's README disagrees with the toolchain manifest** about the APK's signing hash | **Trust the manifest, fix the README.** The manifest is what the code reads |
 
