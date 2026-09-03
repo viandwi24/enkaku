@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { defaultFarmSettings, type FarmSettings } from '@enkaku/protocol'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
-import { createDeviceStateMachine } from '../device/state-machine'
+import { createDeviceStateMachine, type DeviceStateMachine } from '../device/state-machine'
 import type { ShellExecResult, ShellPort } from '../device/shell-port'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import { createLogger } from '../util/logger'
 import { createCommandRunStore, type CommandRunStore } from './store'
 import { admitMember, computeCommandRunStatus, createCommandRunner, resolveCommandTarget, type CommandRunner, type CommandRunnerEvent } from './runner'
@@ -13,45 +14,52 @@ import { admitMember, computeCommandRunStatus, createCommandRunner, resolveComma
  * Plan 93 §3.5-§3.8, §4.5, step 93.3's own verifiable result — every
  * assertion below is one of the eight the plan lists, plus the process-
  * liveness guarantee `00-overview.md` §7 requires of anything with a worker
- * pool. Uses a REAL `CommandRunStore`, a REAL `LeaseManager` (backed by a
- * REAL `DeviceStateMachine` over an in-memory db) — only `ShellPort` is
+ * pool. Uses a REAL `CommandRunStore`, a REAL `ActivityRegistry` (backed by
+ * a REAL `DeviceStateMachine` over an in-memory db) — only `ShellPort` is
  * faked, since that is the actual boundary these tests need to control.
+ *
+ * Reworked for plan 205 §5 step 205.8: the old three-branch per-holder policy
+ * (already held / idle-acquire / refused) becomes the device activity
+ * policy's `command` row, which never refuses for a busy device — only
+ * `device_unavailable`/`device_not_found` still skip a member; a `job`
+ * already running there now WARNS and still runs the command (MVP 04 §1.3's
+ * own `command` row: `job: 'warn'`).
  */
 
-function setUp(): { db: Db; store: CommandRunStore; leases: LeaseManager } {
+function setUp(): { db: Db; store: CommandRunStore; activities: ActivityRegistry; controlSettings: () => ControlPolicySettings; states: DeviceStateMachine } {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db as Db
   const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-  const leases = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: createLogger('test'),
-    onJobLeaseExpired: () => {},
-  })
-  return { db, store: createCommandRunStore(db), leases }
+  const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+  const controlSettings = (): ControlPolicySettings => ({ overControl: 'allow', idleSec: 30 })
+  return { db, store: createCommandRunStore(db), activities, controlSettings, states }
 }
 
-function insertDevice(db: Db, id: string, status: 'idle' | 'busy' | 'manual' | 'offline' | 'quarantined' = 'idle'): void {
+function insertDevice(db: Db, id: string, status: 'online' | 'offline' | 'quarantined' = 'online'): void {
   db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `SER-${id}`, label: `Phone ${id}`, status }).run()
 }
 
-/** Wraps a real `LeaseManager`, counting `acquireManual`/`releaseManual` calls without changing behaviour. */
-function spyLeases(real: LeaseManager): { leases: LeaseManager; calls: { acquireManual: number; releaseManual: number } } {
-  const calls = { acquireManual: 0, releaseManual: 0 }
-  const leases: LeaseManager = {
+/** Registers a live `job` activity on `deviceId` — the new stand-in for the old `'busy'` device status. */
+function markJobRunning(activities: ActivityRegistry, deviceId: string): void {
+  activities.start(deviceId, { id: `job:${deviceId}-job`, kind: 'job', label: 'Running a script', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+}
+
+/** Wraps a real `ActivityRegistry`, counting `start`/`end` calls without changing behaviour. */
+function spyActivities(real: ActivityRegistry): { activities: ActivityRegistry; calls: { start: number; end: number } } {
+  const calls = { start: 0, end: 0 }
+  const activities: ActivityRegistry = {
     ...real,
-    acquireManual: (...args: Parameters<LeaseManager['acquireManual']>) => {
-      calls.acquireManual++
-      return real.acquireManual(...args)
+    start: (deviceId, input) => {
+      calls.start++
+      return real.start(deviceId, input)
     },
-    releaseManual: (...args: Parameters<LeaseManager['releaseManual']>) => {
-      calls.releaseManual++
-      return real.releaseManual(...args)
+    end: (deviceId, id) => {
+      calls.end++
+      return real.end(deviceId, id)
     },
   }
-  return { leases, calls }
+  return { activities, calls }
 }
 
 const shellSettings = (overrides: Partial<FarmSettings['shell']> = {}): FarmSettings['shell'] => ({
@@ -83,8 +91,8 @@ function fakeShellPort(behavior: (deviceId: string, cmd: string, signal?: AbortS
 interface Harness {
   db: Db
   store: CommandRunStore
-  leases: LeaseManager
-  leaseCalls: { acquireManual: number; releaseManual: number }
+  activities: ActivityRegistry
+  activityCalls: { start: number; end: number }
   runner: CommandRunner
   events: CommandRunnerEvent[]
   execCalls: Array<{ deviceId: string; cmd: string; aborted: () => boolean }>
@@ -94,14 +102,16 @@ function buildHarness(
   execBehavior: (deviceId: string, cmd: string, signal?: AbortSignal) => Promise<ShellExecResult>,
   settingsOverride: Partial<FarmSettings['shell']> = {},
 ): Harness {
-  const { db, store, leases: realLeases } = setUp()
-  const { leases, calls: leaseCalls } = spyLeases(realLeases)
+  const { db, store, activities: realActivities, controlSettings, states } = setUp()
+  const { activities, calls: activityCalls } = spyActivities(realActivities)
   const { shellPortFor, calls: execCalls } = fakeShellPort(execBehavior)
   const events: CommandRunnerEvent[] = []
   const runner = createCommandRunner({
     db,
     store,
-    leases,
+    activities,
+    controlSettings,
+    states,
     shellPortFor,
     resolve: (target) => resolveCommandTarget(db, target),
     settings: () => shellSettings(settingsOverride),
@@ -112,7 +122,7 @@ function buildHarness(
     getDevice: () => null,
     log: createLogger('test'),
   })
-  return { db, store, leases, leaseCalls, runner, events, execCalls }
+  return { db, store, activities, activityCalls, runner, events, execCalls }
 }
 
 /** Polls until `pred()` is true or the timeout elapses — the store is a real (synchronous) sqlite db, so a settled member is visible the instant `updateMember` returns; this only waits out the pool's own async scheduling. */
@@ -126,97 +136,63 @@ async function waitUntil(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 
 const ok = (stdout = 'ok'): Promise<ShellExecResult> => Promise.resolve({ stdout, stderr: '', exitCode: 0, truncated: false })
 
-describe('admitMember — the three-branch lease policy (plan 93 §3.8)', () => {
-  test('a device the caller already holds: ok, acquiredHere false', () => {
-    const { db, leases } = setUp()
-    insertDevice(db, 'd1', 'idle')
-    leases.acquireManual('d1', 'client-a', 'user-a')
-    const result = admitMember(leases, 'd1', 'client-a', 'user-a')
-    expect(result).toEqual({ ok: true, acquiredHere: false })
+describe("admitMember — the device activity policy's command row (plan 93 §3.8, plan 205 §4.9)", () => {
+  test('an online device with nothing else running: ok', () => {
+    const { db, activities, controlSettings, states } = setUp()
+    insertDevice(db, 'd1', 'online')
+    const result = admitMember(activities, controlSettings, states, 'd1')
+    expect(result).toEqual({ ok: true })
   })
 
-  test('an idle device: acquired, ok, acquiredHere true — and the lease is now genuinely held', () => {
-    const { db, leases } = setUp()
-    insertDevice(db, 'd1', 'idle')
-    const result = admitMember(leases, 'd1', 'client-a', 'user-a')
-    expect(result).toEqual({ ok: true, acquiredHere: true })
-    expect(leases.getLease('d1')?.holder).toBe('client-a')
+  test('a device with a job already running: still ok — command warns, it does not forbid', () => {
+    const { db, activities, controlSettings, states } = setUp()
+    insertDevice(db, 'd1', 'online')
+    markJobRunning(activities, 'd1')
+    const result = admitMember(activities, controlSettings, states, 'd1')
+    expect(result).toEqual({ ok: true })
   })
 
-  test('a device held by another client: skipped with not_lease_holder, verbatim', () => {
-    const { db, leases } = setUp()
-    insertDevice(db, 'd1', 'idle')
-    leases.acquireManual('d1', 'other-client', 'other-user')
-    const result = admitMember(leases, 'd1', 'client-a', 'user-a')
-    expect(result).toEqual({ ok: false, code: 'not_lease_holder', message: 'another client is controlling this device' })
-  })
-
-  test('a busy (job-held) device: skipped with device_busy, verbatim', () => {
-    const { db, leases } = setUp()
-    insertDevice(db, 'd1', 'busy')
-    const result = admitMember(leases, 'd1', 'client-a', 'user-a')
-    expect(result).toEqual({ ok: false, code: 'device_busy', message: 'Device is running an automation job' })
-  })
-
-  test('an offline device: skipped with device_unavailable, verbatim', () => {
-    const { db, leases } = setUp()
+  test('an offline device: refused with device_unavailable, verbatim', () => {
+    const { db, activities, controlSettings, states } = setUp()
     insertDevice(db, 'd1', 'offline')
-    const result = admitMember(leases, 'd1', 'client-a', 'user-a')
-    expect(result).toEqual({ ok: false, code: 'device_unavailable', message: 'the device is unavailable (status offline)' })
+    const result = admitMember(activities, controlSettings, states, 'd1')
+    expect(result).toEqual({ ok: false, code: 'device_unavailable', message: 'the device is offline' })
+  })
+
+  test('an unknown device: refused with device_not_found', () => {
+    const { activities, controlSettings, states } = setUp()
+    const result = admitMember(activities, controlSettings, states, 'no-such-device')
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.code).toBe('device_not_found')
   })
 })
 
-describe('createCommandRunner — verifiable result #1: a member the caller already holds', () => {
-  test('runs immediately, with no acquire and no release', async () => {
+describe('createCommandRunner — an online member is wrapped in exactly one command activity for the length of its exec', () => {
+  test('starts and ends the activity around a successful exec', async () => {
     const h = buildHarness((_d, _c) => ok())
-    insertDevice(h.db, 'd1', 'idle')
-    h.leases.acquireManual('d1', 'op-client', 'op-user')
-    const before = h.leases.getLease('d1')
-    // The pre-acquisition above went through the same spy — zero it so the
-    // assertions below are about what `start()` itself does, not the setup.
-    h.leaseCalls.acquireManual = 0
-    h.leaseCalls.releaseManual = 0
+    insertDevice(h.db, 'd1', 'online')
 
     const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'op-client', createdBy: 'op-user' })
     await waitUntil(() => h.store.get(run.id)?.status !== 'running')
 
-    expect(h.leaseCalls.acquireManual).toBe(0)
-    expect(h.leaseCalls.releaseManual).toBe(0)
-    // Still held by the same client, untouched — never released.
-    expect(h.leases.getLease('d1')?.holder).toBe('op-client')
-    expect(h.leases.getLease('d1')?.acquiredAt).toBe(before?.acquiredAt)
-    const member = h.store.get(run.id)?.members[0]
-    expect(member?.status).toBe('ok')
-    h.runner.stop()
-  })
-})
-
-describe('createCommandRunner — verifiable result #2: an idle member', () => {
-  test('is acquired and released exactly once on success', async () => {
-    const h = buildHarness((_d, _c) => ok())
-    insertDevice(h.db, 'd1', 'idle')
-
-    const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'op-client', createdBy: 'op-user' })
-    await waitUntil(() => h.store.get(run.id)?.status !== 'running')
-
-    expect(h.leaseCalls.acquireManual).toBe(1)
-    expect(h.leaseCalls.releaseManual).toBe(1)
-    expect(h.leases.getLease('d1')).toBeNull()
+    expect(h.activityCalls.start).toBe(1)
+    expect(h.activityCalls.end).toBe(1)
+    expect(h.activities.list('d1')).toEqual([])
     const member = h.store.get(run.id)?.members[0]
     expect(member?.status).toBe('ok')
     h.runner.stop()
   })
 
-  test('is released even when the exec throws', async () => {
+  test('ends the activity even when the exec throws', async () => {
     const h = buildHarness((_d, _c) => Promise.reject(new Error('adb blew up')))
-    insertDevice(h.db, 'd1', 'idle')
+    insertDevice(h.db, 'd1', 'online')
 
     const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'op-client', createdBy: 'op-user' })
     await waitUntil(() => h.store.get(run.id)?.status !== 'running')
 
-    expect(h.leaseCalls.acquireManual).toBe(1)
-    expect(h.leaseCalls.releaseManual).toBe(1)
-    expect(h.leases.getLease('d1')).toBeNull()
+    expect(h.activityCalls.start).toBe(1)
+    expect(h.activityCalls.end).toBe(1)
+    expect(h.activities.list('d1')).toEqual([])
     const member = h.store.get(run.id)?.members[0]
     expect(member?.status).toBe('failed')
     expect(member?.error).toContain('adb blew up')
@@ -224,33 +200,29 @@ describe('createCommandRunner — verifiable result #2: an idle member', () => {
   })
 })
 
-describe('createCommandRunner — verifiable results #3/#4: skipped members', () => {
-  test('held by another client: skipped, not_lease_holder, verbatim on the stored member', async () => {
+// `resolveCommandTarget` already filters `offline`/`quarantined` devices out
+// of `resolved.usable` (`clusters/resolve.ts`) — the same two statuses
+// `admitMember` itself would refuse — so a member that reaches `admitMember`
+// through `start()` at all is already known-online; `device_unavailable`/
+// `device_not_found` are only ever observed by unit-testing `admitMember`
+// directly (the describe block above), never through a dispatched run. The
+// `command` policy row (MVP 04 §1.3) has no `forbid` cell for any OTHER
+// activity kind either (job/control/command/prep all warn or allow) — so a
+// command-console member is never `skipped` for an activity conflict under
+// the new policy, only ever for something resolve.ts already excluded
+// upstream (covered by "start() gates"'s `E_NO_TARGETS` test below).
+describe('createCommandRunner — a job already running does not skip the member', () => {
+  test('warns but still runs — not skipped', async () => {
     const h = buildHarness((_d, _c) => ok())
-    insertDevice(h.db, 'd1', 'idle')
-    h.leases.acquireManual('d1', 'other-client', 'other-user')
+    insertDevice(h.db, 'd1', 'online')
+    markJobRunning(h.activities, 'd1')
 
     const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'op-client', createdBy: 'op-user' })
     await waitUntil(() => h.store.get(run.id)?.status !== 'running')
 
     const member = h.store.get(run.id)?.members[0]
-    expect(member?.status).toBe('skipped')
-    expect(member?.skip).toEqual({ code: 'not_lease_holder', message: 'another client is controlling this device' })
-    expect(h.execCalls).toHaveLength(0)
-    h.runner.stop()
-  })
-
-  test('busy: skipped, device_busy, verbatim on the stored member', async () => {
-    const h = buildHarness((_d, _c) => ok())
-    insertDevice(h.db, 'd1', 'busy')
-
-    const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'op-client', createdBy: 'op-user' })
-    await waitUntil(() => h.store.get(run.id)?.status !== 'running')
-
-    const member = h.store.get(run.id)?.members[0]
-    expect(member?.status).toBe('skipped')
-    expect(member?.skip).toEqual({ code: 'device_busy', message: 'Device is running an automation job' })
-    expect(h.execCalls).toHaveLength(0)
+    expect(member?.status).toBe('ok')
+    expect(h.execCalls).toHaveLength(1)
     h.runner.stop()
   })
 })
@@ -271,7 +243,7 @@ describe('createCommandRunner — verifiable result #5: cancel', () => {
       }
       return ok()
     })
-    for (const id of ['d1', 'd2', 'd3', 'd4']) insertDevice(h.db, id, 'idle')
+    for (const id of ['d1', 'd2', 'd3', 'd4']) insertDevice(h.db, id, 'online')
 
     const { run } = await h.runner.start({
       cmd: 'true',
@@ -281,7 +253,7 @@ describe('createCommandRunner — verifiable result #5: cancel', () => {
       concurrency: 1, // one at a time — d2/d3/d4 stay pending behind d1
     })
     await waitUntil(() => h.execCalls.length >= 1)
-    await Bun.sleep(20) // let d1 settle into 'running' and hold its lease
+    await Bun.sleep(20) // let d1 settle into 'running' and hold its activity
 
     h.runner.cancel(run.id, null)
 
@@ -295,10 +267,10 @@ describe('createCommandRunner — verifiable result #5: cancel', () => {
     expect(h.execCalls.map((c) => c.deviceId)).toEqual(['d1'])
     expect(h.execCalls[0]?.aborted()).toBe(true)
 
-    // d1's lease is released once the abort actually propagates through the
+    // d1's activity is ended once the abort actually propagates through the
     // (fake, but signal-honouring) exec — not claimed synchronously by
     // `cancel()` itself, since the real world has not caught up yet.
-    await waitUntil(() => h.leases.getLease('d1') === null)
+    await waitUntil(() => h.activities.list('d1').length === 0)
 
     // The real device "finishes" after the fact anyway — must not resurrect the member.
     controls.releaseD1?.({ stdout: 'late', stderr: '', exitCode: 0, truncated: false })
@@ -310,9 +282,9 @@ describe('createCommandRunner — verifiable result #5: cancel', () => {
 })
 
 describe('createCommandRunner — verifiable result #6: staged rollout', () => {
-  test('stops at awaiting-continue after stage 1 and holds no lease on any stage-2 device while waiting', async () => {
+  test('stops at awaiting-continue after stage 1 and holds no activity on any stage-2 device while waiting', async () => {
     const h = buildHarness((_d, _c) => ok())
-    for (const id of ['d1', 'd2', 'd3']) insertDevice(h.db, id, 'idle')
+    for (const id of ['d1', 'd2', 'd3']) insertDevice(h.db, id, 'online')
 
     const { run } = await h.runner.start({
       cmd: 'true',
@@ -330,7 +302,7 @@ describe('createCommandRunner — verifiable result #6: staged rollout', () => {
     for (const id of ['d2', 'd3']) {
       const m = info?.members.find((mm) => mm.deviceId === id)
       expect(m?.status).toBe('pending')
-      expect(h.leases.getLease(id)).toBeNull()
+      expect(h.activities.list(id)).toEqual([])
     }
     expect(h.execCalls.map((c) => c.deviceId)).toEqual(['d1'])
 
@@ -339,14 +311,14 @@ describe('createCommandRunner — verifiable result #6: staged rollout', () => {
     await waitUntil(() => h.store.get(run.id)?.status !== 'running' && h.store.get(run.id)?.status !== 'awaiting-continue')
     expect(h.store.get(run.id)?.status).toBe('ok')
     expect(h.execCalls.map((c) => c.deviceId).sort()).toEqual(['d1', 'd2', 'd3'])
-    for (const id of ['d1', 'd2', 'd3']) expect(h.leases.getLease(id)).toBeNull()
+    for (const id of ['d1', 'd2', 'd3']) expect(h.activities.list(id)).toEqual([])
 
     h.runner.stop()
   })
 
   test('cancelling while awaiting-continue also cancels the still-pending stage-2 members', async () => {
     const h = buildHarness((_d, _c) => ok())
-    for (const id of ['d1', 'd2']) insertDevice(h.db, id, 'idle')
+    for (const id of ['d1', 'd2']) insertDevice(h.db, id, 'online')
 
     const { run } = await h.runner.start({
       cmd: 'true',
@@ -375,8 +347,8 @@ describe('createCommandRunner — verifiable result #6: staged rollout', () => {
 
 describe('createCommandRunner — verifiable result #7: sweepOrphans', () => {
   test('cancels a non-terminal run left by a previous process (mirrors failOrphanRunning)', () => {
-    const { db, store, leases } = setUp()
-    insertDevice(db, 'd1', 'idle')
+    const { db, store, activities, controlSettings, states } = setUp()
+    insertDevice(db, 'd1', 'online')
     // Simulate a run left `running` by a crashed process — created directly
     // through the store, never dispatched through a runner.
     const orphan = store.create({ cmd: 'true', target: { deviceIds: ['d1'] }, createdBy: 'user-1', members: [{ deviceId: 'd1' }] })
@@ -385,7 +357,9 @@ describe('createCommandRunner — verifiable result #7: sweepOrphans', () => {
     const runner = createCommandRunner({
       db,
       store,
-      leases,
+      activities,
+      controlSettings,
+      states,
       shellPortFor: () => {
         throw new Error('must not be called')
       },
@@ -412,7 +386,7 @@ describe('createCommandRunner — verifiable result #8: the coalescer and the ou
   test('coalesces many near-simultaneous member transitions into few command.progress broadcasts', async () => {
     const ids = Array.from({ length: 8 }, (_, i) => `d${i}`)
     const h = buildHarness((_d, _c) => ok())
-    for (const id of ids) insertDevice(h.db, id, 'idle')
+    for (const id of ids) insertDevice(h.db, id, 'online')
 
     const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ids }, clientId: 'op-client', createdBy: 'op-user', concurrency: 8 })
     await waitUntil(() => h.store.get(run.id)?.status !== 'running')
@@ -434,8 +408,8 @@ describe('createCommandRunner — verifiable result #8: the coalescer and the ou
 
   test('outputHash matches Bun.hash(exitCode + stdout + stderr) and groups identical output under one command.output broadcast', async () => {
     const h = buildHarness((_d, _c) => Promise.resolve({ stdout: 'same output', stderr: '', exitCode: 0, truncated: false }))
-    insertDevice(h.db, 'd1', 'idle')
-    insertDevice(h.db, 'd2', 'idle')
+    insertDevice(h.db, 'd1', 'online')
+    insertDevice(h.db, 'd2', 'online')
 
     const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1', 'd2'] }, clientId: 'op-client', createdBy: 'op-user' })
     await waitUntil(() => h.store.get(run.id)?.status !== 'running')
@@ -455,8 +429,8 @@ describe('createCommandRunner — verifiable result #8: the coalescer and the ou
 
   test('distinct outputs get distinct hashes and each gets its own command.output broadcast', async () => {
     const h = buildHarness((deviceId, _c) => Promise.resolve({ stdout: deviceId, stderr: '', exitCode: 0, truncated: false }))
-    insertDevice(h.db, 'd1', 'idle')
-    insertDevice(h.db, 'd2', 'idle')
+    insertDevice(h.db, 'd1', 'online')
+    insertDevice(h.db, 'd2', 'online')
 
     const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1', 'd2'] }, clientId: 'op-client', createdBy: 'op-user' })
     await waitUntil(() => h.store.get(run.id)?.status !== 'running')
@@ -483,7 +457,7 @@ describe('createCommandRunner — process liveness (00-overview.md §7): stop() 
       }
       return ok()
     })
-    for (const id of ['d1', 'd2', 'd3']) insertDevice(h.db, id, 'idle')
+    for (const id of ['d1', 'd2', 'd3']) insertDevice(h.db, id, 'online')
 
     const { run } = await h.runner.start({
       cmd: 'true',
@@ -499,10 +473,10 @@ describe('createCommandRunner — process liveness (00-overview.md §7): stop() 
     const info = h.store.get(run.id)
     expect(info?.status).toBe('cancelled')
     expect(info?.members.every((m) => m.status === 'cancelled')).toBe(true)
-    // Every lease this run could have been holding is gone — d1's exec was
+    // Every activity this run could have been holding is gone — d1's exec was
     // genuinely aborted (the fake honours `signal`, matching what `AdbClient`
-    // already does for a real local device), so its `finally` releases too.
-    await waitUntil(() => ['d1', 'd2', 'd3'].every((id) => h.leases.getLease(id) === null))
+    // already does for a real local device), so its `finally` ends it too.
+    await waitUntil(() => ['d1', 'd2', 'd3'].every((id) => h.activities.list(id).length === 0))
     // A second stop() is a harmless no-op (nothing left in `active`).
     expect(() => h.runner.stop()).not.toThrow()
     controls.hold?.({ stdout: '', stderr: '', exitCode: 0, truncated: false })
@@ -512,22 +486,22 @@ describe('createCommandRunner — process liveness (00-overview.md §7): stop() 
 describe('createCommandRunner — start() gates (plan 93 §3.8, defense in depth alongside the REST route)', () => {
   test('refuses when shell.fanoutEnabled is false', async () => {
     const h = buildHarness((_d, _c) => ok(), { fanoutEnabled: false })
-    insertDevice(h.db, 'd1', 'idle')
+    insertDevice(h.db, 'd1', 'online')
     await expect(h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'c', createdBy: 'u' })).rejects.toMatchObject({ code: 'E_FANOUT_DISABLED' })
     h.runner.stop()
   })
 
   test('refuses when shell.mode is off', async () => {
     const h = buildHarness((_d, _c) => ok(), { mode: 'off' })
-    insertDevice(h.db, 'd1', 'idle')
+    insertDevice(h.db, 'd1', 'online')
     await expect(h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'c', createdBy: 'u' })).rejects.toMatchObject({ code: 'auth.forbidden' })
     h.runner.stop()
   })
 
   test('refuses a target above fanoutMaxDevices', async () => {
     const h = buildHarness((_d, _c) => ok(), { fanoutMaxDevices: 1 })
-    insertDevice(h.db, 'd1', 'idle')
-    insertDevice(h.db, 'd2', 'idle')
+    insertDevice(h.db, 'd1', 'online')
+    insertDevice(h.db, 'd2', 'online')
     await expect(h.runner.start({ cmd: 'true', target: { deviceIds: ['d1', 'd2'] }, clientId: 'c', createdBy: 'u' })).rejects.toMatchObject({ code: 'E_TOO_MANY_TARGETS' })
     h.runner.stop()
   })
@@ -561,7 +535,7 @@ describe('computeCommandRunStatus (plan 93 §3.4)', () => {
 describe('resolveCommandTarget (plan 93 §4.5)', () => {
   test('deviceIds and tags route through resolveTarget; clusterId through resolveCluster', () => {
     const { db } = setUp()
-    insertDevice(db, 'd1', 'idle')
+    insertDevice(db, 'd1', 'online')
     const byIds = resolveCommandTarget(db, { deviceIds: ['d1'] })
     expect(byIds.usable.map((u) => u.deviceId)).toEqual(['d1'])
   })
@@ -572,7 +546,7 @@ describe('resolveCommandTarget (plan 93 §4.5)', () => {
   })
 })
 
-describe('CommandRunner.stats() — the commandConsole block (plan 93 §5 step 93.12, H1/H2/H4)', () => {
+describe('CommandRunner.stats() — the commandConsole block (plan 93 §5 step 93.12, H1/H2)', () => {
   test('a fresh runner reports every field zeroed, distinctOutputRatio 0 not NaN', () => {
     const h = buildHarness((_d, _c) => ok())
     expect(h.runner.stats()).toEqual({
@@ -580,38 +554,14 @@ describe('CommandRunner.stats() — the commandConsole block (plan 93 §5 step 9
       membersInFlight: 0,
       coalescedFramesPerSec: 0,
       distinctOutputRatio: 0,
-      leaseChangedPerMinute: 0,
     })
-    h.runner.stop()
-  })
-
-  test('an idle-device member run counts two lease-change events (acquire, then release) and a distinct output', async () => {
-    const h = buildHarness((_d, _c) => ok('same-output'))
-    insertDevice(h.db, 'd1', 'idle')
-    const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'c', createdBy: 'u' })
-    await waitUntil(() => h.store.get(run.id)?.status === 'ok')
-    const stats = h.runner.stats()
-    expect(stats.leaseChangedPerMinute).toBe(2)
-    expect(stats.distinctOutputRatio).toBe(1)
-    expect(stats.runsInFlight).toBe(0)
-    expect(stats.membersInFlight).toBe(0)
-    h.runner.stop()
-  })
-
-  test('a device the caller already holds contributes zero lease-change events (H4: nothing acquired, nothing to broadcast)', async () => {
-    const h = buildHarness((_d, _c) => ok())
-    insertDevice(h.db, 'd1', 'idle')
-    h.leases.acquireManual('d1', 'c', 'u')
-    const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'c', createdBy: 'u' })
-    await waitUntil(() => h.store.get(run.id)?.status === 'ok')
-    expect(h.runner.stats().leaseChangedPerMinute).toBe(0)
     h.runner.stop()
   })
 
   test('identical output across members collapses distinctOutputRatio toward the H1 grouping ratio, not 1', async () => {
     const h = buildHarness((_d, _c) => ok('same-output'))
-    insertDevice(h.db, 'd1', 'idle')
-    insertDevice(h.db, 'd2', 'idle')
+    insertDevice(h.db, 'd1', 'online')
+    insertDevice(h.db, 'd2', 'online')
     const { run } = await h.runner.start({ cmd: 'true', target: { deviceIds: ['d1', 'd2'] }, clientId: 'c', createdBy: 'u' })
     await waitUntil(() => h.store.get(run.id)?.status === 'ok')
     // Both members produced the SAME hash — one distinct output over two settled execs.
@@ -627,7 +577,7 @@ describe('CommandRunner.stats() — the commandConsole block (plan 93 §5 step 9
           controls.release = resolve
         }),
     )
-    insertDevice(h.db, 'd1', 'idle')
+    insertDevice(h.db, 'd1', 'online')
     const startP = h.runner.start({ cmd: 'true', target: { deviceIds: ['d1'] }, clientId: 'c', createdBy: 'u' })
     await waitUntil(() => h.runner.stats().membersInFlight === 1)
     expect(h.runner.stats().runsInFlight).toBe(1)

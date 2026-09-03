@@ -8,8 +8,11 @@ import type { Role } from '../auth/service'
 import { resolveCluster, resolveTarget, type ResolvedCluster } from '../clusters/resolve'
 import { redactShellCommand } from '../device/redact'
 import type { ShellPort } from '../device/shell-port'
+import type { DeviceStateMachine } from '../device/state-machine'
 import type { EventRecorder } from '../events/recorder'
-import type { Lease, LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import { requireAdmission } from '../activity/admission'
+import type { ControlPolicySettings } from '../activity/policy'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import {
@@ -25,7 +28,7 @@ import {
 
 /**
  * The command console's runner (plan 93 §3.5, §3.6, §3.7, §3.8, §4.5, step
- * 93.3) — target resolution, the per-member lease policy, the worker pool,
+ * 93.3) — target resolution, the per-member activity policy, the worker pool,
  * the 250 ms progress coalescer, the output hash, cancellation, staged
  * rollout, and the boot orphan sweep.
  *
@@ -40,7 +43,7 @@ import {
  * `@enkaku/protocol` (and re-exported below so nothing importing them from
  * THIS file needs to change), and `CommandRunnerEvent` is now the exact
  * `command.*` slice of the real `ServerMessage` union rather than a
- * hand-rolled mirror of it — so this file and the wire schema cannot drift
+ * hand-rolled copy of it — so this file and the wire schema cannot drift
  * apart silently.
  */
 export type { CommandMember, CommandOutput }
@@ -50,17 +53,17 @@ const MAX_POOL_CONCURRENCY = 32
 
 const TERMINAL_MEMBER_STATUSES: ReadonlySet<CommandMemberStatus> = new Set(['ok', 'failed', 'skipped', 'cancelled'])
 
-/** §4.3's server → client `command.*` union — the exact slice of the real `ServerMessage` union, never a hand-rolled mirror of it (step 93.4). */
+/** §4.3's server → client `command.*` union — the exact slice of the real `ServerMessage` union, never a hand-rolled copy of it (step 93.4). */
 export type CommandRunnerEvent = Extract<ServerMessage, { type: `command.${string}` }>
 
 export interface StartCommandRunInput {
   cmd: string
   target: CommandTarget
   /**
-   * The WS `clientId` whose lease conventions apply for the idle-device
-   * auto-acquire branch (§3.8) — HTTP has no native notion of a session, so
-   * the caller supplies it, the same precedent `api/transfer.ts` and
-   * `api/adb-endpoint.ts` already set (§3.17).
+   * The WS `clientId` this run falls back to as the actor id for a member
+   * whose device has no `createdBy` user attached (§3.8) — HTTP has no
+   * native notion of a session, so the caller supplies it, the same
+   * precedent `api/transfer.ts` and `api/adb-endpoint.ts` already set (§3.17).
    */
   clientId: string
   createdBy: string | null
@@ -73,7 +76,9 @@ export interface StartCommandRunInput {
 export interface CommandRunnerDeps {
   db: Db
   store: CommandRunStore
-  leases: LeaseManager
+  activities: ActivityRegistry
+  controlSettings: () => ControlPolicySettings
+  states: Pick<DeviceStateMachine, 'current'>
   shellPortFor: (deviceId: string) => ShellPort
   /** `clusters/resolve.ts`, reused (§3.2, §4.5) — resolves any `CommandTarget` shape. `resolveCommandTarget` below is the implementation; wired here so a fake can bypass the DB in a test. */
   resolve: (target: CommandTarget) => ResolvedCluster
@@ -99,7 +104,6 @@ export interface CommandConsoleStats {
   membersInFlight: number
   coalescedFramesPerSec: number
   distinctOutputRatio: number
-  leaseChangedPerMinute: number
 }
 
 export interface CommandRunner {
@@ -134,39 +138,28 @@ export function resolveCommandTarget(db: Db, target: CommandTarget): ResolvedClu
 }
 
 /**
- * `admitMember` — the three-branch lease policy §3.8 specifies verbatim,
- * exported standalone so it is unit-testable without the worker pool around
- * it. Never touches the store; the caller decides what to do with the result.
+ * `admitMember` — the device activity policy's `command` row (plan 93 §3.8,
+ * reworked by plan 205 §4.9), exported standalone so it is unit-testable
+ * without the worker pool around it. Never touches the store or the
+ * registry itself; the caller (`runOneMember` below) starts and ends the
+ * per-member `command:<runId>:<deviceId>` marker around the exec.
  */
-export type AdmitResult = { ok: true; acquiredHere: boolean } | { ok: false; code: string; message: string }
+export type AdmitResult = { ok: true } | { ok: false; code: string; message: string }
 
-export function admitMember(leases: LeaseManager, deviceId: string, clientId: string, userId: string | null): AdmitResult {
-  const allowed = leases.checkInputAllowed(deviceId, clientId)
-  if (allowed.ok) {
-    // The operator already holds this device — run immediately, hold nothing
-    // new, release nothing when done (§3.8, verifiable result #1).
-    return { ok: true, acquiredHere: false }
+export function admitMember(activities: Pick<ActivityRegistry, 'list'>, settings: () => ControlPolicySettings, states: Pick<DeviceStateMachine, 'current'>, deviceId: string): AdmitResult {
+  try {
+    // A `warn` decision still runs (§3.8, verifiable result #1/#2 collapse into
+    // one branch under the activity policy — there is no separate "already
+    // held by me" case to distinguish, since a command run never held
+    // anything to begin with); only `forbid`, `device_unavailable` and
+    // `device_not_found` refuse, verbatim, never paraphrased (§3.8, verifiable
+    // results #3/#4).
+    requireAdmission(activities, settings, states, deviceId, 'command')
+    return { ok: true }
+  } catch (err) {
+    if (err instanceof EnkakuError) return { ok: false, code: err.code, message: err.message }
+    throw err
   }
-  if (allowed.code === 'no_lease') {
-    // Idle: `acquireManual` succeeds outright (F19) — briefly, genuinely held
-    // by the run for the duration of one command, released in the caller's
-    // `finally` (§3.8, verifiable result #2).
-    try {
-      leases.acquireManual(deviceId, clientId, userId, { purpose: 'command' })
-      return { ok: true, acquiredHere: true }
-    } catch (err) {
-      // Defensive only: `no_lease` is returned for an idle device, and
-      // `acquireManual` succeeds outright on idle (F19). A concurrent
-      // acquire by someone else between the check and this call, or a
-      // `checkInputAllowed`/`acquireManual` disagreement, is the only way
-      // this throws — reported as skipped, not crashed.
-      const e = err instanceof EnkakuError ? err : null
-      return { ok: false, code: e?.code ?? 'E_LEASE', message: e?.message ?? String(err) }
-    }
-  }
-  // `not_lease_holder`, `device_busy`, `device_unavailable`, `device_not_found`
-  // — verbatim, never paraphrased (§3.8, verifiable results #3/#4).
-  return { ok: false, code: allowed.code, message: allowed.message }
 }
 
 function tally(members: CommandRunMemberInfo[]): CommandCounts {
@@ -253,7 +246,7 @@ interface RunState {
 /** Trailing window `stats()` rates are computed over (§5 step 93.12) — one minute, matching the wire field names (`...PerMinute`) and long enough that a single quiet moment does not read as zero. */
 const STATS_WINDOW_MS = 60_000
 
-/** Drops timestamps older than `STATS_WINDOW_MS`, in place, then returns how many remain — the one function both `coalescedFramesPerSec` and `leaseChangedPerMinute` are built from (§5 step 93.12). */
+/** Drops timestamps older than `STATS_WINDOW_MS`, in place, then returns how many remain — the one function `coalescedFramesPerSec` is built from (§5 step 93.12). */
 function pruneAndCount(times: number[], now: number): number {
   const cutoff = now - STATS_WINDOW_MS
   let i = 0
@@ -263,7 +256,7 @@ function pruneAndCount(times: number[], now: number): number {
 }
 
 export function createCommandRunner(deps: CommandRunnerDeps): CommandRunner {
-  const { store, leases, log } = deps
+  const { store, activities, controlSettings, states, log } = deps
   const active = new Map<string, RunState>()
   /** Overridable only for tests — production always uses the spec's 250 ms (§3.5, §4.5). */
   const coalesceIntervalMs = 250
@@ -273,7 +266,6 @@ export function createCommandRunner(deps: CommandRunnerDeps): CommandRunner {
   // would hide exactly the cross-run pattern H1/H4 ask about). Bounded by
   // `STATS_WINDOW_MS`'s own pruning, so none of this grows unbounded.
   const frameTimes: number[] = []
-  const leaseChangeTimes: number[] = []
   let outputsSettled = 0
   let outputsDistinct = 0
 
@@ -422,18 +414,21 @@ export function createCommandRunner(deps: CommandRunnerDeps): CommandRunner {
       settleCancelled(state, deviceId)
       return
     }
-    const admitted = admitMember(leases, deviceId, state.clientId, state.createdBy)
+    const admitted = admitMember(activities, controlSettings, states, deviceId)
     if (!admitted.ok) {
       settleSkipped(state, deviceId, admitted.code, admitted.message)
       return
     }
-    // §5 step 93.12 / H4 — a lease genuinely acquired HERE produces one real
-    // `lease.changed` broadcast now (the grant) and another when it is
-    // released below (the same two-broadcast shape `onManualRevoked`/
-    // `lease.acquire` already produce for any manual hold in production).
-    // The already-held branch (`admitted.acquiredHere === false`) acquires
-    // nothing and is correctly not counted — H4's own premise.
-    if (admitted.acquiredHere) leaseChangeTimes.push(Date.now())
+    // One `command:<runId>:<deviceId>` marker per member, for the length of
+    // its own exec (plan 205 §4.9) — visible to any other viewer of the
+    // device exactly the way a job or an install already are.
+    const activityId = `command:${state.runId}:${deviceId}`
+    activities.start(deviceId, {
+      id: activityId,
+      kind: 'command',
+      label: `Running ${redactShellCommand(state.cmd)}`,
+      actor: { kind: 'user', id: state.createdBy ?? state.clientId, label: state.createdBy ?? 'a signed-out client' },
+    })
     store.updateMember(state.runId, deviceId, { status: 'running' })
     markDirty(state, deviceId)
     const ac = new AbortController()
@@ -465,10 +460,7 @@ export function createCommandRunner(deps: CommandRunnerDeps): CommandRunner {
       settleFailed(state, deviceId, message, durationMs)
     } finally {
       state.inFlight.delete(deviceId)
-      if (admitted.acquiredHere) {
-        leases.releaseManual(deviceId, state.clientId)
-        leaseChangeTimes.push(Date.now())
-      }
+      activities.end(deviceId, activityId)
     }
   }
 
@@ -664,7 +656,6 @@ export function createCommandRunner(deps: CommandRunnerDeps): CommandRunner {
         membersInFlight,
         coalescedFramesPerSec: Math.round((pruneAndCount(frameTimes, now) / (STATS_WINDOW_MS / 1000)) * 100) / 100,
         distinctOutputRatio: outputsSettled > 0 ? Math.round((outputsDistinct / outputsSettled) * 1000) / 1000 : 0,
-        leaseChangedPerMinute: pruneAndCount(leaseChangeTimes, now),
       }
     },
   }
