@@ -1423,7 +1423,7 @@ rg -n "components/layout/AppShell" packages plugins scripts
 ## 11. Handoff report
 
 - **Checklist**: G1 ✅ G2 ⏳ owner G3 ✅ G4 ✅ (13 exempt, not 11 — see discrepancies) G5 ⏳ owner G6 ✅ software half (grep clean; 120 s network-tab half is owner) G7 ⏳ owner G8 ⏳ owner G9 ✅ G10 ✅ G11 ✅ G12 ✅ G13 ✅ with a caveat (pre-existing, unrelated failure — see discrepancies) G14 ✅ with a documented, justified residue G15 ✅ (6 lines, not 4 — matches §10.2's fuller list)
-- **Commits**: `9978a3e` — feat(mvp-213): Studio shell — icon rail, status bar, page panel
+- **Commits**: `9978a3e` — feat(mvp-213): Studio shell — icon rail, status bar, page panel, on branch `worktree-agent-a069f828c37da3531` (cut from `mvp` at `f84e7ae`, plans 201–205)
 - **Typecheck**: clean — `bun run typecheck` prints `OK` for all 20 packages (protocol, ui, adb, toolchain, drivers, scrcpy, sdk, session, harness, core, node, studio, probe-server, networking, proxy-manager, tiktok-automation-pack, mikrotik-routing, google-automation-pack, youtube-automation-pack, examples).
 - **Tests run**: none. This plan touches no backend module; Studio and `@enkaku/ui` have zero tests by policy (plan 200 §8.3). Verification is `bun run typecheck`, `bun run build:studio`, and the greps/scripts below, exactly as plan §7.1 prescribes.
 - **Removed, proven**:
