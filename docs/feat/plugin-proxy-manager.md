@@ -689,7 +689,7 @@ right.** `net.connect({ localAddress })` was measured on the owner's farm host o
 record's `bindAddress` was correct, the routing rule was correct, `curl.exe --interface` and a raw
 `.NET Socket.Bind` both egressed through the intended link — only the Bun-built bridge kept
 leaving through the default one. That measurement was real and is unchanged; what changed is the
-conclusion drawn from it. Plan 123 (`docs/plans/123-m88-bind-capability-probe.md` §0) reproduced
+conclusion drawn from it. Plan 123 (`docs/archive/plans/123-m88-bind-capability-probe.md` §0) reproduced
 the identical failure on **macOS 15**, including a bogus-address test proving Bun's `net.connect`
 never calls `bind()` at all, and it was independently reported from a live **Ubuntu 24.04** farm
 (`refs/tmp-bug-proxy-mikrotik.md`). `net.connect({ localAddress })` is dropped on every platform
@@ -1341,7 +1341,7 @@ install's running plugin. `scripts/build-packs.ts` reads the version off the bui
 | understand `definePlugin` / `defineService` / the surface tiers | [`docs/feat/plugin-and-script.md`](plugin-and-script.md) |
 | understand the KV store's three axes and the `secret` flag | [`docs/feat/kv-storage.md`](kv-storage.md) |
 | set up the physical side of `bindAddress` | [`docs/guide/install.md`](../guide/install.md) § *Egress binding: one proxy per way out* |
-| understand the farm's own four network engines | [`docs/overview.md`](../overview.md) §11, spec §7.9, plan 114 |
+| understand the farm's own four network engines | [`docs/archive/overview.md`](../archive/overview.md) §11, `docs/spec.md` §9, plan 114 |
 | understand the guest agent's SOCKS5 full tunnel | [`apps/guest-agent/README.md`](../../apps/guest-agent/README.md), [`docs/research/android-guest-agent.md`](../research/android-guest-agent.md) |
-| read the design record | plans [112](../plans/112-m77-proxy-manager.md), [114](../plans/114-m79-device-proxy.md), [117](../plans/117-m82-egress-binding.md), [118](../plans/118-m83-windows-adb-performance.md), [121](../plans/121-m86-proxy-failover.md) |
+| read the design record | plans [112](../archive/plans/112-m77-proxy-manager.md), [114](../archive/plans/114-m79-device-proxy.md), [117](../archive/plans/117-m82-egress-binding.md), [118](../archive/plans/118-m83-windows-adb-performance.md), [121](../archive/plans/121-m86-proxy-failover.md) |
 | use the pack as an operator | [`plugins/proxy-manager/README.md`](../../plugins/proxy-manager/README.md) |

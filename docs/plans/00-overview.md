@@ -1,7 +1,7 @@
 # Plan 00 — Overview, Conventions, and the Execution Roadmap
 
 > The parent document for every plan in `docs/plans/`. Read this **before** working on any plan.
-> The product source of truth is `docs/spec.md` (Enkaku draft v0.2). If a plan contradicts the spec, the spec wins — then update the plan.
+> The product source of truth is `docs/spec.md`, rewritten for the MVP by plan 202; the prototype spec this document was written against is `docs/archive/spec-prototype.md`. Plans 01 to 129 are archived under `docs/archive/plans/`; the MVP series starts at `200-mvp-program.md`, which is read before this document. §3, §4, §6 and §7 below remain binding. If a plan contradicts the spec, the spec wins, then update the plan.
 > Ships: none — this is the conventions/roadmap document, not a milestone plan; it has no artefact of its own for `scripts/check-plan-status.sh` to check (see §7 and that script's header).
 
 ---

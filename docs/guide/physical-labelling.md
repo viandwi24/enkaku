@@ -83,7 +83,7 @@ them is unusual:
    the same admission path a local farm's devices do, and today nothing
    allocates them a number at all — every device on a cloud node shows no
    number, always, on every farm. This is a known, tracked gap (register
-   entry 96.21 in `docs/plans/96-m61-hotfixes.md`), not a bug in the
+   entry 96.21 in `docs/archive/plans/96-m61-hotfixes.md`), not a bug in the
    dashboard and not a temporary state that will resolve itself on its own.
    If you run a cloud fleet, expect dashes where a local farm would show
    numbers, until that gap is closed.
@@ -251,6 +251,6 @@ never a false `applied` — so none of this being unconfirmed changes what
 you can already trust the state badges to say. It does mean you should
 treat "wallpaper mode is available and everything looks green" as
 promising, not as a guarantee, until you have looked at a rack of real
-phones yourself. `docs/plans/89-m54-device-identity-and-physical-labelling.md`
+phones yourself. `docs/archive/plans/89-m54-device-identity-and-physical-labelling.md`
 §5's consolidated hardware-verification table is the exact command sequence
 that settles this, if you want to run it yourself.
