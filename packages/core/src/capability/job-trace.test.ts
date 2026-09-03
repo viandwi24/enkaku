@@ -10,7 +10,9 @@ import { jobEvents } from '../db/schema'
 import { createJobRoutes } from '../api/jobs'
 import { createTraceFrameStore, type TraceFrameStore } from '../jobs/trace/frame-store'
 import type { JobService } from '../services/job-service'
+import { createActivityRegistry } from '../activity/registry'
 import { createWorkspaceStore } from '../workspace/store'
+import { createLogger } from '../util/logger'
 import { createMcpServer } from '../mcp/server'
 import { buildCoreCapabilityRegistry } from './index'
 import { createCapabilityContext, type CapabilityContext, type CapabilityContextDeps } from './context'
@@ -71,7 +73,6 @@ function fakeJobDetail(overrides: Partial<JobDetail> = {}): JobDetail {
     rootJobId: null,
     depth: 0,
     peakRssBytes: null,
-    assistCount: 0,
     notBefore: null,
     batchRepeat: null,
     pacedDelayMs: null,
@@ -105,8 +106,9 @@ const QUOTAS = { maxFileBytes: 1_048_576, maxFilesPerScope: 1_000, maxTotalBytes
 function contextDepsFor(db: Db, service: JobService, traceStore?: TraceFrameStore): CapabilityContextDeps {
   return {
     db,
-    leases: { getLease: () => null, getHolder: () => null } as unknown as CapabilityContextDeps['leases'],
-    states: { current: () => 'idle' } as unknown as CapabilityContextDeps['states'],
+    activities: createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} }),
+    controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+    states: { current: () => 'online' } as unknown as CapabilityContextDeps['states'],
     sessions: () => null,
     readiness: () => null,
     transfer: null,
@@ -331,10 +333,10 @@ describe('job.trace.frame (plan 130 §4.1, §3.2, step 130.1)', () => {
 })
 
 describe('the three trace capabilities are declared correctly (plan 63 §4.3, plan 70 §4.3)', () => {
-  test('all three carry permission job.view, lease none, and a non-empty description', () => {
+  test('all three carry permission job.view, no activity field, and a non-empty description', () => {
     for (const cap of JOB_TRACE_CAPABILITIES) {
       expect(cap.permission).toBe('job.view')
-      expect(cap.lease).toBe('none')
+      expect(cap.activity).toBeUndefined()
       expect(cap.effect).toBe('read')
       expect(cap.description.length).toBeGreaterThan(10)
     }
