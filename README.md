@@ -122,14 +122,7 @@ bun run build:guest-agent      # once; needs JDK 17 and the Android SDK
 bun run dev                    # the local build is picked up automatically
 ```
 
-Then take control of a device in Studio (install and routing are lease-gated) and open **Guest Agents**: install the agent, then set the upstream. There is also a CLI for driving it without Studio:
-
-```bash
-bun scripts/guest-agent.ts install --serial <SERIAL>
-bun scripts/guest-agent.ts route "socks5://user:pass@host:1337" --serial <SERIAL>
-bun scripts/guest-agent.ts status --serial <SERIAL>
-bun scripts/guest-agent.ts stop --serial <SERIAL>
-```
+Then take control of a device in Studio (install and routing are lease-gated) and open **Guest Agents**: install the agent, then set the upstream.
 
 Full install guide and troubleshooting: [`docs/guide/install.md`](docs/guide/install.md).
 

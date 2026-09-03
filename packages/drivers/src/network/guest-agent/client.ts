@@ -54,7 +54,7 @@ import {
  * §5.5). Every call opens its own short-lived TCP connection to the forwarded
  * port, writes exactly one newline-delimited JSON request, reads exactly one
  * line back, and closes — mirroring the agent's own accept-handle-close loop
- * (verified against a real device by `scripts/guest-agent.ts`, plan 44 §5.1),
+ * (verified against a real device in plan 44 §5.1),
  * rather than assuming a persistent multiplexed connection the agent does not
  * actually offer.
  */

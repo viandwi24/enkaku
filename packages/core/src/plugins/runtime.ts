@@ -1245,8 +1245,8 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     /**
      * **Read every row of this name, unfiltered.** `listImpl` is the same
      * unfiltered `SELECT ... WHERE name = ?` the Plugins page reads, and that is
-     * deliberate: `scripts/delete-unowned-scripts.ts`'s header records the
-     * mistake its own first version made — deriving a delete list from a
+     * deliberate: a one-off plan 110 migration script (since deleted) recorded
+     * the mistake its own first version made — deriving a delete list from a
      * FILTERED listing that hides exactly the rows it means to act on, and then
      * reporting "nothing to delete" on a farm holding five. A bulk remove that
      * skipped, say, `failed` rows would leave behind precisely the junk an
