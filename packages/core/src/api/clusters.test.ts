@@ -6,17 +6,15 @@ import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { clusters, devices } from '../db/schema'
-import type { FarmNetwork } from '../registry/device-registry'
+import type { DeviceActivityState, FarmNetwork } from '../registry/device-registry'
 import { allocateDeviceNumber } from '../registry/device-number'
 import { createClusterRoutes } from './clusters'
-import { createDeviceStateMachine } from '../device/state-machine'
-import { createLeaseManager } from '../lease/lease-manager'
-import { createCoControlManager } from '../lease/co-control'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 
 function seedDevice(db: Db, id: string, clusterId: string | null = null): void {
   db.insert(devices)
-    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status: 'idle', clusterId })
+    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status: 'online', clusterId })
     .run()
 }
 
@@ -54,7 +52,7 @@ function makeApp(
   opts: {
     networks?: FarmNetwork[]
     declaredMedia?: Map<string, ConnectionMedium | null>
-    assistedByOf?: (deviceId: string) => import('@enkaku/protocol').LeaseHolder[]
+    activitiesOf?: (deviceId: string) => DeviceActivityState
   } = {},
 ) {
   const audit = createAuditLogger(db)
@@ -65,7 +63,7 @@ function makeApp(
       audit,
       ...(opts.networks ? { networks: () => opts.networks! } : {}),
       ...(opts.declaredMedia ? { declaredMedia: () => opts.declaredMedia } : {}),
-      ...(opts.assistedByOf ? { assistedByOf: opts.assistedByOf } : {}),
+      ...(opts.activitiesOf ? { activitiesOf: opts.activitiesOf } : {}),
     }),
   )
 }
@@ -214,7 +212,7 @@ describe('GET /api/clusters/:id/devices — number (plan 89 §4.2, §4.3)', () =
 
 /**
  * Residual gap left by plan 88 step 88.5's own pass (fixed here): this route
- * called `rowToDeviceInfo(r, tags, cluster, null, null, heldBy)` with NEITHER
+ * called `rowToDeviceInfo(r, tags, cluster, null, null, activityState)` with NEITHER
  * `networks` NOR `declaredMedia` — both defaulted to `[]`/`new Map()`, so a
  * device's connection badge on its own device page (`GET /api/devices/:id`,
  * already fixed) could read `OTG` while the exact same device, viewed
@@ -268,83 +266,62 @@ describe('GET /api/clusters/:id/devices — connection.medium (plan 88 §3.6, §
 })
 
 /**
- * Plan 91 §3.4 item 4, §4.4 — the producer gap step 91.4 flagged and left
- * open: this router's own device list never threaded `assistedByOf`, so a
- * device genuinely being assisted read `assistedBy: []` here while `GET
- * /api/devices` (already fixed in step 91.4) read it correctly. Proven
- * through the real HTTP route, the same discipline the `connection.medium`
- * describe block just above already established.
+ * Plan 205 §4.10 — this router's own device list reads `activities`/
+ * `lastControl` straight off the SAME `ActivityRegistry` `evaluateActivity`/
+ * `touchActivity` read and write, replacing the separate per-holder and
+ * per-secondary-operator producer-gap accessors this file used to thread through.
+ * Proven through the real HTTP route, the same discipline the
+ * `connection.medium` describe block just above already established.
  */
-describe('GET /api/clusters/:id/devices — assistedBy (plan 91 §3.4 item 4, §4.4)', () => {
-  test('a member device with an active assist grant reports assistedBy; an unassisted one reports []', async () => {
+describe('GET /api/clusters/:id/devices — activities (plan 205 §4.10)', () => {
+  test('a member device with a live activity reports it; a quiet one reports []', async () => {
     const db = setUp()
     const [c1] = seed(db, 1)
     seedDevice(db, 'a', c1)
     seedDevice(db, 'b', c1)
-    const assistHolder = { kind: 'user' as const, id: 'u-assist', label: 'operator@enkaku', runId: null, takeable: false, acquiredAt: 100, expiresAt: 200 }
-    const app = makeApp(db, 'admin', { assistedByOf: (deviceId) => (deviceId === 'a' ? [assistHolder] : []) })
+    const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+    activities.start('a', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+    const app = makeApp(db, 'admin', { activitiesOf: (deviceId) => ({ activities: activities.list(deviceId), lastControl: activities.lastControl(deviceId) }) })
 
     const res = await app.request(`/${c1}/devices`)
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { items: Array<{ id: string; assistedBy: unknown }> }
-    expect(body.items.find((d) => d.id === 'a')?.assistedBy).toEqual([assistHolder])
-    expect(body.items.find((d) => d.id === 'b')?.assistedBy).toEqual([])
+    const body = (await res.json()) as { items: Array<{ id: string; activities: unknown[] }> }
+    expect(body.items.find((d) => d.id === 'a')?.activities).toMatchObject([{ kind: 'job' }])
+    expect(body.items.find((d) => d.id === 'b')?.activities).toEqual([])
   })
 
-  test('an omitted assistedByOf dep falls back to [] rather than throwing or guessing', async () => {
+  test('an omitted activitiesOf dep falls back to [] rather than throwing or guessing', async () => {
     const db = setUp()
     const [c1] = seed(db, 1)
     seedDevice(db, 'a', c1)
     const app = makeApp(db)
 
     const res = await app.request(`/${c1}/devices`)
-    const body = (await res.json()) as { items: Array<{ id: string; assistedBy: unknown }> }
-    expect(body.items.find((d) => d.id === 'a')?.assistedBy).toEqual([])
+    const body = (await res.json()) as { items: Array<{ id: string; activities: unknown[] }> }
+    expect(body.items.find((d) => d.id === 'a')?.activities).toEqual([])
   })
 
   /**
-   * docs/plans/96-m61-hotfixes.md §96.10, daemon.ts's own residual — the two
-   * tests above prove `createClusterRoutes` correctly THREADS whatever
-   * `assistedByOf` it is handed; they do not prove the real production
-   * expression (`(deviceId) => coControl.assistedBy(deviceId)`, wired into
-   * `daemon.ts`'s `createClusterRoutes({...})` call) behaves correctly end to
-   * end. This test builds a REAL `CoControlManager` — the same
-   * `leases`-then-`coControl` construction order `daemon.ts` uses — grants a
-   * real assist through it, and passes the identical accessor expression
-   * `daemon.ts` now contains, so the mechanism under test is the production
-   * wiring itself, not a hand-rolled fake array.
+   * The two tests above prove `createClusterRoutes` correctly threads
+   * whatever `activitiesOf` it is handed; this one drives the SAME
+   * `touchControl` a real WS `input.tap` would (through the registry
+   * itself, not a hand-rolled seed), then checks the route sees the marker
+   * it created — the mechanism under test is the production wiring end to
+   * end, not a fake array.
    */
-  test('a REAL CoControlManager, wired with `assistedByOf: (deviceId) => coControl.assistedBy(deviceId)` — the exact daemon.ts expression — reports the granted assist through GET /api/clusters/:id/devices', async () => {
+  test('a control marker touched through the registry reaches GET /api/clusters/:id/devices', async () => {
     const db = setUp()
     const [c1] = seed(db, 1)
     seedDevice(db, 'a', c1)
-    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-    let coControlRef: ReturnType<typeof createCoControlManager> | null = null
-    const leases = createLeaseManager({
-      states,
-      jobStore: { expiredRunning: () => [] } as never,
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-      log: createLogger('test'),
-      onJobLeaseExpired: () => {},
-      onPrimaryEnded: (deviceId) => coControlRef?.onPrimaryEnded(deviceId),
-      onManualTakenOver: ({ deviceId }) => coControlRef?.onPrimaryEnded(deviceId),
-    })
-    const coControl = createCoControlManager({
-      leases,
-      config: { grantTtlSec: () => 300, maxConcurrentPerDevice: () => 1 },
-      log: createLogger('test'),
-    })
-    coControlRef = coControl
+    const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+    activities.touchControl('a', 'user:u1', { kind: 'user', id: 'other-operator', label: 'other-operator' })
 
-    leases.acquireManual('a', 'primary-client', 'primary-user')
-    coControl.grant('a', 'assist-client', 'assisting-user')
-
-    const app = makeApp(db, 'admin', { assistedByOf: (deviceId) => coControl.assistedBy(deviceId) })
+    const app = makeApp(db, 'admin', { activitiesOf: (deviceId) => ({ activities: activities.list(deviceId), lastControl: activities.lastControl(deviceId) }) })
     const res = await app.request(`/${c1}/devices`)
-    const body = (await res.json()) as { items: Array<{ id: string; assistedBy: Array<{ kind: string; id: string }> }> }
-    const assistedBy = body.items.find((d) => d.id === 'a')?.assistedBy
-    expect(assistedBy).toHaveLength(1)
-    expect(assistedBy?.[0]).toMatchObject({ kind: 'user', id: 'assisting-user' })
+    const body = (await res.json()) as { items: Array<{ id: string; activities: Array<{ kind: string; actor: { kind: string; id: string } }> }> }
+    const found = body.items.find((d) => d.id === 'a')?.activities
+    expect(found).toHaveLength(1)
+    expect(found?.[0]).toMatchObject({ kind: 'control', actor: { kind: 'user', id: 'other-operator' } })
   })
 })
 
