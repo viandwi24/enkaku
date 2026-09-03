@@ -167,7 +167,7 @@ const ERROR_STATUS: Record<string, number> = {
 /** `PUT /:id/readiness` (plan 43 §4.5). */
 const ReadinessSetBody = z.object({
   desired: ReadinessSchema,
-  /** The WS session id, when the caller is a browser tab that also holds a lease (plan 43 §3.4's "you hold the lease" check) — same pattern as plan 27/39's `clientId`. */
+  /** The WS session id, when the caller is a browser tab that also holds a control marker (plan 43 §3.4's "you are controlling it" check) — same pattern as plan 27/39's `clientId`. */
   clientId: z.string().min(1).optional(),
 })
 
@@ -202,7 +202,7 @@ export function createDeviceRoutes(deps: {
    */
   adbEndpoint?: {
     manager: AdbEndpointManager
-    activities: Pick<ActivityRegistry, 'start' | 'end'>
+    activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
     controlSettings: () => ControlPolicySettings
     states: Pick<DeviceStateMachine, 'current'>
     userLabel?: (userId: string | null) => string | null
@@ -223,7 +223,7 @@ export function createDeviceRoutes(deps: {
   /**
    * A device's live activities plus its last-control tail (MVP 04 §1.1,
    * §1.2, plan 205 §4.10) — the single accessor that replaced Plan 71's own
-   * holder field and Plan 91's assisting-users field, threaded through so
+   * holder field and Plan 91's secondary-operators field, threaded through so
    * every `DeviceInfo` this router builds carries both (criterion 1).
    * Required, unlike `readiness`: the activity registry exists in every mode
    * this router is mounted in.
@@ -232,7 +232,7 @@ export function createDeviceRoutes(deps: {
   /**
    * Device lifecycle — Forget and Block (plan 47 §4.3, §4.4). Required
    * (unlike `adbEndpoint`/`transfer`/`readiness` above): it depends only on
-   * `db` and the lease manager, both of which exist in every mode,
+   * `db` and the activity registry, both of which exist in every mode,
    * including the orchestrator (constructed before that mode's early return
    * in daemon.ts).
    */
@@ -264,7 +264,7 @@ export function createDeviceRoutes(deps: {
   sweeper?: { sweep(opts?: { expect?: string[] }): Promise<SweepReport> }
   /**
    * Ends every control/command activity on a device (plan 88 §3.7, §4.6, §5
-   * step 88.4: "a successful disconnect ... releases the manual lease
+   * step 88.4: "a successful disconnect ... ends every control marker
    * first"; reworded by plan 205 §4.9). Required, like `activitiesOf` — the
    * activity registry exists in every mode this router is mounted in.
    */
@@ -288,7 +288,7 @@ export function createDeviceRoutes(deps: {
    * built and wired into `daemon.ts` — NOT a second reconnect path: its own
    * `reconnect`/`disconnect` already run the ladder and the ordinary USB
    * refusal; this router adds the coded HTTP refusal, the running-job guard,
-   * and the session/lease teardown ordering on top. Both accessors are
+   * and the session/activity teardown ordering on top. Both accessors are
    * forward-refs (`daemon.ts` assigns `reconnector`/`sessions` later in boot
    * than this router is built, the same reason `rescan`/`onAdmitted` above
    * are functions rather than values) and both are `undefined` in
@@ -1103,7 +1103,7 @@ export function createDeviceRoutes(deps: {
    * here, so this route refuses exactly the same way the WS
    * `device.readiness.set` message does (acceptance #7). `device.view` is
    * the permission both Wake and Sleep require per the plan's table; the
-   * finer distinction (job running, another viewer/lease holder) is
+   * finer distinction (job running, another viewer/control holder) is
    * `readiness.set`'s own job.
    */
   app.put('/:id/readiness', requirePermission('device.view'), async (c) => {
@@ -1144,7 +1144,7 @@ export function createDeviceRoutes(deps: {
     // check, and a PATCH that merely repeats the current owner is a no-op,
     // not a reassignment. Without this, any authenticated operator could
     // set a device's `ownerId` to themselves or anyone else, silently — the
-    // exact thing `canUseDevice` otherwise gates lease acquisition, job
+    // exact thing `canUseDevice` otherwise gates control admission, job
     // enqueue, and the adb endpoint on.
     const ownerChanged = body.data.ownerId !== undefined && body.data.ownerId !== row.ownerId
     if (ownerChanged && (!user || !can(user.role, 'device.owner.set'))) {
@@ -1391,8 +1391,8 @@ export function createDeviceRoutes(deps: {
    *    `force` — bypassing `EnkakuError`/`ERROR_STATUS` here (like
    *    `E_ADB_BUSY_FARM` in `tools/routes.ts`) because the refusal carries a
    *    structured `jobs` list alongside the coded message, not just prose.
-   * 3. Only once both guards pass: the session closes and the manual lease
-   *    is force-released BEFORE the transport actually drops, so an operator
+   * 3. Only once both guards pass: the session closes and every control/
+   *    command activity is ended BEFORE the transport actually drops, so an operator
    *    who asked for this sees it as their own action, not the device dying
    *    out from under them.
    */
@@ -1701,7 +1701,7 @@ export function createDeviceRoutes(deps: {
 
   /**
    * `DELETE /:id?deleteHistory=true|false` (plan 47 §4.4) — Forget. Every
-   * refusal in §3.5 (busy, an active manual lease, still connected) is
+   * refusal in §3.5 (busy, an active control marker, still connected) is
    * enforced inside `lifecycle.forget` itself, server-authoritative exactly
    * like every other mutation here (spec §10.1, acceptance #12): calling
    * this directly is refused exactly as the Studio dialog is.

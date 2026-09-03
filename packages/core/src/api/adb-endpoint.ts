@@ -43,7 +43,7 @@ const OpenBody = z.object({
  */
 export function createAdbEndpointRoutes(deps: {
   manager: AdbEndpointManager
-  activities: Pick<ActivityRegistry, 'start' | 'end'>
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
   controlSettings: () => ControlPolicySettings
   states: Pick<DeviceStateMachine, 'current'>
   userLabel?: (userId: string | null) => string | null
