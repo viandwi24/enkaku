@@ -197,3 +197,40 @@ Added by the MVP, equally immutable for this series:
 - Every action takes a target and answers per device (MVP 07).
 - A job is an intent; a run is an execution (MVP 14).
 - The design of record is the handoff in `docs/mvp/design_handoff_enkaku_openpf/`, as corrected by MVP 15 §0.1 and §1.
+
+## 8. Parallel execution schedule and the testing policy
+
+Derived from §4's dependency column. A stage starts when every plan it waits on is `implemented` or `implemented (software)` on `mvp`.
+
+| Stage | Runs in parallel | Waits on |
+|---|---|---|
+| 1 | 201, 202, 203, 204 | nothing |
+| 2 | 205 | 201 |
+| 3 | 206, 207, 213 | 205 |
+| 4 | 208, 209, 210, 221 | 206, 207 |
+| 5 | 211, 214, 222 | 210, 213, 221 |
+| 6 | 212, 215, 216, 217, 218 | 211, 214 |
+| 7 | 219, 223, 220 (once its design exists) | 212 |
+| 8 | 224 | 202, 219 |
+
+Width: at most five executors at once. Critical path: 201 → 205 → 207 → 210 → 211 → 212 → 219 → 224. Calendar time is set by that chain, not by the plan count.
+
+### 8.1 Worktrees and merging
+
+- Each executor works in its own git worktree on branch `mvp/<plan>` cut from `mvp` at the moment its stage starts (`git worktree add ../openpf-<plan> -b mvp/<plan> mvp`). Never two executors in one checkout.
+- A plan merges into `mvp` when its §11 handoff report is complete. Merge order within a stage follows the plan number. The later plan resolves conflicts; it re-runs its own scoped tests after the merge.
+- Files that several plans in one stage touch (`packages/protocol/src/*`, `packages/core/src/server/ws-handlers.ts`, `packages/core/src/db/schema.ts`, `packages/core/src/daemon.ts`, `packages/studio/src/lib/api.ts`) are edited additively where the plan allows it; a plan that must rewrite one of them says so in its §5 and is merged first in its stage.
+
+### 8.2 Testing policy: write and run scoped tests per plan; defer only the expensive runs
+
+Decided 2026-09-03 with the CEO. Executors may run in parallel and focus on writing code, with this division:
+
+| Runs during the plan, by the executor | Runs once at the wave gate, by the owner |
+|---|---|
+| `bun run typecheck` (seconds) | the full `bun test` |
+| the plan's own test files, one `bun test <file or dir>` at a time, never concurrently with another run (seconds to two minutes) | `bun run --cwd packages/studio test` and `bun run --cwd packages/ui test` |
+| the §10 removal greps for the plan's own rows | the union of every §10 grep in the wave |
+| | every `owner` row in §0 (lab device, owner's farm) |
+| | `bash scripts/check-plan-status.sh`, `bash scripts/check-dead-code.sh` |
+
+The scoped tests are not optional: they are what turns a §0 row from a claim into evidence while five executors change shared files at once. What is deferred is the expensive part, which is also the part that once overheated the maintainer's machine (`CLAUDE.md`, "NEVER run a full test suite"). An executor that cannot scope a test to the files it touched skips it and says so in §11; it does not run a suite to compensate.
