@@ -897,7 +897,7 @@ No MVP 13 Part A row belongs to this plan.
 
 - **Branch**: `worktree-agent-a0fa701d0fd700f3a` (this worktree's own branch; not `mvp` — merge into `mvp` from here). Started at `d96d2be` (`feat(tiktok-pack): search-keyword, keyword-videos, live-browse, shop-browse, notification-activity; verified jittered gestures; v1.15.0`).
 - **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ⏳ owner (implemented, needs a lab device to exercise) G5 ✅ G6 ⏳ owner (implemented, needs a lab device to exercise) G7 ⏳ owner (implemented, needs a lab device — the toggle only renders once codec is h264) G8 ✅ G9 ✅ G10 ✅ G11 ✅ G12 ⏳ owner (lab device) G13 ⏳ owner (lab device) G14 ⏳ owner (lab device, camera) G15 ✅ G16 ✅
-- **Commits**: `df47b3b` — `feat(mvp-203): device PTS end to end, the latency overlay, server-side stats, bench --latency/--warmup` (this plan's own status-line/§0/§7/§11 edits land in a second commit right after this report).
+- **Commits**: `df47b3b` — `feat(mvp-203): device PTS end to end, the latency overlay, server-side stats, bench --latency/--warmup`; `5b153a6` — `docs(mvp-203): status implemented (software), §0/§7 corrected, §11 handoff report` (this plan's own status-line/§0/§7 edits and this report).
 - **Typecheck**: clean — `bun run typecheck` (`bash scripts/typecheck.sh`), all 20 packages/plugins/examples report `OK`.
 - **Tests run**:
   - `bun test packages/protocol/src/binary.test.ts` → 9 pass, 0 fail (includes the 3 new 27-byte-header tests from step 203.4).
