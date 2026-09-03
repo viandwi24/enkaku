@@ -119,7 +119,7 @@ export function createDeviceExecutor(deps: {
    * (every caller before plan 94) OR a getter (plan 94 §4.5, §5 step 94.2,
    * F10) — resolved FRESH ON EVERY DEVICE CALL, not once when this executor
    * is built. This is the fix for a defect this repo has shipped repeatedly
-   * (most recently a co-control queue budget read once and never again): a
+   * (most recently an input-arbiter queue budget read once and never again): a
    * value captured at construction cannot respond to a farm/device setting
    * an operator changes while a script is still mid-run — `job-runner.ts`
    * already re-resolves `deps.timing()` once per ATTEMPT (a real freshness
@@ -165,8 +165,8 @@ export function createDeviceExecutor(deps: {
   const inspector: Inspector = deps.session.inspector ?? new UiautomatorDumpInspector(deps.session.transport)
   // Plan 91 §3.1, §3.3, §4.1 — fixes F6/H1: every pointer/key/text write goes
   // through the arbiter's lanes rather than the raw `session.input` sink, so
-  // this job's actions never interleave with a concurrently assisting
-  // human's. Lazy and memoised: built on first actual use, not at executor
+  // this job's actions never interleave with a person controlling the same
+  // device. Lazy and memoised: built on first actual use, not at executor
   // construction — a `DeviceSession` fixture that never sends input (most of
   // this package's own tests: `app.launch`, `dump`, `find`, `push`, ...) must
   // not be required to supply a working `arbiter` just because SOME executor

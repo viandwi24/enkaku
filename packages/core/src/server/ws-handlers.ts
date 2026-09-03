@@ -1,19 +1,22 @@
 import type { ServerWebSocket } from 'bun'
 import type { AdbClient } from '@enkaku/adb'
 import { engineDescriptors } from '@enkaku/drivers'
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import {
   ClientMessageSchema,
+  E_DEVICE_CONFLICT,
   encodeSnapshot,
   encodeVideoFrame,
   KEYCODES,
+  type ActivityKind,
   type ArtifactInfo,
-  type CoControlMode,
+  type ControlSettings,
+  type DeviceActivity,
   type DeviceEvent,
   type DeviceEventStream,
   type FrameMeta,
   type GestureSample,
-  type MirrorSettings,
+  type PolicyDecision,
   type Point,
   type Quality,
   type ServerMessage,
@@ -22,8 +25,8 @@ import {
 } from '@enkaku/protocol'
 import type { PairingService } from '../enroll/pairing'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
-import type { LeaseManager } from '../lease/lease-manager'
-import type { CoControlManager } from '../lease/co-control'
+import type { ActivityRegistry } from '../activity/registry'
+import { evaluate } from '../activity/policy'
 import type { Hold, ReadinessManager } from '../device/readiness'
 import { DEFAULT_TIMING, resolveTextRoute, SessionError, type DeviceSession, type InputLane, type InputSource, type SessionManager } from '@enkaku/session'
 import type { JobService } from '../services/job-service'
@@ -32,8 +35,8 @@ import type { EventRecorder } from '../events/recorder'
 import type { RecordingService } from '../recording/service'
 import type { CommandRunStore } from '../command-console/store'
 import type { Db } from '../db'
-import { devices, jobs } from '../db/schema'
-import { canAssist, canCancelJob, canUseDevice, canUseShell } from '../auth/acl'
+import { devices } from '../db/schema'
+import { canCancelJob, canUseDevice, canUseShell } from '../auth/acl'
 import type { Role } from '../auth/service'
 import type { DeviceStateMachine } from '../device/state-machine'
 import { createMonitorHub, runOneshotMonitor } from '../device/monitor-hub'
@@ -41,8 +44,6 @@ import { createCrashWatcher, type CrashPolicy } from '../device/crash-watcher'
 import { createLocalShellPort, createRemoteShellPort, type ShellPort } from '../device/shell-port'
 import { createShellSessionStore } from '../device/shell-session'
 import { redactShellCommand } from '../device/redact'
-import { createMirrorManager } from '../mirror/group'
-import { lookupDeviceNumber } from '../registry/device-number'
 import type { TunnelRouter } from '../tunnel/router'
 import type { TunnelRpc } from '../tunnel/rpc'
 import { EnkakuError } from '../util/errors'
@@ -124,29 +125,18 @@ const KEYCODE_NAMES: Record<number, string> = Object.fromEntries(
 )
 
 /**
- * `GET /api/adb/stats`'s `input` block (plan 91 §4.10, §5 step 91.10, tests
- * H2/H4) — `daemon.ts` wires `inputStats()` (below, on the returned object)
- * into `createAdbStatsRoutes` through the same forward-ref pattern
- * `transportStats()` already uses. Fields beyond §4.10's own literal
- * pseudocode (`queueWaitMs`, `uncollectedGrants`, `orphanedMirrorGroups`)
- * are this step's own extension, documented at `inputStats()` itself.
+ * `GET /api/adb/stats`'s `input` block (plan 91 §4.10, narrowed by plan 205
+ * §4.8 to `lanes` only — the subordinate-grant and client-fanout
+ * observability fields this block used to carry had no producer once the
+ * activity model replaced their source subsystems) — `daemon.ts` wires
+ * `inputStats()` (below, on the returned object) into `createAdbStatsRoutes`
+ * through the same forward-ref pattern `transportStats()` already uses.
  */
 export interface InputStatsBlock {
   lanes: Record<InputLane, { depth: number; waitMsP50: number; waitMsP95: number; refusals: number }>
-  assistsActive: number
-  mirrorGroups: number
-  mirrorMembers: number
-  mirrorFanoutMsP50: number
-  mirrorFanoutMsP95: number
-  /** The farm's currently-configured `coControl.queueWaitMs` (plan 91 §4.5) — reported beside the OBSERVED `lanes[*].waitMsP95` so the `co-control` doctor check's "p95 over half the budget" comparison reads both numbers from the same live farm rather than a second fetch. */
-  queueWaitMs: number
-  /** Grants whose `expiresAt` is more than `UNCOLLECTED_GRANT_GRACE_SEC` in the past (`co-control.ts`'s `rawGrantSnapshot()`) — a leak: the reaper (or a lazy prune) should have collected these already. */
-  uncollectedGrants: number
-  /** Mirror groups (`mirror.ts`'s `allGroups()`) whose `ownerClientId` no longer matches any currently-open WS connection — a leak: `stopAllForClient` should have ended these on WS close. */
-  orphanedMirrorGroups: number
 }
 
-/** Which arbiter lane an `input.*` message type runs on (plan 91 §3.3, §5 step 91.10) — mirrors `input-arbiter.ts`'s own split, duplicated here (not imported) for the same "a caller owns its own naming" reasoning `mirror/group.ts`'s identical helper already documents; used only to name the lane in the rate-limited E_INPUT_BUSY warn below. */
+/** Which arbiter lane an `input.*` message type runs on (plan 91 §3.3, §5 step 91.10) — mirrors `input-arbiter.ts`'s own split, duplicated here (not imported) for the same "a caller owns its own naming" reasoning; used only to name the lane in the rate-limited E_INPUT_BUSY warn below. */
 function laneForInputType(type: string): InputLane {
   if (type === 'input.key') return 'keys'
   if (type === 'input.text') return 'text'
@@ -155,12 +145,6 @@ function laneForInputType(type: string): InputLane {
 
 /** Rate-limit window for the E_INPUT_BUSY warn (plan 91 §5 step 91.10) — an operator holding a finger on a busy device refuses every ~40-120ms tap identically; one line per (device, lane) every this-many-ms says "still happening" without flooding the log, the same "once per key per window" shape `util/slow-log.ts`'s `createSlowLogger` already uses for slow commands (duplicated rather than reused: that helper gates on a duration threshold, a different contract). */
 const INPUT_BUSY_WARN_WINDOW_MS = 10_000
-
-/** Grace period past a grant's own `expiresAt`, in seconds, before the co-control doctor check calls it "uncollected" (plan 91 §5 step 91.10) — comfortably beyond the reaper's default 5s sweep interval, so this only ever fires when the reaper genuinely is not collecting, never on an ordinary sweep-timing race. */
-const UNCOLLECTED_GRANT_GRACE_SEC = 30
-
-/** Reported as `input.queueWaitMs` when `deps.coControlQueueWaitMs` is not wired (plan 91 §5 step 91.10) — matches `input-arbiter.ts`'s own `DEFAULT_ARBITER_QUEUE_WAIT_MS`/`session.ts`'s stand-in default, so an unwired host reports the same number the arbiter itself actually falls back to. */
-const DEFAULT_QUEUE_WAIT_MS = 5_000
 
 const sha256Hex = (s: string): string => new Bun.CryptoHasher('sha256').update(s).digest('hex')
 
@@ -229,9 +213,9 @@ interface ConnState {
   /**
    * Devices this connection has run `shell.exec` against (plan 26 §4.4) —
    * used only to reset the emulated cwd on WS close. Reaching `shell.exec`
-   * at all requires holding the manual lease (`checkInputAllowed`), so a
-   * disconnect here really is "the lease holder went away", the same case
-   * `LeaseManager.releaseAllForClient` handles for the lease itself.
+   * at all requires passing the admission gate (plan 205 §4.8), so a
+   * disconnect here really is "the controlling client went away", the same
+   * case `endWhere` handles for the `command:<clientId>` activity itself.
    */
   shellDevices: Set<string>
   /** Devices this connection currently holds an `inspect.attach` on (plan 56 §3.2) — used to release its share of the ref count on `inspect.detach`, WS close, or a second attach being a harmless no-op. */
@@ -245,6 +229,8 @@ interface ConnState {
    * for THIS run, never farm-wide.
    */
   commandSubs: Set<string>
+  /** One `device.activity.warning` per device per minute for this connection (MVP 04 §3, plan 205 §4.8) — deviceId → the unix-ms timestamp of the last warning sent. */
+  warnedAt: Map<string, number>
 }
 
 /**
@@ -281,7 +267,10 @@ export interface WsHandlerDeps {
   /** Sessions for node-owned devices (cloud mode); null in pure local mode. */
   remote?: RemoteSessions
   pairing: PairingService
-  leases: LeaseManager
+  /** The device activity registry (plan 205 §4.2) — the one door every gated case goes through via `admit()`. */
+  activities: ActivityRegistry
+  /** `control.overControl`/`control.idleSec`, read fresh on every admission check (plan 205 §4.5). */
+  controlSettings: () => ControlSettings
   jobs: JobService
   /** For the Monitor tab (plan 24 §4.4) — local devices only; a null accessor means "not ready yet". */
   adb: () => AdbClient | null
@@ -308,8 +297,8 @@ export interface WsHandlerDeps {
    * about hold duration (F5) because nothing here read it at all.
    *
    * Optional, the same "omitted means the shipped default" convention every
-   * other settings accessor in this file uses (`mirrorSettings`,
-   * `coControlMode`, …); omitted falls back to `DEFAULT_TIMING.tapJitterMs`.
+   * other settings accessor in this file uses; omitted falls back to
+   * `DEFAULT_TIMING.tapJitterMs`.
    * Making this genuinely PER-DEVICE (F36: today only the farm default is
    * read anywhere in production) is `daemon.ts`'s wiring to do — outside
    * this step's file list — so a host that has not wired it yet gets the
@@ -324,10 +313,11 @@ export interface WsHandlerDeps {
    */
   roleOf: (userId: string | null) => Role
   /**
-   * `canUseDevice`'s device half (plan 34 §3.5, §4.4) — `lease.acquire`'s
-   * ownership check. Optional so an existing test harness (or a host that
-   * has not wired auth) keeps compiling unchanged; omitting it means "no
-   * ownership check", the same default every other optional ACL dep here uses.
+   * `canUseDevice`'s device half (plan 34 §3.5, §4.4) — an ownership check
+   * used elsewhere (job enqueue, bulk operations). Optional so an existing
+   * test harness (or a host that has not wired auth) keeps compiling
+   * unchanged; omitting it means "no ownership check", the same default
+   * every other optional ACL dep here uses.
    */
   getDeviceOwner?: (deviceId: string) => { ownerId: string | null } | null
   /** The farm's `shell` settings block, read fresh on every `shell.exec` (plan 26 §4.1). */
@@ -345,13 +335,13 @@ export interface WsHandlerDeps {
    * per this step's brief).
    */
   commandRunStore?: CommandRunStore
-  /** The lease-scoped adb endpoint (plan 27 §4.2) — torn down on an explicit `lease.release` below and on WS disconnect (`handleClose`). */
+  /** The adb endpoint, scoped to a controlling client (plan 27 §4.2) — torn down on WS disconnect (`handleClose`). */
   adbEndpoint: AdbEndpointManager
   /**
-   * Device readiness (plan 43 §5 step 43.7) — `stream.start` and
-   * `lease.acquire` each take a hold before proceeding, local devices only.
-   * Optional so tests/hosts (and orchestrator mode, which has no local
-   * readiness manager at all) that do not wire it keep working unchanged.
+   * Device readiness (plan 43 §5 step 43.7) — `stream.start` takes a hold
+   * before proceeding, local devices only. Optional so tests/hosts (and
+   * orchestrator mode, which has no local readiness manager at all) that do
+   * not wire it keep working unchanged.
    */
   readiness?: Pick<ReadinessManager, 'hold' | 'set'>
   /** `transfer.cancel` (plan 39 §4.4, acceptance #9) — undefined only in tests that do not wire file transfer. */
@@ -388,81 +378,22 @@ export interface WsHandlerDeps {
   /** The agent chat protocol's subscribe/unsubscribe/cancel half (plan 66 §3.4, §4.4) — undefined only in a host or test that has not wired Plan 66. */
   agent?: AgentWsHandler
   /**
-   * Co-control — Assist (plan 91 §3.2, §4.2, §5 step 91.4). Consulted in
-   * exactly two places: the `input.*` fallback (§3.2's pseudocode — after
-   * `checkInputAllowed` has already failed) and the `assist.start`/
-   * `assist.stop` handlers below. Optional so a host or test that has not
-   * wired plan 91 keeps compiling and running unchanged, the same pattern
-   * every other optional dep in this file uses: omitted means "co-control
-   * does not exist here" — `input.*` never gets a grant to fall back to, and
-   * `assist.*` refuses `E_NOT_SUPPORTED`.
+   * Raw device status, with no notion of any particular client (plan 205
+   * §4.8) — `admit()`'s own first check, and the crash watcher's
+   * attribution. Required (unlike the deleted optional deps this plan
+   * removes): every host wires the real state machine.
    */
-  coControl?: CoControlManager
-  /**
-   * The farm's `coControl.mode` switch (plan 91 §3.6, §4.6), read fresh on
-   * every `assist.start` — the same "read settings live" discipline
-   * `shellSettings`/`crashPolicy` already give their own farm settings.
-   * Optional alongside `coControl`; omitted defaults to `'off'`, the
-   * fail-safe reading (assisting is unavailable until both are wired).
-   */
-  coControlMode?: () => CoControlMode
-  /**
-   * `coControl.queueWaitMs` (plan 91 §4.5, §5 step 91.10), read fresh —
-   * reported on `/api/adb/stats`'s `input.queueWaitMs`, beside the OBSERVED
-   * `lanes[*].waitMsP95`, so the `co-control` doctor check's "a lane whose
-   * p95 exceeds half the budget" comparison reads both numbers from the
-   * same live farm. Optional, the same convention every other settings
-   * accessor in this file uses; omitted falls back to
-   * `DEFAULT_QUEUE_WAIT_MS` below (the arbiter's own shipped default).
-   */
-  coControlQueueWaitMs?: () => number
-  /**
-   * Delivers `{t:'assist', at, actor}` to a running job's child (plan 91
-   * §3.6, §4.8, §5 step 91.5) — called from the `input.*` branch below on
-   * every ACCEPTED assist action attributed to a job (never on a plain
-   * `assist.start`/`assist.stop`, which grants/ends the authorization but is
-   * not itself an input action). Optional, wired in `daemon.ts` to
-   * `ExecutorHost.notifyAssist`; omitted means a running script simply never
-   * learns — the same fail-quiet default `onJobCrash` above uses. **Known
-   * gap, flagged rather than silently left**: as of this step `daemon.ts`
-   * does not yet pass this — `daemon-wiring.test.ts`'s
-   * "createWsMessageHandler(...) passes a live onAssist accessor" test
-   * documents the exact wiring still needed and fails until it lands.
-   */
-  onAssist?: (jobId: string, e: { at: number; actor: string | null }) => void
-  /**
-   * Raw device status, with no notion of any particular client (plan 91
-   * §3.9, §4.7, §5 step 91.7) — `mirror.start`'s resolution table needs to
-   * tell `idle`/`manual`/`busy`/`offline`/`quarantined` apart for a device
-   * BEFORE deciding who (if anyone) it belongs to, which nothing else in
-   * this router does today: every existing caller only ever asks
-   * `checkInputAllowed`/`checkAssistAllowed` for a SPECIFIC client. A narrow
-   * `Pick`, not the whole `DeviceStateMachine`, matching `leases: Pick<...>`
-   * in `co-control.ts`. Optional, the same "omitted means it does not exist
-   * here" convention as `coControl` right above — mirroring refuses
-   * `E_NOT_SUPPORTED` without it.
-   */
-  states?: Pick<DeviceStateMachine, 'current'>
-  /**
-   * `mirror.maxDevices` / `requireSameOrientation` / `aspectTolerance` /
-   * `dropAfterConsecutiveFailures` (plan 91 §4.5, §5 step 91.7), read fresh
-   * on every `mirror.start`/`input.mirror`, the same freshness discipline
-   * `shellSettings`/`crashPolicy` already give their own farm settings.
-   * Optional; omitted falls back to the settings block's own shipped
-   * defaults (`DEFAULT_MIRROR_SETTINGS` below), so a test/host that has not
-   * wired plan 91's settings still gets sane, non-zero bounds rather than
-   * `undefined` reaching a `Math` call.
-   */
-  mirrorSettings?: () => MirrorSettings
+  states: Pick<DeviceStateMachine, 'current'>
   /**
    * The action recorder (plan 94 §4.6, §5 step 94.3) — one active recording
-   * per device, keyed by deviceId, owned by whoever holds the manual lease.
-   * `recording.start`/`.stop`/`.cancel` are gated by the SAME
-   * `checkInputAllowed` gate `input.*` already uses (never a parallel check
-   * — this plan's own brief). Optional, the same "omitted means it does not
-   * exist here" convention as `coControl`/`states` above: a host or test
-   * that has not wired plan 94 gets `E_NOT_SUPPORTED` from `recording.*`,
-   * and the `input.*` tee below is a harmless no-op (`deps.recording?.get(...)`).
+   * per device, keyed by deviceId, owned by whoever holds the device's
+   * control marker. `recording.start`/`.stop`/`.cancel` are gated by the SAME
+   * `admit()` gate `input.*` already uses (never a parallel check — this
+   * plan's own brief). Optional, the same "omitted means it does not exist
+   * here" convention every other optional dep in this file uses: a host or
+   * test that has not wired plan 94 gets `E_NOT_SUPPORTED` from
+   * `recording.*`, and the `input.*` tee below is a harmless no-op
+   * (`deps.recording?.get(...)`).
    */
   recording?: RecordingService
   log: Logger
@@ -541,6 +472,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         shellDevices: new Set(),
         inspectAttached: new Set(),
         commandSubs: new Set(),
+        warnedAt: new Map(),
       }
       conns.set(ws, s)
     }
@@ -606,23 +538,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   /** The interactive terminal's emulated-cwd state (plan 26 §3.7, §4.4) — one instance for the life of the router, like `monitors` above. */
   const shellSessions = createShellSessionStore()
 
-  /**
-   * Readiness holds taken by `lease.acquire` (plan 43 §5 step 43.7), keyed
-   * by deviceId — a device has at most one manual lease at a time, so at
-   * most one entry. Released on an explicit `lease.release`, or here on WS
-   * disconnect for whichever devices this connection held (`handleClose`),
-   * mirroring `shellSessions`'s own per-device release above. `daemon.ts`'s
-   * `onManualRevoked` (idle timeout, quarantine, forced release) reaches
-   * this through the `releaseLeaseHold` export below, the same forward-ref
-   * pattern `releaseShellSession` already uses.
-   */
-  const leaseHolds = new Map<string, { clientId: string; hold: Hold }>()
-  const releaseLeaseHold = (deviceId: string): void => {
-    const entry = leaseHolds.get(deviceId)
-    if (!entry) return
-    leaseHolds.delete(deviceId)
-    entry.hold.release()
-  }
 
   /**
    * Ref-counted per device across every attached Inspect tab (plan 56 §3.2,
@@ -705,11 +620,13 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     hub: monitors,
     record: deps.recorder.record,
     saveTrace: deps.saveCrashTrace,
-    // Attribution requires a JOB lease specifically (plan 37 §3.3, §8 risks)
-    // — a manual lease at the moment of the crash means "record only".
-    getJobLease: (deviceId) => {
-      const lease = deps.leases.getLease(deviceId)
-      return lease?.type === 'job' ? { jobId: lease.holder } : null
+    // Attribution requires a RUNNING JOB specifically (plan 37 §3.3, §8
+    // risks) — a live control marker at the moment of the crash means
+    // "record only". The activity registry is the one source of truth for
+    // "is a job running on this device" (plan 205 §4.2).
+    runningJobOf: (deviceId) => {
+      const jobActivity = deps.activities.list(deviceId).find((a) => a.kind === 'job' || a.kind === 'workflow-job')
+      return jobActivity ? { jobId: jobActivity.id.replace(/^(job|workflow-job):/, '') } : null
     },
     crashPolicy: deps.crashPolicy,
     crashWatch: deps.crashWatch,
@@ -725,8 +642,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   // `crashWatcher.onJobCrash` above already uses. `recording.step` and a
   // bound-triggered `recording.state` are both broadcasts (every viewer of
   // the device sees them), not unicasts — the same reasoning
-  // `AssistChangedMessage`/`LeaseChangedMessage` already establish for "who
-  // is doing what to this device" facts.
+  // `device.activity` already establishes for "who is doing what to this
+  // device" facts.
   deps.recording?.onStep((deviceId, index, kind, hasCandidate) => {
     deps.broadcast({ type: 'recording.step', payload: { deviceId, index, kind, hasCandidate } })
   })
@@ -752,12 +669,11 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   /**
    * Every live viewer of a device (plan 31 §4.2) — derived from the SAME
    * stream bindings the video path already keeps (no second bookkeeping
-   * structure) plus the lease manager (the single source of truth for who
-   * holds control; presence never stores its own copy).
+   * structure); `holdsControl` reads the activity registry (plan 205 §4.8),
+   * true whenever that connection's `control:<clientId>` marker is live —
+   * several viewers may be true at once, unlike the old single-holder model.
    */
   const viewersOf = (deviceId: string): Viewer[] => {
-    const lease = deps.leases.getLease(deviceId)
-    const holder = lease?.type === 'manual' ? lease.holder : null
     const out: Viewer[] = []
     for (const [ws, state] of conns) {
       if (ws.readyState !== 1) continue
@@ -773,7 +689,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         sessionId: state.clientId,
         userLabel: deps.userLabel?.(state.userId) ?? null,
         since,
-        holdsControl: holder === state.clientId,
+        holdsControl: deps.activities.controlOf(deviceId, state.clientId) !== null,
       })
     }
     return out
@@ -794,103 +710,39 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     }
   }
 
-  /** The settings block's own shipped defaults (`packages/protocol/src/settings.ts`'s `mirror.default(...)`) — used only when `deps.mirrorSettings` is not wired (a test, or a host built before plan 91). */
-  const DEFAULT_MIRROR_SETTINGS: MirrorSettings = { maxDevices: 20, requireSameOrientation: true, aspectTolerance: 0.05, dropAfterConsecutiveFailures: 3 }
-  const mirrorSettings = (): MirrorSettings => deps.mirrorSettings?.() ?? DEFAULT_MIRROR_SETTINGS
-
   /**
-   * Unicast to exactly one WS connection by `clientId` — `mirror.changed`'s
-   * own doc comment (`packages/protocol/src/messages/co-control.ts`) says
-   * "Unicast to the mirror's owner", unlike `assist.changed`'s broadcast. A
-   * `clientId` is generated fresh per connection (`stateOf`, above) and
-   * never reused, so at most one entry ever matches.
+   * The one admission door for every gated case below (plan 205 §4.8) —
+   * never acquires anything, just asks the activity policy. `starting` is
+   * the activity kind about to begin; `admit` never starts it — callers
+   * that need a marker call `deps.activities.touchControl`/`.start`
+   * themselves after a `{ ok: true }` result.
    */
-  const sendToClient = (clientId: string, msg: ServerMessage): void => {
-    for (const [ws, s] of conns) {
-      if (ws.readyState === 1 && s.clientId === clientId) send(ws, msg)
-    }
+  type Gate = { ok: true; warning: PolicyDecision | null } | { ok: false; code: string; message: string }
+  function admit(deviceId: string, state: ConnState, starting: ActivityKind): Gate {
+    const status = deps.states.current(deviceId)
+    if (status === null) return { ok: false, code: 'device_not_found', message: 'no such device' }
+    if (status !== 'online') return { ok: false, code: 'device_unavailable', message: `the device is ${status}` }
+    const decision = evaluate(starting, deps.activities.list(deviceId), deps.controlSettings(), {
+      selfIds: [`control:${state.clientId}`, `command:${state.clientId}`],
+    })
+    if (decision.decision === 'forbid') return { ok: false, code: E_DEVICE_CONFLICT, message: decision.message }
+    return { ok: true, warning: decision.decision === 'warn' ? decision : null }
   }
 
-  /** `devices.label`, or the id itself when the row cannot be found — a `MirrorMember` always carries something a human can read, never a bare id presented as if it were one. */
-  const deviceLabelOf = (deviceId: string): string =>
-    deps.db.select({ label: devices.label }).from(devices).where(eq(devices.id, deviceId)).get()?.label ?? deviceId
-
-  /**
-   * The other half of a `MirrorMember`'s identity (plan 124 §3.7) — the
-   * device's `device_numbers` reservation, or `null`.
-   *
-   * Two reads rather than one joined statement, deliberately: `device_numbers`
-   * is keyed on `stableId` (plan 89 §3.1 — never on `devices.id`, which is
-   * what a mirror group resolves members by), so naming the number for a
-   * `deviceId` means going through the device row regardless. Both reads are
-   * indexed primary/unique-key lookups, they happen at most `mirror.maxDevices`
-   * times per reconciliation (20 by default, 64 at the ceiling), and only
-   * while an operator is actively mirroring — this is not the per-row, per-
-   * request path `loadDeviceNumbers` exists to keep out of the fleet queries.
-   *
-   * `null` for an unknown device id, matching `deviceLabelOf` above: a member
-   * whose row vanished mid-group still renders, just without a number.
-   */
-  const deviceNumberOf = (deviceId: string): number | null => {
-    const row = deps.db.select({ stableId: devices.stableId }).from(devices).where(eq(devices.id, deviceId)).get()
-    return row ? lookupDeviceNumber(deps.db, row.stableId) : null
+  /** One `device.activity.warning` per device per minute per connection (MVP 04 §3, plan 205 §4.8). */
+  function warnOnce(ws: ServerWebSocket<unknown>, state: ConnState, deviceId: string, decision: PolicyDecision): void {
+    if (!decision.conflicting) return
+    const now = Date.now()
+    const last = state.warnedAt.get(deviceId)
+    if (last !== undefined && now - last < 60_000) return
+    state.warnedAt.set(deviceId, now)
+    send(ws, { type: 'device.activity.warning', payload: { deviceId, message: decision.message, conflicting: decision.conflicting } })
   }
 
-  /**
-   * Mirror groups (plan 91 §3.8, §3.9, §4.7, §5 step 91.7) — constructed
-   * only when BOTH `coControl` and `states` are wired, the same "omitted
-   * means it does not exist here" convention every other optional dep in
-   * this file uses. It needs `coControl` for the identical reason
-   * `assist.start` does (a busy/held member becomes an ordinary Assist
-   * grant, never a takeover — §3.9), and it needs `states` to read a
-   * device's RAW status at all, which nothing else in this router exposes.
-   */
-  const coControlForMirror = deps.coControl
-  const statesForMirror = deps.states
-  const mirror =
-    coControlForMirror && statesForMirror
-      ? createMirrorManager({
-          sessions: () => deps.sessions,
-          states: statesForMirror,
-          leases: deps.leases,
-          coControl: coControlForMirror,
-          jobs: deps.jobs,
-          nodeIdFor: (deviceId) => deps.remote?.nodeIdFor(deviceId) ?? null,
-          deviceLabel: deviceLabelOf,
-          deviceNumber: deviceNumberOf,
-          // The SAME `canAssist(role, mode)` gate `assist.start` enforces
-          // (plan 91 §3.6, §4.6) — checked once per MEMBER that would need a
-          // fresh assist grant, not once for the whole `mirror.start` call,
-          // so an operator who lacks `device.assist` can still mirror a
-          // group of otherwise-idle devices; only the members that would
-          // have needed assisting are skipped `assist_not_allowed`.
-          // `coControl.grant` itself still enforces the farm-wide
-          // `mode: 'off'` switch underneath regardless of this (see
-          // `co-control.ts`'s own doc comment on `CoControlConfig.mode`).
-          assistAllowedFor: (userId) => canAssist(deps.roleOf(userId), deps.coControlMode?.() ?? 'off'),
-          // Plan 91 §3.5, §5 step 91.5 — per-device attribution for a
-          // mirrored action, closing the gap step 91.7 flagged (`group.ts`'s
-          // own `MirrorManagerDeps.recorder` doc comment has the full
-          // reasoning). The SAME increment the single-device `input.*`
-          // branch performs above, reused rather than duplicated.
-          recorder: deps.recorder,
-          incrementAssistCount: (jobId) =>
-            deps.db
-              .update(jobs)
-              .set({ assistCount: sql`COALESCE(${jobs.assistCount}, 0) + 1` })
-              .where(eq(jobs.id, jobId))
-              .run(),
-          config: {
-            maxDevices: () => mirrorSettings().maxDevices,
-            requireSameOrientation: () => mirrorSettings().requireSameOrientation,
-            aspectTolerance: () => mirrorSettings().aspectTolerance,
-            dropAfterConsecutiveFailures: () => mirrorSettings().dropAfterConsecutiveFailures,
-          },
-          onChanged: (group, members) =>
-            sendToClient(group.ownerClientId, { type: 'mirror.changed', payload: { groupId: group.id, members } }),
-          log: deps.log.child('mirror'),
-        })
-      : null
+  /** The actor a live `input.*`/`command`/etc. message is attributed to (plan 205 §4.8). */
+  function actorOf(state: ConnState): { kind: 'user'; id: string; label: string } {
+    return { kind: 'user', id: state.userId ?? state.clientId, label: deps.userLabel?.(state.userId) ?? 'a signed-out client' }
+  }
 
   return {
     publishEvent,
@@ -1154,109 +1006,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
-          case 'lease.acquire': {
-            // `canUseDevice` (plan 34 §3.5, §4.4) — checked before the lease
-            // is even attempted, so a device owned by another user is
-            // refused the same way an already-busy device is, not after
-            // control has already been granted.
-            const role = deps.roleOf(state.userId)
-            const owner = deps.getDeviceOwner?.(msg.payload.deviceId) ?? null
-            if (owner && !canUseDevice({ id: state.userId ?? '', role }, owner)) {
-              sendError(ws, 'auth.forbidden', 'this device belongs to another user', msgId)
-              return
-            }
-            // A takeover (plan 71 §3.4) — `takeOverFrom` names the holder the
-            // caller BELIEVES holds it; `acquireManual` itself is the
-            // compare-and-swap and the atomic revoke-then-acquire. A stale
-            // dialog (the holder changed since it was drawn) is refused with
-            // `lease_holder_changed`, caught by the outer try/catch below
-            // exactly like any other coded refusal.
-            const lease = deps.leases.acquireManual(msg.payload.deviceId, state.clientId, state.userId, {
-              ...(msg.payload.takeOverFrom ? { takeOverFrom: msg.payload.takeOverFrom } : {}),
-            })
-            // Readiness hold (plan 43 §3.6, §5 step 43.7) — taking manual
-            // control is one of the acquisition paths listed in §3.6's
-            // pseudocode. One hold per device (a device has at most one
-            // manual lease); a re-acquire by the same client below the
-            // `existing` early-return in `acquireManual` never reaches here
-            // twice for the same lease.
-            const readinessHold = await deps.readiness?.hold(lease.deviceId, 'lease').catch((err) => {
-              deps.log.warn(`readiness hold failed for lease on ${lease.deviceId}, proceeding anyway: ${String(err)}`)
-              return undefined
-            })
-            if (readinessHold) leaseHolds.set(lease.deviceId, { clientId: state.clientId, hold: readinessHold })
-            send(ws, {
-              type: 'lease.acquired',
-              ...(msgId ? { id: msgId } : {}),
-              payload: { deviceId: lease.deviceId, expiresAt: lease.expiresAt },
-            })
-            // Everyone else watching this device needs to know it is being
-            // driven now, so their page stops offering control it cannot get.
-            deps.broadcast({
-              type: 'lease.changed',
-              payload: { deviceId: lease.deviceId, heldBy: deps.leases.getHolder(lease.deviceId), expiresAt: lease.expiresAt },
-            })
-            broadcastViewers(lease.deviceId)
-            deps.recorder.record({
-              deviceId: lease.deviceId,
-              stream: 'main',
-              kind: 'control.acquired',
-              actor: state.userId,
-              meta: { clientId: state.clientId },
-            })
-            // Taking manual control is security-relevant, not just a device
-            // fact — it also lands in the farm-wide audit trail (plan 18 §3.2).
-            deps.audit.record({ userId: state.userId, action: 'device.control', target: lease.deviceId, meta: { action: 'acquired' } })
-            return
-          }
-
-          case 'lease.release': {
-            const released = deps.leases.releaseManual(msg.payload.deviceId, state.clientId)
-            send(ws, {
-              type: 'lease.released',
-              ...(msgId ? { id: msgId } : {}),
-              payload: { deviceId: msg.payload.deviceId },
-            })
-            if (released) {
-              deps.broadcast({
-                type: 'lease.changed',
-                payload: { deviceId: msg.payload.deviceId, heldBy: null, expiresAt: null },
-              })
-              broadcastViewers(msg.payload.deviceId)
-              deps.recorder.record({
-                deviceId: msg.payload.deviceId,
-                stream: 'main',
-                kind: 'control.released',
-                actor: state.userId,
-                meta: { clientId: state.clientId },
-              })
-              // The terminal's emulated cwd does not survive a release — the
-              // next holder (even the same client, re-acquiring later)
-              // starts at `/` (plan 26 §3.7, §4.4, acceptance #11).
-              shellSessions.release(msg.payload.deviceId)
-              state.shellDevices.delete(msg.payload.deviceId)
-              // Nor does an open adb endpoint — it "exists only for the life
-              // of the lease... and disappears when the lease is released"
-              // (plan 27 §1, acceptance #5).
-              deps.adbEndpoint.close(msg.payload.deviceId, 'lease_released')
-              // Nor does the readiness hold this lease took (plan 43 §5 step
-              // 43.7) — releasing it lets the device drift back toward its
-              // `desired` readiness rather than staying awake forever.
-              releaseLeaseHold(msg.payload.deviceId)
-              // Nor does an open recording (plan 94 §4.6: "released when the
-              // lease is released") — ends it exactly like a bound would,
-              // with `stoppedReason: 'lease-lost'`, never a silent drop of
-              // whatever was captured so far.
-              deps.recording?.stopForLeaseLost(msg.payload.deviceId)
-              // A `vpn-helper` route deliberately does NOT tear down on lease
-              // release (plan 52 §0, §3.1, §4.1 — superseding plan 44 §5.7):
-              // a route is a property of the device, not of whoever held the
-              // lease, so releasing it — explicit or automatic — leaves the
-              // route exactly as it was.
-            }
-            return
-          }
-
           case 'device.readiness.set': {
             // Server-authoritative (spec §10.1, plan 43 §3.4, acceptance #7):
             // `readiness.set` itself enforces the whole permission matrix —
@@ -1313,9 +1062,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           case 'monitor.start': {
-            // Read-only, no lease, allowed while `busy` (plan 24 §4.4) —
-            // watching a job's logcat is a primary use case, so this
-            // deliberately does NOT call `leases.checkInputAllowed`.
+            // Read-only, no admission check, allowed alongside a running job
+            // (plan 24 §4.4) — watching a job's logcat is a primary use
+            // case, so this deliberately does NOT call `admit()`.
             const { streamId, backlog } = await monitors.subscribe(
               state.clientId,
               msg.payload.deviceId,
@@ -1338,7 +1087,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           // `command.subscribe`/`command.unsubscribe` (plan 93 §3.17, §4.3,
-          // step 93.4) — bookkeeping only, no lease, no permission check:
+          // step 93.4) — bookkeeping only, no admission check, no permission check:
           // `POST /api/command-runs` is the only way to START a run, and a
           // client must already `GET` it before subscribing (`/ws` has no
           // snapshot replay, spec §13), so subscribing to a runId that does
@@ -1384,24 +1133,29 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               sendError(ws, 'auth.forbidden', 'you do not have permission to run shell commands on this device', msgId)
               return
             }
-            // 2. The SAME lease rule input uses (plan 26 §3.1) — no second
-            // policy: busy/offline/idle/wrong-holder are all covered here.
-            const allowed = deps.leases.checkInputAllowed(deviceId, state.clientId)
-            if (!allowed.ok) {
-              sendError(ws, allowed.code, allowed.message, msgId)
+            // 2. The SAME admission gate input uses (plan 205 §4.8) — no
+            // second policy: online/conflicting-activity are both covered
+            // here.
+            const gate = admit(deviceId, state, 'command')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
               return
             }
+            if (gate.warning) warnOnce(ws, state, deviceId, gate.warning)
             // 3. Resolve local vs. remote — throws node_offline/device_not_found/E_ADB_UNAVAILABLE,
             // caught by the outer try/catch below, same as monitor.start/oneshot.
             const port = shellPortFor(deviceId)
-            // 4. Keep the lease alive while the operator is thinking between commands (mirrors input.*).
-            deps.leases.touchManual(deviceId, state.clientId)
+            // 4. The command activity lasts exactly as long as this call
+            // (plan 205 §4.8, §4.10) — started here, ended in the `finally`
+            // below, never left running past this handler.
+            deps.activities.start(deviceId, { id: `command:${state.clientId}`, kind: 'command', label: 'Running an adb command', actor: actorOf(state) })
             state.shellDevices.add(deviceId)
 
             const actor = state.userId
             const cwdAtStart = shellSessions.getCwd(deviceId)
             const startedAt = Date.now()
 
+            try {
             // 6. Emitted the instant the command is accepted, before it has
             // run, so every viewer sees what is executing (plan 26 §3.8, §4.2).
             for (const target of shellTargets(deviceId, ws)) {
@@ -1410,7 +1164,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 payload: { deviceId, cmd, cwd: cwdAtStart, actor, at: Math.floor(startedAt / 1000) },
               })
             }
-            // 5. Recorded AFTER the lease check passes and BEFORE the device
+            // 5. Recorded AFTER the admission check passes and BEFORE the device
             // is awaited (plan 18's ordering, reused verbatim, §3.3): a
             // refused command never reaches this line, so it is never
             // logged as if it ran. Redacted the same way credential-bearing
@@ -1424,7 +1178,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               meta: { cmd: redactShellCommand(cmd), cwd: cwdAtStart },
             })
 
-            // Plan 93 §3.3, §3.17, step 93.5 — the SAME lease check above is
+            // Plan 93 §3.3, §3.17, step 93.5 — the SAME admission check above is
             // the one this reuses (no second admission decision, unlike a
             // fan-out member which can still be skipped after this point).
             // Written at the SAME point as the `device_events` row just
@@ -1606,6 +1360,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 deps.commandRunStore?.finish(commandRun.id, { status: 'failed' })
               }
             }
+            } finally {
+              deps.activities.end(deviceId, `command:${state.clientId}`)
+            }
             return
           }
 
@@ -1614,27 +1371,18 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           case 'input.gesture':
           case 'input.key':
           case 'input.text': {
-            // Server-authoritative: the lease and status are validated here,
-            // not merely disabled in the UI (spec §10.1). Plan 91 §3.2, §4.1,
-            // §5 step 91.4 — the ONE fallback: a client `checkInputAllowed`
-            // refuses gets a second, narrower chance — does it hold a
-            // co-control (assist) grant on this EXACT device? `checkInputAllowed`
-            // itself is untouched (F1's whole point); this fallback lives ONLY
-            // here, in `input.*`, by construction — `deps.coControl` is not
-            // consulted by any other case in this switch.
-            let allowed = deps.leases.checkInputAllowed(msg.payload.deviceId, state.clientId)
-            let source: InputSource = { kind: 'lease', id: state.clientId, userId: state.userId }
-            if (!allowed.ok) {
-              const assist = deps.coControl?.checkAssistAllowed(msg.payload.deviceId, state.clientId)
-              if (assist?.ok) {
-                allowed = assist
-                source = { kind: 'assist', id: state.clientId, userId: state.userId }
-              }
-            }
-            if (!allowed.ok) {
-              sendError(ws, allowed.code, allowed.message, msgId)
+            // Server-authoritative: the activity policy and status are
+            // validated here, not merely disabled in the UI (spec §10.1,
+            // plan 205 §4.8). The server never refuses a tap for lack of a
+            // control marker — only on `forbid`, or when the device is
+            // offline/quarantined; `warn` proceeds and tells (MVP 04 §3).
+            const gate = admit(msg.payload.deviceId, state, 'control')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
               return
             }
+            if (gate.warning) warnOnce(ws, state, msg.payload.deviceId, gate.warning)
+            const source: InputSource = { kind: 'user', id: state.clientId, userId: state.userId }
             const remoteNode = deps.remote?.nodeIdFor(msg.payload.deviceId) ?? null
             const session = remoteNode
               ? deps.remote!.get(msg.payload.deviceId)
@@ -1650,69 +1398,27 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               )
               return
             }
-            // `touchManual` stays for the lease path — it is already a safe
-            // no-op for a non-holder (`lease-manager.ts`'s own `lease.holder
-            // === clientId` guard); the assist path refreshes the GRANT's own
-            // TTL instead (plan 91 §3.2, §5 step 91.4) — touching the wrong
-            // store here would either do nothing (a non-holder touching the
-            // manual lease) or, worse, silently extend a lease nobody holding
-            // a mere assist grant is entitled to extend.
-            if (source.kind === 'assist') {
-              deps.coControl?.touch(msg.payload.deviceId, state.clientId)
-            } else {
-              deps.leases.touchManual(msg.payload.deviceId, state.clientId)
-            }
-            // Plan 91 §3.5, §4.9, §5 step 91.5 — attribution. Only meaningful
-            // when the PRIMARY hold is a job: §3.9's "manual, held by someone
-            // else" row also grants an assist, but there is no job to
-            // attribute to, so `jobs.assistCount`/`deps.onAssist` both stay
-            // untouched for it, correctly (a human helping another human is
-            // not a job attribution question). Derived fresh from the lease
-            // rather than the grant's own snapshot — equivalent by
-            // construction (a grant dies the instant its primary hold ends,
-            // §3.2's subordination rule), and avoids a second lookup surface
-            // on `CoControlManager` for one field.
-            const assistJobId =
-              source.kind === 'assist'
-                ? (() => {
-                    const primaryLease = deps.leases.getLease(msg.payload.deviceId)
-                    return primaryLease?.type === 'job' ? primaryLease.holder : null
-                  })()
-                : null
-            if (assistJobId) {
-              deps.db
-                .update(jobs)
-                .set({ assistCount: sql`COALESCE(${jobs.assistCount}, 0) + 1` })
-                .where(eq(jobs.id, assistJobId))
-                .run()
-              // The second unsolicited parent→child push ever (plan 91 §3.6,
-              // §4.8, F20/F21) — NOT an abort, the job keeps running exactly
-              // as before; a script that never calls `ctx.onAssist` is
-              // unaffected. Fire-and-forget, like `recorder.record` below.
-              deps.onAssist?.(assistJobId, { at: Math.floor(Date.now() / 1000), actor: state.userId })
-            }
-            // Recorded AFTER the lease check passes and BEFORE awaiting the
-            // device (plan 18 §18.5): a rejected input (handled above, this
-            // point is unreached) is never logged as if it happened. The
+            // The control marker is created or refreshed on every accepted
+            // input (MVP 04 §1.2, plan 205 §4.2) — several operators may
+            // control one device at once, so this never refuses for lack of
+            // a marker, only touches the caller's own.
+            deps.activities.touchControl(msg.payload.deviceId, state.clientId, actorOf(state))
+            // Recorded AFTER the admission check passes and BEFORE awaiting
+            // the device (plan 18 §18.5): a rejected input (handled above,
+            // this point is unreached) is never logged as if it happened. The
             // record() call itself never awaits — buffered, never on the
             // input path's critical section (plan 18 §3.5).
             const actor = state.userId
-            // Plan 91 §3.5, §5 step 91.5 — spread into every `input.*`
-            // recorder call below, never mutating `meta`'s existing shape
-            // for a non-assist action (`assistJobId` is null on the lease
-            // path, so the spread is a no-op there). This is the ONLY
-            // change 91.5 makes to F16's existing per-verb recorder calls.
-            const assistMeta = assistJobId ? { assist: true as const, jobId: assistJobId } : {}
             // Plan 91 §3.1, §3.3, §4.1 — fixes F6/H1: a local session's writes
             // go through its arbiter (three non-preemptive priority lanes over
             // the ONE shared virtual pointer), never the raw `input` sink
-            // directly, so a concurrently assisting human (plan 91's whole
-            // premise) can never interleave with this write. A node-owned
-            // remote session has no arbiter (§2 non-goals: cloud/node devices
-            // are out of scope for this plan) — `'arbiter' in session` is the
-            // same kind of structural discriminant the `'textInput' in
-            // session` check below already uses to tell the two session
-            // shapes apart.
+            // directly, so a second person controlling the same device (MVP
+            // 04 §1.3's own "several operators at once" reading) can never
+            // interleave with this write. A node-owned remote session has no
+            // arbiter (§2 non-goals: cloud/node devices are out of scope for
+            // this plan) — `'arbiter' in session` is the same kind of
+            // structural discriminant the `'textInput' in session` check
+            // below already uses to tell the two session shapes apart.
             const sink = 'arbiter' in session ? session.arbiter.for(source) : session.input
             if (msg.type === 'input.tap') {
               const p = mapNormToDevice(msg.payload.pos, session.frameSize)
@@ -1721,7 +1427,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 stream: 'input',
                 kind: 'input.tap',
                 actor,
-                meta: { x: p.x, y: p.y, w: session.frameSize.width, h: session.frameSize.height, ...assistMeta },
+                meta: { x: p.x, y: p.y, w: session.frameSize.width, h: session.frameSize.height },
               })
               // Plan 94 §4.6, step 94.3 — the recorder's TEE: observes the
               // SAME normalised payload the wire already carries (F2), never
@@ -1752,7 +1458,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 stream: 'input',
                 kind: 'input.swipe',
                 actor,
-                meta: { from, to, durationMs: msg.payload.durationMs, ...assistMeta },
+                meta: { from, to, durationMs: msg.payload.durationMs },
               })
               // Plan 94 §4.6, step 94.3 — the tee (see the `input.tap` branch
               // above for the full reasoning).
@@ -1778,7 +1484,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                   to: last,
                   samples: samples.length,
                   durationMs: last && first ? last.atMs - first.atMs : 0,
-                  ...assistMeta,
                 },
               })
               // Plan 94 §4.6, step 94.3 — the tee, fed the operator's REAL
@@ -1803,7 +1508,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 stream: 'input',
                 kind: 'input.key',
                 actor,
-                meta: { keycode: msg.payload.keycode, ...(name ? { name } : {}), ...assistMeta },
+                meta: { keycode: msg.payload.keycode, ...(name ? { name } : {}) },
               })
               // Plan 94 §4.6, step 94.3 — the tee.
               deps.recording?.get(msg.payload.deviceId)?.observe({ kind: 'key', keycode: msg.payload.keycode })
@@ -1817,7 +1522,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 stream: 'input',
                 kind: 'input.text',
                 actor,
-                meta: { ...redactInputText(text, logText), ...assistMeta },
+                meta: { ...redactInputText(text, logText) },
               })
               // Plan 94 §4.6, step 94.3 — the tee, given the LITERAL string
               // regardless of `logInputText` above: that setting governs
@@ -1899,19 +1604,17 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           case 'recording.start': {
-            // Plan 94 §4.6, §4.9, §5 step 94.3 — the SAME gate `input.*`
-            // uses above, never a parallel check ("if you find yourself
-            // writing a second permission check, stop and report" — this
-            // plan's own brief). Deliberately NOT the `assist` fallback
-            // `input.*` has: recording is a side-channel on the LEASE
-            // holder's own input, not an action an assisting human takes on
-            // someone else's behalf.
+            // Plan 94 §4.6, §4.9, §5 step 94.3 — the SAME `admit()` gate
+            // `input.*` uses above, never a parallel check ("if you find
+            // yourself writing a second permission check, stop and report" —
+            // this plan's own brief, reaffirmed by plan 205 §4.8).
             const { deviceId } = msg.payload
-            const allowed = deps.leases.checkInputAllowed(deviceId, state.clientId)
-            if (!allowed.ok) {
-              sendError(ws, allowed.code, allowed.message, msgId)
+            const gate = admit(deviceId, state, 'control')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
               return
             }
+            if (gate.warning) warnOnce(ws, state, deviceId, gate.warning)
             if (!deps.recording) {
               sendError(ws, 'E_NOT_SUPPORTED', 'recording is not available on this host', msgId)
               return
@@ -1932,8 +1635,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             }
             // `E_RECORDING_ACTIVE` (a synchronous throw from `deps.recording.start`
             // when one is already open) is caught by this handler's outer
-            // try/catch exactly like any other coded error — the same
-            // pattern `assist.start`'s own doc comment describes below.
+            // try/catch exactly like any other coded error.
             //
             // Anchors/screenshots come from WHATEVER inspector this session
             // already has attached (the same `session.inspector` the
@@ -1967,11 +1669,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
 
           case 'recording.stop': {
             const { deviceId } = msg.payload
-            const allowed = deps.leases.checkInputAllowed(deviceId, state.clientId)
-            if (!allowed.ok) {
-              sendError(ws, allowed.code, allowed.message, msgId)
+            const gate = admit(deviceId, state, 'control')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
               return
             }
+            if (gate.warning) warnOnce(ws, state, deviceId, gate.warning)
             if (!deps.recording) {
               sendError(ws, 'E_NOT_SUPPORTED', 'recording is not available on this host', msgId)
               return
@@ -1990,11 +1693,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
 
           case 'recording.cancel': {
             const { deviceId } = msg.payload
-            const allowed = deps.leases.checkInputAllowed(deviceId, state.clientId)
-            if (!allowed.ok) {
-              sendError(ws, allowed.code, allowed.message, msgId)
+            const gate = admit(deviceId, state, 'control')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
               return
             }
+            if (gate.warning) warnOnce(ws, state, deviceId, gate.warning)
             deps.recording?.cancel(deviceId)
             deps.recorder.record({ deviceId, stream: 'main', kind: 'recording.cancelled', actor: state.userId })
             send(ws, {
@@ -2005,183 +1709,21 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
-          case 'assist.start': {
-            // Plan 91 §3.2, §3.6, §4.6, §5 step 91.4 — the ONLY entry point
-            // that mints a co-control grant from a client message.
-            // `mirror.start` (step 91.7) is the other; both call
-            // `coControl.grant` directly, never `acquireManual` — the lease
-            // is never touched (§3.2's table).
-            if (!deps.coControl) {
-              sendError(ws, 'E_NOT_SUPPORTED', 'assisting is not available on this host', msgId)
-              return
-            }
-            const { deviceId } = msg.payload
-            // `canAssist` (F23's shape, `auth/acl.ts`): the farm-wide
-            // `coControl.mode` switch PLUS the `device.assist` role
-            // permission, checked together, server-authoritative — a
-            // hidden/disabled Assist button in Studio is a convenience only.
-            const role = deps.roleOf(state.userId)
-            const mode = deps.coControlMode?.() ?? 'off'
-            if (!canAssist(role, mode)) {
-              sendError(ws, 'auth.forbidden', 'you do not have permission to assist devices on this farm', msgId)
-              return
-            }
-            // Throws a coded `EnkakuError` for every refusal
-            // (`assist_not_allowed` / `assist_taken` / `assist_denied_by_script`
-            // / `device_not_held`, §4.2) — caught by this handler's outer
-            // try/catch exactly like any other coded error. The script's own
-            // `assist: 'deny'` declaration (§3.6) is honoured INSIDE `grant`
-            // via its optional `scriptAssistPolicy` hook — permissive until
-            // step 91.5 supplies the real per-job data, by that hook's own
-            // documented default.
-            const grant = deps.coControl.grant(deviceId, state.clientId, state.userId)
-            const primary = deps.leases.getHolder(deviceId)
-            if (!primary) {
-              // Defensive only: `grant` above already required a live lease
-              // to exist (its own `device_not_held` refusal), and nothing
-              // async ran in between to let it disappear.
-              throw new EnkakuError('E_INTERNAL', 'the device lost its lease the instant assisting was granted')
-            }
-            // Plan 91 §3.5 — the "was this job assisted at all" bookend (F16)
-            // and the "who, farm-wide" audit row (F24), mirroring exactly
-            // what `lease.acquire` already does for `control.acquired`/
-            // `device.control` right above in this file. `jobId` is null
-            // whenever the primary hold is a manually-held lease rather than
-            // a job (§3.9's "manual, held by someone else" row) — there is no
-            // job to attribute to, and that is the correct, honest value.
-            const assistMeta = { jobId: primary.kind === 'job' ? primary.id : null, primaryKind: primary.kind }
-            deps.recorder.record({ deviceId, stream: 'main', kind: 'control.assist.started', actor: state.userId, meta: assistMeta })
-            deps.audit.record({ userId: state.userId, action: 'device.assist', target: deviceId, meta: assistMeta })
-            send(ws, {
-              type: 'assist.started',
-              ...(msgId ? { id: msgId } : {}),
-              payload: { deviceId, expiresAt: grant.expiresAt, primary },
-            })
-            return
-          }
-
-          case 'assist.stop': {
-            // A no-op for a client that holds no grant on this device —
-            // ending your own help early is always allowed, the same
-            // tolerance `lease.release` gives a non-holder. Nothing is
-            // recorded for a no-op release: `release()`'s own boolean return
-            // is exactly "did anything actually end", matching `lease.release`'s
-            // `released` guard around ITS OWN recorder/audit calls a few
-            // cases up in this file.
-            const { deviceId } = msg.payload
-            const released = deps.coControl?.release(deviceId, state.clientId, 'released') ?? false
-            if (released) {
-              const primary = deps.leases.getHolder(deviceId)
-              const assistMeta = { jobId: primary?.kind === 'job' ? primary.id : null, primaryKind: primary?.kind ?? null, reason: 'released' as const }
-              deps.recorder.record({ deviceId, stream: 'main', kind: 'control.assist.ended', actor: state.userId, meta: assistMeta })
-              deps.audit.record({ userId: state.userId, action: 'device.assist', target: deviceId, meta: assistMeta })
-            }
-            send(ws, {
-              type: 'assist.stopped',
-              ...(msgId ? { id: msgId } : {}),
-              payload: { deviceId, reason: 'released' },
-            })
-            return
-          }
-
-          case 'mirror.start': {
-            // Plan 91 §3.9, §4.7, §5 step 91.7 — the operator acquires NO
-            // multi-device lock. Every requested device is resolved
-            // independently against the §3.9 table and reported, never
-            // silently dropped (`mirror.started` always names every one).
-            if (!mirror) {
-              sendError(ws, 'E_NOT_SUPPORTED', 'mirroring is not available on this host', msgId)
-              return
-            }
-            const { focusDeviceId, deviceIds } = msg.payload
-            const { group, members } = await mirror.start({
-              ownerClientId: state.clientId,
-              ownerUserId: state.userId,
-              focusDeviceId,
-              deviceIds,
-            })
-            // `assist`-mode members already broadcast `assist.changed` for
-            // free (`coControl`'s `onGranted` hook, wired centrally in
-            // `daemon.ts` — plan 91 §5 step 91.4). `lease`-mode members do
-            // NOT get that for free: unlike co-control, `lease-manager.ts`
-            // has no equivalent "a lease was just acquired" hook of its
-            // own — every existing `lease.acquire` broadcasts
-            // `lease.changed`/viewers/the event/the audit row itself, at
-            // THIS exact call site (`case 'lease.acquire'`, above). Every
-            // member for which `mirror.start` just acquired a fresh manual
-            // lease needs that identical treatment repeated here, or every
-            // other tab watching that device silently never learns who
-            // holds it now (F25).
-            for (const m of members) {
-              if (m.mode !== 'lease') continue
-              const holder = deps.leases.getHolder(m.deviceId)
-              deps.broadcast({ type: 'lease.changed', payload: { deviceId: m.deviceId, heldBy: holder, expiresAt: holder?.expiresAt ?? null } })
-              broadcastViewers(m.deviceId)
-              deps.recorder.record({
-                deviceId: m.deviceId,
-                stream: 'main',
-                kind: 'control.acquired',
-                actor: state.userId,
-                meta: { clientId: state.clientId, mirror: true, groupId: group.id },
-              })
-              deps.audit.record({
-                userId: state.userId,
-                action: 'device.control',
-                target: m.deviceId,
-                meta: { action: 'acquired', mirror: true, groupId: group.id },
-              })
-            }
-            send(ws, {
-              type: 'mirror.started',
-              ...(msgId ? { id: msgId } : {}),
-              payload: { groupId: group.id, focusDeviceId: group.focusDeviceId, members },
-            })
-            return
-          }
-
-          case 'mirror.stop': {
-            // A no-op for a caller who does not own this group (or names an
-            // already-gone one) — the same tolerance `assist.stop` gives a
-            // non-holder. Deliberately does NOT release the members' own
-            // leases/grants: those are ordinary, independent authorizations
-            // by now, and a WS disconnect already releases every one this
-            // client holds (`handleClose`, below) regardless of which (if
-            // any) mirror group they were resolved through.
-            const { groupId } = msg.payload
-            mirror?.stop(groupId, state.clientId)
-            send(ws, { type: 'mirror.stopped', ...(msgId ? { id: msgId } : {}), payload: { groupId } })
-            return
-          }
-
-          case 'input.mirror': {
-            // Plan 91 §3.8, §4.7, §5 step 91.7 — ONE message in, N parallel
-            // arbiter submissions out, one `input.mirror.result` back with
-            // an entry per live member, always (never silence). Correlated
-            // by `seq`, not the envelope `id` — this message carries none.
-            if (!mirror) {
-              sendError(ws, 'E_NOT_SUPPORTED', 'mirroring is not available on this host', msgId)
-              return
-            }
-            const { groupId, seq, action, soloDeviceId } = msg.payload
-            const results = await mirror.dispatch(groupId, state.clientId, action, soloDeviceId)
-            send(ws, { type: 'input.mirror.result', payload: { groupId, seq, results } })
-            return
-          }
-
           case 'inspect.attach':
           case 'inspect.dump':
           case 'inspect.find': {
             // Reading the screen is a control-grade action (plan 56 §3.7): it
             // can carry whatever text is on screen (passwords included) and
             // seizes the `instrumentation` lock, so it is gated exactly like
-            // `input.*` — the SAME server-authoritative lease check, never
-            // merely a disabled button (spec §10.1).
+            // `input.*` — the SAME server-authoritative admission check,
+            // never merely a disabled button (spec §10.1, plan 205 §4.8).
             const { deviceId } = msg.payload
-            const allowed = deps.leases.checkInputAllowed(deviceId, state.clientId)
-            if (!allowed.ok) {
-              sendError(ws, allowed.code, allowed.message, msgId)
+            const gate = admit(deviceId, state, 'control')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
               return
             }
+            if (gate.warning) warnOnce(ws, state, deviceId, gate.warning)
             // Node-owned devices have no local `Inspector` to call (§2
             // non-goals) — `RemoteSessions` exposes only `frameSize` and
             // `input`. Reported honestly, never a fabricated empty tree.
@@ -2209,7 +1751,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               sendError(ws, 'E_DEVICE_NOT_READY', 'no active session for this device (start the stream first)', msgId)
               return
             }
-            deps.leases.touchManual(deviceId, state.clientId)
+            deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
 
             if (msg.type === 'inspect.attach') {
               send(ws, {
@@ -2338,8 +1880,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           case 'clipboard.get': {
-            // Read-only, no lease (plan 38 §4.5, acceptance #5) — same
-            // "no state change, no gate" reasoning `monitor.start` uses.
+            // Read-only, no admission check (plan 38 §4.5, acceptance #5) —
+            // same "no state change, no gate" reasoning `monitor.start` uses.
             const { deviceId } = msg.payload
             const remoteNode = deps.remote?.nodeIdFor(deviceId) ?? null
             let text: string
@@ -2378,16 +1920,18 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
 
           case 'clipboard.set': {
             const { deviceId, text, paste } = msg.payload
-            // The exact plan 26 lease pattern (§4.5): checkInputAllowed, then
-            // touchManual, then record — writing the clipboard is input.
-            const allowed = deps.leases.checkInputAllowed(deviceId, state.clientId)
-            if (!allowed.ok) {
-              sendError(ws, allowed.code, allowed.message, msgId)
+            // The exact plan 26 admission pattern (§4.5, reworked by plan 205
+            // §4.8): admit, then touchControl, then record — writing the
+            // clipboard is input.
+            const gate = admit(deviceId, state, 'control')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
               return
             }
+            if (gate.warning) warnOnce(ws, state, deviceId, gate.warning)
             // Resolve local vs. remote — and refuse a session that genuinely
-            // cannot do this — BEFORE touching the lease timer or recording
-            // anything (mirrors `shellPortFor`'s ordering, plan 25 §4.1 step
+            // cannot do this — BEFORE touching the control marker or
+            // recording anything (mirrors `shellPortFor`'s ordering, plan 25 §4.1 step
             // 3): a routing failure must never look like an accepted write
             // in the audit trail.
             const remoteNode = deps.remote?.nodeIdFor(deviceId) ?? null
@@ -2405,9 +1949,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 return
               }
             }
-            deps.leases.touchManual(deviceId, state.clientId)
+            deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
             const actor = state.userId
-            // Recorded AFTER the lease check passes and BEFORE the device is
+            // Recorded AFTER the admission check passes and BEFORE the device is
             // awaited (plan 18/26's ordering, reused verbatim): a refused
             // write is never logged as if it happened. The LENGTH only,
             // never the text (plan 38 §3.6, §4.5, acceptance #7) — clipboard
@@ -2439,7 +1983,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           case 'transfer.cancel': {
-            // No lease/permission check: knowing a `transferId` at all already
+            // No admission/permission check: knowing a `transferId` at all already
             // requires having started (or watched) that transfer — it is a
             // random server-minted id, never guessable — and cancelling one's
             // own (or a device's own) in-flight transfer is harmless either
@@ -2516,11 +2060,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         // busy device refuses every ~40-120ms tap identically, and the
         // generic warn would otherwise produce a log line per event. Only
         // the single-device `input.*` messages carry a bare `deviceId` in
-        // their payload — `input.mirror`'s own payload carries `groupId`
-        // instead, and its per-member E_INPUT_BUSY refusals are already
-        // reported as ordinary `MirrorResult`s rather than thrown up to this
-        // catch, so this block is never reached for them; `mirror/group.ts`'s
-        // own `dispatch` carries the identical rate-limited warn for that path.
+        // their payload.
         if (code === 'E_INPUT_BUSY' && typeof msg.payload === 'object' && msg.payload !== null && 'deviceId' in msg.payload) {
           const deviceId = String((msg.payload as { deviceId: unknown }).deviceId)
           const lane = laneForInputType(msg.type)
@@ -2540,7 +2080,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       }
     },
 
-    /** WS dropped → this connection's streams, log subscriptions, and manual leases auto-release. */
+    /** WS dropped → this connection's streams, log subscriptions, and command activities auto-release. */
     handleClose(ws: ServerWebSocket<unknown>): void {
       const state = conns.get(ws)
       if (!state) return
@@ -2563,48 +2103,25 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // nothing external to release, unlike `monitors.releaseClient` above
       // (plan 93 §3.17, step 93.4).
       state.commandSubs.clear()
-      // `LeaseManager.releaseAllForClient` drops the manual lease itself but
-      // does not (today) tell us it did so — reaching `shell.exec` at all
-      // required holding that lease, so every device this connection ran a
-      // command on is, by construction, a device whose lease this close is
-      // about to release (plan 26 §3.7, §4.4, acceptance #11).
       for (const deviceId of state.shellDevices) shellSessions.release(deviceId)
       state.shellDevices.clear()
-      deps.leases.releaseAllForClient(state.clientId)
-      // Plan 91 §3.5, §5 step 91.5 — the `control.assist.ended`/`device.assist`
-      // bookend for a WS DISCONNECT specifically: read BEFORE releasing,
-      // because `releaseAllForClient` below has no return value of its own
-      // to report which grants it ended (unlike `assist.stop`'s explicit
-      // `release()` boolean, which the WS handler above uses the same way).
-      for (const grant of deps.coControl?.grantsForClient(state.clientId) ?? []) {
-        const assistMeta = { jobId: grant.jobId, primaryKind: grant.primaryKind, reason: 'disconnected' as const }
-        deps.recorder.record({ deviceId: grant.deviceId, stream: 'main', kind: 'control.assist.ended', actor: grant.userId, meta: assistMeta })
-        deps.audit.record({ userId: grant.userId, action: 'device.assist', target: grant.deviceId, meta: assistMeta })
-      }
-      // Every co-control grant this connection held, anywhere on the farm
-      // (plan 91 §3.2's "On WS close" row, §5 step 91.4) — the same
-      // "disconnect ends what this connection was authorised to do" reasoning
-      // as `deps.leases.releaseAllForClient` immediately above, for the
-      // grant store instead of the lease store.
-      deps.coControl?.releaseAllForClient(state.clientId)
-      // Every mirror group this connection owned, anywhere on the farm
-      // (plan 91 §5 step 91.7) — only the mirror bookkeeping itself; the
-      // members' own underlying leases/grants are already released by the
-      // two calls immediately above, regardless of which (if any) mirror
-      // group they were resolved through.
-      mirror?.stopAllForClient(state.clientId)
-      // Nor does any readiness hold this connection's lease(s) took (plan 43
-      // §5 step 43.7) — `LeaseManager.releaseAllForClient` above does not
-      // report back which devices it released, so this walks `leaseHolds`
-      // directly for anything still attributed to this connection.
-      for (const [deviceId, entry] of [...leaseHolds]) {
-        if (entry.clientId === state.clientId) {
-          releaseLeaseHold(deviceId)
-          // Same reasoning as `lease.release` above — a WS drop is one more
-          // way "the lease is released" (plan 94 §4.6).
-          deps.recording?.stopForLeaseLost(deviceId)
+      // A control marker is deliberately NOT ended on close (MVP 04 §1.3: it
+      // expires from the last input, via the registry's own sweep) — but any
+      // `command:<clientId>` activity this connection started (`shell.exec`)
+      // must not outlive the connection that opened it, the same reasoning
+      // every other per-client cleanup call in this function already follows.
+      // Every recording this connection's disconnect should end, too — a
+      // recording is scoped to whoever is controlling the device, and a
+      // dropped tab is one more way that stops (plan 94 §4.6).
+      const endedActivityDeviceIds = new Set<string>()
+      deps.activities.endWhere((deviceId, activity) => {
+        if (activity.kind === 'command' && activity.id === `command:${state.clientId}`) {
+          endedActivityDeviceIds.add(deviceId)
+          return true
         }
-      }
+        return false
+      })
+      for (const deviceId of endedActivityDeviceIds) deps.recording?.stopForDisconnect(deviceId)
       // Any adb endpoint(s) this WS session (the REST route's `clientId`,
       // the same session id `hello` sent) opened must not outlive it either
       // (plan 27 §4.2 — "a WS disconnect" is one of the three teardown triggers).
@@ -2616,10 +2133,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       for (const deviceId of [...state.inspectAttached]) {
         void detachInspector(deviceId, state).catch((err) => deps.log.warn(`inspect detach on close failed for ${deviceId}: ${String(err)}`))
       }
-      // A WS disconnect does NOT revert any `vpn-helper` route this
-      // connection's manual lease(s) were covering, for the same reason as
-      // the `lease.release` handler above (plan 52 §0, §3.1, §4.1): the
-      // route belongs to the device, not the connection.
+      // A WS disconnect does NOT revert any `vpn-helper` route a connection's
+      // control marker was covering (plan 52 §0, §3.1, §4.1): the route
+      // belongs to the device, not the connection.
       conns.delete(ws)
       for (const deviceId of watchedDeviceIds) broadcastViewers(deviceId)
       // Agent chat subscriptions are tracked independently of `ConnState` (plan 66 §4.4) — release
@@ -2630,12 +2146,11 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     /**
      * `CommandRunnerDeps.broadcast` (plan 93 §3.17, §4.3, §4.5, step 93.4) —
      * `daemon.ts`'s forward-ref from the command runner (constructed well
-     * before this router, right after `leases`) into `commandTargets(runId)`
+     * before this router, right after `activities`) into `commandTargets(runId)`
      * above, the same "built later, wired back in through a forward
      * reference" shape every other cross-module hook on this returned object
-     * already uses (`releaseLeaseHold`, `reconcileMirror`, ...). Subscriber-
-     * scoped, never `hub.broadcast` — see `commandTargets`'s own doc comment
-     * for why (F27).
+     * already uses. Subscriber-scoped, never `hub.broadcast` — see
+     * `commandTargets`'s own doc comment for why (F27).
      */
     broadcastCommand(runId: string, msg: ServerMessage): void {
       for (const ws of commandTargets(runId)) send(ws, msg)
@@ -2689,44 +2204,20 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       crashWatcher?.unwatch(deviceId)
     },
 
-    /** The manual lease on this device was released, however that happened (plan 26 §3.7, §4.4) — the next holder starts at `/`. */
+    /** A device's control marker ended, however that happened (plan 26 §3.7, §4.4) — the next controlling client starts at `/`. */
     releaseShellSession(deviceId: string): void {
       shellSessions.release(deviceId)
     },
 
     /**
-     * The manual lease's readiness hold (plan 43 §5 step 43.7), for the
-     * automatic-revocation paths (idle timeout, quarantine) that go through
-     * `daemon.ts`'s `onManualRevoked` rather than through this router's own
-     * `lease.release`/`handleClose`, which already call this directly.
+     * Any open recording on this device (plan 94 §4.6), for a disconnect-like
+     * path outside this router's own `handleClose` (quarantine, a forced
+     * teardown) — `handleClose` already calls `deps.recording?.stopForDisconnect`
+     * directly for a plain WS drop; this forward-ref is what lets `daemon.ts`
+     * reach the same effect for the other paths.
      */
-    releaseLeaseHold,
-
-    /**
-     * Any open recording on this device (plan 94 §4.6), for the SAME
-     * automatic-revocation paths `releaseLeaseHold` above already documents
-     * (idle timeout, quarantine, a takeover) — `lease.release` and
-     * `handleClose` in this router already call `deps.recording?.stopForLeaseLost`
-     * directly; this forward-ref is what lets `daemon.ts`'s `onManualRevoked`
-     * reach the same effect for the automatic paths, which is NOT yet wired
-     * (flagged in plan 94 step 94.3's own report — `daemon.ts` is outside
-     * this step's file list).
-     */
-    stopRecordingForLeaseLost(deviceId: string): void {
-      deps.recording?.stopForLeaseLost(deviceId)
-    },
-
-    /**
-     * Live re-resolution for one device, across every mirror group that has
-     * it as a member (plan 91 §4.7, §5 step 91.7) — `daemon.ts` wires this
-     * to `onJobFinished` through the same forward-ref pattern every other
-     * WS-router hook here already uses, so an `internal:install` job ending
-     * (F27) re-admits the device to any mirror group it was skipped from,
-     * without a client asking. A harmless no-op when `mirror` was never
-     * constructed (plan 91 not wired) or the device belongs to no group.
-     */
-    reconcileMirror(deviceId: string): void {
-      mirror?.reconcile(deviceId)
+    stopRecordingForDisconnect(deviceId: string): void {
+      deps.recording?.stopForDisconnect(deviceId)
     },
 
     /** `GET /api/adb/stats`'s `transport` block (plan 85 §3.6, §4.6) — `daemon.ts` wires this into `createAdbStatsRoutes` through the same forward-ref pattern every other WS-router hook here already uses. */
@@ -2745,11 +2236,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     },
 
     /**
-     * `GET /api/adb/stats`'s `input` block (plan 91 §4.10, §5 step 91.10,
-     * tests H2/H4) — `daemon.ts` wires this the same forward-ref way
-     * `transportStats` right above is. See `InputStatsBlock`'s own doc
-     * comment for the two fields (`uncollectedGrants`, `orphanedMirrorGroups`)
-     * this step added beyond §4.10's literal pseudocode.
+     * `GET /api/adb/stats`'s `input` block (plan 91 §4.10, narrowed to
+     * `lanes` only by plan 205 §4.8) — `daemon.ts` wires this the same
+     * forward-ref way `transportStats` right above is.
      *
      * Every local `DeviceSession` carries its OWN three-lane arbiter (91.1)
      * — there is no farm-wide arbiter to read percentiles from directly, and
@@ -2793,29 +2282,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         }
       }
 
-      const mirrorStats = mirror?.stats() ?? { groups: 0, members: 0, fanoutMsP50: 0, fanoutMsP95: 0 }
-      // "Owner connection gone" (plan 91 §5 step 91.10, §8 risk table's own
-      // "a mirror group outlives its owner's tab" row) — cross-referenced
-      // against every currently-OPEN connection's clientId, the same
-      // `readyState === 1` filter `deviceTargets`/`monitorTargets` above use.
-      const connectedClientIds = new Set([...conns.entries()].filter(([ws]) => ws.readyState === 1).map(([, s]) => s.clientId))
-      const orphanedMirrorGroups = (mirror?.allGroups() ?? []).filter((g) => !connectedClientIds.has(g.ownerClientId)).length
-
-      const rawGrants = deps.coControl?.rawGrantSnapshot() ?? []
-      const nowSec = Math.floor(Date.now() / 1000)
-      const uncollectedGrants = rawGrants.filter((g) => nowSec - g.expiresAt > UNCOLLECTED_GRANT_GRACE_SEC).length
-
-      return {
-        lanes,
-        assistsActive: deps.coControl?.activeGrantCount() ?? 0,
-        mirrorGroups: mirrorStats.groups,
-        mirrorMembers: mirrorStats.members,
-        mirrorFanoutMsP50: mirrorStats.fanoutMsP50,
-        mirrorFanoutMsP95: mirrorStats.fanoutMsP95,
-        queueWaitMs: deps.coControlQueueWaitMs?.() ?? DEFAULT_QUEUE_WAIT_MS,
-        uncollectedGrants,
-        orphanedMirrorGroups,
-      }
+      return { lanes }
     },
   }
 }

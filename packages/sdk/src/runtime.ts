@@ -82,7 +82,7 @@ export interface PluginStorage {
  * before the capability runs at all — the list is exhaustive, because it is
  * what the operator was shown and consented to at install. A capability that
  * IS declared can still be refused (`E_FORBIDDEN`, `E_NO_GRANT`,
- * `E_NEEDS_LEASE`, `E_DEVICE_OFFLINE`): declaring something is necessary,
+ * `E_DEVICE_CONFLICT`, `E_DEVICE_OFFLINE`): declaring something is necessary,
  * never sufficient — the farm's own ACL decides, under a `plugin:<name>`
  * principal, and every call is audited under it.
  *
@@ -92,7 +92,7 @@ export interface PluginStorage {
  * script (one published outside a plugin) is refused `E_FARM_NO_PLUGIN`: it
  * has no manifest to declare anything in.
  *
- * `call`/`callRaw` mirror `KvApi`'s own `get`/`getRaw` split deliberately: a
+ * `call`/`callRaw` match `KvApi`'s own `get`/`getRaw` split deliberately: a
  * caller that knows the output shape validates it against its OWN schema at
  * this boundary, because the farm's output schema can change under a plugin
  * that was published months ago. The plan spelled this `ctx.farm.<capability>(input)`;
@@ -699,7 +699,7 @@ export type ServiceSetup = (ctx: PluginServiceContext) => void | Promise<void>
  * this handler is called with — stash that `ctx` and use it a minute later and
  * the extra capabilities are refused again, exactly as if they had never been
  * declared. Everything else about a farm call is unchanged: the real ACL, the
- * lease admission and the audit row all still apply.
+ * activity policy and the audit row all still apply.
  */
 export type ServiceResetData = (ctx: PluginServiceContext) => PluginResetReport | void | Promise<PluginResetReport | void>
 

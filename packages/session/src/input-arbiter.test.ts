@@ -51,16 +51,15 @@ function fakeSink(opts?: { tapMs?: number; swipeMs?: number }): { sink: InputSin
   return { sink, log }
 }
 
-const lease = (id: string): InputSource => ({ kind: 'lease', id, userId: null })
+const user = (id: string): InputSource => ({ kind: 'user', id, userId: null })
 const job = (id: string): InputSource => ({ kind: 'job', id, userId: null })
-const assist = (id: string): InputSource => ({ kind: 'assist', id, userId: `user-${id}` })
 
 describe('createInputArbiter — the pointer lane never interleaves two sources (fixes F6, tests H1)', () => {
   test('two concurrent taps from different sources run one at a time — down and up are never interleaved', async () => {
     const { sink, log } = fakeSink({ tapMs: 15 })
     const arbiter = createInputArbiter(sink, { queueWaitMs: () => 5_000, maxQueueDepth: () => 32, log: silentLog().log })
-    const a = arbiter.for(lease('client-a'))
-    const b = arbiter.for(lease('client-b'))
+    const a = arbiter.for(user('client-a'))
+    const b = arbiter.for(user('client-b'))
 
     // Submitted back-to-back, deliberately not awaited individually: this is
     // exactly the "two overlapping callers" shape F6 describes. `a`'s tap
@@ -100,27 +99,27 @@ describe('createInputArbiter — the pointer lane never interleaves two sources 
   })
 })
 
-describe('createInputArbiter — non-preemptive priority (assist > lease > job = agent, §3.3, §4.1)', () => {
-  test('an assist tap jumps a QUEUED job tap, but never interrupts a RUNNING one', async () => {
+describe('createInputArbiter — non-preemptive priority (user > job = agent, §3.3, §4.1, plan 205 §5 step 205.10)', () => {
+  test('a user tap jumps a QUEUED job tap, but never interrupts a RUNNING one', async () => {
     const { sink, log } = fakeSink({ tapMs: 20 })
     const arbiter = createInputArbiter(sink, { queueWaitMs: () => 5_000, maxQueueDepth: () => 32, log: silentLog().log })
     const jobSrc = arbiter.for(job('job-1'))
-    const assistSrc = arbiter.for(assist('op-1'))
+    const userSrc = arbiter.for(user('op-1'))
 
     // job tap #1 claims the lane (idle → runs immediately).
     const jobTap1 = jobSrc.tap({ x: 1, y: 0 })
     // job tap #2 queues behind it.
     const jobTap2 = jobSrc.tap({ x: 2, y: 0 })
-    // The assist tap arrives after both are already submitted, while job
+    // The user tap arrives after both are already submitted, while job
     // tap #1 is RUNNING — it must wait for job tap #1 to finish (never
     // preempt), but then jump ahead of the already-QUEUED job tap #2.
-    const assistTap = assistSrc.tap({ x: 3, y: 0 })
+    const userTap = userSrc.tap({ x: 3, y: 0 })
 
-    await Promise.all([jobTap1, jobTap2, assistTap])
+    await Promise.all([jobTap1, jobTap2, userTap])
 
-    // job #1 completes as an atomic down/up pair before assist starts at
-    // all (non-preemptive); assist then completes atomically before job #2
-    // runs (priority jump over a queued, lower-priority action).
+    // job #1 completes as an atomic down/up pair before the user tap starts
+    // at all (non-preemptive); the user tap then completes atomically
+    // before job #2 runs (priority jump over a queued, lower-priority action).
     expect(log).toEqual(['down:1', 'up:1', 'down:3', 'up:3', 'down:2', 'up:2'])
   })
 })

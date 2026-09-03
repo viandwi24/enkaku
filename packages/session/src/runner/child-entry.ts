@@ -31,15 +31,6 @@ const pendingFarm = new Map<string, { resolve: (v: unknown) => void; reject: (e:
 const abortController = new AbortController()
 let aborted: 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout' | null = null
 
-/**
- * `ctx.onAssist` registrations (plan 91 §3.6, §4.8) — a list, not a single
- * slot, so a script that calls `ctx.onAssist` more than once (unusual, but
- * never silently drops a caller's registration the way overwriting a single
- * slot would). Never cleared mid-process: this child runs exactly one
- * attempt, so there is no "next job" to leak into.
- */
-const assistHandlers: Array<(e: { at: number; actor: string | null }) => void> = []
-
 function request<T>(call: Omit<Extract<ChildToParent, { t: 'device.call' }>, 't' | 'callId'>): Promise<T> {
   const callId = crypto.randomUUID()
   return new Promise<T>((resolve, reject) => {
@@ -286,11 +277,6 @@ process.on('message', (raw: unknown) => {
     pendingJobs.clear()
     for (const [, waiter] of pendingFarm) waiter.reject(new Error(`job di-abort (${msg.reason})`))
     pendingFarm.clear()
-  } else if (msg.t === 'assist') {
-    // NOT an abort (plan 91 §3.6) — the job keeps running exactly as before;
-    // a script that never called `ctx.onAssist` is unaffected. Delivered to
-    // every registration, in order.
-    for (const cb of assistHandlers) cb({ at: msg.at, actor: msg.actor })
   } else if (msg.t === 'init') {
     void runScript(msg)
   }
@@ -500,8 +486,6 @@ interface BundleDef {
   run: (ctx: unknown) => Promise<unknown>
   finish?: (ctx: unknown) => Promise<void>
   reset?: { packages: string[]; clearData?: boolean }
-  /** Plan 91 §3.6, §4.8 — whether an operator may assist this script's job. Reported in `ready`, undefined for a pre-plan-91 bundle. */
-  assist?: 'allow' | 'deny'
 }
 
 /**
@@ -600,7 +584,6 @@ async function loadBundle(): Promise<{ bundlePath: string; def: BundleDef } | un
       ...(typeof def.retries === 'number' ? { retries: def.retries } : {}),
       ...(def.runtime !== undefined ? { runtime: def.runtime } : {}),
       ...(reset ? { reset } : {}),
-      ...(def.assist !== undefined ? { assist: def.assist } : {}),
     })
     return { bundlePath, def }
   } catch (err) {
@@ -709,12 +692,6 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       // reproduces the exact key derivation this had before that field
       // existed.
       jobs: createJobsApiFor(jobsRequest, { id: init.job.id, attempt: init.job.attempt, nodeId: init.job.nodeId }),
-      // Plan 91 §3.6, §4.8 — a running script's own view of `{t:'assist'}`
-      // pushes (handled at module scope, above `process.on('message', ...)`).
-      // A script that never calls this is affected in NO way.
-      onAssist: (cb: (e: { at: number; actor: string | null }) => void) => {
-        assistHandlers.push(cb)
-      },
       // Plan 97 §3.7, §4.2 — a live, unpersisted snapshot; coalesced here,
       // never validated, never stored, never `resultOf`-readable.
       progress: progressReporter.progress,

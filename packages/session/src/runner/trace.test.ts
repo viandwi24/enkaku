@@ -489,14 +489,11 @@ describe('createTraceTee — the other lanes (plan 128 §4.1)', () => {
     expect((h.events.at(-1)?.meta as { fields: unknown }).fields).toEqual({ ms: 900 })
   })
 
-  test('progress and assist land on the same axis as everything else', () => {
+  test('progress lands on the same axis as everything else', () => {
     const h = harness({ engineId: null })
     h.tee.progress({ done: 3, total: 10 })
-    h.tee.assist({ at: 99, actor: 'operator-1' })
     expect(h.events[0]).toMatchObject({ kind: 'progress', name: 'progress' })
     expect(h.events[0]?.meta).toEqual({ value: { done: 3, total: 10 } })
-    expect(h.events[1]).toMatchObject({ kind: 'assist', name: 'assist', atMs: 99 })
-    expect(h.events[1]?.meta).toEqual({ actor: 'operator-1' })
   })
 
   test('an oversized progress value is truncated by the same rule the args use', () => {
@@ -525,7 +522,6 @@ describe('createNoopTraceTee (plan 128 step 128.4)', () => {
       tee.log({ ts: 1, level: 'info', source: 'runner', msg: 'x' })
       tee.artifact({ kind: 'screenshot', label: 'x', sizeBytes: 1, frameBytes: new Uint8Array([1]) })
       tee.progress(1)
-      tee.assist({ at: 1, actor: null })
     }).not.toThrow()
   })
 })

@@ -267,6 +267,14 @@ export interface SessionManagerDeps {
   withGuestAgentClient?: (deviceId: string) => CreateSessionDeps['withGuestAgentClient']
   /** The session died on its own (device unplugged, capture failed) — viewers need to know. */
   onSessionEnded?: (deviceId: string, reason: string) => void
+  /**
+   * Whether a job is currently running on this device (plan 205 §4.6, §5
+   * step 205.10) — `devices.status` no longer has a "busy" value to read
+   * (that fact now lives in the activity registry). Wired in `daemon.ts` to
+   * `jobStore.runningByDevice(deviceId) !== null`. Optional so a test/fixture
+   * `SessionManager` that never wires it never blocks a reprofile.
+   */
+  hasRunningJob?: (deviceId: string) => boolean
   /** Session start-up phases, tagged with the device they belong to (Plan 17 §3.3, §4.3). */
   onPhase?: (deviceId: string, phase: SessionPhase, detail?: string) => void
   /** Device event log: session.opened / session.closed (Plan 18 §4.2). */
@@ -276,19 +284,15 @@ export interface SessionManagerDeps {
   /** How many idle sessions may be held open across the farm before the least-recently-idle is evicted (Plan 42 §4.4). Read fresh on every release. Omitted/Infinity = no cap. */
   maxIdleSessions?: () => number
   /**
-   * Plan 91 §4.1, §4.5 — `coControl.queueWaitMs`/`coControl.maxQueueDepth`, the input arbiter's
-   * bounded-queue budget. Forwarded VERBATIM (the accessor function itself, never resolved to a
-   * number here) into `createSession`'s identically-named `CreateSessionDeps` fields, which in turn
-   * hand them straight to `createInputArbiter` — `input-arbiter.ts`'s own `submit()` calls
-   * `queueWaitMs()`/`maxQueueDepth()` fresh on every new action, so a farm setting change reaches
-   * every already-open session's arbiter immediately, not only sessions opened after the change.
-   * Undefined falls back to `session.ts`'s own hardcoded defaults, matching every other optional
-   * accessor here. Wired by `daemon.ts`'s `createSessionManager({...})` call to `() =>
-   * settingsStore.get().coControl.queueWaitMs` / `...maxQueueDepth` (fixed 2026-08-13 —
-   * `docs/plans/96-m61-hotfixes.md` §96.13; before that fix `session.ts` already read these two
-   * fields correctly from `CreateSessionDeps`, but `SessionManagerDeps` had no field to receive
-   * them at all, so every session in every wired build ran the plan's own hardcoded stand-in
-   * defaults — 5000ms / 32 — regardless of what an operator configured in Studio).
+   * The input arbiter's bounded-queue budget. Forwarded VERBATIM (the
+   * accessor function itself, never resolved to a number here) into
+   * `createSession`'s identically-named `CreateSessionDeps` fields, which in
+   * turn hand them straight to `createInputArbiter` — `input-arbiter.ts`'s
+   * own `submit()` calls `queueWaitMs()`/`maxQueueDepth()` fresh on every
+   * new action, so a farm setting change reaches every already-open
+   * session's arbiter immediately, not only sessions opened after the
+   * change. Undefined falls back to `session.ts`'s own hardcoded defaults,
+   * matching every other optional accessor here.
    */
   arbiterQueueWaitMs?: () => number
   arbiterMaxQueueDepth?: () => number
@@ -907,10 +911,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         const entry = entries.get(key)
         if (!entry) continue // closed by something else between the snapshot and here
         const deviceId = entry.deviceId
-        // Rule 4 (§3.8): never mid-job — video keeps running while a device
-        // is busy (spec §10.1), and a settings save must not be the thing
-        // that interrupts a running script.
-        if (deps.devices.get(deviceId)?.status === 'busy') {
+        // Rule 4 (§3.8): never mid-job — video keeps running while a job is
+        // running (spec §10.1, plan 205 §4.6 — "busy" is derived from the
+        // activity list, never stored), and a settings save must not be the
+        // thing that interrupts a running script.
+        if (deps.hasRunningJob?.(deviceId)) {
           skippedBusyIds.add(deviceId)
           continue
         }
