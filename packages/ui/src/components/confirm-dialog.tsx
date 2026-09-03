@@ -59,14 +59,14 @@ export function ConfirmDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription asChild>
-            <div className="text-[13px] leading-relaxed text-fg-muted">{description}</div>
+            <div className="text-row leading-relaxed text-dim">{description}</div>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             disabled={busy}
-            className={destructive ? 'bg-led-danger text-white hover:bg-led-danger/90' : undefined}
+            className={destructive ? 'bg-danger-soft text-danger hover:bg-danger/15' : undefined}
             onClick={async (e) => {
               e.preventDefault()
               setBusy(true)

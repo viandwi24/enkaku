@@ -116,7 +116,7 @@ export function ParamsEditor({
             </div>
             <div className="flex items-end justify-end gap-2">
               <label className="flex items-center gap-1.5 pb-1.5 text-[11.5px] text-fg-muted">
-                <Switch size="sm" checked={param.required} onCheckedChange={(required) => update(i, { required })} aria-label="Required" />
+                <Switch checked={param.required} onCheckedChange={(required) => update(i, { required })} aria-label="Required" />
                 required
               </label>
               <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove parameter" onClick={() => remove(i)}>
