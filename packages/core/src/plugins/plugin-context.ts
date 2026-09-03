@@ -69,8 +69,8 @@ export interface PluginContextDeps {
   farm?: (id: string, input: unknown) => Promise<unknown>
   /**
    * One log line. Defaults to the core logger under `plugin.<id>`; step
-   * 109.8 replaces it with the per-plugin ring + rotated file + `plugin.log`
-   * broadcast, and nothing about the context changes when it does.
+   * 109.8 replaces it with the per-plugin ring + rotated file, and nothing
+   * about the context changes when it does.
    */
   emitLog?: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, fields?: Record<string, unknown>) => void
   /**

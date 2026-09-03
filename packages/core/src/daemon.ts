@@ -1728,9 +1728,9 @@ let blobGc: BlobGc | null = null
       // window that survives, and a limiter rebuilt with the router would reset
       // every count.
       const pluginWebhookLimiter = createWebhookRateLimiter()
-      // Plan 109 §4.5, step 109.8 — the per-plugin ring, the rotated file, the
-      // redactor, and the `plugin.log` broadcast. R3's shape (`jobs/log-buffer.ts`
-      // is the precedent), one ring per plugin with every line optionally
+      // Plan 109 §4.5, step 109.8 — the per-plugin ring, the rotated file, and
+      // the redactor. R3's shape (`jobs/log-buffer.ts` is the precedent),
+      // one ring per plugin with every line optionally
       // tagged, so "logs for one thing this plugin manages" is a filter rather
       // than a second stream.
       const pluginLogs = createPluginLogStore({
@@ -1754,7 +1754,6 @@ let blobGc: BlobGc | null = null
               return []
             }
           }),
-        broadcast: (plugin, line) => hub.broadcast({ type: 'plugin.log', payload: { plugin, ...line } }),
         log: log.child('plugin-logs'),
       })
       pluginHost = createRuntimeHost({

@@ -496,15 +496,15 @@ export interface ProxyUpstream {
 /**
  * The `fields.event` marker a `service/failover.ts` switch's log line carries
  * (plan 121 §4.5, step 121.6) — `service/logbook.ts`'s `LogSink` is the only
- * broadcast channel a plugin service has (`plugin.log`, `@enkaku/protocol`'s
- * `messages/plugin.ts`); there is no separate, plugin-specific WS message
- * type, because the core's protocol package must not carry one entry per
- * optional plugin (00-overview §4.3's "no second, weaker way", applied to the
- * wire rather than to storage). A switch's `warn`/`info` line therefore
- * carries this marker plus `recordId`/`from`/`to`/`reason`/`at` in its
- * `fields` bag, so a reader of the plugin's log (today: the Logs tab; in
- * principle, anything that reads `plugin.log`) can tell a failover event from
- * an ordinary line without parsing prose. `ui/parts/catalogue.tsx`'s own
+ * log channel a plugin service has (the per-plugin ring served by
+ * `GET /api/plugins/:name/runtime/logs`); there is no separate, plugin-specific
+ * WS message type, because the core's protocol package must not carry one
+ * entry per optional plugin (00-overview §4.3's "no second, weaker way",
+ * applied to the wire rather than to storage). A switch's `warn`/`info` line
+ * therefore carries this marker plus `recordId`/`from`/`to`/`reason`/`at` in
+ * its `fields` bag, so a reader of the plugin's log (the Logs tab) can tell a
+ * failover event from an ordinary line without parsing prose.
+ * `ui/parts/catalogue.tsx`'s own
  * failover chip does NOT read this — see that file's own note on why it polls
  * the ordinary `GET …/http/proxies` row instead.
  */

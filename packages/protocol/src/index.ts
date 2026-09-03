@@ -139,12 +139,6 @@ import {
 // `messages/command`'s own import blocks above already use).
 import { JobProgressEventMessage } from './messages/job'
 
-// Plan 109 (M74 — the plugin runtime), step 109.8. `plugin.log` — the live
-// half of a plugin service's log. Imported here, separately from the re-export
-// block further down, for the same reason `JobProgressEventMessage` above is:
-// `ServerMessageSchema` needs to reference it.
-import { PluginLogMessage } from './messages/plugin'
-
 // Plan 128 (M93 — the job trace timeline), step 128.1, §4.2. `job.trace` — the
 // live tail of one job's event stream. Imported here, separately from the
 // re-export block further down, for the same reason `JobProgressEventMessage`
@@ -1058,14 +1052,6 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   // appended last, for the same "never interleave, this file is contested"
   // reason noted on the Plan 93/94 entries above.
   JobProgressEventMessage,
-  // Plan 109 (M74 — the plugin runtime), step 109.8, §4.5 — appended last, for
-  // the same "never interleave, this file is contested" reason noted above.
-  //
-  // It also widens `SERVER_MESSAGE_TYPES`, which is the plugin event
-  // vocabulary — so this one addition would hand a plugin the ability to
-  // subscribe to its OWN log. `refusedPluginEventTypesMessage` below is what
-  // stops that, and its comment is where the reasoning lives.
-  PluginLogMessage,
   // Plan 128 (M93 — the job trace timeline), step 128.1, §4.2 — the trace's
   // live tail, the sibling of `JobLogMessage` above. Appended last, for the
   // same "never interleave, this file is contested" reason noted on every
@@ -1138,44 +1124,6 @@ export function unknownPluginEventTypesMessage(events: readonly string[]): strin
       ? ' — and there is no `device.connected`/`device.disconnected`: a device connecting or disconnecting arrives as `device.status`' +
         " (payload.status === 'offline' is disconnected), and joining or leaving the registry as `device.added`/`device.removed`."
       : '.')
-  )
-}
-
-/**
- * Farm events a plugin may **not** subscribe to, however real they are (plan
- * 109 §3.5, step 109.8).
- *
- * There is exactly one entry and it was created by step 109.8 itself.
- * `plugin.log` is a genuine broadcast, so `unknownPluginEventTypesMessage`
- * above would happily accept it — and a plugin that subscribed to it would
- * have every one of its own log lines delivered back to a handler, whose own
- * `ctx.log` call broadcasts another line, which is delivered back. The loop is
- * not hypothetical and it is not slow: one `ctx.log.info` inside a
- * `plugin.log` handler is unbounded growth at the speed of the event loop, in
- * the core's own process, and neither the per-handler deadline nor the error
- * budget can see it because nothing is failing.
- *
- * Refused here rather than rate-limited later, because a subscription to your
- * own output is never the thing an author meant. A plugin that wants to react
- * to its own logging already has the call site.
- *
- * A denylist rather than a rule ("no event a plugin can cause") on purpose: a
- * plugin can cause `job.status` too, and reacting to a job it started is a
- * legitimate, terminating thing to do. What makes `plugin.log` different is
- * that the reaction's own *observation* is what feeds the loop.
- */
-export const PLUGIN_EVENT_TYPE_DENYLIST: readonly string[] = ['plugin.log']
-const PLUGIN_EVENT_TYPE_DENY_SET = new Set(PLUGIN_EVENT_TYPE_DENYLIST)
-
-/** Returns the refusal message, or `null` when no declared type is on the denylist. */
-export function refusedPluginEventTypesMessage(events: readonly string[]): string | null {
-  const refused = events.filter((type) => PLUGIN_EVENT_TYPE_DENY_SET.has(type))
-  if (refused.length === 0) return null
-  return (
-    `a plugin may not subscribe to ${refused.join(', ')}. \`plugin.log\` carries a plugin service's OWN log lines, so a handler for it ` +
-    `that logs anything — directly, or through any helper that does — is fed its own output back forever, inside the core's process, ` +
-    `with nothing failing for the error budget to notice (docs/plans/109-m74-plugin-runtime.md §3.5, step 109.8). ` +
-    `React at the call site instead.`
   )
 }
 
@@ -1485,10 +1433,8 @@ export { JobProgressEventMessage } from './messages/job'
 // tidy an existing block).
 export { PushJobParamsSchema, PullJobParamsSchema, type PushJobParams, type PullJobParams } from './messages/transfer'
 
-// Plan 109 (M74 — the plugin runtime), step 109.8, §4.5. The `plugin.log`
-// broadcast and the shapes `GET /api/plugins/:name/runtime/logs` serves.
-// Appended as its own statement for the same append-only reason as above.
-export { PluginLogMessage, PluginLogLineSchema, PluginLogPageSchema, type PluginLogLine, type PluginLogPage } from './messages/plugin'
+// Plan 109 step 109.8: the shapes `GET /api/plugins/:name/runtime/logs` serves.
+export { PluginLogLineSchema, PluginLogPageSchema, type PluginLogLine, type PluginLogPage } from './messages/plugin'
 
 // Plan 89 (M54 — device identity and physical labelling), step 89.6. The
 // labelling settings block (`DeviceLabelModeSchema`/`DeviceLabellingSchema`,

@@ -12,7 +12,6 @@ import {
   type ServiceResetData,
 } from '@enkaku/sdk'
 import {
-  refusedPluginEventTypesMessage,
   ReportedListenerSchema,
   PluginResetReportSchema,
   type PluginHandlerKind,
@@ -293,7 +292,7 @@ export interface RuntimeHostDeps {
   /**
    * One log line from plugin code. `daemon.ts` wires
    * `plugins/runtime-logs.ts` here (step 109.8) — the per-plugin ring, the
-   * rotated file, the redactor and the `plugin.log` broadcast. Absent ⇒ the
+   * rotated file and the redactor. Absent ⇒ the
    * core logger under `plugin.<id>`, unredacted, which is what every test that
    * does not care about logging gets.
    */
@@ -1017,13 +1016,6 @@ export function createRuntimeHost(deps: RuntimeHostDeps): RuntimeHost {
               `which is the list the operator consented to at install. Declared: ${rec.declaration.events.length > 0 ? rec.declaration.events.join(', ') : '(none)'}`,
           )
         }
-        // Belt and braces over verify's own refusal (step 109.8): the
-        // declaration check above is exhaustive, and `plugin.log` cannot reach
-        // a published manifest — but the manifest is a persisted JSON column,
-        // and the one loop this farm cannot survive is not worth trusting a
-        // single gate with.
-        const refused = refusedPluginEventTypesMessage([type])
-        if (refused) throw new EnkakuError('E_PLUGIN_EVENT_REFUSED', `ctx.onEvent("${type}") (plugin "${rec.name}"): ${refused}`)
         if (stale('ctx.onEvent')) return
         rec.eventUnsubscribes.push(
           events.subscribe({
