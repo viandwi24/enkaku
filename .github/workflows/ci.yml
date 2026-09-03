@@ -49,6 +49,10 @@ jobs:
       # until a tag is already published.
       - run: bash scripts/check-release-packs.sh
       - run: bun run typecheck
+      # `@enkaku/ui` and Studio have zero tests (plan 200 §8.3); this is
+      # their gate instead — the palette, the icon set, and the barrel
+      # exports plan 204 depends on (plan 204 §12).
+      - run: bun run scripts/check-design-tokens.ts
       - run: bun test
       # Studio's component/page tests need a real DOM and run as their own
       # invocation, not as part of the root `bun test` above (plan 72 §4.4,
