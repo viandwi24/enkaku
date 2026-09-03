@@ -92,8 +92,8 @@ export function createThreadRoutes(deps: { runner: AgentRunner; threads: ThreadS
     return typedJson(c, ThreadDeleteResponseSchema, { deleted: true, counts })
   })
 
-  // The fetch half of fetch-then-subscribe (plan 66 §3.4) — a client GETs history, THEN sends
-  // `agent.subscribe` over /ws. `/ws` itself never replays a snapshot (CLAUDE.md).
+  // The fetch half of fetch-then-subscribe (plan 66 §3.4) — a client GETs history, THEN attaches
+  // to the SSE stream (`agent-chat-stream.ts`). `/ws` itself never replays a snapshot (CLAUDE.md).
   app.get('/threads/:id/messages', requirePermission('agent.view'), (c) => {
     const id = c.req.param('id')
     const afterRaw = c.req.query('after')

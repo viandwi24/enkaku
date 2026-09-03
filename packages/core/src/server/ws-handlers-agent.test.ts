@@ -7,7 +7,7 @@ import { approvalResolvedMessage, createAgentWsHandler } from './ws-handlers-age
  * The agent chat protocol's WS half (plan 66 §3.4, §4.4, criterion 6): NO
  * snapshot replay — subscribing only ever starts a live feed; fan-out is
  * per-thread, never global; a disconnected connection stops receiving
- * without needing an explicit `agent.unsubscribe`.
+ * without an explicit `.unsubscribe()` call.
  */
 
 function fakeConn(): { ws: ServerWebSocket<unknown>; sent: ServerMessage[] } {

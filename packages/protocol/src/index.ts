@@ -73,8 +73,6 @@ import {
   InspectTreeMessage,
 } from './messages/inspect'
 import {
-  AgentSubscribeMessage,
-  AgentUnsubscribeMessage,
   AgentRunCancelMessage,
   AgentRunStartedMessage,
   AgentRunFinishedMessage,
@@ -698,8 +696,6 @@ export {
   CreateThreadInputSchema,
   PostThreadMessageInputSchema,
   ApprovalDecisionInputSchema,
-  AgentSubscribeMessage,
-  AgentUnsubscribeMessage,
   AgentRunCancelMessage,
   AgentRunStartedMessage,
   AgentRunFinishedMessage,
@@ -1225,8 +1221,6 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   InspectDetachMessage,
   InspectDumpMessage,
   InspectFindMessage,
-  AgentSubscribeMessage,
-  AgentUnsubscribeMessage,
   AgentRunCancelMessage,
   // Plan 91 §4.4, §5 step 91.4 (Task B.2) — the five client→server halves of
   // the twelve co-control messages (§4.4's table): `assist.start`/

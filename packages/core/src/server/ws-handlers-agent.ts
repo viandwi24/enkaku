@@ -4,8 +4,9 @@ import type { AgentRunner, RunEmitEvent } from '../agent/runner'
 
 /**
  * The agent chat protocol's WS half (plan 66 §3.4, §4.4) —
- * `agent.subscribe`/`.unsubscribe`/`.run.cancel` in, `agent.delta`/
- * `.message`/`.tool.*`/`.approval.*`/`.run.*` out. `/ws` has NO SNAPSHOT
+ * `agent.run.cancel` in over /ws, the SSE relay (`api/agent-chat-stream.ts`)
+ * in through `.subscribe()`, `agent.delta`/`.message`/`.tool.*`/
+ * `.approval.*`/`.run.*` out. `/ws` has NO SNAPSHOT
  * REPLAY (`CLAUDE.md`): subscribing only ever starts a live feed from the
  * moment of the call — a client fetches history over
  * `GET /api/v1/threads/:id/messages` first, exactly like every other

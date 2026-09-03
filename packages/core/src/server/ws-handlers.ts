@@ -1261,19 +1261,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
-          // The agent chat protocol (plan 66 §3.4, §4.4) — `deps.agent` is optional so a host or
-          // test that has not wired Plan 66 keeps compiling and running unchanged, the same
-          // pattern every other optional dep in this file uses.
-          case 'agent.subscribe': {
-            deps.agent?.subscribe(ws, msg.payload.threadId)
-            return
-          }
-
-          case 'agent.unsubscribe': {
-            deps.agent?.unsubscribe(ws, msg.payload.threadId)
-            return
-          }
-
+          // `deps.agent` is optional so a host or test that has not wired
+          // Plan 66 keeps compiling and running unchanged, the same pattern
+          // every other optional dep in this file uses.
           case 'agent.run.cancel': {
             deps.agent?.cancelRun(msg.payload.runId, deps.userLabel?.(state.userId) ?? state.userId)
             // Audited to match its HTTP sibling (`POST /runs/:id/cancel`,
