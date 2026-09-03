@@ -815,3 +815,15 @@ Allowed exceptions, precisely: (a) `packages/core/drizzle/**` is generated histo
 - **Observed, not done**:
 - **Open questions hit**:
 - **Processes**:
+
+
+---
+
+## 12. Amendment 2026-09-03 — testing policy (plan 200 §8.3)
+
+Studio has zero tests. Overrides the Studio tests named above:
+
+- **Dropped**: `packages/studio/src/lib/activity.test.ts`, `packages/studio/src/components/ActivityBadge.test.tsx`; do not create them. The deleted `HolderBadge.test.tsx`, `TakeControlDialog.test.tsx`, `AssistDialog.test.tsx` and any other Studio test in §10 are still deleted (plan 201 deletes every Studio test; if 201 has already merged they are gone and the row is trivially satisfied).
+- **Moves**: `stateDot()` (the MVP 15 dot mapping in `packages/studio/src/lib/activity.ts`) is a pure function of `DeviceInfo`; place it in `packages/protocol/src/activity.ts` as `deviceState(info)` and test it in `packages/protocol/src/activity.test.ts` (five states, one case each). The Studio badge imports it.
+- **§0 amended**: G11's "Verified by" becomes `test ! -e` for the six deleted files plus `bun run typecheck`; the badge's rendering is confirmed by the owner smoke (open a device with a running job: one chip; tap it: the control chip appears and the tail text appears 30 s after the last tap).
+- **§7 amended**: remove the two `bun test packages/studio/...` lines; add `bun test packages/protocol/src/activity.test.ts`.

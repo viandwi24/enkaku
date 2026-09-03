@@ -831,3 +831,14 @@ Forbidden words introduced by this area: `Waking`, `WAKE_OFFER`, `idleTtlSec`, `
 - **Observed, not done**:
 - **Open questions hit**:
 - **Processes**:
+
+
+---
+
+## 12. Amendment 2026-09-03 — testing policy (plan 200 §8.3)
+
+Studio has zero tests. Overrides the Studio tests named above:
+
+- **Dropped**: every change to `packages/studio/src/components/LiveView.test.tsx`, `app/settings/page.test.tsx`, `components/video/FarmVideoFields.test.tsx`, `components/video/useAdbVideoStatsPoll.test.ts`, `components/wall/Wall.test.tsx`. Do not edit them; if they still exist when this plan runs, leave them to plan 201, which deletes them. If a Studio test fails to compile because of this plan's protocol change and plan 201 has not merged yet, delete that test file in this plan and list it in §11 (not a stub, not a skip).
+- **Replaced by**: `bun run typecheck` and the owner smoke already in §7 (no "Waking" panel anywhere; a tile with no frames shows the activity sentence; `E_SESSION_PREPARING` retry every 3 s observed in the network tab).
+- **§0 amended**: G7's "Verified by" becomes the `rg` for the deleted identifiers plus the owner smoke; no Studio test command remains in §7.
