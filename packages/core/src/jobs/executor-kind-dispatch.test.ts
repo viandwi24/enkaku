@@ -1,9 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import type { ScriptKind } from '../db/schema'
 import type { DeviceHealth } from '../device/health'
-import type { DeviceStateMachine } from '../device/state-machine'
+import type { ActivityRegistry } from '../activity/registry'
 import type { JobRow } from '../db/schema'
-import type { LeaseManager } from '../lease/lease-manager'
 import type { JobStore } from '../queue/job-store'
 import type { Logger } from '../util/logger'
 import type { JobExecutor } from './executor'
@@ -76,7 +75,7 @@ function makeJob(overrides: Partial<JobRow> = {}): JobRow {
     params: null,
     priority: 0,
     status: 'running',
-    leaseExpiresAt: null,
+    heartbeatExpiresAt: null,
     result: null,
     error: null,
     createdAt: new Date(),
@@ -95,7 +94,6 @@ function makeJob(overrides: Partial<JobRow> = {}): JobRow {
     depth: 0,
     triggerKey: null,
     peakRssBytes: null,
-    assistCount: 0,
     // Plan 98 §4.4, §4.6, step 98.5 — null here: a bare fixture row, no
     // concurrency gate exercised by this file's own test.
     maxConcurrent: null,
@@ -150,38 +148,35 @@ describe("executor-host.ts does not yet pass a job's script kind to ExecutorRegi
       cancelQueuedDescendants: () => 0,
       listByBatch: () => [],
       cancelQueuedInBatch: () => 0,
-      renewLease: () => true,
+      renewHeartbeat: () => true,
       expiredRunning: () => [],
       expireQueued: () => [],
       failOrphanRunning: () => 0,
       runningByDevice: () => null,
-      assists: () => [],
     }
-    const states: DeviceStateMachine = { apply: () => ({ changed: true, from: 'busy', to: 'idle' }), current: () => 'busy' }
-    const leases: LeaseManager = {
-      acquireManual: () => {
-        throw new Error('not used')
-      },
-      touchManual: () => {},
-      releaseManual: () => false,
-      releaseAllForClient: () => {},
-      noteJobLease: () => {},
-      clearJobLease: () => {},
-      getLease: () => null,
-      getHolder: () => null,
-      lastManualReleaseAt: () => null,
-      lastManualHolder: () => null,
-      checkInputAllowed: () => ({ ok: true }),
-      startReaper: () => {},
-      stopReaper: () => {},
+    /** A minimal fake `ActivityRegistry` — only `end`/`touch` are exercised by `executor-host.ts`. */
+    const activities: ActivityRegistry = {
+      start: (_deviceId, input) => ({ id: input.id, kind: input.kind, label: input.label, actor: input.actor, startedAt: 0, updatedAt: 0 }),
+      update: () => null,
+      touch: () => {},
+      end: () => true,
+      endWhere: () => 0,
+      touchControl: (_deviceId, clientId, actor) => ({ id: `control:${clientId}`, kind: 'control', label: '', actor, startedAt: 0, updatedAt: 0 }),
+      controlOf: () => null,
+      liveControls: () => [],
+      list: () => [],
+      devicesWith: () => [],
+      lastControl: () => null,
+      rebuild: () => {},
+      startSweep: () => {},
+      stopSweep: () => {},
     }
     const health: DeviceHealth = { note: () => {}, consecutiveFailures: () => 0, start: () => {}, stop: () => {} }
 
     const deps: ExecutorHostDepsWithScriptKind = {
       registry,
       jobStore,
-      states,
-      leases: () => leases,
+      activities: () => activities,
       log: silentLog(),
       jobTtlSec: 60,
       heartbeatMs: 5000,

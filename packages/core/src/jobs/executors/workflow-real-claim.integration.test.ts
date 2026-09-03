@@ -4,8 +4,7 @@ import type { SessionManager } from '@enkaku/session'
 import { openDb, runMigrations, type Db } from '../../db'
 import { devices, jobNodes, jobs, scripts } from '../../db/schema'
 import type { DeviceHealth } from '../../device/health'
-import { createDeviceStateMachine } from '../../device/state-machine'
-import { createLeaseManager } from '../../lease/lease-manager'
+import { createActivityRegistry } from '../../activity/registry'
 import { createDevSlotStore } from '../../plugins/dev-slots'
 import { createJobStore } from '../../queue/job-store'
 import { createJobNodeTracker } from '../../runner/artifact-store'
@@ -19,17 +18,20 @@ import { createWorkflowExecutor, DEFAULT_WORKFLOW_MAX_TOTAL_MS } from './workflo
  * The plan's own central claim, proved against the REAL machinery (plan 99
  * step 99.7's brief: "Prove it against the real claim path —
  * `job-store.ts`'s `BEGIN IMMEDIATE` predicate ... with a second job
- * genuinely queued on the same device while the workflow runs"):
+ * genuinely queued on the same device while the workflow runs"), reworked by
+ * plan 205 §4.7 for the activity model:
  *
- *   a three-node workflow on one device produces ONE `jobs` row, ONE lease
- *   held end to end, ONE session build, THREE `job_nodes` rows and THREE
- *   child spawns; `GET /api/devices` shows the device `busy` for the whole
- *   pipeline and NO OTHER queued job on it is claimed during it.
+ *   a three-node workflow on one device produces ONE `jobs` row, ONE
+ *   `job:<id>` activity held end to end, ONE session build, THREE
+ *   `job_nodes` rows and THREE child spawns; the device stays `online`
+ *   throughout (plan 205 §4.6 — "busy" is derived, never stored) with a
+ *   live job activity for the whole pipeline, and NO OTHER queued job on it
+ *   is claimed during it.
  *
  * Real throughout, no fakes for the claim path itself: `JobStore` (SQLite,
- * the actual `claimNext` `BEGIN IMMEDIATE` transaction), `DeviceStateMachine`
- * (the actual `devices.status` column), `LeaseManager` (the actual `Lease`
- * map), `ExecutorHost` (the actual settle/heartbeat/lease lifecycle),
+ * the actual `claimNext` `BEGIN IMMEDIATE` transaction with its `NOT EXISTS`
+ * running-job guard), `ActivityRegistry` (the actual in-memory map),
+ * `ExecutorHost` (the actual settle/heartbeat/activity lifecycle),
  * `ScriptRegistry`/`JobRunner` (real bundles, REAL spawned child
  * processes — the same subprocess path `plugin-execution.integration.test.ts`
  * already proves for a standalone job). Only `SessionManager` is a fake
@@ -45,7 +47,7 @@ import { createWorkflowExecutor, DEFAULT_WORKFLOW_MAX_TOTAL_MS } from './workflo
  * `../executor-kind-dispatch.test.ts`. Registering the workflow's OWN
  * concrete scriptId via `ExecutorRegistry.register()` (the same door
  * `internal:sleep`/`internal:install` already use) reaches the exact same
- * `ExecutorHost.start()` → `settle()` → lease/state machinery this test
+ * `ExecutorHost.start()` → `settle()` → activity machinery this test
  * needs to exercise for real, without depending on the separately-tracked
  * gap. `daemon.ts`'s own PRODUCTION wiring — `executors.setFallback(workflowExecutor,
  * 'workflow')` — is pinned by source-text assertion in `daemon-wiring.test.ts`.
@@ -63,7 +65,7 @@ const silentLog = (): Logger => {
 }
 
 function seedDevice(db: Db, id: string) {
-  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'idle' }).run()
+  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'online' }).run()
 }
 
 function deviceStatus(db: Db, id: string): string | null {
@@ -200,21 +202,13 @@ describe("a three-node workflow on one device — plan 99 step 99.7's own verifi
     // rather than `.setFallback(..., 'workflow')`.
     executors.register(workflowId, workflowExecutor)
 
-    const states = createDeviceStateMachine({ db, log: silentLog() })
-    const leases = createLeaseManager({
-      states,
-      jobStore,
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 300, reaperIntervalMs: 60_000 },
-      log: silentLog(),
-      onJobLeaseExpired: () => {},
-    })
+    const activities = createActivityRegistry({ log: silentLog(), controlIdleSec: () => 30, onChange: () => {} })
     const health: DeviceHealth = { note: () => {}, consecutiveFailures: () => 0, start: () => {}, stop: () => {} }
 
     const host = createExecutorHost({
       registry: executors,
       jobStore,
-      states,
-      leases: () => leases,
+      activities: () => activities,
       log: silentLog(),
       jobTtlSec: 60,
       heartbeatMs: 5000,
@@ -228,24 +222,35 @@ describe("a three-node workflow on one device — plan 99 step 99.7's own verifi
 
     // ---- Enqueue and claim the ONE workflow job through the REAL claim SQL. ----
     const enqueued = jobStore.enqueue({ scriptId: workflowId, deviceId: 'd1', params: {}, priority: 0, scriptName: 'pipeline', scriptVersion: '1.0.0' })
-    expect(deviceStatus(db, 'd1')).toBe('idle') // not yet claimed
+    expect(deviceStatus(db, 'd1')).toBe('online') // devices.status never flips any more (plan 205 §4.6)
+    expect(activities.list('d1')).toEqual([]) // not yet claimed — no job activity
 
     const claimed = jobStore.claimNext(60)
     if (!claimed) throw new Error('expected the workflow job to be claimable')
     expect(claimed.job.id).toBe(enqueued.id)
-    expect(deviceStatus(db, 'd1')).toBe('busy') // claimNext's OWN transaction flips this — before host.start ever runs
+    // The scheduler starts the job activity right after a successful claim
+    // (plan 205 §4.7); this test drives `claimNext` directly, so it does the
+    // same thing the scheduler's loop would do.
+    activities.start(claimed.deviceId, {
+      id: `job:${claimed.job.id}`,
+      kind: 'job',
+      label: 'Running pipeline',
+      actor: { kind: 'system', id: 'core', label: 'Scheduler' },
+    })
 
     host.start(claimed.job)
 
     // ---- While node "b" (the slow one) is running, prove the central claim. ----
     await waitUntil(() => nodeEvents.some((e) => e.id === 'b' && e.status === 'running'))
 
-    // 1. The device is busy for the WHOLE pipeline (job.status's own device row, the same one GET /api/devices reads).
-    expect(deviceStatus(db, 'd1')).toBe('busy')
+    // 1. The device stays online, with a live job activity, for the WHOLE
+    // pipeline (the same activity list `GET /api/devices` reads).
+    expect(deviceStatus(db, 'd1')).toBe('online')
+    expect(activities.list('d1').map((a) => a.id)).toEqual([`job:${claimed.job.id}`])
 
-    // 2. One lease, the SAME jobId, held throughout.
-    const midLease = leases.getLease('d1')
-    expect(midLease?.holder).toBe(claimed.job.id)
+    // 2. One job activity, the SAME jobId, held throughout.
+    const midActivity = activities.list('d1').find((a) => a.kind === 'job')
+    expect(midActivity?.id).toBe(`job:${claimed.job.id}`)
 
     // 3. The REAL claim predicate refuses a second queued job on this device
     // while the workflow is still running — the whole point of one job
@@ -294,9 +299,9 @@ describe("a three-node workflow on one device — plan 99 step 99.7's own verifi
     expect(nodeRows[1]?.output).toEqual({ marker: 'b' })
     expect(nodeRows[2]?.output).toEqual({ marker: 'c' })
 
-    // The device returns to idle and the lease is gone once the job settles.
-    expect(deviceStatus(db, 'd1')).toBe('idle')
-    expect(leases.getLease('d1')).toBeNull()
+    // The device stays online, and the job activity is gone once the job settles.
+    expect(deviceStatus(db, 'd1')).toBe('online')
+    expect(activities.list('d1')).toEqual([])
 
     // And ONLY NOW can the second, previously-refused job be claimed.
     const claimedSecond = jobStore.claimNext(60)

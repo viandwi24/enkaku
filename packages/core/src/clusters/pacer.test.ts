@@ -17,7 +17,7 @@ function setUp(): Db {
 }
 
 function seedDevice(db: Db, id: string) {
-  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status: 'idle' }).run()
+  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status: 'online' }).run()
 }
 
 function fakeScheduler(): { scheduler: Scheduler; kicks: number[] } {
@@ -163,7 +163,7 @@ describe('BatchPacer.onMemberSettled — the repeating clock (plan 94 §3.7, §3
       params: null,
       priority: 0,
       status: opts.status,
-      leaseExpiresAt: null,
+      heartbeatExpiresAt: null,
       result: null,
       error: null,
       createdAt: new Date(),
@@ -185,7 +185,6 @@ describe('BatchPacer.onMemberSettled — the repeating clock (plan 94 §3.7, §3
       depth: 0,
       triggerKey: null,
       peakRssBytes: null,
-      assistCount: 0,
       maxConcurrent: null,
       runtimeOverride: null,
       resultStatus: null,
@@ -329,7 +328,7 @@ describe('replanAfterRestart — restart safety (plan 94 §4.8)', () => {
         params: null,
         priority: 0,
         status: 'success',
-        leaseExpiresAt: null,
+        heartbeatExpiresAt: null,
         result: null,
         error: null,
         createdAt: new Date(),
@@ -351,7 +350,6 @@ describe('replanAfterRestart — restart safety (plan 94 §4.8)', () => {
         depth: 0,
         triggerKey: null,
         peakRssBytes: null,
-        assistCount: 0,
         maxConcurrent: null,
         runtimeOverride: null,
         resultStatus: null,
@@ -400,7 +398,7 @@ describe('replanAfterRestart — restart safety (plan 94 §4.8)', () => {
         params: null,
         priority: 0,
         status: 'running',
-        leaseExpiresAt: null,
+        heartbeatExpiresAt: null,
         result: null,
         error: null,
         createdAt: new Date(),
@@ -422,7 +420,6 @@ describe('replanAfterRestart — restart safety (plan 94 §4.8)', () => {
         depth: 0,
         triggerKey: null,
         peakRssBytes: null,
-        assistCount: 0,
         maxConcurrent: null,
         runtimeOverride: null,
         resultStatus: null,
@@ -486,7 +483,7 @@ describe('replanAfterRestart — closing an orphaned paced batch (plan 94 §5 st
       params: null,
       priority: 0,
       status: opts.status,
-      leaseExpiresAt: null,
+      heartbeatExpiresAt: null,
       result: null,
       error: null,
       createdAt: new Date(),
@@ -508,7 +505,6 @@ describe('replanAfterRestart — closing an orphaned paced batch (plan 94 §5 st
       depth: 0,
       triggerKey: null,
       peakRssBytes: null,
-      assistCount: 0,
       maxConcurrent: null,
       runtimeOverride: null,
       resultStatus: null,
