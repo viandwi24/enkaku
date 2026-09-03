@@ -2,7 +2,6 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import type { LanguageModel } from 'ai'
 import { z } from 'zod'
 import type { ModelInfo } from '@enkaku/protocol'
-import { EnkakuError } from '../../util/errors'
 import type { CountTokensRequest, ProviderAdapter, TokenCount } from './types'
 
 /**
@@ -149,9 +148,4 @@ export async function testOpenRouterConnection(deps: OpenRouterAdapterDeps): Pro
     }
     return { status: 'unreachable', message: err instanceof Error ? err.message : String(err) }
   }
-}
-
-export function assertOpenRouterApiKey(apiKey: string | null): string {
-  if (!apiKey) throw new EnkakuError('E_NO_CREDENTIAL', 'this connector has no stored credential and ENKAKU_OPENROUTER_API_KEY is not set')
-  return apiKey
 }

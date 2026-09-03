@@ -172,9 +172,6 @@ const RecordingDetailResponseSchema = z.object({
   generatedSource: z.string().nullable(),
 })
 
-export const RecordingCreateResponseSchema = z.object({ slug: z.string(), doc: RecordingDocSchema, hash: z.string() })
-export const RecordingPatchResponseSchema = z.object({ slug: z.string(), doc: RecordingDocSchema, hash: z.string() })
-
 const CreateBody = z.object({
   deviceId: z.string().min(1),
   name: z.string().min(1).max(200),

@@ -2,7 +2,6 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import type { LanguageModel, ModelMessage } from 'ai'
 import { z } from 'zod'
 import type { Effort, ModelInfo } from '@enkaku/protocol'
-import { EnkakuError } from '../../util/errors'
 import type { CountTokensRequest, ProviderAdapter, ProviderToolDef, TokenCount } from './types'
 
 /**
@@ -354,9 +353,4 @@ export async function testAnthropicConnection(deps: AnthropicAdapterDeps): Promi
     }
     return { status: 'unreachable', message: err instanceof Error ? err.message : String(err) }
   }
-}
-
-export function assertApiKey(apiKey: string | null): string {
-  if (!apiKey) throw new EnkakuError('E_NO_CREDENTIAL', 'this connector has no stored credential and ENKAKU_ANTHROPIC_API_KEY is not set')
-  return apiKey
 }
