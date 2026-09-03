@@ -839,11 +839,7 @@ bun test packages/session/src/video-latency.test.ts
 bun test packages/session/src/manager.test.ts
 bun test packages/core/src/api/video.test.ts
 bun test packages/core/src/server/                       # the directory ws-handlers.ts lives in; once
-bun test packages/studio/src/lib/h264-decoder.test.ts
-bun test packages/studio/src/lib/latency-stats.test.ts
-bun test packages/studio/src/lib/prefs.test.ts
-bun test packages/studio/src/components/video/LatencyOverlay.test.tsx
-bun test packages/studio/src/components/LiveView.test.tsx
+bun test packages/protocol/src/video-latency.test.ts
 bun run typecheck
 ```
 

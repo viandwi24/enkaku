@@ -277,6 +277,8 @@ The prototype's Studio suite is about 170 isolated processes, each building a DO
 | inspector lifecycle state machine and fail-fast parser (208) | the automation bottleneck |
 | toolchain sha256 and download verification | supply chain |
 
+**The principle behind the list, so a plan can apply it to something the list does not name:** a backend test is written where **a wrong answer would be silent** — a byte layout, a schema contract, a rules matrix, a migration over rows already on disk, a decision made inside a SQL transaction. Those are the places where the code compiles, the screen looks right, and the product is wrong. Nothing is tested merely because it is code.
+
 Not tested: HTTP route wiring, UI copy, settings section lists, log wording, anything a typecheck already proves. An existing backend test outside the list is deleted by the plan that touches its module (listed in that plan's §10).
 
 **Target:** the full backend `bun test` under 60 s on the maintainer's laptop by plan 224, at which point `CLAUDE.md`'s "never run a full suite" rule is retired and executors run their package's suite instead of scoped files.
