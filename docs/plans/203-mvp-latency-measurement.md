@@ -1,6 +1,6 @@
 # Plan 203 — MVP wave 0 : Latency measurement — device PTS end to end, the overlay, the H-9 experiment, the bench harness
 
-> Status: draft — not started; written 2026-09-03 by the plan author for the MVP series
+> Status: implemented (software) — 2026-09-03. Every G1-G11, G15, G16 row in §0 is checked by a command that was run and read. G4, G6, G7, G12, G13, G14 stay `owner`: G4/G6/G7 are implemented in code but need a real h264 stream (a lab device) to render or exercise at all, and G12-G14 are the explicitly hardware-gated rows (bench numbers, the H-9 experiment, the camera glass-to-glass measurement) — there is no lab device in this environment. No number was written into `docs/mvp/01-casting-latency.md` or `docs/spec.md`; see §11.
 > Depends on: nothing (wave 0, `docs/plans/200-mvp-program.md` §4). Reads `docs/mvp/01-casting-latency.md` (all of it; §1.2, §1.3, §1.4 and §4 step 1 are the source of every step below), `docs/mvp/09-additional-scope.md` §7, `docs/mvp/16-consolidated-plan.md` §2 (Video row) and §3 (wave 0). External facts: R1 and R3 from plan 200 §5.
 > Spec references: `docs/spec.md` §16 line 1103 (`| Glass-to-glass latency (manual control) | < 150 ms | scrcpy H.264 plus WebCodecs |`), §7.6 (vanilla scrcpy-server, never forked), §13 (binary WS streams). Until plan 202 rewrites the spec, `docs/mvp/16` wins where they disagree (plan 200 header).
 > Ships: packages/studio/src/components/video/LatencyOverlay.tsx
@@ -11,22 +11,22 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | The binary video frame header carries the device PTS and the host receive time | header length 27 bytes; bytes 11..18 u64BE `ptsUs`, bytes 19..26 u64BE `hostReceivedAt` (unix ms); `VIDEO_HEADER_LEN === 27` | `bun test packages/protocol/src/binary.test.ts` → the test `round-trips ptsUs and hostReceivedAt through the 27-byte header` passes | [ ] |
-| G2 | The demuxer stamps every packet with the moment its bytes reached the host | `ScrcpyPacket.receivedAt` (unix ms) present on `config`, `keyframe` and `frame`; `ptsUs` unchanged | `bun test packages/scrcpy/src/demuxer.test.ts` → 4 tests pass | [ ] |
-| G3 | `FrameMeta.capturedAt` no longer exists; `ptsUs` and `hostReceivedAt` replace it at every producer | 0 matches | `rg -n "capturedAt" packages/protocol/src/driver.ts packages/drivers/src packages/session/src packages/core/src/server packages/core/src/tunnel packages/studio/src` → empty | [ ] |
-| G4 | The browser decoder timestamps chunks with the device PTS, not the wall clock | `EncodedVideoChunk.timestamp === Number(ptsUs)` for `ptsUs > 0n`; `lastTimestampUs + 1` for `ptsUs === 0n` | `bun test packages/studio/src/lib/h264-decoder.test.ts` → 3 tests pass | [ ] |
-| G5 | The latency estimator is pure and deterministic | offset = min over the first 60 samples with `ptsUs > 0n` of `hostReceivedAt - Number(ptsUs) / 1000`; window 120 samples; median and p95 | `bun test packages/studio/src/lib/latency-stats.test.ts` → 5 tests pass | [ ] |
-| G6 | `LatencyOverlay` renders the eight rows from a summary | rows `device→host`, `host→browser`, `decode`, `decode→paint`, `queue`, `fps`, `dropped`, `keyframe requests` | `bun test packages/studio/src/components/video/LatencyOverlay.test.tsx` → 3 tests pass | [ ] |
-| G7 | The overlay toggle persists per browser | `LocalPrefs.latencyOverlay: boolean`, default `false` | `bun test packages/studio/src/lib/prefs.test.ts` → the test `round-trips latencyOverlay` passes | [ ] |
-| G8 | The core exposes per-device server-side latency numbers | `GET /api/video/latency?deviceId=<id>` → `VideoLatencyResponseSchema`; `400 E_BAD_REQUEST` without `deviceId`; `501 E_NOT_SUPPORTED` without sessions | `bun test packages/core/src/api/video.test.ts` → 4 new tests pass | [ ] |
-| G9 | The session manager tracks per-entry PTS statistics | `SessionManager.videoLatency(deviceId)` returns one row per open `(deviceId, quality)` entry | `bun test packages/session/src/video-latency.test.ts` → 4 tests pass | [ ] |
-| G10 | Every `TODO-verify` marker in `packages/scrcpy` is replaced by a dated verification line | 0 matches | `rg -n "TODO-verify" packages/scrcpy` → empty; `rg -n "verified against v3.3.1" packages/scrcpy/src` → 5 matches (`version.ts` ×2, `demuxer.ts`, `control/messages.ts`, `session.ts`) | [ ] |
-| G11 | The bench script has a `--latency` mode and a `--warmup` placeholder | `--latency` prints one line starting `latency:`; `--warmup` prints `warmup: not implemented in plan 203 - plan 206 (always-on sessions) fills this mode` and exits 2 | `bun run scripts/bench-device-nfrs.ts --warmup; echo $?` → the line above, then `2` (no device needed: the check runs before the `ENKAKU_TEST_DEVICE` gate) | [ ] |
+| G1 | The binary video frame header carries the device PTS and the host receive time | header length 27 bytes; bytes 11..18 u64BE `ptsUs`, bytes 19..26 u64BE `hostReceivedAt` (unix ms); `VIDEO_HEADER_LEN === 27` | `bun test packages/protocol/src/binary.test.ts` → the test `round-trips ptsUs and hostReceivedAt through the 27-byte header` passes | [x] |
+| G2 | The demuxer stamps every packet with the moment its bytes reached the host | `ScrcpyPacket.receivedAt` (unix ms) present on `config`, `keyframe` and `frame`; `ptsUs` unchanged | `bun test packages/scrcpy/src/demuxer.test.ts` → 4 tests pass | [x] |
+| G3 | `FrameMeta.capturedAt` no longer exists; `ptsUs` and `hostReceivedAt` replace it at every producer | 0 matches | `rg -n "capturedAt" packages/protocol/src/driver.ts packages/drivers/src packages/session/src packages/core/src/server packages/core/src/tunnel packages/studio/src` → empty | [x] |
+| G4 | The browser decoder timestamps chunks with the device PTS, not the wall clock | `EncodedVideoChunk.timestamp === Number(ptsUs)` for `ptsUs > 0n`; `lastTimestampUs + 1` for `ptsUs === 0n` | amended §12: implemented in `packages/studio/src/lib/h264-decoder.ts`, no Studio test exists for it (plan 200 §8.3); verified by owner smoke on the lab device | owner |
+| G5 | The latency estimator is pure and deterministic | offset = min over the first 60 samples with `ptsUs > 0n` of `hostReceivedAt - Number(ptsUs) / 1000`; window 120 samples; median and p95 | amended §12: moved to `packages/protocol/src/video-latency.ts` — `bun test packages/protocol/src/video-latency.test.ts` → 5 tests pass | [x] |
+| G6 | `LatencyOverlay` renders the eight rows from a summary | rows `device→host`, `host→browser`, `decode`, `decode→paint`, `queue`, `fps`, `dropped`, `keyframe requests` | amended §12: implemented in `packages/studio/src/components/video/LatencyOverlay.tsx`, no Studio test exists for it; verified by owner smoke on the lab device | owner |
+| G7 | The overlay toggle persists per browser | `LocalPrefs.latencyOverlay: boolean`, default `false` | amended §12: implemented in `packages/studio/src/lib/prefs.ts` (`bun run typecheck` clean); verified by reloading the page and observing the toggle state — needs an h264 stream (a real device) to render the toggle at all, so this is an owner check | owner |
+| G8 | The core exposes per-device server-side latency numbers | `GET /api/video/latency?deviceId=<id>` → `VideoLatencyResponseSchema`; `400 E_BAD_REQUEST` without `deviceId`; `501 E_NOT_SUPPORTED` without sessions | `bun test packages/core/src/api/video.test.ts` → 5 new tests pass (400, 501, join, zero-counters, permission) | [x] |
+| G9 | The session manager tracks per-entry PTS statistics | `SessionManager.videoLatency(deviceId)` returns one row per open `(deviceId, quality)` entry | `bun test packages/session/src/video-latency.test.ts` → 4 tests pass | [x] |
+| G10 | Every `TODO-verify` marker in `packages/scrcpy` is replaced by a dated verification line | 0 matches | `rg -n "TODO-verify" packages/scrcpy` → empty; `rg -n "verified against v3.3.1" packages/scrcpy/src` → 5 matches (`version.ts` ×2, `demuxer.ts`, `control/messages.ts`, `session.ts`) | [x] |
+| G11 | The bench script has a `--latency` mode and a `--warmup` placeholder | `--latency` prints one line starting `latency:`; `--warmup` prints `warmup: not implemented in plan 203 - plan 206 (always-on sessions) fills this mode` and exits 2 | `bun run scripts/bench-device-nfrs.ts --warmup; echo $?` → the line above, then `2` (no device needed: the check runs before the `ENKAKU_TEST_DEVICE` gate) | [x] |
 | G12 | Server-side leg numbers exist for the lab device | `ENKAKU_TEST_DEVICE=1 bun run bench:device-nfrs -- --serial <S> --latency --skip-inspector` prints `latency: ttfp=<N> ms ...` | owner, lab device attached; the line is pasted into §11 | owner |
 | G13 | The H-9 experiment has been run and its table is filled | §5 step 203.13's table has six numbers (30 fps and 60 fps columns, three rows) | owner, lab device; the table in §5 step 203.13 is filled in this document | owner |
 | G14 | A median glass-to-glass number exists | §5 step 203.14's table has ≥ 10 samples, a median and a p95 | owner, lab device, camera; the number is written into `docs/mvp/01-casting-latency.md` §4 step 1 by the owner after measurement. The threshold (`< 150 ms`, spec §16) is NOT a goal of this plan; a median number existing is | owner |
-| G15 | Workspace typechecks | 0 errors | `bun run typecheck` → clean | [ ] |
-| G16 | The cloud path still compiles and still relays frames, with zeroed timing | `device-proxy.ts` sets `ptsUs: 0n, hostReceivedAt: Date.now()` | `bun run typecheck` → clean; `rg -n "ptsUs: 0n" packages/core/src/tunnel/device-proxy.ts` → 1 match | [ ] |
+| G15 | Workspace typechecks | 0 errors | `bun run typecheck` → clean | [x] |
+| G16 | The cloud path still compiles and still relays frames, with zeroed timing | `device-proxy.ts` sets `ptsUs: 0n, hostReceivedAt: Date.now()` | `bun run typecheck` → clean; `rg -n "ptsUs: 0n" packages/core/src/tunnel/device-proxy.ts` → 1 match | [x] |
 
 ## 1. Goals
 
@@ -831,23 +831,19 @@ Rule: the median goes into `docs/mvp/01-casting-latency.md` §4 step 1 ("Exit cr
 
 Unit, one invocation at a time, never concurrently, never a bare `bun test`:
 
+Amended by §12 (this line corrects §7 itself, which the amendment did not edit in place): the five `bun test packages/studio/...` lines below are removed — Studio has zero tests (plan 200 §8.3) — and `bun test packages/protocol/src/video-latency.test.ts` is added for the estimator, moved there by §12.
+
 ```bash
 bun test packages/protocol/src/binary.test.ts
+bun test packages/protocol/src/video-latency.test.ts
 bun test packages/scrcpy/src/demuxer.test.ts
 bun test packages/scrcpy/src/session.test.ts
 bun test packages/session/src/video-latency.test.ts
 bun test packages/session/src/manager.test.ts
 bun test packages/core/src/api/video.test.ts
 bun test packages/core/src/server/                       # the directory ws-handlers.ts lives in; once
-bun test packages/studio/src/lib/h264-decoder.test.ts
-bun test packages/studio/src/lib/latency-stats.test.ts
-bun test packages/studio/src/lib/prefs.test.ts
-bun test packages/studio/src/components/video/LatencyOverlay.test.tsx
-bun test packages/studio/src/components/LiveView.test.tsx
 bun run typecheck
 ```
-
-Studio test files import `happydom` explicitly (`packages/studio/src/components/video/DeviceVideoFields.test.tsx:5`, `import '../../../happydom'`), which is what lets them run from the repo root without the Studio suite.
 
 Manual smoke, no device:
 
@@ -866,11 +862,11 @@ Device tests (`ENKAKU_TEST_DEVICE=1`, owner):
 ENKAKU_TEST_DEVICE=1 bun run bench:device-nfrs -- --serial <S> --latency --skip-inspector
 ```
 
-then §5 step 203.13 and 133.14.
+then §5 step 203.13 and 203.14.
 
 ## 8. Risks and mitigations
 
-- **A byte-layout mismatch found in 133.1.** The plan stops that step and reports (§9 Q1). Nothing in 203.2 onward depends on 203.1, so the rest still lands; the marker stays until the owner decides.
+- **A byte-layout mismatch found in 203.1.** The plan stops that step and reports (§9 Q1). Nothing in 203.2 onward depends on 203.1, so the rest still lands; the marker stays until the owner decides.
 - **The 16 extra header bytes on the wall path.** At `wall balanced` (18 fps) that is 288 B/s per tile, against a 1.1 Mbit/s stream. Negligible; `MAX_BUFFERED` is unchanged.
 - **`setBigUint64` with a non-bigint.** Any producer that forgets `ptsUs` throws at encode time, loudly, in the first frame. The `LiveView.test.tsx:636` literal is the known case and 203.2 fixes it; `bun run typecheck` catches the rest because `ptsUs` is required on `FrameMeta`.
 - **WebCodecs rejects a non-monotonic timestamp.** The `lastTimestampUs + 1` substitution for `0n` keeps the sequence monotonic; a backwards device PTS (encoder restart) is possible only across a `stream.started`, which recreates the decoder.
@@ -899,15 +895,38 @@ No MVP 13 Part A row belongs to this plan.
 
 ## 11. Handoff report
 
-- **Checklist**:
-- **Commits**:
-- **Typecheck**:
+- **Branch**: `worktree-agent-a0fa701d0fd700f3a` (this worktree's own branch; not `mvp` — merge into `mvp` from here). Started at `d96d2be` (`feat(tiktok-pack): search-keyword, keyword-videos, live-browse, shop-browse, notification-activity; verified jittered gestures; v1.15.0`).
+- **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ⏳ owner (implemented, needs a lab device to exercise) G5 ✅ G6 ⏳ owner (implemented, needs a lab device to exercise) G7 ⏳ owner (implemented, needs a lab device — the toggle only renders once codec is h264) G8 ✅ G9 ✅ G10 ✅ G11 ✅ G12 ⏳ owner (lab device) G13 ⏳ owner (lab device) G14 ⏳ owner (lab device, camera) G15 ✅ G16 ✅
+- **Commits**: `df47b3b` — `feat(mvp-203): device PTS end to end, the latency overlay, server-side stats, bench --latency/--warmup` (this plan's own status-line/§0/§7/§11 edits land in a second commit right after this report).
+- **Typecheck**: clean — `bun run typecheck` (`bash scripts/typecheck.sh`), all 20 packages/plugins/examples report `OK`.
 - **Tests run**:
+  - `bun test packages/protocol/src/binary.test.ts` → 9 pass, 0 fail (includes the 3 new 27-byte-header tests from step 203.4).
+  - `bun test packages/protocol/src/video-latency.test.ts` → 5 pass, 0 fail (the estimator, moved here by §12).
+  - `bun test packages/protocol/src/export-uniqueness.test.ts` → 3 pass, 0 fail (no name collision from the new export).
+  - `bun test packages/scrcpy/src/demuxer.test.ts` → 4 pass, 0 fail (new).
+  - `bun test packages/scrcpy/src/session.test.ts` → 21 pass, 0 fail (re-run after the verified-comment edits touched this file).
+  - `bun test packages/session/src/video-latency.test.ts` → 4 pass, 0 fail (new).
+  - `bun test packages/session/src/manager.test.ts` → 49 pass, 0 fail (existing fixtures still satisfy the required `Entry.latency` field and optional `videoLatency`).
+  - `bun test packages/core/src/api/video.test.ts` → 10 pass, 0 fail (5 new: 400, 501, join, zero-counters, permission; 5 pre-existing `/reprofile` tests untouched).
+  - `bun test packages/core/src/server/` → 155 pass, 0 fail across 18 files, run once, alone (the directory `ws-handlers.ts` lives in).
+  - Manual smoke: `bun run scripts/bench-device-nfrs.ts --warmup; echo $?` → prints the placeholder line, then `2`, with no adb touched. `bun run scripts/bench-device-nfrs.ts --help` lists both new flags. A core started on a scratch data dir (port 7799, to avoid a port already held by another agent's worktree on 7700) answered `GET /api/video/latency` (no `deviceId`) with `400 E_BAD_REQUEST`, and `GET /api/video/latency?deviceId=nope` with `{"deviceId":"nope","at":<ms>,"streams":[]}` once adb finished provisioning — exactly the plan's own expected output. The core was killed and its scratch data dir removed afterward.
+  - Not run: `bun test` (bare, forbidden); anything under `packages/studio` or `packages/ui` (zero tests by decision, plan 200 §8.3); the `ENKAKU_TEST_DEVICE=1` device tests (no lab device in this environment).
 - **Removed, proven**:
+  - `rg -n "capturedAt" packages/protocol/src/driver.ts packages/drivers/src packages/session/src packages/core/src/server packages/core/src/tunnel packages/studio/src` → empty (the one hit found mid-work was a doc comment naming the old field historically; reworded so the grep is genuinely empty, not just "no live reference").
+  - `rg -n "VIDEO_HEADER_LEN = 11" packages/protocol/src` → empty.
+  - `rg -n "performance.now\(\) \* 1000" packages/studio/src/lib` → empty.
+  - `rg -n "TODO-verify" packages/scrcpy` → empty; `rg -n "verified against v3.3.1" packages/scrcpy/src` → 5 matches (`version.ts` ×2, `demuxer.ts`, `control/messages.ts`, `session.ts`).
+  - Vocabulary check (new files only): `rg -n -i "device page|popup|modal|lease" packages/studio/src/components/video/LatencyOverlay.tsx packages/protocol/src/video-latency.ts packages/session/src/video-latency.ts` → empty.
 - **Discrepancies between plan and code**:
-- **Observed, not done**:
-- **Open questions hit**:
-- **Processes**:
+  - **Two files share the name `video-latency.ts` on purpose, in two different packages, for two different things.** `packages/session/src/video-latency.ts` is the §4.5 session-side PTS tracker (frames/firstFrameMs/PTS-interval/jitter, fed by `manager.ts`'s `dispatchFrame`, exposed as `SessionManager.videoLatency()`). `packages/protocol/src/video-latency.ts` is the §4.9/§12 pure browser-side estimator (`createLatencyEstimator`/`LatencySummary`, exported from `@enkaku/protocol`). Neither the original §4.5/§4.9 text nor §12's amendment says this explicitly — §12 only says the estimator moves "from `packages/studio/src/lib/latency-stats.ts`", without naming the session-side file's own path as a potential point of confusion — so it is recorded here for the next reader. No collision: different packages, different exports, `export-uniqueness.test.ts` passes.
+  - **BigInt literal syntax is unusable in `packages/protocol` and `packages/studio`.** Not stated anywhere in the plan. Studio's standalone tsconfig targets ES2017 (Next's own requirement) and `@enkaku/protocol`'s `package.json` `exports` points straight at `src/index.ts` — so Studio's own `bunx tsc -p packages/studio` typechecks `packages/protocol`'s source directly, and a bare `0n`/`1_000_000n` literal in that source fails with `TS2737: BigInt literals are not available when targeting lower than ES2020`. `packages/protocol/src/video-latency.ts` and `packages/studio/src/lib/h264-decoder.ts` both write `BigInt(0)` instead of `0n` for this reason; `packages/session`, `packages/scrcpy`, `packages/core` (not reachable from Studio's typecheck) keep ordinary bigint literals, matching the existing style in those packages (`demuxer.ts`'s `1n << 63n`, `version.ts`'s `-1n`).
+  - **§7's own test list disagreed with §12's amendment** (five `bun test packages/studio/...` lines never removed, the moved estimator's test never added). Corrected in this same handoff, in §7 itself, since a reader following §7 verbatim would have tried to run five files plan 200 §8.3 forbids writing at all.
+  - **`packages/core/src/api/video.test.ts`'s new-test count**: the plan's own §0 G8 row says "4 new tests"; 5 were written (400, 501, join, a `zero counters — never undefined` case the plan's step 203.6 test list did not itemize but which the response schema's `.int()` fields make worth asserting directly, and the permission/auth pair). Recorded here per §2.2's "the file wins for facts" rule.
+- **Observed, not done** (deliberately left, not built):
+  - The `owner` rows: G12 (bench `--latency` server-side numbers on a lab device), G13 (the H-9 30-vs-60fps experiment, §5 step 203.13's table), G14 (the camera-and-stopwatch glass-to-glass procedure, §5 step 203.14's table). No lab device exists in this environment; the instruments (the bench flag, the overlay, the route) are built and the tables in §5 are left blank for the owner to fill, exactly as the plan requires. No number was written into `docs/mvp/01-casting-latency.md` or `docs/spec.md` — both are untouched (`git diff --stat` confirms).
+  - An owner smoke on the lab device (per §12's replacement for the dropped Studio tests: "open Device Control, toggle the overlay, confirm all eight rows show numbers within 5s, confirm device→host stays within ±20ms of its own median over 60s on a static screen, confirm decode→paint is below 16ms at 30fps") was not run, for the same no-device reason.
+- **Open questions hit**: none. §9's three questions (a byte-layout mismatch's fix, whether the `< 150ms` target survives G14's number, which device is the lab device) were none of them reached — step 203.1 found no mismatch against the pinned v3.3.1 source, and G14/the target question are explicitly the owner's to decide after a measurement that has not happened yet.
+- **Processes**: `ps -Ao pid=,command= | grep -i "[o]penpf"` → no output (nothing running). The scratch-port core (port 7799, `.dev-data-plan203`) used for the manual smoke test was killed and its data dir removed before this check.
 
 
 ---
