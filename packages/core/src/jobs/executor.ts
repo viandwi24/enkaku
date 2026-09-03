@@ -5,7 +5,7 @@ import type { Logger } from '../util/logger'
 export interface ExecutorContext {
   /** Aborted on cancel or force-release. */
   signal: AbortSignal
-  /** Extend the job lease (called by the host on every heartbeat). */
+  /** Extend the job heartbeat (called by the host on every tick). */
   heartbeat(): void
   log: Logger
   /**
@@ -26,15 +26,6 @@ export interface ExecutorContext {
    * executors have no subprocess to measure.
    */
   onPeakRss?: (bytes: number) => void
-  /**
-   * Registers a callback for a co-control assist action (plan 91 §3.6, §4.8)
-   * — the second unsolicited "the core tells a running job something
-   * happened" mechanism, after `onCrash` above. NOT an abort: the job keeps
-   * running exactly as before. Optional, the same reasoning `onCrash`/
-   * `onPeakRss` already give: only the script executor wires this today (the
-   * sleep and remote-bridge executors have no child process to notify).
-   */
-  onAssist?: (cb: (e: { at: number; actor: string | null }) => void) => void
   /**
    * Reports the child's own verdict on `run()`'s return value (plan 97 §3.3,
    * §3.4, §3.8, §4.5) — called at most once, right before `run()` resolves
@@ -63,7 +54,7 @@ export interface JobExecutor {
    * which script's `paramsSchema` applies. Throws `EnkakuError` on an
    * invalid value — `validateScriptForRun` never catches it, so a bad
    * params object fails BEFORE a job row exists and BEFORE any device is
-   * leased, whether the caller is a single job or a batch.
+   * claimed, whether the caller is a single job or a batch.
    */
   validateParams(params: unknown, scriptId: string): unknown
   /** Run to completion; resolve means success, reject means failure. */

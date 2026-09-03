@@ -5,7 +5,7 @@ import type { ExecutorContext, JobExecutor } from '../executor'
 
 /**
  * The `internal:sleep` dummy executor (plan 04 §4.5) — exercises the whole
- * queue and lease without touching adb at all. Plan 05 replaces it with the
+ * queue and job heartbeat without touching adb at all. Plan 05 replaces it with the
  * subprocess runner, but it stays useful for queue testing.
  */
 export const sleepExecutor: JobExecutor = {
@@ -26,9 +26,9 @@ export const sleepExecutor: JobExecutor = {
         ctx.signal.removeEventListener('abort', onAbort)
       }
       function onAbort() {
-        // ignoreCancel makes a "stubborn" job — the reaper and lease-expiry settle it.
+        // ignoreCancel makes a "stubborn" job — the reaper and heartbeat-expiry settle it.
         if (params.ignoreCancel) {
-          ctx.log.warn(`job ${job.id} is ignoring the cancel (ignoreCancel) — waiting for lease expiry`)
+          ctx.log.warn(`job ${job.id} is ignoring the cancel (ignoreCancel) — waiting for heartbeat expiry`)
           return
         }
         cleanup()

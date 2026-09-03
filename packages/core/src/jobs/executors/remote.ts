@@ -50,8 +50,8 @@ export interface RemoteJobBridge {
  * always runs included. The control plane only waits for word and writes it to
  * the DB, so Studio cannot tell a local job from a remote one.
  *
- * Lease heartbeat: every `job.progress` extends the lease. A dropped tunnel
- * means no progress, which expires the lease, which fails the job through the
+ * Job heartbeat: every `job.progress` extends it. A dropped tunnel means no
+ * progress, which expires the heartbeat, which fails the job through the
  * Plan 04 mechanism. No special path that could become its own bug source.
  */
 export function createRemoteJobBridge(deps: {

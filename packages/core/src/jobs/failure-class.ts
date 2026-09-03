@@ -33,8 +33,8 @@ export interface ClassifiedFailure {
  *  - codes synthesised by the runner/host for farm-caused endings: the child
  *    process was killed by the OS without reporting a result
  *    (`CHILD_CRASHED`), the device vanished from track-devices mid-job
- *    (`DEVICE_DISCONNECTED`), the job lease was force-expired
- *    (`LEASE_FORCE_RELEASED`), the runner could not even acquire the
+ *    (`DEVICE_DISCONNECTED`), the job's own heartbeat expired
+ *    (`HEARTBEAT_EXPIRED`, plan 205 §4.7), the runner could not even acquire the
  *    device session for the next attempt (`SESSION_ACQUIRE_FAILED`), or the
  *    child never sent `ready` at all (`STARTUP_TIMEOUT`, plan 74 §3.2,
  *    §4.2 — a child that never started is a farm problem, not the script's,
@@ -55,7 +55,7 @@ const INFRA_CODES = new Set<string>([
   'port_range_exhausted',
   'CHILD_CRASHED',
   'DEVICE_DISCONNECTED',
-  'LEASE_FORCE_RELEASED',
+  'HEARTBEAT_EXPIRED',
   'SESSION_ACQUIRE_FAILED',
   'STARTUP_TIMEOUT',
 ])

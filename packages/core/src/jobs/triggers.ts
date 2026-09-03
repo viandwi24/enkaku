@@ -185,7 +185,7 @@ export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
           params: input.params ?? null,
           priority: input.priority ?? 0,
           status: 'queued',
-          leaseExpiresAt: null,
+          heartbeatExpiresAt: null,
           result: null,
           error: null,
           createdAt: new Date(),
@@ -204,9 +204,6 @@ export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
           depth,
           triggerKey: input.key,
           peakRssBytes: null,
-          // Plan 91 §3.5, §4.9 — a freshly triggered job has not been
-          // assisted yet, same as an ordinary `enqueue()`.
-          assistCount: 0,
           // Plan 98 §3.7, §4.6, step 98.5 — same resolution `job-service.ts`
           // performs at enqueue, from the SAME registry entry this function
           // already resolved above (`entry.runtime`) rather than a second

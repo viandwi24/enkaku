@@ -252,7 +252,7 @@ function toJobRow(input: {
     params: input.params ?? null,
     priority: input.priority,
     status: 'queued',
-    leaseExpiresAt: null,
+    heartbeatExpiresAt: null,
     result: null,
     error: null,
     createdAt: input.now,
@@ -274,9 +274,6 @@ function toJobRow(input: {
     depth: 0,
     triggerKey: null,
     peakRssBytes: null,
-    // Plan 91 §3.5, §4.9 — a freshly dispatched batch member has not been
-    // assisted yet, same as an ordinary `enqueue()` (`queue/job-store.ts`).
-    assistCount: 0,
     maxConcurrent: input.maxConcurrent,
     // Plan 98 §3.8, §4.4, step 98.7 (closed here) — the SAME validated
     // override every sibling member gets, pinned at dispatch exactly like

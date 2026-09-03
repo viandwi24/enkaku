@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import type { DeviceStateMachine } from '../device/state-machine'
+import type { ActivityRegistry } from '../activity/registry'
 import { openDb, runMigrations } from '../db'
 import { devices, jobs } from '../db/schema'
-import type { LeaseManager } from '../lease/lease-manager'
 import { createJobStore } from '../queue/job-store'
 import { RESULT_LIMITS } from '@enkaku/protocol'
 import type { Logger } from '../util/logger'
@@ -39,27 +38,22 @@ function neverSettles(): Promise<unknown> {
   return new Promise(() => {})
 }
 
-const dummyStates: DeviceStateMachine = {
-  apply: () => ({ changed: true, from: 'busy', to: 'idle' }),
-  current: () => 'busy',
-}
-
-const dummyLeases: LeaseManager = {
-  acquireManual: () => {
-    throw new Error('not used')
-  },
-  touchManual: () => {},
-  releaseManual: () => false,
-  releaseAllForClient: () => {},
-  noteJobLease: () => {},
-  clearJobLease: () => {},
-  getLease: () => null,
-  getHolder: () => null,
-  lastManualReleaseAt: () => null,
-  lastManualHolder: () => null,
-  checkInputAllowed: () => ({ ok: true }),
-  startReaper: () => {},
-  stopReaper: () => {},
+/** A minimal fake `ActivityRegistry` — only `end`/`touch` are exercised by `executor-host.ts`. */
+const dummyActivities: ActivityRegistry = {
+  start: (_deviceId, input) => ({ id: input.id, kind: input.kind, label: input.label, actor: input.actor, startedAt: 0, updatedAt: 0 }),
+  update: () => null,
+  touch: () => {},
+  end: () => true,
+  endWhere: () => 0,
+  touchControl: (_deviceId, clientId, actor) => ({ id: `control:${clientId}`, kind: 'control', label: '', actor, startedAt: 0, updatedAt: 0 }),
+  controlOf: () => null,
+  liveControls: () => [],
+  list: () => [],
+  devicesWith: () => [],
+  lastControl: () => null,
+  rebuild: () => {},
+  startSweep: () => {},
+  stopSweep: () => {},
 }
 
 describe('ExecutorHost.progress (plan 97 §3.7, §5 step 97.7)', () => {
@@ -88,15 +82,13 @@ describe('ExecutorHost.progress (plan 97 §3.7, §5 step 97.7)', () => {
         cancelQueuedDescendants: () => 0,
         listByBatch: () => [],
         cancelQueuedInBatch: () => 0,
-        renewLease: () => true,
+        renewHeartbeat: () => true,
         expiredRunning: () => [],
         expireQueued: () => [],
         failOrphanRunning: () => 0,
         runningByDevice: () => null,
-        assists: () => [],
       },
-      states: dummyStates,
-      leases: () => dummyLeases,
+      activities: () => dummyActivities,
       log,
       jobTtlSec: 60,
       heartbeatMs: 1000,
@@ -125,7 +117,7 @@ describe('ExecutorHost.progress (plan 97 §3.7, §5 step 97.7)', () => {
       params: null,
       priority: 0,
       status: 'running' as const,
-      leaseExpiresAt: null,
+      heartbeatExpiresAt: null,
       result: null,
       error: null,
       createdAt: new Date(),
@@ -144,7 +136,6 @@ describe('ExecutorHost.progress (plan 97 §3.7, §5 step 97.7)', () => {
       depth: 0,
       triggerKey: null,
       peakRssBytes: null,
-      assistCount: 0,
       maxConcurrent: null,
       runtimeOverride: null,
       notBefore: null,
@@ -173,15 +164,13 @@ describe('ExecutorHost.progress (plan 97 §3.7, §5 step 97.7)', () => {
         cancelQueuedDescendants: () => 0,
         listByBatch: () => [],
         cancelQueuedInBatch: () => 0,
-        renewLease: () => true,
+        renewHeartbeat: () => true,
         expiredRunning: () => [],
         expireQueued: () => [],
         failOrphanRunning: () => 0,
         runningByDevice: () => null,
-        assists: () => [],
       },
-      states: dummyStates,
-      leases: () => dummyLeases,
+      activities: () => dummyActivities,
       log,
       jobTtlSec: 60,
       heartbeatMs: 1000,
@@ -216,7 +205,7 @@ describe('ExecutorHost.progress (plan 97 §3.7, §5 step 97.7)', () => {
   test('10 000 progress pushes against a REAL sqlite handle execute ZERO UPDATE statements — the whole point of "progress is not a result" (plan 97 §3.7)', async () => {
     const { db, sqlite } = openDb(':memory:')
     runMigrations(db)
-    db.insert(devices).values({ id: 'dev-1', stableId: 'stable-dev-1', serial: 'serial-dev-1', label: 'device 1', status: 'busy' }).run()
+    db.insert(devices).values({ id: 'dev-1', stableId: 'stable-dev-1', serial: 'serial-dev-1', label: 'device 1', status: 'online' }).run()
     db.insert(jobs)
       .values({ id: 'job-1', scriptId: 'test-script', deviceId: 'dev-1', params: {}, priority: 0, status: 'running', createdAt: new Date(), startedAt: new Date() })
       .run()
@@ -240,8 +229,7 @@ describe('ExecutorHost.progress (plan 97 §3.7, §5 step 97.7)', () => {
     const deps: ExecutorHostDeps = {
       registry: new ExecutorRegistry(),
       jobStore,
-      states: dummyStates,
-      leases: () => dummyLeases,
+      activities: () => dummyActivities,
       log,
       jobTtlSec: 60,
       heartbeatMs: 100_000,

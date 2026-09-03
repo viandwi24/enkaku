@@ -7,11 +7,13 @@ import { createExpiryReaper } from './expiry'
 import { createJobStore } from './job-store'
 
 /**
- * The expiry reaper (plan 21 §4.3, §21.4) must only ever touch `queued`
- * jobs — a `running` job is governed by the job lease, which already has its
- * own reaper. These tests seed `expires_at` directly (a plain past epoch
- * second, never `Date.now()` inside an assertion) so the SQL's own
- * `strftime('%s','now')` is exercised against a real, if artificial, deadline.
+ * The expiry reaper (plan 21 §4.3, §21.4) must only ever flip a `queued` job
+ * to `expired` via `expireQueued()` — a `running` job is governed by the job
+ * heartbeat, swept separately (`expiredRunning()`, plan 205 §4.7, since the
+ * lease manager's own reaper is deleted). These tests seed `expires_at`/
+ * `heartbeat_expires_at` directly (a plain past epoch second, never
+ * `Date.now()` inside an assertion) so the SQL's own `strftime('%s','now')`
+ * is exercised against a real, if artificial, deadline.
  */
 
 function setUp() {
@@ -20,7 +22,7 @@ function setUp() {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' = 'idle') {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online') {
   db.insert(devices)
     .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status })
     .run()
@@ -31,7 +33,7 @@ const FUTURE = Math.floor(Date.now() / 1000) + 3600
 
 function seedJob(
   db: Db,
-  input: { id: string; deviceId: string; status: 'queued' | 'running'; expiresAt: number | null; batchId?: string; batchSeq?: number },
+  input: { id: string; deviceId: string; status: 'queued' | 'running'; expiresAt: number | null; batchId?: string; batchSeq?: number; heartbeatExpiresAt?: number },
 ) {
   db.insert(jobs)
     .values({
@@ -43,7 +45,7 @@ function seedJob(
       status: input.status,
       createdAt: new Date(),
       startedAt: input.status === 'running' ? new Date() : null,
-      leaseExpiresAt: input.status === 'running' ? FUTURE : null,
+      heartbeatExpiresAt: input.status === 'running' ? (input.heartbeatExpiresAt ?? FUTURE) : null,
       expiresAt: input.expiresAt,
       batchId: input.batchId ?? null,
       batchSeq: input.batchSeq ?? null,
@@ -87,9 +89,9 @@ describe('expireQueued / createExpiryReaper — plan 21 §4.3, acceptance #4', (
     expect(db.select().from(jobs).where(eq(jobs.id, 'j1')).get()?.status).toBe('queued')
   })
 
-  test('a RUNNING job past the same deadline is never expired — only the job lease governs it', () => {
+  test('a RUNNING job past the same expiresAt deadline is never expired by expireQueued — only its own heartbeat governs it', () => {
     const db = setUp()
-    seedDevice(db, 'd1', 'busy')
+    seedDevice(db, 'd1')
     seedJob(db, { id: 'j1', deviceId: 'd1', status: 'running', expiresAt: PAST })
     const store = createJobStore(db)
 
@@ -118,9 +120,52 @@ describe('expireQueued / createExpiryReaper — plan 21 §4.3, acceptance #4', (
       log: createLogger('test'),
       onJobStatus: () => {},
       onBatchChanged: (batchId) => seen.push(batchId),
+      onHeartbeatExpired: () => {},
     })
     const expired = reaper.sweepOnce()
     expect(expired.length).toBe(1)
     expect(seen).toEqual(['b1'])
+  })
+
+  /**
+   * Plan 205 §4.7 — the reaper that used to belong to the deleted lease
+   * manager: a running job whose heartbeat has passed is reported through
+   * `onHeartbeatExpired`, not flipped to any terminal status directly by
+   * this sweep (that is `host.finishExternally`'s job, wired in `daemon.ts`).
+   */
+  test('a running job whose heartbeat expired is reported through onHeartbeatExpired', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedJob(db, { id: 'j1', deviceId: 'd1', status: 'running', expiresAt: null, heartbeatExpiresAt: PAST })
+    const store = createJobStore(db)
+    const expiredIds: string[] = []
+    const reaper = createExpiryReaper({
+      jobStore: store,
+      intervalMs: 60_000,
+      log: createLogger('test'),
+      onJobStatus: () => {},
+      onBatchChanged: () => {},
+      onHeartbeatExpired: (jobId) => expiredIds.push(jobId),
+    })
+    reaper.sweepOnce()
+    expect(expiredIds).toEqual(['j1'])
+  })
+
+  test('a running job whose heartbeat has not expired yet is left alone', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedJob(db, { id: 'j1', deviceId: 'd1', status: 'running', expiresAt: null, heartbeatExpiresAt: FUTURE })
+    const store = createJobStore(db)
+    const expiredIds: string[] = []
+    const reaper = createExpiryReaper({
+      jobStore: store,
+      intervalMs: 60_000,
+      log: createLogger('test'),
+      onJobStatus: () => {},
+      onBatchChanged: () => {},
+      onHeartbeatExpired: (jobId) => expiredIds.push(jobId),
+    })
+    reaper.sweepOnce()
+    expect(expiredIds).toEqual([])
   })
 })
