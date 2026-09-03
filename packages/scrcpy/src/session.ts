@@ -175,7 +175,7 @@ export interface ScrcpySession {
  * distinctive while staying inside the signed range.
  */
 const SCID_MARKER_BYTE = 0x7f
-export const SCID_MARKER_PREFIX = SCID_MARKER_BYTE.toString(16).padStart(2, '0')
+const SCID_MARKER_PREFIX = SCID_MARKER_BYTE.toString(16).padStart(2, '0')
 
 export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOptions): Promise<ScrcpySession> {
   const log = opts.onLog ?? (() => {})

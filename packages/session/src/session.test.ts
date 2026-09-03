@@ -3,10 +3,12 @@ import type { AdbClient, TrackedDevice } from '@enkaku/adb'
 import type { GuestAgentClient, GuestAgentClientRunner } from '@enkaku/drivers'
 import type { Inspector, UiNode } from '@enkaku/protocol'
 import type { ScrcpySession } from '@enkaku/scrcpy'
-import { FARM_TAG_PROPERTY } from './farm-tag'
 import { createSession, type CreateSessionDeps } from './session'
 import { ENKAKU_IME_COMPONENT_ID } from './text-input'
 import type { Logger } from './logger'
+
+/** Mirrors farm-tag.ts's private constant; a test that pins the shipped value. */
+const FARM_TAG_PROPERTY = 'debug.enkaku.instrumented'
 
 const silentLog = (): Logger => {
   const l = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => l }

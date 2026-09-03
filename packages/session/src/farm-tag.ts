@@ -37,7 +37,7 @@ import type { Logger } from './logger'
  *   adb shell setprop debug.enkaku.instrumented 1
  *   adb shell getprop debug.enkaku.instrumented   # -> 1
  */
-export const FARM_TAG_PROPERTY = 'debug.enkaku.instrumented'
+const FARM_TAG_PROPERTY = 'debug.enkaku.instrumented'
 
 /**
  * Device-under-automation marker. Mirrors `applyRotation`'s shape

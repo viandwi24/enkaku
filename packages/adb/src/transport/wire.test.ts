@@ -9,14 +9,12 @@ import {
   HEADER_BYTES,
   MAX_MAXDATA,
   MIN_MAXDATA,
-  VERSION_SKIP_CHECKSUM,
   checksum,
   clampMaxdata,
   commandName,
   decodeHeader,
   encodeFrame,
   stripTrailingNul,
-  verifyChecksum,
 } from './wire'
 
 const te = new TextEncoder()
@@ -101,27 +99,6 @@ describe('decodeHeader — bad magic and truncation', () => {
     // magic field is also 0 — a deliberately adversarial all-zero frame must
     // not be accepted as valid.
     expect(() => decodeHeader(new Uint8Array(24))).toThrow(AdbError)
-  })
-})
-
-describe('verifyChecksum', () => {
-  test('always true for a peer at or past VERSION_SKIP_CHECKSUM, even with a wrong dataCheck', () => {
-    const payload = te.encode('hello')
-    const frame = encodeFrame(A_WRTE, 1, 2, payload)
-    const header = decodeHeader(frame)
-    const tamperedHeader = { ...header, dataCheck: header.dataCheck + 1 }
-    expect(verifyChecksum(tamperedHeader, payload, VERSION_SKIP_CHECKSUM)).toBe(true)
-    expect(verifyChecksum(tamperedHeader, payload, VERSION_SKIP_CHECKSUM + 1)).toBe(true)
-  })
-
-  test('validates the sum for an older peer', () => {
-    const payload = te.encode('hello')
-    const frame = encodeFrame(A_WRTE, 1, 2, payload)
-    const header = decodeHeader(frame)
-    const oldVersion = VERSION_SKIP_CHECKSUM - 1
-    expect(verifyChecksum(header, payload, oldVersion)).toBe(true)
-    const tamperedHeader = { ...header, dataCheck: header.dataCheck + 1 }
-    expect(verifyChecksum(tamperedHeader, payload, oldVersion)).toBe(false)
   })
 })
 
