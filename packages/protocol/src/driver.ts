@@ -26,7 +26,23 @@ export interface FrameMeta {
   height: number
   codec: 'png' | 'h264'
   seq: number
-  capturedAt: number
+  /**
+   * The device's presentation timestamp for this access unit, in
+   * microseconds on the device's own clock (scrcpy's PTS, bits 0..61 of the
+   * 12-byte frame header, `packages/scrcpy/src/demuxer.ts`). `0n` means the
+   * source has no device clock: a PNG screencap frame, an H.264 config
+   * packet (SPS/PPS carries no PTS), the cached keyframe a joining viewer
+   * is primed with, or a frame relayed from a node (the tunnel carries no
+   * metadata). Consumers that estimate time skip `0n` samples.
+   */
+  ptsUs: bigint
+  /**
+   * Unix milliseconds (`Date.now()`) at the moment the host parsed this
+   * access unit off the device socket. Plan 203 §3.2 D1 renames the
+   * pre-existing "capture" field to this honest name — it was always the
+   * host's own parse time, never a moment on the device.
+   */
+  hostReceivedAt: number
   /**
    * Whether this chunk can start a decode. Left undefined it means "PNG, so
    * yes"; H.264 sources must set it, because a decoder handed a delta frame

@@ -483,6 +483,31 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   /** Rate-limit bookkeeping for the E_INPUT_BUSY warn (plan 91 §5 step 91.10), keyed `deviceId:lane` — per-router-instance, like `transportMetrics`/`logSlowCommand` above. */
   const lastInputBusyWarnAt = new Map<string, number>()
 
+  /**
+   * Plan 203 §4.6: `GET /api/video/latency`'s per-stream counters, keyed
+   * `${deviceId}:${quality}`. In-memory, cleared on restart, like
+   * `transportMetrics` above. `deviceId`/`quality` are kept on the counters
+   * themselves (not re-parsed out of the key) since a device id is never
+   * guaranteed free of `:`.
+   */
+  interface StreamCounters {
+    deviceId: string
+    quality: Quality
+    keyframeRequests: number
+    congestionDrops: number
+  }
+  const streamCounters = new Map<string, StreamCounters>()
+  function countersFor(binding: StreamBinding): StreamCounters {
+    const quality = binding.quality ?? 'control'
+    const key = `${binding.deviceId}:${quality}`
+    let counters = streamCounters.get(key)
+    if (!counters) {
+      counters = { deviceId: binding.deviceId, quality, keyframeRequests: 0, congestionDrops: 0 }
+      streamCounters.set(key, counters)
+    }
+    return counters
+  }
+
   const send = (ws: ServerWebSocket<unknown>, msg: ServerMessage) => ws.send(JSON.stringify(msg))
   /** `action` (plan 90 §3.3, §5 step 90.5) is optional — every existing caller omits it, unchanged. */
   const sendError = (ws: ServerWebSocket<unknown>, code: string, message: string, id?: string, action?: 'install-agent' | 'update-agent') =>
@@ -941,15 +966,22 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 transportMetrics.recordBufferedBytes(bufferedAmount)
                 const congested = bufferedAmount > MAX_BUFFERED
                 if (meta.codec === 'png') {
-                  if (congested) return // one lost picture; nothing downstream depends on it
+                  if (congested) {
+                    countersFor(binding).congestionDrops++
+                    return // one lost picture; nothing downstream depends on it
+                  }
                 } else {
                   if (congested && !binding.awaitingKeyframe) {
                     binding.awaitingKeyframe = true
+                    countersFor(binding).keyframeRequests++
                     sessionForBinding(binding)?.requestKeyframe?.()
                   }
                   if (binding.awaitingKeyframe) {
                     // Resume only on a keyframe, and only once the socket drained.
-                    if (congested || !meta.keyframe) return
+                    if (congested || !meta.keyframe) {
+                      countersFor(binding).congestionDrops++
+                      return
+                    }
                     binding.awaitingKeyframe = false
                   }
                 }
@@ -1073,7 +1105,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               height: frameSize.height,
               codec: 'h264',
               seq: 0,
-              capturedAt: Date.now(),
+              ptsUs: 0n,
+              hostReceivedAt: Date.now(),
               keyframe: true,
             }
             const config = localSession?.videoConfig?.()
@@ -1092,6 +1125,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               // before the encoder is running kills the server outright — 0
               // packets and a closed socket, versus 143 packets in five seconds
               // without it. The same message 3.8 s later is harmless.
+              countersFor(binding).keyframeRequests++
               localSession?.requestKeyframe?.()
             }
             return
@@ -1115,6 +1149,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // with the server ending the stream first.
             const binding = state.streams.get(msg.payload.streamId)
             if (!binding || binding.remote) return
+            countersFor(binding).keyframeRequests++
             sessionForBinding(binding)?.requestKeyframe?.()
             return
           }
@@ -2697,6 +2732,16 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     /** `GET /api/adb/stats`'s `transport` block (plan 85 §3.6, §4.6) — `daemon.ts` wires this into `createAdbStatsRoutes` through the same forward-ref pattern every other WS-router hook here already uses. */
     transportStats(): TransportSnapshot {
       return transportMetrics.snapshot(conns.size)
+    },
+
+    /** Plan 203 §4.6: `GET /api/video/latency`'s per-stream counters. `daemon.ts` wires this into `createVideoRoutes` through the same forward-ref pattern `transportStats` above already uses. */
+    videoStreamStats(deviceId: string): Array<{ quality: Quality; keyframeRequests: number; congestionDrops: number }> {
+      const rows: Array<{ quality: Quality; keyframeRequests: number; congestionDrops: number }> = []
+      for (const counters of streamCounters.values()) {
+        if (counters.deviceId !== deviceId) continue
+        rows.push({ quality: counters.quality, keyframeRequests: counters.keyframeRequests, congestionDrops: counters.congestionDrops })
+      }
+      return rows
     },
 
     /**

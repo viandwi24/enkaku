@@ -5,6 +5,7 @@ import type { Logger } from './logger'
 import type { RotationOutcome } from './orientation'
 import { createSession, type CreateSessionDeps, type DeviceSession } from './session'
 import type { DeviceSnapshotSource } from './types'
+import { createVideoLatencyTracker, type VideoLatencySnapshot, type VideoLatencyTracker } from './video-latency'
 import { sameVideoNumbers, type VideoProfile } from './video-profile'
 
 /** Legacy fallback when `idleTtlSec` is not supplied (node mode, tests) — the
@@ -51,6 +52,8 @@ interface Entry {
    * "the device's original state".
    */
   ownsDevicePrep: boolean
+  /** Plan 203 §4.5 — per-entry PTS statistics, fed by every dispatched frame. */
+  latency: VideoLatencyTracker
 }
 
 export interface SessionManager {
@@ -233,6 +236,11 @@ export interface SessionManager {
     buildQueueDepth: number
     profiles: Array<{ deviceId: string; quality: Quality; maxSize: number; maxFps: number; bitRate: number }>
   }
+  /**
+   * Plan 203 §4.5: per-entry PTS statistics for `GET /api/video/latency`.
+   * Optional for the same fixture-compatibility reason `videoStats` is.
+   */
+  videoLatency?(deviceId: string): Array<{ quality: Quality; viewers: number } & VideoLatencySnapshot>
 }
 
 export interface SessionManagerDeps {
@@ -452,6 +460,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const dispatchFrame = (key: string) => (chunk: Uint8Array, meta: FrameMeta) => {
     const entry = entries.get(key)
     if (!entry) return
+    entry.latency.record(meta)
     for (const cb of entry.frameSubscribers) cb(chunk, meta)
   }
 
@@ -621,6 +630,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       idleSince: null,
       videoProfile,
       ownsDevicePrep: !fastOpts?.skipDevicePrep,
+      latency: createVideoLatencyTracker({ startedAt: Date.now() }),
     }
     entries.set(key, entry)
     await session.display.start()
@@ -994,6 +1004,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         buildQueueDepth: buildLane.queueDepth(),
         profiles,
       }
+    },
+
+    videoLatency(deviceId) {
+      const rows: Array<{ quality: Quality; viewers: number } & VideoLatencySnapshot> = []
+      for (const entry of entries.values()) {
+        if (entry.deviceId !== deviceId) continue
+        rows.push({ quality: entry.quality, viewers: entry.refcount, ...entry.latency.snapshot() })
+      }
+      return rows
     },
   }
 }

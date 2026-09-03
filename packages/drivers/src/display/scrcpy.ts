@@ -70,7 +70,8 @@ export class ScrcpyDisplay implements DisplaySource {
         height: this.height,
         codec: 'h264',
         seq: this.seq++,
-        capturedAt: Date.now(),
+        ptsUs: packet.kind === 'config' ? 0n : packet.ptsUs,
+        hostReceivedAt: packet.receivedAt,
         // Config (SPS/PPS) and IDR frames are the only points a decoder can
         // join at; everything else is a delta it cannot make sense of alone.
         keyframe: packet.kind !== 'frame',

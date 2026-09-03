@@ -116,6 +116,13 @@ const LocalPrefsSchema = z.object({
     .union([z.literal(20), z.literal(40), z.literal(60), z.literal(80), z.literal(100), z.literal(160), z.literal(200)])
     .catch(20)
     .default(20),
+  /**
+   * Plan 203 §4.12: whether the Device Control cast shows the latency
+   * overlay. A property of the screen an operator is sitting in front of,
+   * like `tileSize`, so it lives in `localStorage` and survives a new tab.
+   * Off by default: it is a diagnostic, not a status readout.
+   */
+  latencyOverlay: z.boolean().default(false),
 })
 export type LocalPrefs = z.infer<typeof LocalPrefsSchema>
 export type TileSize = LocalPrefs['tileSize']

@@ -8,18 +8,19 @@ import type { FrameMeta } from './driver'
  *   byte 1    : u8  streamId — allocated by the core at stream.started (VIDEO/AUDIO/CONTROL)
  *   byte 2..  : payload per (channel, codec)
  *
- * Payload VIDEO codec PNG (M2):
+ * Payload VIDEO codec PNG (M2), extended by plan 203 §4.2:
  *   byte 2    : u8 codec (0x01 PNG; 0x02 H264 from Plan 08)
  *   byte 3..4 : u16BE width
  *   byte 5..6 : u16BE height
  *   byte 7..10: u32BE seq
- *   byte 11.. : data PNG utuh
+ *   byte 11..18: u64BE ptsUs          device PTS, microseconds; 0 = no device clock
+ *   byte 19..26: u64BE hostReceivedAt unix milliseconds at host parse time
+ *   byte 27.. : data PNG utuh (or the H.264 Annex-B access unit)
  *
  * Byte 2 carries the codec in its low bits and VIDEO_FLAG_KEYFRAME (0x80) in
  * its high bit. A decoder must be handed a keyframe first — WebCodecs rejects
  * anything else right after `configure()` — so the receiver has to be able to
- * tell one from the other. Reusing the spare bit keeps the header at 11 bytes.
- * PNG frames are all keyframes and set it too.
+ * tell one from the other. PNG frames are all keyframes and set it too.
  *
  * Payload SNAPSHOT (plan 56 §3.8) — the Inspect tab's dump screenshot,
  * always PNG. Byte 1 here is NOT a `stream.started` streamId; it carries the
@@ -33,7 +34,7 @@ export const CHANNEL = { VIDEO: 0x01, AUDIO: 0x02, CONTROL: 0x03, SNAPSHOT: 0x04
 export const VIDEO_CODEC = { PNG: 0x01, H264: 0x02 } as const
 export const VIDEO_FLAG_KEYFRAME = 0x80
 
-const VIDEO_HEADER_LEN = 11
+const VIDEO_HEADER_LEN = 27
 
 export function encodeVideoFrame(streamId: number, meta: FrameMeta, data: Uint8Array): Uint8Array {
   const out = new Uint8Array(VIDEO_HEADER_LEN + data.length)
@@ -46,6 +47,8 @@ export function encodeVideoFrame(streamId: number, meta: FrameMeta, data: Uint8A
   dv.setUint16(3, meta.width, false)
   dv.setUint16(5, meta.height, false)
   dv.setUint32(7, meta.seq >>> 0, false)
+  dv.setBigUint64(11, meta.ptsUs, false)
+  dv.setBigUint64(19, BigInt(Math.max(0, Math.floor(meta.hostReceivedAt))), false)
   out.set(data, VIDEO_HEADER_LEN)
   return out
 }
@@ -102,6 +105,10 @@ export interface DecodedVideoFrame {
   seq: number
   /** True for a PNG frame, an H.264 config packet (SPS/PPS), or an IDR. */
   keyframe: boolean
+  /** Device PTS in microseconds; `0n` when the source had no device clock (see `FrameMeta.ptsUs`). */
+  ptsUs: bigint
+  /** Unix milliseconds at host parse time (see `FrameMeta.hostReceivedAt`). */
+  hostReceivedAt: number
   data: Uint8Array
 }
 
@@ -123,6 +130,8 @@ export function decodeVideoFrame(buf: Uint8Array): DecodedVideoFrame {
     height: dv.getUint16(5, false),
     seq: dv.getUint32(7, false),
     keyframe: (codecByte & VIDEO_FLAG_KEYFRAME) !== 0,
+    ptsUs: dv.getBigUint64(11, false),
+    hostReceivedAt: Number(dv.getBigUint64(19, false)),
     data: buf.subarray(VIDEO_HEADER_LEN),
   }
 }
