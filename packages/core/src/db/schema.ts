@@ -30,6 +30,7 @@ export const devices = sqliteTable(
 
     battery: text('battery', { mode: 'json' }),
     settings: text('settings', { mode: 'json' }),
+    /** offline | online | quarantined (MVP 04 §0.1, §4, plan 205 §4.6) — "busy" and "controlled" are derived from the activity registry and never stored. */
     status: text('status').default('offline'),
     /** Quarantine reason (e.g. 'thermal:47.3C') — null when not quarantined. */
     quarantineReason: text('quarantine_reason'),
@@ -213,8 +214,8 @@ export type BlockedDeviceRow = typeof blockedDevices.$inferSelect
  * Phones adb has seen that nobody has admitted to the farm yet (plan 56 §3.3).
  *
  * A separate table rather than a sixth `DeviceStatus` on purpose: `devices`
- * rows ARE farm members — the scheduler picks from them, the lease manager
- * leases them, the wall renders them. A status would mean every one of those
+ * rows ARE farm members — the scheduler picks from them, the activity
+ * registry tracks them, the wall renders them. A status would mean every one of those
  * paths has to remember to exclude it, a filter that must be right in a dozen
  * places and only has to be wrong once to hand someone's personal phone to a
  * job. Keyed on `stableId`, exactly like `blocked_devices` above, because
@@ -400,8 +401,8 @@ export const jobs = sqliteTable(
     params: text('params', { mode: 'json' }),
     priority: integer('priority').default(0),
     status: text('status').default('queued'), // queued|running|success|failed|cancelled
-    /** Epoch seconds — the job lease, extended by the runner's heartbeat (spec §10.2). */
-    leaseExpiresAt: integer('lease_expires_at'),
+    /** Epoch seconds; the job heartbeat, extended by the runner (spec §10.2). */
+    heartbeatExpiresAt: integer('heartbeat_expires_at'),
     result: text('result', { mode: 'json' }),
     error: text('error'),
     createdAt: integer('created_at', { mode: 'timestamp' }),
@@ -514,17 +515,6 @@ export const jobs = sqliteTable(
      * and for every row written before this column existed.
      */
     peakRssBytes: integer('peak_rss_bytes'),
-    /**
-     * Plan 91 §3.5, §4.9 — how many times a human sent input to this job's
-     * device while it was running (a co-control/assist action, never the
-     * job's own input). On the row rather than derived, so a job list can
-     * badge it with no join, and so it outlives `retention.eventInputDays`
-     * (3 days by default, F19) with the job it belongs to. Same shape as
-     * `infraAttempts` above. Incremented once per ACCEPTED assist action
-     * (`packages/core/src/server/ws-handlers.ts`'s `input.*` branch), never
-     * per `assist.start`/`assist.stop`.
-     */
-    assistCount: integer('assist_count').default(0),
     /**
      * Plan 98 §3.7, §4.4, §4.6, step 98.5 — the ONLY resolved runtime value
      * ever written to a row (every other field `resolveRuntime` produces —
@@ -1078,7 +1068,7 @@ export type ArtifactRow = typeof artifacts.$inferSelect
 /**
  * The job trace: one append-only event stream per job (plan 128 §4.1). Every
  * device action a script takes, with its arguments, duration and outcome;
- * every log line; every phase boundary; every artifact; every human assist —
+ * every log line; every phase boundary; every artifact —
  * all on one time axis, so a failed run can be answered with "here is what
  * the phone was doing" rather than a re-run.
  *
@@ -1118,7 +1108,7 @@ export const jobEvents = sqliteTable(
     phase: text('phase'),
     /** Plan 99's workflow node axis, mirroring `artifacts.nodeId`. Null for every non-workflow job. */
     nodeId: text('node_id'),
-    /** 'phase' | 'action' | 'log' | 'artifact' | 'progress' | 'assist' | 'error' */
+    /** 'phase' | 'action' | 'log' | 'artifact' | 'progress' | 'error' */
     kind: text('kind').notNull(),
     /** For kind 'action': the DeviceCall method. For 'log': the level. For 'phase': 'start' | 'end'. */
     name: text('name').notNull(),
