@@ -33,9 +33,9 @@ function asSchemaNode(value: unknown): Record<string, unknown> | undefined {
  * (`def.params.parse`) and is still the only place a `.refine()`/
  * `.superRefine()` constraint is enforced (§3.6) — but every representable
  * constraint (types, bounds, enums, required, ordered ranges) now fails
- * BEFORE a device is leased instead of after, because `validateScriptForRun`
+ * BEFORE a device is claimed instead of after, because `validateScriptForRun`
  * (`jobs/validate-script.ts`) calls this before the job row is written and
- * `createBatch` (`clusters/dispatch.ts`) calls it before resolving targets.
+ * `createBatch` (`groups/dispatch.ts`) calls it before resolving targets.
  *
  * Plan 82 §3.3: reads the script through the `ScriptRegistry` rather than the
  * `scripts` table directly — `job.scriptId` can be a persisted row's id
@@ -64,6 +64,7 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
     },
 
     async run(job: JobRow, ctx: ExecutorContext): Promise<unknown> {
+      if (!job.scriptId) throw new EnkakuError('unknown_script', 'no scriptId on this job')
       const entry = deps.registry.get(job.scriptId)
       if (!entry) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
       if (!entry.enabled) throw new EnkakuError('script_disabled', `the script ${entry.name} is disabled`)
@@ -79,21 +80,18 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
       }
 
       // A cancel from the core aborts the child (grace → SIGTERM → SIGKILL).
-      ctx.signal.addEventListener('abort', () => deps.runner.abort(job.id, 'cancelled'))
+      ctx.signal.addEventListener('abort', () => deps.runner.abort(ctx.runId, 'cancelled'))
       // A crash of a package the farm's crash policy cares about (plan 37
       // §3.5, §4.4) — a SEPARATE abort path from `signal` above, so it
       // settles as `APP_CRASHED` (script-class, never blames the device)
       // rather than as a plain cancel.
-      ctx.onCrash?.((e) => deps.runner.abort(job.id, 'crashed', `${e.package} crashed: ${e.exception}`))
-      // A human sent input to this job's device while it was running (plan 91
-      // §3.6, §4.8) — NOT an abort, forwarded to the child so a script that
-      // registered `ctx.onAssist` can react; one that never did is unaffected.
-      ctx.onAssist?.((e) => deps.runner.notifyAssist(job.id, e))
+      ctx.onCrash?.((e) => deps.runner.abort(ctx.runId, 'crashed', `${e.package} crashed: ${e.exception}`))
 
       // The bundle is materialised in the core (which has DB access); the runner only gets a path.
       const bundlePath = await deps.registry.bundlePath(entry)
       const result = await deps.runner.execute({
         id: job.id,
+        runId: ctx.runId,
         deviceId: job.deviceId,
         bundlePath,
         params: job.params ?? {},
@@ -120,7 +118,7 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
         // shape `job.scriptId`/`job.runtime` both already have). `null` for
         // every job enqueued with no override, and for every job that
         // predates this column.
-        runtimeOverride: parseJobRuntimeOverride(job.runtimeOverride),
+        runtimeOverride: parseJobRuntimeOverride(ctx.run.runtimeOverride),
       })
       // Plan 98 §4.8, H1 — reported here, BEFORE the ok/fail branch below, so
       // a peak is recorded whether the job succeeded or failed (acceptance:

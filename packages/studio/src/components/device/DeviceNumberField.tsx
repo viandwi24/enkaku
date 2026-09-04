@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { z } from 'zod'
 import { DeviceResponseSchema } from '@enkaku/protocol'
-import type { DeviceDetailInfo } from '@/components/device/DeviceHeader'
+import type { DeviceDetail } from '@enkaku/protocol'
 import { Button, Input, Label, api, describeApiError } from '@enkaku/ui'
 
 /**
@@ -29,7 +29,7 @@ export function DeviceNumberField({
   device,
   onSaved,
 }: {
-  device: DeviceDetailInfo
+  device: DeviceDetail
   /** The number changed — patched into the caller's own `device` state, mirroring `reloadDevice`'s existing shape. */
   onSaved: (patch: { number: number | null }) => void
 }) {

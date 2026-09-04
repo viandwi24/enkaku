@@ -3,7 +3,7 @@
 > An as-built account, read off the code on `main` (2026-08-18), not a plan. Where the code and a
 > plan disagree, this document follows the code and says so. Plan 79 is the design record for the
 > store, plan 108 §3.1/§4.5 for the plugin routes on top of it, plan 112 step 112.2 for the hint
-> switch; `docs/spec.md` §12.4 is the product statement.
+> switch; `docs/archive/spec-prototype.md` §12.4 was the product statement; the MVP spec covers it in `docs/spec.md` §4.4 and §10.
 
 ---
 

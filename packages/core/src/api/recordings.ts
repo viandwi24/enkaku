@@ -7,9 +7,6 @@ import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
 import { scripts } from '../db/schema'
-import { RECORDINGS_PLUGIN_NAME, resolveRecordingsOwner } from '../plugins/owner'
-import { buildScriptFromWorkspace } from '../scripts/build'
-import { publishScript } from '../scripts/service'
 import { EnkakuError } from '../util/errors'
 import type { WorkspaceStore } from '../workspace/store'
 import { emitDetachedScript, emitRecordingEntry, paramsJsonSchemaFor } from '../recording/compile'
@@ -23,22 +20,15 @@ import type { RecordingService } from '../recording/service'
  *
  * A recording's identity IS its workspace path (§3.1): every route here is a
  * plain read/write/delete against `/recordings/<slug>.recording.json`, never
- * a second table. Publishing goes through the SAME `buildScriptFromWorkspace`
- * + `publishScript` pair `script.publish`'s `{ path }` input form already
- * uses (`capability/script.ts`) — this file constructs the compiled entry
- * (`emitRecordingEntry`) and hands its PATH to that exact function, never a
- * bundle assembled by hand, so F11's "no new bundling" holds literally.
- * `publishScript`'s `kind` is left at its default (`'script'`) — a recording
- * publishes as an ORDINARY script row, indistinguishable from a hand-written
- * one (acceptance criterion 2): nothing here ever writes `kind: 'recording'`,
- * because no such kind exists, deliberately.
+ * a second table.
  *
- * Since plan 110 §3.4 that ordinary row is an ordinary PLUGIN MEMBER row —
- * `recordings/<slug>`, owned by the synthetic `recordings` plugin
- * (`plugins/owner.ts`) — which is precisely what keeps it indistinguishable
- * from a hand-written one, now that a hand-written script is a plugin member
- * too (§3.2). Nothing else about this file's publish path moved: the same
- * compile, the same `buildScriptFromWorkspace`, the same writer.
+ * **Plan 210 (MVP 06 §2, §4 item 3): publishing a recording is parked for
+ * the MVP.** `POST /:slug/publish` answers `410 E_RECORDINGS_PARKED` and
+ * writes nothing — no plugin, no `scripts` row. Recordings are outside the
+ * MVP navigation and cannot be published until the plugin-per-recording
+ * rework (`docs/mvp/03-navigation-and-pages.md` §2.2 rule 3) lands. Every
+ * other route stays exactly as it was: review, trim, parameterise and
+ * detach all still work.
  *
  * **One addition beyond §4.9's own six-row table, flagged here and in this
  * step's report rather than silently added: `POST /` (create).** The table
@@ -131,15 +121,17 @@ function isDetached(workspace: WorkspaceStore, slug: string): boolean {
 }
 
 /**
- * The published NAME of a recording (plan 110 §3.4): `recordings/<slug>`, a
- * member of the farm's synthetic `recordings` plugin. A recording published
- * BEFORE that change is a row named `<slug>` with no owning plugin, which the
- * farm no longer resolves at all (`scripts/service.ts`'s `isUnownedScriptRow`)
- * — it is deliberately not looked up here, and re-recording publishes it under
- * the owned name above.
+ * Plan 210 — publishing is parked; nothing writes under this name any more.
+ * Kept read-only so the list/detail routes can still show what the
+ * prototype (or a farm from before this plan) published, under the synthetic
+ * `recordings` plugin's old naming (`<slug>` became `recordings/<slug>` once
+ * a recording had to be a plugin member; that plugin is gone, but its member
+ * rows are parked, not deleted, and the boot step that parked them left this
+ * name unchanged on each row — see `db/migrations/park-synthetic-recordings.ts`).
  */
+const PARKED_PUBLISHED_PREFIX = 'recordings/'
 function publishedName(slug: string): string {
-  return `${RECORDINGS_PLUGIN_NAME}/${slug}`
+  return `${PARKED_PUBLISHED_PREFIX}${slug}`
 }
 
 /** The latest version this recording's NAME has ever published as, or `null` — read straight off `scripts`, never a second source of truth. */
@@ -172,9 +164,6 @@ const RecordingDetailResponseSchema = z.object({
   generatedSource: z.string().nullable(),
 })
 
-export const RecordingCreateResponseSchema = z.object({ slug: z.string(), doc: RecordingDocSchema, hash: z.string() })
-export const RecordingPatchResponseSchema = z.object({ slug: z.string(), doc: RecordingDocSchema, hash: z.string() })
-
 const CreateBody = z.object({
   deviceId: z.string().min(1),
   name: z.string().min(1).max(200),
@@ -197,8 +186,6 @@ const PatchBody = z.object({
     .strict(),
 })
 
-const PublishBody = z.object({ version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+].+)?$/).optional() })
-
 const ERROR_STATUS: Record<string, number> = {
   E_RECORDING_NOT_FOUND: 404,
   E_RECORDING_INVALID: 400,
@@ -212,6 +199,7 @@ const ERROR_STATUS: Record<string, number> = {
   E_STALE: 409,
   E_QUOTA: 413,
   script_version_exists: 409,
+  E_RECORDINGS_PARKED: 410,
 }
 
 export function createRecordingRoutes(deps: { db: Db; workspace: WorkspaceStore; recording?: RecordingService; audit?: AuditLogger }): Hono<AuthEnv> {
@@ -314,46 +302,15 @@ export function createRecordingRoutes(deps: { db: Db; workspace: WorkspaceStore;
     return c.json({ ok: true })
   })
 
-  app.post('/:slug/publish', requirePermission('script.publish'), async (c) => {
-    const slug = c.req.param('slug')
-    if (isDetached(workspace, slug)) {
-      throw new EnkakuError('E_RECORDING_DETACHED', `"${slug}" was detached and no longer compiles — publish /scripts/${slug}.ts as an ordinary script instead`)
-    }
-    const doc = readDoc(workspace, slug)
-    const body = PublishBody.safeParse(await c.req.json().catch(() => ({})))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => i.message).join('; '))
-    const toPublish = body.data.version ? { ...doc, version: body.data.version } : doc
-    const parsed = RecordingDocSchema.safeParse(toPublish)
-    if (!parsed.success) throw new EnkakuError('E_RECORDING_INVALID', z.prettifyError(parsed.error))
-    // Persist the (possibly bumped) version back onto the stored document —
-    // §3.1's diagram: "compile → regenerated every time" — so a follow-up
-    // GET reflects exactly what was just published.
-    if (parsed.data.version !== doc.version) writeDoc(workspace, slug, parsed.data, actorId(c))
-
-    const entrySource = emitRecordingEntry(parsed.data)
-    upsertFile(workspace, compiledPath(slug), new TextEncoder().encode(entrySource), 'text/typescript', actorId(c))
-
-    // F11: the SAME server-side bundler `script.publish`'s `{ path }` form uses — never a bundle assembled by hand.
-    const { bundle, source } = await buildScriptFromWorkspace(workspace, compiledPath(slug))
-    // Plan 110 §3.4, §5 step 110.2 — a recording is published as a MEMBER of
-    // the synthetic `recordings` plugin, created on first publish and never
-    // installable. That is what makes it satisfy the rule every other script
-    // now satisfies (§3.2), and it gives every recording one KV namespace
-    // (`recordings`) rather than one per recording.
-    const owner = resolveRecordingsOwner(db)
-    const script = publishScript(db, {
-      name: publishedName(parsed.data.name),
-      version: parsed.data.version,
-      bundle,
-      source,
-      paramsSchema: paramsJsonSchemaFor(parsed.data),
-      // `kind` deliberately omitted — defaults to `'script'` (`publishScript`'s own doc comment), the
-      // same row shape a hand-written script publishes as (acceptance criterion 2).
-      pluginId: owner.id,
-      exportId: parsed.data.name,
-    })
-    deps.audit?.record({ userId: actorId(c), action: 'script.publish', target: script.id, meta: { name: script.name, version: script.version, source: 'recording', slug } })
-    return c.json({ script }, 201)
+  // Plan 210 (MVP 06 §2, §4 item 3) — recordings are parked for the MVP:
+  // publishing a recording as a plugin no longer happens here. Every other
+  // route in this file stays mounted with its permissions unchanged (review,
+  // trim, parameterise and detach all still work).
+  app.post('/:slug/publish', requirePermission('script.publish'), () => {
+    throw new EnkakuError(
+      'E_RECORDINGS_PARKED',
+      'Publishing a recording is parked for the MVP (docs/mvp/06-feature-scope.md §2 and §4 item 3, decided 2026-09-03): recordings are outside the MVP navigation and cannot be published until the plugin-per-recording rework (docs/mvp/03-navigation-and-pages.md §2.2 rule 3) lands. Review, trim, parameterise and detach still work.',
+    )
   })
 
   app.post('/:slug/detach', requirePermission('script.publish'), (c) => {

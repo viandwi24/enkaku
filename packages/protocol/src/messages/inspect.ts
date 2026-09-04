@@ -7,8 +7,8 @@ import { SelectorSchema, UiNodeSchema } from '../ui-node'
  * `screenshot`) — nothing new runs on the device. Reading the screen is a
  * control-grade action (plan 56 §3.7): it can carry whatever text is on
  * screen (passwords included) and seizes the `instrumentation` lock, so
- * every message here is refused server-side without the manual lease, the
- * same `checkInputAllowed` gate `input.*` uses.
+ * every message here is refused server-side unless the device is online, the
+ * same admission gate `input.*` uses (plan 205 §4.8).
  */
 
 /** Correlates the JSON `inspect.tree`/`inspect.match` reply with the binary snapshot frame on `CHANNEL.SNAPSHOT` (byte 1 of the frame, plan 56 §3.8) — one byte, so it is capped at 255. */
@@ -18,14 +18,14 @@ export const FrameSizeSchema = z.object({ width: z.number().int(), height: z.num
 
 // ---- client → server ----
 
-/** Start (or join) the inspector engine for this device — ref-counted per device across every attached viewer (§3.2). */
+/** Attach to the session's inspector (started by the session itself; plan 208 §3.2). The reply carries the engine and its capabilities; a tab is a viewer, never an owner. */
 export const InspectAttachMessage = z.object({
   type: z.literal('inspect.attach'),
   id: z.string().optional(),
   payload: z.object({ deviceId: z.string() }),
 })
 
-/** Release this viewer's hold on the inspector engine; released for real once the last one leaves. */
+/** This viewer left; recorded on the device's main stream, nothing is released (the engine lives with the session). */
 export const InspectDetachMessage = z.object({
   type: z.literal('inspect.detach'),
   payload: z.object({ deviceId: z.string() }),

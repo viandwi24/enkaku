@@ -1,35 +1,19 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { BatchResponseSchema, type BatchOrder, type ClusterInfo, type DeviceInfo } from '@enkaku/protocol'
+import type { DeviceInfo, GroupInfo } from '@enkaku/protocol'
 import { ArtifactPicker, uploadArtifactSource, type ArtifactSource } from '@/components/ArtifactPicker'
-import { OutcomeSummary } from '@/components/bulk/OutcomeSummary'
-import { SkippedGroups, deviceLabelIn, deviceNameIn } from '@/components/bulk/SkippedGroups'
-import { batchOutcomeCounts, batchOutcomeGroups, useBatchReport } from '@/components/bulk/use-batch-report'
-import { ReattachBanner } from '@/components/operations/ReattachBanner'
+import { deviceLabelIn, deviceNameIn } from '@/components/bulk/SkippedGroups'
+import { ActionResults } from '@/components/actions/ActionResults'
 import { TransferProgressBar } from '@/components/operations/TransferProgressBar'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
-import {
-  api,
-  Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  Label,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  useAction,
-} from '@enkaku/ui'
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, useAction } from '@enkaku/ui'
+import { runAction, awaitOperation } from '@/lib/actions'
 import { findReattach, resolveTargetDeviceIds, useOperations } from '@/lib/operations'
+import type { ActionResult } from '@enkaku/protocol'
 
-const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
+const TARGET_ALLOW: Target[] = ['single', 'group', 'devices']
 
 /**
  * Devices list → multi-select → "Install on selected" (plan 39 §4.5, §4.7;
@@ -41,61 +25,56 @@ const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
  * previously always "all at once, as listed"); the artifact comes from
  * `ArtifactPicker` so a previously uploaded APK can be reused; and,
  * F15's own headline defect, the dialog no longer navigates away before a
- * result exists — it STAYS OPEN and renders the same `OutcomeSummary` +
- * `SkippedGroups` report every other bulk surface in this plan uses (H3).
+ * result exists — it STAYS OPEN and renders per-device outcomes through
+ * `ActionResults` (plan 207 §4.9).
  *
  * Plan 104 (M69) §3.4 — `devices` is now a DEFAULT, not a lock: `TargetPicker`
- * lets the operator switch to a cluster or edit the device list before
+ * lets the operator switch to a group or edit the device list before
  * installing, the same "fill default value nya ada, tapi user juga masih
  * bisa custom" the owner asked for everywhere else. `allDevices` is the
  * whole pool the picker can choose from — every caller that predates this
  * plan omits it, which reproduces its exact previous behaviour (a picker
  * that can only ever narrow the one set it was handed).
  *
- * Plan 107 (M72) §3.6, step 107.5 — opening this dialog while an install is
- * already running on the (fully overlapping) target re-attaches to THAT
- * operation instead of offering a fresh Install button: the form is
- * replaced outright by `useBatchReport`'s existing progress view (a
- * `batch:<id>` match) or by a lightweight byte-progress view
- * (`TransferProgressBar`, a `transfer:<id>` match — the ephemeral shape a
- * single-device install started elsewhere, e.g. the device popup's Files
- * tab, takes before any batch machinery is involved). A PARTIAL overlap (a
- * running install on only some of the currently-selected devices) is never
- * merged silently — `ReattachBanner` states it and the Install button is
- * disabled until the operator narrows the target or waits, because
- * guessing here is exactly what races two `pm install` runs on one phone.
+ * Plan 207 §4.2, §4.9 — `install` is now the actions API's own async verb:
+ * `POST /api/actions/install` dispatches to every device in the target at
+ * once (bounded server-side, `ACTION_FANOUT_CONCURRENCY` — no client-picked
+ * concurrency or order any more, since the verb takes none), and
+ * `awaitOperation` polls until every result settles. This replaced the old
+ * `internal:install` BATCH (`POST /api/batches`) entirely, so a batch-shaped
+ * re-attach (plan 107 §3.6's `batch:<id>` match) no longer applies here — an
+ * install this dialog itself started is polled to completion inline, never
+ * left as a re-openable batch. The one re-attach case that still can happen
+ * — a single-device install already running from elsewhere (the device
+ * popup's Files tab, or device preparation's own `ui-server` install), an
+ * ephemeral `transfer:<id>` operation from `lib/operations.ts`'s farm-wide
+ * poller — is kept, via `TransferProgressBar`.
  */
 export function InstallBatchDialog({
   open,
   onOpenChange,
   devices,
   allDevices,
-  clusters = [],
+  groups = [],
   nonModal = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The pre-filled default target — still fully editable through the picker below. */
   devices: DeviceInfo[]
-  /** The whole pool `TargetPicker`'s Cluster/Multiple devices modes can choose from. Defaults to `devices` for a caller not yet updated to pass the whole fleet. */
+  /** The whole pool `TargetPicker`'s Group/Multiple devices modes can choose from. Defaults to `devices` for a caller not yet updated to pass the whole fleet. */
   allDevices?: DeviceInfo[]
-  clusters?: ClusterInfo[]
-  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Install apk" row, one device); see `AssistDialog`'s own doc comment on the same prop for why. */
+  groups?: GroupInfo[]
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Install apk" row, one device): when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
   const pool = allDevices ?? devices
   const { run, isPending } = useAction()
   const [source, setSource] = useState<ArtifactSource | null>(null)
-  const [concurrency, setConcurrency] = useState(0)
-  const [order, setOrder] = useState<BatchOrder>('as-listed')
-  const [batchId, setBatchId] = useState<string | null>(null)
-  const report = useBatchReport(batchId)
+  const [results, setResults] = useState<ActionResult[] | null>(null)
   // Plan 107 §3.6, step 107.5 — re-attach, not restart: opening this dialog
-  // while an install is already running on the (fully overlapping) target
-  // shows THAT operation instead of a fresh Install button. `attachedKey`
-  // is a `transfer:<id>` key only — a `batch:<id>` match instead sets
-  // `batchId` directly (below), reusing `useBatchReport`'s own report
-  // unchanged rather than building a second progress renderer.
+  // while an install is already running elsewhere on the (fully overlapping)
+  // target shows THAT ephemeral transfer instead of a fresh Install button.
   const { operations } = useOperations()
   const [attachedKey, setAttachedKey] = useState<string | null>(null)
   const attachedTransfer = attachedKey ? (operations.find((o) => o.key === attachedKey) ?? null) : null
@@ -104,13 +83,12 @@ export function InstallBatchDialog({
   // `Infinity` here, which can never look "every usable device", rather
   // than the picked set's own size (comparing a set to itself would flag
   // EVERY pick as fleet-wide, which is worse than no gate at all).
-  const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, clusters })
-  const { target, deviceId, deviceIds, clusterId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
+  const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, groups })
+  const { target, deviceId, deviceIds, groupId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
 
   // Re-default every time the dialog OPENS (not on every render) — a single
-  // device handed in still lands on `single` (no concurrency/order — one
-  // device has nothing to order), and more than one lands on `devices`,
-  // pre-filled, exactly like before this plan's own extraction.
+  // device handed in still lands on `single`, and more than one lands on
+  // `devices`, pre-filled, exactly like before this plan's own extraction.
   useEffect(() => {
     if (!open) return
     targetSelection.reset({
@@ -122,85 +100,54 @@ export function InstallBatchDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  // Plan 124 §4.4, step 124.3 — one lookup, two shapes. `deviceName` is the
-  // two-field form `batchOutcomeGroups` feeds into `NamedOutcome` (the number
-  // stays apart so `SkippedGroups` can dim it); `deviceLabel` is the composed
-  // `#7 Galaxy A15` string the prose sentences and `ReattachBanner` need.
-  const deviceName = (id: string) => deviceNameIn(pool, id)
+  // Plan 124 §4.4, step 124.3 — `deviceLabel` is the composed `#7 Galaxy A15`
+  // string `ActionResults` and the prose sentences below need.
   const deviceLabel = (id: string) => deviceLabelIn(pool, id)
 
   // Plan 107 §3.6 — resolved against the CURRENT picker state, not just the
   // caller's own pre-fill, so editing the target while the dialog stays
   // open (e.g. adding a device) re-checks for an overlap immediately.
   const targetDeviceIds = useMemo(
-    () => resolveTargetDeviceIds({ target, deviceId, deviceIds, clusterId }, pool),
-    [target, deviceId, deviceIds, clusterId, pool],
+    () => resolveTargetDeviceIds({ target, deviceId, deviceIds, groupId }, pool),
+    [target, deviceId, deviceIds, groupId, pool],
   )
   const reattach = useMemo(() => findReattach(operations, 'install', targetDeviceIds), [operations, targetDeviceIds])
 
-  // Silent re-attach — ONLY the clean case (§3.6): the whole target is
-  // covered by exactly one running/queued operation. Runs once per fresh
-  // open (guarded by `!batchId && !attachedKey`) rather than on every
-  // `reattach` change, so an operator who is mid-edit on the target is
-  // never yanked into a report view they did not ask for.
+  // Silent re-attach — ONLY the clean case (§3.6), and only ever to an
+  // ephemeral transfer now (see the file's own doc comment for why a batch
+  // match can no longer occur). Runs once per fresh open (guarded by
+  // `!results && !attachedKey`) rather than on every `reattach` change, so an
+  // operator who is mid-edit on the target is never yanked into a report
+  // view they did not ask for.
   useEffect(() => {
-    if (!open || batchId || attachedKey) return
+    if (!open || results || attachedKey) return
     if (reattach.overlap !== 'full' || !reattach.operation) return
-    if (reattach.operation.kind === 'batch') {
-      setBatchId(reattach.operation.key.slice('batch:'.length))
-    } else if (reattach.operation.kind === 'transfer') {
+    if (reattach.operation.kind === 'transfer') {
       setAttachedKey(reattach.operation.key)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, reattach, batchId, attachedKey])
+  }, [open, reattach, results, attachedKey])
 
   function reset(): void {
     setSource(null)
-    setBatchId(null)
+    setResults(null)
     setAttachedKey(null)
   }
 
-  async function submitBatch(): Promise<void> {
+  async function submitInstall(): Promise<void> {
     if (!source || !hasTarget) return
     await run(
       'install-batch',
       async () => {
         const artifactId = await uploadArtifactSource(source)
-        /*
-         * `api()`, not a raw `fetch`. The raw call this replaces collapsed
-         * every possible refusal into one string — "Could not create the
-         * batch" — and `POST /api/batches` with `internal:install` can refuse
-         * for four unrelated reasons, each of which the server already names:
-         *
-         *   - the caller lacks `job.run`
-         *   - the caller's role cannot run an install under the farm's
-         *     current `shell.mode` (`requires device.files`)
-         *   - `transfer.enabled` is off farm-wide
-         *   - the target device belongs to another user
-         *
-         * Those have four different fixes and three different people who can
-         * apply them, and the operator was told none of it. Reported from the
-         * owner's farm on 2026-08-26 as an unexplained 403 that took a code
-         * read to place. `api()` throws an Error carrying the server's own
-         * `code` and `message`, which is what `useAction`'s toast shows.
-         */
-        const body = await api('/api/batches', BatchResponseSchema, {
-          json: {
-            scriptId: 'internal:install',
-            params: { artifactId },
-            target: target === 'cluster' ? { clusterId } : { deviceIds: target === 'single' ? [deviceId] : deviceIds },
-            concurrency,
-            order,
-          },
-        })
-        setBatchId(body.batch.id)
+        const targetBody = target === 'group' ? { groupId } : { deviceIds: target === 'single' ? [deviceId] : deviceIds }
+        const response = await runAction('install', targetBody, { artifactId })
+        const operation = await awaitOperation(response.operationId)
+        setResults(operation.results)
       },
-      { failure: 'Install batch failed to start' },
+      { failure: 'Install failed to start' },
     )
   }
-
-  const counts = report.batch ? batchOutcomeCounts(report.batch) : null
-  const groups = report.batch ? batchOutcomeGroups(report.batch, report.jobs, deviceName) : null
 
   return (
     <Dialog
@@ -215,53 +162,26 @@ export function InstallBatchDialog({
         <DialogHeader>
           <DialogTitle>Install on {resolvedCount} device{resolvedCount === 1 ? '' : 's'}</DialogTitle>
           <DialogDescription>
-            Uploads (or reuses) the APK once, then installs it across every selected device as one batch. Each
-            device reports its own result — this dialog stays open to show it.
+            Uploads (or reuses) the APK once, then installs it across every selected device. Each device reports its
+            own result — this dialog stays open to show it.
           </DialogDescription>
         </DialogHeader>
 
-        {!batchId && !attachedTransfer ? (
+        {!results && !attachedTransfer ? (
           <>
-            <ReattachBanner reattach={reattach} deviceLabel={deviceLabel} verb="installing" />
-            <ArtifactPicker accept=".apk" value={source} onChange={setSource} disabled={isPending('install-batch')} />
-            <TargetPicker selection={targetSelection} devices={pool} clusters={clusters} allow={TARGET_ALLOW} />
-            {(target === 'cluster' || target === 'devices') && (
-              <div className="grid grid-cols-2 gap-3 rounded-lg border bg-surface-2/40 p-3">
-                <div className="space-y-1.5">
-                  <Label className="text-[12.5px] font-normal">Concurrency</Label>
-                  <Select value={String(concurrency)} onValueChange={(v) => setConcurrency(Number.parseInt(v, 10))}>
-                    <SelectTrigger className="h-8 w-full text-[12.5px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="0">All at once</SelectItem>
-                      <SelectItem value="1">One at a time</SelectItem>
-                      <SelectItem value="2">2 at a time</SelectItem>
-                      <SelectItem value="3">3 at a time</SelectItem>
-                      <SelectItem value="5">5 at a time</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-[12.5px] font-normal">Order</Label>
-                  <Select value={order} onValueChange={(v) => setOrder(v as BatchOrder)}>
-                    <SelectTrigger className="h-8 w-full text-[12.5px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="as-listed">As listed</SelectItem>
-                      <SelectItem value="random">Random</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
+            {reattach.overlap !== 'none' && (
+              <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
+                {reattach.overlap === 'partial' ? 'Some of' : 'All of'} this target is already installing —
+                {reattach.overlapping.map((op) => op.deviceIds.map(deviceLabel).join(', ')).join('; ')}. Narrow the
+                target or wait for it to finish.
+              </p>
             )}
+            <ArtifactPicker accept=".apk" value={source} onChange={setSource} disabled={isPending('install-batch')} />
+            <TargetPicker selection={targetSelection} devices={pool} groups={groups} allow={TARGET_ALLOW} />
           </>
-        ) : batchId ? (
+        ) : results ? (
           <div className="space-y-3">
-            {counts && <OutcomeSummary counts={counts} label="Install progress" />}
-            {groups && <SkippedGroups failed={groups.failed} skipped={groups.skipped} />}
-            {!report.done && <p className="text-[11.5px] text-fg-subtle">Installing…</p>}
+            <ActionResults results={results} nameOf={deviceLabel} />
           </div>
         ) : (
           attachedTransfer && (
@@ -281,13 +201,13 @@ export function InstallBatchDialog({
         )}
 
         <DialogFooter>
-          {!batchId && !attachedTransfer ? (
+          {!results && !attachedTransfer ? (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
               <Button
-                onClick={() => void submitBatch()}
+                onClick={() => void submitInstall()}
                 disabled={!source || !hasTarget || !fleetConfirmed || reattach.overlap !== 'none' || isPending('install-batch')}
               >
                 {isPending('install-batch') ? 'Starting…' : 'Install'}

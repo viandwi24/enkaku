@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiServerClient } from './client'
-import type { UiServerLauncher } from './launcher'
+import type { UiServerLauncher, UiServerStartHooks } from './launcher'
 import { createWatchdog, DEFAULT_RESTART_BACKOFF_MS, restartCycleBackoffMs, type UiServerStatus } from './watchdog'
 
 /**
@@ -24,13 +24,24 @@ function fakeClient(ping: () => Promise<boolean>): UiServerClient {
   return { ping } as unknown as UiServerClient
 }
 
-/** Counts `start`/`stop` calls — `launcher.start()` is the one action a restart cycle takes that this file can observe directly. */
-function fakeLauncher(): { launcher: UiServerLauncher; startCalls: () => number; stopCalls: () => number } {
+/**
+ * Counts `start`/`stop` calls — `launcher.start()` is the one action a
+ * restart cycle takes that this file can observe directly. `onStartHooks`
+ * (plan 208 §4.4) lets a test invoke the hooks the REAL launcher would call
+ * (`onFatal`/`onExit`) from inside a fake `start()`, driving the watchdog's
+ * fail-fast path without a real instrumentation stream.
+ */
+function fakeLauncher(opts?: { onStartHooks?: (hooks?: UiServerStartHooks) => void }): {
+  launcher: UiServerLauncher
+  startCalls: () => number
+  stopCalls: () => number
+} {
   let starts = 0
   let stops = 0
   const launcher = {
-    start: async () => {
+    start: async (_localPort: number, hooks?: UiServerStartHooks) => {
       starts += 1
+      opts?.onStartHooks?.(hooks)
     },
     stop: async () => {
       stops += 1
@@ -197,7 +208,7 @@ describe('createWatchdog — start() fails the start, and fails it once (plan 12
       onStatus: (s) => statuses.push(s),
     })
 
-    await expect(watchdog.start()).rejects.toThrow('ui-server was not ready within the start timeout')
+    await expect(watchdog.start()).rejects.toThrow('ui-server did not start: no ping answered within the')
 
     // Exactly one launcher.start() call — the old code's swallowed restart
     // cycle inside start() (a second launcher.start + a second 15s wait)
@@ -208,7 +219,7 @@ describe('createWatchdog — start() fails the start, and fails it once (plan 12
 
     const dead = statuses.filter((s) => s.state === 'dead')
     expect(dead).toHaveLength(1)
-    expect((dead[0] as Extract<UiServerStatus, { state: 'dead' }>).reason).toContain('start timeout')
+    expect((dead[0] as Extract<UiServerStatus, { state: 'dead' }>).reason).toContain('silence ceiling')
     // No `restarting` status was ever emitted — the start path never enters
     // the restart cycle at all.
     expect(statuses.some((s) => s.state === 'restarting')).toBe(false)
@@ -310,5 +321,120 @@ describe('createWatchdog — `dead` is terminal (plan 85 §3.5, fixes F17; plan 
     expect(watchdog.isDead()).toBe(true)
     expect(watchdog.isHealthy()).toBe(false)
     expect(startCalls()).toBe(callsAtDeath)
+  })
+})
+
+describe('createWatchdog — verdict-aware waitReady, onReady (plan 208 §3.3, §4.4)', () => {
+  test('a fatal verdict 300 ms after start rejects in under 2 s with startTimeoutMs left at 15 s', async () => {
+    const { launcher } = fakeLauncher({
+      onStartHooks: (hooks) => {
+        setTimeout(() => hooks?.onFatal?.('the stub class was not found: INSTRUMENTATION_STATUS: stack=...'), 300)
+      },
+    })
+    const client = fakeClient(async () => false) // never pongs; only the fatal verdict should end this
+    const statuses: UiServerStatus[] = []
+    const watchdog = createWatchdog({
+      client,
+      launcher,
+      localPort: 1,
+      // Left at the real 15s ceiling deliberately — the test proves the
+      // fatal verdict ends the start well before it, not that the ceiling
+      // itself was shrunk.
+      idlePingMs: 100_000,
+      onStatus: (s) => statuses.push(s),
+    })
+
+    const startedAt = Date.now()
+    await expect(watchdog.start()).rejects.toThrow('the stub class was not found')
+    expect(Date.now() - startedAt).toBeLessThan(2000)
+    expect(watchdog.isDead()).toBe(true)
+    const dead = statuses.filter((s) => s.state === 'dead')
+    expect(dead).toHaveLength(1)
+    expect((dead[0] as Extract<UiServerStatus, { state: 'dead' }>).reason).toContain('stub class was not found')
+  })
+
+  test('silence alone waits for startTimeoutMs and nothing less', async () => {
+    const { launcher } = fakeLauncher() // never invokes onFatal — pure silence
+    const client = fakeClient(async () => false)
+    const watchdog = createWatchdog({ client, launcher, localPort: 1, startTimeoutMs: 50, idlePingMs: 100_000 })
+
+    const startedAt = Date.now()
+    await expect(watchdog.start()).rejects.toThrow('ui-server did not start: no ping answered within the')
+    const elapsed = Date.now() - startedAt
+    expect(elapsed).toBeGreaterThanOrEqual(45) // close to the 50ms ceiling, never near-instant
+  })
+
+  test('onReady is awaited before healthy on start and on every restart', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient(async () => true)
+    const readyCalls: number[] = []
+    let counter = 0
+    const watchdog = createWatchdog({
+      client,
+      launcher,
+      localPort: 1,
+      maxRestartsPerWindow: 2,
+      restartWindowMs: 60_000,
+      restartBackoffMs: [1, 1],
+      startTimeoutMs: 200,
+      idlePingMs: 100_000,
+      onReady: async () => {
+        readyCalls.push(++counter)
+      },
+    })
+
+    await watchdog.start()
+    expect(readyCalls).toEqual([1])
+    expect(watchdog.isHealthy()).toBe(true)
+
+    watchdog.reportFailure('degraded')
+    await waitUntil(() => readyCalls.length === 2)
+    expect(readyCalls).toEqual([1, 2])
+  })
+
+  test('a rejecting onReady is logged, never fails the start', async () => {
+    const { launcher } = fakeLauncher()
+    const client = fakeClient(async () => true)
+    const watchdog = createWatchdog({
+      client,
+      launcher,
+      localPort: 1,
+      startTimeoutMs: 200,
+      idlePingMs: 100_000,
+      onReady: async () => {
+        throw new Error('setConfigurator failed')
+      },
+    })
+
+    await expect(watchdog.start()).resolves.toBeUndefined()
+    expect(watchdog.isHealthy()).toBe(true)
+    await watchdog.stop()
+  })
+
+  test('onExit from the launcher triggers a restart without waiting for two pings', async () => {
+    let exitHook: ((reason: string) => void) | undefined
+    const { launcher, startCalls } = fakeLauncher({
+      onStartHooks: (hooks) => {
+        exitHook = hooks?.onExit
+      },
+    })
+    const client = fakeClient(async () => true)
+    const watchdog = createWatchdog({
+      client,
+      launcher,
+      localPort: 1,
+      maxRestartsPerWindow: 2,
+      restartWindowMs: 60_000,
+      restartBackoffMs: [1, 1],
+      startTimeoutMs: 200,
+      idlePingMs: 100_000, // deliberately huge: only the exit hook should drive the restart
+    })
+
+    await watchdog.start()
+    expect(startCalls()).toBe(1)
+
+    exitHook?.('the instrumentation ended: closed')
+    await waitUntil(() => startCalls() === 2)
+    expect(watchdog.isDead()).toBe(false)
   })
 })

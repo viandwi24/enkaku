@@ -136,7 +136,7 @@ this file only tracks what is actually built.
   private address from a public one), and `decideVerifyOutcome` decides what a fresh public-IP
   reading means against an assignment's own prior baseline. `browser-probe.ts` is the async half:
   one intent launch, one poll loop, a permission-dialog dismiss.
-- `src/verify-egress.ts` (step 122.10) — runs on the device under a lease. Reads the device's own
+- `src/verify-egress.ts` (step 122.10) — runs on the device under a job activity. Reads the device's own
   public IP from `https://api.ipify.org` and compares it against the last public IP THIS SAME
   assignment observed (there is no per-path "known good" IP anywhere in this plugin's data model —
   a path is a routing-table name, and a modem's own address can rotate — so "expected" can only mean

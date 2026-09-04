@@ -41,11 +41,11 @@ That node's devices are marked offline, its sessions are cancelled, and any runn
 
 ## Current limitation
 
-Video travels through the WebSocket tunnel. For a node on a healthy network that is fine, but on the internet with packet loss TCP holds the whole stream until the packet is retransmitted — the screen can freeze for a moment. The WebRTC path addresses this (see `docs/plans/13-m9-webrtc-backend.md`).
+Video travels through the WebSocket tunnel. For a node on a healthy network that is fine, but on the internet with packet loss TCP holds the whole stream until the packet is retransmitted — the screen can freeze for a moment. A UDP video path is a post-MVP decision; until then a lossy link can freeze the picture for a moment.
 
 ## The adb endpoint on a cloud device
 
-The same lease-scoped `adb connect` endpoint described in `docs/guide/install.md` works for a node-owned device too (plan 28, `docs/plans/28-m12g-cloud-adb-endpoint.md`). Nothing about the workflow changes: enable `shell.endpointEnabled`, hold the device's manual lease, open the endpoint from the device page, then run `adb connect <control-plane-host>:<port>` from your own machine.
+The same lease-scoped `adb connect` endpoint described in `docs/guide/install.md` works for a node-owned device too (plan 28, `docs/archive/plans/28-m12g-cloud-adb-endpoint.md`). Nothing about the workflow changes: enable `shell.endpointEnabled`, hold the device's manual lease, open the endpoint from the device page, then run `adb connect <control-plane-host>:<port>` from your own machine.
 
 The path is longer than the local case — every byte of `shell`, `logcat`, `install`, and `push`/`pull` traffic now relays through the control plane to the node and back:
 

@@ -8,10 +8,10 @@ import { Button, api, useAction } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 
 /**
- * The lease-scoped adb endpoint (plan 27 §4.4) — beside the Terminal tab.
+ * The activity-gated adb endpoint (plan 27 §4.4) — beside the Terminal tab.
  * Shows the copyable `adb connect …` line, a live connection count, the
- * idle countdown, and a close button. Visible only to the lease holder,
- * only when the farm has the feature enabled (`shell.endpointEnabled`);
+ * idle countdown, and a close button. Visible only while the device is
+ * online, only when the farm has the feature enabled (`shell.endpointEnabled`);
  * both facts are handed down from the device page, which already resolves
  * them the same way it does for the Terminal tab itself.
  */
@@ -27,7 +27,7 @@ export function AdbEndpointCard({
   canOpen,
 }: {
   deviceId: string
-  /** The WS session id (`hello`'s `sessionId`) — the endpoint is lease-scoped, and this IS the lease holder's identity for it (plan §4.3). `null` before the WS `hello` arrives. */
+  /** The WS session id (`hello`'s `sessionId`) — the endpoint is activity-gated, and this IS the controlling client's identity for it (plan §4.3). `null` before the WS `hello` arrives. */
   clientId: string | null
   /** Same server-authoritative fact the Terminal tab's input box reads (plan §3.4) — Studio hiding this card is a convenience, never the control. */
   canOpen: boolean
@@ -123,8 +123,8 @@ export function AdbEndpointCard({
           <h3 className="text-[13.5px] font-semibold tracking-tight">adb endpoint</h3>
           <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
             Grants whoever can reach this address full adb control of the device — install, push/pull, logcat, a
-            debugger, exactly like a real <code className="readout">adbd</code>. It exists only for the life of
-            your lease and closes automatically when you release control or after it sits idle.
+            debugger, exactly like a real <code className="readout">adbd</code>. It exists only while the device
+            stays online and closes automatically when you stop controlling it or after it sits idle.
           </p>
         </div>
         {endpoint ? (

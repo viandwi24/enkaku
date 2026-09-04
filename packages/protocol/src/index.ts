@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DeviceAddedMessage, DeviceDiscoveredMessage, DeviceReadinessMessage, DeviceReadinessSetMessage, DeviceRemovedMessage, DeviceStatusMessage } from './device'
+import { DeviceAddedMessage, DeviceDiscoveredMessage, DeviceMetricsMessage, DeviceReadinessMessage, DeviceReadinessSetMessage, DeviceRemovedMessage, DeviceStatusMessage } from './device'
 import {
   DevicePairingCodeMessage,
   DevicePairingCodeResultMessage,
@@ -10,24 +10,28 @@ import {
   DeviceInspectorFallbackMessage,
   DeviceBatteryMessage,
 } from './messages/enroll'
-import { InputGestureMessage, InputKeyMessage, InputSwipeMessage, InputTapMessage, InputTextMessage, InputTextResultMessage } from './messages/input'
+import {
+  InputGestureMessage,
+  InputKeyEventMessage,
+  InputKeyMessage,
+  InputPinchMessage,
+  InputScrollMessage,
+  InputSwipeMessage,
+  InputTapMessage,
+  InputTextMessage,
+  InputTextResultMessage,
+  InputTouchMessage,
+} from './messages/input'
 import {
   JobArtifactMessage,
   JobCancelMessage,
   JobEnqueueMessage,
   JobLogMessage,
   JobStatusEventMessage,
-  LeaseAcquiredMessage,
-  LeaseAcquireMessage,
-  LeaseReleasedMessage,
-  LeaseReleaseMessage,
-  LeaseChangedMessage,
-  LeaseRevokedMessage,
   JobWaitingMessage,
 } from './messages/job'
 import {
   QualitySchema,
-  SessionProgressMessage,
   StreamEndedMessage,
   StreamKeyframeMessage,
   StreamMetaMessage,
@@ -36,21 +40,12 @@ import {
   StreamStopMessage,
 } from './messages/stream'
 import {
-  WebRtcAnswerMessage,
-  WebRtcFailedMessage,
-  WebRtcIceMessage,
-  WebRtcOfferMessage,
-  WebRtcRequestMessage,
-  WebRtcStopMessage,
-} from './tunnel'
-import {
   ToolChangedMessage,
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
 } from './messages/tool'
 import { AdbHealthMessage } from './messages/adb-health'
 import { AdbServerPhaseMessage } from './messages/adb-server-control'
-import { ScanProgressMessage } from './messages/scan'
 import { DeviceCutoverMessage } from './messages/cutover'
 import { BatchStatusMessage } from './messages/batch'
 import { ScheduleFiredMessage } from './messages/schedule'
@@ -69,7 +64,7 @@ import {
   ShellEchoMessage,
   ShellResultMessage,
 } from './messages/shell'
-import { ClipboardGetMessage, ClipboardOkMessage, ClipboardSetMessage, ClipboardValueMessage } from './messages/clipboard'
+import { ClipboardChangedMessage, ClipboardGetMessage, ClipboardOkMessage, ClipboardSetMessage, ClipboardValueMessage } from './messages/clipboard'
 import { TransferCancelMessage, TransferDoneMessage, TransferProgressMessage } from './messages/transfer'
 import {
   InspectAttachMessage,
@@ -81,8 +76,6 @@ import {
   InspectTreeMessage,
 } from './messages/inspect'
 import {
-  AgentSubscribeMessage,
-  AgentUnsubscribeMessage,
   AgentRunCancelMessage,
   AgentRunStartedMessage,
   AgentRunFinishedMessage,
@@ -94,35 +87,11 @@ import {
   AgentApprovalResolvedMessage,
   AgentChildStartedMessage,
   AgentChildFinishedMessage,
-  AgentMessageQueuedMessage,
-  AgentMessageDeliveredMessage,
 } from './messages/agent'
 import { NotificationCreatedMessage } from './messages/notify'
-// Plan 91 §4.4, §5 step 91.4 (Task B.2) — the twelve co-control messages
-// (`assist.*`, `mirror.*`, `input.mirror*`) were declared and re-exported
-// from `./messages/co-control` by step 91.3, but never imported for use in
-// `ClientMessageSchema`/`ServerMessageSchema` below — so the WS router could
-// not recognise a single one of them. Imported here, separately from the
-// re-export block further down, purely so the two union arrays can reference
-// them.
-import {
-  AssistStartMessage,
-  AssistStopMessage,
-  MirrorStartMessage,
-  MirrorStopMessage,
-  InputMirrorMessage,
-  AssistStartedMessage,
-  AssistStoppedMessage,
-  AssistChangedMessage,
-  MirrorStartedMessage,
-  MirrorStoppedMessage,
-  InputMirrorResultMessage,
-  MirrorChangedMessage,
-} from './messages/co-control'
 // Plan 94 (M59 — the action recorder), step 94.3. The recorder's five WS
 // messages (§4.9) — imported here, separately from the re-export block
-// further down, purely so the two union arrays below can reference them (the
-// same split `messages/co-control`'s own import block above already uses).
+// further down, purely so the two union arrays below can reference them.
 import {
   RecordingStartMessage,
   RecordingStopMessage,
@@ -130,33 +99,16 @@ import {
   RecordingStateMessage,
   RecordingStepMessage,
 } from './messages/recording'
-// Plan 93 (M58 — command console and bulk operations), step 93.4. The
-// command console's five server→client events and two client→server
-// subscription messages (§3.17, §4.3) — imported here, separately from the
-// re-export block further down, purely so the two union arrays below can
-// reference them (the same split `messages/co-control`'s and `messages/
-// recording`'s own import blocks above already use).
-import {
-  CommandStartedMessage,
-  CommandProgressMessage,
-  CommandOutputMessage,
-  CommandStageMessage,
-  CommandFinishedMessage,
-  CommandSubscribeMessage,
-  CommandUnsubscribeMessage,
-} from './messages/command'
 // Plan 97 (M62 — the script output contract), step 97.7, §3.7, §4.6.
 // `ctx.progress()`'s live push — imported here, separately from the
 // re-export block further down, purely so `ServerMessageSchema` below can
-// reference it (the same split `messages/co-control`'s/`messages/recording`'s/
-// `messages/command`'s own import blocks above already use).
+// reference it (the same split `messages/recording`'s own import block
+// above already uses).
 import { JobProgressEventMessage } from './messages/job'
-
-// Plan 109 (M74 — the plugin runtime), step 109.8. `plugin.log` — the live
-// half of a plugin service's log. Imported here, separately from the re-export
-// block further down, for the same reason `JobProgressEventMessage` above is:
-// `ServerMessageSchema` needs to reference it.
-import { PluginLogMessage } from './messages/plugin'
+// Plan 205 (MVP 04) — the device activity model's two broadcasts, imported
+// here for the same reason the blocks above are: the union arrays below need
+// to reference them.
+import { DeviceActivityMessage, DeviceActivityWarningMessage } from './activity'
 
 // Plan 128 (M93 — the job trace timeline), step 128.1, §4.2. `job.trace` — the
 // live tail of one job's event stream. Imported here, separately from the
@@ -166,6 +118,8 @@ import { JobTraceMessage } from './messages/job'
 
 export { EnvelopeSchema, type Envelope } from './envelope'
 export * from './api'
+export * from './activity'
+export * from './actions'
 export {
   PARAM_KINDS,
   DURATION_UNITS,
@@ -259,7 +213,7 @@ export {
   type AnyCapability,
   type CapabilityResult,
   type CapabilityEffect,
-  type CapabilityLease,
+  type CapabilityActivity,
   type CapabilityRefusalCode,
   type CapabilityError,
   type DeviceCallMethod,
@@ -273,7 +227,6 @@ export {
   DeviceStatusMessage,
   DeviceReadinessSetMessage,
   DeviceReadinessMessage,
-  LeaseHolderSchema,
   ConnectionKindSchema,
   ConnectionMediumSchema,
   DeviceConnectionSchema,
@@ -291,13 +244,16 @@ export {
   type DeviceStatusEvent,
   type DeviceReadinessSet,
   type DeviceReadinessEvent,
-  type LeaseHolder,
   type ConnectionKind,
   type ConnectionMedium,
   type DeviceConnection,
   type AgentState,
   type AgentStatus,
   type GuestAgentIdentity,
+  DeviceMetricsSchema,
+  DeviceMetricsMessage,
+  type DeviceMetrics,
+  type DeviceMetricsEvent,
 } from './device'
 export {
   PreparationStateSchema,
@@ -352,7 +308,6 @@ export {
   TimingSettingsSchema,
   KeepAwakeModeSchema,
   ShellModeSchema,
-  CoControlModeSchema,
   RotationModeSchema,
   TextInputModeSchema,
   DeviceGpsSchema,
@@ -368,7 +323,6 @@ export {
   type BatteryState,
   type KeepAwakeMode,
   type ShellMode,
-  type CoControlMode,
   type RotationMode,
   type TextInputMode,
   type TimingSettings,
@@ -383,8 +337,7 @@ export {
   type WallSettings,
   type ReadinessSettings,
   type WorkspaceSettings,
-  type CoControlSettings,
-  type MirrorSettings,
+  type ControlSettings,
   type WorkflowJobSettings,
 } from './settings'
 export {
@@ -406,10 +359,6 @@ export {
   type AdbServerPhaseEvent,
 } from './messages/adb-server-control'
 export {
-  ScanProgressMessage,
-  type ScanProgressEvent,
-} from './messages/scan'
-export {
   NormPointSchema,
   INPUT_ACTION_BODIES,
   InputTapMessage,
@@ -419,31 +368,15 @@ export {
   InputTextResultMessage,
   NormGestureSampleSchema,
   InputGestureMessage,
-  MirrorActionSchema,
+  InputActionSchema,
+  InputScrollMessage,
+  InputKeyEventMessage,
+  InputPinchMessage,
+  InputTouchMessage,
   type NormPoint,
   type NormGestureSample,
-  type MirrorAction,
+  type InputAction,
 } from './messages/input'
-export {
-  AssistEndReasonSchema,
-  MirrorMemberSchema,
-  MirrorResultSchema,
-  AssistStartMessage,
-  AssistStopMessage,
-  MirrorStartMessage,
-  MirrorStopMessage,
-  InputMirrorMessage,
-  AssistStartedMessage,
-  AssistStoppedMessage,
-  AssistChangedMessage,
-  MirrorStartedMessage,
-  MirrorStoppedMessage,
-  InputMirrorResultMessage,
-  MirrorChangedMessage,
-  type AssistEndReason,
-  type MirrorMember,
-  type MirrorResult,
-} from './messages/co-control'
 export {
   StreamStartMessage,
   StreamStartedMessage,
@@ -452,10 +385,8 @@ export {
   StreamMetaMessage,
   StreamEndedMessage,
   SessionPhaseSchema,
-  SessionProgressMessage,
   QualitySchema,
   type SessionPhase,
-  type SessionProgress,
   type Quality,
 } from './messages/stream'
 export {
@@ -481,6 +412,15 @@ export {
   type DecodedSnapshot,
 } from './binary'
 export {
+  OFFSET_WINDOW,
+  SUMMARY_WINDOW,
+  createLatencyEstimator,
+  type LegSummary,
+  type LatencySummary,
+  type LatencyEvent,
+  type LatencyEstimator,
+} from './video-latency'
+export {
   JobStatusSchema,
   SleepJobParamsSchema,
   JobInfoSchema,
@@ -492,36 +432,30 @@ export {
   JobEnqueueMessage,
   JobCancelMessage,
   JobStatusEventMessage,
-  LeaseAcquireMessage,
-  LeaseReleaseMessage,
-  LeaseAcquiredMessage,
-  LeaseReleasedMessage,
-  LeaseChangedMessage,
-  LeaseRevokedMessage,
   JobWaitingMessage,
-  /** Plan 99 §4.6, §4.9 — `job_nodes.status`'s domain, shared by `job.status`'s `node` block. */
-  JobNodeStatusSchema,
-  /** Plan 99 §3.5, §4.9, step 99.8 — resume. The node timeline's own schemas come from `./api/jobs` via `export * from './api'` above. */
-  JobResumeRequestSchema,
-  JobResumeResponseSchema,
+  RunTriggerSchema,
+  JobKindSchema,
+  JobRunInfoSchema,
+  JobRunDetailSchema,
   type JobStatus,
   type JobInfo,
   type JobDetail,
   type JobSummary,
   type ArtifactInfo,
   type SleepJobParams,
-  type JobNodeStatus,
-  type JobResumeRequest,
-  type JobResumeResponse,
+  type RunTrigger,
+  type JobKind,
+  type JobRunInfo,
+  type JobRunDetail,
 } from './messages/job'
 export {
   BatchOrderSchema,
   BatchStatusSchema,
   BatchCountsSchema,
-  ClusterInfoSchema,
+  GroupInfoSchema,
   ResolvedTargetSchema,
   SkippedDeviceSchema,
-  ClusterPreviewSchema,
+  TargetPreviewSchema,
   BatchInfoSchema,
   BatchStatusMessage,
   BatchPacingSchema,
@@ -529,8 +463,8 @@ export {
   type BatchOrder,
   type BatchStatusValue,
   type BatchCounts,
-  type ClusterInfo,
-  type ClusterPreview,
+  type GroupInfo,
+  type TargetPreview,
   type BatchInfo,
   type BatchStatusEvent,
   type BatchPacing,
@@ -544,7 +478,6 @@ export {
   ScheduleThreadModeSchema,
   OnApprovalRequiredSchema,
   ScheduleInfoSchema,
-  ScheduleRunInfoSchema,
   ScheduleFiredMessage,
   type OnOverlap,
   type CatchUp,
@@ -553,7 +486,6 @@ export {
   type ScheduleThreadMode,
   type OnApprovalRequired,
   type ScheduleInfo,
-  type ScheduleRunInfo,
   type ScheduleFiredEvent,
 } from './messages/schedule'
 export {
@@ -629,6 +561,7 @@ export {
   ClipboardSetMessage,
   ClipboardValueMessage,
   ClipboardOkMessage,
+  ClipboardChangedMessage,
 } from './messages/clipboard'
 export {
   TransferKindSchema,
@@ -663,6 +596,29 @@ export {
 } from './ui-node'
 export { matchSelector, centerOf } from './selector-match'
 export { FindOutcomeSchema, type FindOutcome } from './find-outcome'
+export {
+  DOM_CODES,
+  DomCodeSchema,
+  KEY_TABLE,
+  isDomCode,
+  describeKey,
+  KeyMetaSchema,
+  ANDROID_META,
+  androidMetaState,
+  type DomCode,
+  type KeyEntry,
+  type KeyDescriptor,
+  type KeyMeta,
+} from './keys'
+export {
+  HOTKEY_IDS,
+  HotkeyIdSchema,
+  DEVICE_CONTROL_HOTKEYS,
+  chordLabel,
+  hotkeyFor,
+  type HotkeyId,
+  type Hotkey,
+} from './hotkeys'
 export {
   countMatches,
   proposeSelectors,
@@ -706,8 +662,6 @@ export {
   CreateThreadInputSchema,
   PostThreadMessageInputSchema,
   ApprovalDecisionInputSchema,
-  AgentSubscribeMessage,
-  AgentUnsubscribeMessage,
   AgentRunCancelMessage,
   AgentRunStartedMessage,
   AgentRunFinishedMessage,
@@ -721,8 +675,6 @@ export {
   AgentTreeResponseSchema,
   AgentChildStartedMessage,
   AgentChildFinishedMessage,
-  AgentMessageQueuedMessage,
-  AgentMessageDeliveredMessage,
   type AgentMessageRole,
   type AgentImageMediaType,
   type AgentImageRef,
@@ -768,12 +720,6 @@ export {
   SessionStartedMessage,
   SessionFailedMessage,
   JobProgressMessage,
-  WebRtcRequestMessage,
-  WebRtcOfferMessage,
-  WebRtcAnswerMessage,
-  WebRtcIceMessage,
-  WebRtcFailedMessage,
-  WebRtcStopMessage,
   ShellReplyErrorSchema,
   ShellExecRequestMessage,
   ShellExecReplyMessage,
@@ -855,6 +801,16 @@ export {
   LabelClearRequestSchema,
   TextCommitRequestSchema,
   TextStatusRequestSchema,
+  UiDumpRequestSchema,
+  UiFindRequestSchema,
+  UiWatchRequestSchema,
+  UiUnwatchRequestSchema,
+  UiStatusRequestSchema,
+  GuestAgentActivitySchema,
+  GuestAgentVideoSchema,
+  ActivitySetRequestSchema,
+  DeviceDescribeRequestSchema,
+  TextPrefsRequestSchema,
   GuestAgentRequestSchema,
   HelloResultSchema,
   PingResultSchema,
@@ -871,6 +827,14 @@ export {
   LabelClearResultSchema,
   TextCommitResultSchema,
   TextStatusResultSchema,
+  UiDumpResultSchema,
+  UiFindResultSchema,
+  UiWatchResultSchema,
+  UiUnwatchResultSchema,
+  UiStatusResultSchema,
+  ActivitySetResultSchema,
+  DeviceDescribeResultSchema,
+  TextPrefsResultSchema,
   GuestAgentOkResponseSchema,
   GuestAgentErrorResponseSchema,
   GuestAgentResponseSchema,
@@ -890,6 +854,18 @@ export {
   type LabelClearRequest,
   type TextCommitRequest,
   type TextStatusRequest,
+  type UiDumpRequest,
+  type UiFindRequest,
+  type UiWatchRequest,
+  type UiUnwatchRequest,
+  type UiStatusRequest,
+  UiChangedEventSchema,
+  type UiChangedEvent,
+  type GuestAgentActivity,
+  type GuestAgentVideo,
+  type ActivitySetRequest,
+  type DeviceDescribeRequest,
+  type TextPrefsRequest,
   type GuestAgentRequest,
   type HelloResult,
   type PingResult,
@@ -906,6 +882,14 @@ export {
   type LabelClearResult,
   type TextCommitResult,
   type TextStatusResult,
+  type UiDumpResult,
+  type UiFindResult,
+  type UiWatchResult,
+  type UiUnwatchResult,
+  type UiStatusResult,
+  type ActivitySetResult,
+  type DeviceDescribeResult,
+  type TextPrefsResult,
   type GuestAgentOkResponse,
   type GuestAgentErrorResponse,
   type GuestAgentResponse,
@@ -926,7 +910,6 @@ export {
   WorkflowNodeIdSchema,
   WorkflowPathSchema,
   WorkflowNameSchema,
-  WorkflowVersionSchema,
   ValueExprSchema,
   GATE_OPS,
   PredicateSchema,
@@ -1005,30 +988,22 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   DeviceInspectorStatusMessage,
   DeviceInspectorFallbackMessage,
   DeviceBatteryMessage,
+  DeviceMetricsMessage,
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
   ToolChangedMessage,
   AdbHealthMessage,
   AdbServerPhaseMessage,
-  ScanProgressMessage,
   DeviceCutoverMessage,
   StreamStartedMessage,
   StreamMetaMessage,
   StreamEndedMessage,
-  SessionProgressMessage,
   DevicePairingRequestResultMessage,
   DevicePairingCodeResultMessage,
   JobStatusEventMessage,
   JobLogMessage,
   JobArtifactMessage,
-  LeaseAcquiredMessage,
-  LeaseReleasedMessage,
-  LeaseChangedMessage,
-  LeaseRevokedMessage,
   JobWaitingMessage,
-  WebRtcOfferMessage,
-  WebRtcFailedMessage,
-  WebRtcIceMessage,
   BatchStatusMessage,
   ScheduleFiredMessage,
   DeviceEventMessage,
@@ -1041,6 +1016,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ShellResultMessage,
   ClipboardValueMessage,
   ClipboardOkMessage,
+  ClipboardChangedMessage,
   InputTextResultMessage,
   TransferProgressMessage,
   TransferDoneMessage,
@@ -1057,21 +1033,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   AgentApprovalResolvedMessage,
   AgentChildStartedMessage,
   AgentChildFinishedMessage,
-  AgentMessageQueuedMessage,
-  AgentMessageDeliveredMessage,
   NotificationCreatedMessage,
-  // Plan 91 §4.4, §5 step 91.4 (Task B.2) — the seven server→client halves of
-  // the twelve co-control messages (§4.4's table): `assist.started`,
-  // `assist.stopped` (unicast replies), `assist.changed` (broadcast), and
-  // the five `mirror.*`/`input.mirror.result` messages step 91.7 will start
-  // sending.
-  AssistStartedMessage,
-  AssistStoppedMessage,
-  AssistChangedMessage,
-  MirrorStartedMessage,
-  MirrorStoppedMessage,
-  InputMirrorResultMessage,
-  MirrorChangedMessage,
   ErrorMessage,
   // Plan 94 (M59 — the action recorder), step 94.3, §4.9 — appended after
   // `ErrorMessage` rather than interleaved among the entries above, so this
@@ -1079,31 +1041,19 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   // contested file.
   RecordingStateMessage,
   RecordingStepMessage,
-  // Plan 93 (M58 — command console and bulk operations), step 93.4, §3.17,
-  // §4.3 — appended last, for the same "never interleave, this file is
-  // contested" reason noted on the Plan 94 entries immediately above.
-  CommandStartedMessage,
-  CommandProgressMessage,
-  CommandOutputMessage,
-  CommandStageMessage,
-  CommandFinishedMessage,
   // Plan 97 (M62 — the script output contract), step 97.7, §3.7, §4.6 —
   // appended last, for the same "never interleave, this file is contested"
   // reason noted on the Plan 93/94 entries above.
   JobProgressEventMessage,
-  // Plan 109 (M74 — the plugin runtime), step 109.8, §4.5 — appended last, for
-  // the same "never interleave, this file is contested" reason noted above.
-  //
-  // It also widens `SERVER_MESSAGE_TYPES`, which is the plugin event
-  // vocabulary — so this one addition would hand a plugin the ability to
-  // subscribe to its OWN log. `refusedPluginEventTypesMessage` below is what
-  // stops that, and its comment is where the reasoning lives.
-  PluginLogMessage,
   // Plan 128 (M93 — the job trace timeline), step 128.1, §4.2 — the trace's
   // live tail, the sibling of `JobLogMessage` above. Appended last, for the
   // same "never interleave, this file is contested" reason noted on every
   // entry above it.
   JobTraceMessage,
+  // Plan 205 (MVP 04) — the device activity model's two broadcasts, appended
+  // last for the same "never interleave, this file is contested" reason.
+  DeviceActivityMessage,
+  DeviceActivityWarningMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
 
@@ -1174,44 +1124,6 @@ export function unknownPluginEventTypesMessage(events: readonly string[]): strin
   )
 }
 
-/**
- * Farm events a plugin may **not** subscribe to, however real they are (plan
- * 109 §3.5, step 109.8).
- *
- * There is exactly one entry and it was created by step 109.8 itself.
- * `plugin.log` is a genuine broadcast, so `unknownPluginEventTypesMessage`
- * above would happily accept it — and a plugin that subscribed to it would
- * have every one of its own log lines delivered back to a handler, whose own
- * `ctx.log` call broadcasts another line, which is delivered back. The loop is
- * not hypothetical and it is not slow: one `ctx.log.info` inside a
- * `plugin.log` handler is unbounded growth at the speed of the event loop, in
- * the core's own process, and neither the per-handler deadline nor the error
- * budget can see it because nothing is failing.
- *
- * Refused here rather than rate-limited later, because a subscription to your
- * own output is never the thing an author meant. A plugin that wants to react
- * to its own logging already has the call site.
- *
- * A denylist rather than a rule ("no event a plugin can cause") on purpose: a
- * plugin can cause `job.status` too, and reacting to a job it started is a
- * legitimate, terminating thing to do. What makes `plugin.log` different is
- * that the reaction's own *observation* is what feeds the loop.
- */
-export const PLUGIN_EVENT_TYPE_DENYLIST: readonly string[] = ['plugin.log']
-const PLUGIN_EVENT_TYPE_DENY_SET = new Set(PLUGIN_EVENT_TYPE_DENYLIST)
-
-/** Returns the refusal message, or `null` when no declared type is on the denylist. */
-export function refusedPluginEventTypesMessage(events: readonly string[]): string | null {
-  const refused = events.filter((type) => PLUGIN_EVENT_TYPE_DENY_SET.has(type))
-  if (refused.length === 0) return null
-  return (
-    `a plugin may not subscribe to ${refused.join(', ')}. \`plugin.log\` carries a plugin service's OWN log lines, so a handler for it ` +
-    `that logs anything — directly, or through any helper that does — is fed its own output back forever, inside the core's process, ` +
-    `with nothing failing for the error budget to notice (docs/plans/109-m74-plugin-runtime.md §3.5, step 109.8). ` +
-    `React at the call site instead.`
-  )
-}
-
 /** Every client→server message (M2: input, stream, pairing). */
 export const ClientMessageSchema = z.discriminatedUnion('type', [
   InputTapMessage,
@@ -1219,6 +1131,10 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   InputGestureMessage,
   InputKeyMessage,
   InputTextMessage,
+  InputScrollMessage,
+  InputKeyEventMessage,
+  InputPinchMessage,
+  InputTouchMessage,
   StreamStartMessage,
   StreamStopMessage,
   StreamKeyframeMessage,
@@ -1227,13 +1143,6 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   DevicePairingCodeMessage,
   JobEnqueueMessage,
   JobCancelMessage,
-  LeaseAcquireMessage,
-  LeaseReleaseMessage,
-  WebRtcRequestMessage,
-  WebRtcAnswerMessage,
-  WebRtcStopMessage,
-  // ICE is bidirectional: the browser sends its candidates too.
-  WebRtcIceMessage,
   LogSubscribeMessage,
   LogUnsubscribeMessage,
   MonitorStartMessage,
@@ -1247,31 +1156,13 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   InspectDetachMessage,
   InspectDumpMessage,
   InspectFindMessage,
-  AgentSubscribeMessage,
-  AgentUnsubscribeMessage,
   AgentRunCancelMessage,
-  // Plan 91 §4.4, §5 step 91.4 (Task B.2) — the five client→server halves of
-  // the twelve co-control messages (§4.4's table): `assist.start`/
-  // `assist.stop` (step 91.4, wired below in `ws-handlers.ts`) and
-  // `mirror.start`/`mirror.stop`/`input.mirror` (step 91.7 — declared here
-  // now so the whole set is reachable together, per this step's brief;
-  // their WS-handler cases do not exist yet).
-  AssistStartMessage,
-  AssistStopMessage,
-  MirrorStartMessage,
-  MirrorStopMessage,
-  InputMirrorMessage,
   // Plan 94 (M59 — the action recorder), step 94.3, §4.9 — appended last,
   // for the same "never interleave, this file is contested" reason noted on
   // `ServerMessageSchema` above.
   RecordingStartMessage,
   RecordingStopMessage,
   RecordingCancelMessage,
-  // Plan 93 (M58 — command console and bulk operations), step 93.4, §3.17,
-  // §4.3 — subscription only; `POST /api/command-runs` is the only way to
-  // START a run (§3.17).
-  CommandSubscribeMessage,
-  CommandUnsubscribeMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>
 
@@ -1329,7 +1220,7 @@ export {
 // block above per its own "append-only, never reorder" rule.
 export { WallTransportSchema, type WallTransport } from './settings'
 
-// Plan 93 (M58 — command console and bulk operations), step 93.1. Moved out
+// Plan 93 (M58 — bulk operations), step 93.1. Moved out
 // of `packages/studio/src/components/terminal/TerminalPane.tsx` verbatim
 // (F24, §3.14) so Studio and, later, the core evaluate the identical list —
 // see the doc comment on `high-consequence.ts` for what this guard is and is
@@ -1392,62 +1283,6 @@ export {
 // contested file.
 export type { RecordingSettings } from './settings'
 
-// Plan 93 (M58 — command console and bulk operations), step 93.4. The
-// shared target/status/member/output shapes (§4.3) — the reconciliation
-// `command-console/store.ts` (step 93.2) and `command-console/runner.ts`
-// (step 93.3) each flagged in their own doc comments: both declared an
-// identical shape LOCALLY because this directory was off limits to them at
-// the time, on the explicit understanding that this step builds the real
-// copy and both files import from it afterward. Appended here, as its own
-// statement, rather than folded into any block above — this file is
-// contested and the rule is append-only, never reorder or tidy an existing
-// block.
-export {
-  CommandTargetSchema,
-  COMMAND_MEMBER_STATUSES,
-  CommandMemberStatusSchema,
-  COMMAND_RUN_STATUSES,
-  CommandRunStatusSchema,
-  CommandMemberSchema,
-  CommandOutputSchema,
-  CommandCountsSchema,
-  type CommandTarget,
-  type CommandMemberStatus,
-  type CommandRunStatus,
-  type CommandMember,
-  type CommandOutput,
-  type CommandCounts,
-} from './command/target'
-
-// Plan 93 (M58), step 93.4, §3.17, §4.3. The command console's WS surface —
-// re-exported here (the five server→client events and two client→server
-// subscribe/unsubscribe messages are already imported, separately, for use
-// in `ServerMessageSchema`/`ClientMessageSchema` above; this is the SAME
-// split `messages/recording`'s own two blocks already use).
-export {
-  CommandStartedMessage,
-  CommandProgressMessage,
-  CommandOutputMessage,
-  CommandStageMessage,
-  CommandFinishedMessage,
-  CommandSubscribeMessage,
-  CommandUnsubscribeMessage,
-} from './messages/command'
-
-// Plan 93 (M58), step 93.4, §4.4. `packages/core/src/api/command-runs.ts`'s
-// response envelopes.
-export {
-  CommandRunSummarySchema,
-  CommandRunDetailSchema,
-  CommandRunCreateResponseSchema,
-  CommandRunDetailResponseSchema,
-  CommandRunActionResponseSchema,
-  CommandRunDeleteResponseSchema,
-  CommandRunsPageResponseSchema,
-  type CommandRunSummary,
-  type CommandRunDetail,
-} from './api/command-runs'
-
 // Plan 97 (M62 — the script output contract), step 97.2, §3.3, §3.6, §4.1.
 // `RESULT_STATUSES`/`ResultStatusSchema` — the five states a job's result
 // settles into — plus `RESULT_LIMITS` (the same 64 KiB `kv.maxValueBytes`
@@ -1490,23 +1325,6 @@ export { ParamIssueSchema } from './schema/validate'
 // identical hazard one level down.
 export { DANGEROUS_FIELD_NAMES } from './schema/limits'
 
-// Plan 93 (M58 — command console and bulk operations), step 93.6, §3.10,
-// §4.2, §4.4. Saved commands — the wire shape of a `saved_commands` row
-// plus `packages/core/src/api/saved-commands.ts`'s CRUD response envelopes.
-// Kept in `command/saved.ts` (this step's own directory) rather than beside
-// `api/command-runs.ts` in `./api/`, which step 93.6 does not own. Appended
-// here, as its own statement, rather than folded into the step 93.4 block
-// above — this file is contested (several concurrent workers are also
-// appending today) and the rule is append-only, never reorder or tidy an
-// existing block.
-export {
-  SavedCommandSchema,
-  SavedCommandListResponseSchema,
-  SavedCommandResponseSchema,
-  SavedCommandDeleteResponseSchema,
-  type SavedCommand,
-} from './command/saved'
-
 // Plan 97 (M62 — the script output contract), step 97.7, §3.7, §4.6.
 // `JobProgressEventMessage` — the server→client half of `ctx.progress()`
 // (§3.7 in full: coalesced in the child, size-checked and warned-once-per-job
@@ -1516,7 +1334,7 @@ export {
 // an existing block.
 export { JobProgressEventMessage } from './messages/job'
 
-// Plan 93 (M58 — command console and bulk operations), step 93.9, §4.6.
+// Plan 93 (M58 — bulk operations), step 93.9, §4.6.
 // `PushJobParamsSchema`/`PullJobParamsSchema` — the `internal:push`/
 // `internal:pull` batch executor param shapes, near-copies of
 // `InstallJobParamsSchema` (exported from the same `./messages/transfer`
@@ -1525,10 +1343,8 @@ export { JobProgressEventMessage } from './messages/job'
 // tidy an existing block).
 export { PushJobParamsSchema, PullJobParamsSchema, type PushJobParams, type PullJobParams } from './messages/transfer'
 
-// Plan 109 (M74 — the plugin runtime), step 109.8, §4.5. The `plugin.log`
-// broadcast and the shapes `GET /api/plugins/:name/runtime/logs` serves.
-// Appended as its own statement for the same append-only reason as above.
-export { PluginLogMessage, PluginLogLineSchema, PluginLogPageSchema, type PluginLogLine, type PluginLogPage } from './messages/plugin'
+// Plan 109 step 109.8: the shapes `GET /api/plugins/:name/runtime/logs` serves.
+export { PluginLogLineSchema, PluginLogPageSchema, type PluginLogLine, type PluginLogPage } from './messages/plugin'
 
 // Plan 89 (M54 — device identity and physical labelling), step 89.6. The
 // labelling settings block (`DeviceLabelModeSchema`/`DeviceLabellingSchema`,
@@ -1542,17 +1358,11 @@ export { DeviceLabelModeSchema, DeviceLabellingSchema, type DeviceLabelMode, typ
 // `./api/devices.ts` (owned by a concurrent worker for step 89.2's
 // device-shape changes) — see that file's own doc comment.
 export { DeviceLabelStateSchema, DEFAULT_DEVICE_LABEL_STATE, type DeviceLabelState } from './api/device-label'
-// Step 89.4/89.9's own gap: the labelling HTTP endpoints' body/response
-// shapes, added once `./api/devices.ts` was free again — see that file's
-// own comment on why they live beside `DeviceLabelStateSchema` rather than
-// in the already-contested `./api/devices.ts`.
-export {
-  DeviceLabelClearBodySchema,
-  DeviceLabelsApplyBodySchema,
-  DeviceLabelsApplyResultSchema,
-  DeviceLabelsApplyResponseSchema,
-  type DeviceLabelsApplyResult,
-} from './api/device-label'
+// Step 89.4/89.9's own gap: the labelling HTTP endpoint's body shape, added
+// once `./api/devices.ts` was free again. The fleet-wide apply envelope that
+// used to live beside it is removed by plan 207 — `set-label` is an actions
+// API verb now (`./actions.ts`).
+export { DeviceLabelClearBodySchema } from './api/device-label'
 
 // Plan 107 (M72 — long-running operations), step 107.2, §3.1, §3.4, §4.
 // `GET /api/transfers` — the in-memory transfer registry's response shape

@@ -92,7 +92,7 @@ function setUp(
       overrides.drainSessions ??
       (async () => {
         calls.push('drainSessions')
-        return { sessionsClosed: 2, leasesReleased: 1, jobsFailed: [] } satisfies DrainResult
+        return { sessionsClosed: 2, controlsEnded: 1, jobsFailed: [] } satisfies DrainResult
       }),
     reattachEndpoints:
       overrides.reattachEndpoints ??
@@ -136,7 +136,7 @@ describe('createAdbServerControl — cycle() (plan 88 §3.10, §4.8)', () => {
     ])
     expect(report.reason).toBe('restart')
     expect(report.sessionsClosed).toBe(2)
-    expect(report.leasesReleased).toBe(1)
+    expect(report.controlsEnded).toBe(1)
     expect(report.reattachAttempted).toBe(3)
     expect(report.reattachSucceeded).toBe(3)
     expect(report.reattachFailed).toEqual([])
@@ -222,7 +222,7 @@ describe('createAdbServerControl — cycle() (plan 88 §3.10, §4.8)', () => {
     const h = setUp({
       drainSessions: async (opts) => {
         seen.push(opts.force)
-        return { sessionsClosed: 0, leasesReleased: 0, jobsFailed: opts.force ? ['job-1'] : [] }
+        return { sessionsClosed: 0, controlsEnded: 0, jobsFailed: opts.force ? ['job-1'] : [] }
       },
     })
     const control = createAdbServerControl(h.deps)
@@ -238,8 +238,8 @@ describe('createAdbServerControl — cycle() (plan 88 §3.10, §4.8)', () => {
     // resolving a not-yet-awaited promise is safe, it just resolves once
     // something starts awaiting it.
     const drain: { release: (() => void) | null } = { release: null }
-    const drainPromise = new Promise<{ sessionsClosed: number; leasesReleased: number; jobsFailed: string[] }>((resolve) => {
-      drain.release = () => resolve({ sessionsClosed: 0, leasesReleased: 0, jobsFailed: [] })
+    const drainPromise = new Promise<{ sessionsClosed: number; controlsEnded: number; jobsFailed: string[] }>((resolve) => {
+      drain.release = () => resolve({ sessionsClosed: 0, controlsEnded: 0, jobsFailed: [] })
     })
     const h = setUp({ drainSessions: () => drainPromise })
     const control = createAdbServerControl(h.deps)

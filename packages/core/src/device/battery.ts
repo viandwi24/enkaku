@@ -1,5 +1,5 @@
 import type { AdbClient } from '@enkaku/adb'
-import { BatteryStateSchema, type BatteryState, type DeviceStatus } from '@enkaku/protocol'
+import { BatteryStateSchema, type BatteryState, type DeviceMetrics, type DeviceStatus } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
@@ -8,6 +8,7 @@ import type { FarmSettingsStore } from '../settings/farm-settings'
 import type { EventRecorder } from '../events/recorder'
 import type { Logger } from '../util/logger'
 import { mapWithConcurrency } from '../util/concurrency'
+import { METRICS_PROBE, parseDeviceMetrics, type CpuSample } from './metrics'
 
 /** Parse output `dumpsys battery` (spec §15.2). */
 export function parseDumpsysBattery(raw: string): BatteryState | null {
@@ -56,6 +57,8 @@ export interface BatteryMonitor {
   /** Manually release a quarantine (from Studio). */
   unquarantine(deviceId: string): boolean
   pollOnce(): Promise<void>
+  /** Live metrics for one device (plan 214 §4.3), or `null` when none has been sampled yet (or the device is offline). */
+  metricsOf(deviceId: string): DeviceMetrics | null
 }
 
 /**
@@ -70,10 +73,16 @@ export function createBatteryMonitor(deps: {
   settings: FarmSettingsStore
   log: Logger
   onBattery: (deviceId: string, battery: BatteryState) => void
+  /** The `device.metrics` broadcast (plan 214 §4.3). */
+  onMetrics: (deviceId: string, metrics: DeviceMetrics) => void
   /** Main-stream device event: battery.warning (plan 18 §4.2). */
   record?: EventRecorder['record']
 }): BatteryMonitor {
   let timer: ReturnType<typeof setInterval> | null = null
+  /** Previous `/proc/stat` sample per device, so the next sample can difference it (plan 214 §4.3). */
+  const cpuPrev = new Map<string, CpuSample>()
+  /** Most recent parsed metrics per device — read by `metricsOf`, never persisted. */
+  const latest = new Map<string, DeviceMetrics>()
 
   /** One device's poll body — unchanged from before plan 23, just no longer run in a sequential `for`. */
   async function pollDevice(client: AdbClient, row: DeviceRow, status: DeviceStatus): Promise<void> {
@@ -84,6 +93,16 @@ export function createBatteryMonitor(deps: {
       if (!battery) return
       deps.db.update(devices).set({ battery }).where(eq(devices.id, row.id)).run()
       deps.onBattery(row.id, battery)
+
+      // The metrics probe (plan 214 §3.7, §4.3): reuses the same `battery`
+      // profile — the same cadence, the same 8s ceiling, and the same slice
+      // of the adb semaphore budget this poll already holds.
+      const { stdout: metricsRaw } = await client.exec(row.serial, METRICS_PROBE, { profile: 'battery' })
+      const { metrics, cpu } = parseDeviceMetrics(metricsRaw, cpuPrev.get(row.id) ?? null, Math.floor(Date.now() / 1000))
+      if (cpu) cpuPrev.set(row.id, cpu)
+      else cpuPrev.delete(row.id)
+      latest.set(row.id, metrics)
+      deps.onMetrics(row.id, metrics)
 
       if (battery.temperatureC > cfg.tempThresholdC && status !== 'quarantined') {
         deps.record?.({
@@ -120,11 +139,18 @@ export function createBatteryMonitor(deps: {
   async function pollOnce(): Promise<void> {
     const client = deps.client()
     if (!client) return
-    const rows = deps.db
-      .select()
-      .from(devices)
-      .all()
-      .filter((row) => ((row.status ?? 'offline') as DeviceStatus) !== 'offline')
+    const allRows = deps.db.select().from(devices).all()
+    const rows = allRows.filter((row) => ((row.status ?? 'offline') as DeviceStatus) !== 'offline')
+    // A device the poll finds offline carries no live fact any more — drop
+    // its metrics rather than let a stale number outlive the disconnect
+    // (plan 214 §4.3: the handoff's own rule is an em dash, not a frozen one).
+    const onlineIds = new Set(rows.map((row) => row.id))
+    for (const row of allRows) {
+      if (!onlineIds.has(row.id)) {
+        latest.delete(row.id)
+        cpuPrev.delete(row.id)
+      }
+    }
     const limit = Math.max(1, Math.min(8, client.stats().maxConcurrent))
     await mapWithConcurrency(rows, limit, (row) => pollDevice(client, row, (row.status ?? 'offline') as DeviceStatus))
   }
@@ -147,5 +173,8 @@ export function createBatteryMonitor(deps: {
       return true
     },
     pollOnce,
+    metricsOf(deviceId) {
+      return latest.get(deviceId) ?? null
+    },
   }
 }

@@ -7,9 +7,8 @@ import { devices, scripts } from '../db/schema'
 import { createDevSlotStore } from '../plugins/dev-slots'
 import { allocateDeviceNumber } from '../registry/device-number'
 import { createScriptRegistry } from '../scripts/registry'
-import { createDeviceStateMachine } from '../device/state-machine'
-import { createLeaseManager } from '../lease/lease-manager'
-import { createCoControlManager } from '../lease/co-control'
+import { createActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import { createLogger } from '../util/logger'
 import { createCapabilityContext } from './context'
 import { deviceTap } from './device-input'
@@ -23,20 +22,20 @@ function setUp(): Db {
 }
 
 function insertDevice(db: Db, id: string, ownerId: string | null = null): void {
-  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, ownerId, status: 'idle' }).run()
+  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, ownerId, status: 'online' }).run()
 }
 
+const fakeControlSettings = (): ControlPolicySettings => ({ overControl: 'allow', idleSec: 30 })
+
 /**
- * A minimal `LeaseManager` fake — `getLease` is what `controlLeaseBlockedBy`
- * reads; `getHolder` is what `listDevices()`/`getDevice()` read (plan 71
- * §4.4, threaded through `rowToDeviceInfo`'s `heldBy` — plan 88 §5 step
- * 88.5's own tests are the first in this file to exercise either method).
+ * A REAL, empty `ActivityRegistry` per test (plan 205 §4.4) — `evaluateActivity`/
+ * `touchActivity` read and write it directly, so a fresh one behaves exactly
+ * like a device nothing else is currently touching: `evaluateActivity` reads
+ * `allow` for anything, and `touchActivity`/a seeded `start()` are what a test
+ * that needs a conflict calls before building the context.
  */
-function fakeLeases(lease: { holder: string; holderUserId: string | null; type: 'manual' | 'job' } | null) {
-  return {
-    getLease: () => (lease ? { deviceId: 'd1', acquiredAt: 0, expiresAt: 0, ...lease } : null),
-    getHolder: () => null,
-  } as unknown as import('../lease/lease-manager').LeaseManager
+function fakeActivities() {
+  return createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
 }
 
 function fakeStates(status: string | null) {
@@ -60,8 +59,6 @@ function fakeSessionManager(session: DeviceSession) {
       },
       get: () => session,
       closeDevice: async () => {},
-      closeIfIdle: async () => {},
-      idleSessions: () => [],
       closeAll: async () => {},
     } as unknown as import('@enkaku/session').SessionManager,
     calls,
@@ -80,6 +77,12 @@ function fakeSession(overrides: Partial<DeviceSession> = {}): DeviceSession {
     transport: { exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }), execOut: async () => new Uint8Array() },
     input: { tap: async () => {}, swipe: async () => {}, key: async () => {}, text: async () => {} },
     inspector: null,
+    // Plan 208 §3.5, §5 step 208.8 — a never-rejecting no-op by default: most
+    // fixtures here set `inspector` directly (the start already "happened").
+    // The one variant that actually exercises `deviceCall`'s await is below
+    // (`fakeSessionStartingInspector`).
+    whenInspectorReady: async () => {},
+    inspectorEngineId: 'ui-server',
     frameSize: { width: 1080, height: 1920 },
     clipboard: null,
     ...overrides,
@@ -137,7 +140,7 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     const db = setUp()
     insertDevice(db, 'd1', null)
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
     expect(ctx.canReachDevice('d1')).toBe(true)
@@ -147,7 +150,7 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     const db = setUp()
     insertDevice(db, 'd1', 'someone-else')
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
     expect(ctx.canReachDevice('d1')).toBe(false)
@@ -157,28 +160,49 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     const db = setUp()
     insertDevice(db, 'd1', 'someone-else')
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'admin' },
     )
     expect(ctx.canReachDevice('d1')).toBe(true)
   })
 
-  test('controlLeaseBlockedBy: null when the actor holds the manual lease', () => {
+  test('evaluateActivity: allow when nothing else is live on the device', () => {
     const db = setUp()
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases({ holder: 'client-1', holderUserId: 'u1', type: 'manual' }), states: fakeStates('manual'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
-    expect(ctx.controlLeaseBlockedBy('d1')).toBeNull()
+    expect(ctx.evaluateActivity('d1', 'control')).toEqual({ decision: 'allow', message: '' })
   })
 
-  test('controlLeaseBlockedBy: names the holder when someone else has it', () => {
+  test('evaluateActivity: warns, naming the job already running on the device', () => {
     const db = setUp()
+    const activities = fakeActivities()
+    activities.start('d1', { id: 'job:j1', kind: 'job', label: 'Running tiktok/login (job #482)', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases({ holder: 'client-2', holderUserId: 'u2', type: 'manual' }), states: fakeStates('manual'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities, controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
-    expect(ctx.controlLeaseBlockedBy('d1')).toBe('u2')
+    const decision = ctx.evaluateActivity('d1', 'control')
+    expect(decision.decision).toBe('warn')
+    expect(decision.message).toContain('job #482')
+  })
+
+  test("touchActivity: refreshes this actor's own control marker under a control:user:<id> id", () => {
+    const db = setUp()
+    const activities = fakeActivities()
+    const ctx = createCapabilityContext(
+      { db, activities, controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { id: 'u1', role: 'operator' },
+    )
+    ctx.touchActivity('d1', 'control')
+    const live = activities.list('d1')
+    expect(live).toHaveLength(1)
+    expect(live[0]).toMatchObject({ id: 'control:user:u1', kind: 'control', actor: { kind: 'user', id: 'u1' } })
+    // A non-'control' kind is never touched this way — `invoke.ts` never calls it for any other kind.
+    activities.end('d1', 'control:user:u1')
+    ctx.touchActivity('d1', 'command')
+    expect(activities.list('d1')).toEqual([])
   })
 
   test('deviceCall acquires the session, runs the SAME executor a script uses, and releases it', async () => {
@@ -188,7 +212,7 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     })
     const { manager, calls } = fakeSessionManager(session)
     const ctx = createCapabilityContext(
-      { db: setUp(), leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, timing: ZERO_JITTER_TIMING },
+      { db: setUp(), activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, timing: ZERO_JITTER_TIMING },
       { id: 'u1', role: 'operator' },
     )
     const result = await ctx.deviceCall('d1', { method: 'tap', args: { target: { point: { x: 10, y: 20 } } } })
@@ -196,6 +220,72 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     expect(state.tapped).toEqual({ x: 10, y: 20 })
     expect(calls.acquire).toBe(1)
     expect(calls.release).toBe(1)
+  })
+
+  /**
+   * Plan 208 §3.5, §4.10 — an agent, REST or MCP read reaches the SAME
+   * engine a script would, through `session.whenInspectorReady()`, never an
+   * ad-hoc dump. The fixture's `whenInspectorReady` mimics the real
+   * session's start-once/join contract: it sets `inspector` on first call.
+   */
+  test('deviceCall awaits whenInspectorReady for find and never builds a dump engine', async () => {
+    const db = setUp()
+    insertDevice(db, 'd1', null)
+    let readyCalls = 0
+    const execCalls: string[] = []
+    const session = fakeSession({
+      inspector: null,
+      whenInspectorReady: async () => {
+        readyCalls++
+        ;(session as unknown as { inspector: unknown }).inspector = {
+          id: 'fake',
+          find: async () => ({
+            resourceId: 'x',
+            text: '',
+            desc: '',
+            className: 'android.widget.Button',
+            packageName: 'com.example',
+            bounds: { left: 0, top: 0, right: 10, bottom: 10 },
+            clickable: true,
+            enabled: true,
+            focused: false,
+            index: 0,
+            children: [],
+          }),
+        }
+      },
+      transport: {
+        exec: async (cmd: string) => {
+          execCalls.push(cmd)
+          return { stdout: '', stderr: '', exitCode: 0 }
+        },
+        execOut: async (cmd: string) => {
+          execCalls.push(cmd)
+          return new Uint8Array()
+        },
+      } as unknown as DeviceSession['transport'],
+    })
+    const { manager } = fakeSessionManager(session)
+    const ctx = createCapabilityContext(
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { id: 'u1', role: 'operator' },
+    )
+    const result = await invoke(deviceFind, ctx, { deviceId: 'd1', sel: { text: 'x' } })
+    expect(result.ok).toBe(true)
+    expect(readyCalls).toBe(1)
+    expect(execCalls.some((c) => c.includes('uiautomator dump'))).toBe(false)
+  })
+
+  test('deviceCall does not await whenInspectorReady for tap', async () => {
+    let readyCalls = 0
+    const session = fakeSession({ whenInspectorReady: async () => { readyCalls++ } })
+    const { manager } = fakeSessionManager(session)
+    const ctx = createCapabilityContext(
+      { db: setUp(), activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, timing: ZERO_JITTER_TIMING },
+      { id: 'u1', role: 'operator' },
+    )
+    await ctx.deviceCall('d1', { method: 'tap', args: { target: { point: { x: 1, y: 1 } } } })
+    expect(readyCalls).toBe(0)
   })
 
   test('end-to-end: device.tap through invoke() hits the fake driver, not a reimplementation', async () => {
@@ -207,7 +297,7 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     })
     const { manager } = fakeSessionManager(session)
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases({ holder: 'c1', holderUserId: 'u1', type: 'manual' }), states: fakeStates('manual'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, timing: ZERO_JITTER_TIMING },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, timing: ZERO_JITTER_TIMING },
       { id: 'u1', role: 'operator' },
     )
     const result = await invoke(deviceTap, ctx, { deviceId: 'd1', target: { point: { x: 5, y: 6 } } })
@@ -222,7 +312,7 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     const session = fakeSession({ inspector: { id: 'fake', find: async () => null, dump: async () => { throw new Error('unused') }, screenshot: async () => new Uint8Array() } })
     const { manager } = fakeSessionManager(session)
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
     const result = await invoke(deviceFind, ctx, { deviceId: 'd1', sel: { text: 'OK' } })
@@ -248,7 +338,7 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     })
     const { manager } = fakeSessionManager(session)
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
     const result = await invoke(deviceFind, ctx, { deviceId: 'd1', sel: { id: 'url_bar' } })
@@ -274,7 +364,7 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     })
     const { manager } = fakeSessionManager(session)
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
     const result = await invoke(deviceFind, ctx, { deviceId: 'd1', sel: { text: 'Next' } })
@@ -299,7 +389,7 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     })
     const { manager } = fakeSessionManager(session)
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
     const result = await invoke(deviceWaitFor, ctx, { deviceId: 'd1', sel: { id: 'url_bar' }, timeout: 20, intervalMs: 5 })
@@ -331,8 +421,9 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     const ctx = createCapabilityContext(
       {
         db,
-        leases: fakeLeases({ holder: 'c1', holderUserId: 'u1', type: 'manual' }),
-        states: fakeStates('manual'),
+        activities: fakeActivities(),
+        controlSettings: fakeControlSettings,
+        states: fakeStates('online'),
         sessions: () => manager,
         readiness: () => null,
         transfer: null,
@@ -380,8 +471,9 @@ describe('createCapabilityContext — connection.medium reaches listDevices/getD
     const ctx = createCapabilityContext(
       {
         db,
-        leases: fakeLeases(null),
-        states: fakeStates('idle'),
+        activities: fakeActivities(),
+        controlSettings: fakeControlSettings,
+        states: fakeStates('online'),
         sessions: () => null,
         readiness: () => null,
         transfer: null,
@@ -402,8 +494,9 @@ describe('createCapabilityContext — connection.medium reaches listDevices/getD
     const ctx = createCapabilityContext(
       {
         db,
-        leases: fakeLeases(null),
-        states: fakeStates('idle'),
+        activities: fakeActivities(),
+        controlSettings: fakeControlSettings,
+        states: fakeStates('online'),
         sessions: () => null,
         readiness: () => null,
         transfer: null,
@@ -434,8 +527,9 @@ describe('createCapabilityContext — the device number reaches getDevice() too 
     const ctx = createCapabilityContext(
       {
         db,
-        leases: fakeLeases(null),
-        states: fakeStates('idle'),
+        activities: fakeActivities(),
+        controlSettings: fakeControlSettings,
+        states: fakeStates('online'),
         sessions: () => null,
         readiness: () => null,
         transfer: null,
@@ -449,67 +543,70 @@ describe('createCapabilityContext — the device number reaches getDevice() too 
 })
 
 /**
- * Plan 91 §3.4 item 4, §4.4 — the producer gap step 91.4 flagged and left
- * open: `ctx.listDevices()`/`ctx.getDevice()` (an agent script's own view of
- * the fleet, `capability/device-state.ts`) never threaded `assistedByOf`, so
- * a script would see `assistedBy: []` even while a human was genuinely
- * assisting the device it runs on. Proven through the real
- * `createCapabilityContext` surface, the same discipline the
- * `connection.medium` describe block just above already established.
+ * Plan 205 §4.10 — `ctx.listDevices()`/`ctx.getDevice()` (an agent script's
+ * own view of the fleet, `capability/device-state.ts`) now read `activities`/
+ * `lastControl` straight off the SAME `ActivityRegistry` `evaluateActivity`/
+ * `touchActivity` read and write, replacing the separate per-holder and
+ * per-secondary-operator producer-gap accessors this file used to thread through —
+ * there is no second path to override, so this is always live, never a
+ * default a caller has to remember to fill in.
  */
-describe('createCapabilityContext — assistedBy reaches listDevices/getDevice too (plan 91 §3.4 item 4, §4.4)', () => {
-  const assistHolder = { kind: 'user' as const, id: 'u-assist', label: 'operator@enkaku', runId: null, takeable: false, acquiredAt: 100, expiresAt: 200 }
-
-  test('listDevices() reports the assisting holder for an assisted device, and [] for an unassisted one', () => {
+describe('createCapabilityContext — activities/lastControl reach listDevices/getDevice too (plan 205 §4.10)', () => {
+  test('listDevices() reports the live activity for a busy device, and [] for an idle one', () => {
     const db = setUp()
     insertDevice(db, 'd1', null)
     insertDevice(db, 'd2', null)
+    const activities = fakeActivities()
+    activities.start('d1', { id: 'job:j1', kind: 'job', label: 'Running tiktok/login (job #482)', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const ctx = createCapabilityContext(
       {
         db,
-        leases: fakeLeases(null),
-        states: fakeStates('idle'),
+        activities,
+        controlSettings: fakeControlSettings,
+        states: fakeStates('online'),
         sessions: () => null,
         readiness: () => null,
         transfer: null,
         jobService: noopJobService,
         workspace: noopWorkspace,
-        assistedByOf: (deviceId) => (deviceId === 'd1' ? [assistHolder] : []),
       },
       { id: 'u1', role: 'operator' },
     )
-    expect(ctx.listDevices().find((d) => d.id === 'd1')?.assistedBy).toEqual([assistHolder])
-    expect(ctx.listDevices().find((d) => d.id === 'd2')?.assistedBy).toEqual([])
+    expect(ctx.listDevices().find((d) => d.id === 'd1')?.activities).toMatchObject([{ kind: 'job' }])
+    expect(ctx.listDevices().find((d) => d.id === 'd2')?.activities).toEqual([])
   })
 
-  test('getDevice() reports the same assistedBy as listDevices()', () => {
+  test('getDevice() reports the same activities as listDevices()', () => {
+    const db = setUp()
+    insertDevice(db, 'd1', null)
+    const activities = fakeActivities()
+    activities.start('d1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+    const ctx = createCapabilityContext(
+      {
+        db,
+        activities,
+        controlSettings: fakeControlSettings,
+        states: fakeStates('online'),
+        sessions: () => null,
+        readiness: () => null,
+        transfer: null,
+        jobService: noopJobService,
+        workspace: noopWorkspace,
+      },
+      { id: 'u1', role: 'operator' },
+    )
+    expect(ctx.getDevice('d1')?.activities).toEqual(ctx.listDevices().find((d) => d.id === 'd1')?.activities)
+  })
+
+  test('a device with nothing live reports an empty activities array and a null lastControl, never a guess', () => {
     const db = setUp()
     insertDevice(db, 'd1', null)
     const ctx = createCapabilityContext(
       {
         db,
-        leases: fakeLeases(null),
-        states: fakeStates('idle'),
-        sessions: () => null,
-        readiness: () => null,
-        transfer: null,
-        jobService: noopJobService,
-        workspace: noopWorkspace,
-        assistedByOf: () => [assistHolder],
-      },
-      { id: 'u1', role: 'operator' },
-    )
-    expect(ctx.getDevice('d1')?.assistedBy).toEqual([assistHolder])
-  })
-
-  test('an omitted assistedByOf dep falls back to [] rather than throwing or guessing', () => {
-    const db = setUp()
-    insertDevice(db, 'd1', null)
-    const ctx = createCapabilityContext(
-      {
-        db,
-        leases: fakeLeases(null),
-        states: fakeStates('idle'),
+        activities: fakeActivities(),
+        controlSettings: fakeControlSettings,
+        states: fakeStates('online'),
         sessions: () => null,
         readiness: () => null,
         transfer: null,
@@ -518,64 +615,42 @@ describe('createCapabilityContext — assistedBy reaches listDevices/getDevice t
       },
       { id: 'u1', role: 'operator' },
     )
-    expect(ctx.getDevice('d1')?.assistedBy).toEqual([])
-    expect(ctx.listDevices().find((d) => d.id === 'd1')?.assistedBy).toEqual([])
+    expect(ctx.getDevice('d1')?.activities).toEqual([])
+    expect(ctx.getDevice('d1')?.lastControl).toBeNull()
+    expect(ctx.listDevices().find((d) => d.id === 'd1')?.activities).toEqual([])
   })
 
   /**
-   * docs/plans/96-m61-hotfixes.md §96.10, daemon.ts's own residual — the
-   * three tests above prove `createCapabilityContext` correctly THREADS
-   * whatever `assistedByOf` it is handed; they do not prove the real
-   * production expression (`(deviceId) => coControl.assistedBy(deviceId)`,
-   * wired into `daemon.ts`'s `capContextDeps` object literal) behaves
-   * correctly end to end. This test builds a REAL `CoControlManager` and a
-   * REAL `LeaseManager` — the same `leases`-then-`coControl` construction
-   * order `daemon.ts` uses — grants a real assist through it, and passes the
-   * identical accessor expression `daemon.ts` now contains, so the mechanism
-   * under test is the production wiring itself, not a hand-rolled fake array.
+   * The three tests above prove `createCapabilityContext` correctly reads
+   * whatever the registry currently holds; this one drives the SAME
+   * `evaluateActivity`/`touchActivity` a real `device.tap` capability call
+   * would (through the context itself, not a hand-rolled seed), then checks
+   * `listDevices()`/`getDevice()` see the marker it created — the mechanism
+   * under test is the production wiring end to end, not a fake array.
    */
-  test('a REAL CoControlManager, wired with `assistedByOf: (deviceId) => coControl.assistedBy(deviceId)` — the exact daemon.ts expression — reports the granted assist through ctx.listDevices()/ctx.getDevice()', () => {
+  test('a control marker touched through ctx.touchActivity reaches ctx.listDevices()/ctx.getDevice()', () => {
     const db = setUp()
     insertDevice(db, 'd1', null)
-    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-    let coControlRef: ReturnType<typeof createCoControlManager> | null = null
-    const leases = createLeaseManager({
-      states,
-      jobStore: { expiredRunning: () => [] } as never,
-      config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-      log: createLogger('test'),
-      onJobLeaseExpired: () => {},
-      onPrimaryEnded: (deviceId) => coControlRef?.onPrimaryEnded(deviceId),
-      onManualTakenOver: ({ deviceId }) => coControlRef?.onPrimaryEnded(deviceId),
-    })
-    const coControl = createCoControlManager({
-      leases,
-      config: { grantTtlSec: () => 300, maxConcurrentPerDevice: () => 1 },
-      log: createLogger('test'),
-    })
-    coControlRef = coControl
-
-    leases.acquireManual('d1', 'primary-client', 'primary-user')
-    coControl.grant('d1', 'assist-client', 'assisting-user')
-
+    const activities = fakeActivities()
     const ctx = createCapabilityContext(
       {
         db,
-        leases,
-        states: fakeStates('idle'),
+        activities,
+        controlSettings: fakeControlSettings,
+        states: fakeStates('online'),
         sessions: () => null,
         readiness: () => null,
         transfer: null,
         jobService: noopJobService,
         workspace: noopWorkspace,
-        assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
       },
       { id: 'u1', role: 'operator' },
     )
-    const fromList = ctx.listDevices().find((d) => d.id === 'd1')?.assistedBy
+    ctx.touchActivity('d1', 'control')
+    const fromList = ctx.listDevices().find((d) => d.id === 'd1')?.activities
     expect(fromList).toHaveLength(1)
-    expect(fromList?.[0]).toMatchObject({ kind: 'user', id: 'assisting-user' })
-    expect(ctx.getDevice('d1')?.assistedBy).toEqual(fromList)
+    expect(fromList?.[0]).toMatchObject({ kind: 'control', actor: { kind: 'user', id: 'u1' } })
+    expect(ctx.getDevice('d1')?.activities).toEqual(fromList)
   })
 })
 
@@ -584,7 +659,7 @@ describe('createCapabilityContext — resolveScriptRef through the registry (pla
     const db = setUp()
     db.insert(scripts).values({ id: 's1', name: 'checkout', version: '1.0.0', bundle: 'x', enabled: true, createdAt: new Date() }).run()
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
     expect(ctx.resolveScriptRef('checkout@1.0.0').id).toBe('s1')
@@ -597,7 +672,7 @@ describe('createCapabilityContext — resolveScriptRef through the registry (pla
       .run()
     const registry = createScriptRegistry({ db, dataDir: '/tmp/enkaku-context-test', devSlots: createDevSlotStore() })
     const ctx = createCapabilityContext(
-      { db, leases: fakeLeases(null), states: fakeStates('idle'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, registry },
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, registry },
       { id: 'u1', role: 'operator' },
     )
     expect(ctx.resolveScriptRef('tiktok/login@1.0.0').id).toBe('s1')

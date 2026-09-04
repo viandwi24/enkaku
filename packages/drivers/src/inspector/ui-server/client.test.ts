@@ -1,6 +1,8 @@
 import { createServer, type Server as NetServer } from 'node:net'
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import {
+  ConfiguratorInfoSchema,
+  DEFAULT_CONFIGURATOR,
   DUMP_WINDOW_HIERARCHY_TIMEOUT_MS,
   PING_TIMEOUT_MS,
   RPC_TIMEOUT_MS,
@@ -302,5 +304,67 @@ describe('UiServerClient — an error must not invent a number (plan 129 §3.3/�
     } finally {
       server.close()
     }
+  })
+})
+
+/**
+ * Plan 208 §4.5, §5 step 208.4 — the configurator surface, verified against
+ * the pinned tag's own source before this test was written (client.ts's
+ * header comment records what was found). A local echo server that captures
+ * the last `/jsonrpc/0` request body, rather than a mocked `fetch` — the
+ * file's own header explains why a mock is the wrong tool here.
+ */
+describe('UiServerClient — setConfigurator/getConfigurator (plan 208 §4.5)', () => {
+  let lastBody: unknown = null
+  let getConfiguratorResult: Record<string, unknown> = { waitForIdleTimeout: 10_000 }
+  let server: { port: number; stop: () => void }
+
+  beforeAll(() => {
+    const bunServer = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url)
+        if (url.pathname === '/jsonrpc/0') {
+          const body = (await req.json()) as { method: string; params: unknown[] }
+          lastBody = body
+          if (body.method === 'getConfigurator') {
+            return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: getConfiguratorResult }))
+          }
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }))
+        }
+        return new Response('not found', { status: 404 })
+      },
+    })
+    const port = bunServer.port
+    if (typeof port !== 'number') throw new Error('Bun.serve did not report a port')
+    server = { port, stop: () => bunServer.stop(true) }
+  })
+  afterAll(() => server.stop())
+
+  test('setConfigurator posts the ConfiguratorInfo as the single positional param', async () => {
+    const client = new UiServerClient({ localPort: server.port })
+    await client.setConfigurator(DEFAULT_CONFIGURATOR)
+    const body = lastBody as { method: string; params: unknown[] }
+    expect(body.method).toBe('setConfigurator')
+    expect(body.params).toEqual([DEFAULT_CONFIGURATOR])
+  })
+
+  test('getConfigurator returns the server\'s object', async () => {
+    getConfiguratorResult = { waitForIdleTimeout: 0, waitForSelectorTimeout: 0 }
+    const client = new UiServerClient({ localPort: server.port })
+    const result = await client.getConfigurator()
+    expect(result).toEqual(getConfiguratorResult)
+  })
+
+  test('setConfigurator rejects a negative timeout before any request is sent', () => {
+    const client = new UiServerClient({ localPort: server.port })
+    lastBody = null
+    expect(() => client.setConfigurator({ ...DEFAULT_CONFIGURATOR, waitForIdleTimeout: -1 })).toThrow()
+    expect(lastBody).toBeNull()
+  })
+
+  test('ConfiguratorInfoSchema accepts an optional uiAutomationFlags but does not require it', () => {
+    expect(ConfiguratorInfoSchema.parse(DEFAULT_CONFIGURATOR)).toEqual(DEFAULT_CONFIGURATOR)
+    expect(ConfiguratorInfoSchema.parse({ ...DEFAULT_CONFIGURATOR, uiAutomationFlags: 2 }).uiAutomationFlags).toBe(2)
   })
 })

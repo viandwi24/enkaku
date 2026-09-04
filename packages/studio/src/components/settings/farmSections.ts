@@ -83,30 +83,19 @@ export const FARM_SECTION_DEFS: readonly FarmSectionDef[] = [
   // section — it does not need a section of its own to exist first.
   { id: 'video', title: 'Video', group: 'Devices', keys: ['video'] },
   // `readiness` (`maxHot`/`defaultDesired`) joins `session`/`wall` here, not
-  // a section of its own. Its own doc comment in `settings.ts` USED to say
-  // `maxHot` was deliberately the same default as `wall.maxTiles` and
-  // `session.maxIdleSessions` — plan 92 §3.7 corrected that: `wall.maxTiles`
-  // is now derived from the resolved wall bitrate (the Video section right
-  // above), not a fixed number for `maxHot` to match. The three settings
-  // still share one tab because they answer one question — how many
-  // devices/sessions the farm holds open at once — even though the numbers
-  // no longer coincide by default.
-  // Plan 100 §4.3, step 100.6 — `display.fallbackRetryCount` joins the same
-  // tab as `session`/`wall`/`readiness`: all four answer "how a device
-  // session behaves while open," and a fifth single-field tab for one retry
-  // count would be more clutter than the setting is worth.
+  // a section of its own — the three answer one question, how many
+  // devices/sessions the farm holds open at once. Plan 100 §4.3, step 100.6
+  // — `display.fallbackRetryCount` joins the same tab: all four answer "how
+  // a device session behaves while open," and a fifth single-field tab for
+  // one retry count would be more clutter than the setting is worth. Plan
+  // 206 §4.5 shrank `session` to its one remaining knob (`buildsPerUsbRoot`)
+  // — sessions themselves are always on now — without moving this tab.
   { id: 'sessions', title: 'Sessions & Wall', group: 'Devices', keys: ['session', 'wall', 'readiness', 'display'] },
-  // Plan 91 §4.5, §5 step 91.3 — Assist (reaching into a device a job or
-  // another person already controls, without taking it) and Mirror (one
-  // operator's input fanned out to many devices at once) are the two halves
-  // of co-control, so they share one tab rather than getting one field each.
-  { id: 'assist', title: 'Assist & mirror', group: 'Devices', keys: ['coControl', 'mirror'] },
   // Plan 94 §4.6, §5 step 94.3 — the recorder's own throttles (how eagerly
   // it dumps the UI tree for a selector candidate) and bounds (steps,
-  // duration). Its own tab rather than folded into `assist` above: it is
-  // not a co-control concept, and `job`'s tab right below is a closer
-  // conceptual neighbour ("what a device does automatically") than
-  // `Assist & mirror` is ("who else may touch a device someone holds").
+  // duration). Its own tab: the old per-holder/secondary-operator subsystem
+  // this used to sit beside is gone entirely (plan 205 §4.9) — a device is
+  // simply online or it is not, with no farm-wide knob left to configure.
   { id: 'recording', title: 'Recording', group: 'Devices', keys: ['recording'] },
   // Plan 99 §3.11, §5 items 1-2 — `workflow` (today just `maxTotalMs`, the
   // pipeline's own outer clock) joins `job` here rather than getting a tab
@@ -142,7 +131,7 @@ export const FARM_SECTION_DEFS: readonly FarmSectionDef[] = [
   { id: 'blocked', title: 'Blocked devices', group: 'Farm', keys: [] },
   // Plan 96 item 96.4 — `shell` (the device terminal, plan 26) and
   // `transfer` (push/pull/install, plan 39) are both about what an operator
-  // or lease holder may DO on a device, farm-wide — the same "access
+  // or controlling client may DO on a device, farm-wide — the same "access
   // surface" shape as `Blocked devices` right above, not a `Devices`-tab
   // operational tuning knob like `battery`/`adb`.
   { id: 'access', title: 'Terminal & transfer', group: 'Farm', keys: ['shell', 'transfer'] },

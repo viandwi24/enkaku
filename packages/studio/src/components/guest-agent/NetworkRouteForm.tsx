@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { DeviceNetworkStatusResponseSchema } from '@enkaku/protocol'
-import { Button, ConfirmDialog, ErrorState, LoadingRows, Switch, api, cn, duration, relativeTime, useAction } from '@enkaku/ui'
+import { Button, ConfirmDialog, ErrorState, LoadingRows, Switch, cn, duration, relativeTime, useAction } from '@enkaku/ui'
 import { HttpProxyFields } from '@/components/guest-agent/HttpProxyFields'
 import { Choice, ChoiceGroup } from '@/components/guest-agent/RouteChoice'
 // Step 114.8 — the two sentences moved to their own module so `BulkProxyDialog`
@@ -26,6 +26,7 @@ import {
   type RouteCheckState,
 } from '@/lib/api'
 import { useNow } from '@/lib/useNow'
+import { runOnDevice } from '@/lib/actions'
 
 /**
  * The three modes an operator chooses between (plan 114 §3.10). Deliberately
@@ -420,7 +421,7 @@ export function NetworkRouteForm({
   useEffect(load, [deviceId])
 
   const removeRoute = () =>
-    run('remove', () => api(`/api/devices/${deviceId}/network`, DeviceNetworkStatusResponseSchema, { method: 'DELETE' }), {
+    run('remove', async () => DeviceNetworkStatusResponseSchema.parse((await runOnDevice('set-network', deviceId, { op: 'clear' })).detail), {
       success: 'Route removed',
       failure: 'Could not remove the route',
       onSuccess: load,

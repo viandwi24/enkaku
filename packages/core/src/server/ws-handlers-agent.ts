@@ -4,8 +4,9 @@ import type { AgentRunner, RunEmitEvent } from '../agent/runner'
 
 /**
  * The agent chat protocol's WS half (plan 66 §3.4, §4.4) —
- * `agent.subscribe`/`.unsubscribe`/`.run.cancel` in, `agent.delta`/
- * `.message`/`.tool.*`/`.approval.*`/`.run.*` out. `/ws` has NO SNAPSHOT
+ * `agent.run.cancel` in over /ws, the SSE relay (`api/agent-chat-stream.ts`)
+ * in through `.subscribe()`, `agent.delta`/`.message`/`.tool.*`/
+ * `.approval.*`/`.run.*` out. `/ws` has NO SNAPSHOT
  * REPLAY (`CLAUDE.md`): subscribing only ever starts a live feed from the
  * moment of the call — a client fetches history over
  * `GET /api/v1/threads/:id/messages` first, exactly like every other
@@ -19,7 +20,7 @@ import type { AgentRunner, RunEmitEvent } from '../agent/runner'
 export interface AgentWsHandler {
   subscribe(ws: ServerWebSocket<unknown>, threadId: string): void
   unsubscribe(ws: ServerWebSocket<unknown>, threadId: string): void
-  /** `agent.run.cancel` (plan 66 §3.7) — `cancelledBy` is this connection's user label, resolved by the caller (same pattern `lease.acquire`'s actor already uses). */
+  /** `agent.run.cancel` (plan 66 §3.7) — `cancelledBy` is this connection's user label, resolved by the caller (same pattern a control marker's actor already uses). */
   cancelRun(runId: string, cancelledBy: string | null): void
   handleClose(ws: ServerWebSocket<unknown>): void
   /** Wired to `AgentRunner`'s `emit` — fans one event out to every connection subscribed to its thread. */
@@ -44,7 +45,7 @@ export function createAgentWsHandler(deps: AgentWsHandlerDeps): AgentWsHandler {
 
   const targets = (threadId: string): ServerWebSocket<unknown>[] => [...(subsByThread.get(threadId) ?? [])]
 
-  function toServerMessage(thread: AgentThread, run: AgentRun, event: RunEmitEvent): ServerMessage {
+  function toServerMessage(thread: AgentThread, run: AgentRun, event: RunEmitEvent): ServerMessage | null {
     switch (event.type) {
       case 'delta':
         return { type: 'agent.delta', payload: { runId: run.id, threadId: thread.id, seq: run.steps, kind: event.kind, text: event.text } }
@@ -59,7 +60,7 @@ export function createAgentWsHandler(deps: AgentWsHandlerDeps): AgentWsHandler {
       case 'approval.resolved':
         return { type: 'agent.approval.resolved', payload: { approvalId: event.approvalId, runId: run.id, threadId: thread.id, status: event.status, decidedBy: null } }
       case 'inbox.delivered':
-        return { type: 'agent.message.delivered', payload: { inboxId: event.inboxId, targetRunId: run.id, fromRunId: event.fromRunId, kind: event.kind } }
+        return null
     }
   }
 
@@ -98,6 +99,7 @@ export function createAgentWsHandler(deps: AgentWsHandlerDeps): AgentWsHandler {
 
     publish(thread, run, event) {
       const msg = toServerMessage(thread, run, event)
+      if (msg === null) return
       for (const ws of targets(thread.id)) send(ws, msg)
     },
 

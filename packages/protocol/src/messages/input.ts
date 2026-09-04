@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DomCodeSchema, KeyMetaSchema } from '../keys'
 
 /**
  * Manual input (spec §13) — coordinates are ALWAYS normalised 0..1 on the
@@ -27,11 +28,9 @@ export type NormGestureSample = z.infer<typeof NormGestureSampleSchema>
  * F28). `InputTapMessage` … `InputGestureMessage` below are rebuilt from
  * these fields, WIRE-IDENTICAL to what shipped before this plan — every
  * existing input-message test still passes unchanged against the rebuilt
- * schemas. `MirrorActionSchema` (plan 91 §3.8, §4.4) is the second consumer:
- * the same five bodies, minus `deviceId` — a mirrored action fans out to
- * every live member of a group from one message, so the device id belongs on
- * each `MirrorResult` (`./co-control.ts`), never repeated on the action
- * itself.
+ * schemas. `InputActionSchema` (MVP 15 §1) is the second consumer: the same
+ * five bodies, minus `deviceId` — one input action, verb-tagged, the shape a
+ * client-side fan-out sends per device (MVP 15 §1).
  *
  * Each value here is a plain field map (not a `z.object()`), spread directly
  * into a message's `payload`, because `input.*`'s wire payload is flat
@@ -60,6 +59,31 @@ export const INPUT_ACTION_BODIES = {
   gesture: { samples: z.array(NormGestureSampleSchema).min(2).max(300) },
   key: { keycode: z.number().int().min(0).max(320) },
   text: { text: z.string().min(1).max(1000) },
+  scroll: {
+    pos: NormPointSchema,
+    /** Notches, -1..1 per message; the browser normalises pixel/line/page deltas and clamps (plan 209 §4.13). Positive `vDelta` scrolls the content up (Android `AXIS_VSCROLL` sign). */
+    hDelta: z.number().min(-1).max(1),
+    vDelta: z.number().min(-1).max(1),
+  },
+  keyEvent: {
+    action: z.enum(['down', 'up']),
+    /** The physical key, `KeyboardEvent.code`; the core maps it through `KEY_TABLE` (plan 209 §3.2 D3). */
+    code: DomCodeSchema,
+    meta: KeyMetaSchema,
+  },
+  pinch: {
+    center: NormPointSchema,
+    /** Half the finger distance as a fraction of min(width, height): 0.05 is a close pinch, 0.45 fingers near the edges. */
+    scaleFrom: z.number().min(0.02).max(0.5),
+    scaleTo: z.number().min(0.02).max(0.5),
+    durationMs: z.number().int().min(50).max(10_000).default(300),
+  },
+  touch: {
+    action: z.enum(['down', 'move', 'up']),
+    pos: NormPointSchema,
+    /** 0 is the primary finger. The UHID pointer has one contact; ids above 0 go through `INJECT_TOUCH_EVENT` (plan 209 §4.7). */
+    pointerId: z.number().int().min(0).max(9).default(0),
+  },
 } as const
 
 export const InputTapMessage = z.object({
@@ -118,19 +142,29 @@ export const InputGestureMessage = z.object({
   payload: z.object({ deviceId: z.string(), ...INPUT_ACTION_BODIES.gesture }),
 })
 
+export const InputScrollMessage = z.object({ type: z.literal('input.scroll'), payload: z.object({ deviceId: z.string(), ...INPUT_ACTION_BODIES.scroll }) })
+export const InputKeyEventMessage = z.object({ type: z.literal('input.keyEvent'), payload: z.object({ deviceId: z.string(), ...INPUT_ACTION_BODIES.keyEvent }) })
+export const InputPinchMessage = z.object({ type: z.literal('input.pinch'), payload: z.object({ deviceId: z.string(), ...INPUT_ACTION_BODIES.pinch }) })
 /**
- * One mirrored input action (plan 91 §3.8, §4.4) — verb-tagged, built from
- * the SAME five bodies `InputTapMessage`…`InputGestureMessage` use above, so
- * a mirrored action can never accept something a single-device action would
- * refuse (or vice versa). No `deviceId` here: `input.mirror`'s envelope
- * (`./co-control.ts`) carries one `groupId` and fans the action out to every
- * live member; the per-device outcome comes back as a `MirrorResult`.
+ * One pointer sample of a live drag (plan 209 §3.2 D6, D7; MVP 08 §1.1 row 3): sent as it
+ * happens, 8 ms apart, never buffered to pointer-up. Fire-and-forget like `input.tap`. No
+ * timestamp: the core stamps `atMs` on receipt when it coalesces the stream into a recorded
+ * gesture (D8). `input.gesture` stays for scripts and replay.
  */
-export const MirrorActionSchema = z.discriminatedUnion('verb', [
+export const InputTouchMessage = z.object({ type: z.literal('input.touch'), payload: z.object({ deviceId: z.string(), ...INPUT_ACTION_BODIES.touch }) })
+
+/**
+ * One input action, verb-tagged, the shape a client-side fan-out sends per
+ * device (MVP 15 §1) — built from the SAME five bodies
+ * `InputTapMessage`…`InputGestureMessage` use above, so a fanned-out action
+ * can never accept something a single-device action would refuse (or vice
+ * versa).
+ */
+export const InputActionSchema = z.discriminatedUnion('verb', [
   z.object({ verb: z.literal('tap'), ...INPUT_ACTION_BODIES.tap }),
   z.object({ verb: z.literal('swipe'), ...INPUT_ACTION_BODIES.swipe }),
   z.object({ verb: z.literal('gesture'), ...INPUT_ACTION_BODIES.gesture }),
   z.object({ verb: z.literal('key'), ...INPUT_ACTION_BODIES.key }),
   z.object({ verb: z.literal('text'), ...INPUT_ACTION_BODIES.text }),
 ])
-export type MirrorAction = z.infer<typeof MirrorActionSchema>
+export type InputAction = z.infer<typeof InputActionSchema>

@@ -1,5 +1,6 @@
 import type { z } from 'zod'
 import type { CapabilityError } from './errors'
+import type { ActivityKind } from '../activity'
 
 /**
  * `'read'` observes; safe to retry, safe to run unattended.
@@ -13,15 +14,20 @@ import type { CapabilityError } from './errors'
 export type CapabilityEffect = 'read' | 'write' | 'destructive'
 
 /**
- * `'none'` — no device involved (`script.list`).
- * `'device'` — needs the device online; no exclusivity (`device.screenshot`).
- * `'control'` — needs the caller to hold the manual lease (`device.tap`).
+ * What a capability does to a device (MVP 04 §1.4, plan 205 §4.4). `null` —
+ * no device involved (`script.list`). `kind: 'read'` — the device must be
+ * online, nothing is started and the policy is not consulted
+ * (`device.inspect.dump`). Any other kind is evaluated against the device's
+ * live activities before the handler runs (`device.tap` declares `control`).
  */
-export type CapabilityLease = 'none' | 'device' | 'control'
+export interface CapabilityActivity {
+  kind: ActivityKind | 'read'
+  exclusiveWith?: ActivityKind[]
+}
 
 /**
  * One declaration of one operation the farm can perform (plan 63 §3.2) — id,
- * input, output, permission, lease requirement, deadline, side-effect class
+ * input, output, permission, activity requirement, deadline, side-effect class
  * and a model-facing description, all in one place.
  *
  * Generic over `Ctx`: `@enkaku/protocol` has zero runtime dependencies
@@ -30,7 +36,7 @@ export type CapabilityLease = 'none' | 'device' | 'control'
  * context here. `@enkaku/core`'s `capability/context.ts` defines the real
  * `CapabilityContext` every handler actually runs against and pins `Ctx` to
  * it (`CoreCapability` in `capability/types.ts`). Only the shape that is
- * genuinely dependency-free — id/input/output/permission/lease/deadline/
+ * genuinely dependency-free — id/input/output/permission/activity/deadline/
  * effect/description plus the handler signature — lives here.
  */
 export interface Capability<I extends z.ZodType = z.ZodType, O extends z.ZodType = z.ZodType, Ctx = unknown> {
@@ -42,7 +48,8 @@ export interface Capability<I extends z.ZodType = z.ZodType, O extends z.ZodType
    * imported) for the same zero-dependency reason as `Ctx`; `@enkaku/core`'s
    * `CoreCapability` narrows it to the real `Permission` union. */
   permission: string
-  lease: CapabilityLease
+  /** `undefined` for a device-less capability. */
+  activity?: CapabilityActivity
   /** Milliseconds. Enforced by the executor (`invoke`), never by the handler. */
   deadline: number
   effect: CapabilityEffect
@@ -62,5 +69,8 @@ export type AnyCapability<Ctx = unknown> = Capability<z.ZodType, z.ZodType, Ctx>
  * What `invoke` (plan 63 §3.4) hands back — never a bare string (plan 63
  * §3.3, acceptance #12). `output`'s shape is whatever the capability's own
  * `output` schema declares; success is never determined by matching text.
+ * `warning`, added by plan 205 §4.4, is set on a success whose activity
+ * policy answered `warn` — a sentence naming the conflicting activity,
+ * absent when nothing conflicted.
  */
-export type CapabilityResult<O = unknown> = { ok: true; output: O } | { ok: false; error: CapabilityError }
+export type CapabilityResult<O = unknown> = { ok: true; output: O; warning?: string } | { ok: false; error: CapabilityError }

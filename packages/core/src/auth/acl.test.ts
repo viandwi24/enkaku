@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { ALL_PERMISSIONS, can, canAssist, canCancelJob, canUseAdbEndpoint, canUseShell, isPermission } from './acl'
+import { ALL_PERMISSIONS, can, canCancelJob, canUseAdbEndpoint, canUseShell, isPermission } from './acl'
 
 /**
  * `device.shell` across roles and every `shell.mode` value (plan 26 §7) —
@@ -57,41 +57,6 @@ describe('device.adb / canUseAdbEndpoint (plan 27 §3.4, §4.3)', () => {
 })
 
 /**
- * `device.assist` / `canAssist` (plan 91 §3.2, §3.6, §4.6) — the gate for
- * Assist, a narrow grant to touch a device someone/something else already
- * controls, checked the SAME "mode plus permission" way `canUseShell` is
- * (F23), but starting from an OPPOSITE static default: unlike `device.shell`,
- * `device.assist` is already in the OPERATOR set (it grants five input
- * verbs, never a shell), so `coControl.mode` alone decides admin-vs-operator
- * once `mode !== 'off'`.
- */
-describe('device.assist / canAssist (plan 91 §3.2, §3.6, §4.6)', () => {
-  test('the static ACL matrix admits BOTH admin and operator — unlike device.shell', () => {
-    expect(can('admin', 'device.assist')).toBe(true)
-    expect(can('operator', 'device.assist')).toBe(true)
-  })
-
-  test('mode "off" refuses everyone, including admin', () => {
-    expect(canAssist('admin', 'off')).toBe(false)
-    expect(canAssist('operator', 'off')).toBe(false)
-  })
-
-  test('mode "admin" admits only admin', () => {
-    expect(canAssist('admin', 'admin')).toBe(true)
-    expect(canAssist('operator', 'admin')).toBe(false)
-  })
-
-  test('mode "operator" (the default) admits both admin and operator', () => {
-    expect(canAssist('admin', 'operator')).toBe(true)
-    expect(canAssist('operator', 'operator')).toBe(true)
-  })
-
-  test('is a real, validated permission name', () => {
-    expect(ALL_PERMISSIONS).toContain('device.assist')
-    expect(isPermission('device.assist')).toBe(true)
-  })
-})
-
 /**
  * `device.owner.set` (plan 09 §4.4) — gates the `ownerId` transition on
  * `PATCH /api/devices/:id`. Admin-only in the static matrix, unlike most

@@ -74,7 +74,7 @@ function LocalExceptionWarning({ report }: { report: DoctorResult }) {
             "#7 SM-F721U1 (192.168.10.15)". It is deliberately NOT re-composed
             here: the number arrives inside `label`, and wrapping it again
             would print `#7 #7 SM-F721U1` — the exact double-naming plan 124's
-            own §10 notes record from `MirrorMember`.
+            own §10 notes record from a since-deleted device-list schema.
           */}
           Uncovered: <span className="font-medium text-fg">{localException.uncoveredDevices.map((d) => `${d.label} (${d.address})`).join(', ')}</span>
         </p>

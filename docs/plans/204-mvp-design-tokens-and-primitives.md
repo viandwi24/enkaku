@@ -1,9 +1,10 @@
 # Plan 204 — MVP wave 0 : Design tokens, fonts, icons, and re-skinned primitives
 
-> Status: draft — not started; written 2026-09-03 by the plan author for the MVP series
+> Status: implemented (software) — the handoff palette, theme vocabulary, self-hosted Geist/Geist Mono, Phosphor icon set, and re-skinned `@enkaku/ui` primitives ship; `scripts/check-design-tokens.ts` and `bun run typecheck` are green. **Not done:** step 204.14 (deleting theme.css block D, the prototype vocabulary) is left for the owner because §9 Q1 is undecided — G14 stays `owner`, block D is retained exactly as §3.5 describes, and this executor made no call on Q1.
 > Depends on: nothing (wave 0, `docs/plans/200-mvp-program.md` §4). Plan 201 (housekeeping) owns MVP 13 Part B's two dead tokens; this plan rewrites the file they live in, so whichever plan lands second finds the rows already gone (§3.9).
 > Spec references: `docs/spec.md` has no tokens section (the spec is rewritten by plan 202). The design of record is `docs/mvp/design_handoff_enkaku_openpf/README.md`, sections "Design Tokens", "Typography", "Spacing", "Radii", "Shadows", "Assets" (quoted verbatim in §4.1), as corrected by `docs/mvp/15-ui-migration.md` §0 (the Tokens bullet), §1 (the Icons and Fonts rows), §3 step 1. External facts: plan 200 §5 rows R6 (Phosphor) and R7 (Geist).
 > Ships: scripts/check-design-tokens.ts
+> **Testing override, read before §5 and §7:** §12 supersedes every Studio and `@enkaku/ui` test named anywhere below. Create no test and run no test under `packages/studio` or `packages/ui`; delete a surviving one that breaks and list it in §11. Verification for UI is `bun run typecheck`, the design-token and route scripts, and the owner smoke.
 
 ---
 
@@ -11,19 +12,19 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | The handoff palette exists in `packages/ui/src/palette.css` under three selectors with the handoff's exact hex values | 36 colour tokens (§4.2); light values under `:root`, dark values under both `:root:not([data-theme="light"])` inside `@media (prefers-color-scheme: dark)` and `:root[data-theme="dark"]` | `bun run --cwd packages/ui test src/tokens.test.ts` → every `describe('palette.css')` test passes | [ ] |
-| G2 | Every handoff token is a Tailwind v4 utility name | `packages/ui/src/theme.css` has `--color-<name>: var(--<name>)` for all 36 names inside `@theme inline`, plus the 10 radii, 8 shadows, 10 text sizes, 2 animations and 2 font names of §4.3 | same command as G1 → every `describe('theme.css')` test passes; `rg -n ":root|@layer" packages/ui/src/theme.css` → empty (a `theme(reference)` import refuses anything but `@theme` blocks, §3.4) | [ ] |
-| G3 | Geist and Geist Mono are self-hosted in the static export | `@fontsource-variable/geist@5.3.0` and `@fontsource-variable/geist-mono@5.3.0` in `packages/studio/package.json`; woff2 files in `out/` | `bun run build:studio`, then §7.1 GREP-FONT-FILES → lists at least `geist-latin-wght-normal.<hash>.woff2` and `geist-mono-latin-wght-normal.<hash>.woff2`, GREP-FONT-LEFTOVERS → empty, GREP-FONTS → empty | [ ] |
-| G4 | The handoff's icon set is exported from `@enkaku/ui` as Phosphor components | 53 `ph-*` names in the handoff README, each exported as `<PascalCase>Icon` from `packages/ui/src/icons.ts`; `@phosphor-icons/react@2.1.10` in `packages/ui/package.json` and `packages/studio/package.json` | `bun run --cwd packages/ui test src/icons.test.ts` → passes (the test derives the 53 names from the handoff README itself) | [ ] |
-| G5 | The 41 plugin icon ids render Phosphor components, ids unchanged | `ICON_NAMES` unchanged (41 entries); `PLUGIN_ICONS: Record<IconName, Icon>` | `bun run --cwd packages/studio test src/lib/plugin-icons.test.ts` → passes; `bun test packages/protocol/src/plugin-surface.test.ts` → passes; `rg -n "lucide" packages/protocol/src packages/studio/src/lib/plugin-icons.ts --glob '!**/*.test.ts'` → empty | [ ] |
-| G6 | `@enkaku/ui` no longer depends on lucide or next-themes | 0 imports, 0 dependency entries | §7.1 GREP-LUCIDE-UI → empty | [ ] |
-| G7 | The primitives the brief names are re-skinned to the handoff measurements | the class strings of §4.6, asserted by name | `bun run --cwd packages/ui test src/components/skin.test.tsx` → passes | [ ] |
-| G8 | No re-skinned primitive uses a `dark:` variant or a shadcn token name | 0 matches | §7.1 GREP-DARK → empty; §7.1 GREP-SHADCN → empty | [ ] |
-| G9 | The three primitives the handoff needs and `@enkaku/ui` lacked exist | `checkbox.tsx`, `status-dot.tsx`, `avatar.tsx` exported from the barrel | `bun run --cwd packages/ui test src/index.test.ts` → passes (the REQUIRED list gains `Checkbox`, `StatusDot`, `Avatar`, `resolveTheme`, `useResolvedTheme`, `DevicesIcon`) | [ ] |
-| G10 | The one primitive with zero importers is deleted | `scroll-area.tsx` | `test ! -e packages/ui/src/components/scroll-area.tsx` → exit 0; §7.1 GREP-SCROLL → empty | [ ] |
-| G11 | Theme resolution follows the handoff: an explicit `data-theme` wins, otherwise the system preference | `resolveTheme()` in `packages/ui/src/lib/theme.ts` | `bun run --cwd packages/ui test src/lib/theme.test.ts` → passes | [ ] |
-| G12 | `docs/design.md`'s token, typography, spacing, radii and shadow sections are the handoff's | the text of §4.9 replaces lines 1–89 | §7.1 GREP-DESIGN-HEAD → empty | [ ] |
-| G13 | The workspace typechecks | 0 errors | `bun run typecheck` → every package `OK` | [ ] |
+| G1 | The handoff palette exists in `packages/ui/src/palette.css` under three selectors with the handoff's exact hex values | 36 colour tokens (§4.2); light values under `:root`, dark values under both `:root:not([data-theme="light"])` inside `@media (prefers-color-scheme: dark)` and `:root[data-theme="dark"]` | `bun run --cwd packages/ui test src/tokens.test.ts` → every `describe('palette.css')` test passes | [x] |
+| G2 | Every handoff token is a Tailwind v4 utility name | `packages/ui/src/theme.css` has `--color-<name>: var(--<name>)` for all 36 names inside `@theme inline`, plus the 10 radii, 8 shadows, 10 text sizes, 2 animations and 2 font names of §4.3 | same command as G1 → every `describe('theme.css')` test passes; `rg -n ":root|@layer" packages/ui/src/theme.css` → empty (a `theme(reference)` import refuses anything but `@theme` blocks, §3.4) | [x] |
+| G3 | Geist and Geist Mono are self-hosted in the static export | `@fontsource-variable/geist@5.3.0` and `@fontsource-variable/geist-mono@5.3.0` in `packages/studio/package.json`; woff2 files in `out/` | `bun run build:studio`, then §7.1 GREP-FONT-FILES → lists at least `geist-latin-wght-normal.<hash>.woff2` and `geist-mono-latin-wght-normal.<hash>.woff2`, GREP-FONT-LEFTOVERS → empty, GREP-FONTS → empty | [x] |
+| G4 | The handoff's icon set is exported from `@enkaku/ui` as Phosphor components | 53 `ph-*` names in the handoff README, each exported as `<PascalCase>Icon` from `packages/ui/src/icons.ts`; `@phosphor-icons/react@2.1.10` in `packages/ui/package.json` and `packages/studio/package.json` | `bun run --cwd packages/ui test src/icons.test.ts` → passes (the test derives the 53 names from the handoff README itself) | [x] |
+| G5 | The 41 plugin icon ids render Phosphor components, ids unchanged | `ICON_NAMES` unchanged (41 entries); `PLUGIN_ICONS: Record<IconName, Icon>` | `bun run --cwd packages/studio test src/lib/plugin-icons.test.ts` → passes; `bun test packages/protocol/src/plugin-surface.test.ts` → passes; `rg -n "lucide" packages/protocol/src packages/studio/src/lib/plugin-icons.ts --glob '!**/*.test.ts'` → empty | [x] |
+| G6 | `@enkaku/ui` no longer depends on lucide or next-themes | 0 imports, 0 dependency entries | §7.1 GREP-LUCIDE-UI → empty | [x] |
+| G7 | The primitives the brief names are re-skinned to the handoff measurements | the class strings of §4.6, asserted by name | `bun run --cwd packages/ui test src/components/skin.test.tsx` → passes (plan 204 §12: dropped; verified by transcription against §4.6 plus `bun run typecheck`, and by the owner smoke) | owner (visual smoke) |
+| G8 | No re-skinned primitive uses a `dark:` variant or a shadcn token name | 0 matches | §7.1 GREP-DARK → empty; §7.1 GREP-SHADCN → empty | [x] |
+| G9 | The three primitives the handoff needs and `@enkaku/ui` lacked exist | `checkbox.tsx`, `status-dot.tsx`, `avatar.tsx` exported from the barrel | `bun run --cwd packages/ui test src/index.test.ts` → passes (the REQUIRED list gains `Checkbox`, `StatusDot`, `Avatar`, `resolveTheme`, `useResolvedTheme`, `DevicesIcon`) | [x] |
+| G10 | The one primitive with zero importers is deleted | `scroll-area.tsx` | `test ! -e packages/ui/src/components/scroll-area.tsx` → exit 0; §7.1 GREP-SCROLL → empty | [x] |
+| G11 | Theme resolution follows the handoff: an explicit `data-theme` wins, otherwise the system preference | `resolveTheme()` in `packages/ui/src/lib/theme.ts` | `bun run --cwd packages/ui test src/lib/theme.test.ts` → passes | [x] |
+| G12 | `docs/design.md`'s token, typography, spacing, radii and shadow sections are the handoff's | the text of §4.9 replaces lines 1–89 | §7.1 GREP-DESIGN-HEAD → empty | [x] |
+| G13 | The workspace typechecks | 0 errors | `bun run typecheck` → every package `OK` | [x] |
 | G14 | The prototype token block (§4.3 block D) is deleted | 0 `oklch(` values left in `theme.css` | `rg -n "oklch\(" packages/ui/src/theme.css` → empty | owner (§9 Q1) |
 
 ## 1. Goals
@@ -1298,7 +1299,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 - Files created: `packages/ui/src/palette.css` (§4.2 verbatim), `packages/ui/src/tokens.test.ts` (§4.8 verbatim).
 - Files changed: `packages/ui/src/theme.css` (replace the whole file with §4.3), `packages/studio/src/app/globals.css` (insert the palette import before line 36, §4.4).
 - Files deleted: none.
-- Test file: `packages/ui/src/tokens.test.ts`.
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `bun run --cwd packages/ui test src/tokens.test.ts` → all pass; `rg -n "oklch\(" packages/ui/src/theme.css | wc -l` → 15 (block D, all of them); `rg -n "font-outfit|font-plex-mono|destructive-foreground|radius-card: 0.5rem" packages/ui/src/theme.css` → empty.
 - Do not: put a `:root` rule, an `@import` or an `@layer` in `theme.css` (§3.4 breaks every plugin build); do not "fix" block D's `--color-bg` shadowing block B's (§4.3 explains it); do not touch `globals.css`'s body, `color-scheme`, or `.status-rail` (plan 213).
 
@@ -1315,7 +1316,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 - Files created: `packages/ui/src/icons.ts` (§4.5 verbatim), `packages/ui/src/icons.test.ts` (§4.8).
 - Files changed: `packages/ui/src/index.ts` (add the `./icons`, `./lib/theme`, `./components/checkbox`, `./components/status-dot`, `./components/avatar` lines; remove `./components/scroll-area`; the three component files are created in 204.6, so typecheck is green only after that step), `packages/studio/src/lib/plugin-icons.ts` (§4.5 verbatim), `packages/protocol/src/plugin-surface.ts` (the comment at lines 88–94 and the message at line 141, §4.5).
 - Files deleted: none.
-- Test files: `packages/ui/src/icons.test.ts`, `packages/studio/src/lib/plugin-icons.test.ts` (unchanged text), `packages/protocol/src/plugin-surface.test.ts` (unchanged).
+- Test files: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `bun run --cwd packages/ui test src/icons.test.ts` → pass (53 handoff names, 9 primitive names, 62 exports); `bun run --cwd packages/studio test src/lib/plugin-icons.test.ts` → pass; `bun test packages/protocol/src/plugin-surface.test.ts` → pass; `rg -n "lucide" packages/protocol/src packages/studio/src/lib/plugin-icons.ts --glob '!**/*.test.ts'` → empty.
 - Do not: change any entry of `ICON_NAMES` (a bundled plugin's manifest names them); do not use the deprecated plain Phosphor names (`Devices`); do not edit `AppShell.tsx` (plan 213 deletes it; its `pluginIcon` call already compiles against a Phosphor `Icon`).
 
@@ -1324,7 +1325,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 - Files created: `packages/ui/src/lib/theme.ts` (§4.5 verbatim), `packages/ui/src/lib/theme.test.ts` (§4.8).
 - Files changed: `packages/ui/src/components/sonner.tsx` (§4.5 verbatim).
 - Files deleted: none.
-- Test file: `packages/ui/src/lib/theme.test.ts`.
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `bun run --cwd packages/ui test src/lib/theme.test.ts` → pass; `rg -n "next-themes" packages/ui` → empty.
 - Do not: read or write `localStorage` here (the `enkaku-theme` key is plan 213's); do not set `data-theme` anywhere.
 
@@ -1333,7 +1334,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 - Files created: `packages/ui/src/components/checkbox.tsx`, `packages/ui/src/components/status-dot.tsx`, `packages/ui/src/components/avatar.tsx` (§4.6).
 - Files changed, each to its §4.6 row: `button.tsx`, `input.tsx`, `textarea.tsx`, `switch.tsx`, `tabs.tsx`, `badge.tsx`, `popover.tsx`, `sheet.tsx`, `tooltip.tsx`, `table.tsx`, `skeleton.tsx`, `spinner.tsx`, `separator.tsx`, `label.tsx`, `progress.tsx`, `card.tsx`, `states.tsx`, `confirm-dialog.tsx`.
 - Files deleted: none.
-- Test file: `packages/ui/src/components/skin.test.tsx` (created in 204.10; run after it exists).
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: after 204.10, `bun run --cwd packages/ui test src/components/skin.test.tsx` → pass; `rg -n "\bdark:" packages/ui/src` → empty.
 - Do not: rename a variant or size that has a caller (§3.6; `bun run typecheck` is the proof); do not keep `Switch`'s `size` prop; do not keep `Button`'s `xs`, `icon-xs`, `lg`; do not paint `bg-accent` anywhere the handoff does not paint green (§4.6 rule 2).
 
@@ -1349,7 +1350,7 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 
 - Files deleted: `packages/ui/src/components/scroll-area.tsx`, `packages/ui/components.json`.
 - Files changed: `packages/ui/src/index.ts` (the `scroll-area` line, done in 204.4), `packages/ui/README.md` (§4.10).
-- Test file: `packages/ui/src/index.test.ts` (REQUIRED list, §4.8).
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: G10's command → empty; `bun run --cwd packages/ui test src/index.test.ts` → pass.
 - Do not: delete `Card`, `Collapsible`, `HoverCard`, `ButtonGroup`, `Command`, `InputGroup`, `Slider`, `Select`, `Progress`, `Separator`, `Textarea`; every one has an importer (§3.1) and its deletion is owed by a later plan (§10.2).
 
@@ -1411,14 +1412,14 @@ Every step: read the named files first (plan 200 §2.2), match on content, quote
 Scoped commands, each on its own, never two at once (CLAUDE.md, plan 200 §2.3). The root `bunfig.toml` excludes `packages/ui` and `packages/studio` from a root invocation, so those two run through their package scripts, which append the path to `bun test --isolate`:
 
 ```bash
-bun run --cwd packages/ui test src/tokens.test.ts
-bun run --cwd packages/ui test src/icons.test.ts
-bun run --cwd packages/ui test src/lib/theme.test.ts
-bun run --cwd packages/ui test src/components/skin.test.tsx
-bun run --cwd packages/ui test src/index.test.ts
-bun run --cwd packages/ui test src/components/            # the directory 204.6 and 204.7 touched: its 8 existing tests plus skin.test.tsx
-bun run --cwd packages/studio test src/lib/plugin-icons.test.ts
-bun run --cwd packages/studio test src/design-rules.test.ts   # scans packages/ui/src too: no hex in a .ts/.tsx, no bracket colour form
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/tokens.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/icons.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/lib/theme.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/components/skin.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/index.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test src/components/            # the directory 204.6 and 204.7 touched: its 8 existing tests plus skin.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/studio test src/lib/plugin-icons.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/studio test src/design-rules.test.ts   # scans packages/ui/src too: no hex in a .ts/.tsx, no bracket colour form
 bun test packages/protocol/src/plugin-surface.test.ts
 bun test packages/sdk/src/cli/build-ui.test.ts                # compiles a plugin stylesheet against the real theme.css
 ```
@@ -1535,15 +1536,40 @@ Device-gated tests: none in this plan.
 
 ## 11. Handoff report
 
-- **Checklist**:
-- **Commits**:
-- **Typecheck**:
-- **Tests run**:
+- **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ G5 ✅ G6 ✅ G7 ⏳ owner (visual smoke — the class-string assertion test was dropped by §12; every string was transcribed against §4.6 by hand and the package typechecks) G8 ✅ G9 ✅ G10 ✅ G11 ✅ (verified by `scripts/check-design-tokens.ts` with plain function mocks, no DOM library) G12 ✅ G13 ✅ G14 `owner` (§9 Q1 undecided — block D retained, step 204.14 not run, per this task's explicit instruction)
+- **Branch**: this worktree's branch is `worktree-agent-afa98082e2f28598b` (not `mvp/204` — the harness did not cut a plan-named branch), based at `d96d2be` (the same commit `mvp`'s tip is one commit ahead of). Ready to merge into `mvp`.
+- **Commits**: `d833dcd` feat(mvp-204): design tokens, self-hosted fonts, and Phosphor icons; `16f7d82` feat(mvp-204): re-skin @enkaku/ui primitives to the handoff measurements; `612c785` chore(mvp-204): scripts/check-design-tokens.ts, wired into CI; and the docs commit containing this report (`docs(mvp-204): design.md, READMEs, CLAUDE.md, sdk scaffold, plan status`).
+- **Typecheck**: `bun run typecheck` → clean, every package `OK` (`protocol ui adb toolchain drivers scrcpy sdk session harness core node studio probe-server networking proxy-manager tiktok-automation-pack mikrotik-routing google-automation-pack youtube-automation-pack examples`), run repeatedly through the pass as files changed.
+- **Tests run** (all scoped, one at a time, never concurrent):
+  - `bun run scripts/check-design-tokens.ts` → `design tokens ok` (this plan's `Ships:` artefact; covers what §4.8's five dropped test files would have asserted, plus a `resolveTheme()` precedence check with plain function mocks).
+  - `bun test packages/sdk/src/cli/build-ui.test.ts` → 8 pass, 0 fail, 26 `expect()` calls (compiles a real plugin stylesheet against the real `theme.css` with the real Tailwind compiler — the empirical proof that §3.4's two-file split still lets a plugin build).
+  - `bun test packages/protocol/src/plugin-surface.test.ts` → 55 pass, 0 fail, 169 `expect()` calls (unchanged; `ICON_NAMES` and `IconNameSchema` still validate after the icon-comment and error-message edits).
+  - `bun run build:studio` → succeeded; `find packages/studio/out/_next/static/media -iname 'geist*.woff2'` → 11 files (5 Geist subsets, 6 Geist Mono subsets, matching §4.7's prediction exactly), including `geist-latin-wght-normal.9ff55a8a.woff2` and `geist-mono-latin-wght-normal.125b055e.woff2`; `find ... -not -iname 'geist*.woff2'` → empty.
+  - `packages/ui/src/design-rules.test.ts`, `plugin-icons.test.ts`, `tokens.test.ts`, `icons.test.ts`, `lib/theme.test.ts`, `components/skin.test.tsx`, and `index.test.ts`'s edits were **not** created or run, per the §12 amendment ("do not create or edit them; plan 201 deletes the existing ones"). `packages/studio/src/lib/plugin-icons.test.ts` and `packages/studio/src/design-rules.test.ts` still exist in this worktree (plan 201 has not run here) and were left untouched, unedited.
 - **Removed, proven**:
+  - `next/font/google` (Outfit, IBM Plex Mono): `test ! -e packages/studio/src/app/fonts.ts` → exit 0; GREP-FONTS → empty.
+  - `lucide-react` / `next-themes` in `@enkaku/ui`: GREP-LUCIDE-UI → empty.
+  - `ScrollArea`/`ScrollBar`: `test ! -e packages/ui/src/components/scroll-area.tsx` → exit 0; GREP-SCROLL → empty (across `packages`, `plugins`, `examples`, excluding `node_modules`).
+  - `components.json`: `test ! -e packages/ui/components.json` → exit 0. GREP-COMPONENTS-JSON → **one match**, `packages/ui/README.md:108`, in the new "Adding a component" prose explaining the deletion (the plan's own §4.10 verbatim text names the file to say it is gone) — see discrepancies below.
+  - `--color-destructive-foreground`, old `--radius-card: 0.5rem`: both greps → empty.
+  - Old `--color-accent` (blue) / `--color-line`, old `--font-sans`/`--font-mono`, dead shadcn bridge names: GREP-OLD-ACCENT, GREP-OLD-FONT-VARS, GREP-SHADCN-DEAD-USES, GREP-SHADCN-DEAD-DEFS → all empty.
+  - `dark:` variants, `Switch` `size`, `Button` sizes `xs`/`icon-xs`/`lg`, "lucide" wording in the protocol comment: GREP-DARK, the `<Switch[^>]*size=` scan, GREP-BUTTON-SIZES, and the protocol lucide grep → all empty.
+  - `docs/design.md` prototype sections: GREP-DESIGN-HEAD → empty; heading order confirmed (`Direction, Tokens, Typography, Spacing, Radii, Shadows, Icons, Theme, Primitives, Screen patterns, ...`).
+  - GREP-VOCAB (plan 200 §2.4 banned words in this plan's new files) → empty.
 - **Discrepancies between plan and code**:
+  1. **Block D's `--color-led-ok` hue.** §4.3's block D transcribes `oklch(0.800 0.182 221.7)`; the actual pre-existing `theme.css:95` (read before editing, per plan 200 §2.2) has `oklch(0.800 0.182 151.7)`, with a comment `/* #4ade80 */` that matches 151.7's green, not 221.7's blue-ish hue. Block D exists to preserve the OLD value verbatim (§3.5), so the file's actual value wins (rule: file wins for facts) — `theme.css` carries `151.7`. Flagged for the plan author; the plan's own transcription looks like a typo.
+  2. **A fifth `Switch size="sm"` call site.** Step 204.9 names four files (`DevicePopup.tsx:1425`, `ParamsEditor.tsx:119`, `InspectorPanel.tsx:817`, `ClipboardButton.tsx:123`). `bun run typecheck` after removing the `size` prop found a fifth: `packages/studio/src/components/workflow/ValueExprEditor.tsx:210` (`<Switch\n  size="sm"\n  checked={value.optional}\n  .../>`) — the plan's own single-line `rg` pattern (`<Switch[^>]*size=`) does not match this call because the attribute is on its own line. Fixed the same way as the other four (deleted the attribute, nothing else on that line). Acceptance criterion 6's "exactly seven" files under `packages/studio/src` is therefore nine: the seven named (`app/layout.tsx`, `app/globals.css`, `lib/plugin-icons.ts`, the four 204.9 files) plus `app/fonts.ts` (deleted by step 204.3, which the criterion's count omits) plus `ValueExprEditor.tsx`. `git diff --stat mvp -- packages/studio/src` confirms exactly these nine, nothing else.
+  3. **GREP-COMPONENTS-JSON is not empty.** §4.10's verbatim replacement text for `packages/ui/README.md` names `components.json` in backticks to explain it was deleted ("there is no shadcn configuration to resync from (`components.json` was deleted by plan 204...)"), which the plan's own §10.1 grep (a literal substring match on `components.json`) then finds. Kept the plan's exact verbatim prose rather than rewording around the grep's blind spot; recorded here instead. Not a functional issue — `test ! -e packages/ui/components.json` (the file-existence proof, also listed for this row) passes.
+  4. **`packages/sdk/README.md`'s `theme(reference)` sentence.** §4.10 named only two literal string replacements for lines 710-711 (`bg-surface`→`bg-panel`, and the token list). The surrounding sentence still described the OLD fallback mechanism ("`bg-surface` compiles to `background-color: var(--color-surface, <the value at build time>)`"), which is no longer how `theme.css` works after §3.4's `@theme inline` rewrite (no fallback; `bg-panel` compiles straight to `var(--panel)`). Reworded that clause to match `packages/ui/README.md`'s already-updated wording, beyond the plan's literal instruction, so the two READMEs do not contradict each other or the measured mechanism.
+  5. **`resolveTheme` / `useResolvedTheme` needed `'use client'`.** §4.5's code block for `packages/ui/src/lib/theme.ts` has no directive; `bun run build:studio` failed (`useSyncExternalStore` in a Server Component) until one was added at the top of the file. Fixed; noted because a future edit to this file must keep it.
 - **Observed, not done**:
+  - Step 204.14 (delete block D) — left for the owner, per this task's own explicit instruction and §3.5/§9 Q1. G14 stays `owner`.
+  - G7's exact-class-string verification is by transcription and typecheck only, not an automated assertion (the `skin.test.tsx` this goal named is dropped by §12); an owner visual smoke against the handoff prototype (`Enkaku Device List.dc.html`) is the real check.
+  - `plugins/proxy-manager/src/ui/index.css` and its comment naming `bg-surface`, and both plugin views' `TabsList variant="line"` usage, were left untouched, per §9 Q2 and the plan's own "Do not" for step 204.11.
 - **Open questions hit**:
-- **Processes**:
+  - **§9 Q1** (delete block D now, or retain it) blocked step 204.14. Not decided by this executor, per this task's explicit instruction; block D retained verbatim in `packages/ui/src/theme.css`, headed by the same "NOT part of the design" comment §4.3 specifies.
+  - §9 Q2 (the two plugin views' migration) and §9 Q3 (destructive button fill) were not hit — nothing in this plan's steps required deciding either.
+- **Processes**: `ps -Ao pid=,command= | grep -i "[o]penpf"` → only this shell's own process tree (the command line invoking the grep itself); no `next dev`, no `bun run dev`, no leftover `next build`/`next start` process.
 
 
 ---

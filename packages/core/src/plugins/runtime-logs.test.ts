@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
-import { PluginLogPageSchema, ServerMessageSchema, SERVER_MESSAGE_TYPES, refusedPluginEventTypesMessage } from '@enkaku/protocol'
+import { PluginLogPageSchema } from '@enkaku/protocol'
 import { openDb, runMigrations } from '../db'
 import { createKvStore, type KvStore } from '../kv/store'
 import type { Logger } from '../util/logger'
@@ -37,7 +37,6 @@ interface Harness {
   logs: PluginLogStore
   kv: KvStore
   dataDir: string
-  broadcasts: Array<{ plugin: string; line: { seq: number; msg: string; subject: string | null } }>
 }
 
 const cleanup: Array<() => void> = []
@@ -47,11 +46,9 @@ function setUp(opts?: { rotateBytes?: number; ringLines?: number; writeFiles?: b
   runMigrations(opened.db)
   const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-plugin-logs-'))
   const kv = createKvStore(opened.db, dataDir, () => ({ maxValueBytes: 65_536, maxKeyLength: 256, maxEntriesPerNamespace: 1_000, maxEntriesPerDevice: 5_000 }))
-  const broadcasts: Harness['broadcasts'] = []
   const logs = createPluginLogStore({
     dataDir,
     store: kv,
-    broadcast: (plugin, line) => broadcasts.push({ plugin, line: { seq: line.seq, msg: line.msg, subject: line.subject } }),
     log: quietLog(),
     ...(opts?.rotateBytes !== undefined ? { rotateBytes: opts.rotateBytes } : {}),
     ...(opts?.ringLines !== undefined ? { ringLines: opts.ringLines } : {}),
@@ -63,7 +60,7 @@ function setUp(opts?: { rotateBytes?: number; ringLines?: number; writeFiles?: b
     opened.sqlite.close()
     rmSync(dataDir, { recursive: true, force: true })
   })
-  return { logs, kv, dataDir, broadcasts }
+  return { logs, kv, dataDir }
 }
 
 afterEach(() => {
@@ -338,55 +335,13 @@ describe('the file, and how a reader learns something was dropped', () => {
     // nothing beyond that — the oldest is deleted rather than accumulated.
     expect(existsSync(`${base}.${PLUGIN_LOG_KEEP_FILES + 1}`)).toBe(false)
 
-    // How a reader learns. The banner is a real log line, so it is in the ring,
-    // on the broadcast, and at the head of the new file — three places a reader
-    // might be looking, rather than a silent `renameSync`.
+    // How a reader learns. The banner is a real log line, so it is in the ring
+    // and at the head of the new file.
     const banner = h.logs.page('demo').lines.filter((l) => l.msg.includes('log rotated'))
     expect(banner.length).toBeGreaterThan(0)
     expect(banner[0]!.level).toBe('warn')
     expect(banner[0]!.msg).toContain('has been deleted')
-    expect(h.broadcasts.some((b) => b.line.msg.includes('log rotated'))).toBe(true)
     expect(readFileSync(base, 'utf8')).toContain('log rotated')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// The broadcast
-// ---------------------------------------------------------------------------
-
-describe('`plugin.log` — the live half', () => {
-  test('every line is broadcast, already redacted, and parses as a ServerMessage', () => {
-    const h = setUp({ writeFiles: false })
-    const secret = 'broadcast-secret-value-42'
-    h.kv.set({ kind: 'global' }, 'demo', 'k', secret, { secret: true })
-    h.logs.append('demo', 'info', `leaking ${secret}`, { subject: 'proxy:a' })
-
-    expect(h.broadcasts).toHaveLength(1)
-    expect(h.broadcasts[0]!.plugin).toBe('demo')
-    // The broadcast carries the SAME line the ring holds — redaction happens
-    // once, before either sees it, so a live reader and a page reader can never
-    // disagree about what was logged.
-    expect(h.broadcasts[0]!.line.msg).not.toContain(secret)
-    expect(h.broadcasts[0]!.line.subject).toBe('proxy:a')
-    expect(h.broadcasts[0]!.line.seq).toBe(h.logs.page('demo').lines[0]!.seq)
-
-    const parsed = ServerMessageSchema.safeParse({
-      type: 'plugin.log',
-      payload: { plugin: 'demo', ...h.logs.page('demo').lines[0]! },
-    })
-    expect(parsed.success).toBe(true)
-  })
-
-  test('`plugin.log` is a real broadcast type AND is refused as a plugin subscription', () => {
-    // Control 1 — the thing is real: adding the message widened the farm's own
-    // vocabulary, which is exactly why the refusal below has to exist.
-    expect(SERVER_MESSAGE_TYPES).toContain('plugin.log')
-    // The absence: a plugin cannot subscribe to its own log, because a handler
-    // that logs would be fed its own output forever with nothing failing.
-    expect(refusedPluginEventTypesMessage(['plugin.log'])).toContain('fed its own output back forever')
-    // Control 2 — the check is narrow. An ordinary event is not refused, so the
-    // denylist is not "refuse everything".
-    expect(refusedPluginEventTypesMessage(['device.status', 'job.status'])).toBeNull()
   })
 })
 

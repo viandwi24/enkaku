@@ -17,7 +17,7 @@ describe('classifyFailure — the infra table (plan 36 §3.2, §4.1)', () => {
     'port_range_exhausted',
     'CHILD_CRASHED',
     'DEVICE_DISCONNECTED',
-    'LEASE_FORCE_RELEASED',
+    'HEARTBEAT_EXPIRED',
     'SESSION_ACQUIRE_FAILED',
   ]
 

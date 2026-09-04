@@ -193,8 +193,8 @@ export function BackupUpstreamsEditor({ value, onChange, failover, onFailoverCha
       </div>
       {/* No upper bound on the input (plan 121 §9 Q2 — the owner runs a
           large, varied fleet and a blanket ceiling would be guessing at a
-          number nobody asked for). `min={1}` is the schema's own floor
-          (`ProxyFailoverSchema.failureThreshold`), not an added opinion. */}
+          number nobody asked for). `min={1}` mirrors `readProxyRecord`'s own
+          floor for `failover.failureThreshold`, not an added opinion. */}
       <p className="text-[11.5px] leading-relaxed text-fg-muted">
         Consecutive dial failures against whichever upstream is active before a confirmation probe runs and, if it also fails, a switch happens.
       </p>

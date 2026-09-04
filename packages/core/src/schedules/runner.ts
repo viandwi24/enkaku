@@ -15,11 +15,12 @@ import {
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import { stopBatch } from '../api/batches'
-import { createBatch, type BatchDispatchDeps } from '../clusters/dispatch'
-import { resolveCluster, resolveTarget } from '../clusters/resolve'
+import { addRunsToBatch, createBatch, type BatchDispatchDeps } from '../groups/dispatch'
+import { resolveGroup, resolveTarget } from '../groups/resolve'
 import type { Db } from '../db'
-import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
+import { batches, groups, jobs, schedules, scheduleAgentTargets, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
 import type { JobStore } from '../queue/job-store'
+import type { RunStore } from '../jobs/runs/store'
 import type { Scheduler } from '../queue/scheduler'
 import { resolveScriptRef } from '../scripts/resolve'
 import type { ScriptRegistry } from '../scripts/registry'
@@ -78,6 +79,7 @@ export interface ScheduleRunner {
 export interface ScheduleRunnerDeps {
   db: Db
   jobStore: JobStore
+  runs: RunStore
   scheduler: Scheduler
   audit: AuditLogger
   log: Logger
@@ -146,16 +148,29 @@ export function pickJitterMs(jitterSec: number, random: () => number = Math.rand
   return Math.floor(random() * (jitterSec * 1000 + 1))
 }
 
-/** Exactly one of clusterId / deviceIds is populated on a schedule row (plan 21 §9 open question #3). */
-export function scheduleTarget(schedule: ScheduleRow): { clusterId: string } | { deviceIds: string[] } {
-  if (schedule.clusterId) return { clusterId: schedule.clusterId }
+/** Exactly one of groupId / deviceIds is populated on a schedule row (plan 21 §9 open question #3). */
+export function scheduleTarget(schedule: ScheduleRow): { groupId: string } | { deviceIds: string[] } {
+  if (schedule.groupId) return { groupId: schedule.groupId }
   return { deviceIds: (schedule.deviceIds as string[] | null) ?? [] }
 }
 
-function isBatchActive(db: Db, batchId: string | null): boolean {
+const NON_TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(['queued', 'running'])
+
+/**
+ * Overlap is "any member job's latest run is non-terminal" (plan 211 §3.2
+ * decision 4), replacing `isBatchActive`'s old batch-status check — a
+ * schedule's batch has no terminal status of its own any more once it is
+ * reused across fires; only its members' latest runs say whether it is live.
+ */
+function isBatchActive(deps: { db: Db; runs: RunStore }, batchId: string | null): boolean {
   if (!batchId) return false
-  const row = db.select().from(batches).where(eq(batches.id, batchId)).get()
-  return row ? row.status === 'queued' || row.status === 'running' : false
+  const memberJobs = deps.db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()
+  if (memberJobs.length === 0) return false
+  const latestRuns = deps.runs.latestRuns(memberJobs.map((j) => j.id))
+  for (const run of latestRuns.values()) {
+    if (NON_TERMINAL_RUN_STATUSES.has(run.status)) return true
+  }
+  return false
 }
 
 /**
@@ -174,54 +189,40 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
   // Plan 68 §4.2 — branch once, at the very top, on whether an AGENT target exists for this
   // schedule. Presence of a `scheduleAgentTargets` row IS the discriminator (see that table's own
   // doc comment in `db/schema.ts` for why a companion table, not a column on `schedules` itself).
-  // Every pre-plan-68 schedule has no such row, so it falls straight through to the script branch
-  // below, byte-for-byte unchanged from plan 62.
   const agentTarget = deps.db.select().from(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, schedule.id)).get()
   if (agentTarget) {
     return fireAgentOnce(deps, schedule, agentTarget, dueAt, missedCount)
   }
 
-  const active = isBatchActive(deps.db, schedule.lastBatchId)
+  const active = isBatchActive(deps, schedule.batchId)
 
   // Claim this fire time first — see the doc comment above.
   deps.db.update(schedules).set({ lastFiredAt: dueAt }).where(eq(schedules.id, schedule.id)).run()
 
   let outcome: ScheduleRunOutcome
-  let batchId: string | null = null
+  let batchId: string | null = schedule.batchId
   let detail: string | null = null
-  // Plan 94 §3.7, F28 — the value `pickJitterMs` actually draws, materialised
-  // on `schedule_runs.jitterMs` below instead of thrown away. `0` here (a
-  // `skipped-overlap` fire never reaches the draw at all) is indistinguishable
-  // from "no jitter configured," which is correct: neither attributes any
-  // delay to jitter.
-  let jitterMs = 0
+  let runIds: string[] = []
 
   if (active && schedule.onOverlap === 'skip') {
     outcome = 'skipped-overlap'
-    detail = `the previous batch (${schedule.lastBatchId}) has not finished`
+    detail = `the previous batch (${schedule.batchId}) has not finished`
   } else {
-    if (active && schedule.onOverlap === 'cancel-previous' && schedule.lastBatchId) {
+    if (active && schedule.onOverlap === 'cancel-previous' && schedule.batchId) {
       // Plan 94 §3.9, §4.9, step 94.8 — routed through the SAME stop `POST
-      // /api/batches/:id/stop` uses (no second implementation): before this,
-      // `cancelQueuedInBatch` alone left a `running` member going, and for a
-      // PACED batch also left the pacer planning further repetitions — a
-      // schedule set to `cancel-previous` would accumulate running work
-      // forever instead of ever actually stopping the previous run. No
-      // `actor` (no interactive caller at cron time — the same reasoning
-      // `assertDeviceAllowedFor` in `api/batches.ts` already states for this
-      // exact call site): every member is stoppable, matching this route's
-      // existing farm-wide authority to fire a schedule at all.
-      const stopped = stopBatch(deps, schedule.lastBatchId, null)
+      // /api/batches/:id/stop` uses (no second implementation).
+      const stopped = stopBatch(deps, schedule.batchId, null)
       detail = `stopped the previous run before starting — ${stopped.cancelled} queued, ${stopped.aborted} running`
     }
 
     // Resolved once, at dispatch — shifts the batch creation time, never the
     // cron evaluation, so the schedule itself does not drift (plan 21 §3.6).
-    jitterMs = pickJitterMs(schedule.jitterSec, deps.random)
+    const jitterMs = pickJitterMs(schedule.jitterSec, deps.random)
     if (jitterMs > 0) await deps.sleep(jitterMs)
 
     const batchDeps: BatchDispatchDeps = {
       db: deps.db,
+      runs: deps.runs,
       scheduler: deps.scheduler,
       audit: deps.audit,
       onJobStatus: deps.onJobStatus,
@@ -232,26 +233,13 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
       // Resolved once, at the moment of dispatch — never per job (plan 62
       // §3.4): a batch of twenty devices from one firing must run exactly
       // one version, even if a publish lands mid-dispatch. `@latest` is
-      // recomputed on EVERY firing, which is the whole point of writing
-      // `checkout@latest` on a schedule instead of a concrete version.
+      // recomputed on EVERY firing.
       const parsedRef = ScriptRefSchema.safeParse(schedule.scriptRef)
       if (!parsedRef.success) {
         throw new EnkakuError('script_ref_unresolved', `"${schedule.scriptRef}" is not a valid script reference`)
       }
       const resolved = deps.registry ? deps.registry.resolve(parsedRef.data) : resolveScriptRef(deps.db, parsedRef.data)
 
-      // Reconciled against the RESOLVED version's schema (plan 95 §4.4, §5
-      // step 95.7) — the same discipline plan 62 §4.5 already applies to an
-      // unresolvable reference: a contract change (a field tightened, a
-      // required field added with no default) must stop an unattended
-      // firing rather than run a half-understood configuration. Blocking
-      // findings (`missing`/`invalid`) refuse the fire outright, below.
-      // `reconciliation.value` — not the raw `schedule.params` — is what
-      // actually gets dispatched further down: a NON-blocking finding (a
-      // field reset to its new default, a stale field the schema no longer
-      // declares dropped) must take effect, or the raw stored value would
-      // still fail `createBatch`'s own param validation for the exact field
-      // reconciliation just silently repaired.
       const reconciliation = reconcileParams(resolved.paramsSchema as JsonSchemaNode | null, schedule.params)
       if (reconciliation.blocking) {
         const blocking = reconciliation.findings.filter((f) => f.kind === 'invalid' || f.kind === 'missing')
@@ -263,42 +251,84 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
         )
       }
 
-      // The queue timeout lives on the job, set from whatever created it
+      // The queue timeout lives on the run, set from whatever created it
       // (plan 21 §3.3) — a schedule is simply the first caller to set it.
       const expiresAt =
         schedule.queueTimeoutSec != null ? Math.floor(deps.clock().getTime() / 1000) + schedule.queueTimeoutSec : null
-      const { batch } = createBatch(batchDeps, {
-        scriptId: resolved.id,
-        params: reconciliation.value,
-        target: scheduleTarget(schedule),
-        concurrency: schedule.concurrency,
-        order: schedule.order as BatchOrder,
-        priority: schedule.priority,
-        createdBy: schedule.createdBy,
-        expiresAt,
-        // Plan 94 §3.7, §4.8, step 94.9, F34 — passed through exactly like
-        // concurrency/order/priority above, the same seam a hand-started
-        // paced batch uses (`POST /api/batches`'s own `pacing` block). A
-        // schedule with `repeatCount: 1` and every interval `0` (the
-        // default) writes the on-the-wire equivalent of an unpaced batch;
-        // `createBatch` itself is what makes that a no-op, not this call.
-        pacing: {
-          count: schedule.repeatCount,
-          intervalMs: [schedule.intervalMinMs, schedule.intervalMaxMs],
-          deviceIntervalMs: schedule.deviceIntervalMs,
-        },
-      })
-      batchId = batch.id
+
+      if (!batchId) {
+        // First fire (plan 211 §3.2 decision 4): the schedule owns a NEW
+        // batch whose member jobs are one per target device.
+        const { batch, jobs: memberJobs } = createBatch(batchDeps, {
+          scriptId: resolved.id,
+          params: reconciliation.value,
+          target: scheduleTarget(schedule),
+          concurrency: schedule.concurrency,
+          order: schedule.order as BatchOrder,
+          priority: schedule.priority,
+          createdBy: schedule.createdBy,
+          expiresAt,
+          pacing: {
+            count: schedule.repeatCount,
+            intervalMs: [schedule.intervalMinMs, schedule.intervalMaxMs],
+            deviceIntervalMs: schedule.deviceIntervalMs,
+          },
+          // G10's own parameter ("every run trigger = 'schedule'") and
+          // `GET /api/schedules/:id/jobs` both need this stamped from the
+          // FIRST fire, not only from a later one that goes through
+          // `addRunsToBatch` below.
+          scheduleId: schedule.id,
+          trigger: 'schedule',
+        })
+        batchId = batch.id
+        // Every member job's own first run was created by `createBatch` —
+        // those ARE this fire's runs.
+        runIds = memberJobs.map((j) => j.latestRunId).filter((id): id is string => id !== null)
+      } else {
+        // A later fire (plan 211 §3.2 decision 4): reuse the batch. A device
+        // newly in the target that has no member job yet gets one; a
+        // device that left the target keeps its existing job untouched.
+        const deviceIds = resolveScheduleDeviceIds(deps.db, schedule)
+        const existingMembers = deps.db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()
+        const byDevice = new Map(existingMembers.map((j) => [j.deviceId, j]))
+        const nextSeqBase = existingMembers.length
+        const jobIdsToRun: string[] = []
+        let created = 0
+        for (const deviceId of deviceIds) {
+          const existing = byDevice.get(deviceId)
+          if (existing) {
+            jobIdsToRun.push(existing.id)
+            continue
+          }
+          const newJob = deps.runs.createJob({
+            kind: 'script',
+            scriptId: resolved.id,
+            deviceId,
+            params: reconciliation.value,
+            scriptName: resolved.name,
+            scriptVersion: resolved.version,
+            batchId,
+            batchSeq: nextSeqBase + created,
+            scheduleId: schedule.id,
+            createdBy: schedule.createdBy,
+          })
+          created += 1
+          jobIdsToRun.push(newJob.id)
+        }
+        const { runIds: addedRunIds } = addRunsToBatch(batchDeps, batchId, {
+          jobIds: jobIdsToRun,
+          trigger: 'schedule',
+          priority: schedule.priority,
+          expiresAt,
+        })
+        runIds = addedRunIds
+      }
       outcome = 'dispatched'
     } catch (err) {
       const code = err instanceof EnkakuError ? err.code : null
       outcome = code === 'E_NO_TARGETS' ? 'no-targets' : 'error'
       detail = err instanceof EnkakuError ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err)
       deps.log.warn(`schedule ${schedule.id} (${schedule.name}) did not dispatch: ${detail}`)
-      // A reference that cannot resolve (plan 62 §4.5, acceptance #12) — and
-      // any other coded dispatch failure — gets its own audit trail entry
-      // naming the code, distinct from the routine "no usable devices right
-      // now" case (E_NO_TARGETS), which is not a schedule malfunction.
       if (code && code !== 'E_NO_TARGETS') {
         deps.audit.record({
           userId: schedule.createdBy,
@@ -310,36 +340,24 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
     }
   }
 
-  const firedAt = deps.clock()
   deps.db
-    .insert(scheduleRuns)
-    .values({
-      id: crypto.randomUUID(),
-      scheduleId: schedule.id,
-      dueAt,
-      firedAt,
-      outcome,
-      batchId,
-      detail,
-      missedCount,
-      jitterMs,
-    })
+    .update(schedules)
+    .set({ lastFireOutcome: outcome, lastFireDetail: detail, ...(batchId ? { batchId } : {}) })
+    .where(eq(schedules.id, schedule.id))
     .run()
-
-  if (batchId) deps.db.update(schedules).set({ lastBatchId: batchId }).where(eq(schedules.id, schedule.id)).run()
 
   deps.broadcastFired({
     type: 'schedule.fired',
-    payload: { scheduleId: schedule.id, outcome, batchId, dueAt: Math.floor(dueAt.getTime() / 1000) },
+    payload: { scheduleId: schedule.id, outcome, batchId, dueAt: Math.floor(dueAt.getTime() / 1000), runIds },
   })
 }
 
 /**
- * Resolves a schedule's device target (cluster or explicit list) to a
+ * Resolves a schedule's device target (group or explicit list) to a
  * concrete, USABLE device id list (plan 68 §3.1: "a schedule with an agent
  * target and a device list passes those devices to the run as its device
  * narrowing"). Reuses the exact resolvers `createBatch` itself calls
- * (`clusters/resolve.ts`) — no second resolution logic. Throws
+ * (`groups/resolve.ts`) — no second resolution logic. Throws
  * `E_NO_TARGETS` on zero usable devices, the SAME coded error the script
  * branch's `createBatch` throws for the same condition, so both branches'
  * `catch` blocks map it to the `no-targets` outcome identically.
@@ -347,11 +365,11 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
 function resolveScheduleDeviceIds(db: Db, schedule: ScheduleRow): string[] {
   const target = scheduleTarget(schedule)
   const resolved =
-    'clusterId' in target
+    'groupId' in target
       ? (() => {
-          const cluster = db.select().from(clusters).where(eq(clusters.id, target.clusterId)).get()
-          if (!cluster) throw new EnkakuError('cluster_not_found', `no such cluster: ${target.clusterId}`)
-          return resolveCluster(db, cluster)
+          const group = db.select().from(groups).where(eq(groups.id, target.groupId)).get()
+          if (!group) throw new EnkakuError('group_not_found', `no such group: ${target.groupId}`)
+          return resolveGroup(db, group)
         })()
       : resolveTarget(db, { tags: [], deviceIds: target.deviceIds })
   if (resolved.usable.length === 0) {
@@ -473,25 +491,12 @@ async function fireAgentOnce(deps: ResolvedDeps, schedule: ScheduleRow, target: 
     }
   }
 
-  const firedAt = deps.clock()
-  deps.db
-    .insert(scheduleRuns)
-    .values({
-      id: crypto.randomUUID(),
-      scheduleId: schedule.id,
-      dueAt,
-      firedAt,
-      outcome,
-      batchId: null,
-      detail,
-      missedCount,
-      jitterMs,
-    })
-    .run()
+  void missedCount
+  deps.db.update(schedules).set({ lastFireOutcome: outcome, lastFireDetail: detail }).where(eq(schedules.id, schedule.id)).run()
 
   deps.broadcastFired({
     type: 'schedule.fired',
-    payload: { scheduleId: schedule.id, outcome, batchId: null, dueAt: Math.floor(dueAt.getTime() / 1000) },
+    payload: { scheduleId: schedule.id, outcome, batchId: null, dueAt: Math.floor(dueAt.getTime() / 1000), runIds: [] },
   })
 }
 
@@ -522,23 +527,15 @@ export async function runStartupCatchUp(rawDeps: ScheduleRunnerDeps): Promise<vo
     }
 
     // 'skip' (default) — record the misses, run nothing (plan 21 §3.4).
+    const detail = `${missed.value} fire(s) missed while the core was stopped`
     deps.db
-      .insert(scheduleRuns)
-      .values({
-        id: crypto.randomUUID(),
-        scheduleId: schedule.id,
-        dueAt: now,
-        firedAt: now,
-        outcome: 'skipped-missed',
-        batchId: null,
-        detail: `${missed.value} fire(s) missed while the core was stopped`,
-        missedCount: missed.value,
-      })
+      .update(schedules)
+      .set({ lastFiredAt: now, lastFireOutcome: 'skipped-missed', lastFireDetail: detail })
+      .where(eq(schedules.id, schedule.id))
       .run()
-    deps.db.update(schedules).set({ lastFiredAt: now }).where(eq(schedules.id, schedule.id)).run()
     deps.broadcastFired({
       type: 'schedule.fired',
-      payload: { scheduleId: schedule.id, outcome: 'skipped-missed', batchId: null, dueAt: Math.floor(now.getTime() / 1000) },
+      payload: { scheduleId: schedule.id, outcome: 'skipped-missed', batchId: null, dueAt: Math.floor(now.getTime() / 1000), runIds: [] },
     })
   }
 }

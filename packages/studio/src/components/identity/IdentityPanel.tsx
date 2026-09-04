@@ -28,7 +28,7 @@ export function IdentityPanel({
   canUse,
 }: {
   deviceId: string
-  /** Same server-authoritative gate every other mutating control on this page uses — the server checks the held lease itself on every request regardless. */
+  /** Same server-authoritative gate every other mutating control on this page uses — the server checks the control activity itself on every request regardless. */
   canUse: boolean
 }) {
   const [identity, setIdentity] = useState<DeviceIdentity | null>(null)

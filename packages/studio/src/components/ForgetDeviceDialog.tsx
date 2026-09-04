@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { DeviceHistoryCountsResponseSchema, type DeviceInfo } from '@enkaku/protocol'
-import { z } from 'zod'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, Switch, api, formatDeviceName, type ApiError } from '@enkaku/ui'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Button, Switch, api, formatDeviceName } from '@enkaku/ui'
 import { toast } from 'sonner'
+import { ActionRefusedError, runOnDevice } from '@/lib/actions'
 
 interface HistoryCounts {
   jobs: number
@@ -12,19 +12,15 @@ interface HistoryCounts {
   events: number
 }
 
-function isApiError(err: unknown): err is Error & ApiError {
-  return err instanceof Error && 'code' in err
-}
-
 /**
  * Forget a device (plan 47 §3.2, §4.5): states plainly what is removed (the
- * row, its tags, its cluster membership) and what is kept (jobs, artifacts,
+ * row, its tags, its group membership) and what is kept (jobs, artifacts,
  * events — unless "also delete history" is ticked, which shows the exact
  * counts before its own confirm enables, per §3.4).
  *
- * A refusal (§3.5 — busy, an active manual lease, still connected) shows the
- * server's own reason rather than a generic failure, and for the "still
- * connected" case offers Block instead in the same dialog, since that
+ * A refusal (§3.5 — busy, an active manual control marker, still connected)
+ * shows the server's own reason rather than a generic failure, and for the
+ * "still connected" case offers Block instead in the same dialog, since that
  * refusal IS the intended next step, not a dead end.
  */
 export function ForgetDeviceDialog({
@@ -39,7 +35,7 @@ export function ForgetDeviceDialog({
   onOpenChange: (open: boolean) => void
   /** Called after a successful Forget OR Block — either way the device just left the fleet. */
   onDone: () => void
-  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path; see `AssistDialog`'s own doc comment on the same prop for why. */
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path: when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
   const [deleteHistory, setDeleteHistory] = useState(false)
@@ -85,16 +81,14 @@ export function ForgetDeviceDialog({
     setRefusal(null)
     setBusy(true)
     try {
-      // `DELETE /:id` returns `{ forgotten: {...} }` (`packages/core/src/api/devices.ts`) — no
-      // envelope for that exists in `@enkaku/protocol` yet, and this call site never reads the
-      // body (only success/failure matters here), so a permissive ad-hoc "some object came back"
-      // schema rather than a new export for a value nothing reads.
-      await api(`/api/devices/${device.id}?deleteHistory=${deleteHistory}`, z.object({}).passthrough(), { method: 'DELETE' })
+      // `forget` (plan 207 §4.2) — this call site never reads `detail` (only
+      // success/failure matters here).
+      await runOnDevice('forget', device.id, { deleteHistory })
       toast.success(`${name} forgotten`)
       onOpenChange(false)
       onDone()
     } catch (err) {
-      if (isApiError(err)) {
+      if (err instanceof ActionRefusedError) {
         setRefusal({ code: err.code, message: err.message })
       } else {
         toast.error('Could not forget the device', { description: err instanceof Error ? err.message : String(err) })
@@ -107,8 +101,8 @@ export function ForgetDeviceDialog({
   const blockInstead = async () => {
     setBusy(true)
     try {
-      // Same reasoning as the DELETE above: `POST /:id/block` returns `{ blocked: {...} }`, unread here.
-      await api(`/api/devices/${device.id}/block`, z.object({}).passthrough(), { method: 'POST', json: {} })
+      // `block` (plan 207 §4.2) — `detail` is unread here, same as `forget` above.
+      await runOnDevice('block', device.id, {})
       toast.success(`${name} blocked`)
       onOpenChange(false)
       onDone()
@@ -125,7 +119,7 @@ export function ForgetDeviceDialog({
         <DialogHeader>
           <DialogTitle>Forget {name}?</DialogTitle>
           <DialogDescription>
-            Removes it from the fleet: the device row, its tags, and its cluster membership. Its jobs, artifacts, and
+            Removes it from the fleet: the device row, its tags, and its group membership. Its jobs, artifacts, and
             events are kept — they still show up wherever they already do, labelled as a deleted device.
           </DialogDescription>
         </DialogHeader>

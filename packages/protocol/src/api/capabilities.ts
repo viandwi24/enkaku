@@ -1,5 +1,18 @@
 import { z } from 'zod'
 import { JsonSchemaNodeSchema } from './json-schema'
+import { ActivityKindSchema } from '../activity'
+
+/**
+ * What a capability does to a device (MVP 04 §1.4, plan 205 §4.4). Absent:
+ * the capability never touches a device. `kind: 'read'`: the device must be
+ * online, nothing is started and the policy is not consulted. Any other
+ * kind is evaluated against the device's live activities before the handler
+ * runs; `control` also refreshes the caller's control marker.
+ */
+export const CapabilityActivitySchema = z.object({
+  kind: z.enum([...ActivityKindSchema.options, 'read']),
+  exclusiveWith: z.array(ActivityKindSchema).optional(),
+})
 
 /**
  * `GET /api/v1/cap` (plan 63 §3.6) — the registry filtered to what the
@@ -16,7 +29,7 @@ export const CapabilityDescriptorSchema = z.object({
   input: JsonSchemaNodeSchema,
   output: JsonSchemaNodeSchema,
   permission: z.string(),
-  lease: z.enum(['none', 'device', 'control']),
+  activity: CapabilityActivitySchema.nullable(),
   deadline: z.number(),
   effect: z.enum(['read', 'write', 'destructive']),
 })

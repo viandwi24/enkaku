@@ -80,6 +80,42 @@ describe('createInspectorForSession — plan 41 artifact verification wiring (§
     expect(dumpsysCalls).toBe(2) // one verify, one re-verify after the repair attempt — not a loop
   })
 
+  test('the instrumentation stream is pinned with both clocks off (plan 208 §3.6, §4.9)', async () => {
+    const transport = fakeTransport(async (cmd) => {
+      if (cmd.startsWith('dumpsys package')) return dumpsysOutput(2003003) // matches the expectation → ensureInstalled succeeds
+      return '' // `pm list packages` — empty reads as "unreadable", which skips the test-package check rather than failing it
+    })
+    let capturedOpts: AdbStreamOptions | null = null
+    const deps: InspectorFactoryDeps = {
+      toolchain: fakeToolchain({ packageName: PKG, versionCode: 2003003 }),
+      ports: new PortAllocator({ rangeStart: 27100, rangeEnd: 27110 }),
+      log: nullLogger,
+      hostAdb: async () => '',
+      forward: async () => {},
+      listForward: async () => [{ serial: transport.serial, local: 'tcp:27100', remote: 'tcp:9008' }],
+      killForward: async () => {},
+      execStream: async (_serial, _cmd, opts) => {
+        capturedOpts = opts
+        // Reject the start fast, without a real TCP server, by pushing a
+        // fatal line through onData — the same trick plan 208 §5 step 208.7
+        // uses to reach the fallback path deterministically.
+        queueMicrotask(() =>
+          opts.onData(new TextEncoder().encode('INSTRUMENTATION_STATUS: stack=java.lang.ClassNotFoundException: x\n')),
+        )
+        return { pid: null, stop: async () => {} }
+      },
+    }
+
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-server' })
+
+    expect(handle.engineId).toBe('uiautomator-dump') // the fatal line above failed the ui-server start
+    expect(capturedOpts).not.toBeNull()
+    expect(capturedOpts!.pinned).toBe(true)
+    expect(capturedOpts!.idleTimeoutMs).toBe(0)
+    expect(capturedOpts!.absoluteTimeoutMs).toBe(0)
+    expect(typeof capturedOpts!.onData).toBe('function')
+  })
+
   // A "no expectation → starts cleanly" case is intentionally NOT exercised
   // here: past `ensureInstalled()`, `UiServerInspector.start()`'s watchdog
   // waits for a real ping over the forwarded port, which needs an actual

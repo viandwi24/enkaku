@@ -31,10 +31,9 @@ export const RetentionConfigSchema = z.object({
   sweepIntervalMinutes: z.number().int().min(1).default(60),
 })
 
-export const LeaseConfigSchema = z.object({
+export const HeartbeatConfigSchema = z.object({
   jobTtlSec: z.number().int().min(10).default(60),
   heartbeatMs: z.number().int().min(1000).default(15_000),
-  manualIdleTimeoutSec: z.number().int().min(10).default(300),
   reaperIntervalMs: z.number().int().min(500).default(5000),
 })
 
@@ -46,7 +45,7 @@ export const EnkakuConfigSchema = z.object({
   auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
   tls: TlsConfigSchema.default(() => TlsConfigSchema.parse({})),
   retention: RetentionConfigSchema.default(() => RetentionConfigSchema.parse({})),
-  lease: LeaseConfigSchema.default(() => LeaseConfigSchema.parse({})),
+  heartbeat: HeartbeatConfigSchema.default(() => HeartbeatConfigSchema.parse({})),
   scheduler: z
     .object({ fallbackIntervalMs: z.number().int().min(200).default(2000) })
     .default(() => ({ fallbackIntervalMs: 2000 })),
@@ -127,12 +126,11 @@ export function loadConfig(): CoreConfig {
       ...(process.env.ENKAKU_TLS_CERT ? { certPath: process.env.ENKAKU_TLS_CERT } : {}),
       ...(process.env.ENKAKU_TLS_KEY ? { keyPath: process.env.ENKAKU_TLS_KEY } : {}),
     },
-    lease: {
-      ...((fileConfig.lease as object) ?? {}),
-      jobTtlSec: intEnv('ENKAKU_LEASE_JOB_TTL', 60),
-      heartbeatMs: intEnv('ENKAKU_LEASE_HEARTBEAT_MS', 15_000),
-      manualIdleTimeoutSec: intEnv('ENKAKU_LEASE_MANUAL_IDLE_TIMEOUT', 300),
-      reaperIntervalMs: intEnv('ENKAKU_LEASE_REAPER_MS', 5000),
+    heartbeat: {
+      ...((fileConfig.heartbeat as object) ?? {}),
+      jobTtlSec: intEnv('ENKAKU_JOB_HEARTBEAT_TTL', 60),
+      heartbeatMs: intEnv('ENKAKU_JOB_HEARTBEAT_MS', 15_000),
+      reaperIntervalMs: intEnv('ENKAKU_JOB_REAPER_MS', 5000),
     },
     scheduler: { fallbackIntervalMs: intEnv('ENKAKU_SCHEDULER_INTERVAL_MS', 2000) },
   }

@@ -14,7 +14,6 @@ import type {
   DbInspectResult,
   DoctorContext,
   HostAdbCoreStats,
-  InputStatsProbe,
   PortHolder,
   StreamsStatus,
 } from './types'
@@ -253,20 +252,6 @@ const AdbStatsProbeSchema = z.object({
       restartAdvised: z.boolean(),
     })
     .optional(),
-  /** Plan 91 §4.10, §5 step 91.10 — same "hand-rolled, fully optional" reasoning as `streams`/`hostAdb`/`adbHealth` above: an older core simply omits this block. */
-  input: z
-    .object({
-      lanes: z.record(z.string(), z.object({ depth: z.number(), waitMsP50: z.number(), waitMsP95: z.number(), refusals: z.number() })),
-      assistsActive: z.number(),
-      mirrorGroups: z.number(),
-      mirrorMembers: z.number(),
-      mirrorFanoutMsP50: z.number(),
-      mirrorFanoutMsP95: z.number(),
-      queueWaitMs: z.number(),
-      uncollectedGrants: z.number(),
-      orphanedMirrorGroups: z.number(),
-    })
-    .optional(),
 })
 
 /** Fetches `/api/adb/stats` once and returns every block this file cares about — `null` on any failure (unreachable core, bad JSON, schema mismatch), same "a diagnostic never throws" rule as every other probe in this file. */
@@ -277,21 +262,19 @@ async function probeAdbStats(
   streams: StreamsStatus | null
   hostAdb: HostAdbCoreStats | null
   adbHealth: AdbServerHealthProbe | null
-  input: InputStatsProbe | null
 }> {
   try {
     const res = await fetch(`http://${host}:${port}/api/adb/stats`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
-    if (!res.ok) return { streams: null, hostAdb: null, adbHealth: null, input: null }
+    if (!res.ok) return { streams: null, hostAdb: null, adbHealth: null }
     const parsed = AdbStatsProbeSchema.safeParse(await res.json())
-    if (!parsed.success) return { streams: null, hostAdb: null, adbHealth: null, input: null }
+    if (!parsed.success) return { streams: null, hostAdb: null, adbHealth: null }
     return {
       streams: parsed.data.streams ?? null,
       hostAdb: parsed.data.hostAdb ?? null,
       adbHealth: parsed.data.adbHealth ?? null,
-      input: parsed.data.input ?? null,
     }
   } catch {
-    return { streams: null, hostAdb: null, adbHealth: null, input: null }
+    return { streams: null, hostAdb: null, adbHealth: null }
   }
 }
 
@@ -487,6 +470,5 @@ export async function createRealDoctorContext(dataDir: string): Promise<DoctorCo
       probeCoreStats: async () => (await probeAdbStats(host, port)).hostAdb,
     },
     adbHealth: { probe: async () => (await probeAdbStats(host, port)).adbHealth },
-    coControl: { probe: async () => (await probeAdbStats(host, port)).input },
   }
 }

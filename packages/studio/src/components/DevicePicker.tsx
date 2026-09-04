@@ -1,21 +1,21 @@
 'use client'
 
-import type { DeviceInfo } from '@enkaku/protocol'
+import type { DeviceInfo, DeviceStatus } from '@enkaku/protocol'
 import { DevicePicker as BaseDevicePicker, type DevicePickerSlots } from '@enkaku/ui'
 import { DeviceStatusBadge } from '@/components/StatusBadge'
-import { HolderBadge } from '@/components/HolderBadge'
-import { UNAVAILABLE_REASON } from '@/components/device-popup/ControlState'
+import { ActivityBadge } from '@/components/ActivityBadge'
 
 /**
- * Why a device cannot take control or a job right now (plan 19 §4.4) — the
- * text itself now lives in `./device-popup/ControlState.tsx` (plan 105 §5
- * step 105.1's own `free` state reads it too, for the identical reason: one
- * place, not three drifting apart the way each screen's own copy used to).
- * Re-exported here because `DeviceHeader.tsx`/`app/device/page.tsx` already
- * import it from this module, and moving THEIR import instead of leaving one
- * re-export would touch two more files for no behavioural change.
+ * Why a device cannot take a job right now (plan 19 §4.4; plan 205 §4.9 —
+ * `DeviceStatus` shrank to `offline`/`online`/`quarantined`, so a device with
+ * a live job is still `online` and still pickable — a job just queues behind
+ * it (plan 71 §3.7) — and there is nothing left in this table for `online`
+ * at all).
  */
-export { UNAVAILABLE_REASON }
+export const UNAVAILABLE_REASON: Partial<Record<DeviceStatus, string>> = {
+  offline: 'The device is not connected to this farm',
+  quarantined: 'The device was pulled from the queue — return it from the Devices page first',
+}
 
 /**
  * Studio's device picker — the shared one from `@enkaku/ui`, plus the three
@@ -31,31 +31,15 @@ export { UNAVAILABLE_REASON }
  * closes that gap without splitting the picker in two.
  *
  * What is injected, and why it could not simply travel with the component:
- * `HolderBadge` reaches `next/link` and `AgentAvatar`, neither of which
- * belongs in a framework-agnostic UI package. `DeviceStatusBadge` and
+ * `ActivityBadge` reaches `next/link`, which does not belong in a
+ * framework-agnostic UI package. `DeviceStatusBadge` and
  * `UNAVAILABLE_REASON` are cheaper, but they are Studio's vocabulary for
  * Studio's screens; a plugin has no use for them and should not inherit
  * them by accident.
  */
 const SLOTS: DevicePickerSlots<DeviceInfo> = {
   renderStatus: (d: DeviceInfo) => <DeviceStatusBadge status={d.status} />,
-  renderHolders: (d: DeviceInfo) => (
-    <>
-      {/* A `manual`/`busy` device is still pickable — a job just waits for it
-          to go quiet (plan 71 §3.7) — so who holds it now is worth showing
-          here rather than only a status word. */}
-      {d.heldBy && <HolderBadge holder={d.heldBy} />}
-      {/* Who is ASSISTING this device (plan 91 §3.4 item 4, §4.4, F25) — a
-          narrow, subordinate grant beside `heldBy` above, never a takeover.
-          `?? []` covers a caller that predates the field, the same guard
-          `DeviceCard`/`WallTile` use. Plan 105 §3.2/§4 — the "assisting" vs
-          "may assist" split lives in `HolderBadge` (`deriveAssistActivity`),
-          shared with every other caller. */}
-      {(d.assistedBy ?? []).map((a) => (
-        <HolderBadge key={a.id} holder={a} variant="assists" />
-      ))}
-    </>
-  ),
+  renderActivities: (d: DeviceInfo) => <ActivityBadge activities={d.activities} lastControl={d.lastControl} />,
   unavailableReason: (d: DeviceInfo) => UNAVAILABLE_REASON[d.status] ?? 'This device is unavailable',
 }
 

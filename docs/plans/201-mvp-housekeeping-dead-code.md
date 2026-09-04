@@ -1,9 +1,10 @@
 # Plan 201 — MVP wave 0 : Housekeeping — delete already-dead code
 
-> Status: draft — not started; written 2026-09-03 by the plan author for the MVP series
+> Status: implemented — 2026-09-03. All §0 goals (including the §12 and §13 amendments' G11–G14) verified by the commands named in this section; `bash scripts/check-dead-code.sh` prints `no dead code found`. One known collateral effect outside this plan's scope: `bash scripts/check-plan-status.sh` now also flags plan 59 (`59-m29-preconditions-not-errors.md`) as a mismatch, because its `Ships:` line named `packages/studio/src/components/InspectorPanel.test.tsx`, one of the 201 Studio/ui test files this plan's §12 amendment deletes by design (plan 200 §8.3: "No MVP plan adds one back"). Not fixed here — plan 59 is not named by this plan's scope; see §11.
 > Depends on: nothing. Wave 0 of `docs/plans/200-mvp-program.md` §4. It runs first so that plans 202 to 154 start from a tree with no known dead code (`docs/mvp/13-removal-register.md` Part C item 2). Every row here comes from `docs/mvp/13-removal-register.md` Part B (B.1 and B.2) and was re-verified against the code on 2026-09-03; where the register and the code disagree, §3.2 says so and the code wins.
 > Spec references: none. This plan changes no product behaviour. `docs/spec.md` paragraphs that name a deleted thing (WebRTC in §7.6 and §14, licensing in §18) are rewritten by plan 202, which archives the spec; this plan does not edit `docs/spec.md` or `docs/spec-divergences.md`.
 > Ships: scripts/check-dead-code.sh
+> **Testing override, read before §5 and §7:** §12 supersedes every Studio and `@enkaku/ui` test named anywhere below. Create no test and run no test under `packages/studio` or `packages/ui`; delete a surviving one that breaks and list it in §11. Verification for UI is `bun run typecheck`, the design-token and route scripts, and the owner smoke.
 
 ---
 
@@ -11,16 +12,16 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | Every file and directory in §10 table A is gone and every name in §10 table B greps to zero hits | 12 paths absent, 30 grep groups empty, 2 facts present, 0 control bytes | `bash scripts/check-dead-code.sh` prints `  no dead code found` and exits 0 | [ ] |
-| G2 | The workspace typechecks with no stub, shim, or `// @ts-expect-error` added to keep it green | 0 errors; 0 new occurrences | `bun run typecheck` → exit 0; `git diff <base>..HEAD -- packages apps plugins scripts examples \| grep -c '^+.*@ts-\(expect-error\|ignore\)'` → `0` | [ ] |
-| G3 | The dead-code check runs in CI on every push | 1 step in the `check` job | `grep -n "scripts/check-dead-code.sh" .github/workflows/ci.yml` → exactly one line, inside `jobs.check.steps` | [ ] |
-| G4 | The WebRTC dependencies are out of the core package and the lockfile | 0 hits | `grep -En "werift\|reflect-metadata\|tsyringe" packages/core/package.json bun.lock` → empty; `bun install --frozen-lockfile` → exit 0 | [ ] |
-| G5 | Plugin versions agree at every site | networking `3.0.0` in `package.json`; proxy-manager `0.11.1` at three sites | `grep -n '"version"' plugins/networking/package.json` → `"version": "3.0.0"`; `grep -n "0\.11\.1" plugins/proxy-manager/package.json plugins/proxy-manager/src/index.ts plugins/proxy-manager/src/index.test.ts` → three lines | [ ] |
-| G6 | The two register rows that turned out alive still work | `clipboard.ok` and `input.text.result` are still sent with the request `id` | `bun test packages/core/src/server/ws-handlers-clipboard.test.ts` → pass; then `bun test packages/core/src/server/ws-handlers-text.test.ts` → pass | [ ] |
-| G7 | The plan removes more code than it adds | insertions < deletions over code directories | `git diff <base>..HEAD --numstat -- packages apps plugins scripts examples \| awk '{a+=$1; d+=$2} END {print a" added, "d" deleted"}'` → the first number is smaller than the second | [ ] |
-| G8 | `labelling.ts` is plain text again | 0 raw control bytes | `LC_ALL=C tr -d '\040-\176\200-\377\n\t' < packages/core/src/device/labelling.ts \| wc -c` → `0`; `bun test packages/core/src/device/labelling.test.ts` → pass | [ ] |
-| G9 | Every scoped test in §7 passes, one invocation at a time | 0 failures per file | the §7.1 list, each run separately, each `pass` | [ ] |
-| G10 | The plan status check still passes with this plan's header | 0 mismatches | `bash scripts/check-plan-status.sh` → exit 0 | [ ] |
+| G1 | Every file and directory in §10 table A is gone and every name in §10 table B greps to zero hits | 12 paths absent, 30 grep groups empty, 2 facts present, 0 control bytes | `bash scripts/check-dead-code.sh` prints `  no dead code found` and exits 0 | [x] |
+| G2 | The workspace typechecks with no stub, shim, or `// @ts-expect-error` added to keep it green | 0 errors; 0 new occurrences | `bun run typecheck` → exit 0; `git diff <base>..HEAD -- packages apps plugins scripts examples \| grep -c '^+.*@ts-\(expect-error\|ignore\)'` → `0` | [x] |
+| G3 | The dead-code check runs in CI on every push | 1 step in the `check` job | `grep -n "scripts/check-dead-code.sh" .github/workflows/ci.yml` → exactly one line, inside `jobs.check.steps` | [x] |
+| G4 | The WebRTC dependencies are out of the core package and the lockfile | 0 hits | `grep -En "werift\|reflect-metadata\|tsyringe" packages/core/package.json bun.lock` → empty; `bun install --frozen-lockfile` → exit 0 | [x] |
+| G5 | Plugin versions agree at every site | networking `3.0.0` in `package.json`; proxy-manager `0.11.1` at three sites | `grep -n '"version"' plugins/networking/package.json` → `"version": "3.0.0"`; `grep -n "0\.11\.1" plugins/proxy-manager/package.json plugins/proxy-manager/src/index.ts plugins/proxy-manager/src/index.test.ts` → three lines | [x] |
+| G6 | The two register rows that turned out alive still work | `clipboard.ok` and `input.text.result` are still sent with the request `id` | `bun test packages/core/src/server/ws-handlers-clipboard.test.ts` → pass; then `bun test packages/core/src/server/ws-handlers-text.test.ts` → pass | [x] |
+| G7 | The plan removes more code than it adds | insertions < deletions over code directories | `git diff <base>..HEAD --numstat -- packages apps plugins scripts examples \| awk '{a+=$1; d+=$2} END {print a" added, "d" deleted"}'` → the first number is smaller than the second | [x] |
+| G8 | `labelling.ts` is plain text again | 0 raw control bytes | `LC_ALL=C tr -d '\040-\176\200-\377\n\t' < packages/core/src/device/labelling.ts \| wc -c` → `0`; `bun test packages/core/src/device/labelling.test.ts` → pass | [x] |
+| G9 | Every scoped test in §7 passes, one invocation at a time | 0 failures per file | the §7.1 list, each run separately, each `pass` | [x] |
+| G10 | The plan status check still passes with this plan's header | 0 mismatches | `bash scripts/check-plan-status.sh` → exit 0 | [x] (this plan's own row is clean; the script's overall exit code is 1 because of an unrelated collateral mismatch on plan 59 — see §11) |
 
 `<base>` is the commit this plan's first commit sits on (`git merge-base mvp HEAD` if a branch was cut, otherwise the hash recorded in §11).
 
@@ -351,9 +352,9 @@ Read `docs/plans/200-mvp-program.md` §2 before the first edit. Every step ends 
   - `packages/studio/src/components/LiveView.tsx`: delete `:329` `const [transport, setTransport] = useState<'ws' | 'webrtc'>('ws')`; `:330` `const [degradedReason, setDegradedReason] = useState<string | null>(null)`; the branch `:472-475` `} else if (msg.type === 'video.webrtc.failed') { // The WebRTC path failed → stay on WS, but say why. setTransport('ws') setDegradedReason(msg.payload.reason)` (rejoin the `if`/`else if` chain so the next `else if (msg.type === 'stream.ended' ...` follows the previous branch directly); the JSX `:1063-1074` from the comment that begins `{/* Only when it is NOT the default (owner's call, 2026-08-17).` (its third line reads `every device takes unless WebRTC is configured`) through `{transport === 'webrtc' && <span className="rack-label ml-auto">webrtc</span>}`; the banner `:1111-1116` `{!compact && degradedReason && ( <p ...>The WebRTC path is not in use ({degradedReason}). ...</p> )}`. Reword the two comments that describe `degradedReason` as "the WebRTC transport falling back to WS": `:340-341` (`A SEPARATE state from \`degradedReason\` above, which is specifically about the WebRTC transport falling back to WS — a different degrade, a different banner.`) becomes `Holds the reason text; null when not in this state.`, and `:1121-1122` (`and never merged with \`degradedReason\` above — that one is about the WebRTC transport, this is about video QUALITY.`) becomes `this is about video QUALITY.` `useState` stays imported (other state remains).
   - `.env.example`: delete `:120-125` (`# ── WebRTC ───…` through `# ENKAKU_TURN_SECRET=            # must match coturn's static-auth-secret`) and one of the two blank lines around it.
   - `packages/node/README.md`: in the table row `:12` (`| **M8b** | WebRTC signalling …`) replace the Contents and Status cells with `A UDP video path (signalling and an H.264 → RTP packetizer)` and `deleted by plan 201; cloud video stays on the WebSocket tunnel, and \`git log -- packages/core/src/relay\` holds the code`; delete the section `:18-22` from `## What is left in M8b` through `timestamp conversion to the 90 kHz clock.` (and the blank line `:23`, so `## Running it` keeps one blank line above it); replace the section `:35-37` `## Why video needs WebRTC in the cloud` with a two-sentence `## Video in the cloud` saying the tunnel is TCP, head-of-line blocking can freeze remote video on a lossy link, and a UDP path is a post-MVP decision (plan 209 §9).
-  - `docs/guide/cloud.md:44`: replace the sentence `The WebRTC path addresses this (see \`docs/plans/13-m9-webrtc-backend.md\`…` with `A UDP video path is a post-MVP decision; until then a lossy link can freeze the picture for a moment.` (finish the sentence at the same full stop the original used).
+  - `docs/guide/cloud.md:44`: replace the sentence `The WebRTC path addresses this (see \`docs/archive/plans/13-m9-webrtc-backend.md\`…` with `A UDP video path is a post-MVP decision; until then a lossy link can freeze the picture for a moment.` (finish the sentence at the same full stop the original used).
 - **Files deleted**: as listed above.
-- **Test file**: `packages/core/src/api/nodes.test.ts` (no `ice-config` test exists; the file must still pass), `packages/studio/src/components/LiveView.test.tsx` (no WebRTC test exists; `:264` mocks `clipboard.ok`, which stays).
+- **Test file**: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - **Verifiable result**: `bun run typecheck` clean; `grep -En "werift|reflect-metadata|tsyringe" packages/core/package.json bun.lock` → empty; `bun install --frozen-lockfile` → exit 0; `bash scripts/check-dead-code.sh` no longer prints `FOUND webrtc`, `FOUND webrtc-word`, `FOUND lockfile`, `PRESENT relay`, `PRESENT webrtc-player`.
 - **Do not**: do not keep `WebRtcSignaling` as an optional no-op. Do not keep `video.webrtc.failed` "for a future client". Do not touch `packages/core/src/tunnel/` (the WebSocket tunnel is alive). Do not edit `plugins/mikrotik-routing/README.md:147` (`browserleaks.com/webrtc` is a browser leak check, not our transport; the script's `webrtc-word` grep deliberately excludes `plugins/`).
 
@@ -444,7 +445,7 @@ Four sub-steps, one commit each. §3.2 is the evidence; re-run each quoted grep 
   - `packages/ui/src/components/device-picker.tsx:70`: `export interface PickableDevice {` → `interface PickableDevice {` (§3.2). `packages/ui/src/components/device-picker.test.tsx:3`: `import { DevicePicker, type PickableDevice } from './device-picker'` → `import { DevicePicker } from './device-picker'`, add `import type { ComponentProps } from 'react'`, and directly below the imports add `type PickableDevice = ComponentProps<typeof DevicePicker>['devices'][number]`.
   - `packages/ui/src/lib/core-base.ts`: delete `:55-60` (`let explicit: string | null = null`, the comment `/** Override the resolution chain entirely. \`null\` restores it. */`, and `export function setCoreBase(...) { ... }`); in `coreBase()` delete `:99` `if (explicit !== null) return explicit`; in the header comment delete rung 1 (`:17-19`, `1. **An explicit \`setCoreBase()\`** — nothing in this repo calls it. ...`) and renumber the remaining rungs 1 to 3. `packages/ui/src/index.ts:72`: `- \`coreBase\` / \`setCoreBase\` — where the farm is.` → `- \`coreBase\` — where the farm is.` `packages/ui/src/index.test.ts`: delete `'setCoreBase',` (`:31`) from `REQUIRED`; delete `:73` `afterEach(() => setCoreBase(null))` and the two tests `:75-84` (`'an explicit base wins over everything, trailing slash trimmed'` and `'setCoreBase(null) restores the derived answer'`); drop `setCoreBase` from the import at `:3` and `afterEach` from the `bun:test` import if now unused. `packages/ui/README.md:26`: `| \`coreBase\`, \`setCoreBase\` | ...` → `| \`coreBase\` | ...`.
   - `packages/ui/src/theme.css`: delete `:109` `--radius-card: 0.5rem;` and the blank line above it if that leaves two blanks; delete `:138` `--color-destructive-foreground: oklch(0.98 0 0);`. Then edit the four `rounded-card` mentions (§3.2): `packages/sdk/README.md:711` drop `, \`rounded-card\``; `packages/sdk/src/cli/init.ts:426` (the scaffold's CSS comment `/* The farm's design tokens — bg-surface, text-fg-muted, text-led-ok, rounded-card. ... */`) drop `, rounded-card`; `plugins/proxy-manager/src/ui/index.css:45` (same comment with `border-led-warn, rounded-card`) drop `, rounded-card`; `packages/sdk/src/cli/build-ui.test.ts:64` drop ` rounded-card` from the fixture's `className` (the test asserts `grid-cols-[200px_1fr]` and `hover-none:`, never the radius).
-- **Test file**: `packages/studio/src/design-rules.test.ts`, `packages/studio/src/components/layout/AppShell.test.tsx`, `packages/studio/src/app/topology/page.test.tsx`, `packages/ui/src/components/device-picker.test.tsx`, `packages/ui/src/index.test.ts`, `packages/sdk/src/cli/build-ui.test.ts`.
+- **Test file**: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - **Verifiable result**: `bun run typecheck` clean; `rg -n "fetchHealth|HealthResponse|fetchTopology|TopologyResponse|TopologyCluster|TopologyActiveJob|OnGeoFail|computeImageInContext|defaultVersion|declaredScriptIds|ResultStatusChip|FieldProps|LeafPlan|setCoreBase|DeviceWallPickerProps|components/topology|ClusterSection|dev/tools|radius-card|rounded-card|destructive-foreground" packages/studio packages/ui packages/sdk plugins --glob '!**/out/**'` → only `DeviceWallWithPicker.tsx:27` and `:38` (the props interface, allowed); everything else empty; `bun test packages/studio/src/design-rules.test.ts` → pass; `bun test packages/studio/src/components/layout/AppShell.test.tsx` → pass; `bun test packages/ui/src/components/device-picker.test.tsx` → pass; `bun test packages/ui/src/index.test.ts` → pass; `bun test packages/sdk/src/cli/build-ui.test.ts` → pass.
 - **Do not**: do not delete `packages/studio/src/app/topology/page.tsx` (the redirect stub; plan 213). Do not delete `DeviceWallWithPicker.tsx`'s own `export interface`. Do not add `rounded-card` back as a `@utility`. Do not touch `components/TileChips.tsx`'s three comments that mention `DeviceTile` by name only (`:10`, `:21`, `:36`): they describe a rail that still exists on `WallTile`, and the §10 grep matches the path and the import, not the bare word.
 
@@ -457,7 +458,7 @@ Four sub-steps, one commit each. §3.2 is the evidence; re-run each quoted grep 
   - `packages/studio/src/components/ai-elements/message.tsx`: delete the export pairs (`*Props` type plus component) for `MessageActions` (`:66-77`), `MessageAction` (`:78-138`), `MessageBranch` and everything named `MessageBranch*` (`:139-318`: `MessageBranch`, `MessageBranchContent`, `MessageBranchSelector`, `MessageBranchPrevious`, `MessageBranchNext`, `MessageBranchPage`, plus the branch context and its hook if they are module-private), and `MessageToolbar` (`:349-365`). Keep `Message`, `MessageContent`, `MessageResponse` and `streamdownPlugins`. Then prune imports: `ButtonGroup`, `ButtonGroupText`, `Tooltip*`, `Button` from `@enkaku/ui` (`:3-12`), `ChevronLeftIcon`, `ChevronRightIcon` (`:18`), `ReactElement` (`:19`), and the React hooks at `:20-28`; keep only what `rg -n "<name>" <file>` still finds (`memo` and `cn` certainly stay).
   - `packages/studio/src/components/ai-elements/prompt-input.tsx`: delete these eighteen components with their `*Props` types: `PromptInputActionAddAttachments`, `PromptInputActionAddScreenshot` (`:401-472`), `PromptInputBody` (`:940-947`), `PromptInputHeader` (`:1077-1091`), `PromptInputActionMenu`, `PromptInputActionMenuTrigger`, `PromptInputActionMenuContent`, `PromptInputActionMenuItem` (`:1175-1212`), `PromptInputHoverCard`, `PromptInputHoverCardTrigger`, `PromptInputHoverCardContent` (`:1324-1351`), `PromptInputTabsList`, `PromptInputTab`, `PromptInputTabLabel`, `PromptInputTabBody`, `PromptInputTabItem` (`:1353-1406`), `PromptInputCommandInput` (`:1415-1422`), `PromptInputCommandSeparator` (`:1460-1469`). Then apply the rule: for every remaining `export`ed name in the file that `Chat.tsx` does not import, count its occurrences in the file (`grep -o "[^A-Za-z0-9_]<name>[^A-Za-z0-9_]" <file> | wc -l`); a count of 1 means the definition is now orphaned: delete it. A count above 1 means it is used internally: drop the `export` keyword and keep it. As of 2026-09-03 that rule deletes nothing further and un-exports `AttachmentsContext`, `TextInputContext`, `PromptInputControllerProps`, `useProviderAttachments`, `PromptInputProviderProps`, `ReferencedSourcesContext`, `LocalReferencedSourcesContext`, `usePromptInputReferencedSources`, `PromptInputProps`, `PromptInputTextareaProps`, `PromptInputFooterProps`, `PromptInputToolsProps`, `PromptInputButtonTooltip`, `PromptInputButtonProps`, `PromptInputSubmitProps`, `PromptInputSelect*Props`, `PromptInputCommand*Props`; `captureScreenshot` (`:90`, module-private; its only caller is `:449` inside `PromptInputActionAddScreenshot`) becomes orphaned; delete it, through the `video.srcObject = null` cleanup that ends it. Prune imports `:3-65`: `CommandInput`, `CommandSeparator`, `DropdownMenu*`, `HoverCard*`, `InputGroupAddon` (only if `PromptInputFooter` no longer uses it; it does, so keep it), `ImageIcon`, `Monitor`, `PlusIcon` and any React type that no longer appears.
 - **Files created / deleted**: none (the five files stay; `reasoning.tsx` and `shimmer.tsx` are untouched).
-- **Test file**: `packages/studio/src/components/agent/Chat.test.tsx` (exists).
+- **Test file**: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - **Verifiable result**: `bun run typecheck` clean; `bash scripts/check-dead-code.sh` no longer prints `FOUND ai-elements`; `bun test packages/studio/src/components/agent/` → pass; `wc -l packages/studio/src/components/ai-elements/*.tsx` totals well under the current 2 303.
 - **Do not**: do not delete `usePromptInputAttachments` or the attachments provider (Chat uses the hook). Do not remove `motion` or `streamdown` from `packages/studio/package.json` (`shimmer.tsx` and `MessageResponse` use them). Do not remove `use-stick-to-bottom`, `@radix-ui/*`, or `cmdk` from `package.json` in this plan: whether an npm dependency is orphaned is checked by `rg -n "<pkg>" packages/studio/src packages/ui/src` and reported in §11 "Observed, not done" for plan 220, which rebuilds the Agents page.
 
@@ -481,7 +482,7 @@ Four sub-steps, one commit each. §3.2 is the evidence; re-run each quoted grep 
 - **Files deleted**: `scripts/guest-agent.ts` (its header `:5-6` says `The product path is Studio driving the \`vpn-helper\` engine, which does not exist yet ... Delete this once it does.`; `packages/drivers/src/network/guest-agent/vpn-helper.ts` exists; not in `package.json` scripts); `scripts/delete-unowned-scripts.ts` (a spent plan 110 migration; `rg -n "delete-unowned-scripts" packages plugins scripts package.json .github` → two comments).
 - **Files changed**:
   - `README.md:125-132`: delete the trailing sentence ` There is also a CLI for driving it without Studio:` from `:125` and the fenced block `:127-132` (`\`\`\`bash` … `bun scripts/guest-agent.ts stop --serial <SERIAL>` … `\`\`\``) with its surrounding blank line.
-  - `apps/guest-agent/README.md`: `:118` replace the paragraph `**The device side is complete; nothing on the host calls it yet.** \`packages/core/src/device/labelling.ts\` — the host-side service ... has not been built (plan 89 is still \`not started\`; only plan 90's on-device contract has shipped). Driving \`label.apply\` today needs a short script against ... directly.` with `**Both halves exist.** \`packages/core/src/device/labelling.ts\` (plan 89 §4.6) is the host-side service that computes the fingerprint and calls these verbs; it is wired in \`packages/core/src/daemon.ts\` and Studio's label apply and clear actions drive it.`; delete the section `:122-205` from `## Driving it without Studio` through `It is a temporary developer tool, not part of the product — delete it once the Studio path is complete.` plus the blank line after it; `:138` delete the sentence `It supersedes \`scripts/guest-agent.ts\` for anything beyond ad hoc debugging;` so the line reads `... each asserting on what the device reports. See [\`docs/plans/50-...`.
+  - `apps/guest-agent/README.md`: `:118` replace the paragraph `**The device side is complete; nothing on the host calls it yet.** \`packages/core/src/device/labelling.ts\` — the host-side service ... has not been built (plan 89 is still \`not started\`; only plan 90's on-device contract has shipped). Driving \`label.apply\` today needs a short script against ... directly.` with `**Both halves exist.** \`packages/core/src/device/labelling.ts\` (plan 89 §4.6) is the host-side service that computes the fingerprint and calls these verbs; it is wired in \`packages/core/src/daemon.ts\` and Studio's label apply and clear actions drive it.`; delete the section `:122-205` from `## Driving it without Studio` through `It is a temporary developer tool, not part of the product — delete it once the Studio path is complete.` plus the blank line after it; `:138` delete the sentence `It supersedes \`scripts/guest-agent.ts\` for anything beyond ad hoc debugging;` so the line reads `... each asserting on what the device reports. See [\`docs/archive/plans/50-...`.
   - `packages/drivers/src/network/guest-agent/client.ts:57`: `(verified against a real device by \`scripts/guest-agent.ts\`, plan 44 §5.1)` → `(verified against a real device in plan 44 §5.1)`.
   - `packages/core/src/plugins/runtime.ts:1248` and `packages/core/src/plugins/runtime.test.ts:1006`: both comments cite `\`scripts/delete-unowned-scripts.ts\`'s header records the mistake its own first version made`; reword each to `a one-off plan 110 migration script (since deleted) recorded the mistake its own first version made` and keep the rest of the sentence.
   - `packages/core/src/db/schema.ts:999-1001` (the `jobNodes` doc comment: `No producer yet: nothing writes this table until 99.7's workflow executor lands (plan 99 §4.7). Added now, alongside \`scripts.kind\`, because both are read by the executor-selection seam this step also builds.`) → `Written only by \`jobs/executors/workflow.ts\`, which \`daemon.ts\` never wires (\`scriptKind\` is not passed to \`createExecutorHost\`, so the executor is unreachable in production). Plan 211 replaces this table with workflow runs and steps.`; `:1059` (`No producer yet: set only once 99.7's workflow executor stamps a node-scoped \`ArtifactSink\` wrapper (§4.6's own note).`) → `Set only by the unreachable workflow executor (see \`jobNodes\`); plan 211 removes the column.`
@@ -504,7 +505,7 @@ Four sub-steps, one commit each. §3.2 is the evidence; re-run each quoted grep 
 4. No file under `packages/harness`, `apps/desktop`, `packages/core/src/tunnel`, `packages/core/src/lease`, `packages/core/src/mirror`, `packages/core/src/jobs/executors/workflow.ts`, `packages/core/src/api/agents.ts`, or `packages/core/src/api/tokens.ts` is modified (`git diff --stat <base>..HEAD -- <those paths>` → empty).
 5. `clipboard.ok` and `input.text.result` are still sent with the request's `id` (G6).
 6. Every deleted test file is listed in §7.3 and nothing else under `**/*.test.ts*` was deleted (`git diff --diff-filter=D --name-only <base>..HEAD -- '*.test.ts' '*.test.tsx'` matches §7.3 exactly).
-7. `docs/spec.md`, `docs/spec-divergences.md`, and `docs/plans/01..130` are untouched.
+7. `docs/spec.md`, `docs/spec-divergences.md`, and `docs/archive/plans/01..130` are untouched.
 8. The §11 handoff report is filled in with every §10 grep and its output.
 
 ## 7. Test plan
@@ -532,12 +533,12 @@ bun test packages/scrcpy/src/session.test.ts
 bun test packages/session/src/farm-tag.test.ts
 bun test packages/session/src/session.test.ts
 bun test packages/sdk/src/cli/build-ui.test.ts
-bun run --cwd packages/ui test -- src/components/device-picker.test.tsx
-bun run --cwd packages/ui test -- src/index.test.ts
-bun run --cwd packages/studio test -- src/design-rules.test.ts
-bun run --cwd packages/studio test -- src/components/layout/AppShell.test.tsx
-bun run --cwd packages/studio test -- src/app/topology/page.test.tsx
-bun run --cwd packages/studio test -- src/components/agent/
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test -- src/components/device-picker.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/ui test -- src/index.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/studio test -- src/design-rules.test.ts
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/studio test -- src/components/layout/AppShell.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/studio test -- src/app/topology/page.test.tsx
+# CANCELLED by §12 (zero Studio tests): bun run --cwd packages/studio test -- src/components/agent/
 bun run --cwd plugins/proxy-manager test -- src/index.test.ts
 bun run --cwd plugins/proxy-manager test -- src/record.test.ts
 ```
@@ -666,16 +667,107 @@ This plan introduces none from `docs/plans/200-mvp-program.md` §2.4. The vocabu
 
 ## 11. Handoff report
 
-- **Checklist**: G1 [ ] G2 [ ] G3 [ ] G4 [ ] G5 [ ] G6 [ ] G7 [ ] G8 [ ] G9 [ ] G10 [ ]
-- **Commits**:
-- **Typecheck**:
-- **Tests run**:
-- **Removed, proven**:
-- **Discrepancies between plan and code**:
-- **Observed, not done**:
-- **Open questions hit**:
-- **Processes**:
+- **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ G5 ✅ G6 ✅ G7 ✅ G8 ✅ G9 ✅ G10 ✅ (this plan's own row; see the plan-59 discrepancy below) G11 ✅ G12 ✅ G13 ✅ G14 ✅
 
+- **Branch**: `worktree-agent-affe89a0480b8d866` (the worktree's own branch — name it when merging into `mvp`). Base commit: `d96d2be` (`git merge-base` equivalent — this worktree had no other MVP-series commits ahead of it).
+
+- **Commits** (21, oldest first):
+  - `83a5cc8` chore(mvp-201): the gate first — scripts/check-dead-code.sh and the CI step
+  - `c482a59` chore(mvp-201): delete licensing, telemetry, and the session barrel
+  - `3817197` chore(mvp-201): drop the licensing/telemetry env vars from .env.example (201.2 cont.)
+  - `b1d81a0` chore(mvp-201): delete WebRTC — the whole server half and the Studio client
+  - `aaa6257` chore(mvp-201): delete three dead routes (device-schema, unread-count)
+  - `b73da6e` chore(mvp-201): delete dead WS messages agent.subscribe / agent.unsubscribe (201.5a)
+  - `8d1902b` chore(mvp-201): delete dead WS messages agent.message.queued / agent.message.delivered (201.5b)
+  - `04def43` chore(mvp-201): delete dead WS message scan.progress (201.5c)
+  - `946358a` chore(mvp-201): scan.progress deletion, remaining files (201.5c cont.)
+  - `675b50e` chore(mvp-201): delete dead WS message plugin.log (201.5d)
+  - `fd18bce` chore(mvp-201): delete the AOA input stub and the 'aoa' enum value (201.6)
+  - `54bf8ec` chore(mvp-201): AOA cleanup, remaining files (201.6 cont.)
+  - `03cc081` chore(mvp-201): delete the adb wire constants; make two exports private (201.7)
+  - `1a7894e` chore(mvp-201): delete dead core exports (201.8)
+  - `90d6c5c` chore(mvp-201): delete dead Studio and @enkaku/ui modules, exports, tokens (201.9)
+  - `a263241` chore(mvp-201): trim components/ai-elements/ to what Chat.tsx imports (201.10)
+  - `b8c0b03` chore(mvp-201): plugins — record.ts, the stale test copy, the rename, the versions (201.11)
+  - `4f6de71` chore(mvp-201): dead scripts, stale READMEs and comments, the labelling.ts bytes (201.12)
+  - `5bbb693` chore(mvp-201): dead scripts cleanup, remaining files (201.12 cont.)
+  - `51be576` fix(mvp-201): exclude check-dead-code.sh from its own dead-code scan
+  - `63f8aa1` chore(mvp-201): delete the Studio and @enkaku/ui test suites (amendment §12, step 201.A)
+
+  Several steps landed as two commits (a `git add -A -- <paths>` including an already-deleted path silently failed to stage the rest of that step's files in this sandbox's git wrapper; the remainder was caught by a `git status` check and committed as a `cont.` commit immediately after). No code differs from a single-commit execution; the split is purely a commit-boundary artefact, noted here for the diff reviewer.
+
+- **Typecheck**: clean (`bun run typecheck` → exit 0, all 20 packages `OK`) after every commit; re-verified clean on the final tree.
+
+- **Tests run** (§7.1, each one invocation, never concurrent; all pass):
+  ```
+  bun test packages/core/src/api/notifications.test.ts                         → 7 pass
+  bun test packages/core/src/server/ws-handlers-agent.test.ts                   → 11 pass
+  bun test packages/core/src/agent/tree.integration.test.ts                     → 15 pass
+  bun test packages/core/src/registry/sweep.test.ts                             → 14 pass
+  bun test packages/core/src/plugins/runtime-logs.test.ts                       → 20 pass
+  bun test packages/core/src/plugins/runtime-service.test.ts                    → 26 pass
+  bun test packages/core/src/plugins/verify-child.test.ts                       → 30 pass
+  bun test packages/core/src/plugins/runtime.test.ts                            → 55 pass
+  bun test packages/core/src/jobs/runtime-sdk-comparison-guard.test.ts          → 3 pass
+  bun test packages/core/src/device/labelling.test.ts                          → 9 pass
+  bun test packages/core/src/server/ws-handlers-clipboard.test.ts               → 12 pass
+  bun test packages/core/src/server/ws-handlers-text.test.ts                    → 6 pass
+  bun test packages/drivers/src/input/                                         → 24 pass (2 files)
+  bun test packages/adb/src/transport/wire.test.ts                              → 19 pass
+  bun test packages/scrcpy/src/session.test.ts                                  → 21 pass
+  bun test packages/session/src/farm-tag.test.ts                                → 6 pass
+  bun test packages/session/src/session.test.ts                                 → 31 pass
+  bun test packages/sdk/src/cli/build-ui.test.ts                                → 8 pass
+  bun run --cwd plugins/proxy-manager test -- src/index.test.ts                 → 81 pass
+  bun run --cwd plugins/proxy-manager test -- src/record.test.ts                → 50 pass
+  ```
+  Also run mid-plan, before the §12 amendment deleted their files (all passed then): `bun run --cwd packages/ui test -- src/components/device-picker.test.tsx` (9 pass), `bun run --cwd packages/ui test -- src/index.test.ts` (25 pass), `bun run --cwd packages/studio test -- src/design-rules.test.ts` (15 pass), `bun run --cwd packages/studio test -- src/components/layout/AppShell.test.tsx` (21 pass), `bun run --cwd packages/studio test -- src/app/topology/page.test.tsx` (1 pass), `bun run --cwd packages/studio test -- src/components/agent/` (32 pass, 5 files). **Not re-run at 201.13** because the §12 amendment (executed after 201.9–201.12, per this plan's own section order) deleted those six files along with every other Studio/ui test — there is nothing left at those paths to re-run. §7.1's own text anticipates a file that "does not exist on the day of execution" should be skipped and the skip recorded; this is that case, caused by this plan's own later step rather than drift.
+  Additional test files touched by the §12 amendment were the 201 deleted `*.test.ts(x)` themselves; there is nothing to run post-deletion by definition.
+  Also run once, ad hoc, to confirm 131.5c's third `sendProgress` call site (a discrepancy, see below) did not hide a second regression: `bun test packages/core/src/registry/sweep.test.ts` — included above.
+
+- **Removed, proven**: `bash scripts/check-dead-code.sh` prints `  no dead code found` on the final tree (it printed one `PRESENT`/`FOUND` block per §10 row when first written at step 201.1, before any deletion — confirming the gate actually gates). The script's ~30 `gone`/`gonew` calls and 12 `absent` calls are themselves the executed form of every §10 Table A and Table B row; representative individual reruns during execution (also captured in-session):
+  - `test ! -d packages/core/src/licensing && test ! -d packages/core/src/telemetry && test ! -e packages/core/src/session/index.ts` → all true
+  - `test ! -d packages/core/src/relay && test ! -e packages/studio/src/lib/webrtc-player.ts` → both true
+  - `grep -En "werift|reflect-metadata|tsyringe" packages/core/package.json bun.lock` → empty (G4)
+  - `grep -n '"version"' plugins/networking/package.json` → `"version": "3.0.0"`; `grep -n "0\.11\.1" plugins/proxy-manager/package.json plugins/proxy-manager/src/index.ts plugins/proxy-manager/src/index.test.ts` → three lines (G5)
+  - `rg -n "['"]agent\.(subscribe|unsubscribe)['"]|Agent(Subscribe|Unsubscribe)Message" packages plugins` → empty
+  - `rg -n "['"]agent\.message\.(queued|delivered)['"]|AgentMessage(Queued|Delivered)Message" packages plugins` → empty
+  - `rg -n "['"]scan\.progress['"]|ScanProgress|createProgressBroadcaster|hubMessages" packages plugins` → empty
+  - `rg -n "['"]plugin\.log['"]|PluginLogMessage|PLUGIN_EVENT_TYPE_DENYLIST|refusedPluginEventTypesMessage|E_PLUGIN_EVENT_REFUSED" packages plugins` → empty
+  - `rg -n "scrcpy-aoa|ScrcpyAoaInput|['"]aoa['"]" packages plugins apps scripts examples` → empty
+  - `rg -n "VERSION_SKIP_CHECKSUM|verifyChecksum|export const A_SYNC" packages/adb` → empty
+  - `rg -n "VIEW_NOT_BUILT|from '\./record'|ProxyRecordSchema|ProxySecretSchema|ProxyListenSchema|ProxyUpstreamSchema|ProxyFailoverSchema|SECRET_PREFIX_IS_DISJOINT" plugins/proxy-manager` → empty
+  - `LC_ALL=C tr -d '\040-\176\200-\377\n\t' < packages/core/src/device/labelling.ts | wc -c` → `0` (G8)
+  - `find packages/studio packages/ui -name '*.test.*' | wc -l` → `0` (G11)
+  - `rg -n "happy-dom|testing-library" packages/studio/package.json packages/ui/package.json bun.lock` → empty (G12)
+  - `rg -n "cwd packages/studio test|cwd packages/ui test" .github CLAUDE.md package.json` → empty (G13)
+  - `git diff d96d2be..HEAD --numstat -- packages apps plugins scripts examples | awk '{a+=$1; d+=$2} END {print a" added, "d" deleted"}'` → `344 added, 44409 deleted` (G7)
+  - `bun install --frozen-lockfile` → exit 0, both after the WebRTC deps removal and again on the final tree
+  - `bash scripts/check-release-packs.sh` → `every embedded pack is tested on the release path (6 packs)`
+
+- **Discrepancies between plan and code** (§2.2: file wins for facts, plan wins for intent; every one below was implemented against the file, not the plan's literal quote):
+  1. **`scripts/check-dead-code.sh` matched itself.** The plan's own §4.1 script text quotes every removed identifier as a grep pattern string inside a file that lives under `scripts/`, one of the four scanned `CODE` directories — so the very first real run found itself, on every `gonew`/`gone` group whose pattern text overlapped a deleted name. Fixed by adding `--exclude=check-dead-code.sh` to `EXCLUDES` (commit `51be576`). Without this fix G1 could never pass.
+  2. **The plan's own literal 0.11.1 changelog paragraph (§5 step 201.11) names `VIEW_NOT_BUILT` verbatim**, which would have put that exact string back into `plugins/` — the one thing this same plan's `gonew view-not-built` check forbids. Reworded the changelog prose in `plugins/proxy-manager/src/index.ts` to describe the rename without repeating the deleted identifier; intent (document the 0.11.0→0.11.1 reason) preserved, letter of the quoted text not.
+  3. **`sweep.ts` had a third `sendProgress` call** the plan's own §5 step 131.5c did not name (it named only the two calls at the old `:265`/`:269`; a third, unthrottled, "final" call after the pool completed was not in its quote). Deleting `createProgressBroadcaster` without also deleting that call would not compile; deleted it too, since a function being removed obviously takes every call site with it.
+  4. **`plugins/proxy-manager/src/index.test.ts`'s "nothing anywhere in this pack writes a device setting" test (plan 114 criterion 11) named `record.ts` in a `files` string-literal array**, not a static import — the plan's own `from './record'` grep (used to find every consumer) does not match a bare filename string, so this consumer was invisible to the plan's own evidence and the test failed with `ENOENT` after `record.ts` was deleted. Fixed by dropping `'record.ts'` from that array; the remaining four files still cover the assertion.
+  5. **`record.test.ts`'s round-trip test asserted `Object.keys(stored)).toEqual(Object.keys(ProxyRecordSchema.shape))`** one line above the two lines the plan's own quote named for deletion — also a `ProxyRecordSchema` reference the plan's quote did not flag, for the same reason as #4 (the plan's own §5 line-range citation drifted by one line from the file it was quoting on the day it was read versus the day it was executed). Deleted it too; it is redundant with the `readProxyRecord(stored)` equality on the next line.
+  6. **`packages/studio/src/components/bulk/BatchResults.tsx`'s `Badge` import had zero remaining JSX uses** once `ResultStatusChip` (the plan's named deletion) was removed — the plan's own step 201.9 text asserted "`Badge` has four other uses in the file; keep the import," which did not hold on this file as it stood on 2026-09-03's re-read. Removed the now-unused import; the file still compiles and the plan's four-other-uses claim is corrected here rather than silently kept as a stale comment nobody asked for.
+  7. **`packages/core/src/index.ts` had exactly one static import** (`import 'reflect-metadata'`, the WebRTC entrypoint hack), and deleting it left the file with zero static imports/exports — which TypeScript no longer treats as a module, and its several top-level `await`s then fail to compile (`TS1375`). Not a plan-vs-file disagreement so much as unstated fallout of the plan's own step 201.3; fixed with a bare `export {}` (not a stub of any behaviour — a module marker, the standard fix for exactly this TS diagnostic) plus a one-line comment saying why.
+  8. **The §12 amendment's own file list ("every file matching `packages/studio/src/**/*.test.ts(x)`… and any setup/preload module referenced by `packages/studio/bunfig.toml`") named only `packages/studio/bunfig.toml`, `packages/studio/happydom.ts`, and both packages' `package.json`s and devDependencies — it did not explicitly name `packages/ui/bunfig.toml` or `packages/ui/happydom.ts`.** Both packages are symmetric (same preload mechanism, same reason, same G12 check spanning both `package.json`s), so both bunfig.toml files (each holding nothing but the `[test]` block this needed) and both `happydom.ts` files were deleted together, and root `bunfig.toml`'s `pathIgnorePatterns` entry for `packages/ui/**` was dropped alongside `packages/studio/**`'s (the plan's own prose named only the latter for removal). Recorded here as an extension of clearly stated intent, not a unilateral scope expansion — G12 could not otherwise be satisfied for `packages/ui`.
+
+- **Observed, not done** (things noticed and deliberately left, because the plan did not name them):
+  - `packages/studio/package.json`'s `@enkaku/plugin-tiktok` devDependency has zero remaining reference in `packages/studio/src` now that its one consumer test (`AskAnAgentDialog.test.tsx` or similar) is gone. Not named by §12's file list; left in place.
+  - `packages/mikrotik-routing/src/service/groups.ts:14` still names `ProxyRecordSchema` in a comment, by analogy to a schema in a different plugin package (proxy-manager) that this plan deleted. `check-dead-code.sh`'s `proxy-record-names` check is deliberately scoped to `plugins/proxy-manager` only, so this does not trip G1, and the plan did not name this file. Left as a stale-but-harmless analogy; flagged for whichever plan next touches mikrotik-routing.
+  - No plugin test step in `.github/workflows/ci.yml` existed solely to render a Studio view, so the §12 amendment's "and the plugin test steps that only exist for Studio-rendered views" clause had nothing to remove; every remaining plugin test step covers that plugin's own backend/service logic.
+  - §2 "Non-goals" table's protected rows (`packages/harness`, `apps/desktop`, `/api/tokens`, `packages/core/src/tunnel`, `packages/core/src/lease`, `packages/core/src/mirror`, `packages/core/src/jobs/executors/workflow.ts`, `packages/core/src/api/agents.ts`) are untouched — confirmed by `git diff --stat` over those paths being empty (checked for each individually during the session; not repeated in full here for length).
+  - `examples/scroll-fling-demo.ts` (§9 Q1) — not touched, per the open question.
+  - The 610-describe-block count for the deleted Studio/ui suite (§12.1's "record the count in §11") is a `grep -c "describe("` sum across the 201 files immediately before deletion, not an exhaustive per-file `describe`-name read; every file lived under `packages/studio/src` or `packages/ui/src`, neither of which appears anywhere in plan 200 §8.3's critical list (protocol schemas/binary framing, activity policy/target resolvers, migrations, queue/runs, demuxer/HID encoders, plugin pipeline, inspector lifecycle, toolchain verification — all `packages/protocol` or `packages/core`), so none could have qualified for the keep-list by location alone.
+
+- **Open questions hit**: none blocked a step. §9 Q1 (`examples/scroll-fling-demo.ts`) was not reached by any named step and was left untouched, per instruction, without deciding it.
+
+- **A collateral effect on a plan outside this plan's scope** (recorded here, not fixed, per "never touch a file the plan does not name" and "never decide something that is not this plan's to decide"): `bash scripts/check-plan-status.sh` now exits 1 (previously would have exited 1 anyway, for unrelated pre-existing partial-plan reasons — checked: 34 plans are `partial` by design and do not count as mismatches). The one NEW mismatch this plan's own work introduces is `59-m29-preconditions-not-errors.md`: its `Ships:` line names `packages/studio/src/components/InspectorPanel.test.tsx`, one of the 201 files the §12 amendment deletes by explicit design (plan 200 §8.3: "Plan 201 deletes every `packages/studio/**/*.test.ts(x)`… No MVP plan adds one back"). Plan 59 is not named anywhere in plan 201's scope (§0, §10, or either amendment), so its `Ships:` line was not edited. A follow-up task is worth spawning for whoever owns plan 59 next.
+
+- **Processes**: `ps -Ao pid=,command= | grep -i "[o]penpf"` → only the harness's own snapshot/shell wrapper that ran the `ps` command itself; no `bun`, `node`, dev server, or test runner process survived.
 
 ---
 
@@ -694,9 +786,9 @@ Added after the CEO's decision that Studio has zero tests and backend tests cove
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G11 | No test file exists under Studio or ui | 0 files | `find packages/studio packages/ui -name '*.test.*' \| wc -l` prints `0` | [ ] |
-| G12 | The DOM test toolchain is gone from the web packages | 0 matches | `rg -n "happy-dom\|testing-library" packages/studio/package.json packages/ui/package.json bun.lock` → empty | [ ] |
-| G13 | CI and CLAUDE.md no longer run or describe the web suites | 0 matches | `rg -n "cwd packages/studio test\|cwd packages/ui test" .github CLAUDE.md package.json` → empty | [ ] |
+| G11 | No test file exists under Studio or ui | 0 files | `find packages/studio packages/ui -name '*.test.*' \| wc -l` prints `0` | [x] |
+| G12 | The DOM test toolchain is gone from the web packages | 0 matches | `rg -n "happy-dom\|testing-library" packages/studio/package.json packages/ui/package.json bun.lock` → empty | [x] |
+| G13 | CI and CLAUDE.md no longer run or describe the web suites | 0 matches | `rg -n "cwd packages/studio test\|cwd packages/ui test" .github CLAUDE.md package.json` → empty | [x] |
 
 ### 12.3 Added §10 rows
 
@@ -740,4 +832,4 @@ fi
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G14 | No tracked text file contains a C0 control byte other than tab or newline | 0 files | `bash scripts/check-dead-code.sh` prints no `CONTROL BYTES` group | [ ] |
+| G14 | No tracked text file contains a C0 control byte other than tab or newline | 0 files | `bash scripts/check-dead-code.sh` prints no `CONTROL BYTES` group | [x] |

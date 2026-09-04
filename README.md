@@ -105,7 +105,7 @@ The token is needed only once; after that `bun run dev:node` is enough. Full gui
 
 ### Guest agent smoke test
 
-`scripts/smoke-guest-agent.ts` drives one real phone through the guest agent's install, bootstrap, token-rotation, routing, and uninstall lifecycle over adb, asserting on what the device reports. It exists because the six defects it checks for were all found by hand on hardware and none of them showed up in `bun test` (docs/plans/50-m24a-ci-and-device-smoke-test.md).
+`scripts/smoke-guest-agent.ts` drives one real phone through the guest agent's install, bootstrap, token-rotation, routing, and uninstall lifecycle over adb, asserting on what the device reports. It exists because the six defects it checks for were all found by hand on hardware and none of them showed up in `bun test` (docs/archive/plans/50-m24a-ci-and-device-smoke-test.md).
 
 ```bash
 ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <SERIAL>
@@ -122,14 +122,7 @@ bun run build:guest-agent      # once; needs JDK 17 and the Android SDK
 bun run dev                    # the local build is picked up automatically
 ```
 
-Then take control of a device in Studio (install and routing are lease-gated) and open **Guest Agents**: install the agent, then set the upstream. There is also a CLI for driving it without Studio:
-
-```bash
-bun scripts/guest-agent.ts install --serial <SERIAL>
-bun scripts/guest-agent.ts route "socks5://user:pass@host:1337" --serial <SERIAL>
-bun scripts/guest-agent.ts status --serial <SERIAL>
-bun scripts/guest-agent.ts stop --serial <SERIAL>
-```
+Then take control of a device in Studio (install and routing are lease-gated) and open **Guest Agents**: install the agent, then set the upstream.
 
 Full install guide and troubleshooting: [`docs/guide/install.md`](docs/guide/install.md).
 

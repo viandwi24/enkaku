@@ -10,7 +10,6 @@ import {
   WorkflowNodeIdSchema,
   WorkflowNodeSchema,
   WorkflowPathSchema,
-  WorkflowVersionSchema,
 } from './workflow'
 
 /** A minimal, otherwise-valid script node — callers override only what the test cares about. */
@@ -34,7 +33,6 @@ describe('WorkflowDocSchema — round trip (99.1 verifiable result)', () => {
   const doc = {
     schema: 1,
     name: 'tiktok-search-pipeline',
-    version: '1.0.0',
     title: 'TikTok search pipeline',
     description: 'Warm up the feed, search a keyword, and report what was found.',
     params: [{ name: 'keyword', type: 'string', required: true, title: 'Search keyword' }],
@@ -86,8 +84,7 @@ describe('WorkflowDocSchema — duplicate node id is refused, naming the id', ()
     const doc = {
       schema: 1,
       name: 'dup',
-      version: '1.0.0',
-      nodes: [scriptNode({ id: 'same' }), scriptNode({ id: 'same' })],
+        nodes: [scriptNode({ id: 'same' }), scriptNode({ id: 'same' })],
     }
     const result = WorkflowDocSchema.safeParse(doc)
     expect(result.success).toBe(false)
@@ -100,8 +97,7 @@ describe('WorkflowDocSchema — duplicate node id is refused, naming the id', ()
     const doc = {
       schema: 1,
       name: 'nodup',
-      version: '1.0.0',
-      nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b' })],
+        nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b' })],
     }
     expect(WorkflowDocSchema.safeParse(doc).success).toBe(true)
   })
@@ -113,12 +109,12 @@ describe('WorkflowDocSchema — maxNodes (99.1 verifiable result: a 51-node docu
   }
 
   test(`exactly WORKFLOW_LIMITS.maxNodes (${WORKFLOW_LIMITS.maxNodes}) nodes is fine`, () => {
-    const doc = { schema: 1, name: 'big', version: '1.0.0', nodes: nodesOfLength(WORKFLOW_LIMITS.maxNodes) }
+    const doc = { schema: 1, name: 'big', nodes: nodesOfLength(WORKFLOW_LIMITS.maxNodes) }
     expect(WorkflowDocSchema.safeParse(doc).success).toBe(true)
   })
 
   test(`${WORKFLOW_LIMITS.maxNodes + 1} nodes is refused`, () => {
-    const doc = { schema: 1, name: 'toobig', version: '1.0.0', nodes: nodesOfLength(WORKFLOW_LIMITS.maxNodes + 1) }
+    const doc = { schema: 1, name: 'toobig', nodes: nodesOfLength(WORKFLOW_LIMITS.maxNodes + 1) }
     const result = WorkflowDocSchema.safeParse(doc)
     expect(result.success).toBe(false)
   })
@@ -261,7 +257,7 @@ describe('WorkflowNodeIdSchema', () => {
   })
 })
 
-describe('WorkflowNameSchema / WorkflowVersionSchema — the SAME grammar a script name/version already use', () => {
+describe('WorkflowNameSchema — the SAME grammar a script name already uses', () => {
   test.each(['checkout', 'my-workflow', 'tiktok/pipeline'])('name accepts %s', (name) => {
     expect(WorkflowNameSchema.safeParse(name).success).toBe(true)
   })
@@ -269,13 +265,12 @@ describe('WorkflowNameSchema / WorkflowVersionSchema — the SAME grammar a scri
   test.each(['', 'Checkout', '/leading', 'trailing/'])('name rejects %s', (name) => {
     expect(WorkflowNameSchema.safeParse(name).success).toBe(false)
   })
+})
 
-  test.each(['1.0.0', '1.0.0-beta.1', '1.0.0+build.5'])('version accepts %s', (version) => {
-    expect(WorkflowVersionSchema.safeParse(version).success).toBe(true)
-  })
-
-  test.each(['1.0', 'v1.0.0', 'latest'])('version rejects %s (a workflow row is a concrete published version, never `latest`)', (version) => {
-    expect(WorkflowVersionSchema.safeParse(version).success).toBe(false)
+describe('WorkflowDocSchema — plan 210: a document carries no version', () => {
+  test('a doc with a version key is refused (the schema is .strict())', () => {
+    const result = WorkflowDocSchema.safeParse({ schema: 1, name: 'versioned', version: '1.0.0', nodes: [scriptNode({ id: 'a' })] })
+    expect(result.success).toBe(false)
   })
 })
 
@@ -310,7 +305,6 @@ describe('export surface — packages/protocol/src/index.ts re-exports (permanen
       'WorkflowNodeIdSchema',
       'WorkflowPathSchema',
       'WorkflowNameSchema',
-      'WorkflowVersionSchema',
       'ValueExprSchema',
       'GATE_OPS',
       'PredicateSchema',

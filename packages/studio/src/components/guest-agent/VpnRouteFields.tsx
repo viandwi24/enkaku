@@ -23,6 +23,7 @@ import {
 } from '@/components/guest-agent/VpnAgentPrecondition'
 import type { NetworkStatus, NetworkUdpMode } from '@/lib/api'
 import { isAdmin, useAuth } from '@/lib/auth'
+import { runOnDevice } from '@/lib/actions'
 
 /**
  * A `socks5://user:pass@host:port` URL, parsed in the browser only — the raw
@@ -128,7 +129,7 @@ export function VpnRouteFields({
   onChooseHttp,
 }: {
   deviceId: string
-  /** Same server-authoritative gate as every other mutating control on the page — the server checks the lease itself regardless. */
+  /** Same server-authoritative gate as every other mutating control on the page — the server checks the control activity itself regardless. */
   canUse: boolean
   status: NetworkStatus
   onApplied: (next: NetworkStatus) => void
@@ -262,27 +263,31 @@ export function VpnRouteFields({
   const applyRoute = () =>
     run(
       'apply',
-      () =>
-        api(`/api/devices/${deviceId}/network`, DeviceNetworkStatusResponseSchema, {
-          method: 'PUT',
-          json: {
-            // Plan 114 §4.1 — the discriminator. Optional on the wire (the
-            // schema defaults it) so a core that predates the union still
-            // accepts this body, but sent explicitly because a post-114 core
-            // parses a PUT body through the bare union, where an untagged
-            // request is a client bug rather than a value to guess at.
-            engine: 'vpn-helper',
-            host: host.trim(),
-            port: portNum,
-            username: username.trim() ? username.trim() : undefined,
-            password: password ? password : undefined,
-            udpMode,
-            failClosed,
-            clearCredential: clearCredential ? true : undefined,
-            expect,
-            onGeoFail,
-          },
-        }),
+      async () =>
+        DeviceNetworkStatusResponseSchema.parse(
+          (
+            await runOnDevice('set-network', deviceId, {
+              op: 'set',
+              route: {
+                // Plan 114 §4.1 — the discriminator. Optional on the wire (the
+                // schema defaults it) so a core that predates the union still
+                // accepts this body, but sent explicitly because a post-114 core
+                // parses the body through the bare union, where an untagged
+                // request is a client bug rather than a value to guess at.
+                engine: 'vpn-helper',
+                host: host.trim(),
+                port: portNum,
+                username: username.trim() ? username.trim() : undefined,
+                password: password ? password : undefined,
+                udpMode,
+                failClosed,
+                clearCredential: clearCredential ? true : undefined,
+                expect,
+                onGeoFail,
+              },
+            })
+          ).detail,
+        ),
       {
         success: 'Route applied',
         failure: 'Could not apply the route',

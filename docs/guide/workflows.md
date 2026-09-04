@@ -1,6 +1,6 @@
 # Workflows
 
-A workflow is a pipeline of scripts that runs as **one job, on one device, under one lease** — nothing else can use that device between nodes, and the app state one node leaves behind is what the next one starts from. The full design is `docs/plans/99-m64-workflows.md`; the document shape and the two closed grammars a node can use are `packages/protocol/README.md`; the executor, `job_nodes`, and resume are `packages/core/README.md`. This page is the owner's own example, built end to end.
+A workflow is a pipeline of scripts that runs as **one job, on one device, under one lease** — nothing else can use that device between nodes, and the app state one node leaves behind is what the next one starts from. The full design is `docs/archive/plans/99-m64-workflows.md`; the document shape and the two closed grammars a node can use are `packages/protocol/README.md`; the executor, `job_nodes`, and resume are `packages/core/README.md`. This page is the owner's own example, built end to end.
 
 ## The example
 

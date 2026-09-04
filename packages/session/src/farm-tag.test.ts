@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import type { Transport } from '@enkaku/protocol'
-import { FARM_TAG_PROPERTY, applyFarmTag } from './farm-tag'
+import { applyFarmTag } from './farm-tag'
 import type { Logger } from './logger'
+
+/** Mirrors farm-tag.ts's private constant; a test that pins the shipped value. */
+const FARM_TAG_PROPERTY = 'debug.enkaku.instrumented'
 
 function silentLog(): { log: Logger; warnings: string[]; debugs: string[] } {
   const warnings: string[] = []

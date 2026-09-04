@@ -1,12 +1,7 @@
 import { z } from 'zod'
-import {
-  DeviceDetailResponseSchema,
-  DeviceLabelStateSchema,
-  DeviceResponseSchema,
-  type DeviceLabelState,
-  type DeviceLabelsApplyResult,
-} from '@enkaku/protocol'
+import { DeviceDetailResponseSchema, DeviceLabelStateSchema, DeviceResponseSchema, type ActionResult, type DeviceLabelState } from '@enkaku/protocol'
 import { api } from '@enkaku/ui'
+import { runOnDevice } from '@/lib/actions'
 import type { NamedOutcome } from '@/components/bulk/SkippedGroups'
 import type { OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 
@@ -76,13 +71,17 @@ export async function setWallpaperLabelMode(deviceId: string, knownSettings?: un
 }
 
 /**
- * Step 2 of §3.5, and the truthful one: `POST /:id/label/apply` answers with
- * the device's real `DeviceLabelState`, parsed through the protocol's own
- * schema (never an `as`-cast — the whole point of this call is that its
- * `state` is reported verbatim, so it had better be the shape it claims).
+ * Step 2 of §3.5, and the truthful one. Plan 207 §4.2, §4.9 — `POST
+ * /:id/label/apply` is gone; this is now the actions API's own `set-label`
+ * verb (`runOnDevice('set-label', deviceId, {})`), whose `done` result
+ * carries the device's real `DeviceLabelState` as its `detail`, parsed
+ * through the protocol's own schema (never an `as`-cast — the whole point of
+ * this call is that its `state` is reported verbatim, so it had better be
+ * the shape it claims).
  */
 export async function applyDeviceLabel(deviceId: string): Promise<DeviceLabelState> {
-  return api(`/api/devices/${deviceId}/label/apply`, DeviceLabelStateSchema, { method: 'POST' })
+  const result = await runOnDevice('set-label', deviceId, {})
+  return DeviceLabelStateSchema.parse(result.detail)
 }
 
 /** Both halves, in order — the whole of one press of "Set number as wallpaper" for ONE device. */
@@ -92,7 +91,8 @@ export async function setNumberAsWallpaper(deviceId: string, knownSettings?: unk
 }
 
 /**
- * `POST /api/devices/labels/apply`'s per-device report, turned into the
+ * The `set-label` actions verb's per-device results (plan 207 §4.9 — was
+ * `POST /api/devices/labels/apply`'s own report), turned into the
  * `OutcomeSummary` + `SkippedGroups` pair every bulk surface in Studio shares.
  *
  * **Only `applied` counts as ok.** That is plan 124 §4.6's "Apply labels stops
@@ -105,29 +105,34 @@ export async function setNumberAsWallpaper(deviceId: string, knownSettings?: unk
  * `partial`, `unavailable`, `stale` and `unknown` are real, reported outcomes
  * of the labelling service — not thrown errors — so they group under
  * `skipped`, each carrying the service's OWN reason text verbatim (plan 93
- * §3.15's rule: never invented, never paraphrased). `state === null` is the
- * only `failed`: the call itself threw before producing a state at all.
+ * §3.15's rule: never invented, never paraphrased). A non-`done`
+ * `ActionResult` (`failed`/`forbidden`/`skipped`/`warned`) is the only
+ * `failed` row now — the actions API's own refusal, named by its `message`.
  */
 export function summariseLabelApply(
-  results: readonly DeviceLabelsApplyResult[],
+  results: readonly ActionResult[],
   total: number,
   nameOf: (deviceId: string) => { label: string; number: number | null },
 ): { counts: OutcomeCounts; failed: NamedOutcome[]; skipped: NamedOutcome[] } {
   const named = (deviceId: string, reason: string): NamedOutcome => ({ deviceId, ...nameOf(deviceId), reason })
-  const ok = results.filter((r) => r.state?.state === 'applied').length
-  const failed = results.filter((r) => r.state === null).map((r) => named(r.deviceId, r.error ?? 'unknown error'))
-  const skipped = results
-    .filter((r) => r.state !== null && r.state.state !== 'applied')
-    .map((r) =>
-      named(
+  const states = results.map((r) => ({ r, state: r.status === 'done' ? DeviceLabelStateSchema.safeParse(r.detail) : null }))
+  const ok = states.filter(({ state }) => state?.success && state.data.state === 'applied').length
+  const failed = states
+    .filter(({ r, state }) => r.status !== 'done' || !state?.success)
+    .map(({ r }) => named(r.deviceId, r.message ?? r.status))
+  const skipped = states
+    .filter(({ state }) => state?.success && state.data.state !== 'applied')
+    .map(({ r, state }) => {
+      const data = (state as { success: true; data: DeviceLabelState }).data
+      return named(
         r.deviceId,
         // `off` is the one state the service leaves `reason: null` on, because
         // from its side there is nothing to explain — it was asked to apply a
         // mode of `off` and did exactly that. From the operator's side it is
         // the single most important thing this report can say, so it is
         // spelled out here rather than degrading to the bare word "off".
-        r.state?.state === 'off' ? 'labelling is off for this device' : (r.state?.reason ?? r.state?.state ?? 'not applied'),
-      ),
-    )
+        data.state === 'off' ? 'labelling is off for this device' : (data.reason ?? data.state ?? 'not applied'),
+      )
+    })
   return { counts: { ok, failed: failed.length, skipped: skipped.length, total }, failed, skipped }
 }

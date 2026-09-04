@@ -1,4 +1,4 @@
-import type { DeviceCallMethod, JobTraceEvent } from '@enkaku/protocol'
+import type { DeviceCallMethod, JobTraceEvent, UiNode } from '@enkaku/protocol'
 import type { DeviceCall } from './ipc'
 
 /**
@@ -189,13 +189,11 @@ export interface TraceTee {
   /** One artifact. `frameBytes` is the artifact's own bytes for a screenshot (§3.2) — never a second capture. */
   artifact(a: { kind: string; label: string; sizeBytes: number; frameBytes?: unknown }): void
   progress(value: unknown): void
-  assist(e: { at: number; actor: string | null }): void
 }
 
 export interface TraceTeeDeps {
-  jobId: string
-  /** Plan 99's workflow node axis, mirroring `artifacts.nodeId`. Undefined for every non-workflow job. */
-  nodeId?: string | null
+  /** The RUN this trace belongs to (renamed from `jobId`, plan 211). */
+  runId: string
   /** The LIVE attempt number — an accessor, because one tee spans every attempt of a job (see this module's doc). */
   attempt: () => number
   /**
@@ -236,6 +234,27 @@ export function resolveFramePolicy(engineId: string | null): FramePolicy {
   if (engineId === null) return 'none'
   if (engineId === 'ui-server') return 'per-action'
   return 'on-failure'
+}
+
+/**
+ * Plan 208 §3.7, §4.9 — the failing-action trace capture's "cheap cache"
+ * window. The script has usually just paid for a dump (`find`/`waitFor`/
+ * `dump` are the actions that fail on an absent element); reusing it avoids
+ * a second round trip on the channel the script's own calls share. Short on
+ * purpose: a tree from thirty seconds ago is not the picture a debugger came
+ * for.
+ */
+export const TRACE_TREE_REUSE_MS = 2_000
+
+/**
+ * `cached` is an engine's `lastDump()` (optional on `Inspector` — an engine
+ * that does not track one, or has never dumped, answers `null`/`undefined`
+ * here too). Returns the cached root when it is at most `TRACE_TREE_REUSE_MS`
+ * old, `null` otherwise — the caller dumps fresh in that case.
+ */
+export function reusableTree(cached: { root: UiNode; at: number } | null | undefined, now: number): UiNode | null {
+  if (!cached) return null
+  return now - cached.at <= TRACE_TREE_REUSE_MS ? cached.root : null
 }
 
 /** §4.4 — one arg value, truncated to a marker when its JSON exceeds `MAX_ARG_BYTES`. */
@@ -288,7 +307,6 @@ export function createNoopTraceTee(): TraceTee {
     log: () => {},
     artifact: () => {},
     progress: () => {},
-    assist: () => {},
   }
 }
 
@@ -362,11 +380,10 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
     uiHash?: string | null
   }): TraceEventInput {
     return {
-      jobId: deps.jobId,
+      runId: deps.runId,
       atMs: part.atMs,
       attempt: part.attempt,
       phase: part.phase,
-      nodeId: deps.nodeId ?? null,
       kind: part.kind,
       name: part.name,
       durationMs: part.durationMs ?? null,
@@ -379,7 +396,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
     }
   }
 
-  /** Every instantaneous event (log, artifact, progress, assist, phase) goes through here. */
+  /** Every instantaneous event (log, artifact, progress, phase) goes through here. */
   function emitInstant(kind: JobTraceEvent['kind'], name: string, opts: { atMs?: number; meta?: Record<string, unknown> | null; durationMs?: number | null } = {}): void {
     safeEmit(
       build({
@@ -616,13 +633,6 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
       }
     },
 
-    assist(e) {
-      try {
-        emitInstant('assist', 'assist', { atMs: e.at, meta: { actor: e.actor } })
-      } catch {
-        // observe, never alter
-      }
-    },
   }
 }
 

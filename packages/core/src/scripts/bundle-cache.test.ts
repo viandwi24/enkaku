@@ -7,7 +7,6 @@ import { materializeBundle, materializeBundleText } from './bundle-cache'
 function row(overrides: Partial<ScriptRow>): ScriptRow {
   return {
     id: 'id-1',
-    kind: 'script',
     name: 'checkout',
     version: '1.0.0',
     bundle: 'export default { id: "checkout" }',

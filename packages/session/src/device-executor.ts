@@ -1,5 +1,5 @@
 import { shellQuote } from '@enkaku/adb'
-import { buildGesturePath, supportsElementActions, UiautomatorDumpInspector } from '@enkaku/drivers'
+import { buildGesturePath, supportsElementActions } from '@enkaku/drivers'
 import {
   centerOf,
   matchSelector,
@@ -32,6 +32,19 @@ import type { TransferPort } from './types'
  * threading its own identity through simply passes `source` itself.
  */
 const DEFAULT_INPUT_SOURCE: InputSource = { kind: 'job', id: 'device-executor', userId: null }
+
+/**
+ * The methods that need the session's inspector (plan 208 §3.5, §4.10):
+ * `deviceCall` (`packages/core/src/capability/context.ts`) awaits
+ * `whenInspectorReady()` for exactly these, so a `tap` from an agent never
+ * waits on an engine it does not use. Exported so the capability path and
+ * this executor cannot disagree.
+ */
+export const INSPECTOR_METHODS: ReadonlySet<string> = new Set(['find', 'dump', 'waitFor', 'screenshot'])
+
+export function needsInspector(call: { method: string }): boolean {
+  return INSPECTOR_METHODS.has(call.method)
+}
 
 export type { TimingSettings }
 
@@ -119,7 +132,7 @@ export function createDeviceExecutor(deps: {
    * (every caller before plan 94) OR a getter (plan 94 §4.5, §5 step 94.2,
    * F10) — resolved FRESH ON EVERY DEVICE CALL, not once when this executor
    * is built. This is the fix for a defect this repo has shipped repeatedly
-   * (most recently a co-control queue budget read once and never again): a
+   * (most recently an input-arbiter queue budget read once and never again): a
    * value captured at construction cannot respond to a farm/device setting
    * an operator changes while a script is still mid-run — `job-runner.ts`
    * already re-resolves `deps.timing()` once per ATTEMPT (a real freshness
@@ -160,13 +173,27 @@ export function createDeviceExecutor(deps: {
     const t = deps.timing
     return typeof t === 'function' ? t() : (t ?? DEFAULT_TIMING)
   }
-  // The session's own inspector (ui-server / uiautomator-dump). When a session
-  // is created without one (manual control mode), fall back to an ad-hoc dump engine.
-  const inspector: Inspector = deps.session.inspector ?? new UiautomatorDumpInspector(deps.session.transport)
+  /**
+   * Read per call, never captured at construction (plan 208 §3.5): the
+   * session's inspector is `null` until the prewarm settles. A `null` is now
+   * an error, `E_INSPECTOR_STARTING`, never a substitute engine — the old
+   * ad-hoc `uiautomator dump` fallback took the `instrumentation` lock and
+   * could kill a healthy ui-server in another session (MVP 02 §2.5). The
+   * dump engine is built in exactly one place now, the factory's own
+   * fallback (`inspector-factory.ts`).
+   */
+  const inspectorOrThrow = (): Inspector => {
+    const i = deps.session.inspector
+    if (i) return i
+    throw new SessionError(
+      'E_INSPECTOR_STARTING',
+      `the inspector on ${deps.session.deviceId} is still starting (engine: ${deps.session.inspectorEngineId}); retry in a moment`,
+    )
+  }
   // Plan 91 §3.1, §3.3, §4.1 — fixes F6/H1: every pointer/key/text write goes
   // through the arbiter's lanes rather than the raw `session.input` sink, so
-  // this job's actions never interleave with a concurrently assisting
-  // human's. Lazy and memoised: built on first actual use, not at executor
+  // this job's actions never interleave with a person controlling the same
+  // device. Lazy and memoised: built on first actual use, not at executor
   // construction — a `DeviceSession` fixture that never sends input (most of
   // this package's own tests: `app.launch`, `dump`, `find`, `push`, ...) must
   // not be required to supply a working `arbiter` just because SOME executor
@@ -203,7 +230,7 @@ export function createDeviceExecutor(deps: {
 
   async function resolveTarget(sel: Selector): Promise<Point> {
     if ('point' in sel) return sel.point
-    const node = await inspector.find(sel)
+    const node = await inspectorOrThrow().find(sel)
     if (!node) throw new SessionError('element_not_found', `element not found: ${JSON.stringify(sel)}`)
     return centerOf(node.bounds)
   }
@@ -216,6 +243,7 @@ export function createDeviceExecutor(deps: {
    * still gets an honest, if less specific, outcome rather than an error.
    */
   async function findOutcome(sel: Selector): Promise<FindOutcome> {
+    const inspector = inspectorOrThrow()
     if (inspector.findDetailed) return inspector.findDetailed(sel)
     const node = await inspector.find(sel)
     return node ? { ok: true, node } : { ok: false, reason: 'not-found', matches: 0 }
@@ -387,8 +415,13 @@ export function createDeviceExecutor(deps: {
         // §3.3): ui-server's element-scoped `set_text` is already unicode-clean (F26) and is
         // tried first whenever a selector-based tap makes it applicable, before the ladder is
         // ever consulted — unchanged from before this plan.
-        if (instant && supportsElementActions(inspector) && lastTarget) {
-          await inspector.setText(lastTarget, call.args.text)
+        //
+        // Read directly, never `inspectorOrThrow()` (plan 208 §3.5): `type`
+        // is not one of `INSPECTOR_METHODS`, so a still-starting engine
+        // falls straight to the text ladder below rather than throwing.
+        const currentInspector = deps.session.inspector
+        if (instant && currentInspector && supportsElementActions(currentInspector) && lastTarget) {
+          await currentInspector.setText(lastTarget, call.args.text)
           return { via: 'ui-server-set-text', clobberedClipboard: false }
         }
 
@@ -467,9 +500,14 @@ export function createDeviceExecutor(deps: {
         // has always had this method; nothing but the script ever asked for
         // it. The four-shape selector grammar cannot reach a node that has a
         // resource id and no text, and ordinary TypeScript over the tree can.
-        return inspector.dump()
+        return inspectorOrThrow().dump()
       }
       case 'waitFor': {
+        // Thrown up front, before the loop's own `.catch` below — otherwise
+        // an `E_INSPECTOR_STARTING` from `findOutcome()` would be swallowed
+        // into a plain `not-found` and reported as a timeout instead of the
+        // real reason (plan 208 §3.5, §4.10).
+        inspectorOrThrow()
         // The polling loop lives in the parent — one call, one meaning, pacing in
         // one place. The interval follows the active engine: ui-server is cheap
         // (~80ms), a dump is expensive.
@@ -494,7 +532,7 @@ export function createDeviceExecutor(deps: {
         }
       }
       case 'screenshot': {
-        const png = await inspector.screenshot()
+        const png = await inspectorOrThrow().screenshot()
         return Buffer.from(png).toString('base64')
       }
       case 'app.launch': {

@@ -18,7 +18,7 @@ export const deviceClipboardGet = defineCapability({
   input: ClipboardGetArgsSchema.extend({ deviceId: z.string() }),
   output: TextOutput,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 10_000,
   effect: 'read',
   description:
@@ -35,7 +35,7 @@ export const deviceClipboardSet = defineCapability({
   input: ClipboardSetArgsSchema.extend({ deviceId: z.string() }),
   output: OkOutput,
   permission: 'device.control',
-  lease: 'control',
+  activity: { kind: 'control' },
   deadline: 10_000,
   effect: 'write',
   description: 'Set the device clipboard. paste:true also pastes it into the currently focused field (scrcpy sessions only).',

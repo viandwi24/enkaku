@@ -225,7 +225,7 @@ function AgentDetail() {
   }, [connectorId])
 
   // Reset the run/tree the moment the open thread changes — `Chat` itself resets on mount (a fresh
-  // `key={threadId}`) for a new `threadId`, but the PARENT's own mirror (used only for the header's
+  // `key={threadId}`) for a new `threadId`, but the PARENT's own copy (used only for the header's
   // Cancel button) must not go on showing a previous thread's run while a new one loads.
   useEffect(() => {
     setRun(null)

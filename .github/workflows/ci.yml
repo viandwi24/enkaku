@@ -49,16 +49,15 @@ jobs:
       # until a tag is already published.
       - run: bash scripts/check-release-packs.sh
       - run: bun run typecheck
+      # `@enkaku/ui` and Studio have zero tests (plan 200 §8.3); this is
+      # their gate instead — the palette, the icon set, and the barrel
+      # exports plan 204 depends on (plan 204 §12).
+      - run: bun run scripts/check-design-tokens.ts
+      # The orphan-route rule (plan 213 §3.7): every top-level `src/app`
+      # route is either a rail entry or a named exemption, and a listed
+      # exemption must still exist on disk (a stale row fails the build).
+      - run: bun run scripts/check-routes.ts
       - run: bun test
-      # Studio's component/page tests need a real DOM and run as their own
-      # invocation, not as part of the root `bun test` above (plan 72 §4.4,
-      # criterion 10 — see CLAUDE.md's Commands section for why).
-      - run: bun run --cwd packages/studio test
-      # `packages/ui` — Studio's components, extracted in plan 111 step 111.1 so
-      # a plugin can import the same ones — is excluded from the root `bun test`
-      # on the same grounds and needs the same separate invocation: its
-      # component tests render against the DOM its own bunfig.toml preloads.
-      - run: bun run --cwd packages/ui test
       # `plugins/*` and `examples/` sit outside `bunfig.toml`'s `[test] root =
       # "packages"`, so each needs its own invocation.
       #
@@ -83,14 +82,17 @@ jobs:
       # its worth depends entirely on staying diffable against upstream. A
       # local edit is invisible to typecheck and tests — only this catches it.
       - run: bash scripts/check-harness-provenance.sh
+      # Plan 201 (MVP wave 0): every name the housekeeping plan deleted stays
+      # deleted. Grep only, exits non-zero on the first hit; a hit is fixed by
+      # deleting the thing again, never by allowlisting it in the script.
+      - run: bash scripts/check-dead-code.sh
       # Plan 84 (M49) §4.4 "closing the loop": a deliberately dumb name-presence
-      # check for a table, route, or `page.tsx` screen that appears in neither
-      # docs/spec.md nor a DIV- row in docs/spec-divergences.md. Warning only —
-      # it always exits 0 today (see FAIL_ON_GAP in scripts/spec-check.ts);
-      # dozens of divergence rows are still open, and failing the build on day
-      # one would block every commit. It becomes a hard gate once that register
-      # reaches zero open rows (plan 84 §9 Q4) — flipping the single constant
-      # in the script is the only change that step needs.
+      # check for a table, route, or `page.tsx` screen that appears nowhere in
+      # docs/spec.md (the MVP spec, plan 202). Warning only — it always exits 0
+      # today (see FAIL_ON_GAP in scripts/spec-check.ts): the spec is a skeleton
+      # and the code still carries the prototype tables and routes the MVP
+      # deletes, so the gap list is the to-do list, not a failure. Plan 224
+      # flips the single constant once the spec is final.
       - run: bun run spec:check
       # scripts/ sits outside bunfig.toml's `[test] root = "packages"` — like
       # plugins/* and examples/ above — but has no package.json of its own for
@@ -143,10 +145,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
-      # Same split as `check` above, and for the same reason (plan 72 §4.4,
-      # criterion 10 — see CLAUDE.md's Commands section).
-      - run: bun run --cwd packages/studio test
-      - run: bun run --cwd packages/ui test
       - run: bun run --cwd plugins/networking test
       - run: bun run --cwd plugins/proxy-manager test
       - run: bun run --cwd plugins/tiktok-automation-pack test
@@ -159,10 +157,11 @@ jobs:
       # the two checks below, so it is worth the extra minute here.
       - run: bun test ./scripts/spec-check.test.ts
       # Deliberately NOT run here: `check-plan-status.sh`,
-      # `check-harness-provenance.sh`, and `bun run spec:check`. All three
-      # inspect committed text (a plan's status header, a vendored-file diff,
-      # spec/code name-presence) with no OS-dependent behaviour of their own —
-      # `check` already runs them once per push — and the provenance diff in
+      # `check-harness-provenance.sh`, `check-dead-code.sh`, and `bun run
+      # spec:check`. All four inspect committed text (a plan's status header,
+      # a vendored-file diff, deleted names, spec/code name-presence) with no
+      # OS-dependent behaviour of their own — `check` already runs them once
+      # per push — and the provenance diff in
       # particular is exactly the kind of check a Windows git checkout's
       # CRLF/LF translation can fail *for the wrong reason*. Excluded on
       # purpose, not silently dropped.
@@ -180,6 +179,7 @@ jobs:
             android:
               - 'apps/guest-agent/**'
               - 'scripts/build-guest-agent.sh'
+              - 'packages/toolchain/manifest/enkaku-tools.json'
 
   # Builds the guest agent APK only — it does not sign, publish, or run it against a device.
   # Path-conditional because provisioning the Android SDK and NDK costs several hundred megabytes

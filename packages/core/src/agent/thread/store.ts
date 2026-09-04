@@ -187,7 +187,7 @@ export function createThreadStore(db: Db) {
     return db.select().from(agentRuns).where(eq(agentRuns.threadId, threadId)).orderBy(desc(agentRuns.startedAt), desc(agentRuns.id)).all().map(rowToRun)
   }
 
-  /** Direct children of a run (plan 67 §3.5's cascade, §3.7's tree-lease-holder queries). */
+  /** Direct children of a run (plan 67 §3.5's cascade, §3.7's tree-claim-holder queries). */
   function listChildRuns(parentRunId: string): AgentRun[] {
     return db.select().from(agentRuns).where(eq(agentRuns.parentRunId, parentRunId)).all().map(rowToRun)
   }

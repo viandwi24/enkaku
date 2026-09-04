@@ -111,8 +111,9 @@ class RouteVpnService : VpnService() {
         }
       }
     }
-    // Never restarted by the system on its own: a route belongs to a lease, and the host reapplies
-    // it deliberately. Coming back by itself would resurrect a route whose lease has ended.
+    // Never restarted by the system on its own: a route belongs to the activity that applied it,
+    // and the host reapplies it deliberately. Coming back by itself would resurrect a route whose
+    // activity has ended.
     return START_NOT_STICKY
   }
 

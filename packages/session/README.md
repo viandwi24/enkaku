@@ -26,11 +26,12 @@ device's `InputSink` and the sink itself. It exists because the sink has
 both run against one shared virtual pointer with one position and one touch
 bit. Two overlapping callers writing to it directly do not produce two taps;
 they produce one incoherent gesture, because nothing in the byte stream
-identifies which caller a given `write()` belongs to. Plan 91 (co-control,
-letting a human reach into a device a job is driving) made two callers
-possible for the first time, so an arbiter had to exist before authorisation
-did — shipping the grant without it would have shipped the feature and a
-silent input-corruption defect in the same commit.
+identifies which caller a given `write()` belongs to. Plan 91 (letting a
+human reach into a device a job is driving — since superseded by plan 205's
+activity model) made two callers possible for the first time, so an arbiter
+had to exist before authorisation did — shipping the grant without it would
+have shipped the feature and a silent input-corruption defect in the same
+commit.
 
 **Why three lanes, and not one queue.** The obvious fix — a single per-device
 mutex around all input — is correct and badly wrong for the product: a
@@ -52,12 +53,12 @@ running, because they are different lanes.
 
 **Rules inside each lane:**
 
-- **FIFO, non-preemptive, priority by source.** `assist` (a human helping a
-  job or another operator) jumps ahead of *queued* `job`/`agent` actions, but
+- **FIFO, non-preemptive, priority by source.** A `user` (the operator
+  actually driving the device — plan 205 §5 step 205.10 reworked this from
+  the old three-way split) jumps ahead of *queued* `job`/`agent` actions, but
   never interrupts one already running — preempting mid-gesture would
-  reintroduce exactly the corruption the arbiter exists to prevent. `lease`
-  (the ordinary manual operator) sits between `assist` and `job`/`agent`,
-  which share a priority and settle by arrival order.
+  reintroduce exactly the corruption the arbiter exists to prevent. `job` and
+  `agent` share a priority and settle by arrival order.
 - **Bounded, and every refusal names what it waited for.** `queueWaitMs`
   (read fresh on every submission, so a farm setting change takes effect on
   the very next action) and `maxQueueDepth` cap how long and how deep a lane
@@ -65,25 +66,25 @@ running, because they are different lanes.
   with a message like *"the job's swipe is still running (waited 5.0 s)"* —
   never silently dropped, never queued forever.
 - **`for(source): InputSink`** returns a façade bound to one `InputSource`
-  (`{ kind: 'lease' | 'assist' | 'job' | 'agent', id, userId }`) — every
-  existing production caller of the raw sink migrated to
+  (`{ kind: 'user' | 'job' | 'agent', id, userId }`, `id` matching the
+  activity registry's own marker id — plan 205 §4.2) — every existing
+  production caller of the raw sink migrated to
   `session.arbiter.for(source).*` in the same commit that added the arbiter
   (per `00-overview.md` §4.3, "replace, never version"); `session.input`
   remains the raw sink, touched only by the arbiter itself.
 - **`stats()`** reports `{ depth, running, waitMsP50, waitMsP95, refusals }`
-  per lane, the source `GET /api/adb/stats`'s `input` block and `enkaku
-  doctor`'s co-control check both read from (`packages/core/README.md`).
+  per lane, the source `GET /api/adb/stats`'s `input` block reads from
+  (`packages/core/README.md`).
 
 **No `onAction` callback.** The arbiter's constructor originally sketched an
-`onAction` hook meant to feed the attribution work (`jobs.assistCount`, the
-`device_events` `meta.assist`/`meta.jobId`, the `device.assist` audit row).
-It shipped with no producer wired to it and nothing reading its output:
-attribution ended up going through `ws-handlers.ts`'s own `input.*` branch
-directly, at the exact call site that already has the verb-specific payload
-(tap position, swipe endpoints, redacted text) a generic completion event
-never carried, and the mirror path (`packages/core/src/mirror/group.ts`'s
-`dispatch`) does the identical thing independently for a mirrored action. The
-dead callback was found and removed 2026-08-13
+`onAction` hook meant to feed the attribution work — a subordinate-grant
+mechanism plan 205 §3.2 item 8 deleted outright rather than renamed. It
+shipped with no producer wired to it and nothing reading its output:
+attribution instead goes through `ws-handlers.ts`'s own `input.*` branch,
+which records the control marker directly, inline, at the exact call site
+that already has the verb-specific payload (tap position, swipe endpoints,
+redacted text) a generic completion event never carried. The dead callback
+was found and removed 2026-08-13
 (`docs/plans/96-m61-hotfixes.md` §96.13) rather than left wired to nothing —
 see `src/input-arbiter.ts`'s own header comment for the full account.
 `adb-input` (the crude fallback engine) needs no lane logic of its own: it is
@@ -97,15 +98,14 @@ existing `input: InputSink`. The arbiter's `queueWaitMs`/`maxQueueDepth` are
 threaded through from `SessionManagerDeps.arbiterQueueWaitMs`/
 `arbiterMaxQueueDepth` (both `() => number`, optional — omitted falls back to
 `DEFAULT_ARBITER_QUEUE_WAIT_MS` = 5000 / `DEFAULT_ARBITER_MAX_QUEUE_DEPTH` =
-32) down through `CreateSessionDeps`, read fresh on every submission so a
-farm setting edited mid-session (`coControl.queueWaitMs`/`maxQueueDepth`,
-`packages/protocol/src/settings.ts`) takes effect for that same session
-immediately, with no restart and no re-open. `daemon.ts` wires both to
-`() => settingsStore.get().coControl.{queueWaitMs,maxQueueDepth}` — closed
-2026-08-13 (`docs/plans/96-m61-hotfixes.md` §96.13), after shipping for a
-time with only the hardcoded defaults actually enforced regardless of what an
-operator configured; that gap is what `daemon-wiring.test.ts`'s "input
-arbiter settings" block now pins against a regression.
+32) down through `CreateSessionDeps`, read fresh on every submission so a farm
+setting edited mid-session would take effect for that same session
+immediately, with no restart and no re-open — **but there is no such farm
+setting any more**: the old second-operator-grant subsystem these two
+accessors were fed from is gone (plan 205 §2.4), and nothing replaced it, so
+`daemon.ts` now leaves both accessors unset and every session runs on the two
+hardcoded defaults above regardless of farm size (`daemon.ts`'s own comment
+beside `deviceIsAwake` has the full account).
 
 ## Video profiles: two quality profiles, one resolver (plan 92 §3.5, §3.6, §4.2)
 
@@ -161,7 +161,7 @@ again (spec: farm defaults are a template, not a live fallback), so a
 farm-wide video setting expressed that way would reach devices enrolled
 after the change and nothing else. `FarmSettings.video` is read **live**,
 at session-build time and on every `reprofile` pass, from `settingsStore` —
-the same freshness discipline `idleTtlSec` already used before this existed.
+the same freshness discipline every other per-session accessor here uses.
 
 The function is pure (no clock, no I/O, no settings-store read inside it),
 so `reprofile`'s own comparison and every Studio readout can call it and
@@ -225,9 +225,9 @@ Five rules, in order:
    operator edits a form field by field) and from the per-device PATCH
    route when `changedKeys` includes `video`. The core wires a 500ms
    debounce around this — see `packages/core/README.md`.
-3. **Every restart goes through the build lane** (`session.
-   maxConcurrentBuilds`, below) — re-profiling 25 live sessions is a queue,
-   not a burst.
+3. **Every restart goes through `restartAt`**, coalesced per `(deviceId,
+   quality)` the same way a fresh build is — two reprofile passes racing
+   the same entry restart it exactly once.
 4. **Never mid-job.** A device whose `status` is `busy` is collected into
    `skippedBusy` and its session object is left completely untouched — not
    even a phase event. **This is a deliberate blast-radius bound, not an
@@ -236,12 +236,12 @@ Five rules, in order:
    busy device picks up the new profile the next time its session is
    built from scratch (its next `stream.start` after the job releases it),
    not before.
-5. **It explains itself.** Every restarted session's phase events carry
-   `detail: 'applying new video settings'` (the generic
-   `SessionProgressMessage.detail` field, rendered by Studio's `LiveView`
-   under the phase headline) — an operator watching a tile go soft and
-   come back sharper sees why, rather than guessing at a spontaneous
-   reconnect.
+5. **It is silent on the wire, and that is deliberate.** Plan 206 §2 retired
+   the phase-progress message this restart used to narrate through — after
+   that plan a reprofile is a brief dark tile that repaints, with the
+   `'video_reprofile'` reason still recorded to the device event log for an
+   operator who goes looking, but no longer announced live on the tile
+   itself. A later plan may add an activity for it.
 
 `restartAt(deviceId, quality, detail?)` is the mechanism underneath — the
 generalisation of what used to be a `wall → control` upgrade special case
@@ -343,3 +343,79 @@ does, but its `atMs` is stamped at `begin()` — so it lands on the axis at the
 instant the action really started. Log lines are never held behind a capture.
 That is why `seq` (arrival order at the recorder) is the right keyset cursor
 and the wrong display axis; see `packages/core/README.md`'s companion section.
+
+## Always-on sessions (`src/always-on.ts`, `src/manager.ts`, plan 206)
+
+A session is built the instant a device comes online and lives until it goes
+offline — never built lazily by a browser's `stream.start`, never torn down
+by an idle timer (MVP 11 §1.1). Two modules split the responsibility:
+
+- **`manager.ts`'s `SessionManager`** owns the entries themselves: `build()`
+  constructs the one BASE (`wall`) entry a device holds for as long as it is
+  online; `acquire()`/`release()` are for job/readiness callers that only
+  ever want that base entry and never build one; `attachViewer()`/
+  `detachViewer()` are for WS viewers (`ws-handlers.ts`), which may ask for
+  `control` quality.
+- **`always-on.ts`'s `createAlwaysOn`** is the builder: it queues a build the
+  moment `deviceOnline(id)` fires, staggers pending builds by USB root
+  (`buildsPerUsbRoot`, default 4) and a farm-wide ceiling
+  (`SESSION_BUILD_FARM_CEILING`, 16, overridable by
+  `ENKAKU_SESSION_BUILD_CEILING`), retries a dead or failed build under a
+  fixed backoff (`REBUILD_BACKOFF_MS`: 1s, 3s, 10s, 30s, then 30s
+  repeated), and starts the inspector prewarm
+  (`INSPECTOR_PREWARM_DELAY_MS`, 2s after the first frame) once per
+  successful build.
+
+### Inspector lifecycle (plan 208 §3.2, §3.3)
+
+The inspector is session-scoped, not tab-scoped: `prewarmInspector()` (the
+always-on builder's call above) and `whenInspectorReady()` (a job, or an
+Inspect tab's `inspect.attach`) are the same start-once, join, never-reject
+contract — whichever runs first starts the engine, and `close()` is the only
+release. A start that cannot succeed fails fast: the launcher's line parser
+(`@enkaku/drivers`'s `lifecycle.ts`) rejects within about 250ms of a
+definitive `INSTRUMENTATION_*` failure line, and the 15s ceiling
+(`INSTRUMENTATION_START_SILENCE_MS`) is paid only by a server that prints
+nothing at all. A caller that reaches the inspector before the session's
+engine exists gets `E_INSPECTOR_STARTING` ("still starting, retry"), never a
+substitute ad-hoc `uiautomator dump` engine — that substitute is exactly what
+used to seize the `instrumentation` lock from a healthy `ui-server` in
+another session (MVP 02 §2.5). The `inspector ready: <engineId> on <deviceId>
+in <N> ms` log line reports the whole prewarm cost, once per session.
+
+### The five steps
+
+The activity sentence a device shows while it has no picture yet
+("Preparing, step 3 of 5") names the session's own build phases, in the
+order `createSession` actually runs them — the order is load-bearing, not
+cosmetic (MVP 02 §2.1):
+
+| Step | Phase | What runs |
+|---|---|---|
+| 1 | `connecting` | adb transport connect |
+| 2 | `waking` | `wakeDevice`, skipped (but still reported) when the readiness manager already holds the screen |
+| 3 | `starting-video` | jar push, port forward, scrcpy-server launch, video and control sockets |
+| 4 | `waiting-frame` | sockets up, no picture yet |
+| 5 | `ready` | first frame received — the `prep` activity ends here, and the inspector prewarm timer starts |
+
+### The encoder split
+
+At most **two** encoders per device, ever: the BASE (`wall`) entry, built by
+the always-on builder and running for the whole time the device is online,
+and the CONTROL entry, built on demand the instant a `control`-quality
+viewer attaches and closed `CONTROL_LINGER_MS` (15s) after its last viewer
+detaches. A `control` attach never waits on a build: it is served by the
+already-running wall entry first (`ViewerAttach.substitute: 'wall'`) and
+switched onto the control entry the moment its first real keyframe arrives
+(`ViewerHooks.onSwitched`) — nothing is transcoded or upscaled server-side,
+the browser simply draws a sharper frame into the same canvas. A control
+build that cannot produce a real second scrcpy session calls
+`ViewerHooks.onControlFailed` instead; the viewer stays on the wall entry.
+
+### The activity port
+
+`always-on.ts` cannot import plan 205's real `ActivityRegistry` directly —
+`@enkaku/core` depends on `@enkaku/session`, never the other way around
+(`00-overview.md` §4.1). `ActivityPort` is the seam: a core wires a real
+adapter over the registry (`daemon.ts`); a test, or a core built without
+plan 205, gets `noopActivityPort`.

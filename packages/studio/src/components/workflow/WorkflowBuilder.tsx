@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { GitBranch, LayoutGrid, Plus, Workflow as WorkflowIcon, X } from 'lucide-react'
 import { toast } from 'sonner'
 import type { ValueExpr, WorkflowFinding } from '@enkaku/protocol'
-import { publishWorkflow, validateWorkflow, WorkflowPublishError } from '@/lib/api'
+import { saveWorkflow, validateWorkflow, WorkflowPublishError, type WorkflowInfo } from '@/lib/api'
 import { useAction, Button, Input, Label, Switch, Textarea, cn } from '@enkaku/ui'
 import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 import { applyEdgeChange, type EdgeChange } from './canvas-edit'
@@ -55,11 +55,13 @@ function toNodeOption(n: WorkflowNodeDraft): NodeOption {
 export function WorkflowBuilder({
   initialDraft,
   scripts,
-  onPublished,
+  mode,
+  onSaved,
 }: {
   initialDraft: WorkflowDocDraft
   scripts: readonly ScriptOption[]
-  onPublished(result: { id: string; name: string; version: string }): void
+  mode: 'create' | 'update'
+  onSaved(workflow: WorkflowInfo): void
 }) {
   const [draft, setDraft] = useState(initialDraft)
   const [findings, setFindings] = useState<WorkflowFinding[]>([])
@@ -137,26 +139,26 @@ export function WorkflowBuilder({
       },
     )
 
-  const handlePublish = () =>
+  const handleSave = () =>
     run(
       'publish',
       async () => {
         const parsed = toWorkflowDoc(draft)
         if (!parsed.success) {
           setFindings(zodIssuesToFindings(parsed.error))
-          throw new Error('Fix the highlighted problems before publishing.')
+          throw new Error('Fix the highlighted problems before saving.')
         }
         try {
-          return await publishWorkflow(parsed.data)
+          return await saveWorkflow(parsed.data, mode)
         } catch (err) {
           if (err instanceof WorkflowPublishError && err.findings.length > 0) setFindings(err.findings)
           throw err
         }
       },
       {
-        success: 'Workflow published',
-        failure: 'Could not publish the workflow',
-        onSuccess: (script) => onPublished(script),
+        success: 'Workflow saved',
+        failure: 'Could not save the workflow',
+        onSuccess: (workflow) => onSaved(workflow),
       },
     )
 
@@ -180,27 +182,15 @@ export function WorkflowBuilder({
   return (
     <div className="mx-auto max-w-4xl space-y-5 px-5 py-4 pb-28">
       <section className="space-y-3 rounded-lg border bg-surface p-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1">
-            <Label className="text-[12px] font-normal text-fg-muted">Name</Label>
-            <Input
-              className="readout h-9"
-              placeholder="tiktok-search-pipeline"
-              value={draft.name}
-              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-              aria-label="Workflow name"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-[12px] font-normal text-fg-muted">Version</Label>
-            <Input
-              className="readout h-9"
-              placeholder="1.0.0"
-              value={draft.version}
-              onChange={(e) => setDraft((d) => ({ ...d, version: e.target.value }))}
-              aria-label="Workflow version"
-            />
-          </div>
+        <div className="space-y-1">
+          <Label className="text-[12px] font-normal text-fg-muted">Name</Label>
+          <Input
+            className="readout h-9"
+            placeholder="tiktok-search-pipeline"
+            value={draft.name}
+            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+            aria-label="Workflow name"
+          />
         </div>
         <div className="space-y-1">
           <Label className="text-[12px] font-normal text-fg-muted">Title</Label>
@@ -473,8 +463,8 @@ export function WorkflowBuilder({
         <Button type="button" variant="outline" onClick={() => void handleValidate()} disabled={isPending('validate')}>
           {isPending('validate') ? 'Validating…' : 'Validate'}
         </Button>
-        <Button type="button" onClick={() => void handlePublish()} disabled={isPending('publish') || draft.nodes.length === 0}>
-          {isPending('publish') ? 'Publishing…' : 'Publish'}
+        <Button type="button" onClick={() => void handleSave()} disabled={isPending('publish') || draft.nodes.length === 0}>
+          {isPending('publish') ? 'Saving…' : 'Save'}
         </Button>
         {findings.length > 0 && (
           <span className="readout text-[11.5px] text-fg-muted">

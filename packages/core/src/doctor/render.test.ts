@@ -110,23 +110,6 @@ function unhappyContext(): DoctorContext {
         restartAdvised: true,
       }),
     },
-    coControl: {
-      probe: async () => ({
-        lanes: {
-          pointer: { depth: 5, waitMsP50: 2000, waitMsP95: 4500, refusals: 3 },
-          keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
-          text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
-        },
-        assistsActive: 2,
-        mirrorGroups: 1,
-        mirrorMembers: 3,
-        mirrorFanoutMsP50: 40,
-        mirrorFanoutMsP95: 120,
-        queueWaitMs: 5_000,
-        uncollectedGrants: 1,
-        orphanedMirrorGroups: 1,
-      }),
-    },
   })
 }
 
@@ -224,7 +207,6 @@ describe('doctor package — never runs adb kill-server (repo rule, plan 41 §6.
     'checks/streams.ts',
     'checks/host-adb.ts',
     'checks/adb-health.ts',
-    'checks/co-control.ts',
     'checks/labelling.ts',
   ]
 

@@ -16,9 +16,10 @@ export const MAIN_EVENT_KINDS = [
   'device.online',
   'device.offline',
   'device.unauthorized',
-  'control.acquired',
-  'control.released',
-  'control.revoked',
+  /** An activity started on the device (plan 205, MVP 04) — carries { id, kind, label, actor }. */
+  'activity.started',
+  /** An activity ended on the device (plan 205, MVP 04) — carries { id, kind, label, actor }. */
+  'activity.ended',
   'session.opened',
   'session.closed',
   'session.degraded',
@@ -40,9 +41,9 @@ export const MAIN_EVENT_KINDS = [
   'device.artifact.mismatch',
   /** `desired` readiness changed, by a human or a policy (plan 43 §4.5) — carries { from, to }. */
   'device.readiness',
-  /** The inspector engine was started (or joined) for the Inspect tab (plan 56 §3.7) — carries { engineId }. Individual dumps are NOT recorded here (§3.7): they are reads, many per minute, and would drown the log. */
+  /** An Inspect tab attached to the session's already-running engine (plan 56 §3.7, plan 208 §3.2) — carries { engineId, tookMs }. Individual dumps are NOT recorded here (§3.7): they are reads, many per minute, and would drown the log. */
   'inspect.attached',
-  /** The last Inspect tab viewer left and the inspector engine was released (plan 56 §3.7). */
+  /** An Inspect tab viewer left; the engine keeps running with the session (plan 56 §3.7, plan 208 §3.2). */
   'inspect.detached',
   /** Bounded automatic network-route recovery gave up after its attempt bound (plan 90 §3.7 rule 5, fixes F20) — carries { attempts, message }. */
   'network.recovery.exhausted',
@@ -80,10 +81,6 @@ export const MAIN_EVENT_KINDS = [
    * never took (`packages/session/src/orientation.ts`).
    */
   'device.rotation',
-  /** A co-control (Assist) grant started on this device (plan 91 §3.5, §3.4 item 4) — mirrors `control.acquired`/`control.released` for the SUBORDINATE grant rather than the lease. Carries { jobId, primaryKind }. */
-  'control.assist.started',
-  /** The bookend to `control.assist.started` — carries { jobId, primaryKind, reason }, `reason` one of `AssistEndReason` ('released' | 'ttl' | 'disconnected' | 'primary_ended' | 'mode_off'). */
-  'control.assist.ended',
   // `'clipboard.overwritten'` — the text ladder's clipboard-paste rung (plan 90 §3.3 rule 3) —
   // was added here for step 90.5's benefit and removed by the M61 hotfix pass
   // (docs/plans/96-m61-hotfixes.md §96.7, §96.8): the rung it recorded was proven
@@ -91,8 +88,8 @@ export const MAIN_EVENT_KINDS = [
   // without first re-adding a reachable clipboard-paste rung to `packages/session/src/text-input.ts`.
 ] as const
 
-/** Input-stream kinds (§4.2). */
-export const INPUT_EVENT_KINDS = ['input.tap', 'input.swipe', 'input.gesture', 'input.key', 'input.text'] as const
+/** Input-stream kinds (§4.2). `input.touch` has no event kind: a stream is logged as a tap or a gesture on `up` (plan 209 §3.2 D8). */
+export const INPUT_EVENT_KINDS = ['input.tap', 'input.swipe', 'input.gesture', 'input.key', 'input.text', 'input.scroll', 'input.keyEvent', 'input.pinch'] as const
 
 export const DeviceEventSchema = z.object({
   id: z.string(),

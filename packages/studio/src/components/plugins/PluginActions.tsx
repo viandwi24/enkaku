@@ -7,6 +7,7 @@ import {
   PluginDataCountResponseSchema,
   PluginOkResponseSchema,
   PluginRemoveResponseSchema,
+  PluginRowResponseSchema,
   PluginVerifyResponseSchema,
   type PluginDataCountResponse,
 } from '@enkaku/protocol'
@@ -63,14 +64,18 @@ export function PluginActions({
 
   const activate = () =>
     run('activate-' + p.id, () => api(`/api/plugins/${p.id}/activate`, PluginActivateResponseSchema, { method: 'POST' }), {
-      success: `${p.name}@${p.version} activated`,
       failure: 'Could not activate this version',
-      onSuccess: onChanged,
+      onSuccess: (b) => {
+        toast.success(
+          `${p.name}@${p.version} active: ${b.scriptsMoved} script(s) moved${b.queuedKeepingPrevious > 0 ? `, ${b.queuedKeepingPrevious} queued job(s) keep the previous version` : ''}`,
+        )
+        onChanged()
+      },
     })
   const rollback = () =>
     run(
       'rollback-' + p.id,
-      () => api(`/api/plugins/${p.name}/rollback`, PluginActivateResponseSchema, { method: 'POST', json: { toVersion: p.version } }),
+      () => api(`/api/plugins/${p.name}/rollback`, PluginRowResponseSchema, { method: 'POST', json: { toVersion: p.version } }),
       {
         success: `Rolled back to ${p.name}@${p.version}`,
         failure: 'Could not roll back to this version',
@@ -107,7 +112,7 @@ export function PluginActions({
    * here.
    */
   const enable = () =>
-    run('enable-' + p.id, () => api(`/api/plugins/${encodeURIComponent(p.name)}/enable`, PluginActivateResponseSchema, { method: 'POST' }), {
+    run('enable-' + p.id, () => api(`/api/plugins/${encodeURIComponent(p.name)}/enable`, PluginRowResponseSchema, { method: 'POST' }), {
       success: `${p.name} enabled`,
       failure: 'Could not enable this plugin',
       onSuccess: onChanged,

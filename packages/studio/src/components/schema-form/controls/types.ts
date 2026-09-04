@@ -1,10 +1,3 @@
-import type { FieldPlan } from '../plan'
-
-/** Every leaf `FieldPlan` — everything a control (plan 95 §4.6) can be asked
- *  to render. `group` is excluded: nesting is `SchemaForm`'s own job (K7's
- *  card/left-rule rule), never a control's. */
-export type LeafPlan = Exclude<FieldPlan, { control: 'group' }>
-
 /**
  * The props every control shares (plan 95 §5 step 95.3). `SchemaForm` fills
  * these in for a form's own fields; `ListControl`/`TableControl` fill them

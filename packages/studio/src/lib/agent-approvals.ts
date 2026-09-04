@@ -11,7 +11,7 @@ import { latestRunId } from './agent-runs'
  * THE GAP, RECORDED RATHER THAN WORKED AROUND SILENTLY: Plan 66 built
  * `GET /runs/:id/approvals` (scoped to one run you already know the id of)
  * and a per-thread WS broadcast (`agent.approval.requested`, delivered only
- * to a connection that has `agent.subscribe`d that exact thread). Neither
+ * to a stream attached to that exact thread). Neither
  * one answers "what is pending, anywhere, right now" — there is no
  * `GET /api/v1/approvals?status=pending` and no farm-wide broadcast. So this
  * walks agent → threads → (bounded) messages → latest run id → that run's

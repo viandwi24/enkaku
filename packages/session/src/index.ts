@@ -13,10 +13,49 @@ export {
   type WallBudget,
   type WallTransport,
 } from './video-profile'
-export { createSessionManager, type SessionManager, type SessionManagerDeps } from './manager'
+export {
+  createSessionManager,
+  createRateMeter,
+  RateMeter,
+  CONTROL_LINGER_MS,
+  type SessionManager,
+  type SessionManagerDeps,
+  type SessionState,
+  type PrepStep,
+  type ViewerAttach,
+  type ViewerHooks,
+  type EncoderState,
+  type EncoderReport,
+  type FrameSink,
+  type ForwardRecord,
+} from './manager'
+export {
+  createAlwaysOn,
+  noopActivityPort,
+  buildSentence,
+  usbRootOf,
+  rebuildDelayMs,
+  prepLabel,
+  recoveringLabel,
+  PREP_QUEUED_LABEL,
+  PREP_STEP_COUNT,
+  REBUILD_BACKOFF_MS,
+  DEFAULT_BUILDS_PER_USB_ROOT,
+  SESSION_BUILD_FARM_CEILING,
+  SCRCPY_FALLBACK_AFTER_FAILURES,
+  INSPECTOR_PREWARM_DELAY_MS,
+  USB_ROOT_CACHE_MS,
+  NETWORK_ROOT,
+  UNKNOWN_ROOT,
+  ALWAYS_ON_ACTOR,
+  type ActivityPort,
+  type AlwaysOn,
+  type AlwaysOnDeps,
+  type DeviceBuildState,
+} from './always-on'
 export { createInspectorForSession, type InspectorHandle, type InspectorFactoryDeps } from './inspector-factory'
 export { PortAllocator, parsePortRange, isPortFree } from './port-allocator'
-export { createDeviceExecutor, DEFAULT_TIMING, type TimingSettings } from './device-executor'
+export { createDeviceExecutor, DEFAULT_TIMING, INSPECTOR_METHODS, needsInspector, type TimingSettings } from './device-executor'
 export {
   createInputArbiter,
   type InputArbiter,
@@ -47,6 +86,8 @@ export {
   redactArgs,
   ARG_REDACTION,
   MAX_ARG_BYTES,
+  reusableTree,
+  TRACE_TREE_REUSE_MS,
   type TraceTee,
   type TraceTeeDeps,
   type TraceToken,

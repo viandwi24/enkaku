@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { DeviceNetworkStatusResponseSchema, NetworkEngineIdSchema } from '@enkaku/protocol'
-import { admitMember } from '../command-console/runner'
-import type { LeaseManager } from '../lease/lease-manager'
+import { DeviceNetworkStatusResponseSchema, E_DEVICE_CONFLICT, NetworkEngineIdSchema } from '@enkaku/protocol'
+import type { ActivityRegistry } from '../activity/registry'
+import { evaluate, type ControlPolicySettings } from '../activity/policy'
 import type { DeviceNetworkPort } from '../network/route-service'
 import { pluginNameFromPrincipal } from '../plugins/principal'
 import { EnkakuError } from '../util/errors'
@@ -41,27 +41,20 @@ import { defineCapability } from './types'
  * `capability.invoke` row under the `plugin:<name>` principal. "What has this
  * plugin done to my farm" stays one query.
  *
- * ## The lease, and the one thing that is genuinely different here
+ * ## The activity policy, and the one thing that is genuinely different here
  *
- * Every network write takes a lease admission check (plan 44 §5.7) — a route
- * change on a phone somebody is actively driving is exactly the change they
- * will not notice. An operator at the device page already holds that lease; a
- * plugin never holds one and never will.
+ * Every network write is evaluated against the device activity policy (plan
+ * 44 §5.7, reworked by plan 205 §4.4, §5 step 205.8) — a route change on a
+ * phone somebody is actively driving is exactly the change they will not
+ * notice. The policy's `network-apply` row is what decides this, the SAME
+ * table `route-service.ts`'s own admission and the bulk apply consult,
+ * because a second implementation of "may this caller touch this device
+ * right now" would drift.
  *
- * So this uses `admitMember` — the command console's own three-branch policy
- * (plan 93 §3.8), imported rather than re-derived, because a second
- * implementation of "may this caller touch this device right now" would drift:
- *
- * | the device is | what happens |
- * |---|---|
- * | already held by this caller | run, hold nothing new, release nothing |
- * | idle | acquire a manual lease, run, release it in `finally` |
- * | held by someone else | refused `not_lease_holder`, naming them |
- * | running a job / offline / quarantined | refused with that verbatim reason |
- *
- * That is plan 114 §3.9's own answer for the bulk path (*"a transient lease per
- * device, serially, released immediately"*) and §9 Q2's ruling (*"skip and
- * name"* — never take over from a person), applied to the one-device case.
+ * A `forbid` decision refuses naming the conflicting activity; anything else
+ * runs, wrapped in a `network-apply:<uuid>` marker for the length of the
+ * call, so the device's Network panel and any other viewer see the write in
+ * progress the same way a job or an install already show.
  *
  * ## What it does NOT do
  *
@@ -104,7 +97,7 @@ const DeviceOnlyInput = z.object({ deviceId: z.string() })
 
 /**
  * The capability-facing half of `DeviceNetworkPort`: the same three operations,
- * with this caller's lease admission and principal already bound in.
+ * with this caller's activity admission and principal already bound in.
  *
  * Built per invocation by `createCapabilityContext`, like every other service
  * accessor on the context.
@@ -117,7 +110,8 @@ export interface DeviceNetworkCapabilityService {
 
 export interface DeviceNetworkServiceDeps {
   port: DeviceNetworkPort
-  leases: LeaseManager
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
+  controlSettings: () => ControlPolicySettings
 }
 
 export function createDeviceNetworkService(deps: DeviceNetworkServiceDeps, actor: CapabilityActor | null): DeviceNetworkCapabilityService {
@@ -133,63 +127,38 @@ export function createDeviceNetworkService(deps: DeviceNetworkServiceDeps, actor
   }
 
   /**
-   * Take the device for the length of one write, or refuse naming who has it.
-   *
-   * `userId` is the actor's own id for a person and `null` for a plugin: a
-   * `plugin:<name>` principal is not a row in `users`, and writing one into
-   * `lease.holderUserId` would make "who is holding this device" resolve to a
-   * user that does not exist. The `clientId` carries the full principal either
-   * way, so the hold is still attributable.
+   * Evaluate the `network-apply` row of the activity policy, refuse on
+   * `forbid`, and wrap `fn()` in a `network-apply:<uuid>` marker for the
+   * length of the write (plan 205 §4.4, §5 step 205.8) — visible to any
+   * other viewer of the device exactly the way a job or an install already
+   * are. The plugin name (`plugin:<name>`), when this is a plugin principal,
+   * is what the marker's actor names; a person's own id otherwise.
    */
-  async function withDevice<T>(deviceId: string, fn: () => Promise<T>, opts: { disarm?: boolean } = {}): Promise<T> {
+  async function withDevice<T>(deviceId: string, fn: () => Promise<T>): Promise<T> {
     const clientId = principal()
-    const userId = pluginNameFromPrincipal(clientId) === null ? clientId : null
-    const admitted = admitMember(deps.leases, deviceId, clientId, userId)
-    /**
-     * **The disarm direction, and the one code it lets through** — the same
-     * widening `requireDisarmAdmission` (`network/route-service.ts`) applies to
-     * `DELETE /api/devices/:id/network`, applied here so the capability and the
-     * HTTP endpoint agree about when a route may be turned OFF.
-     *
-     * That file carries the whole argument and it is not restated. The short
-     * form: a lease on an `offline` or `quarantined` device is not merely
-     * unheld, it is UNOBTAINABLE, so `device_unavailable` on the off switch does
-     * not mean "take control first", it means "you may never turn this off" —
-     * and offline is the case where turning a route off matters most. The
-     * machinery for a teardown that cannot reach the phone already exists and
-     * predates this: `revertNetwork` records the debt as `pendingClear` and the
-     * device's next admission settles it, with a real teardown. The gate was
-     * refusing the request before the machinery built for it could run.
-     *
-     * `device_busy` and `not_lease_holder` are still refused, unchanged. A job
-     * driving the phone right now, or a person holding it, is a collision and
-     * not a disarm.
-     *
-     * **This narrows nothing that was previously wide, and widens nothing but
-     * `clear`.** `set` still takes a full admission — applying a route to a
-     * phone you cannot reach is a promise you cannot keep. The route-service
-     * comment that used to read *"the plugin path into this function is NOT
-     * widened by this"* was true when written and is superseded here; the
-     * reason it is superseded is Reset data, where a plugin's stored assignments
-     * are the only record of which phones carry its routes, and the phones that
-     * most need un-routing are exactly the ones that are away.
-     */
-    if (!admitted.ok && !(opts.disarm === true && admitted.code === 'device_unavailable')) {
-      throw new EnkakuError(admitted.code, admitted.message)
-    }
+    const pluginName = pluginNameFromPrincipal(clientId)
+    const decision = evaluate('network-apply', deps.activities.list(deviceId), deps.controlSettings())
+    if (decision.decision === 'forbid') throw new EnkakuError(E_DEVICE_CONFLICT, decision.message)
+    const id = `network-apply:${crypto.randomUUID()}`
+    deps.activities.start(deviceId, {
+      id,
+      kind: 'network-apply',
+      label: 'Applying network route',
+      actor: pluginName ? { kind: 'plugin', id: clientId, label: pluginName } : { kind: 'user', id: clientId, label: clientId },
+    })
     try {
       return await fn()
     } finally {
-      if (admitted.ok && admitted.acquiredHere) deps.leases.releaseManual(deviceId, clientId)
+      deps.activities.end(deviceId, id)
     }
   }
 
   return {
-    // A read takes no lease: `GET /api/devices/:id/network` does not either, and
+    // A read takes no activity: `GET /api/devices/:id/network` does not either, and
     // reading what a phone is set to must work while somebody else is driving it.
     get: (deviceId) => deps.port.get(deviceId),
     set: (deviceId, route) => withDevice(deviceId, () => deps.port.set(deviceId, route, principal())),
-    clear: (deviceId) => withDevice(deviceId, () => deps.port.clear(deviceId, principal()), { disarm: true }),
+    clear: (deviceId) => withDevice(deviceId, () => deps.port.clear(deviceId, principal())),
   }
 }
 
@@ -200,29 +169,24 @@ function mustNetwork(network: DeviceNetworkCapabilityService | undefined): Devic
 }
 
 /**
- * `lease: 'none'` on all three, and it is not a loophole.
+ * No `activity` field on any of the three, deliberately — not an oversight.
  *
- * `invoke`'s own lease step refuses unless the CALLER already holds the manual
- * lease — which a plugin never does, so declaring `'control'` here would make
- * this capability permanently unreachable by the only caller it exists for.
- * The admission is not skipped; it moves into the handler, where `admitMember`
- * can take a transient hold and give it back, and where the refusals name the
- * real reason (`device_busy`, `device_unavailable`, `not_lease_holder`) instead
- * of `invoke`'s generic `E_NEEDS_LEASE`. This is the same reasoning
- * `device.wake`/`.sleep` already record for `readiness.set`.
- *
- * It also means `invoke` runs no readiness check, which is correct rather than
- * convenient: a route is a property of the DEVICE and survives it being offline
- * (plan 114 F14), so a config saved against a phone that is away applies when it
- * returns. `admitMember` still reports an unreachable device as
- * `device_unavailable`.
+ * `invoke`'s own activity-policy step refuses a capability that declares one
+ * unless the DEVICE is online, which a route must not require: a route is a
+ * property of the DEVICE and survives it being offline (plan 114 F14), so a
+ * config saved against a phone that is away applies when it returns, and a
+ * `clear` against an unreachable phone must still be accepted (the same
+ * disarm-direction rule `DELETE /api/devices/:id/network` follows). The
+ * admission is not skipped; it moves into `withDevice` above, which
+ * evaluates the SAME `network-apply` policy row `invoke` would have, without
+ * `invoke`'s blanket online requirement, and wraps the write in its own
+ * marker for as long as it runs.
  */
 export const deviceNetworkGet = defineCapability({
   id: 'device.network.get',
   input: DeviceOnlyInput,
   output: DeviceNetworkStatusResponseSchema,
   permission: 'device.network',
-  lease: 'none',
   deadline: 15_000,
   effect: 'read',
   description: "Read a device's network route: which engine is applied, what was declared, the named checks behind its health, and who set it.",
@@ -234,7 +198,6 @@ export const deviceNetworkSet = defineCapability({
   input: RouteSetInput,
   output: DeviceNetworkStatusResponseSchema,
   permission: 'device.network',
-  lease: 'none',
   // A `vpn-helper` apply walks an install/grant/bootstrap/forward/handshake/start
   // chain and settles against the device; an advisory write is sub-second. The
   // budget is the slow one, because refusing the slow case would make VPN mode
@@ -242,7 +205,7 @@ export const deviceNetworkSet = defineCapability({
   deadline: 120_000,
   effect: 'write',
   description:
-    "Apply a network route to a device, through the same door PUT /api/devices/:id/network uses — same lease admission, same credential refusal, same one-route-per-device lock. The route is recorded as set by this plugin, and the device's Network panel says so. Refused, naming the holder, while someone else is controlling the device.",
+    "Apply a network route to a device, through the same door PUT /api/devices/:id/network uses — same activity admission, same credential refusal, same one-route-per-device lock. The route is recorded as set by this plugin, and the device's Network panel says so. Refused, naming the conflicting activity, while someone else is controlling the device.",
   handler: (ctx, { deviceId, route }) => mustNetwork(ctx.network).set(deviceId, route) as Promise<z.infer<typeof DeviceNetworkStatusResponseSchema>>,
 })
 
@@ -251,7 +214,6 @@ export const deviceNetworkClear = defineCapability({
   input: DeviceOnlyInput,
   output: DeviceNetworkStatusResponseSchema,
   permission: 'device.network',
-  lease: 'none',
   deadline: 120_000,
   effect: 'write',
   description:

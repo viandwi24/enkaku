@@ -13,11 +13,11 @@ import type { PairingRow } from './bulk-builder'
  *
  * No DOM harness in this pack (`bits.test.ts` records the same limitation),
  * and `groups.tsx` additionally imports `@enkaku/host`
- * (`DeviceWallWithPicker`) — a module that is never published and only ever
- * resolves inside Studio's own bundle via an import map (see
+ * (`DevicePickerDialog`, plan 216 §4.10) — a module that is never published
+ * and only ever resolves inside Studio's own bundle via an import map (see
  * `src/enkaku-host.d.ts`'s header). `mock.module` stands in for it here so
  * `groups.tsx` can be imported at all; the module is otherwise untouched —
- * this proves the pure mapping function, nothing about the wall picker.
+ * this proves the pure mapping function, nothing about the device picker.
  *
  * A STATIC `import './groups'` at the top of this file would resolve (and
  * fail on) `@enkaku/host` before `mock.module` below ever runs — ES module
@@ -29,7 +29,7 @@ import type { PairingRow } from './bulk-builder'
  */
 
 mock.module('@enkaku/host', () => ({
-  DeviceWallWithPicker: () => null,
+  DevicePickerDialog: () => null,
 }))
 
 const loadGroups = () => import('./groups')

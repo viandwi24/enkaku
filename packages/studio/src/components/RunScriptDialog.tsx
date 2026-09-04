@@ -4,18 +4,12 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
-  BatchResponseSchema,
   clampSchema,
-  JobCreateResponseSchema,
-  ScriptResponseSchema,
   summarizeClamp,
-  type BatchInfo,
   type BatchOrder,
-  type ClusterInfo,
+  type GroupInfo,
   type DeviceInfo,
-  type JobInfo,
   type RuntimeEnvelope,
-  type WorkflowDoc,
 } from '@enkaku/protocol'
 import { ParamSetPicker } from '@/components/ParamSetPicker'
 import { RuntimeOverrideSection } from '@/components/schema-form/RuntimeOverrideSection'
@@ -23,6 +17,7 @@ import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
+import { runAction } from '@/lib/actions'
 import {
   Button,
   DeviceName,
@@ -40,15 +35,11 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-  Tabs,
-  TabsList,
-  TabsTrigger,
-  api,
   issuesFromError,
   relativeTime,
   useAction,
 } from '@enkaku/ui'
-import { estimateWorkflowDuration, fetchAllPages, type WorkflowDurationEstimate } from '@/lib/api'
+import { fetchAllPages, type WorkflowDurationEstimate } from '@/lib/api'
 
 export interface ScriptRow {
   id: string
@@ -79,26 +70,10 @@ export interface ScriptRow {
    */
   pluginName?: string | null
   isDev?: boolean
-  /**
-   * Plan 99 §3.1, §4.11, step 99.10 — `'script'` | `'workflow'`, straight off
-   * `scripts.kind`. Optional (not "always present") because several fixtures
-   * predate this field — a dev-slot row (`device/page.tsx`'s `devRows`),
-   * every existing test fixture in this file, and any other caller not yet
-   * updated to pass it through — and every one of those is an ordinary
-   * script, never a workflow, so `?? 'script'` is the correct default
-   * everywhere this field is read, not merely a safe one.
-   *
-   * This is one of only FOUR places in the repo allowed to compare
-   * `kind === 'workflow'` (plan 99 §3.1's containment claim, amended to name
-   * this file explicitly) — the run dialog's own Workflow | Script filter.
-   */
-  kind?: 'script' | 'workflow'
 }
 
-type Kind = 'script' | 'workflow'
-
 /** Every mode this dialog has ever offered — unchanged by plan 104's extraction (`RunScriptDialog` was §3.1's "first caller", not a narrower one). */
-const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
+const TARGET_ALLOW: Target[] = ['single', 'group', 'devices']
 
 /** `ms` rounded to the nearest whole minute, then to "N min" or "H h M m" — the format the consequence sentence's "up to about" duration estimate uses (plan 99 §3.11, §4.11). Never below 1 min for a positive `ms`, so a short node timeout does not print "0 min". */
 function formatMsRough(ms: number): string {
@@ -223,9 +198,10 @@ function perDeviceEstimateText(est: WorkflowDurationEstimate): string {
  * "5 devices, one at a time, in random order — about 5× one run." (plan 20
  * §4.8) — or, for a workflow (plan 99 §4.11), the duration estimate takes
  * over the multiplier: *"4 nodes, up to about 42 min per device — 5 devices,
- * one at a time — up to about 3 h 30 m."* `workflowEstimate` is only ever
- * passed for a `kind: 'workflow'` `chosen` (§4.11's containment: this is the
- * same sanctioned filter file, not a second reader).
+ * one at a time — up to about 3 h 30 m."* `workflowEstimate` is always
+ * `null` since plan 210 (a script is never a workflow) — kept as a prop so
+ * the SAME sentence-building function still serves both callers; plan 217
+ * replaces the run dialog with one that has no workflow branch to carry.
  */
 /**
  * Plan 94 §4.10 — "extends the existing consequence sentence rather than
@@ -472,11 +448,11 @@ function groupByPlugin(groups: NameGroup[]): Array<{ pluginName: string | null; 
 }
 
 /**
- * Running a script: pick a target — a single device, a saved cluster, or an
+ * Running a script: pick a target — a single device, a saved group, or an
  * ad-hoc multi-device list — fill in the parameters, run (plan 20 §4.8).
  *
  * A single device still creates one plain job (`POST /api/jobs`), unchanged
- * from plan 19. A cluster or a multi-device pick creates a batch instead
+ * from plan 19. A group or a multi-device pick creates a batch instead
  * (`POST /api/batches`) — one job per device, with the chosen concurrency
  * and order.
  */
@@ -485,7 +461,7 @@ export function RunScriptDialog({
   scripts,
   devices,
   initialDevice,
-  initialCluster,
+  initialGroup,
   initialSelectedIds,
   lockedDevice,
   onLaunched,
@@ -503,11 +479,11 @@ export function RunScriptDialog({
   scripts?: ScriptRow[]
   devices: DeviceInfo[]
   initialDevice?: string | null
-  initialCluster?: string | null
+  initialGroup?: string | null
   /**
    * Plan 104 (M69) §3.2 — a LIVE multi-selection the caller already has (a
    * device popup's own candidate set, the Wall/List's own `selectedIds`).
-   * When non-empty, it wins over `initialDevice`/`initialCluster` and the
+   * When non-empty, it wins over `initialDevice`/`initialGroup` and the
    * dialog opens on `devices` mode, pre-filled — still fully editable, never
    * a lock (§3.2's own rule). Omitted by every caller that predates this
    * plan, which reproduces their exact previous default.
@@ -527,28 +503,17 @@ export function RunScriptDialog({
    */
   onLaunched?: (result: { jobId?: string; batchId?: string }) => void
   onClose: () => void
-  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Run script" row); see `AssistDialog`'s own doc comment on the same prop for why. */
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Run script" row): when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
-  // The Workflow | Script segmented filter (plan 99 §4.11, step 99.10) — the
-  // sanctioned `kind === 'workflow'` comparison this file is one of only
-  // four places allowed to make (§3.1's containment claim). Default
-  // `'script'`: unchanged behaviour for every caller until an operator
-  // deliberately switches, since that was the only kind this dialog could
-  // run before this plan.
-  const [kindFilter, setKindFilter] = useState<Kind>('script')
-  // When `scripts` is supplied the dialog owns the choice; otherwise `script`
-  // decides and these stay unused. Filtered by `kindFilter` BEFORE grouping,
-  // so a stale `pickedId` from the other kind can never resolve `chosen`
-  // below (a script published before `kind` existed reads `undefined`, which
-  // is a `'script'`, never a `'workflow'` — no back-published row is ever
-  // secretly a pipeline).
-  const filteredScripts = (scripts ?? []).filter((s) => (s.kind ?? 'script') === kindFilter)
+  // Plan 210 (MVP 03 §2): a script is never a workflow — the Workflow |
+  // Script filter this dialog used to carry is gone with it.
+  const filteredScripts = scripts ?? []
   const groups = groupByName(filteredScripts)
   const [pickedName, setPickedName] = useState<string>('')
   const [pickedId, setPickedId] = useState<string>('')
   const locked = lockedDevice ?? null
-  const [clusters, setClusters] = useState<ClusterInfo[]>([])
+  const [deviceGroups, setDeviceGroups] = useState<GroupInfo[]>([])
   const [concurrency, setConcurrency] = useState(0)
   const [order, setOrder] = useState<BatchOrder>('as-listed')
   // Plan 94 §3.6, §4.10, step 94.10 — the Repeat section (F33's own dialog,
@@ -566,9 +531,10 @@ export function RunScriptDialog({
   // script must never silently ride along onto a different one.
   const [runtimeOverride, setRuntimeOverride] = useState<unknown>(undefined)
   // Plan 95 §3.7, §4.3, §5 step 95.6 (fixes F12, F14) — `serverErrors` maps
-  // straight onto `SchemaForm`; `formCanSubmit` is the callback's mirror,
-  // ANDed into the Run button below so a form the server just rejected (or
-  // one the client already knows is invalid) cannot be resubmitted as-is.
+  // straight onto `SchemaForm`; `formCanSubmit` tracks the same validity the
+  // callback reports, ANDed into the Run button below so a form the server
+  // just rejected (or one the client already knows is invalid) cannot be
+  // resubmitted as-is.
   const [serverIssues, setServerIssues] = useState<Record<string, string> | undefined>(undefined)
   const [formCanSubmit, setFormCanSubmit] = useState(true)
   const { run, isPending } = useAction()
@@ -597,9 +563,9 @@ export function RunScriptDialog({
 
   // Plan 104 (M69) §3.1, §4 — the target model extracted out of this dialog
   // (G1: it was the only place it existed). `reset()` below re-derives
-  // target/deviceId/deviceIds/clusterId from context exactly where this
+  // target/deviceId/deviceIds/groupId from context exactly where this
   // file's own effect used to set four pieces of state by hand.
-  const targetSelection = useTargetSelection({ usableCount: usable.length, clusters })
+  const targetSelection = useTargetSelection({ usableCount: usable.length, groups: deviceGroups })
 
   // Preselect the newest version of the first script IN THE CURRENT FILTER.
   // A picker that opens on nothing makes the operator do work the screen
@@ -613,37 +579,16 @@ export function RunScriptDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scripts])
 
-  // Switching Workflow | Script always re-picks — unlike the mount-only
-  // effect above, this one is NOT guarded by `pickedId`: a script picked
-  // under the old filter is never a legal pick under the new one (a
-  // `<Select>` bound to a name the current `groups` no longer lists would
-  // otherwise show a blank placeholder while `chosen` quietly fell back to
-  // `groups[0]` below — a picker that looks empty while a run is actually
-  // armed on something else). Resets params too, the same reason a script or
-  // version change already does: a workflow's compiled params schema and a
-  // plain script's are never the same shape.
-  useEffect(() => {
-    if (!scripts) return
-    const first = groups[0]
-    setPickedName(first?.name ?? '')
-    setPickedId(first?.versions[0]?.id ?? '')
-    setParams(undefined)
-    setRuntimeOverride(undefined)
-    setServerIssues(undefined)
-    setFormCanSubmit(true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kindFilter])
-
   // The typed fleet-wide confirmation's own reset-on-change effect now
   // lives inside `useTargetSelection` itself (identical dependency array:
-  // target, clusterId, deviceIds.length) — every dialog that reuses the
+  // target, groupId, deviceIds.length) — every dialog that reuses the
   // hook gets it for free instead of re-declaring it.
 
   useEffect(() => {
     if (!script && !scripts) return
-    void fetchAllPages<ClusterInfo>('/api/clusters')
-      .then(setClusters)
-      .catch(() => setClusters([]))
+    void fetchAllPages<GroupInfo>('/api/groups')
+      .then(setDeviceGroups)
+      .catch(() => setDeviceGroups([]))
   }, [script])
 
   useEffect(() => {
@@ -660,7 +605,7 @@ export function RunScriptDialog({
     // Plan 104 (M69) §3.2's own table, applied here exactly as it used to be
     // spelled out by hand: a live multi-selection wins (when the caller
     // passes one — most `RunScriptDialog` callers still do not, so this is
-    // additive, not a behaviour change for them), else an explicit cluster,
+    // additive, not a behaviour change for them), else an explicit group,
     // else an explicit/fallback single device. `initialDevice` winning even
     // while offline, and the `readyNow` → `usable` fallback order, are
     // unchanged from before this extraction — see `computeDefaultTarget`'s
@@ -671,10 +616,10 @@ export function RunScriptDialog({
       allow: TARGET_ALLOW,
       initialDeviceId: initialDevice,
       initialSelectedIds,
-      initialClusterId: initialCluster,
+      initialGroupId: initialGroup,
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, scripts, initialDevice, initialCluster, initialSelectedIds, devices.length])
+  }, [script, scripts, initialDevice, initialGroup, initialSelectedIds, devices.length])
 
   // Resolved synchronously so the rest of the render never has to ask whether
   // a script exists: the explicit pick, else the newest of the first script
@@ -695,96 +640,19 @@ export function RunScriptDialog({
     [chosen?.paramsSchema],
   )
 
-  // The workflow duration estimate (plan 99 §3.11, §4.11) — fetched only for
-  // a `kind: 'workflow'` `chosen`, since a plain script has no pipeline to
-  // sum. `GET /api/scripts/:id` is the SAME route every other detail read in
-  // this codebase uses; its `workflow` field is the parsed `WorkflowDoc`
-  // (`packages/protocol/src/api/scripts.ts`'s own doc comment: "present only
-  // on GET /:id for a kind: 'workflow' row"). `resolveScriptId` reuses the
-  // scripts list this dialog ALREADY loaded (`scripts` prop, unfiltered by
-  // kind — a node's own script is always `kind: 'script'`, never a nested
-  // workflow, which `E_WORKFLOW_NESTED` already refuses at publish) rather
-  // than a second network round trip per node ref.
-  const [workflowDoc, setWorkflowDoc] = useState<WorkflowDoc | null>(null)
-  const [durationEstimate, setDurationEstimate] = useState<WorkflowDurationEstimate | null>(null)
-  useEffect(() => {
-    setWorkflowDoc(null)
-    setDurationEstimate(null)
-    if (!chosen || (chosen.kind ?? 'script') !== 'workflow') return
-    let cancelled = false
-    void api(`/api/scripts/${chosen.id}`, ScriptResponseSchema)
-      .then((b) => {
-        if (cancelled) return
-        const doc = b.script.workflow ?? null
-        setWorkflowDoc(doc)
-        if (!doc) return
-        const resolveScriptId = (ref: string): string | null => {
-          const at = ref.lastIndexOf('@')
-          if (at < 0) return null
-          const name = ref.slice(0, at)
-          const version = ref.slice(at + 1)
-          const candidates = (scripts ?? []).filter((s) => s.name === name)
-          if (version === 'latest') return [...candidates].sort(byVersionDesc)[0]?.id ?? null
-          return candidates.find((s) => s.version === version)?.id ?? null
-        }
-        void estimateWorkflowDuration(doc, resolveScriptId).then((est) => {
-          if (!cancelled) setDurationEstimate(est)
-        })
-      })
-      .catch(() => {
-        if (!cancelled) setWorkflowDoc(null)
-      })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chosen?.id, chosen?.kind])
-
   if (!chosen) {
-    // Not "no script yet" — nothing in the CURRENT filter, or nothing at all.
+    // Not "no script yet" — nothing published at all.
     if (!scripts) return null
-    const nothingPublished = scripts.length === 0
     return (
       <Dialog open onOpenChange={(v) => !v && onClose()} modal={!nonModal}>
         <DialogContent className="sm:max-w-lg" overlay={!nonModal}>
           <DialogHeader>
             <DialogTitle>Run a script</DialogTitle>
-            <DialogDescription>
-              {nothingPublished
-                ? 'Nothing is published to this farm yet.'
-                : kindFilter === 'workflow'
-                  ? 'No workflow is published to this farm yet.'
-                  : 'No script is published to this farm yet.'}
-            </DialogDescription>
+            <DialogDescription>Nothing is published to this farm yet.</DialogDescription>
           </DialogHeader>
-          {/* Shown even here so switching back to whichever kind DOES have
-              something published needs no reopen (plan 99 §4.11: "Choosing
-              Workflow with none published shows the empty state and a link
-              straight to the editor"). Hidden only when NOTHING at all is
-              published — there is nothing to filter between yet. */}
-          {!nothingPublished && (
-            <Tabs value={kindFilter} onValueChange={(v) => setKindFilter(v as Kind)}>
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="workflow">Workflow</TabsTrigger>
-                <TabsTrigger value="script">Script</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          )}
           <p className="text-[12.5px] leading-relaxed text-fg-muted">
-            {kindFilter === 'workflow' ? (
-              <>Build one in the workflow editor, then run it from here.</>
-            ) : (
-              <>
-                Publish one with <span className="readout">enkaku publish &lt;script.ts&gt;</span>, then run it from
-                here.
-              </>
-            )}
+            Publish one with <span className="readout">enkaku publish &lt;script.ts&gt;</span>, then run it from here.
           </p>
-          {kindFilter === 'workflow' && (
-            <Button asChild variant="outline" size="sm">
-              <Link href="/workflows/editor">Open the workflow editor</Link>
-            </Button>
-          )}
         </DialogContent>
       </Dialog>
     )
@@ -793,7 +661,7 @@ export function RunScriptDialog({
   // Plan 104 (M69) §3.1, §4 — every one of these used to be computed here by
   // hand; `useTargetSelection` (above) now owns them, so no dialog computes
   // its own target count (plan 104 §6 acceptance).
-  const { target, deviceId, deviceIds, clusterId, resolvedCount: targetCount, fleetConfirmed, hasTarget } = targetSelection
+  const { target, deviceId, deviceIds, groupId, resolvedCount: targetCount, fleetConfirmed, hasTarget } = targetSelection
   // Plan 94 §3.6 — a single device is still "one device", but a real repeat
   // draft on it is ALSO a batch (`count > 1` is the trigger, independent of
   // device count). `effectiveDeviceCount` feeds the stagger/finish-time math
@@ -818,52 +686,41 @@ export function RunScriptDialog({
   const pacingBody = pacingActive
     ? {
         count: repeat.count,
-        intervalMs: [repeat.intervalMinSec * 1000, repeat.intervalMaxSec * 1000],
+        intervalMs: [repeat.intervalMinSec * 1000, repeat.intervalMaxSec * 1000] as [number, number],
         deviceIntervalMs: repeat.deviceIntervalSec * 1000,
       }
     : undefined
 
   // Plan 94 §3.6 — "the run dialog creates a batch the moment count > 1 or
-  // more than one device is targeted". A single device with no repeat draft
-  // keeps the plain `POST /api/jobs` path untouched.
-  const useBatch = target !== 'single' || pacingActive
+  // more than one device is targeted". Plan 207 §4.9 — both paths are now
+  // the same `run-script` actions verb; `createBatch` (`groups/dispatch.ts`)
+  // always creates a batch on the core side, even for one device (§1.2), so
+  // there is no longer a separate plain-job wire shape here to choose
+  // between — `useBatch` only decided which of two ROUTES to call, and
+  // there is only one now.
+  const targetBody = target === 'group' ? { groupId } : { deviceIds: target === 'single' ? [deviceId] : deviceIds }
 
   const runScript = () => {
     setServerIssues(undefined)
-    return run<{ job: JobInfo } | { batch: BatchInfo }>(
+    return run(
       'run',
       async () => {
         try {
-          return await (!useBatch
-            ? api('/api/jobs', JobCreateResponseSchema, {
-                method: 'POST',
-                // `runtimeOverride` (plan 98 §5 step 98.8) — composed and
-                // client-validated here already; the CORE does not accept
-                // this field on `POST /api/jobs` yet (`EnqueueBody` in
-                // `packages/core/src/api/jobs.ts` has no `runtimeOverride`
-                // key), so a Zod object with no `.strict()` silently strips
-                // it server-side today. Sent anyway, forward-compatibly:
-                // the day that route is extended, no further Studio change
-                // is needed. See this plan's own status line for the full
-                // accounting of that gap.
-                json: { scriptId: chosen.id, deviceId, params: params ?? {}, runtimeOverride: runtimeOverrideBody },
-              })
-            : api('/api/batches', BatchResponseSchema, {
-                method: 'POST',
-                json: {
-                  scriptId: chosen.id,
-                  params: params ?? {},
-                  // A single device with a repeat draft has no cluster/list
-                  // target of its own — it becomes a one-device batch
-                  // (§3.6), which `target: { deviceIds: [...] }` already
-                  // expresses with no new wire shape.
-                  target: target === 'cluster' ? { clusterId } : { deviceIds: target === 'single' ? [deviceId] : deviceIds },
-                  concurrency,
-                  order,
-                  runtimeOverride: runtimeOverrideBody,
-                  pacing: pacingBody,
-                },
-              }))
+          const response = await runAction('run-script', targetBody, {
+            scriptId: chosen.id,
+            params: params ?? {},
+            concurrency,
+            order,
+            runtimeOverride: runtimeOverrideBody,
+            pacing: pacingBody,
+          })
+          // `run-script` dispatches and settles synchronously (`actions/run.ts`
+          // — it never returns `accepted`), so the one result is already terminal.
+          const first = response.results[0]
+          if (first?.status !== 'done') {
+            throw new Error(first?.message ?? `could not start (${first?.status ?? 'no result'})`)
+          }
+          return { jobId: first.jobId, batchId: first.batchId }
         } catch (err) {
           // `invalid_job_params` (plan 95 §3.7, §4.3, fixes F12) — attach the
           // field-level issues to the form; `run()`'s own catch still shows
@@ -874,17 +731,17 @@ export function RunScriptDialog({
         }
       },
       {
-        success: !useBatch ? 'Job created' : 'Batch created',
-        failure: !useBatch ? 'Could not create the job' : 'Could not create the batch',
-        onSuccess: (b) => {
+        success: 'Batch created',
+        failure: 'Could not create the batch',
+        onSuccess: (result) => {
           onClose()
-          const result = 'job' in b ? { jobId: b.job.jobId } : { batchId: b.batch.id }
           if (onLaunched) {
             onLaunched(result)
             return
           }
+          // A batch of one navigates straight to the job, as before (plan 207 §4.9).
           if (result.jobId) router.push(`/jobs/detail?id=${result.jobId}`)
-          else router.push(`/batches/detail?id=${result.batchId}`)
+          else if (result.batchId) router.push(`/batches/detail?id=${result.batchId}`)
         },
       },
     )
@@ -899,7 +756,7 @@ export function RunScriptDialog({
             <span className="readout ml-1.5 text-[12px] font-normal text-fg-muted">@{chosen.version}</span>
           </DialogTitle>
           <DialogDescription>
-            A single device joins its queue directly; a cluster, a device list, or any run set to repeat creates a batch.
+            A single device joins its queue directly; a group, a device list, or any run set to repeat creates a batch.
           </DialogDescription>
           {/* Provenance (plan 95 §3.8 R6, §5 step 95.5, criterion 18) — "the
               operator can see who published the thing they are about to
@@ -912,21 +769,6 @@ export function RunScriptDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Workflow | Script (plan 99 §4.11, step 99.10) — a segmented
-              filter over the ONE list this dialog already loaded, matching
-              F31's "the run dialog is a filter away from supporting
-              workflows if they are `scripts` rows" (§3.1). Only shown when
-              the dialog owns the choice (`scripts` supplied) — a single
-              known `script` (the Scripts pages) has nothing to filter. */}
-          {scripts && (
-            <Tabs value={kindFilter} onValueChange={(v) => setKindFilter(v as Kind)}>
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="workflow">Workflow</TabsTrigger>
-                <TabsTrigger value="script">Script</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          )}
-
           {scripts && (
             <div className="grid gap-2.5 sm:grid-cols-[1fr_auto]">
               <div className="space-y-1.5">
@@ -1013,24 +855,6 @@ export function RunScriptDialog({
             </div>
           )}
 
-          {/* The duration estimate (plan 99 §3.11, §4.11) — only for a
-              workflow, and honest about the three states: still resolving,
-              nothing declared, or a real "up to about" figure. Placed here
-              (right under the picker) so it applies to a SINGLE device too —
-              `ConsequenceNote` below only renders for the cluster/devices
-              target, and a single-device run deserves the same estimate. */}
-          {(chosen.kind ?? 'script') === 'workflow' && (
-            <div className="rounded-lg border bg-surface-2/40 px-3 py-2">
-              <p className="text-[11.5px] text-fg-muted">
-                {durationEstimate
-                  ? `${perDeviceEstimateText(durationEstimate)}.`
-                  : workflowDoc
-                    ? `${workflowDoc.nodes.length} node${workflowDoc.nodes.length === 1 ? '' : 's'} — estimating duration…`
-                    : 'Loading the pipeline…'}
-              </p>
-            </div>
-          )}
-
           {locked ? (
             <div className="rounded-lg border bg-surface-2 px-3 py-2">
               <p className="rack-label mb-0.5">running on</p>
@@ -1048,7 +872,7 @@ export function RunScriptDialog({
               </p>
             </div>
           ) : (
-            <TargetPicker selection={targetSelection} devices={devices} clusters={clusters} allow={TARGET_ALLOW} />
+            <TargetPicker selection={targetSelection} devices={devices} groups={deviceGroups} allow={TARGET_ALLOW} />
           )}
 
           {/* Plan 94 §3.6 — a single device can repeat too; it just has no
@@ -1070,7 +894,7 @@ export function RunScriptDialog({
             </p>
           )}
 
-          {(target === 'cluster' || target === 'devices') && (
+          {(target === 'group' || target === 'devices') && (
             <div className="grid grid-cols-2 gap-3 rounded-lg border bg-surface-2/40 p-3">
               <div className="space-y-1.5">
                 <Label className="text-[12.5px] font-normal">Concurrency</Label>
@@ -1104,14 +928,14 @@ export function RunScriptDialog({
                   count={targetCount}
                   concurrency={concurrency}
                   order={order}
-                  workflowEstimate={(chosen.kind ?? 'script') === 'workflow' ? durationEstimate : null}
+                  workflowEstimate={null}
                   repeat={repeat}
                 />
               </div>
             </div>
           )}
 
-          {(target === 'cluster' || target === 'devices') && (
+          {(target === 'group' || target === 'devices') && (
             <RepeatSection
               repeat={repeat}
               onChange={setRepeat}
@@ -1174,9 +998,7 @@ export function RunScriptDialog({
               />
             </>
           ) : (
-            <p className="text-[12px] text-fg-muted">
-              This {(chosen.kind ?? 'script') === 'workflow' ? 'workflow' : 'script'} takes no parameters.
-            </p>
+            <p className="text-[12px] text-fg-muted">This script takes no parameters.</p>
           )}
 
           {/* Plan 98 §3.9 item 2, §5 step 98.8 — the collapsed Runtime
@@ -1190,7 +1012,7 @@ export function RunScriptDialog({
               Cancel
             </Button>
             <Button onClick={() => void runScript()} disabled={!canSubmit || !formCanSubmit || isPending('run')}>
-              {isPending('run') ? 'Creating…' : !useBatch ? 'Run' : 'Run batch'}
+              {isPending('run') ? 'Creating…' : 'Run'}
             </Button>
           </div>
         </div>

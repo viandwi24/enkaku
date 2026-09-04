@@ -135,7 +135,7 @@ import verifyEgressScript from './verify-egress'
  * `service.permissions` is UNCHANGED: `job.run` was already declared (0.1.0's
  * manifest names exactly this — "enqueuing verify-egress"), and none of the
  * three needs a NEW capability (`ctx.device.*` inside a script is the job
- * system's own device access, granted by the job's lease, not the plugin
+ * system's own device access, granted by the job's control marker, not the plugin
  * capability broker `ctx.farm` gates; `activate-group` calls
  * `groups-service.ts`'s `activateGroup` directly with `ctx` as the host,
  * reusing `storage`/`farm`/`log` a script already carries). So this is not a
@@ -226,6 +226,19 @@ import verifyEgressScript from './verify-egress'
  *     devices count; unverified ones are never grouped with each other.
  *
  * Minor, not patch: a new column, a new button, and two new warnings.
+ *
+ * **0.13.1 → 0.13.2 — groups rename, MVP 15 §0.1 (plan 207).** One
+ * doc-comment rework (`src/index.ts` here, two lines) that cited "cluster"
+ * — the core-side rename that plan 207 carried all the way to the DB
+ * table and the `/api/groups` route — as "group" instead. No behavior
+ * change. Patch: invisible to an operator.
+ *
+ * **0.13.0 → 0.13.1 — plan 205 vocabulary sweep.** Three doc-comment
+ * reworks (`src/index.ts` here, `src/verify-egress.ts`,
+ * `src/ui/parts/settings.tsx`) that cited terms plan 205 retired core-side —
+ * a device job's control marker (the deleted per-device manual-hold
+ * concept), and a deleted device-list schema from the deleted screen-share
+ * feature — no behavior change. Patch: invisible to an operator.
  *
  * **0.11.0 → 0.12.0 — a down path says why (plan 133, M98).**
  *
@@ -352,10 +365,10 @@ import verifyEgressScript from './verify-egress'
  * plugin. So the component moved into `@enkaku/ui` (with Studio's status
  * badge, holder badges and unavailable-reason text injected through render
  * props, so Studio loses nothing), and this editor now uses the same picker
- * every other surface does: search, tag chips, cluster grouping, and
+ * every other surface does: search, tag chips, group grouping, and
  * multi-select — tick several phones, add them in one motion.
  *
- * `FleetDeviceRow` carries no status, tags or cluster. The picker's input is
+ * `FleetDeviceRow` carries no status, tags or group. The picker's input is
  * structural with those optional, so the parts it was not given simply do
  * not render — rather than this pack inventing `status: 'idle'` to satisfy a
  * type, which would have put a badge on screen that nobody had checked.
@@ -402,6 +415,36 @@ import verifyEgressScript from './verify-egress'
  * left at 0.8.0 the owner's farm would go on serving the list-picker bundle
  * and this row would never reach a browser — exactly what plan 124 §0.2 and
  * the 0.7.0/0.8.0 rows above already record happening twice.
+ *
+ * **0.13.2 → 0.14.0 — plan 216 §4.6/§4.10/§10, the live-tile picker retired.**
+ * MVP 07 §2.1 unifies every device-choosing surface in the product behind
+ * one `DevicePicker`/`useTarget` pair, and the Screens view (plan 214) is
+ * now where a device is chosen by looking at its live screen — so this
+ * editor's live-tile picker (0.9.0's own component, then named for the
+ * tiles it rendered) is replaced by `DevicePickerDialog`, the SAME unified
+ * picker every Studio action dialog renders, still reached through
+ * `@enkaku/host` (plan 129 §3.4/§4.4) with the
+ * identical prop shape (`open`, `onOpenChange`, `value`, `onConfirm`,
+ * `filter?`, `title?`) — `addEntry`'s own several-ids-in-one-call shape is
+ * therefore unchanged again.
+ *
+ * The owner's own words that opened the 0.9.0 row are moved here rather than
+ * deleted, because the design history they record does not stop being true:
+ * *"saya minta device selector nya pas add device ada popup untuk device
+ * list kaya walls gitu, jadi user bisa pilih mau add device sambil lihat
+ * screen castnya"* — the wall was the right answer for that farm at that
+ * time; a unified action-dialog picker across the whole product is the
+ * MVP's answer now, and both are recorded, not one erased in favour of the
+ * other.
+ *
+ * `service.permissions` is UNCHANGED. Minor, not patch, for the same
+ * mechanical reason every row above gives: an operator meets the change the
+ * moment they open the group editor, and `seedEmbeddedPacks` keys on
+ * `${pack.name}@${pack.version}` — left at 0.13.2 the owner's farm would go
+ * on serving the wall-picker bundle and this row would never reach a
+ * browser. The seeded version is STAGED, not activated: the operator still
+ * activates `mikrotik-routing@0.14.0` on the Plugins page before it takes
+ * effect (plan 216 §11).
  */
 
 const checkParams = z.object({})
@@ -426,7 +469,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.13.0',
+  version: '0.14.0',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',

@@ -27,14 +27,14 @@ export interface CrashWatcherDeps {
   record: (e: { deviceId: string; stream: 'main' | 'input'; kind: string; actor?: string | null; meta?: Record<string, unknown> }) => void
   /**
    * Writes the trace (plan 37 §3.6): job-scoped when `jobId` is non-null (a
-   * job lease was held when the crash arrived), device-scoped otherwise —
-   * the caller (`ws-handlers.ts`/`daemon.ts`) decides which artifact store
-   * that maps to; the watcher only knows "attach to this job, or just this
+   * job was running when the crash arrived), device-scoped otherwise — the
+   * caller (`ws-handlers.ts`/`daemon.ts`) decides which artifact store that
+   * maps to; the watcher only knows "attach to this job, or just this
    * device".
    */
   saveTrace: (opts: { deviceId: string; jobId: string | null; label: string; text: string }) => Promise<ArtifactInfo>
-  /** The device's current JOB lease, if any (plan 37 §3.3) — a manual lease means no attribution. */
-  getJobLease: (deviceId: string) => { jobId: string } | null
+  /** The device's current running job, if any (plan 37 §3.3, renamed by plan 205 — a live control marker means no attribution). */
+  runningJobOf: (deviceId: string) => { jobId: string } | null
   /** Read fresh per crash (same pattern as every other farm setting, e.g. `adb.maxConcurrent`). */
   crashPolicy: () => CrashPolicy
   /** The `declared` policy's target package set for a running job (plan 37 §3.4, §4.4). */
@@ -109,7 +109,7 @@ interface Restart {
  * device with both a watcher and an open viewer still runs exactly one
  * `logcat` process (acceptance #8). Detection never depends on a job being
  * active; job attribution is a second, independent step done per crash, by
- * checking whether a JOB lease (not a manual one) is currently held.
+ * checking whether a job is currently running (a live control marker means no attribution).
  */
 export function createCrashWatcher(deps: CrashWatcherDeps): CrashWatcher {
   const clientId = deps.clientId ?? 'internal:crash'
@@ -197,8 +197,8 @@ export function createCrashWatcher(deps: CrashWatcherDeps): CrashWatcher {
     const w = byDevice.get(deviceId)
     if (w && rateLimited(w)) return
 
-    const lease = deps.getJobLease(deviceId)
-    const jobId = lease?.jobId ?? null
+    const running = deps.runningJobOf(deviceId)
+    const jobId = running?.jobId ?? null
 
     // The trace is written BEFORE the event is recorded (not after, in
     // parallel) so the event's `meta.artifactId` can point straight at it —
@@ -233,9 +233,9 @@ export function createCrashWatcher(deps: CrashWatcherDeps): CrashWatcher {
       },
     })
 
-    // Job attribution requires a JOB lease specifically (plan 37 §3.3, §8
-    // risks) — a manual lease at the moment the crash arrives means the
-    // event above was recorded, full stop; there is no job to fail.
+    // Job attribution requires a RUNNING JOB specifically (plan 37 §3.3, §8
+    // risks) — a live control marker at the moment the crash arrives means
+    // the event above was recorded, full stop; there is no job to fail.
     if (!jobId) return
     const policy = deps.crashPolicy()
     const targets = deps.targetPackagesForJob(jobId)

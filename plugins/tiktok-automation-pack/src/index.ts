@@ -675,8 +675,8 @@ const DeviceListOutput = z.object({
       id: z.string(),
       stableId: z.string(),
       status: z.string(),
-      /** `kind: 'job'` (or `'user'`/`'agent'`) means something already holds this device. `null` means nothing does. */
-      heldBy: z.object({ kind: z.string() }).nullable(),
+      /** Any live entry (a `job`, a `control` marker, …) means something is already happening on this device. An empty list means nothing is. */
+      activities: z.array(z.object({ kind: z.string() })),
     }),
   ),
 })
@@ -689,10 +689,11 @@ function messageOf(err: unknown): string {
 
 /**
  * One eligible device, one post job, `params: { source: 'queue' }` (§4.6). "Eligible" is read straight
- * off `device.list`'s own `status`/`heldBy` — `job.list` is deliberately NOT among this service's
+ * off `device.list`'s own `status`/`activities` — `job.list` is deliberately NOT among this service's
  * declared permissions (the list is exhaustive, and `device.list` alone is already enough to answer
- * "does this device already have a running job": `heldBy.kind === 'job'`). A device mid-job, mid-manual
- * -control, offline or quarantined is skipped rather than queued behind whatever it is already doing.
+ * "does this device already have a running job": an `activities` entry with `kind === 'job'`). A device
+ * mid-job, mid-control, offline or quarantined is skipped rather than queued behind whatever it is
+ * already doing.
  */
 async function runAutoPostTick(ctx: PluginServiceContext): Promise<void> {
   let devices: z.infer<typeof DeviceListOutput>
@@ -703,9 +704,9 @@ async function runAutoPostTick(ctx: PluginServiceContext): Promise<void> {
     return
   }
 
-  const eligible = devices.items.filter((device) => device.status === 'idle' && device.heldBy === null)
+  const eligible = devices.items.filter((device) => device.status === 'online' && device.activities.length === 0)
   if (eligible.length === 0) {
-    ctx.log.info('auto-post tick found no eligible (idle, unheld) device')
+    ctx.log.info('auto-post tick found no eligible (online, idle) device')
     return
   }
 
@@ -773,7 +774,18 @@ export default definePlugin({
   // random point inside their middle 70% (`gesture.ts` `jitteredPoint`, same
   // rule as `youtube-automation-pack`'s `insetPoint`) and grid-cell taps carry
   // a ±4% offset — the farm's `tapJitterMs` jitters the tap; this jitters where.
-  version: '1.15.0',
+  // 1.15.1 — MVP 04 (plan 205): `runAutoPostTick`'s eligibility check reads
+  // `device.list`'s new `activities` list instead of the old per-holder
+  // field (an empty list is now what "unheld" means) — invisible to an
+  // operator, since eligibility is unchanged, only what it is computed from.
+  // 1.15.2 — groups rename, MVP 15 §0.1 (plan 207): `queue.ts`'s own doc
+  // comment cited `clusters/dispatch.ts`, the core-side module plan 207
+  // renamed to `groups/dispatch.ts` — reworded to match. No behavior change.
+  // 1.16.0 — keyword tilt on `keyword-videos`: `keywords` + `keywordBoostFactor`
+  // shift the DWELL toward the long buckets when the opened player's caption /
+  // author text matches (the pack still never likes/follows/comments — the
+  // tilt lands on watch time, the one thing this pack is allowed to vary).
+  version: '1.16.0',
   title: 'TikTok automation pack',
   description: 'Watch, scroll, search, browse shop and live, and read notifications on the TikTok feed, with human-shaped timing.',
   scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript, searchKeyword, keywordVideos, liveBrowse, shopBrowse, notificationActivity],
@@ -785,7 +797,7 @@ export default definePlugin({
    * not also name. `fs.read` is `captions.ts`'s `readCaptionsFile` (step 113.8); `job.run` and
    * `device.list` are `runAutoPostTick` above, the auto-posting timer this step gives the service a
    * body for. `job.list` is deliberately absent — see `runAutoPostTick`'s own comment for why
-   * `device.list`'s `heldBy` already answers the one question this service needs `job.list` for.
+   * `device.list`'s `activities` already answers the one question this service needs `job.list` for.
    *
    * Two consequences follow regardless of what this manifest declares (C4, C5): a declared permission
    * is still refused if the publishing user's ROLE does not hold it, and a dev slot (`enkaku dev`) has

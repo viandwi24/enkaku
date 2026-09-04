@@ -3,11 +3,15 @@ package dev.enkaku.guestagent
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.Settings
 import android.text.format.Formatter
 import android.util.TypedValue
 import android.view.View
@@ -16,10 +20,15 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import dev.enkaku.guestagent.activity.ActivityMirror
 import dev.enkaku.guestagent.control.ControlChannelState
+import dev.enkaku.guestagent.control.HostExpectation
 import dev.enkaku.guestagent.control.Pairing
 import dev.enkaku.guestagent.control.Protocol
+import dev.enkaku.guestagent.identity.MockLocationState
+import dev.enkaku.guestagent.input.ImePrefs
 import dev.enkaku.guestagent.input.TextFacet
+import dev.enkaku.guestagent.label.WallpaperFacet
 import dev.enkaku.guestagent.route.DeadMansSwitch
 import dev.enkaku.guestagent.route.EgressProbe
 import dev.enkaku.guestagent.route.Ipv6Leak
@@ -27,6 +36,9 @@ import dev.enkaku.guestagent.route.RouteLifecycleState
 import dev.enkaku.guestagent.route.RouteState
 import dev.enkaku.guestagent.route.RouteVpnService
 import dev.enkaku.guestagent.route.VpnLink
+import dev.enkaku.guestagent.ui.UiTreeService
+import dev.enkaku.guestagent.ui.UiTreeState
+import dev.enkaku.guestagent.ui.UiTreeWatch
 import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -104,6 +116,7 @@ class StatusActivity : Activity() {
     findViewById<Button>(R.id.refresh_button).setOnClickListener { refresh() }
     findViewById<Button>(R.id.copy_button).setOnClickListener { onCopyClicked() }
     findViewById<Button>(R.id.switch_keyboard_button).setOnClickListener { onSwitchKeyboardClicked() }
+    findViewById<Button>(R.id.accessibility_button).setOnClickListener { onAccessibilitySettingsClicked() }
   }
 
   override fun onResume() {
@@ -138,10 +151,16 @@ class StatusActivity : Activity() {
       banner = banner(paired, listening, routeState, vpn),
       sections =
         listOf(
+          nowSection(),
+          deviceSection(),
           linkSection(paired, listening),
+          videoSection(),
+          inspectorSection(),
           routeSection(routeState, vpn),
           checksSection(),
           keyboardSection(),
+          labelSection(),
+          locationSection(),
           buildSection(),
         ),
       takenAt = Date(),
@@ -178,9 +197,174 @@ class StatusActivity : Activity() {
         Banner(getString(R.string.banner_channel_down_title), getString(R.string.banner_channel_down_body), Tone.WARN)
       routeState == RouteLifecycleState.UP ->
         Banner(getString(R.string.banner_up_title), getString(R.string.banner_up_body), Tone.GOOD)
-      paired -> Banner(getString(R.string.banner_idle_title), getString(R.string.banner_idle_body), Tone.MUTED)
+      // MVP 10 §2's banner — a running job or a controlling actor is not a verified good state
+      // (only an egress check earns Tone.GOOD), so this arm is always MUTED. Falls back to the
+      // existing "idle" wording when the farm has pushed no activity at all.
+      paired -> {
+        val activities = ActivityMirror.activities()
+        val running = activities.firstOrNull { it.kind != "control" }
+        val controller = activities.firstOrNull { it.kind == "control" }
+        when {
+          running != null -> Banner(getString(R.string.banner_activity_title), getString(R.string.banner_activity_body, running.label), Tone.MUTED)
+          controller != null -> Banner(getString(R.string.banner_controlled_title, controller.actorLabel), getString(R.string.banner_controlled_body), Tone.MUTED)
+          else -> Banner(getString(R.string.banner_idle_title), getString(R.string.banner_idle_body), Tone.MUTED)
+        }
+      }
       else -> Banner(getString(R.string.banner_unpaired_title), getString(R.string.banner_unpaired_body), Tone.MUTED)
     }
+  }
+
+  /**
+   * [ActivityMirror] — what the farm says is happening on this device right now (plan 221 §4.5,
+   * MVP 10 §1.3). Read-only: this app never acts on any of it.
+   */
+  private fun nowSection(): Section {
+    val rows = mutableListOf<Row>()
+    if (ActivityMirror.updatedAt() == ActivityMirror.NEVER) {
+      rows += Row(getString(R.string.label_now_status), getString(R.string.value_now_never), Tone.MUTED)
+      return Section(getString(R.string.section_now), rows)
+    }
+    if (ActivityMirror.isStale()) {
+      rows +=
+        Row(
+          getString(R.string.label_now_status),
+          getString(R.string.value_now_stale, since(ControlChannelState.lastRequestAt())),
+          Tone.WARN,
+        )
+    }
+    for (activity in ActivityMirror.activities()) {
+      rows +=
+        Row(
+          activity.kind,
+          getString(R.string.value_now_activity, activity.label, wallDuration(activity.startedAt), activity.actorLabel),
+          Tone.NORMAL,
+        )
+    }
+    return Section(getString(R.string.section_now), rows)
+  }
+
+  /**
+   * The farm's own facts about this device ([ActivityMirror.device], pushed by `device.describe`)
+   * followed by what this app reads about itself directly (model, Android version, battery,
+   * screen). `group`, never "cluster" (plan 200 §2.4).
+   */
+  private fun deviceSection(): Section {
+    val rows = mutableListOf<Row>()
+    val device = ActivityMirror.device()
+    device?.label?.let { label ->
+      val value = device.number?.let { "$label · $it" } ?: label
+      rows += Row(getString(R.string.label_farm_label), value, Tone.NORMAL)
+    }
+    device?.group?.let { rows += Row(getString(R.string.label_group), it, Tone.MUTED) }
+    if (device != null && device.tags.isNotEmpty()) {
+      rows += Row(getString(R.string.label_tags), device.tags.joinToString(", "), Tone.MUTED)
+    }
+    device?.stableId?.let { rows += Row(getString(R.string.label_stable_id), it, Tone.MUTED) }
+    rows += Row(getString(R.string.label_model), "${Build.MANUFACTURER} ${Build.MODEL}", Tone.MUTED)
+    rows += Row(getString(R.string.label_android), getString(R.string.value_android, Build.VERSION.RELEASE, Build.VERSION.SDK_INT), Tone.MUTED)
+    batteryRow()?.let { rows += it }
+    rows += screenRow()
+    return Section(getString(R.string.section_device), rows)
+  }
+
+  private fun batteryRow(): Row? {
+    val bm = getSystemService(BatteryManager::class.java) ?: return null
+    val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    if (pct < 0) return null
+    val charging = bm.isCharging
+    val value =
+      if (charging) getString(R.string.value_battery_charging, pct) else getString(R.string.value_battery_on_battery, pct)
+    return Row(getString(R.string.label_battery), value, Tone.MUTED)
+  }
+
+  private fun screenRow(): Row {
+    val on = getSystemService(PowerManager::class.java)?.isInteractive == true
+    return Row(getString(R.string.label_screen), if (on) getString(R.string.value_screen_on) else getString(R.string.value_screen_off), Tone.MUTED)
+  }
+
+  /**
+   * What the farm STARTED, per [ActivityMirror.video] — never a claim that anyone is watching
+   * (MVP 10 §2). The whole section is omitted only when the farm has never pushed anything at
+   * all; once it has, "no scrcpy server running" is itself a fact, not a blank.
+   */
+  private fun videoSection(): Section {
+    if (ActivityMirror.updatedAt() == ActivityMirror.NEVER) return Section(getString(R.string.section_video), emptyList())
+    val video = ActivityMirror.video()
+    val rows = mutableListOf<Row>()
+    rows +=
+      if (video != null && video.running) {
+        Row(getString(R.string.label_video), getString(R.string.value_video_running, video.widthPx, video.heightPx, video.fps), Tone.NORMAL)
+      } else {
+        Row(getString(R.string.label_video), getString(R.string.value_video_none), Tone.MUTED)
+      }
+    rows += Row(getString(R.string.label_video_note), getString(R.string.value_video_note), Tone.MUTED)
+    return Section(getString(R.string.section_video), rows)
+  }
+
+  /** [UiTreeState] and the Settings fact — see `UiStatusResultSchema`'s doc comment for why `enabled` and `connected` are separate. */
+  private fun inspectorSection(): Section {
+    val rows = mutableListOf<Row>()
+    val enabledList = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+    val enabled = enabledList?.contains(UiTreeService.COMPONENT_ID) == true
+    val connected = UiTreeState.isConnected()
+    rows +=
+      when {
+        enabled && connected -> Row(getString(R.string.label_inspector_service), getString(R.string.value_inspector_enabled_connected), Tone.GOOD)
+        enabled -> Row(getString(R.string.label_inspector_service), getString(R.string.value_inspector_enabled_not_connected), Tone.WARN)
+        else -> Row(getString(R.string.label_inspector_service), getString(R.string.value_inspector_not_enabled), Tone.MUTED)
+      }
+    rows +=
+      Row(
+        getString(R.string.label_inspector_watching),
+        if (UiTreeWatch.isWatching()) getString(R.string.value_inspector_watching_yes) else getString(R.string.value_inspector_watching_idle),
+        Tone.MUTED,
+      )
+    if (UiTreeState.lastDumpAt() != UiTreeState.NEVER) {
+      rows +=
+        Row(
+          getString(R.string.label_inspector_last_dump),
+          getString(R.string.value_inspector_last_dump, UiTreeState.lastDumpNodes(), UiTreeState.lastDumpTookMs(), since(UiTreeState.lastDumpAt())),
+          Tone.MUTED,
+        )
+    }
+    UiTreeState.lastError()?.let { rows += Row(getString(R.string.label_inspector_last_error), it, Tone.WARN) }
+    return Section(getString(R.string.section_inspector), rows)
+  }
+
+  /** [WallpaperFacet.status] — "Applied" is omitted, never rendered "no", when this app has never applied a label (`fingerprint == null`). */
+  private fun labelSection(): Section {
+    val status = WallpaperFacet.status(this)
+    val rows = mutableListOf<Row>()
+    if (status.fingerprint != null) {
+      rows +=
+        Row(
+          getString(R.string.label_label_applied),
+          getString(R.string.value_label_applied_yes),
+          if (status.matchesOurs) Tone.GOOD else Tone.WARN,
+        )
+    }
+    rows += Row(getString(R.string.label_label_renderer), status.rendererVersion.toString(), Tone.MUTED)
+    return Section(getString(R.string.section_label), rows)
+  }
+
+  /** [MockLocationState] — [dev.enkaku.guestagent.identity.MockLocation] itself is stateless by design and remembers no fix. */
+  private fun locationSection(): Section {
+    val rows = mutableListOf<Row>()
+    rows +=
+      Row(
+        getString(R.string.label_location_mock),
+        if (MockLocationState.isActive()) getString(R.string.value_location_active) else getString(R.string.value_location_inactive),
+        Tone.MUTED,
+      )
+    MockLocationState.lastFix()?.let { (lat, lng) ->
+      rows +=
+        Row(
+          getString(R.string.label_location_last_fix),
+          getString(R.string.value_location_last_fix, round3(lat), round3(lng), since(MockLocationState.setAt())),
+          Tone.MUTED,
+        )
+    }
+    return Section(getString(R.string.section_location), rows)
   }
 
   /** [Pairing] and [ControlChannelState] — is a farm host there, and when did it last say anything? */
@@ -387,23 +571,48 @@ class StatusActivity : Activity() {
           if (status.connected) getString(R.string.value_ime_connected) else getString(R.string.value_ime_disconnected),
           Tone.MUTED,
         )
+      // Plan 221 §4.6, MVP 08 §1.2 — only meaningful while this IME is actually the live one;
+      // otherwise there is no keyboard state on this device to report at all.
+      rows +=
+        Row(
+          getString(R.string.label_soft_keyboard),
+          if (status.softKeyboardShown) getString(R.string.value_soft_keyboard_showing) else getString(R.string.value_soft_keyboard_hidden),
+          Tone.MUTED,
+        )
+      rows +=
+        Row(
+          getString(R.string.label_soft_keyboard_with_hardware),
+          if (status.showSoftKeyboardWithHardware) {
+            getString(R.string.value_soft_keyboard_with_hardware_on)
+          } else {
+            getString(R.string.value_soft_keyboard_with_hardware_off)
+          },
+          Tone.MUTED,
+        )
     }
     return Section(getString(R.string.section_keyboard), rows)
   }
 
   /** Enough to tell an outdated agent from a misbehaving one — the same facts `hello` reports to the host. */
-  private fun buildSection(): Section =
-    Section(
-      getString(R.string.section_build),
-      listOf(
+  private fun buildSection(): Section {
+    val rows =
+      mutableListOf(
         Row(getString(R.string.label_version), versionLabel(), Tone.NORMAL),
         Row(getString(R.string.label_protocol), Protocol.PROTOCOL_VERSION.toString(), Tone.MUTED),
         Row(getString(R.string.label_capabilities), Protocol.CAPABILITIES.joinToString(", "), Tone.MUTED),
         Row(getString(R.string.label_android), getString(R.string.value_android, Build.VERSION.RELEASE, Build.VERSION.SDK_INT), Tone.MUTED),
         Row(getString(R.string.label_device), "${Build.MANUFACTURER} ${Build.MODEL}", Tone.MUTED),
         Row(getString(R.string.label_package), packageName, Tone.MUTED),
-      ),
-    )
+      )
+    // Plan 221 §4.9 — the host's own pin, told to us on `hello`. Omitted unless it names a build
+    // strictly newer than the one answering right now: an equal or lower number is not news.
+    val expected = HostExpectation.versionCode()
+    val ours = runCatching { packageManager.getPackageInfo(packageName, 0).longVersionCode }.getOrNull() ?: 0L
+    if (expected > 0 && expected > ours) {
+      rows += Row(getString(R.string.label_host_expects), getString(R.string.value_host_expects, expected), Tone.WARN)
+    }
+    return Section(getString(R.string.section_build), rows)
+  }
 
   // ---------------------------------------------------------------------------------------------
   // Rendering
@@ -516,6 +725,21 @@ class StatusActivity : Activity() {
     }
   }
 
+  /**
+   * The last resort of R4's OEM caveat (plan 221 §4.10): on a build where the host could not
+   * write `enabled_accessibility_services` from adb, a human holding the phone enables it here.
+   * Never a silent no-op — a device with no such screen says so, the same way the keyboard button
+   * already does.
+   */
+  private fun onAccessibilitySettingsClicked() {
+    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (intent.resolveActivity(packageManager) != null) {
+      startActivity(intent)
+    } else {
+      Toast.makeText(this, R.string.accessibility_settings_missing, Toast.LENGTH_LONG).show()
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Formatting
   // ---------------------------------------------------------------------------------------------
@@ -561,6 +785,16 @@ class StatusActivity : Activity() {
 
   /** Grouped in the DEVICE's locale, matching `Formatter.formatShortFileSize` beside it — mixing `1,204` with `3,9 MB` on one row reads as a typo. */
   private fun count(value: Long): String = String.format(Locale.getDefault(), "%,d", value)
+
+  /**
+   * Elapsed since a HOST-supplied unix-seconds timestamp (`ActivityMirror.Activity.startedAt`) —
+   * the one duration on this screen measured against the wall clock rather than
+   * [SystemClock.elapsedRealtime], because the host never sends us its own elapsed-realtime clock.
+   */
+  private fun wallDuration(unixSeconds: Long): String = duration((System.currentTimeMillis() / 1000 - unixSeconds) * 1000)
+
+  /** Three decimal places — enough to place a device without being precise about it, matching `location.set`'s own accuracy story. */
+  private fun round3(value: Double): String = String.format(Locale.US, "%.3f", value)
 
   private fun traffic(bytes: Long, packets: Long): String =
     getString(R.string.value_traffic, Formatter.formatShortFileSize(this, bytes), count(packets))

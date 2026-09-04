@@ -3,6 +3,7 @@
  * Engine implementations live in packages/drivers (from Plan 03 onward).
  */
 import type { FindOutcome } from './find-outcome'
+import type { KeyDescriptor, KeyMeta } from './keys'
 import type { Selector, UiNode } from './ui-node'
 
 /**
@@ -26,7 +27,23 @@ export interface FrameMeta {
   height: number
   codec: 'png' | 'h264'
   seq: number
-  capturedAt: number
+  /**
+   * The device's presentation timestamp for this access unit, in
+   * microseconds on the device's own clock (scrcpy's PTS, bits 0..61 of the
+   * 12-byte frame header, `packages/scrcpy/src/demuxer.ts`). `0n` means the
+   * source has no device clock: a PNG screencap frame, an H.264 config
+   * packet (SPS/PPS carries no PTS), the cached keyframe a joining viewer
+   * is primed with, or a frame relayed from a node (the tunnel carries no
+   * metadata). Consumers that estimate time skip `0n` samples.
+   */
+  ptsUs: bigint
+  /**
+   * Unix milliseconds (`Date.now()`) at the moment the host parsed this
+   * access unit off the device socket. Plan 203 §3.2 D1 renames the
+   * pre-existing "capture" field to this honest name — it was always the
+   * host's own parse time, never a moment on the device.
+   */
+  hostReceivedAt: number
   /**
    * Whether this chunk can start a decode. Left undefined it means "PNG, so
    * yes"; H.264 sources must set it, because a decoder handed a delta frame
@@ -106,7 +123,7 @@ export interface GestureSample {
 
 export interface InputSink {
   id: string
-  mode: 'sdk' | 'uhid' | 'aoa'
+  mode: 'sdk' | 'uhid'
   /**
    * `opts.holdMs` (spec §9.3, §17): the down→up hold duration, sampled from a
    * `[min, max]` range rather than fixed — this is test realism (a real
@@ -135,6 +152,23 @@ export interface InputSink {
    * for the same reason as `gesture`.
    */
   typeText?(text: string, opts: { perCharMs: [number, number]; rng?: () => number }): Promise<void>
+  /**
+   * One sample of a live pointer stream (plan 209 §3.2 D6): `down` starts a contact, `move`
+   * updates it, `up` ends it. Device pixels. Absent on `adb-input`, whose `input swipe`
+   * cannot be driven sample by sample; the core then replays the stream as one `swipe` on `up`.
+   */
+  touch?(action: 'down' | 'move' | 'up', p: Point, pointerId: number): Promise<void>
+  /** A wheel tick at `p`; `hDelta`/`vDelta` in -1..1 notches. */
+  scroll?(p: Point, hDelta: number, vDelta: number): Promise<void>
+  /** Two fingers on the vertical axis through `center`, `radiusFromPx` → `radiusToPx` apart from it, over `durationMs`. */
+  pinch?(opts: { center: Point; radiusFromPx: number; radiusToPx: number; durationMs: number }): Promise<void>
+  /** A real key down / key up with the modifiers the browser reported (plan 209 §3.2 D4). */
+  keyDown?(key: KeyDescriptor, meta: KeyMeta): Promise<void>
+  keyUp?(key: KeyDescriptor, meta: KeyMeta): Promise<void>
+  /** Every key up. Called on stream stop, disconnect and canvas blur. */
+  releaseKeys?(): Promise<void>
+  /** UHID engines only: register the virtual keyboard now instead of on the first key (§9 Q1). */
+  prepareKeyboard?(): Promise<void>
 }
 
 /** Engine inspeksi UI (spec §7): `uiautomator-dump` (M4), `ui-server` (M4.5). */
@@ -153,4 +187,11 @@ export interface Inspector {
    * at every consumer, just less informative for that engine.
    */
   findDetailed?(sel: Selector): Promise<FindOutcome>
+  /**
+   * The last tree `dump()` returned and when (unix ms), or null. MVP 02 §4
+   * phase 1 "cheap cache": the failing-action trace capture reuses it while
+   * it is fresh (`TRACE_TREE_REUSE_MS`) instead of a second round trip on
+   * the channel the script's own calls share. Optional, like `findDetailed`.
+   */
+  lastDump?(): { root: UiNode; at: number } | null
 }

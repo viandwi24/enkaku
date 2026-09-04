@@ -90,8 +90,16 @@ export interface HostAdb {
    * called-out risk: "must never enumerate the system").
    */
   killAll(): void
-  stats(): { running: number; maxConcurrent: number; installsRunning: number; longLived: number }
+  stats(): {
+    running: number
+    maxConcurrent: number
+    installsRunning: number
+    longLived: number
+    installsByRoot: Record<string, { running: number; queued: number }>
+  }
 }
+
+const INSTALL_PER_USB_ROOT = 1
 
 export interface HostAdbDeps {
   /**
@@ -103,6 +111,13 @@ export interface HostAdbDeps {
   binaryPath: () => string
   /** `adb.maxHostConcurrent`/`adb.maxInstallConcurrent`, read fresh so a live settings change takes effect on the next call without a restart. */
   settings: () => { maxHostConcurrent: number; maxInstallConcurrent: number }
+  /**
+   * Resolves a serial's USB root, cached (plan 223 §4.6) — `createUsbRootCache`
+   * wrapping the SAME `usbRootOf` (`@enkaku/session`, plan 206) the always-on
+   * builder uses. Required so the install lane can enforce "at most one
+   * install per root" (MVP 09 §2) without guessing.
+   */
+  usbRootOf: (serial: string) => Promise<string>
   onLog?: (level: 'debug' | 'info' | 'warn', msg: string) => void
 }
 
@@ -157,6 +172,16 @@ export function createHostAdb(deps: HostAdbDeps): HostAdb {
   const hostSem = new Semaphore(Math.max(1, initial.maxHostConcurrent))
   const installSem = new Semaphore(Math.max(1, initial.maxInstallConcurrent))
   const installQueue = new PerDeviceQueue(installSem)
+  /** One Semaphore(1) per USB root (plan 223 §4.6) — created lazily, never removed (a root that goes idle costs one small object, not worth reaping). */
+  const rootInstallSems = new Map<string, Semaphore>()
+  function rootInstallSem(root: string): Semaphore {
+    let sem = rootInstallSems.get(root)
+    if (!sem) {
+      sem = new Semaphore(INSTALL_PER_USB_ROOT)
+      rootInstallSems.set(root, sem)
+    }
+    return sem
+  }
   // Every `Bun.Subprocess` this module has ever spawned and not yet reaped —
   // both one-shot (`run`) and long-lived (`spawnLongLived`) children live in
   // here, which is the ONLY thing `killAll` ever iterates.
@@ -238,13 +263,20 @@ export function createHostAdb(deps: HostAdbDeps): HostAdb {
         if (!opts?.serial) {
           throw new EnkakuError('E_BAD_REQUEST', "hostAdb.run: opts.serial is required when opts.lane is 'install'")
         }
-        // The per-device chain (H5's fix): even though `maxInstallConcurrent`
-        // may allow several installs farm-wide, a single device only ever
-        // sees one `pm install`/`pm uninstall` at a time — a fleet attaching
-        // inspectors on 20 devices at once must not turn into 40 concurrent
-        // installs, but it also must never let the SAME device race two
-        // installs against each other.
-        return installQueue.run(opts.serial, () => runHostBound(args, timeoutMs))
+        const serial = opts.serial
+        // Per-device chain (H5's original fix, unchanged) INSIDE the per-root
+        // gate (plan 223, MVP 09 §2) INSIDE the farm-wide installQueue/installSem
+        // (unchanged) INSIDE the general hostSem `runHostBound` already acquires.
+        // Four gates, tightest one governs; none replaces another.
+        return installQueue.run(serial, async () => {
+          const root = await deps.usbRootOf(serial)
+          const release = await rootInstallSem(root).acquire()
+          try {
+            return await runHostBound(args, timeoutMs)
+          } finally {
+            release()
+          }
+        })
       }
       return runHostBound(args, timeoutMs)
     },
@@ -303,11 +335,14 @@ export function createHostAdb(deps: HostAdbDeps): HostAdb {
     },
 
     stats() {
+      const installsByRoot: Record<string, { running: number; queued: number }> = {}
+      for (const [root, sem] of rootInstallSems) installsByRoot[root] = { running: sem.inFlight, queued: sem.waiting }
       return {
         running: hostSem.inFlight,
         maxConcurrent: hostSem.max,
         installsRunning: installSem.inFlight,
         longLived: longLived.size,
+        installsByRoot,
       }
     },
   }

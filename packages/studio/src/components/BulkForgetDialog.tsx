@@ -25,7 +25,7 @@ const TARGET_ALLOW: Target[] = ['single', 'devices']
  * the rest.
  *
  * Plan 104 (M69) §3.4 — `devices` is the pre-filled DEFAULT, still editable
- * through `TargetPicker` (single or an ad-hoc device list — no cluster mode,
+ * through `TargetPicker` (single or an ad-hoc device list — no group mode,
  * per §3.4's own table). Forget keeps its fleet-wide typed confirmation
  * (irreversible), which `TargetPicker` already carries — no second one is
  * invented here.
@@ -117,8 +117,8 @@ export function BulkForgetDialog({
             Forget {targetDevices.length} device{targetDevices.length === 1 ? '' : 's'}?
           </DialogTitle>
           <DialogDescription>
-            Removes each from the fleet — its row, tags, and cluster membership. Jobs, artifacts, and events are kept.
-            A device that is busy, has an active manual lease, or is still connected and idle is refused and named
+            Removes each from the fleet — its row, tags, and group membership. Jobs, artifacts, and events are kept.
+            A device that is busy, has an active manual control marker, or is still connected and idle is refused and named
             below, exactly as a single Forget would be — block it instead from its own device page.
           </DialogDescription>
         </DialogHeader>

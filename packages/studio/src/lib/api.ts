@@ -1,16 +1,18 @@
 import { z } from 'zod'
-import { DeviceNetworkStatusResponseSchema, GuestAgentStatusResponseSchema } from '@enkaku/protocol'
+import { DeviceNetworkStatusResponseSchema, DiscoveredDevicesResponseSchema, GuestAgentStatusResponseSchema, type VideoLatencyResponse, VideoLatencyResponseSchema } from '@enkaku/protocol'
 import type {
   DeviceInfo,
   DeviceNetworkConfig,
-  JobNodeInfo,
+  DiscoveredDeviceInfo,
   NetworkEngineId,
   RouteCheckId,
   WorkflowDoc,
   WorkflowFinding,
+  WorkflowStepInfo,
 } from '@enkaku/protocol'
-import { BadResponseError, formatDeviceName } from '@enkaku/ui'
+import { api, BadResponseError, formatDeviceName } from '@enkaku/ui'
 import { coreBase } from './ws'
+import { runOnDevice } from './actions'
 
 interface ItemsPage<T> {
   items: T[]
@@ -178,80 +180,24 @@ export function deviceRefLabel(ref: DeviceRef | undefined, fallbackId: string): 
   return formatDeviceName(ref.number, ref.label ?? ref.stableId)
 }
 
-// ---- Discovered devices (plan 56 §4.3, §4.5) ----
+// ---- Discovered devices (plan 56 §4.3, §4.5; parsed through Zod since plan 214 §4.14, G11) ----
 
 /**
  * A phone adb has seen that nobody has admitted to the farm yet (plan 56
- * §3.3, §4.1). Deliberately not a `DeviceInfo` — it has no id, no status, no
- * cluster: there is no `devices` row behind it at all. Mirrors the WS
- * `device.discovered` payload plus the two timestamps only this REST
- * snapshot carries (`firstSeen` is what makes the tray a queue: longest
- * waiting first).
+ * §3.3, §4.1). Re-exported here rather than duplicated (plan 214 §4.2's
+ * `DiscoveredDeviceSchema`) — deliberately not a `DeviceInfo`, it has no id,
+ * no status, no group: there is no `devices` row behind it at all. Mirrors
+ * the WS `device.discovered` payload plus the two timestamps only this REST
+ * snapshot carries (`firstSeen` is what makes the discovery sheet a queue:
+ * longest waiting first).
  */
-export interface DiscoveredDevice {
-  stableId: string
-  serial: string
-  /** `ro.product.model`, when the probe could read it. */
-  label: string | null
-  androidVersion: string | null
-  /** Unix seconds. */
-  firstSeen: number | null
-  /** Unix seconds. */
-  lastSeen: number | null
-}
+export type { DiscoveredDeviceInfo as DiscoveredDevice } from '@enkaku/protocol'
 
 /** `GET /api/devices/discovered` — the core returns it longest-waiting first. */
-export async function fetchDiscoveredDevices(): Promise<DiscoveredDevice[]> {
-  const res = await fetch(`${coreBase()}/api/devices/discovered`)
-  if (!res.ok) throw new Error(`GET /api/devices/discovered → ${res.status}`)
-  const body = (await res.json()) as { discovered: DiscoveredDevice[] }
-  return body.discovered
+export async function fetchDiscoveredDevices(): Promise<DiscoveredDeviceInfo[]> {
+  return api('/api/devices/discovered', DiscoveredDevicesResponseSchema).then((body) => body.discovered)
 }
 
-export interface HealthResponse {
-  ok: boolean
-  version: string
-  adb: { state: string; serverVersion: string | null }
-  deviceCount: number
-  uptimeMs: number
-}
-
-export async function fetchHealth(): Promise<HealthResponse> {
-  const res = await fetch(`${coreBase()}/api/health`)
-  return (await res.json()) as HealthResponse
-}
-
-/** One section of the fleet map (plan 32 §4.1) — a device may appear in several. */
-export interface TopologyCluster {
-  id: string
-  name: string
-  deviceIds: string[]
-}
-
-/** The currently running job on one device (plan 32 §4.1) — one at a time, the per-device queue guarantees it. */
-export interface TopologyActiveJob {
-  deviceId: string
-  jobId: string
-  scriptName: string | null
-  startedAt: number | null
-}
-
-export interface TopologyResponse {
-  clusters: TopologyCluster[]
-  devices: DeviceInfo[]
-  ungroupedDeviceIds: string[]
-  activeJobs: TopologyActiveJob[]
-}
-
-/**
- * The whole farm in one call (plan 32 §4.1) — deliberately not paginated: a
- * map needs the whole farm at once or it stops being a map.
- */
-export async function fetchTopology(): Promise<TopologyResponse> {
-  const res = await fetch(`${coreBase()}/api/topology`)
-  if (!res.ok) throw new Error(`GET /api/topology → ${res.status}`)
-  return (await res.json()) as TopologyResponse
-}
 
 // ---- Guest agent (plan 44 §4.6, §5.8; widened plan 90 §3.8, §4.7) ----
 
@@ -272,7 +218,7 @@ export async function fetchTopology(): Promise<TopologyResponse> {
  * restated. This used to be a hand-written union kept "in sync by hand" with
  * that schema, and it drifted the moment the provisioner grew a seventh
  * state: `consent-required` reached the wire, every caller that narrowed on
- * this type stopped compiling, and the mirror had to be corrected by hand
+ * this type stopped compiling, and the copy had to be corrected by hand
  * again. A type that can only be wrong in one direction should not be a copy.
  * Deriving it means the next state the provisioner invents is a compile error
  * in the screens that must handle it, which is exactly where it belongs.
@@ -307,6 +253,13 @@ export async function fetchGuestAgentStatus(deviceId: string): Promise<GuestAgen
   const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/guest-agent`)
   if (!res.ok) throw new Error(`GET /api/devices/${deviceId}/guest-agent → ${res.status}`)
   return (await res.json()) as GuestAgentStatus
+}
+
+/** `GET /api/video/latency?deviceId=<id>` (plan 203 §4.7, the `input` block added by plan 209 §4.14). */
+export async function fetchVideoLatency(deviceId: string): Promise<VideoLatencyResponse> {
+  const res = await fetch(`${coreBase()}/api/video/latency?deviceId=${encodeURIComponent(deviceId)}`)
+  if (!res.ok) throw new Error(`GET /api/video/latency?deviceId=${deviceId} → ${res.status}`)
+  return VideoLatencyResponseSchema.parse(await res.json())
 }
 
 // ---- Network route (plan 44 §4.6, §5.8) ----
@@ -359,9 +312,6 @@ export interface GeoObservation {
   at: number
 }
 
-/** What a failed `geo` check should do to the route (plan 55 §3.5, §4.1, §5.6). */
-export type OnGeoFail = 'report' | 'hold'
-
 /**
  * What was saved, discriminated on `engine` (plan 114 §4.1) — one of three
  * shapes, not the SOCKS5 one with the other two bolted on:
@@ -376,7 +326,7 @@ export type OnGeoFail = 'report' | 'hold'
  * §4.5, acceptance criterion 8) — and the two HTTP arms have nowhere to put
  * one at all (§3.8).
  *
- * Was a hand-written mirror of the VPN arm alone; step 114.6 replaced it with
+ * Was a hand-written reimplementation of the VPN arm alone; step 114.6 replaced it with
  * the protocol's own response-shaped union, which is where the "no
  * `username`, only a `credentialRef`" narrowing is documented.
  */
@@ -514,21 +464,17 @@ export async function fetchNetworkStatus(deviceId: string): Promise<NetworkStatu
   return DeviceNetworkStatusResponseSchema.parse(await res.json())
 }
 
+/**
+ * `set-network` (plan 207 §4.2) — `enable`/`disable`/`retry` are three of its
+ * five `op` values (`set`/`clear` are the other two, `HttpProxyFields.tsx`/
+ * `VpnRouteFields.tsx`/`NetworkRouteForm.tsx`'s own doors). The `enable`
+ * route's `E_NO_ROUTE_CONFIG` 409 (nothing saved to turn on) now arrives as
+ * an `ActionRefusedError` with that same code — the UI already disables the
+ * toggle for that case, so this is a backstop, not the primary guard.
+ */
 async function postNetworkAction(deviceId: string, action: 'enable' | 'disable' | 'retry'): Promise<NetworkStatus> {
-  const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/network/${action}`, {
-    method: 'POST',
-  })
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: { code: string; message?: string } } | null
-    // The `enable` route 409s with `E_NO_ROUTE_CONFIG` and no `message` when
-    // there is nothing saved to turn on — the UI already disables the
-    // toggle for that case, so this is a backstop, not the primary guard.
-    throw Object.assign(
-      new Error(body?.error?.message ?? `POST /api/devices/${deviceId}/network/${action} → ${res.status}`),
-      { code: body?.error?.code },
-    )
-  }
-  return DeviceNetworkStatusResponseSchema.parse(await res.json())
+  const r = await runOnDevice('set-network', deviceId, { op: action })
+  return DeviceNetworkStatusResponseSchema.parse(r.detail)
 }
 
 /** Switch an already-saved route on, without retyping credentials. 409s with `E_NO_ROUTE_CONFIG` when nothing is saved. */
@@ -658,7 +604,7 @@ const WorkflowFindingSchema = z.object({
 })
 const WorkflowFindingsResponseSchema = z.array(WorkflowFindingSchema)
 
-/** Thrown by `publishWorkflow` on a 400/409 — `findings` is populated only for `E_WORKFLOW_INVALID`/the `checkWorkflow` gate, so a caller can render the SAME inline finding list `validateWorkflow` produces instead of a bare toast. */
+/** Thrown by `saveWorkflow` on a 400/409 — `findings` is populated only for `E_WORKFLOW_INVALID`/the `checkWorkflow` gate, so a caller can render the SAME inline finding list `validateWorkflow` produces instead of a bare toast. */
 export class WorkflowPublishError extends Error {
   readonly code: string
   readonly findings: WorkflowFinding[]
@@ -687,10 +633,37 @@ export async function validateWorkflow(doc: WorkflowDoc | Record<string, unknown
   return parsed.data as WorkflowFinding[]
 }
 
-/** `POST /api/workflows` (plan 99 §4.5) — publishes a new `(name, version)` `scripts` row with `kind: 'workflow'`. Throws `WorkflowPublishError` on `E_WORKFLOW_INVALID`/`E_PARAMS_SCHEMA_INVALID` (carrying `findings` when the server sent them) or the plain `script_version_exists` conflict. */
-export async function publishWorkflow(doc: WorkflowDoc | Record<string, unknown>): Promise<{ id: string; name: string; version: string }> {
-  const res = await fetch(`${coreBase()}/api/workflows`, {
-    method: 'POST',
+export interface WorkflowInfo {
+  id: string
+  name: string
+  doc: WorkflowDoc
+  createdBy: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** `GET /api/workflows` (plan 210 §4.3) — every workflow, sorted by name; small enough to carry the documents. */
+export async function listWorkflows(): Promise<WorkflowInfo[]> {
+  const res = await fetch(`${coreBase()}/api/workflows`)
+  if (!res.ok) throw new Error(`GET /api/workflows → ${res.status}`)
+  const body = (await res.json()) as { items: WorkflowInfo[] }
+  return body.items
+}
+
+/** `GET /api/workflows/:name` (plan 210 §4.3). */
+export async function fetchWorkflow(name: string): Promise<WorkflowInfo> {
+  const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}`)
+  if (!res.ok) throw new Error(`GET /api/workflows/${name} → ${res.status}`)
+  const body = (await res.json()) as { workflow: WorkflowInfo }
+  return body.workflow
+}
+
+/** `POST` (create) or `PUT` (update, plan 210 §4.3) `/api/workflows`. Throws `WorkflowPublishError` on `E_WORKFLOW_INVALID`/`E_PARAMS_SCHEMA_INVALID` (carrying `findings` when the server sent them) or the plain `workflow_name_exists` conflict. */
+export async function saveWorkflow(doc: WorkflowDoc | Record<string, unknown>, mode: 'create' | 'update'): Promise<WorkflowInfo> {
+  const name = (doc as { name?: unknown }).name
+  const url = mode === 'create' ? `${coreBase()}/api/workflows` : `${coreBase()}/api/workflows/${encodeURIComponent(String(name))}`
+  const res = await fetch(url, {
+    method: mode === 'create' ? 'POST' : 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ doc }),
   })
@@ -699,27 +672,18 @@ export async function publishWorkflow(doc: WorkflowDoc | Record<string, unknown>
     const err = (body as { error?: { code?: string; message?: string; findings?: unknown } } | null)?.error
     const findingsParsed = WorkflowFindingsResponseSchema.safeParse(err?.findings ?? [])
     throw new WorkflowPublishError(
-      err?.message ?? `POST /api/workflows → ${res.status}`,
+      err?.message ?? `${mode === 'create' ? 'POST' : 'PUT'} /api/workflows → ${res.status}`,
       err?.code ?? 'unknown',
       findingsParsed.success ? (findingsParsed.data as WorkflowFinding[]) : [],
     )
   }
-  return (body as { script: { id: string; name: string; version: string } }).script
+  return (body as { workflow: WorkflowInfo }).workflow
 }
 
-export interface WorkflowVersionOption {
-  id: string
-  version: string
-  enabled: boolean
-  createdAt: number | null
-}
-
-/** `GET /api/workflows/:name/versions` (plan 99 §4.9) — the editor's own "start from version" picker; a thin alias over the same query `GET /api/scripts/:name/versions` runs, kept as its own endpoint since a workflow name and a script name never legitimately collide. */
-export async function fetchWorkflowVersions(name: string): Promise<WorkflowVersionOption[]> {
-  const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}/versions`)
-  if (!res.ok) throw new Error(`GET /api/workflows/${name}/versions → ${res.status}`)
-  const body = (await res.json()) as { items: WorkflowVersionOption[] }
-  return body.items
+/** `DELETE /api/workflows/:name` (plan 210 §4.3). */
+export async function deleteWorkflow(name: string): Promise<void> {
+  const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`DELETE /api/workflows/${name} → ${res.status}`)
 }
 
 // ---- Workflow duration estimate (plan 99 §3.11, §4.11, step 99.10) ----
@@ -802,4 +766,4 @@ export async function estimateWorkflowDuration(
   return { nodeCount: doc.nodes.length, totalMs, unknownNodes }
 }
 
-export type { JobNodeInfo }
+export type { WorkflowStepInfo }

@@ -8,28 +8,25 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Hourglass, RotateCcw } from 'lucide-react'
 import { z } from 'zod'
 import {
-  JobAssistsResponseSchema,
   JobCancelResponseSchema,
-  JobCreateResponseSchema,
   JobDeleteResponseSchema,
-  JobNodesResponseSchema,
   JobResponseSchema,
   resolveRuntime,
   SettingsResponseSchema,
+  WorkflowResumeResponseSchema,
+  WorkflowStepsResponseSchema,
   type ArtifactInfo,
-  type DeviceEvent,
+  type DeviceActivity,
   type GateOutcome,
   type JobInfo,
-  type JobNodeStatus,
   type JobSettings,
-  type LeaseHolder,
   type Predicate,
   type ValueExpr,
   type WorkflowDoc,
   type WorkflowNode,
+  type WorkflowStepInfo,
 } from '@enkaku/protocol'
 import { JobStatusBadge } from '@/components/StatusBadge'
-import { HolderBadge } from '@/components/HolderBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { JobArtifactsPanel } from '@/components/jobs/JobArtifactsPanel'
@@ -58,7 +55,7 @@ import {
   relativeTime,
   useAction,
 } from '@enkaku/ui'
-import { deviceRefLabel, fetchAllPages, type JobNodeInfo } from '@/lib/api'
+import { deviceRefLabel, fetchAllPages } from '@/lib/api'
 import { descendantsOf } from '@/lib/job-lineage'
 import type { JobWithPhase } from '@/lib/jobs'
 import { useJobDetail, type JobWithNode } from '@/lib/use-job-detail'
@@ -69,13 +66,14 @@ import { coreBase, ws } from '@/lib/ws'
 const PHASES = ['reset', 'prepare', 'run', 'finish'] as const
 
 /**
- * `job_nodes.verdict` (plan 99 §3.7, §4.4, §4.9) — a gate's `PredicateTrace`,
- * typed `unknown` on the wire (`JobNodeInfoSchema.output.verdict`) because
- * `@enkaku/protocol` never declares a Zod schema for it (`workflow-resolve.ts`
- * exports the TYPE only, produced by `evaluatePredicate`, never parsed from
- * external input on that side). Parsed HERE, defensively, rather than
- * `as`-cast — the repo rule for anything crossing the wire (`CLAUDE.md`).
- * Recursive to match `all`/`any`/`not` nesting; a leaf has no `children`.
+ * `workflow_steps.verdict` (plan 99 §3.7, §4.4, §4.9; re-keyed from
+ * `job_nodes` by plan 211) — a gate's `PredicateTrace`, typed `unknown` on
+ * the wire (`WorkflowStepInfoSchema.verdict`) because `@enkaku/protocol`
+ * never declares a Zod schema for it (`workflow-resolve.ts` exports the
+ * TYPE only, produced by `evaluatePredicate`, never parsed from external
+ * input on that side). Parsed HERE, defensively, rather than `as`-cast —
+ * the repo rule for anything crossing the wire (`CLAUDE.md`). Recursive to
+ * match `all`/`any`/`not` nesting; a leaf has no `children`.
  */
 const PredicateTraceSchema: z.ZodType<{
   op: string
@@ -179,18 +177,18 @@ function describeOutcome(go: GateOutcome): string {
  * arrow, when the document is unavailable (a deleted script row, or a fetch
  * that has not settled yet) — real data either way, never a placeholder.
  */
-function gateVerdictSentence(row: JobNodeInfo, docNode: WorkflowNode | null): string | null {
+function gateVerdictSentence(row: WorkflowStepInfo, docNode: WorkflowNode | null): string | null {
   if (row.kind !== 'gate') return null
-  const parsed = PredicateTraceSchema.safeParse(row.output.verdict)
+  const parsed = PredicateTraceSchema.safeParse(row.verdict)
   if (!parsed.success) return docNode ? null : 'verdict not recorded'
   const trace = parsed.data
   if (!docNode || docNode.kind !== 'gate') {
     // No document to read `when`/`then`/`else` from — render what the trace alone can say.
-    return `${row.nodeId} — condition ${trace.value ? 'true' : 'false'}`
+    return `${row.stepId} — condition ${trace.value ? 'true' : 'false'}`
   }
   const condition = describeCondition(docNode.when, trace)
   const outcome = describeOutcome(trace.value ? docNode.then : docNode.else)
-  return `${row.nodeId} — ${condition} → ${outcome}`
+  return `${row.stepId} — ${condition} → ${outcome}`
 }
 
 /** `workflowDoc.nodes[]` keyed by document node id — `null` when the document is unavailable, or the id is not (or no longer) in it. */
@@ -199,32 +197,33 @@ function docNodeById(doc: WorkflowDoc | null, nodeId: string): WorkflowNode | nu
 }
 
 /**
- * `skipped` and `skipped-on-resume` are DIFFERENT facts (plan 99 §3.5's own
- * brief): one node was never reached because a gate branched away; the
- * other was deliberately not re-run because a resume started later in the
- * pipeline. Rendered with different labels AND different tones — `skipped`
- * muted/neutral, `skipped-on-resume` the accent tone (a deliberate,
+ * `skipped` and `carried-over` are DIFFERENT facts (plan 99 §3.5's own
+ * brief, re-keyed from `job_nodes` to `workflow_steps` by plan 211): one
+ * step was never reached because a gate branched away; the other was
+ * deliberately not re-run because a resume started later in the pipeline.
+ * Rendered with different labels AND different tones — `skipped`
+ * muted/neutral, `carried-over` the accent tone (a deliberate,
  * unremarkable choice, never the warning/danger tones a real problem gets).
  */
-const NODE_STATUS_LABEL: Record<JobNodeStatus, string> = {
+const NODE_STATUS_LABEL: Record<WorkflowStepInfo['status'], string> = {
   running: 'running',
   success: 'succeeded',
   failed: 'failed',
   cancelled: 'cancelled',
   skipped: 'skipped',
-  'skipped-on-resume': 'carried over',
+  'carried-over': 'carried over',
 }
 
-const NODE_STATUS_TONE: Record<JobNodeStatus, string> = {
+const NODE_STATUS_TONE: Record<WorkflowStepInfo['status'], string> = {
   running: 'text-led-active border-led-active/35 bg-led-active/10',
   success: 'text-led-ok border-led-ok/35 bg-led-ok/10',
   failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
   cancelled: 'text-led-warn border-led-warn/35 bg-led-warn/10',
   skipped: 'text-fg-subtle border-line bg-transparent',
-  'skipped-on-resume': 'text-accent border-accent/35 bg-accent/10',
+  'carried-over': 'text-accent border-accent/35 bg-accent/10',
 }
 
-function NodeStatusChip({ status }: { status: JobNodeStatus }) {
+function NodeStatusChip({ status }: { status: WorkflowStepInfo['status'] }) {
   return (
     <span
       className={cn(
@@ -239,120 +238,80 @@ function NodeStatusChip({ status }: { status: JobNodeStatus }) {
 }
 
 /**
- * The node timeline (plan 99 §3.5, §3.7, §4.9, §4.11, step 99.10) — one row
- * per `job_nodes` EXECUTION (a loop re-runs a document node, and each pass
- * is its own row here, matching the API's own contract). This is the
- * surface the step's own verifiable result names: reading which node
- * failed and why, without opening the log — each row carries its own
- * status, duration, attempts, gate verdict sentence, and artifacts.
+ * The step timeline (plan 99 §3.5, §3.7, §4.9, §4.11, step 99.10; re-keyed
+ * from `job_nodes` to `workflow_steps` by plan 211 §3.2 decision 4 — a
+ * workflow step is now a real job, not a node execution attributed to the
+ * workflow job) — one row per step EXECUTION (a loop re-runs a document
+ * node, and each pass is its own row here, matching the API's own
+ * contract). This is the surface the step's own verifiable result names:
+ * reading which step failed and why, without opening the log.
+ *
+ * Two things the pre-211 timeline showed and this one does not, because
+ * `WorkflowStepInfoSchema` carries neither: per-step artifact attribution
+ * (`artifacts` is run-scoped only now, plan 211 §3.2 decision 9 — no more
+ * `artifacts.nodeId`) and the attempt counter (`workflow_steps` has no
+ * `job_nodes.attempts` column; a step's own attempts are visible on its
+ * OWN job page instead, via `row.jobId`). Both are discrepancies from the
+ * pre-211 UI, not decided away — reported as such rather than silently
+ * dropped.
  */
 function NodeTimeline({
   nodes,
   workflowDoc,
   finalized,
-  artifacts,
   now,
   onResumeClick,
 }: {
-  nodes: JobNodeInfo[]
+  nodes: WorkflowStepInfo[]
   workflowDoc: WorkflowDoc | null
   finalized: boolean
-  artifacts: ArtifactInfo[]
   now: number
-  onResumeClick: (nodeId: string) => void
+  onResumeClick: (stepId: string, seq: number) => void
 }) {
-  // `artifacts.nodeId` names the DOCUMENT node, not the specific execution
-  // (its own doc comment in `@enkaku/protocol`) — ambiguous only for a
-  // looped node, where every pass shares one id. Attributed to that node
-  // id's LAST execution here (the most likely "what did this just produce"
-  // reading) rather than repeated on every earlier pass.
-  const lastSeqForNodeId = new Map<string, number>()
-  for (const n of nodes) lastSeqForNodeId.set(n.nodeId, n.seq)
-  const artifactsByNodeId = new Map<string, ArtifactInfo[]>()
-  for (const a of artifacts) {
-    if (!a.nodeId) continue
-    artifactsByNodeId.set(a.nodeId, [...(artifactsByNodeId.get(a.nodeId) ?? []), a])
-  }
-
   return (
     <div className="rounded-lg border bg-surface p-4">
       <h2 className="rack-label mb-3">pipeline</h2>
       <ol className="space-y-2">
         {nodes.map((row) => {
-          const docNode = docNodeById(workflowDoc, row.nodeId)
+          const docNode = docNodeById(workflowDoc, row.stepId)
           const verdict = gateVerdictSentence(row, docNode)
-          const rowArtifacts = row.seq === lastSeqForNodeId.get(row.nodeId) ? (artifactsByNodeId.get(row.nodeId) ?? []) : []
           // `job_node_not_found` refuses only an already-succeeded or
-          // never-attempted node (`job-service.ts`'s `resume()`) — but the
+          // never-attempted step (`job-service.ts`'s `resume()`) — but the
           // one status this button must never appear for regardless is
-          // `skipped` (a node the cursor never reached at all is not a
+          // `skipped` (a step the cursor never reached at all is not a
           // point ANYTHING can resume from), matching that guard exactly.
           const canResume = finalized && row.status !== 'skipped'
-          const elapsed = row.duration.startedAt ? duration(row.duration.startedAt, row.duration.finishedAt, now) : '—'
+          const elapsed = row.startedAt ? duration(row.startedAt, row.finishedAt, now) : '—'
           return (
-            <li key={`${row.nodeId}-${row.seq}`} className="rounded-md border bg-bg p-2.5">
+            <li key={`${row.stepId}-${row.seq}`} className="rounded-md border bg-bg p-2.5">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="readout text-[11px] text-fg-subtle">#{row.seq + 1}</span>
-                <span className="text-[12.5px] font-medium">{row.nodeId}</span>
+                <span className="text-[12.5px] font-medium">{row.stepId}</span>
                 <NodeStatusChip status={row.status} />
                 {row.kind === 'gate' ? (
                   <span className="readout text-[10.5px] text-fg-subtle">gate</span>
-                ) : row.scriptName ? (
-                  <span className="readout text-[11px] text-fg-muted">
-                    {row.scriptName}@{row.scriptVersion ?? '?'}
-                  </span>
+                ) : row.jobId ? (
+                  <Link href={`/jobs/detail?id=${row.jobId}`} className="readout text-[11px] text-fg-muted hover:underline">
+                    open step job
+                  </Link>
                 ) : null}
                 <span className="readout ml-auto text-[11px] text-fg-subtle">{elapsed}</span>
               </div>
-
-              {row.kind === 'script' && row.attempts.current > 0 && (
-                <p className="readout mt-1 text-[10.5px] text-fg-subtle">
-                  {row.attempts.current} attempt{row.attempts.current === 1 ? '' : 's'}
-                  {row.attempts.total ? ` of ${row.attempts.total}` : ''}
-                </p>
-              )}
 
               {/* The gate verdict sentence (plan 99 §3.7's own example:
                   "scroll1.videos (12) >= 10 → continue") — a rendered
                   sentence, not raw JSON. */}
               {verdict && <p className="readout mt-1.5 text-[12px] text-fg-muted">{verdict}</p>}
 
-              {row.status === 'failed' && row.attempts.lastError && (
-                <p className="mt-1.5 text-[12px] text-led-danger">{row.attempts.lastError.message}</p>
-              )}
+              {row.status === 'failed' && row.error && <p className="mt-1.5 text-[12px] text-led-danger">{row.error}</p>}
 
-              {row.status === 'skipped-on-resume' && (
+              {row.status === 'carried-over' && (
                 <p className="mt-1.5 text-[11.5px] text-fg-subtle">
                   Carried over from an earlier run — not re-executed this time.
-                  {row.resumedFromJobId && (
-                    <>
-                      {' '}
-                      <Link href={`/jobs/detail?id=${row.resumedFromJobId}`} className="hover:underline">
-                        See the original job
-                      </Link>
-                      .
-                    </>
-                  )}
                 </p>
               )}
               {row.status === 'skipped' && (
                 <p className="mt-1.5 text-[11.5px] text-fg-subtle">Never reached — a gate branched around it.</p>
-              )}
-
-              {rowArtifacts.length > 0 && (
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {rowArtifacts.map((a) => (
-                    <a
-                      key={a.id}
-                      href={`${coreBase()}/api/artifacts/${a.id}/content`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="readout rounded border px-1.5 py-0.5 text-[10.5px] text-fg-muted hover:border-accent hover:text-accent"
-                    >
-                      {a.label ?? a.kind}
-                    </a>
-                  ))}
-                </div>
               )}
 
               {canResume && (
@@ -361,7 +320,7 @@ function NodeTimeline({
                     variant="ghost"
                     size="sm"
                     className="h-7 text-[11.5px]"
-                    onClick={() => onResumeClick(row.nodeId)}
+                    onClick={() => onResumeClick(row.stepId, row.seq)}
                   >
                     <RotateCcw className="size-3" aria-hidden />
                     Resume from here
@@ -377,70 +336,74 @@ function NodeTimeline({
 }
 
 /**
- * The resume confirmation (plan 99 §3.5, §4.9) — names every node that will
- * NOT run again before the operator confirms, and is careful never to word
- * this as restarting the original job: resume creates a NEW job, and the
- * original is left exactly as it ran.
+ * The resume confirmation (plan 99 §3.5, §4.9; re-keyed from `job_nodes` to
+ * `workflow_steps` by plan 211) — names every step that will NOT run again
+ * before the operator confirms, and is careful never to word this as
+ * restarting the original job: resume creates a NEW run on the SAME job
+ * (`POST /api/workflow-jobs/:id/resume`, plan 211 §3.2 decision 12 — a
+ * resume is a run, not a new job), and the run it resumes from is
+ * untouched.
  */
 function ResumeDialog({
   jobId,
-  nodeId,
+  stepId,
+  stepSeq,
   nodes,
   workflowDoc,
   onClose,
   onResumed,
 }: {
   jobId: string
-  nodeId: string
-  nodes: JobNodeInfo[]
+  stepId: string
+  stepSeq: number
+  nodes: WorkflowStepInfo[]
   workflowDoc: WorkflowDoc | null
   onClose: () => void
-  onResumed: (newJobId: string) => void
+  onResumed: () => void
 }) {
   const { run, isPending } = useAction()
 
   // Every doc node BEFORE the resume point, in DOCUMENT order — these are
-  // the ones `POST /:id/resume` will write `skipped-on-resume` for (plan 99
-  // §3.5). Falls back to this job's own seq-ordered node ids before the
+  // the ones the resumed run will carry over as `carried-over` (plan 99
+  // §3.5). Falls back to this job's own seq-ordered step ids before the
   // resume point when the document itself is unavailable (a deleted script
   // row, or a fetch still in flight) — real data either way, never a
   // placeholder.
   const skippedIds = useMemo(() => {
     if (workflowDoc) {
-      const idx = workflowDoc.nodes.findIndex((n) => n.id === nodeId)
+      const idx = workflowDoc.nodes.findIndex((n) => n.id === stepId)
       return idx > 0 ? workflowDoc.nodes.slice(0, idx).map((n) => n.id) : []
     }
-    const targetSeq = [...nodes].reverse().find((n) => n.nodeId === nodeId)?.seq ?? 0
     const seen = new Set<string>()
     const ids: string[] = []
     for (const n of nodes) {
-      if (n.seq >= targetSeq) break
-      if (!seen.has(n.nodeId)) {
-        seen.add(n.nodeId)
-        ids.push(n.nodeId)
+      if (n.seq >= stepSeq) break
+      if (!seen.has(n.stepId)) {
+        seen.add(n.stepId)
+        ids.push(n.stepId)
       }
     }
     return ids
-  }, [workflowDoc, nodes, nodeId])
+  }, [workflowDoc, nodes, stepId, stepSeq])
 
-  const lastRowFor = (id: string) => [...nodes].reverse().find((n) => n.nodeId === id) ?? null
+  const lastRowFor = (id: string) => [...nodes].reverse().find((n) => n.stepId === id) ?? null
 
   return (
     <AlertDialog open onOpenChange={(v) => !v && onClose()}>
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
           <AlertDialogTitle>
-            Resume from <span className="readout">{nodeId}</span>?
+            Resume from <span className="readout">{stepId}</span>?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            This creates a NEW job that continues from <span className="readout">{nodeId}</span> — the original job
-            is untouched and stays in its history exactly as it ran.
+            This creates a NEW run that continues from <span className="readout">{stepId}</span> — the run it
+            resumes from is untouched and stays in this job's history exactly as it ran.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {skippedIds.length > 0 && (
           <div className="rounded-md border border-led-warn/35 bg-led-warn/5 p-2.5">
             <p className="rack-label mb-1.5 text-led-warn">
-              {skippedIds.length} node{skippedIds.length === 1 ? '' : 's'} will not run again
+              {skippedIds.length} step{skippedIds.length === 1 ? '' : 's'} will not run again
             </p>
             <ul className="space-y-1">
               {skippedIds.map((id) => {
@@ -448,9 +411,7 @@ function ResumeDialog({
                 return (
                   <li key={id} className="text-[12px] text-fg-muted">
                     <span className="readout font-medium">{id}</span>
-                    {row
-                      ? ` — ${NODE_STATUS_LABEL[row.status]}${row.scriptName ? ` (${row.scriptName}@${row.scriptVersion ?? '?'})` : ''}`
-                      : ' — never ran'}
+                    {row ? ` — ${NODE_STATUS_LABEL[row.status]}` : ' — never ran'}
                   </li>
                 )
               })}
@@ -468,14 +429,14 @@ function ResumeDialog({
               void run(
                 'resume',
                 () =>
-                  api(`/api/jobs/${jobId}/resume`, JobCreateResponseSchema, {
+                  api(`/api/workflow-jobs/${jobId}/resume`, WorkflowResumeResponseSchema, {
                     method: 'POST',
-                    json: { fromNode: nodeId },
+                    json: { fromStep: stepSeq },
                   }),
                 {
-                  success: 'Resumed as a new job',
+                  success: 'Resumed as a new run',
                   failure: 'Could not resume the job',
-                  onSuccess: (b) => onResumed(b.job.jobId),
+                  onSuccess: () => onResumed(),
                 },
               )
             }
@@ -525,34 +486,33 @@ function JobDetail() {
   // file header names exactly what stayed here and why).
   const [chainNodes, setChainNodes] = useState<JobInfo[]>([])
   const [rootInfo, setRootInfo] = useState<JobInfo | null>(null)
-  // Plan 91 §3.5, §4.9 — every non-job input action recorded against this
-  // job's device while it ran. Page-only, same reasoning as `chainNodes`.
-  const [assists, setAssists] = useState<DeviceEvent[]>([])
   // Plan 98 §3.9 item 4, §5 step 98.8 — the Summary tab's "Peak memory" row
   // gains a "/ N limit" half. `farmJobSettings` is fetched once,
   // independently — a job page has no other reason to load farm settings,
   // so this is its own small round trip rather than piggy-backing on an
   // unrelated fetch. Page-only: the popup's Jobs tab has no memory-limit row.
   const [farmJobSettings, setFarmJobSettings] = useState<JobSettings | null>(null)
-  // Waiting for the device to go quiet before claiming it (plan 71 §3.7), OR
-  // (plan 94 §3.7, §4.9, F25, step 94.10) waiting on the PACER for its next
-  // repetition's drawn delay to elapse — visible, not silent: a wait nobody
-  // can see is indistinguishable from a hang. `null` means "not currently
-  // waiting" (never started, or already claimed/expired past the cap).
-  const [waiting, setWaiting] = useState<{ heldBy: LeaseHolder | null; remainingSec: number; reason: 'quiet' | 'paced' } | null>(
+  // Waiting for a live control marker to go quiet before claiming the device
+  // (plan 71 §3.7; plan 205 §3.2 item 6), OR (plan 94 §3.7, §4.9, F25, step
+  // 94.10) waiting on the PACER for its next repetition's drawn delay to
+  // elapse — visible, not silent: a wait nobody can see is indistinguishable
+  // from a hang. `null` means "not currently waiting" (never started, or
+  // already claimed/expired past the cap).
+  const [waiting, setWaiting] = useState<{ conflicting: DeviceActivity | null; remainingSec: number; reason: 'control' | 'paced' } | null>(
     null,
   )
   // The node timeline (plan 99 §3.5, §4.9, step 99.10) — `[]`/`false` for
-  // every non-workflow job, the same "empty, not missing" convention
-  // `assists` above already uses. `workflowDoc` (from the hook) is the
+  // every non-workflow job. `workflowDoc` (from the hook) is the
   // parsed pipeline, read for the gate verdict sentence's `when`/`then`/
   // `else` and the resume dialog's "what will be skipped" preview.
-  const [nodes, setNodes] = useState<JobNodeInfo[]>([])
+  const [nodes, setNodes] = useState<WorkflowStepInfo[]>([])
   const [nodesFinalized, setNodesFinalized] = useState(false)
-  // "Resume from here" (plan 99 §3.5, §4.9) — the node the operator picked,
-  // or null when the dialog is closed. A node id rather than a boolean:
-  // several rows can each offer their own "Resume from here" button.
-  const [resumeFrom, setResumeFrom] = useState<string | null>(null)
+  // "Resume from here" (plan 99 §3.5, §4.9) — the step the operator picked,
+  // or null when the dialog is closed. A step id/seq pair rather than a
+  // boolean: several rows can each offer their own "Resume from here"
+  // button, and `fromStep` (plan 211's `WorkflowResumeRequestSchema`) needs
+  // the numeric seq, not the document node id alone (a loop reuses one id).
+  const [resumeFrom, setResumeFrom] = useState<{ stepId: string; seq: number } | null>(null)
   const { run, isPending } = useAction()
   const router = useRouter()
   // Run time and total-time tick without a refresh while a job is running.
@@ -569,12 +529,18 @@ function JobDetail() {
     [farmJobSettings, scriptRuntime],
   )
 
-  // Split out so the live `job.status` handler below can refresh JUST the
-  // timeline on every node transition, without re-fetching the whole job
-  // (plan 99 §4.11: "watching the node counter advance live").
+  // Split out so the live `job.status` handler below can refresh the
+  // timeline (plan 99 §4.11: "watching the node counter advance live";
+  // re-keyed from `/api/jobs/:id/nodes` to `/api/workflow-jobs/:id/runs/
+  // :runId/steps` by plan 211 — a step is scoped to the RUN it belongs to,
+  // and `job.status` carries no live per-step block any more, so this is
+  // called on every terminal transition rather than every step transition).
+  // `[]`/`false` (not fetched) for a job with no run yet, or a non-workflow
+  // job — the endpoint 404s and the catch below leaves the timeline empty.
   const refreshNodes = () => {
-    if (!jobId) return
-    void api(`/api/jobs/${jobId}/nodes`, JobNodesResponseSchema)
+    const runId = jobRef.current?.runId
+    if (!jobId || !runId) return
+    void api(`/api/workflow-jobs/${jobId}/runs/${runId}/steps`, WorkflowStepsResponseSchema)
       .then((r) => {
         setNodes(r.items)
         setNodesFinalized(r.finalized)
@@ -605,16 +571,9 @@ function JobDetail() {
     } else {
       setRootInfo(null)
     }
-    // Plan 91 §3.5, §4.9 — who touched this job's device while it ran, and
-    // when. Failing quietly to an empty list (an old core without this
-    // route, or a job with none) rather than surfacing a fetch error for
-    // what is a supplementary panel, not the job itself.
-    void api(`/api/jobs/${jobId}/assists`, JobAssistsResponseSchema)
-      .then((r) => setAssists(r.items))
-      .catch(() => setAssists([]))
   }
 
-  // The node timeline and the lineage/assists panels each need the job to
+  // The node timeline and the lineage panel each need the job to
   // exist first (`rootJobId`/`depth` for the latter) — both re-run once
   // `job` first resolves for THIS jobId (not on every in-place `job.status`
   // update, which would over-fetch on every progress tick).
@@ -640,14 +599,16 @@ function JobDetail() {
   // The page-only half of the live `job.status`/`job.waiting` broadcasts —
   // the hook's OWN `ws.on` (inside `useJobDetail`) already merges `job`
   // itself and reloads on a terminal status; this second, independent
-  // listener is what re-reads the node timeline on every node transition and
-  // re-reads lineage/assists once a job actually finishes, matching what the
-  // single combined handler on this page used to do before the extraction.
+  // listener is what re-reads the step timeline and lineage once a job
+  // actually finishes, matching what the single combined handler on this
+  // page used to do before the extraction. Plan 211 §3.2 decision 9 —
+  // `job.status` no longer carries a live per-step block (a step is a real
+  // job now, watched on its own page), so the timeline only re-fetches on
+  // the terminal transition, not on every step.
   useEffect(() => {
     if (!jobId) return
     const off = ws.on((m) => {
       if (m.type === 'job.status' && m.payload.jobId === jobId) {
-        if (m.payload.node) refreshNodes()
         if (['success', 'failed', 'cancelled', 'expired'].includes(m.payload.status)) {
           refreshNodes()
           loadExtras()
@@ -655,7 +616,7 @@ function JobDetail() {
       } else if (m.type === 'job.waiting' && m.payload.jobId === jobId) {
         setWaiting(
           m.payload.waiting
-            ? { heldBy: m.payload.heldBy, remainingSec: m.payload.remainingSec, reason: m.payload.reason }
+            ? { conflicting: m.payload.conflicting, remainingSec: m.payload.remainingSec, reason: m.payload.reason }
             : null,
         )
       }
@@ -708,17 +669,16 @@ function JobDetail() {
         meta={
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <JobStatusBadge status={job.status} />
-            {/* The live node counter (plan 99 §4.9, §4.11) — "node 2/4",
-                pushed by `job.status`'s own `node` block while a workflow
-                job runs. `seq` is 0-based execution order (`+1` for a
-                1-based display) and can legitimately exceed `total` on a
-                looping node — shown as-is rather than clamped, since that IS
-                the honest count of a workflow that has looped past its own
-                node total. */}
-            {job.node && (
+            {/* The step counter (plan 99 §4.9, §4.11; re-keyed from
+                `job.status`'s own live `node` block by plan 211 §3.2
+                decision 9 — that block is gone, a step is now a real job
+                watched on its own page, so this reads the timeline fetched
+                by `refreshNodes` instead of a live push). Shown only while
+                the job is still running, from the last step recorded so
+                far. */}
+            {job.status === 'running' && nodes.length > 0 && (
               <span className="readout rounded-full border px-2 py-0.5 text-[11px] text-fg-muted">
-                node {job.node.seq + 1}/{job.node.total}
-                {job.node.script ? ` · ${job.node.script}` : job.node.kind === 'gate' ? ' · gate' : ''}
+                step {nodes.length}
               </span>
             )}
             {/* The verdict, answerable without scrolling: how long it ran, and
@@ -876,8 +836,13 @@ function JobDetail() {
       {waiting && job.status === 'queued' && (
         <div className="mx-5 mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-led-warn/35 bg-led-warn/5 px-3.5 py-2.5 text-[12.5px]">
           <Hourglass className="size-3.5 shrink-0 text-led-warn" aria-hidden />
-          <span>{waiting.reason === 'paced' ? 'Waiting for the next repetition' : 'Waiting for the device to be free'}</span>
-          {waiting.heldBy && <HolderBadge holder={waiting.heldBy} />}
+          <span>
+            {waiting.reason === 'paced'
+              ? 'Waiting for the next repetition'
+              : waiting.conflicting
+                ? `Waiting for ${waiting.conflicting.label}`
+                : 'Waiting for the device to be free'}
+          </span>
           <span className="readout text-fg-subtle">
             — {waiting.reason === 'paced' ? 'starting' : 'proceeding'} in {waiting.remainingSec}s
             {waiting.remainingSec === 0 ? ' (any moment now)' : ' at the latest'}
@@ -903,18 +868,17 @@ function JobDetail() {
 
             {/* The node timeline (plan 99 §3.5, §3.7, §4.9, §4.11) — hidden
                 entirely for an ordinary (non-workflow) job, the same
-                "nothing extra for the common case" rule the lineage and
-                Assisted-by cards below already follow. This is the surface
-                this step's own verifiable result names: which node failed
-                and why, without opening the log. */}
+                "nothing extra for the common case" rule the lineage card
+                below already follows. This is the surface this step's own
+                verifiable result names: which node failed and why, without
+                opening the log. */}
             {nodes.length > 0 && (
               <NodeTimeline
                 nodes={nodes}
                 workflowDoc={workflowDoc}
                 finalized={nodesFinalized}
-                artifacts={artifacts}
                 now={now}
-                onResumeClick={setResumeFrom}
+                onResumeClick={(stepId, seq) => setResumeFrom({ stepId, seq })}
               />
             )}
           </div>
@@ -1012,7 +976,7 @@ function JobDetail() {
                   link is dropped rather than pointing at a 404. */}
               {!deviceRef?.deleted && (
                 <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
-                  <Link href={`/device?id=${encodeURIComponent(job.deviceId)}`}>Open device</Link>
+                  <Link href={`/?focus=${encodeURIComponent(job.deviceId)}`}>Open device</Link>
                 </Button>
               )}
 
@@ -1094,29 +1058,6 @@ function JobDetail() {
                 </div>
               )}
             </div>
-
-            {/* Plan 91 §1, §3.5 — "a job that mysteriously succeeded because
-                someone tapped a modal is a lie in the history." Hidden
-                entirely for the common, un-assisted case, matching the
-                `hasLineage` card above and `docs/design.md`'s "no disabled
-                placeholders" rule. */}
-            {assists.length > 0 && (
-              <div className="rounded-lg border border-led-warn/35 bg-led-warn/5 p-3.5">
-                <h2 className="rack-label mb-2.5 text-led-warn">
-                  assisted by {assists.length} action{assists.length === 1 ? '' : 's'}
-                </h2>
-                <ul className="space-y-1.5">
-                  {assists.map((e) => (
-                    <li key={e.id} className="flex items-baseline justify-between gap-3 text-[12px]">
-                      <span className="min-w-0 truncate text-fg-muted">
-                        {e.kind.replace('input.', '')} — {e.actor ?? 'an unauthenticated client'}
-                      </span>
-                      <span className="readout shrink-0 text-fg-subtle">{relativeTime(e.at, now)}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </aside>
         </div>
       )}
@@ -1174,17 +1115,21 @@ function JobDetail() {
 
       {/* Rendered regardless of active tab — "Resume from here" lives on the
           Summary tab's node timeline, but the confirmation itself should not
-          vanish if a click happens to straddle a tab switch. */}
+          vanish if a click happens to straddle a tab switch. Plan 211 §3.2
+          decision 12 — a resume is a new RUN on this SAME job, not a new
+          job, so there is no navigation on success: `load()` re-fetches the
+          job (now pointing at the new run) in place. */}
       {resumeFrom && (
         <ResumeDialog
           jobId={jobId}
-          nodeId={resumeFrom}
+          stepId={resumeFrom.stepId}
+          stepSeq={resumeFrom.seq}
           nodes={nodes}
           workflowDoc={workflowDoc}
           onClose={() => setResumeFrom(null)}
-          onResumed={(newJobId) => {
+          onResumed={() => {
             setResumeFrom(null)
-            router.push(`/jobs/detail?id=${newJobId}`)
+            load()
           }}
         />
       )}

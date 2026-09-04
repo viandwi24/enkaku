@@ -345,7 +345,7 @@ export const PluginServiceResetDataSchema = z.object({
   /**
    * Capabilities the reset handler may call **only** during a reset pass, on
    * top of `permissions`. Everything else about a farm call is unchanged: the
-   * real ACL still runs under `plugin:<name>`, the lease admission still
+   * real ACL still runs under `plugin:<name>`, the activity policy still
    * applies, and every call is still audited.
    */
   permissions: z.array(z.string().min(1).max(120)).max(PLUGIN_SERVICE_MAX_RESET_PERMISSIONS).default([]),

@@ -23,15 +23,13 @@ import { resolveVideoProfile, type VideoProfile } from './video-profile'
 import { wakeDevice } from './wake'
 
 /**
- * Plan 91 §4.1, §4.5 — the arbiter's bounded-queue budget, mirroring
- * `coControl.queueWaitMs`/`coControl.maxQueueDepth`'s own schema defaults
- * (`packages/protocol/src/settings.ts`). `daemon.ts`'s `createSessionManager({...})`
- * call threads the real, live farm setting through `SessionManagerDeps` →
- * `CreateSessionDeps` (fixed 2026-08-13 — `docs/plans/96-m61-hotfixes.md`
- * §96.13); these constants remain the fallback for any caller that supplies
- * no accessor at all — a test/fixture `SessionManager`, or the node
- * package's own mini-core, which does not run co-control (`00-overview.md`
- * §4.1's `node` boundary).
+ * Plan 91 §4.1, §4.5 — the arbiter's bounded-queue budget. `daemon.ts`'s
+ * `createSessionManager({...})` call threads the real, live farm setting
+ * through `SessionManagerDeps` → `CreateSessionDeps` (fixed 2026-08-13 —
+ * `docs/plans/96-m61-hotfixes.md` §96.13); these constants remain the
+ * fallback for any caller that supplies no accessor at all — a test/fixture
+ * `SessionManager`, or the node package's own mini-core, which runs no
+ * input arbiter at all (`00-overview.md` §4.1's `node` boundary).
  */
 const DEFAULT_ARBITER_QUEUE_WAIT_MS = 5_000
 const DEFAULT_ARBITER_MAX_QUEUE_DEPTH = 32
@@ -79,8 +77,8 @@ export interface DeviceSession {
    * Every input write goes through this (plan 91 §3.3, §4.1): three
    * independent, non-preemptive priority lanes (`pointer`/`keys`/`text`)
    * over the SAME `input` sink above, so two input sources on one device
-   * (a job and an assisting human, plan 91's whole premise) never interleave
-   * one pointer's down/move/up.
+   * (a job and a person controlling it, plan 91's whole premise) never
+   * interleave one pointer's down/move/up.
    */
   arbiter: InputArbiter
   /** The effective display and input engines (possibly degraded). */
@@ -96,8 +94,8 @@ export interface DeviceSession {
    * it is typed optional only so the dozens of hand-built `DeviceSession`
    * fixtures across `packages/core`'s WS-handler tests (none of them about
    * video) do not all need to grow a stub in this commit — the same
-   * fixture-compatibility reason `SessionManager.videoStats`/`restartAt`
-   * are optional (`packages/session/src/manager.ts`).
+   * fixture-compatibility reason `SessionManager.restartAt`
+   * is optional (`packages/session/src/manager.ts`).
    * `SessionManager.reprofile()` reads the equivalent value it tracks on its
    * own `Entry` (never this field directly, so it never has to branch on the
    * optionality) to decide whether a session needs restarting — comparing
@@ -110,6 +108,16 @@ export interface DeviceSession {
   /** The most recent IDR frame, so a joining viewer has something to decode. */
   videoKeyframe: (() => Uint8Array | null) | null
   /**
+   * The host port this session's active scrcpy forward is bound to (plan 223
+   * §4.2/§4.3) — null when the display engine is `screencap-loop` (no scrcpy
+   * forward exists) or the session predates a successful connect. Read by
+   * `SessionManager.forwards()`; nothing else in this package owns a second,
+   * independent forward-tracking store.
+   */
+  forwardPort: number | null
+  /** This session's scrcpy `scid`, or null under the same condition as `forwardPort` above. */
+  scrcpyScid: string | null
+  /**
    * Ask the encoder for a fresh keyframe (Plan 17 §3.6, §4.5) — sent when a
    * viewer subscribes, so the first thing they see is current rather than the
    * cached IDR from seconds earlier. Only present when scrcpy is the display
@@ -119,13 +127,21 @@ export interface DeviceSession {
   /** This session's inspector engine (ui-server / uiautomator-dump). Null until it is ready. */
   inspector: Inspector | null
   /**
-   * Starts the inspector if it is not running yet, and resolves when it is
-   * ready (or has given up). Jobs call this; manual control never starts it
-   * IMPLICITLY — the Inspect tab (plan 56 §4.3) is the one caller that starts
-   * it explicitly, through `inspect.attach`, so the adb queue stays free for
-   * video the rest of the time.
+   * Starts the inspector if nothing has yet, and resolves once it is ready
+   * (or has fallen back). Start-once; every caller joins the same start.
+   * Never rejects (plan 208 §3.2). The engine is session-scoped: started
+   * here or by `prewarmInspector()` below, whichever runs first, and
+   * released only by `close()` — a tab attaching to it (`inspect.attach`)
+   * is a viewer, never an owner.
    */
   whenInspectorReady(): Promise<void>
+  /**
+   * The same start as `whenInspectorReady()`, invoked by the always-on
+   * builder `INSPECTOR_PREWARM_DELAY_MS` after the first frame (plan 206
+   * §3.9). Identical to `whenInspectorReady` on purpose: there is one
+   * engine per session and one way to start it (plan 208 §3.2).
+   */
+  prewarmInspector(): Promise<void>
   /**
    * Resolves once this session's text-input keyboard has been set up — and
    * STARTS that setup if nothing has yet (plan 125 §3.8, §4.5, §5 step 125.8).
@@ -165,15 +181,11 @@ export interface DeviceSession {
    * plan.
    */
   whenTextInputReady?(): Promise<void>
-  /**
-   * Gives the inspector engine back (plan 56 §3.2, §4.3) — releases the
-   * handle's own `release()` (stops the watchdog, frees its port/lock) and
-   * resets `inspector`/`inspectorEngineId` so the NEXT `whenInspectorReady()`
-   * builds a fresh engine rather than resolving against a dead handle. The
-   * Inspect tab calls this once its last viewer detaches; jobs never call it
-   * — a script's inspector lives for the session, not for one `find`.
-   */
-  releaseInspector(): Promise<void>
+  // The separate early-release method plan 56 once gave the Inspect tab is
+  // gone (plan 208 §3.2): a method that exists and does nothing is the
+  // compatibility shim plan 200 §2.1 forbids. `close()` below is the only
+  // release — the engine is session-scoped, not tab-scoped, so a tab
+  // detaching (`inspect.detach`) releases nothing.
   /** The effective engine id — it can differ from the DB column after a fallback. */
   inspectorEngineId: string
   /** The waitFor polling interval that suits the active engine. */
@@ -240,6 +252,13 @@ export interface DeviceSession {
    * production implementation) always sets it.
    */
   rotation?: RotationLock
+  /**
+   * A device-side clipboard change (plan 209 §3.2 D10, §4.9): scrcpy's
+   * `CLIPBOARD` device message, forwarded from `ScrcpySession.onDeviceMessage`.
+   * `() => () => {}` on a session with no scrcpy control channel. Returns an
+   * unsubscribe.
+   */
+  onClipboardChanged(cb: (text: string) => void): () => void
   close(): Promise<void>
 }
 
@@ -293,16 +312,15 @@ export interface CreateSessionDeps {
    * `DEFAULT_ARBITER_QUEUE_WAIT_MS`/`DEFAULT_ARBITER_MAX_QUEUE_DEPTH`.
    * `SessionManagerDeps.arbiterQueueWaitMs`/`arbiterMaxQueueDepth`
    * (`packages/session/src/manager.ts`) forward these two straight through
-   * from `daemon.ts`'s live `coControl.queueWaitMs`/`coControl.maxQueueDepth`
-   * settings accessors (fixed 2026-08-13 — `docs/plans/96-m61-hotfixes.md`
-   * §96.13).
+   * from `daemon.ts`'s own live settings accessors (fixed 2026-08-13 —
+   * `docs/plans/96-m61-hotfixes.md` §96.13).
    */
   arbiterQueueWaitMs?: () => number
   arbiterMaxQueueDepth?: () => number
   /**
    * Plan 100 §4.3, step 100.6 — `FarmSettings.display.fallbackRetryCount`,
    * read fresh on every retry decision (the same freshness discipline
-   * `arbiterQueueWaitMs`/`idleTtlSec` etc. already use). Undefined falls back
+   * `arbiterQueueWaitMs` etc. already use). Undefined falls back
    * to this file's own `DEFAULT_FALLBACK_RETRY_COUNT`.
    */
   fallbackRetryCount?: () => number
@@ -326,7 +344,7 @@ export interface CreateSessionOpts {
   inspection?: string | null
   apiLevel?: number | null
   /** DeviceSettings.input.preferredMode. */
-  preferredInputMode?: 'uhid' | 'sdk' | 'aoa'
+  preferredInputMode?: 'uhid' | 'sdk'
   /** DeviceSettings.prep.keepAwake — replaces the old `stayAwake` boolean (Plan 17 §3.4). */
   keepAwake?: KeepAwakeMode
   /** DeviceSettings.prep.standbyScreenOff — dark panel, mirroring stays alive (Plan 17 §3.5). */
@@ -420,18 +438,19 @@ export interface CreateSessionOpts {
    */
   skipWake?: boolean
   /**
-   * Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.4 — set only alongside
-   * `skipDevicePrep` above. A fast-path `control` build must produce a
-   * REAL scrcpy session or fail outright: silently falling back to
+   * Plan 206 §3.6, §4.4 — set by the always-on builder on EVERY base build
+   * (not only the fast path any more), and alongside `skipDevicePrep` for a
+   * fast-path `control` build. A build with this set must produce a REAL
+   * scrcpy session or fail outright: silently falling back to
    * screencap-loop + adb-input here would be exactly the silent downgrade
-   * §3.7 forbids (a third, even worse quality than the wall's own, shown
-   * under the Control label). `makeScrcpy` returning null/rejecting throws
-   * `SessionError('E_CONTROL_SESSION_UNAVAILABLE', ...)` instead of
-   * degrading — `packages/scrcpy/src/session.ts`'s own bounded
-   * `connectWithRetry` is what already turns a platform's rejection (a
-   * non-zero server exit, or a handshake that never completes) into that
-   * rejected promise, so this is H2's "detect the platform's own
-   * rejection" signal, not a new timeout invented here.
+   * this plan forbids (a session shown under a wall/control label that is
+   * really the PNG fallback). `makeScrcpy` returning null/rejecting throws
+   * `SessionError('E_SCRCPY_UNAVAILABLE', ...)` instead of degrading —
+   * `packages/scrcpy/src/session.ts`'s own bounded `connectWithRetry` is
+   * what already turns a platform's rejection (a non-zero server exit, or a
+   * handshake that never completes) into that rejected promise, so this is
+   * H2's "detect the platform's own rejection" signal, not a new timeout
+   * invented here.
    *
    * Ignored (never throws) when `opts.display === 'screencap-loop'` is the
    * device's OWN deliberate configuration — that device was never going to
@@ -471,49 +490,42 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   await transport.connect()
 
   /**
-   * The inspector is started lazily, on first use, and never IMPLICITLY for
-   * manual control.
+   * The inspector is session-scoped (plan 208 §3.2): started once, by
+   * whichever of `prewarmInspector()` (the always-on builder, plan 206
+   * §3.9) or `whenInspectorReady()` (a job, or an Inspect tab's
+   * `inspect.attach`) runs first, and torn down only by this session's
+   * `close()` below — never released early by a tab detaching.
    *
-   * Two measurements on a real moto g06 power (Android 15) drove this:
+   * Two measurements on a real moto g06 power (Android 15) are why the
+   * start is not moved earlier than the first frame:
    *   - awaiting it up front delayed the first video frame by ~50 s, because
    *     ui-server's watchdog retries twice before giving up;
    *   - starting it in the background instead was worse in a subtler way. adb
    *     access is serialised per device, so the watchdog's installs starved the
    *     screencap loop: 1 frame in 20 s, versus 11 once it gave up.
    *
-   * Scripts need an inspector through waitFor/find, so the job runner starts
-   * it. Manual control never starts it on its own either — but the Inspect
-   * tab (plan 56 §3.2, §4.3) DOES, explicitly, through `inspect.attach`: an
-   * operator who opens that tab has consciously chosen to pay the
-   * instrumentation-lock and adb-queue cost `whenInspectorReady` was written
-   * to avoid paying by default. `releaseInspector` below is what lets that
-   * cost be given back once the tab closes, rather than being paid for the
-   * rest of the session.
+   * `prewarmInspector()` runs `INSPECTOR_PREWARM_DELAY_MS` after the first
+   * frame (plan 206's `onFirstFrame`), which respects that measurement
+   * without leaving the engine lazy for the rest of the session.
    */
   let inspectorHandle: Awaited<ReturnType<NonNullable<CreateSessionDeps['makeInspector']>>> | null = null
   let inspectorPromise: Promise<void> | null = null
   const startInspector = (): Promise<void> => {
     if (!deps.makeInspector) return Promise.resolve()
-    inspectorPromise ??= deps
-      .makeInspector(opts.deviceId, transport, opts.inspection ?? null)
-      .then((h) => {
+    inspectorPromise ??= (async () => {
+      const t0 = Date.now()
+      try {
+        const h = await deps.makeInspector!(opts.deviceId, transport, opts.inspection ?? null)
         inspectorHandle = h
         session.inspector = h.inspector
         session.inspectorEngineId = h.engineId
         session.inspectorPollIntervalMs = h.pollIntervalMs
-      })
-      .catch((err) => {
-        log.warn(`inspector could not start: ${String(err)} — scripts will use an ad-hoc dump`)
-      })
+        log.info(`inspector ready: ${h.engineId} on ${opts.deviceId} in ${Date.now() - t0} ms`)
+      } catch (err) {
+        log.warn(`inspector could not start: ${String(err)}`)
+      }
+    })()
     return inspectorPromise
-  }
-  const releaseInspector = async (): Promise<void> => {
-    const handle = inspectorHandle
-    inspectorHandle = null
-    inspectorPromise = null
-    session.inspector = null
-    session.inspectorEngineId = 'starting'
-    await handle?.release()
   }
 
   // Plan 100 §4.2, §5 step 100.4: the fast-path control build skips this
@@ -691,7 +703,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     scrcpy = await deps.makeScrcpy(opts.deviceId, transport, videoProfile).catch((err) => {
       displayAttemptFailed = true
       scrcpyFailureReason = err instanceof Error ? err.message : String(err)
-      log.warn(`scrcpy cannot be used (${scrcpyFailureReason}) — falling back to screencap-loop + adb-input`)
+      log.info(`scrcpy cannot be used (${scrcpyFailureReason}); this build ${opts.requireScrcpy ? 'fails' : 'falls back to screencap-loop + adb-input'}`)
       return null
     })
   }
@@ -721,10 +733,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     await revertTextInput()
     await revertFarmTag()
     await transport.disconnect().catch(() => undefined)
-    throw new SessionError(
-      'E_CONTROL_SESSION_UNAVAILABLE',
-      scrcpyFailureReason ?? 'no scrcpy server is available for a second concurrent session on this device',
-    )
+    throw new SessionError('E_SCRCPY_UNAVAILABLE', scrcpyFailureReason ?? 'scrcpy-server could not be started on this device')
   }
 
   // Standby (Plan 17 §3.5): the panel goes dark, the encoder keeps producing
@@ -741,6 +750,8 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
 
   let input: InputSink
   let inputEngineId: string
+  /** Plan 209 §4.9: kept so `close()` can `destroy()` the virtual keyboard/pointer before the scrcpy session closes. */
+  let uhidEngine: ScrcpyUhidInput | null = null
   if (scrcpy) {
     const selection = selectInputEngine({
       preferred: opts.preferredInputMode ?? 'uhid',
@@ -757,7 +768,10 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // server is not reading control messages yet and the pointer never
     // materialises, so taps land nowhere. Registering it at the first tap
     // costs that tap about a second, once per session.
-    const engine = selection.engine === 'scrcpy-uhid' ? new ScrcpyUhidInput(inputDeps) : new ScrcpySdkInput(inputDeps)
+    const engine =
+      selection.engine === 'scrcpy-uhid'
+        ? (uhidEngine = new ScrcpyUhidInput(inputDeps))
+        : new ScrcpySdkInput(inputDeps)
     // Volume keys do not survive scrcpy injection on every device; those go
     // over adb so the buttons in the UI actually move the volume.
     input = withAdbKeyFallback(engine, transport)
@@ -848,13 +862,19 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     videoProfile,
     videoConfig: scrcpyDisplay ? () => scrcpyDisplay.configPacket : null,
     videoKeyframe: scrcpyDisplay ? () => scrcpyDisplay.keyframePacket : null,
+    forwardPort: scrcpy ? scrcpy.port : null,
+    scrcpyScid: scrcpy ? scrcpy.scid : null,
     ...(scrcpy ? { requestKeyframe: () => scrcpy!.control.resetVideo() } : {}),
     inspector: null,
     inspectorEngineId: 'starting',
     inspectorPollIntervalMs: 500,
     whenInspectorReady: startInspector,
+    // Plan 208 §3.2: identical to `whenInspectorReady` — one engine, one way
+    // to start it. The always-on builder calls this `INSPECTOR_PREWARM_DELAY_MS`
+    // after the first frame (plan 206 §3.9); a job or `inspect.attach` that
+    // reaches `whenInspectorReady()` first just joins the same start.
+    prewarmInspector: startInspector,
     whenTextInputReady: startTextInput,
-    releaseInspector,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
     clipboard,
     textInput: {
@@ -873,7 +893,17 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // settings change reaches a session that is already streaming instead of
     // waiting for a cold start that may never come on a wall tile.
     rotation: rotationLock,
+    onClipboardChanged: (cb) =>
+      scrcpy
+        ? scrcpy.onDeviceMessage((m) => {
+            if (m.type === 'clipboard') cb(m.text)
+          })
+        : () => {},
     async close() {
+      // Plan 209 §4.9: UHID_DESTROY the virtual keyboard (if it was ever
+      // created) before the control socket goes away with the rest of the
+      // session — best-effort, matching the rest of this function.
+      await uhidEngine?.destroy().catch(() => undefined)
       // Plan 100 §4.3 step 100.6: stop arming further retries and cancel any
       // in-flight timer FIRST — a retry that fires after close() has already
       // torn the session down must not resurrect a display on a dead session
@@ -1073,6 +1103,8 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     session.videoConfig = () => newDisplay.configPacket
     session.videoKeyframe = () => newDisplay.keyframePacket
     session.requestKeyframe = () => attempted.control.resetVideo()
+    session.forwardPort = attempted.port
+    session.scrcpyScid = attempted.scid
     liveScrcpy = attempted
     fallbackRetryAttempt = 0
     await oldDisplay.stop().catch((err) => log.warn(`failed to stop the screencap-loop fallback after recovering scrcpy for ${opts.deviceId}: ${String(err)}`))

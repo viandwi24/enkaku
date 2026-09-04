@@ -1,0 +1,140 @@
+/*
+ * `@enkaku/ui/palette.css`: the handoff's colour values, and the ONLY file
+ * in the workspace that states one (docs/mvp/design_handoff_enkaku_openpf/
+ * README.md "Design Tokens"; plan 204 §4.2).
+ *
+ * Plain `:root` rules, on purpose, and imported by Studio's globals.css ONLY.
+ * A plugin's stylesheet imports `theme.css` with `theme(reference)`, and
+ * Tailwind refuses a plain rule in such a file (plan 204 §3.4), so the values
+ * live here and the utility names live there. A plugin never re-declares a
+ * value: `bg-panel` compiles to `var(--panel)` and resolves against whatever
+ * this file put on Studio's document.
+ *
+ * Three selectors (plan 204 §3.3): `:root` is light; the media block is dark
+ * for a page with no explicit choice; `[data-theme="dark"]` is dark for an
+ * explicit choice. `[data-theme="light"]` therefore beats a dark system
+ * preference, and nothing here writes the attribute (plan 213's toggle does).
+ */
+:root {
+  --bg: #f1f1f2;
+  --panel: #ffffff;
+  --panel-2: #fbfbfc;
+  --panel-a: #ffffffee;
+  --muted: #f6f6f7;
+  --muted-2: #f4f4f5;
+  --hover: #fafafa;
+  --line: #f0f0f1;
+  --line-2: #eeeef0;
+  --border: #e8e8ea;
+  --border-2: #e4e4e7;
+  --border-3: #d4d4d8;
+  --text: #18181b;
+  --text-2: #3f3f46;
+  --text-3: #52525b;
+  --dim: #71717a;
+  --faint: #a1a1aa;
+  --faint-2: #c4c4c8;
+  --accent: #16803c;
+  --accent-2: #12652f;
+  --accent-soft: #ecf6ef;
+  --on-accent: #ffffff;
+  --accent-a1: #16803c14;
+  --accent-a2: #16803c1f;
+  --accent-a3: #16803c40;
+  --ok: #16a34a;
+  --warn: #b45309;
+  --warn-2: #d97706;
+  --warn-soft: #fef6e7;
+  --danger: #dc2626;
+  --danger-soft: #fdeceb;
+  --avatar-bg: #fde8ea;
+  --avatar-fg: #b4405a;
+  --tooltip-bg: #18181b;
+  --tooltip-fg: #fafafa;
+  --scrim: #18181b33;
+
+  /* Theme-independent. The families are the ones @fontsource-variable/geist
+     and @fontsource-variable/geist-mono declare (plan 204 §3.8). */
+  --font-ui: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-code: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c0c0e;
+    --panel: #16161a;
+    --panel-2: #1a1a1f;
+    --panel-a: #16161aee;
+    --muted: #202027;
+    --muted-2: #1d1d23;
+    --hover: #1e1e25;
+    --line: #26262d;
+    --line-2: #26262d;
+    --border: #2a2a32;
+    --border-2: #32323b;
+    --border-3: #3c3c46;
+    --text: #f4f4f5;
+    --text-2: #d4d4d8;
+    --text-3: #b0b0b8;
+    --dim: #8e8e98;
+    --faint: #71717a;
+    --faint-2: #55555f;
+    --accent: #4ade80;
+    --accent-2: #86efac;
+    --accent-soft: #16281d;
+    --on-accent: #08130c;
+    --accent-a1: #4ade8014;
+    --accent-a2: #4ade801f;
+    --accent-a3: #4ade8040;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --warn-2: #f59e0b;
+    --warn-soft: #2a2110;
+    --danger: #f87171;
+    --danger-soft: #2b1616;
+    --avatar-bg: #34212a;
+    --avatar-fg: #f0a3b4;
+    --tooltip-bg: #f4f4f5;
+    --tooltip-fg: #18181b;
+    --scrim: #00000080;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0c0c0e;
+  --panel: #16161a;
+  --panel-2: #1a1a1f;
+  --panel-a: #16161aee;
+  --muted: #202027;
+  --muted-2: #1d1d23;
+  --hover: #1e1e25;
+  --line: #26262d;
+  --line-2: #26262d;
+  --border: #2a2a32;
+  --border-2: #32323b;
+  --border-3: #3c3c46;
+  --text: #f4f4f5;
+  --text-2: #d4d4d8;
+  --text-3: #b0b0b8;
+  --dim: #8e8e98;
+  --faint: #71717a;
+  --faint-2: #55555f;
+  --accent: #4ade80;
+  --accent-2: #86efac;
+  --accent-soft: #16281d;
+  --on-accent: #08130c;
+  --accent-a1: #4ade8014;
+  --accent-a2: #4ade801f;
+  --accent-a3: #4ade8040;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --warn-2: #f59e0b;
+  --warn-soft: #2a2110;
+  --danger: #f87171;
+  --danger-soft: #2b1616;
+  --avatar-bg: #34212a;
+  --avatar-fg: #f0a3b4;
+  --tooltip-bg: #f4f4f5;
+  --tooltip-fg: #18181b;
+  --scrim: #00000080;
+}

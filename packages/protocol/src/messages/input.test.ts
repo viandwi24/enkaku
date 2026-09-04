@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { InputGestureMessage, InputTapMessage } from './input'
+import { InputGestureMessage, InputKeyEventMessage, InputPinchMessage, InputScrollMessage, InputTapMessage, InputTouchMessage } from './input'
+import { INPUT_EVENT_KINDS } from './device-event'
+import { ClientMessageSchema } from '../index'
 
 /**
  * `input.tap`'s `holdMs` (plan 94 §4.4, closes F4/F5) — the operator's
@@ -84,5 +86,83 @@ describe('InputGestureMessage (plan 40 §4.6)', () => {
       payload: { ...base, samples: [{ x: 0.1, y: 0.2, atMs: -1 }, { x: 0.5, y: 0.6, atMs: 120 }] },
     })
     expect(result.success).toBe(false)
+  })
+})
+
+describe('the four new input messages (plan 209 §4.5, §5 step 209.3)', () => {
+  test('input.touch defaults pointerId to 0 and rejects 10', () => {
+    const base = { deviceId: 'dev-1', action: 'down', pos: { x: 0.5, y: 0.5 } }
+    const defaulted = InputTouchMessage.safeParse({ type: 'input.touch', payload: base })
+    expect(defaulted.success).toBe(true)
+    expect(defaulted.success && defaulted.data.payload.pointerId).toBe(0)
+    const rejected = InputTouchMessage.safeParse({ type: 'input.touch', payload: { ...base, pointerId: 10 } })
+    expect(rejected.success).toBe(false)
+  })
+
+  test('input.touch rejects an action outside down/move/up', () => {
+    const result = InputTouchMessage.safeParse({
+      type: 'input.touch',
+      payload: { deviceId: 'dev-1', action: 'cancel', pos: { x: 0.5, y: 0.5 } },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  test('input.scroll rejects a delta outside -1..1', () => {
+    const result = InputScrollMessage.safeParse({
+      type: 'input.scroll',
+      payload: { deviceId: 'dev-1', pos: { x: 0.5, y: 0.5 }, hDelta: 1.5, vDelta: 0 },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  test('input.keyEvent accepts KeyA with meta and rejects an unmapped code', () => {
+    const meta = { shift: false, ctrl: false, alt: false, meta: false }
+    const ok = InputKeyEventMessage.safeParse({
+      type: 'input.keyEvent',
+      payload: { deviceId: 'dev-1', action: 'down', code: 'KeyA', meta },
+    })
+    expect(ok.success).toBe(true)
+    const bad = InputKeyEventMessage.safeParse({
+      type: 'input.keyEvent',
+      payload: { deviceId: 'dev-1', action: 'down', code: 'NotAKey', meta },
+    })
+    expect(bad.success).toBe(false)
+  })
+
+  test('input.keyEvent requires all four meta flags', () => {
+    const result = InputKeyEventMessage.safeParse({
+      type: 'input.keyEvent',
+      payload: { deviceId: 'dev-1', action: 'down', code: 'KeyA', meta: { shift: false } },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  test('input.pinch defaults durationMs to 300 and rejects scaleTo above 0.5', () => {
+    const defaulted = InputPinchMessage.safeParse({
+      type: 'input.pinch',
+      payload: { deviceId: 'dev-1', center: { x: 0.5, y: 0.5 }, scaleFrom: 0.1, scaleTo: 0.2 },
+    })
+    expect(defaulted.success).toBe(true)
+    expect(defaulted.success && defaulted.data.payload.durationMs).toBe(300)
+    const rejected = InputPinchMessage.safeParse({
+      type: 'input.pinch',
+      payload: { deviceId: 'dev-1', center: { x: 0.5, y: 0.5 }, scaleFrom: 0.1, scaleTo: 0.6 },
+    })
+    expect(rejected.success).toBe(false)
+  })
+
+  test('ClientMessageSchema parses the four new messages', () => {
+    const meta = { shift: false, ctrl: false, alt: false, meta: false }
+    expect(ClientMessageSchema.safeParse({ type: 'input.touch', payload: { deviceId: 'd', action: 'down', pos: { x: 0.1, y: 0.1 } } }).success).toBe(true)
+    expect(ClientMessageSchema.safeParse({ type: 'input.scroll', payload: { deviceId: 'd', pos: { x: 0.1, y: 0.1 }, hDelta: 0, vDelta: 1 } }).success).toBe(true)
+    expect(ClientMessageSchema.safeParse({ type: 'input.keyEvent', payload: { deviceId: 'd', action: 'down', code: 'KeyA', meta } }).success).toBe(true)
+    expect(ClientMessageSchema.safeParse({ type: 'input.pinch', payload: { deviceId: 'd', center: { x: 0.5, y: 0.5 }, scaleFrom: 0.1, scaleTo: 0.2 } }).success).toBe(true)
+  })
+
+  test('INPUT_EVENT_KINDS contains input.scroll, input.keyEvent and input.pinch and not input.touch', () => {
+    expect(INPUT_EVENT_KINDS).toContain('input.scroll')
+    expect(INPUT_EVENT_KINDS).toContain('input.keyEvent')
+    expect(INPUT_EVENT_KINDS).toContain('input.pinch')
+    expect(INPUT_EVENT_KINDS as readonly string[]).not.toContain('input.touch')
   })
 })

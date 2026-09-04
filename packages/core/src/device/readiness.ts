@@ -15,7 +15,7 @@ import {
 import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import type { AwakePolicy } from './awake-policy'
-import type { Lease, LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
 import { mapWithConcurrency } from '../util/concurrency'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -26,7 +26,7 @@ import type { Logger } from '../util/logger'
  * device goes away (the tab closes, the job finishes, the endpoint idles
  * out, ...). NEVER changes `desired` (§3.6) — see `hold()` below.
  */
-export type HoldReason = 'viewer' | 'lease' | 'job' | 'monitor' | 'adb-endpoint' | 'transfer' | 'capability'
+export type HoldReason = 'viewer' | 'control' | 'job' | 'monitor' | 'adb-endpoint' | 'transfer' | 'capability'
 
 export interface Hold {
   readonly id: string
@@ -46,9 +46,9 @@ export interface ReadinessManager {
    * Ensure the device is at least `awake` and keep it there while the caller
    * needs it (§3.6). Wakes if asleep, no-ops if already awake or hot.
    * NEVER changes `desired` — releasing the last hold lets the device settle
-   * back toward it (immediately if there is no live session; on Plan 42's
-   * OWN `session.idleTtlSec` grace period if the hold's caller went on to
-   * open a real session, e.g. `stream.start`'s own `sessions.acquire`).
+   * back toward it immediately (plan 206 §3.7: there is no viewer readiness
+   * hold left in `stream.start`'s own path, and no idle grace period any
+   * more — a session, once built, is not what a hold's release races against).
    */
   hold(deviceId: string, reason: HoldReason): Promise<Hold>
   /**
@@ -79,7 +79,7 @@ export interface ReadinessManagerDeps {
   client: () => AdbClient | null
   /** Plan 42's session manager — the ONLY place a grace-period timer lives (§3.7, acceptance #17). This module starts none of its own. */
   sessions: () => SessionManager | null
-  leases: LeaseManager
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
   /** `readiness.maxHot`, read fresh (the same freshness pattern every other farm setting in this codebase uses). */
   maxHot: () => number
   /**
@@ -150,7 +150,10 @@ const BOOT_SWEEP_MAX_CONCURRENCY = 4
  * instead.
  */
 export function staticReadinessFallback(row: Pick<DeviceRow, 'status' | 'desiredReadiness'>): DeviceReadiness {
-  const desired = (row.desiredReadiness as Readiness | null) ?? 'asleep'
+  // Plan 206 §3.7: `desired` defaults to `awake` for every device, old and
+  // new — migration 0065 rewrites stored NULL/`asleep` rows to `awake` on
+  // upgrade; an operator who wants a device asleep sets it again.
+  const desired = (row.desiredReadiness as Readiness | null) ?? 'awake'
   const offline = (row.status ?? 'offline') === 'offline'
   return DeviceReadinessSchema.parse({
     desired,
@@ -180,18 +183,15 @@ function nowSec(): number {
  * message and the `PUT /api/devices/:id/readiness` route, both of which
  * enforce §3.4 through this exact function).
  *
- * There is exactly ONE inactivity clock (§3.7, acceptance #17): Plan 42's
- * `session.idleTtlSec`, inside `@enkaku/session`'s `SessionManager`. This
- * module starts no `setTimeout`/`setInterval` of its own anywhere below —
- * search it and there is none. A `desired: hot` device is kept hot by
- * holding a STANDING subscriber on `SessionManager` (`desiredHotRelease`
- * below) — the exact same "a session with a subscriber never idles out"
- * mechanism Plan 42 already built, not a second copy of it. A transient hold
+ * This module starts no `setTimeout`/`setInterval` of its own anywhere
+ * below — search it and there is none. Plan 206 §3.7: a session is always
+ * on once built, so there is no longer an inactivity clock to defer to at
+ * all — a device's BASE session never idles out regardless of readiness. A
+ * `desired: hot` device is kept hot by holding a STANDING subscriber on
+ * `SessionManager` (`desiredHotRelease` below); a transient hold
  * (viewer/job/monitor/adb-endpoint/transfer) only guarantees `awake` (a
- * direct, one-off `wakeDevice` call, no session, no timer); if the caller
- * goes on to open a REAL session (`stream.start` → `sessions.acquire`), that
- * session's own subscriber is what keeps it warm through Plan 42's grace
- * period — this module never duplicates that bookkeeping.
+ * direct, one-off `wakeDevice` call, no session, no timer) and never
+ * duplicates the base session's own bookkeeping.
  */
 export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessManager {
   const { db, log } = deps
@@ -204,7 +204,7 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
   const blockedReason = new Map<string, ReadinessBlockedReason | null>()
   /** deviceId → the last observed `actual` level and when it was first seen — drives `since`. */
   const lastActual = new Map<string, { level: Readiness; since: number }>()
-  /** deviceId → number of open holds (viewer/job/monitor/adb-endpoint/transfer/lease). */
+  /** deviceId → number of open holds (viewer/job/monitor/adb-endpoint/transfer/control). */
   const holdCounts = new Map<string, number>()
   /**
    * deviceId → the last thing the PHONE said about its own screen (plan 125
@@ -222,7 +222,10 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
   }
 
   function desiredOf(row: DeviceRow | null): Readiness {
-    return row ? ((row.desiredReadiness as Readiness | null) ?? 'asleep') : 'asleep'
+    // Plan 206 §3.7 — the NULL fallback is `awake`, matching migration 0065's
+    // rewrite of stored NULL/`asleep` rows on upgrade. A row that genuinely
+    // does not exist has no device to keep awake, so `asleep` stays correct there.
+    return row ? ((row.desiredReadiness as Readiness | null) ?? 'awake') : 'asleep'
   }
 
   function transportFor(row: DeviceRow): AdbUsbTransport | null {
@@ -355,6 +358,15 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     if (rawActual(deviceId, row) !== 'asleep') return
     const transport = transportFor(row)
     if (!transport) return
+    // Plan 205 §4.9 — visible to any other viewer of the device exactly the
+    // way a job or an install already are, for the length of the wake
+    // sequence. Deliberately never refuses on a `forbid` decision (unlike
+    // every capability-facing admission point) — this function is called
+    // from deep inside `reconcile()`/`hold()`/the boot sweep, none of which
+    // expect it to throw, and `wakeDevice`'s own failures are already
+    // swallowed and logged below rather than propagated.
+    const wakeActivityId = `wake:${deviceId}`
+    deps.activities.start(deviceId, { id: wakeActivityId, kind: 'wake', label: 'Waking', actor: { kind: 'system', id: 'core', label: 'Readiness' } })
     await transport.connect()
     try {
       // Plan 125 §3.3, step 125.2 — the PERSISTED writes ride along with the
@@ -373,6 +385,7 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       log.warn(`readiness: wakeDevice failed for ${deviceId}: ${String(err)}`)
     } finally {
       await transport.disconnect()
+      deps.activities.end(deviceId, wakeActivityId)
     }
     keepAwakeApplied.add(deviceId)
     broadcast(deviceId)
@@ -429,9 +442,10 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     }
     if (status === 'quarantined') {
       // A device quarantined while hot drops to asleep and keeps `desired`
-      // (Plan 43 §8 risks table) — releasing our own standing subscriber
-      // lets Plan 42's `closeIfIdle` (already called from the state machine
-      // hook, daemon.ts) tear the session down; we do not force it here.
+      // (Plan 43 §8 risks table) — releasing our own standing subscriber is
+      // all this does; the base session itself stays open regardless (plan
+      // 206 §9 Q5, left open: sessions are always on now, and whether
+      // quarantine should shed heat by stopping the encoder is undecided).
       releaseDesiredHot(deviceId)
       blockedReason.set(deviceId, desired !== 'asleep' ? 'quarantined' : null)
       markUnobservable(deviceId, 'the device is quarantined')
@@ -445,7 +459,9 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
         if (sessions && desiredHotRelease.size < deps.maxHot()) {
           const sink = (): void => {}
           try {
-            await sessions.acquire(deviceId, sink, 'wall')
+            // Plan 206 §4.3 — `acquire` always serves the one base (`wall`)
+            // entry now; there is no quality argument left to pass.
+            await sessions.acquire(deviceId, sink)
             desiredHotRelease.set(deviceId, () => sessions.release(deviceId, sink))
             blockedReason.set(deviceId, null)
           } catch (err) {
@@ -582,25 +598,28 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
 
       const waking = RANK[desired] > RANK[currentDesired]
       if (waking) {
-        // §3.4: Wake is allowed for idle/manual/busy, refused for offline/quarantined.
+        // §3.4: Wake is allowed for online (whatever is currently live on it), refused for offline/quarantined.
         if (status === 'offline') throw new EnkakuError('device_offline', 'the device is offline')
         if (status === 'quarantined') throw new EnkakuError('device_quarantined', 'the device is quarantined')
       } else {
-        // §3.4, corrected by Plan 49 §3.1/§4.1: Sleep is refused only for
-        // ACTIVE use — a running job, or another operator's manual lease.
-        // Watching NEVER blocks it: the Wall tile is itself a viewer, so a
-        // viewer check made Sleep impossible from the one screen it belongs
-        // on — refusing the person pressing the button by telling them
-        // someone is watching, when that someone was them. Holding the
-        // lease YOURSELF does not block your own sleep — you are the one
-        // using it, and you are the one asking.
-        if (status === 'busy') throw new EnkakuError('job_running', 'a job is running')
-        const lease: Lease | null = deps.leases.getLease(deviceId)
-        const actorHoldsLease =
-          lease?.type === 'manual' &&
-          (lease.holder === actor.clientId || (actor.userId !== null && lease.holderUserId === actor.userId))
-        if (lease?.type === 'manual' && !actorHoldsLease) {
-          throw new EnkakuError('device_in_use', 'another operator holds the lease on this device')
+        // §3.4, corrected by Plan 49 §3.1/§4.1, reworked by plan 205 §4.9:
+        // Sleep is refused only for ACTIVE use — a running job, or another
+        // operator's control marker. Watching NEVER blocks it: the Wall
+        // tile is itself a viewer, so a viewer check made Sleep impossible
+        // from the one screen it belongs on — refusing the person pressing
+        // the button by telling them someone is watching, when that someone
+        // was them. Holding the control marker YOURSELF does not block your
+        // own sleep — you are the one using it, and you are the one asking.
+        const live = deps.activities.list(deviceId)
+        if (live.some((a) => a.kind === 'job' || a.kind === 'workflow-job' || a.kind === 'install')) {
+          throw new EnkakuError('job_running', 'a job is running')
+        }
+        const control = live.find((a) => a.kind === 'control')
+        const actorHoldsControl =
+          control !== undefined &&
+          (control.id === `control:${actor.clientId}` || (actor.userId !== null && control.actor.kind === 'user' && control.actor.id === actor.userId))
+        if (control && !actorHoldsControl) {
+          throw new EnkakuError('device_in_use', 'another operator is controlling this device')
         }
       }
 
@@ -628,10 +647,11 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
           else holdCounts.set(deviceId, left)
           // No timer here (§3.7, acceptance #17): a pure-awake hold (no
           // session behind it) reconciles back toward `desired` immediately.
-          // A hold whose caller went on to open a real session is not torn
-          // down by this at all — `deps.sessions().get(deviceId)` is still
-          // non-null and `reconcile`'s asleep branch leaves it alone,
-          // deferring entirely to Plan 42's own `session.idleTtlSec`.
+          // A hold on a device with an open BASE session is not torn down by
+          // this at all — `deps.sessions().get(deviceId)` is still non-null
+          // and `reconcile`'s asleep branch leaves it alone; sessions are
+          // always on now (plan 206 §3.7), so for an online device that is
+          // effectively every device, always.
           if (left === 0) void reconcile(deviceId)
         },
       }

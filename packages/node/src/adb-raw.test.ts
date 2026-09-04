@@ -53,7 +53,7 @@ const DEVICE: DeviceSnapshot = {
   stableId: 'stable-1',
   serial: 'SERIAL-1',
   label: 'Phone',
-  status: 'idle',
+  status: 'online',
   androidVersion: '13',
   apiLevel: 33,
   screenW: 1080,

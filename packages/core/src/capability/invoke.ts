@@ -1,4 +1,4 @@
-import type { CapabilityResult } from '@enkaku/protocol'
+import { E_DEVICE_CONFLICT, type CapabilityResult } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import { EnkakuError } from '../util/errors'
 import type { CapabilityContext } from './context'
@@ -13,8 +13,8 @@ import type { AnyCoreCapability } from './types'
  *   1. parse    — `raw` through `cap.input`. Never an `as`-cast.
  *   2. permission
  *   3. device grant (only when the input names a `deviceId`)
- *   4. lease    (`lease: 'control'` only)
- *   5. readiness (device online + woken, for `lease !== 'none'`)
+ *   4. activity policy (`cap.activity` present and its `kind` is not `'read'`)
+ *   5. readiness (device online + woken, whenever `cap.activity` is present)
  *   6. run, under `cap.deadline`
  *   7. audit — every invocation, refusals included
  */
@@ -47,7 +47,7 @@ function isCodedError(err: unknown): err is Error & { code: string } {
   return err instanceof Error && typeof (err as { code?: unknown }).code === 'string'
 }
 
-/** Exported for `agent/loop/run.ts` (plan 66) — the loop needs to know which device a capability call targets to acquire a control lease on the agent's behalf before invoking it; this is the SAME extraction `invoke` itself uses, not a second implementation. */
+/** Exported for `agent/loop/run.ts` (plan 66) — the loop needs to know which device a capability call targets to start the agent's own device activity on its behalf before invoking it; this is the SAME extraction `invoke` itself uses, not a second implementation. */
 export function extractDeviceId(input: unknown): string | undefined {
   if (input && typeof input === 'object' && 'deviceId' in input) {
     const v = (input as { deviceId?: unknown }).deviceId
@@ -72,7 +72,7 @@ export async function invoke(cap: AnyCoreCapability, ctx: CapabilityContext, raw
     })
   }
 
-  const refuse = (code: 'E_BAD_INPUT' | 'E_FORBIDDEN' | 'E_NO_GRANT' | 'E_NEEDS_LEASE' | 'E_DEVICE_OFFLINE', message: string, deviceId?: string, details?: unknown): CapabilityResult => {
+  const refuse = (code: 'E_BAD_INPUT' | 'E_FORBIDDEN' | 'E_NO_GRANT' | typeof E_DEVICE_CONFLICT | 'E_DEVICE_OFFLINE', message: string, deviceId?: string, details?: unknown): CapabilityResult => {
     record('refused', code, deviceId)
     return { ok: false, error: { code, message, ...(details !== undefined ? { details } : {}) } }
   }
@@ -95,19 +95,24 @@ export async function invoke(cap: AnyCoreCapability, ctx: CapabilityContext, raw
     return refuse('E_NO_GRANT', `no grant to reach device ${deviceId}`, deviceId)
   }
 
-  // 4. lease — NEVER acquired implicitly (plan 63 §3.4 step 4): a capability
-  // that silently took control would let a caller interrupt an operator
-  // mid-gesture. The refusal names the holder (acceptance #5).
-  if (cap.lease === 'control' && deviceId) {
-    const blockedBy = ctx.controlLeaseBlockedBy(deviceId)
-    if (blockedBy) {
-      return refuse('E_NEEDS_LEASE', `the control lease on ${deviceId} is held by ${blockedBy}`, deviceId)
+  // 4. activity policy — NEVER touched implicitly before this point (plan
+  // 63 §3.4 step 4, plan 205 §4.4): a capability that silently started an
+  // activity would let a caller interrupt an operator mid-gesture. A
+  // `forbid` refusal names the conflicting activity (acceptance #5); a
+  // device-less capability or one declaring `{ kind: 'read' }` never
+  // consults the policy at all.
+  let warning: string | null = null
+  if (cap.activity && cap.activity.kind !== 'read' && deviceId) {
+    const decision = ctx.evaluateActivity(deviceId, cap.activity.kind, cap.activity.exclusiveWith)
+    if (decision.decision === 'forbid') {
+      return refuse(E_DEVICE_CONFLICT, decision.message, deviceId)
     }
+    if (decision.decision === 'warn') warning = decision.message
   }
 
-  // 5. readiness — device online, then woken if the capability needs it,
-  // before the deadline clock starts (plan 63 §3.4 step 5).
-  if (deviceId && cap.lease !== 'none') {
+  // 5. readiness — device online, then woken, whenever the capability
+  // touches a device at all (plan 63 §3.4 step 5).
+  if (deviceId && cap.activity) {
     if (!ctx.isDeviceOnline(deviceId)) {
       return refuse('E_DEVICE_OFFLINE', `device ${deviceId} is not reachable`, deviceId)
     }
@@ -121,8 +126,15 @@ export async function invoke(cap: AnyCoreCapability, ctx: CapabilityContext, raw
   // capability's own deadline waiting for that to happen.
   try {
     const output = await runWithDeadline(() => cap.handler(ctx, input), cap.deadline)
+    // The control marker is touched AFTER the handler succeeds, never
+    // before — a capability that throws never claims the device (plan 205
+    // §4.4). Only `control` refreshes a marker this way; every other kind is
+    // evaluated against the policy above but does not maintain one here.
+    if (cap.activity?.kind === 'control' && deviceId) {
+      ctx.touchActivity(deviceId, 'control')
+    }
     record('ok', null, deviceId)
-    return { ok: true, output }
+    return warning !== null ? { ok: true, output, warning } : { ok: true, output }
   } catch (err) {
     if (err instanceof DeadlineExceeded) {
       record('refused', 'E_DEADLINE', deviceId)

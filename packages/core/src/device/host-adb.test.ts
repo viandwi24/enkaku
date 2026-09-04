@@ -11,11 +11,19 @@ import { createHostAdb, HostAdbError } from './host-adb'
  */
 const BUN = process.execPath
 
-function hostAdb(overrides?: Partial<{ maxHostConcurrent: number; maxInstallConcurrent: number }>) {
+function hostAdb(
+  overrides?: Partial<{ maxHostConcurrent: number; maxInstallConcurrent: number }>,
+  // Defaults to one root PER SERIAL — every pre-existing test in this file
+  // that does not care about USB roots keeps behaving as it did before plan
+  // 223's per-root gate landed; a test that wants two devices to SHARE a
+  // root passes its own `usbRootOf`.
+  usbRootOf: (serial: string) => Promise<string> = async (serial) => serial,
+) {
   const settings = { maxHostConcurrent: 4, maxInstallConcurrent: 2, ...overrides }
   return createHostAdb({
     binaryPath: () => BUN,
     settings: () => settings,
+    usbRootOf,
   })
 }
 
@@ -131,6 +139,42 @@ describe('createHostAdb — run()', () => {
     // does not accidentally serialise the whole farm.
     expect(Date.now() - startedAt).toBeLessThan(sleepMs * 2)
   })
+
+  test('install lane: two installs on the same USB root never overlap even when maxInstallConcurrent allows it (plan 223 §4.6, MVP 09 §2 H5)', async () => {
+    const adb = hostAdb({ maxHostConcurrent: 8, maxInstallConcurrent: 4 }, async () => 'root-1')
+    const sleepMs = 150
+    const script = `process.stdout.write(String(Date.now())); await Bun.sleep(${sleepMs})`
+    const [a, b] = await Promise.all([
+      adb.run(['-e', script], { lane: 'install', serial: 'device-a' }),
+      adb.run(['-e', script], { lane: 'install', serial: 'device-b' }),
+    ])
+    const starts = [a, b].map((s) => Number.parseInt(s.trim(), 10)).sort((x, y) => x - y)
+    expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(sleepMs - 40)
+  })
+
+  test('install lane: two installs on DIFFERENT USB roots may run concurrently', async () => {
+    const adb = hostAdb({ maxHostConcurrent: 8, maxInstallConcurrent: 4 }, async (serial) => (serial === 'device-a' ? 'root-1' : 'root-2'))
+    const sleepMs = 200
+    const script = `process.stdout.write(String(Date.now())); await Bun.sleep(${sleepMs})`
+    const startedAt = Date.now()
+    await Promise.all([
+      adb.run(['-e', script], { lane: 'install', serial: 'device-a' }),
+      adb.run(['-e', script], { lane: 'install', serial: 'device-b' }),
+    ])
+    expect(Date.now() - startedAt).toBeLessThan(sleepMs * 2)
+  })
+
+  test('install lane: a serial that resolves to unknown is still gated by its own root\'s semaphore', async () => {
+    const adb = hostAdb({ maxHostConcurrent: 8, maxInstallConcurrent: 4 }, async () => 'unknown')
+    const sleepMs = 150
+    const script = `process.stdout.write(String(Date.now())); await Bun.sleep(${sleepMs})`
+    const [a, b] = await Promise.all([
+      adb.run(['-e', script], { lane: 'install', serial: 'device-a' }),
+      adb.run(['-e', script], { lane: 'install', serial: 'device-b' }),
+    ])
+    const starts = [a, b].map((s) => Number.parseInt(s.trim(), 10)).sort((x, y) => x - y)
+    expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(sleepMs - 40)
+  })
 })
 
 describe('createHostAdb — spawnLongLived()', () => {
@@ -210,5 +254,15 @@ describe('createHostAdb — stats()', () => {
     await gate
     expect(adb.stats().running).toBe(0)
     expect(adb.stats().installsRunning).toBe(0)
+  })
+
+  test('installsByRoot reports running/queued per root (plan 223 §4.6)', async () => {
+    const adb = hostAdb({ maxHostConcurrent: 8, maxInstallConcurrent: 4 }, async () => 'root-1')
+    const gate = adb.run(['-e', `await Bun.sleep(150)`], { lane: 'install', serial: 'dev-1' })
+    const queued = adb.run(['-e', `await Bun.sleep(10)`], { lane: 'install', serial: 'dev-2' })
+    await Bun.sleep(30) // let the first actually start and the second queue behind its root's semaphore
+    expect(adb.stats().installsByRoot['root-1']).toEqual({ running: 1, queued: 1 })
+    await Promise.all([gate, queued])
+    expect(adb.stats().installsByRoot['root-1']).toEqual({ running: 0, queued: 0 })
   })
 })

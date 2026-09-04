@@ -6,7 +6,7 @@ import type { GateOutcome, Predicate, ValueExpr, WorkflowDoc, WorkflowNode } fro
 /**
  * Static, publish-time checking of a workflow document (plan 99 §4.3, step
  * 99.6). Pure: `checkWorkflow` never touches a database — every fact about
- * another script it needs (its `kind`, its `paramsSchema`, its declared
+ * another script it needs (its `paramsSchema`, its declared
  * `outputSchema` once plan 97 lands) is handed in already resolved, by the
  * caller. This is deliberate and load-bearing (§4.3's own doc comment on the
  * design): the editor's Validate button (`POST /api/workflows/validate`) and
@@ -29,7 +29,6 @@ export type WorkflowFindingCode =
   | 'E_WORKFLOW_UNKNOWN_PARAM'
   | 'E_WORKFLOW_BINDING_TYPE'
   | 'E_WORKFLOW_BINDING_UNRESOLVABLE'
-  | 'E_WORKFLOW_NESTED'
   | 'E_WORKFLOW_UNREACHABLE'
   | 'E_WORKFLOW_BUDGET_IMPOSSIBLE'
   | 'W_WORKFLOW_UNCHECKED_BINDING'
@@ -75,7 +74,6 @@ export type WorkflowFindingCode =
 export interface ResolvedNodeScript {
   name: string
   version: string
-  kind: 'script' | 'workflow'
   paramsSchema: JsonSchemaNode | null
   outputSchema: JsonSchemaNode | null
   /**
@@ -85,11 +83,11 @@ export interface ResolvedNodeScript {
    * once, before this function ever runs. `null` means the script declared
    * no timeout at all — UNKNOWN, never zero (see `WorkflowFindingCode`'s own
    * `W_WORKFLOW_BUDGET_UNKNOWN` doc comment for why that distinction is
-   * load-bearing). Irrelevant for a `kind: 'workflow'` entry (nesting is
-   * refused elsewhere, `E_WORKFLOW_NESTED`) and for a caller that predates
-   * plan 98 — such a caller may pass `null` here for every entry, which
-   * degrades check 7 to "every node's timeout is unknown", exactly as
-   * honest as not implementing it at all.
+   * load-bearing). A caller that predates plan 98 may pass `null` here for
+   * every entry, which degrades check 7 to "every node's timeout is
+   * unknown", exactly as honest as not implementing it at all. A workflow
+   * node's script always resolves to a plugin member (plan 210, MVP 03 §2):
+   * nesting a workflow inside another cannot be expressed any more.
    */
   timeoutMs: number | null
 }
@@ -570,27 +568,14 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
     }
   }
 
-  // --- 5. No node's script is itself a workflow ---------------------------
+  // --- 5. A stale @latest reference is still worth flagging ---------------
   doc.nodes.forEach((node, i) => {
     if (node.kind !== 'script') return
-    const entry = resolved.get(node.script)
-    // See this file's module doc for why this one comparison exists outside
-    // the three files plan 99 §3.1/acceptance-criterion-3 name — it cannot
-    // be hoisted into the publish route without either duplicating the
-    // check for `/validate` or losing the "same function, cannot disagree"
-    // guarantee the whole design leans on.
-    if (entry?.kind === 'workflow') {
-      push(findings, `nodes[${i}].script`, 'E_WORKFLOW_NESTED', `"${node.script}" is itself a workflow — a workflow node's script must not be another workflow (plan 99 §2)`, 'error')
-    }
     if (node.script.endsWith('@latest')) {
       push(findings, `nodes[${i}].script`, 'W_WORKFLOW_LATEST_REF', `"${node.script}" resolves to whatever is newest at RUN time — this workflow's behaviour can change without the workflow itself changing`, 'warning')
     }
   })
   if (doc.onFail) {
-    const entry = resolved.get(doc.onFail.script)
-    if (entry?.kind === 'workflow') {
-      push(findings, 'onFail.script', 'E_WORKFLOW_NESTED', `"${doc.onFail.script}" is itself a workflow — onFail's cleanup script must not be another workflow (plan 99 §2)`, 'error')
-    }
     if (doc.onFail.script.endsWith('@latest')) {
       push(findings, 'onFail.script', 'W_WORKFLOW_LATEST_REF', `"${doc.onFail.script}" resolves to whatever is newest at RUN time — this workflow's behaviour can change without the workflow itself changing`, 'warning')
     }

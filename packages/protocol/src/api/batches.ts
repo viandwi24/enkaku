@@ -52,14 +52,15 @@ export const BatchesPageResponseSchema = pageSchema(BatchInfoSchema)
 export const BatchArtifactSchema = z.object({
   artifactId: z.string(),
   jobId: z.string(),
+  runId: z.string(),
   deviceId: z.string(),
   /**
    * The device's HUMAN name, already composed with its number — `#7 Pixel 6`,
    * or the bare label for a device with no reservation (plan 124 §3.7, via
    * the core's `formatDeviceLabel`).
    *
-   * Pre-composed here, unlike `DeviceRef.number`/`MirrorMember.number` which
-   * carry the number as their own field, because this row has no other
+   * Pre-composed here, unlike `DeviceRef.number` which carries the number as
+   * its own field, because this row has no other
    * identity a caller could compose against: a batch artifact outlives the
    * device that produced it, and the Studio table rendering it holds no
    * `DeviceInfo` for a device that has since been forgotten. A second

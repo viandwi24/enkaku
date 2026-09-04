@@ -116,7 +116,7 @@ const ERROR_STATUS: Record<string, number> = {
   device_not_found: 404,
   device_unavailable: 409,
   device_busy: 409,
-  cluster_not_found: 404,
+  group_not_found: 404,
   E_NO_TARGETS: 409,
   'auth.forbidden': 403,
   E_RUNTIME_UNSUPPORTED: 400,
@@ -667,7 +667,7 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
         .select({
           // The §3.6 allowlist, and nothing else. Selected narrowly rather than filtered later,
           // so a seventh field cannot arrive by accident.
-          device: { id: devices.id, stableId: devices.stableId, label: devices.label, status: devices.status, clusterId: devices.clusterId },
+          device: { id: devices.id, stableId: devices.stableId, label: devices.label, status: devices.status, groupId: devices.groupId },
           number: deviceNumbers.number,
           entry: kvEntries,
         })
@@ -688,7 +688,7 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
           stableId: r.device.stableId,
           label: r.device.label,
           status: r.device.status,
-          clusterId: r.device.clusterId,
+          groupId: r.device.groupId,
           number: r.number ?? null,
           entry: r.entry ? rowToRedactedEntry(r.entry) : null,
         })),
@@ -1059,9 +1059,14 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
   // activation, every rollback and every re-enable shipped that version's whole
   // bundle back to a dialog that renders a name and a version out of it.
   app.post('/:id/activate', requirePermission('script.publish'), (c) => {
-    const row = runtime.activate(c.req.param('id'))
-    audit.record({ userId: actorId(c), action: 'plugin.activate', target: row.id, meta: { name: row.name, version: row.version } })
-    return c.json({ plugin: row })
+    const { scriptsMoved, queuedKeepingPrevious, ...plugin } = runtime.activate(c.req.param('id'))
+    audit.record({
+      userId: actorId(c),
+      action: 'plugin.activate',
+      target: plugin.id,
+      meta: { name: plugin.name, version: plugin.version, scriptsMoved, queuedKeepingPrevious },
+    })
+    return c.json({ plugin, scriptsMoved, queuedKeepingPrevious })
   })
 
   app.post('/:name/rollback', requirePermission('script.publish'), async (c) => {

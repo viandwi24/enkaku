@@ -496,15 +496,15 @@ export interface ProxyUpstream {
 /**
  * The `fields.event` marker a `service/failover.ts` switch's log line carries
  * (plan 121 §4.5, step 121.6) — `service/logbook.ts`'s `LogSink` is the only
- * broadcast channel a plugin service has (`plugin.log`, `@enkaku/protocol`'s
- * `messages/plugin.ts`); there is no separate, plugin-specific WS message
- * type, because the core's protocol package must not carry one entry per
- * optional plugin (00-overview §4.3's "no second, weaker way", applied to the
- * wire rather than to storage). A switch's `warn`/`info` line therefore
- * carries this marker plus `recordId`/`from`/`to`/`reason`/`at` in its
- * `fields` bag, so a reader of the plugin's log (today: the Logs tab; in
- * principle, anything that reads `plugin.log`) can tell a failover event from
- * an ordinary line without parsing prose. `ui/parts/catalogue.tsx`'s own
+ * log channel a plugin service has (the per-plugin ring served by
+ * `GET /api/plugins/:name/runtime/logs`); there is no separate, plugin-specific
+ * WS message type, because the core's protocol package must not carry one
+ * entry per optional plugin (00-overview §4.3's "no second, weaker way",
+ * applied to the wire rather than to storage). A switch's `warn`/`info` line
+ * therefore carries this marker plus `recordId`/`from`/`to`/`reason`/`at` in
+ * its `fields` bag, so a reader of the plugin's log (the Logs tab) can tell a
+ * failover event from an ordinary line without parsing prose.
+ * `ui/parts/catalogue.tsx`'s own
  * failover chip does NOT read this — see that file's own note on why it polls
  * the ordinary `GET …/http/proxies` row instead.
  */
@@ -528,7 +528,7 @@ export interface ProxyFailoverConfig {
   autoFailback: boolean
 }
 
-/** One proxy, as this plugin stores it. Field order is the storage order — `index.test.ts` holds it to `ProxyRecordSchema`'s. */
+/** One proxy, as this plugin stores it. Field order is the storage order; `index.test.ts` holds `writeProxy` to it. */
 export interface ProxyRecord {
   label: string
   listen: ProxyListen
@@ -826,7 +826,7 @@ export function readProxyRecord(value: unknown): ProxyRecord {
  * halves cannot disagree: a screen that writes `{ hostname }` into a reader
  * that looks for `{ host }` renders blank cells forever, the write succeeds,
  * and nothing anywhere reports a fault. `index.test.ts` runs a value through
- * both and checks the result against `ProxyRecordSchema`.
+ * both and checks the round trip.
  */
 /** One upstream → the exact object it is stored as — the write half of `readUpstream`, shared by the primary `upstream` and every entry of `fallbackUpstreams` (plan 121 §4.1). */
 function writeUpstream(upstream: ProxyUpstream): Record<string, unknown> {
@@ -2226,7 +2226,7 @@ export const PLUGIN_NOT_BUILT =
  * why the opening sentence is four words rather than a longer one: naming the
  * second mode is worth more than the prose it displaced.
  */
-export const VIEW_NOT_BUILT =
+export const PROXIES_VIEW_DESCRIPTION =
   'Proxy records this plugin keeps. A record marked enabled is started by the farm when this plugin loads, and each bridge can be started, stopped or restarted on its own from here. Applying one to a device sets a system proxy, or a VPN through the record’s own upstream, only when you press Apply.'
 
 /**

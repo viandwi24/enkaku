@@ -23,8 +23,8 @@ import { coreBase } from './ws'
  *    running on. Plan 111 T4: two React copies means `Invalid hook call`, so
  *    the plugin must receive these exact objects, never a second copy.
  *    `@enkaku/host` (plan 129 §3.4, step 129.5) is Studio's OWN components —
- *    the ones that reach `/ws`, a lease, or video — offered through this
- *    same table rather than a second mechanism.
+ *    the ones that reach `/ws`, a control activity, or video — offered
+ *    through this same table rather than a second mechanism.
  * 2. **Runtime-generated shim modules**, one per specifier, each re-exporting
  *    the corresponding entry of that table.
  * 3. **One import map**, inserted exactly once and before the first plugin
@@ -474,7 +474,7 @@ export interface PluginHost {
    * `catch` block to invent copy in.
    */
   loadView(request: PluginViewRequest): Promise<PluginViewResult>
-  /** The global installed on `window.__enkaku__`; exposed for tests and for debugging from a console. */
+  /** The global installed on `window.__enkaku__`; exposed for tests and for debugging from the browser's developer tools. */
   readonly globals: EnkakuGlobal
 }
 

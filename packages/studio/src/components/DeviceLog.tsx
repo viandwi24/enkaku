@@ -24,11 +24,13 @@ const KIND_LABEL: Record<string, string> = {
   'device.online': 'Connected',
   'device.offline': 'Disconnected',
   'device.unauthorized': 'Unauthorized',
-  'control.acquired': 'Control taken',
-  'control.released': 'Control released',
-  'control.revoked': 'Control revoked',
-  'control.assist.started': 'Assist started',
-  'control.assist.ended': 'Assist ended',
+  // Plan 205 §4.10 — every activity kind (`control`, `job`, `transfer`,
+  // `prep`, `command`, `agent`, `network-apply`, `wake`) starting or ending
+  // now shares these two rows; `summarize` below reads the real activity's
+  // own `meta.label` for the specific sentence, replacing the five separate
+  // `control.*` kinds this used to carry.
+  'activity.started': 'Activity started',
+  'activity.ended': 'Activity ended',
   'session.opened': 'Session opened',
   'session.closed': 'Session closed',
   'session.degraded': 'Session degraded',
@@ -60,15 +62,8 @@ const KIND_TONE: Record<string, string> = {
   'device.online': 'text-led-ok border-led-ok/35 bg-led-ok/10',
   'device.offline': 'text-fg-subtle border-line bg-transparent',
   'device.unauthorized': 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  'control.acquired': 'text-led-active border-led-active/35 bg-led-active/10',
-  'control.released': 'text-fg-subtle border-line bg-transparent',
-  'control.revoked': 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  // Amber, matching §3.4's assisting chrome (`docs/design.md`: saturated
-  // colour is reserved for a live, unusual, self-expiring condition) — the
-  // same tone `control.revoked` already uses for "something happened without
-  // being asked".
-  'control.assist.started': 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  'control.assist.ended': 'text-fg-subtle border-line bg-transparent',
+  'activity.started': 'text-led-active border-led-active/35 bg-led-active/10',
+  'activity.ended': 'text-fg-subtle border-line bg-transparent',
   'session.degraded': 'text-led-warn border-led-warn/35 bg-led-warn/10',
   'job.finished': 'text-led-ok border-led-ok/35 bg-led-ok/10',
   'job.retry': 'text-led-warn border-led-warn/35 bg-led-warn/10',
@@ -92,18 +87,12 @@ function summarize(ev: DeviceEvent): string {
       return meta.reason ? `Reason: ${String(meta.reason)}` : 'The device went offline'
     case 'device.unauthorized':
       return 'Waiting for the USB debugging prompt to be accepted on the device'
-    case 'control.acquired':
-      return 'Manual control was taken'
-    case 'control.released':
-      return 'Manual control was released'
-    case 'control.revoked':
-      return `Released automatically${meta.reason ? ` (${String(meta.reason)})` : ''}`
-    case 'control.assist.started':
-      return meta.jobId ? `While job ${String(meta.jobId).slice(0, 8)} kept control` : 'While another client kept control'
-    case 'control.assist.ended': {
-      const jobPart = meta.jobId ? ` (job ${String(meta.jobId).slice(0, 8)})` : ''
-      return `Reason: ${String(meta.reason ?? '?')}${jobPart}`
-    }
+    case 'activity.started':
+    case 'activity.ended':
+      // Plan 205 §4.10 — the activity's own label, exactly as the registry
+      // wrote it ("Controlled by Rani", "Running tiktok/login (job #482)",
+      // "Installing app.apk 40 %", …), never re-derived here.
+      return String(meta.label ?? meta.kind ?? 'Activity')
     case 'session.opened':
       return `${String(meta.display ?? '?')} / ${String(meta.input ?? '?')} / ${String(meta.inspection ?? '?')}`
     case 'session.closed':

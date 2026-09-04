@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Check, Download, FileCode2, Folder, FolderOpen, Loader2, Pencil, Plus, Rocket, Save, Trash2, Upload, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { PageHeader } from '@/components/layout/PageHeader'
 import {
   Button,
@@ -27,13 +28,12 @@ import {
   headWorkspaceFile,
   listWorkspace,
   moveWorkspaceFile,
-  publishScriptFromWorkspace,
+  stagePluginFromWorkspace,
   readWorkspaceFile,
   uploadWorkspaceFile,
   workspaceFileUrl,
   writeWorkspaceFile,
   PLUGIN_NAME_SHAPE,
-  SCRIPT_MEMBER_NAME_SHAPE,
   SCRIPT_VERSION_SHAPE,
   type WorkspaceFileMeta,
   type WorkspaceListEntry,
@@ -110,11 +110,7 @@ function WorkspaceView() {
   const [renameError, setRenameError] = useState<string | null>(null)
 
   const [publishOpen, setPublishOpen] = useState(false)
-  // Two halves, not one field (plan 110 §3.2) — a script is published as
-  // `<plugin>/<script>`, and the operator has to be able to see which half a
-  // hint is about.
   const [publishPlugin, setPublishPlugin] = useState('')
-  const [publishMember, setPublishMember] = useState('')
   const [publishVersion, setPublishVersion] = useState('1.0.0')
   const [publishing, setPublishing] = useState(false)
   const [publishError, setPublishError] = useState<string | null>(null)
@@ -306,33 +302,26 @@ function WorkspaceView() {
     if (!selectedPath) return
     const suggested = defaultPublishName(selectedPath)
     setPublishPlugin(suggested.plugin)
-    setPublishMember(suggested.script)
     setPublishVersion('1.0.0')
     setPublishError(null)
     setPublishOpen(true)
   }
 
   const trimmedPlugin = publishPlugin.trim()
-  const trimmedMember = publishMember.trim()
   const trimmedVersion = publishVersion.trim()
 
   /**
-   * The same shapes `script.publish` enforces, checked here so a bad name is a
+   * The same shapes `plugin.stage` enforces, checked here so a bad name is a
    * field hint instead of a round trip that comes back as a schema refusal
-   * naming neither half (plan 110 §3.2).
+   * (plan 210 §4.8).
    */
   const pluginHint = !trimmedPlugin
-    ? 'Plugin name is missing. Every script belongs to a plugin, so this half is required.'
+    ? 'Plugin name is missing.'
     : PLUGIN_NAME_SHAPE.test(trimmedPlugin)
       ? null
       : 'Plugin name can only use lowercase letters, digits and dashes, and must start with a letter or a digit.'
-  const memberHint = !trimmedMember
-    ? 'Script name is missing. Name the script inside the plugin — "main" if it is the only one.'
-    : SCRIPT_MEMBER_NAME_SHAPE.test(trimmedMember)
-      ? null
-      : 'Script name can only use lowercase letters, digits, dots, dashes and underscores, and must start with a letter or a digit.'
   const versionHint = SCRIPT_VERSION_SHAPE.test(trimmedVersion) ? null : 'Version must be three numbers, like 1.0.0.'
-  const publishBlocked = pluginHint !== null || memberHint !== null || versionHint !== null
+  const publishBlocked = pluginHint !== null || versionHint !== null
 
   const doPublish = async () => {
     if (!selectedPath) return
@@ -342,12 +331,10 @@ function WorkspaceView() {
     setPublishing(true)
     setPublishError(null)
     try {
-      const result = await publishScriptFromWorkspace(selectedPath, `${trimmedPlugin}/${trimmedMember}`, trimmedVersion)
+      const result = await stagePluginFromWorkspace(selectedPath, trimmedPlugin, trimmedVersion)
       setPublishOpen(false)
-      // `/scripts` itself is now a redirect to `/plugins`; the version's own
-      // detail page under it is untouched and is where a fresh publish has
-      // something to show.
-      router.push(`/scripts/detail?id=${result.id}`)
+      toast.success(`staged ${result.name}@${result.version}`)
+      if (result.verify && !result.verify.ok) toast.error(result.verify.error ?? 'verification failed')
     } catch (err) {
       setPublishError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -610,46 +597,27 @@ function WorkspaceView() {
       <Dialog open={publishOpen} onOpenChange={setPublishOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Publish as script</DialogTitle>
+            <DialogTitle>Stage as plugin</DialogTitle>
             <DialogDescription>
-              A script is published as part of a plugin, so give it both names — the plugin is created on the first publish if it does not exist yet.
-              The core bundles <span className="readout">{selectedPath}</span> itself — imports outside <span className="readout">@enkaku/sdk</span>,{' '}
-              <span className="readout">zod</span>, or another workspace path fail the build.
+              A script exists only as a member of a plugin. The core bundles <span className="readout">{selectedPath}</span> itself as{' '}
+              <span className="readout">definePlugin({'{'} id, version, scripts: [ … ] {'}'})</span> — imports outside{' '}
+              <span className="readout">@enkaku/sdk</span>, <span className="readout">zod</span>, or another workspace path fail the build.
+              Activation is a separate step, from the Plugins page.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="publish-plugin">Plugin</Label>
-                <Input
-                  id="publish-plugin"
-                  value={publishPlugin}
-                  onChange={(e) => setPublishPlugin(e.target.value)}
-                  placeholder="checkout"
-                  aria-invalid={pluginHint !== null}
-                  className={cn(pluginHint && 'border-led-danger')}
-                />
-              </div>
-              <span className="pb-2 text-fg-muted">/</span>
-              <div className="space-y-1.5">
-                <Label htmlFor="publish-script">Script</Label>
-                <Input
-                  id="publish-script"
-                  value={publishMember}
-                  onChange={(e) => setPublishMember(e.target.value)}
-                  placeholder="main"
-                  aria-invalid={memberHint !== null}
-                  className={cn(memberHint && 'border-led-danger')}
-                />
-              </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="publish-plugin">Plugin</Label>
+              <Input
+                id="publish-plugin"
+                value={publishPlugin}
+                onChange={(e) => setPublishPlugin(e.target.value)}
+                placeholder="checkout"
+                aria-invalid={pluginHint !== null}
+                className={cn(pluginHint && 'border-led-danger')}
+              />
             </div>
             {pluginHint && <p className="text-[11.5px] text-led-danger">{pluginHint}</p>}
-            {memberHint && <p className="text-[11.5px] text-led-danger">{memberHint}</p>}
-            {!publishBlocked && (
-              <p className="text-[11.5px] text-fg-muted">
-                Publishes as <span className="readout">{`${trimmedPlugin}/${trimmedMember}`}</span>.
-              </p>
-            )}
             <div className="space-y-1.5">
               <Label htmlFor="publish-version">Version</Label>
               <Input
@@ -674,7 +642,7 @@ function WorkspaceView() {
             </Button>
             <Button onClick={() => void doPublish()} disabled={publishing || publishBlocked}>
               {publishing ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Rocket className="size-3.5" aria-hidden />}
-              Publish
+              Stage
             </Button>
           </DialogFooter>
         </DialogContent>

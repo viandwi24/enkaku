@@ -23,14 +23,14 @@ Env:
 
 ## Boot sequence
 
-DB and migrations (including the one-shot cluster materialisation, see below) → WS hub plus ToolchainManager (reconcile and adopt pre-baked tools) → HTTP and WS listen → provision required tools (a gate) → adb client, track-devices, registry.
+DB and migrations (including the one-shot membership materialisation, see below) → WS hub plus ToolchainManager (reconcile and adopt pre-baked tools) → HTTP and WS listen → provision required tools (a gate) → adb client, track-devices, registry.
 
 ## Endpoints
 
 - `GET /api/health` — `{ ok, version, adb: { state, serverVersion }, deviceCount, uptimeMs, failedPlugins? }` (`failedPlugins` is a `COUNT(*)` of plugin rows in `failed`, omitted when the host has no plugin store to count — plan 126 step 126.5)
-- `GET /api/devices` — `{ devices: DeviceInfo[] }`; `?tag=` narrows by tag (AND), `?clusterId=<id|none>` narrows by cluster
-- `PUT /api/devices/:id/cluster` — `{ clusterId: string | null }`, moves the device (or unassigns it)
-- `GET/POST /api/clusters`, `PATCH/DELETE /api/clusters/:id` — a cluster is a container (plan 22.0): `POST /api/clusters/:id/devices` assigns members, `DELETE /api/clusters/:id/devices/:deviceId` removes one, `GET /api/clusters/:id/devices` lists them. A device belongs to at most one cluster; deleting a cluster unassigns its members without deleting any device.
+- `GET /api/devices` — `{ devices: DeviceInfo[] }`; `?tag=` narrows by tag (AND), `?groupId=<id|none>` narrows by group
+- `POST /api/actions/set-group` — `{ target, groupId: string | null }`, moves every targeted device (or unassigns it); membership is an action, not a route on `/api/devices` or `/api/groups` (plan 207)
+- `GET/POST /api/groups`, `PATCH/DELETE /api/groups/:id`, `GET /api/groups/:id/devices` — a group is a container (plan 22.0, renamed by plan 207): a device belongs to at most one group; deleting a group unassigns its members without deleting any device
 - `GET /api/tools` · `POST /api/tools/:id/install|activate|check` · `DELETE /api/tools/:id/:version` · `POST /api/tools/manifest/refresh` (spec §7.7)
 - `GET/POST/DELETE /api/devices/:id/guest-agent` — install, inspect, or remove the on-device helper APK
 - `GET/PUT/DELETE /api/devices/:id/network` — the device's network route (plan 44)
@@ -42,11 +42,11 @@ DB and migrations (including the one-shot cluster materialisation, see below) �
 
 `/api/devices/:id/guest-agent` reports the pre-plan-90 five states unless `AgentProvisioner.status()` is wired (see below), and the distinction between two of them is load-bearing: **`installed` means the package is present, `ready` means the control channel actually answers.** Collapsing them would report a broken device as healthy. The others are `not-installed`, `unreachable` (installed and bootstrapped but the channel is silent), and `unsupported` (device SDK below the agent's floor, with the reason returned). Once the provisioner is wired (which it is, in production — see below) the response's `state` additively widens to **seven** values, `outdated`/`failed` joining the five above (`GuestAgentStatusResponseSchema`, `@enkaku/protocol`) — never a replacement, so a caller that only knows the original five still parses every response it receives.
 
-`/api/devices/:id/network` applies a SOCKS5 route through the `vpn-helper` engine — a full tunnel via `VpnService`, so an app under test cannot bypass it the way it can ignore `settings put global http_proxy`. Both endpoint groups require the `device.network` permission and a held manual lease (`leases.checkInputAllowed`), the same gate input and shell use.
+`/api/devices/:id/network` applies a SOCKS5 route through the `vpn-helper` engine — a full tunnel via `VpnService`, so an app under test cannot bypass it the way it can ignore `settings put global http_proxy`. Both endpoint groups require the `device.network` permission and pass the same device activity policy (`evaluate('network-apply', ...)`, plan 205 §4.9) input and shell use.
 
 The response separates **declared** (what was asked for) from **observed** (what the device reports), with a `drift` flag when they disagree — a VPN revoked from Settings, or a tunnel that died, must be visible rather than assumed away. `health` starts at `unverified` and a successful apply does **not** promote it to `ok`: only an egress probe can, and one has run through the tunnel since plan 51. `GET /:id/network` also carries a `recovery` block (`{ attempts, maxAttempts, nextAttemptAt, exhausted, reconnectCycles }`, plan 90 §3.7) — see "Route recovery" below.
 
-Upstream passwords never appear in a response, in the device event log, or in any `meta` field — `redactRouteConfig()` in `@enkaku/protocol` is the single chokepoint. Route state currently lives in memory, so a core restart forgets it (the settings/read-seam half is plan 44 §5.4, deferred), and the lease-teardown revert is wired at two of its four sites, with TODOs marking the rest in `ws-handlers.ts`.
+Upstream passwords never appear in a response, in the device event log, or in any `meta` field — `redactRouteConfig()` in `@enkaku/protocol` is the single chokepoint. Route state currently lives in memory, so a core restart forgets it (the settings/read-seam half is plan 44 §5.4, deferred), and the control-marker-teardown revert is wired at two of its four sites, with TODOs marking the rest in `ws-handlers.ts`.
 
 ## The agent is a device property, not a session step (plan 90)
 
@@ -69,7 +69,7 @@ Before plan 90, the guest agent was installed only as a side effect of applying 
 
 - `POST /api/guest-agent/provision` (`device.admin`) — fleet-wide `ensure()`, returns a per-device `AgentProvisionReport`.
 - `GET /api/guest-agent/summary` (`device.view`) — `{ total, byState, byVersion }`, what Settings' "Guest agent" tab renders.
-- `POST /api/devices/:id/network/retry` (`device.network`, lease-gated like `enable`) — the honest version of "disable then enable" (plan 90 §3.7 rule 4): clears an exhausted recovery bound and applies once, immediately, without the misleading "route is off" state a real toggle passes through.
+- `POST /api/devices/:id/network/retry` (`device.network`, activity-gated like `enable`) — the honest version of "disable then enable" (plan 90 §3.7 rule 4): clears an exhausted recovery bound and applies once, immediately, without the misleading "route is off" state a real toggle passes through.
 
 **Settings** (`guestAgent`, `packages/protocol/src/settings.ts`): `provision` (`'auto' | 'manual' | 'off'`, default `'auto'`) — `'off'`/`'manual'` make every AUTOMATIC hook a true no-op (zero adb calls), while an explicit `force:true` still works; `maxRecoveryCyclesPerHour` (default 4) — the circuit breaker on how many times a genuine reconnect may reset a route's recovery bound within an hour before the slow re-arm clock takes over (plan 54 §9 Q2's answer: yes the bound resets on reconnect, but bounded by this second, coarser breaker so a device flapping against a genuinely dead proxy still converges); `recoveryRearmSec` (default 120) — replaces the old `max(lastBackoff*5, 60)` derivation with a number someone can argue with. All three are read fresh from `settingsStore.get().guestAgent` on every use, the same freshness pattern every other settings getter in `daemon.ts` follows.
 
@@ -81,33 +81,54 @@ The pre-plan-90 defect: a reconnect never reset a network route's recovery-attem
 
 ## Device terminal (plan 26)
 
-`shell.exec` over `/ws` runs a free-form `adb shell` command on a device: gated by the `device.shell` permission (`auth/acl.ts`), the farm-wide `shell.mode` setting (`off | admin | operator`, off by default in server mode), and the same manual-lease rule input uses (`leases.checkInputAllowed`) — busy/offline/idle/wrong-holder are all refused before anything runs. Every accepted command is recorded to the device's `input` event log twice (`shell.exec`, then `shell.result`), with credential-bearing flags redacted (`device/redact.ts`). Results — including the exit code, recovered via a trailing marker since adb's `shell:` service has no exit-status of its own (`device/exit-marker.ts`) — broadcast to every viewer of the device, not just the one who ran it (`shell.echo` / `shell.result`); only the current lease holder may send `shell.exec`. No command allowlist or denylist exists anywhere in this path — see the code comments in `ws-handlers.ts` and `TerminalPane.tsx` for why that would be a false sense of security, not a real one.
+`shell.exec` over `/ws` runs a free-form `adb shell` command on a device: gated by the `device.shell` permission (`auth/acl.ts`), the farm-wide `shell.mode` setting (`off | admin | operator`, off by default in server mode), and the same device activity admission door input uses (`admit(deviceId, state, 'command')`, plan 205 §4.8) — offline/quarantined/a conflicting activity are all refused before anything runs. Every accepted command is recorded to the device's `input` event log twice (`shell.exec`, then `shell.result`), with credential-bearing flags redacted (`device/redact.ts`). Results — including the exit code, recovered via a trailing marker since adb's `shell:` service has no exit-status of its own (`device/exit-marker.ts`) — broadcast to every viewer of the device, not just the one who ran it (`shell.echo` / `shell.result`); any operator the activity policy admits may send `shell.exec`, not only whoever holds the device's control marker. No command allowlist or denylist exists anywhere in this path — see the code comments in `ws-handlers.ts` and `TerminalPane.tsx` for why that would be a false sense of security, not a real one.
 
 ## Clipboard (plan 38)
 
-`clipboard.get`/`clipboard.set` over `/ws` read and write the device clipboard through the scrcpy control socket (`@enkaku/scrcpy`'s device-message reader, `control/device-messages.ts` — the socket was write-only before this plan). `clipboard.set` is gated exactly like `input.*`: the manual lease (`leases.checkInputAllowed` + `touchManual`), recorded to the device's `input` event log — but only the text **length**, never the text itself, since clipboard content is routinely a password or a token. `clipboard.get` needs no lease. Both requests are request/reply correlated by `id`; unlike `shell.echo`/`shell.result`, the reply (`clipboard.value`) goes **only to the requesting connection**, never broadcast to every viewer. A session with no scrcpy control socket (`screencap-loop`) refuses reads with `E_CLIPBOARD_UNAVAILABLE` — never an empty string — while still best-effort writing via `adb shell cmd clipboard set-text`. Node-owned (cloud) devices route both operations through the plan 25 `TunnelRpc` (`clipboard.get.request`/`clipboard.set.request`), handled node-side in `packages/node/src/clipboard.ts`.
+`clipboard.get`/`clipboard.set` over `/ws` read and write the device clipboard through the scrcpy control socket (`@enkaku/scrcpy`'s device-message reader, `control/device-messages.ts` — the socket was write-only before this plan). `clipboard.set` is gated exactly like `input.*`: the same `'control'` activity admission door, touching the caller's own control marker on success (`admit()` + `touchControl`, plan 205 §4.8), recorded to the device's `input` event log — but only the text **length**, never the text itself, since clipboard content is routinely a password or a token. `clipboard.get` needs no control marker. Both requests are request/reply correlated by `id`; unlike `shell.echo`/`shell.result`, the reply (`clipboard.value`) goes **only to the requesting connection**, never broadcast to every viewer. A session with no scrcpy control socket (`screencap-loop`) refuses reads with `E_CLIPBOARD_UNAVAILABLE` — never an empty string — while still best-effort writing via `adb shell cmd clipboard set-text`. Node-owned (cloud) devices route both operations through the plan 25 `TunnelRpc` (`clipboard.get.request`/`clipboard.set.request`), handled node-side in `packages/node/src/clipboard.ts`.
 
 ## Crash detection (plan 37)
 
 A crash watcher (`device/crash-watcher.ts`) is always on for any device with an active session, independent of jobs: it subscribes to the shared monitor stream registry (`device/monitor-hub.ts`, plan 24) as the internal client `internal:crash`, reading `logcat -b crash,main -v threadtime -T 1` (the `crash` monitor kind, `device/monitors.ts`) — the crash-report buffer plus `main` (ANRs are reported by `ActivityManager` there, not in the crash buffer). Because it goes through the same hub every human Monitor tab uses, a device with both a watcher and an open viewer still runs exactly one `logcat` process.
 
-`device/crash-parser.ts` turns those lines into `CrashEvent`s: a `FATAL EXCEPTION` block (tag `AndroidRuntime`) or an `ANR in ...` block (tag `ActivityManager`), closed by the first line that does not continue it, a 2s idle gap, or a 200-line cap — whichever comes first. Every crash is recorded as an `app.crashed` main-stream device event and its trace saved as an artifact (job-scoped when a **job** lease is held at the moment it arrives, device-scoped otherwise via `runner/artifact-store.ts`'s `saveForDevice`) — a manual lease means "record only", no job attribution.
+`device/crash-parser.ts` turns those lines into `CrashEvent`s: a `FATAL EXCEPTION` block (tag `AndroidRuntime`) or an `ANR in ...` block (tag `ActivityManager`), closed by the first line that does not continue it, a 2s idle gap, or a 200-line cap — whichever comes first. Every crash is recorded as an `app.crashed` main-stream device event and its trace saved as an artifact (job-scoped when a **job** activity is live at the moment it arrives, device-scoped otherwise via `runner/artifact-store.ts`'s `saveForDevice`) — a manual control marker means "record only", no job attribution.
 
 Whether a crash also **fails** the running job is `job.crashPolicy` (`ignore` | `declared` | `any`, default `declared`): `declared` matches the script's own `ScriptDefinition.reset.packages`, falling back to packages it launched via `ctx.device.app.launch`; `any` matches any non-system crash. A match aborts the runner with reason `'crashed'` (`session/runner/job-runner.ts`), which settles the job `APP_CRASHED` — classified `script` by `jobs/failure-class.ts` (a crash is a result, not a farm fault) — while still running `finish()` (spec §11.3).
 
 `adb.maxStreamsPerDevice` defaults to 3 (not Plan 24's original 1): the crash watcher and the ui-server inspector (plan 34) each hold a stream slot on top of anything a human opens in the Monitor tab.
 
-## Idle session TTL and quality profiles (plan 42)
+## Always-on sessions and the encoder split (plan 206)
 
-`@enkaku/session`'s `SessionManager` no longer closes a device session the instant its last viewer leaves. It goes idle instead, and is closed only after `session.idleTtlSec` (farm setting, default 300s) with no new subscriber — a viewer returning inside that window re-attaches to the still-live session and sees a picture within one keyframe request, rather than paying the full wake-up sequence again. `session.maxIdleSessions` (default 8) bounds how many idle sessions the whole farm may hold open at once; past the cap the least-recently-idle one closes immediately. An idle session is also closed immediately — never waiting out the TTL — when the device goes offline, is quarantined, or a job claims it (`SessionManager.closeIfIdle`); a session with an **active** viewer is never touched by any of these, since video keeps streaming while a device is busy (spec §10.1). Setting `idleTtlSec: 0` restores the exact pre-plan-42 behaviour. Idle sessions are listed (oldest first) in `GET /api/adb/stats`'s `idleSessions` field.
+`@enkaku/session`'s `SessionManager` builds a device's BASE (`wall`-quality)
+session the instant it comes online (`@enkaku/session`'s `createAlwaysOn`,
+wired from `onDeviceReady`) and keeps it running for as long as the device
+is online — never lazily on a browser's `stream.start`, never torn down by
+an idle timer. `acquire()`/`release()` are for job/readiness callers, which
+only ever want that one base entry and never build one themselves;
+`attachViewer()`/`detachViewer()` are for WS viewers.
 
-Every session also has a **quality profile** (`control` | `wall`), which maps to `max_size`/`max_fps`/`video_bit_rate` on the scrcpy server. `control` is what the device page always asks for; `wall` is what the fleet Wall asks for, so many low-rate tiles can decode in one browser tab. The manager's rule: a device already at `control` quality is shared as-is with a `wall` request — **never** restarted or downgraded for a colleague's wall tile — while a `control` request against a `wall`-quality session restarts it at `control`, carrying existing viewers (e.g. a wall tile) over onto the new session rather than dropping them. `stream.start`'s `quality` payload field defaults to `control`; `stream.started` always reports back the quality actually granted.
+A device holds **at most two** encoders: the always-on BASE (`wall`) entry,
+and a CONTROL entry built on demand the instant a `control`-quality viewer
+attaches, closed 15s after its last control viewer detaches
+(`CONTROL_LINGER_MS`). A `control` attach never waits on a build: it is
+served by the already-running wall entry first (`stream.started.substitute:
+'wall'`) and switched onto the control entry the moment its first real
+keyframe arrives (`stream.meta` with `quality: 'control'`) — nothing is
+transcoded or upscaled server-side. Builds are staggered per USB root
+(`session.buildsPerUsbRoot`, default 4) and by a farm-wide ceiling
+(`SESSION_BUILD_FARM_CEILING`, 16, overridable by
+`ENKAKU_SESSION_BUILD_CEILING`); a dead or failed base build retries under a
+fixed backoff (1s, 3s, 10s, 30s, then 30s repeated). `GET
+/api/video/sessions` reports every device's build state and encoder states,
+including a control entry's `lingerEndsAt`.
+
+Every session also has a **quality profile** (`control` | `wall`), which maps to `max_size`/`max_fps`/`video_bit_rate` on the scrcpy server. `control` is what the device page always asks for; `wall` is what the fleet Wall asks for and what the always-on builder always builds, so many low-rate tiles can decode in one browser tab. `stream.start`'s `quality` payload field defaults to `control`; `stream.started` always reports back the quality actually being served RIGHT NOW, which is `wall` (with `substitute: 'wall'` set) for a `control` request still waiting on its own encoder.
 
 **Plan 92 §3.5, §4.1–§4.2** replaced the two fixed constants behind `control`/`wall` with farm settings: `FarmSettings.video` (eight flat fields — a preset per profile plus its three numbers, `controlPreset`/`controlMaxSize`/`controlMaxFps`/`controlBitRate` and the `wall...` equivalents) plus an all-optional `DeviceSettings.video` override. `packages/session/src/video-profile.ts`'s `resolveVideoProfile(farm, device, quality)` is the one place the two are combined — its preset tables (`CONTROL_PRESETS.sharp`, `WALL_PRESETS.balanced`) are the exact numbers the old constants held (1600px / 30fps / 4Mbps; 480px / 5fps / 800kbps), so a farm that changes no video setting sees byte-identical scrcpy arguments. `SessionManagerDeps.resolveProfile` resolves this fresh for every session build; `CreateSessionOpts.videoProfile` carries the result into `createSession`, which hands it straight to `makeScrcpy` — there is no `QUALITY_PROFILES` lookup table left anywhere in the codebase.
 
-## Cluster migration (plan 22.0)
+## Group membership migration (plan 22.0, renamed by plan 207)
 
-Clusters used to be a saved tag selector; a device now carries a `cluster_id` field directly, so it belongs to at most one cluster. On first boot after upgrading, `db/migrations/cluster-materialise.ts` collapses every existing cluster's old (tag-based) membership into that field — oldest cluster wins any conflict — and writes a report to `<dataDir>/logs/cluster-migration-<timestamp>.json` naming every device that matched more than one. The step is guarded by a marker row (`migration_markers`), so it runs exactly once.
+Groups used to be a saved tag selector; a device now carries a `group_id` field directly, so it belongs to at most one group. On first boot after upgrading, `db/migrations/materialise-0014.ts` collapses every existing group's old (tag-based) membership into that field — oldest group wins any conflict — and writes a timestamped report to `<dataDir>/logs/` naming every device that matched more than one (the report's own filename is a historical artifact of when this step was first written, unrelated to the rename). The step is guarded by a marker row (`migration_markers`), so it runs exactly once.
 
 ## AI agent provider connectors: Anthropic and OpenRouter, on the AI SDK (plan 75)
 
@@ -127,9 +148,30 @@ A script is addressed as `name@version`, or `name@latest` (`ScriptRefSchema`/`pa
 
 - `jobs.scriptId` is unchanged — always a concrete `scripts.id`, resolved from a reference (if one was given) before the row is written. `POST /api/jobs` accepts either `scriptId` or `scriptRef`, exactly one.
 - `schedules.scriptRef` (renamed from `scriptId`) stores the **reference itself** — `checkout@latest` keeps picking up new versions on every future firing; `checkout@1.0.1` stays pinned forever. Resolved exactly **once per firing**, in `schedules/runner.ts`'s `fireOnce`, before the batch is built — so one firing across many devices never straddles two versions, and a reference that fails to resolve enqueues nothing and is audited as `schedule.failed`, naming the code.
-- `GET /api/scripts?group=name` — one row per script name (`{ id, name, latestVersion, versionCount, lastPublishedAt, enabled }`, `latestVersion` being exactly what `@latest` would resolve to); `GET /api/scripts/:name/versions` lists every version, newest semver first.
-- The `schedules.script_id → script_ref` migration (`db/migrations/backfill-schedule-refs.ts`) converts every pre-existing schedule to the exact `"<name>@<version>"` it was already pinned to — **never** to `@latest`, since that would silently change what a trusted schedule runs on its next firing. Guarded by a marker row (`migration_markers`), same pattern as the cluster migration above.
+- **Plan 210** replaced the grouped `GET /api/scripts?group=name` list and `GET /api/scripts/:name/versions` with one shape: `GET /api/scripts` answers one row per member of an ACTIVE plugin — `{ id, name, exportId, plugin: { name, version }, paramsSchema, hasResult, lastRun }` — no `version`, `kind`, or `enabled` field on the wire. A script has no version of its own; it carries its owning plugin's. Version history, activate, and rollback live only on the Plugins page now.
+- The `schedules.script_id → script_ref` migration (`db/migrations/backfill-schedule-refs.ts`) converts every pre-existing schedule to the exact `"<name>@<version>"` it was already pinned to — **never** to `@latest`, since that would silently change what a trusted schedule runs on its next firing. Guarded by a marker row (`migration_markers`), same pattern as the group migration above.
 - The semver comparison (`compareSemver`, `@enkaku/protocol`) is hand-written, not a dependency: numeric component comparison (so `1.0.10 > 1.0.9`, which a string sort gets backwards), a release outranking its own prerelease, and prerelease identifier ordering per semver.org §11 — with build metadata (`+build`) ignored entirely, as the spec requires.
+
+**Plan 210 (MVP 03 §2)** made "a script exists only inside a plugin" true by
+construction: the only `INSERT INTO scripts` left in the tree is
+`plugins/runtime.ts`'s `writeScriptRows`. `POST /api/scripts` (direct
+publish), the non-plugin branch of `enkaku publish`, and the `script.publish`
+capability are gone; publishing goes through `POST /api/plugins` or the new
+`plugin.stage` capability, which stages then verifies a plugin package from a
+bundle or a workspace path. `DELETE /api/scripts/:id` is now the one cleanup
+door for an unowned row (a script published before this rule, or a row a
+boot step parked) — an owned row is refused with `409 E_SCRIPT_OWNED` naming
+the plugin version to remove instead. Two marker-guarded boot steps run once,
+in order, before the script registry's own unowned-row warning:
+`park-synthetic-recordings.ts` deletes the old farm-owned `recordings`
+plugin and unowns its member rows (recordings are parked for the MVP, MVP
+06 §2), then `workflows-from-scripts.ts` copies every workflow row still
+sitting in `scripts` (see the Workflows section below) into the `workflows`
+table, newest version winning and older versions logged once by name.
+`POST /api/plugins/:id/activate` now answers `{ plugin, scriptsMoved,
+queuedKeepingPrevious }` — the manifest's member count, and how many queued
+or running jobs are pinned to the version this activation superseded (they
+keep running; nothing here cancels or rewrites them).
 
 ## VFS, skills, and the plugin system (plan 77)
 
@@ -211,7 +253,7 @@ calls the endpoint and renders the returned `ReconcileReport` as one line
 `POST /api/devices/rescan` is gated on **`device.settings`** — the plan
 document that designed this endpoint named `device.admin`, but no such
 permission exists in `packages/core/src/auth/acl.ts`; every other
-device-configuration route (tags, cluster, discovered/admit, block) already
+device-configuration route (tags, group, discovered/admit, block) already
 gates on `device.settings`, so the endpoint follows that existing convention
 rather than inventing a new permission for one route.
 
@@ -254,6 +296,10 @@ semantics `adb.maxConcurrent` already had — see `packages/adb/README.md` for
 stored `4` (the old fixed default) is rewritten to `0` by a Zod `preprocess`
 (`normaliseLegacyAdb`, `packages/protocol/src/settings.ts`) on first boot
 after upgrading — tracked for removal, see `docs/plans/00-overview.md` §9.
+Since plan 208, the ui-server instrumentation is a **pinned** stream (holds
+no slot on either cap, reported separately in `GET /api/adb/stats`'s
+`streams.pinned`), because it now lives for the whole session rather than
+only while an Inspect tab is open.
 
 **Crash detection that resubscribes instead of dying.** The always-on crash
 watcher (plan 37) used to inherit the streaming lane's generic clocks and,
@@ -371,7 +417,7 @@ only until one of them is threaded through a real call site.
 **The address book** (`registry/endpoints.ts`, `EndpointStore`, table
 `device_endpoints`) exists because adb forgets a TCP device's address the
 moment it disconnects, and until this table, so did Enkaku — a wired or
-wireless phone that came back on a new DHCP lease was unreachable by any
+wireless phone that came back with a new DHCP-assigned address was unreachable by any
 code path in the repo. `observe(stableId, serial)` is called for free from
 the registry's own successful-probe path whenever the serial is `host:port`
 shaped — no extra adb work, no new probe. Rows are keyed on `(stableId,
@@ -423,7 +469,7 @@ version swap (`tools/adb-swap.ts`, now a thin wrapper) and the operator's
 `POST /api/tools/adb/restart` on the Tools page. Both flows are the same
 seven steps with one optional extra: drain → stop → [swap the binary
 pointer] → start → reattach → reconcile. The drain now genuinely includes
-live sessions and leases (`drainSessions`, wired in `daemon.ts` — an unwired
+live sessions and control/command activities (`drainSessions`, wired in `daemon.ts` — an unwired
 optional dependency since M1, per the plan's F19); the reattach step dials
 every address the endpoint book remembers, which is the entire reason the
 OTG half and the restart half of this plan are one plan and not two — without
@@ -447,301 +493,40 @@ self-heals via `ensureServer()`, for instance). The doctor stays a pure
 diagnostic: it reports the verdict and names the Tools action, and never
 performs it itself.
 
-## Co-control (Assist) and mirror groups (plan 91)
+## Device activities (MVP 04, plan 205)
 
-`docs/plans/91-m56-co-control-and-mirror-input.md` carries the full evidence
-and design; this section documents what actually shipped. Two new,
-cooperating subsystems — the grant, and the group — plus the input arbiter
-that makes both safe (`@enkaku/session`'s three input lanes,
-`packages/session/README.md`).
+`docs/plans/205-mvp-device-activities.md` carries the full evidence and
+design; this section documents what actually shipped. A single in-memory
+`ActivityRegistry` per device (`activity/registry.ts`) replaced the manual
+device hold, the subordinate-grant mechanism, and the multi-device screen-share
+feature outright — one device carries
+a list of `DeviceActivity` rows (`control`/`job`/`workflow-job`/`install`/
+`transfer`/`prep`/`command`/`agent`/`network-apply`/`wake`) instead of three
+separate authorisation objects. `activity/policy.ts`'s `evaluate()` is the
+one place that decides whether a NEW activity may start given what is
+already live: a static `allow`/`warn`/`forbid` matrix (row = starting kind,
+column = existing kind), with `control` over `control` read from the
+`control.overControl` farm setting instead of the table. `forbid` always
+produces `E_DEVICE_CONFLICT` (protocol's `activity.ts`), the one refusal code
+for a device conflict everywhere — WS, HTTP 409, and a capability refusal
+alike. The registry is in-memory only, so `rebuild()` re-projects it from
+durable sources (running jobs, transfers, in-flight prep) once at boot, after
+the job store's own orphan sweep — nothing about "what is happening to this
+device" survives a restart by itself; it is recomputed.
 
-**The grant** (`lease/co-control.ts`, `CoControlManager`). A co-control grant
-is a *third* authorisation object, not a lease variant: `grant()` never calls
-`leases.acquireManual` and never touches `DeviceStatus` — it hands out
-exactly the five input verbs (tap/swipe/gesture/key/text) against a device
-someone or something else already holds, refusing `assist_not_allowed` /
-`assist_taken` / `assist_denied_by_script` / `device_not_held` as
-appropriate. `checkAssistAllowed(deviceId, clientId)` is consulted from
-**exactly one place**, `ws-handlers.ts`'s `input.*` branch, and only as a
-fallback once `leases.checkInputAllowed` has already refused — `shell.exec`,
-`inspect.*`, `clipboard.set`, the transfer routes, and the adb endpoint were
-never given this fallback and still call only the lease gate, so co-control
-cannot widen any of them by construction. `ws-handlers.assist.test.ts` proves
-this directly (the containment test): a client holding only a grant is
-refused `shell.exec`/`inspect.attach`/`clipboard.set`/`POST :id/push`/`POST
-:id/adb-endpoint` — all five, one test, same device, all `device_busy` —
-while its `input.tap` succeeds.
+The two farm settings this model reads (`control` block,
+`packages/protocol/src/settings.ts`): `overControl` (default `'allow'`) —
+what happens when someone starts controlling a device another person is
+already controlling; and `idleSec` (default 30) — how long after the last
+tap or key a device stops showing "Controlled by". Every viewer learns about
+a change through one push, `device.activity`, and `GET /api/devices` remains
+the only snapshot source (the `/ws` protocol still has no replay).
 
-**A grant can never outlive the hold it was subordinate to** — the property
-this file exists to guarantee — proven for **five** independent end paths,
-not four: the grant's own TTL expiring (`startReaper`, a ~5s sweep), the
-assisting client's WebSocket closing (`releaseAllForClient`, the same
-WS-close path the lease manager already has), the assisting operator
-releasing it voluntarily (`release()`), the primary hold ending the ordinary
-way (`onPrimaryEnded`, wired from `lease-manager.ts`'s `release()` and
-`clearJobLease()`), and a **lease takeover** — found and wired separately
-during this plan's own work, because a successful takeover's compare-and-swap
-acquisition never calls `release()` at all, so `daemon.ts`'s
-`onManualTakenOver` handler calls `coControl.onPrimaryEnded(deviceId)`
-directly rather than relying on the release path to reach it. `assistedBy(deviceId)`
-is the read side, threaded through every router that builds `DeviceInfo`
-(`api/devices.ts`, `api/topology.ts`, `api/clusters.ts`,
-`capability/context.ts` — the last three were a known gap this plan's own
-step 91.4 flagged and left; closed 2026-08-13, see
-`docs/plans/96-m61-hotfixes.md` §96.10). `maxConcurrentPerDevice` (default 1,
-max 4) bounds how many clients may hold a grant on one device at once — not a
-safety limit (the arbiter already serialises concurrent writers) but an
-attribution one: past 1, nobody can say whose tap did what.
+## Actions API (MVP 07, plan 207)
 
-**Attribution** rides on the job's own row rather than a new table:
-`jobs.assistCount` (migration `0046_watery_quentin_quire.sql`) increments on
-every accepted assist action whose primary hold is a job; the same action is
-written to that device's `input`-stream `device_events` with `meta.assist:
-true`/`meta.jobId`, read back as `GET /api/jobs/:id/assists` (`job.view`) —
-an indexed range scan over `idx_device_events_tail(deviceId, stream, at)`
-bounded by the job's own `startedAt`/`finishedAt`, no JSON extraction, no new
-index. `AuditEntrySchema` gained `meta` in this plan so the bookend
-`device.assist` audit rows (recorded for `started`/`released`/`disconnected`
-— `ttl` and `primary_ended` are NOT audited, a known, flagged gap, since
-their only trigger points are the reaper and `onPrimaryEnded`, both reached
-only through `daemon.ts`'s broadcast-only hooks) can actually be read back
-naming the job, closing a pre-existing defect (F24) where `meta` was written
-to `audit_log` but dropped by the API schema.
+One endpoint per verb, taking a target: `POST /api/actions/<verb>` (`packages/core/src/actions/`, wired through `api/actions.ts`) accepts `{ target: { deviceIds } | { groupId } | { tags }, ...params, force? }` and answers `202` with one `ActionResult` per resolved device — `accepted`/`skipped`/`forbidden`/`warned` immediately, `done`/`failed` once a `sync` verb finishes or an `async` verb's dispatch settles. `GET /api/operations/:id` reads an async verb's settling result off an in-memory, TTL+cap-evicted registry (`actions/operations.ts`, one hour, 1000 entries) — there is no operation table. `warn` proceeds with a per-device `warned` result the caller repeats with `force: true`; `forbid` becomes `forbidden` and ignores `force`. `run-script` and `set-group` dispatch once for the whole candidate set (`run-script` always creates a batch, even for one device, through the existing `groups/dispatch.ts`); every other verb fans out per device, bounded by `ACTION_FANOUT_CONCURRENCY` (4). This replaced every per-device action route, its bulk twin, `POST /api/jobs` and `POST /api/batches` as public enqueues, and the fleet command surface entirely (routers, runner, store, three tables, seven WS messages, the `shell` fan-out settings) — MVP 13 A.5, A.6a. The capability broker reaches the same model through one capability, `actions.run` (`capability/actions.ts`).
 
-**Mirror groups** (`mirror/group.ts`, `MirrorManager`) are one operator
-driving many phones from one focused view. `mirror.start` resolves every
-requested device **independently** against §3.9's table (idle → an ordinary
-manual lease; busy or held → an ordinary co-control grant, never a takeover;
-offline/quarantined/mid-`internal:install`/node-owned → skipped by name) and
-reports one outcome per device — never a silent drop. No multi-device lock is
-acquired anywhere: every member gets exactly the same lease or grant a
-single-device operator would get, through the exact same doors, and
-`dispatch` trusts that authorisation for the group's whole life rather than
-re-checking the gates on every action, because nothing in this file can ever
-grant more than those two functions already would for one device.
-
-`dispatch`'s per-lane orientation gate (§3.7) withholds pointer actions
-(tap/swipe/gesture) from a member whose orientation disagrees with the
-focused device's, naming it `orientation_mismatch` — keys and text still go
-through, since a keycode has no geometry to disagree about. A member's aspect
-ratio is compared once, at `mirror.start`, against `mirror.aspectTolerance`
-and flagged (`aspectDrift`) rather than blocked, because for a scaling layout
-the normalised coordinate is still correct and blocking on a 5% shape
-difference would exclude most real fleets. A member that fails
-`mirror.dropAfterConsecutiveFailures` (default 3) consecutive dispatches
-leaves the group with one message naming it — `reconcile(deviceId)` is the
-other direction, re-admitting a member whose blocker cleared (a job ended, an
-`internal:install` finished), wired to `daemon.ts`'s existing
-`onJobFinished` forward-ref so no client has to ask.
-
-**Mirrored actions are recorded per-device, not in one aggregate row** —
-`mirror/group.ts`'s own header comment states the reasoning directly:
-`device_events` has no field for "N devices", every row belongs to exactly
-one `deviceId`, so an aggregate row parked on the focus device would leave
-every *other* member's own Device Log blind to input it visibly received,
-and would make a mirrored assist on a job-busy member invisible to `GET
-/api/jobs/:id/assists`, which finds assists strictly by `deviceId`. `dispatch`
-therefore records one `device_events` row per successfully-delivered
-per-device action (the same `kind`/meta shape the single-device `input.*`
-branch uses, plus `meta.mirrored: true`/`groupId`), and increments
-`jobs.assistCount` per `assist`-mode member whose primary hold is a job — on
-delivery success, never before, since a member that never received the
-action has nothing honest to report. `audit.record` is deliberately not
-called per mirrored action, for the same reason ordinary manual input is
-never audited either: audit is for the grant/release boundary, not every
-tap. Write amplification is stated plainly rather than hidden: up to
-`mirror.maxDevices` (20 default, 64 ceiling) `device_events` rows per
-mirrored action, landing in the same buffered-transaction recorder every
-concurrent human operator's input already shares — identical cost to 20
-separate operators tapping 20 separate devices today, not a new scaling
-problem this plan introduces.
-
-**Settings** (`coControl`/`mirror` blocks, `packages/protocol/src/settings.ts`):
-
-| Block | Field | Default | What it controls |
-|---|---|---|---|
-| `coControl` | `mode` | `'operator'` | `'off'` disables assisting farm-wide; `'admin'` restricts it to the admin role; `'operator'` (default) allows any role holding `device.assist` — checked together by `canAssist(role, mode)`, the same shape `shell.mode`/`canUseShell` already established. |
-| `coControl` | `grantTtlSec` | 300 | How long a grant survives with no activity before it expires on its own. |
-| `coControl` | `maxConcurrentPerDevice` | 1 (max 4) | How many clients may hold a grant on one device at once. |
-| `coControl` | `queueWaitMs` | 5000 | The input arbiter's per-lane wait budget before refusing with `E_INPUT_BUSY` (`packages/session/README.md`). |
-| `coControl` | `maxQueueDepth` | 32 | How many actions may be queued (not counting the one running) per lane. |
-| `mirror` | `maxDevices` | 20 (max 64) | How many devices one mirror group may contain. |
-| `mirror` | `requireSameOrientation` | `true` | Whether a rotated member is withheld from pointer actions (keys/text are unaffected regardless). |
-| `mirror` | `aspectTolerance` | 0.05 | The `max(w,h)/min(w,h)` difference from the focused device above which a member is flagged `aspectDrift`. |
-| `mirror` | `dropAfterConsecutiveFailures` | 3 | How many consecutive failed dispatches drop a member from the group. |
-
-`coControl.queueWaitMs`/`maxQueueDepth` reach the real arbiter on every
-session via `SessionManagerDeps.arbiterQueueWaitMs`/`arbiterMaxQueueDepth`
-(both `() => number`, read fresh) — this wiring was itself a known gap
-through most of this plan's own steps (the arbiter ran on hardcoded
-`5_000`ms/`32` defaults regardless of what an operator configured) and was
-closed 2026-08-13, see `docs/plans/96-m61-hotfixes.md` §96.13 and
-`packages/session/README.md`.
-
-**Endpoints and observability.** `GET /api/jobs/:id/assists` (`job.view`) —
-see Attribution above. `GET /api/adb/stats` gains an `input` block: `lanes`
-(keyed by `pointer`/`keys`/`text`, each `{ depth, waitMsP50, waitMsP95,
-refusals }`, the WORST value observed across every live session's own local
-arbiter — there is no farm-wide arbiter, so summing/averaging would smooth
-away exactly the contention this block exists to surface),
-`assistsActive`/`mirrorGroups`/`mirrorMembers`/`mirrorFanoutMsP50`/`P95`,
-plus `queueWaitMs` (the farm's configured budget, so a caller can compare
-like-for-like without a second fetch) and two leak-detector counts,
-`uncollectedGrants`/`orphanedMirrorGroups`. `doctor/checks/co-control.ts`
-reads the same block and reports `warn` (never `fail` — budget pressure and
-a leak are both actionable-but-not-fatal, matching `streamsCheck`'s own
-precedent) when a lane's `waitMsP95` exceeds half the configured
-`queueWaitMs`, or either leak count is nonzero, naming the lane/counts in the
-remedy.
-
-## The command console and bulk operations (plan 93, M58)
-
-`docs/plans/93-m58-command-console-and-bulk-operations.md` carries the full
-evidence and design; this section documents what actually shipped as of
-step 93.9. **93.11 (Studio's bulk-operations surfaces — `ArtifactPicker`,
-`BulkTransferDialog`, the batch detail page's collected-files table, the
-fleet toolbar's Push file…/Pull file… entries) is NOT built yet** — nothing
-below should be read as claiming those exist. **93.10 (the archive/download
-surface) is also incomplete, checked directly against the tree rather than
-assumed**: `api/zip-stream.ts` (the STORED-zip writer) exists as a standalone
-file, but it has no test file, is not imported by `api/batches.ts` or any
-other route, and `GET /api/batches/:id/artifacts`/`.../artifacts.zip` do not
-exist — a bulk pull's files are only reachable one at a time, per artifact,
-today. `api/artifacts.ts` also has no `?kind=upload` query yet (F14 stays
-open). None of `zip-stream.ts`, `api/artifacts.ts`, or `api/batches.ts` are
-this documentation step's files to fix.
-
-**Fan-out is a run, not a job.** A batch (plan 20) member is a job: it takes
-a job lease, flips the device to `busy`, and is claimed by a scheduler tick
-— correct for a 90-second APK install, wrong for a 200ms `getprop`. A
-**command run** (`command_runs`/`command_run_members`,
-`command-console/store.ts`) is the shape that fits a fan-out shell command:
-one row per run, one row per targeted device, no job, no scheduler
-involvement — `command-console/runner.ts`'s `createCommandRunner` drives a
-bounded worker pool (`MAX_POOL_CONCURRENCY` 32) directly against
-`ShellPort.exec`.
-
-**Admission is the same three-branch policy the terminal already uses**
-(`admitMember`, exported standalone from `runner.ts`): a device the caller
-already controls runs immediately, with no lease acquire and no release; an
-idle device is acquired with `Lease.purpose: 'command'` for the exact
-duration of that one exec and released in a `finally`, even when the exec
-throws; a device controlled by someone else, or running a job, is `skipped`
-with `checkInputAllowed`'s own code and message verbatim — never taken
-over. `POST /api/command-runs` (`api/command-runs.ts`) runs the full gate
-order — role, `shell.mode`, `shell.fanoutEnabled`,
-`shell.fanoutMaxDevices`, `canUseDevice` per resolved target, and (§3.14)
-the high-consequence acknowledgement — before calling `commandRunner.start()`,
-so nothing is written until every gate passes.
-
-**The high-consequence guard is advisory and client-side, not a block.**
-`isHighConsequence(cmd)` (moved into `@enkaku/protocol` from
-`TerminalPane.tsx`) names what matched — `{ hit, pattern }` — and the REST
-layer requires an explicit `acknowledged: true` on the request whenever the
-target has more than one device and the command hits the guard. It is a
-scale confirmation ("you are about to run this on N devices, say so"), not
-a security judgement: any client can set the flag, and the server never
-refuses a command for being dangerous, only for being un-acknowledged at
-scale. The acknowledgement and the matched pattern (if any) are recorded on
-the run and in the `command.run` audit action either way.
-
-**Output is subscriber-scoped**, deliberately unlike `transfer.progress`
-was before step 93.9's own fix (see below): `ws-handlers.ts`'s
-`command.subscribe`/`command.unsubscribe` register a connection against
-`commandTargets(runId)`, and `broadcastCommand(runId, msg)` reaches only
-those subscribers — never `hub.broadcast`. A 100-device run's live payload
-is sized against `MAX_BUFFERED` (512 KB, plan 85): progress is coalesced to
-at most one frame per 250ms per run, and full per-device stdout/stderr is
-never pushed over the socket at all — only a hashed, capped preview
-(`shell.fanoutPreviewBytes`, default 2 048 bytes) for each **distinct**
-output, fetched over HTTP (`GET /:id/members/:deviceId/output`) on demand.
-
-**A run's cancel reaches a real `AbortSignal` on the exec**, not just the
-stored row: `cancel(runId)` aborts every in-flight member's
-`AbortController`, force-settles every `pending`/`running` member to
-`cancelled` synchronously, and never starts a member that has not begun.
-
-**Staged rollout** (`stageFirstN`) runs the first N members, then stops at
-`awaiting-continue` — holding no lease while it waits — until the operator
-calls `continue` or `cancel`, or `shell.fanoutStageWaitSec` (default 900s)
-elapses and the runner cancels the remainder itself.
-
-**Saved commands** (`saved_commands`, `command-console/saved.ts`,
-`api/saved-commands.ts`) are a farm asset, not a personal bookmark: named,
-described, visible to everyone, editable only by their owner or an admin,
-gated on `canUseShell` at create time so nobody can save a command they
-could not run. No `dangerous` field is stored anywhere — high-consequence-
-ness is derived fresh from `cmd` every time it is rendered or run, so it
-can never go stale when the guard's own patterns change.
-
-**Bulk push and pull** (`jobs/executors/push.ts`/`pull.ts`, step 93.9) are
-near-copies of the existing bulk-install executor, sharing its `{ gate:
-'files', setting: 'transfer.enabled' }` declaration (`JobExecutor.requires`,
-step 93.8) so all three transfer executors close the same permission hole
-bulk install used to have (F10: `POST /api/batches` used to check only
-`job.run`, bypassing `device.files` and `transfer.enabled` entirely — now
-checked at every real dispatch site: `POST /api/jobs`, `POST /api/batches`,
-`POST /api/schedules` create/patch, and the cron-fired schedule runner).
-`registerDeviceArtifact` now takes a required `jobId: string | null`, so a
-file a bulk pull collects is linked back to the job that pulled it —
-`GET /api/artifacts?jobId=...` can answer "what did this bulk pull
-collect", where before it silently wrote `jobId: null` forever (F12).
-`transfer.progress`/`transfer.done` are scoped to viewers of the device the
-same way `shell.result` already is (`daemon.ts`'s `broadcastTransferEvent`
-forward-ref calling `handler.broadcastTransfer`) — the farm-wide
-`hub.broadcast` those two messages used before (F27) is gone from every
-transfer code path (`device/transfer.ts`, `device/transfer-dispatch.ts`,
-the three `jobs/executors/{push,pull,install}.ts`).
-
-**A batch no longer silently forgets a skipped device** (F11 closed, step
-93.8): `batches.skipped` persists `resolved.skipped` (device id + reason),
-on the wire on both create and `GET /:id`. `POST /api/batches/:id/rerun?
-only=failed|skipped` retargets exactly that subset — `only=skipped` reads
-the batch's own persisted `skipped` column, so a device that came back
-online since the original dispatch is correctly retargeted, and one still
-offline correctly refuses with `E_NO_TARGETS`.
-
-**A core restart never leaves a command run `running` forever**:
-`commandRunner.sweepOrphans()` runs in the same boot-recovery phase
-`jobStore.failOrphanRunning()` already opens, marking every non-terminal
-run `cancelled` and explaining every unfinished member — the same
-`failOrphanRunning` precedent (F29) applied to a second kind of row.
-
-**Settings** live under the existing `shell` block
-(`packages/protocol/src/settings.ts`) rather than a new top-level one,
-because "can people run commands on the whole farm" is a Device-terminal
-question in an operator's head, and the gates are the same gates:
-`fanoutEnabled` (default `true` on loopback, forced `false` in server mode
-by `createFarmSettingsStore` — see `docs/guide/install.md`'s own section for
-the reasoning), `fanoutMaxDevices`, `fanoutConcurrency` (0 = let the adb
-exec semaphore decide, no second concurrency mechanism), `fanoutMaxOutputBytes`,
-`fanoutPreviewBytes`, `fanoutConfirmThreshold`, `fanoutStageWaitSec`,
-`commandRunsPerUser` (500, trimmed on insert), `savedCommandLimit`.
-`retention.commandRunDays` (14) sweeps old runs regardless of
-`retention.enabled` — the same "not gated by the master switch" precedent
-`retention.eventInputDays` already sets.
-
-**Measurement** (§5 step 93.12): `GET /api/adb/stats` gains a
-`commandConsole` block — `runsInFlight`, `membersInFlight`,
-`coalescedFramesPerSec` (H2: the coalescer's own effect, measured — the
-spec's own ceiling is ≤4/s at 100 members), `distinctOutputRatio` (H1: near
-1.0 on a real farm means grouping is not helping and the console's default
-should flip to a flat table), and `leaseChangedPerMinute` (H4: the
-per-member acquire/release traffic this feature's own lease policy adds,
-each short hold counting the one broadcast its grant produces and the one
-its release produces, mirroring the two real `lease.changed` broadcasts
-production already sends for any manual hold). **This block is wired in
-`command-console/runner.ts`'s `CommandRunner.stats()` and in
-`api/adb-stats.ts`'s optional `commandConsole` dep, but `daemon.ts` — held
-outside this documentation step's file ownership — does not yet pass
-`commandConsole: () => commandRunner?.stats() ?? null` through**, so a real
-boot reports the block zero-filled until that one line lands (tracked,
-self-detecting, in `api/adb-stats-command-console-wiring.test.ts`). The
-§7.3 fan-out ladder (5 / 20 / 100 devices, against real hardware) that these
-numbers exist to fill in has not been run — see the plan's own status line
-for the exact commands and the empty outcome table.
-
-## Workflows — a pipeline of scripts, one job, one lease (plan 99, M64)
+## Workflows — a pipeline of scripts, one job, one device claim (plan 99, M64)
 
 `docs/plans/99-m64-workflows.md` carries the full evidence and design;
 `packages/protocol/README.md`'s own Workflows section documents the document
@@ -750,32 +535,36 @@ documents the executor, `job_nodes`, resume, and the two new farm settings —
 what actually shipped, which in a few places is not what the plan first
 proposed.
 
-A workflow publishes as an **ordinary `scripts` row** (`kind: 'workflow'`,
-default `'script'` for every other row) whose `bundle` holds a validated
-`WorkflowDoc` instead of an ESM bundle. It runs through
-`jobs/executors/workflow.ts`'s `createWorkflowExecutor`, registered in
-`daemon.ts` as the `kind: 'workflow'` fallback beside the ordinary script
-executor — **one job, one lease, one device, for the whole pipeline**, not
-one job per node. `sessions.acquire(deviceId)` is called exactly **once**,
-before the first node, and released in a `finally` after the last one; every
-node still runs as its own child process through the SAME `JobRunner.execute()`
-a standalone job uses, so each node keeps its own crash containment, timeout,
-retries, and `finish()` — only the outer session hold, the lease, and the
-job id are shared. A gate spawns no child and makes no device call; it is
-evaluated in-process, in microseconds, from values the pipeline already has.
+**Plan 210 (MVP 03 §2) moved a workflow out of the `scripts` table
+entirely.** A workflow is now its own row in the `workflows` table
+(`name` unique, `doc`, `createdBy`, `createdAt`, `updatedAt`) — no version of
+its own, edited in place through `GET/POST/PUT/DELETE /api/workflows`
+(`workflows/store.ts`). A job created from a workflow will snapshot the
+validated document onto `jobs.workflow_doc` at enqueue (the column exists;
+plan 211's orchestrator is the first writer), so editing a workflow never
+changes a queued or running job. The paragraphs below describe the executor
+and `job_nodes` as designed by plan 99; plan 211 rewrites the executor
+against the `workflows` table and retargets these mechanisms at runs — until
+then `jobs/executors/workflow.ts` sits in the tree unregistered
+(`ExecutorRegistry` now has exactly one fallback, plan 210 §4.8 — the
+`daemon.ts` construction and registration this section used to describe were
+deleted because they were unreachable in production: `daemon.ts` never
+passed a per-kind selector to `ExecutorHost`).
 
-**`scripts.kind` is read in exactly four places** — `jobs/executor.ts`'s
-`ExecutorRegistry.get()` (executor selection), the workflow/script publish
-routes, Studio's list/run-dialog filter, and
-`packages/protocol/src/workflow-check.ts`'s `E_WORKFLOW_NESTED` check (a
-nested workflow is refused at publish, and detecting it needs the same
-`kind` fact `checkWorkflow` already carries in its `resolved` map — hoisting
-that comparison into a route would either duplicate the check or defeat the
-whole point of Validate and the publish gate running the identical
-function). This list is a **falsifiable claim, not a target**: a repo-wide
-search for the literal comparison `kind === 'workflow'` outside those four
-files is expected to return nothing, and if it ever does, the containment
-this design depends on has drifted.
+Once rewired, the design is **one job, one device claim, one device, for
+the whole pipeline**, not one job per node. `sessions.acquire(deviceId)` is
+called exactly **once**, before the first node, and released in a `finally`
+after the last one; every node still runs as its own child process through
+the SAME `JobRunner.execute()` a standalone job uses, so each node keeps its
+own crash containment, timeout, retries, and `finish()` — only the outer
+session hold, the device claim, and the job id are shared. A gate spawns no
+child and makes no device call; it is evaluated in-process, in
+microseconds, from values the pipeline already has.
+
+A workflow node's script reference always resolves to a plugin member now
+(plan 210): nesting a workflow inside another workflow cannot be expressed,
+so the `E_WORKFLOW_NESTED` check and its `ResolvedNodeScript.kind` field are
+gone from `packages/protocol/src/workflow-check.ts`.
 
 ### `job_nodes` — one row per node *execution*
 
@@ -876,13 +665,13 @@ here.
 
 `packages/core/src/recording/` tees the core's own manual-input path — the
 same function every `input.tap`/`.swipe`/`.gesture`/`.key`/`.text` WS message
-already passes through, after the lease check and before the device call —
+already passes through, after the activity admission check and before the device call —
 into a `RecordingDoc` (`@enkaku/protocol`'s `recording.ts`) while
 `recording.start` is open on a device. No device-side component: a recording
 observes exactly what an operator's own control session already sends.
 
 - **`RecordingService`** (`recording/service.ts`) is the per-farm registry:
-  one recording per device, held by the lease holder, `E_RECORDING_ACTIVE` on
+  one recording per device, admitted through the same `'control'` activity gate `input.*` uses, `E_RECORDING_ACTIVE` on
   a second `start`. `RecordingSession` (`recording/session.ts`) is the
   per-device state machine — `observe()` is synchronous and never awaited on
   the input path, so recording can never slow down or reorder a live control
@@ -911,13 +700,16 @@ observes exactly what an operator's own control session already sends.
   a one-time code in the clear, on disk — and it is a real, unsettled
   product question, not a solved one; see `docs/guide/record-and-replay.md`.
 
-`recording/compile.ts` turns a reviewed document into the published artefact:
-`emitRecordingEntry(doc)` writes a short, generated entry (one `import` and
-one `defineRecording({...})` call with the document inlined) that publishes
-through the exact same `buildScriptFromWorkspace` + `publishScript` pair every
-hand-written script uses — no new bundling, no new marker on the `scripts`
-row. `emitDetachedScript(doc)` is the one-way "Detach" emitter: a plain
-`defineScript` with every step expanded as a literal, ordered `await`.
+`recording/compile.ts` stays the pure compiler it always was — `emitRecordingEntry(doc)`
+writes a short, generated entry (one `import` and one `defineRecording({...})`
+call with the document inlined), read back by `GET /api/recordings/:slug` as
+a preview. **Publishing it is parked for the MVP** (plan 210, MVP 06 §2):
+`POST /api/recordings/:slug/publish` answers `410 E_RECORDINGS_PARKED` and
+writes nothing, rather than bundling and staging a plugin from that entry.
+`emitDetachedScript(doc)` is the one-way "Detach" emitter and is unaffected:
+a plain `definePlugin({...})` with every step expanded as a literal, ordered
+`await`, written straight to the workspace for an operator to publish by
+hand.
 `packages/core/src/api/recordings.ts` mounts the REST surface at
 `/api/recordings` (list, get, create from a device's just-finished recording,
 patch under compare-and-swap, delete, publish, detach).
@@ -929,7 +721,7 @@ optional `pacing` block: `count` (repetitions per device), `intervalMs:
 [min,max]` (a fresh draw between repetitions), `deviceIntervalMs` (a one-time
 stagger across devices). **Repetition is N jobs, not one job with a loop** —
 each repetition gets its own job row, its own artifacts, its own retry, and
-releases the device between repetitions rather than holding a lease for the
+releases the device between repetitions rather than holding a job activity for the
 whole run.
 
 - `jobs.notBefore` (unix seconds, nullable) is the mechanism: a job the queue
@@ -940,7 +732,7 @@ whole run.
   for that device; `jobs.pacedDelayMs` is the delay actually drawn for that
   repetition, so an operator reading a job row sees "waited 4 min 12 s"
   without doing arithmetic against another column.
-- `packages/core/src/clusters/pacer.ts` — `planFirst` bakes the stagger into
+- `packages/core/src/groups/pacer.ts` — `planFirst` bakes the stagger into
   repetition 0 for every device; `onMemberSettled` (called from
   `recomputeBatchStatus`, the existing single writer of `batches.status`)
   draws the next repetition's delay from `crypto.getRandomValues` — never

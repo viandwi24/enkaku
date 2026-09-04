@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { between, makeRng, pickWatchMs, sleep } from './human'
 import { searchFor } from './search'
 import { all } from './tree'
-import { capture, frameOf, readGate, relaunch, TIKTOK_PACKAGE, verifiedSwipeUp } from './gesture'
+import { capture, frameOf, readGate, readableStrings, relaunch, TIKTOK_PACKAGE, verifiedSwipeUp } from './gesture'
 
 /**
  * `keyword-videos` — search a keyword, open videos from the results, and
@@ -45,6 +45,14 @@ const paramsSchema = z.object({
     .default(3)
     .describe('Stop after this many cell taps that opened nothing — the grid may have shifted, and a blind tap repeated forever is not browsing.')
     .meta(ui({ title: 'Max missed taps' })),
+  keywordBoostFactor: z
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.6)
+    .describe('Watch-time TILT applied when the opened video\'s caption or author contains a keyword: probability mass shifts toward the long dwell buckets (the heavy-tailed shape is kept — a matched video is still sometimes skipped, exactly as a real viewer would).')
+    .meta(ui({ title: 'Keyword dwell tilt' })),
+  keywords: z.array(z.string()).default([]).describe('Keywords to hold attention on. Matched against the caption/hashtags and author read off the opened player.').meta(ui({ title: 'Keywords' })),
 })
 
 const resultSchema = z.object({
@@ -54,6 +62,7 @@ const resultSchema = z.object({
   dwellLabels: z.array(z.string()).describe('The shape of each watch ("skip", "watch", "engaged", "hooked") — the uneven timing the run actually kept.').meta(ui({ title: 'Dwell' })),
   advanced: z.number().int().describe('In-player swipes verified to have changed the screen.').meta(ui({ title: 'Advanced' })),
   cells: z.array(z.string()).describe('Which grid cell (column,row) each tap aimed at — the geometry the run chose, stated as the inference it is.').meta(ui({ title: 'Cells tapped' })),
+  keywordMatches: z.number().int().describe('Videos whose caption/author text matched a keyword and got the dwell tilt.').meta(ui({ title: 'Keyword matches', summary: true })),
 })
 
 function playerUp(tree: UiNode): boolean {
@@ -81,6 +90,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     let played = 0
     let misses = 0
     let advanced = 0
+    let keywordMatches = 0
     const dwellLabels: string[] = []
     const cells: string[] = []
 
@@ -106,8 +116,17 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       }
 
       played += 1
-      const dwell = pickWatchMs(rng)
-      dwellLabels.push(dwell.label)
+      // Keyword tilt: the opened player's own words (caption, hashtags, author —
+      // readable even when the results grid is not) decide the DWELL, never a
+      // like. `pickWatchMs`'s tilt shifts probability mass toward the long
+      // buckets while keeping the distribution lumpy: a matched video is still
+      // sometimes skipped in a second, because no person is that consistent.
+      const playerTree = await ctx.device.dump()
+      const text = readableStrings(playerTree).join(' ')
+      const matched = ctx.params.keywords.some((k) => k.trim() !== '' && text.toLowerCase().includes(k.toLowerCase()))
+      if (matched) keywordMatches += 1
+      const dwell = pickWatchMs(rng, matched ? ctx.params.keywordBoostFactor : 0)
+      dwellLabels.push(`${dwell.label}${matched ? '+kw' : ''}`)
       await sleep(dwell.ms)
 
       // Swipe to the next video in the opened feed — TikTok continues the keyword flow upward once
@@ -123,7 +142,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       throw new Error(`none of the ${cells.length} grid cells opened a readable player — see artifact nothing-opened`)
     }
 
-    return { query: ctx.params.query, played, misses, dwellLabels, advanced, cells }
+    return { query: ctx.params.query, played, misses, dwellLabels, advanced, cells, keywordMatches }
   },
 
   async finish(ctx) {

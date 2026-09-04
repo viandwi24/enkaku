@@ -155,8 +155,6 @@ export interface PluginLogStoreDeps {
    * anything wider than the strings it needs.
    */
   extraSecrets?: (pluginId: string) => Array<{ key: string; plaintext: string }>
-  /** Called after a line is recorded and redacted. `daemon.ts` passes `hub.broadcast` of a `plugin.log`. */
-  broadcast?: (pluginId: string, line: PluginLogLine) => void
   /** Set `false` to keep everything in memory (tests). */
   writeFiles?: boolean
   /**
@@ -374,8 +372,6 @@ export function createPluginLogStore(deps: PluginLogStoreDeps): PluginLogStore {
       }
       if (file.bytes >= rotateBytes) rotate(pluginId, ring, file)
     }
-
-    deps.broadcast?.(pluginId, line)
   }
 
   return {

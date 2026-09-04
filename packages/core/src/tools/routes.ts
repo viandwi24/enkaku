@@ -55,8 +55,8 @@ export interface AdbControlRouteDeps {
   binaryPath: () => string | null
   /** Live counts for the confirmation dialog, fetched fresh on every call. */
   preview: () => { devicesTotal: number; sessionsActive: number; networkDevicesWithEndpoint: number }
-  /** Named, not just counted (plan 88 §3.10's `E_ADB_BUSY_FARM` guard: "listing running jobs and held leases"). */
-  busyFarm: () => { runningJobs: Array<{ id: string; label: string }>; heldDevices: Array<{ deviceId: string; label: string }> }
+  /** Named, not just counted (plan 88 §3.10's `E_ADB_BUSY_FARM` guard: "listing running jobs and controlled devices"). */
+  busyFarm: () => { runningJobs: Array<{ id: string; label: string }>; controlledDevices: Array<{ deviceId: string; label: string }> }
   restartCooldownSec: () => number
 }
 
@@ -183,7 +183,7 @@ export function createToolsRoutes(
     return typedJson(c, AdbRestartPreviewSchema, {
       devicesTotal: preview.devicesTotal,
       sessionsActive: preview.sessionsActive,
-      leasesHeld: busy.heldDevices.length,
+      controlled: busy.controlledDevices.length,
       jobsRunning: busy.runningJobs.length,
       networkDevicesWithEndpoint: preview.networkDevicesWithEndpoint,
       restartCooldownSec: deps.adb.restartCooldownSec(),
@@ -195,7 +195,7 @@ export function createToolsRoutes(
   /**
    * Restart the shared adb server (plan 88 §3.10). `tool.manage` (admin
    * only, F25); rate-limited to one per `restartCooldownSec`; refused with
-   * `E_ADB_BUSY_FARM` — naming every running job and held lease — unless
+   * `E_ADB_BUSY_FARM` — naming every running job and controlled device — unless
    * `force`. No automatic restart anywhere in this codebase calls this: it
    * is reachable from exactly one place, an operator's click on the Tools
    * page (plan 88 §3.10's "no automatic restart, ever").
@@ -221,15 +221,15 @@ export function createToolsRoutes(
 
     if (!force) {
       const busy = deps.adb.busyFarm()
-      if (busy.runningJobs.length > 0 || busy.heldDevices.length > 0) {
+      if (busy.runningJobs.length > 0 || busy.controlledDevices.length > 0) {
         return c.json(
           {
             error: {
               code: 'E_ADB_BUSY_FARM',
-              message: `restarting adb now would fail ${busy.runningJobs.length} running job(s) and release control on ${busy.heldDevices.length} device(s) — pass force to restart anyway`,
+              message: `restarting adb now would fail ${busy.runningJobs.length} running job(s) and release control on ${busy.controlledDevices.length} device(s) — pass force to restart anyway`,
             },
             runningJobs: busy.runningJobs,
-            heldDevices: busy.heldDevices,
+            controlledDevices: busy.controlledDevices,
           },
           409,
         )
@@ -274,12 +274,12 @@ export function createToolsRoutes(
 
     if (!force) {
       const preview = deps.app.preview()
-      if (preview.jobsRunning > 0 || preview.leasesHeld > 0) {
+      if (preview.jobsRunning > 0 || preview.controlled > 0) {
         return c.json(
           {
             error: {
               code: 'E_APP_BUSY_FARM',
-              message: `restarting Enkaku now would fail ${preview.jobsRunning} running job(s) and release control on ${preview.leasesHeld} device(s) — pass force to restart anyway`,
+              message: `restarting Enkaku now would fail ${preview.jobsRunning} running job(s) and release control on ${preview.controlled} device(s) — pass force to restart anyway`,
             },
           },
           409,

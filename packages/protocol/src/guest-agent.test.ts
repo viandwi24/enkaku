@@ -1,10 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  GuestAgentCapabilitySchema,
   GuestAgentRequestSchema,
   GuestAgentResponseSchema,
+  TextStatusResultSchema,
+  UiChangedEventSchema,
+  UiDumpResultSchema,
+  UiFindRequestSchema,
   GUEST_AGENT_PROTOCOL,
   GUEST_AGENT_SOCKET,
 } from './guest-agent'
+import { UiNodeSchema } from './ui-node'
 
 /**
  * These frames were captured against a real Android 15 phone (plan 44 §5.1's
@@ -317,5 +323,86 @@ describe('egress.probe (plan 51 §4.2, §5.2)', () => {
       },
     }
     expect(() => GuestAgentResponseSchema.parse(raw)).toThrow()
+  })
+})
+
+describe('plan 221 — ui-tree and activity', () => {
+  test('GuestAgentCapabilitySchema carries ui-tree and activity', () => {
+    expect(GuestAgentCapabilitySchema.options).toEqual([
+      'socks5-route',
+      'vpn-status',
+      'egress-probe',
+      'route-hold',
+      'mock-location',
+      'screen-label',
+      'text-input',
+      'ui-tree',
+      'activity',
+    ])
+    expect(GuestAgentCapabilitySchema.options.length).toBe(9)
+  })
+
+  test('UiDumpResultSchema reuses UiNodeSchema unchanged', () => {
+    expect(UiDumpResultSchema.shape.root).toBe(UiNodeSchema)
+  })
+
+  test('UiFindRequestSchema rejects a point selector', () => {
+    const raw = { id: 'f1', method: 'ui.find', token: 't', selector: { point: { x: 1, y: 2 } } }
+    expect(() => GuestAgentRequestSchema.parse(raw)).toThrow()
+    expect(() => UiFindRequestSchema.parse(raw)).toThrow()
+  })
+
+  test('UiFindRequestSchema accepts id/desc/text selectors', () => {
+    for (const selector of [{ id: 'x' }, { desc: 'y' }, { text: 'z' }]) {
+      const raw = { id: 'f2', method: 'ui.find', token: 't', selector }
+      expect(() => GuestAgentRequestSchema.parse(raw)).not.toThrow()
+    }
+  })
+
+  test('TextStatusResultSchema still parses a build that omits the two new fields', () => {
+    const parsed = TextStatusResultSchema.parse({ ime: 'current', id: 'dev.enkaku.guestagent/.input.EnkakuIme', connected: true })
+    expect(parsed.softKeyboardShown).toBeUndefined()
+    expect(parsed.showSoftKeyboardWithHardware).toBeUndefined()
+  })
+
+  test('GuestAgentRequestSchema discriminates every new method', () => {
+    const methods = [
+      { id: '1', method: 'ui.dump', token: 't' },
+      { id: '2', method: 'ui.find', token: 't', selector: { id: 'x' } },
+      { id: '3', method: 'ui.watch', token: 't' },
+      { id: '4', method: 'ui.unwatch', token: 't' },
+      { id: '5', method: 'ui.status', token: 't' },
+      { id: '6', method: 'activity.set', token: 't', activities: [], video: null },
+      {
+        id: '7',
+        method: 'device.describe',
+        token: 't',
+        stableId: null,
+        label: null,
+        number: null,
+        group: null,
+        tags: [],
+      },
+      { id: '8', method: 'text.prefs', token: 't', showSoftKeyboardWithHardware: true },
+    ]
+    for (const raw of methods) {
+      expect(() => GuestAgentRequestSchema.parse(raw)).not.toThrow()
+    }
+  })
+
+  test('UiChangedEventSchema refuses a frame with an unknown reason', () => {
+    const raw = { event: 'ui.changed', seq: 1, at: 1_700_000_000, packageName: 'com.example', reason: 'scroll' }
+    expect(() => UiChangedEventSchema.parse(raw)).toThrow()
+    expect(() =>
+      UiChangedEventSchema.parse({ ...raw, reason: 'content' }),
+    ).not.toThrow()
+  })
+
+  test('hello gains an optional expectVersionCode', () => {
+    const withoutIt = GuestAgentRequestSchema.parse({ id: '1', method: 'hello', token: 't' })
+    expect(withoutIt).not.toHaveProperty('expectVersionCode')
+    const withIt = GuestAgentRequestSchema.parse({ id: '1', method: 'hello', token: 't', expectVersionCode: 1042 })
+    if (withIt.method !== 'hello') throw new Error('expected hello')
+    expect(withIt.expectVersionCode).toBe(1042)
   })
 })

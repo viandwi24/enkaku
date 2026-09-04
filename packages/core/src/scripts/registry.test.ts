@@ -204,29 +204,13 @@ describe('ScriptRegistry — dev overlay (criteria 11, 12, 16, 17, 18)', () => {
     expect(entry.origin).toBe('plugin')
   })
 
-  test('groups() lists published and dev scripts together (criterion 11)', () => {
-    const { db, dataDir } = setUp()
-    const devSlots = createDevSlotStore()
-    const registry = createScriptRegistry({ db, dataDir, devSlots })
-    publish(db, 'demo/checkout', '1.0.0')
-    publish(db, 'tiktok/login', '1.0.0', { pluginId: 'p1', exportId: 'login' })
-    putDev(devSlots, 'onlydev', '0.1.0', ['run'])
-    const groups = registry.groups()
-    expect(groups.map((g) => g.name).sort()).toEqual(['demo/checkout', 'onlydev/run', 'tiktok/login'])
-    const devGroup = groups.find((g) => g.name === 'onlydev/run')
-    expect(devGroup?.hasDev).toBe(true)
-    expect(devGroup?.versions[0]?.origin).toBe('dev')
-  })
-
-  test('dropping a dev slot makes it vanish from list, groups, and resolve (criterion 17)', () => {
+  test('dropping a dev slot makes it vanish from list and resolve (criterion 17)', () => {
     const { db, dataDir } = setUp()
     const devSlots = createDevSlotStore()
     const registry = createScriptRegistry({ db, dataDir, devSlots })
     putDev(devSlots, 'onlydev', '0.1.0', ['run'])
-    expect(registry.groups().some((g) => g.name === 'onlydev/run')).toBe(true)
     expect(registry.list({ origin: 'dev' }).items).toHaveLength(1)
     devSlots.drop('onlydev')
-    expect(registry.groups().some((g) => g.name === 'onlydev/run')).toBe(false)
     expect(registry.list({ origin: 'dev' }).items).toHaveLength(0)
     expect(() => registry.resolve('onlydev/run@latest', { allowDev: true })).toThrow(EnkakuError)
   })
@@ -243,46 +227,6 @@ describe('ScriptRegistry — dev overlay (criteria 11, 12, 16, 17, 18)', () => {
       expect(err).toBeInstanceOf(EnkakuError)
       expect((err as EnkakuError).code).toBe('script_is_dev')
     }
-  })
-})
-
-describe('ScriptRegistry — kind (plan 99 §3.1, §4.5, step 99.5)', () => {
-  test('a row inserted with no kind (every pre-plan-99 write) carries kind "script" through get() and resolve() via the column default', () => {
-    const { db, dataDir } = setUp()
-    const devSlots = createDevSlotStore()
-    const registry = createScriptRegistry({ db, dataDir, devSlots })
-    const id = publish(db, 'demo/checkout', '1.0.0') // publish() never sets `kind` — relies on the DB default
-    expect(registry.get(id)?.kind).toBe('script')
-    expect(registry.resolve('demo/checkout@1.0.0').kind).toBe('script')
-  })
-
-  test('a row with kind "workflow" carries that through get() and resolve() unchanged — resolve() itself branches on nothing', () => {
-    const { db, dataDir } = setUp()
-    const devSlots = createDevSlotStore()
-    const registry = createScriptRegistry({ db, dataDir, devSlots })
-    const id = 'wf-1'
-    db.insert(scripts)
-      .values({
-        id,
-        kind: 'workflow',
-        name: 'my-pipeline',
-        version: '1.0.0',
-        bundle: '{"schema":1}',
-        enabled: true,
-        createdAt: new Date(1_700_000_000 * 1000),
-      })
-      .run()
-    expect(registry.get(id)?.kind).toBe('workflow')
-    expect(registry.resolve('my-pipeline@1.0.0').kind).toBe('workflow')
-  })
-
-  test('a dev entry is always kind "script" — there is no dev workflow build', () => {
-    const { db, dataDir } = setUp()
-    const devSlots = createDevSlotStore()
-    const registry = createScriptRegistry({ db, dataDir, devSlots })
-    putDev(devSlots, 'onlydev', '0.1.0', ['run'])
-    const entry = registry.resolve('onlydev/run@latest', { allowDev: true })
-    expect(entry.kind).toBe('script')
   })
 })
 
@@ -432,7 +376,6 @@ describe('ScriptRegistry — a row with no owning plugin is ignored', () => {
 
     expect(registry.list().items.map((e) => e.name)).toEqual(['demo/checkout'])
     expect(registry.list().total).toBe(1)
-    expect(registry.groups().map((g) => g.name)).toEqual(['demo/checkout'])
     expect(registry.get(orphanId)).toBeNull()
     // And the owned row behaves exactly as it did before.
     expect(registry.resolve('demo/checkout@1.0.0').origin).toBe('plugin')
@@ -450,13 +393,15 @@ describe('ScriptRegistry — a row with no owning plugin is ignored', () => {
     const registry = createScriptRegistry({ db, dataDir, devSlots: createDevSlotStore(), log })
     expect(warns).toHaveLength(1)
     expect(warns[0]).toContain('5 script row(s) across 4 name(s)')
-    expect(warns[0]).toContain('chrome-open-url, debug-node, hello-no-device, network-test')
+    expect(warns[0]).toContain('chrome-open-url@1.0.0')
+    expect(warns[0]).toContain('debug-node@1.0.0')
+    expect(warns[0]).toContain('hello-no-device@1.0.0')
+    expect(warns[0]).toContain('network-test@1.0.0')
     expect(warns[0]).toContain('DELETE /api/scripts/<id>')
 
     // Not once per request either: every read below goes through the same
     // rows and adds nothing to the log.
     registry.list()
-    registry.groups()
     expect(() => registry.resolve('debug-node@latest')).toThrow(EnkakuError)
     expect(warns).toHaveLength(1)
   })
@@ -467,30 +412,5 @@ describe('ScriptRegistry — a row with no owning plugin is ignored', () => {
     const { log, warns } = collectWarns()
     createScriptRegistry({ db, dataDir, devSlots: createDevSlotStore(), log })
     expect(warns).toHaveLength(0)
-  })
-
-  test('a WORKFLOW row carries no pluginId either and is NOT one of these — it lists, groups and resolves (plan 110 §3.3)', () => {
-    const { db, dataDir } = setUp()
-    const { log, warns } = collectWarns()
-    db.insert(scripts)
-      .values({
-        id: 'wf-1',
-        kind: 'workflow',
-        name: 'nightly',
-        version: '1.0.0',
-        bundle: '{"schema":1}',
-        enabled: true,
-        createdAt: new Date(1_700_000_000 * 1000),
-      })
-      .run()
-    const registry = createScriptRegistry({ db, dataDir, devSlots: createDevSlotStore(), log })
-
-    expect(warns).toHaveLength(0)
-    expect(registry.list().items.map((e) => e.name)).toEqual(['nightly'])
-    expect(registry.groups().map((g) => g.name)).toEqual(['nightly'])
-    expect(registry.get('wf-1')?.kind).toBe('workflow')
-    expect(registry.resolve('nightly@1.0.0').id).toBe('wf-1')
-    // It owns no plugin, and says so where that is actually read.
-    expect(registry.get('wf-1')?.pluginName).toBeNull()
   })
 })

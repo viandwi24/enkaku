@@ -5,17 +5,19 @@ import {
   defaultDeviceSettings,
   type AgentState,
   type ConnectionMedium,
+  type DeviceActivity,
   type DeviceConnection,
   type DeviceInfo,
+  type DeviceMetrics,
   type DeviceReadiness,
   type DeviceSettings,
   type FarmDeviceDefaults,
-  type LeaseHolder,
+  type LastControl,
   type Readiness,
 } from '@enkaku/protocol'
 import { and, eq, gte, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db'
-import { clusters, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
+import { groups, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from '../device/state-machine'
 import { staticReadinessFallback } from '../device/readiness'
 import { deriveGuestAgentPreparation } from '../device/preparation/guest-agent-status'
@@ -68,7 +70,7 @@ export interface DeviceRegistryDeps {
    * Farm networks (plan 88 §3.6, §4.1) — `discovery.networks`, read fresh on
    * every call, the same discipline `endpoints` above already follows.
    * Residual gap (found alongside `api/devices.ts`'s admit route and
-   * `api/clusters.ts`'s device list — 88.5's own pass wired `daemon.ts`,
+   * `api/groups.ts`'s device list — 88.5's own pass wired `daemon.ts`,
    * `capability/context.ts` and `api/topology.ts` but missed these three):
    * without this, this registry's own `device.added` broadcast (the "new
    * device registered" branch of `onOnline`, below) and `listDevices()`
@@ -131,20 +133,20 @@ export interface DeviceRegistry {
 }
 
 /**
- * Every device's owning cluster resolved by name, in one query total (plan
+ * Every device's owning group resolved by name, in one query total (plan
  * 22.0 §4.4, acceptance #10 — never one query per device). A device with no
- * cluster looks it up as `undefined` and `rowToDeviceInfo` renders that as
+ * group looks it up as `undefined` and `rowToDeviceInfo` renders that as
  * `null`, same as an empty map would.
  */
-export function loadClusterNames(db: Db): Map<string, string> {
-  return new Map(db.select({ id: clusters.id, name: clusters.name }).from(clusters).all().map((c) => [c.id, c.name]))
+export function loadGroupNames(db: Db): Map<string, string> {
+  return new Map(db.select({ id: groups.id, name: groups.name }).from(groups).all().map((g) => [g.id, g.name]))
 }
 
-/** The single-device counterpart to `loadClusterNames` — one extra query, only when the device has a cluster. */
-export function clusterRefFor(db: Db, clusterId: string | null): { id: string; name: string } | null {
-  if (!clusterId) return null
-  const row = db.select({ name: clusters.name }).from(clusters).where(eq(clusters.id, clusterId)).get()
-  return row ? { id: clusterId, name: row.name } : null
+/** The single-device counterpart to `loadGroupNames` — one extra query, only when the device has a group. */
+export function groupRefFor(db: Db, groupId: string | null): { id: string; name: string } | null {
+  if (!groupId) return null
+  const row = db.select({ name: groups.name }).from(groups).where(eq(groups.id, groupId)).get()
+  return row ? { id: groupId, name: row.name } : null
 }
 
 /**
@@ -199,6 +201,20 @@ export interface FarmNetwork {
   medium: ConnectionMedium
   scan: boolean
 }
+
+/**
+ * What `rowToDeviceInfo`/`listDevicesWithTags` need to fill `DeviceInfo.activities`/
+ * `.lastControl` (plan 205 §4.10) — the single accessor that replaced the two
+ * separate per-holder and secondary-operator parameters this file carried before that plan.
+ * `activities` and `lastControl` come from the SAME `ActivityRegistry`, so they can
+ * never disagree about whether a device is currently controlled.
+ */
+export interface DeviceActivityState {
+  activities: DeviceActivity[]
+  lastControl: LastControl | null
+}
+
+const NO_ACTIVITY: DeviceActivityState = { activities: [], lastControl: null }
 
 /**
  * The ONE place a device's connection is computed (plan 88 §3.1, §4.1) —
@@ -259,7 +275,7 @@ export function deriveConnection(
  * `readCached` uses, so there is exactly one place that knows how to read
  * this fact (including its legacy `devices.agent` fallback for a
  * pre-migration row). Deliberately NOT a `rowToDeviceInfo` parameter
- * threaded by each caller (unlike `readiness`/`heldBy`/`networks`, which
+ * threaded by each caller (unlike `readiness`/`activityState`/`networks`, which
  * come from managers external to the row): `preparation`/`agent` are
  * columns on `devices`, already present on every `DeviceRow` this file's
  * callers select in full (`db.select().from(devices)`, never a partial
@@ -281,7 +297,7 @@ export function deriveAgentState(row: Pick<DeviceRow, 'agent' | 'preparation'>):
  * CURRENT serial in one map hit. Resolved once for the whole device list
  * (`endpoints.allWithEndpoints()` already reads every row for the restart
  * flow's reattach list, §3.10) — the same N+1 discipline
- * `loadClusterNames`/`loadRecentCrashes` above already use, extended to
+ * `loadGroupNames`/`loadRecentCrashes` above already use, extended to
  * `connection.medium`.
  */
 export function loadDeclaredMedia(endpoints: Pick<EndpointStore, 'allWithEndpoints'>): Map<string, ConnectionMedium | null> {
@@ -297,7 +313,7 @@ export function loadDeclaredMedia(endpoints: Pick<EndpointStore, 'allWithEndpoin
 export function rowToDeviceInfo(
   row: DeviceRow,
   tags: string[] = [],
-  cluster: { id: string; name: string } | null = null,
+  group: { id: string; name: string } | null = null,
   /** Populated only by `listDevicesWithTags` (plan 37 §4.5) — see `DeviceInfoSchema.lastCrashAt`. */
   lastCrashAt: number | null = null,
   /**
@@ -309,12 +325,13 @@ export function rowToDeviceInfo(
    */
   readiness: DeviceReadiness | null = null,
   /**
-   * Who currently holds this device's manual lease (plan 71 §3.2, §4.4) — the
-   * single field that replaced Plan 69's three polling workarounds. `null`
-   * when nobody does, which is also what every call site that has no lease
-   * manager to hand (orchestrator mode, most tests) gets by default.
+   * The device's live activities plus its last-control tail (MVP 04 §1.1,
+   * §1.2, plan 205 §4.10) — the single accessor that replaced Plan 71's own
+   * holder field and Plan 91's secondary-operators field. Empty/`null` when nobody has threaded
+   * an `ActivityRegistry` through (orchestrator mode, most tests), same as
+   * those two defaulted before this plan.
    */
-  heldBy: LeaseHolder | null = null,
+  activityState: DeviceActivityState = NO_ACTIVITY,
   /**
    * Farm networks (plan 88 §3.6) — used only to infer `connection.medium`
    * for a `tcp` serial. Defaulted to `[]` (every network match then misses,
@@ -326,7 +343,7 @@ export function rowToDeviceInfo(
   /**
    * Declared medium per `stableId`+address (plan 88 §3.1, §3.2, §4.3, §5
    * step 88.5) — `loadDeclaredMedia`'s own return shape, resolved ONCE by
-   * the caller (same N+1 discipline as `networks`/`tags`/`cluster` above),
+   * the caller (same N+1 discipline as `networks`/`tags`/`group` above),
    * not re-queried per row. Defaulted to an empty map so every existing
    * caller (tests, orchestrator mode, call sites that predate this
    * parameter) keeps parsing exactly as before — `mediumSource` then simply
@@ -343,12 +360,20 @@ export function rowToDeviceInfo(
    * as numberless rather than throwing.
    */
   number: number | null = null,
+  /**
+   * Live metrics (plan 214 §4.2), read from the sampler's in-memory map,
+   * never from a column, because there is no column: a metric is a fact
+   * about a phone that is plugged in now. Defaulted to `null` so every
+   * existing caller keeps parsing exactly as before.
+   */
+  metrics: DeviceMetrics | null = null,
 ): DeviceInfo {
   return DeviceInfoSchema.parse({
     id: row.id,
     stableId: row.stableId,
     serial: row.serial,
     label: row.label,
+    model: row.model ?? null,
     androidVersion: row.androidVersion,
     apiLevel: row.apiLevel,
     screenW: row.screenW,
@@ -359,13 +384,15 @@ export function rowToDeviceInfo(
     battery: row.battery ?? null,
     quarantineReason: row.quarantineReason ?? null,
     tags,
-    cluster,
+    group,
     lastCrashAt,
     readiness: readiness ?? staticReadinessFallback(row),
-    heldBy,
+    activities: activityState.activities,
+    lastControl: activityState.lastControl,
     connection: deriveConnection(row.serial, networks, declaredMedia.get(`${row.stableId} ${row.serial}`)),
     agent: deriveAgentState(row),
     number,
+    metrics,
   })
 }
 
@@ -390,7 +417,7 @@ export function loadRecentCrashes(db: Db, sinceEpochSec: number): Map<string, nu
 }
 
 /**
- * Every device plus its tags and its cluster, in exactly three queries
+ * Every device plus its tags and its group, in exactly three queries
  * regardless of how many devices there are (plan 19 §4.3 and plan 22.0
  * §4.4, acceptance #7 and #10 — never N+1).
  */
@@ -398,11 +425,11 @@ export function listDevicesWithTags(
   db: Db,
   /** Readiness (plan 43 §4.1) — omitted call sites fall back to `staticReadinessFallback` per-row, same as `rowToDeviceInfo` itself. */
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
-  /** Lease holder (plan 71 §4.4) — omitted call sites fall back to `null` (unheld), same as `rowToDeviceInfo` itself. */
-  heldByOf?: (deviceId: string) => LeaseHolder | null,
+  /** Live activities plus last-control tail (plan 205 §4.10) — omitted call sites fall back to `NO_ACTIVITY`, same as `rowToDeviceInfo` itself. */
+  activitiesOf?: (deviceId: string) => DeviceActivityState,
   /**
    * Farm networks (plan 88 §3.6), resolved ONCE for the whole list — the
-   * same N+1 discipline this function already applies to tags, clusters and
+   * same N+1 discipline this function already applies to tags, groups and
    * crashes above, extended to `connection.medium`. `rowToDeviceInfo` NEVER
    * re-resolves this per row.
    */
@@ -419,7 +446,7 @@ export function listDevicesWithTags(
 ): DeviceInfo[] {
   const rows = db.select().from(devices).all()
   const tagMap = loadDeviceTags(db)
-  const clusterNames = loadClusterNames(db)
+  const groupNames = loadGroupNames(db)
   // The device card crash badge (plan 37 §4.5) — one query for the whole
   // fleet, not one per device.
   const recentCrashes = loadRecentCrashes(db, Math.floor(Date.now() / 1000) - 3600)
@@ -431,10 +458,10 @@ export function listDevicesWithTags(
     rowToDeviceInfo(
       r,
       tagMap.get(r.id) ?? [],
-      r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null,
+      r.groupId ? { id: r.groupId, name: groupNames.get(r.groupId) ?? r.groupId } : null,
       recentCrashes.get(r.id) ?? null,
       readinessOf?.(r.id, r) ?? null,
-      heldByOf?.(r.id) ?? null,
+      activitiesOf?.(r.id) ?? NO_ACTIVITY,
       networks,
       declaredMedia ?? new Map(),
       numbers.get(r.stableId) ?? null,
@@ -565,7 +592,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       }
       if (admission === 'discovered') {
         // Seen, identified, and deliberately NOT enrolled: no `devices` row
-        // means nothing to schedule, nothing to lease, and nothing for the
+        // means nothing to schedule, nothing to control, and nothing for the
         // wall to draw. It waits in the tray until someone admits it.
         const firstSighting = !db
           .select({ stableId: discoveredDevices.stableId })
@@ -605,12 +632,13 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
           stableId: probe.stableId,
           serial,
           label: probe.model ?? probe.stableId,
+          model: probe.model ?? null,
           androidVersion: probe.androidVersion,
           apiLevel: probe.apiLevel,
           screenW: probe.screenW,
           screenH: probe.screenH,
           density: probe.density,
-          status: 'idle',
+          status: 'online',
           lastSeen: now,
           // First enrollment copies the farm defaults; the conflict branch below
           // deliberately leaves them alone so a device keeps its own settings.
@@ -622,6 +650,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
           // the state machine (DEVICE_CONNECTED), which keeps `quarantined` sticky.
           set: {
             serial,
+            model: probe.model ?? null,
             androidVersion: probe.androidVersion,
             apiLevel: probe.apiLevel,
             screenW: probe.screenW,
@@ -659,7 +688,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
             null,
             null,
             null,
-            null,
+            NO_ACTIVITY,
             deps.networks?.() ?? [],
             deps.endpoints ? loadDeclaredMedia(deps.endpoints) : undefined,
             number,
@@ -745,7 +774,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
 
   return {
     async start() {
-      // Crash recovery: idle|manual|busy → offline (quarantined stays sticky);
+      // Crash recovery: online → offline (quarantined stays sticky);
       // the tracker's first snapshot brings back whatever is really there.
       db
         .update(devices)

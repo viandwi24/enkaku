@@ -136,7 +136,7 @@
         {
           "version": "0.1.8",
           "releasedAt": "unknown",
-          "compatibleCoreRange": "TODO-M55",
+          "compatibleCoreRange": ">=0.1.8",
           "deviceArtifact": {
             "packageName": "dev.enkaku.guestagent",
             "versionCode": 1008,

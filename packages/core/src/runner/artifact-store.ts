@@ -5,12 +5,6 @@ import type { Db } from '../db'
 import { artifacts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 
-/**
- * The pre-plan-115 fallback for `saveForDevice`'s own cap, below — that
- * path never handles `kind: 'file'` (it always writes `kind: 'log'`, "save
- * last N lines" style), so it is out of plan 115 §3.6's "raise it for the
- * file kind" scope and keeps this constant unchanged.
- */
 const MAX_FILE_BYTES = 8 * 1024 * 1024
 
 const slug = (label: string): string =>
@@ -27,32 +21,21 @@ export interface ArtifactStore {
     data: Uint8Array
     ext?: string
   }): Promise<ArtifactInfo>
-  jobDir(): string
+  runDir(): string
 }
 
 /**
- * Per-job artifacts (spec §11.2, §7.2): `<app-data>/artifacts/<job-id>/`.
+ * Per-run artifacts (spec §11.2, §7.2, plan 211): `<app-data>/artifacts/<run-id>/`.
  * `path` is stored RELATIVE to app-data so the folder can be moved.
  */
 export function createArtifactStore(deps: {
   db: Db
   dataDir: string
-  jobId: string
+  runId: string
   onSaved: (info: ArtifactInfo) => void
   /**
-   * Plan 99 §3.2, §4.6, §4.7 — read FRESH on every save (the same
-   * "accessor, not a value" convention `resetPolicy`/`adb.maxConcurrent`
-   * already use), so a save that lands while node 2 is running stamps node
-   * 2 even though this whole `ArtifactStore` was built once, at job start,
-   * for the job's WHOLE lifetime. Undefined (every non-workflow job) stamps
-   * nothing — `nodeId` reads back `null`, byte-identical to before this
-   * field existed. See this file's own module doc for the full mechanism.
-   */
-  nodeId?: () => string | null
-  /**
    * The `kind: 'file'` size cap (plan 115 §3.6, W5) — read fresh on every
-   * save, the same "accessor, not a value" convention `nodeId` above already
-   * uses, so a settings change applies to the very next save with no
+   * save, so a settings change applies to the very next save with no
    * restart. Driven from `transfer.maxPushBytes` (the farm's own push
    * limit, W6) rather than the bare 8 MB `MAX_FILE_BYTES` this replaces for
    * this kind — a video is 5-50 MB, three orders of magnitude past the old
@@ -61,11 +44,11 @@ export function createArtifactStore(deps: {
    */
   maxFileBytes: () => number
 }): ArtifactStore {
-  const dir = join(deps.dataDir, 'artifacts', deps.jobId)
+  const dir = join(deps.dataDir, 'artifacts', deps.runId)
   let seq = 0
 
   return {
-    jobDir: () => dir,
+    runDir: () => dir,
 
     async save({ kind, label, data, ext }) {
       if (kind === 'file') {
@@ -83,26 +66,24 @@ export function createArtifactStore(deps: {
       const size = statSync(abs).size
       const info: ArtifactInfo = {
         id: crypto.randomUUID(),
-        jobId: deps.jobId,
+        runId: deps.runId,
         deviceId: null,
         kind,
         label,
-        path: join('artifacts', deps.jobId, filename),
+        path: join('artifacts', deps.runId, filename),
         sizeBytes: size,
         createdAt: Math.floor(Date.now() / 1000),
-        nodeId: deps.nodeId?.() ?? null,
       }
       deps.db
         .insert(artifacts)
         .values({
           id: info.id,
-          jobId: info.jobId,
+          runId: info.runId,
           kind: info.kind,
           label: info.label,
           path: info.path,
           sizeBytes: size,
           createdAt: new Date(),
-          nodeId: info.nodeId,
         })
         .run()
       deps.onSaved(info)
@@ -112,75 +93,9 @@ export function createArtifactStore(deps: {
 }
 
 /**
- * Plan 99 §3.2, §4.6, §4.7 — tracks which workflow NODE is currently
- * executing for a given job, so `createArtifactStore`'s `nodeId` accessor
- * above (read fresh on every save, from `createDbArtifactSink` in
- * `session/adapters.ts`, which is the SAME factory `createJobRunner`'s
- * `artifacts: (jobId) => ArtifactSink` is built from in `daemon.ts`) can
- * stamp `artifacts.node_id` with ZERO changes to `@enkaku/session` or the
- * child boundary (plan 99 §3.1, §3.2's "the runner learns nothing about
- * nodes").
- *
- * The mechanism, in one sentence: `JobRunner.execute()` calls
- * `deps.artifacts(job.id)` exactly once per node execution (every node in a
- * workflow shares the SAME `job.id`, §3.2) — the workflow executor
- * (`jobs/executors/workflow.ts`) calls `begin(job.id, node.id)`
- * immediately before that `execute()` call and `end(job.id)` immediately
- * after it resolves, so any artifact the child saves DURING that window
- * (through the ordinary, unmodified `ctx.artifact.save()` IPC path) is
- * attributed correctly. A standalone (non-workflow) job never calls
- * `begin`, so `current()` reads back `null` for it — the pre-plan-99
- * behaviour, unchanged.
- *
- * `noteAttempt`/`attempts` piggyback on the SAME per-job window for a
- * second fact `job_nodes.attempts` needs and has no other seam for:
- * `JobRunnerDeps.onPhase(jobId, attempt, phase)` already fires on every
- * attempt of every execution (daemon.ts's own callback, extended to call
- * `noteAttempt` here), and `attempt` resets to 1 at the top of every
- * `execute()` call (`job-runner.ts`'s own `let attempt = 0` inside
- * `execute()`) — so the highest value seen between one `begin`/`end` pair is
- * exactly how many attempts THIS node execution spent, with no new IPC
- * message and no runner change.
- */
-export interface JobNodeTracker {
-  begin(jobId: string, nodeId: string): void
-  end(jobId: string): void
-  current(jobId: string): string | null
-  noteAttempt(jobId: string, attempt: number): void
-  /** The highest attempt number seen since the last `begin` for this job; 0 if none (a gate, or a resolve/binding failure that never called `runner.execute()`). */
-  attempts(jobId: string): number
-}
-
-export function createJobNodeTracker(): JobNodeTracker {
-  const nodeByJob = new Map<string, string>()
-  const attemptsByJob = new Map<string, number>()
-  return {
-    begin(jobId, nodeId) {
-      nodeByJob.set(jobId, nodeId)
-      attemptsByJob.set(jobId, 0)
-    },
-    end(jobId) {
-      nodeByJob.delete(jobId)
-      attemptsByJob.delete(jobId)
-    },
-    current(jobId) {
-      return nodeByJob.get(jobId) ?? null
-    },
-    noteAttempt(jobId, attempt) {
-      const prev = attemptsByJob.get(jobId)
-      if (prev === undefined) return // no workflow node currently in flight for this job — nothing to attribute the attempt to
-      if (attempt > prev) attemptsByJob.set(jobId, attempt)
-    },
-    attempts(jobId) {
-      return attemptsByJob.get(jobId) ?? 0
-    },
-  }
-}
-
-/**
- * Device-scoped artifacts (plan 24 §4.6) — no job to belong to, so they live
- * under `<app-data>/artifacts/device-<device-id>/` instead of a job folder,
- * and the DB row carries `deviceId` with `jobId` left null. Used today for
+ * Device-scoped artifacts (plan 24 §4.6) — no run to belong to, so they live
+ * under `<app-data>/artifacts/device-<device-id>/` instead of a run folder,
+ * and the DB row carries `deviceId` with `runId` left null. Used today for
  * "save last N lines" from the Monitor tab; kind is always `log`.
  */
 export async function saveForDevice(
@@ -202,7 +117,7 @@ export async function saveForDevice(
   const size = data.length
   const info: ArtifactInfo = {
     id: crypto.randomUUID(),
-    jobId: null,
+    runId: null,
     deviceId,
     kind: 'log',
     label,
@@ -255,20 +170,21 @@ export function devicePullArtifactPath(
  * point — once by `statRemote` and again by `pullFile`'s running-total check
  * — so re-applying the smaller cap here would be both redundant and wrong.
  *
- * `jobId` (plan 93 §3.13, §4.6, step 93.9 — closes F12): a pull performed by
- * a batch/job passes `job.id` here so the artifact can be traced back to the
- * run that produced it; a pull with no job behind it (the REST route, the
- * script IPC bridge) passes `null`, exactly the pre-plan-93 value. Threaded
- * explicitly by every caller — never defaulted — so a caller that forgets it
- * fails to typecheck rather than silently landing `null`.
+ * `runId` (plan 93 §3.13, §4.6, step 93.9 — closes F12; renamed from `jobId`
+ * by plan 211): a pull performed by a batch/job passes the run id here so
+ * the artifact can be traced back to the run that produced it; a pull with
+ * no job behind it (the REST route, the script IPC bridge) passes `null`,
+ * exactly the pre-plan-93 value. Threaded explicitly by every caller — never
+ * defaulted — so a caller that forgets it fails to typecheck rather than
+ * silently landing `null`.
  */
 export function registerDeviceArtifact(
   deps: { db: Db },
-  opts: { deviceId: string; label: string; relPath: string; sizeBytes: number; jobId: string | null },
+  opts: { deviceId: string; label: string; relPath: string; sizeBytes: number; runId: string | null },
 ): ArtifactInfo {
   const info: ArtifactInfo = {
     id: crypto.randomUUID(),
-    jobId: opts.jobId,
+    runId: opts.runId,
     deviceId: opts.deviceId,
     kind: 'file',
     label: opts.label,
@@ -280,7 +196,7 @@ export function registerDeviceArtifact(
     .insert(artifacts)
     .values({
       id: info.id,
-      jobId: info.jobId,
+      runId: info.runId,
       deviceId: info.deviceId,
       kind: info.kind,
       label: info.label,

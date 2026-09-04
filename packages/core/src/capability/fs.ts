@@ -74,7 +74,6 @@ export const fsList = defineCapability({
   input: z.object({ prefix: z.string() }),
   output: z.object({ entries: z.array(ListEntry) }),
   permission: 'fs.read',
-  lease: 'none',
   deadline: 5_000,
   effect: 'read',
   description:
@@ -90,7 +89,6 @@ export const fsRead = defineCapability({
   input: z.object({ path: z.string() }),
   output: MetaOutput.extend({ content: z.string() }),
   permission: 'fs.read',
-  lease: 'none',
   deadline: 5_000,
   effect: 'read',
   description:
@@ -113,7 +111,6 @@ export const fsWrite = defineCapability({
   }),
   output: MetaOutput,
   permission: 'fs.write',
-  lease: 'none',
   deadline: 10_000,
   effect: 'write',
   description:
@@ -137,7 +134,6 @@ export const fsDelete = defineCapability({
   input: z.object({ path: z.string(), ifMatch: z.string().nullable().optional() }),
   output: z.object({ ok: z.literal(true) }),
   permission: 'fs.write',
-  lease: 'none',
   deadline: 5_000,
   effect: 'destructive',
   description:
@@ -154,7 +150,6 @@ export const fsMove = defineCapability({
   input: z.object({ from: z.string(), to: z.string(), ifMatch: z.string() }),
   output: MetaOutput,
   permission: 'fs.write',
-  lease: 'none',
   deadline: 5_000,
   effect: 'write',
   description:
@@ -174,7 +169,6 @@ export const fsGrep = defineCapability({
   input: z.object({ prefix: z.string(), pattern: z.string() }),
   output: z.object({ hits: z.array(GrepHitOutput), truncated: z.boolean() }),
   permission: 'fs.read',
-  lease: 'none',
   deadline: 10_000,
   effect: 'read',
   description:

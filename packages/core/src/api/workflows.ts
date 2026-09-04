@@ -1,13 +1,14 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   checkDeclaredSchema,
   checkWorkflow,
-  compareSemver,
   compileWorkflowParams,
   defaultFarmSettings,
   WorkflowDocSchema,
+  WorkflowResponseSchema,
+  WorkflowsListResponseSchema,
+  WorkflowDeleteResponseSchema,
   type ResolvedNodeScript,
   type ScriptRef,
   type WorkflowBudget,
@@ -18,33 +19,30 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { scripts } from '../db/schema'
 import type { ScriptRegistry } from '../scripts/registry'
-import { publishScript } from '../scripts/service'
+import type { WorkflowStore } from '../workflows/store'
 import { EnkakuError } from '../util/errors'
+import { typedJson } from './typed-json'
 
 /**
- * `POST /`, `POST /validate`, `GET /:name/versions` (plan 99 §4.5, §4.9, §5
- * step 99.6) — mounted at `/api/workflows` in `server/http.ts`. Publishing a
- * workflow is deliberately its OWN route, not a branch inside
- * `scripts/routes.ts`'s `POST /api/scripts`, because the request BODY is a
- * different thing (`{ doc: WorkflowDoc }`, not `{ bundle, source,
- * paramsSchema }`) — but the WRITE at the end is the SAME `publishScript()`
- * every other publish path calls (§4.5: "so script_version_exists, the
- * (name, version) unique index, the audit entry and the mutation-token
- * guard are all inherited rather than reimplemented. One writer of `scripts`
- * rows, as today.").
+ * `GET/POST/PUT/DELETE /api/workflows`, `POST /validate` (plan 210 §4.3,
+ * §4.4) — a workflow is its own table now, no version, edited in place.
+ * `resolveDocRefs`/`checkWorkflow` are unchanged apart from dropping `kind`
+ * (a workflow node's reference always resolves to a plugin member; nesting a
+ * workflow inside another cannot be expressed any more).
  */
 
 const DocBody = z.object({ doc: z.unknown() })
 
 const ERROR_STATUS: Record<string, number> = {
+  workflow_not_found: 404,
+  workflow_name_exists: 409,
+  workflow_corrupt: 500,
   script_not_found: 404,
   script_version_not_found: 404,
   script_ref_unresolved: 400,
   script_disabled: 400,
   script_is_dev: 400,
-  script_version_exists: 409,
   E_BAD_REQUEST: 400,
   E_WORKFLOW_INVALID: 400,
   E_PARAMS_SCHEMA_INVALID: 400,
@@ -59,12 +57,9 @@ function parseErrorFindings(issues: readonly { path: readonly PropertyKey[]; mes
  * `ScriptRegistry.resolve()` every other resolution path uses (F17) — never
  * a second lookup, and never `allowDev` (a published workflow must not
  * depend on someone's ephemeral dev build, plan 82 §3.5). Collects EVERY
- * resolution failure rather than aborting on the first — the same "every
- * finding, not the first" rule `checkWorkflow` itself follows — each
- * reported as an `E_WORKFLOW_SCRIPT_UNRESOLVED` finding (this file's own
- * addition to the finding vocabulary; see `workflow-check.ts`'s doc comment
- * on that code) so an author sees every broken reference in one round trip,
- * not one 404 at a time.
+ * resolution failure rather than aborting on the first, each reported as an
+ * `E_WORKFLOW_SCRIPT_UNRESOLVED` finding so an author sees every broken
+ * reference in one round trip, not one 404 at a time.
  */
 function resolveDocRefs(registry: ScriptRegistry, doc: WorkflowDoc): { resolved: Map<ScriptRef, ResolvedNodeScript>; findings: WorkflowFinding[] } {
   const pathsByRef = new Map<string, string[]>()
@@ -86,20 +81,10 @@ function resolveDocRefs(registry: ScriptRegistry, doc: WorkflowDoc): { resolved:
       resolved.set(ref as ScriptRef, {
         name: entry.name,
         version: entry.version,
-        kind: entry.kind,
         paramsSchema: (entry.paramsSchema as ResolvedNodeScript['paramsSchema']) ?? null,
         // Plan 97 (§0.2 assumption A1) has not landed — no script anywhere
         // declares an output schema yet, so this is always null today.
-        // `checkWorkflow` degrades every output-shaped check to
-        // `W_WORKFLOW_UNCHECKED_BINDING` for exactly this reason (see its
-        // own module doc comment).
         outputSchema: null,
-        // Plan 99 §4.3 check 7, unblocked by plan 98 §4.4 step 98.4:
-        // `ScriptEntry.runtime` is read straight off `scripts.runtime`
-        // (`ScriptRegistry.resolve`, `packages/core/src/scripts/registry.ts`)
-        // — `null` for a pre-plan-98 row or a script that declared no
-        // `runtime.timeoutMs`, which `checkWorkflow` treats as UNKNOWN, never
-        // zero (its own doc comment on `ResolvedNodeScript.timeoutMs`).
         timeoutMs: entry.runtime?.timeoutMs ?? null,
       })
     } catch (err) {
@@ -115,31 +100,63 @@ function errorFindingsMessage(findings: readonly WorkflowFinding[]): string {
 }
 
 /**
- * `deps.settings` is OPTIONAL, but `daemon.ts`'s real `createWorkflowRoutes({...})`
- * call now always passes `settings: () => settingsStore.get().workflow`
- * (docs/settings-audit.md #3, `docs/plans/96-m61-hotfixes.md` — this used to
- * be the one gap in an otherwise-live setting: the workflow executor's
- * runtime clock read the live value while this route silently fell back to
- * the hardcoded schema default, so the two could disagree). The fallback
- * below stays for every OTHER caller — a test building routes directly, or
- * any future host that constructs this router without wiring a settings
- * accessor — so `budgetFor` still resolves to `workflow.maxTotalMs`'s own
- * SCHEMA default (`defaultFarmSettings()`, `packages/protocol/src/settings.ts`)
- * rather than skipping check 7 outright in that case, never a thrown error
- * for an optional dependency.
+ * `deps.settings` is OPTIONAL: `daemon.ts`'s real `createWorkflowRoutes({...})`
+ * call passes `settings: () => settingsStore.get().workflow`. The fallback
+ * below stays for every other caller so `budgetFor` resolves to
+ * `workflow.maxTotalMs`'s own SCHEMA default rather than skipping check 7
+ * outright.
  */
 function budgetFor(deps: { settings?: () => WorkflowBudget }): WorkflowBudget {
   return deps.settings ? deps.settings() : { maxTotalMs: defaultFarmSettings().workflow.maxTotalMs }
 }
 
-export function createWorkflowRoutes(deps: { db: Db; registry: ScriptRegistry; audit?: AuditLogger; settings?: () => WorkflowBudget }): Hono<AuthEnv> {
+/**
+ * Validates a document through the same pipeline `POST`/`PUT` use, up to
+ * (but not including) the write: schema parse, ref resolution, `checkWorkflow`,
+ * and the declared-params-schema gate. Returns either the ready-to-write doc
+ * plus its compiled paramsSchema, or the JSON error body to answer with.
+ */
+function validateForWrite(
+  registry: ScriptRegistry,
+  settingsDeps: { settings?: () => WorkflowBudget },
+  rawDoc: unknown,
+): { ok: true; doc: WorkflowDoc; paramsSchema: unknown } | { ok: false; status: 400; body: unknown } {
+  const parsedDoc = WorkflowDocSchema.safeParse(rawDoc)
+  if (!parsedDoc.success) {
+    const findings = parseErrorFindings(parsedDoc.error.issues)
+    return { ok: false, status: 400, body: { error: { code: 'E_WORKFLOW_INVALID', message: errorFindingsMessage(findings), findings } } }
+  }
+  const doc = parsedDoc.data
+  const { resolved, findings: refFindings } = resolveDocRefs(registry, doc)
+  const checkFindings = checkWorkflow(doc, resolved, budgetFor(settingsDeps))
+  const allFindings = [...refFindings, ...checkFindings]
+  const blocking = allFindings.filter((f) => f.severity === 'error')
+  if (blocking.length > 0) {
+    return { ok: false, status: 400, body: { error: { code: 'E_WORKFLOW_INVALID', message: errorFindingsMessage(blocking), findings: allFindings } } }
+  }
+  const paramsSchema = compileWorkflowParams(doc.params)
+  const schemaFindings = checkDeclaredSchema(paramsSchema).filter((f) => f.limit !== 'group')
+  if (schemaFindings.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        error: {
+          code: 'E_PARAMS_SCHEMA_INVALID',
+          message: schemaFindings.map((f) => (f.path ? `${f.path}: ${f.message}` : f.message)).join('; '),
+          issues: schemaFindings.map((f) => ({ path: f.path, message: f.message })),
+        },
+      },
+    }
+  }
+  return { ok: true, doc, paramsSchema }
+}
+
+export function createWorkflowRoutes(deps: { db: Db; registry: ScriptRegistry; store: WorkflowStore; audit?: AuditLogger; settings?: () => WorkflowBudget }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
-  const { db, registry } = deps
+  const { registry, store } = deps
   const actorId = (c: { get(k: 'user'): { id: string } | undefined }): string | null => c.get('user')?.id ?? null
 
-  // Registered before `POST /` (a one-segment vs. a bare-root match — no
-  // collision either way, matching `scripts/routes.ts`'s own precedent of
-  // keeping every two-segment route visually grouped near the top).
   app.post('/validate', requirePermission('script.view'), async (c) => {
     const body = DocBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
@@ -154,76 +171,52 @@ export function createWorkflowRoutes(deps: { db: Db; registry: ScriptRegistry; a
     return c.json(findings)
   })
 
-  // The version list for the editor's "start from" picker (plan 99 §4.9) —
-  // a THIN alias over the exact query `scripts/routes.ts`'s own
-  // `/:name/versions` runs, deliberately NOT filtered by `kind`: a workflow
-  // and a script never legitimately share a name (the same `(name,
-  // version)` uniqueness both publish paths write through), and filtering
-  // here would be a fourth `kind` comparison this file has no sanctioned
-  // reason to make (plan 99 §3.1's containment — this route is not the
-  // publish path).
-  app.get('/:name/versions', requirePermission('script.view'), (c) => {
-    const name = c.req.param('name')
-    const rows = db.select().from(scripts).where(eq(scripts.name, name)).all()
-    const items = [...rows]
-      .sort((a, b) => compareSemver(b.version, a.version))
-      .map((r) => ({ id: r.id, version: r.version, enabled: r.enabled ?? true, createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : null }))
-    return c.json({ items })
+  app.get('/', requirePermission('script.view'), (c) => {
+    const items = store.list()
+    return typedJson(c, WorkflowsListResponseSchema, { items, total: items.length })
+  })
+
+  app.get('/:name', requirePermission('script.view'), (c) => {
+    const workflow = store.get(c.req.param('name'))
+    if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${c.req.param('name')}"`)
+    return typedJson(c, WorkflowResponseSchema, { workflow })
   })
 
   app.post('/', requirePermission('script.publish'), async (c) => {
     const body = DocBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
+    const validated = validateForWrite(registry, deps, body.data.doc)
+    if (!validated.ok) return c.json(validated.body, validated.status)
+    const workflow = store.create({ doc: validated.doc, createdBy: actorId(c) })
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.create', target: workflow.id, meta: { name: workflow.name } })
+    return typedJson(c, WorkflowResponseSchema, { workflow }, 201)
+  })
 
-    const parsedDoc = WorkflowDocSchema.safeParse(body.data.doc)
-    if (!parsedDoc.success) {
-      const findings = parseErrorFindings(parsedDoc.error.issues)
-      return c.json({ error: { code: 'E_WORKFLOW_INVALID', message: errorFindingsMessage(findings), findings } }, 400)
-    }
-    const doc = parsedDoc.data
-
-    const { resolved, findings: refFindings } = resolveDocRefs(registry, doc)
-    const checkFindings = checkWorkflow(doc, resolved, budgetFor(deps))
-    const allFindings = [...refFindings, ...checkFindings]
-    const blocking = allFindings.filter((f) => f.severity === 'error')
-    if (blocking.length > 0) {
-      return c.json({ error: { code: 'E_WORKFLOW_INVALID', message: errorFindingsMessage(blocking), findings: allFindings } }, 400)
-    }
-
-    // Compiles the workflow's OWN parameter declarations to the same JSON
-    // Schema a hand-written Zod object would produce (plan 99 §3.8, §4.2),
-    // then holds it to the SAME limits every other publish path already
-    // enforces (F24) — a workflow-declared schema is exactly as
-    // author-controlled and untrusted as a hand-written one.
-    const paramsSchema = compileWorkflowParams(doc.params)
-    const schemaFindings = checkDeclaredSchema(paramsSchema).filter((f) => f.limit !== 'group')
-    if (schemaFindings.length > 0) {
+  app.put('/:name', requirePermission('script.publish'), async (c) => {
+    const name = c.req.param('name')
+    const body = DocBody.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
+    const rawDoc = body.data.doc
+    if (rawDoc && typeof rawDoc === 'object' && 'name' in rawDoc && (rawDoc as { name?: unknown }).name !== name) {
       return c.json(
-        {
-          error: {
-            code: 'E_PARAMS_SCHEMA_INVALID',
-            message: schemaFindings.map((f) => (f.path ? `${f.path}: ${f.message}` : f.message)).join('; '),
-            issues: schemaFindings.map((f) => ({ path: f.path, message: f.message })),
-          },
-        },
+        { error: { code: 'E_BAD_REQUEST', message: `the document names "${String((rawDoc as { name?: unknown }).name)}" but the route names "${name}"; rename by deleting and creating` } },
         400,
       )
     }
+    const validated = validateForWrite(registry, deps, rawDoc)
+    if (!validated.ok) return c.json(validated.body, validated.status)
+    const workflow = store.update(name, { doc: validated.doc })
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.update', target: workflow.id, meta: { name: workflow.name } })
+    return typedJson(c, WorkflowResponseSchema, { workflow })
+  })
 
-    // §4.5: "bundle holds the canonical WorkflowDoc JSON ... source holds
-    // the same document pretty-printed — which is exactly what source's
-    // stated purpose already is". `pluginId`/`exportId` stay null (the
-    // column defaults), exactly as §4.5 also specifies.
-    const script = publishScript(db, {
-      name: doc.name,
-      version: doc.version,
-      bundle: JSON.stringify(doc),
-      source: JSON.stringify(doc, null, 2),
-      paramsSchema,
-      kind: 'workflow',
-    })
-    deps.audit?.record({ userId: actorId(c), action: 'script.publish', target: script.id, meta: { name: script.name, version: script.version, kind: 'workflow' } })
-    return c.json({ script }, 201)
+  app.delete('/:name', requirePermission('script.publish'), (c) => {
+    const name = c.req.param('name')
+    const workflow = store.get(name)
+    if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+    store.remove(name)
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.delete', target: workflow.id, meta: { name } })
+    return typedJson(c, WorkflowDeleteResponseSchema, { ok: true })
   })
 
   app.onError((err, c) => {

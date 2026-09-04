@@ -28,8 +28,8 @@ export const AppRestartPreviewSchema = z.object({
   devicesTotal: z.number(),
   /** Live sessions (wall tiles / control) that will stop. */
   sessionsActive: z.number(),
-  /** Manual leases that will be released. */
-  leasesHeld: z.number(),
+  /** Live control/command activities that will end. */
+  controlled: z.number(),
   /** Jobs that will fail unless the restart is cancelled. */
   jobsRunning: z.number(),
 })
@@ -55,7 +55,7 @@ export const AppRestartReportSchema = z.object({
   outcome: z.enum(['initiated', 'verified']),
   durationMs: z.number(),
   sessionsClosed: z.number(),
-  leasesReleased: z.number(),
+  controlsEnded: z.number(),
   jobsFailed: z.array(z.string()),
 })
 export type AppRestartReport = z.infer<typeof AppRestartReportSchema>

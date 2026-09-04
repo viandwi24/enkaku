@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { GestureSample, InputSink, Point, TimingSettings } from '@enkaku/protocol'
-import { createDeviceExecutor, DEFAULT_TIMING } from './device-executor'
+import { createDeviceExecutor, DEFAULT_TIMING, needsInspector } from './device-executor'
 import { createInputArbiter } from './input-arbiter'
 import type { Logger } from './logger'
 import type { DeviceCall } from './runner/ipc'
@@ -646,7 +646,7 @@ describe('createDeviceExecutor — swipeNorm (plan 94 §3.4, §4.4, F6, F7): the
  * read per call matters" — a farm/device setting changed WHILE a script is
  * still running must reach its very next device call, on the SAME executor
  * instance, not merely a future one. This is the exact class of defect the
- * brief calls out by name: a co-control queue budget read once at
+ * brief calls out by name: an input-arbiter queue budget read once at
  * construction and never again.
  */
 describe('createDeviceExecutor — timing is a getter, read fresh on every call (plan 94 §4.5, F10)', () => {
@@ -691,5 +691,66 @@ describe('createDeviceExecutor — timing is a getter, read fresh on every call 
     await execute(call('tap', { target: { point: { x: 500, y: 500 } } }))
     // A jitter this large cannot land back on the exact same pixel.
     expect(calls.tap[1]!.p).not.toEqual({ x: 500, y: 500 })
+  })
+})
+
+/**
+ * Plan 208 §3.5, §4.10 — `find`/`dump`/`waitFor`/`screenshot` are the only
+ * methods that need the session's inspector; a `null` inspector (the
+ * session's prewarm has not settled yet) is now `E_INSPECTOR_STARTING`,
+ * never a substitute ad-hoc dump engine.
+ */
+function fakeStartingSession(): DeviceSession {
+  const input: InputSink = { tap: async () => {} } as unknown as InputSink
+  const arbiter = createInputArbiter(input, { queueWaitMs: () => 5_000, maxQueueDepth: () => 32, log: silentLog() })
+  return {
+    deviceId: 'dev-1',
+    inspector: null,
+    inspectorEngineId: 'starting',
+    inspectorPollIntervalMs: 200,
+    arbiter,
+    frameSize: { width: 1080, height: 1920 },
+    transport: { exec: async () => '', execOut: async () => new Uint8Array() },
+  } as unknown as DeviceSession
+}
+
+describe('createDeviceExecutor — E_INSPECTOR_STARTING while the session has no inspector (plan 208 §3.5, §4.10)', () => {
+  test('find, dump, waitFor, screenshot throw E_INSPECTOR_STARTING', async () => {
+    const session = fakeStartingSession()
+    const execute = createDeviceExecutor({ session })
+
+    const calls: DeviceCall[] = [
+      call('find', { sel: { text: 'x' } }),
+      call('dump', {}),
+      call('waitFor', { sel: { text: 'x' }, timeout: 100, intervalMs: 50 }),
+      call('screenshot', {}),
+    ]
+    for (const c of calls) {
+      let caught: unknown
+      try {
+        await execute(c)
+      } catch (err) {
+        caught = err
+      }
+      expect(caught, `${c.method} should have thrown`).toBeDefined()
+      expect((caught as { code?: string }).code).toBe('E_INSPECTOR_STARTING')
+    }
+  })
+
+  test('tap does not need the inspector — the existing inspector: null fixtures above keep passing unchanged', async () => {
+    const session = fakeStartingSession()
+    const execute = createDeviceExecutor({ session })
+    // A point target never touches the inspector at all.
+    await expect(execute(call('tap', { target: { point: { x: 1, y: 1 } } }))).resolves.toBeUndefined()
+  })
+
+  test('needsInspector is true for exactly the four inspector methods', () => {
+    expect(needsInspector({ method: 'find' })).toBe(true)
+    expect(needsInspector({ method: 'dump' })).toBe(true)
+    expect(needsInspector({ method: 'waitFor' })).toBe(true)
+    expect(needsInspector({ method: 'screenshot' })).toBe(true)
+    expect(needsInspector({ method: 'tap' })).toBe(false)
+    expect(needsInspector({ method: 'type' })).toBe(false)
+    expect(needsInspector({ method: 'app.launch' })).toBe(false)
   })
 })

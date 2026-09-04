@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
-import type { ShellMode } from '@enkaku/protocol'
+import type { DeviceStatus, ShellMode } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
-import type { LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
+import type { DeviceStateMachine } from '../device/state-machine'
+import { createLogger } from '../util/logger'
 import { createAdbEndpointRoutes } from './adb-endpoint'
 
 /** Mirrors `authMiddleware` well enough for a route test: sets `c.get('user')` before dispatch. */
@@ -17,10 +20,12 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
   return wrapper
 }
 
-function fakeLeases(result: { ok: true } | { ok: false; code: string; message: string }): LeaseManager {
-  return {
-    checkInputAllowed: () => result,
-  } as unknown as LeaseManager
+function fakeActivities(): ActivityRegistry {
+  return createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+}
+
+function fakeStates(status: DeviceStatus | null): Pick<DeviceStateMachine, 'current'> {
+  return { current: () => status }
 }
 
 function fakeManager(overrides: Partial<AdbEndpointManager> = {}): AdbEndpointManager {
@@ -35,17 +40,20 @@ function fakeManager(overrides: Partial<AdbEndpointManager> = {}): AdbEndpointMa
 
 function makeApp(opts: {
   role: 'admin' | 'operator' | null
-  leaseOk?: boolean
+  deviceStatus?: DeviceStatus | null
   shellMode?: ShellMode
   endpointEnabled?: boolean
   manager?: AdbEndpointManager
+  activities?: ActivityRegistry
+  controlSettings?: () => ControlPolicySettings
   /** `undefined` (the default) means "device not found" — `canUseDevice` then never applies, matching every pre-plan-34 test above unchanged. */
   deviceOwnerId?: string | null
 }): Hono<AuthEnv> {
-  const leaseResult = opts.leaseOk === false ? ({ ok: false, code: 'no_lease', message: 'take control first' } as const) : ({ ok: true } as const)
   const inner = createAdbEndpointRoutes({
     manager: opts.manager ?? fakeManager(),
-    leases: fakeLeases(leaseResult),
+    activities: opts.activities ?? fakeActivities(),
+    controlSettings: opts.controlSettings ?? (() => ({ overControl: 'allow', idleSec: 30 })),
+    states: fakeStates(opts.deviceStatus === undefined ? 'online' : opts.deviceStatus),
     shellSettings: () => ({ mode: opts.shellMode ?? 'admin', endpointEnabled: opts.endpointEnabled ?? true }),
     getDevice: () => (opts.deviceOwnerId === undefined ? null : { ownerId: opts.deviceOwnerId }),
   })
@@ -53,7 +61,7 @@ function makeApp(opts: {
 }
 
 describe('POST /api/devices/:id/adb-endpoint (plan 27 §4.3, acceptance #7)', () => {
-  test('admin, holding the lease, feature enabled → 200 with host/port/expiresAt/command', async () => {
+  test('admin, device online, feature enabled → 200 with host/port/expiresAt/command', async () => {
     const app = makeApp({ role: 'admin' })
     const res = await app.request('/dev-1/adb-endpoint', {
       method: 'POST',
@@ -65,7 +73,7 @@ describe('POST /api/devices/:id/adb-endpoint (plan 27 §4.3, acceptance #7)', ()
     expect(body).toEqual({ host: '127.0.0.1', port: 12345, expiresAt: 9_999_999_999, command: 'adb connect 127.0.0.1:12345' })
   })
 
-  test('endpointEnabled: false refuses even an admin holding the lease', async () => {
+  test('endpointEnabled: false refuses even an admin', async () => {
     const app = makeApp({ role: 'admin', endpointEnabled: false })
     const res = await app.request('/dev-1/adb-endpoint', {
       method: 'POST',
@@ -95,8 +103,8 @@ describe('POST /api/devices/:id/adb-endpoint (plan 27 §4.3, acceptance #7)', ()
     expect(res.status).toBe(200)
   })
 
-  test('no lease held → the leases.checkInputAllowed code/message pass through', async () => {
-    const app = makeApp({ role: 'admin', leaseOk: false })
+  test('an offline device is refused with device_unavailable', async () => {
+    const app = makeApp({ role: 'admin', deviceStatus: 'offline' })
     const res = await app.request('/dev-1/adb-endpoint', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -104,7 +112,32 @@ describe('POST /api/devices/:id/adb-endpoint (plan 27 §4.3, acceptance #7)', ()
     })
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: { code: string; message: string } }
-    expect(body.error.code).toBe('no_lease')
+    expect(body.error.code).toBe('device_unavailable')
+  })
+
+  test('an unknown device is refused with device_not_found', async () => {
+    const app = makeApp({ role: 'admin', deviceStatus: null })
+    const res = await app.request('/dev-1/adb-endpoint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId: 'client-a' }),
+    })
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('device_not_found')
+  })
+
+  test('a device with a live job is refused with E_DEVICE_CONFLICT — command warns against control/prep but forbids against a running job', async () => {
+    const activities = fakeActivities()
+    activities.start('dev-1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+    const app = makeApp({ role: 'admin', activities, controlSettings: () => ({ overControl: 'allow', idleSec: 30 }) })
+    const res = await app.request('/dev-1/adb-endpoint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId: 'client-a' }),
+    })
+    // MVP 04 §1.3's `command` row warns (never forbids) against a running job — the call still succeeds.
+    expect(res.status).toBe(200)
   })
 
   test('an unauthenticated request is refused', async () => {

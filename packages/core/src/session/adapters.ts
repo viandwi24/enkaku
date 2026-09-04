@@ -40,8 +40,7 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
         input: row.input,
         inspection: row.inspection,
         preferredInputMode:
-          (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' | 'aoa' } } | null)?.input?.preferredMode ??
-          'uhid',
+          (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' } } | null)?.input?.preferredMode ?? 'uhid',
         keepAwake: prep.keepAwake,
         standbyScreenOff: prep.standbyScreenOff,
         rotation: prep.rotation,
@@ -70,10 +69,8 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
 export function createDbArtifactSink(deps: {
   db: Db
   dataDir: string
-  jobId: string
+  runId: string
   onSaved: (info: ArtifactInfo) => void
-  /** Plan 99 §3.2, §4.6, §4.7 — forwarded straight to `createArtifactStore`; see its own doc comment. */
-  nodeId?: () => string | null
   /** Plan 115 §3.6 — forwarded straight to `createArtifactStore`; see its own doc comment. */
   maxFileBytes: () => number
 }): ArtifactSink {

@@ -4,29 +4,24 @@ import { Suspense, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Play } from 'lucide-react'
+import type { z } from 'zod'
 import {
   JobsPageResponseSchema,
   ScriptDeleteResponseSchema,
   ScriptResponseSchema,
-  ScriptToggleResponseSchema,
-  ScriptVersionsResponseSchema,
+  ScriptRowSchema,
   SettingsResponseSchema,
-  type DeviceInfo,
   type JobInfo,
   type JobSettings,
 } from '@enkaku/protocol'
+
+type ScriptDetailRow = z.infer<typeof ScriptRowSchema>
 import {
   Button,
   ConfirmDialog,
   EmptyState,
   ErrorState,
   LoadingRows,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Switch,
   TableCell,
   TableHead,
   api,
@@ -35,22 +30,14 @@ import {
   relativeTime,
   useAction,
 } from '@enkaku/ui'
-import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
+import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { JobsList } from '@/components/JobsList'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { fetchDevices } from '@/lib/api'
 import { useNow } from '@/lib/useNow'
 import { computeRuntimeReadout } from '../runtime-readout'
-
-interface VersionOption {
-  id: string
-  version: string
-  enabled: boolean
-  createdAt: number | null
-}
 
 /**
  * A published script is an object with real depth — its parameter contract, the
@@ -63,13 +50,11 @@ function ScriptDetail() {
   const tab = params.get('tab') ?? 'overview'
   const router = useRouter()
 
-  const [script, setScript] = useState<ScriptRow | null>(null)
-  const [versions, setVersions] = useState<VersionOption[]>([])
+  const [script, setScript] = useState<ScriptDetailRow | null>(null)
   const [runsCount, setRunsCount] = useState<number | null>(null)
-  const [devices, setDevices] = useState<DeviceInfo[]>([])
-  const [runOpen, setRunOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { run, isPending } = useAction()
+  const { run } = useAction()
+  const { open: openActionDialog } = useActionDialogs()
   const runsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
   // The runs table's durations tick while a run is still going (Plan 17 §4.6).
   const now = useNow()
@@ -87,9 +72,6 @@ function ScriptDetail() {
     void api(`/api/scripts/${scriptId}`, ScriptResponseSchema)
       .then((b) => setScript(b.script))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-    void fetchDevices()
-      .then(setDevices)
-      .catch(() => undefined)
   }
 
   useEffect(load, [scriptId])
@@ -99,18 +81,6 @@ function ScriptDetail() {
       .then((b) => setFarmJobSettings(b.settings.job))
       .catch(() => undefined)
   }, [])
-
-  // The version selector's options (plan 62 §4.6) — re-fetched whenever the
-  // script's NAME changes (switching versions keeps the same name, so this
-  // does not re-fire on every version switch, only when arriving at a
-  // different script family entirely).
-  useEffect(() => {
-    if (!script) return
-    void api(`/api/scripts/${encodeURIComponent(script.name)}/versions`, ScriptVersionsResponseSchema)
-      .then((b) => setVersions(b.items))
-      .catch(() => setVersions([]))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script?.name])
 
   /**
    * `/api/jobs` has no per-script filter (plan 30 non-goals — pagination
@@ -167,30 +137,9 @@ function ScriptDetail() {
         title={script.name}
         description={`published ${relativeTime(script.createdAt)}`}
         meta={
-          // Only when there is a choice — a script with one version has
-          // nothing to select between (plan 62 §4.6, acceptance #10:
-          // "the detail page's selector defaults to latest").
-          versions.length > 1 ? (
-            <Select
-              value={script.id}
-              onValueChange={(id) => router.push(`/scripts/detail?id=${encodeURIComponent(id)}${tab === 'overview' ? '' : `&tab=${tab}`}`)}
-            >
-              <SelectTrigger className="readout h-8 w-32 text-[12.5px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {versions.map((v, i) => (
-                  <SelectItem key={v.id} value={v.id} className="readout">
-                    {v.version}
-                    {i === 0 ? ' · latest' : ''}
-                    {!v.enabled ? ' · disabled' : ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <span className="readout text-[12.5px] text-fg-muted">v{script.version}</span>
-          )
+          <Link href={`/plugins/detail?name=${script.plugin.name}`} className="readout text-[12.5px] text-fg-muted hover:text-accent">
+            {script.plugin.name}@{script.plugin.version}
+          </Link>
         }
         actions={
           <>
@@ -203,7 +152,7 @@ function ScriptDetail() {
                 All scripts
               </Link>
             </Button>
-            <Button size="sm" disabled={!script.enabled} onClick={() => setRunOpen(true)}>
+            <Button size="sm" onClick={() => script && openActionDialog('run-script', {}, { scriptId: script.id })}>
               <Play className="size-4" aria-hidden />
               Run
             </Button>
@@ -262,9 +211,8 @@ function ScriptDetail() {
             <dl className="space-y-1.5">
               {[
                 ['script id', script.id],
-                ['version', script.version],
+                ['plugin', `${script.plugin.name}@${script.plugin.version}`],
                 ['published by', script.createdBy ?? '—'],
-                ['status', script.enabled ? 'enabled' : 'disabled'],
               ].map(([k, v]) => (
                 <div key={k} className="flex items-baseline justify-between gap-3">
                   <dt className="text-[12px] text-fg-muted">{k}</dt>
@@ -273,8 +221,8 @@ function ScriptDetail() {
               ))}
             </dl>
             <p className="mt-3 text-[11.5px] leading-relaxed text-fg-subtle">
-              Publishing again with the same version is rejected — bump the version instead. Jobs record the specific
-              script id, so older runs stay reproducible.
+              A script has no version of its own — it carries its plugin's. Jobs record the specific script id, so
+              older runs stay reproducible.
             </p>
           </div>
         </div>
@@ -315,40 +263,19 @@ function ScriptDetail() {
 
       {tab === 'settings' && (
         <div className="max-w-2xl space-y-4 px-5 py-4">
-          <div className="flex items-start justify-between gap-4 rounded-lg border bg-surface p-4">
-            <div className="min-w-0">
-              <p className="text-[13px] font-medium">Enabled</p>
-              <p className="mt-0.5 text-[12px] leading-relaxed text-fg-muted">
-                A disabled script stays published and keeps its history, but cannot be run.
-              </p>
-            </div>
-            <Switch
-              checked={script.enabled}
-              disabled={isPending('toggle')}
-              aria-label="Enable this script"
-              onCheckedChange={() =>
-                void run('toggle', () => api(`/api/scripts/${script.id}`, ScriptToggleResponseSchema, { method: 'PATCH', json: { enabled: !script.enabled } }), {
-                  success: script.enabled ? `${script.name} disabled` : `${script.name} enabled`,
-                  failure: 'Could not change the script status',
-                  onSuccess: load,
-                })
-              }
-            />
-          </div>
-
           <div className="rounded-lg border border-led-danger/30 bg-led-danger/5 p-4">
             <p className="text-[13px] font-medium text-led-danger">Delete this script</p>
             <p className="mt-0.5 mb-3 text-[12px] leading-relaxed text-fg-muted">
-              It disappears from the farm and can no longer be run. Jobs that already ran keep their history. A script
-              still used by a queued or running job cannot be deleted.
+              A script is a member of its plugin — removing it here is refused (`E_SCRIPT_OWNED`); remove the owning
+              plugin version instead, from the Plugins page.
             </p>
             <ConfirmDialog
               trigger={<Button variant="outline" size="sm">Delete script</Button>}
-              title={`Delete ${script.name}@${script.version}?`}
+              title={`Delete ${script.name}?`}
               description="This cannot be undone. Publish it again to bring it back."
               onConfirm={() =>
                 run('delete', () => api(`/api/scripts/${script.id}`, ScriptDeleteResponseSchema, { method: 'DELETE' }), {
-                  success: `${script.name}@${script.version} deleted`,
+                  success: `${script.name} deleted`,
                   failure: 'Could not delete the script',
                   onSuccess: () => router.push('/plugins'),
                 })
@@ -358,12 +285,6 @@ function ScriptDetail() {
         </div>
       )}
 
-      <RunScriptDialog
-        script={runOpen ? script : null}
-        devices={devices}
-        onClose={() => setRunOpen(false)}
-        onLaunched={() => runsRef.current?.reload()}
-      />
     </>
   )
 }
@@ -376,7 +297,7 @@ function ScriptDetail() {
  * does every bit of resolving and labelling; this component only walks its
  * `rows` output.
  */
-function RuntimeCard({ farm, scriptRuntime }: { farm: JobSettings; scriptRuntime: ScriptRow['runtime'] }) {
+function RuntimeCard({ farm, scriptRuntime }: { farm: JobSettings; scriptRuntime: ScriptDetailRow['runtime'] }) {
   const { rows } = computeRuntimeReadout(farm, scriptRuntime ?? null)
   return (
     <div className="rounded-lg border bg-surface p-4">

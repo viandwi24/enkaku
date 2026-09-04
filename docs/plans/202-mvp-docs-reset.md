@@ -1,6 +1,6 @@
 # Plan 202 — MVP wave 0 : Docs reset — archive the spec and plans, write the MVP spec skeleton
 
-> Status: draft — not started; written 2026-09-03 by the plan author for the MVP series
+> Status: implemented (docs) — 2026-09-03, executed in worktree branch `worktree-agent-aab5a371b91912ec5` (based on `mvp` at `d96d2be`), pending merge into `mvp`
 > Depends on: nothing (wave 0, `docs/plans/200-mvp-program.md` §4). Plans 201, 203 and 134 run in the same wave and may touch `CLAUDE.md` concurrently; see §8 R1.
 > Spec references: none (this plan writes the spec). The prototype spec is archived whole; the new `docs/spec.md` §21 maps every prototype section number to its MVP successor so archived plans stay readable.
 > Ships: docs/archive/README.md
@@ -13,19 +13,19 @@ Every row is verified from the repo root on the `mvp` branch after the last step
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | The prototype spec is archived and a new spec stands in its place | `docs/archive/spec-prototype.md` exists; `docs/spec.md` is the new document whose first line is `# Enkaku MVP specification` | `test -e docs/archive/spec-prototype.md && head -1 docs/spec.md` prints `# Enkaku MVP specification` | [ ] |
-| G2 | Every prototype plan is archived; only the MVP series and `00-overview.md` remain in `docs/plans/` | 136 files under `docs/archive/plans/`; no file in `docs/plans/` whose name starts with a number below 200 (the MVP series is 200–224; the five `13x-m9x` prototype plans are archived with the rest) | `ls docs/archive/plans/*.md \| wc -l` prints `136`; `ls docs/plans \| rg '^(0[1-9]\|[1-9][0-9]\|1[0-9][0-9])[.-]'` prints nothing; `ls docs/plans \| rg '^13[0-4]-m9'` prints nothing | [ ] |
-| G3 | The five prototype audit documents are archived | `ux-audit.md`, `settings-audit.md`, `spec-divergences.md`, `tmp-try-arch-mikrotik.md`, `overview.md` live only under `docs/archive/` | `for f in ux-audit settings-audit spec-divergences tmp-try-arch-mikrotik overview; do test -e docs/archive/$f.md && test ! -e docs/$f.md \|\| echo "BAD $f"; done` prints nothing | [ ] |
-| G4 | Git history follows the moved files | `git mv` was used, not copy plus delete | after the commit, `git log --follow --oneline -- docs/archive/spec-prototype.md \| wc -l` prints a number of at least `2` | [ ] |
-| G5 | `docs/archive/README.md` exists and points at the live documents | it names `docs/mvp/16-consolidated-plan.md`, `docs/plans/200-mvp-program.md`, and `docs/spec.md` | `rg -c "docs/mvp/16-consolidated-plan.md\|docs/plans/200-mvp-program.md\|docs/spec.md" docs/archive/README.md` prints a number of at least `3` | [ ] |
-| G6 | The new spec has the section set §4.2 defines, and every deferred section names a plan in the MVP series | 22 `## ` headings (§0 to §21); every `TBD by plan NNN` marker names a plan between 131 and 154 | `rg -c "^## " docs/spec.md` prints `22`; `rg -o "TBD by plan [0-9]+" docs/spec.md \| rg -v "plan (13[1-9]\|14[0-9]\|15[0-4])$"` prints nothing | [ ] |
-| G7 | `spec:check` runs against the new spec and reports, never fails | exit code 0; the NOTE names the archived register | `bun run spec:check; echo "exit=$?"` ends with `exit=0`, and the output contains `docs/archive/spec-divergences.md` | [ ] |
-| G8 | The spec-check unit tests still pass | 15 tests, 0 failures | `bun test ./scripts/spec-check.test.ts` prints ` 15 pass` and ` 0 fail` | [ ] |
-| G9 | The plan-status check passes with the archive out of its scan | exit code 0 | `bash scripts/check-plan-status.sh; echo "exit=$?"` prints the line `  every plan that declares an artefact agrees with the code` and ends with `exit=0` | [ ] |
-| G10 | `CLAUDE.md` points at the new documents and no longer describes the removed hold model | the reference list names `docs/plans/200-mvp-program.md`, `docs/mvp/`, `docs/archive/`; the `adb kill-server` bullet says "sessions and activities" | `rg -n "docs/spec.md" CLAUDE.md` prints exactly one line, and it contains `plan 202`; `rg -c "200-mvp-program" CLAUDE.md` prints a number of at least `2`; `rg -n "sessions and leases" CLAUDE.md` prints nothing; `rg -n "sessions and activities" CLAUDE.md` prints one line | [ ] |
-| G11 | No live document links to a moved path | zero references to the old locations in `docs/guide`, `docs/feat`, `README.md`, `.env.example` | `rg -n "\.\./plans/\|\.\./overview\.md\|\.\./tmp-try\|docs/plans/(0[1-9]\|[1-9][0-9]\|1[0-2][0-9])[.-]\|docs/(ux-audit\|settings-audit\|spec-divergences\|tmp-try-arch-mikrotik\|overview)\.md" docs/guide docs/feat README.md .env.example` prints nothing | [ ] |
-| G12 | The forbidden vocabulary is absent from the documents this plan writes | 0 matches | `rg -n -i -w "lease\|leases\|cluster\|clusters\|co-control\|assist\|heldBy\|assistedBy" docs/spec.md docs/archive/README.md` prints nothing | [ ] |
-| G13 | Typecheck is clean | 0 errors | `bun run typecheck` exits 0 | [ ] |
+| G1 | The prototype spec is archived and a new spec stands in its place | `docs/archive/spec-prototype.md` exists; `docs/spec.md` is the new document whose first line is `# Enkaku MVP specification` | `test -e docs/archive/spec-prototype.md && head -1 docs/spec.md` prints `# Enkaku MVP specification` | [x] |
+| G2 | Every prototype plan is archived; only the MVP series and `00-overview.md` remain in `docs/plans/` | 136 files under `docs/archive/plans/`; no file in `docs/plans/` whose name starts with a number below 200 (the MVP series is 200–224; the five `13x-m9x` prototype plans are archived with the rest) | `ls docs/archive/plans/*.md \| wc -l` prints `136`; `ls docs/plans \| rg '^(0[1-9]\|[1-9][0-9]\|1[0-9][0-9])[.-]'` prints nothing; `ls docs/plans \| rg '^13[0-4]-m9'` prints nothing | [x] |
+| G3 | The five prototype audit documents are archived | `ux-audit.md`, `settings-audit.md`, `spec-divergences.md`, `tmp-try-arch-mikrotik.md`, `overview.md` live only under `docs/archive/` | `for f in ux-audit settings-audit spec-divergences tmp-try-arch-mikrotik overview; do test -e docs/archive/$f.md && test ! -e docs/$f.md \|\| echo "BAD $f"; done` prints nothing | [x] |
+| G4 | Git history follows the moved files | `git mv` was used, not copy plus delete | after the commit, `git log --follow --oneline -- docs/archive/spec-prototype.md \| wc -l` prints a number of at least `2` | [x] |
+| G5 | `docs/archive/README.md` exists and points at the live documents | it names `docs/mvp/16-consolidated-plan.md`, `docs/plans/200-mvp-program.md`, and `docs/spec.md` | `rg -c "docs/mvp/16-consolidated-plan.md\|docs/plans/200-mvp-program.md\|docs/spec.md" docs/archive/README.md` prints a number of at least `3` | [x] |
+| G6 | The new spec has the section set §4.2 defines, and every deferred section names a plan in the MVP series | 22 `## ` headings (§0 to §21); every `TBD by plan NNN` marker names a plan between 131 and 154 | `rg -c "^## " docs/spec.md` prints `22`; `rg -o "TBD by plan [0-9]+" docs/spec.md \| rg -v "plan (13[1-9]\|14[0-9]\|15[0-4])$"` prints nothing | [x] |
+| G7 | `spec:check` runs against the new spec and reports, never fails | exit code 0; the NOTE names the archived register | `bun run spec:check; echo "exit=$?"` ends with `exit=0`, and the output contains `docs/archive/spec-divergences.md` | [x] |
+| G8 | The spec-check unit tests still pass | 15 tests, 0 failures | `bun test ./scripts/spec-check.test.ts` prints ` 15 pass` and ` 0 fail` | [x] |
+| G9 | The plan-status check passes with the archive out of its scan | exit code 0 | `bash scripts/check-plan-status.sh; echo "exit=$?"` prints the line `  every plan that declares an artefact agrees with the code` and ends with `exit=0` | [x] |
+| G10 | `CLAUDE.md` points at the new documents and no longer describes the removed hold model | the reference list names `docs/plans/200-mvp-program.md`, `docs/mvp/`, `docs/archive/`; the `adb kill-server` bullet says "sessions and activities" | `rg -n "docs/spec.md" CLAUDE.md` prints exactly one line, and it contains `plan 202`; `rg -c "200-mvp-program" CLAUDE.md` prints a number of at least `2`; `rg -n "sessions and leases" CLAUDE.md` prints nothing; `rg -n "sessions and activities" CLAUDE.md` prints one line | [x] |
+| G11 | No live document links to a moved path | zero references to the old locations in `docs/guide`, `docs/feat`, `README.md`, `.env.example` | `rg -n "\.\./plans/\|\.\./overview\.md\|\.\./tmp-try\|docs/plans/(0[1-9]\|[1-9][0-9]\|1[0-2][0-9])[.-]\|docs/(ux-audit\|settings-audit\|spec-divergences\|tmp-try-arch-mikrotik\|overview)\.md" docs/guide docs/feat README.md .env.example` prints nothing | [x] |
+| G12 | The forbidden vocabulary is absent from the documents this plan writes | 0 matches | `rg -n -i -w "lease\|leases\|cluster\|clusters\|co-control\|assist\|heldBy\|assistedBy" docs/spec.md docs/archive/README.md` prints nothing | [x] |
+| G13 | Typecheck is clean | 0 errors | `bun run typecheck` exits 0 | [x] |
 
 ## 1. Goals
 
@@ -56,7 +56,7 @@ Verified 2026-09-03 with `ls docs docs/plans docs/research docs/benchmarks docs/
 |---|---|---|
 | `docs/spec.md` | 1 198 lines, 225 KB, 22 top-level sections (`## 1. Summary and vision` … `## 22. Open questions / future`), prototype v0.2 to v0.8 | `git mv` to `docs/archive/spec-prototype.md`; a new `docs/spec.md` is written |
 | `docs/plans/00-overview.md` | conventions and roadmap; §3, §4, §6, §7 still binding (200 §7) | stays; line 4 edited (§4.5) |
-| `docs/plans/01-…` to `docs/plans/129-…` | 131 files (numbers repeat: `22.0`, `22.1`, two `56-m26-*`) | `git mv` to `docs/archive/plans/` |
+| `docs/archive/plans/01-…` to `docs/archive/plans/129-…` | 131 files (numbers repeat: `22.0`, `22.1`, two `56-m26-*`) | `git mv` to `docs/archive/plans/` |
 | `docs/plans/130-m95-…`, `131-m96-…`, `132-m97-…`, `133-m98-…`, `134-m99-…` | 5 prototype plans (M95 to M99), all `implemented (software)`, committed in `37c73bf` | `git mv` to `docs/archive/plans/`; see §3.2 |
 | `docs/plans/200-mvp-program.md` | the MVP conventions document, **untracked** at the time of writing | stays; nothing to move |
 | `docs/ux-audit.md`, `settings-audit.md`, `spec-divergences.md`, `tmp-try-arch-mikrotik.md`, `overview.md` | prototype audits and one incident log | `git mv` to `docs/archive/` (MVP 13 A.10) |
@@ -69,7 +69,7 @@ Verified 2026-09-03 with `ls docs docs/plans docs/research docs/benchmarks docs/
 
 `docs/plans/200-mvp-program.md` §1 says "The prototype (v0.1.32, plans 01–129)". The tree also holds five prototype plans numbered 130 to 134 (slugs `m95` to `m99`, headers `> Status: implemented (software)`), written 2026-08-26 and committed in `37c73bf`, before the MVP series claimed those numbers. `docs/plans/132-m97-assignment-is-a-constraint-not-a-preference.md` sits beside this plan.
 
-Decision: they are archived with the rest of the prototype series. The intent of MVP 09 §1 and MVP 13 A.10 ("`docs/plans/01..129` (archived)") is "every prototype plan", and the number 129 was the last number the author of 130 knew about. Keeping five `implemented` prototype plans under MVP numbers would make `130-m95` look like a sibling of `200-mvp-program` and would let `check-plan-status.sh` keep checking their `Ships:` artefacts, which plans 205 to 149 delete. The archive README lists them by name.
+Decision: they are archived with the rest of the prototype series. The intent of MVP 09 §1 and MVP 13 A.10 ("`docs/archive/plans/01..129` (archived)") is "every prototype plan", and the number 129 was the last number the author of 130 knew about. Keeping five `implemented` prototype plans under MVP numbers would make `130-m95` look like a sibling of `200-mvp-program` and would let `check-plan-status.sh` keep checking their `Ships:` artefacts, which plans 205 to 149 delete. The archive README lists them by name.
 
 ### 3.3 What the checks enforce
 
@@ -105,7 +105,7 @@ Every line below was read on 2026-09-03; match on content if the number drifts.
 | File:line | Content (verbatim start) |
 |---|---|
 | `CLAUDE.md:9` | `- \`docs/spec.md\` — the product spec, the **single source of truth**. If a plan or the code contradicts the spec, the spec wins.` |
-| `CLAUDE.md:11` | `- \`docs/plans/01..16-*.md\` — milestone plans M0–M10 (a nine-section template, with acceptance criteria per plan).` |
+| `CLAUDE.md:11` | `- \`docs/archive/plans/01..16-*.md\` — milestone plans M0–M10 (a nine-section template, with acceptance criteria per plan).` |
 | `CLAUDE.md:83` | `- **\`adb kill-server\` is forbidden everywhere except …` containing `Both drain sessions and leases (plus any running job the caller explicitly overrode)` |
 | `CLAUDE.md:91` | `- The driver subsystem has **five** layers, not four: transport, display, input, inspector, and \`network\` (spec §7.9).` |
 | `scripts/spec-check.ts:12-13` | `* or \`page.tsx\` screen exists whose name appears NOWHERE in \`docs/spec.md\`` / `* and has NO \`DIV-\` row in \`docs/spec-divergences.md\`.` |
@@ -116,16 +116,16 @@ Every line below was read on 2026-09-03; match on content if the number drifts.
 | `.github/workflows/ci.yml:86-93` | the eight comment lines starting `# Plan 84 (M49) §4.4 "closing the loop": a deliberately dumb name-presence` |
 | `docs/plans/00-overview.md:4` | `> The product source of truth is \`docs/spec.md\` (Enkaku draft v0.2). If a plan contradicts the spec, the spec wins — then update the plan.` |
 | `docs/mvp/README.md:11` | `- \`docs/spec.md\` remains the single source of truth. Where an MVP document proposes changing a spec commitment, it says so explicitly.` |
-| `.env.example:75` | `# looked up the name — see docs/plans/51-m24b-verified-egress-and-fail-closed.md §3.3.` |
+| `.env.example:75` | `# looked up the name — see docs/archive/plans/51-m24b-verified-egress-and-fail-closed.md §3.3.` |
 | `docs/guide/install.md:272` | `[\`docs/tmp-try-arch-mikrotik.md\`](../tmp-try-arch-mikrotik.md) for the incident. After any change,` |
 | `docs/guide/install.md:277` | `\`docs/tmp-try-arch-mikrotik.md\` is one operator's own worked log of doing exactly this for a farm` |
-| `docs/guide/cloud.md:48` | contains `(plan 28, \`docs/plans/28-m12g-cloud-adb-endpoint.md\`)` |
-| `docs/guide/physical-labelling.md:86` | `   entry 96.21 in \`docs/plans/96-m61-hotfixes.md\`), not a bug in the` |
-| `docs/guide/physical-labelling.md:254` | `phones yourself. \`docs/plans/89-m54-device-identity-and-physical-labelling.md\`` |
-| `docs/guide/record-and-replay.md:8` | `\`docs/plans/94-m59-action-recorder-and-task-scheduling.md\`; the SDK's` |
+| `docs/guide/cloud.md:48` | contains `(plan 28, \`docs/archive/plans/28-m12g-cloud-adb-endpoint.md\`)` |
+| `docs/guide/physical-labelling.md:86` | `   entry 96.21 in \`docs/archive/plans/96-m61-hotfixes.md\`), not a bug in the` |
+| `docs/guide/physical-labelling.md:254` | `phones yourself. \`docs/archive/plans/89-m54-device-identity-and-physical-labelling.md\`` |
+| `docs/guide/record-and-replay.md:8` | `\`docs/archive/plans/94-m59-action-recorder-and-task-scheduling.md\`; the SDK's` |
 | `docs/feat/kv-storage.md:6` | `> switch; \`docs/spec.md\` §12.4 is the product statement.` |
 | `docs/feat/plugin-and-script.md:5` | `> 97, 98 and 99 are the design record; \`docs/spec.md\` §11 is the product statement.` |
-| `docs/feat/plugin-proxy-manager.md:692` | contains `Plan 123 (\`docs/plans/123-m88-bind-capability-probe` |
+| `docs/feat/plugin-proxy-manager.md:692` | contains `Plan 123 (\`docs/archive/plans/123-m88-bind-capability-probe` |
 | `docs/feat/plugin-proxy-manager.md:1344` | `| understand the farm's own four network engines | [\`docs/overview.md\`](../overview.md) §11, spec §7.9, plan 114 |` |
 | `docs/feat/plugin-proxy-manager.md:1346` | `| read the design record | plans [112](../plans/112-m77-proxy-manager.md), [114](../plans/114-m79-device-proxy.md), [117](../plans/117-m82-egress-binding.md), [118](../plans/118-m83-windows-adb-performance.md), [121](../plans/121-m86-proxy-failover.md) |` |
 | `packages/scrcpy/src/version.ts:11` | `export const SCRCPY_VERSION = '3.3.1'` |
@@ -763,16 +763,16 @@ Exact substitutions, one per line. Nothing else in these files changes.
 
 | File:line | Old fragment | New fragment |
 |---|---|---|
-| `.env.example:75` | `docs/plans/51-m24b-verified-egress-and-fail-closed.md` | `docs/archive/plans/51-m24b-verified-egress-and-fail-closed.md` |
+| `.env.example:75` | `docs/archive/plans/51-m24b-verified-egress-and-fail-closed.md` | `docs/archive/plans/51-m24b-verified-egress-and-fail-closed.md` |
 | `docs/guide/install.md:272` | `[\`docs/tmp-try-arch-mikrotik.md\`](../tmp-try-arch-mikrotik.md)` | `[\`docs/archive/tmp-try-arch-mikrotik.md\`](../archive/tmp-try-arch-mikrotik.md)` |
 | `docs/guide/install.md:277` | `\`docs/tmp-try-arch-mikrotik.md\` is` | `\`docs/archive/tmp-try-arch-mikrotik.md\` is` |
-| `docs/guide/cloud.md:48` | `docs/plans/28-m12g-cloud-adb-endpoint.md` | `docs/archive/plans/28-m12g-cloud-adb-endpoint.md` |
-| `docs/guide/physical-labelling.md:86` | `docs/plans/96-m61-hotfixes.md` | `docs/archive/plans/96-m61-hotfixes.md` |
-| `docs/guide/physical-labelling.md:254` | `docs/plans/89-m54-device-identity-and-physical-labelling.md` | `docs/archive/plans/89-m54-device-identity-and-physical-labelling.md` |
-| `docs/guide/record-and-replay.md:8` | `docs/plans/94-m59-action-recorder-and-task-scheduling.md` | `docs/archive/plans/94-m59-action-recorder-and-task-scheduling.md` |
+| `docs/guide/cloud.md:48` | `docs/archive/plans/28-m12g-cloud-adb-endpoint.md` | `docs/archive/plans/28-m12g-cloud-adb-endpoint.md` |
+| `docs/guide/physical-labelling.md:86` | `docs/archive/plans/96-m61-hotfixes.md` | `docs/archive/plans/96-m61-hotfixes.md` |
+| `docs/guide/physical-labelling.md:254` | `docs/archive/plans/89-m54-device-identity-and-physical-labelling.md` | `docs/archive/plans/89-m54-device-identity-and-physical-labelling.md` |
+| `docs/guide/record-and-replay.md:8` | `docs/archive/plans/94-m59-action-recorder-and-task-scheduling.md` | `docs/archive/plans/94-m59-action-recorder-and-task-scheduling.md` |
 | `docs/feat/kv-storage.md:6` | `\`docs/spec.md\` §12.4 is the product statement.` | `\`docs/archive/spec-prototype.md\` §12.4 was the product statement; the MVP spec covers it in \`docs/spec.md\` §4.4 and §10.` |
 | `docs/feat/plugin-and-script.md:5` | `\`docs/spec.md\` §11 is the product statement.` | `\`docs/archive/spec-prototype.md\` §11 was the product statement; the MVP spec covers it in \`docs/spec.md\` §4.4 to §4.6 and §10.` |
-| `docs/feat/plugin-proxy-manager.md:692` | `docs/plans/123-m88-bind-capability-probe` | `docs/archive/plans/123-m88-bind-capability-probe` |
+| `docs/feat/plugin-proxy-manager.md:692` | `docs/archive/plans/123-m88-bind-capability-probe` | `docs/archive/plans/123-m88-bind-capability-probe` |
 | `docs/feat/plugin-proxy-manager.md:1344` | `[\`docs/overview.md\`](../overview.md) §11, spec §7.9, plan 114` | `[\`docs/archive/overview.md\`](../archive/overview.md) §11, \`docs/spec.md\` §9, plan 114` |
 | `docs/feat/plugin-proxy-manager.md:1346` | each of `../plans/112-`, `../plans/114-`, `../plans/117-`, `../plans/118-`, `../plans/121-` | `../archive/plans/112-`, `../archive/plans/114-`, `../archive/plans/117-`, `../archive/plans/118-`, `../archive/plans/121-` |
 
@@ -934,7 +934,7 @@ Rows from `docs/mvp/13-removal-register.md` A.10 (docs) that this plan owns, plu
 | `docs/spec-divergences.md` (the `DIV-` register as a live document) | `docs/` | `test ! -e docs/spec-divergences.md` |
 | `docs/tmp-try-arch-mikrotik.md` | `docs/` | `test ! -e docs/tmp-try-arch-mikrotik.md` |
 | `docs/overview.md` | `docs/` | `test ! -e docs/overview.md` |
-| The reference-list bullet `docs/plans/01..16-*.md — milestone plans M0–M10` | `CLAUDE.md:11` | `rg -n "01\.\.16" CLAUDE.md` → empty |
+| The reference-list bullet `docs/archive/plans/01..16-*.md — milestone plans M0–M10` | `CLAUDE.md:11` | `rg -n "01\.\.16" CLAUDE.md` → empty |
 | "drain sessions and leases" in the `adb kill-server` rule | `CLAUDE.md:83` | `rg -n "sessions and leases" CLAUDE.md` → empty |
 | `(spec §7.9)` as the citation for the network layer | `CLAUDE.md:91` | `rg -n "spec §7\.9" CLAUDE.md` → empty |
 | "does not exist yet" NOTE about the divergence register | `scripts/spec-check.ts:231` | `rg -n "does not exist yet" scripts/spec-check.ts` → empty |
@@ -946,12 +946,33 @@ Forbidden vocabulary introduced by this plan's area (200 §2.4), proven absent f
 
 ## 11. Handoff report
 
-- **Checklist**:
-- **Commits**:
-- **Typecheck**:
-- **Tests run**:
+- **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ G5 ✅ G6 ✅ G7 ✅ G8 ✅ G9 ✅ G10 ✅ G11 ✅ G12 ✅ G13 ✅
+- **Commits** (branch `worktree-agent-aab5a371b91912ec5`, based on `mvp` at `d96d2be`; `mvp` itself has since advanced to `2b31dfc` with two unrelated commits this branch does not carry — merge, don't fast-forward):
+  - `7e1fe31` chore(mvp-202): archive the prototype spec, plans, and audits under docs/archive
+  - `739e595` chore(mvp-202): write the MVP spec skeleton from docs/mvp
+  - `9905c8d` chore(mvp-202): point the doc checks at the archived register and the new spec
+  - `36bcfdd` chore(mvp-202): point CLAUDE.md, the overview, and the guides at the new docs layout
+  - (this commit) chore(mvp-202): mark plan 202 implemented
+- **Typecheck**: clean (`bun run typecheck` exit 0, all 19 packages OK). Note: this worktree had no `node_modules` at the start of execution (`bun install` had never been run here); `bun install` was run once, purely a dependency-install with no git effect, before typecheck would resolve `zod` and the other workspace deps.
+- **Tests run**: `bun test ./scripts/spec-check.test.ts` → ` 15 pass`, ` 0 fail`, 29 `expect()` calls. No other test was run (no package code changed; §7 names only this file).
 - **Removed, proven**:
+  - `rg -n -i -w "co-control\|heldBy\|assistedBy\|quiet period" docs/spec.md` → empty; `rg -c "^## " docs/spec.md` → `22`; `test -e docs/archive/spec-prototype.md` → exit 0
+  - `ls docs/plans \| rg '^(0[1-9]\|[1-9][0-9]\|1[0-9][0-9])[.-]'` → empty
+  - `ls docs/plans \| rg '^13[0-4]-m9'` → empty
+  - `test ! -e docs/ux-audit.md && test ! -e docs/settings-audit.md && test ! -e docs/spec-divergences.md && test ! -e docs/tmp-try-arch-mikrotik.md && test ! -e docs/overview.md` → all true
+  - `rg -n "01\.\.16" CLAUDE.md` → empty
+  - `rg -n "sessions and leases" CLAUDE.md` → empty
+  - `rg -n "spec §7\.9" CLAUDE.md` → empty
+  - `rg -n "does not exist yet" scripts/spec-check.ts` → one remaining match, at line 193, in a JSDoc comment for `computeGaps` ("`divergencesSrc` is `null` when the register file does not exist yet ..."). This is not one of the plan's three enumerated edits (§4.3 Edit 1/2/3, which targeted only the header comment, the switch comment, and the runtime NOTE at what was lines 231–232) and is not in its "Do not" list either; left unedited as out of the plan's named scope. See discrepancy below.
+  - `rg -n "draft v0.2" docs/plans/00-overview.md` → empty
+  - `rg -n "remains the single source of truth" docs/mvp/README.md` → empty
+  - G11's grep over `docs/guide docs/feat README.md .env.example` → empty (after fixing 3 references the plan's §4.6 table did not list — see discrepancy below)
+  - Forbidden vocabulary: `rg -n -i -w "lease\|leases\|cluster\|clusters\|co-control\|assist\|heldBy\|assistedBy" docs/spec.md docs/archive/README.md` → empty
 - **Discrepancies between plan and code**:
-- **Observed, not done**:
-- **Open questions hit**:
-- **Processes**:
+  - `AGENTS.md`: the plan (§3.6, §9 Q4, step 202.6) says it is "untracked at the repo root" and instructs verifying `git status --short AGENTS.md` prints `?? AGENTS.md`. In this worktree it is **tracked** — introduced by commit `b3b85bf` ("docs(plans): 211 — a job is an intent, a run is an execution..."), an ancestor of this branch's base `d96d2be` — so `git status --short -- AGENTS.md` prints nothing (clean, not untracked). This contradicts both the plan's own audit and the untracked `?? AGENTS.md` shown in the main worktree's status at session start; the two worktrees disagree on this file's tracked state, presumably because that commit landed on this branch's ancestry but not on whatever the main worktree currently has checked out (or vice versa — history diverged). Per instruction and §9 Q4, the file was left completely untouched either way: not read for editing, not staged, not deleted, its fate not decided here. Its line 3 was read only to confirm it still names Codex, as the step asked.
+  - G11 scope gap: §4.6's twelve-row table missed three live references to archived plan paths that G11's own grep (over `docs/guide`, `README.md`) would have caught: `README.md:108` cited `docs/archive/plans/50-m24a-ci-and-device-smoke-test.md`; `docs/guide/cloud.md:44` cited `docs/archive/plans/13-m9-webrtc-backend.md`; `docs/guide/workflows.md:3` cited `docs/archive/plans/99-m64-workflows.md` (this file wasn't even named among the "six" `docs/guide` files the plan's §3.1 said link to moved files). All three were repointed to their `docs/archive/plans/...` equivalents, same substitution pattern as the rest of §4.6, so G11 passes; nothing else on those lines was touched.
+  - §4.2's intro sentence ("the executor writes this file verbatim, then fills the two placeholders marked `<DATE>`") claims two `<DATE>` placeholders; the quoted spec body in §4.2 contains exactly one (in the `> Status:` line). Only that one was replaced with `2026-09-03`; no second occurrence exists anywhere in the quoted spec text to fill.
+  - Plan step 202.8 says `git branch --show-current` should show a branch mergeable to `mvp`; this worktree's branch is `worktree-agent-aab5a371b91912ec5` (not `mvp` itself), consistent with the task's instruction to commit on "whatever branch the worktree gave you." `mvp` at the time of writing is two commits ahead (`ac9fcdd`, `2b31dfc`) of this branch's base and does not yet contain any of plan 202's work.
+- **Observed, not done**: nothing beyond the plan's explicit non-goals (§2) was attempted. The `spec:check` gap list (42 names: 4 tables, 2 screens, 36 routes) is the expected removal to-do for later plans, left untouched per step 202.3's "Do not" (not padding the spec to shrink it).
+- **Open questions hit**: none of §9's six items blocked any step; all steps completed as written.
+- **Processes**: `ps -Ao pid=,command= | grep -i "[o]penpf"` → no output (nothing left running).

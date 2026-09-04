@@ -3,8 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { z } from 'zod'
-import { CutoverResponseSchema, type ConnectionMedium, type CutoverState, type DeviceInfo } from '@enkaku/protocol'
+import { CutoverStateSchema, type ConnectionMedium, type CutoverState, type DeviceInfo } from '@enkaku/protocol'
 import {
   Button,
   Dialog,
@@ -21,21 +20,13 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  api,
   cn,
   formatDeviceName,
-  type ApiError,
 } from '@enkaku/ui'
 import { ConnectionBadge } from '@/components/ConnectionBadge'
 import { useNow } from '@/lib/useNow'
 import { ws } from '@/lib/ws'
-
-function isApiError(err: unknown): err is Error & ApiError {
-  return err instanceof Error && 'code' in err
-}
-
-/** `DELETE .../connection/cutover` returns `{ ok: true }`, a non-empty body — `z.void()` only parses `undefined` (see `AdmitDeviceDialog.tsx`'s own comment on the exact same trap). The result is discarded either way. */
-const CutoverCancelResponseSchema = z.object({ ok: z.boolean() })
+import { ActionRefusedError, runOnDevice } from '@/lib/actions'
 
 /**
  * The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) —
@@ -61,7 +52,7 @@ export function CutoverDialog({
   onOpenChange: (open: boolean) => void
   /** Called once the phone answers on the network — the caller reloads the device (its badge, address and mediumSource all just changed). */
   onDone: () => void
-  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path; see `AssistDialog`'s own doc comment on the same prop for why. */
+  /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path: when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
   const [medium, setMedium] = useState<ConnectionMedium>('wired')
@@ -110,15 +101,16 @@ export function CutoverDialog({
     setBusy(true)
     setRefusal(null)
     try {
-      const body: { medium: ConnectionMedium; port?: number; address?: string } = { medium }
+      const body: { op: 'start'; medium: ConnectionMedium; port?: number; address?: string } = { op: 'start', medium }
       const parsedPort = Number(port)
       if (port.trim() && Number.isFinite(parsedPort) && parsedPort > 0) body.port = Math.round(parsedPort)
       if (address.trim()) body.address = address.trim()
-      const res = await api(`/api/devices/${device.id}/connection/cutover`, CutoverResponseSchema, { method: 'POST', json: body })
-      setState(res.cutover)
-      if (res.cutover.step === 'failed') toast.error(`Could not arm ${name}`, { description: res.cutover.detail })
+      const r = await runOnDevice('cutover', device.id, body)
+      const next = CutoverStateSchema.parse(r.detail)
+      setState(next)
+      if (next.step === 'failed') toast.error(`Could not arm ${name}`, { description: next.detail })
     } catch (err) {
-      if (isApiError(err)) setRefusal({ code: err.code, message: err.message })
+      if (err instanceof ActionRefusedError) setRefusal({ code: err.code, message: err.message })
       else toast.error('Could not start the cutover wizard', { description: err instanceof Error ? err.message : String(err) })
     } finally {
       setBusy(false)
@@ -130,7 +122,7 @@ export function CutoverDialog({
     try {
       // Reverts nothing (§3.4): TCP mode stays on, and a phone in TCP mode
       // still works perfectly over USB — this only stops Enkaku watching.
-      await api(`/api/devices/${device.id}/connection/cutover`, CutoverCancelResponseSchema, { method: 'DELETE' })
+      await runOnDevice('cutover', device.id, { op: 'cancel' })
     } catch {
       // Best-effort — the dialog closes either way; there is nothing an
       // operator can do about a failed cancel except close the dialog.

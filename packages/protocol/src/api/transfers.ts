@@ -24,7 +24,7 @@ import { TransferKindSchema } from '../messages/transfer'
  * as proof nothing is happening.
  *
  * Shaped so a later swap to a durable `transfers` table (plan 107 §3.4's
- * other option — survives restart, consistent with jobs/batches/command-runs,
+ * other option — survives restart, consistent with jobs/batches,
  * but a schema change and a retention question for something usually over in
  * seconds) would not change this response shape or any client reading it —
  * only `transfer-registry.ts`'s internals, and this file's own producer,

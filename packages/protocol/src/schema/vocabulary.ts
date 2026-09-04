@@ -103,7 +103,7 @@ export const PARAM_SOURCES = [
   'registry.inspectors',
   'registry.networks',
   'devices',
-  'clusters',
+  'groups',
   'scripts',
 ] as const
 export type ParamSource = (typeof PARAM_SOURCES)[number]

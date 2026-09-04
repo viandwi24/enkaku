@@ -1,94 +1,91 @@
 # Design system — Enkaku Studio
 
-This document records Studio's visual decisions and the reasoning behind them. The point is that a new screen can be built without guesswork, and that a change of style has somewhere to be argued before it spreads across many files.
+This document records Studio's visual decisions and the reasoning behind them, so a screen can be built without guesswork and a change of style has somewhere to be argued before it spreads across many files.
 
-> **Plan 101 (M66) shipped** — a new palette, Outfit in place of Archivo, a collapsible floating sidebar, a dot-grid background. This document describes what actually shipped, in the same step that shipped it (plan 101 §3.8, step 101.4) — a design system whose own document argues against the palette it ships is worse than having no document. One value is still owner-arbitrated: see the `--color-bg` note under Direction below.
+> **The design of record is the handoff** in `docs/mvp/design_handoff_enkaku_openpf/` (`README.md` plus the `Enkaku Device List.dc.html` prototype), as corrected by `docs/mvp/15-ui-migration.md` §0.1 and §1. Plan 204 (MVP wave 0) landed its tokens, type scale, spacing, radii, shadows, fonts and icons; the sections below through "Theme" describe that. The "Screen patterns" section and everything after it still describe the v0.1.32 prototype and are replaced screen by screen by plans 213–219 (150 for Agents).
 
-## Direction: an instrument panel, not a SaaS dashboard
+## Direction
 
-The subject of this application is physical hardware — phones on a rack, cables, heat, batteries. So the look follows measuring equipment rather than an analytics app:
-
-- **The background is still cool graphite, not near-black — pending an owner call, not a settled position.** `--color-bg` (`oklch(0.185 0.012 245)`, a blue-cast graphite) was left unchanged by plan 101 step 101.1 rather than adopted from `refs/ui`'s near-black `#0a0a0a`, specifically because this document's own long-standing argument — *"pure black makes status colours look like they are shouting"* — was never actually tested against the reference's palette side by side. Plan 101 H3 (`docs/plans/101-m66-visual-refresh.md` §7) is the owner-run probe that settles it: render the wall at both backgrounds with a mixed ok/warn/danger/off device set and judge. **Until H3 runs, treat this bullet as unresolved, not as this document winning by seniority** — the rest of the palette below shipped either way, gated on nothing.
-- **Measurements are always monospaced.** Temperature, fps, battery percentage, resolution, serial — all of it uses the `.readout` class (IBM Plex Mono, `tabular-nums`). Digits that line up mean a changing number never shifts the layout.
-- **Saturated colour is for status only.** One red dot among a dozen devices has to catch the eye immediately. If colour is spent on decoration, that signal is lost.
-
-### The signature element: the status rail
-
-Every device card — and, since plan 101 §5 step 101.7, every Wall tile too — carries a 3 px bar of colour down its left edge (`.status-rail`), exactly like the indicator lamp on a rack unit. Scanning a column of rails is far faster than reading status text one card at a time. The rail only pulses while a device is genuinely working (`data-live="true"`) — motion marks real activity, never decoration.
-
-`WallTile.tsx` reads it a second way `DeviceCard.tsx`/`DeviceTile.tsx` do not: `data-agent-alert` tints the rail `led-danger`/`led-warn` for a guest agent that has `failed`/is `outdated`, quiet for every other agent state. This is the Wall tile's own replacement for `AgentAlertChip` (plan 90 §5 step 90.6), which left the tile entirely in the same step — the tile shows the screencast and, floating over it, the device's name; nothing else, so the rail is the only place left for "this device is streaming fine but something is still wrong" to live.
-
-**Plan 106 §5 step 106.4 (2026-08-17) confirmed this rail is device preparation's own Wall signal — for the guest agent, and named plainly where it stops.** `device.agent` is now DERIVED from `devices.preparation['guest-agent']` (plan 106 §5 step 106.5's migration), not a standalone column, but the wire shape (the same six `AgentState` values) never changed, so `data-agent-alert` needed no edit at all to keep being true after that migration — §3.4's "fold into the existing rail, no new per-tile indicator" was already satisfied by construction. What it does **not** cover: any OTHER registered preparation component (`ui-server` today, whatever is registered next) has no equivalent on `DeviceInfo` at all, so the rail cannot flag "ui-server failed" on the Wall without a per-tile fetch — exactly the fan-out F27 already paid down once, and forbidden for the same reason. Extending this signal to every component needs a compact, precomputed summary riding `DeviceInfo`'s own broadcast (e.g. a worst-state-across-components field, computed once server-side) — `packages/core/**` work, out of a `packages/studio`-only pass's scope, and the same gap plan 107 step 107.4 already found and named for its own operation tray rather than approximated with a second endpoint. An operator still finds a non-guest-agent failure on that device's own popup (`SettingsPopup`'s new Preparation section, above) — just not, yet, from the Wall.
-
-**Plan 106 §5 step 106.7 (2026-08-17) re-asked this question for `provisioning` specifically and reached the same answer, for the same reason** — a per-tile "is anything installing on this device right now" indicator would need the identical farm-wide `DeviceInfo` field the paragraph above already declined to build. It is NOT the same gap as the device POPUP's own screen-panel overlay (`LiveView.tsx`'s new `provisioning` prop, below): that overlay renders once per OPEN popup, never once per Wall tile, which is exactly the bounded case the Blur section's "nothing that scales with device count" rule permits rather than forbids — the same distinction that section already draws between a fixed handful of chrome elements and anything rendered per device.
+Desktop-first, 1280–1600 px wide, usable down to 960 px; no mobile layout was designed. Two themes, light and dark, from one palette. Saturated colour is for status and the one accent: a green dot, an amber dot, a red dot, and the accent on the control that acts. Animations are two, and only two: `enkakuPulse` (2.6 s, the health dot) and `enkakuSpin` (0.9 s, a rescan). No page transitions.
 
 ## Tokens
 
-Every token lives in `packages/ui/src/theme.css` inside `@theme` blocks. That file is the ONLY one whose colours change when the palette moves — the 125 component files that name these tokens (`bg-surface`, `text-fg-muted`, …) inherit a new palette without being edited, which is what made plan 101's whole refresh a one-file change rather than a 125-file one (§3.1 there).
+The values live in `packages/ui/src/palette.css` and the names in `packages/ui/src/theme.css`. Two files because two compilers read them (plan 204 §3.4): Studio's `globals.css` imports both and puts the values on the document; a plugin's own stylesheet imports only `theme.css`, with `theme(reference)`, which Tailwind refuses for a file holding a plain rule. `theme.css` maps every name with `@theme inline`, so `bg-panel` compiles to `background-color: var(--panel)` in Studio and in a plugin alike, and a plugin can never repaint the farm with a copy of the palette frozen on the day it was built.
 
-It sits in `@enkaku/ui` rather than in Studio because **two compilers read it** (plan 111 §9 Q1, step 111.9). Studio's `globals.css` does `@import '@enkaku/ui/theme.css'` and emits the variables onto the document; a tier-C plugin's own stylesheet imports the same file with `theme(reference)` and emits nothing, so `bg-surface` in a plugin compiles to `var(--color-surface, …)` and resolves against the value Studio already published. A second copy would drift the first time the palette moved — and because a plugin's `<link>` is injected after Studio's, that stale copy would win the cascade and repaint every screen in the farm, not just the plugin's. `@custom-variant hover-none` lives there too: it names a device capability, not a component, and an unknown variant compiles to nothing with no error at all.
+Three selectors carry the palette: `:root` (light), `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) }` (dark by system preference), and `:root[data-theme="dark"]` (dark by choice). An explicit `data-theme` wins; with none, the page follows the system. `scripts/check-design-tokens.ts` asserts every value below under every selector (plan 204 §12: `@enkaku/ui` has zero tests, so this is a CI script, not a test file).
 
-What stays in `packages/studio/src/app/globals.css` is Studio's own page — the `@layer base` reset (including the dot-grid body background) and the `@layer components` classes (`.status-rail`, `.rack-label`, `.readout`). Those are not vocabulary a plugin could name.
+| Token | Light | Dark |
+|---|---|---|
+| `--bg` | `#f1f1f2` | `#0c0c0e` |
+| `--panel` | `#ffffff` | `#16161a` |
+| `--panel-2` | `#fbfbfc` | `#1a1a1f` |
+| `--panel-a` | `#ffffffee` | `#16161aee` |
+| `--muted` | `#f6f6f7` | `#202027` |
+| `--muted-2` | `#f4f4f5` | `#1d1d23` |
+| `--hover` | `#fafafa` | `#1e1e25` |
+| `--line` / `--line-2` | `#f0f0f1` / `#eeeef0` | `#26262d` / `#26262d` |
+| `--border` / `--border-2` / `--border-3` | `#e8e8ea` / `#e4e4e7` / `#d4d4d8` | `#2a2a32` / `#32323b` / `#3c3c46` |
+| `--text` / `--text-2` / `--text-3` | `#18181b` / `#3f3f46` / `#52525b` | `#f4f4f5` / `#d4d4d8` / `#b0b0b8` |
+| `--dim` / `--faint` / `--faint-2` | `#71717a` / `#a1a1aa` / `#c4c4c8` | `#8e8e98` / `#71717a` / `#55555f` |
+| `--accent` / `--accent-2` | `#16803c` / `#12652f` | `#4ade80` / `#86efac` |
+| `--accent-soft` / `--on-accent` | `#ecf6ef` / `#ffffff` | `#16281d` / `#08130c` |
+| `--accent-a1` / `-a2` / `-a3` | `#16803c14` / `1f` / `40` | `#4ade8014` / `1f` / `40` |
+| `--ok` | `#16a34a` | `#4ade80` |
+| `--warn` / `--warn-2` / `--warn-soft` | `#b45309` / `#d97706` / `#fef6e7` | `#fbbf24` / `#f59e0b` / `#2a2110` |
+| `--danger` / `--danger-soft` | `#dc2626` / `#fdeceb` | `#f87171` / `#2b1616` |
+| `--avatar-bg` / `--avatar-fg` | `#fde8ea` / `#b4405a` | `#34212a` / `#f0a3b4` |
+| `--tooltip-bg` / `--tooltip-fg` | `#18181b` / `#fafafa` | `#f4f4f5` / `#18181b` |
+| `--scrim` | `#18181b33` | `#00000080` |
 
-| Group | Tokens | Used for |
-| --- | --- | --- |
-| Surfaces | `--color-bg`, `--color-surface`, `--color-surface-2`, `--color-surface-3` | page background, cards, inputs, popovers |
-| Lines | `--color-line`, `--color-line-strong` | card borders, input borders |
-| Text | `--color-fg`, `--color-fg-muted`, `--color-fg-subtle` | body, descriptions, labels |
-| Interactive | `--color-accent`, `--color-accent-strong`, `--color-accent-fg` | primary buttons, focus, links |
-| Status (LED) | `--color-led-ok`, `--color-led-active`, `--color-led-warn`, `--color-led-danger`, `--color-led-off` | status badges, the rail, out-of-range numbers |
-
-A second `@theme` block maps the shadcn tokens (`--color-background`, `--color-primary`, …) onto the ones above, so shadcn components and our own draw from one palette rather than two.
-
-### The plan 101 refresh — values converted from `refs/ui`, never pasted as hex
-
-Every value below is expressed in OKLCH, converted from the reference's hex/rgba (never pasted as hex, so `theme.css` does not drift into two colour notations). See that file's own inline comments for the exact conversion and the reasoning behind each deviation from the reference.
-
-| Token | Source in `refs/ui` | Note |
-| --- | --- | --- |
-| `--color-bg` | `#0a0a0a` | **Not adopted** — see the Direction section above. Left at its pre-refresh graphite value, gated on plan 101 H3. |
-| `--color-surface` | `#181818` | |
-| `--color-surface-2` | `#0d0d0d` | **Repurposed**: before this refresh, `-2` meant an ELEVATED surface (lighter than `--color-surface`); the reference's own `-2` is a RECESSED panel (darker). Adopted as the reference defines it — a component reaching for "elevated" now wants `--color-surface-3` instead. |
-| `--color-surface-3` | *(no reference counterpart)* | Kept as the elevated surface existing dialogs/popovers/skeletons already rely on, continuing the pre-refresh progression above `--color-surface` rather than guessing a new role for a step the mockup never needed. |
-| `--color-line` / `-strong` | `rgba(255,255,255,0.12)` / `0.14` | The reference uses alpha-white borders; composited to solid tokens (over `--color-surface`) so opacity modifiers stay usable on the tokens themselves, rather than the tokens being semi-transparent. |
-| `--color-fg` | `#f2f2f2` | |
-| `--color-fg-muted` / `-subtle` | `rgba(255,255,255,0.5)` / `0.35` | Same solid-token conversion as `--color-line` above. |
-| `--color-accent` | `#6db5ff` | |
-| `--color-led-ok` / `-danger` | `#4ade80` / `#ff5c5c` | Adopted directly. |
-| `--color-led-warn` | `#fefa3d` | **Not adopted verbatim** — converts to a markedly brighter value than the rest of this palette. Landed a step down in lightness and chroma instead, still visibly brighter than the pre-refresh warn. |
-| `--color-led-active`, `--color-led-off` | **no counterpart** | Re-derived, never dropped (see below) — `led-active`'s hue now matches the new accent; `led-off`'s lightness was nudged for legibility against the still-fairly-dark `--color-surface`. |
-
-**`led-active` and `led-off` have no equivalent in the reference**, because the reference never had to render an idle rack. `led-active` distinguishes a device that is streaming from one that is merely healthy; `led-off` distinguishes a device with no signal from one in trouble. A wall that cannot tell "asleep" from "broken" is a regression no amount of polish repays. A palette rewrite is exactly the kind of change that drops a token only one screen uses — `design-rules.test.ts` asserts their survival mechanically rather than trusting review.
-
-`#ff5de7` appears once in the reference, in the logo mark's gradient. It is deliberately **not** promoted to a token: naming it invites its use as a second accent, and "saturated colour is for status only" is the rule immediately above.
-
-### Blur: nothing that scales with device count
-
-The refresh introduced `backdrop-blur-[20px] backdrop-saturate-[150%]` on the sidebar (`AppShell.tsx`). Plan 101 §5 step 101.7 (2026-08-16) added a second, bounded use: the Devices screen's floating title/search/filter pills (`app/page.tsx`'s `PILL`), matching `refs/ui`'s own header treatment.
-
-Step 101.8 (2026-08-16) added the content pane's own two ambient-glow blobs (`AppShell.tsx`, above) — these use `filter: blur()`, a different CSS property from `backdrop-filter`. `filter: blur()` still forces a compositing layer, so it is held to the same "nothing that scales with device count" rule below (two fixed, decorative divs, not one per device) — but it is worth naming as a distinct property, because `design-rules.test.ts`'s own regex only matches `backdrop-(filter|blur|saturate)`/`backdropFilter` by design (it is scoped to the specific per-device components named in §6, and a plain `filter: blur()` on those would not trip it either). Nothing here relies on the test to catch a `filter: blur()` misuse — it relies on this rule being read.
-
-**The rule is not "exactly one element" — it never was, precisely; that earlier wording here was imprecise and is corrected in this same pass.** The real constraint, which `design-rules.test.ts` has enforced from the start, is **nothing that scales with device count**. Backdrop-filter forces a compositing layer, and the wall is already the most GPU-contended surface in this product — it decodes 24–40 simultaneous H.264 streams, and plan 100 established that **browser decode capacity, not bandwidth, is what limits how many devices a wall can show**. A blur repeated per tile would spend exactly what plan 100 was built to win back; a blur on a FIXED handful of header chrome elements — the sidebar, a page's title pill, a row of filter pills — costs the same whether the farm has 4 devices or 400, so it never competes with the decoders the way a per-tile cost would.
-
-So: permitted on the sidebar and on a bounded number of once-per-page chrome elements (a title pill, a filter row). Forbidden on wall tiles, device cards, status rails, and anything else rendered once **per device**. `design-rules.test.ts` asserts the forbidden half mechanically against `WallTile.tsx`/`DeviceCard.tsx`/`DeviceTile.tsx`/`LiveView.tsx`'s own source, not by review — this codebase has already recorded two cases (hotfix §96.22, §96.25) of a rule that nobody re-checked quietly ceasing to be true, and the refresh itself tripped a THIRD: `WallTile.tsx` carried a pre-existing per-tile `backdrop-blur-sm` (predating this plan) that the new test caught and step 101.3 removed.
+What the names mean: `--bg` is the page behind the panels; `--panel` is every panel, the rail, the status bar, a popover; `--panel-2` is a recessed surface (a table header, an input); `--panel-a` is the panel at 93% alpha, for a scrim over a screen; `--muted` and `--muted-2` are fills for chips, pill containers and hover rows; `--hover` is a hovered table row; `--line`/`--line-2` are hairlines inside a panel and `--border`/`-2`/`-3` are borders of increasing weight; `--text`/`-2`/`-3` are body text steps and `--dim`/`--faint`/`--faint-2` are the secondary steps; `--accent` is the one interactive colour, `--accent-2` its hover, `--accent-soft` its tint, `--on-accent` the text on it, and `--accent-a1/2/3` its alphas (marquee fill, node bounds, the bulk pill's shadow); `--ok`, `--warn`, `--warn-2`, `--danger` are status, with `-soft` tints; `--avatar-*` is the avatar chip; `--tooltip-*` is the dark tooltip; `--scrim` dims a sheet's backdrop.
 
 ### Writing colour classes
 
-Tailwind v4 generates utilities straight from the token names: `--color-surface` becomes `bg-surface`, `--color-fg-muted` becomes `text-fg-muted`, and `--color-led-danger` becomes `border-led-danger` (accepting opacity modifiers, as in `bg-led-danger/10`).
+Tailwind v4 generates the utilities from `theme.css`: `bg-panel`, `bg-panel-2`, `text-text`, `text-faint`, `border-line-2`, `border-border-3`, `bg-accent-soft`, `text-on-accent`, `bg-scrim`, `fill-tooltip-bg`, with opacity modifiers (`bg-danger/15`). `text-text` is the body text colour; it reads oddly and is kept because it is the handoff's own name.
 
-**Do not write `bg-[--color-surface]`.** That form is Tailwind v3 syntax and produces no CSS at all in v4 — the class silently has no effect, which is far harder to spot than a visible error.
+**Do not write `bg-[--color-panel]`.** That is Tailwind v3 syntax and produces nothing in v4. **Do not write `dark:`.** The palette switches; a class never does. **Do not state a hex in a component.** `packages/studio/src/design-rules.test.ts` fails a `.ts`/`.tsx` file that contains one.
+
+The names `bg-surface`, `text-fg-muted`, `text-led-ok` and the shadcn names (`bg-primary`, `text-muted-foreground`) are the prototype's vocabulary, retained in `theme.css`'s last block only until the screens that use them are deleted (plan 204 §3.5). A new screen never names one.
 
 ## Typography
 
-- **Outfit** for the interface (replaced Archivo, plan 101 step 101.1). A geometric grotesk, self-hosted through the identical `next/font/google` mechanism Archivo used — see below for why that mechanism matters, not just which typeface it loads.
-- **IBM Plex Mono** for `.readout` and `.rack-label`. **Unchanged by the refresh.** The `refs/ui` reference has no monospace face at all, because it never had to render a temperature that changes twice a second beside one that does not. `.readout` is why a fluctuating number does not reflow the card it sits in; dropping it to match a mockup would trade a functional property for a cosmetic one.
-- Both load through `next/font/google`, so their files are self-hosted at build time. Nothing is requested from a third party at runtime — which matters for farms on closed networks.
+Geist and Geist Mono, self-hosted through `@fontsource-variable/geist` and `@fontsource-variable/geist-mono` (imported once in `packages/studio/src/app/layout.tsx`, `wght.css` of each, normal weight only), never from Google Fonts: the core serves Studio on LANs that may have no internet, and on at least one farm every request rides the guest agent's SOCKS5 tunnel, where an external fetch hangs rather than degrading. `font-sans` is Geist, `font-mono` is Geist Mono.
 
-  **This is why Outfit arrives through `fonts.ts`, never a `<link>`.** The reference loads it from the Google Fonts CDN, which is a runtime third-party request. Studio is a static export served by the core, routinely on closed networks — and on at least one real farm every request is routed through the guest agent's SOCKS5 tunnel, where an external font fetch does not degrade gracefully, it hangs.
+From the handoff, verbatim: **Typography** — `Geist` (400/500/600/700) for UI, `Geist Mono` (400/500) for serials, endpoints, paths, versions, script names, timestamps and numeric readouts. Scale: 19px/600 settings section titles, 16px/600 sheet titles, 15px/600 page and job titles, 14px/600 device name in Device Control, 13px/500-600 row titles and buttons, 12.5px body and controls, 11.5px meta, 11px column labels and hints, 10.5px badges, 10px tooltips and frame captions.
 
-`.rack-label` (10 px, uppercase, `letter-spacing: 0.12em`) is for small panel headings, imitating rack-unit markings.
+The scale has one utility per step: `text-section` (19), `text-sheet` (16), `text-title` (15), `text-name` (14), `text-row` (13), `text-body` (12.5), `text-meta` (11.5), `text-label` (11), `text-badge` (10.5), `text-tip` (10). A measurement (a serial, an endpoint, a duration, a count) is always `font-mono`.
+
+## Spacing
+
+From the handoff, verbatim: **Spacing** — 10px shell gap and padding; 12–14px panel padding; 6/8/10/12/14px gaps.
+
+## Radii
+
+From the handoff, verbatim: **Radii** — 16px page panels, 18px floating window and cast, 14px cards/sheets/status bar, 12px inner cards, 10px buttons and rows, 9px settings inputs and nav items, 8px small buttons, 7px compact chips, 5px checkboxes, 999px pills.
+
+Utilities: `rounded-panel` (16), `rounded-window` (18), `rounded-card` (14), `rounded-inner` (12), `rounded-button` (10), `rounded-input` (9), `rounded-small` (8), `rounded-chip` (7), `rounded-check` (5), `rounded-pill` (999).
+
+## Shadows
+
+From the handoff, verbatim: **Shadows** — `0 1px 3px #00000014` (active pill), `0 8px 24px #00000014` (cast), `0 10px 24px var(--accent-a3)` (bulk pill), `0 16px 40px #0000001f` (popovers), `0 20px 50px #00000024` (console/menus), `0 30px 80px #00000033` (Device Control).
+
+Utilities: `shadow-active-pill`, `shadow-cast`, `shadow-bulk-pill`, `shadow-popover`, `shadow-menu`, `shadow-window`, plus two the components draw: `shadow-selected-row` (`inset 2px 0 0 var(--accent)`, the selected table row) and `shadow-dot-ring` (`0 0 0 3px var(--panel-a)`, the card's status dot). The console the handoff shadowed was removed by MVP 15 §0.1.4; the value stays for menus.
+
+## Icons
+
+Phosphor, regular weight, from `@phosphor-icons/react` 2.1.10, under the package's `*Icon` names (`DevicesIcon`, `ArrowsClockwiseIcon`). Studio imports them from `@phosphor-icons/react`; `@enkaku/ui` re-exports the handoff's set from `packages/ui/src/icons.ts`, and a plugin takes them from `@enkaku/ui` so it never bundles its own copy. The plugin nav allowlist (`ICON_NAMES`, 41 ids) is unchanged; `packages/studio/src/lib/plugin-icons.ts` maps each id to a Phosphor component.
+
+## Theme
+
+`resolveTheme()` from `@enkaku/ui` answers `'light' | 'dark'` by the same rule as the palette's selectors: an explicit `data-theme` on `<html>`, else the system preference. `useResolvedTheme()` is the same as React state, re-rendering when either changes. The toggle that writes the attribute and persists it under `localStorage` `enkaku-theme` is the shell's (plan 213).
+
+## Primitives
+
+`@enkaku/ui`'s components carry the handoff's measurements (plan 204 §4.6): a button is 34 px tall with a 10 px radius (`sm` is 26 px with 8 px; `icon` is 32×32; `icon-lg` is the 34×34 rail button); an input is 34 px, 9 px radius, on `panel-2` with a `border-2` border; a checkbox is 16×16, 5 px, a 1.5 px `border-3` border, accent when checked; a switch is 34×19 with a 15 px knob; tabs are 7px 12px at 9 px, compact chips 4px 10px at 7 px, and pill tabs sit in a 999 px `muted` container; a popover carries `shadow-popover`; a sheet is 452 px on the right behind `bg-scrim`; a tooltip is `tooltip-bg`/`tooltip-fg` at 8 px and 10 px text; a table header is 38 px on `panel-2` with 11 px `faint` labels; `StatusDot` is 8 px, or 9 px with a 3 px `panel-a` ring on a card; `Badge` is the task chip (3px 9px, 999 px, 11.5 px; `default` accent, `warn`, `secondary` muted, `ghost` plain); `Avatar` is the 30 px initials chip.
 
 ## Screen patterns
+
+> **Prototype section.** Everything from here on describes the v0.1.32 Studio (`AppShell`, `PageHeader`, the status rail, the device popup, `TargetPicker`, the operation tray). It is replaced screen by screen by plans 213 (shell), 214 (Devices), 215 (Device Control), 216 (action dialogs), 217 (Scripts and Workflows), 218 (Jobs), 219 (Plugins and Settings) and 150 (Agents), each of which rewrites the bullets it owns and deletes the rest.
 
 - **`PageHeader`** is required on every screen: the title answers "where am I", and the right side carries the one primary action. Its position never moves, so it never has to be hunted for.
 

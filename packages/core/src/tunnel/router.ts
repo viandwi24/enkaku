@@ -49,7 +49,7 @@ export interface TunnelRouter {
 /**
  * Tunnel router in the control plane (plan 11 §4.3).
  *
- * Authoritative decisions (leases, busy rejection, lock validation) stay in the
+ * Authoritative decisions (activity admission, busy rejection, lock validation) stay in the
  * control plane BEFORE a message is forwarded to a node — the node's local
  * re-validation is defence in depth, nothing more.
  */

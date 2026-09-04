@@ -6,6 +6,8 @@ import type { HelloResult, LocationClearResult, LocationSetResult } from '@enkak
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
+import { createActivityRegistry } from '../activity/registry'
+import { createDeviceStateMachine } from '../device/state-machine'
 import { createLogger } from '../util/logger'
 import { createDeviceIdentityRoutes, type DeviceIdentityRoutesDeps } from './device-identity'
 
@@ -27,19 +29,11 @@ function seedDevice(db: Db, overrides: Partial<DeviceRow> = {}): void {
       stableId: 'stable-dev-1',
       serial: 'serial-dev-1',
       label: 'Test Phone',
-      status: 'idle',
+      status: 'online',
       apiLevel: 35,
       ...overrides,
     })
     .run()
-}
-
-function fakeLeases(held = true) {
-  return {
-    getLease: () => (held ? { deviceId: 'dev-1', type: 'manual' as const, holder: 'client-a', acquiredAt: 0, expiresAt: 0 } : null),
-    checkInputAllowed: (_deviceId: string, clientId: string) =>
-      held && clientId === 'client-a' ? { ok: true as const } : { ok: false as const, code: 'no_lease', message: 'take control first' },
-  } as unknown as DeviceIdentityRoutesDeps['leases']
 }
 
 interface Harness {
@@ -51,7 +45,6 @@ interface Harness {
 
 function makeHarness(opts: {
   role?: 'admin' | 'operator' | null
-  leaseHeld?: boolean
   /** Capabilities the fake guest agent advertises via `hello()`. Omit `'mock-location'` to simulate an older build. */
   capabilities?: string[]
   /** When set, every guest-agent call rejects with this — simulates an unreachable device. */
@@ -105,17 +98,42 @@ function makeHarness(opts: {
     labelClear: async () => ({ restored: 'system-default', fingerprint: null }),
     textCommit: async () => ({ committed: 0, ime: 'not-current' }),
     textStatus: async () => ({ ime: 'disabled', id: 'dev.enkaku.guestagent/.input.EnkakuIme', connected: false }),
+    // Not exercised by this file's tests — stubs to satisfy the widened `GuestAgentClient`
+    // interface (plan 221 §4.11's `ui-tree`/`activity` capabilities).
+    uiDump: async () => ({
+      root: { resourceId: '', text: '', desc: '', className: 'hierarchy', packageName: '', bounds: { left: 0, top: 0, right: 0, bottom: 0 }, clickable: false, enabled: true, focused: false, index: 0, children: [] },
+      widthPx: 0,
+      heightPx: 0,
+      nodeCount: 0,
+      truncated: false,
+      tookMs: 0,
+    }),
+    uiFind: async () => ({ node: null, matches: 0, tookMs: 0 }),
+    activitySet: async () => ({ accepted: 0 }),
+    deviceDescribe: async () => ({ accepted: true as const }),
+    textPrefs: async () => ({ showSoftKeyboardWithHardware: false }),
+    uiStatus: async () => ({
+      enabled: false,
+      connected: false,
+      watching: false,
+      lastDumpAgoMs: null,
+      lastDumpNodes: null,
+      lastError: null,
+    }),
   }
 
+  const log = createLogger('test')
   const deps: DeviceIdentityRoutesDeps = {
     db,
     exec: async (serial, cmd) => {
       execCalls.push(`${serial}: ${cmd}`)
       return { stdout: '', stderr: '', exitCode: 0 }
     },
-    leases: fakeLeases(opts.leaseHeld ?? true),
+    activities: createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} }),
+    controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+    states: createDeviceStateMachine({ db, log }),
     record: () => {},
-    log: createLogger('test'),
+    log,
     withGuestAgentClient: async (_deviceId, fn) => {
       if (opts.guestAgentUnreachable) throw opts.guestAgentUnreachable
       return fn(client)
@@ -167,9 +185,9 @@ describe('PUT /api/devices/:id/identity — timezone and locale (plan 58 §4, §
     })
   })
 
-  test('a manual lease must be held', async () => {
-    const { db, app } = makeHarness({ leaseHeld: false })
-    seedDevice(db)
+  test('an offline device is refused — the only admission this `command`-kind write still takes (plan 205 §4.9)', async () => {
+    const { db, app } = makeHarness({})
+    seedDevice(db, { status: 'offline' })
     const res = await app.request('/dev-1/identity', {
       method: 'PUT',
       body: JSON.stringify({ timezone: 'America/New_York' }),
@@ -270,9 +288,9 @@ describe('DELETE /api/devices/:id/identity (plan 58 §4.3, §5.3)', () => {
     expect((row?.settings as { identity?: unknown } | null)?.identity).toEqual({})
   })
 
-  test('a manual lease must be held', async () => {
-    const { db, app } = makeHarness({ leaseHeld: false })
-    seedDevice(db)
+  test('an offline device is refused — the only admission this `command`-kind write still takes (plan 205 §4.9)', async () => {
+    const { db, app } = makeHarness({})
+    seedDevice(db, { status: 'offline' })
     const res = await app.request('/dev-1/identity', { method: 'DELETE' })
     expect(res.status).toBe(409)
   })

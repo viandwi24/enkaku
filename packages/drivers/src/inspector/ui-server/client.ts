@@ -5,8 +5,16 @@ import type { UiSelector } from './selector'
  * Client JSONRPC ke server on-device (pola openatx/uiautomator2).
  *
  * The usable method SUBSET is deliberately narrow (plan 06 §4.4) so that
- * moving to our own APK stays a small surface. The method names below MUST be
- * verified against the pinned APK version (TODO-verify on a real device).
+ * moving to our own APK stays a small surface. The method names below were
+ * verified against the pinned APK's own source (plan 208 §5 step 208.4,
+ * `android-uiautomator-server` tag 2.3.3): `AutomatorService`/
+ * `AutomatorServiceImpl` (`app/src/androidTest/.../stub/`) declare
+ * `dumpWindowHierarchy`, `objInfo`, `setText`, `longClick`, `click`,
+ * `setConfigurator(ConfiguratorInfo)`/`getConfigurator()` exactly as used
+ * below, served by `com.googlecode.jsonrpc4j.JsonRpcServer` (plain
+ * `nanohttpd` + `jsonrpc4j` 1.5.0, no `@JsonRpcParam` annotations), which
+ * maps a JSON array of params positionally — the single-element
+ * `params: [info]` shape below is correct, not a guess.
  */
 
 const JsonRpcResponse = z.object({
@@ -196,4 +204,42 @@ export class UiServerClient {
     await Bun.sleep(80)
     await this.rpc('click', [selector])
   }
+
+  /** Positional, as every other method on this surface: `params: [info]`. */
+  setConfigurator(info: ConfiguratorInfo): Promise<void> {
+    return this.rpc<void>('setConfigurator', [ConfiguratorInfoSchema.parse(info)])
+  }
+
+  /** Read back for the one `info` log line after every apply; the shape is the server's, validated loosely. */
+  async getConfigurator(): Promise<Record<string, unknown>> {
+    const raw = await this.rpc<unknown>('getConfigurator', [])
+    return z.record(z.string(), z.unknown()).parse(raw)
+  }
+}
+
+/**
+ * The openatx `ConfiguratorInfo` (R5): the JSON-RPC mirror of UiAutomator's
+ * `Configurator`. Field names verified against the pinned tag's source in
+ * plan 208 §5 step 208.4 (`ConfiguratorInfo.java`'s public getters/setters,
+ * serialised by jsonrpc4j's default Jackson mapping — camelCase, no
+ * underscore prefix despite the private field names carrying one);
+ * `uiAutomationFlags` exists from 2.3.11 only and is not sent on 2.3.3 (§9 Q4).
+ */
+export const ConfiguratorInfoSchema = z.object({
+  waitForIdleTimeout: z.number().int().min(0),
+  waitForSelectorTimeout: z.number().int().min(0),
+  actionAcknowledgmentTimeout: z.number().int().min(0),
+  scrollAcknowledgmentTimeout: z.number().int().min(0),
+  keyInjectionDelay: z.number().int().min(0),
+  uiAutomationFlags: z.number().int().min(0).optional(),
+})
+export type ConfiguratorInfo = z.infer<typeof ConfiguratorInfoSchema>
+
+/** MVP 02 §4 phase 1: the caller polls; the server must never wait for idle on its behalf. */
+export const DEFAULT_CONFIGURATOR: ConfiguratorInfo = {
+  waitForIdleTimeout: 0,
+  waitForSelectorTimeout: 0,
+  actionAcknowledgmentTimeout: 0,
+  scrollAcknowledgmentTimeout: 0,
+  keyInjectionDelay: 0,
 }

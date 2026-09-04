@@ -8,11 +8,9 @@ import { toast } from 'sonner'
 import {
   PluginRestartResponseSchema,
   PluginOkResponseSchema,
-  ScriptGroupsPageResponseSchema,
-  ScriptResponseSchema,
-  ScriptToggleResponseSchema,
+  ScriptsListResponseSchema,
   type DevSlotView,
-  type DeviceInfo,
+  type ScriptListItem,
 } from '@enkaku/protocol'
 import {
   Badge,
@@ -22,7 +20,6 @@ import {
   ErrorState,
   Input,
   LoadingRows,
-  Switch,
   Table,
   TableBody,
   TableCell,
@@ -37,16 +34,16 @@ import {
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { InstallPluginDialog } from '@/components/plugins/InstallPluginDialog'
 import { PluginActions } from '@/components/plugins/PluginActions'
-import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { PluginStatusBadge } from '@/components/StatusBadge'
-import { fetchDevices } from '@/lib/api'
 import { coreBase } from '@/lib/ws'
 import {
   PluginsListSchema,
   devSlotMatches,
   groupPlugins,
+  paramCount,
   scriptMatches,
   searchPlugins,
   type PluginMatch,
@@ -95,7 +92,7 @@ import {
  * **URL parameters.** `?tab=plugins|scripts` and `?q=<search>`, both in the
  * query string because Studio is a static export (`output: 'export'`) — no
  * route segments, `next/link` for the tabs, never a plain `<a>`. `?device=`
- * and `?cluster=` still arrive here from a device card's Run button and from
+ * and `?group=` still arrive here from a device card's Run button and from
  * `/scripts`'s redirect, are untouched, and now additionally select the
  * Scripts tab by default, since "run a script on this device" is what they
  * mean. One `q` serves both tabs and is carried across a tab switch: typing
@@ -145,7 +142,7 @@ function PluginsScreen() {
   const [scriptError, setScriptError] = useState<string | null>(null)
 
   const tabParam = params.get('tab')
-  const hasRunTarget = Boolean(params.get('device') || params.get('cluster'))
+  const hasRunTarget = Boolean(params.get('device') || params.get('group'))
   const tab: TabKey = tabParam === 'scripts' || tabParam === 'plugins' ? tabParam : hasRunTarget ? 'scripts' : 'plugins'
 
   // Typed into local state so the field never lags a keystroke, mirrored into
@@ -562,16 +559,6 @@ function PluginRowView({ match, onChanged }: { match: PluginMatch; onChanged: ()
   )
 }
 
-/** One row per script NAME (plan 62 §3.5, §4.4) — the version count is a link into the detail, where every version lives. */
-interface ScriptGroupRow {
-  id: string
-  name: string
-  latestVersion: string
-  versionCount: number
-  lastPublishedAt: number | null
-  enabled: boolean
-}
-
 /**
  * The Scripts tab — what used to be the whole of `/scripts`, absorbed here (the
  * grouped list, the enable switch, Run, and the row link into
@@ -583,94 +570,38 @@ interface ScriptGroupRow {
  * for either to distinguish: a script is a member of a plugin and nothing else
  * (plan 110 §3.2), so every name in this list is already `<plugin>/<script>`.
  * A DEV script is never in this list at all (dev slots are not `scripts` rows);
- * it is visible in the Plugins tab instead, and in `RunScriptDialog`.
+ * it is visible in the Plugins tab instead, and in the `run-script` action dialog.
  *
- * `?device=`/`?cluster=` still arrive here — a device card's Run button and a
- * cluster's Run link point at `/plugins?device=…`, and `/scripts` keeps its
+ * `?device=`/`?group=` still arrive here — a device card's Run button and a
+ * group's Run link point at `/plugins?device=…`, and `/scripts` keeps its
  * query intact when it redirects — so the "open the run dialog straight away"
  * flow those links exist for is unbroken, and now lands on this tab.
  */
 function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { count: number | null; error: string | null }) => void }) {
   const params = useSearchParams()
   const initialDevice = params.get('device')
-  const initialCluster = params.get('cluster')
-  const tableRef = useRef<PaginatedTableHandle<ScriptGroupRow>>(null)
-  const [devices, setDevices] = useState<DeviceInfo[]>([])
-  const [firstScript, setFirstScript] = useState<ScriptRow | null>(null)
-  const [runTarget, setRunTarget] = useState<ScriptRow | null>(null)
+  const initialGroup = params.get('group')
+  const tableRef = useRef<PaginatedTableHandle<ScriptListItem>>(null)
+  const [firstScript, setFirstScript] = useState<ScriptListItem | null>(null)
   const [autoOpened, setAutoOpened] = useState(false)
-  const { run, isPending } = useAction()
+  const { isPending } = useAction()
+  const { open: openActionDialog } = useActionDialogs()
 
-  /**
-   * The farm's device list, fetched LAZILY — plan 126 §0.4, step 126.3.
-   *
-   * It exists for one consumer, `RunScriptDialog`'s target picker, and it is
-   * not cheap: `fetchDevices()` is `fetchAllPages('/api/devices')`, which
-   * walks pages SEQUENTIALLY at `limit=200`, up to 25 round trips
-   * (`lib/api.ts`). It used to run on mount — and because this section stays
-   * MOUNTED behind the tab strip (see the `hidden` comment above, which is
-   * load-bearing: unmounting it would make a failure in the inactive tab
-   * silent), every operator who opened the Plugins tab paid for it, including
-   * the ones who never opened the run dialog at all.
-   *
-   * `requested` is a ref, not state: this must fire exactly once per mount and
-   * a re-render is not wanted — the arriving devices already re-render through
-   * `setDevices`. `RunScriptDialog` re-resolves its default target when
-   * `devices.length` changes (its own `targetSelection.reset` effect), which is
-   * what makes a list that lands slightly after the dialog opened correct
-   * rather than a flash: the picker fills in and re-defaults, exactly as it
-   * already does for `/api/clusters`, which the dialog has always fetched on
-   * open rather than on mount.
-   */
-  const devicesRequested = useRef(false)
-  const ensureDevices = () => {
-    if (devicesRequested.current) return
-    devicesRequested.current = true
-    void fetchDevices()
-      .then(setDevices)
-      .catch(() => undefined)
-  }
+  const ctxFromQuery = () => (initialDevice ? { deviceIds: [initialDevice] } : initialGroup ? { groupId: initialGroup } : {})
 
-  // The deep-link flow (`?device=`/`?cluster=`) opens the dialog by itself as
-  // soon as the script list resolves, so the fetch starts HERE rather than
-  // waiting for that: it runs in parallel with the script list instead of
-  // after it, which is what keeps the "Run on this device" arrival as fast as
-  // it was before this became lazy.
-  useEffect(() => {
-    if (initialDevice || initialCluster) ensureDevices()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialDevice, initialCluster])
-
-  // Arriving from the "Run" button on a device card, or a cluster's "Run" link:
+  // Arriving from the "Run" button on a device card, or a group's "Run" link:
   // open the dialog as soon as the script list is ready, so the flow is not
   // interrupted.
   useEffect(() => {
-    if ((initialDevice || initialCluster) && firstScript && !runTarget && !autoOpened) {
-      setRunTarget(firstScript)
+    if ((initialDevice || initialGroup) && firstScript && !autoOpened) {
+      openActionDialog('run-script', ctxFromQuery(), { scriptId: firstScript.id })
       setAutoOpened(true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialDevice, initialCluster, firstScript])
+  }, [initialDevice, initialGroup, firstScript])
 
-  const toggleEnabled = (s: ScriptGroupRow) =>
-    run('toggle-' + s.id, () => api(`/api/scripts/${s.id}`, ScriptToggleResponseSchema, { method: 'PATCH', json: { enabled: !s.enabled } }), {
-      success: s.enabled ? `${s.name}@${s.latestVersion} disabled` : `${s.name}@${s.latestVersion} enabled`,
-      failure: 'Could not change the script status',
-      onSuccess: () => tableRef.current?.reload(),
-    })
-
-  // The list only ever shows the latest version's summary — opening the run
-  // dialog needs its full row (params schema included), which the grouped
-  // endpoint deliberately omits to keep the list payload small.
-  const openRun = (s: ScriptGroupRow) => {
-    // Started BEFORE the script fetch is awaited, so the two run in parallel
-    // and the device list is usually already in state by the time the dialog
-    // mounts (plan 126 step 126.3).
-    ensureDevices()
-    return run('run-' + s.id, () => api(`/api/scripts/${s.id}`, ScriptResponseSchema), {
-      failure: 'Could not load this script',
-      onSuccess: (b) => setRunTarget(b.script),
-    })
+  const openRun = (s: ScriptListItem) => {
+    openActionDialog('run-script', {}, { scriptId: s.id })
   }
 
   return (
@@ -679,23 +610,19 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
         <h2 id="scripts-section-heading" className="text-[13px] font-semibold tracking-tight">
           Scripts
         </h2>
-        <p className="min-w-0 flex-1 text-[12px] text-fg-muted">Every script the plugins registered, newest version first.</p>
+        <p className="min-w-0 flex-1 text-[12px] text-fg-muted">Every script the active plugins register.</p>
       </div>
 
-      <PaginatedTable<ScriptGroupRow>
+      <PaginatedTable<ScriptListItem>
         ref={tableRef}
         fetchPage={(cursor) =>
-          // Grouped: one row per name (plan 62 §4.4). The number of distinct
-          // script names is small, so the core returns every group in one page
-          // — `cursor` stays unused, kept in the call shape only because
-          // `PaginatedTable` always passes one.
-          api(`/api/scripts?group=name${cursor ? `&cursor=${cursor}` : ''}`, ScriptGroupsPageResponseSchema)
+          // The set is small (plan 210 §3.2 item 2): the core returns every
+          // member of every active plugin in one page — `cursor` stays
+          // unused, kept in the call shape only because `PaginatedTable`
+          // always passes one.
+          api(`/api/scripts${cursor ? `?cursor=${cursor}` : ''}`, ScriptsListResponseSchema)
             .then((page) => {
-              if (cursor === null && page.items[0]) {
-                void api(`/api/scripts/${page.items[0].id}`, ScriptResponseSchema)
-                  .then((b) => setFirstScript(b.script))
-                  .catch(() => undefined)
-              }
+              if (cursor === null && page.items[0]) setFirstScript(page.items[0])
               onLoaded({ count: page.total ?? page.items.length, error: null })
               return page
             })
@@ -717,10 +644,9 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
         header={
           <>
             <TableHead>Name</TableHead>
-            <TableHead>Latest</TableHead>
-            <TableHead>Versions</TableHead>
-            <TableHead>Published</TableHead>
-            <TableHead>Enabled</TableHead>
+            <TableHead>Plugin</TableHead>
+            <TableHead>Params</TableHead>
+            <TableHead>Last run</TableHead>
             <TableHead className="text-right">Actions</TableHead>
           </>
         }
@@ -735,30 +661,17 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
                 {s.name}
               </Link>
             </TableCell>
-            <TableCell className="readout whitespace-nowrap text-[12px] text-fg-muted">{s.latestVersion}</TableCell>
             <TableCell className="whitespace-nowrap">
-              <Link href={`/scripts/detail?id=${s.id}`} className="readout text-[12px] text-fg-muted hover:text-accent">
-                {s.versionCount} version{s.versionCount === 1 ? '' : 's'}
+              <Link href={`/plugins/detail?name=${s.plugin.name}`} className="readout text-[12px] text-fg-muted hover:text-accent">
+                {s.plugin.name}@{s.plugin.version}
               </Link>
             </TableCell>
-            <TableCell className="readout whitespace-nowrap text-[11.5px] text-fg-muted">{relativeTime(s.lastPublishedAt)}</TableCell>
-            <TableCell>
-              <Switch
-                checked={s.enabled}
-                disabled={isPending('toggle-' + s.id)}
-                onCheckedChange={() => void toggleEnabled(s)}
-                aria-label={`Enable ${s.name}@${s.latestVersion}`}
-                title={`Affects ${s.latestVersion} — the version @latest resolves to`}
-              />
+            <TableCell className="readout whitespace-nowrap text-[12px] text-fg-muted">{paramCount(s.paramsSchema) ?? '—'}</TableCell>
+            <TableCell className="readout whitespace-nowrap text-[11.5px] text-fg-muted">
+              {s.lastRun ? relativeTime(s.lastRun.createdAt) : 'never'}
             </TableCell>
             <TableCell className="text-right">
-              <Button
-                size="sm"
-                variant="secondary"
-                className="h-7 text-[12px]"
-                disabled={!s.enabled || isPending('run-' + s.id)}
-                onClick={() => void openRun(s)}
-              >
+              <Button size="sm" variant="secondary" className="h-7 text-[12px]" disabled={isPending('run-' + s.id)} onClick={() => void openRun(s)}>
                 <Play className="size-3.5" aria-hidden />
                 Run
               </Button>
@@ -782,13 +695,6 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
         }}
       />
 
-      <RunScriptDialog
-        script={runTarget}
-        devices={devices}
-        initialDevice={initialDevice}
-        initialCluster={initialCluster}
-        onClose={() => setRunTarget(null)}
-      />
     </>
   )
 }

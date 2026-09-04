@@ -16,7 +16,7 @@ describe('buildOpenApiDocument (plan 63 §4.5, acceptance #10)', () => {
     const paths = Object.keys(doc.paths)
     expect(paths.length).toBe(registry.all().length)
     expect(paths).toContain('/api/v1/cap/device.tap')
-    expect(paths).toContain('/api/v1/cap/script.publish')
+    expect(paths).toContain('/api/v1/cap/plugin.stage')
   })
 
   test('every path declares a POST operation with a request body and a 200 response schema', () => {

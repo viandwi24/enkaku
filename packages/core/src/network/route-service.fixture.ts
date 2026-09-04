@@ -7,8 +7,9 @@ import type { PreparationComponentStatus, RouteStatusResult, ShellResult } from 
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
-import { createDeviceStateMachine } from '../device/state-machine'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import { createDeviceStateMachine, type DeviceStateMachine } from '../device/state-machine'
+import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import type { Logger } from '../util/logger'
 import { createReverseRegistry, type ReverseRegistry } from './reverse-registry'
 import { createRouteService, type DeviceSession, type RouteService, type RouteServiceDeps } from './route-service'
@@ -27,9 +28,10 @@ import { createRouteService, type DeviceSession, type RouteService, type RouteSe
  *   back, restore) rather than being mocked out — an engine mocked at this
  *   seam would make every capture-once and restore assertion vacuous.
  * - the reverse registry is the REAL one over a fake `hostAdb` recording argv.
- * - the lease manager and the device state machine are REAL, over an in-memory
- *   database, because "held by somebody else" is precisely what the bulk path's
- *   classification turns on.
+ * - the activity registry and the device state machine are REAL, over an
+ *   in-memory database, because a live job/workflow-job/install is precisely
+ *   what the `network-apply` policy row's `forbid` turns on (plan 205 §2.4,
+ *   §4.4, §4.8).
  * - only the guest agent's session/launcher/client are stubs, which is the same
  *   boundary `api/guest-agent.test.ts` already fakes.
  */
@@ -89,9 +91,11 @@ export interface RouteHarness {
   service: RouteService
   /** `service.routes` behind a middleware that sets `c.get('user')`, like the real auth middleware does. */
   app: Hono<AuthEnv>
-  leases: LeaseManager
-  /** Every manual acquire/release the SERVICE itself made — the bulk path's transient hold (plan 114 §3.9). */
-  leaseCalls: Array<{ op: 'acquire' | 'release'; deviceId: string; clientId: string }>
+  activities: ActivityRegistry
+  controlSettings: () => ControlPolicySettings
+  states: DeviceStateMachine
+  /** Every `network-apply:<uuid>` marker the SERVICE itself started/ended — the online bulk path's own admission+marker (plan 205 §4.9). */
+  activityCalls: Array<{ op: 'start' | 'end'; deviceId: string; id: string }>
   events: RecordedEvent[]
   warns: string[]
   phones: Map<string, FakePhone>
@@ -139,24 +143,19 @@ export function makeRouteHarness(opts: RouteHarnessOptions = {}): RouteHarness {
     child: () => log,
   }
   const states = createDeviceStateMachine({ db, log, onChange: () => {} })
-  const leaseCalls: RouteHarness['leaseCalls'] = []
-  const realLeases = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 600, reaperIntervalMs: 1_000_000 },
-    log,
-    onJobLeaseExpired: () => {},
-  })
-  /** Records what the service does with leases without changing what it gets back. */
-  const leases: LeaseManager = {
-    ...realLeases,
-    acquireManual: (deviceId, clientId, userId, o) => {
-      leaseCalls.push({ op: 'acquire', deviceId, clientId })
-      return realLeases.acquireManual(deviceId, clientId, userId, o)
+  const activityCalls: RouteHarness['activityCalls'] = []
+  const controlSettings = (): ControlPolicySettings => ({ overControl: 'allow', idleSec: 30 })
+  const realActivities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
+  /** Records every `network-apply:<uuid>` marker the service itself starts/ends, without changing what it gets back. */
+  const activities: ActivityRegistry = {
+    ...realActivities,
+    start: (deviceId, input) => {
+      activityCalls.push({ op: 'start', deviceId, id: input.id })
+      return realActivities.start(deviceId, input)
     },
-    releaseManual: (deviceId, clientId, reason) => {
-      leaseCalls.push({ op: 'release', deviceId, clientId })
-      return realLeases.releaseManual(deviceId, clientId, reason)
+    end: (deviceId, id) => {
+      activityCalls.push({ op: 'end', deviceId, id })
+      return realActivities.end(deviceId, id)
     },
   }
 
@@ -190,6 +189,7 @@ export function makeRouteHarness(opts: RouteHarnessOptions = {}): RouteHarness {
     ensureInstalled: async () => ({ versionCode: null }),
     ensurePreGranted: async () => ({ state: 'granted', reason: null }),
     vpnConsent: async () => ({ state: 'granted', reason: null }),
+    ensureAccessibilityEnabled: async () => ({ state: 'enabled', reason: null }),
     bootstrap: async () => {},
     forward: async () => {},
     removeForward: async () => {},
@@ -232,7 +232,9 @@ export function makeRouteHarness(opts: RouteHarnessOptions = {}): RouteHarness {
     db,
     exec: execAgainst(phones),
     apkPath: async () => '/fake/guest-agent.apk',
-    leases,
+    activities,
+    controlSettings,
+    states,
     dataDir: mkdtempSync(join(tmpdir(), 'enkaku-route-service-test-')),
     log,
     record: (e) => events.push(e as RecordedEvent),
@@ -277,8 +279,10 @@ export function makeRouteHarness(opts: RouteHarnessOptions = {}): RouteHarness {
     db,
     service,
     app,
-    leases,
-    leaseCalls,
+    activities,
+    controlSettings,
+    states,
+    activityCalls,
     events,
     warns,
     phones,
@@ -291,7 +295,7 @@ export function makeRouteHarness(opts: RouteHarnessOptions = {}): RouteHarness {
       const serial = serialFor(deviceId)
       phones.set(serial, makePhone(serial))
       db.insert(devices)
-        .values({ id: deviceId, stableId: `stable-${deviceId}`, serial, label: `Phone ${deviceId}`, status: 'idle', apiLevel: 35, ...overrides })
+        .values({ id: deviceId, stableId: `stable-${deviceId}`, serial, label: `Phone ${deviceId}`, status: 'online', apiLevel: 35, ...overrides })
         .run()
       return db.select().from(devices).all().find((r) => r.id === deviceId)!
     },

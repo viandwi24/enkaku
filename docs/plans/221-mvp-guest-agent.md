@@ -1,6 +1,6 @@
 # Plan 221 — MVP wave 4 : The guest agent — `ui-tree` and `activity` facets, keyboard preferences, the full status screen, and the APK in the release
 
-> Status: draft — not started; written 2026-09-03 by the plan author for the MVP series
+> Status: implemented (software) — executed 2026-09-04; every hardware-gated row (G3, G6, G7, G8, G9, G10 and the §7.4 owner smoke) is unverified pending the lab device. See §11 for the full handoff.
 > Depends on: plan 205 (device activities: `DeviceActivitySchema` and `ActivityKindSchema` are the exact shape this plan mirrors onto the phone; the registry's `onChange` is what drives the push), plan 208 (inspector phase 1: the session-scoped lifecycle, the instrumentation lock, and its §9 Q4 on `uiAutomationFlags`), plan 200 (rules, format, references R1..R8).
 > Spec references: `docs/mvp/10-guest-agent.md` (entire, the scope), `docs/mvp/02-inspector-readiness.md` §4 phase 2 (why a first-party inspector and the enablement question), `docs/mvp/08-device-control.md` §1.2 (why UHID handles ordinary keys and the IME handles the rest), `docs/mvp/09-additional-scope.md` §4 (the APK is not built by the release today, plan 43 §5.11), `docs/mvp/16-consolidated-plan.md` §2 "Guest agent" row and §3 wave 4, `docs/mvp/13-removal-register.md` Part B.2 `apps/guest-agent` row, `docs/research/android-guest-agent.md` §1.1, §1.2, §1.3, §8, §10 item 5. External facts: R4 (restricted settings), R5 (openatx releases, `uiAutomationFlags`).
 > Ships: apps/guest-agent/app/src/main/java/dev/enkaku/guestagent/ui/UiTreeService.kt
@@ -1271,12 +1271,85 @@ Nothing in the APK is removed: the four existing facets stay, the single-line `E
 
 ## 11. Handoff report
 
-- **Checklist**:
-- **Commits**:
-- **Typecheck**:
-- **Tests run**:
-- **Removed, proven**:
+- **Branch**: `plan-221-guest-agent`, based on `mvp` tip (`71cac9d docs(plans): plan 200 §8.8 — R4 reconciliation; read the migration journal before generating`), in the isolated worktree `/Users/solpochi/Projects/oss/openpf/.claude/worktrees/agent-a44c3776f9ee3228a`.
+
+- **Checklist**: G1 ✅ (`GuestAgentCapabilitySchema` has 9 members incl. `ui-tree`/`activity`; `Protocol.kt`'s `CAPABILITIES` matches) · G2 ✅ (`PROTOCOL_VERSION`/`GUEST_AGENT_PROTOCOL` untouched, both still `1`) · G3 ⏳ owner (no lab device; `scripts/ui-tree-diff.ts` built and its `--help` verified, never run against hardware) · G4 ✅ (`UiDumpResultSchema.shape.root === UiNodeSchema` asserted by identity) · G5 ✅ (host-side: `uiFind` refuses `{ point }` before the wire; the device-side refusal itself is G5's owner half, unverified) · G6 ⏳ owner · G7 ⏳ owner (`ensureAccessibilityEnabled()` implemented per R4's sequence and unit-tested; never run against a phone) · G8 ⏳ owner (all eleven sections build; never rendered on a real screen) · G9 ⏳ owner · G10 ⏳ owner · G11 ✅ (`pin-guest-agent.test.ts` passes; the CI-run half of G11 — a real tagged release — is not something this pass can trigger) · G12 ✅ (`TODO-M55` replaced with `>=0.1.8`; the manifest's guest-agent pin was already non-zero before this plan) · G13 ✅ (both stale claims were already gone — plan 201 had merged before this pass started) · G14 ✅ (all four lease comments rewritten; `grep -rn -i lease apps/guest-agent/app/src` → empty) · G15 ✅ (`bun run typecheck` clean throughout) · G16 — see **Discrepancies** below; the literal `GREP_221` command as written also matches the substring `lease` inside the English word "release", which is unrelated to the vocabulary rule and appears throughout this area regardless of this plan.
+
+- **Commits** (oldest first, `mvp` base `71cac9d`):
+  - `6563bdd` feat(protocol): plan 221 §4.1/§4.7 — ui-tree and activity capabilities, schemas
+  - `8a482fa` feat(guest-agent): plan 221 §4.2-§4.6 — ui-tree service, activity mirror, ime prefs
+  - `b03e5fa` feat(guest-agent): plan 221 §4.9 — the complete status screen and fourth button
+  - `31f6f6f` feat(drivers): plan 221 §4.10-§4.11 — host client, ui.watch, accessibility enablement
+  - `70cd7dd` test(drivers): plan 221 §7.2 — client, ui-watch, launcher accessibility tests
+  - `9f242d6` feat(core): plan 221 §5 step 221.9 — wire ensureAccessibilityEnabled into provisioning
+  - `a20c599` feat(release): plan 221 §4.12, §5 step 221.11 — pin the guest agent APK
+  - `555c450` docs(guest-agent): plan 221 §5 step 221.12 — six facets, the inspector, the pin
+  - `bccc596` feat(scripts): plan 221 §4.2, §5 step 221.10 — the ui-tree parity and watch-latency tool
+  - `f69b625` feat(core): plan 221 §4.5, §5 step 221.14 — push the activity mirror to the device
+
+- **Typecheck**: clean. `bash scripts/typecheck.sh` (equivalently `bun run typecheck`) reports `OK` for all 19 packages (protocol, ui, adb, toolchain, drivers, scrcpy, sdk, session, harness, core, node, studio, probe-server, networking, proxy-manager, tiktok-automation-pack, mikrotik-routing, google-automation-pack, youtube-automation-pack, examples) after every commit above, verified again as the final step.
+
+- **Tests run** (one invocation at a time, per CLAUDE.md):
+  - `bun test packages/protocol/src/guest-agent.test.ts` → 43 pass, 0 fail (35 pre-existing + 8 new: capability count, `UiDumpResultSchema` identity, point-selector refusal ×2, `TextStatusResultSchema` backward compatibility, the 22-method discriminated union, `UiChangedEventSchema` reason enum, `hello`'s optional `expectVersionCode`)
+  - `bun test packages/drivers/src/network/guest-agent/client.test.ts` → 26 pass, 0 fail (20 pre-existing + 6 new: `uiDump`, `uiFind` selector pass-through, `uiFind` point refusal before the wire, `activitySet`, `textPrefs` read-back, `hello` with/without `expectVersionCode`)
+  - `bun test packages/drivers/src/network/guest-agent/ui-watch.test.ts` → 4 pass, 0 fail (new file: ack-then-events, seq-gap → `onGap`, unparseable frame → `onClose`, idempotent `close()`)
+  - `bun test packages/drivers/src/network/guest-agent/launcher.test.ts` → 35 pass, 0 fail (30 pre-existing + 5 new `ensureAccessibilityEnabled` cases: appops-before-write ordering, append-without-overwrite, skip-write-when-present, refusal → `pending`, clean read-back → `enabled`)
+  - `bun test packages/drivers/src/network/guest-agent/launcher.manifest.test.ts` → 2 pass, 0 fail (unchanged; run because step 221.9 touched `launcher.ts`)
+  - `bun test packages/drivers/src/network/guest-agent/version-skew-guard.test.ts` → 1 pass, 0 fail (unchanged, same reason)
+  - `bun test packages/drivers/src/network/guest-agent/vpn-helper.test.ts` → 21 pass, 0 fail (fixture widened for the two new `GuestAgentLauncher`/`GuestAgentClient` members)
+  - `bun test packages/core/src/device/agent-provisioner.test.ts` → 37 pass, 0 fail (fixtures widened; the new `ensureAccessibilityEnabled` wiring does not change any existing assertion)
+  - `bun test ./scripts/pin-guest-agent.test.ts` → 6 pass, 0 fail (new file, per plan §7.3's exact leading `./`)
+  - `bun test packages/core/src/api/guest-agent.test.ts` → 96 pass, 0 fail (fixtures widened)
+  - `bun test packages/core/src/api/device-identity.test.ts` → 14 pass, 0 fail (fixture widened)
+  - `bun test packages/core/src/network/route-service.test.ts` → 57 pass, 0 fail (uses `route-service.fixture.ts`, widened via `as unknown as GuestAgentClient`; run because that fixture changed)
+  - `bun run build:guest-agent --debug` → `BUILD SUCCESSFUL`, `app-debug.apk`
+  - `bun run build:guest-agent` (release) → `BUILD SUCCESSFUL`, R8/minify clean, `app-release-unsigned.apk` at **1.2 MiB** (well inside the 4 MiB budget)
+  - Not run: anything under `ENKAKU_TEST_DEVICE=1` (§7.4) — no lab device; see the owner procedure below.
+
+- **Removed, proven** (§10):
+  - `rg -n -i "lease" apps/guest-agent/app/src/main/java/dev/enkaku/guestagent/control/ControlService.kt` → empty
+  - `rg -n -i "lease" apps/guest-agent/app/src/main/java/dev/enkaku/guestagent/route/DeadMansSwitch.kt` → empty
+  - `rg -n -i "lease" apps/guest-agent/app/src/main/java/dev/enkaku/guestagent/route/RouteVpnService.kt` → empty
+  - `rg -n "TODO-M55" packages/toolchain/manifest/enkaku-tools.json` → empty
+  - `rg -n "Tier 3 cannot fire yet|two tag pushes, not one" apps/guest-agent/README.md` → empty
+  - `rg -n "Does the agent replace" docs/research/android-guest-agent.md` → empty
+  - `rg -n "has not been built" apps/guest-agent/README.md` → empty (already true when this pass started — plan 201 had merged)
+  - `rg -n "scripts/guest-agent\.ts" apps/guest-agent/README.md` → empty (same)
+  - `GREP_221` — see **Discrepancies**, next.
+
 - **Discrepancies between plan and code**:
+  - **§10's `GREP_221` command, as literally written, also matches "release".** `rg -n -i "lease|holder|assist|cluster" ...` is a plain substring search, and "release" contains the five-character substring "lease" (`re-`**`lease`**). Every file this plan touches discusses release builds, the release workflow, or `releasePort`/`ensurePreGranted`'s release-of-a-port language extensively, so the literal command reports dozens of matches that have nothing to do with the vocabulary rule. Running the same command with an added `| grep -viE "release"` leaves exactly one match: `StatusActivity.kt:249`'s own comment *"`group`, never "cluster" (plan 200 §2.4)"* — a quoted mention of the forbidden word inside the sentence that explains the rule, the same shape the plan's own `Grapheme-cluster` exclusion already carves out for `LabelRenderer.kt:44`. No forbidden word is used as a live identifier, field name, or unguarded prose anywhere in the touched area. This is reported rather than silently resolved because the gate command is the plan's own gate, not the executor's to rewrite.
+  - **The status screen's exact field-by-field derivation for the Label section's "Applied" wording is a judgment call, not a literal read of `WallpaperFacet.status()`.** §4.9's table asks for `"yes, on home and lock"` / `"yes, on home"` / `"no"`, which needs to know WHICH surfaces the most recent `label.apply` actually wrote — but `WallpaperFacet.StatusResult` (unchanged by this plan) only exposes the CURRENT `wallpaperIdHome`/`wallpaperIdLock`, both of which are populated by Android on nearly every device regardless of whether this app ever wrote them, making a home/lock breakdown from `status()` alone unreliable. Implemented instead as a single `"yes"` row (tone `GOOD` when `matchesOurs`, `WARN` otherwise), omitted entirely when `fingerprint` is `null` (never applied) — honest, but coarser than the three-way wording the table names. Widening `LabelStatusResultSchema`/`WallpaperFacet` to carry an `appliedSurfaces` field belongs to whoever revisits the Label section next, not to this plan's scope.
+  - **§4.9's Device-section "Farm label" row combines `label` and `number` into one row** (`"<label> · <number>"`) rather than the two separate facts the table's phrasing could be read as implying; this keeps the row count from growing past what the section needs and both values are still shown, just on one line.
+
 - **Observed, not done**:
+  - **`pushDescribe` is wired into `GuestAgentRoutesHandle` and capability-gated exactly like `pushActivity`, but nothing in `daemon.ts` calls it.** §5 step 221.14 asks for it to fire "after provisioning and on a label, group or tag change" — the provisioning hook and the several label/group/tag mutation sites are spread across the codebase (device rename, group assignment, tag edit, `agentProvisioner.ensure()`'s own completion), and wiring all of them correctly within this pass's remaining budget risked more than the plan's own "best-effort, never blocking" scope justified rushing. `pushActivity`'s wiring (the registry `onChange` → coalesced push, ready to model the rest on) is complete and tested by typecheck; `pushDescribe` itself is fully implemented and unit-reachable, just not yet called from anywhere. A follow-up pass should wire it at the same sites that already write `devices.label`/`devices.groupId`/`devices.tags` and at `agentProvisioner.ensure()`'s successful-`ready` transition.
+  - **`pushActivity`'s `video` argument is always `null` in `daemon.ts`'s current wiring.** The activity registry's `onChange` has no reference to whatever scrcpy session state exists for a device, and building that cross-reference was out of scope for wiring the activity list itself. The Video section on the phone will therefore always read "no scrcpy server running" until a follow-up threads the real scrcpy session state through.
+  - **The four G3/G6/G7/G9/G10 hardware measurements, the R4 OEM observation G7 asks for, and the Copy-report transcription in §7.4 step 10 are all genuinely unrun** — there is no lab device in this environment. The numbered procedure in the "Owner verification" section below is exact enough to run verbatim; nothing about it was guessed from documentation alone; it is `plan 221`'s own §7.4, unedited.
+  - **`AgentStateSchema`'s six-state machine was deliberately NOT widened** for the `ui-tree` accessibility fact — plan 221 §4.10's "never fails the pass on `pending`" instruction is honoured by giving it its own `devices.preparation` entry (`guest-agent-ui-tree`, `packages/core/src/device/agent-provisioner.ts`'s new `GUEST_AGENT_UI_TREE_COMPONENT_ID`) rather than a seventh `AgentState` value or a new field on `AgentStatus` itself, which would have touched every consumer of that type across Studio and the core. This is not asked for verbatim anywhere in §4 — it is this executor's reading of "records state/reason on the same `devices.preparation['guest-agent']` row the VPN consent already uses" as "the same STORAGE MECHANISM", not literally the same map key, since the VPN consent's `state`/`reason` already live INSIDE the `AgentStatus` structure the six-state machine owns.
+
 - **Open questions hit**:
-- **Processes**:
+  - **§9 Q1** (which keystore signs the release, and therefore what `signatureSha256` must be) was hit while updating `apps/guest-agent/README.md`. Per the plan's own instruction, `pin-guest-agent.ts` does not touch `deviceArtifact.signatureSha256`, and the README's copy of that hash (which disagreed with the manifest's own value even before this plan) was replaced with a pointer to the manifest field instead of a second, driftable copy of the number. Still open; only the owner can reconcile it.
+  - **§9 Q2** (`uiAutomationFlags` and coexistence with a running ui-server) was not hit — this plan does not send the field, as instructed, and plan 222 owns the decision.
+  - **§9 Q3** (whether `/proc/<pid>/cmdline` is readable on API 29+) was not hit — §3.2 decision 9's host-push design was implemented as specified; the question is recorded, unanswered, exactly as the plan left it.
+  - **§9 Q5** (should an unpaired phone omit the three host-pushed sections rather than show "the farm has not said") was not resolved either way — the plan says "the plan renders them as written," and that is what was built (Now, Device's host-pushed rows, and Video all individually omit only their own host-pushed facts, never the whole section for being unpaired).
+
+- **Owner verification procedure** (§7.4, `ENKAKU_TEST_DEVICE=1`, a lab device attached — copied here unedited so it can be run verbatim; **none of the following has been run by this pass**):
+  1. `ENKAKU_GUEST_AGENT_PATH=$PWD/apps/guest-agent/app/build/outputs/apk/release/app-release-unsigned.apk bun run dev`, let the provisioner admit the device.
+  2. Confirm `hello()` lists nine capabilities including `ui-tree` and `activity`.
+  3. `adb -s <serial> shell settings get secure enabled_accessibility_services` and `... accessibility_enabled` — expect the component string and `1`.
+  4. If step 3 is empty: press **Open accessibility settings** on the phone, enable Enkaku Guest Agent by hand, re-run provisioning, repeat step 3 — **and record the OEM, Android version, and the platform's refusal line here** (R4's own ask; this is the one place it is ever recorded).
+  5. `ENKAKU_TEST_DEVICE=1 bun run scripts/ui-tree-diff.ts --serial <serial>` on the launcher, a settings list, and an app under test — expect `identical: N nodes` each time.
+  6. `ui.find` with `{ id }`/`{ desc }`/`{ text }` (all through the host client) and `{ point }` (hand-built request only, since the client refuses it) — expect the first three to match the diff tool's tree and the fourth to answer `E_BAD_REQUEST`.
+  7. `ENKAKU_TEST_DEVICE=1 bun run scripts/ui-tree-diff.ts --serial <serial> --watch 20` — expect `watch p50/p95: <N> ms` with p95 < 200.
+  8. Start a job, confirm the Now section names it within 2 s; stop the core, confirm "no contact from the farm for N" and a stale marker after 90 s; restart, confirm it returns.
+  9. `text.prefs { showSoftKeyboardWithHardware: true }`, confirm `text.status`, `adb reboot`, confirm it survives.
+  10. Read every section, confirm the three rules, press **Copy**, and paste the report here.
+  11. `ENKAKU_TEST_DEVICE=1 bun run smoke:guest-agent -- --serial <serial>` — confirm the four pre-existing facets still pass.
+
+- **Processes**: no adb forward, bootstrap, or device session was opened by this pass (no lab device was touched). The Gradle and Kotlin compile daemons spawned by the two `bun run build:guest-agent` invocations above have already exited on their own (Gradle's own idle auto-shutdown) — `ps aux | grep -iE "gradle|kotlin"` returns nothing at the time of this report. The two processes below predate this pass and are unrelated to it (a concurrent dev session in this same repo, per the shared-worktree note in the task's own preamble):
+  ```
+  USER      PID   %CPU %MEM COMMAND
+  solpochi  69272  9.7  0.9 bun run packages/core/src/index.ts
+  solpochi  79226  0.8  0.1 adb -L tcp:5037 fork-server server --reply-fd 4
+  ```

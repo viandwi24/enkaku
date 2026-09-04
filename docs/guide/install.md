@@ -269,12 +269,12 @@ trusting that a pasted block of commands ran the way it looked like it would. A 
 pasted into a router or shell terminal can silently drop its first line — this happened twice in
 one real farm build-out, caught only because every stage ended in a count that was supposed to
 match the number of links and didn't. See finding #2 in
-[`docs/tmp-try-arch-mikrotik.md`](../tmp-try-arch-mikrotik.md) for the incident. After any change,
+[`docs/archive/tmp-try-arch-mikrotik.md`](../archive/tmp-try-arch-mikrotik.md) for the incident. After any change,
 re-list the addresses/routes/rules you expect and count them — twenty links should show twenty
 entries in whatever list proves the mapping exists, every time, not just the first time you set it
 up.
 
-`docs/tmp-try-arch-mikrotik.md` is one operator's own worked log of doing exactly this for a farm
+`docs/archive/tmp-try-arch-mikrotik.md` is one operator's own worked log of doing exactly this for a farm
 of twenty LTE modems behind a MikroTik router and switch, including the bug that setup hit and how
 it was found and fixed — it is linked here as a real example to read, not as a config to copy. No
 first-party document, including this one, describes any particular router, VLAN scheme, or modem

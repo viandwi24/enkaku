@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
 import type { AdbClient, TrackedDevice } from '@enkaku/adb'
-import type { ServerMessage } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, discoveredDevices } from '../db/schema'
@@ -103,7 +102,6 @@ interface Harness {
   db: Db
   endpoints: EndpointStore
   onOnlineCalls: string[]
-  hubMessages: ServerMessage[]
   sweeper: Sweeper
   state: FakeAdbState
 }
@@ -119,7 +117,6 @@ function setUp(opts: {
   const endpoints = createEndpointStore({ db, settings: () => ({ endpointsPerDevice: 4, endpointRetireAfter: 10 }) })
   const state = fakeAdbState(opts.stateOverrides)
   const onOnlineCalls: string[] = []
-  const hubMessages: ServerMessage[] = []
 
   // A REALISTIC (not merely recording) fake `onOnline`, matching exactly the
   // slice of `device-registry.ts`'s own admission behaviour this step's
@@ -159,12 +156,11 @@ function setUp(opts: {
     endpoints,
     registry: { onOnline: opts.onOnline ?? defaultOnOnline },
     settings: () => settings,
-    hub: { broadcast: (msg) => hubMessages.push(msg) },
     log: fakeLogger() as unknown as SweeperDeps['log'],
     tcpPreProbe: opts.tcpPreProbe,
   }
   const sweeper = createSweeper(deps)
-  return { db, endpoints, onOnlineCalls, hubMessages, sweeper, state }
+  return { db, endpoints, onOnlineCalls, sweeper, state }
 }
 
 describe('Sweeper.sweep — availability gates (plan 88 §3.5, §4.5)', () => {
@@ -457,19 +453,5 @@ describe('Sweeper.sweep — last-octet-first ordering (plan 88 §3.5, §5 step 8
 
     expect(probedOrder[0]).toBe('10.0.0.1')
     expect(probedOrder[1]).toBe('10.0.0.2')
-  })
-})
-
-describe('Sweeper.sweep — scan.progress broadcasts (plan 88 §4.6, §5 step 88.3)', () => {
-  test('broadcasts scan.progress at least once, and the FINAL one reports scanned === total', async () => {
-    const h = setUp({
-      settings: { networks: [{ cidr: '10.0.0.0/28', label: '', medium: 'wired', scan: true }] }, // 14 usable addresses — small and fast
-      tcpPreProbe: async () => 'refused',
-    })
-    const report = await h.sweeper.sweep()
-    const progressMessages = h.hubMessages.filter((m) => m.type === 'scan.progress')
-    expect(progressMessages.length).toBeGreaterThan(0)
-    const last = progressMessages[progressMessages.length - 1]
-    expect(last).toMatchObject({ type: 'scan.progress', payload: { scanned: report.scanned, total: report.scanned, answered: 0 } })
   })
 })

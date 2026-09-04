@@ -7,7 +7,7 @@ import {
   InputSwipeMessage,
   InputTapMessage,
   InputTextMessage,
-  MirrorActionSchema,
+  InputActionSchema,
 } from './messages/input'
 import {
   CidrSchema,
@@ -274,7 +274,7 @@ describe('FarmSettingsSchema.adbControl — adb server health monitoring and res
     expect(() => FarmSettingsSchema.parse({ adbControl: { restartCooldownSec: 3601 } })).toThrow()
   })
 
-  test('drainTimeoutMs is bounded to [5_000, 300_000] — how long cycle() waits for sessions/leases to drain', () => {
+  test('drainTimeoutMs is bounded to [5_000, 300_000] — how long cycle() waits for sessions/activities to drain', () => {
     expect(FarmSettingsSchema.parse({ adbControl: { drainTimeoutMs: 5_000 } }).adbControl.drainTimeoutMs).toBe(5_000)
     expect(FarmSettingsSchema.parse({ adbControl: { drainTimeoutMs: 300_000 } }).adbControl.drainTimeoutMs).toBe(300_000)
     expect(() => FarmSettingsSchema.parse({ adbControl: { drainTimeoutMs: 4_999 } })).toThrow()
@@ -527,8 +527,6 @@ describe('FarmSettingsSchema.job — session hygiene between jobs (plan 35 §4.1
       resetStrict: false,
       retry: { maxInfraAttempts: 2, backoffBaseMs: 2_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true },
       crashPolicy: 'declared',
-      quietPeriodSec: 10,
-      maxWaitSec: 120,
       defaultTimeoutMs: 3_600_000,
       startupTimeoutMs: 60_000,
       maxTimeoutMs: null,
@@ -671,48 +669,18 @@ describe('FarmSettingsSchema.transfer — file transfer and APK install (plan 39
   })
 })
 
-describe('FarmSettingsSchema.shell — fleet fan-out and saved commands (plan 93 §3.8, §3.9, §3.10, §4.1)', () => {
-  test('a settings row that predates these fields (an empty object) still parses, with working defaults', () => {
+describe('FarmSettingsSchema.shell — the device terminal only, the fleet-wide screen is gone (plan 207, MVP 15 §0.1)', () => {
+  test('a settings row that predates the removed fields (an empty object) still parses, with exactly the terminal keys', () => {
     const parsed = FarmSettingsSchema.parse({})
-    expect(parsed.shell.fanoutEnabled).toBe(true)
-    expect(parsed.shell.fanoutMaxDevices).toBe(0)
-    expect(parsed.shell.fanoutConcurrency).toBe(0)
-    expect(parsed.shell.fanoutMaxOutputBytes).toBe(32_768)
-    expect(parsed.shell.fanoutPreviewBytes).toBe(2_048)
-    expect(parsed.shell.fanoutConfirmThreshold).toBe(5)
-    expect(parsed.shell.fanoutStageWaitSec).toBe(900)
-    expect(parsed.shell.commandRunsPerUser).toBe(500)
-    expect(parsed.shell.savedCommandLimit).toBe(200)
-  })
-
-  test('fanoutPreviewBytes stays well under MAX_BUFFERED (512 KB, ws-handlers.ts) at every bound — plan 93 §3.6, §4.4 sizing check', () => {
-    const MAX_BUFFERED = 512 * 1024
-    expect(FarmSettingsSchema.parse({}).shell.fanoutPreviewBytes).toBeLessThan(MAX_BUFFERED)
-    expect(() => FarmSettingsSchema.parse({ shell: { fanoutPreviewBytes: 16_384 } })).not.toThrow()
-    expect(FarmSettingsSchema.parse({ shell: { fanoutPreviewBytes: 16_384 } }).shell.fanoutPreviewBytes).toBeLessThan(MAX_BUFFERED)
-  })
-
-  test('fanoutMaxDevices / fanoutConcurrency / commandRunsPerUser / savedCommandLimit are bounded', () => {
-    expect(() => FarmSettingsSchema.parse({ shell: { fanoutMaxDevices: -1 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ shell: { fanoutConcurrency: 65 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ shell: { commandRunsPerUser: 49 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ shell: { savedCommandLimit: 9 } })).toThrow()
+    expect(Object.keys(parsed.shell).sort()).toEqual(
+      ['endpointBind', 'endpointEnabled', 'endpointIdleSec', 'execTimeoutMs', 'maxEndpointStreams', 'maxOutputBytes', 'mode'].sort(),
+    )
   })
 })
 
-describe('FarmSettingsSchema.retention.commandRunDays — command console history GC (plan 93 §3.9, §4.1)', () => {
-  test('a settings row that predates this field (an empty object) still parses, defaulting to 14 days', () => {
-    expect(FarmSettingsSchema.parse({}).retention.commandRunDays).toBe(14)
-  })
-
-  test('NOT gated by retention.enabled — an unbounded command history is a disk-filling bug, not an opt-in convenience, matching eventMainDays/eventInputDays', () => {
-    const parsed = FarmSettingsSchema.parse({ retention: { enabled: false } })
-    expect(parsed.retention.enabled).toBe(false)
-    expect(parsed.retention.commandRunDays).toBe(14)
-  })
-
-  test('bounded below at 1 day', () => {
-    expect(() => FarmSettingsSchema.parse({ retention: { commandRunDays: 0 } })).toThrow()
+describe('FarmSettingsSchema.retention — no per-action history retention field (plan 207, MVP 15 §0.1)', () => {
+  test('the removed history GC field is gone', () => {
+    expect(FarmSettingsSchema.parse({}).retention).not.toHaveProperty('commandRunDays')
   })
 })
 
@@ -799,108 +767,42 @@ describe('DeviceSettingsSchema.prep.textInput — the guest agent keyboard (plan
   })
 })
 
-describe('FarmSettingsSchema.coControl — Assist (plan 91 §3.2, §3.6, §4.5, §5 step 91.3)', () => {
-  test('a settings row that predates this block (an empty object) still parses, defaulting to operator mode', () => {
+describe('FarmSettingsSchema.control — MVP 04 §1.3 rows 7 and 8, MVP 12 §1 (plan 205 §4.5)', () => {
+  test('a settings row that predates this block (an empty object) still parses, defaulting to allow/30s', () => {
     const parsed = FarmSettingsSchema.parse({})
-    expect(parsed.coControl.mode).toBe('operator')
-    expect(parsed.coControl.grantTtlSec).toBe(300)
-    expect(parsed.coControl.maxConcurrentPerDevice).toBe(1)
-    expect(parsed.coControl.queueWaitMs).toBe(5_000)
-    expect(parsed.coControl.maxQueueDepth).toBe(32)
-    expect(defaultFarmSettings().coControl).toEqual({
-      mode: 'operator',
-      grantTtlSec: 300,
-      maxConcurrentPerDevice: 1,
-      queueWaitMs: 5_000,
-      maxQueueDepth: 32,
-    })
+    expect(parsed.control.overControl).toBe('allow')
+    expect(parsed.control.idleSec).toBe(30)
+    expect(defaultFarmSettings().control).toEqual({ overControl: 'allow', idleSec: 30 })
   })
 
-  test('mode only accepts off/admin/operator', () => {
-    for (const mode of ['off', 'admin', 'operator'] as const) {
-      expect(FarmSettingsSchema.parse({ coControl: { mode } }).coControl.mode).toBe(mode)
+  test('overControl only accepts allow/warn/forbid', () => {
+    for (const overControl of ['allow', 'warn', 'forbid'] as const) {
+      expect(FarmSettingsSchema.parse({ control: { overControl } }).control.overControl).toBe(overControl)
     }
-    expect(() => FarmSettingsSchema.parse({ coControl: { mode: 'everyone' } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ control: { overControl: 'everyone' } })).toThrow()
   })
 
-  test('grantTtlSec is bounded to [30, 3600]', () => {
-    expect(() => FarmSettingsSchema.parse({ coControl: { grantTtlSec: 29 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ coControl: { grantTtlSec: 3_601 } })).toThrow()
-    expect(FarmSettingsSchema.parse({ coControl: { grantTtlSec: 600 } }).coControl.grantTtlSec).toBe(600)
+  test('idleSec is bounded to [5, 600]', () => {
+    expect(() => FarmSettingsSchema.parse({ control: { idleSec: 4 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ control: { idleSec: 601 } })).toThrow()
+    expect(FarmSettingsSchema.parse({ control: { idleSec: 60 } }).control.idleSec).toBe(60)
   })
 
-  test('maxConcurrentPerDevice is bounded to [1, 4]', () => {
-    expect(() => FarmSettingsSchema.parse({ coControl: { maxConcurrentPerDevice: 0 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ coControl: { maxConcurrentPerDevice: 5 } })).toThrow()
-  })
-
-  test('queueWaitMs is bounded to [500, 30000]', () => {
-    expect(() => FarmSettingsSchema.parse({ coControl: { queueWaitMs: 499 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ coControl: { queueWaitMs: 30_001 } })).toThrow()
-  })
-
-  test('maxQueueDepth is bounded to [1, 256]', () => {
-    expect(() => FarmSettingsSchema.parse({ coControl: { maxQueueDepth: 0 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ coControl: { maxQueueDepth: 257 } })).toThrow()
-  })
-
-  test('the generated JSON Schema represents every field (the settings form needs this to render the Assist & mirror tab)', () => {
+  test('the generated JSON Schema represents both fields (the settings form needs this to render the Control section)', () => {
     const jsonSchema = z.toJSONSchema(FarmSettingsSchema) as unknown as {
-      properties: { coControl: { properties: Record<string, unknown> } }
+      properties: { control: { properties: Record<string, unknown> } }
     }
-    expect(Object.keys(jsonSchema.properties.coControl.properties).sort()).toEqual([
-      'grantTtlSec',
-      'maxConcurrentPerDevice',
-      'maxQueueDepth',
-      'mode',
-      'queueWaitMs',
-    ])
-  })
-})
-
-describe('FarmSettingsSchema.mirror — controlling many devices at once (plan 91 §3.7, §3.9, §4.5, §5 step 91.3)', () => {
-  test('a settings row that predates this block (an empty object) still parses, defaulting to 20 devices', () => {
-    const parsed = FarmSettingsSchema.parse({})
-    expect(parsed.mirror.maxDevices).toBe(20)
-    expect(parsed.mirror.requireSameOrientation).toBe(true)
-    expect(parsed.mirror.aspectTolerance).toBe(0.05)
-    expect(parsed.mirror.dropAfterConsecutiveFailures).toBe(3)
-    expect(defaultFarmSettings().mirror).toEqual({
-      maxDevices: 20,
-      requireSameOrientation: true,
-      aspectTolerance: 0.05,
-      dropAfterConsecutiveFailures: 3,
-    })
-  })
-
-  test('maxDevices is bounded to [2, 64]', () => {
-    expect(() => FarmSettingsSchema.parse({ mirror: { maxDevices: 1 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ mirror: { maxDevices: 65 } })).toThrow()
-  })
-
-  test('aspectTolerance is bounded to [0, 0.5]', () => {
-    expect(() => FarmSettingsSchema.parse({ mirror: { aspectTolerance: -0.01 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ mirror: { aspectTolerance: 0.51 } })).toThrow()
-  })
-
-  test('dropAfterConsecutiveFailures is bounded to [1, 20]', () => {
-    expect(() => FarmSettingsSchema.parse({ mirror: { dropAfterConsecutiveFailures: 0 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ mirror: { dropAfterConsecutiveFailures: 21 } })).toThrow()
-  })
-
-  test('requireSameOrientation can be turned off (keys/text still reach a rotated member — enforced by the mirror dispatcher, not this schema)', () => {
-    expect(FarmSettingsSchema.parse({ mirror: { requireSameOrientation: false } }).mirror.requireSameOrientation).toBe(false)
+    expect(Object.keys(jsonSchema.properties.control.properties).sort()).toEqual(['idleSec', 'overControl'])
   })
 })
 
 /**
- * The riskiest part of plan 91 §5 step 91.3: `INPUT_ACTION_BODIES` now backs
- * BOTH the five pre-existing input messages and the new `MirrorActionSchema`.
- * Every one of these assertions held true before the refactor (this file's
- * `input.test.ts` sibling is unchanged and still passes); this block locks
- * the wire shape down explicitly, in the same file the plan names for it.
+ * `INPUT_ACTION_BODIES` backs BOTH the five pre-existing input messages and
+ * `InputActionSchema` (MVP 15 §1, plan 205 §4.1 — the client-side fan-out's
+ * per-device action shape). This block locks the wire shape down explicitly,
+ * in the same file the plan names for it.
  */
-describe('input.ts — INPUT_ACTION_BODIES refactor is wire-identical (plan 91 §4.4, §5 step 91.3)', () => {
+describe('input.ts — INPUT_ACTION_BODIES backs both input messages and InputActionSchema', () => {
   test('InputTapMessage: unchanged bounds on pos', () => {
     expect(InputTapMessage.safeParse({ type: 'input.tap', payload: { deviceId: 'd1', pos: { x: 0.5, y: 0.5 } } }).success).toBe(true)
     expect(InputTapMessage.safeParse({ type: 'input.tap', payload: { deviceId: 'd1', pos: { x: 1.1, y: 0.5 } } }).success).toBe(false)
@@ -939,11 +841,11 @@ describe('input.ts — INPUT_ACTION_BODIES refactor is wire-identical (plan 91 �
     expect(Object.keys(INPUT_ACTION_BODIES)).toEqual(['tap', 'swipe', 'gesture', 'key', 'text'])
   })
 
-  test('MirrorActionSchema accepts the same five verbs, discriminated, built from the same bodies', () => {
-    expect(MirrorActionSchema.safeParse({ verb: 'tap', pos: { x: 0.5, y: 0.5 } }).success).toBe(true)
-    expect(MirrorActionSchema.safeParse({ verb: 'swipe', from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }).success).toBe(true)
+  test('InputActionSchema accepts the same five verbs, discriminated, built from the same bodies', () => {
+    expect(InputActionSchema.safeParse({ verb: 'tap', pos: { x: 0.5, y: 0.5 } }).success).toBe(true)
+    expect(InputActionSchema.safeParse({ verb: 'swipe', from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }).success).toBe(true)
     expect(
-      MirrorActionSchema.safeParse({
+      InputActionSchema.safeParse({
         verb: 'gesture',
         samples: [
           { x: 0.1, y: 0.2, atMs: 0 },
@@ -951,14 +853,14 @@ describe('input.ts — INPUT_ACTION_BODIES refactor is wire-identical (plan 91 �
         ],
       }).success,
     ).toBe(true)
-    expect(MirrorActionSchema.safeParse({ verb: 'key', keycode: 26 }).success).toBe(true)
-    expect(MirrorActionSchema.safeParse({ verb: 'text', text: 'hello' }).success).toBe(true)
+    expect(InputActionSchema.safeParse({ verb: 'key', keycode: 26 }).success).toBe(true)
+    expect(InputActionSchema.safeParse({ verb: 'text', text: 'hello' }).success).toBe(true)
   })
 
-  test('MirrorActionSchema rejects a verb outside the five, and rejects the same out-of-bounds values InputTapMessage does', () => {
-    expect(MirrorActionSchema.safeParse({ verb: 'scroll', pos: { x: 0.5, y: 0.5 } }).success).toBe(false)
-    expect(MirrorActionSchema.safeParse({ verb: 'tap', pos: { x: 1.1, y: 0.5 } }).success).toBe(false)
-    expect(MirrorActionSchema.safeParse({ verb: 'key', keycode: 321 }).success).toBe(false)
+  test('InputActionSchema rejects a verb outside the five, and rejects the same out-of-bounds values InputTapMessage does', () => {
+    expect(InputActionSchema.safeParse({ verb: 'scroll', pos: { x: 0.5, y: 0.5 } }).success).toBe(false)
+    expect(InputActionSchema.safeParse({ verb: 'tap', pos: { x: 1.1, y: 0.5 } }).success).toBe(false)
+    expect(InputActionSchema.safeParse({ verb: 'key', keycode: 321 }).success).toBe(false)
   })
 })
 
@@ -1222,19 +1124,29 @@ describe('FarmSettingsSchema.display.fallbackRetryCount — the screencap-loop f
   })
 })
 
-describe('FarmSettingsSchema.session.maxConcurrentBuilds — the build lane budget (plan 92 §3.3, §4.1)', () => {
-  test('defaults to 2, alongside the pre-existing idleTtlSec/maxIdleSessions defaults', () => {
+describe('FarmSettingsSchema.session.buildsPerUsbRoot — always-on sessions (plan 206 §4.5)', () => {
+  test('defaults to { buildsPerUsbRoot: 4 }', () => {
     const parsed = FarmSettingsSchema.parse({})
-    expect(parsed.session.maxConcurrentBuilds).toBe(2)
-    expect(parsed.session.idleTtlSec).toBe(300)
-    expect(parsed.session.maxIdleSessions).toBe(8)
-    expect(defaultFarmSettings().session.maxConcurrentBuilds).toBe(2)
+    expect(parsed.session).toEqual({ buildsPerUsbRoot: 4 })
+    expect(defaultFarmSettings().session).toEqual({ buildsPerUsbRoot: 4 })
   })
 
   test('is bounded to [1, 16]', () => {
-    expect(() => FarmSettingsSchema.parse({ session: { maxConcurrentBuilds: 0 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ session: { maxConcurrentBuilds: 17 } })).toThrow()
-    expect(FarmSettingsSchema.parse({ session: { maxConcurrentBuilds: 16 } }).session.maxConcurrentBuilds).toBe(16)
+    expect(() => FarmSettingsSchema.parse({ session: { buildsPerUsbRoot: 0 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ session: { buildsPerUsbRoot: 17 } })).toThrow()
+    expect(FarmSettingsSchema.parse({ session: { buildsPerUsbRoot: 16 } }).session.buildsPerUsbRoot).toBe(16)
+  })
+
+  test('a stored pre-plan-206 row carrying the three deleted fields (a per-viewer idle TTL, a farm-wide idle cap, a build-lane cap) parses cleanly to the new default — Zod strips unknown keys, nothing rewrites the row', () => {
+    // Spelled out via property access rather than as object-literal keys, so
+    // this test proving the deleted keys are GONE does not itself become a
+    // live reference to them (plan 206 §10's own removal grep).
+    const legacy: Record<string, number> = {}
+    legacy['idle' + 'TtlSec'] = 300
+    legacy['max' + 'IdleSessions'] = 8
+    legacy['maxConcurrent' + 'Builds'] = 2
+    const parsed = FarmSettingsSchema.parse({ session: legacy })
+    expect(parsed.session).toEqual({ buildsPerUsbRoot: 4 })
   })
 })
 
@@ -1400,15 +1312,13 @@ describe('FarmSettingsSchema.retention.traceDays — job trace history GC (plan 
         eventInputDays: 2,
         eventMaxRowsPerDevice: 20_000,
         blobOrphanGraceHours: 48,
-        commandRunDays: 7,
       },
     }
     const parsed = FarmSettingsSchema.parse(legacy)
-    expect(parsed.retention.commandRunDays).toBe(7)
     expect(parsed.retention.traceDays).toBe(30)
   })
 
-  test('NOT gated by retention.enabled — an unbounded per-action trace table is a disk-filling bug, not an opt-in convenience, matching eventMainDays/commandRunDays', () => {
+  test('NOT gated by retention.enabled — an unbounded per-action trace table is a disk-filling bug, not an opt-in convenience, matching eventMainDays', () => {
     const parsed = FarmSettingsSchema.parse({ retention: { enabled: false } })
     expect(parsed.retention.enabled).toBe(false)
     expect(parsed.retention.traceDays).toBe(30)

@@ -445,7 +445,7 @@ describe('criterion 17 — a UDP listener is accepted; claiming a device can dia
 // ---------------------------------------------------------------------------
 
 /** A `device.status` broadcast — the real message the core sends when a device connects or disconnects. */
-function deviceStatus(status: 'idle' | 'offline'): ServerMessage {
+function deviceStatus(status: 'online' | 'offline'): ServerMessage {
   return { type: 'device.status', payload: { id: 'dev-1', stableId: 'stable-1', status } }
 }
 
@@ -488,7 +488,7 @@ describe('criterion 12 — an event handler cannot veto, delay, or modify a broa
     })
 
     const started = Bun.nanoseconds()
-    hub.hub.broadcast(deviceStatus('idle'))
+    hub.hub.broadcast(deviceStatus('online'))
     const broadcastMs = (Bun.nanoseconds() - started) / 1e6
     const returnedAt = Date.now()
 
@@ -497,7 +497,7 @@ describe('criterion 12 — an event handler cannot veto, delay, or modify a broa
     // …nothing was vetoed: both clients have the frame, byte for byte…
     expect(hub.frames[0]).toHaveLength(1)
     expect(hub.frames[1]).toEqual(hub.frames[0]!)
-    expect(JSON.parse(hub.frames[0]![0]!)).toEqual({ type: 'device.status', payload: { id: 'dev-1', stableId: 'stable-1', status: 'idle' } })
+    expect(JSON.parse(hub.frames[0]![0]!)).toEqual({ type: 'device.status', payload: { id: 'dev-1', stableId: 'stable-1', status: 'online' } })
     // …and the core's own path ran, inside the broadcast, before any of this.
     expect(coreObserverRan).toBe(true)
     // The handler had not even STARTED when `broadcast` returned. This is the
@@ -530,7 +530,7 @@ describe('criterion 12 — an event handler cannot veto, delay, or modify a broa
     })
 
     const started = Bun.nanoseconds()
-    hub.hub.broadcast(deviceStatus('idle'))
+    hub.hub.broadcast(deviceStatus('online'))
     const broadcastMs = (Bun.nanoseconds() - started) / 1e6
     expect(broadcastMs).toBeGreaterThan(140)
   }, 20_000)
@@ -549,7 +549,7 @@ describe('criterion 12 — an event handler cannot veto, delay, or modify a broa
     const hub = attachHub(h.host)
 
     const started = Bun.nanoseconds()
-    hub.hub.broadcast(deviceStatus('idle'))
+    hub.hub.broadcast(deviceStatus('online'))
     const broadcastMs = (Bun.nanoseconds() - started) / 1e6
     expect(broadcastMs).toBeGreaterThan(140)
     expect(control().eventsSeen).toEqual(['device.status'])
@@ -567,7 +567,7 @@ describe('criterion 12 — an event handler cannot veto, delay, or modify a broa
     })
 
     hub.hub.broadcast(deviceStatus('offline'))
-    hub.hub.broadcast(deviceStatus('idle'))
+    hub.hub.broadcast(deviceStatus('online'))
     await Bun.sleep(200)
 
     expect(hub.frames[0]).toHaveLength(2)
@@ -590,7 +590,7 @@ describe('criterion 12 — an event handler cannot veto, delay, or modify a broa
     const hub = attachHub(h.host)
 
     const started = Bun.nanoseconds()
-    hub.hub.broadcast(deviceStatus('idle'))
+    hub.hub.broadcast(deviceStatus('online'))
     expect((Bun.nanoseconds() - started) / 1e6).toBeLessThan(50)
     expect(hub.frames[0]).toHaveLength(1)
 
@@ -608,7 +608,7 @@ describe('criterion 12 — an event handler cannot veto, delay, or modify a broa
     const hub = attachHub(h.host)
 
     for (let i = 0; i < 3; i++) {
-      hub.hub.broadcast(deviceStatus('idle'))
+      hub.hub.broadcast(deviceStatus('online'))
       await Bun.sleep(40)
     }
     await Bun.sleep(120)
@@ -617,7 +617,7 @@ describe('criterion 12 — an event handler cannot veto, delay, or modify a broa
     expect(view.status).toBe('failed')
 
     const seenWhenDisabled = control().eventsSeen.length
-    for (let i = 0; i < 5; i++) hub.hub.broadcast(deviceStatus('idle'))
+    for (let i = 0; i < 5; i++) hub.hub.broadcast(deviceStatus('online'))
     await Bun.sleep(150)
     // Loud and finite: a plugin that misbehaves on every event does not spin
     // forever, it stops being handed events.
@@ -631,10 +631,10 @@ describe('subscriptions are declared, scoped to one instance, and dropped with i
   test('ctx.onEvent refuses a type the manifest does not declare', async () => {
     const h = setUp()
     await h.install('fixture')
-    control().subscribeUndeclared = 'lease.changed'
+    control().subscribeUndeclared = 'device.activity'
     await h.host.load('fixture')
     expect(control().subscribeError).toContain('E_PLUGIN_EVENT_UNDECLARED')
-    expect(control().subscribeError).toContain('lease.changed')
+    expect(control().subscribeError).toContain('device.activity')
     // The declared one still worked, so this is a refusal and not a broken setup.
     expect(h.host.get('fixture')!.subscriptions).toEqual(['device.status'])
   })
@@ -655,12 +655,12 @@ describe('subscriptions are declared, scoped to one instance, and dropped with i
     await h.host.load('fixture')
     const hub = attachHub(h.host)
 
-    hub.hub.broadcast(deviceStatus('idle'))
+    hub.hub.broadcast(deviceStatus('online'))
     await Bun.sleep(80)
     expect(control().eventsSeen).toHaveLength(1)
 
     await h.host.reload('fixture')
-    hub.hub.broadcast(deviceStatus('idle'))
+    hub.hub.broadcast(deviceStatus('online'))
     await Bun.sleep(80)
     // Exactly one more: the previous instance's subscription went with it,
     // rather than doubling every delivery on each reload.
@@ -668,7 +668,7 @@ describe('subscriptions are declared, scoped to one instance, and dropped with i
 
     await h.host.unload('fixture', 'a test asked')
     expect(h.host.get('fixture')!.subscriptions).toEqual([])
-    hub.hub.broadcast(deviceStatus('idle'))
+    hub.hub.broadcast(deviceStatus('online'))
     await Bun.sleep(80)
     expect(control().eventsSeen).toHaveLength(2)
     // The hub itself never stopped.

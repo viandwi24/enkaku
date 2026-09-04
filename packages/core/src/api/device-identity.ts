@@ -5,6 +5,7 @@ import { GUEST_AGENT_PACKAGE, type GuestAgentClient } from '@enkaku/drivers'
 import {
   DeviceIdentitySchema,
   DeviceSettingsSchema,
+  E_DEVICE_CONFLICT,
   PersistedNetworkRouteSchema,
   defaultDeviceSettings,
   type DeviceIdentity,
@@ -17,7 +18,10 @@ import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
 import { countryToLocale, countryToTimezone, cityToGps } from '../identity/lookups'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
+import { requireAdmission } from '../activity/admission'
+import type { DeviceStateMachine } from '../device/state-machine'
 import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
 
@@ -26,7 +30,7 @@ import { EnkakuError } from '../util/errors'
  * (plan 58 §4.3, §5.3) — timezone, locale, and a mock GPS fix, aligned with a route's observed
  * exit so every signal an app under test can see agrees on one identity (plan 58 §0).
  *
- * NOT a driver layer (plan 58 §3.1): no lease-scoped apply/revert tied to a session, no
+ * NOT a driver layer (plan 58 §3.1): no activity-scoped apply/revert tied to a session, no
  * capability negotiation of its own. It lives in `devices.settings.identity` exactly like
  * `timing`/`prep`, with its own endpoints — a separate file from `guest-agent.ts` because identity
  * is a device-settings extension, not part of the network route, even though applying GPS reuses
@@ -43,9 +47,7 @@ import { EnkakuError } from '../util/errors'
 const ERROR_STATUS: Record<string, number> = {
   device_not_found: 404,
   E_BAD_REQUEST: 400,
-  no_lease: 409,
-  not_lease_holder: 409,
-  device_busy: 409,
+  [E_DEVICE_CONFLICT]: 409,
   device_unavailable: 409,
   E_NO_GEO_OBSERVATION: 409,
 }
@@ -54,7 +56,11 @@ export interface DeviceIdentityRoutesDeps {
   db: Db
   /** Per-device shell exec, through the adb queue — the same shape `Transport.exec` uses (mirrors `guest-agent.ts`'s `exec` dep). */
   exec: (serial: string, cmd: string) => Promise<ShellResult>
-  leases: LeaseManager
+  /** The device activity registry (plan 205 §4.2, §4.8) — the one admission door every mutating endpoint here takes. */
+  activities: Pick<ActivityRegistry, 'list'>
+  /** `control.overControl`/`control.idleSec`, read fresh on every admission check (plan 205 §4.5). */
+  controlSettings: () => ControlPolicySettings
+  states: Pick<DeviceStateMachine, 'current'>
   /** Main-stream device events: identity.applied / identity.cleared. */
   record?: EventRecorder['record']
   log: Logger
@@ -84,11 +90,15 @@ export function createDeviceIdentityRoutes(deps: DeviceIdentityRoutesDeps): Hono
     return row
   }
 
-  /** Mirrors `guest-agent.ts`'s own `requireHeldLease` exactly — a manual lease must be held to change what a device presents to apps under test, same gate input/shell already use. */
-  function requireHeldLease(deviceId: string): void {
-    const lease = deps.leases.getLease(deviceId)
-    const allowed = deps.leases.checkInputAllowed(deviceId, lease?.holder ?? '')
-    if (!allowed.ok) throw new EnkakuError(allowed.code, allowed.message)
+  /**
+   * Plan 205 §4.9 — the SAME `command` policy row `shell.exec` takes: a
+   * manual control marker is no longer required to change what a device
+   * presents to apps under test (only a live job/workflow-job/install warns,
+   * never forbids, against `command`), which is the correct, deliberate
+   * liberalisation this row already gives every other adb-touching write.
+   */
+  function requireIdentityAdmission(deviceId: string): void {
+    requireAdmission(deps.activities, deps.controlSettings, deps.states, deviceId, 'command')
   }
 
   function readSettings(row: DeviceRow): DeviceSettings {
@@ -147,7 +157,7 @@ export function createDeviceIdentityRoutes(deps: DeviceIdentityRoutesDeps): Hono
 
   app.put('/:id/identity', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
-    requireHeldLease(row.id)
+    requireIdentityAdmission(row.id)
     const parsed = DeviceIdentitySchema.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) {
       throw new EnkakuError('E_BAD_REQUEST', parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
@@ -192,7 +202,7 @@ export function createDeviceIdentityRoutes(deps: DeviceIdentityRoutesDeps): Hono
 
   app.delete('/:id/identity', requirePermission('device.settings'), async (c) => {
     const row = mustGet(c.req.param('id'))
-    requireHeldLease(row.id)
+    requireIdentityAdmission(row.id)
     const settings = readSettings(row)
     const previous = settings.identity
 

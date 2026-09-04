@@ -22,10 +22,9 @@ import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
-import type { JobStore } from '../queue/job-store'
+import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
 import { createLogger, type Logger } from '../util/logger'
-import { createGuestAgentRoutes, resolveGuestAgentApkPath, type GuestAgentRoutesDeps, type NetworkStatusResult } from './guest-agent'
+import { createGuestAgentRoutes, resolveGuestAgentApkPath, type GuestAgentRoutesDeps, type GuestAgentRoutesHandle, type NetworkStatusResult } from './guest-agent'
 
 /** Mirrors `authMiddleware` well enough for a route test: sets `c.get('user')` before dispatch (same pattern `adb-endpoint.test.ts` uses). */
 function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
@@ -45,7 +44,7 @@ function seedDevice(db: Db, overrides: Partial<DeviceRow> = {}): void {
       stableId: 'stable-dev-1',
       serial: 'serial-dev-1',
       label: 'Test Phone',
-      status: 'idle',
+      status: 'online',
       apiLevel: 35,
       ...overrides,
     })
@@ -66,6 +65,7 @@ function fakeLauncher(overrides: Partial<GuestAgentLauncher> = {}): { launcher: 
       return { state: 'granted' as const, reason: null }
     },
     vpnConsent: async () => ({ state: 'granted' as const, reason: null }),
+    ensureAccessibilityEnabled: async () => ({ state: 'enabled' as const, reason: null }),
     bootstrap: async (token) => {
       calls.push(`bootstrap:${token}`)
     },
@@ -131,16 +131,30 @@ function fakeClient(overrides: Partial<GuestAgentClient> = {}): GuestAgentClient
     labelClear: async () => ({ restored: 'system-default', fingerprint: null }),
     textCommit: async () => ({ committed: 0, ime: 'not-current' }),
     textStatus: async () => ({ ime: 'disabled', id: 'dev.enkaku.guestagent/.input.EnkakuIme', connected: false }),
+    // Not exercised by this file's tests — stubs to satisfy the widened `GuestAgentClient`
+    // interface (plan 221 §4.11's `ui-tree`/`activity` capabilities).
+    uiDump: async () => ({
+      root: { resourceId: '', text: '', desc: '', className: 'hierarchy', packageName: '', bounds: { left: 0, top: 0, right: 0, bottom: 0 }, clickable: false, enabled: true, focused: false, index: 0, children: [] },
+      widthPx: 0,
+      heightPx: 0,
+      nodeCount: 0,
+      truncated: false,
+      tookMs: 0,
+    }),
+    uiFind: async () => ({ node: null, matches: 0, tookMs: 0 }),
+    activitySet: async () => ({ accepted: 0 }),
+    deviceDescribe: async () => ({ accepted: true as const }),
+    textPrefs: async () => ({ showSoftKeyboardWithHardware: false }),
+    uiStatus: async () => ({
+      enabled: false,
+      connected: false,
+      watching: false,
+      lastDumpAgoMs: null,
+      lastDumpNodes: null,
+      lastError: null,
+    }),
     ...overrides,
   }
-}
-
-function fakeLeases(held = true): LeaseManager {
-  return {
-    getLease: () => (held ? { deviceId: 'dev-1', type: 'manual', holder: 'client-a', acquiredAt: 0, expiresAt: 0 } : null),
-    checkInputAllowed: (_deviceId: string, clientId: string) =>
-      held && clientId === 'client-a' ? { ok: true } : { ok: false, code: 'no_lease', message: 'take control first' },
-  } as unknown as LeaseManager
 }
 
 function fakePorts() {
@@ -221,11 +235,21 @@ interface Harness {
   handleDeviceOffline: (deviceId: string) => Promise<void>
   /** The shared per-device session seam (plan 44 §8b) — exercised directly by the pairing tests below. */
   withGuestAgentClient: <T>(deviceId: string, fn: (client: GuestAgentClient) => Promise<T>) => Promise<T>
+  /** The REAL activity registry (plan 205 §4.2) — exposed so a test can seat a live job/workflow-job/install and prove the `network-apply` policy row still forbids it. */
+  activities: ActivityRegistry
+  /**
+   * The five per-device network operations (plan 207 §4.2, §5 step 207.4) —
+   * the exact functions `PUT/POST/DELETE /:id/network*` used to call before
+   * those per-device HTTP routes were removed (plan 207 §10's removal
+   * register: `set-network` is the one remaining door). Exposed here so
+   * this file's own network tests can keep exercising the same admission
+   * and write behaviour directly, through `asNetworkResponse` below.
+   */
+  routeActions: GuestAgentRoutesHandle['routeActions']
 }
 
 function makeHarness(opts: {
   role?: 'admin' | 'operator' | null
-  leaseHeld?: boolean
   launcher?: GuestAgentLauncher
   client?: GuestAgentClient
   makeClient?: (opts: GuestAgentClientOptions) => GuestAgentClient
@@ -257,6 +281,9 @@ function makeHarness(opts: {
   const db = opened.db
   const events: Harness['events'] = []
   const ports = fakePorts()
+  const log = opts.log ?? createLogger('test')
+  const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
+  const states = createDeviceStateMachine({ db, log })
 
   const deps: GuestAgentRoutesDeps = {
     db,
@@ -269,9 +296,11 @@ function makeHarness(opts: {
     // to `<dataDir>/network-credentials.key`, and tests must never share one, or an encrypt in
     // one test and a decrypt in another would use two different keys for the "same" credential.
     dataDir: mkdtempSync(join(tmpdir(), 'enkaku-guest-agent-test-')),
-    leases: fakeLeases(opts.leaseHeld ?? true),
+    activities,
+    controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+    states,
     record: (e) => events.push(e),
-    log: opts.log ?? createLogger('test'),
+    log,
     // These drive fakes; sitting out the real multi-second settle/poll budgets would only make the
     // suite slow and flaky.
     routeTimings: { applySettleTimeoutMs: 0, revertPollTimeoutMs: 0 },
@@ -283,9 +312,39 @@ function makeHarness(opts: {
     ...(opts.guestAgentSettings ? { guestAgentSettings: opts.guestAgentSettings } : {}),
     ...(opts.agentProvisioner ? { agentProvisioner: opts.agentProvisioner } : {}),
   }
-  const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient } = createGuestAgentRoutes(deps)
-  const app = withUser(opts.role === undefined ? 'admin' : opts.role, routes)
-  return { db, app, events, ports, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient }
+  const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient, routeActions } = createGuestAgentRoutes(deps)
+  const app = withUser(opts.role === undefined ? 'admin' : opts.role, withTestOnlyNetworkActionRoutes(routes, routeActions))
+  return { db, app, events, ports, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient, activities, routeActions }
+}
+
+/**
+ * Re-mounts `PUT/POST/DELETE /:id/network*` as plain HTTP routes over
+ * `routeActions` (`RouteService['actions']`, `set/clear/enable/disable/
+ * retry` — the exact functions the real per-device routes called before
+ * they were removed, plan 207 §10's removal register: `set-network` is the
+ * one remaining production door). TEST-FILE-ONLY: this router is never
+ * mounted anywhere the real app tree can reach, so it does not reopen the
+ * per-device write surface plan 207 closes — it exists purely so this
+ * file's ~80 pre-existing `app.request('/dev-1/network...')` calls, several
+ * of which depend on the GET route's own read-throttle window ordering
+ * relative to a PUT/DELETE, keep working unchanged rather than each being
+ * rewritten to a direct function call (a far larger, riskier mechanical
+ * change than the small number of call sites `route-service.test.ts` needed).
+ */
+function withTestOnlyNetworkActionRoutes(app: Hono<AuthEnv>, routeActions: GuestAgentRoutesHandle['routeActions']): Hono<AuthEnv> {
+  // `routes` already carries its own `onError` (`guest-agent.ts`'s own,
+  // identical EnkakuError -> ERROR_STATUS mapping) — these routes rely on
+  // that existing handler rather than registering a second one.
+  const actorOf = (c: { get(key: 'user'): { id: string } | undefined }): string | null => c.get('user')?.id ?? null
+  app.put('/:id/network', async (c) => {
+    const raw: unknown = await c.req.json().catch(() => null)
+    return c.json(await routeActions.set(c.req.param('id'), raw, actorOf(c)))
+  })
+  app.post('/:id/network/enable', async (c) => c.json(await routeActions.enable(c.req.param('id'), actorOf(c))))
+  app.post('/:id/network/disable', async (c) => c.json(await routeActions.disable(c.req.param('id'), actorOf(c))))
+  app.post('/:id/network/retry', async (c) => c.json(await routeActions.retry(c.req.param('id'), actorOf(c))))
+  app.delete('/:id/network', async (c) => c.json(await routeActions.clear(c.req.param('id'), actorOf(c))))
+  return app
 }
 
 describe('GET /api/devices/:id/guest-agent — the state machine (plan 44 §5.8)', () => {
@@ -553,14 +612,14 @@ describe('POST /api/devices/:id/guest-agent — install/repair (plan 44 §5.8)',
     expect(res.status).toBe(200)
   })
 
-  test('refuses without a held lease, even for an admin', async () => {
+  test('refuses an offline device, even for an admin (plan 205 §4.8 — no manual control to hold any more at all)', async () => {
     const { launcher } = fakeLauncher()
-    const { db, app } = makeHarness({ launcher, leaseHeld: false })
-    seedDevice(db)
+    const { db, app } = makeHarness({ launcher })
+    seedDevice(db, { status: 'offline' })
     const res = await app.request('/dev-1/guest-agent', { method: 'POST' })
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('no_lease')
+    expect(body.error.code).toBe('device_unavailable')
   })
 
   test('an operator (device.network is an OPERATOR permission) may install — no lockout', async () => {
@@ -796,10 +855,10 @@ describe('GET/PUT/DELETE /api/devices/:id/network (plan 44 §5.8, persistence in
     expect(body2).toMatchObject({ engine: 'none', config: null, enabled: false })
   })
 
-  test('PUT refuses without a held lease', async () => {
+  test('PUT refuses an offline device (plan 205 §4.8)', async () => {
     const { launcher } = fakeLauncher()
-    const { db, app } = makeHarness({ launcher, leaseHeld: false })
-    seedDevice(db)
+    const { db, app } = makeHarness({ launcher })
+    seedDevice(db, { status: 'offline' })
     const res = await app.request('/dev-1/network', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -897,14 +956,25 @@ describe('POST /api/devices/:id/network/enable and /disable (plan 44 step 5.4)',
     expect(body.config).toEqual({ engine: 'vpn-helper', host: 'proxy.example', port: 1080, credentialRef: 'device-dev-1', udpMode: 'udp', onGeoFail: 'report' })
   })
 
-  test('enable/disable refuse without a held lease', async () => {
+  test('enable refuses an offline device (the arm direction — plan 205 §4.8)', async () => {
     const { launcher } = fakeLauncher()
-    const { db, app } = makeHarness({ launcher, leaseHeld: false })
-    seedDevice(db)
-    const res1 = await app.request('/dev-1/network/enable', { method: 'POST' })
-    expect(res1.status).toBe(409)
-    const res2 = await app.request('/dev-1/network/disable', { method: 'POST' })
-    expect(res2.status).toBe(409)
+    const { db, app } = makeHarness({ launcher })
+    seedDevice(db, { status: 'offline' })
+    const res = await app.request('/dev-1/network/enable', { method: 'POST' })
+    expect(res.status).toBe(409)
+  })
+
+  test('disable does NOT refuse an offline device — the disarm direction widens exactly that case (plan 44 §5.7, plan 205 §4.8) — but a live job still forbids it', async () => {
+    const { launcher } = fakeLauncher()
+    const { db, app, activities } = makeHarness({ launcher })
+    seedDevice(db, { status: 'offline' })
+    const offline = await app.request('/dev-1/network/disable', { method: 'POST' })
+    expect(offline.status).toBe(200)
+
+    seedDevice(db, { id: 'dev-2', stableId: 'stable-dev-2', serial: 'serial-dev-2' })
+    activities.start('dev-2', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
+    const busy = await app.request('/dev-2/network/disable', { method: 'POST' })
+    expect(busy.status).toBe(409)
   })
 })
 
@@ -919,10 +989,10 @@ describe('POST /api/devices/:id/network/retry (plan 90 §3.7 rule 4, fixes F17) 
     expect(body.error.code).toBe('E_NO_ROUTE_CONFIG')
   })
 
-  test('refuses without a held lease', async () => {
+  test('refuses an offline device (plan 205 §4.8)', async () => {
     const { launcher } = fakeLauncher()
-    const { db, app } = makeHarness({ launcher, leaseHeld: false })
-    seedDevice(db)
+    const { db, app } = makeHarness({ launcher })
+    seedDevice(db, { status: 'offline' })
     const res = await app.request('/dev-1/network/retry', { method: 'POST' })
     expect(res.status).toBe(409)
   })
@@ -1930,56 +2000,31 @@ describe('plan 52 §4.1 device lifecycle — offline keeps the route, online res
   })
 })
 
-describe('plan 52 §0, §3.1: a route is no longer scoped to a lease', () => {
-  /**
-   * Builds a real `DeviceStateMachine` + `LeaseManager` over the SAME `db`
-   * the guest-agent routes use, wired the way `daemon.ts` now wires them
-   * (plan 52 §4.1: `onManualRevoked` touches nothing network-related) —
-   * proving the lifecycle end to end rather than only asserting "nothing in
-   * this file calls revertNetwork".
-   */
-  function makeLeaseManager(db: Db): LeaseManager {
-    const states = createDeviceStateMachine({ db, log: createLogger('test') })
-    const jobStore = { expiredRunning: () => [] } as unknown as JobStore
-    return createLeaseManager({
-      states,
-      jobStore,
-      config: { jobTtlSec: 3600, manualIdleTimeoutSec: 90, reaperIntervalMs: 60_000 },
-      log: createLogger('test'),
-      onJobLeaseExpired: () => {},
-      // Deliberately empty — plan 52 §4.1's whole point is that a manual
-      // lease ending (idle timeout, disconnect, or an explicit release)
-      // must not touch the device's network route.
-      onManualRevoked: () => {},
-    })
-  }
-
-  test('a route survives a manual lease being released (explicit release, and a forced idle-timeout revoke)', async () => {
+describe('plan 52 §0, §3.1: a route is no longer scoped to who is in control (plan 205 §2.4 widens this further — a live control marker never gates a route write at all)', () => {
+  test('a route survives a control marker ending (an explicit end, and a forced idle-timeout sweep)', async () => {
     const { launcher } = fakeLauncher()
     const client = fakeClient({ routeStatus: async () => ({ prepared: true, up: true, upstream: 'proxy.example:1080' }) })
-    const { db, app, events } = makeHarness({ launcher, client })
+    const { db, app, events, activities } = makeHarness({ launcher, client })
     seedDevice(db)
-    const leases = makeLeaseManager(db)
 
-    leases.acquireManual('dev-1', 'client-a', 'user-1')
+    activities.touchControl('dev-1', 'client-a', { kind: 'user', id: 'user-1', label: 'user-1' })
     await app.request('/dev-1/network', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
     })
 
-    // An explicit release, exactly like a client sending `lease.release`.
-    expect(leases.releaseManual('dev-1', 'client-a')).toBe(true)
+    // An explicit end, exactly like a WS disconnect ends a control marker.
+    expect(activities.end('dev-1', 'control:client-a')).toBe(true)
 
     let res = await app.request('/dev-1/network')
     let body = (await res.json()) as { enabled: boolean; observed: { up: boolean } | null }
     expect(body.enabled).toBe(true)
     expect(body.observed?.up).toBe(true)
 
-    // Re-acquire and force-revoke it as an idle timeout would (the reaper's
-    // own call shape) — still nothing torn down.
-    leases.acquireManual('dev-1', 'client-b', 'user-2')
-    expect(leases.releaseManual('dev-1', 'client-b', 'idle_timeout')).toBe(true)
+    // Re-establish and end it again as an idle-timeout sweep would — still nothing torn down.
+    activities.touchControl('dev-1', 'client-b', { kind: 'user', id: 'user-2', label: 'user-2' })
+    expect(activities.end('dev-1', 'control:client-b')).toBe(true)
 
     res = await app.request('/dev-1/network')
     body = (await res.json()) as { enabled: boolean; observed: { up: boolean } | null }
@@ -2212,7 +2257,9 @@ describe('the boot-time inline-credential migration (plan 52 §5.1) — nothing 
       apkPath: async () => '/fake/guest-agent.apk',
       ports: fakePorts(),
       dataDir: mkdtempSync(join(tmpdir(), 'enkaku-guest-agent-test-')),
-      leases: fakeLeases(true),
+      activities: createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} }),
+      controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+      states: createDeviceStateMachine({ db, log: createLogger('test') }),
       log: createLogger('test'),
       routeTimings: { applySettleTimeoutMs: 0, revertPollTimeoutMs: 0 },
       makeLauncher: () => launcher,

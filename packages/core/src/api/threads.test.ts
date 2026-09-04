@@ -7,7 +7,7 @@ import { openDb, runMigrations, type Db } from '../db'
 import type { AuthEnv } from '../auth/middleware'
 import { devices, users } from '../db/schema'
 import { createLogger } from '../util/logger'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createDeviceStateMachine } from '../device/state-machine'
 import type { CapabilityContextDeps } from '../capability/context'
 import { buildCapabilityRegistry } from '../capability/registry'
@@ -33,24 +33,19 @@ function setUp(caps: import('../capability/types').AnyCoreCapability[] = []) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db as Db
-  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone', status: 'online' }).run()
   db.insert(users).values({ id: 'admin-user', email: 'admin@test', role: 'admin', passwordHash: null, createdAt: new Date() }).run()
 
   const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-  const leases = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: createLogger('test'),
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+  const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
   const registry = buildCapabilityRegistry(caps.map((cap) => ({ cap, file: 'test' })))
   const threads = createThreadStore(db)
   const approvals = createApprovalStore({ db })
   const agentsStore = createAgentStore({ db, registry })
   const connectors = createConnectorStore({ db, dataDir: mkdtempSync(join(tmpdir(), 'enkaku-threads-route-test-')) })
   const treeStore = createTreeStore(db)
-  const capContextDeps: CapabilityContextDeps = { db, leases, states, sessions: () => null, readiness: () => null, transfer: null, jobService: {} as never, workspace: {} as never }
+  const capContextDeps: CapabilityContextDeps = { db, activities, controlSettings, states, sessions: () => null, readiness: () => null, transfer: null, jobService: {} as never, workspace: {} as never }
   const connector = connectors.create({ name: 'test-connector', kind: 'anthropic', credential: 'sk-ant-fake' })
   const agent = agentsStore.create(
     { slug: `route-test-agent-${crypto.randomUUID()}`, name: 'Route Test Agent', connectorId: connector.id, model: 'fake-model', tools: caps.map((c) => c.id), permissions: ['agent.run'], settings: { maxConcurrentRuns: 1 } },
@@ -67,7 +62,8 @@ function setUp(caps: import('../capability/types').AnyCoreCapability[] = []) {
     connectors,
     registry,
     capContextDeps,
-    leases,
+    activities,
+    controlSettings,
     settings: () =>
       ({
         agentDefaults: {

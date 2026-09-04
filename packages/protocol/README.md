@@ -21,37 +21,23 @@ Zod schemas and pure functions shared by the core and Studio — the WS/REST env
 
 **A result schema is published with `io: 'output'`; a params schema with `io: 'input'` — two separate call sites in `enkaku publish`, not a shared conversion helper.** A `params` schema describes what a person is about to type, so a `.default()` field must stay optional in the generated form (`io: 'input'`). A `result` schema describes a value already produced — every default already applied by the time `run()` returns — so the same field is correctly `required` in `io: 'output'`. Measured, not assumed: `z.boolean().default(false)` is `required` in one mode and absent from `required` in the other, against this workspace's own installed Zod.
 
-## The command console and bulk operations — wire shapes (plan 93, M58)
+## Actions API — wire shapes (plan 207)
 
-`packages/core/README.md`'s own "The command console and bulk operations"
-section documents the executor and the runner; this package owns the
-shapes both sides of the wire agree on. **93.11 (Studio's bulk-operations
-UI) is not built yet** — the shapes below exist and are exercised by
-`packages/core`'s routes and tests, but no Studio component under
-`components/bulk/` reads them.
-
-| Export | Where | What it is |
-|---|---|---|
-| `isHighConsequence(cmd)`, `HighConsequencePattern` | `command/high-consequence.ts` | The same pattern set `TerminalPane.tsx` always used, moved here so both the single-device terminal and the fan-out REST route (`api/command-runs.ts`) share one list. Advisory only — see below. |
-| `CommandTargetSchema`, `CommandMemberStatusSchema`, `CommandRunStatusSchema`, `CommandMemberSchema`, `CommandOutputSchema`, `CommandCountsSchema` | `command/target.ts` | A run's target (`{ deviceIds }` \| `{ tags }` \| `{ clusterId }`), a member's status (`pending`\|`running`\|`ok`\|`failed`\|`skipped`\|`cancelled`), a run's own status (adds `awaiting-continue`, plus `skipped` as a first-class non-failure outcome — a run that is all `ok`/`skipped` is `ok`), the wire shape of one member row, one distinct-output preview, and the tallied counts a `command.progress` frame carries. |
-| `SavedCommandSchema`, `SavedCommandListResponseSchema`, `SavedCommandResponseSchema`, `SavedCommandDeleteResponseSchema` | `command/saved.ts` | `GET/POST/PATCH/DELETE /api/saved-commands[/:id]`'s wire shapes. No `dangerous` field — see `packages/core/README.md`'s note on why. |
-| Five `command.*` server→client messages (`command.started`/`.progress`/`.output`/`.stage`/`.finished`) plus `command.subscribe`/`command.unsubscribe` client→server | `messages/command.ts`, appended to `ServerMessage`/`ClientMessage` in `index.ts` | The live surface. Subscriber-scoped by construction (`command.subscribe` names a `runId`) — a client watching one run never receives another's traffic, and `command.progress` is coalesced to at most one frame per 250ms carrying only that tick's deltas, never one frame per member. `POST /api/command-runs` (`api/command-runs.ts`, in `packages/core`) is the only way a run is ever started; these messages carry no way to start one. |
-| `PushJobParamsSchema`, `PullJobParamsSchema` | `messages/transfer.ts` | The two new `internal:push`/`internal:pull` job executors' params (step 93.9) — `{ artifactId, remotePath, mediaScan? }` and `{ remotePath }`, siblings of the existing install job's own params. |
-| `commandConsole` on `AdbStatsResponseSchema` | `api/adb.ts` | `GET /api/adb/stats`'s measurement block for H1/H2/H4 — `runsInFlight`, `membersInFlight`, `coalescedFramesPerSec`, `distinctOutputRatio`, `leaseChangedPerMinute`. `.optional()` on the wire, same convention as `input`/`video` beside it; the real core always sends it, zero-filled until `daemon.ts` wires the dependency (see `packages/core/README.md`'s note). |
+`actions.ts` is the shared shape for `POST /api/actions/<verb>` and `GET /api/operations/:id`: `TargetSchema` (`{ deviceIds }` \| `{ groupId }` \| `{ tags }`), `ActionVerbSchema` (one member per verb), `ActionRequestSchema` (a discriminated union on `verb`, each member carrying its own params beside `target`/`force`), `ActionResultSchema` (`deviceId`, `status` — `accepted`\|`skipped`\|`forbidden`\|`warned`\|`done`\|`failed` — plus an optional `message`/`code`/`activityId`/`jobId`/`batchId`/`detail`), `ActionResponseSchema` (`{ operationId, verb, results }`), and `OperationSchema` (the same shape plus `target`, `createdBy`, `createdAt`, `settled`). This replaced the fleet command surface's own wire shapes entirely (`command/target.ts`, `command/saved.ts`, `messages/command.ts`, and `commandConsole` on `AdbStatsResponseSchema`) — MVP 13 A.5, A.6a.
 
 **The high-consequence guard is advisory, and says so wherever it appears.**
-`isHighConsequence` never blocks anything by itself — it names what a
-command matched (`{ hit, pattern }`) so the REST layer can require an
-explicit `acknowledged: true` once the target has more than one device.
-Plan 26 §3.4 settled this for the single-device terminal already: a
-command allowlist/denylist is not a real security control (`sh -c`, a
-backtick, or an alias defeats any parser), so this package never pretends
-otherwise — the acknowledgement is an audit fact ("someone typed the exact
-device count and meant it"), never an authorisation decision.
+`isHighConsequence(cmd)`/`HighConsequencePattern` (`command/high-consequence.ts`) never block anything by themselves — they name what a
+command matched (`{ hit, pattern }`) so a caller can require an
+explicit acknowledgement once the target has more than one device. Both
+the single-device terminal (`TerminalPane.tsx`) and the `adb` action verb
+use the same list. Plan 26 §3.4 settled this for the single-device
+terminal already: a command allowlist/denylist is not a real security
+control (`sh -c`, a backtick, or an alias defeats any parser), so this
+package never pretends otherwise.
 
 ## Workflows — the document, the grammar, and the rule that matters most (plan 99, M64)
 
-A **workflow** is a pipeline: an ordered list of **nodes**, each an ordinary published script reference, plus optional **gates** that branch on values the pipeline already has. It runs as one job, on one device, under one lease — see `packages/core/README.md`'s own Workflows section for the executor and the runtime side. This package owns the document shape, the two closed grammars a node can use, and the checks that make a document publishable.
+A **workflow** is a pipeline: an ordered list of **nodes**, each an ordinary published script reference, plus optional **gates** that branch on values the pipeline already has. It runs as one job, on one device, under one control marker — see `packages/core/README.md`'s own Workflows section for the executor and the runtime side. This package owns the document shape, the two closed grammars a node can use, and the checks that make a document publishable.
 
 ### The document — `workflow.ts`
 

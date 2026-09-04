@@ -5,7 +5,7 @@
  * versions with no compatibility guarantee** (Genymobile's own docs). Therefore:
  * - the jar version is pinned to this constant (Toolchain: `swappable: false`),
  * - raising the version is core-release work, not just editing a number:
- *   every TODO-verify assumption in this package must be re-checked against
+ *   every `verified against` line in this package must be re-checked against
  *   the new release's source.
  */
 export const SCRCPY_VERSION = '3.3.1'
@@ -15,7 +15,16 @@ export const DEVICE_JAR_PATH = '/data/local/tmp/scrcpy-server.jar'
 
 /**
  * Minimum API level for UHID (virtual HID through the kernel's UHID).
- * TODO-verify against the pinned version's limits during device testing.
+ * verified against v3.3.1 server source on 2026-09-03: the pinned server's
+ * `UhidManager` opens `/dev/uhid` unconditionally and has no explicit
+ * minimum-API guard of its own (its one `Build.VERSION.SDK_INT` check, API
+ * 23, gates an unrelated `HandlerThread` optimisation). `29` is not a byte
+ * layout this package can check against source; it documents that the
+ * `/dev/uhid` kernel node is unreliably accessible to apps before Android 10
+ * (SELinux policy), matching plan 200 §5 R2's independent verification
+ * ("`UHID_MIN_API = 29` in `version.ts:20` matches upstream"). Nothing in
+ * v3.3.1's source contradicts it; this remains a device-tested assumption,
+ * not a compile-time-checkable fact.
  */
 export const UHID_MIN_API = 29
 
@@ -26,7 +35,12 @@ export const CODEC_ID = {
   AV1: 0x00617631, // 'av1'
 } as const
 
-/** host→device control message types (TODO-verify the ordering against the pinned version). */
+/**
+ * host→device control message types.
+ * verified against v3.3.1 server/src/main/java/com/genymobile/scrcpy/control/ControlMessage.java
+ * on 2026-09-03: every name and ordinal (0 INJECT_KEYCODE .. 17 RESET_VIDEO)
+ * matches `TYPE_*` exactly, with no gaps and no extras.
+ */
 export const CONTROL_MSG = {
   INJECT_KEYCODE: 0,
   INJECT_TEXT: 1,

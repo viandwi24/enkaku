@@ -1,4 +1,5 @@
 import { AGENT_TREE_CAPABILITIES } from './agent'
+import { ACTIONS_CAPABILITIES } from './actions'
 import { NOTIFY_CAPABILITIES } from './notify'
 import { DEVICE_APP_CAPABILITIES } from './device-app'
 import { DEVICE_CLIPBOARD_CAPABILITIES } from './device-clipboard'
@@ -11,6 +12,7 @@ import { FILE_TOOLS_CAPABILITIES } from './file-tools'
 import { FS_CAPABILITIES } from './fs'
 import { JOB_CAPABILITIES } from './job'
 import { JOB_TRACE_CAPABILITIES } from './job-trace'
+import { PLUGIN_CAPABILITIES } from './plugin'
 import { buildCapabilityRegistry, type CapabilityRegistry, type CapabilitySource } from './registry'
 import { SCRIPT_CAPABILITIES } from './script'
 import { SKILLS_CAPABILITIES } from './skills'
@@ -25,6 +27,7 @@ const SOURCES: { file: string; caps: AnyCoreCapability[] }[] = [
   { file: 'capability/device-state.ts', caps: DEVICE_STATE_CAPABILITIES },
   { file: 'capability/device-network.ts', caps: DEVICE_NETWORK_CAPABILITIES },
   { file: 'capability/script.ts', caps: SCRIPT_CAPABILITIES },
+  { file: 'capability/plugin.ts', caps: PLUGIN_CAPABILITIES },
   { file: 'capability/job.ts', caps: JOB_CAPABILITIES },
   { file: 'capability/job-trace.ts', caps: JOB_TRACE_CAPABILITIES },
   { file: 'capability/fs.ts', caps: FS_CAPABILITIES },
@@ -32,6 +35,7 @@ const SOURCES: { file: string; caps: AnyCoreCapability[] }[] = [
   { file: 'capability/skills.ts', caps: SKILLS_CAPABILITIES },
   { file: 'capability/agent.ts', caps: AGENT_TREE_CAPABILITIES },
   { file: 'capability/notify.ts', caps: NOTIFY_CAPABILITIES },
+  { file: 'capability/actions.ts', caps: ACTIONS_CAPABILITIES },
 ]
 
 /** Every capability the farm declares, assembled into `{ cap, file }` pairs

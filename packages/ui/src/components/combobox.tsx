@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState, type ReactNode } from 'react'
-import { Check, ChevronsUpDown } from 'lucide-react'
+import { CaretUpDownIcon, CheckIcon } from '../icons'
 import { Button } from './button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './command'
 import { Popover, PopoverContent, PopoverTrigger } from './popover'
@@ -142,7 +142,7 @@ export function Combobox({
           <span className={cn('truncate', selected ? undefined : 'text-fg-subtle')}>
             {selected ? selected.label : placeholder}
           </span>
-          <ChevronsUpDown className="size-3.5 shrink-0 opacity-60" aria-hidden />
+          <CaretUpDownIcon className="size-3.5 shrink-0 opacity-60" aria-hidden />
         </Button>
       </PopoverTrigger>
       <PopoverContent align={align} className={cn('w-(--radix-popover-trigger-width) min-w-64 p-0', className)}>
@@ -182,7 +182,7 @@ export function Combobox({
                         setOpen(false)
                       }}
                     >
-                      <Check className={cn('size-3.5 shrink-0', o.value === value ? 'opacity-100' : 'opacity-0')} aria-hidden />
+                      <CheckIcon className={cn('size-3.5 shrink-0', o.value === value ? 'opacity-100' : 'opacity-0')} aria-hidden />
                       {renderOption ? (
                         renderOption(o)
                       ) : (

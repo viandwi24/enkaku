@@ -10,7 +10,7 @@ import { createRecordingService } from './service'
  * `RecordingService` (plan 94 §4.6, step 94.3) — the per-farm registry: one
  * open recording per device, `E_RECORDING_ACTIVE` on a double-start,
  * `E_NO_RECORDING` on a stop with nothing open, the `onStep`/`onBoundStopped`
- * push registration, and `stopForLeaseLost`.
+ * push registration, and `stopForDisconnect`.
  */
 
 function db(): Db {
@@ -150,24 +150,24 @@ describe('RecordingService — onStep / onBoundStopped pushes', () => {
   })
 })
 
-describe('RecordingService.stopForLeaseLost', () => {
-  test('ends an open recording with stoppedReason lease-lost, via onBoundStopped', async () => {
+describe('RecordingService.stopForDisconnect', () => {
+  test('ends an open recording with stoppedReason disconnected, via onBoundStopped', async () => {
     const svc = service()
     const calls: string[] = []
     svc.onBoundStopped((_deviceId, reason) => calls.push(reason))
     const rec = svc.start('dev-1', 'user-1', ctx())
     rec.observe({ kind: 'key', keycode: 4 })
-    svc.stopForLeaseLost('dev-1')
+    svc.stopForDisconnect('dev-1')
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
-    expect(calls).toEqual(['lease-lost'])
+    expect(calls).toEqual(['disconnected'])
     expect(svc.get('dev-1')).toBeNull()
     expect(svc.lastFinished('dev-1')?.steps).toHaveLength(1)
   })
 
   test('a harmless no-op when nothing is open on that device', () => {
     const svc = service()
-    expect(() => svc.stopForLeaseLost('dev-1')).not.toThrow()
+    expect(() => svc.stopForDisconnect('dev-1')).not.toThrow()
   })
 })

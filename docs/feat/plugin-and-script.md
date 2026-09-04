@@ -2,7 +2,7 @@
 
 > An as-built analysis, read off the code on `main` (2026-08-17), not a plan. Where the code and a
 > plan disagree, this document follows the code and says so. Plans 62, 64, 79, 80, 81, 82, 94, 95,
-> 97, 98 and 99 are the design record; `docs/spec.md` §11 is the product statement.
+> 97, 98 and 99 are the design record; `docs/archive/spec-prototype.md` §11 was the product statement; the MVP spec covers it in `docs/spec.md` §4.4 to §4.6 and §10.
 
 ---
 

@@ -7,12 +7,12 @@ import type { ExecutorContext, JobExecutor } from '../executor'
 
 /**
  * `internal:pull` (plan 93 §3.13, §4.6, §5 step 93.9) — a near-copy of
- * `createInstallExecutor`/`createPushExecutor`. Closes F12: `job.id` is
- * threaded into `TransferService.pull`'s `TransferOpts.jobId`, so
- * `registerDeviceArtifact` stamps the pulling job's id onto the artifact
- * instead of `null`, and a bulk pull's files are traceable back to the
- * batch that produced them (§3.13 point 1, `artifacts`'s own `(jobId,
- * createdAt)` index).
+ * `createInstallExecutor`/`createPushExecutor`. Closes F12: `ctx.runId` is
+ * threaded into `TransferService.pull`'s `TransferOpts.runId` (plan 211 §3.2
+ * decision 9 re-keyed this from `jobId`), so `registerDeviceArtifact` stamps
+ * the pulling run's id onto the artifact instead of `null`, and a bulk
+ * pull's files are traceable back to the batch/run that produced them
+ * (§3.13 point 1, `artifacts`'s own `(run_id, created_at)` index).
  */
 export function createPullExecutor(deps: { transfer: TransferService; broadcast: TransferBroadcast }): JobExecutor {
   return {
@@ -34,7 +34,7 @@ export function createPullExecutor(deps: { transfer: TransferService; broadcast:
         deviceId: job.deviceId,
         kind: 'pull',
         signal: ctx.signal,
-        op: (transferId, onProgress) => deps.transfer.pull(job.deviceId, params.remotePath, { transferId, onProgress, jobId: job.id }),
+        op: (transferId, onProgress) => deps.transfer.pull(job.deviceId, params.remotePath, { transferId, onProgress, runId: ctx.runId }),
       })
     },
   }

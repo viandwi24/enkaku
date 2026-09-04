@@ -36,19 +36,6 @@ export type KeepAwakeMode = z.infer<typeof KeepAwakeModeSchema>
 export const ShellModeSchema = z.enum(['off', 'admin', 'operator'])
 export type ShellMode = z.infer<typeof ShellModeSchema>
 
-/**
- * Who may Assist — reach into a device someone/something else already
- * controls, without taking it (plan 91 §3.6, §4.5, §4.6) — copying the exact
- * shape `ShellModeSchema` above established (F23): a farm-wide mode PLUS a
- * role permission (`device.assist`), checked together by `canAssist`
- * (`packages/core/src/auth/acl.ts`). `'off'` disables assisting entirely,
- * server-authoritative. Extracted to a named schema for the same reason
- * `ShellModeSchema` is: `acl.ts` and Studio both need the type without
- * duplicating the enum.
- */
-export const CoControlModeSchema = z.enum(['off', 'admin', 'operator'])
-export type CoControlMode = z.infer<typeof CoControlModeSchema>
-
 /** Timing realism (spec §9.3). */
 export const TimingSettingsSchema = z.object({
   tapJitterMs: z
@@ -224,9 +211,10 @@ export type DeviceGps = z.infer<typeof DeviceGpsSchema>
  * own value alone", never a guessed default — same honesty rule as the network
  * layer's `expect` (never inferred, never defaulted).
  *
- * This is NOT a driver layer (plan 58 §3.1): it has no lease-scoped
- * apply/revert lifecycle, no capability negotiation, and persists across leases
- * like `timing` and `prep`. It lives in `DeviceSettingsSchema` alongside them.
+ * This is NOT a driver layer (plan 58 §3.1): it has no activity-scoped
+ * apply/revert lifecycle, no capability negotiation, and persists across
+ * control markers like `timing` and `prep`. It lives in `DeviceSettingsSchema`
+ * alongside them.
  */
 export const DeviceIdentitySchema = z
   .object({
@@ -411,7 +399,7 @@ export const DeviceSettingsSchema = z
     input: z
       .object({
         preferredMode: z
-          .enum(['uhid', 'sdk', 'aoa'])
+          .enum(['uhid', 'sdk'])
           .default('uhid')
           .describe('uhid looks like real hardware to the device; sdk is the widest-compatibility fallback')
           .meta({ title: 'Injection mode' }),
@@ -742,27 +730,6 @@ export const JobSettingsSchema = z
       )
       .meta({ title: 'Fail jobs on app crash' }),
     /**
-     * A job waits for the device to go quiet before claiming it (plan 71
-     * §3.7) instead of interrupting whatever a person is mid-gesture on.
-     * Bounded by `maxWaitSec` so one person cannot starve the queue.
-     */
-    quietPeriodSec: z
-      .number()
-      .int()
-      .min(0)
-      .max(600)
-      .default(10)
-      .describe('How long a device must have had no manual lease before a queued job may claim it.')
-      .meta(ui({ title: 'Quiet period before claiming (sec)', kind: 'duration', unit: 's', group: 'Queueing' })),
-    maxWaitSec: z
-      .number()
-      .int()
-      .min(0)
-      .max(3_600)
-      .default(120)
-      .describe('The most a job will wait for a quiet gap before claiming the device anyway.')
-      .meta(ui({ title: 'Maximum wait for quiet (sec)', kind: 'duration', unit: 's', group: 'Queueing' })),
-    /**
      * Plan 74 §3.1, §4.1 — replaces the hard-coded `DEFAULT_TIMEOUT_MS`
      * (`job-runner.ts`, 300_000) that appeared in no settings screen, no
      * config file, and no environment variable. A script's own
@@ -812,7 +779,7 @@ export const JobSettingsSchema = z
       .meta(ui({ title: 'Maximum job timeout (ms)', kind: 'duration', unit: 'ms', group: 'Timeouts' })),
     /**
      * The script runtime envelope's memory field (plan 98 §3.5, §4.3) —
-     * `defaultMaxRssBytes`/`maxRssBytes` mirror `defaultTimeoutMs`/
+     * `defaultMaxRssBytes`/`maxRssBytes` mirrors `defaultTimeoutMs`/
      * `maxTimeoutMs`'s exact "offered, and off" shape (F7): both byte
      * fields default to `null` (no limit anywhere) so a farm that sets
      * neither and runs scripts that declare nothing sees no change at all.
@@ -956,8 +923,6 @@ export const JobSettingsSchema = z
     resetStrict: false,
     retry: { maxInfraAttempts: 2, backoffBaseMs: 2_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true },
     crashPolicy: 'declared',
-    quietPeriodSec: 10,
-    maxWaitSec: 120,
     defaultTimeoutMs: 3_600_000,
     startupTimeoutMs: 60_000,
     maxTimeoutMs: null,
@@ -976,7 +941,7 @@ export type JobSettings = z.infer<typeof JobSettingsSchema>
  * `discovery.networks[].cidr` (plan 88 §3.5, §3.6, §4.2) — the bounded
  * sweep's whole address space. IPv4 only: every example and every cost-model
  * number in the plan is IPv4 (`10.20.0.0/24`, TEST-NET-1's `192.0.2.0/24`),
- * and a farm chassis switch does not hand out IPv6 leases in practice.
+ * and a farm chassis switch does not hand out IPv6 addresses via DHCP in practice.
  */
 const IPV4_OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d|0)'
 const IPV4_CIDR_RE = new RegExp(`^${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}/(3[0-2]|[12]?\\d)$`)
@@ -1142,28 +1107,12 @@ export const FarmSettingsSchema = z.object({
         .describe('An agent screenshot blob no message references anywhere is deleted once it is this old. Protects an upload still mid-compose from being swept before its message is sent.')
         .meta(ui({ title: 'Unreferenced screenshot grace period (hours)', kind: 'duration', unit: 'h' })),
       /**
-       * The command console's own history budget (plan 93 §3.9, §4.1).
-       * Alongside `eventMainDays`/`eventInputDays`/`blobOrphanGraceHours`
-       * above, and NOT gated by `enabled` for the same stated reason: an
-       * unbounded command history is a disk-filling bug, not an opt-in
-       * convenience — `command_runs` is the same append-only, per-action
-       * shape `device_events` already is.
-       */
-      commandRunDays: z
-        .number()
-        .int()
-        .min(1)
-        .default(14)
-        .describe('Command runs older than this are deleted, with their per-device results.')
-        .meta({ title: 'Command history retention (days)' }),
-      /**
        * The job trace's own history budget (plan 128 §3.7, §4.1).
-       * Alongside `eventMainDays`/`eventInputDays`/`blobOrphanGraceHours`/
-       * `commandRunDays` above, and NOT gated by `enabled` for the same
-       * stated reason: `job_events` is the same append-only, per-action shape
-       * `device_events` and `command_runs` already are — one row per device
-       * call plus a screenshot per row — so leaving it unbounded is a
-       * disk-filling bug, not an opt-in convenience.
+       * Alongside `eventMainDays`/`eventInputDays`/`blobOrphanGraceHours`
+       * above, and NOT gated by `enabled` for the same stated reason: `job_events`
+       * is the same append-only, per-action shape `device_events` already is —
+       * one row per device call plus a screenshot per row — so leaving it
+       * unbounded is a disk-filling bug, not an opt-in convenience.
        *
        * A trace's LIFETIME rule is separate and stricter: a trace lives
        * exactly as long as its job's history, and deleting a job takes its
@@ -1180,7 +1129,7 @@ export const FarmSettingsSchema = z.object({
         .describe('Job traces older than this are deleted, with their captured frames and UI snapshots.')
         .meta({ title: 'Job trace retention (days)' }),
     })
-    .default({ enabled: false, maxAgeDays: 30, maxTotalGb: 20, eventMainDays: 30, eventInputDays: 3, eventMaxRowsPerDevice: 50_000, blobOrphanGraceHours: 24, commandRunDays: 14, traceDays: 30 })
+    .default({ enabled: false, maxAgeDays: 30, maxTotalGb: 20, eventMainDays: 30, eventInputDays: 3, eventMaxRowsPerDevice: 50_000, blobOrphanGraceHours: 24, traceDays: 30 })
     .meta({
       title: 'Artifact storage',
       description: 'Screenshots and job logs pile up over time. Turn this on to clear them automatically.',
@@ -1672,16 +1621,19 @@ export const FarmSettingsSchema = z.object({
       description: 'How closely the shared adb server is watched for signs it is stuck, not just busy, and the drain/cooldown rules the Restart adb server action follows.',
     }),
   /**
-   * The interactive device terminal (plan 26 §4.1), extended by plan 93 §4.1
-   * to also cover the fleet command console — extends this block rather than
-   * adding a new top-level one, because an operator looking for "can people
-   * run commands on the whole farm" looks under Device terminal, and the
-   * gates are the same gates. `mode` defaults to `'admin'` here — that
-   * default is correct for a loopback (single-user) install. A server-mode
-   * install (non-loopback bind) overrides it to `'off'` at config load
-   * instead, in `createFarmSettingsStore`: the auth mode is derived from the
-   * bind address, which this Zod schema cannot see. `fanoutEnabled` below
-   * gets the SAME server-mode override, forced to `false` alongside `mode`.
+   * The interactive device terminal (plan 26 §4.1). `mode` defaults to
+   * `'admin'` here — that default is correct for a loopback (single-user)
+   * install. A server-mode install (non-loopback bind) overrides it to
+   * `'off'` at config load instead, in `createFarmSettingsStore`: the auth
+   * mode is derived from the bind address, which this Zod schema cannot see.
+   *
+   * The fleet-wide screen this block once grew (plan 93) — its own opt-in
+   * flag, per-request device cap, concurrency and output-size knobs, staged
+   * confirmation wait, and per-person/per-farm history limits — is removed
+   * entirely (MVP 15 §0.1 item 4, plan 207): the `adb` verb is one operation
+   * with a bounded dispatch-width constant (`ACTION_FANOUT_CONCURRENCY` in
+   * `packages/core/src/actions/verbs.ts`), not a setting, and it keeps no
+   * history table of its own.
    */
   shell: z
     .object({
@@ -1721,7 +1673,7 @@ export const FarmSettingsSchema = z.object({
       endpointEnabled: z
         .boolean()
         .default(false)
-        .describe('Allow lease holders to open a temporary adb endpoint for this farm.')
+        .describe('Allow a controlling client to open a temporary adb endpoint for this farm.')
         .meta(ui({ title: 'Allow adb endpoint', group: 'adb endpoint' })),
       endpointBind: z
         .string()
@@ -1745,87 +1697,6 @@ export const FarmSettingsSchema = z.object({
         .default(8)
         .describe('Concurrent adb streams allowed per endpoint.')
         .meta(ui({ title: 'Max endpoint streams', kind: 'count', group: 'adb endpoint' })),
-      /**
-       * Fan-out (plan 93 §3.8, §4.1) — a SEPARATE opt-in from `mode` above,
-       * on the exact precedent of `endpointEnabled` above: running one gated
-       * shell and running a hundred at once are different decisions. Unlike
-       * the endpoint this follows `mode`'s asymmetry rather than a flat
-       * `false` — `true` here, forced to `false` in server mode by
-       * `createFarmSettingsStore` (the auth mode is derived from the bind
-       * address, which this schema cannot see). A laptop farm gets the
-       * feature by default; an exposed farm gets a decision.
-       */
-      fanoutEnabled: z
-        .boolean()
-        .default(true)
-        .describe('Allow one command to be sent to many devices at once. Turned off automatically on a server-mode install.')
-        .meta(ui({ title: 'Allow fleet commands', group: 'Fleet commands' })),
-      fanoutMaxDevices: z
-        .number()
-        .int()
-        .min(0)
-        .max(1_000)
-        .default(0)
-        .describe('Largest number of devices one command may target. 0 means no limit.')
-        .meta(ui({ title: 'Max devices per fleet command', kind: 'count', group: 'Fleet commands' })),
-      /** 0 = as many as the adb exec semaphore already lets through (plan 93 §3.5) — no second concurrency mechanism. */
-      fanoutConcurrency: z
-        .number()
-        .int()
-        .min(0)
-        .max(64)
-        .default(0)
-        .describe('How many devices a fleet command runs on at once. 0 lets the adb scheduler decide.')
-        .meta(ui({ title: 'Fleet command concurrency', kind: 'count', group: 'Fleet commands' })),
-      fanoutMaxOutputBytes: z
-        .number()
-        .int()
-        .min(1_024)
-        .max(262_144)
-        .default(32_768)
-        .describe('Output kept per device for a fleet command. Smaller than a single terminal command on purpose — a fleet command is a survey, not a capture.')
-        .meta(ui({ title: 'Max output per device (bytes)', kind: 'bytes', group: 'Fleet commands' })),
-      /** Sized against `MAX_BUFFERED` (512 KB, `ws-handlers.ts`) — see plan 93 §3.6, §4.4. */
-      fanoutPreviewBytes: z
-        .number()
-        .int()
-        .min(256)
-        .max(16_384)
-        .default(2_048)
-        .describe('How much of each distinct result is pushed live to the browser. The rest is fetched on demand.')
-        .meta(ui({ title: 'Live result preview (bytes)', kind: 'bytes', group: 'Fleet commands' })),
-      fanoutConfirmThreshold: z
-        .number()
-        .int()
-        .min(0)
-        .max(1_000)
-        .default(5)
-        .describe('Above this many devices, the operator must type the device count to confirm. 0 always asks.')
-        .meta(ui({ title: 'Typed confirmation above', kind: 'count', group: 'Fleet commands' })),
-      fanoutStageWaitSec: z
-        .number()
-        .int()
-        .min(60)
-        .max(86_400)
-        .default(900)
-        .describe('How long a staged command waits for Continue before it is cancelled.')
-        .meta(ui({ title: 'Staged command wait (s)', kind: 'duration', unit: 's', group: 'Fleet commands' })),
-      commandRunsPerUser: z
-        .number()
-        .int()
-        .min(50)
-        .max(5_000)
-        .default(500)
-        .describe('How many past commands are kept per person. The oldest go first.')
-        .meta(ui({ title: 'Command history per person', kind: 'count', group: 'Fleet commands' })),
-      savedCommandLimit: z
-        .number()
-        .int()
-        .min(10)
-        .max(1_000)
-        .default(200)
-        .describe('How many saved commands this farm may hold.')
-        .meta(ui({ title: 'Max saved commands', kind: 'count', group: 'Fleet commands' })),
     })
     .default({
       mode: 'admin',
@@ -1835,113 +1706,31 @@ export const FarmSettingsSchema = z.object({
       endpointBind: '127.0.0.1',
       endpointIdleSec: 300,
       maxEndpointStreams: 8,
-      fanoutEnabled: true,
-      fanoutMaxDevices: 0,
-      fanoutConcurrency: 0,
-      fanoutMaxOutputBytes: 32_768,
-      fanoutPreviewBytes: 2_048,
-      fanoutConfirmThreshold: 5,
-      fanoutStageWaitSec: 900,
-      commandRunsPerUser: 500,
-      savedCommandLimit: 200,
     })
     .meta({
-      title: 'Device terminal and command console',
+      title: 'Device terminal',
       description:
-        'Free-form adb shell commands, gated by permission and audited in full (plan 26), plus an optional lease-scoped adb endpoint (plan 27) and fleet-wide fan-out with saved commands and history (plan 93).',
+        'Free-form adb shell commands, gated by permission and audited in full (plan 26), plus an optional adb endpoint scoped to a controlling client (plan 27).',
     }),
-  /**
-   * Assist (plan 91 §3.2, §3.6, §4.5) — reaching into a device a job or
-   * another person is already driving, without taking control from them. The
-   * lease is never touched by anything in this block: `DeviceStatus`,
-   * `heldBy`, and the job's own `expiresAt` are all unaffected by an assist
-   * grant (§3.2's table).
-   */
-  coControl: z
+  /** MVP 04 §1.3 rows 7 and 8, MVP 12 §1 "Control". */
+  control: z
     .object({
-      mode: CoControlModeSchema.default('operator')
-        .describe('Who may tap and type on a device someone else is already controlling. Off disables assisting entirely.')
-        .meta(ui({ title: 'Assisting a controlled device' })),
-      grantTtlSec: z
+      overControl: z
+        .enum(['allow', 'warn', 'forbid'])
+        .default('allow')
+        .describe('What happens when someone starts controlling a device another person is already controlling.')
+        .meta(ui({ title: 'Control over control' })),
+      idleSec: z
         .number()
         .int()
-        .min(30)
-        .max(3600)
-        .default(300)
-        .describe('Assisting stops on its own after this long without input.')
-        .meta(ui({ title: 'Assist idle timeout (s)', kind: 'duration', unit: 's' })),
-      maxConcurrentPerDevice: z
-        .number()
-        .int()
-        .min(1)
-        .max(4)
-        .default(1)
-        .describe('How many people may assist the same device at once. More than one makes it hard to tell whose tap did what.')
-        .meta(ui({ title: 'People assisting one device', kind: 'count' })),
-      queueWaitMs: z
-        .number()
-        .int()
-        .min(500)
-        .max(30_000)
-        .default(5_000)
-        .describe('How long an action waits for the device to be free before it is refused with an explanation.')
-        .meta(ui({ title: 'Input wait budget (ms)', kind: 'duration', unit: 'ms' })),
-      maxQueueDepth: z
-        .number()
-        .int()
-        .min(1)
-        .max(256)
-        .default(32)
-        .describe('Input actions that may be waiting for one device at once.')
-        .meta(ui({ title: 'Max queued input actions', kind: 'count' })),
+        .min(5)
+        .max(600)
+        .default(30)
+        .describe('How long after the last tap or key a device stops showing "Controlled by".')
+        .meta(ui({ title: 'Control idle seconds', kind: 'duration', unit: 's' })),
     })
-    .default({ mode: 'operator', grantTtlSec: 300, maxConcurrentPerDevice: 1, queueWaitMs: 5_000, maxQueueDepth: 32 })
-    .meta({
-      title: 'Assisting',
-      description: 'Reaching into a device a job or another person is driving, without taking control from them.',
-    }),
-  /**
-   * Controlling many devices at once (plan 91 §3.7, §3.9, §4.5) — a mirror
-   * group acquires no multi-device lock; a busy or held member becomes an
-   * ordinary Assist grant instead (subject to `coControl` above), never a
-   * takeover.
-   */
-  mirror: z
-    .object({
-      maxDevices: z
-        .number()
-        .int()
-        .min(2)
-        .max(64)
-        .default(20)
-        .describe('How many devices one operator may drive at the same time.')
-        .meta(ui({ title: 'Max devices per mirror', kind: 'count' })),
-      requireSameOrientation: z
-        .boolean()
-        .default(true)
-        .describe('Skip taps and swipes on a device whose screen is rotated differently from the one you are looking at. Keys and typing still go through.')
-        .meta({ title: 'Skip rotated devices for taps' }),
-      aspectTolerance: z
-        .number()
-        .min(0)
-        .max(0.5)
-        .default(0.05)
-        .describe('How different a screen shape may be before that device is flagged as likely to land taps in a different place.')
-        .meta(ui({ title: 'Screen shape tolerance', kind: 'chance' })),
-      dropAfterConsecutiveFailures: z
-        .number()
-        .int()
-        .min(1)
-        .max(20)
-        .default(3)
-        .describe('A device that refuses this many actions in a row leaves the group, with a message saying which.')
-        .meta(ui({ title: 'Drop after failures', kind: 'count' })),
-    })
-    .default({ maxDevices: 20, requireSameOrientation: true, aspectTolerance: 0.05, dropAfterConsecutiveFailures: 3 })
-    .meta({
-      title: 'Controlling many devices',
-      description: 'One screen, one set of taps, many phones.',
-    }),
+    .default({ overControl: 'allow', idleSec: 30 })
+    .meta({ title: 'Control', description: 'Who may touch a device someone else just touched, and how long "controlled" lasts.' }),
   job: JobSettingsSchema,
   /**
    * The workflow executor's OWN outer clock (plan 99 §3.11 — "three clocks,
@@ -1993,56 +1782,25 @@ export const FarmSettingsSchema = z.object({
       description: 'How long a workflow job may hold a device in total, across every node in the pipeline (plan 99 §3.11).',
     }),
   /**
-   * Idle session TTL (plan 42 §3.4, §4.4): when the last viewer of a device
-   * leaves, the session is not closed right away — it is kept alive for
-   * `idleTtlSec` in case the same or another viewer returns shortly, which is
-   * what makes returning to a device instant instead of a fresh wake-up.
-   * Bounded farm-wide by `maxIdleSessions` so a big fleet cannot hold every
-   * device's session open at once; `idleTtlSec: 0` restores the pre-plan-42
-   * behaviour of closing the instant the last viewer leaves.
+   * Session builds (MVP 11 §1.4). A session is built when a device comes online and lives
+   * as long as the device is online; the only knob is how many builds may run at once per
+   * USB root hub. The farm-wide ceiling is a constant (`SESSION_BUILD_FARM_CEILING`, 16).
    */
   session: z
     .object({
-      idleTtlSec: z
-        .number()
-        .int()
-        .min(0)
-        .max(3600)
-        .default(300)
-        .describe('How long a device session stays alive after the last viewer leaves, so returning is instant. 0 closes it immediately.')
-        .meta(ui({ title: 'Idle session TTL (s)', kind: 'duration', unit: 's' })),
-      maxIdleSessions: z
-        .number()
-        .int()
-        .min(0)
-        .max(64)
-        .default(8)
-        .describe('How many idle sessions may be held open across the farm before the oldest is closed.')
-        .meta(ui({ title: 'Max idle sessions', kind: 'count' })),
-      /**
-       * The build lane's own budget (plan 92 §3.3, §4.3) — a farm-wide
-       * counting semaphore around `createEntry` (session construction: push
-       * a jar, spawn scrcpy-server, connect two sockets). It QUEUES, it does
-       * not refuse: a wall tile that waits 900ms for its turn is correct; a
-       * wall tile that errors because another tab was also loading is not.
-       * Two is not a guess — plan 85 §3.4 used the same reasoning for
-       * `adb.maxInstallConcurrent`: a session build shares one USB
-       * controller, and the observed failure at five devices was
-       * concurrency, not count.
-       */
-      maxConcurrentBuilds: z
+      buildsPerUsbRoot: z
         .number()
         .int()
         .min(1)
         .max(16)
-        .default(2)
-        .describe('How many device sessions may be started at the same time across the farm. Extra requests wait their turn rather than failing.')
-        .meta(ui({ title: 'Max concurrent session starts', kind: 'count' })),
+        .default(4)
+        .describe('How many device sessions may be starting at the same time on one USB root hub. Raise if a cold start of many devices is too slow; lower if it saturates USB.')
+        .meta(ui({ title: 'Session builds per USB root', kind: 'count' })),
     })
-    .default({ idleTtlSec: 300, maxIdleSessions: 8, maxConcurrentBuilds: 2 })
+    .default({ buildsPerUsbRoot: 4 })
     .meta({
       title: 'Device sessions',
-      description: 'How long a device session lingers after the last viewer leaves, how many may linger at once, and how many may be starting up at the same time.',
+      description: 'How many device sessions may be starting at once on one USB root hub. Sessions themselves are always on.',
     }),
   /**
    * Plan 100 §4.3, step 100.6 (closes 96.22/G10/G11) — a session that opened
@@ -2210,9 +1968,8 @@ export const FarmSettingsSchema = z.object({
    *
    * `rampConcurrency` bounds how many tiles may ask for a stream at the same
    * time while the wall fills in (plan 92 §3.3) — a CLIENT-side courtesy
-   * only; the authoritative bound is `session.maxConcurrentBuilds` above,
-   * because the client cannot be trusted to enforce it alone (two tabs, or a
-   * tab and a script, both loading the wall at once).
+   * only; sessions are always on now (plan 206), so a tile's request
+   * attaches to an already-built entry rather than racing a build.
    *
    * There is deliberately NO `defaultView` field here. §9 Q1 (decided
    * 2026-08-12, plan 92 §3.10): the Wall is the unconditional landing view;
@@ -2683,8 +2440,7 @@ export type WallSettings = FarmSettings['wall']
 export type ReadinessSettings = FarmSettings['readiness']
 export type WorkspaceSettings = FarmSettings['workspace']
 export type KvSettings = FarmSettings['kv']
-export type CoControlSettings = FarmSettings['coControl']
-export type MirrorSettings = FarmSettings['mirror']
+export type ControlSettings = FarmSettings['control']
 /** Plan 99 §3.11 — read by `packages/core/src/jobs/executors/workflow.ts` (its own `WorkflowSettings`) and by whichever caller passes a `WorkflowBudget` into `checkWorkflow` (`packages/protocol/src/workflow-check.ts`). */
 export type WorkflowJobSettings = FarmSettings['workflow']
 /** Plan 94 §4.6, step 94.3 — read by `packages/core/src/recording/service.ts`. */

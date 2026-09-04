@@ -1,50 +1,18 @@
 import { describe, expect, test } from 'bun:test'
-import { JobResumeRequestSchema, JobResumeResponseSchema, JobTraceEventSchema, JobTraceMessage } from './job'
+import { JobTraceEventSchema, JobTraceMessage } from './job'
 import { SERVER_MESSAGE_TYPES, ServerMessageSchema, isServerMessageType } from '../index'
 
-// The node TIMELINE's schemas (`JobNodeInfoSchema`, `JobNodesResponseSchema`)
-// live in `../api/jobs` and are covered by `../api/jobs.test.ts` — this file
-// only owns what `messages/job.ts` still declares.
-
-describe('resume (plan 99 §3.5)', () => {
-  test('fromNode is optional — omitting it means "the first node that did not succeed"', () => {
-    expect(JobResumeRequestSchema.parse({}).fromNode).toBeUndefined()
-    expect(JobResumeRequestSchema.parse({ fromNode: 'report' }).fromNode).toBe('report')
-  })
-
-  test('the response echoes the node the server actually resolved', () => {
-    const parsed = JobResumeResponseSchema.parse({
-      newJobId: 'job-2',
-      resumedFromJobId: 'job-1',
-      resumedFromNode: 'scroll-fyp',
-      status: 'queued',
-    })
-    expect(parsed.resumedFromNode).toBe('scroll-fyp')
-  })
-
-  test('a status outside the three the route can return is refused', () => {
-    expect(
-      JobResumeResponseSchema.safeParse({
-        newJobId: 'job-2',
-        resumedFromJobId: 'job-1',
-        resumedFromNode: 'scroll-fyp',
-        status: 'success',
-      }).success,
-    ).toBe(false)
-  })
-})
-
 // ---- Plan 128 (M93 — the job trace timeline), step 128.1, §3.3, §4.2 ----
+// Re-keyed from jobId to runId by plan 211.
 
 /** One `action` event exactly as the recorder writes one. */
 const actionEvent = {
   id: 'evt-1',
-  jobId: 'job-1',
+  runId: 'run-1',
   seq: 7,
   atMs: 1_756_000_000_123,
   attempt: 1,
   phase: 'run' as const,
-  nodeId: null,
   kind: 'action' as const,
   name: 'find',
   durationMs: 184,
@@ -109,22 +77,19 @@ describe('JobTraceEventSchema (plan 128 §4.2)', () => {
   test('an unknown kind is refused rather than passed through as a string', () => {
     expect(JobTraceEventSchema.safeParse({ ...actionEvent, kind: 'screenshot' }).success).toBe(false)
   })
-
-  test('the workflow node axis is carried, mirroring artifacts.nodeId', () => {
-    expect(JobTraceEventSchema.parse({ ...actionEvent, nodeId: 'scroll-fyp' }).nodeId).toBe('scroll-fyp')
-  })
 })
 
 describe('JobTraceMessage (plan 128 §4.2)', () => {
   test('the live tail wraps one event, mirroring job.log', () => {
-    const parsed = JobTraceMessage.parse({ type: 'job.trace', payload: { jobId: 'job-1', event: actionEvent } })
+    const parsed = JobTraceMessage.parse({ type: 'job.trace', payload: { jobId: 'job-1', runId: 'run-1', event: actionEvent } })
     expect(parsed.type).toBe('job.trace')
     expect(parsed.payload.event.seq).toBe(7)
   })
 
   test('the event inside the payload is validated, not waved through', () => {
     expect(
-      JobTraceMessage.safeParse({ type: 'job.trace', payload: { jobId: 'job-1', event: { ...actionEvent, kind: 'nope' } } }).success,
+      JobTraceMessage.safeParse({ type: 'job.trace', payload: { jobId: 'job-1', runId: 'run-1', event: { ...actionEvent, kind: 'nope' } } })
+        .success,
     ).toBe(false)
   })
 })
@@ -147,7 +112,7 @@ describe('job.trace is registered in the /ws server→client union (plan 128 §4
   })
 
   test('the union parses a job.trace envelope and discriminates it correctly', () => {
-    const parsed = ServerMessageSchema.parse({ type: 'job.trace', payload: { jobId: 'job-1', event: actionEvent } })
+    const parsed = ServerMessageSchema.parse({ type: 'job.trace', payload: { jobId: 'job-1', runId: 'run-1', event: actionEvent } })
     expect(parsed.type).toBe('job.trace')
     if (parsed.type !== 'job.trace') throw new Error('discriminated to the wrong member')
     expect(parsed.payload.event.frameStatus).toBe('ok')

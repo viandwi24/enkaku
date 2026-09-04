@@ -11,7 +11,7 @@ import { AdbError } from '../errors'
  * every host platform adb ships on (ARM/x86, never big-endian).
  */
 
-export const A_SYNC = 0x434e5953
+const A_SYNC = 0x434e5953
 export const A_CNXN = 0x4e584e43
 export const A_OPEN = 0x4e45504f
 export const A_OKAY = 0x59414b4f
@@ -41,13 +41,10 @@ export const HEADER_BYTES = 24
  * real `adb` client (platform-tools 36.0.0, adb protocol as of 2024) sent
  * exactly `CNXN` `arg0=0x01000001` — `A_VERSION_SKIP_CHECKSUM` in AOSP's
  * `adb/transport.h`. From this version on, `data_check` is not verified by
- * either side, which is why `checksum()` below exists only for symmetry with
- * older peers and is never load-bearing against a modern client.
+ * either side, so `checksum()` below is what this shim WRITES into
+ * `data_check`; nothing verifies an inbound one.
  */
 export const CONNECT_VERSION = 0x01000001
-
-/** The oldest version whose peer skips checksum verification — same constant as `CONNECT_VERSION` today, kept as a separate name because the two mean different things (what we SEND vs. the threshold we check a peer's version AGAINST). */
-export const VERSION_SKIP_CHECKSUM = 0x01000001
 
 /**
  * The ceiling this shim ever advertises or accepts, regardless of what a
@@ -74,7 +71,7 @@ export interface AdbdHeader {
  * The classic adb "checksum" — a plain sum of the payload's bytes mod 2^32,
  * NOT a real CRC32 despite `protocol.txt`'s wording (AOSP's own
  * `adb/transport.cpp:calculate_apacket_checksum` is exactly this). Kept only
- * for symmetry with a pre-`VERSION_SKIP_CHECKSUM` peer; the spike confirmed a
+ * for symmetry with an older peer; the spike confirmed a
  * current adb client neither sends nor checks a meaningful value here.
  */
 export function checksum(data: Uint8Array): number {
@@ -125,17 +122,6 @@ export function decodeHeader(bytes: Uint8Array): AdbdHeader {
     )
   }
   return { command, arg0, arg1, dataLength, dataCheck, magic }
-}
-
-/**
- * Verify a payload against a decoded header's `dataCheck` — a no-op success
- * for any peer at or past `VERSION_SKIP_CHECKSUM` (every adb client observed
- * in the spike), since the field is meaningless there. `peerVersion` is the
- * version THAT PEER announced in its own CNXN, not ours.
- */
-export function verifyChecksum(header: AdbdHeader, payload: Uint8Array, peerVersion: number): boolean {
-  if (peerVersion >= VERSION_SKIP_CHECKSUM) return true
-  return checksum(payload) === header.dataCheck
 }
 
 /**

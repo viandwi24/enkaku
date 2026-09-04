@@ -1,6 +1,6 @@
 import type { AdbClient } from '@enkaku/adb'
 import { probeDeviceIdentity } from '@enkaku/session'
-import type { ConnectionMedium, ServerMessage, SweepReport } from '@enkaku/protocol'
+import type { ConnectionMedium, SweepReport } from '@enkaku/protocol'
 import { addressCount } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { EnkakuError } from '../util/errors'
@@ -65,7 +65,6 @@ export interface SweeperDeps {
   /** The exact admission-gated path every other adopt/discover route uses (plan 56, F14) — see the module comment on WHY nothing here writes to `devices` or `discovered_devices` directly. */
   registry: { onOnline(serial: string): Promise<void> }
   settings: () => SweeperSettings
-  hub: { broadcast(msg: ServerMessage): void }
   log: Logger
   /** Injectable so a test proves this against a fake, never a real socket — same discipline as `reconnect.ts`. Defaults to `defaultTcpPreProbe`. */
   tcpPreProbe?: TcpPreProbe
@@ -178,18 +177,6 @@ async function runPool<T>(items: T[], concurrency: number, worker: (item: T) => 
   await Promise.all(lanes)
 }
 
-/** Throttles `scan.progress` broadcasts (plan 88 §4.6) to at most one per 200ms, plus always the final one — 254 raw per-address broadcasts for one `/24` would be noise, not progress. */
-function createProgressBroadcaster(hub: SweeperDeps['hub'], total: number) {
-  let lastSentAt = 0
-  return (scanned: number, answered: number) => {
-    const now = Date.now()
-    const isFinal = scanned >= total
-    if (!isFinal && now - lastSentAt < 200) return
-    lastSentAt = now
-    hub.broadcast({ type: 'scan.progress', payload: { scanned, total, answered } })
-  }
-}
-
 /**
  * Builds the sweeper (plan 88 §4.5). A singleton BY CONSTRUCTION, not by
  * locking a shared resource: one process constructs one `Sweeper`, and its
@@ -255,18 +242,15 @@ export function createSweeper(deps: SweeperDeps): Sweeper {
     const adopted: string[] = []
     const discovered: string[] = []
     const conflicts: SweepReport['conflicts'] = []
-    const sendProgress = createProgressBroadcaster(deps.hub, capped.length)
 
     await runPool(capped, Math.max(1, cfg.scan.concurrency), async (address) => {
       const { host, port } = splitHostPort(address)
       const preProbeResult = await tcpPreProbe(host, port, cfg.scan.probeTimeoutMs)
       scanned++
       if (preProbeResult !== 'accepted') {
-        sendProgress(scanned, answered)
         return
       }
       answered++
-      sendProgress(scanned, answered)
 
       let connectReply: string
       try {
@@ -320,8 +304,6 @@ export function createSweeper(deps: SweeperDeps): Sweeper {
       else if (admission === 'discovered') discovered.push(probe.stableId)
       await deps.registry.onOnline(address)
     })
-
-    sendProgress(capped.length, answered) // final, unthrottled
 
     return {
       networks: networksReport,

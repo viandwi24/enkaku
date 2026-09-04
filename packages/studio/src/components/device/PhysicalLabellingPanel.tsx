@@ -8,6 +8,7 @@ import { LabelStateBadge } from '@/components/device/LabelStateBadge'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { Button, Switch, ConfirmDialog, api, describeApiError, formatDeviceName, relativeTime } from '@enkaku/ui'
+import { runOnDevice } from '@/lib/actions'
 
 function readDraftLabelling(draft: Record<string, unknown>): { mode: DeviceLabelMode; showName: boolean } {
   const raw = (draft.labelling ?? {}) as { mode?: DeviceLabelMode; showName?: boolean }
@@ -85,7 +86,8 @@ export function PhysicalLabellingPanel({
     setActionBusy('apply')
     setActionError(null)
     try {
-      const state = await api(`/api/devices/${device.id}/label/apply`, DeviceLabelStateSchema, { method: 'POST' })
+      const r = await runOnDevice('set-label', device.id, {})
+      const state = DeviceLabelStateSchema.parse(r.detail)
       onLabelStateChange(state)
       if (state.state === 'applied') toast.success('Label applied')
       else if (state.state === 'partial') toast.warning(`Only partially applied — ${state.reason ?? 'see the badge below'}`)
@@ -101,10 +103,8 @@ export function PhysicalLabellingPanel({
     setActionBusy('clear')
     setActionError(null)
     try {
-      const state = await api(`/api/devices/${device.id}/label/clear`, DeviceLabelStateSchema, {
-        method: 'POST',
-        json: { restoreOriginal },
-      })
+      const r = await runOnDevice('clear-label', device.id, { restoreOriginal })
+      const state = DeviceLabelStateSchema.parse(r.detail)
       onLabelStateChange(state)
       toast.success(restoreOriginal ? 'Restored the original' : 'Cleared to the system default')
     } catch (err) {
@@ -120,12 +120,12 @@ export function PhysicalLabellingPanel({
   return (
     <div className="space-y-5">
       {/* §3.6, §3.8 — stated where the choice is made, not only in a doc:
-          this writes to the phone and outlives the session, the lease, and
-          the core process, and clearing it later is a separate, explicit
-          action. */}
+          this writes to the phone and outlives the session, the control
+          marker, and the core process, and clearing it later is a separate,
+          explicit action. */}
       <p className="rounded-lg border bg-surface-2/40 px-3 py-2.5 text-[12px] leading-relaxed text-fg-muted">
         Turning this on writes to the phone itself, not just to this session — it stays on screen after you close
-        this tab, after the lease ends, even across a restart of Enkaku. "Wallpaper" replaces the phone's wallpaper
+        this tab, after the control marker ends, even across a restart of Enkaku. "Wallpaper" replaces the phone's wallpaper
         and needs the guest agent; "Lock screen" writes one line of text under the lock-screen clock and needs
         nothing installed, but a device without the guest agent cannot use "Wallpaper" and will report so rather
         than quietly using the lesser tier.

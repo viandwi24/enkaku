@@ -50,8 +50,8 @@ export interface RemoteJobBridge {
  * always runs included. The control plane only waits for word and writes it to
  * the DB, so Studio cannot tell a local job from a remote one.
  *
- * Lease heartbeat: every `job.progress` extends the lease. A dropped tunnel
- * means no progress, which expires the lease, which fails the job through the
+ * Job heartbeat: every `job.progress` extends it. A dropped tunnel means no
+ * progress, which expires the heartbeat, which fails the job through the
  * Plan 04 mechanism. No special path that could become its own bug source.
  */
 export function createRemoteJobBridge(deps: {
@@ -73,6 +73,7 @@ export function createRemoteJobBridge(deps: {
         // read — a node-owned device runs a published plugin member the
         // same way the local executor does (a dev entry too, though
         // scheduling one is out of scope per §2; an ad-hoc run is not).
+        if (!job.scriptId) throw new EnkakuError('unknown_script', 'no scriptId on this job')
         const entry = deps.registry.get(job.scriptId)
         if (!entry) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
         if (!entry.enabled) throw new EnkakuError('script_disabled', `the script ${entry.name} is disabled`)

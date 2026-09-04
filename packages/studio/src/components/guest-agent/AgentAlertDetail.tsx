@@ -4,9 +4,10 @@ import { useState } from 'react'
 import { Check, ChevronDown, ChevronRight, Copy, Loader2 } from 'lucide-react'
 import { PreparationComponentStatusSchema, type AgentState, type PreparationComponentStatus } from '@enkaku/protocol'
 import { toast } from 'sonner'
-import { Button, ErrorState, api, cn, describeApiError, relativeTime } from '@enkaku/ui'
+import { Button, ErrorState, cn, describeApiError, relativeTime } from '@enkaku/ui'
 import { usePreparation } from '@/lib/use-preparation'
 import { useNow } from '@/lib/useNow'
+import { runOnDevice } from '@/lib/actions'
 
 /**
  * What the `Agent failed` chip opens (the owner's own ask: *"kalau ada agent
@@ -244,18 +245,16 @@ export function AgentAlertDetail({
     setBusy(true)
     setOutcome(null)
     try {
-      // `POST /api/devices/:id/preparation/:componentId/retry` — the
-      // single-device, single-component route (plan 106 §3.3), not the
-      // fleet-wide `POST /api/guest-agent/provision`, which has no way to
-      // scope a run to one phone and would provision the whole farm. It calls
-      // `AgentProvisioner.ensure(id, { force: true })`, and `force` is what
-      // makes this honest: `nextBoundedRetry` resets `priorAttempts` to 0 for
-      // a forced pass, so the standing backoff window and an exhausted
-      // attempt budget are both cleared rather than waited out. That is
-      // exactly what the button below is worded to promise.
-      const next = await api(`/api/devices/${deviceId}/preparation/${GUEST_AGENT_ID}/retry`, PreparationComponentStatusSchema, {
-        method: 'POST',
-      })
+      // `retry-prepare` (plan 207 §4.2), the single-device, single-component
+      // verb (plan 106 §3.3), not the fleet-wide `POST /api/guest-agent/
+      // provision`, which has no way to scope a run to one phone and would
+      // provision the whole farm. It calls `AgentProvisioner.ensure(id, {
+      // force: true })`, and `force` is what makes this honest:
+      // `nextBoundedRetry` resets `priorAttempts` to 0 for a forced pass, so
+      // the standing backoff window and an exhausted attempt budget are both
+      // cleared rather than waited out. That is exactly what the button
+      // below is worded to promise.
+      const next = PreparationComponentStatusSchema.parse((await runOnDevice('retry-prepare', deviceId, { component: GUEST_AGENT_ID })).detail)
       patch(GUEST_AGENT_ID, next)
       const result = outcomeOf(next, deviceLabel)
       setOutcome(result)

@@ -71,5 +71,8 @@ describe('daemon.ts wiring — /api/workflows (plan 99 §4.5, §4.9, §5 step 99
     // the SAME registry `scriptRoutes`/`pluginRoutes`/every other resolver
     // in this file already shares (F17: one door).
     expect(call).toContain('registry: scriptRegistry')
+    // Plan 210 §4.4, §4.5 — `store: workflowStore`, the one instance
+    // `createWorkflowStore(db)` builds beside `scriptRegistry`.
+    expect(call).toContain('store: workflowStore')
   })
 })
