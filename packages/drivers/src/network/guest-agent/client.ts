@@ -388,9 +388,21 @@ async function call<TResult>(
      */
     const raw = JSON.stringify(envelope.data.result)
     const shown = raw.length > 400 ? `${raw.slice(0, 400)}… (${raw.length} bytes)` : raw
+    /**
+     * The request line as it went onto the wire, with the token redacted.
+     *
+     * `request.method` is read off the object we built, not off the bytes we
+     * sent, so every message so far has been asserting what we MEANT to send
+     * rather than what we did. Chasing `ui.status` (2026-09-04) the agent
+     * answered with the `ui.unwatch` body under our own request id, which
+     * only two things can explain: the device dispatched the wrong branch, or
+     * we sent a different method than we think. One of those is ruled out by
+     * printing this.
+     */
+    const sent = JSON.stringify({ ...(request as Record<string, unknown>), token: '<redacted>' })
     throw new GuestAgentClientError(
       'E_UNEXPECTED_RESPONSE',
-      `guest agent ${request.method} result did not match its schema: ${result.error.message} — the agent sent ${shown}`,
+      `guest agent ${request.method} result did not match its schema: ${result.error.message} — we sent ${sent}, the agent sent ${shown}`,
     )
   }
   return result.data

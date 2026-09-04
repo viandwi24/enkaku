@@ -6,7 +6,7 @@ import {
   ArrowsClockwiseIcon,
   ArrowsLeftRightIcon,
   CheckIcon,
-  DotsThreeIcon,
+  DotsThreeVerticalIcon,
   FunnelIcon,
   Input,
   MagnifyingGlassIcon,
@@ -285,7 +285,7 @@ export function DevicesToolbar({
           className={cn(ICON_BTN, moreOpen ? ICON_ACTIVE : ICON_IDLE)}
           aria-label="More"
         >
-          <DotsThreeIcon className="size-4" aria-hidden />
+          <DotsThreeVerticalIcon className="size-4" aria-hidden />
         </button>
         {moreOpen && (
           <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[248px] rounded-card border border-border bg-panel p-1 shadow-popover">

@@ -125,3 +125,12 @@ export {
   PaperclipIcon,
   RocketIcon,
 } from '@phosphor-icons/react'
+
+/**
+ * The Devices toolbar's fleet menu (owner, 2026-09-04). `DotsThreeIcon` in
+ * group 1 is the HORIZONTAL glyph, which is what that toolbar's button first
+ * shipped with — but every other overflow control in the product is the
+ * vertical kebab, and a row of icons reads as a row whichever way the dots
+ * lie. This is the vertical one.
+ */
+export { DotsThreeVerticalIcon } from '@phosphor-icons/react'
