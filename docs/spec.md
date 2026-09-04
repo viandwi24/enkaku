@@ -1,6 +1,7 @@
 # Enkaku MVP specification
 
-> Status: skeleton, written by plan 202 on 2026-09-03 from the decisions in `docs/mvp/` (MVP 16 wins where those documents disagree). Sections marked `TBD by plan NNN` are filled by that plan; plan 224 finalises the whole document.
+> Status: **complete for the MVP** — started by plan 202 on 2026-09-03 from the decisions in `docs/mvp/` (MVP 16 wins where those documents disagree), filled section by section as plans 203 to 224 landed, and closed on 2026-09-04. Every `TBD by plan NNN` marker is gone; the two that plans 219 and 220 left behind were written at the programme's closing gate from what those plans actually shipped.
+> This document describes software that builds, typechecks and agrees with itself. It does not yet describe software proven on hardware: `docs/guide/owner-smoke.md` is the pass that would establish that, and it has not been run.
 > The prototype specification this replaces is `docs/archive/spec-prototype.md`; §21 maps its section numbers to this document.
 
 ## 0. How to read this document
@@ -164,7 +165,7 @@ job_runs:  id, jobId, seq (1..n),
 
 ### 4.9 Agent and files
 
-An AI agent has a roster entry (`ai_agents`), threads, runs, messages, approvals, an inbox, spawn grants (`agent_threads`, `agent_runs`, `agent_messages`, `agent_approvals`, `agent_inbox`, `agent_spawn_grants`), connectors (`connectors`), notifications (`notifications`, `webhook_endpoints`), and files (`workspace_files`, `agent_blobs`; shown as Files under Agents). Agents stay in the core, compacted to one page with their settings on that page (MVP 06 §4.2). An agent run appears on a device as an `agent` activity. The agent surface is not yet designed; TBD by plan 220 (source: MVP 06 §3, MVP 15 §2).
+An AI agent has a roster entry (`ai_agents`), threads, runs, messages, approvals, an inbox, spawn grants (`agent_threads`, `agent_runs`, `agent_messages`, `agent_approvals`, `agent_inbox`, `agent_spawn_grants`), connectors (`connectors`), notifications (`notifications`, `webhook_endpoints`), and files (`workspace_files`, `agent_blobs`; shown as Files under Agents). Agents stay in the core, compacted to one page with their settings on that page (MVP 06 §4.2). An agent run appears on a device as an `agent` activity. The agent surface is one page, `/agents`, with five tabs: **Roster**, **Runs**, **Approvals**, **Files**, and **Settings** (connectors and webhooks live inside Settings, not as pages of their own). `/agents/detail?id=` remains the single agent's own page. The former `/agents/approvals`, `/agents/runs`, `/agents/thread` and `/workspace` routes are gone — Workspace is Files, under Agents. Spawn grants keep their store and their `canSpawn` enforcement; the HTTP routes that exposed them are removed, because an operator never edited a grant by hand and the rule is enforced where it is read, not where it was displayed (plan 220 §3.5).
 
 ### 4.10 Farm, users, audit
 
@@ -275,7 +276,7 @@ Rules for every engine: configuration is bound to the device and survives client
 
 ## 10. Plugins
 
-The plugin pipeline is stage → verify → activate; rollback and disable are the other two lifecycle actions; dev slots exist for local development. A plugin's surface may add navigation entries under the static rail (rendered from `PluginSurface.nav`), views, actions (`<plugin>/<verb>`, §11), a service, webhooks, and KV. The icon allowlist maps ids to Phosphor names (200 §5 R6). Plugin views are the only place device-scoped plugin data is shown. `enkaku init` scaffolds a plugin; `enkaku publish` stages one. The Plugins page lists Plugin · Status · Scripts · Verified · Actions (Disable or Activate; overflow with Reset data, Remove). Whether the plugin service contract shrinks to what a bundled plugin has needed (`onQuery`, `onSocket`, `onWebhook`, `onEvent` have no users) is MVP 06's call; TBD by plan 219 (source: MVP 13 Part B, plugin surface).
+The plugin pipeline is stage → verify → activate; rollback and disable are the other two lifecycle actions; dev slots exist for local development. A plugin's surface may add navigation entries under the static rail (rendered from `PluginSurface.nav`), views, actions (`<plugin>/<verb>`, §11), a service, webhooks, and KV. The icon allowlist maps ids to Phosphor names (200 §5 R6). Plugin views are the only place device-scoped plugin data is shown. `enkaku init` scaffolds a plugin; `enkaku publish` stages one. The Plugins page lists Plugin · Status · Scripts · Verified · Actions (Disable or Activate; overflow with Reset data, Remove). The plugin service contract keeps `onQuery`, `onSocket`, `onWebhook` and `onEvent` for the MVP, and the observation behind the question stands: verified at the close of the programme, **no bundled plugin implements `onSocket`, `onWebhook` or `onEvent`**, and the apparent `onQuery` users are `onQueryChange`, an unrelated React prop. They are kept because an unused extension point is not dead code — it is the surface a plugin nobody has written yet would bind to, and the four hooks cost nothing at runtime. Shrinking the contract is a post-MVP review, and it needs a real third-party plugin to inform it rather than a grep over the six bundled ones.
 
 ## 11. Actions API
 
