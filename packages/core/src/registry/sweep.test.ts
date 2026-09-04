@@ -180,6 +180,39 @@ describe('Sweeper.sweep — availability gates (plan 88 §3.5, §4.5)', () => {
   })
 })
 
+describe('Sweeper.sweep — `only` narrows, and can never widen (Devices → Scan networks, per-range Scan)', () => {
+  const twoNetworks = [
+    { cidr: '10.0.0.0/30', label: 'A', medium: 'wired' as const, scan: true },
+    { cidr: '10.9.9.0/30', label: 'B', medium: 'wired' as const, scan: true },
+  ]
+
+  test('sweeps only the named range, leaving the other configured one untouched', async () => {
+    const h = setUp({ settings: { networks: twoNetworks }, tcpPreProbe: async () => 'refused' })
+    const report = await h.sweeper.sweep({ only: ['10.9.9.0/30'] })
+    expect(report.networks.map((n) => n.cidr)).toEqual(['10.9.9.0/30'])
+  })
+
+  test('an unconfigured range is refused, never probed — `only` is a filter, not a second address space', async () => {
+    const h = setUp({ settings: { networks: twoNetworks }, tcpPreProbe: async () => 'refused' })
+    await expect(h.sweeper.sweep({ only: ['192.168.1.0/24'] })).rejects.toMatchObject({ code: 'E_SCAN_UNAVAILABLE' })
+    expect(h.state.connectCalls).toEqual([])
+  })
+
+  test('a configured but unticked range is refused, exactly as it is in a whole-farm sweep', async () => {
+    const h = setUp({
+      settings: { networks: [{ cidr: '10.0.0.0/30', label: 'A', medium: 'wired', scan: false }] },
+      tcpPreProbe: async () => 'refused',
+    })
+    await expect(h.sweeper.sweep({ only: ['10.0.0.0/30'] })).rejects.toMatchObject({ code: 'E_SCAN_UNAVAILABLE' })
+  })
+
+  test('an empty `only` is the whole-farm sweep, not an empty one', async () => {
+    const h = setUp({ settings: { networks: twoNetworks }, tcpPreProbe: async () => 'refused' })
+    const report = await h.sweeper.sweep({ only: [] })
+    expect(report.networks.map((n) => n.cidr)).toEqual(['10.0.0.0/30', '10.9.9.0/30'])
+  })
+})
+
 describe('Sweeper.sweep — singleton mutex (plan 88 §3.5, §4.5, §5 step 88.3)', () => {
   test('a second concurrent call rejects E_SCAN_BUSY while one is running; running() reflects it', async () => {
     let gateResolve!: () => void

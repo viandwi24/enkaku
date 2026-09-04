@@ -4,7 +4,9 @@ import { useState } from 'react'
 import { ReconcileReportSchema, type DeviceInfo, type GroupInfo } from '@enkaku/protocol'
 import {
   ArrowsClockwiseIcon,
+  ArrowsLeftRightIcon,
   CheckIcon,
+  DotsThreeIcon,
   FunnelIcon,
   Input,
   MagnifyingGlassIcon,
@@ -68,6 +70,8 @@ export function DevicesToolbar({
   matchCount,
   pendingCount,
   onOpenDiscovery,
+  onOpenOtg,
+  onOpenScan,
 }: {
   groups: GroupInfo[]
   /** The group-scoped device list — what the filter menu's counts describe. */
@@ -88,15 +92,19 @@ export function DevicesToolbar({
   matchCount: number
   pendingCount: number
   onOpenDiscovery: () => void
+  onOpenOtg: () => void
+  onOpenScan: () => void
 }) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
   const [viewOpen, setViewOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [spinning, setSpinning] = useState(false)
 
   useOverlay('menu', searchOpen, () => setSearchOpen(false))
   useOverlay('menu', filterOpen, () => setFilterOpen(false))
   useOverlay('menu', viewOpen, () => setViewOpen(false))
+  useOverlay('menu', moreOpen, () => setMoreOpen(false))
 
   const rescan = () => {
     setSpinning(true)
@@ -260,6 +268,52 @@ export function DevicesToolbar({
       <button type="button" onClick={rescan} className={cn(ICON_BTN, ICON_IDLE)} aria-label="Rescan">
         <ArrowsClockwiseIcon className={cn('size-4', spinning && 'animate-enkaku-spin')} aria-hidden />
       </button>
+
+      {/*
+        The fleet menu (owner, 2026-09-04). The four icons to the left are all
+        ways of LOOKING at the farm — search it, filter it, lay it out, re-read
+        it. These two change the farm's own wiring, and they are the two an
+        operator standing at a rack reaches for: they were previously buried in
+        Settings (the network list) or mounted nowhere at all (the cutover
+        wizard). Two rows, not a submenu: a third would mean this menu had
+        become the overflow drawer every toolbar eventually grows.
+      */}
+      <div className="relative flex flex-none items-center">
+        <button
+          type="button"
+          onClick={() => setMoreOpen((v) => !v)}
+          className={cn(ICON_BTN, moreOpen ? ICON_ACTIVE : ICON_IDLE)}
+          aria-label="More"
+        >
+          <DotsThreeIcon className="size-4" aria-hidden />
+        </button>
+        {moreOpen && (
+          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[248px] rounded-card border border-border bg-panel p-1 shadow-popover">
+            <button
+              type="button"
+              className={ROW}
+              onClick={() => {
+                setMoreOpen(false)
+                onOpenOtg()
+              }}
+            >
+              <ArrowsLeftRightIcon className="size-4 text-faint" aria-hidden />
+              <span className="flex-1 text-left">Switch to OTG…</span>
+            </button>
+            <button
+              type="button"
+              className={ROW}
+              onClick={() => {
+                setMoreOpen(false)
+                onOpenScan()
+              }}
+            >
+              <MagnifyingGlassIcon className="size-4 text-faint" aria-hidden />
+              <span className="flex-1 text-left">Scan networks…</span>
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

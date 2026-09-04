@@ -19,6 +19,7 @@ import {
   type RotationApplyResult,
   type RotationMode,
   SweepReportSchema,
+  SweepRequestSchema,
   defaultDeviceSettings,
   normaliseTag,
   validateEngineSelection,
@@ -198,7 +199,7 @@ export function createDeviceRoutes(deps: {
    * `rescan`. A `scan.mode: 'off'`/no-networks refusal is `sweeper.sweep`'s
    * OWN job (`E_SCAN_UNAVAILABLE`) and is handled below, not here.
    */
-  sweeper?: { sweep(opts?: { expect?: string[] }): Promise<SweepReport> }
+  sweeper?: { sweep(opts?: { expect?: string[]; only?: string[] }): Promise<SweepReport> }
   /**
    * Ends every control/command activity on a device (plan 88 §3.7, §4.6, §5
    * step 88.4: "a successful disconnect ... ends every control marker
@@ -489,11 +490,27 @@ export function createDeviceRoutes(deps: {
    */
   app.post('/scan', requirePermission('device.settings'), async (c) => {
     if (!deps.sweeper) throw new EnkakuError('E_NOT_SUPPORTED', 'network scanning is not available (orchestrator mode, or the adb subsystem is not ready)')
-    const report: SweepReport = await deps.sweeper.sweep()
+    // An optional body (`{ cidrs }`) narrows the sweep to ranges the
+    // operator picked on the Devices page's Scan dialog; no body at all is
+    // the original whole-farm sweep, unchanged. A body that is absent, empty
+    // or unparseable is treated as "no narrowing" rather than as a 400: the
+    // route's contract before this addition was "POST with nothing", and
+    // every existing caller still means exactly that.
+    const raw = await c.req.json().catch(() => null)
+    const parsed = raw === null ? null : SweepRequestSchema.safeParse(raw)
+    if (parsed && !parsed.success) throw new EnkakuError('E_BAD_REQUEST', parsed.error.issues[0]?.message ?? 'invalid scan request')
+    const only = parsed?.success ? parsed.data.cidrs : undefined
+    const report: SweepReport = await deps.sweeper.sweep(only ? { only } : undefined)
     deps.audit.record({
       userId: c.get('user')?.id ?? null,
       action: 'device.scan',
-      meta: { scanned: report.scanned, answered: report.answered, adopted: report.adopted.length, discovered: report.discovered.length },
+      meta: {
+        scanned: report.scanned,
+        answered: report.answered,
+        adopted: report.adopted.length,
+        discovered: report.discovered.length,
+        ...(only ? { only } : {}),
+      },
     })
     return typedJson(c, SweepReportSchema, report)
   })

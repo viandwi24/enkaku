@@ -11,6 +11,8 @@ import { ws } from '@/lib/ws'
 import { BulkPill } from './BulkPill'
 import { DeviceTable } from './DeviceTable'
 import { DiscoverySheet } from './DiscoverySheet'
+import { OtgSwitchDialog } from './OtgSwitchDialog'
+import { ScanNetworkDialog } from './ScanNetworkDialog'
 import { DevicesToolbar, matchesDevice, type CardWidth, type DevicesFilter, type DevicesView } from './DevicesToolbar'
 import { isDeviceState, reconnectingAttempt } from './device-state'
 import { ScreensGrid } from './ScreensGrid'
@@ -40,6 +42,12 @@ export function DevicesScreen() {
   const [filter, setFilter] = useState<DevicesFilter>('all')
   const [query, setQuery] = useState('')
   const [discoveryOpen, setDiscoveryOpen] = useState(false)
+  // The fleet menu's two dialogs (owner, 2026-09-04). Both live here rather
+  // than inside the toolbar: the toolbar is a row of controls, and a dialog
+  // that unmounts with its own trigger loses a cutover it is mid-way through
+  // watching the moment the menu closes.
+  const [otgOpen, setOtgOpen] = useState(false)
+  const [scanOpen, setScanOpen] = useState(false)
   const [spinning, setSpinning] = useState(false)
 
   // Enrolment (§9 Q5, kept undrawn by the handoff): the only surface that
@@ -185,6 +193,8 @@ export function DevicesScreen() {
         matchCount={filtered.length}
         pendingCount={pendingCount}
         onOpenDiscovery={() => setDiscoveryOpen(true)}
+        onOpenOtg={() => setOtgOpen(true)}
+        onOpenScan={() => setScanOpen(true)}
       />
 
       {view === 'table' ? (
@@ -204,6 +214,10 @@ export function DevicesScreen() {
       {selection.selected.size > 0 && (
         <BulkPill count={selection.selected.size} target={target} onClear={selection.clear} />
       )}
+
+      <OtgSwitchDialog open={otgOpen} onOpenChange={setOtgOpen} devices={devices} onDone={reload} />
+
+      <ScanNetworkDialog open={scanOpen} onOpenChange={setScanOpen} onScanned={reload} />
 
       <DiscoverySheet
         open={discoveryOpen}

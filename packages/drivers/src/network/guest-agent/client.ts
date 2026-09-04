@@ -341,6 +341,30 @@ async function call<TResult>(
     )
   }
 
+  /**
+   * The answer must belong to the question.
+   *
+   * Every request carries a `crypto.randomUUID()` id and every response
+   * echoes it, and this checked neither — so ANY line arriving on the socket
+   * was accepted as the answer. Chasing `ui.status` on real hardware
+   * (2026-09-04) the host was handed `{"watching":false}`, which is the
+   * `ui.unwatch` branch's reply, and reported it as a malformed `ui.status`
+   * result: three fields short, cause invisible, and the real fault — a
+   * response belonging to a different request — never named.
+   *
+   * A mismatch is a protocol fault, not a bad value, so it fails loudly with
+   * both ids rather than being silently retried: retrying would paper over
+   * whatever desynchronised the stream in the first place. The device omits
+   * `id` when a request carried none, which ours never do, so a missing id is
+   * treated the same way.
+   */
+  if (envelope.data.id !== request.id) {
+    throw new GuestAgentClientError(
+      'E_UNEXPECTED_RESPONSE',
+      `guest agent answered request ${envelope.data.id ?? '(no id)'} on a channel waiting for ${request.id} (${request.method}) — the response stream is out of step`,
+    )
+  }
+
   if (!envelope.data.ok) {
     // Carries the agent's own code so callers match on it, never on message text (CLAUDE.md).
     throw new GuestAgentClientError(envelope.data.error.code, envelope.data.error.message)

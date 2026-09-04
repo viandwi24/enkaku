@@ -51,6 +51,14 @@ export function useNetworkRanges(opts: { includePort?: boolean } = {}) {
   // is excluded here on purpose — see this file's header comment; a caller
   // that also edits the port (`ScanNetworkDialog`) compares that itself.
   const savedRowsSnapshot = useRef<string | null>(null)
+  /**
+   * The rows as the server currently stores them, serialised one by one —
+   * what the per-row Scan button needs to answer "is THIS row saved?".
+   * `dirty` above answers the whole-table question and cannot: a table with
+   * one edited row is dirty, and the other five rows are still perfectly
+   * scannable.
+   */
+  const [savedRowKeys, setSavedRowKeys] = useState<Set<string>>(new Set())
 
   const load = () => {
     setError(null)
@@ -65,6 +73,7 @@ export function useNetworkRanges(opts: { includePort?: boolean } = {}) {
         const nextRows = networksToRanges(b.settings.networkScan.networks)
         setRows(nextRows)
         savedRowsSnapshot.current = JSON.stringify(nextRows)
+        setSavedRowKeys(new Set(nextRows.map((r) => JSON.stringify(r))))
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
@@ -115,13 +124,21 @@ export function useNetworkRanges(opts: { includePort?: boolean } = {}) {
           const nextRows = networksToRanges(b.settings.networkScan.networks)
           setRows(nextRows)
           savedRowsSnapshot.current = JSON.stringify(nextRows)
+          setSavedRowKeys(new Set(nextRows.map((r) => JSON.stringify(r))))
         },
       },
     )
   }
 
+  /** Indexes of rows that are byte-for-byte what the server stores — see `savedRowKeys` above. */
+  const savedRowIndexes = new Set<number>()
+  ;(rows ?? []).forEach((r, i) => {
+    if (savedRowKeys.has(JSON.stringify(r))) savedRowIndexes.add(i)
+  })
+
   return {
     rows,
+    savedRowIndexes,
     maxAddresses,
     tcpPort,
     error,
