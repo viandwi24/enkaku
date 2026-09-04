@@ -48,6 +48,8 @@ export interface FlowCanvasProps {
   selectedIds: ReadonlySet<string>
   /** A script ref whose plugin is not (or no longer) installed — rendered dashed, with its raw ref. */
   notInstalledScriptRefs: ReadonlySet<string>
+  /** Node ids with an authoring-state pin (plan 300 P10) — the canvas badge (plan 306 §4.2 step 306.7). */
+  pinnedIds: ReadonlySet<string>
   onSelectionChange(ids: string[]): void
   /** Fired once per drag gesture (one `move-nodes` history entry, plan 305 §3.3). */
   onNodesMoved(positions: Record<string, WorkflowPoint>): void
@@ -64,6 +66,7 @@ function FlowCanvasInner({
   findings,
   selectedIds,
   notInstalledScriptRefs,
+  pinnedIds,
   onSelectionChange,
   onNodesMoved,
   onEdgeChange,
@@ -112,11 +115,12 @@ function FlowCanvasInner({
             errorCount: nodeFindings.filter((f) => f.severity === 'error').length,
             warningCount: nodeFindings.filter((f) => f.severity === 'warning').length,
             notInstalled,
+            pinned: pinnedIds.has(n.id),
             editable: true,
           },
         }
       }),
-    [doc.nodes, fallbackById, findingsByNode, notInstalledScriptRefs, selectedIds, unreachableSet],
+    [doc.nodes, fallbackById, findingsByNode, notInstalledScriptRefs, pinnedIds, selectedIds, unreachableSet],
   )
 
   const flowEdges: Edge<FlowEdgeData>[] = useMemo(

@@ -787,6 +787,7 @@ export async function estimateWorkflowDuration(
 }
 
 export type { WorkflowStepInfo }
+export type { WorkflowLastRunResponse } from '@enkaku/protocol'
 
 // ---- The node panel (plan 306) ----
 

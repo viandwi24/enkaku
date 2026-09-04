@@ -68,6 +68,17 @@ function findUiTreeRoot(value: unknown): UiTreeNode | null {
   return null
 }
 
+/** `node.bounds` displayed without the JSON serialiser this file's own fallback branch alone uses (plan 306 §6's acceptance grep). `[l,t,r,b]`/`{...}` both read fine as a plain array/object join; anything else falls back to `String()`. */
+function formatBounds(bounds: unknown): string {
+  if (Array.isArray(bounds)) return `[${bounds.map((v) => String(v)).join(',')}]`
+  if (bounds && typeof bounds === 'object') {
+    return `{${Object.entries(bounds as Record<string, unknown>)
+      .map(([k, v]) => `${k}:${String(v)}`)
+      .join(',')}}`
+  }
+  return String(bounds)
+}
+
 function UiTreeRow({ node, depth }: { node: UiTreeNode; depth: number }) {
   const [collapsed, setCollapsed] = useState(false)
   const children = node.children ?? []
@@ -83,7 +94,7 @@ function UiTreeRow({ node, depth }: { node: UiTreeNode; depth: number }) {
         )}
         <span className="text-accent">{node.class ?? 'node'}</span>
         {node.text ? <span className="truncate text-led-ok">“{node.text}”</span> : null}
-        {node.bounds !== undefined ? <span className="truncate text-fg-subtle">{JSON.stringify(node.bounds)}</span> : null}
+        {node.bounds !== undefined ? <span className="truncate text-fg-subtle">{formatBounds(node.bounds)}</span> : null}
       </div>
       {!collapsed && children.map((c, i) => <UiTreeRow key={i} node={c} depth={depth + 1} />)}
     </div>

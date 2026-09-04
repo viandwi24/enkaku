@@ -1,8 +1,9 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { NodeType, ValueExpr, WorkflowDoc, WorkflowNode } from '@enkaku/protocol'
-import { saveWorkflow, type WorkflowInfo } from '@/lib/api'
+import type { NodeType, WorkflowDoc, WorkflowNode } from '@enkaku/protocol'
+import { listWorkflowPins, saveWorkflow, type WorkflowInfo } from '@/lib/api'
+import { Sheet, SheetContent } from '@enkaku/ui'
 import {
   ArrowsClockwiseIcon,
   ArrowCounterClockwiseIcon,
@@ -12,18 +13,14 @@ import {
   Label,
   SquaresFourIcon,
   PlusIcon,
-  Switch,
   Textarea,
   useAction,
-  XIcon,
 } from '@enkaku/ui'
 import { FlowCanvas } from './FlowCanvas'
 import { NodePalette } from './NodePalette'
+import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
-import { PredicateEditor } from './PredicateEditor'
-import { ScriptPicker, type ScriptOption } from './ScriptPicker'
-import { paramProperties, resolveScriptOption } from './scriptBindings'
-import { type NodeOption, ValueExprEditor } from './ValueExprEditor'
+import type { ScriptOption } from './ScriptPicker'
 import { useHistory, type UseHistoryResult } from './useHistory'
 import { useValidation, nodeIndexOf } from './useValidation'
 import { useClipboard } from './useClipboard'
@@ -91,6 +88,25 @@ export function FlowEditor({
   const [paletteOpen, setPaletteOpen] = useState(false)
   const pendingInsert = useRef<PendingInsert | null>(null)
   const dirty = doc !== initialDoc
+
+  // Plan 306 §4.2 step 306.7 — the canvas badge plan 305 §4.4 reserved but
+  // never actually wired. Pins are authoring state, outside the document
+  // (plan 304 §3.3), so this is its own fetch, refreshed after any pin
+  // change the node panel makes.
+  const [pinnedIds, setPinnedIds] = useState<ReadonlySet<string>>(new Set())
+  const refreshPinnedIds = useCallback(() => {
+    const name = doc.name.trim()
+    if (!name) {
+      setPinnedIds(new Set())
+      return
+    }
+    void listWorkflowPins(name)
+      .then((list) => setPinnedIds(new Set(list.map((p) => p.nodeId))))
+      .catch(() => setPinnedIds(new Set()))
+  }, [doc.name])
+  useEffect(() => {
+    refreshPinnedIds()
+  }, [refreshPinnedIds])
 
   // A browser-level warning on navigate-away, never autosave (plan 305 §3.5).
   useEffect(() => {
@@ -286,6 +302,7 @@ export function FlowEditor({
             findings={validation.findings}
             selectedIds={selectedIds}
             notInstalledScriptRefs={notInstalledScriptRefs}
+            pinnedIds={pinnedIds}
             onSelectionChange={(ids) => setSelectedIds(new Set(ids))}
             onNodesMoved={(positions) => dispatch({ t: 'move-nodes', positions }, 'move-nodes')}
             onEdgeChange={(change) => dispatch({ t: 'set-edge', from: change.nodeId, kind: change.kind, to: change.targetId ?? undefined })}
@@ -298,17 +315,14 @@ export function FlowEditor({
           />
         </div>
 
-        {selectedNode && (
-          <aside className="flex w-full shrink-0 flex-col gap-2 overflow-y-auto lg:w-96">
-            <div className="flex items-center justify-between px-0.5">
-              <h3 className="rack-label">editing · {selectedNode.title.trim() || selectedNode.id}</h3>
-              <Button type="button" variant="ghost" size="icon-sm" aria-label="Close node editor" onClick={() => setSelectedIds(new Set())}>
-                <XIcon className="size-3.5" aria-hidden />
-              </Button>
-            </div>
-            <NodeInspector
-              node={selectedNode}
+      </div>
+
+      <Sheet open={!!selectedNode} onOpenChange={(open) => !open && setSelectedIds(new Set())}>
+        <SheetContent side="right" showCloseButton={false} className="w-[1040px] max-w-[96vw] p-0">
+          {selectedNode && (
+            <NodePanel
               doc={doc}
+              node={selectedNode}
               scripts={scripts}
               findings={validation.findingsByNodeIndex.get(selectedIndex) ?? []}
               onChange={(patch) => dispatch({ t: 'update-node', id: selectedNode.id, patch })}
@@ -316,10 +330,13 @@ export function FlowEditor({
                 dispatch({ t: 'remove-nodes', ids: [selectedNode.id] })
                 setSelectedIds(new Set())
               }}
+              onClose={() => setSelectedIds(new Set())}
+              onSetParams={(params) => dispatch({ t: 'set-meta', patch: { params } })}
+              onPinsChanged={refreshPinnedIds}
             />
-          </aside>
-        )}
-      </div>
+          )}
+        </SheetContent>
+      </Sheet>
 
       <NodePalette open={paletteOpen} onOpenChange={setPaletteOpen} onPick={handlePick} />
     </div>
@@ -391,126 +408,5 @@ function WorkflowMetaForm({ doc, dispatch }: { doc: WorkflowDoc; dispatch: UseHi
         </div>
       )}
     </section>
-  )
-}
-
-function NodeInspector({
-  node,
-  doc,
-  scripts,
-  findings,
-  onChange,
-  onRemove,
-}: {
-  node: WorkflowNode
-  doc: WorkflowDoc
-  scripts: readonly ScriptOption[]
-  findings: readonly { path: string; message: string; severity: 'error' | 'warning' }[]
-  onChange(patch: Partial<WorkflowNode>): void
-  onRemove(): void
-}) {
-  const nodeOptions: NodeOption[] = doc.nodes
-    .filter((n) => n.id !== node.id)
-    .map((n) => ({ id: n.id, label: n.title.trim() ? `${n.title} (${n.id})` : n.id }))
-
-  const scriptOption = node.kind === 'script' ? resolveScriptOption(node.script, scripts) : undefined
-  const bindingFields = node.kind === 'script' ? paramProperties(scriptOption?.paramsSchema) : []
-
-  return (
-    <div className="space-y-3 rounded-lg border bg-surface p-3.5">
-      <div className="space-y-1">
-        <Label className="text-[11.5px] font-normal text-fg-muted">Title</Label>
-        <Input className="h-8 text-[13px]" value={node.title} onChange={(e) => onChange({ title: e.target.value })} aria-label="Node title" />
-      </div>
-
-      {findings.length > 0 && (
-        <div className="space-y-1">
-          {findings.map((f, i) => (
-            <p
-              key={i}
-              data-testid="finding"
-              data-severity={f.severity}
-              className={
-                f.severity === 'error'
-                  ? 'rounded border border-led-danger/30 bg-led-danger/5 px-2 py-1 text-[11.5px] text-led-danger'
-                  : 'rounded border border-led-warn/30 bg-led-warn/5 px-2 py-1 text-[11.5px] text-led-warn'
-              }
-            >
-              {f.message}
-            </p>
-          ))}
-        </div>
-      )}
-
-      {node.kind === 'script' && (
-        <div className="space-y-3">
-          <ScriptPicker scripts={scripts} value={node.script} onChange={(ref) => onChange({ script: ref })} />
-          {bindingFields.map(({ key, node: fieldSchema, required }) => (
-            <div key={key} className="space-y-1">
-              <p className="text-[12px] font-medium">
-                {typeof fieldSchema.title === 'string' ? fieldSchema.title : key}
-                {required && <span className="ml-1 text-led-warn">*</span>}
-              </p>
-              <ValueExprEditor
-                value={node.params[key]}
-                onChange={(next) => {
-                  const params: Record<string, ValueExpr> = { ...node.params }
-                  if (next === undefined) delete params[key]
-                  else params[key] = next
-                  onChange({ params })
-                }}
-                workflowParams={doc.params}
-                nodeOptions={nodeOptions}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {node.kind === 'gate' && <PredicateEditor value={node.when} onChange={(when) => onChange({ when })} workflowParams={doc.params} nodeOptions={nodeOptions} />}
-
-      {node.kind === 'switch' && (
-        <div className="space-y-2">
-          {node.cases.map((c, i) => (
-            <div key={i} className="space-y-1 rounded-md border border-dashed p-2">
-              <p className="rack-label">case {i + 1}</p>
-              <PredicateEditor
-                value={c.when}
-                onChange={(when) => onChange({ cases: node.cases.map((x, j) => (j === i ? { ...x, when } : x)) })}
-                workflowParams={doc.params}
-                nodeOptions={nodeOptions}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {node.kind === 'delay' && (
-        <div className="space-y-1">
-          <Label className="text-[11.5px] font-normal text-fg-muted">Maximum wait (ms)</Label>
-          <Input
-            type="number"
-            className="h-8 text-[12.5px]"
-            value={node.maxMs}
-            onChange={(e) => onChange({ maxMs: Math.max(0, e.target.valueAsNumber || 0) })}
-            aria-label="Maximum wait, milliseconds"
-          />
-        </div>
-      )}
-
-      {node.kind === 'finish' && (
-        <div className="space-y-2">
-          <Label className="flex items-center gap-2 text-[12px]">
-            <Switch checked={node.status === 'succeed'} onCheckedChange={(on) => onChange({ status: on ? 'succeed' : 'fail' })} />
-            Ends the run: {node.status === 'succeed' ? 'succeeded' : 'failed'}
-          </Label>
-          <Textarea className="text-[12.5px]" value={node.message} onChange={(e) => onChange({ message: e.target.value })} aria-label="Finish message" />
-        </div>
-      )}
-
-      <Button type="button" variant="outline" size="sm" onClick={onRemove} disabled={node.kind === 'start'}>
-        Remove node
-      </Button>
-    </div>
   )
 }

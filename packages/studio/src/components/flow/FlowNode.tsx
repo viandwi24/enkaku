@@ -2,18 +2,20 @@
 
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import type { WorkflowNode } from '@enkaku/protocol'
-import { cn } from '@enkaku/ui'
+import { CircleIcon, cn } from '@enkaku/ui'
 import { pluginIcon } from '@/lib/plugin-icons'
 import type { EdgeKind } from './doc-edit'
 
 /**
- * One node's card on the canvas (plan 305 §4.4) — 220×64, per `layout.ts`'s
- * existing rank spacing (240×130), so an upgraded document opens unchanged.
- * States: selected (accent ring), unreachable (50% opacity), has-error
- * finding (`led-danger` ring), has-warning finding (`led-warn` ring),
- * pinned (plan 304's own field — not yet on the document this plan builds
- * against; the badge is wired but never fires until 304's schema lands),
- * not-installed (dashed border, raw ref shown).
+ * One node's card on the canvas (plan 305 §4.4, badge wired by plan 306
+ * §4.2 step 306.7) — 220×64, per `layout.ts`'s existing rank spacing
+ * (240×130), so an upgraded document opens unchanged. States: selected
+ * (accent ring), unreachable (50% opacity), has-error finding
+ * (`led-danger` ring), has-warning finding (`led-warn` ring), pinned (plan
+ * 300 P10 — a filled dot badge; there is no pin-shaped icon in
+ * `@enkaku/ui`'s exported set, and this plan may not add one — see the
+ * handoff report's substitution note), not-installed (dashed border, raw
+ * ref shown).
  */
 
 export interface FlowNodeData extends Record<string, unknown> {
@@ -24,6 +26,7 @@ export interface FlowNodeData extends Record<string, unknown> {
   errorCount: number
   warningCount: number
   notInstalled: boolean
+  pinned: boolean
   editable: boolean
 }
 
@@ -65,7 +68,7 @@ function outputHandles(node: WorkflowNode): { kind: EdgeKind; title: string; y: 
 }
 
 export function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
-  const { node, icon, summaryText, unreachable, errorCount, warningCount, notInstalled, editable } = data
+  const { node, icon, summaryText, unreachable, errorCount, warningCount, notInstalled, pinned, editable } = data
   const Icon = pluginIcon(icon)
   const handles = outputHandles(node)
 
@@ -99,6 +102,12 @@ export function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
         )}
       </div>
       <p className="truncate text-[11px] text-fg-subtle">{notInstalled ? 'not installed' : summaryText || KIND_LABEL[node.kind]}</p>
+      {pinned && (
+        <span title="Pinned — downstream nodes use this output instead of touching the device" className="absolute -top-2 -left-2 flex items-center gap-0.5 rounded bg-led-ok/20 px-1 py-0.5 text-led-ok">
+          <CircleIcon weight="fill" className="size-2" aria-hidden />
+          <span className="rack-label">pinned</span>
+        </span>
+      )}
       {unreachable && (
         <span title="No node in this workflow reaches this one" className="rack-label absolute -top-2 right-1 rounded bg-led-danger/20 px-1 py-0.5 text-led-danger">
           unreachable
