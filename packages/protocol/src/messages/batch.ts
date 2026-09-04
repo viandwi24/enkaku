@@ -10,7 +10,7 @@ export type BatchOrder = z.infer<typeof BatchOrderSchema>
  * `batches.status` (`db/schema.ts`) gains a SIXTH value, `'stopping'` (plan
  * 94 §3.9, §4.8 — step 94.7 added the column-level value only; step 94.8,
  * this widening, adds the writer, `POST /api/batches/:id/stop`) — a state,
- * not a flag, that `clusters/status.ts`'s `recomputeBatchStatus` never
+ * not a flag, that `groups/status.ts`'s `recomputeBatchStatus` never
  * writes and never clobbers away early (see that function's own comment): it
  * is written directly by the stop endpoint, held while any member is still
  * settling, and released back to whatever `computeBatchStatus` derives
@@ -45,10 +45,11 @@ export const BatchCountsSchema = z.object({
 export type BatchCounts = z.infer<typeof BatchCountsSchema>
 
 /**
- * A cluster is a container, not a selector (plan 22.0 §3.1–§3.3, superseding
- * plan 20 §3.1) — its identity only, membership lives on `devices.cluster`.
+ * A group is a container, not a selector (plan 22.0 §3.1–§3.3, superseding
+ * plan 20 §3.1; renamed per MVP 15 §0.1) — its identity only, membership
+ * lives on `devices.groupId`.
  */
-export const ClusterInfoSchema = z.object({
+export const GroupInfoSchema = z.object({
   id: z.string(),
   name: z.string(),
   description: z.string().nullable(),
@@ -58,11 +59,11 @@ export const ClusterInfoSchema = z.object({
   /** Of `deviceCount`, how many are online and not quarantined right now. */
   usableCount: z.number().int(),
 })
-export type ClusterInfo = z.infer<typeof ClusterInfoSchema>
+export type GroupInfo = z.infer<typeof GroupInfoSchema>
 
 export const ResolvedTargetSchema = z.object({
   deviceId: z.string(),
-  via: z.enum(['tag', 'explicit', 'cluster']),
+  via: z.enum(['tag', 'explicit', 'group']),
 })
 
 export const SkippedDeviceSchema = z.object({
@@ -70,11 +71,11 @@ export const SkippedDeviceSchema = z.object({
   reason: z.string(),
 })
 
-export const ClusterPreviewSchema = z.object({
+export const TargetPreviewSchema = z.object({
   usable: z.array(ResolvedTargetSchema),
   skipped: z.array(SkippedDeviceSchema),
 })
-export type ClusterPreview = z.infer<typeof ClusterPreviewSchema>
+export type TargetPreview = z.infer<typeof TargetPreviewSchema>
 
 /**
  * The batch's own repeat/stagger configuration (plan 94 §3.7, §4.8, §4.9,
@@ -112,7 +113,7 @@ export type BatchDeviceRepeat = z.infer<typeof BatchDeviceRepeatSchema>
 /** One script run across a resolved set of devices (plan 20 §3.1, §3.5). */
 export const BatchInfoSchema = z.object({
   id: z.string(),
-  clusterId: z.string().nullable(),
+  groupId: z.string().nullable(),
   scriptId: z.string(),
   scriptName: z.string().nullable().default(null),
   scriptVersion: z.string().nullable().default(null),

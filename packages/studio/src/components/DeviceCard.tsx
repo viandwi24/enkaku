@@ -267,15 +267,15 @@ export function DeviceCard({
         <div className="flex flex-wrap items-center gap-1">
           {/* Readiness — a second, orthogonal axis to status (plan 43 §4.6). */}
           <ReadinessBadge readiness={device.readiness} />
-          {/* The cluster is always shown, even when empty — "Unclustered" muted
+          {/* The group is always shown, even when empty — "Ungrouped" muted
               rather than omitted, so the field reads as a field (plan 22.0 §4.5). */}
           <span
             className={cn(
               'rounded-full px-1.5 py-0.5 text-[10px] font-medium',
-              device.cluster ? 'bg-accent/10 text-accent-strong' : 'text-fg-subtle',
+              device.group ? 'bg-accent/10 text-accent-strong' : 'text-fg-subtle',
             )}
           >
-            {device.cluster ? device.cluster.name : 'Unclustered'}
+            {device.group ? device.group.name : 'Ungrouped'}
           </span>
           {device.tags.map((tag) => (
             <span key={tag} className="readout rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted">

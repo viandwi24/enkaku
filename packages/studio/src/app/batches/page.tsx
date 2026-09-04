@@ -109,7 +109,7 @@ export default function BatchesPage() {
             icon: <Boxes className="size-4" aria-hidden />,
             title: 'No batches yet',
             description:
-              'Run a script across a cluster or a multi-device selection from the Plugins & scripts page to see its report here.',
+              'Run a script across a group or a multi-device selection from the Plugins & scripts page to see its report here.',
             action: (
               <Button asChild>
                 <Link href="/plugins">Browse scripts</Link>

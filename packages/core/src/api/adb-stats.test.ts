@@ -292,51 +292,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
     })
   })
 
-  test('commandConsole is zero-filled when the dep is absent (plan 93 §5 step 93.12, not yet wired into daemon.ts)', async () => {
-    const opened = openDb(':memory:')
-    runMigrations(opened.db)
-    const inner = createAdbStatsRoutes({
-      db: opened.db,
-      client: () => null,
-      metrics: createAdbMetricsStore(),
-      health: () => null,
-      auto: () => true,
-      sessions: () => null,
-    })
-    const app = withUser('operator', inner)
-    const res = await app.request('/')
-    const body = (await res.json()) as { commandConsole: unknown }
-    expect(body.commandConsole).toEqual({
-      runsInFlight: 0,
-      membersInFlight: 0,
-      coalescedFramesPerSec: 0,
-      distinctOutputRatio: 0,
-    })
-  })
-
-  test('commandConsole reports the live CommandRunner.stats() verbatim when the dep is supplied (plan 93 §5 step 93.12)', async () => {
-    const opened = openDb(':memory:')
-    runMigrations(opened.db)
-    const inner = createAdbStatsRoutes({
-      db: opened.db,
-      client: () => null,
-      metrics: createAdbMetricsStore(),
-      health: () => null,
-      auto: () => true,
-      sessions: () => null,
-      commandConsole: () => ({ runsInFlight: 2, membersInFlight: 14, coalescedFramesPerSec: 3.5, distinctOutputRatio: 0.08}),
-    })
-    const app = withUser('operator', inner)
-    const res = await app.request('/')
-    const body = (await res.json()) as { commandConsole: unknown }
-    expect(body.commandConsole).toEqual({
-      runsInFlight: 2,
-      membersInFlight: 14,
-      coalescedFramesPerSec: 3.5,
-      distinctOutputRatio: 0.08,
-    })
-  })
-
   test('requires device.view — an unauthenticated request is rejected with 403', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)

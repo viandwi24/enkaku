@@ -8,6 +8,7 @@ import { LabelStateBadge } from '@/components/device/LabelStateBadge'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { Button, Switch, ConfirmDialog, api, describeApiError, formatDeviceName, relativeTime } from '@enkaku/ui'
+import { runOnDevice } from '@/lib/actions'
 
 function readDraftLabelling(draft: Record<string, unknown>): { mode: DeviceLabelMode; showName: boolean } {
   const raw = (draft.labelling ?? {}) as { mode?: DeviceLabelMode; showName?: boolean }
@@ -85,7 +86,8 @@ export function PhysicalLabellingPanel({
     setActionBusy('apply')
     setActionError(null)
     try {
-      const state = await api(`/api/devices/${device.id}/label/apply`, DeviceLabelStateSchema, { method: 'POST' })
+      const r = await runOnDevice('set-label', device.id, {})
+      const state = DeviceLabelStateSchema.parse(r.detail)
       onLabelStateChange(state)
       if (state.state === 'applied') toast.success('Label applied')
       else if (state.state === 'partial') toast.warning(`Only partially applied — ${state.reason ?? 'see the badge below'}`)
@@ -101,10 +103,8 @@ export function PhysicalLabellingPanel({
     setActionBusy('clear')
     setActionError(null)
     try {
-      const state = await api(`/api/devices/${device.id}/label/clear`, DeviceLabelStateSchema, {
-        method: 'POST',
-        json: { restoreOriginal },
-      })
+      const r = await runOnDevice('clear-label', device.id, { restoreOriginal })
+      const state = DeviceLabelStateSchema.parse(r.detail)
       onLabelStateChange(state)
       toast.success(restoreOriginal ? 'Restored the original' : 'Cleared to the system default')
     } catch (err) {

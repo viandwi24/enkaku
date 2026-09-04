@@ -192,14 +192,14 @@ export function createNode(opts: NodeOptions): Node {
               density: null,
               status: 'online',
               lastSeen: Math.floor(Date.now() / 1000),
-              // Battery, quarantine, tags, and cluster are tracked by the
+              // Battery, quarantine, tags, and group are tracked by the
               // core, not the node — the node only reports the identity of
-              // devices attached to it (plan 19 §4.2, plan 22.0 §4.4: the
-              // control plane owns tags and cluster membership).
+              // devices attached to it (plan 19 §4.2, plan 22.0 §4.4, renamed
+              // by plan 207: the control plane owns tags and group membership).
               battery: null,
               quarantineReason: null,
               tags: [],
-              cluster: null,
+              group: null,
               // Crash detection's badge field (plan 37 §4.5) is populated
               // only by the control plane's own fleet list — the node has
               // no `device_events` table of its own to aggregate here.
@@ -213,7 +213,7 @@ export function createNode(opts: NodeOptions): Node {
               // A device's live activities and its last-control tail (plan
               // 205 §4.10, replacing the old per-holder/secondary-operator
               // fields) are control-plane state, exactly like
-              // battery/quarantine/tags/cluster above — the node only
+              // battery/quarantine/tags/group above — the node only
               // reports device IDENTITY. The control plane's own device
               // registry (`tunnel/registry.ts`'s `syncDevices`) overwrites
               // the DB row's activity-independent columns from this

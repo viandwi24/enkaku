@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Upload } from 'lucide-react'
-import { InstallResponseSchema, PullResponseSchema, PushResponseSchema, type InstallResult, type MediaScanResult } from '@enkaku/protocol'
-import { Button, Input, Progress, cn, api, useAction, fileSize } from '@enkaku/ui'
+import { InstallResultSchema, PushResultSchema, type InstallResult, type MediaScanResult } from '@enkaku/protocol'
+import { z } from 'zod'
+import { Button, Input, Progress, cn, useAction, fileSize } from '@enkaku/ui'
+import { runOnDevice } from '@/lib/actions'
 import { coreBase, ws } from '@/lib/ws'
 
 /**
@@ -128,19 +130,22 @@ export function FilesPanel({
     if (progress.transferId) ws.send({ type: 'transfer.cancel', payload: { transferId: progress.transferId } })
   }
 
+  // Plan 207 §4.2, §4.9 — `POST /api/devices/:id/install|push|pull` are gone;
+  // these are now the actions API's own `install`/`push`/`pull` verbs
+  // through `runOnDevice`, whose `done` result carries the same outcome
+  // shape as its own `detail`, parsed through the protocol's schemas exactly
+  // as the old per-device response was. `clientId` no longer travels — the
+  // actions API is session-cookie authenticated, not client-correlated.
   async function installApk(): Promise<void> {
     const file = installFileRef.current?.files?.[0]
-    if (!file || !clientId) return
+    if (!file) return
     setInstallResult(null)
     await run(
       'files-install',
       async () => {
         const uploaded = await uploadArtifact(file, file.name)
-        const body = await api(`/api/devices/${deviceId}/install`, InstallResponseSchema, {
-          method: 'POST',
-          json: { artifactId: uploaded.id, clientId },
-        })
-        setInstallResult(body.result)
+        const result = await runOnDevice('install', deviceId, { artifactId: uploaded.id })
+        setInstallResult(InstallResultSchema.parse(result.detail))
         if (installFileRef.current) installFileRef.current.value = ''
       },
       { failure: 'Install failed' },
@@ -149,7 +154,7 @@ export function FilesPanel({
 
   async function pushFile(): Promise<void> {
     const file = pushFileRef.current?.files?.[0]
-    if (!file || !clientId || !pushPath.trim()) return
+    if (!file || !pushPath.trim()) return
     setPushResult(null)
     await run(
       'files-push',
@@ -158,11 +163,8 @@ export function FilesPanel({
         // `mediaScan` is left to the server's own default ('auto') — it
         // scans exactly when `remotePath` resolves under a known media
         // root, which is what the destination presets below steer toward.
-        const body = await api(`/api/devices/${deviceId}/push`, PushResponseSchema, {
-          method: 'POST',
-          json: { artifactId: uploaded.id, remotePath: pushPath.trim(), clientId },
-        })
-        setPushResult(body.result.mediaScan)
+        const result = await runOnDevice('push', deviceId, { artifactId: uploaded.id, remotePath: pushPath.trim(), mediaScan: 'auto' })
+        setPushResult(PushResultSchema.parse(result.detail).mediaScan)
         if (pushFileRef.current) pushFileRef.current.value = ''
         setPushFileName('')
       },
@@ -171,16 +173,13 @@ export function FilesPanel({
   }
 
   async function pullFile(): Promise<void> {
-    if (!clientId || !pullPath.trim()) return
+    if (!pullPath.trim()) return
     setPullArtifactId(null)
     await run(
       'files-pull',
       async () => {
-        const body = await api(`/api/devices/${deviceId}/pull`, PullResponseSchema, {
-          method: 'POST',
-          json: { remotePath: pullPath.trim(), clientId },
-        })
-        setPullArtifactId(body.result.artifactId)
+        const result = await runOnDevice('pull', deviceId, { remotePath: pullPath.trim() })
+        setPullArtifactId(z.object({ artifactId: z.string(), bytes: z.number() }).parse(result.detail).artifactId)
       },
       { failure: 'Pull failed' },
     )

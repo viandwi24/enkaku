@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { DeviceNetworkStatusResponseSchema } from '@enkaku/protocol'
-import { Button, Input, Label, api, useAction } from '@enkaku/ui'
+import { Button, Input, Label, useAction } from '@enkaku/ui'
+import { runOnDevice } from '@/lib/actions'
 import { Choice, ChoiceGroup } from '@/components/guest-agent/RouteChoice'
 import { HTTP_PROXY_ADVISORY } from '@/components/guest-agent/proxy-copy'
 import type { NetworkStatus } from '@/lib/api'
@@ -190,14 +191,18 @@ export function HttpProxyFields({
   const applyRoute = () =>
     run(
       'apply',
-      () =>
-        api(`/api/devices/${deviceId}/network`, DeviceNetworkStatusResponseSchema, {
-          method: 'PUT',
-          json:
-            placement === 'direct'
-              ? { engine: PLACEMENT_ENGINE.direct, host: host.trim(), port: portNum }
-              : { engine: PLACEMENT_ENGINE.farm, hostPort: hostPortNum },
-        }),
+      async () =>
+        DeviceNetworkStatusResponseSchema.parse(
+          (
+            await runOnDevice('set-network', deviceId, {
+              op: 'set',
+              route:
+                placement === 'direct'
+                  ? { engine: PLACEMENT_ENGINE.direct, host: host.trim(), port: portNum }
+                  : { engine: PLACEMENT_ENGINE.farm, hostPort: hostPortNum },
+            })
+          ).detail,
+        ),
       {
         success: 'Proxy set on the device',
         failure: 'Could not set the proxy',

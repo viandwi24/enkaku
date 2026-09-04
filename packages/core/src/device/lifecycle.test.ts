@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { artifacts, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobEvents, jobs } from '../db/schema'
+import { artifacts, blockedDevices, groups, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobEvents, jobs } from '../db/schema'
 import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
 import type { ControlPolicySettings } from '../activity/policy'
 import { createKvStore } from '../kv/store'
@@ -41,9 +41,9 @@ function setUp(): { db: Db; lifecycle: DeviceLifecycle; activities: ActivityRegi
   return { db, lifecycle, activities, events }
 }
 
-function seedDevice(db: Db, id: string, status: 'online' | 'offline' | 'quarantined', clusterId: string | null = null): void {
+function seedDevice(db: Db, id: string, status: 'online' | 'offline' | 'quarantined', groupId: string | null = null): void {
   db.insert(devices)
-    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `Phone ${id}`, status, clusterId })
+    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `Phone ${id}`, status, groupId })
     .run()
 }
 
@@ -116,9 +116,9 @@ describe('checkRemovable — the §3.5 safety matrix', () => {
 })
 
 describe('forget (plan 47 §4.3, §4.4)', () => {
-  test('an offline device is forgotten: the row, its tags, and its cluster membership are gone; history is kept', async () => {
+  test('an offline device is forgotten: the row, its tags, and its group membership are gone; history is kept', async () => {
     const { db, lifecycle, events } = setUp()
-    db.insert(clusters).values({ id: 'c1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
+    db.insert(groups).values({ id: 'c1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
     seedDevice(db, 'd1', 'offline', 'c1')
     db.insert(deviceTags).values({ deviceId: 'd1', tag: 'smoke', at: new Date() }).run()
     db.insert(jobs).values({ id: 'j1', scriptId: 'internal:sleep', deviceId: 'd1', status: 'success', createdAt: new Date() }).run()

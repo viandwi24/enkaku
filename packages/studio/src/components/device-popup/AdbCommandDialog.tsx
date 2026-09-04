@@ -2,41 +2,27 @@
 
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import {
-  CommandRunActionResponseSchema,
-  CommandRunCreateResponseSchema,
-  SettingsResponseSchema,
-  isHighConsequence,
-  type ClusterInfo,
-  type CommandMember,
-  type CommandOutput,
-  type CommandTarget,
-  type DeviceInfo,
-  type ServerMessage,
-} from '@enkaku/protocol'
-import { ConfirmFanout } from '@/components/command/ConfirmFanout'
-import { RunReport, type RunReportRun } from '@/components/command/RunReport'
-import { EmptyState, Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Label, Switch, api, formatDeviceName, useAction } from '@enkaku/ui'
+import { z } from 'zod'
+import { SettingsResponseSchema, isHighConsequence, type ActionResult, type GroupInfo, type DeviceInfo } from '@enkaku/protocol'
+import { ActionResults } from '@/components/actions/ActionResults'
+import { EmptyState, Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Label, api, formatDeviceName, useAction } from '@enkaku/ui'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
 import { AdbEndpointCard } from '@/components/terminal/AdbEndpointCard'
 import { TerminalPane } from '@/components/terminal/TerminalPane'
-import { coreBase, ws } from '@/lib/ws'
+import { runAction, awaitOperation } from '@/lib/actions'
+import { ws } from '@/lib/ws'
 
-const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
+const TARGET_ALLOW: Target[] = ['single', 'group', 'devices']
 
-interface ActiveRun {
-  run: RunReportRun
-  members: CommandMember[]
-  outputs: CommandOutput[]
-}
-
-interface ConfirmState {
-  cmd: string
-  targetCount: number
-  hc: ReturnType<typeof isHighConsequence>
-  onConfirm: () => void
-}
+/** The `adb` verb's `detail` shape on a `done` result (`packages/core/src/actions/impl/shell.ts`'s `ShellRunResult`) — mirrored here rather than imported, since Studio does not depend on `packages/core`. */
+const ShellRunResultSchema = z.object({
+  exitCode: z.number().nullable(),
+  stdout: z.string(),
+  stderr: z.string(),
+  truncated: z.boolean(),
+  durationMs: z.number(),
+})
 
 /**
  * The device popup's "Adb command" row — plan 103 §9 Q4, answered
@@ -45,7 +31,7 @@ interface ConfirmState {
  * device juga, jadi bisa running banyak devices"*, then, seeing it still a
  * side-panel tab: *"terminal kenapa masih ada tab nya? ... ketika di tekan
  * muncul popup modal tersendiri ... seperti install apk mendukung opsi
- * specific device, multiple device atau cluster ... tapi outputnya harus
+ * specific device, multiple device atau group ... tapi outputnya harus
  * bisa dilihat langsung juga?"* This is that modal — it replaces the
  * `SidePanel`'s old Terminal TAB entirely (`SidePanel.tsx`'s own doc
  * comment records the removal).
@@ -57,18 +43,20 @@ interface ConfirmState {
  * not picking a winner between them.
  *
  * - **`single`** renders `TerminalPane` UNCHANGED — the same interactive,
- *   multi-command session with a live transcript, arrow-up history, and its
- *   own high-consequence confirm (plan 26 §4.5, plan 93 §3.5). This is also
- *   the answer to "do not silently drop the interactive session" (the
- *   owner's own instruction on this pass): it has not moved or lost
- *   anything, it is simply this modal's single-device shape instead of a
- *   side-panel tab reached by a separate click.
- * - **`cluster`/`devices`** renders the fleet console's OWN pieces —
- *   `RunReport`, `ConfirmFanout` — talking to the SAME `POST
- *   /api/command-runs` / `command.*` WS events `/console` already uses
- *   (plan 93). Nothing here reinvents per-device output; it reuses the one
- *   house style multi-device reports already have (`docs/design.md`'s
- *   "Multi-device reports — outcome first, grouped by reason").
+ *   multi-command session with a live transcript and arrow-up history
+ *   (plan 26 §4.5, plan 93 §3.5). This is also the answer to "do not
+ *   silently drop the interactive session" (the owner's own instruction on
+ *   this pass): it has not moved or lost anything, it is simply this
+ *   modal's single-device shape instead of a side-panel tab reached by a
+ *   separate click.
+ * - **`group`/`devices`** dispatches the actions API's own `adb` verb
+ *   (`POST /api/actions/adb`, plan 207 §4.2, §4.9) — the same `command`
+ *   activity and per-device operation registry every other async verb
+ *   uses, polled by `awaitOperation` (1s interval) and rendered through
+ *   `ActionResults`, with each device's stdout/stderr shown under its own
+ *   row. This replaced the fleet command surface entirely (plan 207 §4.7):
+ *   no history, no named commands, no staging, no cancel/continue — an
+ *   `adb` run is one bounded fan-out, start to finish.
  *
  * `TerminalPane`'s own `canType` only ever reflects whether the FOCUSED
  * device is online (`canUseLive`, `DevicePopup.tsx`'s `online`) — switching
@@ -88,28 +76,25 @@ export function AdbCommandDialog({
   deviceId,
   devices,
   selectedIds = [],
-  clusters = [],
+  groups = [],
   canUseLive,
   open,
   onOpenChange,
 }: {
   /** The popup's own focused device — `single` mode's default, and the only device `canType` can ever be true for. */
   deviceId: string
-  /** The Wall's whole pool — `TargetPicker`'s `devices`/`cluster` modes need it, same as `ActionsList`'s other multi-device rows. */
+  /** The Wall's whole pool — `TargetPicker`'s `devices`/`group` modes need it, same as `ActionsList`'s other multi-device rows. */
   devices: DeviceInfo[]
   /** The Wall's own live selection, unioned with `deviceId` before becoming the picker's pre-fill (plan 104 §3.2). */
   selectedIds?: readonly string[]
-  clusters?: ClusterInfo[]
+  groups?: GroupInfo[]
   /** `iHoldControl && !busy` on the focused device — gates `TerminalPane`'s input box in `single` mode. */
   canUseLive: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { run: runAction, isPending } = useAction()
+  const { run, isPending } = useAction()
   const [shellMode, setShellMode] = useState<'off' | 'admin' | 'operator' | 'all'>('admin')
-  const [fanoutEnabled, setFanoutEnabled] = useState(true)
-  const [fanoutConfirmThreshold, setFanoutConfirmThreshold] = useState(5)
-  const [fanoutMaxDevices, setFanoutMaxDevices] = useState(0)
   // Plan 103 §5, closing step 103.11's audit row 8 — the SAME farm switch
   // `app/device/page.tsx`'s own Terminal tab reads for `AdbEndpointCard`
   // below.
@@ -117,15 +102,10 @@ export function AdbCommandDialog({
   const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   const [cmd, setCmd] = useState('')
-  const [staged, setStaged] = useState(false)
-  const [stageFirstN, setStageFirstN] = useState(1)
-  const [confirm, setConfirm] = useState<ConfirmState | null>(null)
-  const [activeRun, setActiveRun] = useState<ActiveRun | null>(null)
+  const [results, setResults] = useState<ActionResult[] | null>(null)
 
-  const targetSelection = useTargetSelection({ usableCount: devices.length, clusters })
-  const { target, deviceId: singleDeviceId, deviceIds, clusterId, hasTarget, fleetConfirmed, resolvedCount } = targetSelection
-
-  const mySessionId = ws.getSessionId()
+  const targetSelection = useTargetSelection({ usableCount: devices.length, groups })
+  const { target, deviceId: singleDeviceId, deviceIds, groupId, hasTarget, fleetConfirmed, resolvedCount } = targetSelection
 
   // Re-default and clear any run every time the dialog OPENS — the same
   // shape `InstallBatchDialog` uses (plan 104 §3.2): nothing else selected
@@ -145,18 +125,13 @@ export function AdbCommandDialog({
   useEffect(() => {
     if (!open) return
     setCmd('')
-    setStaged(false)
-    setActiveRun(null)
-    setConfirm(null)
+    setResults(null)
     const candidateIds = [...new Set([deviceId, ...selectedIds])]
     const initialSelectedIds = candidateIds.length > 1 ? candidateIds : undefined
     targetSelection.reset({ devices, allow: TARGET_ALLOW, initialDeviceId: deviceId, initialSelectedIds })
     void api('/api/settings', SettingsResponseSchema)
       .then((b) => {
         setShellMode(b.settings.shell.mode)
-        setFanoutEnabled(b.settings.shell.fanoutEnabled)
-        setFanoutConfirmThreshold(b.settings.shell.fanoutConfirmThreshold)
-        setFanoutMaxDevices(b.settings.shell.fanoutMaxDevices)
         setEndpointEnabled(b.settings.shell.endpointEnabled)
       })
       .catch(() => undefined)
@@ -166,163 +141,27 @@ export function AdbCommandDialog({
 
   function handleOpenChange(o: boolean): void {
     onOpenChange(o)
-    if (!o) {
-      setActiveRun(null)
-      setConfirm(null)
-    }
+    if (!o) setResults(null)
   }
 
-  // Subscriber-scoped output (plan 93 §3.17) — the identical shape
-  // `/console` uses, scoped to whatever run this modal currently shows;
-  // unsubscribes on close (via `handleOpenChange` clearing `activeRun`,
-  // which Radix then unmounts) or when a new run replaces this one.
-  useEffect(() => {
-    if (!activeRun) return
-    const runId = activeRun.run.id
-    const subscribe = () => ws.send({ type: 'command.subscribe', payload: { runId } })
-    subscribe()
-    const offReconnect = ws.onReconnected(subscribe)
-
-    const off = ws.on((msg: ServerMessage) => {
-      if (!msg.type.startsWith('command.')) return
-      const payload = msg.payload as { runId: string }
-      if (payload.runId !== runId) return
-      setActiveRun((prev) => {
-        if (!prev || prev.run.id !== runId) return prev
-        if (msg.type === 'command.started') {
-          return { ...prev, members: msg.payload.members, run: { ...prev.run, counts: msg.payload.counts } }
-        }
-        if (msg.type === 'command.progress') {
-          const byId = new Map(prev.members.map((m) => [m.deviceId, m]))
-          for (const m of msg.payload.changed) byId.set(m.deviceId, m)
-          return { ...prev, members: [...byId.values()], run: { ...prev.run, counts: msg.payload.counts } }
-        }
-        if (msg.type === 'command.output') {
-          const rest = prev.outputs.filter((o) => o.hash !== msg.payload.output.hash)
-          return { ...prev, outputs: [...rest, msg.payload.output] }
-        }
-        if (msg.type === 'command.stage') {
-          return { ...prev, run: { ...prev.run, stage: msg.payload.stage, status: msg.payload.awaitingContinue ? 'awaiting-continue' : 'running' } }
-        }
-        if (msg.type === 'command.finished') {
-          return {
-            ...prev,
-            run: { ...prev.run, status: msg.payload.status, counts: msg.payload.counts, finishedAt: prev.run.startedAt + Math.round(msg.payload.durationMs / 1000) },
-          }
-        }
-        return prev
-      })
-    })
-
-    return () => {
-      off()
-      offReconnect()
-      ws.send({ type: 'command.unsubscribe', payload: { runId } })
-    }
-  }, [activeRun?.run.id])
-
-  function submitGuarded(cmdText: string, targetCount: number, doSend: (acknowledged: boolean) => void): void {
-    if (targetCount === 0) {
-      toast.error('No devices to target', { description: 'Nothing in the current target is eligible to receive this command.' })
-      return
-    }
-    if (fanoutMaxDevices > 0 && targetCount > fanoutMaxDevices) {
-      toast.error('Too many devices', { description: `This farm limits a fleet command to ${fanoutMaxDevices} devices at once.` })
-      return
-    }
-    const hc = isHighConsequence(cmdText)
-    const needsAck = hc.hit && targetCount > 1
-    const needsTyped = targetCount > fanoutConfirmThreshold
-    if (needsAck || needsTyped) {
-      setConfirm({
-        cmd: cmdText,
-        targetCount,
-        hc,
-        onConfirm: () => {
-          doSend(true)
-          setConfirm(null)
-        },
-      })
-    } else {
-      doSend(false)
-    }
-  }
-
-  async function startRun(acknowledged: boolean): Promise<void> {
-    const commandTarget: CommandTarget | null = target === 'cluster' ? (clusterId ? { clusterId } : null) : deviceIds.length > 0 ? { deviceIds } : null
-    if (!commandTarget || !mySessionId) return
-    const hc = isHighConsequence(cmd)
-    const result = await runAction(
+  async function handleRunClick(): Promise<void> {
+    if (!hasTarget || !cmd.trim()) return
+    const targetBody = target === 'group' ? { groupId } : { deviceIds: target === 'single' ? [singleDeviceId] : deviceIds }
+    await run(
       'start',
-      () =>
-        api('/api/command-runs', CommandRunCreateResponseSchema, {
-          json: {
-            cmd: cmd.trim(),
-            target: commandTarget,
-            clientId: mySessionId,
-            ...(staged && stageFirstN > 0 ? { stageFirstN } : {}),
-            ...(hc.hit && acknowledged ? { acknowledge: { highConsequence: true } } : {}),
-          },
-        }),
+      async () => {
+        const response = await runAction('adb', targetBody, { cmd: cmd.trim() })
+        const operation = await awaitOperation(response.operationId, { intervalMs: 1000 })
+        setResults(operation.results)
+      },
       { failure: 'Could not start the command' },
     )
-    if (!result) return
-    setActiveRun({ run: result.run, members: result.members, outputs: [] })
-  }
-
-  function handleRunClick(): void {
-    if (!hasTarget || !cmd.trim()) return
-    submitGuarded(cmd.trim(), resolvedCount, (acknowledged) => void startRun(acknowledged))
-  }
-
-  async function doRetry(only: 'failed' | 'skipped', acknowledged: boolean): Promise<void> {
-    if (!activeRun || !mySessionId) return
-    const hc = isHighConsequence(activeRun.run.cmd)
-    const result = await runAction(
-      `retry-${only}`,
-      () =>
-        api(`/api/command-runs/${activeRun.run.id}/rerun?only=${only}`, CommandRunCreateResponseSchema, {
-          json: { clientId: mySessionId, ...(hc.hit && acknowledged ? { acknowledge: { highConsequence: true } } : {}) },
-        }),
-      { failure: `Could not retry the ${only} devices` },
-    )
-    if (!result) return
-    setActiveRun({ run: result.run, members: result.members, outputs: [] })
-  }
-
-  function handleRetry(only: 'failed' | 'skipped'): void {
-    if (!activeRun) return
-    const count = only === 'failed' ? activeRun.run.counts.failed : activeRun.run.counts.skipped
-    submitGuarded(activeRun.run.cmd, count, (acknowledged) => void doRetry(only, acknowledged))
-  }
-
-  async function cancelRun(): Promise<void> {
-    if (!activeRun) return
-    await runAction('cancel', () => api(`/api/command-runs/${activeRun.run.id}/cancel`, CommandRunActionResponseSchema, { method: 'POST' }), {
-      failure: 'Could not stop the run',
-    })
-  }
-
-  async function continueRun(): Promise<void> {
-    if (!activeRun) return
-    await runAction('continue', () => api(`/api/command-runs/${activeRun.run.id}/continue`, CommandRunActionResponseSchema, { method: 'POST' }), {
-      failure: 'Could not continue the run',
-    })
-  }
-
-  async function fetchFullOutput(devId: string, stream: 'stdout' | 'stderr'): Promise<string> {
-    if (!activeRun) return ''
-    const res = await fetch(`${coreBase()}/api/command-runs/${activeRun.run.id}/members/${encodeURIComponent(devId)}/output?stream=${stream}`)
-    if (!res.ok) return ''
-    return res.text()
   }
 
   /**
-   * Plan 124 §4.4 Group D, step 124.4 — the run report's own label lookup,
-   * composing the number for exactly the reason `app/console/page.tsx`'s
-   * twin does: this dialog can fan a command out across the whole farm, and
-   * `RunReport`'s grouped device chips are the only per-device result an
-   * operator ever sees for it.
+   * Plan 124 §4.4 Group D, step 124.4 — the report's own label lookup,
+   * composing the number the same way every other bulk report in this
+   * codebase does.
    */
   function deviceLabel(devId: string): string {
     const d = devices.find((dev) => dev.id === devId)
@@ -330,150 +169,108 @@ export function AdbCommandDialog({
   }
 
   const shellOff = shellMode === 'off'
-  const fanoutOff = !fanoutEnabled
+  const hc = isHighConsequence(cmd)
 
   return (
-    <>
-      {/* Plan 103 §3.2 — non-modal (`overlay={false}` + `modal={false}`), so
-          the live screen beside this modal stays visible and interactive
-          while a command runs — the strongest case for it, since watching
-          the phone react is the whole point (§9 Q4's own resolution). */}
-      <Dialog open={open} onOpenChange={handleOpenChange} modal={false}>
-        <DialogContent overlay={false} className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Adb command</DialogTitle>
-            <DialogDescription>
-              Run a shell command on this device, several, or a cluster — output is visible live, the same as the fleet
-              command console.
-            </DialogDescription>
-          </DialogHeader>
+    <Dialog open={open} onOpenChange={handleOpenChange} modal={false}>
+      <DialogContent overlay={false} className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Adb command</DialogTitle>
+          <DialogDescription>
+            Run a shell command on this device, several, or a group — each device reports its own result.
+          </DialogDescription>
+        </DialogHeader>
 
-          {!settingsLoaded ? (
-            <p className="text-[11.5px] text-fg-subtle">Loading…</p>
-          ) : shellOff ? (
-            <EmptyState
-              title="Device shell access is turned off"
-              description="Turn it on from Settings → Device terminal and command console."
-            />
-          ) : (
-            <div className="space-y-3">
-              <TargetPicker selection={targetSelection} devices={devices} clusters={clusters} allow={TARGET_ALLOW} singleLabel="Device" devicesLabel="Devices" />
+        {!settingsLoaded ? (
+          <p className="text-[11.5px] text-fg-subtle">Loading…</p>
+        ) : shellOff ? (
+          <EmptyState title="Device shell access is turned off" description="Turn it on from Settings → Device terminal." />
+        ) : (
+          <div className="space-y-3">
+            <TargetPicker selection={targetSelection} devices={devices} groups={groups} allow={TARGET_ALLOW} singleLabel="Device" devicesLabel="Devices" />
 
-              {target === 'single' ? (
-                singleDeviceId ? (
-                  <div className="space-y-3">
-                    {/* Row 8 (audit) — the activity-gated `adb connect`
-                        endpoint, gated on the farm's `shell.endpointEnabled`
-                        exactly like the device page's own Terminal tab.
-                        `canOpen` mirrors `TerminalPane`'s own `canType`
-                        below — a picked device other than the popup's own
-                        focused one stays honestly closed, same reasoning. */}
-                    {endpointEnabled && (
-                      <AdbEndpointCard deviceId={singleDeviceId} clientId={ws.getSessionId()} canOpen={singleDeviceId === deviceId && canUseLive} />
-                    )}
-                    <div className="max-h-[26rem] overflow-y-auto rounded-lg border">
-                      <TerminalPane
-                        deviceId={singleDeviceId}
-                        canType={singleDeviceId === deviceId && canUseLive}
-                        onRunAsStream={() =>
-                          toast.info('Open Jobs → Monitor from the Actions list to watch this as a live stream.', {
-                            description: 'Reachable from this device’s own popup now — no need to leave for the full device page.',
-                          })
-                        }
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <EmptyState title="No device to target" description="Pick a device above." />
-                )
-              ) : fanoutOff ? (
-                <EmptyState
-                  title="Fleet commands are turned off for this farm"
-                  description="Switch to Single device — a single device's own terminal still works."
-                />
-              ) : (
+            {target === 'single' ? (
+              singleDeviceId ? (
                 <div className="space-y-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="popup-adb-cmd" className="text-[11.5px] text-fg-muted">
-                      Command
-                    </Label>
-                    <Input
-                      id="popup-adb-cmd"
-                      value={cmd}
-                      onChange={(e) => setCmd(e.target.value)}
-                      placeholder="getprop ro.build.version.release"
-                      className="readout h-8 text-[12.5px]"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <Switch checked={staged} onCheckedChange={setStaged} id="popup-adb-staged" />
-                    <Label htmlFor="popup-adb-staged" className="text-[11.5px] text-fg-muted">
-                      Run on the first N first
-                    </Label>
-                    {staged && (
-                      <Input
-                        type="number"
-                        min={1}
-                        value={stageFirstN}
-                        onChange={(e) => setStageFirstN(Math.max(1, Number(e.target.value)))}
-                        className="h-7 w-16 text-[12px]"
-                        aria-label="Stage 1 device count"
-                      />
-                    )}
-                  </div>
-
-                  <Button size="sm" onClick={handleRunClick} disabled={!hasTarget || !cmd.trim() || !fleetConfirmed || isPending('start')}>
-                    {isPending('start') ? 'Starting…' : 'Run'}
-                  </Button>
-
-                  {activeRun && (
-                    <RunReport
-                      run={activeRun.run}
-                      members={activeRun.members}
-                      outputs={activeRun.outputs}
-                      deviceLabel={deviceLabel}
-                      onCancel={() => void cancelRun()}
-                      onContinue={() => void continueRun()}
-                      onRetryFailed={() => handleRetry('failed')}
-                      onRetrySkipped={() => handleRetry('skipped')}
-                      fetchFullOutput={fetchFullOutput}
-                      busy={
-                        isPending('cancel')
-                          ? 'cancel'
-                          : isPending('continue')
-                            ? 'continue'
-                            : isPending('retry-failed')
-                              ? 'retry-failed'
-                              : isPending('retry-skipped')
-                                ? 'retry-skipped'
-                                : null
+                  {/* Row 8 (audit) — the activity-gated `adb connect`
+                      endpoint, gated on the farm's `shell.endpointEnabled`
+                      exactly like the device page's own Terminal tab.
+                      `canOpen` mirrors `TerminalPane`'s own `canType`
+                      below — a picked device other than the popup's own
+                      focused one stays honestly closed, same reasoning. */}
+                  {endpointEnabled && (
+                    <AdbEndpointCard deviceId={singleDeviceId} clientId={ws.getSessionId()} canOpen={singleDeviceId === deviceId && canUseLive} />
+                  )}
+                  <div className="max-h-[26rem] overflow-y-auto rounded-lg border">
+                    <TerminalPane
+                      deviceId={singleDeviceId}
+                      canType={singleDeviceId === deviceId && canUseLive}
+                      onRunAsStream={() =>
+                        toast.info('Open Jobs → Monitor from the Actions list to watch this as a live stream.', {
+                          description: 'Reachable from this device’s own popup now — no need to leave for the full device page.',
+                        })
                       }
                     />
+                  </div>
+                </div>
+              ) : (
+                <EmptyState title="No device to target" description="Pick a device above." />
+              )
+            ) : (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="popup-adb-cmd" className="text-[11.5px] text-fg-muted">
+                    Command
+                  </Label>
+                  <Input
+                    id="popup-adb-cmd"
+                    value={cmd}
+                    onChange={(e) => setCmd(e.target.value)}
+                    placeholder="getprop ro.build.version.release"
+                    className="readout h-8 text-[12.5px]"
+                  />
+                  {/* A usability guard, never a security control (`high-consequence.ts`'s own
+                      doc comment) — the server does not know this list exists. Stated inline
+                      rather than behind a second confirm dialog: with the fleet command surface gone,
+                      an operator who runs it anyway sees the same warning either way. */}
+                  {hc.hit && (
+                    <p className="text-[11.5px] text-led-warn">
+                      This command matches a pattern that is often destructive or disruptive. Double-check the target before running it.
+                    </p>
                   )}
                 </div>
-              )}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
 
-      {/* A scale confirmation (plan 93 §3.14), not a security control — the
-          one dialog in this modal that stays Radix-modal (`ConfirmFanout`
-          is shared unchanged with `/console`, which has no live screen to
-          preserve). Rare: only above the confirm threshold, or a
-          high-consequence command aimed at more than one device. */}
-      {confirm && (
-        <ConfirmFanout
-          open
-          onOpenChange={(o) => !o && setConfirm(null)}
-          cmd={confirm.cmd}
-          targetCount={confirm.targetCount}
-          threshold={fanoutConfirmThreshold}
-          highConsequence={confirm.hc}
-          onConfirm={confirm.onConfirm}
-        />
-      )}
-    </>
+                <Button size="sm" onClick={() => void handleRunClick()} disabled={!hasTarget || !cmd.trim() || !fleetConfirmed || isPending('start')}>
+                  {isPending('start') ? 'Starting…' : 'Run'}
+                </Button>
+
+                {results && (
+                  <div className="space-y-3">
+                    <ActionResults results={results} nameOf={deviceLabel} />
+                    {results
+                      .filter((r) => r.status === 'done')
+                      .map((r) => {
+                        const parsed = ShellRunResultSchema.safeParse(r.detail)
+                        if (!parsed.success || (!parsed.data.stdout && !parsed.data.stderr)) return null
+                        return (
+                          <div key={r.deviceId} className="rounded-lg border bg-surface p-2.5">
+                            <p className="mb-1 text-[11px] font-medium text-fg-muted">{deviceLabel(r.deviceId)}</p>
+                            {parsed.data.stdout && (
+                              <pre className="readout whitespace-pre-wrap text-[11.5px] text-fg">{parsed.data.stdout}</pre>
+                            )}
+                            {parsed.data.stderr && (
+                              <pre className="readout whitespace-pre-wrap text-[11.5px] text-led-danger">{parsed.data.stderr}</pre>
+                            )}
+                          </div>
+                        )
+                      })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }

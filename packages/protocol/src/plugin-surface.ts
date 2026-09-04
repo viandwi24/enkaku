@@ -259,7 +259,7 @@ export function handlerViewsWithoutServiceMessage(surface: PluginSurface, hasSer
  * the one of those three the allowlist could not reach. `null` for a device
  * with no reservation, which is a real state and not an error.
  */
-export const BINDING_DEVICE_FIELDS = ['id', 'stableId', 'label', 'status', 'clusterId', 'number'] as const
+export const BINDING_DEVICE_FIELDS = ['id', 'stableId', 'label', 'status', 'groupId', 'number'] as const
 export type BindingDeviceField = (typeof BINDING_DEVICE_FIELDS)[number]
 
 /** The KV entry fields a binding may read — metadata only; the value itself is reached through `$row`. */

@@ -32,7 +32,7 @@ function setUp() {
   return opened.db
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'offline' = 'idle') {
+function seedDevice(db: Db, id: string, status: 'idle' | 'offline' | 'online' = 'idle') {
   db.insert(devices)
     .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status })
     .run()
@@ -59,7 +59,7 @@ function seedSchedule(db: Db, overrides: Partial<ScheduleRow> & { id: string }):
     timezone: overrides.timezone ?? 'UTC',
     scriptRef: overrides.scriptRef ?? 'test-script@1.0.0',
     params: overrides.params ?? {},
-    clusterId: overrides.clusterId ?? null,
+    groupId: overrides.groupId ?? null,
     deviceIds: overrides.deviceIds ?? ['d1'],
     concurrency: overrides.concurrency ?? 0,
     order: overrides.order ?? 'as-listed',
@@ -224,7 +224,7 @@ describe('fireOnce — onOverlap modes (plan 21 §3.2)', () => {
     expect(prevBatch?.status).not.toBe('running')
   })
 
-  test('a cluster/device list resolving to nothing usable is recorded as no-targets, not a thrown error', async () => {
+  test('a group/device list resolving to nothing usable is recorded as no-targets, not a thrown error', async () => {
     const db = setUp()
     const schedule = seedSchedule(db, { id: 's1', deviceIds: ['does-not-exist'] })
 
@@ -567,7 +567,7 @@ describe('fireOnce — @latest resolution (plan 62 §3.4, §4.5)', () => {
  * `docs/plans/96-m61-hotfixes.md` §96.14's "closed" claim looked complete
  * while a schedule-fired batch still denormalised `scriptName: null` /
  * `maxConcurrent: 0` (unlimited) on every member row — the same failure
- * shape `clusters/dispatch-batch-max-concurrent.integration.test.ts` proves
+ * shape `groups/dispatch-batch-max-concurrent.integration.test.ts` proves
  * for the direct `createBatch` call sites, reproduced here through the
  * REAL `fireOnce` and a REAL `ScriptRegistry`, matching production wiring
  * (`daemon.ts` supplies `registry: scriptRegistry` to `createScheduleRunner`).
@@ -575,7 +575,11 @@ describe('fireOnce — @latest resolution (plan 62 §3.4, §4.5)', () => {
 describe('fireOnce — a scheduled batch member carries the SAME runtime.maxConcurrent cap and scriptName a standalone enqueue() applies', () => {
   test('a maxConcurrent:1 script fired by a schedule across three idle devices pins maxConcurrent:1 and a non-null scriptName on every member row, and the claim gate honours it', async () => {
     const db = setUp()
-    for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d)
+    // `online`, not the file's usual `idle` default: this test's own final
+    // assertion goes through `claimNext`, whose admission SQL requires
+    // `status = 'online'` literally (plan 205 §4.7) — a pre-existing gap this
+    // plan's own test run surfaced (plan 200 §2.1).
+    for (const d of ['d1', 'd2', 'd3']) seedDevice(db, d, 'online')
     db.insert(scripts)
       .values({
         pluginId: 'p-fixture',
@@ -787,7 +791,7 @@ describe('fireOnce — the agent branch (plan 68 §3.1, §4.2)', () => {
     expect(target?.threadId).toBe('existing-thread')
   })
 
-  test('a schedule with a cluster/device target narrows the run to those resolved devices (criterion 3)', async () => {
+  test('a schedule with a group/device target narrows the run to those resolved devices (criterion 3)', async () => {
     const db = setUp()
     seedDevice(db, 'd1')
     seedDevice(db, 'd2')

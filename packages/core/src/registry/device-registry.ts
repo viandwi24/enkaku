@@ -16,7 +16,7 @@ import {
 } from '@enkaku/protocol'
 import { and, eq, gte, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db'
-import { clusters, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
+import { groups, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from '../device/state-machine'
 import { staticReadinessFallback } from '../device/readiness'
 import { deriveGuestAgentPreparation } from '../device/preparation/guest-agent-status'
@@ -69,7 +69,7 @@ export interface DeviceRegistryDeps {
    * Farm networks (plan 88 §3.6, §4.1) — `discovery.networks`, read fresh on
    * every call, the same discipline `endpoints` above already follows.
    * Residual gap (found alongside `api/devices.ts`'s admit route and
-   * `api/clusters.ts`'s device list — 88.5's own pass wired `daemon.ts`,
+   * `api/groups.ts`'s device list — 88.5's own pass wired `daemon.ts`,
    * `capability/context.ts` and `api/topology.ts` but missed these three):
    * without this, this registry's own `device.added` broadcast (the "new
    * device registered" branch of `onOnline`, below) and `listDevices()`
@@ -132,20 +132,20 @@ export interface DeviceRegistry {
 }
 
 /**
- * Every device's owning cluster resolved by name, in one query total (plan
+ * Every device's owning group resolved by name, in one query total (plan
  * 22.0 §4.4, acceptance #10 — never one query per device). A device with no
- * cluster looks it up as `undefined` and `rowToDeviceInfo` renders that as
+ * group looks it up as `undefined` and `rowToDeviceInfo` renders that as
  * `null`, same as an empty map would.
  */
-export function loadClusterNames(db: Db): Map<string, string> {
-  return new Map(db.select({ id: clusters.id, name: clusters.name }).from(clusters).all().map((c) => [c.id, c.name]))
+export function loadGroupNames(db: Db): Map<string, string> {
+  return new Map(db.select({ id: groups.id, name: groups.name }).from(groups).all().map((g) => [g.id, g.name]))
 }
 
-/** The single-device counterpart to `loadClusterNames` — one extra query, only when the device has a cluster. */
-export function clusterRefFor(db: Db, clusterId: string | null): { id: string; name: string } | null {
-  if (!clusterId) return null
-  const row = db.select({ name: clusters.name }).from(clusters).where(eq(clusters.id, clusterId)).get()
-  return row ? { id: clusterId, name: row.name } : null
+/** The single-device counterpart to `loadGroupNames` — one extra query, only when the device has a group. */
+export function groupRefFor(db: Db, groupId: string | null): { id: string; name: string } | null {
+  if (!groupId) return null
+  const row = db.select({ name: groups.name }).from(groups).where(eq(groups.id, groupId)).get()
+  return row ? { id: groupId, name: row.name } : null
 }
 
 /**
@@ -296,7 +296,7 @@ export function deriveAgentState(row: Pick<DeviceRow, 'agent' | 'preparation'>):
  * CURRENT serial in one map hit. Resolved once for the whole device list
  * (`endpoints.allWithEndpoints()` already reads every row for the restart
  * flow's reattach list, §3.10) — the same N+1 discipline
- * `loadClusterNames`/`loadRecentCrashes` above already use, extended to
+ * `loadGroupNames`/`loadRecentCrashes` above already use, extended to
  * `connection.medium`.
  */
 export function loadDeclaredMedia(endpoints: Pick<EndpointStore, 'allWithEndpoints'>): Map<string, ConnectionMedium | null> {
@@ -312,7 +312,7 @@ export function loadDeclaredMedia(endpoints: Pick<EndpointStore, 'allWithEndpoin
 export function rowToDeviceInfo(
   row: DeviceRow,
   tags: string[] = [],
-  cluster: { id: string; name: string } | null = null,
+  group: { id: string; name: string } | null = null,
   /** Populated only by `listDevicesWithTags` (plan 37 §4.5) — see `DeviceInfoSchema.lastCrashAt`. */
   lastCrashAt: number | null = null,
   /**
@@ -342,7 +342,7 @@ export function rowToDeviceInfo(
   /**
    * Declared medium per `stableId`+address (plan 88 §3.1, §3.2, §4.3, §5
    * step 88.5) — `loadDeclaredMedia`'s own return shape, resolved ONCE by
-   * the caller (same N+1 discipline as `networks`/`tags`/`cluster` above),
+   * the caller (same N+1 discipline as `networks`/`tags`/`group` above),
    * not re-queried per row. Defaulted to an empty map so every existing
    * caller (tests, orchestrator mode, call sites that predate this
    * parameter) keeps parsing exactly as before — `mediumSource` then simply
@@ -375,7 +375,7 @@ export function rowToDeviceInfo(
     battery: row.battery ?? null,
     quarantineReason: row.quarantineReason ?? null,
     tags,
-    cluster,
+    group,
     lastCrashAt,
     readiness: readiness ?? staticReadinessFallback(row),
     activities: activityState.activities,
@@ -407,7 +407,7 @@ export function loadRecentCrashes(db: Db, sinceEpochSec: number): Map<string, nu
 }
 
 /**
- * Every device plus its tags and its cluster, in exactly three queries
+ * Every device plus its tags and its group, in exactly three queries
  * regardless of how many devices there are (plan 19 §4.3 and plan 22.0
  * §4.4, acceptance #7 and #10 — never N+1).
  */
@@ -419,7 +419,7 @@ export function listDevicesWithTags(
   activitiesOf?: (deviceId: string) => DeviceActivityState,
   /**
    * Farm networks (plan 88 §3.6), resolved ONCE for the whole list — the
-   * same N+1 discipline this function already applies to tags, clusters and
+   * same N+1 discipline this function already applies to tags, groups and
    * crashes above, extended to `connection.medium`. `rowToDeviceInfo` NEVER
    * re-resolves this per row.
    */
@@ -436,7 +436,7 @@ export function listDevicesWithTags(
 ): DeviceInfo[] {
   const rows = db.select().from(devices).all()
   const tagMap = loadDeviceTags(db)
-  const clusterNames = loadClusterNames(db)
+  const groupNames = loadGroupNames(db)
   // The device card crash badge (plan 37 §4.5) — one query for the whole
   // fleet, not one per device.
   const recentCrashes = loadRecentCrashes(db, Math.floor(Date.now() / 1000) - 3600)
@@ -448,7 +448,7 @@ export function listDevicesWithTags(
     rowToDeviceInfo(
       r,
       tagMap.get(r.id) ?? [],
-      r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null,
+      r.groupId ? { id: r.groupId, name: groupNames.get(r.groupId) ?? r.groupId } : null,
       recentCrashes.get(r.id) ?? null,
       readinessOf?.(r.id, r) ?? null,
       activitiesOf?.(r.id) ?? NO_ACTIVITY,

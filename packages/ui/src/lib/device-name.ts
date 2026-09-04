@@ -123,7 +123,7 @@ export function deviceSearchTerms(d: SearchableDevice): string[] {
  * This is the four-way match `DevicePicker.tsx:73-88` has implemented since
  * plan 19, lifted verbatim so that every other device list in the product —
  * the Mikrotik assignments table, the Proxy Manager assignments table, the
- * agent device-grant list, the cluster members dialog — behaves identically
+ * agent device-grant list, the group members dialog — behaves identically
  * instead of each growing its own near-miss (plan 124 §1 goal 3, §4.1's
  * closing note that `DevicePicker` then calls this rather than keeping a
  * second copy).

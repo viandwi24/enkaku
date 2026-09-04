@@ -78,7 +78,7 @@ const MIN_FIT_CONTAINER_WIDTH_PX = 240
  * monitor, which needs a camera pointed at both and an on-device stopwatch —
  * `docs/plans/08-m6-scrcpy.md:540-548` has the real procedure. Plan 125 §2
  * puts that measurement explicitly out of scope. So neither the readout below
- * nor the console line may ever be worded as glass-to-glass, and neither is:
+ * nor the developer-tools log line may ever be worded as glass-to-glass, and neither is:
  * both say "click→paint" and the tooltip says what it excludes.
  *
  * The mark is a module-level map rather than a prop because the click and the

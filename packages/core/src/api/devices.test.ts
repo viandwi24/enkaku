@@ -9,7 +9,7 @@ import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { artifacts, auditLog, blockedDevices, clusters, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs } from '../db/schema'
+import { artifacts, auditLog, blockedDevices, groups, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs } from '../db/schema'
 import type { BatteryMonitor } from '../device/battery'
 import { createDeviceLifecycle } from '../device/lifecycle'
 import type { LabellingService } from '../device/labelling'
@@ -206,12 +206,7 @@ function seedDevice(db: Db, id: string, tags: string[] = []): void {
   for (const tag of tags) db.insert(deviceTags).values({ deviceId: id, tag, at: now }).run()
 }
 
-/**
- * `PUT /:id/tags` and `PUT /:id/cluster` now require `device.settings` (plan
- * 34 §4.4, §4.5) — an admin user by default, matching what these
- * pre-existing tests already assumed implicitly. The wiring itself is
- * covered by the dedicated describe block at the end of this file.
- */
+/** An admin user by default, matching what these pre-existing tests already assumed implicitly. */
 function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
   const wrapper = new Hono<AuthEnv>()
   wrapper.use('*', async (c, next) => {
@@ -570,109 +565,9 @@ describe('GET /api/devices — agent (plan 90 §3.8, §4.3, §4.7, docs/plans/96
   })
 })
 
-describe('PUT /api/devices/:id/tags', () => {
-  test('normalises, replaces the whole set atomically, and records an audit entry', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a', ['stale:tag'])
-
-    const res = await app.request('/a/tags', json({ tags: [' Pool: Smoke ', 'android:15', 'android:15'] }))
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { tags: string[] }
-    expect(body.tags).toEqual(['android:15', 'pool:smoke'])
-
-    const rows = db.select().from(deviceTags).where(eq(deviceTags.deviceId, 'a')).all()
-    expect(rows.map((r) => r.tag).sort()).toEqual(['android:15', 'pool:smoke'])
-
-    const entries = db.select().from(auditLog).all()
-    expect(entries).toHaveLength(1)
-    expect(entries[0]!.action).toBe('device.settings')
-    expect(entries[0]!.target).toBe('a')
-  })
-
-  test('an invalid tag rejects the whole request and leaves existing tags untouched', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a', ['pool:smoke'])
-
-    const res = await app.request('/a/tags', json({ tags: ['pool:smoke', 'bad tag!'] }))
-    expect(res.status).toBe(400)
-
-    const rows = db.select().from(deviceTags).where(eq(deviceTags.deviceId, 'a')).all()
-    expect(rows.map((r) => r.tag)).toEqual(['pool:smoke'])
-  })
-
-  test('an empty array clears all tags', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a', ['pool:smoke', 'android:15'])
-
-    const res = await app.request('/a/tags', json({ tags: [] }))
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { tags: string[] }
-    expect(body.tags).toEqual([])
-
-    const rows = db.select().from(deviceTags).where(eq(deviceTags.deviceId, 'a')).all()
-    expect(rows).toHaveLength(0)
-  })
-
-  test('404s for an unknown device', async () => {
-    const { app } = makeApp()
-    const res = await app.request('/does-not-exist/tags', json({ tags: [] }))
-    expect(res.status).toBe(404)
-  })
-})
-
-describe('PUT /api/devices/:id/cluster (plan 22.0 §4.4, acceptance #1, #2)', () => {
-  const put = (body: unknown) => ({ method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-
-  test('assigns an unclustered device and reports movedFrom: null', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a')
-    db.insert(clusters).values({ id: 'c1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
-
-    const res = await app.request('/a/cluster', put({ clusterId: 'c1' }))
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { device: { cluster: { id: string; name: string } | null }; movedFrom: string | null }
-    expect(body.device.cluster).toEqual({ id: 'c1', name: 'Jakarta' })
-    expect(body.movedFrom).toBeNull()
-
-    const entries = db.select().from(auditLog).all()
-    expect(entries.find((e) => e.action === 'cluster.assign')).toBeTruthy()
-  })
-
-  test('assigning a device already in another cluster moves it and reports what it moved from', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a')
-    db.insert(clusters).values({ id: 'jakarta', name: 'Jakarta', description: null, createdAt: new Date() }).run()
-    db.insert(clusters).values({ id: 'bandung', name: 'Bandung', description: null, createdAt: new Date() }).run()
-    await app.request('/a/cluster', put({ clusterId: 'jakarta' }))
-
-    const res = await app.request('/a/cluster', put({ clusterId: 'bandung' }))
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { device: { cluster: { id: string } | null }; movedFrom: string | null }
-    expect(body.device.cluster?.id).toBe('bandung')
-    expect(body.movedFrom).toBe('jakarta')
-  })
-
-  test('clusterId: null unassigns and records cluster.unassign', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a')
-    db.insert(clusters).values({ id: 'c1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
-    await app.request('/a/cluster', put({ clusterId: 'c1' }))
-
-    const res = await app.request('/a/cluster', put({ clusterId: null }))
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { device: { cluster: unknown } }
-    expect(body.device.cluster).toBeNull()
-    const entries = db.select().from(auditLog).all()
-    expect(entries.find((e) => e.action === 'cluster.unassign')).toBeTruthy()
-  })
-
-  test('an unknown cluster id 404s', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a')
-    const res = await app.request('/a/cluster', put({ clusterId: 'ghost' }))
-    expect(res.status).toBe(404)
-  })
-})
+// `PUT /:id/tags` and `PUT /:id/group` are removed by plan 207 (MVP 07):
+// `set-tags` and `set-group` are actions API verbs now, tested in
+// `packages/core/src/api/actions.test.ts`.
 
 /**
  * Security fix (plan 09 §4.4's `device.owner.set`, never carried into the
@@ -799,21 +694,21 @@ describe('PATCH /api/devices/:id — blanket device.settings gate (plan 87, mvp-
   })
 })
 
-describe('GET /api/devices?clusterId= (plan 22.0 §4.4, acceptance #4)', () => {
-  test('clusterId=<id> returns only that cluster\'s members; clusterId=none returns exactly the unclustered devices', async () => {
+describe('GET /api/devices?groupId= (plan 22.0 §4.4, acceptance #4)', () => {
+  test('groupId=<id> returns only that group\'s members; groupId=none returns exactly the devices with no group', async () => {
     const { db, app } = makeApp()
-    db.insert(clusters).values({ id: 'c1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
+    db.insert(groups).values({ id: 'c1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
     seedDevice(db, 'a')
     seedDevice(db, 'b')
     seedDevice(db, 'c')
-    db.update(devices).set({ clusterId: 'c1' }).where(eq(devices.id, 'a')).run()
-    db.update(devices).set({ clusterId: 'c1' }).where(eq(devices.id, 'b')).run()
+    db.update(devices).set({ groupId: 'c1' }).where(eq(devices.id, 'a')).run()
+    db.update(devices).set({ groupId: 'c1' }).where(eq(devices.id, 'b')).run()
 
-    const clustered = await app.request('/?clusterId=c1')
-    const clusteredBody = (await clustered.json()) as { items: Array<{ id: string }> }
-    expect(clusteredBody.items.map((d) => d.id).sort()).toEqual(['a', 'b'])
+    const grouped = await app.request('/?groupId=c1')
+    const groupedBody = (await grouped.json()) as { items: Array<{ id: string }> }
+    expect(groupedBody.items.map((d) => d.id).sort()).toEqual(['a', 'b'])
 
-    const none = await app.request('/?clusterId=none')
+    const none = await app.request('/?groupId=none')
     const noneBody = (await none.json()) as { items: Array<{ id: string }> }
     expect(noneBody.items.map((d) => d.id)).toEqual(['c'])
   })
@@ -969,53 +864,12 @@ describe('POST /:id/monitor/save — device.settings gate (plan 87, mvp-3 Findin
   })
 })
 
-describe('requirePermission("device.settings") on tags/cluster (plan 34 §4.4, §4.5, acceptance #7)', () => {
-  test('PUT /:id/tags is refused with no authenticated user', async () => {
-    const { db, app } = makeApp(null)
-    seedDevice(db, 'a')
-    const res = await app.request('/a/tags', json({ tags: ['pool:smoke'] }))
-    expect(res.status).toBe(403)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('auth.forbidden')
-  })
-
-  test('an operator (device.settings is an OPERATOR permission) may still set tags — no lockout', async () => {
-    const { db, app } = makeApp('operator')
-    seedDevice(db, 'a')
-    const res = await app.request('/a/tags', json({ tags: ['pool:smoke'] }))
-    expect(res.status).toBe(200)
-  })
-
-  test('PUT /:id/cluster is refused with no authenticated user', async () => {
-    const { db, app } = makeApp(null)
-    seedDevice(db, 'a')
-    db.insert(clusters).values({ id: 'c1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
-    const res = await app.request('/a/cluster', json({ clusterId: 'c1' }))
-    expect(res.status).toBe(403)
-  })
-
+describe('requirePermission("device.settings") on read routes (plan 34 §4.4, §4.5, acceptance #7)', () => {
   test('GET /:id needs no permission at all — read routes stay open', async () => {
     const { db, app } = makeApp(null)
     seedDevice(db, 'a')
     const res = await app.request('/a')
     expect(res.status).toBe(200)
-  })
-
-  // Plan 47 §4.4 — the same permission tags/cluster already use (§9 of the
-  // plan says so explicitly), calling directly is refused exactly as the UI
-  // would be (acceptance #12).
-  test('DELETE /:id (Forget) is refused with no authenticated user', async () => {
-    const { db, app } = makeApp(null)
-    seedDevice(db, 'a')
-    const res = await app.request('/a', { method: 'DELETE' })
-    expect(res.status).toBe(403)
-  })
-
-  test('POST /:id/block is refused with no authenticated user', async () => {
-    const { db, app } = makeApp(null)
-    seedDevice(db, 'a')
-    const res = await app.request('/a/block', { method: 'POST' })
-    expect(res.status).toBe(403)
   })
 
   test('GET /:id/history-counts is refused with no authenticated user', async () => {
@@ -1037,8 +891,8 @@ describe('requirePermission("device.settings") on tags/cluster (plan 34 §4.4, �
  * security-sweep finding, `packages/core/src/api/devices.ts:549`): any
  * authenticated operator could change a device's transport/display/input/
  * inspector engines. Now gated on `device.settings` — the same OPERATOR
- * permission `PUT /:id/tags`/`PUT /:id/cluster` already use — and audited as
- * `device.drivers`.
+ * permission the actions API's `set-tags`/`set-group` verbs already use —
+ * and audited as `device.drivers`.
  */
 describe('PATCH /api/devices/:id/drivers (security fix)', () => {
   function driversRegistry(): RegistryResponse {
@@ -1119,54 +973,8 @@ describe('PATCH /api/devices/:id/drivers (security fix)', () => {
  * operator could clear a thermal/safety quarantine. Now gated on
  * `device.quarantine` and audited as `device.unquarantine`.
  */
-describe('POST /api/devices/:id/unquarantine (security fix)', () => {
-  function quarantinedBattery(unquarantined: string[]): () => BatteryMonitor {
-    return () => ({
-      start: () => {},
-      stop: () => {},
-      pollOnce: async () => {},
-      unquarantine: (deviceId: string) => {
-        unquarantined.push(deviceId)
-        return true
-      },
-    })
-  }
-
-  test('an operator is refused (403) — device.quarantine is admin-only — and unquarantine is never called', async () => {
-    const calls: string[] = []
-    const { db, app } = makeApp('operator', { battery: quarantinedBattery(calls) })
-    seedDevice(db, 'a')
-    const res = await app.request('/a/unquarantine', { method: 'POST' })
-    expect(res.status).toBe(403)
-    expect(calls).toEqual([])
-    expect(db.select().from(auditLog).all()).toHaveLength(0)
-  })
-
-  test('no authenticated user is refused (403)', async () => {
-    const calls: string[] = []
-    const { db, app } = makeApp(null, { battery: quarantinedBattery(calls) })
-    seedDevice(db, 'a')
-    const res = await app.request('/a/unquarantine', { method: 'POST' })
-    expect(res.status).toBe(403)
-  })
-
-  test('an admin CAN unquarantine, and it is audited', async () => {
-    const calls: string[] = []
-    const { db, app } = makeApp('admin', { battery: quarantinedBattery(calls) })
-    seedDevice(db, 'a')
-    db.update(devices).set({ status: 'quarantined', quarantineReason: 'overheating' }).where(eq(devices.id, 'a')).run()
-
-    const res = await app.request('/a/unquarantine', { method: 'POST' })
-    expect(res.status).toBe(200)
-    expect(calls).toEqual(['a'])
-
-    const entries = db.select().from(auditLog).all()
-    expect(entries).toHaveLength(1)
-    expect(entries[0]!.action).toBe('device.unquarantine')
-    expect(entries[0]!.target).toBe('a')
-    expect(entries[0]!.meta).toEqual({ reason: 'overheating' })
-  })
-})
+// `POST /:id/unquarantine` is removed by plan 207 (MVP 07): `unquarantine`
+// is an actions API verb now, tested in `packages/core/src/api/actions.test.ts`.
 
 describe('POST /rescan (plan 85 §3.3, §4.4, §4.6, §5 step 85.2)', () => {
   const sampleReport: ReconcileReport = {
@@ -1297,165 +1105,9 @@ function seedTcpDevice(db: Db, id = 'a', address = '10.0.0.5:5555'): void {
   db.update(devices).set({ serial: address }).where(eq(devices.id, id)).run()
 }
 
-describe('POST /:id/connection/disconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4, fixes F11)', () => {
-  test('a USB device refuses with a coded, explaining E_TRANSPORT_NOT_DETACHABLE — no reconnector needed', async () => {
-    const { db, app } = makeApp('admin')
-    seedDevice(db, 'a') // USB-shaped serial by default.
-    const res = await app.request('/a/connection/disconnect', { method: 'POST' })
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string; message: string } }
-    expect(body.error.code).toBe('E_TRANSPORT_NOT_DETACHABLE')
-    expect(body.error.message).toMatch(/usb/i)
-  })
-
-  test('refuses E_NOT_SUPPORTED for a tcp device when no reconnector is wired (orchestrator mode, or the adb subsystem is not ready)', async () => {
-    const { db, app } = makeApp('admin')
-    seedTcpDevice(db)
-    const res = await app.request('/a/connection/disconnect', { method: 'POST' })
-    expect(res.status).toBe(501)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('E_NOT_SUPPORTED')
-  })
-
-  test('a running job refuses (coded job_running) and LISTS the job, unless force — nothing is torn down first', async () => {
-    const calls: string[] = []
-    const { db, app } = makeApp('admin', { connection: { reconnector: () => fakeReconnector(calls), sessions: () => fakeSessions(calls) } })
-    seedTcpDevice(db)
-    db.insert(jobs).values({ id: 'job-1', scriptId: 'internal:sleep', scriptName: 'sleep-and-tap', deviceId: 'a', status: 'running', createdAt: new Date() }).run()
-
-    const res = await app.request('/a/connection/disconnect', { method: 'POST' })
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string }; jobs: Array<{ id: string; scriptName: string }> }
-    expect(body.error.code).toBe('job_running')
-    expect(body.jobs).toEqual([{ id: 'job-1', scriptName: 'sleep-and-tap' }])
-    expect(calls).toEqual([])
-  })
-
-  test('force overrides the running-job refusal', async () => {
-    const calls: string[] = []
-    const { db, app } = makeApp('admin', { connection: { reconnector: () => fakeReconnector(calls), sessions: () => fakeSessions(calls) } })
-    seedTcpDevice(db)
-    db.insert(jobs).values({ id: 'job-1', scriptId: 'internal:sleep', deviceId: 'a', status: 'running', createdAt: new Date() }).run()
-
-    const res = await app.request(
-      '/a/connection/disconnect',
-      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ force: true }) },
-    )
-    expect(res.status).toBe(200)
-    expect(calls).toContain('transport-disconnected')
-  })
-
-  test('closes the session and ends every control/command activity BEFORE the transport disconnects (plan 88 §4.6\'s ordering, plan 205 §4.9)', async () => {
-    const calls: string[] = []
-    const sessions = fakeSessions(calls)
-    const reconnector = fakeReconnector(calls)
-    const { db, app } = makeApp('admin', { activityCalls: calls, connection: { reconnector: () => reconnector, sessions: () => sessions } })
-    seedTcpDevice(db)
-
-    const res = await app.request('/a/connection/disconnect', { method: 'POST' })
-    expect(res.status).toBe(200)
-    expect(calls).toEqual(['session-closed', 'activity-ended', 'transport-disconnected'])
-    expect(sessions.closed).toEqual(['a'])
-    expect(reconnector.disconnectCalls).toEqual(['stable-a'])
-  })
-
-  test('returns the ladder\'s outcome, audits device.disconnect, and records device.disconnected on the main stream', async () => {
-    const calls: string[] = []
-    const { db, app, records } = makeApp('admin', { connection: { reconnector: () => fakeReconnector(calls), sessions: () => fakeSessions(calls) } })
-    seedTcpDevice(db)
-
-    const res = await app.request('/a/connection/disconnect', { method: 'POST' })
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body).toEqual({ result: 'disconnected' })
-
-    const auditEntry = db.select().from(auditLog).where(eq(auditLog.action, 'device.disconnect')).get()
-    expect(auditEntry?.target).toBe('a')
-    expect((auditEntry?.meta as { result?: string } | null)?.result).toBe('disconnected')
-
-    const event = records.find((r) => r.kind === 'device.disconnected')
-    expect(event).toBeDefined()
-    expect(event?.deviceId).toBe('a')
-    expect(event?.stream).toBe('main')
-  })
-
-  test('is refused with no authenticated user, same as every other device.settings mutation here', async () => {
-    const { db, app } = makeApp(null)
-    seedTcpDevice(db)
-    const res = await app.request('/a/connection/disconnect', { method: 'POST' })
-    expect(res.status).toBe(403)
-  })
-
-  test('404s for an unknown device', async () => {
-    const { app } = makeApp('admin')
-    const res = await app.request('/does-not-exist/connection/disconnect', { method: 'POST' })
-    expect(res.status).toBe(404)
-  })
-})
-
-describe('POST /:id/connection/reconnect (plan 88 §3.3, §3.8, §4.4, §4.6, §5 step 88.4, fixes F13, tests H2)', () => {
-  test('reuses the SAME DeviceReconnector — passes stableId/opts through and returns its outcome verbatim', async () => {
-    const calls: string[] = []
-    const reconnector = fakeReconnector(calls, {
-      reconnect: async (stableId, opts) => {
-        reconnector.reconnectCalls.push({ stableId, opts })
-        return { result: 'connected', address: '10.0.0.5:5555', viaSweep: false }
-      },
-    })
-    const { db, app } = makeApp('admin', { connection: { reconnector: () => reconnector, sessions: () => fakeSessions(calls) } })
-    seedTcpDevice(db)
-
-    const res = await app.request(
-      '/a/connection/reconnect',
-      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ allowSweep: true, force: true }) },
-    )
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body).toEqual({ result: 'connected', address: '10.0.0.5:5555', viaSweep: false })
-    expect(reconnector.reconnectCalls).toEqual([{ stableId: 'stable-a', opts: { allowSweep: true, force: true } }])
-  })
-
-  test('audits device.reconnect and records device.reconnected on the main stream', async () => {
-    const calls: string[] = []
-    const { db, app, records } = makeApp('admin', { connection: { reconnector: () => fakeReconnector(calls), sessions: () => fakeSessions(calls) } })
-    seedTcpDevice(db)
-
-    await app.request('/a/connection/reconnect', { method: 'POST' })
-    const auditEntry = db.select().from(auditLog).where(eq(auditLog.action, 'device.reconnect')).get()
-    expect(auditEntry?.target).toBe('a')
-    const event = records.find((r) => r.kind === 'device.reconnected')
-    expect(event?.deviceId).toBe('a')
-  })
-
-  test('a not-found outcome is still a 200 — the ladder reports failure as data, not an HTTP error', async () => {
-    const calls: string[] = []
-    const reconnector = fakeReconnector(calls, {
-      reconnect: async () => ({ result: 'not-found', tried: [{ address: '10.0.0.5:5555', preProbe: 'timeout', ms: 300 }], sweep: null }),
-    })
-    const { db, app } = makeApp('admin', { connection: { reconnector: () => reconnector, sessions: () => fakeSessions(calls) } })
-    seedTcpDevice(db)
-
-    const res = await app.request('/a/connection/reconnect', { method: 'POST' })
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { result: string; tried: unknown[] }
-    expect(body.result).toBe('not-found')
-    expect(body.tried).toHaveLength(1)
-  })
-
-  test('refuses E_NOT_SUPPORTED when no reconnector is wired', async () => {
-    const { db, app } = makeApp('admin')
-    seedTcpDevice(db)
-    const res = await app.request('/a/connection/reconnect', { method: 'POST' })
-    expect(res.status).toBe(501)
-  })
-
-  test('is refused with no authenticated user', async () => {
-    const { db, app } = makeApp(null)
-    seedTcpDevice(db)
-    const res = await app.request('/a/connection/reconnect', { method: 'POST' })
-    expect(res.status).toBe(403)
-  })
-})
+// 'POST /:id/connection/disconnect' and 'POST /:id/connection/reconnect'
+// are removed by plan 207 (MVP 07): disconnect and reconnect are actions
+// API verbs now, tested in actions.test.ts.
 
 describe('PATCH /:id/connection (plan 88 §3.1, §4.6, §5 step 88.4)', () => {
   test('declares a medium for a tcp device, persists it via EndpointStore.declare, and returns the updated connection', async () => {
@@ -1526,145 +1178,10 @@ describe('PATCH /:id/connection (plan 88 §3.1, §4.6, §5 step 88.4)', () => {
   })
 })
 
-describe('POST /:id/connection/cutover (plan 88 §3.4, §4.6, §5 step 88.5)', () => {
-  test('starts the wizard for a USB device, forwards { port, medium, address } to the manager, and returns its state', async () => {
-    const cutover = fakeCutoverManager()
-    const { db, app } = makeApp('admin', { cutover })
-    seedDevice(db, 'a') // USB-shaped serial by default
+// 'POST /:id/connection/cutover' and 'DELETE /:id/connection/cutover' are
+// removed by plan 207 (MVP 07): cutover is an actions API verb now
+// ({ op: 'start' | 'cancel' }), tested in actions.test.ts.
 
-    const res = await app.request('/a/connection/cutover', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ port: 5599, medium: 'wired', address: '10.20.0.9:5555' }),
-    })
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { cutover: { step: string; port: number; medium: string } }
-    expect(body.cutover).toMatchObject({ step: 'armed', port: 5599, medium: 'wired' })
-    expect(cutover.startCalls).toEqual([
-      { device: { id: 'a', stableId: 'stable-a', serial: 'serial-a', label: 'Test Phone' }, opts: { port: 5599, medium: 'wired', address: '10.20.0.9:5555' } },
-    ])
-
-    const auditEntry = db.select().from(auditLog).where(eq(auditLog.action, 'device.cutover.start')).get()
-    expect(auditEntry?.target).toBe('a')
-  })
-
-  test('refuses E_ALREADY_ON_NETWORK for a device already on tcp — this wizard is for the USB→network move itself', async () => {
-    const cutover = fakeCutoverManager()
-    const { db, app } = makeApp('admin', { cutover })
-    seedTcpDevice(db)
-
-    const res = await app.request('/a/connection/cutover', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ medium: 'wired' }),
-    })
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('E_ALREADY_ON_NETWORK')
-    expect(cutover.startCalls).toEqual([])
-  })
-
-  test('refuses device_offline for an offline device — there is no USB transport to enable TCP mode on', async () => {
-    const cutover = fakeCutoverManager()
-    const { db, app } = makeApp('admin', { cutover })
-    seedDevice(db, 'a')
-    db.update(devices).set({ status: 'offline' }).where(eq(devices.id, 'a')).run()
-
-    const res = await app.request('/a/connection/cutover', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ medium: 'wired' }),
-    })
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('device_offline')
-    expect(cutover.startCalls).toEqual([])
-  })
-
-  test('a running job refuses (coded job_running) and lists it — no force override for a physical port flip', async () => {
-    const cutover = fakeCutoverManager()
-    const { db, app } = makeApp('admin', { cutover })
-    seedDevice(db, 'a')
-    db.insert(jobs).values({ id: 'job-1', scriptId: 'internal:sleep', scriptName: 'sleep-and-tap', deviceId: 'a', status: 'running', createdAt: new Date() }).run()
-
-    const res = await app.request('/a/connection/cutover', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ medium: 'wired' }),
-    })
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string }; jobs: Array<{ id: string; scriptName: string }> }
-    expect(body.error.code).toBe('job_running')
-    expect(body.jobs).toEqual([{ id: 'job-1', scriptName: 'sleep-and-tap' }])
-    expect(cutover.startCalls).toEqual([])
-  })
-
-  test('refuses E_NOT_SUPPORTED when no cutover manager is wired', async () => {
-    const { db, app } = makeApp('admin')
-    seedDevice(db, 'a')
-    const res = await app.request('/a/connection/cutover', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ medium: 'wired' }),
-    })
-    expect(res.status).toBe(501)
-  })
-
-  test('a malformed body is rejected E_BAD_REQUEST', async () => {
-    const { db, app } = makeApp('admin', { cutover: fakeCutoverManager() })
-    seedDevice(db, 'a')
-    const res = await app.request('/a/connection/cutover', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}), // medium is required
-    })
-    expect(res.status).toBe(400)
-  })
-
-  test('is refused with no authenticated user', async () => {
-    const { db, app } = makeApp(null, { cutover: fakeCutoverManager() })
-    seedDevice(db, 'a')
-    const res = await app.request('/a/connection/cutover', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ medium: 'wired' }),
-    })
-    expect(res.status).toBe(403)
-  })
-})
-
-describe('DELETE /:id/connection/cutover (plan 88 §3.4, §4.6, §5 step 88.5) — cancel reverts nothing', () => {
-  test('cancels the armed window by stableId, is idempotent, and audits', async () => {
-    const cutover = fakeCutoverManager()
-    const { db, app } = makeApp('admin', { cutover })
-    seedDevice(db, 'a')
-
-    const res = await app.request('/a/connection/cutover', { method: 'DELETE' })
-    expect(res.status).toBe(200)
-    expect(cutover.cancelCalls).toEqual(['stable-a'])
-
-    const res2 = await app.request('/a/connection/cutover', { method: 'DELETE' })
-    expect(res2.status).toBe(200) // idempotent — cancelling twice is a no-op, not an error
-    expect(cutover.cancelCalls).toEqual(['stable-a', 'stable-a'])
-
-    const auditEntry = db.select().from(auditLog).where(eq(auditLog.action, 'device.cutover.cancel')).get()
-    expect(auditEntry?.target).toBe('a')
-  })
-
-  test('refuses E_NOT_SUPPORTED when no cutover manager is wired', async () => {
-    const { db, app } = makeApp('admin')
-    seedDevice(db, 'a')
-    const res = await app.request('/a/connection/cutover', { method: 'DELETE' })
-    expect(res.status).toBe(501)
-  })
-
-  test('is refused with no authenticated user', async () => {
-    const { db, app } = makeApp(null, { cutover: fakeCutoverManager() })
-    seedDevice(db, 'a')
-    const res = await app.request('/a/connection/cutover', { method: 'DELETE' })
-    expect(res.status).toBe(403)
-  })
-})
 
 /**
  * The read-back gap step 88.4 flagged and step 88.5 closed (plan 88 §5 step
@@ -1753,226 +1270,17 @@ describe('connection.medium read-back on GET (plan 88 §3.1, §5 step 88.5) — 
   })
 })
 
-/**
- * Residual gap left by plan 88 step 88.5's own pass (fixed here): the admit
- * route (`POST /discovered/:stableId/admit`) called bare `rowToDeviceInfo(row)`
- * for BOTH the `device.added` broadcast and its own response body — the two
- * defaulted params (`networks: []`, `declaredMedia: new Map()`) meant a
- * device admitted on a configured wired network badged `TCP` at the exact
- * moment an operator is most likely watching (right after clicking "Add to
- * farm"), then silently flipped to `OTG` on the next ordinary `GET
- * /api/devices` refetch — which already went through `infoWithTags` and so
- * already read the network/declaration correctly. Proven end to end through
- * the real HTTP route and the real broadcast payload, not `deriveConnection`
- * in isolation, mirroring the "connection.medium read-back on GET" block
- * above.
- */
-describe('POST /discovered/:stableId/admit — connection.medium is correct on the FIRST render, not just on a later GET', () => {
-  test('admitting a device whose address falls inside a configured wired network broadcasts device.added with medium: wired', async () => {
-    const { db, app, broadcast } = makeApp('admin', {
-      networks: [{ cidr: '10.0.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }],
-    })
-    seedTcpDevice(db) // stable-a, serial 10.0.0.5:5555 — inside the configured /24
-    expect((await app.request('/a', { method: 'DELETE' })).status).toBe(200) // forget → lands in Discovered, same serial
+// The "connection.medium is correct on the FIRST render" admit tests used
+// `DELETE /:id` (Forget) to put a device back in the Discovered tray before
+// re-admitting it. `DELETE /:id` is removed by plan 207 (MVP 07): `forget`
+// is an actions API verb now, and this forget/re-admit round trip is no
+// longer reachable through this router (see the note below).
 
-    const res = await app.request('/discovered/stable-a/admit', { method: 'POST' })
-    expect(res.status).toBe(200)
+// 'DELETE /:id' (Forget) and 'POST /:id/block' are removed by plan 207
+// (MVP 07): forget and block are actions API verbs now, tested in
+// actions.test.ts. The discovered-tray admit/dismiss round trip these
+// tests exercised via DELETE is no longer reachable through this router.
 
-    // The response body itself — an operator's UI often renders THIS directly.
-    const body = (await res.json()) as { device: { connection: { medium: string | null; mediumSource: string; networkLabel: string | null } } }
-    expect(body.device.connection).toMatchObject({ medium: 'wired', mediumSource: 'network', networkLabel: 'Chassis A' })
-
-    // The broadcast every OTHER connected Studio tab renders from — must agree.
-    const added = broadcast.find((m) => m.type === 'device.added') as { type: string; payload: { connection: { medium: string | null; mediumSource: string } } } | undefined
-    expect(added?.payload.connection).toMatchObject({ medium: 'wired', mediumSource: 'network' })
-  })
-
-  test('a declared medium (from a prior forget/re-admit cycle, F15) wins over a network match on admit', async () => {
-    const endpoints = fakeEndpoints()
-    const { db, app } = makeApp('admin', {
-      endpoints,
-      networks: [{ cidr: '10.0.0.0/24', label: 'Chassis A', medium: 'wireless', scan: true }],
-    })
-    seedTcpDevice(db)
-    expect((await app.request('/a', { method: 'DELETE' })).status).toBe(200)
-    // The address book survives Forget (F15) — an operator declared this one wired earlier.
-    endpoints.declare('stable-a', '10.0.0.5:5555', 'wired')
-
-    const res = await app.request('/discovered/stable-a/admit', { method: 'POST' })
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { device: { connection: { medium: string | null; mediumSource: string } } }
-    expect(body.device.connection).toMatchObject({ medium: 'wired', mediumSource: 'declared' })
-  })
-
-  test('with no network and no declaration, admit still reads the honest TCP — never a guessed WI-FI', async () => {
-    const { db, app } = makeApp('admin')
-    seedTcpDevice(db)
-    expect((await app.request('/a', { method: 'DELETE' })).status).toBe(200)
-
-    const res = await app.request('/discovered/stable-a/admit', { method: 'POST' })
-    const body = (await res.json()) as { device: { connection: { medium: string | null; mediumSource: string } } }
-    expect(body.device.connection).toMatchObject({ medium: null, mediumSource: 'unknown' })
-  })
-})
-
-describe('DELETE /api/devices/:id — Forget (plan 47 §4.4, §6)', () => {
-  test('an offline device is forgotten: 200, gone from the list, a device.removed broadcast, an audit entry', async () => {
-    const { db, app, broadcast } = makeApp()
-    seedDevice(db, 'a')
-    db.update(devices).set({ status: 'offline' }).where(eq(devices.id, 'a')).run()
-
-    const res = await app.request('/a', { method: 'DELETE' })
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as {
-      forgotten: { deviceId: string; stableId: string; historyDeleted: boolean; counts: unknown; kvDeleted: number }
-    }
-    // `kvDeleted: 0` — this test's `makeApp()` wires no `kv` dependency into `createDeviceLifecycle`
-    // (plan 79 §3.3, §4.6); the kv store's own lifecycle integration is covered directly in
-    // `device/lifecycle.test.ts`.
-    expect(body.forgotten).toEqual({ deviceId: 'a', stableId: 'stable-a', historyDeleted: false, counts: null, kvDeleted: 0 })
-
-    expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(0)
-    expect(db.select().from(deletedDevices).where(eq(deletedDevices.id, 'a')).get()?.stableId).toBe('stable-a')
-    expect(broadcast).toContainEqual({ type: 'device.removed', payload: { id: 'a', stableId: 'stable-a' } })
-    const auditRows = db.select().from(auditLog).where(eq(auditLog.action, 'device.forget')).all()
-    expect(auditRows).toHaveLength(1)
-    expect(auditRows[0]?.target).toBe('a')
-  })
-
-  test('the round trip: forget a connected device, then admit it again — the loop the old refusal made impossible', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a')
-
-    expect((await app.request('/a', { method: 'DELETE' })).status).toBe(200)
-
-    const tray = (await (await app.request('/discovered')).json()) as { discovered: Array<{ stableId: string }> }
-    expect(tray.discovered.map((d) => d.stableId)).toEqual(['stable-a'])
-
-    const admitted = await app.request('/discovered/stable-a/admit', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ label: 'Rack 3 slot 2' }),
-    })
-    expect(admitted.status).toBe(200)
-
-    const rows = db.select().from(devices).all()
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.label).toBe('Rack 3 slot 2')
-    // The device kept its identity across the whole loop, which is the promise
-    // `stableId` makes (spec §7.5) — only the row id is new.
-    expect(rows[0]?.stableId).toBe('stable-a')
-    expect(db.select().from(discoveredDevices).all()).toHaveLength(0)
-  })
-
-  test('admitting something that is not in the tray is a 404, not a server error', async () => {
-    const { app } = makeApp()
-    const res = await app.request('/discovered/never-seen/admit', { method: 'POST' })
-    expect(res.status).toBe(404)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('E_NOT_DISCOVERED')
-  })
-
-  test('dismiss removes the entry without blocking anything (plan 56 §3.5)', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a')
-    await app.request('/a', { method: 'DELETE' })
-    expect(db.select().from(discoveredDevices).all()).toHaveLength(1)
-
-    expect((await app.request('/discovered/stable-a', { method: 'DELETE' })).status).toBe(200)
-
-    expect(db.select().from(discoveredDevices).all()).toHaveLength(0)
-    // Dismissal is not a quiet block — nothing was added to the block list, so
-    // the phone is free to reappear the next time it connects.
-    expect(db.select().from(blockedDevices).all()).toHaveLength(0)
-  })
-
-  test('forgetting an online device succeeds and lands it in the Discovered tray (plan 56 §3.2)', async () => {
-    // Until plan 56 this was a 409 `device_online` with an offer to block
-    // instead — the trap that made an operator declare a phone permanently
-    // unwelcome just to take it out of the farm.
-    const { db, app } = makeApp()
-    seedDevice(db, 'a') // seedDevice leaves status: 'online'
-
-    const res = await app.request('/a', { method: 'DELETE' })
-
-    expect(res.status).toBe(200)
-    expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(0)
-    expect(db.select().from(discoveredDevices).all()).toHaveLength(1)
-    expect(db.select().from(blockedDevices).all()).toHaveLength(0)
-  })
-
-  test('?deleteHistory=true deletes exactly the counts GET /:id/history-counts promised', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a')
-    db.update(devices).set({ status: 'offline' }).where(eq(devices.id, 'a')).run()
-    db.insert(deviceEvents).values({ id: 'e1', deviceId: 'a', stream: 'main', kind: 'device.online', at: new Date() }).run()
-
-    const before = await app.request('/a/history-counts')
-    const beforeBody = (await before.json()) as { counts: { jobs: number; artifacts: number; events: number } }
-    expect(beforeBody.counts.events).toBe(1)
-
-    const res = await app.request('/a?deleteHistory=true', { method: 'DELETE' })
-    const body = (await res.json()) as { forgotten: { historyDeleted: boolean; counts: unknown } }
-    expect(body.forgotten.historyDeleted).toBe(true)
-    expect(body.forgotten.counts).toEqual(beforeBody.counts)
-    expect(db.select().from(deviceEvents).where(eq(deviceEvents.deviceId, 'a')).all()).toHaveLength(0)
-  })
-
-  test('an unknown device is refused with 404', async () => {
-    const { app } = makeApp()
-    const res = await app.request('/ghost', { method: 'DELETE' })
-    expect(res.status).toBe(404)
-  })
-})
-
-describe('POST /api/devices/:id/block (plan 47 §4.4, §6)', () => {
-  test('blocks a connected device: it disappears from the fleet, is listed under GET /blocked, and can be unblocked', async () => {
-    const { db, app, broadcast } = makeApp()
-    seedDevice(db, 'a') // idle — the connected case this verb exists for.
-
-    const res = await app.request('/a/block', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'retired' }),
-    })
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { blocked: { stableId: string; reason: string | null } }
-    expect(body.blocked).toMatchObject({ stableId: 'stable-a', reason: 'retired' })
-
-    expect(db.select().from(devices).where(eq(devices.id, 'a')).all()).toHaveLength(0)
-    expect(broadcast).toContainEqual({ type: 'device.removed', payload: { id: 'a', stableId: 'stable-a' } })
-
-    const list = await app.request('/blocked')
-    const listBody = (await list.json()) as { blocked: Array<{ stableId: string }> }
-    expect(listBody.blocked.map((b) => b.stableId)).toEqual(['stable-a'])
-
-    const unblock = await app.request('/blocked/stable-a', { method: 'DELETE' })
-    expect(unblock.status).toBe(200)
-    const listAfter = await app.request('/blocked')
-    const listAfterBody = (await listAfter.json()) as { blocked: unknown[] }
-    expect(listAfterBody.blocked).toEqual([])
-    const auditRows = db.select().from(auditLog).where(eq(auditLog.action, 'device.unblock')).all()
-    expect(auditRows).toHaveLength(1)
-  })
-
-  test('block is refused for a device with a live job activity, exactly like forget (plan 205 §4.9)', async () => {
-    const { db, app } = makeApp('admin', { runningJobDeviceIds: new Set(['a']) })
-    seedDevice(db, 'a')
-    const res = await app.request('/a/block', { method: 'POST' })
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('device_busy')
-  })
-
-  test('a blocked stableId never comes back through GET /api/devices — it is not in the live list', async () => {
-    const { db, app } = makeApp()
-    seedDevice(db, 'a')
-    db.insert(blockedDevices).values({ stableId: 'blocked-elsewhere', label: null, reason: null, blockedAt: new Date(), blockedBy: null }).run()
-    const res = await app.request('/')
-    const body = (await res.json()) as { items: Array<{ stableId: string }> }
-    expect(body.items.map((d) => d.stableId)).toEqual(['stable-a'])
-  })
-})
 
 describe('GET /api/devices/refs — dangling-reference resolution (plan 47 §4.5)', () => {
   test('resolves a live device and a deleted one in the same call, and omits an id neither table has', async () => {
@@ -2318,69 +1626,9 @@ describe('Physical labelling endpoints (plan 89 §4.3, §4.6, §5 step 89.4/89.9
     expect(body.state).not.toBe('applied')
   })
 
-  test('POST /:id/label/apply calls the service, audits, and returns its state', async () => {
-    const { service, calls } = fakeLabelling()
-    const { db, app } = makeApp('admin', { labelling: service })
-    seedDevice(db, 'a')
-    const res = await app.request('/a/label/apply', { method: 'POST' })
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as DeviceLabelState
-    expect(body.state).toBe('applied')
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatchObject({ method: 'apply', deviceId: 'a' })
-  })
-
-  test('POST /:id/label/clear defaults restoreOriginal to false and forwards it to the service', async () => {
-    const { service, calls } = fakeLabelling()
-    const { db, app } = makeApp('admin', { labelling: service })
-    seedDevice(db, 'a')
-    const res = await app.request('/a/label/clear', { method: 'POST' })
-    expect(res.status).toBe(200)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatchObject({ method: 'clear', deviceId: 'a', opts: { restoreOriginal: false } })
-  })
-
-  test('POST /:id/label/clear honours an explicit restoreOriginal: true', async () => {
-    const { service, calls } = fakeLabelling()
-    const { db, app } = makeApp('admin', { labelling: service })
-    seedDevice(db, 'a')
-    await app.request('/a/label/clear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ restoreOriginal: true }) })
-    expect(calls[0]).toMatchObject({ opts: { restoreOriginal: true } })
-  })
-
-  test('POST /labels/apply applies every requested device and reports a per-device error without failing the whole request', async () => {
-    const { service } = fakeLabelling({
-      apply: async (deviceId) => {
-        if (deviceId === 'bad') throw new Error('agent unreachable')
-        return {
-          mode: 'wallpaper',
-          state: 'applied',
-          reason: null,
-          fingerprint: 'fp3',
-          appliedAt: 1,
-          originalCaptured: true,
-          capturedLockScreen: null,
-        }
-      },
-    })
-    const { db, app } = makeApp('admin', { labelling: service })
-    seedDevice(db, 'good')
-    seedDevice(db, 'bad')
-    const res = await app.request('/labels/apply', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ deviceIds: ['good', 'bad'] }),
-    })
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { total: number; results: Array<{ deviceId: string; state: DeviceLabelState | null; error: string | null }> }
-    expect(body.total).toBe(2)
-    const good = body.results.find((r) => r.deviceId === 'good')!
-    const bad = body.results.find((r) => r.deviceId === 'bad')!
-    expect(good.state?.state).toBe('applied')
-    expect(good.error).toBeNull()
-    expect(bad.state).toBeNull()
-    expect(bad.error).toContain('agent unreachable')
-  })
+  // `POST /:id/label/apply`, `POST /:id/label/clear` and `POST /labels/apply`
+  // are removed by plan 207 (MVP 07): `set-label` and `clear-label` are
+  // actions API verbs now, tested in `packages/core/src/api/actions.test.ts`.
 
   test('PATCH /:id renaming a device schedules a debounced label reconcile, not an immediate one', async () => {
     const { service, calls } = fakeLabelling()

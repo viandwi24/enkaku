@@ -8,7 +8,6 @@ import { can } from '../auth/acl'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
 import { formatDeviceLabel, loadDeviceNumbers } from '../registry/device-number'
-import type { CommandConsoleStats } from '../command-console/runner'
 import type { AdbMetricsStore } from '../device/adb-metrics'
 import type { DeviceHealth } from '../device/health'
 import { EnkakuError } from '../util/errors'
@@ -45,7 +44,7 @@ const ZERO_ADB_HEALTH: AdbHealthStats = {
   symptoms: [],
   restartAdvised: false,
 }
-/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. Narrowed to `lanes` only by plan 205 (MVP 04) — the subordinate-grant and client-fanout fields this used to carry had no producer once the activity model replaced their source subsystems. */
+/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. Narrowed to `lanes` only by plan 205 (MVP 04) — the subordinate-grant and per-client fan-out fields this used to carry had no producer once the activity model replaced their source subsystems. */
 const ZERO_INPUT: InputStats = {
   lanes: {
     pointer: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
@@ -68,14 +67,6 @@ const ZERO_VIDEO: VideoStats = {
   // the real classification once `deps.video` is wired.
   transport: 'loopback',
 }
-/** Same zero-fill contract (plan 93 §5 step 93.12) — reported before `deps.commandConsole` is wired (today: always, until `daemon.ts` passes `() => commandRunner?.stats() ?? null` through — see `adb-stats-command-console-wiring.test.ts`, the self-detecting gap this step could not close itself). `distinctOutputRatio: 0` is deliberate, not a claim that grouping never helps — it means "no member has settled yet", the same "0 is not NaN" reasoning `adbHealth.window.timeoutRate` already documents. */
-const ZERO_COMMAND_CONSOLE: NonNullable<AdbStatsResponse['commandConsole']> = {
-  runsInFlight: 0,
-  membersInFlight: 0,
-  coalescedFramesPerSec: 0,
-  distinctOutputRatio: 0,
-}
-
 /**
  * `GET /api/adb/stats` (plan 23 §4.6, permission `device.view`) — the global
  * semaphore's live state plus per-device queue depth, latency percentiles,
@@ -120,14 +111,6 @@ export function createAdbStatsRoutes(deps: {
    * `transport`/`hostAdb`/`adbHealth` above.
    */
   video?: () => { buildsPerUsbRoot: number; farmCeiling: number; maxTiles: number; maxTilesAuto: boolean; transport: NonNullable<VideoStats>['transport'] } | null
-  /**
-   * The command console's own observability (plan 93 §3.5, §3.8, §7.3, §5
-   * step 93.12) — `command-console/runner.ts`'s `CommandRunner.stats()`,
-   * wired through the same forward-ref pattern `transport`/`hostAdb`/
-   * `adbHealth`/`input`/`video` above already use. Same optional/zero-default
-   * contract as those.
-   */
-  commandConsole?: () => CommandConsoleStats | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -208,7 +191,6 @@ export function createAdbStatsRoutes(deps: {
       adbHealth: deps.adbHealth?.() ?? ZERO_ADB_HEALTH,
       input: deps.input?.() ?? ZERO_INPUT,
       video,
-      commandConsole: deps.commandConsole?.() ?? ZERO_COMMAND_CONSOLE,
     })
   })
 

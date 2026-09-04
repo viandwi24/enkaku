@@ -32,7 +32,7 @@ export interface ScheduleRefBackfillReport {
  * themselves do it.
  *
  * Guarded by a marker row so a second core start is a no-op (same pattern as
- * `cluster-materialise.ts`, plan 22.0 §4.1) — verified by this file's test:
+ * `materialise-0014.ts`, plan 22.0 §4.1) — verified by this file's test:
  * running it twice changes nothing on the second pass.
  */
 export function backfillScheduleScriptRefs(db: Db, deps: { log: Logger }): ScheduleRefBackfillReport | null {

@@ -1,23 +1,24 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { ClusterInfo } from '@enkaku/protocol'
+import type { GroupInfo } from '@enkaku/protocol'
 
 /**
  * Plan 104 (M69) §3.1, §4 — the target model `RunScriptDialog` already had,
  * pulled out so every action dialog can share it instead of re-inventing a
- * `deviceIds`/`clusterId` pair per file (G1/G2). Three shapes, unchanged
- * from `RunScriptDialog`'s own `Target`: one device, a saved cluster, or an
- * ad-hoc device list.
+ * `deviceIds`/`groupId` pair per file (G1/G2). Three shapes, unchanged from
+ * `RunScriptDialog`'s own `Target`: one device, a saved group (this mode's
+ * own former name, renamed by plan 207 — MVP 15 §0.1 item 3), or an ad-hoc
+ * device list.
  */
-export type Target = 'single' | 'cluster' | 'devices'
+export type Target = 'single' | 'group' | 'devices'
 
 /**
  * What a caller knows when it opens a picker — plan 104 §3.2's own table: a
  * device popup with nothing else selected targets that device; the same
- * popup with N devices selected arrives pre-filled with those N; a cluster
- * screen defaults to that cluster. `reset()` (below) turns this into a
- * concrete `target`/`deviceId`/`deviceIds`/`clusterId`, and it is always the
+ * popup with N devices selected arrives pre-filled with those N; a group
+ * screen defaults to that group. `reset()` (below) turns this into a
+ * concrete `target`/`deviceId`/`deviceIds`/`groupId`, and it is always the
  * OPERATOR who can still change it afterward — this context is a starting
  * point, never a lock (§3.2's own words).
  */
@@ -37,26 +38,26 @@ export interface TargetDefaultContext {
    * devices are selected" / "the fleet toolbar with a selection" rows).
    */
   initialSelectedIds?: readonly string[]
-  /** A cluster screen's own id (§3.2's "a cluster screen defaults to that cluster" row). */
-  initialClusterId?: string | null
+  /** A group screen's own id (§3.2's "a group screen defaults to that group" row). */
+  initialGroupId?: string | null
 }
 
 interface ResolvedDefault {
   mode: Target
   deviceId?: string
   deviceIds?: string[]
-  clusterId?: string
+  groupId?: string
 }
 
 /** Plan 104 §3.2's table, as a pure function — probed directly by `useTargetSelection.test.ts` without having to mount a component. */
 export function computeDefaultTarget(ctx: TargetDefaultContext): ResolvedDefault {
-  const { devices, readyNow = devices, allow, initialDeviceId, initialSelectedIds, initialClusterId } = ctx
+  const { devices, readyNow = devices, allow, initialDeviceId, initialSelectedIds, initialGroupId } = ctx
 
   if (initialSelectedIds && initialSelectedIds.length > 0 && allow.includes('devices')) {
     return { mode: 'devices', deviceIds: [...new Set(initialSelectedIds)] }
   }
-  if (initialClusterId && allow.includes('cluster')) {
-    return { mode: 'cluster', clusterId: initialClusterId }
+  if (initialGroupId && allow.includes('group')) {
+    return { mode: 'group', groupId: initialGroupId }
   }
   if (allow.includes('single')) {
     const deviceId =
@@ -70,7 +71,7 @@ export function computeDefaultTarget(ctx: TargetDefaultContext): ResolvedDefault
   // now) never allows `single` at all.
   const fallback = allow[0] ?? 'single'
   if (fallback === 'devices') return { mode: 'devices', deviceIds: [] }
-  if (fallback === 'cluster') return { mode: 'cluster', clusterId: '' }
+  if (fallback === 'group') return { mode: 'group', groupId: '' }
   return { mode: 'single', deviceId: '' }
 }
 
@@ -82,8 +83,8 @@ export interface UseTargetSelectionOptions {
    * most callers can just pass their own `devices.length`.
    */
   usableCount: number
-  /** Needed only when `cluster` is an allowed mode — `resolvedCount` reads a chosen cluster's own `usableCount` off this list. */
-  clusters?: ClusterInfo[]
+  /** Needed only when `group` is an allowed mode — `resolvedCount` reads a chosen group's own `usableCount` off this list. */
+  groups?: GroupInfo[]
 }
 
 export interface TargetSelection {
@@ -93,11 +94,11 @@ export interface TargetSelection {
   setDeviceId: (id: string) => void
   deviceIds: string[]
   setDeviceIds: (ids: string[]) => void
-  clusterId: string
-  setClusterId: (id: string) => void
+  groupId: string
+  setGroupId: (id: string) => void
   /**
    * The one true count for whatever `target` currently resolves to — a
-   * chosen cluster's own `usableCount`, the picked device-id list's length,
+   * chosen group's own `usableCount`, the picked device-id list's length,
    * or 1/0 for `single` depending on whether a device is actually chosen.
    * Plan 104 §4: "the resolved count is rendered by the picker itself, not
    * by each dialog, so no dialog can show a number that disagrees with what
@@ -112,7 +113,7 @@ export interface TargetSelection {
   setFleetConfirm: (v: string) => void
   fleetConfirmed: boolean
   /**
-   * Re-derives target/deviceId/deviceIds/clusterId from a fresh context
+   * Re-derives target/deviceId/deviceIds/groupId from a fresh context
    * (plan 104 §3.2) — call this explicitly whenever the THING the picker
    * targets changes (a different script picked, a different popup opened).
    * Never wired to fire on every render: the operator's own edits must
@@ -128,25 +129,25 @@ export interface TargetSelection {
  * `useState`/derived-value block.
  */
 export function useTargetSelection(opts: UseTargetSelectionOptions): TargetSelection {
-  const { usableCount, clusters = [] } = opts
+  const { usableCount, groups = [] } = opts
   const [target, setTarget] = useState<Target>('single')
   const [deviceId, setDeviceId] = useState('')
   const [deviceIds, setDeviceIds] = useState<string[]>([])
-  const [clusterId, setClusterId] = useState('')
+  const [groupId, setGroupId] = useState('')
   const [fleetConfirm, setFleetConfirm] = useState('')
 
   // A typed fleet-wide confirmation belongs to ONE specific selection —
-  // switching target, cluster, or device list must not leave a stale
+  // switching target, group, or device list must not leave a stale
   // confirmation valid for whatever the operator picks next (plan 94 §9 Q4,
   // carried over unchanged from `RunScriptDialog`).
   useEffect(() => {
     setFleetConfirm('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, clusterId, deviceIds.length])
+  }, [target, groupId, deviceIds.length])
 
   const resolvedCount =
-    target === 'cluster'
-      ? (clusters.find((c) => c.id === clusterId)?.usableCount ?? 0)
+    target === 'group'
+      ? (groups.find((g) => g.id === groupId)?.usableCount ?? 0)
       : target === 'devices'
         ? deviceIds.length
         : deviceId
@@ -154,9 +155,9 @@ export function useTargetSelection(opts: UseTargetSelectionOptions): TargetSelec
           : 0
 
   const hasTarget =
-    target === 'single' ? !!deviceId : target === 'cluster' ? !!clusterId && resolvedCount > 0 : deviceIds.length > 0
+    target === 'single' ? !!deviceId : target === 'group' ? !!groupId && resolvedCount > 0 : deviceIds.length > 0
 
-  const fleetWide = (target === 'cluster' || target === 'devices') && resolvedCount > 0 && usableCount > 0 && resolvedCount >= usableCount
+  const fleetWide = (target === 'group' || target === 'devices') && resolvedCount > 0 && usableCount > 0 && resolvedCount >= usableCount
   const fleetConfirmed = !fleetWide || fleetConfirm.trim() === String(resolvedCount)
 
   function reset(ctx: TargetDefaultContext): void {
@@ -164,7 +165,7 @@ export function useTargetSelection(opts: UseTargetSelectionOptions): TargetSelec
     setTarget(d.mode)
     setDeviceId(d.deviceId ?? '')
     setDeviceIds(d.deviceIds ?? [])
-    setClusterId(d.clusterId ?? '')
+    setGroupId(d.groupId ?? '')
     setFleetConfirm('')
   }
 
@@ -175,8 +176,8 @@ export function useTargetSelection(opts: UseTargetSelectionOptions): TargetSelec
     setDeviceId,
     deviceIds,
     setDeviceIds,
-    clusterId,
-    setClusterId,
+    groupId,
+    setGroupId,
     resolvedCount,
     hasTarget,
     fleetWide,

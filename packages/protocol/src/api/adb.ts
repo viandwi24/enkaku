@@ -98,8 +98,9 @@ export const AdbStatsResponseSchema = z.object({
    * detect on its own). `watchdogReconnects` counts connection churn the
    * SERVER can observe (opens beyond peak concurrency) — it can never be
    * attributed to the client's silence watchdog specifically, since
-   * `ClientMessage` deliberately carries no such signal; the browser console
-   * is the source of truth for a genuinely watchdog-caused reconnect.
+   * `ClientMessage` deliberately carries no such signal; the browser's own
+   * developer tools are the source of truth for a genuinely watchdog-caused
+   * reconnect.
    */
   transport: z.object({
     connections: z.number(),
@@ -123,9 +124,9 @@ export const AdbStatsResponseSchema = z.object({
    * Input-lane observability — `packages/core/src/server/ws-handlers.ts`'s
    * `inputStats()`, wired into this route through the same forward-ref
    * pattern `transport`/`hostAdb`/`adbHealth` above already use. Narrowed by
-   * plan 205 (MVP 04) to `lanes` only: the subordinate-grant and client-fanout
-   * observability fields this block used to carry had no producer once the
-   * activity model replaced their source subsystems (plan 205 §3.2).
+   * plan 205 (MVP 04) to `lanes` only: the subordinate-grant and multi-client
+   * spread observability fields this block used to carry had no producer
+   * once the activity model replaced their source subsystems (plan 205 §3.2).
    *
    * `.optional()`, unlike `transport`/`hostAdb`/`adbHealth` right above —
    * deliberately, and ONLY for this field: this step's own file-ownership
@@ -189,31 +190,6 @@ export const AdbStatsResponseSchema = z.object({
        * integer.
        */
       transport: WallTransportSchema,
-    })
-    .optional(),
-  /**
-   * The command console's own observability (plan 93 §3.5, §3.8, §7.3, §5
-   * step 93.12) — the numbers hypotheses H1, H2 and H4 are settled by. Wired
-   * from `packages/core/src/command-console/runner.ts`'s `CommandRunner.stats()`
-   * through the same forward-ref pattern `transport`/`hostAdb`/`adbHealth`/
-   * `input`/`video` above already use.
-   *
-   * `.optional()` for the SAME reason `input`/`video` above are: a consumer
-   * that predates this field must keep parsing. The real running core
-   * always sends it, zero-filled the same way the other forward-ref blocks
-   * are, once `daemon.ts` wires the dependency through (tracked separately
-   * — see `adb-stats-command-console-wiring.test.ts`).
-   */
-  commandConsole: z
-    .object({
-      /** `active.size` in the runner — command runs currently dispatching or awaiting-continue. */
-      runsInFlight: z.number().int(),
-      /** Members with an exec genuinely outstanding right now, summed across every in-flight run — bounded by `MAX_POOL_CONCURRENCY` (32) per run, not farm-wide. */
-      membersInFlight: z.number().int(),
-      /** `command.progress` frames actually broadcast per second, averaged over the trailing 60s — the coalescer's own effect, measured (H2: ≤4/s at 100 members is the spec's own ceiling, §3.5). */
-      coalescedFramesPerSec: z.number(),
-      /** Distinct output hashes ÷ total settled execs, cumulative across every run this core process has driven since it started (not time-windowed, unlike the two rate fields below — a run's own grouping is a property of that run, and the cumulative view is what tells whether H1 holds across many runs, not just the latest one) — H1's own number: near 1.0 means grouping is not helping and the default should flip to a flat table (§7.3's 20-device rung). `0` when nothing has settled yet, never `NaN`. */
-      distinctOutputRatio: z.number(),
     })
     .optional(),
 })

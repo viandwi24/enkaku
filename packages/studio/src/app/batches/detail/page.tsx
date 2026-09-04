@@ -251,7 +251,7 @@ function BatchDetail() {
   // any bulk operation: a device that was offline at dispatch time and has
   // since come back is retargeted with one click, through the SAME
   // `?only=skipped` route `RunReport`'s own "Retry skipped" already uses
-  // for a command run (§3.8, step 93.8) — one shared server-side mechanism,
+  // for the deleted fleet command surface's own runs (§3.8, step 93.8) — one shared server-side mechanism,
   // two client surfaces.
   const canRetrySkipped = batch.status !== 'queued' && batch.status !== 'running' && batch.status !== 'stopping' && batch.skipped.length > 0
   const isPaced = batch.pacing !== null
@@ -356,13 +356,13 @@ function BatchDetail() {
 
           {/* Plan 93 §3.12, §3.15, §4.8, F11, F15, H3, step 93.11 — the same
               three-part `OutcomeSummary`/`SkippedGroups` report every other
-              bulk surface in this plan shows (the console's `RunReport`,
+              bulk surface in this plan shows (the deleted fleet command surface's own `RunReport`,
               `InstallBatchDialog`, `BulkTransferDialog`, wake/sleep), so a
               batch's own detail page converges on the same shape rather
               than inventing a fifth. `SkippedGroups` is what makes F11's
               own fix ("a batch silently forgets the devices it did not
               target") actually VISIBLE here — every skipped device, named,
-              grouped by the exact reason `clusters/dispatch.ts` recorded at
+              grouped by the exact reason `groups/dispatch.ts` recorded at
               dispatch time. */}
           <div className="rounded-lg border bg-surface p-4">
             <h2 className="rack-label mb-2.5">outcome</h2>
@@ -418,7 +418,7 @@ function BatchDetail() {
             <dl className="space-y-1.5">
               {[
                 ['batch id', batch.id],
-                ['cluster', batch.clusterId ?? '(ad-hoc list)'],
+                ['group', batch.groupId ?? '(ad-hoc list)'],
                 ['concurrency', batch.concurrency === 0 ? 'unlimited' : String(batch.concurrency)],
                 ['order', batch.order],
                 ['created', relativeTime(batch.createdAt)],

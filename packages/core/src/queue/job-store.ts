@@ -66,7 +66,7 @@ export function rowToJobInfo(
     /** Plan 98 §4.4, H1 — always whatever the row has, whether or not a limit is configured. */
     peakRssBytes: row.peakRssBytes ?? null,
     // Plan 94 §3.7, §3.8, §4.8, step 94.7 — straight from the row; the
-    // pacer (`clusters/pacer.ts`) is the only writer of any of these three.
+    // pacer (`groups/pacer.ts`) is the only writer of any of these three.
     notBefore: row.notBefore ?? null,
     batchRepeat: row.batchRepeat ?? null,
     pacedDelayMs: row.pacedDelayMs ?? null,

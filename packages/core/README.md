@@ -23,14 +23,14 @@ Env:
 
 ## Boot sequence
 
-DB and migrations (including the one-shot cluster materialisation, see below) → WS hub plus ToolchainManager (reconcile and adopt pre-baked tools) → HTTP and WS listen → provision required tools (a gate) → adb client, track-devices, registry.
+DB and migrations (including the one-shot membership materialisation, see below) → WS hub plus ToolchainManager (reconcile and adopt pre-baked tools) → HTTP and WS listen → provision required tools (a gate) → adb client, track-devices, registry.
 
 ## Endpoints
 
 - `GET /api/health` — `{ ok, version, adb: { state, serverVersion }, deviceCount, uptimeMs, failedPlugins? }` (`failedPlugins` is a `COUNT(*)` of plugin rows in `failed`, omitted when the host has no plugin store to count — plan 126 step 126.5)
-- `GET /api/devices` — `{ devices: DeviceInfo[] }`; `?tag=` narrows by tag (AND), `?clusterId=<id|none>` narrows by cluster
-- `PUT /api/devices/:id/cluster` — `{ clusterId: string | null }`, moves the device (or unassigns it)
-- `GET/POST /api/clusters`, `PATCH/DELETE /api/clusters/:id` — a cluster is a container (plan 22.0): `POST /api/clusters/:id/devices` assigns members, `DELETE /api/clusters/:id/devices/:deviceId` removes one, `GET /api/clusters/:id/devices` lists them. A device belongs to at most one cluster; deleting a cluster unassigns its members without deleting any device.
+- `GET /api/devices` — `{ devices: DeviceInfo[] }`; `?tag=` narrows by tag (AND), `?groupId=<id|none>` narrows by group
+- `POST /api/actions/set-group` — `{ target, groupId: string | null }`, moves every targeted device (or unassigns it); membership is an action, not a route on `/api/devices` or `/api/groups` (plan 207)
+- `GET/POST /api/groups`, `PATCH/DELETE /api/groups/:id`, `GET /api/groups/:id/devices` — a group is a container (plan 22.0, renamed by plan 207): a device belongs to at most one group; deleting a group unassigns its members without deleting any device
 - `GET /api/tools` · `POST /api/tools/:id/install|activate|check` · `DELETE /api/tools/:id/:version` · `POST /api/tools/manifest/refresh` (spec §7.7)
 - `GET/POST/DELETE /api/devices/:id/guest-agent` — install, inspect, or remove the on-device helper APK
 - `GET/PUT/DELETE /api/devices/:id/network` — the device's network route (plan 44)
@@ -126,9 +126,9 @@ Every session also has a **quality profile** (`control` | `wall`), which maps to
 
 **Plan 92 §3.5, §4.1–§4.2** replaced the two fixed constants behind `control`/`wall` with farm settings: `FarmSettings.video` (eight flat fields — a preset per profile plus its three numbers, `controlPreset`/`controlMaxSize`/`controlMaxFps`/`controlBitRate` and the `wall...` equivalents) plus an all-optional `DeviceSettings.video` override. `packages/session/src/video-profile.ts`'s `resolveVideoProfile(farm, device, quality)` is the one place the two are combined — its preset tables (`CONTROL_PRESETS.sharp`, `WALL_PRESETS.balanced`) are the exact numbers the old constants held (1600px / 30fps / 4Mbps; 480px / 5fps / 800kbps), so a farm that changes no video setting sees byte-identical scrcpy arguments. `SessionManagerDeps.resolveProfile` resolves this fresh for every session build; `CreateSessionOpts.videoProfile` carries the result into `createSession`, which hands it straight to `makeScrcpy` — there is no `QUALITY_PROFILES` lookup table left anywhere in the codebase.
 
-## Cluster migration (plan 22.0)
+## Group membership migration (plan 22.0, renamed by plan 207)
 
-Clusters used to be a saved tag selector; a device now carries a `cluster_id` field directly, so it belongs to at most one cluster. On first boot after upgrading, `db/migrations/cluster-materialise.ts` collapses every existing cluster's old (tag-based) membership into that field — oldest cluster wins any conflict — and writes a report to `<dataDir>/logs/cluster-migration-<timestamp>.json` naming every device that matched more than one. The step is guarded by a marker row (`migration_markers`), so it runs exactly once.
+Groups used to be a saved tag selector; a device now carries a `group_id` field directly, so it belongs to at most one group. On first boot after upgrading, `db/migrations/materialise-0014.ts` collapses every existing group's old (tag-based) membership into that field — oldest group wins any conflict — and writes a timestamped report to `<dataDir>/logs/` naming every device that matched more than one (the report's own filename is a historical artifact of when this step was first written, unrelated to the rename). The step is guarded by a marker row (`migration_markers`), so it runs exactly once.
 
 ## AI agent provider connectors: Anthropic and OpenRouter, on the AI SDK (plan 75)
 
@@ -149,7 +149,7 @@ A script is addressed as `name@version`, or `name@latest` (`ScriptRefSchema`/`pa
 - `jobs.scriptId` is unchanged — always a concrete `scripts.id`, resolved from a reference (if one was given) before the row is written. `POST /api/jobs` accepts either `scriptId` or `scriptRef`, exactly one.
 - `schedules.scriptRef` (renamed from `scriptId`) stores the **reference itself** — `checkout@latest` keeps picking up new versions on every future firing; `checkout@1.0.1` stays pinned forever. Resolved exactly **once per firing**, in `schedules/runner.ts`'s `fireOnce`, before the batch is built — so one firing across many devices never straddles two versions, and a reference that fails to resolve enqueues nothing and is audited as `schedule.failed`, naming the code.
 - `GET /api/scripts?group=name` — one row per script name (`{ id, name, latestVersion, versionCount, lastPublishedAt, enabled }`, `latestVersion` being exactly what `@latest` would resolve to); `GET /api/scripts/:name/versions` lists every version, newest semver first.
-- The `schedules.script_id → script_ref` migration (`db/migrations/backfill-schedule-refs.ts`) converts every pre-existing schedule to the exact `"<name>@<version>"` it was already pinned to — **never** to `@latest`, since that would silently change what a trusted schedule runs on its next firing. Guarded by a marker row (`migration_markers`), same pattern as the cluster migration above.
+- The `schedules.script_id → script_ref` migration (`db/migrations/backfill-schedule-refs.ts`) converts every pre-existing schedule to the exact `"<name>@<version>"` it was already pinned to — **never** to `@latest`, since that would silently change what a trusted schedule runs on its next firing. Guarded by a marker row (`migration_markers`), same pattern as the group migration above.
 - The semver comparison (`compareSemver`, `@enkaku/protocol`) is hand-written, not a dependency: numeric component comparison (so `1.0.10 > 1.0.9`, which a string sort gets backwards), a release outranking its own prerelease, and prerelease identifier ordering per semver.org §11 — with build metadata (`+build`) ignored entirely, as the spec requires.
 
 ## VFS, skills, and the plugin system (plan 77)
@@ -232,7 +232,7 @@ calls the endpoint and renders the returned `ReconcileReport` as one line
 `POST /api/devices/rescan` is gated on **`device.settings`** — the plan
 document that designed this endpoint named `device.admin`, but no such
 permission exists in `packages/core/src/auth/acl.ts`; every other
-device-configuration route (tags, cluster, discovered/admit, block) already
+device-configuration route (tags, group, discovered/admit, block) already
 gates on `device.settings`, so the endpoint follows that existing convention
 rather than inventing a new permission for one route.
 
@@ -497,148 +497,9 @@ tap or key a device stops showing "Controlled by". Every viewer learns about
 a change through one push, `device.activity`, and `GET /api/devices` remains
 the only snapshot source (the `/ws` protocol still has no replay).
 
-## The command console and bulk operations (plan 93, M58)
+## Actions API (MVP 07, plan 207)
 
-`docs/plans/93-m58-command-console-and-bulk-operations.md` carries the full
-evidence and design; this section documents what actually shipped as of
-step 93.9. **93.11 (Studio's bulk-operations surfaces — `ArtifactPicker`,
-`BulkTransferDialog`, the batch detail page's collected-files table, the
-fleet toolbar's Push file…/Pull file… entries) is NOT built yet** — nothing
-below should be read as claiming those exist. **93.10 (the archive/download
-surface) is also incomplete, checked directly against the tree rather than
-assumed**: `api/zip-stream.ts` (the STORED-zip writer) exists as a standalone
-file, but it has no test file, is not imported by `api/batches.ts` or any
-other route, and `GET /api/batches/:id/artifacts`/`.../artifacts.zip` do not
-exist — a bulk pull's files are only reachable one at a time, per artifact,
-today. `api/artifacts.ts` also has no `?kind=upload` query yet (F14 stays
-open). None of `zip-stream.ts`, `api/artifacts.ts`, or `api/batches.ts` are
-this documentation step's files to fix.
-
-**Fan-out is a run, not a job.** A batch (plan 20) member is a job: it takes
-a job activity, flips the device to `busy`, and is claimed by a scheduler tick
-— correct for a 90-second APK install, wrong for a 200ms `getprop`. A
-**command run** (`command_runs`/`command_run_members`,
-`command-console/store.ts`) is the shape that fits a fan-out shell command:
-one row per run, one row per targeted device, no job, no scheduler
-involvement — `command-console/runner.ts`'s `createCommandRunner` drives a
-bounded worker pool (`MAX_POOL_CONCURRENCY` 32) directly against
-`ShellPort.exec`.
-
-**Admission is the device activity policy's `command` row** (`admitMember`,
-exported standalone from `runner.ts`, reworked by plan 205 §4.9): `forbid`,
-`device_unavailable` and `device_not_found` refuse, verbatim, never
-paraphrased; anything else — including a device someone else is actively
-controlling — runs, since a `warn` decision proceeds rather than blocking
-and a command run never held anything to begin with. `runOneMember` starts
-and ends a `command:<runId>:<deviceId>` activity marker for the exact
-duration of that one exec, even when it throws. `POST /api/command-runs`
-(`api/command-runs.ts`) runs the full gate order — role, `shell.mode`,
-`shell.fanoutEnabled`, `shell.fanoutMaxDevices`, `canUseDevice` per resolved
-target, and (§3.14) the high-consequence acknowledgement — before calling
-`commandRunner.start()`, so nothing is written until every gate passes.
-
-**The high-consequence guard is advisory and client-side, not a block.**
-`isHighConsequence(cmd)` (moved into `@enkaku/protocol` from
-`TerminalPane.tsx`) names what matched — `{ hit, pattern }` — and the REST
-layer requires an explicit `acknowledged: true` on the request whenever the
-target has more than one device and the command hits the guard. It is a
-scale confirmation ("you are about to run this on N devices, say so"), not
-a security judgement: any client can set the flag, and the server never
-refuses a command for being dangerous, only for being un-acknowledged at
-scale. The acknowledgement and the matched pattern (if any) are recorded on
-the run and in the `command.run` audit action either way.
-
-**Output is subscriber-scoped**, deliberately unlike `transfer.progress`
-was before step 93.9's own fix (see below): `ws-handlers.ts`'s
-`command.subscribe`/`command.unsubscribe` register a connection against
-`commandTargets(runId)`, and `broadcastCommand(runId, msg)` reaches only
-those subscribers — never `hub.broadcast`. A 100-device run's live payload
-is sized against `MAX_BUFFERED` (512 KB, plan 85): progress is coalesced to
-at most one frame per 250ms per run, and full per-device stdout/stderr is
-never pushed over the socket at all — only a hashed, capped preview
-(`shell.fanoutPreviewBytes`, default 2 048 bytes) for each **distinct**
-output, fetched over HTTP (`GET /:id/members/:deviceId/output`) on demand.
-
-**A run's cancel reaches a real `AbortSignal` on the exec**, not just the
-stored row: `cancel(runId)` aborts every in-flight member's
-`AbortController`, force-settles every `pending`/`running` member to
-`cancelled` synchronously, and never starts a member that has not begun.
-
-**Staged rollout** (`stageFirstN`) runs the first N members, then stops at
-`awaiting-continue` — holding no activity marker while it waits — until the operator
-calls `continue` or `cancel`, or `shell.fanoutStageWaitSec` (default 900s)
-elapses and the runner cancels the remainder itself.
-
-**Saved commands** (`saved_commands`, `command-console/saved.ts`,
-`api/saved-commands.ts`) are a farm asset, not a personal bookmark: named,
-described, visible to everyone, editable only by their owner or an admin,
-gated on `canUseShell` at create time so nobody can save a command they
-could not run. No `dangerous` field is stored anywhere — high-consequence-
-ness is derived fresh from `cmd` every time it is rendered or run, so it
-can never go stale when the guard's own patterns change.
-
-**Bulk push and pull** (`jobs/executors/push.ts`/`pull.ts`, step 93.9) are
-near-copies of the existing bulk-install executor, sharing its `{ gate:
-'files', setting: 'transfer.enabled' }` declaration (`JobExecutor.requires`,
-step 93.8) so all three transfer executors close the same permission hole
-bulk install used to have (F10: `POST /api/batches` used to check only
-`job.run`, bypassing `device.files` and `transfer.enabled` entirely — now
-checked at every real dispatch site: `POST /api/jobs`, `POST /api/batches`,
-`POST /api/schedules` create/patch, and the cron-fired schedule runner).
-`registerDeviceArtifact` now takes a required `jobId: string | null`, so a
-file a bulk pull collects is linked back to the job that pulled it —
-`GET /api/artifacts?jobId=...` can answer "what did this bulk pull
-collect", where before it silently wrote `jobId: null` forever (F12).
-`transfer.progress`/`transfer.done` are scoped to viewers of the device the
-same way `shell.result` already is (`daemon.ts`'s `broadcastTransferEvent`
-forward-ref calling `handler.broadcastTransfer`) — the farm-wide
-`hub.broadcast` those two messages used before (F27) is gone from every
-transfer code path (`device/transfer.ts`, `device/transfer-dispatch.ts`,
-the three `jobs/executors/{push,pull,install}.ts`).
-
-**A batch no longer silently forgets a skipped device** (F11 closed, step
-93.8): `batches.skipped` persists `resolved.skipped` (device id + reason),
-on the wire on both create and `GET /:id`. `POST /api/batches/:id/rerun?
-only=failed|skipped` retargets exactly that subset — `only=skipped` reads
-the batch's own persisted `skipped` column, so a device that came back
-online since the original dispatch is correctly retargeted, and one still
-offline correctly refuses with `E_NO_TARGETS`.
-
-**A core restart never leaves a command run `running` forever**:
-`commandRunner.sweepOrphans()` runs in the same boot-recovery phase
-`jobStore.failOrphanRunning()` already opens, marking every non-terminal
-run `cancelled` and explaining every unfinished member — the same
-`failOrphanRunning` precedent (F29) applied to a second kind of row.
-
-**Settings** live under the existing `shell` block
-(`packages/protocol/src/settings.ts`) rather than a new top-level one,
-because "can people run commands on the whole farm" is a Device-terminal
-question in an operator's head, and the gates are the same gates:
-`fanoutEnabled` (default `true` on loopback, forced `false` in server mode
-by `createFarmSettingsStore` — see `docs/guide/install.md`'s own section for
-the reasoning), `fanoutMaxDevices`, `fanoutConcurrency` (0 = let the adb
-exec semaphore decide, no second concurrency mechanism), `fanoutMaxOutputBytes`,
-`fanoutPreviewBytes`, `fanoutConfirmThreshold`, `fanoutStageWaitSec`,
-`commandRunsPerUser` (500, trimmed on insert), `savedCommandLimit`.
-`retention.commandRunDays` (14) sweeps old runs regardless of
-`retention.enabled` — the same "not gated by the master switch" precedent
-`retention.eventInputDays` already sets.
-
-**Measurement** (§5 step 93.12): `GET /api/adb/stats` gains a
-`commandConsole` block — `runsInFlight`, `membersInFlight`,
-`coalescedFramesPerSec` (H2: the coalescer's own effect, measured — the
-spec's own ceiling is ≤4/s at 100 members), `distinctOutputRatio` (H1: near
-1.0 on a real farm means grouping is not helping and the console's default
-should flip to a flat table). **This block is wired in
-`command-console/runner.ts`'s `CommandRunner.stats()` and in
-`api/adb-stats.ts`'s optional `commandConsole` dep, but `daemon.ts` — held
-outside this documentation step's file ownership — does not yet pass
-`commandConsole: () => commandRunner?.stats() ?? null` through**, so a real
-boot reports the block zero-filled until that one line lands (tracked,
-self-detecting, in `api/adb-stats-command-console-wiring.test.ts`). The
-§7.3 fan-out ladder (5 / 20 / 100 devices, against real hardware) that these
-numbers exist to fill in has not been run — see the plan's own status line
-for the exact commands and the empty outcome table.
+One endpoint per verb, taking a target: `POST /api/actions/<verb>` (`packages/core/src/actions/`, wired through `api/actions.ts`) accepts `{ target: { deviceIds } | { groupId } | { tags }, ...params, force? }` and answers `202` with one `ActionResult` per resolved device — `accepted`/`skipped`/`forbidden`/`warned` immediately, `done`/`failed` once a `sync` verb finishes or an `async` verb's dispatch settles. `GET /api/operations/:id` reads an async verb's settling result off an in-memory, TTL+cap-evicted registry (`actions/operations.ts`, one hour, 1000 entries) — there is no operation table. `warn` proceeds with a per-device `warned` result the caller repeats with `force: true`; `forbid` becomes `forbidden` and ignores `force`. `run-script` and `set-group` dispatch once for the whole candidate set (`run-script` always creates a batch, even for one device, through the existing `groups/dispatch.ts`); every other verb fans out per device, bounded by `ACTION_FANOUT_CONCURRENCY` (4). This replaced every per-device action route, its bulk twin, `POST /api/jobs` and `POST /api/batches` as public enqueues, and the fleet command surface entirely (routers, runner, store, three tables, seven WS messages, the `shell` fan-out settings) — MVP 13 A.5, A.6a. The capability broker reaches the same model through one capability, `actions.run` (`capability/actions.ts`).
 
 ## Workflows — a pipeline of scripts, one job, one device claim (plan 99, M64)
 
@@ -839,7 +700,7 @@ whole run.
   for that device; `jobs.pacedDelayMs` is the delay actually drawn for that
   repetition, so an operator reading a job row sees "waited 4 min 12 s"
   without doing arithmetic against another column.
-- `packages/core/src/clusters/pacer.ts` — `planFirst` bakes the stagger into
+- `packages/core/src/groups/pacer.ts` — `planFirst` bakes the stagger into
   repetition 0 for every device; `onMemberSettled` (called from
   `recomputeBatchStatus`, the existing single writer of `batches.status`)
   draws the next repetition's delay from `crypto.getRandomValues` — never

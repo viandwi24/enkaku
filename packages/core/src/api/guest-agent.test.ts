@@ -24,7 +24,7 @@ import { devices, type DeviceRow } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
 import { createLogger, type Logger } from '../util/logger'
-import { createGuestAgentRoutes, resolveGuestAgentApkPath, type GuestAgentRoutesDeps, type NetworkStatusResult } from './guest-agent'
+import { createGuestAgentRoutes, resolveGuestAgentApkPath, type GuestAgentRoutesDeps, type GuestAgentRoutesHandle, type NetworkStatusResult } from './guest-agent'
 
 /** Mirrors `authMiddleware` well enough for a route test: sets `c.get('user')` before dispatch (same pattern `adb-endpoint.test.ts` uses). */
 function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
@@ -214,6 +214,15 @@ interface Harness {
   withGuestAgentClient: <T>(deviceId: string, fn: (client: GuestAgentClient) => Promise<T>) => Promise<T>
   /** The REAL activity registry (plan 205 §4.2) — exposed so a test can seat a live job/workflow-job/install and prove the `network-apply` policy row still forbids it. */
   activities: ActivityRegistry
+  /**
+   * The five per-device network operations (plan 207 §4.2, §5 step 207.4) —
+   * the exact functions `PUT/POST/DELETE /:id/network*` used to call before
+   * those per-device HTTP routes were removed (plan 207 §10's removal
+   * register: `set-network` is the one remaining door). Exposed here so
+   * this file's own network tests can keep exercising the same admission
+   * and write behaviour directly, through `asNetworkResponse` below.
+   */
+  routeActions: GuestAgentRoutesHandle['routeActions']
 }
 
 function makeHarness(opts: {
@@ -280,9 +289,39 @@ function makeHarness(opts: {
     ...(opts.guestAgentSettings ? { guestAgentSettings: opts.guestAgentSettings } : {}),
     ...(opts.agentProvisioner ? { agentProvisioner: opts.agentProvisioner } : {}),
   }
-  const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient } = createGuestAgentRoutes(deps)
-  const app = withUser(opts.role === undefined ? 'admin' : opts.role, routes)
-  return { db, app, events, ports, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient, activities }
+  const { routes, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient, routeActions } = createGuestAgentRoutes(deps)
+  const app = withUser(opts.role === undefined ? 'admin' : opts.role, withTestOnlyNetworkActionRoutes(routes, routeActions))
+  return { db, app, events, ports, reconcileNetworkRoutes, restoreDeviceRoute, handleDeviceOffline, withGuestAgentClient, activities, routeActions }
+}
+
+/**
+ * Re-mounts `PUT/POST/DELETE /:id/network*` as plain HTTP routes over
+ * `routeActions` (`RouteService['actions']`, `set/clear/enable/disable/
+ * retry` — the exact functions the real per-device routes called before
+ * they were removed, plan 207 §10's removal register: `set-network` is the
+ * one remaining production door). TEST-FILE-ONLY: this router is never
+ * mounted anywhere the real app tree can reach, so it does not reopen the
+ * per-device write surface plan 207 closes — it exists purely so this
+ * file's ~80 pre-existing `app.request('/dev-1/network...')` calls, several
+ * of which depend on the GET route's own read-throttle window ordering
+ * relative to a PUT/DELETE, keep working unchanged rather than each being
+ * rewritten to a direct function call (a far larger, riskier mechanical
+ * change than the small number of call sites `route-service.test.ts` needed).
+ */
+function withTestOnlyNetworkActionRoutes(app: Hono<AuthEnv>, routeActions: GuestAgentRoutesHandle['routeActions']): Hono<AuthEnv> {
+  // `routes` already carries its own `onError` (`guest-agent.ts`'s own,
+  // identical EnkakuError -> ERROR_STATUS mapping) — these routes rely on
+  // that existing handler rather than registering a second one.
+  const actorOf = (c: { get(key: 'user'): { id: string } | undefined }): string | null => c.get('user')?.id ?? null
+  app.put('/:id/network', async (c) => {
+    const raw: unknown = await c.req.json().catch(() => null)
+    return c.json(await routeActions.set(c.req.param('id'), raw, actorOf(c)))
+  })
+  app.post('/:id/network/enable', async (c) => c.json(await routeActions.enable(c.req.param('id'), actorOf(c))))
+  app.post('/:id/network/disable', async (c) => c.json(await routeActions.disable(c.req.param('id'), actorOf(c))))
+  app.post('/:id/network/retry', async (c) => c.json(await routeActions.retry(c.req.param('id'), actorOf(c))))
+  app.delete('/:id/network', async (c) => c.json(await routeActions.clear(c.req.param('id'), actorOf(c))))
+  return app
 }
 
 describe('GET /api/devices/:id/guest-agent — the state machine (plan 44 §5.8)', () => {

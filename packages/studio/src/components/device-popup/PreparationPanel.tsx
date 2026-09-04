@@ -9,9 +9,10 @@ import {
   type PreparationComponentStatus,
   type PreparationState,
 } from '@enkaku/protocol'
-import { Button, cn, ErrorState, LoadingRows, api, useAction, duration, relativeTime } from '@enkaku/ui'
+import { Button, cn, ErrorState, LoadingRows, useAction, duration, relativeTime } from '@enkaku/ui'
 import { usePreparation } from '@/lib/use-preparation'
 import { useNow } from '@/lib/useNow'
+import { runOnDevice } from '@/lib/actions'
 
 /**
  * The device popup's Preparation section (plan 106 §3.3, §5 step 106.3) —
@@ -252,14 +253,14 @@ export function PreparationPanel({
   const now = useNow(1000)
 
   const retryComponent = (id: string) =>
-    run(`retry-${id}`, () => api(`/api/devices/${deviceId}/preparation/${id}/retry`, PreparationComponentStatusSchema, { method: 'POST' }), {
+    run(`retry-${id}`, async () => PreparationComponentStatusSchema.parse((await runOnDevice('retry-prepare', deviceId, { component: id })).detail), {
       success: `${componentLabel(id)} rechecked on ${deviceLabel}`,
       failure: `Could not recheck ${componentLabel(id)}`,
       onSuccess: (status) => patch(id, status),
     })
 
   const checkNow = () =>
-    run('check-now', () => api(`/api/devices/${deviceId}/preparation`, DevicePreparationSchema, { method: 'POST' }), {
+    run('check-now', async () => DevicePreparationSchema.parse((await runOnDevice('prepare', deviceId, { forceRecheck: false })).detail), {
       success: `Preparation rechecked on ${deviceLabel}`,
       failure: 'Could not recheck preparation',
       onSuccess: replace,

@@ -2,7 +2,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { DeviceCall } from '@enkaku/session'
 import { createDeviceExecutor, type TimingSettings, type TransferPort } from '@enkaku/session'
 import { newSession, type Session } from '@enkaku/harness'
-import { JobTraceEventSchema, type ActivityActor, type ActivityKind, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type PolicyDecision, type UiNode } from '@enkaku/protocol'
+import { JobTraceEventSchema, type ActionRequest, type ActionResponse, type ActivityActor, type ActivityKind, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type PolicyDecision, type UiNode } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
 import { can, canUseDevice, type Permission } from '../auth/acl'
 import type { Role } from '../auth/service'
@@ -20,7 +20,7 @@ import type { ScriptRegistry } from '../scripts/registry'
 import { resolveDirectPublishOwner } from '../plugins/owner'
 import { getScriptDetail, listScriptGroups, publishScript, type PublishScriptInput, type ScriptDetail, type ScriptGroupInfo } from '../scripts/service'
 import type { JobService } from '../services/job-service'
-import { clusterRefFor, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
+import { groupRefFor, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
 import { lookupDeviceNumber } from '../registry/device-number'
 import { loadDeviceTags } from '../registry/device-tags'
 import { EnkakuError } from '../util/errors'
@@ -183,6 +183,16 @@ export interface CapabilityContext {
    * fixture that omits it.
    */
   jobTrace?: JobTraceCapabilityService
+  /**
+   * `actions.run`'s one door (plan 207 §4.10) — the SAME `runAction` the
+   * actions API router (`api/actions.ts`) calls, so a plugin or agent
+   * reaching a verb through the broker gets identical per-device policy
+   * evaluation and results. Optional for the same reason `network`/`notify`
+   * are: every pre-plan-207 test that hand-builds a `CapabilityContext`
+   * literal keeps compiling unedited; the capability refuses by name
+   * (`E_NOT_SUPPORTED`) on a fixture that omits it.
+   */
+  actions?: { run(request: ActionRequest, actor: CapabilityActor): Promise<ActionResponse> }
 }
 
 /** `job.trace`'s decoded cursor shape — the same `{ sortValue, id }` pair `decodeCursor` (`api/pagination.ts`) already returns; kept here rather than re-exported from there, since only this service consumes it. */
@@ -406,6 +416,15 @@ export interface CapabilityContextDeps {
    * `job.trace` itself needs no store at all, since it only ever reads `job_events`.
    */
   traceStore?: TraceFrameStore
+  /**
+   * `actions.run`'s one door (plan 207 §4.10) — the SAME `runAction` the
+   * actions API router (`api/actions.ts`) calls, threaded in from
+   * `daemon.ts` exactly like `network`/`jobService` above. Optional for the
+   * same reason `network`/`notify`/`jobTrace` are: an orchestrator-mode host
+   * or a pre-plan-207 test literal has none, and `actions.run` refuses by
+   * name (`E_NOT_SUPPORTED`) rather than throwing something unreadable.
+   */
+  actionsRun?: (request: ActionRequest, actor: CapabilityActor) => Promise<ActionResponse>
 }
 
 /**
@@ -481,6 +500,10 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     // with no network port simply has no `network`, and the capabilities say
     // so by name.
     ...(deps.network ? { network: createDeviceNetworkService({ port: deps.network, activities: deps.activities, controlSettings: deps.controlSettings }, actor) } : {}),
+    // `actions.run` (plan 207 §4.10) — the SAME `runAction` the actions API
+    // router calls; `deps.actionsRun` is absent on an orchestrator-mode host
+    // or a pre-plan-207 test literal, and the capability refuses by name.
+    ...(deps.actionsRun ? { actions: { run: deps.actionsRun } } : {}),
     fileToolsSession: fileToolsSessionFor(actor, null),
     hasPermission: (permission) => (actor ? can(actor.role, permission) : false),
 
@@ -564,11 +587,11 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     getDevice(deviceId) {
       const row = getDeviceRow(deviceId)
       if (!row) return null
-      const cluster = row.clusterId ? clusterRefFor(deps.db, row.clusterId) : null
+      const group = row.groupId ? groupRefFor(deps.db, row.groupId) : null
       return rowToDeviceInfo(
         row,
         loadDeviceTags(deps.db, [deviceId]).get(deviceId) ?? [],
-        cluster,
+        group,
         null,
         deps.readiness()?.get(deviceId) ?? null,
         { activities: deps.activities.list(deviceId), lastControl: deps.activities.lastControl(deviceId) },

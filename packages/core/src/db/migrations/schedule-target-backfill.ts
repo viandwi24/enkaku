@@ -19,7 +19,7 @@ import { migrationMarkers, schedules } from '../schema'
  * Because "script" is the ABSENCE of a companion row rather than a stored
  * value, there is nothing to physically convert — every pre-existing row
  * already reads as a script target with zero data movement. This pass is
- * still guarded by a marker, exactly like `materialiseClusters` (plan 22.0
+ * still guarded by a marker, exactly like `materialiseMembership` (plan 22.0
  * §4.1) and `backfillScheduleScriptRefs` (plan 62 §4.3), purely as the
  * explicit, auditable record that the conversion was considered and is a
  * no-op — a report line, like both of those, so "did the 68 migration run"

@@ -8,7 +8,7 @@ import type { ExecutorContext, JobExecutor } from '../executor'
 /**
  * `internal:push` (plan 93 §4.6, §5 step 93.9) — a near-copy of
  * `createInstallExecutor` (`jobs/executors/install.ts`): a batch push across
- * a cluster reuses the SAME concurrency/ordering/reporting/cancel machinery,
+ * a group reuses the SAME concurrency/ordering/reporting/cancel machinery,
  * with no new orchestration. `requires: { gate: 'files', setting:
  * 'transfer.enabled' }` closes the same F10 gap `internal:install` closes
  * (plan 93 §3.12, step 93.8) — a batch/schedule dispatch of `internal:push`

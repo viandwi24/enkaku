@@ -10,9 +10,9 @@ import { Badge, Collapsible, CollapsibleContent, CollapsibleTrigger, DeviceName,
  * this component is what makes every one of those counts openable into the
  * actual device list, grouped by the exact reason text rather than flattened
  * into one undifferentiated pile — the same instinct `RunReport.tsx`'s own
- * `run-grouping.ts` already applies to a command run, generalised here for
+ * `run-grouping.ts` already applied to the deleted fleet command surface's own runs, generalised here for
  * every OTHER bulk surface (a batch, a bulk wake/sleep) that is not a
- * command run and therefore cannot reuse that file directly (it is keyed on
+ * that deleted surface's own runs and therefore cannot reuse that file directly (it is keyed on
  * `CommandMember`, not a generic device outcome).
  */
 export interface NamedOutcome {

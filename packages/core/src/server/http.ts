@@ -143,28 +143,13 @@ export interface HttpDeps {
   /** `GET /:id/preparation`, `POST /:id/preparation`, `POST /:id/preparation/:componentId/retry` (plan 106 §3.3, §4) — a fourth Hono app at the same `/api/devices` prefix, same reasoning as `guestAgentRoutes`/`deviceIdentityRoutes`. */
   devicePreparationRoutes: Hono<AuthEnv>
   tagRoutes: Hono
-  clusterRoutes: Hono<AuthEnv>
-  topologyRoutes: Hono
+  /** `GET/POST /api/groups`, `PATCH/DELETE /api/groups/:id`, `GET /api/groups/:id/devices` (plan 22.0 §4.4, renamed by plan 207 §4.6 — MVP 15 §0.1 item 3). Membership is now the `set-group` actions verb, never a route on this router. */
+  groupRoutes: Hono<AuthEnv>
   batchRoutes: Hono<AuthEnv>
-  /**
-   * `POST/GET/DELETE /api/command-runs`, `.../cancel`, `.../continue`,
-   * `.../rerun`, `.../members/:deviceId/output` (plan 93 §4.4, step 93.4).
-   * Optional, the same pattern `workflowRoutes` above already uses: a build
-   * where `daemon.ts` has not (yet) been touched to construct one simply
-   * never mounts this route — `/api/command-runs/*` falls through to the
-   * catch-all 404 below rather than the app failing to boot, and every
-   * existing `HttpDeps` object literal (this file's own `http.test.ts`) keeps
-   * compiling unedited.
-   */
-  commandRunRoutes?: Hono<AuthEnv>
-  /**
-   * `GET/POST/PATCH/DELETE /api/saved-commands[/:id]` (plan 93 §3.10, §4.4,
-   * step 93.6) — the same optional-mount pattern `commandRunRoutes` above
-   * already uses: a build where `daemon.ts` has not (yet) constructed one
-   * simply never mounts this route, and `/api/saved-commands/*` falls
-   * through to the catch-all 404 below rather than the app failing to boot.
-   */
-  savedCommandRoutes?: Hono<AuthEnv>
+  /** `POST /api/actions/:verb` (plan 207 §4.2, §4.8) — one endpoint per verb, taking a target; answers `202` with one result per device. */
+  actionRoutes: Hono<AuthEnv>
+  /** `GET /api/operations/:id` (plan 207 §4.2, §4.8) — an async verb's dispatch result, readable for one hour off the in-memory operation registry. */
+  operationRoutes: Hono<AuthEnv>
   scheduleRoutes: Hono<AuthEnv>
   settingsRoutes: Hono<AuthEnv>
   artifactRoutes: Hono<AuthEnv>
@@ -413,21 +398,16 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   app.route('/api/tags', deps.tagRoutes)
 
-  app.route('/api/clusters', deps.clusterRoutes)
-
-  app.route('/api/topology', deps.topologyRoutes)
+  app.route('/api/groups', deps.groupRoutes)
 
   app.route('/api/batches', deps.batchRoutes)
 
-  // The fleet command console (plan 93 §4.4, step 93.4) — see
-  // `commandRunRoutes`'s own doc comment on `HttpDeps` for why this is
-  // conditional.
-  if (deps.commandRunRoutes) app.route('/api/command-runs', deps.commandRunRoutes)
+  // One endpoint per verb, taking a target (plan 207 §4.2, §4.8) — replaces
+  // every per-device action route and its bulk twin, plus the deleted
+  // fleet command surface's own REST surface.
+  app.route('/api/actions', deps.actionRoutes)
 
-  // Saved commands (plan 93 §3.10, §4.4, step 93.6) — see
-  // `savedCommandRoutes`'s own doc comment on `HttpDeps` for why this is
-  // conditional.
-  if (deps.savedCommandRoutes) app.route('/api/saved-commands', deps.savedCommandRoutes)
+  app.route('/api/operations', deps.operationRoutes)
 
   app.route('/api/schedules', deps.scheduleRoutes)
 

@@ -4,16 +4,12 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
-  BatchResponseSchema,
   clampSchema,
-  JobCreateResponseSchema,
   ScriptResponseSchema,
   summarizeClamp,
-  type BatchInfo,
   type BatchOrder,
-  type ClusterInfo,
+  type GroupInfo,
   type DeviceInfo,
-  type JobInfo,
   type RuntimeEnvelope,
   type WorkflowDoc,
 } from '@enkaku/protocol'
@@ -23,6 +19,7 @@ import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
+import { runAction } from '@/lib/actions'
 import {
   Button,
   DeviceName,
@@ -98,7 +95,7 @@ export interface ScriptRow {
 type Kind = 'script' | 'workflow'
 
 /** Every mode this dialog has ever offered — unchanged by plan 104's extraction (`RunScriptDialog` was §3.1's "first caller", not a narrower one). */
-const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
+const TARGET_ALLOW: Target[] = ['single', 'group', 'devices']
 
 /** `ms` rounded to the nearest whole minute, then to "N min" or "H h M m" — the format the consequence sentence's "up to about" duration estimate uses (plan 99 §3.11, §4.11). Never below 1 min for a positive `ms`, so a short node timeout does not print "0 min". */
 function formatMsRough(ms: number): string {
@@ -472,11 +469,11 @@ function groupByPlugin(groups: NameGroup[]): Array<{ pluginName: string | null; 
 }
 
 /**
- * Running a script: pick a target — a single device, a saved cluster, or an
+ * Running a script: pick a target — a single device, a saved group, or an
  * ad-hoc multi-device list — fill in the parameters, run (plan 20 §4.8).
  *
  * A single device still creates one plain job (`POST /api/jobs`), unchanged
- * from plan 19. A cluster or a multi-device pick creates a batch instead
+ * from plan 19. A group or a multi-device pick creates a batch instead
  * (`POST /api/batches`) — one job per device, with the chosen concurrency
  * and order.
  */
@@ -485,7 +482,7 @@ export function RunScriptDialog({
   scripts,
   devices,
   initialDevice,
-  initialCluster,
+  initialGroup,
   initialSelectedIds,
   lockedDevice,
   onLaunched,
@@ -503,11 +500,11 @@ export function RunScriptDialog({
   scripts?: ScriptRow[]
   devices: DeviceInfo[]
   initialDevice?: string | null
-  initialCluster?: string | null
+  initialGroup?: string | null
   /**
    * Plan 104 (M69) §3.2 — a LIVE multi-selection the caller already has (a
    * device popup's own candidate set, the Wall/List's own `selectedIds`).
-   * When non-empty, it wins over `initialDevice`/`initialCluster` and the
+   * When non-empty, it wins over `initialDevice`/`initialGroup` and the
    * dialog opens on `devices` mode, pre-filled — still fully editable, never
    * a lock (§3.2's own rule). Omitted by every caller that predates this
    * plan, which reproduces their exact previous default.
@@ -548,7 +545,7 @@ export function RunScriptDialog({
   const [pickedName, setPickedName] = useState<string>('')
   const [pickedId, setPickedId] = useState<string>('')
   const locked = lockedDevice ?? null
-  const [clusters, setClusters] = useState<ClusterInfo[]>([])
+  const [deviceGroups, setDeviceGroups] = useState<GroupInfo[]>([])
   const [concurrency, setConcurrency] = useState(0)
   const [order, setOrder] = useState<BatchOrder>('as-listed')
   // Plan 94 §3.6, §4.10, step 94.10 — the Repeat section (F33's own dialog,
@@ -598,9 +595,9 @@ export function RunScriptDialog({
 
   // Plan 104 (M69) §3.1, §4 — the target model extracted out of this dialog
   // (G1: it was the only place it existed). `reset()` below re-derives
-  // target/deviceId/deviceIds/clusterId from context exactly where this
+  // target/deviceId/deviceIds/groupId from context exactly where this
   // file's own effect used to set four pieces of state by hand.
-  const targetSelection = useTargetSelection({ usableCount: usable.length, clusters })
+  const targetSelection = useTargetSelection({ usableCount: usable.length, groups: deviceGroups })
 
   // Preselect the newest version of the first script IN THE CURRENT FILTER.
   // A picker that opens on nothing makes the operator do work the screen
@@ -637,14 +634,14 @@ export function RunScriptDialog({
 
   // The typed fleet-wide confirmation's own reset-on-change effect now
   // lives inside `useTargetSelection` itself (identical dependency array:
-  // target, clusterId, deviceIds.length) — every dialog that reuses the
+  // target, groupId, deviceIds.length) — every dialog that reuses the
   // hook gets it for free instead of re-declaring it.
 
   useEffect(() => {
     if (!script && !scripts) return
-    void fetchAllPages<ClusterInfo>('/api/clusters')
-      .then(setClusters)
-      .catch(() => setClusters([]))
+    void fetchAllPages<GroupInfo>('/api/groups')
+      .then(setDeviceGroups)
+      .catch(() => setDeviceGroups([]))
   }, [script])
 
   useEffect(() => {
@@ -661,7 +658,7 @@ export function RunScriptDialog({
     // Plan 104 (M69) §3.2's own table, applied here exactly as it used to be
     // spelled out by hand: a live multi-selection wins (when the caller
     // passes one — most `RunScriptDialog` callers still do not, so this is
-    // additive, not a behaviour change for them), else an explicit cluster,
+    // additive, not a behaviour change for them), else an explicit group,
     // else an explicit/fallback single device. `initialDevice` winning even
     // while offline, and the `readyNow` → `usable` fallback order, are
     // unchanged from before this extraction — see `computeDefaultTarget`'s
@@ -672,10 +669,10 @@ export function RunScriptDialog({
       allow: TARGET_ALLOW,
       initialDeviceId: initialDevice,
       initialSelectedIds,
-      initialClusterId: initialCluster,
+      initialGroupId: initialGroup,
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, scripts, initialDevice, initialCluster, initialSelectedIds, devices.length])
+  }, [script, scripts, initialDevice, initialGroup, initialSelectedIds, devices.length])
 
   // Resolved synchronously so the rest of the render never has to ask whether
   // a script exists: the explicit pick, else the newest of the first script
@@ -794,7 +791,7 @@ export function RunScriptDialog({
   // Plan 104 (M69) §3.1, §4 — every one of these used to be computed here by
   // hand; `useTargetSelection` (above) now owns them, so no dialog computes
   // its own target count (plan 104 §6 acceptance).
-  const { target, deviceId, deviceIds, clusterId, resolvedCount: targetCount, fleetConfirmed, hasTarget } = targetSelection
+  const { target, deviceId, deviceIds, groupId, resolvedCount: targetCount, fleetConfirmed, hasTarget } = targetSelection
   // Plan 94 §3.6 — a single device is still "one device", but a real repeat
   // draft on it is ALSO a batch (`count > 1` is the trigger, independent of
   // device count). `effectiveDeviceCount` feeds the stagger/finish-time math
@@ -819,52 +816,41 @@ export function RunScriptDialog({
   const pacingBody = pacingActive
     ? {
         count: repeat.count,
-        intervalMs: [repeat.intervalMinSec * 1000, repeat.intervalMaxSec * 1000],
+        intervalMs: [repeat.intervalMinSec * 1000, repeat.intervalMaxSec * 1000] as [number, number],
         deviceIntervalMs: repeat.deviceIntervalSec * 1000,
       }
     : undefined
 
   // Plan 94 §3.6 — "the run dialog creates a batch the moment count > 1 or
-  // more than one device is targeted". A single device with no repeat draft
-  // keeps the plain `POST /api/jobs` path untouched.
-  const useBatch = target !== 'single' || pacingActive
+  // more than one device is targeted". Plan 207 §4.9 — both paths are now
+  // the same `run-script` actions verb; `createBatch` (`groups/dispatch.ts`)
+  // always creates a batch on the core side, even for one device (§1.2), so
+  // there is no longer a separate plain-job wire shape here to choose
+  // between — `useBatch` only decided which of two ROUTES to call, and
+  // there is only one now.
+  const targetBody = target === 'group' ? { groupId } : { deviceIds: target === 'single' ? [deviceId] : deviceIds }
 
   const runScript = () => {
     setServerIssues(undefined)
-    return run<{ job: JobInfo } | { batch: BatchInfo }>(
+    return run(
       'run',
       async () => {
         try {
-          return await (!useBatch
-            ? api('/api/jobs', JobCreateResponseSchema, {
-                method: 'POST',
-                // `runtimeOverride` (plan 98 §5 step 98.8) — composed and
-                // client-validated here already; the CORE does not accept
-                // this field on `POST /api/jobs` yet (`EnqueueBody` in
-                // `packages/core/src/api/jobs.ts` has no `runtimeOverride`
-                // key), so a Zod object with no `.strict()` silently strips
-                // it server-side today. Sent anyway, forward-compatibly:
-                // the day that route is extended, no further Studio change
-                // is needed. See this plan's own status line for the full
-                // accounting of that gap.
-                json: { scriptId: chosen.id, deviceId, params: params ?? {}, runtimeOverride: runtimeOverrideBody },
-              })
-            : api('/api/batches', BatchResponseSchema, {
-                method: 'POST',
-                json: {
-                  scriptId: chosen.id,
-                  params: params ?? {},
-                  // A single device with a repeat draft has no cluster/list
-                  // target of its own — it becomes a one-device batch
-                  // (§3.6), which `target: { deviceIds: [...] }` already
-                  // expresses with no new wire shape.
-                  target: target === 'cluster' ? { clusterId } : { deviceIds: target === 'single' ? [deviceId] : deviceIds },
-                  concurrency,
-                  order,
-                  runtimeOverride: runtimeOverrideBody,
-                  pacing: pacingBody,
-                },
-              }))
+          const response = await runAction('run-script', targetBody, {
+            scriptId: chosen.id,
+            params: params ?? {},
+            concurrency,
+            order,
+            runtimeOverride: runtimeOverrideBody,
+            pacing: pacingBody,
+          })
+          // `run-script` dispatches and settles synchronously (`actions/run.ts`
+          // — it never returns `accepted`), so the one result is already terminal.
+          const first = response.results[0]
+          if (first?.status !== 'done') {
+            throw new Error(first?.message ?? `could not start (${first?.status ?? 'no result'})`)
+          }
+          return { jobId: first.jobId, batchId: first.batchId }
         } catch (err) {
           // `invalid_job_params` (plan 95 §3.7, §4.3, fixes F12) — attach the
           // field-level issues to the form; `run()`'s own catch still shows
@@ -875,17 +861,17 @@ export function RunScriptDialog({
         }
       },
       {
-        success: !useBatch ? 'Job created' : 'Batch created',
-        failure: !useBatch ? 'Could not create the job' : 'Could not create the batch',
-        onSuccess: (b) => {
+        success: 'Batch created',
+        failure: 'Could not create the batch',
+        onSuccess: (result) => {
           onClose()
-          const result = 'job' in b ? { jobId: b.job.jobId } : { batchId: b.batch.id }
           if (onLaunched) {
             onLaunched(result)
             return
           }
+          // A batch of one navigates straight to the job, as before (plan 207 §4.9).
           if (result.jobId) router.push(`/jobs/detail?id=${result.jobId}`)
-          else router.push(`/batches/detail?id=${result.batchId}`)
+          else if (result.batchId) router.push(`/batches/detail?id=${result.batchId}`)
         },
       },
     )
@@ -900,7 +886,7 @@ export function RunScriptDialog({
             <span className="readout ml-1.5 text-[12px] font-normal text-fg-muted">@{chosen.version}</span>
           </DialogTitle>
           <DialogDescription>
-            A single device joins its queue directly; a cluster, a device list, or any run set to repeat creates a batch.
+            A single device joins its queue directly; a group, a device list, or any run set to repeat creates a batch.
           </DialogDescription>
           {/* Provenance (plan 95 §3.8 R6, §5 step 95.5, criterion 18) — "the
               operator can see who published the thing they are about to
@@ -1018,7 +1004,7 @@ export function RunScriptDialog({
               workflow, and honest about the three states: still resolving,
               nothing declared, or a real "up to about" figure. Placed here
               (right under the picker) so it applies to a SINGLE device too —
-              `ConsequenceNote` below only renders for the cluster/devices
+              `ConsequenceNote` below only renders for the group/devices
               target, and a single-device run deserves the same estimate. */}
           {(chosen.kind ?? 'script') === 'workflow' && (
             <div className="rounded-lg border bg-surface-2/40 px-3 py-2">
@@ -1049,7 +1035,7 @@ export function RunScriptDialog({
               </p>
             </div>
           ) : (
-            <TargetPicker selection={targetSelection} devices={devices} clusters={clusters} allow={TARGET_ALLOW} />
+            <TargetPicker selection={targetSelection} devices={devices} groups={deviceGroups} allow={TARGET_ALLOW} />
           )}
 
           {/* Plan 94 §3.6 — a single device can repeat too; it just has no
@@ -1071,7 +1057,7 @@ export function RunScriptDialog({
             </p>
           )}
 
-          {(target === 'cluster' || target === 'devices') && (
+          {(target === 'group' || target === 'devices') && (
             <div className="grid grid-cols-2 gap-3 rounded-lg border bg-surface-2/40 p-3">
               <div className="space-y-1.5">
                 <Label className="text-[12.5px] font-normal">Concurrency</Label>
@@ -1112,7 +1098,7 @@ export function RunScriptDialog({
             </div>
           )}
 
-          {(target === 'cluster' || target === 'devices') && (
+          {(target === 'group' || target === 'devices') && (
             <RepeatSection
               repeat={repeat}
               onChange={setRepeat}
@@ -1191,7 +1177,7 @@ export function RunScriptDialog({
               Cancel
             </Button>
             <Button onClick={() => void runScript()} disabled={!canSubmit || !formCanSubmit || isPending('run')}>
-              {isPending('run') ? 'Creating…' : !useBatch ? 'Run' : 'Run batch'}
+              {isPending('run') ? 'Creating…' : 'Run'}
             </Button>
           </div>
         </div>

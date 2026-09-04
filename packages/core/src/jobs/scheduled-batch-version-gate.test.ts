@@ -12,7 +12,7 @@ import { fireOnce, type ScheduleRunnerDeps } from '../schedules/runner'
 
 /**
  * A gap found while auditing plan 98 steps 98.6/98.7, sibling to (and NOT
- * fixed by) the `clusters/dispatch.ts` fix `batch-dispatch-version-gate.test.ts`
+ * fixed by) the `groups/dispatch.ts` fix `batch-dispatch-version-gate.test.ts`
  * pins: `packages/core/src/schedules/runner.ts`'s `fireOnce` builds its own
  * `batchDeps: BatchDispatchDeps` literal (the object it passes to
  * `createBatch`) with ONLY `db`/`scheduler`/`audit`/`onJobStatus`/
@@ -26,7 +26,7 @@ import { fireOnce, type ScheduleRunnerDeps } from '../schedules/runner'
  * .ts`'s own documented behaviour ("triggers a **batch** ... never a bare
  * job"), so this is a real, reachable path, not a hypothetical one.
  *
- * The consequence touches BOTH gates `clusters/dispatch.ts` now enforces:
+ * The consequence touches BOTH gates `groups/dispatch.ts` now enforces:
  * with `named` always `null` on this call site, `createBatch`'s
  * `checkRuntimeMajor(named?.runtime?.sdk)` (plan 98 §3.3 S1, step 98.6 —
  * added by this same audit) resolves `undefined` and never refuses — a
@@ -38,7 +38,7 @@ import { fireOnce, type ScheduleRunnerDeps } from '../schedules/runner'
  * behaviour that entry believed it had closed for every batch path.
  *
  * `packages/core/src/schedules/runner.ts` is outside every file list this
- * worker was assigned, even after the `clusters/**`/`api/batches.ts`
+ * worker was assigned, even after the `groups/**`/`api/batches.ts`
  * reassignment, so — per this plan's own "make the gap self-detecting"
  * instruction — it is reported and pinned here rather than edited directly.
  * This test calls the REAL, exported `fireOnce` (not a re-implementation)
@@ -102,7 +102,7 @@ describe('fireOnce (schedules/runner.ts) — the version gate is NOT reached (op
       timezone: 'UTC',
       scriptRef,
       params: {},
-      clusterId: null,
+      groupId: null,
       deviceIds: ['d1'],
       concurrency: 0,
       order: 'as-listed',

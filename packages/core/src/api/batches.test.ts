@@ -6,7 +6,8 @@ import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
-import { createBatchPacer } from '../clusters/pacer'
+import { createBatch } from '../groups/dispatch'
+import { createBatchPacer } from '../groups/pacer'
 import { openDb, runMigrations, type Db } from '../db'
 import { artifacts, batches, devices, jobs, scripts } from '../db/schema'
 import { ExecutorRegistry } from '../jobs/executor'
@@ -16,7 +17,32 @@ import { createJobStore } from '../queue/job-store'
 import { allocateDeviceNumber } from '../registry/device-number'
 import { createScriptRegistry } from '../scripts/registry'
 import { createLogger } from '../util/logger'
-import { createBatchRoutes, queryBatchRows, type BatchRoutesDeps } from './batches'
+import { createBatchDispatchDeps, createBatchRoutes, queryBatchRows, type BatchRoutesDeps } from './batches'
+
+/**
+ * `run-script` (the actions API verb, plan 207) is what creates a batch now
+ * — `POST /` is gone from this router. Tests that only need a batch ON DISK
+ * to then exercise `GET /:id`, `POST /:id/rerun`, `POST /:id/stop`, etc.
+ * call `createBatch` directly, through the SAME `createBatchDispatchDeps`
+ * factory the router's own surviving `rerun`/`rerun-failed` routes use —
+ * never a hand-rolled INSERT that could drift from what dispatch actually
+ * writes.
+ */
+function createBatchDirect(
+  deps: BatchRoutesDeps,
+  actor: { id: string; role: 'admin' | 'operator' } | undefined,
+  input: { scriptId: string; params: unknown; target: { deviceIds: string[] } | { groupId: string } },
+): { batch: { id: string; skipped: { deviceId: string; reason: string }[] } } {
+  const { batch } = createBatch(createBatchDispatchDeps(deps, actor), {
+    scriptId: input.scriptId,
+    params: input.params,
+    target: input.target,
+    concurrency: 0,
+    order: 'as-listed',
+    createdBy: actor?.id ?? null,
+  })
+  return { batch: { id: batch.id, skipped: (batch.skipped as { deviceId: string; reason: string }[] | null) ?? [] } }
+}
 
 function setUp() {
   const opened = openDb(':memory:')
@@ -131,120 +157,13 @@ function makeApp(db: Db, role: 'admin' | 'operator' | null) {
     registry,
     findScript: () => null,
   }
-  return withUser(role, createBatchRoutes(deps))
+  return { app: withUser(role, createBatchRoutes(deps)), deps }
 }
 
-/**
- * `requirePermission('job.run')` on `POST /` (plan 34 §4.4, §4.5) — there is
- * no `job.manage` permission; `job.run` is the closest existing fit and,
- * being an OPERATOR permission, must not lock an operator out of a flow
- * they already had.
- */
-describe('requirePermission("job.run") on /api/batches mutations (plan 34 §4.4, §4.5)', () => {
-  const createBody = { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } }
-
-  test('POST / is refused with no authenticated user', async () => {
-    const db = setUp()
-    const app = makeApp(db, null)
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(createBody) })
-    expect(res.status).toBe(403)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('auth.forbidden')
-  })
-
-  test('an operator (job.run is an OPERATOR permission) may create a batch — no lockout', async () => {
-    const db = setUp()
-    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
-    const app = makeApp(db, 'operator')
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(createBody) })
-    expect(res.status).toBe(201)
-  })
-
-  test('GET / needs no permission at all — read routes stay open', async () => {
-    const db = setUp()
-    const app = makeApp(db, null)
-    const res = await app.request('/')
-    expect(res.status).toBe(200)
-  })
-})
-
-/**
- * Plan 95 §5 step 95.6's verifiable result: `dispatch.ts:131` already called
- * `deps.validateScript` before ANY target resolution or row write (F11) —
- * what was missing was the fallback executor actually enforcing anything.
- * This exercises the real `POST /api/batches` route with the REAL
- * `createScriptExecutor` wired as the fallback, exactly as `daemon.ts` wires
- * it, so the "batches are covered by the same edit" claim is proven through
- * the HTTP layer, not just at the function-call level.
- */
-describe('POST /api/batches rejects invalid params before any job or device is touched (plan 95 §5 step 95.6)', () => {
-  function makeAppWithRealValidation(db: Db, role: 'admin' | 'operator' | null) {
-    db.insert(scripts)
-      .values({
-        pluginId: 'p-fixture',
-        exportId: 'main',
-        id: 'checkout-1.0.0',
-        name: 'checkout',
-        version: '1.0.0',
-        bundle: 'export {}',
-        enabled: true,
-        paramsSchema: { type: 'object', properties: { videos: { type: 'integer', maximum: 2000 } }, required: ['videos'] },
-        createdAt: new Date(),
-      })
-      .run()
-    const scriptRegistry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-batches-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
-    const audit = createAuditLogger(db)
-    const registry = new ExecutorRegistry()
-    registry.setFallback(createScriptExecutor({ registry: scriptRegistry, runner: {} as never }))
-    const deps: BatchRoutesDeps = {
-      db,
-      jobStore: { listByBatch: () => [] } as unknown as BatchRoutesDeps['jobStore'],
-      scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
-      audit,
-      broadcastBatchStatus: () => {},
-      scriptNames: () => new Map(),
-      registry,
-      findScript: (id) => (id === 'checkout-1.0.0' ? { enabled: true } : null),
-    }
-    return withUser(role, createBatchRoutes(deps))
-  }
-
-  test('{ videos: 9999 } is refused with 400 invalid_job_params, naming the field, with no batch or job row created and no device touched', async () => {
-    const db = setUp()
-    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd2', stableId: 'stable-d2', serial: 'serial-d2', label: 'd2', status: 'idle' }).run()
-    const app = makeAppWithRealValidation(db, 'operator')
-
-    const res = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ scriptId: 'checkout-1.0.0', params: { videos: 9999 }, target: { deviceIds: ['d1', 'd2'] } }),
-    })
-
-    expect(res.status).toBe(400)
-    const body = (await res.json()) as { error: { code: string; issues?: { path: string; message: string }[] } }
-    expect(body.error.code).toBe('invalid_job_params')
-    expect(body.error.issues).toEqual([{ path: 'videos', message: 'must be at most 2000' }])
-    expect(db.select().from(batches).all().length).toBe(0)
-    expect(db.select().from(jobs).all().length).toBe(0)
-    expect(db.select().from(devices).all().every((d) => d.status === 'idle')).toBe(true)
-  })
-
-  test('a params value inside every bound creates the batch normally', async () => {
-    const db = setUp()
-    db.insert(devices).values({ id: 'd1', stableId: 'stable-d1', serial: 'serial-d1', label: 'd1', status: 'idle' }).run()
-    const app = makeAppWithRealValidation(db, 'operator')
-
-    const res = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ scriptId: 'checkout-1.0.0', params: { videos: 30 }, target: { deviceIds: ['d1'] } }),
-    })
-
-    expect(res.status).toBe(201)
-    expect(db.select().from(jobs).all().length).toBe(1)
-  })
-})
+// `POST /` (the public create-batch enqueue), and everything that tested it
+// directly — the `requirePermission('job.run')` gate and the script-params
+// validation pass-through — are removed by plan 207 (MVP 07): `run-script`
+// is an actions API verb now, tested in `packages/core/src/api/actions.test.ts`.
 
 /**
  * Plan 95 §4.4, §5 step 95.7 — rerun-failed reconciles the ORIGINAL batch's
@@ -542,71 +461,12 @@ describe('POST /api/batches/:id/stop (plan 94 §3.9, §4.9, step 94.8 — replac
   })
 })
 
-/**
- * `JobExecutor.requires` at the batch dispatch gate (plan 93 §3.12, §4.6,
- * step 93.8) — closes F10: `POST /api/batches {scriptId:'internal:install'}`
- * used to require only `job.run`, no `device.files`, no `transfer.enabled`.
- * The fake `internal:install` registered here carries the SAME `requires`
- * declaration the real `jobs/executors/install.ts` does.
- */
-function makeAppWithInstallGate(db: Db, opts: { role: 'admin' | 'operator' | null; shellMode: 'off' | 'operator' | 'admin'; transferEnabled: boolean }) {
-  const audit = createAuditLogger(db)
-  const registry = new ExecutorRegistry()
-  registry.register('internal:install', {
-    validateParams: (p) => p,
-    run: async () => undefined,
-    requires: { gate: 'files', setting: 'transfer.enabled' },
-  })
-  const deps: BatchRoutesDeps = {
-    db,
-    jobStore: createJobStore(db),
-    scheduler: { kick: () => {}, start: () => {}, stop: () => {} },
-    audit,
-    broadcastBatchStatus: () => {},
-    scriptNames: () => new Map(),
-    registry,
-    findScript: () => null,
-    shellMode: () => opts.shellMode,
-    transferEnabled: () => opts.transferEnabled,
-  }
-  return withUser(opts.role, createBatchRoutes(deps))
-}
-
-describe('POST /api/batches — JobExecutor.requires closes F10 (plan 93 §3.12, §4.6, step 93.8)', () => {
-  const installBody = { scriptId: 'internal:install', params: {}, target: { deviceIds: ['d1'] } }
-
-  test('an operator without device.files, shell.mode: admin, gets 403 — no batch, no job row', async () => {
-    const db = setUp()
-    db.insert(devices).values({ id: 'd1', stableId: 's-d1', serial: 'ser-d1', label: 'd1', status: 'idle' }).run()
-    const app = makeAppWithInstallGate(db, { role: 'operator', shellMode: 'admin', transferEnabled: true })
-
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(installBody) })
-    expect(res.status).toBe(403)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('auth.forbidden')
-    expect(db.select().from(batches).all()).toHaveLength(0)
-    expect(db.select().from(jobs).all()).toHaveLength(0)
-  })
-
-  test('transfer.enabled: false refuses even an admin', async () => {
-    const db = setUp()
-    db.insert(devices).values({ id: 'd1', stableId: 's-d1', serial: 'ser-d1', label: 'd1', status: 'idle' }).run()
-    const app = makeAppWithInstallGate(db, { role: 'admin', shellMode: 'admin', transferEnabled: false })
-
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(installBody) })
-    expect(res.status).toBe(403)
-    expect(db.select().from(batches).all()).toHaveLength(0)
-  })
-
-  test('an admin with transfer.enabled: true and shell.mode: admin dispatches successfully', async () => {
-    const db = setUp()
-    db.insert(devices).values({ id: 'd1', stableId: 's-d1', serial: 'ser-d1', label: 'd1', status: 'idle' }).run()
-    const app = makeAppWithInstallGate(db, { role: 'admin', shellMode: 'admin', transferEnabled: true })
-
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(installBody) })
-    expect(res.status).toBe(201)
-  })
-})
+// The `JobExecutor.requires` batch-dispatch gate this block used to test
+// (F10, plan 93 §3.12) applied only to `POST /api/batches`'s own
+// `{scriptId:'internal:install'}` shape — removed with that route by plan
+// 207 (MVP 07). The `install`/`push`/`pull` actions API verbs have their own
+// `device.files`/`transfer.enabled` gate (`checkGate` in `actions/run.ts`),
+// tested in `packages/core/src/api/actions.test.ts`.
 
 /**
  * `BatchInfo.skipped` (plan 93 §3.12, §4.2, §4.6, step 93.8, closing F11) —
@@ -628,7 +488,7 @@ function makeAppWithRealJobStore(db: Db, role: 'admin' | 'operator' | null) {
     registry,
     findScript: () => null,
   }
-  return withUser(role, createBatchRoutes(deps))
+  return { app: withUser(role, createBatchRoutes(deps)), deps }
 }
 
 describe('BatchInfo.skipped and POST /:id/rerun?only= (plan 93 §3.12, §4.6, step 93.8)', () => {
@@ -637,12 +497,9 @@ describe('BatchInfo.skipped and POST /:id/rerun?only= (plan 93 §3.12, §4.6, st
     db.insert(devices).values({ id: 'd1', stableId: 's-d1', serial: 'ser-d1', label: 'd1', status: 'idle' }).run()
     db.insert(devices).values({ id: 'd2', stableId: 's-d2', serial: 'ser-d2', label: 'd2', status: 'offline' }).run()
     db.insert(devices).values({ id: 'd3', stableId: 's-d3', serial: 'ser-d3', label: 'd3', status: 'quarantined' }).run()
-    const app = makeAppWithRealJobStore(db, 'operator')
+    const { app, deps } = makeAppWithRealJobStore(db, 'operator')
 
-    const body = { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] } }
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    expect(res.status).toBe(201)
-    const parsed = (await res.json()) as { batch: { id: string; skipped: { deviceId: string; reason: string }[] } }
+    const parsed = createBatchDirect(deps, { id: 'u1', role: 'operator' }, { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] } })
     expect(parsed.batch.skipped.sort((a, b) => a.deviceId.localeCompare(b.deviceId))).toEqual([
       { deviceId: 'd2', reason: 'offline' },
       { deviceId: 'd3', reason: 'quarantined' },
@@ -657,11 +514,9 @@ describe('BatchInfo.skipped and POST /:id/rerun?only= (plan 93 §3.12, §4.6, st
   test('a batch with no skips reports skipped: []', async () => {
     const db = setUp()
     db.insert(devices).values({ id: 'd1', stableId: 's-d1', serial: 'ser-d1', label: 'd1', status: 'idle' }).run()
-    const app = makeApp(db, 'operator')
+    const { deps } = makeApp(db, 'operator')
 
-    const body = { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } }
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    const parsed = (await res.json()) as { batch: { skipped: unknown[] } }
+    const parsed = createBatchDirect(deps, { id: 'u1', role: 'operator' }, { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } })
     expect(parsed.batch.skipped).toEqual([])
   })
 
@@ -670,11 +525,9 @@ describe('BatchInfo.skipped and POST /:id/rerun?only= (plan 93 §3.12, §4.6, st
     db.insert(devices).values({ id: 'd1', stableId: 's-d1', serial: 'ser-d1', label: 'd1', status: 'idle' }).run()
     db.insert(devices).values({ id: 'd2', stableId: 's-d2', serial: 'ser-d2', label: 'd2', status: 'offline' }).run()
     db.insert(devices).values({ id: 'd3', stableId: 's-d3', serial: 'ser-d3', label: 'd3', status: 'idle' }).run()
-    const app = makeAppWithRealJobStore(db, 'operator')
+    const { app, deps } = makeAppWithRealJobStore(db, 'operator')
 
-    const body = { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] } }
-    const createRes = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    const created = (await createRes.json()) as { batch: { id: string } }
+    const created = createBatchDirect(deps, { id: 'u1', role: 'operator' }, { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1', 'd2', 'd3'] } })
 
     // d3's job fails; d1's stays queued.
     const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, created.batch.id)).all()
@@ -700,11 +553,9 @@ describe('BatchInfo.skipped and POST /:id/rerun?only= (plan 93 §3.12, §4.6, st
   test('an unknown "only" value is a 400, and rerunning an empty subset is a coded E_NO_TARGETS', async () => {
     const db = setUp()
     db.insert(devices).values({ id: 'd1', stableId: 's-d1', serial: 'ser-d1', label: 'd1', status: 'idle' }).run()
-    const app = makeApp(db, 'operator')
+    const { app, deps } = makeApp(db, 'operator')
 
-    const body = { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } }
-    const createRes = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    const created = (await createRes.json()) as { batch: { id: string } }
+    const created = createBatchDirect(deps, { id: 'u1', role: 'operator' }, { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } })
 
     const badOnly = await app.request(`/${created.batch.id}/rerun?only=bogus`, { method: 'POST' })
     expect(badOnly.status).toBe(400)
@@ -1185,7 +1036,7 @@ describe('GET /api/batches/:id/artifacts and .../artifacts.zip (plan 93 §3.13, 
 
 /**
  * `docs/plans/96-m61-hotfixes.md` §96.30 — the owner's own stuck operation-
- * tray entry, reproduced end to end. `clusters/dispatch.ts`'s `createBatch`
+ * tray entry, reproduced end to end. `groups/dispatch.ts`'s `createBatch`
  * is the only writer of a `batches` row and always inserts it together with
  * at least one job row, in the same transaction — so a batch can only ever
  * read `counts.total === 0` because its job rows were deleted AFTER
@@ -1205,7 +1056,7 @@ describe('a batch whose jobs are all gone (device forgotten with history) resolv
     // time this reads it, zero job rows — `statusOf` must derive a terminal
     // status straight from the row + counts, never touching the DB itself.
     db.insert(batches).values({ id: 'b1', scriptId: 'internal:sleep', concurrency: 0, order: 'as-listed', status: 'stopping', createdAt: new Date() }).run()
-    const app = makeApp(db, null)
+    const { app } = makeApp(db, null)
 
     const res = await app.request('/b1')
     expect(res.status).toBe(200)
@@ -1222,7 +1073,7 @@ describe('a batch whose jobs are all gone (device forgotten with history) resolv
   test('GET / (the list the tray/batches page reads) heals the same row', async () => {
     const db = setUp()
     db.insert(batches).values({ id: 'b1', scriptId: 'internal:sleep', concurrency: 0, order: 'as-listed', status: 'stopping', createdAt: new Date() }).run()
-    const app = makeApp(db, null)
+    const { app } = makeApp(db, null)
 
     const res = await app.request('/')
     const body = (await res.json()) as { items: { id: string; status: string }[] }
@@ -1250,12 +1101,7 @@ describe('a batch whose jobs are all gone (device forgotten with history) resolv
     }
     const app = withUser('operator', createBatchRoutes(deps))
 
-    const createRes = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } }),
-    })
-    const created = (await createRes.json()) as { batch: { id: string } }
+    const created = createBatchDirect(deps, { id: 'u1', role: 'operator' }, { scriptId: 'internal:sleep', params: {}, target: { deviceIds: ['d1'] } })
 
     // `device/lifecycle.ts`'s `forget({ deleteHistory: true })` — deleting
     // the member job row directly reproduces its effect on this batch

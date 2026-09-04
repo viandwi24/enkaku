@@ -12,7 +12,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
  * `scripts/detail` pages underneath it are untouched and still the only place
  * a script's versions, source and param sets live.
  *
- * The query is carried over rather than dropped: `?device=`/`?cluster=` are
+ * The query is carried over rather than dropped: `?device=`/`?group=` are
  * what make the Run flow open its dialog on arrival, so a bookmarked or
  * in-flight `/scripts?device=…` must reach `/plugins` still carrying it.
  *

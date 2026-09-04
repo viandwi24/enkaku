@@ -116,7 +116,7 @@ const ERROR_STATUS: Record<string, number> = {
   device_not_found: 404,
   device_unavailable: 409,
   device_busy: 409,
-  cluster_not_found: 404,
+  group_not_found: 404,
   E_NO_TARGETS: 409,
   'auth.forbidden': 403,
   E_RUNTIME_UNSUPPORTED: 400,
@@ -667,7 +667,7 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
         .select({
           // The §3.6 allowlist, and nothing else. Selected narrowly rather than filtered later,
           // so a seventh field cannot arrive by accident.
-          device: { id: devices.id, stableId: devices.stableId, label: devices.label, status: devices.status, clusterId: devices.clusterId },
+          device: { id: devices.id, stableId: devices.stableId, label: devices.label, status: devices.status, groupId: devices.groupId },
           number: deviceNumbers.number,
           entry: kvEntries,
         })
@@ -688,7 +688,7 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
           stableId: r.device.stableId,
           label: r.device.label,
           status: r.device.status,
-          clusterId: r.device.clusterId,
+          groupId: r.device.groupId,
           number: r.number ?? null,
           entry: r.entry ? rowToRedactedEntry(r.entry) : null,
         })),

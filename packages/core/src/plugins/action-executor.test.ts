@@ -8,7 +8,7 @@ import { validatePluginSurface, type ActionSpec, type JobInfo, type PluginSurfac
 import { createPluginRoutes } from '../api/plugins'
 import { createAuditLogger, type AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
-import type { BatchDispatchDeps } from '../clusters/dispatch'
+import type { BatchDispatchDeps } from '../groups/dispatch'
 import { openDb, runMigrations, type Db } from '../db'
 import { auditLog, devices } from '../db/schema'
 import { createKvStore, type KvStore } from '../kv/store'
@@ -242,7 +242,7 @@ async function setUp(role: 'admin' | 'operator' | null = 'operator'): Promise<Ha
 }
 
 const actor = { id: 'u1', role: 'operator' as const }
-const row = { username: 'alice', $device: { id: 'd1', stableId: 's1', label: 'Pixel 1', status: 'online', clusterId: null } }
+const row = { username: 'alice', $device: { id: 'd1', stableId: 's1', label: 'Pixel 1', status: 'online', groupId: null } }
 
 describe('a `job` action', () => {
   test('passes the declared REF through to the registry and enqueues the concrete id it resolved', async () => {

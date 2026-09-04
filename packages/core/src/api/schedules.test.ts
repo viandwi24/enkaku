@@ -39,7 +39,7 @@ function seedSchedule(db: Db, n: number) {
         cron: '0 0 * * *',
         timezone: 'UTC',
         scriptRef: 'test-script@1.0.0',
-        clusterId: null,
+        groupId: null,
         deviceIds: ['d1'],
         createdAt: new Date((base + i) * 1000),
       })

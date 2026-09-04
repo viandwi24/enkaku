@@ -30,12 +30,12 @@ async function startDaemon(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
-  // Plan 85 §3.4, §5 step 85.3: on Windows, closing the console window (or a
+  // Plan 85 §3.4, §5 step 85.3: on Windows, closing the terminal window (or a
   // logoff) does not deliver SIGTERM the way it does on POSIX — Node/Bun's
   // own docs describe `SIGHUP` as exactly the event that DOES fire there
-  // ("emitted on Windows when the console window is closed, and on other
-  // platforms under various similar conditions"), so it gets the same clean
-  // shutdown SIGINT/SIGTERM already get, on every platform.
+  // (paraphrased: emitted on Windows when the terminal window is closed, and
+  // on other platforms under various similar conditions), so it gets the
+  // same clean shutdown SIGINT/SIGTERM already get, on every platform.
   process.on('SIGHUP', () => void shutdown('SIGHUP'))
   // Best-effort belt-and-suspenders for any OTHER quiet-exit path neither
   // signal covers: `beforeExit` fires once the event loop has nothing left

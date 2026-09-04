@@ -474,7 +474,7 @@ export interface PluginHost {
    * `catch` block to invent copy in.
    */
   loadView(request: PluginViewRequest): Promise<PluginViewResult>
-  /** The global installed on `window.__enkaku__`; exposed for tests and for debugging from a console. */
+  /** The global installed on `window.__enkaku__`; exposed for tests and for debugging from the browser's developer tools. */
   readonly globals: EnkakuGlobal
 }
 

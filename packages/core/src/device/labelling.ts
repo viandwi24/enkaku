@@ -85,7 +85,7 @@ export interface LabellingService {
 function sanitiseName(raw: string): string {
   const stripped = raw.replace(/[\x00-\x1f\x7f]/g, '').trim()
   // Intl.Segmenter, not `Array.from`/`[...raw]`: a codepoint split still
-  // breaks a combining-mark cluster apart (F11 — this repo has full Unicode
+  // breaks a combining-mark sequence apart (F11 — this repo has full Unicode
   // names and no font to render them, so the HOST's own truncation must not
   // be the thing that mangles one first). `undefined` locale — this is a
   // display-length truncation, not a locale-aware collation, so no locale

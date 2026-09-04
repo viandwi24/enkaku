@@ -27,7 +27,7 @@ export const deviceList = defineCapability({
   permission: 'device.view',
   deadline: 5_000,
   effect: 'read',
-  description: 'List every device on the farm with its current status, battery, tags, cluster, and readiness.',
+  description: 'List every device on the farm with its current status, battery, tags, group, and readiness.',
   handler: (ctx) => Promise.resolve({ items: ctx.listDevices() }),
 })
 

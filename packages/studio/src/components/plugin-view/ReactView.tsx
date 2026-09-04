@@ -77,7 +77,7 @@ const NEXT_STEP: Record<PluginViewFailureKind, string> = {
   'module-load-failed':
     'Check that the plugin package really carries this file under its ui/ directory, and that the core is still reachable. Rebuild and push the plugin, then try again.',
   'module-threw':
-    'The plugin’s own code threw before it could register anything, so this is a fix for its author. The browser console has the stack.',
+    'The plugin’s own code threw before it could register anything, so this is a fix for its author. The browser’s developer tools have the stack.',
   'view-not-registered':
     'The plugin’s module has to call window.__enkaku__.register() with this exact view id, at the top level of the module.',
 }

@@ -470,6 +470,13 @@
       "when": 1788479278548,
       "tag": "0066_desired_awake",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "6",
+      "when": 1788478214531,
+      "tag": "0067_groups_rename",
+      "breakpoints": true
     }
   ]
 }

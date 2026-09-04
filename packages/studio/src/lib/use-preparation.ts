@@ -48,7 +48,7 @@ export function usePreparation(deviceId: string): {
   reload: () => void
   /** Optimistic local patch — a Retry action already gets that ONE component's fresh status back in its own response; applying it here shows the result the instant the mutation resolves, instead of waiting for the next poll tick or a `device.preparation` event. The next poll or event still re-syncs from the server as usual. */
   patch: (componentId: string, status: PreparationComponentStatus) => void
-  /** Same idea as `patch`, for an action that returns the WHOLE record at once (the on-demand whole-device pass, `POST /:id/preparation`). */
+  /** Same idea as `patch`, for an action that returns the WHOLE record at once (the on-demand whole-device pass, the `prepare` verb). */
   replace: (next: DevicePreparation) => void
 } {
   const [preparation, setPreparation] = useState<DevicePreparation | null>(null)

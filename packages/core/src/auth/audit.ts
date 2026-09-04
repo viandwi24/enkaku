@@ -40,7 +40,7 @@ export type AuditAction =
   // Per-device disconnect/reconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4)
   // — distinct from `device.forget`/`device.block`, which un-enrol a device:
   // these only drop or restore the adb transport and leave the device's
-  // record, tags, cluster, settings, job history and artifacts untouched.
+  // record, tags, group, settings, job history and artifacts untouched.
   | 'device.disconnect'
   | 'device.reconnect'
   // `PATCH /:id/connection`'s declared medium (plan 88 §3.1, §4.6, §5 step
@@ -94,11 +94,11 @@ export type AuditAction =
   // how much of it" is answerable afterwards rather than inferred from a gap.
   | 'job.delete'
   | 'job.history.clear'
-  | 'cluster.create'
-  | 'cluster.update'
-  | 'cluster.delete'
-  | 'cluster.assign'
-  | 'cluster.unassign'
+  | 'group.create'
+  | 'group.update'
+  | 'group.delete'
+  | 'group.assign'
+  | 'group.unassign'
   // Plan 94 §3.9, §4.9, step 94.8 — `POST /:id/stop` REPLACES `/:id/cancel`
   // (00-overview §4.3), so this action name replaces `'batch.cancel'`
   // rather than sitting beside it.
@@ -321,14 +321,14 @@ export type AuditAction =
   // response status and the body's size. Never the body, never the signature,
   // and never the secret.
   | 'plugin.webhook'
-  // The command console (plan 93 §3.4, §4.5, §5 step 93.3) — one row per fan-out
+  // The fleet command surface (plan 93 §3.4, §4.5, §5 step 93.3) — one row per fan-out
   // run, the same "create the run, audit it once" shape `createBatch`'s own
-  // `job.run` row already has (`clusters/dispatch.ts`). `meta` carries the
+  // `job.run` row already has (`groups/dispatch.ts`). `meta` carries the
   // redacted command text, the resolved device count, and the skipped list —
   // never the raw command (the same log-hygiene pass §3.9's history already applies).
   | 'command.run'
-  // Saved commands (plan 93 §3.10, §4.4, step 93.6) — create/update/delete
-  // of a farm-scoped saved command. `meta` carries `{ name }` only — never
+  // Named commands (plan 93 §3.10, §4.4, step 93.6) — create/update/delete
+  // of a farm-scoped named command. `meta` carries `{ name }` only — never
   // the raw `cmd` text, the same log-hygiene reasoning `command.run` above
   // already applies.
   | 'command.saved.create'

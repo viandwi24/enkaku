@@ -1,37 +1,20 @@
 import { Hono } from 'hono'
 import {
   ConnectionMediumSchema,
-  CutoverResponseSchema,
-  CutoverStartBodySchema,
   DeviceConnectionPatchResponseSchema,
   DeviceHistoryCountsResponseSchema,
-  DeviceLabelClearBodySchema,
   DeviceLabelStateSchema,
-  DeviceLabelsApplyBodySchema,
-  DeviceLabelsApplyResponseSchema,
-  type DeviceLabelsApplyResult,
   DeviceNumberCompactResponseSchema,
   type DeviceRef,
   DeviceRefsResponseSchema,
-  DEVICE_PREP_KEYS,
-  DevicePrepApplyBodySchema,
-  DevicePrepApplyResponseSchema,
-  type DevicePrepApplyResult,
-  type DevicePrepKey,
-  type DevicePrepPatch,
-  classifyDevicePrepApply,
   DeviceReadinessResponseSchema,
   DeviceResponseSchema,
   DeviceSettingsSchema,
-  DeviceTagsResponseSchema,
   DeviceViewersResponseSchema,
   DevicesBlockedResponseSchema,
-  DisconnectOutcomeSchema,
   MonitorKindSchema,
   MonitorSaveResponseSchema,
-  ReadinessSchema,
   ReconcileReportSchema,
-  ReconnectOutcomeSchema,
   type RotationApplyResult,
   type RotationMode,
   SweepReportSchema,
@@ -67,19 +50,17 @@ import type { EventRecorder } from '../events/recorder'
 import type { ActivityRegistry } from '../activity/registry'
 import type { ControlPolicySettings } from '../activity/policy'
 import type { JobStore } from '../queue/job-store'
-import { assignDevices, unassignDevices } from '../clusters/membership'
 import { admitDevice } from '../registry/admission'
 import type { CutoverManager } from '../registry/cutover'
-import { clusterRefFor, deriveConnection, loadClusterNames, loadDeclaredMedia, rowToDeviceInfo, type DeviceActivityState, type FarmNetwork } from '../registry/device-registry'
-import { compactDeviceNumbers, formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber, releaseDeviceNumber, setDeviceNumber } from '../registry/device-number'
-import { loadDeviceTags, replaceDeviceTags } from '../registry/device-tags'
+import { groupRefFor, deriveConnection, loadGroupNames, loadDeclaredMedia, rowToDeviceInfo, type DeviceActivityState, type FarmNetwork } from '../registry/device-registry'
+import { compactDeviceNumbers, loadDeviceNumbers, lookupDeviceNumber, releaseDeviceNumber, setDeviceNumber } from '../registry/device-number'
+import { loadDeviceTags } from '../registry/device-tags'
 import type { EndpointStore } from '../registry/endpoints'
 import type { DeviceReconnector } from '../registry/reconnect'
 import { saveForDevice } from '../runner/artifact-store'
 import { EnkakuError } from '../util/errors'
 import { createAdbEndpointRoutes } from './adb-endpoint'
 import { createDeviceEventsRoutes } from './device-events'
-import { createTransferRoutes, type TransferRoutesDeps } from './transfer'
 import { decodeCursor, decodeStringCursor, encodeCursor, parsePageQuery } from './pagination'
 import { typedJson } from './typed-json'
 
@@ -98,20 +79,6 @@ const PatchBody = z.object({
   number: z.number().int().positive().optional(),
 })
 
-const TagsBody = z.object({ tags: z.array(z.string()) })
-
-/** Plan 22.0 §4.4 — `PUT /:id/cluster`. `null` unassigns. */
-const DeviceClusterBody = z.object({ clusterId: z.string().min(1).nullable() })
-
-/** Plan 47 §4.4 — `POST /:id/block`. Every field optional: a bodyless call is valid. */
-const BlockBody = z.object({ reason: z.string().min(1).optional() })
-
-/** Plan 88 §4.6, §5 step 88.4 — `POST /:id/connection/disconnect`. Every field optional: a bodyless call is valid. */
-const ConnectionDisconnectBody = z.object({ force: z.boolean().optional() })
-
-/** Plan 88 §4.6, §5 step 88.4 — `POST /:id/connection/reconnect`. Every field optional: a bodyless call is valid. */
-const ConnectionReconnectBody = z.object({ allowSweep: z.boolean().optional(), force: z.boolean().optional() })
-
 /** Plan 88 §3.1, §4.6, §5 step 88.4 — `PATCH /:id/connection`. `null` declares "medium unknown", overriding a network-inferred guess (§3.1's "a declaration wins"). */
 const ConnectionPatchBody = z.object({ medium: ConnectionMediumSchema.nullable() })
 
@@ -123,7 +90,7 @@ const MonitorSaveBody = z.object({
 
 const ERROR_STATUS: Record<string, number> = {
   device_not_found: 404,
-  cluster_not_found: 404,
+  group_not_found: 404,
   E_BAD_REQUEST: 400,
   // `device.owner.set` (plan 09 §4.4, `auth/acl.ts`) — the ownerId transition's own gate on PATCH /:id.
   'auth.forbidden': 403,
@@ -131,50 +98,24 @@ const ERROR_STATUS: Record<string, number> = {
   ENGINE_UNAVAILABLE: 409,
   LOCK_CONFLICT: 409,
   REQUIREMENT_MISSING: 409,
-  not_quarantined: 409,
-  // Device readiness (plan 43 §3.4, §4.5) — the same codes `readiness.set` throws.
-  device_offline: 409,
-  device_quarantined: 409,
-  job_running: 409,
-  device_in_use: 409,
   E_NOT_SUPPORTED: 501,
-  // Device lifecycle (plan 47 §3.5, §4.4) — the same codes `lifecycle.forget`/`block` throw.
-  device_busy: 409,
-  device_online: 409,
   not_blocked: 404,
   // The bounded sweep (plan 88 §3.5, §4.5, §5 step 88.3) — `sweeper.sweep`'s own coded refusals.
   E_SCAN_BUSY: 409,
   E_SCAN_UNAVAILABLE: 409,
-  // Per-device disconnect/reconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4).
-  // `E_TRANSPORT_NOT_DETACHABLE`: adb has no host service to release a single
-  // USB transport (§4.6) — the Connection menu's Disconnect item is present
-  // but disabled for exactly this reason, never a silent no-op.
-  E_TRANSPORT_NOT_DETACHABLE: 409,
   // `PATCH /:id/connection` on a USB device — there is no network address to
   // declare a medium for.
   E_NOT_ON_NETWORK: 409,
-  // `POST /:id/connection/cutover` on a device already on the network (plan
-  // 88 §3.4, §4.6, §5 step 88.5) — the wizard is for the USB→network move
-  // itself; Disconnect/Reconnect/the manual PATCH cover a device already
-  // there.
-  E_ALREADY_ON_NETWORK: 409,
   // The device number allocator (plan 89 §3.2, §4.2, §4.3) — a manual
   // `PATCH /:id` number, or `POST /:id` targeting an already-held number,
   // is refused loudly rather than resolved silently.
   E_NUMBER_TAKEN: 409,
 }
 
-/** `PUT /:id/readiness` (plan 43 §4.5). */
-const ReadinessSetBody = z.object({
-  desired: ReadinessSchema,
-  /** The WS session id, when the caller is a browser tab that also holds a control marker (plan 43 §3.4's "you are controlling it" check) — same pattern as plan 27/39's `clientId`. */
-  clientId: z.string().min(1).optional(),
-})
-
 /** `POST /discovered/:stableId/admit` (plan 56 §4.3) — every field optional; a bodyless call admits with the probed label. */
 const AdmitDeviceBodySchema = z.object({
   label: z.string().trim().min(1).max(120).optional(),
-  clusterId: z.string().optional(),
+  groupId: z.string().optional(),
 })
 
 export function createDeviceRoutes(deps: {
@@ -209,12 +150,6 @@ export function createDeviceRoutes(deps: {
     shellSettings: () => { mode: ShellMode; endpointEnabled: boolean }
   }
   /**
-   * File transfer and APK install (plan 39 §4.3, §4.4) — undefined when the
-   * adb subsystem is not up (orchestrator mode), the same optionality as
-   * `adbEndpoint` above.
-   */
-  transfer?: TransferRoutesDeps
-  /**
    * Device readiness (plan 43 §4.5) — undefined only in orchestrator mode
    * (no local devices at all) or a test that does not wire it; the mounted
    * routes refuse with `E_NOT_SUPPORTED` rather than not existing.
@@ -231,7 +166,7 @@ export function createDeviceRoutes(deps: {
   activitiesOf: (deviceId: string) => DeviceActivityState
   /**
    * Device lifecycle — Forget and Block (plan 47 §4.3, §4.4). Required
-   * (unlike `adbEndpoint`/`transfer`/`readiness` above): it depends only on
+   * (unlike `adbEndpoint`/`readiness` above): it depends only on
    * `db` and the activity registry, both of which exist in every mode,
    * including the orchestrator (constructed before that mode's early return
    * in daemon.ts).
@@ -460,7 +395,7 @@ export function createDeviceRoutes(deps: {
     const body = AdmitDeviceBodySchema.parse(await c.req.json().catch(() => ({})))
     const row = admitDevice(deps.db, stableId, {
       ...(body.label ? { label: body.label } : {}),
-      ...(body.clusterId ? { clusterId: body.clusterId } : {}),
+      ...(body.groupId ? { groupId: body.groupId } : {}),
       ...(deps.deviceDefaults ? { deviceDefaults: deps.deviceDefaults } : {}),
       ...(deps.defaultDesiredReadiness ? { defaultDesiredReadiness: deps.defaultDesiredReadiness } : {}),
     })
@@ -513,7 +448,7 @@ export function createDeviceRoutes(deps: {
    * permission does not exist in this codebase's ACL
    * (`packages/core/src/auth/acl.ts`, out of scope for this change) — every
    * other admin-style device mutation in this exact router (block, forget,
-   * tags, cluster, discovered/admit) already gates on `device.settings`, so
+   * tags, group, discovered/admit) already gates on `device.settings`, so
    * this uses the same one rather than inventing a permission nothing else
    * recognises.
    */
@@ -612,220 +547,11 @@ export function createDeviceRoutes(deps: {
     return typedJson(c, DeviceNumberCompactResponseSchema, { changed, released, relabelled, failed })
   })
 
-  /**
-   * `POST /labels/apply` (plan 89 §4.3, §4.6, §5 step 89.6's own noted gap)
-   * — the fleet-wide switch-on: apply every named device's label,
-   * unconditionally, in one request. A static route, mounted before `/:id`
-   * below for the same shadowing reason as `/numbers/compact`/`/rescan`
-   * above. `device.admin` per the plan's own table does not exist in this
-   * codebase's ACL — same substitution as `/numbers/compact`.
-   */
-  app.post('/labels/apply', requirePermission('device.settings'), async (c) => {
-    if (!deps.labelling) throw new EnkakuError('E_NOT_SUPPORTED', 'physical labelling is not available on this host')
-    const body = DeviceLabelsApplyBodySchema.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { deviceIds: string[] } is required')
-    const actor = { userId: c.get('user')?.id ?? null }
-    const results: DeviceLabelsApplyResult[] = []
-    for (const deviceId of body.data.deviceIds) {
-      try {
-        const state = await deps.labelling.apply(deviceId, actor)
-        results.push({ deviceId, state, error: null })
-      } catch (err) {
-        results.push({ deviceId, state: null, error: err instanceof Error ? err.message : String(err) })
-      }
-    }
-    const ok = results.filter((r) => r.state !== null).length
-    deps.audit.record({ userId: actor.userId, action: 'device.labels.apply', meta: { total: results.length, ok } })
-    return typedJson(c, DeviceLabelsApplyResponseSchema, { total: results.length, results })
-  })
+  // POST /labels/apply and POST /prep/apply (the fleet-wide label and
+  // prep-settings switches) are removed by plan 207 (MVP 07): set-label
+  // and settings are actions API verbs now (POST /api/actions/set-label,
+  // POST /api/actions/settings), each answering per device.
 
-  /**
-   * `POST /prep/apply` — one PREP setting (or several) across a selection,
-   * synchronously, in `POST /labels/apply`'s envelope and
-   * `POST /network/apply`'s per-device report.
-   *
-   * **Why it exists.** `FarmSettings.defaults` is copy-on-admission — its own
-   * doc says so: *"Devices already registered keep their own settings."* On a
-   * farm whose phones are all already enrolled, changing a farm default
-   * changes nothing, by design. That left `prep.rotation` and its four
-   * siblings settable one device at a time only, through `PATCH /:id`; twenty
-   * phones is twenty requests for one checkbox.
-   *
-   * **Partial by construction, in three places.** `DevicePrepPatchSchema` has
-   * every key optional; the merge below is five explicit `if (… !== undefined)`
-   * assignments onto the device's OWN current prep block; and the body schema
-   * refuses an empty patch. A spread of the patch would not do — an absent key
-   * arrives as `undefined`, `DeviceSettingsSchema` fills a default for it, and
-   * four settings the operator never touched would be silently reset on every
-   * selected device. That is the single most dangerous thing this route could
-   * do, and none of the three layers can do it alone.
-   *
-   * **It differs from `PATCH /:id` in one deliberate way.** `PATCH` re-locks a
-   * live screen only when `prep.rotation` actually CHANGES value, because
-   * Studio's settings form posts the whole settings object and an unrelated
-   * `keepAwake` edit must not rotate a phone. Here `rotation` is present only
-   * because the operator ticked it for this selection, so the live apply is
-   * attempted whenever it is present, changed or not. Without that, a retry
-   * would be a guaranteed no-op on exactly the devices that failed the first
-   * time — the value is already stored, so there would be nothing left to
-   * "change".
-   *
-   * **A busy device is not skipped.** Its settings are written like every
-   * other device's; only the live re-lock waits, and the row says so
-   * (`saved: true`, `rotation.state: 'busy'`). The alternative — skipping the
-   * whole device — would mean an operator who bulk-locked twenty phones came
-   * back an hour later to find the three that had been running jobs still
-   * unlocked, with nothing in the farm remembering the instruction. There is
-   * deliberately no force/override: nothing here pre-empts a running job.
-   *
-   * Serial, not concurrent, for the same reason `network/apply` is: this is
-   * one shell round trip per device against the one adb server this machine
-   * shares with everything else.
-   *
-   * `device.settings` — the same permission `PATCH /:id` and `/labels/apply`
-   * already require. Nothing looser: this writes device settings, so it is
-   * gated exactly as writing device settings is.
-   */
-  app.post('/prep/apply', requirePermission('device.settings'), async (c) => {
-    const body = DevicePrepApplyBodySchema.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) {
-      throw new EnkakuError(
-        'E_BAD_REQUEST',
-        `a body of { deviceIds: string[], prep: {...} } is required — ${body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
-      )
-    }
-    const patch = body.data.prep
-    // The keys the operator actually chose, in the protocol's own declared
-    // order — every loop below is driven by THIS list, never by
-    // `Object.keys(patch)` (which would carry a key explicitly sent as
-    // `undefined`) and never by the full prep block.
-    const keys = DEVICE_PREP_KEYS.filter((key) => patch[key] !== undefined)
-    const actor = c.get('user')?.id ?? null
-    // Deduped, same as `network/apply`: a selection naming a device twice is
-    // an operator mistake, not an instruction to write twice, and a duplicate
-    // row would inflate every count in the report.
-    const deviceIds = [...new Set(body.data.deviceIds)]
-    const results: DevicePrepApplyResult[] = []
-    for (const deviceId of deviceIds) results.push(await applyPrepToDevice(deviceId, patch, keys, actor))
-    const failed = results.filter((r) => classifyDevicePrepApply(r) === 'failed').length
-    const deferred = results.filter((r) => classifyDevicePrepApply(r) === 'deferred').length
-    deps.audit.record({ userId: actor, action: 'device.prep.apply', meta: { total: results.length, keys, failed, deferred } })
-    return typedJson(c, DevicePrepApplyResponseSchema, { total: results.length, keys, results })
-  })
-
-  /** `EnkakuError`'s code when it has one, the fallback otherwise — the small local half of `network/route-service.ts`'s `toCodedError`, kept here rather than imported so this router does not depend on the network subsystem for a settings write. */
-  const codedFailure = (err: unknown, fallback: string): { code: string; message: string } =>
-    err instanceof EnkakuError
-      ? { code: err.code, message: err.message }
-      : { code: fallback, message: err instanceof Error ? err.message : String(err) }
-
-  /**
-   * One device's half of `POST /prep/apply`. A function declaration, so the
-   * route above can call it before `mustGet` is declared further down — it is
-   * only ever invoked from inside a request.
-   */
-  async function applyPrepToDevice(
-    deviceId: string,
-    patch: DevicePrepPatch,
-    keys: readonly DevicePrepKey[],
-    actor: string | null,
-  ): Promise<DevicePrepApplyResult> {
-    let row: { id: string; status: string | null; settings: unknown }
-    try {
-      row = mustGet(deviceId)
-    } catch (err) {
-      return { deviceId, saved: false, changed: [], rotation: null, error: codedFailure(err, 'E_DEVICE_NOT_FOUND') }
-    }
-
-    let changed: DevicePrepKey[]
-    try {
-      // Normalised through the schema first (a legacy row's missing fields
-      // would otherwise read as spurious changes), then merged key by key.
-      //
-      // A row that does NOT parse is a per-device failure, deliberately, and
-      // NOT `defaultDeviceSettings()` as a base — falling back to the defaults
-      // here would merge the operator's one chosen key onto a blank slate and
-      // write THAT, silently resetting every other setting on the one device
-      // whose settings were already in a state nobody understood. Refusing
-      // names the device instead.
-      const current = DeviceSettingsSchema.safeParse(row.settings ?? {})
-      if (!current.success) {
-        throw new EnkakuError(
-          'E_SETTINGS_UNREADABLE',
-          `this device’s stored settings do not parse, so they cannot be merged into — fix them on the device’s own settings page first (${current.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')})`,
-        )
-      }
-      const settings = current.data
-      changed = keys.filter((key) => settings.prep[key] !== patch[key])
-      /**
-       * The merge, written out one key at a time ON PURPOSE. `{ ...prep,
-       * ...patch }` looks identical and is not: a key the operator did not
-       * choose is `undefined` in `patch`, a spread would write that
-       * `undefined` over the device's real value, and the re-parse below
-       * would then quietly substitute the schema default. Five lines that
-       * cannot do that beat one line that can.
-       */
-      const prep = { ...settings.prep }
-      if (patch.disableAnimations !== undefined) prep.disableAnimations = patch.disableAnimations
-      if (patch.keepAwake !== undefined) prep.keepAwake = patch.keepAwake
-      if (patch.standbyScreenOff !== undefined) prep.standbyScreenOff = patch.standbyScreenOff
-      if (patch.rotation !== undefined) prep.rotation = patch.rotation
-      if (patch.textInput !== undefined) prep.textInput = patch.textInput
-      if (changed.length > 0) {
-        // Re-parsed rather than trusted: the same one door `PATCH /:id` goes
-        // through, so a merge this route got wrong fails here instead of
-        // reaching the column.
-        const next = DeviceSettingsSchema.parse({ ...settings, prep })
-        db.update(devices).set({ settings: next }).where(eq(devices.id, row.id)).run()
-        deps.record?.({
-          deviceId: row.id,
-          stream: 'main',
-          kind: 'settings.changed',
-          actor,
-          meta: { keys: ['prep'], prep: changed, source: 'bulk' },
-        })
-      }
-    } catch (err) {
-      return { deviceId, saved: false, changed: [], rotation: null, error: codedFailure(err, 'E_PREP_SAVE_FAILED') }
-    }
-
-    // Only `rotation` has a live applier (plan 85 §3.7 — `SessionManager.
-    // setRotation`). The other four are read by `createSession`, so they
-    // genuinely take effect on the device's next session and this report says
-    // nothing more about them than that they were saved.
-    let rotation: RotationApplyResult | null = null
-    if (patch.rotation !== undefined) {
-      const mode = patch.rotation
-      if (deps.runningJobOf(row.id)) {
-        rotation = { mode, state: 'busy', reason: 'a job is running on this device — the setting is saved and the new rotation applies to the job’s next session' }
-      } else {
-        try {
-          const outcome = (await deps.connection?.sessions?.()?.setRotation?.(row.id, mode)) ?? null
-          if (!outcome) rotation = { mode, state: 'no-session' }
-          else if (outcome.applied) rotation = { mode, state: 'applied' }
-          else rotation = { mode, state: 'failed', ...(outcome.reason ? { reason: outcome.reason } : {}) }
-        } catch (err) {
-          // The setting IS saved; only the live re-lock threw. Reported as a
-          // failure of the live half, never as a failure of the save.
-          rotation = { mode, state: 'failed', reason: codedFailure(err, 'E_ROTATION_FAILED').message }
-        }
-      }
-      // The same two outcomes `PATCH /:id` logs, for the same reason: a live
-      // re-lock that took, and one that did not. `no-session`/`busy` changed
-      // nothing on the device, and `settings.changed` above already recorded
-      // the save.
-      if (rotation.state === 'applied' || rotation.state === 'failed') {
-        deps.record?.({
-          deviceId: row.id,
-          stream: 'main',
-          kind: 'device.rotation',
-          actor,
-          meta: { to: mode, state: rotation.state, applied: rotation.state === 'applied', source: 'bulk', ...(rotation.reason ? { reason: rotation.reason } : {}) },
-        })
-      }
-    }
-    return { deviceId, saved: true, changed, rotation, error: null }
-  }
 
   /**
    * `DELETE /numbers/:stableId` (plan 89 §3.2 point 5, §4.2, §4.3) — the
@@ -859,8 +585,9 @@ export function createDeviceRoutes(deps: {
   // without a separate top-level entry in http.ts.
   if (deps.adbEndpoint) app.route('/', createAdbEndpointRoutes({ ...deps.adbEndpoint, getDevice: getDeviceOwner }))
 
-  // POST /:id/install|push|pull (plan 39 §4.4) — same mounting pattern again.
-  if (deps.transfer) app.route('/', createTransferRoutes(deps.transfer))
+  // `POST /:id/install|push|pull` are removed by plan 207 (MVP 07): `install`,
+  // `push` and `pull` are actions API verbs now, calling the same
+  // `runTransfer`/`TransferService` door (`actions/impl/transfer.ts`).
 
   const mustGet = (id: string) => {
     const row = db.select().from(devices).where(eq(devices.id, id)).get()
@@ -909,7 +636,7 @@ export function createDeviceRoutes(deps: {
   /**
    * The address book's declared media (plan 88 §3.1, §3.2, §4.3, §5 step
    * 88.5) — resolved fresh on every call (same "no caching, DB is the
-   * source of truth" discipline `tagMap`/`clusterNames` already follow
+   * source of truth" discipline `tagMap`/`groupNames` already follow
    * below), never once at router-construction time, so a declaration made a
    * moment ago is visible on the very next request. `undefined` (no
    * endpoint store wired — orchestrator mode, or before the adb subsystem
@@ -926,7 +653,7 @@ export function createDeviceRoutes(deps: {
       ...rowToDeviceInfo(
         row,
         loadDeviceTags(db, [row.id]).get(row.id) ?? [],
-        clusterRefFor(db, row.clusterId),
+        groupRefFor(db, row.groupId),
         null,
         readinessOf(row),
         deps.activitiesOf(row.id),
@@ -946,11 +673,11 @@ export function createDeviceRoutes(deps: {
 
   // `?tag=a&tag=b` narrows to devices carrying ALL of them (plan 19 §4.3) — one
   // tags query total, so a 50-device farm does not issue 50 (acceptance #7).
-  // `?clusterId=<id>` narrows to that cluster's members; `?clusterId=none`
-  // narrows to unclustered devices (plan 22.0 §4.4, acceptance #4).
+  // `?groupId=<id>` narrows to that group's members; `?groupId=none`
+  // narrows to devices with no group (plan 22.0 §4.4, acceptance #4).
   app.get('/', (c) => {
     const wanted = (c.req.queries('tag') ?? []).map(normaliseTag).filter(Boolean)
-    const clusterIdParam = c.req.query('clusterId') ?? null
+    const groupIdParam = c.req.query('groupId') ?? null
     // `?sort=number|label` (plan 89 §4.3) — `number` is the default, the
     // rack's own order; `label` remains available so nothing depending on
     // alphabetical order breaks (F25's "a different sort field slots into
@@ -961,19 +688,19 @@ export function createDeviceRoutes(deps: {
     }
     const rows = db.select().from(devices).all()
     const tagMap = loadDeviceTags(db)
-    const clusterNames = loadClusterNames(db)
+    const groupNames = loadGroupNames(db)
     const media = declaredMedia()
     const networks = farmNetworks()
     const numbers = loadDeviceNumbers(db)
     let filtered =
       wanted.length === 0 ? rows : rows.filter((r) => wanted.every((t) => (tagMap.get(r.id) ?? []).includes(t)))
-    if (clusterIdParam === 'none') filtered = filtered.filter((r) => r.clusterId === null)
-    else if (clusterIdParam) filtered = filtered.filter((r) => r.clusterId === clusterIdParam)
+    if (groupIdParam === 'none') filtered = filtered.filter((r) => r.groupId === null)
+    else if (groupIdParam) filtered = filtered.filter((r) => r.groupId === groupIdParam)
     const infos = filtered.map((r) => ({
       ...rowToDeviceInfo(
         r,
         tagMap.get(r.id) ?? [],
-        r.clusterId ? { id: r.clusterId, name: clusterNames.get(r.clusterId) ?? r.clusterId } : null,
+        r.groupId ? { id: r.groupId, name: groupNames.get(r.groupId) ?? r.groupId } : null,
         null,
         readinessOf(r),
         deps.activitiesOf(r.id),
@@ -1043,7 +770,7 @@ export function createDeviceRoutes(deps: {
       ...rowToDeviceInfo(
         row,
         loadDeviceTags(db, [row.id]).get(row.id) ?? [],
-        clusterRefFor(db, row.clusterId),
+        groupRefFor(db, row.groupId),
         null,
         readinessOf(row),
         deps.activitiesOf(row.id),
@@ -1097,31 +824,14 @@ export function createDeviceRoutes(deps: {
     return typedJson(c, DeviceReadinessResponseSchema, { readiness: readinessOf(row) })
   })
 
-  /**
-   * `PUT /:id/readiness` (plan 43 §4.5) — server-authoritative (spec §10.1):
-   * every refusal in §3.4 is enforced inside `readiness.set` itself, not
-   * here, so this route refuses exactly the same way the WS
-   * `device.readiness.set` message does (acceptance #7). `device.view` is
-   * the permission both Wake and Sleep require per the plan's table; the
-   * finer distinction (job running, another viewer/control holder) is
-   * `readiness.set`'s own job.
-   */
-  app.put('/:id/readiness', requirePermission('device.view'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    const body = ReadinessSetBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { desired } is required')
-    if (!deps.readiness) throw new EnkakuError('E_NOT_SUPPORTED', 'device readiness is not available (orchestrator mode)')
-    const readiness = await deps.readiness.set(row.id, body.data.desired, {
-      userId: c.get('user')?.id ?? null,
-      clientId: body.data.clientId ?? null,
-    })
-    return typedJson(c, DeviceReadinessResponseSchema, { readiness })
-  })
+  // `PUT /:id/readiness` (wake/sleep) is removed by plan 207 (MVP 07):
+  // `wake` and `sleep` are actions API verbs now (POST /api/actions/wake,
+  // POST /api/actions/sleep), calling the same `readiness.set` door.
 
   /**
    * `device.settings` (plan 34 §4.4, §4.5) — the blanket gate every sibling
-   * mutation on this router already declares (`PUT /:id/tags`, `PUT
-   * /:id/cluster`, `PATCH /:id/drivers`, …), but this route never had: any
+   * mutation on this router already declares (`PATCH /:id/drivers`, …), but
+   * this route never had: any
    * authenticated caller could reach `label`/`settings` with no permission
    * check at all (plan 87, mvp-3 Finding 3). It is a no-op today FOR WHO GETS
    * IN — `device.settings` sits in `OPERATOR` (`acl.ts`), so both roles this
@@ -1311,52 +1021,15 @@ export function createDeviceRoutes(deps: {
     return typedJson(c, DeviceLabelStateSchema, state)
   })
 
-  /**
-   * `POST /:id/label/apply` (plan 89 §4.3, §4.6) — the unconditional
-   * "Re-apply label" action: a thin call-through to
-   * `LabellingService.apply`, which does its own gating (capability,
-   * fingerprint, tier) and never reports `applied` unless the device itself
-   * confirmed it. `device.settings`, the same permission every other
-   * device-scoped mutation on this router uses.
-   */
-  app.post('/:id/label/apply', requirePermission('device.settings'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    if (!deps.labelling) throw new EnkakuError('E_NOT_SUPPORTED', 'physical labelling is not available on this host')
-    const actor = { userId: c.get('user')?.id ?? null }
-    const state = await deps.labelling.apply(row.id, actor)
-    deps.audit.record({ userId: actor.userId, action: 'device.label.apply', target: row.id, meta: { mode: state.mode, state: state.state } })
-    return typedJson(c, DeviceLabelStateSchema, state)
-  })
-
-  /**
-   * `POST /:id/label/clear` (plan 89 §3.6, §4.3, §4.6) — idempotent by
-   * construction (`LabellingService.clear`'s own doc comment): the same
-   * writes happen on the tenth call as the first, and no "already cleared"
-   * flag is consulted here or in the service. `restoreOriginal` defaults to
-   * `false` (`DeviceLabelClearBodySchema`) — the service itself refuses to
-   * restore when nothing was captured (H3), so this route adds no gating of
-   * its own on top of that.
-   */
-  app.post('/:id/label/clear', requirePermission('device.settings'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    if (!deps.labelling) throw new EnkakuError('E_NOT_SUPPORTED', 'physical labelling is not available on this host')
-    const body = DeviceLabelClearBodySchema.safeParse(await c.req.json().catch(() => ({})))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { restoreOriginal? } is required')
-    const actor = { userId: c.get('user')?.id ?? null }
-    const state = await deps.labelling.clear(row.id, { restoreOriginal: body.data.restoreOriginal, actor })
-    deps.audit.record({
-      userId: actor.userId,
-      action: 'device.label.clear',
-      target: row.id,
-      meta: { restoreOriginal: body.data.restoreOriginal },
-    })
-    return typedJson(c, DeviceLabelStateSchema, state)
-  })
+  // `POST /:id/label/apply` and `POST /:id/label/clear` are removed by plan
+  // 207 (MVP 07): `set-label` and `clear-label` are actions API verbs now
+  // (POST /api/actions/set-label, POST /api/actions/clear-label), calling
+  // the same `LabellingService.apply`/`.clear` doors.
 
   /**
    * Per-device engine choice — validated server-side (capabilities and locks,
    * spec §8). `device.settings` (plan 34 §4.4, §4.5) — the same permission
-   * `PUT /:id/tags`/`PUT /:id/cluster` above already gate on: this route had
+   * `set-tags`/`set-group` (actions API verbs) gate on: this route had
    * NO `requirePermission` at all until this fix (a security-sweep finding,
    * not part of the original plan 09/34 work), so any authenticated operator
    * could silently change a device's transport/display/input/inspector
@@ -1377,116 +1050,11 @@ export function createDeviceRoutes(deps: {
     return c.json({ device: { id: row.id, ...body.data } })
   })
 
-  /**
-   * `POST /:id/connection/disconnect` (plan 88 §3.7, §3.8, §4.6, §5 step
-   * 88.4) — drops a `tcp` device's adb transport. The phone stays enrolled:
-   * its record, tags, cluster, settings, job history and artifacts are
-   * untouched. This is NOT Remove/Forget/Block (§3.8's whole point), so the
-   * confirm copy and this route's own behaviour say so, not just the button.
-   *
-   * Guards, in order — the substance of this step:
-   * 1. A `usb` device refuses with `E_TRANSPORT_NOT_DETACHABLE`: adb has no
-   *    host service to release one USB transport (F11), so the menu item is
-   *    present but disabled with this exact reason, never a button that
-   *    quietly does nothing.
-   * 2. A running job refuses (coded `job_running`, naming every job) unless
-   *    `force` — bypassing `EnkakuError`/`ERROR_STATUS` here (like
-   *    `E_ADB_BUSY_FARM` in `tools/routes.ts`) because the refusal carries a
-   *    structured `jobs` list alongside the coded message, not just prose.
-   * 3. Only once both guards pass: the session closes and every control/
-   *    command activity is ended BEFORE the transport actually drops, so an operator
-   *    who asked for this sees it as their own action, not the device dying
-   *    out from under them.
-   */
-  app.post('/:id/connection/disconnect', requirePermission('device.settings'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    const body = ConnectionDisconnectBody.safeParse(await c.req.json().catch(() => ({})))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { force? } is required')
-
-    const conn = deriveConnection(row.serial, [])
-    if (conn.kind === 'usb') {
-      throw new EnkakuError(
-        'E_TRANSPORT_NOT_DETACHABLE',
-        `${row.label} is connected over USB — adb has no way to release a single USB transport. Unplug the cable to disconnect it.`,
-      )
-    }
-
-    const reconnector = deps.connection?.reconnector()
-    if (!reconnector) {
-      throw new EnkakuError('E_NOT_SUPPORTED', 'device connection control is not available (orchestrator mode, or the adb subsystem is not ready)')
-    }
-
-    if (!body.data.force) {
-      const running = deps.jobStore.list({ deviceId: row.id, status: 'running', limit: 50 }).rows
-      if (running.length > 0) {
-        const names = running.map((j) => j.scriptName ?? 'a script').join(', ')
-        return c.json(
-          {
-            error: {
-              code: 'job_running',
-              message: `${running.length} running job${running.length === 1 ? '' : 's'} on ${formatDeviceLabel(lookupDeviceNumber(db, row.stableId), row.label)} (${names}) would fail if disconnected now — pass force to disconnect anyway`,
-            },
-            jobs: running.map((j) => ({ id: j.id, scriptName: j.scriptName ?? 'a script' })),
-          },
-          409,
-        )
-      }
-    }
-
-    // Close first, end second, drop the transport LAST (plan 88 §4.6's
-    // ordering, reworded by plan 205 §4.9) — a device with no session and
-    // no live activity disconnecting reads as "Enkaku did this on purpose",
-    // not as an unexplained drop.
-    await deps.connection?.sessions?.()?.closeDevice(row.id)
-    deps.activities.endWhere((deviceId, activity) => deviceId === row.id && (activity.kind === 'control' || activity.kind === 'command'))
-
-    const outcome = await reconnector.disconnect(row.stableId)
-    deps.record?.({
-      deviceId: row.id,
-      stream: 'main',
-      kind: 'device.disconnected',
-      actor: c.get('user')?.id ?? null,
-      meta: { result: outcome.result, force: Boolean(body.data.force) },
-    })
-    deps.audit.record({
-      userId: c.get('user')?.id ?? null,
-      action: 'device.disconnect',
-      target: row.id,
-      meta: { result: outcome.result, force: Boolean(body.data.force) },
-    })
-    return typedJson(c, DisconnectOutcomeSchema, outcome)
-  })
-
-  /**
-   * `POST /:id/connection/reconnect` (plan 88 §3.3, §3.8, §4.4, §4.6, §5 step
-   * 88.4, fixes F13, tests H2) — dials this ONE device's last known address.
-   * Reuses `DeviceReconnector.reconnect()` verbatim (steps 88.2/88.8's own
-   * ladder: already-connected → remembered addresses → sweep when
-   * `allowSweep` and a sweeper is wired) — this route adds nothing to the
-   * ladder itself, only the HTTP/audit/event wrapping every other mutation on
-   * this router already has.
-   */
-  app.post('/:id/connection/reconnect', requirePermission('device.settings'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    const body = ConnectionReconnectBody.safeParse(await c.req.json().catch(() => ({})))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { allowSweep?, force? } is required')
-
-    const reconnector = deps.connection?.reconnector()
-    if (!reconnector) {
-      throw new EnkakuError('E_NOT_SUPPORTED', 'device connection control is not available (orchestrator mode, or the adb subsystem is not ready)')
-    }
-
-    const outcome = await reconnector.reconnect(row.stableId, { allowSweep: body.data.allowSweep, force: body.data.force })
-    deps.record?.({
-      deviceId: row.id,
-      stream: 'main',
-      kind: 'device.reconnected',
-      actor: c.get('user')?.id ?? null,
-      meta: { result: outcome.result },
-    })
-    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.reconnect', target: row.id, meta: { result: outcome.result } })
-    return typedJson(c, ReconnectOutcomeSchema, outcome)
-  })
+  // `POST /:id/connection/disconnect` and `POST /:id/connection/reconnect`
+  // are removed by plan 207 (MVP 07): `disconnect` and `reconnect` are
+  // actions API verbs now (POST /api/actions/disconnect,
+  // POST /api/actions/reconnect), each answering per device and calling the
+  // same `DeviceReconnector`/session/activity doors this route used.
 
   /**
    * `PATCH /:id/connection` (plan 88 §3.1, §4.6, §5 step 88.4) — declares (or
@@ -1529,104 +1097,14 @@ export function createDeviceRoutes(deps: {
     return typedJson(c, DeviceConnectionPatchResponseSchema, { connection: deriveConnection(row.serial, farmNetworks(), body.data.medium) })
   })
 
-  /**
-   * `POST /:id/connection/cutover` (plan 88 §3.4, §4.6, §5 step 88.5) —
-   * starts the guided USB → network move: arm (enable TCP mode, verified by
-   * read-back), then watch (poll the SAME reconnect ladder + sweep every
-   * other reconnect path uses) until the phone answers on the network or
-   * the window expires. `device.cutover` broadcasts every step so a second
-   * browser tab sees the same progress.
-   *
-   * Guards, in order — mirroring `/:id/connection/disconnect`'s own shape:
-   * 1. Already on the network → `E_ALREADY_ON_NETWORK` (this wizard is for
-   *    the USB→network move itself, not a device already there — Disconnect
-   *    /Reconnect or the manual `PATCH` cover that).
-   * 2. Offline → `device_offline` (there is no USB transport to enable TCP
-   *    mode on).
-   * 3. A running job refuses (coded `job_running`, naming every job) — no
-   *    `force` override here: flipping a chassis port is a physical action
-   *    a script cannot be recovered from mid-run, unlike a disconnect.
-   */
-  app.post('/:id/connection/cutover', requirePermission('device.enroll'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    const body = CutoverStartBodySchema.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { port?, medium, address? } is required')
+  // `POST /:id/connection/cutover` and `DELETE /:id/connection/cutover` are
+  // removed by plan 207 (MVP 07): `cutover` is an actions API verb now
+  // (POST /api/actions/cutover, `{ op: 'start' | 'cancel' }`), calling the
+  // same `CutoverManager.start`/`.cancel` doors.
 
-    const conn = deriveConnection(row.serial, farmNetworks())
-    if (conn.kind !== 'usb') {
-      throw new EnkakuError(
-        'E_ALREADY_ON_NETWORK',
-        `${row.label} is already on the network — use Disconnect/Reconnect, or declare its medium directly, instead of the cutover wizard.`,
-      )
-    }
-    if (row.status === 'offline') {
-      throw new EnkakuError('device_offline', `${row.label} is offline — connect it over USB before starting the cutover wizard.`)
-    }
-    const running = deps.jobStore.list({ deviceId: row.id, status: 'running', limit: 50 }).rows
-    if (running.length > 0) {
-      const names = running.map((j) => j.scriptName ?? 'a script').join(', ')
-      return c.json(
-        {
-          error: {
-            code: 'job_running',
-            message: `${running.length} running job${running.length === 1 ? '' : 's'} on ${formatDeviceLabel(lookupDeviceNumber(db, row.stableId), row.label)} (${names}) — finish or cancel them before moving this device to the network`,
-          },
-          jobs: running.map((j) => ({ id: j.id, scriptName: j.scriptName ?? 'a script' })),
-        },
-        409,
-      )
-    }
-
-    const manager = deps.cutover?.()
-    if (!manager) {
-      throw new EnkakuError('E_NOT_SUPPORTED', 'the cutover wizard is not available (orchestrator mode, or the adb subsystem is not ready)')
-    }
-    const state = await manager.start({ id: row.id, stableId: row.stableId, serial: row.serial, label: row.label }, body.data)
-    deps.audit.record({
-      userId: c.get('user')?.id ?? null,
-      action: 'device.cutover.start',
-      target: row.id,
-      meta: { port: state.port, medium: state.medium, step: state.step },
-    })
-    return typedJson(c, CutoverResponseSchema, { cutover: state })
-  })
-
-  /**
-   * `DELETE /:id/connection/cutover` (plan 88 §3.4, §4.6, §5 step 88.5) —
-   * cancel an armed window. Reverts nothing (§3.4: TCP mode stays on; a
-   * phone in TCP mode still works perfectly over USB) — this only stops
-   * Enkaku watching. Idempotent: cancelling twice, or a window that already
-   * finished, is a harmless no-op either way.
-   */
-  app.delete('/:id/connection/cutover', requirePermission('device.enroll'), (c) => {
-    const row = mustGet(c.req.param('id'))
-    const manager = deps.cutover?.()
-    if (!manager) {
-      throw new EnkakuError('E_NOT_SUPPORTED', 'the cutover wizard is not available (orchestrator mode, or the adb subsystem is not ready)')
-    }
-    manager.cancel(row.stableId)
-    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.cutover.cancel', target: row.id, meta: {} })
-    return c.json({ ok: true })
-  })
-
-  /**
-   * `device.quarantine` (plan 09 §4.4, admin-only in `auth/acl.ts`) — the SET
-   * side of quarantine happens automatically (`BatteryMonitor`'s own
-   * thermal policy), but this manual UNSET side had no permission check at
-   * all until this fix: any authenticated operator could clear a
-   * thermal/safety quarantine on a device they may not even own. Audited as
-   * `device.unquarantine`, matching the action name already defined (and
-   * already unused) in `auth/audit.ts`.
-   */
-  app.post('/:id/unquarantine', requirePermission('device.quarantine'), (c) => {
-    const row = mustGet(c.req.param('id'))
-    const monitor = deps.battery()
-    if (!monitor || !monitor.unquarantine(row.id)) {
-      throw new EnkakuError('not_quarantined', `device ${row.label} is not quarantined`)
-    }
-    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'device.unquarantine', target: row.id, meta: { reason: row.quarantineReason } })
-    return typedJson(c, DeviceResponseSchema, { device: infoWithTags(row.id) })
-  })
+  // `POST /:id/unquarantine` is removed by plan 207 (MVP 07): `unquarantine`
+  // is an actions API verb now (POST /api/actions/unquarantine), calling
+  // the same `BatteryMonitor.unquarantine` door.
 
   /**
    * "Save last N lines" (plan 24 §4.6, §3.6): the Monitor pane is deliberately
@@ -1649,47 +1127,13 @@ export function createDeviceRoutes(deps: {
   /**
    * Replace a device's whole tag set (plan 19 §4.3) — simpler to reason about
    * than add/remove endpoints, and it makes the Studio editor a plain form.
+   *
+   * Removed by plan 207 (MVP 07): `PUT /:id/tags` is the `set-tags` actions
+   * API verb now (POST /api/actions/set-tags), calling the same
+   * `replaceDeviceTags` door; `PUT /:id/group` is the `set-group` verb
+   * (POST /api/actions/set-group), calling the same `assignDevices`/
+   * `unassignDevices` doors (`groups/membership.ts`).
    */
-  // `device.settings` (plan 34 §4.4, §4.5) — the exact permission already
-  // named as the audit action for both of these mutations below.
-  app.put('/:id/tags', requirePermission('device.settings'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    const body = TagsBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { tags: string[] } is required')
-    const { tags, diff } = replaceDeviceTags(db, row.id, body.data.tags)
-    deps.audit.record({
-      userId: c.get('user')?.id ?? null,
-      action: 'device.settings',
-      target: row.id,
-      meta: { tags: diff },
-    })
-    return typedJson(c, DeviceTagsResponseSchema, { tags })
-  })
-
-  /**
-   * Assign or unassign this device's cluster (plan 22.0 §4.4). `clusterId:
-   * null` unassigns; a non-null value moves the device — an `UPDATE`
-   * necessarily clears whatever cluster it was in before, so `movedFrom`
-   * reports what changed (acceptance #2) without a second lookup.
-   */
-  app.put('/:id/cluster', requirePermission('device.settings'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    const body = DeviceClusterBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { clusterId: string | null } is required')
-    const from = row.clusterId
-    if (body.data.clusterId === null) {
-      unassignDevices(db, [row.id])
-    } else {
-      assignDevices(db, body.data.clusterId, [row.id])
-    }
-    deps.audit.record({
-      userId: c.get('user')?.id ?? null,
-      action: body.data.clusterId === null ? 'cluster.unassign' : 'cluster.assign',
-      target: row.id,
-      meta: { clusterId: body.data.clusterId, from },
-    })
-    return c.json({ device: infoWithTags(row.id), movedFrom: from })
-  })
 
   /**
    * `GET /:id/history-counts` (plan 47 §3.4, §4.4) — shown before "delete
@@ -1701,52 +1145,11 @@ export function createDeviceRoutes(deps: {
     return typedJson(c, DeviceHistoryCountsResponseSchema, { counts })
   })
 
-  /**
-   * `DELETE /:id?deleteHistory=true|false` (plan 47 §4.4) — Forget. Every
-   * refusal in §3.5 (busy, an active control marker, still connected) is
-   * enforced inside `lifecycle.forget` itself, server-authoritative exactly
-   * like every other mutation here (spec §10.1, acceptance #12): calling
-   * this directly is refused exactly as the Studio dialog is.
-   */
-  app.delete('/:id', requirePermission('device.settings'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    const deleteHistory = c.req.query('deleteHistory') === 'true'
-    const result = await deps.lifecycle.forget(row.id, { deleteHistory, actor: { userId: c.get('user')?.id ?? null } })
-    deps.audit.record({
-      userId: c.get('user')?.id ?? null,
-      action: 'device.forget',
-      target: row.id,
-      meta: { stableId: result.stableId, deleteHistory: result.historyDeleted, ...(result.counts ? { counts: result.counts } : {}) },
-    })
-    // The fleet list has listened for this since plan 42 — nothing ever sent
-    // it before this plan, which is the whole reason forgetting did not exist.
-    deps.broadcast({ type: 'device.removed', payload: { id: result.deviceId, stableId: result.stableId } })
-    return c.json({ forgotten: result })
-  })
-
-  /**
-   * `POST /:id/block` (plan 47 §3.3, §4.4) — forgets AND blocks the
-   * `stableId` in one transaction (`lifecycle.block`), so the fleet can
-   * never show the confusing half-state of a device that is blocked but
-   * still listed.
-   */
-  app.post('/:id/block', requirePermission('device.settings'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    const body = BlockBody.safeParse(await c.req.json().catch(() => ({})))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { reason? } is required')
-    const blocked = await deps.lifecycle.block(row.id, {
-      ...(body.data.reason ? { reason: body.data.reason } : {}),
-      actor: { userId: c.get('user')?.id ?? null },
-    })
-    deps.audit.record({
-      userId: c.get('user')?.id ?? null,
-      action: 'device.block',
-      target: row.id,
-      meta: { stableId: blocked.stableId, reason: blocked.reason },
-    })
-    deps.broadcast({ type: 'device.removed', payload: { id: row.id, stableId: blocked.stableId } })
-    return c.json({ blocked })
-  })
+  // `DELETE /:id` (Forget) and `POST /:id/block` are removed by plan 207
+  // (MVP 07): `forget` and `block` are actions API verbs now
+  // (POST /api/actions/forget, POST /api/actions/block), calling the same
+  // `DeviceLifecycle.forget`/`.block` doors and sending the same
+  // `device.removed` broadcast.
 
   app.onError((err, c) => {
     if (err instanceof EnkakuError) return c.json(err.toJSON(), (ERROR_STATUS[err.code] ?? 500) as 400)

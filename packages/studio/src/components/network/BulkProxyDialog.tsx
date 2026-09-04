@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { DeviceNetworkApplyResponseSchema, classifyDeviceNetworkApply, type ClusterInfo, type DeviceInfo, type DeviceNetworkApplyResult } from '@enkaku/protocol'
-import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, api, useAction } from '@enkaku/ui'
+import { DeviceNetworkStatusResponseSchema, type ActionResult, type DeviceInfo, type GroupInfo } from '@enkaku/protocol'
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, useAction } from '@enkaku/ui'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups, deviceNameIn, type NamedOutcome } from '@/components/bulk/SkippedGroups'
 import { Choice, ChoiceGroup } from '@/components/guest-agent/RouteChoice'
@@ -11,6 +11,7 @@ import { parseSocks5Url } from '@/components/guest-agent/VpnRouteFields'
 import { HTTP_MODE_DESCRIPTION, HTTP_PROXY_ADVISORY, VPN_MODE_DESCRIPTION } from '@/components/guest-agent/proxy-copy'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
+import { runAction, awaitOperation } from '@/lib/actions'
 import { resolveTargetDeviceIds } from '@/lib/operations'
 
 /**
@@ -53,7 +54,7 @@ import { resolveTargetDeviceIds } from '@/lib/operations'
  * config, and `POST /network/apply` carries a route to apply rather than an
  * absence. See this step's report; it is a named gap, not a silent one.
  */
-const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
+const TARGET_ALLOW: Target[] = ['single', 'group', 'devices']
 
 /** The three modes an operator picks between, minus Off — see the note above. */
 type ProxyMode = 'http' | 'vpn'
@@ -93,15 +94,15 @@ export function BulkProxyDialog({
   onOpenChange,
   devices,
   allDevices,
-  clusters = [],
+  groups = [],
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The pre-filled default target — still fully editable through the picker below. */
   devices: DeviceInfo[]
-  /** The whole pool `TargetPicker`'s Cluster/Multiple devices modes choose from. Defaults to `devices` for a caller not yet updated to pass the whole fleet. */
+  /** The whole pool `TargetPicker`'s Group/Multiple devices modes choose from. Defaults to `devices` for a caller not yet updated to pass the whole fleet. */
   allDevices?: DeviceInfo[]
-  clusters?: ClusterInfo[]
+  groups?: GroupInfo[]
 }) {
   const pool = allDevices ?? devices
   const { run, isPending } = useAction()
@@ -117,13 +118,13 @@ export function BulkProxyDialog({
   const [vpnUser, setVpnUser] = useState('')
   const [vpnPass, setVpnPass] = useState('')
   const [udpMode, setUdpMode] = useState<'udp' | 'tcp'>('udp')
-  const [results, setResults] = useState<DeviceNetworkApplyResult[] | null>(null)
+  const [results, setResults] = useState<ActionResult[] | null>(null)
 
   // See `InstallBatchDialog`'s identical comment: `Infinity` for a caller that
   // has not been updated to pass `allDevices`, so an un-updated caller never
   // sees a fleet-wide gate comparing the picked set to itself.
-  const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, clusters })
-  const { target, deviceId, deviceIds, clusterId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
+  const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, groups })
+  const { target, deviceId, deviceIds, groupId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
 
   // Plan 124 §4.4, step 124.3 — the two-field form `NamedOutcome` carries, so
   // the number stays apart from the label and `SkippedGroups` can dim it. The
@@ -211,26 +212,31 @@ export function BulkProxyDialog({
   }
 
   // The one resolver every other bulk dialog uses (plan 107 §3.6's own helper)
-  // — never a second copy of "what does `cluster` mean", which is exactly how a
+  // — never a second copy of "what does `group` mean", which is exactly how a
   // dialog ends up submitting a set that disagrees with the count it displayed.
   const targetDeviceIds = useMemo(
-    () => resolveTargetDeviceIds({ target, deviceId, deviceIds, clusterId }, pool),
-    [target, deviceId, deviceIds, clusterId, pool],
+    () => resolveTargetDeviceIds({ target, deviceId, deviceIds, groupId }, pool),
+    [target, deviceId, deviceIds, groupId, pool],
   )
 
   const canSubmit = hasTarget && fleetConfirmed && routeReady && targetDeviceIds.length > 0
 
+  // Plan 207 §4.2, §4.9 — `POST /api/devices/network/apply` is gone; this is
+  // now the actions API's own `set-network` verb, `op: 'set'`
+  // (`runAction('set-network', target, { op: 'set', route })`), settled via
+  // `awaitOperation`. `ActionResult.status` already carries forbidden/
+  // skipped/failed/done directly — no second classification needed.
   const submit = () =>
     run(
       'bulk-proxy',
-      () =>
-        api('/api/devices/network/apply', DeviceNetworkApplyResponseSchema, {
-          method: 'POST',
-          json: { deviceIds: targetDeviceIds, route: routeBody() },
-        }),
+      async () => {
+        const response = await runAction('set-network', { deviceIds: targetDeviceIds }, { op: 'set', route: routeBody() })
+        const operation = await awaitOperation(response.operationId)
+        return operation.results
+      },
       {
         failure: 'Could not apply the proxy route',
-        onSuccess: (res) => setResults(res.results),
+        onSuccess: (rows) => setResults(rows),
       },
     )
 
@@ -246,18 +252,18 @@ export function BulkProxyDialog({
     let ok = 0
     let unverified = 0
     for (const r of results) {
-      const outcome = classifyDeviceNetworkApply(r)
-      if (outcome === 'failed' && r.error) {
-        failed.push({ deviceId: r.deviceId, ...deviceName(r.deviceId), reason: reasonText(r.error.code, r.error.message) })
-      } else if (outcome === 'skipped' && r.skip) {
-        skipped.push({ deviceId: r.deviceId, ...deviceName(r.deviceId), reason: reasonText(r.skip.code, r.skip.message) })
-      } else {
+      if (r.status === 'failed' || r.status === 'forbidden') {
+        failed.push({ deviceId: r.deviceId, ...deviceName(r.deviceId), reason: reasonText(r.code ?? r.status, r.message ?? '') })
+      } else if (r.status === 'skipped' || r.status === 'warned') {
+        skipped.push({ deviceId: r.deviceId, ...deviceName(r.deviceId), reason: r.message ?? r.status })
+      } else if (r.status === 'done') {
         ok += 1
         // NOT a failure — the normal terminal state of both HTTP rungs. Counted
         // separately so the sentence below can be honest about what was and was
         // not proven, without ever moving one of these devices into the failed
         // column (plan 114 §3.5, §3.9).
-        if (r.status && r.status.health !== 'ok') unverified += 1
+        const parsed = DeviceNetworkStatusResponseSchema.safeParse(r.detail)
+        if (parsed.success && parsed.data.health !== 'ok') unverified += 1
       }
     }
     const counts: OutcomeCounts = { ok, failed: failed.length, skipped: skipped.length, total: results.length }
@@ -488,7 +494,7 @@ export function BulkProxyDialog({
               </p>
             )}
 
-            <TargetPicker selection={targetSelection} devices={pool} clusters={clusters} allow={TARGET_ALLOW} />
+            <TargetPicker selection={targetSelection} devices={pool} groups={groups} allow={TARGET_ALLOW} />
           </div>
         ) : (
           <div className="space-y-3">

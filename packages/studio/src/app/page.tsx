@@ -7,16 +7,14 @@ import { Download, EthernetPort, Globe, Hash, Inbox, LayoutGrid, List, MoreVerti
 import { toast } from 'sonner'
 import {
   connectionBadge,
-  DeviceLabelsApplyResponseSchema,
   DeviceNumberCompactResponseSchema,
-  DeviceResponseSchema,
   JobInfoSchema,
   ReconnectOutcomeSchema,
   SettingsResponseSchema,
-  type ClusterInfo,
   type DeviceInfo,
   type DeviceLabelMode,
   type DeviceStatus,
+  type GroupInfo,
   type JobInfo,
   type Readiness,
   type SweepReport,
@@ -26,6 +24,7 @@ import { DeviceCard } from '@/components/DeviceCard'
 import { DiscoveredTray } from '@/components/DiscoveredTray'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
 import { InstallBatchDialog } from '@/components/InstallBatchDialog'
+import { AdbCommandDialog } from '@/components/device-popup/AdbCommandDialog'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { DisconnectDeviceDialog } from '@/components/DisconnectDeviceDialog'
 import { BulkForgetDialog } from '@/components/BulkForgetDialog'
@@ -79,13 +78,14 @@ import { isAdmin, useAuth } from '@/lib/auth'
 import { summariseSweepReport } from '@/lib/network-scan'
 import { PAGE_SIZE_OPTIONS, readLocalPrefs, readSessionPrefs, TILE_SIZE_PX, type PageSize, type TileSize, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { setWallpaperLabelMode, summariseLabelApply } from '@/lib/labelling'
+import { runAction, runOnDevice } from '@/lib/actions'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { applyActivityEvent, hasJob, isControlled } from '@/lib/activity'
 import { ws } from '@/lib/ws'
 
 type Filter = 'all' | 'ready' | 'inUse' | 'attention'
-/** 'all' = no filter, 'none' = the explicit "Unclustered" option (plan 22.0 §4.5), else a cluster id. */
-type ClusterFilter = 'all' | 'none' | (string & {})
+/** 'all' = no filter, 'none' = the explicit "Ungrouped" option (plan 22.0 §4.5), else a group id. */
+type GroupFilter = 'all' | 'none' | (string & {})
 /** A readiness filter, by `actual` (plan 43 §4.6) — 'all' = no filter. */
 type ReadinessFilter = 'all' | 'hot' | 'awake' | 'asleep'
 /**
@@ -111,9 +111,9 @@ const CONNECTION_FILTER_LABEL: Record<ConnectionFilter, string> = {
  * The floating pill treatment (plan 101 §5 step 101.7's second owner note,
  * folded in mid-step, 2026-08-16; header composition corrected by step
  * 101.8, 2026-08-16) — `refs/ui`'s own Devices-screen chrome
- * (`data-screen-label="Devices"`'s search/Cluster/Status row): a rounded,
+ * (`data-screen-label="Devices"`'s search/Group/Status row): a rounded,
  * blurred capsule instead of a plain bordered box. Shared by the header's
- * Search/Cluster/Status pills (`PageHeader`'s `actions`, matching the
+ * Search/Group/Status pills (`PageHeader`'s `actions`, matching the
  * reference's own header exactly) and the filter row's "Filters" popover
  * trigger below, so all of them read as one family — height, radius, fill,
  * blur and border all come from here, and each caller only adds what makes
@@ -129,7 +129,7 @@ const PILL =
 
 /** The View and Group controls (plan 47 §3.6, §4.5) — both linkable in the query string. */
 type View = 'list' | 'wall'
-type GroupBy = 'none' | 'cluster' | 'status' | 'tag'
+type GroupBy = 'none' | 'group' | 'status' | 'tag'
 
 /** Plan 205 §4.9 — `DeviceStatus` shrank to `offline`/`online`/`quarantined`; what used to be `idle`/`busy`/`manual` is now the live `activities` list, not a groupable status. */
 const STATUS_ORDER: DeviceStatus[] = ['online', 'quarantined', 'offline']
@@ -143,7 +143,7 @@ function isView(v: string | null): v is View {
   return v === 'list' || v === 'wall'
 }
 function isGroupBy(v: string | null): v is GroupBy {
-  return v === 'none' || v === 'cluster' || v === 'status' || v === 'tag'
+  return v === 'none' || v === 'group' || v === 'status' || v === 'tag'
 }
 
 function DashboardView() {
@@ -155,7 +155,7 @@ function DashboardView() {
   const canReleaseQuarantine = isAdmin(user)
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null)
   const [jobs, setJobs] = useState<JobInfo[]>([])
-  const [clusters, setClusters] = useState<ClusterInfo[]>([])
+  const [deviceGroups, setDeviceGroups] = useState<GroupInfo[]>([])
   const [unauthorized, setUnauthorized] = useState<string[]>([])
   // Mirrors `unauthorized` outside React state so the `device.unauthorized`
   // handler below can tell a genuinely new serial apart from the
@@ -168,13 +168,13 @@ function DashboardView() {
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
-  const [clusterFilter, setClusterFilter] = useState<ClusterFilter>('all')
+  const [groupFilter, setGroupFilter] = useState<GroupFilter>('all')
   const [readinessFilter, setReadinessFilter] = useState<ReadinessFilter>('all')
   const [connectionFilter, setConnectionFilter] = useState<ConnectionFilter>('all')
-  // View (List | Wall) and Group (None | Cluster | Status | Tag) are two
+  // View (List | Wall) and Group (None | Group | Status | Tag) are two
   // orthogonal controls, both in the query string so a view is linkable
   // (plan 47 §3.6, §4.5) — this is what replaces the separate `/topology`
-  // route: it becomes `view=wall&group=cluster`.
+  // route: it becomes `view=wall&group=group`.
   //
   // Precedence, most specific first (plan 92 §3.10, §4.9, §9 Q1, decided
   // 2026-08-12): URL query param -> this tab's session preference -> 'wall'.
@@ -238,6 +238,12 @@ function DashboardView() {
   const gridContainerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deviceId: string } | null>(null)
   const [installBatchOpen, setInstallBatchOpen] = useState(false)
+  // "Run command…" (plan 93 §3.16, §4.8, F15, step 93.11; rewired by plan
+  // 207 §4.9 onto the actions API) — the same `AdbCommandDialog` the device
+  // popup uses, opened here with no single focused device: the pre-fill is
+  // exactly the current selection, and an operator who switches to `single`
+  // mode gets a read-only terminal (no live focus device on this page).
+  const [adbCommandOpen, setAdbCommandOpen] = useState(false)
   // Push/Pull file (plan 93 §3.11, §3.16, §4.8, F15, step 93.11) — one
   // dialog, two modes, beside the existing Install: `BulkTransferDialog`
   // posts a batch (`internal:push`/`internal:pull`) exactly like
@@ -369,10 +375,10 @@ function DashboardView() {
   const applyLabelsToSelected = () =>
     run(
       'apply-labels',
-      () => api('/api/devices/labels/apply', DeviceLabelsApplyResponseSchema, { method: 'POST', json: { deviceIds: selectedIds } }),
+      async () => (await runAction('set-label', { deviceIds: selectedIds }, {})).results,
       {
         failure: 'Could not apply labels',
-        onSuccess: (res) => {
+        onSuccess: (results) => {
           // Plan 124 §0.4, §4.6, step 124.6 — **this report used to count
           // `state: 'off'` as ok.** The farm default IS `off`, so pressing
           // "Apply labels" on 45 phones that had never been switched on wrote
@@ -383,7 +389,7 @@ function DashboardView() {
           // `labelling is off for this device`, which is both true and
           // actionable. The mapping itself moved to `lib/labelling.ts` so
           // this page and the popup's own bulk report cannot disagree.
-          setLabelsApplyReport({ title: 'Apply labels', ...summariseLabelApply(res.results, res.total, outcomeNameOf) })
+          setLabelsApplyReport({ title: 'Apply labels', ...summariseLabelApply(results, results.length, outcomeNameOf) })
         },
       },
     )
@@ -419,18 +425,12 @@ function DashboardView() {
           return [{ deviceId: id, ...outcomeNameOf(id), reason: describeApiError(r.reason) }]
         })
         const applicable = ids.filter((_, i) => patched[i]?.status === 'fulfilled')
-        // `DeviceLabelsApplyBodySchema` requires at least one id — a run where
-        // every PATCH failed reports those failures instead of sending a
-        // request the server would reject for being empty.
+        // A run where every PATCH failed reports those failures instead of
+        // sending a `set-label` request with an empty target.
         const report =
           applicable.length === 0
             ? { counts: { ok: 0, failed: 0, skipped: 0, total: 0 }, failed: [] as NamedOutcome[], skipped: [] as NamedOutcome[] }
-            : summariseLabelApply(
-                (await api('/api/devices/labels/apply', DeviceLabelsApplyResponseSchema, { method: 'POST', json: { deviceIds: applicable } }))
-                  .results,
-                applicable.length,
-                outcomeNameOf,
-              )
+            : summariseLabelApply((await runAction('set-label', { deviceIds: applicable }, {})).results, applicable.length, outcomeNameOf)
         setLabelsApplyReport({
           title: 'Set number as wallpaper',
           counts: { ...report.counts, failed: report.counts.failed + patchFailed.length, total: ids.length },
@@ -501,8 +501,8 @@ function DashboardView() {
   }
 
   useEffect(() => {
-    void fetchAllPages<ClusterInfo>('/api/clusters')
-      .then(setClusters)
+    void fetchAllPages<GroupInfo>('/api/groups')
+      .then(setDeviceGroups)
       .catch(() => undefined)
     // The farm's default labelling mode (plan 89 §3.8) — `AdmitDeviceDialog`
     // reads it to reflect what a freshly admitted device will get, without
@@ -655,10 +655,10 @@ function DashboardView() {
     // AND semantics (plan 19 §4.3, §9.3) — the same rule GET /api/devices?tag=
     // applies server-side, so filtering here and filtering there never disagree.
     if (selectedTags.length > 0) list = list.filter((d) => selectedTags.every((t) => d.tags.includes(t)))
-    // A cluster filter (plan 22.0 §4.5, acceptance #4) — 'none' means exactly
-    // the unclustered devices, matching `GET /api/devices?clusterId=none`.
-    if (clusterFilter === 'none') list = list.filter((d) => d.cluster === null)
-    else if (clusterFilter !== 'all') list = list.filter((d) => d.cluster?.id === clusterFilter)
+    // A group filter (plan 22.0 §4.5, acceptance #4) — 'none' means exactly
+    // the ungrouped devices, matching `GET /api/devices?groupId=none`.
+    if (groupFilter === 'none') list = list.filter((d) => d.group === null)
+    else if (groupFilter !== 'all') list = list.filter((d) => d.group?.id === groupFilter)
     // Readiness filter, by `actual` (plan 43 §4.6) — what the device really
     // is right now, not merely what was asked for.
     if (readinessFilter !== 'all') list = list.filter((d) => d.readiness.actual === readinessFilter)
@@ -672,12 +672,12 @@ function DashboardView() {
     else if (connectionFilter === 'wifi') list = list.filter((d) => connectionBadge(d.connection) === 'WI-FI')
     else if (connectionFilter === 'tcp') list = list.filter((d) => connectionBadge(d.connection) === 'TCP')
     return list
-  }, [devices, filter, query, selectedTags, clusterFilter, readinessFilter, connectionFilter])
+  }, [devices, filter, query, selectedTags, groupFilter, readinessFilter, connectionFilter])
 
-  // View (List | Wall) and Group (None | Cluster | Status | Tag) update the
+  // View (List | Wall) and Group (None | Group | Status | Tag) update the
   // query string too, so the exact page anyone is looking at is linkable —
   // this is what makes the old `/topology` route a plain redirect to
-  // `view=wall&group=cluster` rather than a page of its own (plan 47 §3.6).
+  // `view=wall&group=group` rather than a page of its own (plan 47 §3.6).
   const pushParams = (next: { view?: View; group?: GroupBy }) => {
     const qs = new URLSearchParams(params.toString())
     const v = next.view ?? view
@@ -728,7 +728,7 @@ function DashboardView() {
   // BOTH the table and the Wall (the same `groups` value feeds each), which
   // is the one thing the old, separate `/topology` route never offered for
   // the table. A device with several tags appears in each tag group; a
-  // device with none, or with no cluster, gets its own bucket rather than
+  // device with none, or with no group, gets its own bucket rather than
   // being silently dropped.
   const groups = useMemo((): Array<[string, DeviceInfo[]]> | null => {
     if (group === 'none') return null
@@ -750,20 +750,20 @@ function DashboardView() {
       if (untagged.length > 0) sorted.push(['untagged', untagged])
       return sorted
     }
-    if (group === 'cluster') {
-      const byCluster = new Map<string, DeviceInfo[]>()
-      const unclustered: DeviceInfo[] = []
+    if (group === 'group') {
+      const byGroup = new Map<string, DeviceInfo[]>()
+      const ungrouped: DeviceInfo[] = []
       for (const d of filtered) {
-        if (!d.cluster) {
-          unclustered.push(d)
+        if (!d.group) {
+          ungrouped.push(d)
           continue
         }
-        const list = byCluster.get(d.cluster.name)
+        const list = byGroup.get(d.group.name)
         if (list) list.push(d)
-        else byCluster.set(d.cluster.name, [d])
+        else byGroup.set(d.group.name, [d])
       }
-      const sorted: Array<[string, DeviceInfo[]]> = [...byCluster.entries()].sort(([a], [b]) => a.localeCompare(b))
-      if (unclustered.length > 0) sorted.push(['Unclustered', unclustered])
+      const sorted: Array<[string, DeviceInfo[]]> = [...byGroup.entries()].sort(([a], [b]) => a.localeCompare(b))
+      if (ungrouped.length > 0) sorted.push(['Ungrouped', ungrouped])
       return sorted
     }
     // group === 'status'
@@ -779,7 +779,7 @@ function DashboardView() {
   }, [filtered, group])
 
   // Pagination applies to the UNGROUPED grid only (plan 101 §5 step 101.7).
-  // Grouping (None | Cluster | Status | Tag) reorganises `filtered` into
+  // Grouping (None | Group | Status | Tag) reorganises `filtered` into
   // named buckets that each want to show everything they contain — a "page
   // 2 of 4" spanning bucket boundaries would not read as browsing a list the
   // way `refs/ui`'s own flat `Showing X of Y` + Prev/Next does, and the
@@ -806,7 +806,7 @@ function DashboardView() {
   useEffect(() => {
     setPageRaw(0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter, query, selectedTags, clusterFilter, readinessFilter, connectionFilter, group])
+  }, [filter, query, selectedTags, groupFilter, readinessFilter, connectionFilter, group])
 
   const goPrevPage = () => setPageRaw(Math.max(0, page - 1))
   const goNextPage = () => setPageRaw(Math.min(totalPages - 1, page + 1))
@@ -875,19 +875,18 @@ function DashboardView() {
    * group-by) are set away from their default (plan 101 §5 step 101.8) —
    * shown as a small badge on the popover's trigger pill so an operator can
    * tell at a glance that something in there is narrowing the list, without
-   * opening it to check. Cluster and status live in the header now (their
+   * opening it to check. Group and status live in the header now (their
    * own pills), so they are not counted here.
    */
   const activeSecondaryFilterCount =
     (readinessFilter !== 'all' ? 1 : 0) + (connectionFilter !== 'all' ? 1 : 0) + (group !== 'none' ? 1 : 0)
 
   const releaseQuarantine = (d: DeviceInfo) =>
-    // Not one of the call sites the plan named for this file — found while
-    // migrating. `POST /:id/unquarantine` returns `{ device }`
-    // (`packages/core/src/api/devices.ts`), the result unread here (the WS
+    // Plan 207 §4.2, §4.9 — `POST /:id/unquarantine` is gone; this is now
+    // `runOnDevice('unquarantine', ...)`. The result is unread here (the WS
     // `device.status` broadcast the unquarantine triggers is what actually
     // updates the list, via `load()` below).
-    run('unq-' + d.id, () => api(`/api/devices/${d.id}/unquarantine`, DeviceResponseSchema, { method: 'POST' }), {
+    run('unq-' + d.id, () => runOnDevice('unquarantine', d.id, {}), {
       // Plan 124 §1 goal 1, §4.4 Group F — every toast that names a device
       // names it with its number.
       success: `${formatDeviceName(d.number, d.label)} is back in the queue`,
@@ -897,19 +896,23 @@ function DashboardView() {
 
   /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — no confirmation, it is not destructive. */
   const reconnectDevice = (d: DeviceInfo) =>
-    run('reconnect-' + d.id, () => api(`/api/devices/${d.id}/connection/reconnect`, ReconnectOutcomeSchema, { method: 'POST', json: {} }), {
-      // Plan 124 §1 goal 1, §4.4 Group F — the same four outcomes the popup's
-      // own Reconnect row reports, named the same way, with the number.
-      failure: `Could not reconnect ${formatDeviceName(d.number, d.label)}`,
-      onSuccess: (outcome) => {
-        const name = formatDeviceName(d.number, d.label)
-        if (outcome.result === 'already-connected') toast.success(`${name} is already connected`)
-        else if (outcome.result === 'connected') toast.success(`${name} reconnected from ${outcome.address}`)
-        else if (outcome.result === 'not-found') toast.error(`Could not find ${name} on the network`, { description: 'It did not answer at any remembered address.' })
-        else toast.error(`Could not reconnect ${name}`, { description: outcome.detail })
-        void load()
+    run(
+      'reconnect-' + d.id,
+      async () => ReconnectOutcomeSchema.parse((await runOnDevice('reconnect', d.id, {})).detail),
+      {
+        // Plan 124 §1 goal 1, §4.4 Group F — the same four outcomes the popup's
+        // own Reconnect row reports, named the same way, with the number.
+        failure: `Could not reconnect ${formatDeviceName(d.number, d.label)}`,
+        onSuccess: (outcome) => {
+          const name = formatDeviceName(d.number, d.label)
+          if (outcome.result === 'already-connected') toast.success(`${name} is already connected`)
+          else if (outcome.result === 'connected') toast.success(`${name} reconnected from ${outcome.address}`)
+          else if (outcome.result === 'not-found') toast.error(`Could not find ${name} on the network`, { description: 'It did not answer at any remembered address.' })
+          else toast.error(`Could not reconnect ${name}`, { description: outcome.detail })
+          void load()
+        },
       },
-    })
+    )
 
   /**
    * "Wake selected" / "Sleep selected" (plan 43 §4.6, §5 step 43.5; plan 93
@@ -981,7 +984,7 @@ function DashboardView() {
             {/* Plan 101 §5 step 101.8 (owner-specified, 2026-08-16): the
                 header row now holds exactly what `refs/ui`'s own
                 `data-screen-label="Devices"` header holds — a compact
-                Search, a `Cluster:` pill, a `Status:` pill — plus the ONE
+                Search, a `Group:` pill, a `Status:` pill — plus the ONE
                 primary action `docs/design.md`'s `PageHeader` rule calls
                 for ("+ Add device"). Everything the previous version of
                 this header also carried — List/Wall, tile size, Select
@@ -999,18 +1002,18 @@ function DashboardView() {
               />
             </div>
 
-            {/* This row's mapping of `refs/ui`'s own "Cluster:" dropdown —
+            {/* This row's mapping of `refs/ui`'s own "Group:" dropdown —
                 moved up from the filter row below to match the reference's
                 own header composition exactly (plan 101 §5 step 101.8). */}
-            <Select value={clusterFilter} onValueChange={setClusterFilter}>
-              <SelectTrigger className={cn(PILL, 'w-auto gap-1.5')} aria-label="Filter by cluster">
-                <span className="text-fg-subtle">Cluster:</span>
+            <Select value={groupFilter} onValueChange={setGroupFilter}>
+              <SelectTrigger className={cn(PILL, 'w-auto gap-1.5')} aria-label="Filter by group">
+                <span className="text-fg-subtle">Group:</span>
                 <SelectValue placeholder="All" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All clusters</SelectItem>
-                <SelectItem value="none">Unclustered</SelectItem>
-                {clusters.map((c) => (
+                <SelectItem value="all">All groups</SelectItem>
+                <SelectItem value="none">Ungrouped</SelectItem>
+                {deviceGroups.map((c) => (
                   <SelectItem key={c.id} value={c.id}>
                     {c.name}
                   </SelectItem>
@@ -1272,7 +1275,7 @@ function DashboardView() {
                 </Select>
               </div>
 
-              {/* Group by: None | Cluster | Status | Tag (plan 47 §3.6, §4.5) —
+              {/* Group by: None | Group | Status | Tag (plan 47 §3.6, §4.5) —
                   applies to the table AND the Wall, from the same `groups`
                   value. This is what replaced the separate `/topology` route;
                   `refs/ui` has no grouping concept at all, so this is likewise a
@@ -1285,7 +1288,7 @@ function DashboardView() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">No grouping</SelectItem>
-                    <SelectItem value="cluster">Group by cluster</SelectItem>
+                    <SelectItem value="group">Group by group</SelectItem>
                     <SelectItem value="status">Group by status</SelectItem>
                     <SelectItem value="tag">Group by tag</SelectItem>
                   </SelectContent>
@@ -1571,7 +1574,7 @@ function DashboardView() {
             </span>
             <div className="h-4 w-px bg-line" aria-hidden />
             <div className="flex flex-wrap items-center gap-2">
-              {/* Warming or sleeping a whole cluster is the actual use case
+              {/* Warming or sleeping a whole group is the actual use case
                   (plan 43 §4.6) — one tile at a time is the thing that would
                   make an operator write a script. Each device is set
                   independently; a refusal on one (e.g. a job running) does
@@ -1623,11 +1626,9 @@ function DashboardView() {
                   toolbar reads `selectedIds` regardless of which view
                   populated it, exactly as Wake/Sleep/Install/Forget
                   already do. */}
-              <Button size="sm" variant="outline" asChild>
-                <Link href={`/console?deviceIds=${selectedIds.map(encodeURIComponent).join(',')}`}>
-                  <Terminal className="size-3.5" aria-hidden />
-                  Run command…
-                </Link>
+              <Button size="sm" variant="outline" onClick={() => setAdbCommandOpen(true)}>
+                <Terminal className="size-3.5" aria-hidden />
+                Run command…
               </Button>
               <Button size="sm" variant="outline" onClick={() => setBulkTransferOpen('push')}>
                 <Upload className="size-3.5" aria-hidden />
@@ -1717,7 +1718,7 @@ function DashboardView() {
 
       <DiscoveredTray
         discovered={discovered}
-        clusters={clusters}
+        groups={deviceGroups}
         farmLabellingMode={farmLabellingMode}
         open={trayOpen}
         onOpenChange={setTrayOpen}
@@ -1743,7 +1744,7 @@ function DashboardView() {
       />
       {/* Plan 104 (M69) §3.4 — `devices` (the Wall's own selection) is the
           DEFAULT, pre-filled; `allDevices` is the whole pool so the picker
-          can also switch to a cluster or a different device list. */}
+          can also switch to a group or a different device list. */}
       <InstallBatchDialog
         open={installBatchOpen}
         onOpenChange={(o) => {
@@ -1752,9 +1753,22 @@ function DashboardView() {
         }}
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
         allDevices={devices ?? []}
-        clusters={clusters}
+        groups={deviceGroups}
       />
-      {/* Plan 114 §3.9, step 114.8 — same `devices`/`allDevices`/`clusters`
+      {/* "Run command…" — no single focused device on this page (unlike the
+          device popup's own use of this dialog), so `deviceId` is just the
+          first selected device and `canUseLive` stays false: an operator who
+          switches to `single` mode gets a read-only terminal, honestly. */}
+      <AdbCommandDialog
+        deviceId={selectedIds[0] ?? ''}
+        devices={devices ?? []}
+        selectedIds={selectedIds}
+        groups={deviceGroups}
+        canUseLive={false}
+        open={adbCommandOpen}
+        onOpenChange={setAdbCommandOpen}
+      />
+      {/* Plan 114 §3.9, step 114.8 — same `devices`/`allDevices`/`groups`
           triple every other bulk dialog on this page takes: the selection is
           the pre-filled DEFAULT, the whole fleet is the pool the picker can
           still switch to. The selection is deliberately NOT cleared on close:
@@ -1765,7 +1779,7 @@ function DashboardView() {
         onOpenChange={setBulkProxyOpen}
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
         allDevices={devices ?? []}
-        clusters={clusters}
+        groups={deviceGroups}
       />
       {/* Plan 88 §5 step 88.5's bulk sibling, opened from the fleet `⋮` menu
           above. `devices` (the pre-filled default) is the CURRENT selection
@@ -1804,7 +1818,7 @@ function DashboardView() {
         onOpenChange={setBulkPrepOpen}
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
         allDevices={devices ?? []}
-        clusters={clusters}
+        groups={deviceGroups}
       />
       <BulkTransferDialog
         mode={bulkTransferOpen ?? 'push'}
@@ -1817,7 +1831,7 @@ function DashboardView() {
         }}
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
         allDevices={devices ?? []}
-        clusters={clusters}
+        groups={deviceGroups}
       />
       {/* Plan 93 §3.15, §4.8, F15, H3, step 93.11 — `wakeOrSleepSelected`'s
           own report: the same `OutcomeSummary`/`SkippedGroups` pair every

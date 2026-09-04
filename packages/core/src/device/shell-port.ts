@@ -43,7 +43,7 @@ export interface ShellPort {
       maxOutputBytes?: number
       /**
        * Best-effort cancellation (plan 93 §3.7, §4.5) — added for the command
-       * console's fan-out runner, which aborts in-flight members on cancel.
+       * fleet command surface's fan-out runner, which aborts in-flight members on cancel.
        * Optional so every pre-existing caller (the terminal's `shell.exec`)
        * keeps compiling unchanged; omitted, behaviour is identical to before
        * this field existed. Local devices forward it straight to

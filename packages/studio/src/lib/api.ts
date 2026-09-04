@@ -11,6 +11,7 @@ import type {
 } from '@enkaku/protocol'
 import { BadResponseError, formatDeviceName } from '@enkaku/ui'
 import { coreBase } from './ws'
+import { runOnDevice } from './actions'
 
 interface ItemsPage<T> {
   items: T[]
@@ -183,7 +184,7 @@ export function deviceRefLabel(ref: DeviceRef | undefined, fallbackId: string): 
 /**
  * A phone adb has seen that nobody has admitted to the farm yet (plan 56
  * §3.3, §4.1). Deliberately not a `DeviceInfo` — it has no id, no status, no
- * cluster: there is no `devices` row behind it at all. Mirrors the WS
+ * group: there is no `devices` row behind it at all. Mirrors the WS
  * `device.discovered` payload plus the two timestamps only this REST
  * snapshot carries (`firstSeen` is what makes the tray a queue: longest
  * waiting first).
@@ -467,21 +468,17 @@ export async function fetchNetworkStatus(deviceId: string): Promise<NetworkStatu
   return DeviceNetworkStatusResponseSchema.parse(await res.json())
 }
 
+/**
+ * `set-network` (plan 207 §4.2) — `enable`/`disable`/`retry` are three of its
+ * five `op` values (`set`/`clear` are the other two, `HttpProxyFields.tsx`/
+ * `VpnRouteFields.tsx`/`NetworkRouteForm.tsx`'s own doors). The `enable`
+ * route's `E_NO_ROUTE_CONFIG` 409 (nothing saved to turn on) now arrives as
+ * an `ActionRefusedError` with that same code — the UI already disables the
+ * toggle for that case, so this is a backstop, not the primary guard.
+ */
 async function postNetworkAction(deviceId: string, action: 'enable' | 'disable' | 'retry'): Promise<NetworkStatus> {
-  const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/network/${action}`, {
-    method: 'POST',
-  })
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: { code: string; message?: string } } | null
-    // The `enable` route 409s with `E_NO_ROUTE_CONFIG` and no `message` when
-    // there is nothing saved to turn on — the UI already disables the
-    // toggle for that case, so this is a backstop, not the primary guard.
-    throw Object.assign(
-      new Error(body?.error?.message ?? `POST /api/devices/${deviceId}/network/${action} → ${res.status}`),
-      { code: body?.error?.code },
-    )
-  }
-  return DeviceNetworkStatusResponseSchema.parse(await res.json())
+  const r = await runOnDevice('set-network', deviceId, { op: action })
+  return DeviceNetworkStatusResponseSchema.parse(r.detail)
 }
 
 /** Switch an already-saved route on, without retyping credentials. 409s with `E_NO_ROUTE_CONFIG` when nothing is saved. */

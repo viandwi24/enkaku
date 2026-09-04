@@ -4,7 +4,7 @@
  * H2 both explain the field report ("the page loads slowly, closing the tab
  * fixes it"), and only numbers separate them. `bufferedBytes*` and
  * `controlReplyMs*` are the H1 evidence (a control reply queued behind
- * already-buffered H.264); the browser console's watchdog-reconnect log is
+ * already-buffered H.264); the browser's own developer-tools watchdog-reconnect log is
  * H2's (`packages/studio/src/lib/ws.ts`) — `watchdogReconnects` here is a
  * best-effort SERVER-side proxy only, see its own doc comment below.
  *

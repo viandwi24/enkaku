@@ -103,7 +103,7 @@ function byKeyAscending<T extends { key: string }>(items: T[]): T[] {
 
 /**
  * Fisher-Yates: every permutation equally likely, so the result is not biased by the input's (key)
- * order. `crypto.getRandomValues`, not `Math.random()` — the same choice `clusters/dispatch.ts`'s
+ * order. `crypto.getRandomValues`, not `Math.random()` — the same choice `groups/dispatch.ts`'s
  * own `shuffle` makes for `order: 'random'`, kept consistent here rather than picking a second RNG.
  * The `as T`/`as number` casts below are bounds-safety casts for `noUncheckedIndexedAccess`, not a
  * cast over untrusted data — `i`/`j` are always in range by the loop's own invariant, exactly as in

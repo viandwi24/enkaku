@@ -322,6 +322,8 @@ export interface GuestAgentRoutesHandle {
    * admission, the same lock, and writes the same attributed device event.
    */
   deviceNetwork: DeviceNetworkPort
+  /** The `set-network` actions API verb's one door (plan 207 §4.2, §5 step 207.4) — the SAME five functions the HTTP routes above call. */
+  routeActions: RouteService['actions']
 }
 
 export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRoutesHandle {
@@ -763,5 +765,6 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     isRouteEnabled: service.isRouteEnabled,
     withGuestAgentClient: (deviceId, fn) => withEphemeralSession(mustGet(deviceId), fn),
     deviceNetwork: service.device,
+    routeActions: service.actions,
   }
 }

@@ -197,11 +197,11 @@ export const DeviceInfoSchema = z.object({
   /** Sorted, normalised. Empty array rather than null, so callers need no guard. */
   tags: z.array(z.string()).default([]),
   /**
-   * The owning cluster (plan 22.0 §4.2), or null when unclustered. An object
-   * rather than a bare id so every list and picker can render the name
-   * without a second lookup — the same reasoning that put `tags` inline.
+   * The owning group (plan 22.0 §4.2, renamed by MVP 15 §0.1), or null. An
+   * object rather than a bare id so every list and picker can render the
+   * name without a second lookup — the same reasoning that put `tags` inline.
    */
-  cluster: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
+  group: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
   /**
    * When this device last had an application crash or ANR, IF it was within
    * the last hour — otherwise null (plan 37 §4.5). Only the fleet list
@@ -289,7 +289,7 @@ export type DeviceRemoved = z.infer<typeof DeviceRemovedMessage>
  * A phone adb has seen that nobody has admitted to the farm (plan 56).
  *
  * Deliberately NOT a `DeviceInfo`: a discovered device has no id, no status,
- * no cluster, no readiness and no tags, because it has no `devices` row at
+ * no group, no readiness and no tags, because it has no `devices` row at
  * all. Reusing the device shape would mean inventing values for all of those,
  * and an invented status is exactly how something unadmitted ends up looking
  * schedulable.

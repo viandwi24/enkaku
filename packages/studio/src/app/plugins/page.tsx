@@ -95,7 +95,7 @@ import {
  * **URL parameters.** `?tab=plugins|scripts` and `?q=<search>`, both in the
  * query string because Studio is a static export (`output: 'export'`) — no
  * route segments, `next/link` for the tabs, never a plain `<a>`. `?device=`
- * and `?cluster=` still arrive here from a device card's Run button and from
+ * and `?group=` still arrive here from a device card's Run button and from
  * `/scripts`'s redirect, are untouched, and now additionally select the
  * Scripts tab by default, since "run a script on this device" is what they
  * mean. One `q` serves both tabs and is carried across a tab switch: typing
@@ -145,7 +145,7 @@ function PluginsScreen() {
   const [scriptError, setScriptError] = useState<string | null>(null)
 
   const tabParam = params.get('tab')
-  const hasRunTarget = Boolean(params.get('device') || params.get('cluster'))
+  const hasRunTarget = Boolean(params.get('device') || params.get('group'))
   const tab: TabKey = tabParam === 'scripts' || tabParam === 'plugins' ? tabParam : hasRunTarget ? 'scripts' : 'plugins'
 
   // Typed into local state so the field never lags a keystroke, mirrored into
@@ -585,15 +585,15 @@ interface ScriptGroupRow {
  * A DEV script is never in this list at all (dev slots are not `scripts` rows);
  * it is visible in the Plugins tab instead, and in `RunScriptDialog`.
  *
- * `?device=`/`?cluster=` still arrive here — a device card's Run button and a
- * cluster's Run link point at `/plugins?device=…`, and `/scripts` keeps its
+ * `?device=`/`?group=` still arrive here — a device card's Run button and a
+ * group's Run link point at `/plugins?device=…`, and `/scripts` keeps its
  * query intact when it redirects — so the "open the run dialog straight away"
  * flow those links exist for is unbroken, and now lands on this tab.
  */
 function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { count: number | null; error: string | null }) => void }) {
   const params = useSearchParams()
   const initialDevice = params.get('device')
-  const initialCluster = params.get('cluster')
+  const initialGroup = params.get('group')
   const tableRef = useRef<PaginatedTableHandle<ScriptGroupRow>>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [firstScript, setFirstScript] = useState<ScriptRow | null>(null)
@@ -619,7 +619,7 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
    * `devices.length` changes (its own `targetSelection.reset` effect), which is
    * what makes a list that lands slightly after the dialog opened correct
    * rather than a flash: the picker fills in and re-defaults, exactly as it
-   * already does for `/api/clusters`, which the dialog has always fetched on
+   * already does for `/api/groups`, which the dialog has always fetched on
    * open rather than on mount.
    */
   const devicesRequested = useRef(false)
@@ -631,26 +631,26 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
       .catch(() => undefined)
   }
 
-  // The deep-link flow (`?device=`/`?cluster=`) opens the dialog by itself as
+  // The deep-link flow (`?device=`/`?group=`) opens the dialog by itself as
   // soon as the script list resolves, so the fetch starts HERE rather than
   // waiting for that: it runs in parallel with the script list instead of
   // after it, which is what keeps the "Run on this device" arrival as fast as
   // it was before this became lazy.
   useEffect(() => {
-    if (initialDevice || initialCluster) ensureDevices()
+    if (initialDevice || initialGroup) ensureDevices()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialDevice, initialCluster])
+  }, [initialDevice, initialGroup])
 
-  // Arriving from the "Run" button on a device card, or a cluster's "Run" link:
+  // Arriving from the "Run" button on a device card, or a group's "Run" link:
   // open the dialog as soon as the script list is ready, so the flow is not
   // interrupted.
   useEffect(() => {
-    if ((initialDevice || initialCluster) && firstScript && !runTarget && !autoOpened) {
+    if ((initialDevice || initialGroup) && firstScript && !runTarget && !autoOpened) {
       setRunTarget(firstScript)
       setAutoOpened(true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialDevice, initialCluster, firstScript])
+  }, [initialDevice, initialGroup, firstScript])
 
   const toggleEnabled = (s: ScriptGroupRow) =>
     run('toggle-' + s.id, () => api(`/api/scripts/${s.id}`, ScriptToggleResponseSchema, { method: 'PATCH', json: { enabled: !s.enabled } }), {
@@ -786,7 +786,7 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
         script={runTarget}
         devices={devices}
         initialDevice={initialDevice}
-        initialCluster={initialCluster}
+        initialGroup={initialGroup}
         onClose={() => setRunTarget(null)}
       />
     </>

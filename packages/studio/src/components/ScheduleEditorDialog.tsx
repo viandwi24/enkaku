@@ -13,7 +13,7 @@ import {
   summarizeClamp,
   ValidateResponseSchema,
 } from '@enkaku/protocol'
-import type { Agent, BatchOrder, CatchUp, ClusterInfo, DeviceInfo, OnApprovalRequired, OnOverlap, ScheduleInfo, ScheduleThreadMode } from '@enkaku/protocol'
+import type { Agent, BatchOrder, CatchUp, GroupInfo, DeviceInfo, OnApprovalRequired, OnOverlap, ScheduleInfo, ScheduleThreadMode } from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
 import { ParamSetPicker } from '@/components/ParamSetPicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
@@ -95,7 +95,7 @@ const APPROVAL_NOTE: Record<OnApprovalRequired, string> = {
   pause: 'A destructive tool call waits for a human to approve, exactly like a chat run — and expires unanswered like any other approval.',
 }
 
-type Target = 'cluster' | 'devices'
+type Target = 'group' | 'devices'
 /** Plan 68 §3.1 — the work this schedule triggers. */
 type WorkKind = 'script' | 'agent'
 
@@ -143,9 +143,9 @@ export function ScheduleEditorDialog({
   const [useLatest, setUseLatest] = useState(true)
   const [pinnedVersion, setPinnedVersion] = useState('')
   const [params, setParams] = useState<unknown>(undefined)
-  const [target, setTarget] = useState<Target>('cluster')
-  const [clusters, setClusters] = useState<ClusterInfo[]>([])
-  const [clusterId, setClusterId] = useState('')
+  const [target, setTarget] = useState<Target>('group')
+  const [groups, setGroups] = useState<GroupInfo[]>([])
+  const [groupId, setGroupId] = useState('')
   const [deviceIds, setDeviceIds] = useState<string[]>([])
   const [concurrency, setConcurrency] = useState(0)
   const [order, setOrder] = useState<BatchOrder>('as-listed')
@@ -180,9 +180,9 @@ export function ScheduleEditorDialog({
     void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
       .then((scripts) => setScripts((scripts as ScriptOption[]).filter((s) => s.enabled)))
       .catch(() => setScripts([]))
-    void fetchAllPages<ClusterInfo>('/api/clusters')
-      .then(setClusters)
-      .catch(() => setClusters([]))
+    void fetchAllPages<GroupInfo>('/api/groups')
+      .then(setGroups)
+      .catch(() => setGroups([]))
     void api('/api/agents', ListAgentsResponseSchema)
       .then((res) => setAgents(res.agents.filter((a) => a.enabled)))
       .catch(() => setAgents([]))
@@ -208,8 +208,8 @@ export function ScheduleEditorDialog({
       setUseLatest(true)
       setPinnedVersion('')
       setParams(undefined)
-      setTarget('cluster')
-      setClusterId('')
+      setTarget('group')
+      setGroupId('')
       setDeviceIds([])
       setConcurrency(0)
       setOrder('as-listed')
@@ -244,8 +244,8 @@ export function ScheduleEditorDialog({
         setPinnedVersion(ref.version === 'latest' ? '' : ref.version)
         setParams(schedule.params)
       }
-      setTarget(schedule.clusterId ? 'cluster' : 'devices')
-      setClusterId(schedule.clusterId ?? '')
+      setTarget(schedule.groupId ? 'group' : 'devices')
+      setGroupId(schedule.groupId ?? '')
       setDeviceIds(schedule.deviceIds)
       setConcurrency(schedule.concurrency)
       setOrder(schedule.order)
@@ -312,11 +312,11 @@ export function ScheduleEditorDialog({
 
   if (!open) return null
 
-  const targetCount = target === 'cluster' ? (clusters.find((c) => c.id === clusterId)?.usableCount ?? 0) : deviceIds.length
+  const targetCount = target === 'group' ? (groups.find((c) => c.id === groupId)?.usableCount ?? 0) : deviceIds.length
   const canSubmit =
     name.trim().length > 0 &&
     (preview?.valid ?? false) &&
-    (target === 'cluster' ? !!clusterId : deviceIds.length > 0) &&
+    (target === 'group' ? !!groupId : deviceIds.length > 0) &&
     (workKind === 'agent' ? !!agentId && prompt.trim().length > 0 : !!scriptName && (useLatest || !!pinnedVersion)) &&
     // Plan 94 §4.9, step 94.10 — mirrors the core's own `assertPacingValid`
     // client-side, the same defence `RunScriptDialog`'s Repeat section has.
@@ -337,7 +337,7 @@ export function ScheduleEditorDialog({
     cron,
     timezone,
     workTarget,
-    target: target === 'cluster' ? { clusterId } : { deviceIds },
+    target: target === 'group' ? { groupId } : { deviceIds },
     concurrency,
     order,
     onOverlap,
@@ -393,7 +393,7 @@ export function ScheduleEditorDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{schedule === 'new' ? 'New schedule' : `Edit ${schedule.name}`}</DialogTitle>
-          <DialogDescription>Runs a script against a cluster or device list on a cron expression, triggering a batch.</DialogDescription>
+          <DialogDescription>Runs a script against a group or device list on a cron expression, triggering a batch.</DialogDescription>
         </DialogHeader>
 
         <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
@@ -677,22 +677,22 @@ export function ScheduleEditorDialog({
             <Label className="text-[13px] font-normal">Target</Label>
             <Tabs value={target} onValueChange={(v) => setTarget(v as Target)}>
               <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="cluster">Cluster</TabsTrigger>
+                <TabsTrigger value="group">Group</TabsTrigger>
                 <TabsTrigger value="devices">Explicit devices</TabsTrigger>
               </TabsList>
             </Tabs>
-            {target === 'cluster' ? (
-              clusters.length === 0 ? (
+            {target === 'group' ? (
+              groups.length === 0 ? (
                 <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
-                  No cluster is saved yet — create one from the Clusters page, or pick "Explicit devices".
+                  No group is saved yet — create one from the Groups page, or pick "Explicit devices".
                 </p>
               ) : (
-                <Select value={clusterId} onValueChange={setClusterId}>
+                <Select value={groupId} onValueChange={setGroupId}>
                   <SelectTrigger className="h-8 w-full text-[12.5px]">
-                    <SelectValue placeholder="Pick a cluster" />
+                    <SelectValue placeholder="Pick a group" />
                   </SelectTrigger>
                   <SelectContent>
-                    {clusters.map((c) => (
+                    {groups.map((c) => (
                       <SelectItem key={c.id} value={c.id}>
                         {c.name} <span className="readout text-fg-subtle">· {c.usableCount} now</span>
                       </SelectItem>

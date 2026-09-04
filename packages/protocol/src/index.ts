@@ -88,26 +88,11 @@ import {
   RecordingStateMessage,
   RecordingStepMessage,
 } from './messages/recording'
-// Plan 93 (M58 — command console and bulk operations), step 93.4. The
-// command console's five server→client events and two client→server
-// subscription messages (§3.17, §4.3) — imported here, separately from the
-// re-export block further down, purely so the two union arrays below can
-// reference them (the same split `messages/recording`'s own import block
-// above already uses).
-import {
-  CommandStartedMessage,
-  CommandProgressMessage,
-  CommandOutputMessage,
-  CommandStageMessage,
-  CommandFinishedMessage,
-  CommandSubscribeMessage,
-  CommandUnsubscribeMessage,
-} from './messages/command'
 // Plan 97 (M62 — the script output contract), step 97.7, §3.7, §4.6.
 // `ctx.progress()`'s live push — imported here, separately from the
 // re-export block further down, purely so `ServerMessageSchema` below can
-// reference it (the same split `messages/recording`'s/`messages/command`'s
-// own import blocks above already use).
+// reference it (the same split `messages/recording`'s own import block
+// above already uses).
 import { JobProgressEventMessage } from './messages/job'
 // Plan 205 (MVP 04) — the device activity model's two broadcasts, imported
 // here for the same reason the blocks above are: the union arrays below need
@@ -123,6 +108,7 @@ import { JobTraceMessage } from './messages/job'
 export { EnvelopeSchema, type Envelope } from './envelope'
 export * from './api'
 export * from './activity'
+export * from './actions'
 export {
   PARAM_KINDS,
   DURATION_UNITS,
@@ -447,10 +433,10 @@ export {
   BatchOrderSchema,
   BatchStatusSchema,
   BatchCountsSchema,
-  ClusterInfoSchema,
+  GroupInfoSchema,
   ResolvedTargetSchema,
   SkippedDeviceSchema,
-  ClusterPreviewSchema,
+  TargetPreviewSchema,
   BatchInfoSchema,
   BatchStatusMessage,
   BatchPacingSchema,
@@ -458,8 +444,8 @@ export {
   type BatchOrder,
   type BatchStatusValue,
   type BatchCounts,
-  type ClusterInfo,
-  type ClusterPreview,
+  type GroupInfo,
+  type TargetPreview,
   type BatchInfo,
   type BatchStatusEvent,
   type BatchPacing,
@@ -975,14 +961,6 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   // contested file.
   RecordingStateMessage,
   RecordingStepMessage,
-  // Plan 93 (M58 — command console and bulk operations), step 93.4, §3.17,
-  // §4.3 — appended last, for the same "never interleave, this file is
-  // contested" reason noted on the Plan 94 entries immediately above.
-  CommandStartedMessage,
-  CommandProgressMessage,
-  CommandOutputMessage,
-  CommandStageMessage,
-  CommandFinishedMessage,
   // Plan 97 (M62 — the script output contract), step 97.7, §3.7, §4.6 —
   // appended last, for the same "never interleave, this file is contested"
   // reason noted on the Plan 93/94 entries above.
@@ -1101,11 +1079,6 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   RecordingStartMessage,
   RecordingStopMessage,
   RecordingCancelMessage,
-  // Plan 93 (M58 — command console and bulk operations), step 93.4, §3.17,
-  // §4.3 — subscription only; `POST /api/command-runs` is the only way to
-  // START a run (§3.17).
-  CommandSubscribeMessage,
-  CommandUnsubscribeMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>
 
@@ -1163,7 +1136,7 @@ export {
 // block above per its own "append-only, never reorder" rule.
 export { WallTransportSchema, type WallTransport } from './settings'
 
-// Plan 93 (M58 — command console and bulk operations), step 93.1. Moved out
+// Plan 93 (M58 — bulk operations), step 93.1. Moved out
 // of `packages/studio/src/components/terminal/TerminalPane.tsx` verbatim
 // (F24, §3.14) so Studio and, later, the core evaluate the identical list —
 // see the doc comment on `high-consequence.ts` for what this guard is and is
@@ -1226,62 +1199,6 @@ export {
 // contested file.
 export type { RecordingSettings } from './settings'
 
-// Plan 93 (M58 — command console and bulk operations), step 93.4. The
-// shared target/status/member/output shapes (§4.3) — the reconciliation
-// `command-console/store.ts` (step 93.2) and `command-console/runner.ts`
-// (step 93.3) each flagged in their own doc comments: both declared an
-// identical shape LOCALLY because this directory was off limits to them at
-// the time, on the explicit understanding that this step builds the real
-// copy and both files import from it afterward. Appended here, as its own
-// statement, rather than folded into any block above — this file is
-// contested and the rule is append-only, never reorder or tidy an existing
-// block.
-export {
-  CommandTargetSchema,
-  COMMAND_MEMBER_STATUSES,
-  CommandMemberStatusSchema,
-  COMMAND_RUN_STATUSES,
-  CommandRunStatusSchema,
-  CommandMemberSchema,
-  CommandOutputSchema,
-  CommandCountsSchema,
-  type CommandTarget,
-  type CommandMemberStatus,
-  type CommandRunStatus,
-  type CommandMember,
-  type CommandOutput,
-  type CommandCounts,
-} from './command/target'
-
-// Plan 93 (M58), step 93.4, §3.17, §4.3. The command console's WS surface —
-// re-exported here (the five server→client events and two client→server
-// subscribe/unsubscribe messages are already imported, separately, for use
-// in `ServerMessageSchema`/`ClientMessageSchema` above; this is the SAME
-// split `messages/recording`'s own two blocks already use).
-export {
-  CommandStartedMessage,
-  CommandProgressMessage,
-  CommandOutputMessage,
-  CommandStageMessage,
-  CommandFinishedMessage,
-  CommandSubscribeMessage,
-  CommandUnsubscribeMessage,
-} from './messages/command'
-
-// Plan 93 (M58), step 93.4, §4.4. `packages/core/src/api/command-runs.ts`'s
-// response envelopes.
-export {
-  CommandRunSummarySchema,
-  CommandRunDetailSchema,
-  CommandRunCreateResponseSchema,
-  CommandRunDetailResponseSchema,
-  CommandRunActionResponseSchema,
-  CommandRunDeleteResponseSchema,
-  CommandRunsPageResponseSchema,
-  type CommandRunSummary,
-  type CommandRunDetail,
-} from './api/command-runs'
-
 // Plan 97 (M62 — the script output contract), step 97.2, §3.3, §3.6, §4.1.
 // `RESULT_STATUSES`/`ResultStatusSchema` — the five states a job's result
 // settles into — plus `RESULT_LIMITS` (the same 64 KiB `kv.maxValueBytes`
@@ -1324,23 +1241,6 @@ export { ParamIssueSchema } from './schema/validate'
 // identical hazard one level down.
 export { DANGEROUS_FIELD_NAMES } from './schema/limits'
 
-// Plan 93 (M58 — command console and bulk operations), step 93.6, §3.10,
-// §4.2, §4.4. Saved commands — the wire shape of a `saved_commands` row
-// plus `packages/core/src/api/saved-commands.ts`'s CRUD response envelopes.
-// Kept in `command/saved.ts` (this step's own directory) rather than beside
-// `api/command-runs.ts` in `./api/`, which step 93.6 does not own. Appended
-// here, as its own statement, rather than folded into the step 93.4 block
-// above — this file is contested (several concurrent workers are also
-// appending today) and the rule is append-only, never reorder or tidy an
-// existing block.
-export {
-  SavedCommandSchema,
-  SavedCommandListResponseSchema,
-  SavedCommandResponseSchema,
-  SavedCommandDeleteResponseSchema,
-  type SavedCommand,
-} from './command/saved'
-
 // Plan 97 (M62 — the script output contract), step 97.7, §3.7, §4.6.
 // `JobProgressEventMessage` — the server→client half of `ctx.progress()`
 // (§3.7 in full: coalesced in the child, size-checked and warned-once-per-job
@@ -1350,7 +1250,7 @@ export {
 // an existing block.
 export { JobProgressEventMessage } from './messages/job'
 
-// Plan 93 (M58 — command console and bulk operations), step 93.9, §4.6.
+// Plan 93 (M58 — bulk operations), step 93.9, §4.6.
 // `PushJobParamsSchema`/`PullJobParamsSchema` — the `internal:push`/
 // `internal:pull` batch executor param shapes, near-copies of
 // `InstallJobParamsSchema` (exported from the same `./messages/transfer`
@@ -1374,17 +1274,11 @@ export { DeviceLabelModeSchema, DeviceLabellingSchema, type DeviceLabelMode, typ
 // `./api/devices.ts` (owned by a concurrent worker for step 89.2's
 // device-shape changes) — see that file's own doc comment.
 export { DeviceLabelStateSchema, DEFAULT_DEVICE_LABEL_STATE, type DeviceLabelState } from './api/device-label'
-// Step 89.4/89.9's own gap: the labelling HTTP endpoints' body/response
-// shapes, added once `./api/devices.ts` was free again — see that file's
-// own comment on why they live beside `DeviceLabelStateSchema` rather than
-// in the already-contested `./api/devices.ts`.
-export {
-  DeviceLabelClearBodySchema,
-  DeviceLabelsApplyBodySchema,
-  DeviceLabelsApplyResultSchema,
-  DeviceLabelsApplyResponseSchema,
-  type DeviceLabelsApplyResult,
-} from './api/device-label'
+// Step 89.4/89.9's own gap: the labelling HTTP endpoint's body shape, added
+// once `./api/devices.ts` was free again. The fleet-wide apply envelope that
+// used to live beside it is removed by plan 207 — `set-label` is an actions
+// API verb now (`./actions.ts`).
+export { DeviceLabelClearBodySchema } from './api/device-label'
 
 // Plan 107 (M72 — long-running operations), step 107.2, §3.1, §3.4, §4.
 // `GET /api/transfers` — the in-memory transfer registry's response shape

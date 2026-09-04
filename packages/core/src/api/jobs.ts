@@ -13,7 +13,6 @@ import {
   JobTraceEventSchema,
   JobTraceResponseSchema,
   JobsPageResponseSchema,
-  ScriptRefSchema,
   type JobStatus,
   type JobTraceEvent,
 } from '@enkaku/protocol'
@@ -40,36 +39,6 @@ import { typedJson } from './typed-json'
  * that resolves to and when it refuses instead.
  */
 const ResumeBody = z.object({ fromNode: z.string().min(1).optional() })
-
-// `scriptId` (concrete, unchanged) OR `scriptRef` (`name@version`/`name@latest`,
-// plan 62 §4.4) — exactly one. `refine` rather than a union so the error
-// message names the actual rule instead of a generic "no variant matched".
-const EnqueueBody = z
-  .object({
-    scriptId: z.string().min(1).optional(),
-    scriptRef: ScriptRefSchema.optional(),
-    deviceId: z.string().min(1),
-    params: z.unknown(),
-    priority: z.number().int().optional(),
-    /**
-     * Plan 98 §3.8, step 98.7 — the operator's own per-job runtime layer,
-     * composed by Studio's `RuntimeOverrideSection`. `unknown` deliberately:
-     * this route does not itself validate its shape — it crosses the same
-     * external boundary `params` does, and `JobService.enqueue()` is the ONE
-     * place that validates it against `RuntimeEnvelopeSchema`
-     * (`E_RUNTIME_ENVELOPE_INVALID`) and checks it against the farm's own
-     * ceiling (`E_RUNTIME_OVER_CEILING`, mapped to 400 below), so there is no
-     * second shape to drift from that one. This gap — the field was accepted
-     * by neither this body nor `api/batches.ts`'s create-batch body, so an
-     * operator's typed override was silently stripped by this route's own
-     * Zod parse before `service.enqueue` ever saw it — closed per
-     * docs/plans/96-m61-hotfixes.md, continuing that document's numbering.
-     */
-    runtimeOverride: z.unknown().optional(),
-  })
-  .refine((b) => (b.scriptId ? 1 : 0) + (b.scriptRef ? 1 : 0) === 1, {
-    message: 'exactly one of scriptId or scriptRef is required',
-  })
 
 const ERROR_STATUS: Record<string, number> = {
   device_not_found: 404,
@@ -115,14 +84,6 @@ const ERROR_STATUS: Record<string, number> = {
 
 export interface JobRoutesDeps {
   log?: Logger
-  /**
-   * Resolves `name@version`/`name@latest` to a concrete `scripts.id` (plan
-   * 62 §4.4) — called BEFORE the job row is written, so the stored
-   * `scriptId` is always concrete, whichever form the request used. Throws
-   * an `EnkakuError` (`script_not_found` | `script_version_not_found` |
-   * `script_ref_unresolved` | `script_disabled`) when it cannot resolve.
-   */
-  resolveScriptRef?: (ref: string) => { id: string }
   /**
    * What a RUNNING job has logged so far. `/ws` has no snapshot replay and the
    * `job.log` artifact does not exist until the job ends, so without this a
@@ -203,33 +164,12 @@ function toTraceEvent(row: typeof jobEvents.$inferSelect): JobTraceEvent {
 export function createJobRoutes(service: JobService, deps?: JobRoutesDeps): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
-  app.post('/', async (c) => {
-    const body = EnqueueBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) {
-      return c.json(
-        { error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } },
-        400,
-      )
-    }
-    let scriptId = body.data.scriptId
-    if (body.data.scriptRef) {
-      if (!deps?.resolveScriptRef) {
-        return c.json({ error: { code: 'E_BAD_REQUEST', message: 'scriptRef is not supported here' } }, 400)
-      }
-      scriptId = deps.resolveScriptRef(body.data.scriptRef).id
-    }
-    // `canUseDevice` (plan 34 §3.5, §4.4) — refused inside `service.enqueue`
-    // with `auth.forbidden` when the device belongs to another user.
-    const job = service.enqueue({
-      scriptId: scriptId as string, // guaranteed by the refine() above plus the branch just taken
-      deviceId: body.data.deviceId,
-      params: body.data.params,
-      priority: body.data.priority,
-      actor: c.get('user'),
-      runtimeOverride: body.data.runtimeOverride,
-    })
-    return typedJson(c, JobCreateResponseSchema, { job }, 201)
-  })
+  // `POST /` (the public enqueue) is removed by plan 207 (MVP 07): `run-script`
+  // is an actions API verb now (`POST /api/actions/run-script`), which
+  // always creates a batch (even for one device) through `createBatch` —
+  // never `JobService.enqueue` directly. Scripts started from inside the
+  // farm (a schedule, a plugin) still reach `service.enqueue`/`job.run`
+  // exactly as before; only the public HTTP door for a bare job is gone.
 
   /**
    * "Clear history" (plan 128 §4.3) — the bulk form of `DELETE /:id`'s
