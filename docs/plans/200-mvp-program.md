@@ -40,7 +40,7 @@ These are hard rules. A plan may add rules; it may not relax these.
 
 - Read every file the step names **before** editing it. Quote the line you are changing in your working notes. Plans cite `file:line` as of 2026-09-03; lines drift, so match on content, not on number.
 - When the plan's description of a file disagrees with the file, **the file wins for facts and the plan wins for intent**: implement the intent against the real code and record the discrepancy in the report.
-- Never run `git stash`, `git checkout -- .`, `git reset --hard`, or any whole-tree operation. Other agents may be working in the same tree.
+- Never run `git stash`, `git checkout -- .`, `git reset --hard`, or any whole-tree operation. Other agents may be working in the same tree **`git stash` is forbidden in every form, including a path-scoped `git stash push <file>`** — plan 223's executor used the scoped form to test whether a fixture bug predated its work, restored it immediately, lost nothing, and reported it plainly. The rule stays absolute anyway: it exists because one agent's whole-tree stash wiped 324 files belonging to three others, and a rule with a "when it is obviously safe" exemption is one an executor under time pressure will read as permission. To compare against an earlier state, use `git show <ref>:<path>`, `git diff`, or a copy in the scratchpad — never anything that moves the working tree.
 
 ### 2.3 Testing
 
