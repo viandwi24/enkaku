@@ -15,8 +15,13 @@ import { ParamIssueSchema } from '../schema/validate'
 export const JobStatusSchema = z.enum(['queued', 'running', 'success', 'failed', 'cancelled', 'expired'])
 export type JobStatus = z.infer<typeof JobStatusSchema>
 
-/** Why an execution exists (MVP 14 §1, plan 211). Shown in the Jobs detail meta line. */
-export const RunTriggerSchema = z.enum(['manual', 'rerun', 'schedule', 'batch', 'resume', 'workflow-step'])
+/**
+ * Why an execution exists (MVP 14 §1, plan 211). Shown in the Jobs detail
+ * meta line. `node-test` (plan 304 §4.1) is a single node run alone, on
+ * purpose, from the node panel (plan 300 P9) — it appears in the Jobs list
+ * like any other run (plan 304 §6), never a hidden execution.
+ */
+export const RunTriggerSchema = z.enum(['manual', 'rerun', 'schedule', 'batch', 'resume', 'workflow-step', 'node-test'])
 export type RunTrigger = z.infer<typeof RunTriggerSchema>
 
 /** 'script' or 'workflow' (MVP 05 §1.2), visible per row in the one Jobs list (MVP 15 §1). */

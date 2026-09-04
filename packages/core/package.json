@@ -10,6 +10,7 @@
     "@ai-sdk/anthropic": "^4.0.33",
     "@enkaku/adb": "workspace:*",
     "@enkaku/drivers": "workspace:*",
+    "@enkaku/expr": "workspace:*",
     "@enkaku/harness": "workspace:*",
     "@enkaku/protocol": "workspace:*",
     "@enkaku/scrcpy": "workspace:*",

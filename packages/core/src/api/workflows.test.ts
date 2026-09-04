@@ -2,11 +2,14 @@ import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
+import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { scripts } from '../db/schema'
+import { jobRuns, jobs, scripts, workflowSteps } from '../db/schema'
 import { createDevSlotStore } from '../plugins/dev-slots'
 import { createScriptRegistry, type ScriptRegistry } from '../scripts/registry'
 import { createWorkflowStore, type WorkflowStore } from '../workflows/store'
+import { createPinStore, type PinStore } from '../workflows/pins'
+import { createRunStore, type RunStore } from '../jobs/runs/store'
 import { createWorkflowRoutes } from './workflows'
 
 /**
@@ -31,12 +34,16 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
   return wrapper
 }
 
-function setUp(): { db: Db; registry: ScriptRegistry; store: WorkflowStore } {
+function setUp(): { db: Db; registry: ScriptRegistry; store: WorkflowStore; runs: RunStore; pins: PinStore; scheduler: { kick: () => void }; kicked: number[] } {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const registry = createScriptRegistry({ db: opened.db, dataDir: `/tmp/enkaku-workflows-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
   const store = createWorkflowStore(opened.db)
-  return { db: opened.db, registry, store }
+  const runs = createRunStore(opened.db)
+  const pins = createPinStore(opened.db)
+  const kicked: number[] = []
+  const scheduler = { kick: () => void kicked.push(1) }
+  return { db: opened.db, registry, store, runs, pins, scheduler, kicked }
 }
 
 /** Publishes a plugin member row directly, bypassing HTTP — a node's script reference must resolve to something real before a workflow document naming it can be checked at all. */
@@ -107,10 +114,10 @@ function seedOwnerExampleDeps(db: Db) {
 
 describe('POST /api/workflows — the owner\'s example (plan 210 §4.4)', () => {
   test('creates a workflows row and answers 201 { workflow }', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
     const { audit, calls } = fakeAudit()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, audit }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler, audit }))
 
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(201)
@@ -123,9 +130,9 @@ describe('POST /api/workflows — the owner\'s example (plan 210 §4.4)', () => 
   })
 
   test('a second POST with the same name is 409 workflow_name_exists', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const doc = ownerExampleDocInput()
 
     const first = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc }) })
@@ -138,9 +145,9 @@ describe('POST /api/workflows — the owner\'s example (plan 210 §4.4)', () => 
   })
 
   test('requires script.publish — no authenticated user is refused', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser(null, createWorkflowRoutes({ db, registry, store }))
+    const app = withUser(null, createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(403)
   })
@@ -148,10 +155,10 @@ describe('POST /api/workflows — the owner\'s example (plan 210 §4.4)', () => 
 
 describe('PUT /api/workflows/:name', () => {
   test('replaces the document and bumps updatedAt', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
     const { audit, calls } = fakeAudit()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, audit }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler, audit }))
     const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     const { workflow } = (await created.json()) as { workflow: { id: string; updatedAt: number } }
 
@@ -165,9 +172,9 @@ describe('PUT /api/workflows/:name', () => {
   })
 
   test('a mismatched name is 400', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
 
     const res = await app.request('/tiktok-search-pipeline', {
@@ -179,9 +186,9 @@ describe('PUT /api/workflows/:name', () => {
   })
 
   test('PUT on an unknown name is 404 workflow_not_found', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/nope', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput('nope') }) })
     expect(res.status).toBe(404)
     const body = (await res.json()) as { error: { code: string } }
@@ -191,9 +198,9 @@ describe('PUT /api/workflows/:name', () => {
 
 describe('GET /api/workflows, GET /api/workflows/:name', () => {
   test('list and one', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
 
     const list = await app.request('/')
@@ -214,10 +221,10 @@ describe('GET /api/workflows, GET /api/workflows/:name', () => {
 
 describe('DELETE /api/workflows/:name', () => {
   test('DELETE then GET is 404', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
     const { audit, calls } = fakeAudit()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, audit }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler, audit }))
     await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
 
     const del = await app.request('/tiktok-search-pipeline', { method: 'DELETE' })
@@ -229,8 +236,8 @@ describe('DELETE /api/workflows/:name', () => {
   })
 
   test('DELETE on an unknown name is 404', async () => {
-    const { db, registry, store } = setUp()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/nope', { method: 'DELETE' })
     expect(res.status).toBe(404)
   })
@@ -238,9 +245,9 @@ describe('DELETE /api/workflows/:name', () => {
 
 describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
   test('a document binding to a node that runs LATER is refused with E_WORKFLOW_FORWARD_REF, naming both nodes', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     publishScriptRow(db, 'demo', '1.0.0')
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
 
     const doc = {
       schema: 1,
@@ -264,8 +271,8 @@ describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
   })
 
   test('a node naming a script that does not exist is refused with E_WORKFLOW_SCRIPT_UNRESOLVED, not a 500', async () => {
-    const { db, registry, store } = setUp()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const doc = {
       schema: 1,
       name: 'ghost-script',
@@ -279,8 +286,8 @@ describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
   })
 
   test('a malformed v2 document (fails WorkflowDocSchema itself) is refused with E_WORKFLOW_INVALID findings, not a crash', async () => {
-    const { db, registry, store } = setUp()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 2, name: 'x', entry: 'a', nodes: [] } }) })
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { findings: Array<{ code: string }> } }
@@ -289,8 +296,8 @@ describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
   })
 
   test('a malformed v1 document (does not satisfy the frozen v1 shape) is refused with E_WORKFLOW_UPGRADE_FAILED, not a crash (plan 301 §4.6)', async () => {
-    const { db, registry, store } = setUp()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 1, name: 'x', nodes: [] } }) })
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { code: string; findings: Array<{ code: string }> } }
@@ -298,8 +305,8 @@ describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
   })
 
   test('a document declaring an unknown schema is refused with E_WORKFLOW_SCHEMA_UNKNOWN (plan 301 §4.6)', async () => {
-    const { db, registry, store } = setUp()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 3, name: 'x', nodes: [] } }) })
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { code: string } }
@@ -309,9 +316,9 @@ describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
 
 describe('POST /api/workflows — accepts a v1 body and stores v2 (plan 301 §4.5)', () => {
   test('a v1 document is upgraded before checkWorkflow ever sees it, and stored as schema 2', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(201)
     const body = (await res.json()) as { workflow: { doc: { schema: number; entry: string } } }
@@ -322,9 +329,9 @@ describe('POST /api/workflows — accepts a v1 body and stores v2 (plan 301 §4.
 
 describe('POST /api/workflows/validate', () => {
   test('returns the same findings the publish gate would, and writes nothing', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     publishScriptRow(db, 'demo', '1.0.0')
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const doc = {
       schema: 1,
       name: 'validate-only',
@@ -342,9 +349,9 @@ describe('POST /api/workflows/validate', () => {
   })
 
   test('a valid document validates clean (only the @latest / unchecked-binding warnings the owner\'s example always carries)', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(200)
     const findings = (await res.json()) as Array<{ code: string; severity: string }>
@@ -352,9 +359,9 @@ describe('POST /api/workflows/validate', () => {
   })
 
   test('requires only script.view, not script.publish', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(200)
   })
@@ -380,11 +387,11 @@ describe('POST /api/workflows/validate — workflow.maxTotalMs preflight honours
   }
 
   test('a custom, SMALL maxTotalMs (well under the 6h schema default) flags a document whose declared node timeouts sum past it', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     publishScriptRow(db, 'node-a', '1.0.0', { timeoutMs: 400_000 })
     publishScriptRow(db, 'node-b', '1.0.0', { timeoutMs: 400_000 })
 
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, settings: () => ({ maxTotalMs: 500_000 }) }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler, settings: () => ({ maxTotalMs: 500_000 }) }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeDoc() }) })
     expect(res.status).toBe(200)
     const findings = (await res.json()) as Array<{ code: string; message: string }>
@@ -395,14 +402,154 @@ describe('POST /api/workflows/validate — workflow.maxTotalMs preflight honours
   })
 
   test('the IDENTICAL document, with no settings accessor passed at all, falls back to the schema default and is NOT flagged', async () => {
-    const { db, registry, store } = setUp()
+    const { db, registry, store, runs, pins, scheduler } = setUp()
     publishScriptRow(db, 'node-a', '1.0.0', { timeoutMs: 400_000 })
     publishScriptRow(db, 'node-b', '1.0.0', { timeoutMs: 400_000 })
 
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeDoc() }) })
     expect(res.status).toBe(200)
     const findings = (await res.json()) as Array<{ code: string }>
     expect(findings.some((f) => f.code === 'E_WORKFLOW_BUDGET_IMPOSSIBLE')).toBe(false)
+  })
+})
+
+/** `start -> a -> b`, `b` reads `a`'s own output through `{ from: 'a', path: 'x' }` — the direct-predecessor case `run-node` supports (plan 304 §4.6). */
+function twoNodeV2Doc() {
+  return {
+    schema: 2,
+    name: 'run-node-doc',
+    title: '',
+    description: '',
+    params: [],
+    entry: 'start',
+    nodes: [
+      { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, next: 'a' },
+      { kind: 'script', id: 'a', title: '', ui: { x: 0, y: 0 }, script: 'node-a@1.0.0', params: {}, next: 'b' },
+      { kind: 'script', id: 'b', title: '', ui: { x: 0, y: 0 }, script: 'node-b@1.0.0', params: { x: { from: 'a', path: 'x' } } },
+    ],
+  }
+}
+
+describe('POST /api/workflows/:name/run-node (plan 300 P9, plan 304 §3.2, §4.3, §4.6)', () => {
+  async function seed(): Promise<{ db: Db; registry: ScriptRegistry; store: WorkflowStore; runs: RunStore; pins: PinStore; scheduler: { kick: () => void }; kicked: number[]; app: Hono<AuthEnv> }> {
+    const { db, registry, store, runs, pins, scheduler, kicked } = setUp()
+    publishScriptRow(db, 'node-a', '1.0.0')
+    publishScriptRow(db, 'node-b', '1.0.0')
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
+    const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeV2Doc() }) })
+    expect(created.status).toBe(201)
+    return { db, registry, store, runs, pins, scheduler, kicked, app }
+  }
+
+  test('running with a literal input creates a run with trigger = node-test (G3)', async () => {
+    const { app, db, kicked } = await seed()
+    const res = await app.request('/run-node-doc/run-node', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'b', deviceId: 'dev-1', input: { from: 'literal', value: { x: 42 } } }),
+    })
+    expect(res.status).toBe(202)
+    const body = (await res.json()) as { job: { jobId: string; kind: string }; runId: string }
+    expect(body.job.kind).toBe('workflow')
+    const runRow = db.select().from(jobRuns).where(eq(jobRuns.id, body.runId)).get()
+    expect(runRow?.trigger).toBe('node-test')
+    // Appears in the ordinary jobs table like any other run (plan 304 §6) — no hidden execution.
+    const jobRow = db.select().from(jobs).where(eq(jobs.id, body.job.jobId)).get()
+    expect(jobRow?.kind).toBe('workflow')
+    expect(kicked.length).toBe(1) // the scheduler was kicked, exactly like any other enqueue
+  })
+
+  test('running with { from: "last-run" } (the default) uses the node\'s own recorded $input', async () => {
+    const { app, db } = await seed()
+    // Simulate a prior real run: its own workflow job (a workflow's
+    // DEFINITION creates no `jobs` row — only running it does) plus one
+    // step recording node "b"'s own $input.
+    const priorJobId = crypto.randomUUID()
+    const priorRunId = crypto.randomUUID()
+    db.insert(jobs)
+      .values({ id: priorJobId, kind: 'workflow', workflowName: 'run-node-doc', deviceId: 'dev-1', scriptName: 'run-node-doc', createdAt: new Date() })
+      .run()
+    db.insert(jobRuns)
+      .values({ id: priorRunId, jobId: priorJobId, seq: 1, trigger: 'manual', status: 'success', deviceId: 'dev-1', createdAt: new Date(), seed: 0 })
+      .run()
+    db.insert(workflowSteps)
+      .values({ id: crypto.randomUUID(), runId: priorRunId, seq: 1, stepId: 'b', kind: 'script', status: 'success', startedAt: new Date(), input: { x: 7 }, pinned: false })
+      .run()
+
+    const res = await app.request('/run-node-doc/run-node', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nodeId: 'b', deviceId: 'dev-1' }) })
+    expect(res.status).toBe(202)
+  })
+
+  test('running with { from: "last-run" } and no recorded input is refused with E_NODE_NO_INPUT', async () => {
+    const { app } = await seed()
+    const res = await app.request('/run-node-doc/run-node', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nodeId: 'b', deviceId: 'dev-1' }) })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_NODE_NO_INPUT')
+  })
+
+  test('running with { from: "pin" } uses the pin on the node\'s own predecessor', async () => {
+    const { app, pins } = await seed()
+    pins.set('run-node-doc', 'a', { x: 99 }, 'u1')
+    const res = await app.request('/run-node-doc/run-node', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'b', deviceId: 'dev-1', input: { from: 'pin' } }),
+    })
+    expect(res.status).toBe(202)
+  })
+
+  test('an unknown node is refused with E_NODE_UNKNOWN', async () => {
+    const { app } = await seed()
+    const res = await app.request('/run-node-doc/run-node', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: 'no-such-node', deviceId: 'dev-1', input: { from: 'literal', value: {} } }),
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_NODE_UNKNOWN')
+  })
+})
+
+describe('Workflow pins CRUD over HTTP (plan 300 P10, plan 304 §3.3, §4.3)', () => {
+  test('PUT sets a literal pin, GET reads it back, list never carries the data, DELETE removes it', async () => {
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    publishScriptRow(db, 'node-a', '1.0.0')
+    publishScriptRow(db, 'node-b', '1.0.0')
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
+    const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeV2Doc() }) })
+    expect(created.status).toBe(201)
+
+    const put = await app.request('/run-node-doc/pins/a', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: { x: 5 } }) })
+    expect(put.status).toBe(204)
+
+    const list = await app.request('/run-node-doc/pins')
+    expect(list.status).toBe(200)
+    const listBody = (await list.json()) as { pins: Array<{ nodeId: string; updatedAt: number; bytes: number }> }
+    expect(listBody.pins).toEqual([{ nodeId: 'a', updatedAt: expect.any(Number), bytes: expect.any(Number) }])
+
+    const get = await app.request('/run-node-doc/pins/a')
+    expect(get.status).toBe(200)
+    expect(((await get.json()) as { data: unknown }).data).toEqual({ x: 5 })
+
+    const del = await app.request('/run-node-doc/pins/a', { method: 'DELETE' })
+    expect(del.status).toBe(204)
+    const getAfter = await app.request('/run-node-doc/pins/a')
+    expect(getAfter.status).toBe(404)
+  })
+
+  test('deleting the workflow removes its pins too', async () => {
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    publishScriptRow(db, 'node-a', '1.0.0')
+    publishScriptRow(db, 'node-b', '1.0.0')
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
+    const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeV2Doc() }) })
+    expect(created.status).toBe(201)
+    pins.set('run-node-doc', 'a', { x: 1 }, 'u1')
+    const del = await app.request('/run-node-doc', { method: 'DELETE' })
+    expect(del.status).toBe(200)
+    expect(pins.list('run-node-doc')).toHaveLength(0)
   })
 })

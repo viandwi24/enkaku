@@ -158,6 +158,47 @@ describe("a schedule-owned job never loses its last run (G3)", () => {
   })
 })
 
+describe('the most recent run of each WORKFLOW survives retention, even across two different jobs (plan 304 §4.4, G8)', () => {
+  test('keeps last workflow run', () => {
+    const { db, runs, sweeper } = harness()
+
+    // jobA: three runs. r0 (60d, terminal) and r1 (40d, terminal) are both
+    // NOT jobA's own latest run (r2, still queued, is) — both would be
+    // ordinary candidates under the EXISTING "job's own latest" rule alone.
+    // r1 is the WORKFLOW's own most recent completed run, though, so ONLY r0
+    // should actually go.
+    const jobA = runs.createJob({ kind: 'workflow', workflowName: 'wf-1', workflowDoc: { schema: 2 }, deviceId: 'd1', params: {}, scriptName: 'wf-1', scriptVersion: null })
+    const r0 = runs.addRun(jobA.id, { trigger: 'manual' })
+    ageRun(db, r0.id, 60, 'failed')
+    const r1 = runs.addRun(jobA.id, { trigger: 'manual' })
+    ageRun(db, r1.id, 40, 'success')
+    const r2 = runs.addRun(jobA.id, { trigger: 'manual' }) // left 'queued' — not terminal, not a candidate at all.
+
+    // jobB: a DIFFERENT job of the SAME workflow, one older completed run —
+    // already protected by the EXISTING "job's own latest" rule; present
+    // here only to prove a second job of the same workflow does not confuse
+    // "the workflow's own most recent run" (still r1, at 40 days, not this
+    // one at 90).
+    const jobB = runs.createJob({ kind: 'workflow', workflowName: 'wf-1', workflowDoc: { schema: 2 }, deviceId: 'd1', params: {}, scriptName: 'wf-1', scriptVersion: null })
+    const rB = runs.addRun(jobB.id, { trigger: 'manual' })
+    ageRun(db, rB.id, 90, 'success')
+
+    const result = sweeper.sweepOnce()
+    expect(runs.getRun(r0.id)).toBeNull() // old, non-latest-for-its-job, AND not the workflow's own latest — genuinely swept.
+    expect(runs.getRun(r1.id)).not.toBeNull() // non-latest-for-its-job, but IS the workflow's own most recent run — kept.
+    expect(runs.getRun(r2.id)).not.toBeNull() // never a candidate (not terminal).
+    expect(runs.getRun(rB.id)).not.toBeNull() // jobB's own latest run — kept regardless.
+    expect(result.runsDeleted).toBe(1)
+
+    // A DIFFERENT workflow's own latest run is unaffected by wf-1's.
+    const jobC = runs.createJob({ kind: 'workflow', workflowName: 'wf-2', workflowDoc: { schema: 2 }, deviceId: 'd1', params: {}, scriptName: 'wf-2', scriptVersion: null })
+    const oldC = runs.addRun(jobC.id, { trigger: 'manual' })
+    ageRun(db, oldC.id, 400)
+    sweeper.sweepOnce()
+    expect(runs.getRun(oldC.id)).not.toBeNull() // wf-2's own only run — kept as ITS latest, independent of wf-1.
+  })
+})
+
 describe('device events respect storage.historyDays for main and the fixed constant for input', () => {
   test('main and input streams age out independently', () => {
     const { db, sweeper } = harness()

@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm'
+import { deriveRandom } from '@enkaku/expr'
 import {
   evaluatePredicate,
   resolveValue,
@@ -12,12 +13,22 @@ import {
 import type { Db } from '../../db'
 import { workflowSteps, type JobRow, type JobRunRow } from '../../db/schema'
 import { parseWorkflowDoc } from '../../workflows/store'
+import type { PinStore } from '../../workflows/pins'
 import type { ScriptEntry, ScriptRegistry } from '../../scripts/registry'
 import { EnkakuError } from '../../util/errors'
 import type { Logger } from '../../util/logger'
 import type { ExecutorContext, JobExecutor } from '../executor'
 import type { RunStore } from '../runs/store'
 import type { RunWatcher } from '../runs/watcher'
+
+/**
+ * Triggers allowed to see a pin (plan 304 §3.3): `manual`/`rerun` (an
+ * author debugging in Studio) and `node-test` (plan 304 §4.6's "run one
+ * node" — its whole point is to skip the device). `schedule` and `batch`
+ * are a farm's own production paths and never appear here — production
+ * ignores pins by NOT LOOKING, not by a flag that could be inverted.
+ */
+const PIN_AWARE_TRIGGERS = new Set(['manual', 'rerun', 'node-test'])
 
 /**
  * Plan 99 §3.11, rewritten by plan 211 — the workflow's OWN clock, separate
@@ -36,6 +47,8 @@ export interface WorkflowOrchestratorDeps {
   runs: RunStore
   watcher: RunWatcher
   registry: ScriptRegistry
+  /** Plan 304 §3.3, §4.5 — read only on `PIN_AWARE_TRIGGERS`. */
+  pins: PinStore
   /** Enqueue one step job and its first run, then kick the scheduler (`services/job-service.ts`'s `enqueueStep`). */
   enqueueStep: (input: {
     parentWorkflowJobId: string
@@ -106,6 +119,42 @@ function capOutput(value: unknown): { output: unknown; truncated: string | null 
   return { output: null, truncated: `output was ${bytes} bytes, over the ${WORKFLOW_LIMITS.maxNodeOutputBytes}-byte cap (WORKFLOW_LIMITS.maxNodeOutputBytes) — dropped` }
 }
 
+/** The edge a PINNED node takes (plan 304 §3.3, §4.2) — a pinned node is never executed, so no predicate or case is ever evaluated; it leaves by its FIRST declared successor, matching what an author sees on the canvas as the node's "main" edge. */
+function defaultEdgeFor(node: WorkflowNode): string {
+  switch (node.kind) {
+    case 'gate':
+      return node.then !== undefined ? 'then' : 'else'
+    case 'switch': {
+      const idx = node.cases.findIndex((c) => c.to !== undefined)
+      return idx === -1 ? 'default' : `case:${idx}`
+    }
+    case 'script':
+    case 'delay':
+      return 'next'
+    default:
+      return 'next'
+  }
+}
+
+/** The node id `edge` (as `defaultEdgeFor` or a normal evaluated branch names it) points at — `null` when it dangles. */
+function edgeTarget(node: WorkflowNode, edge: string): string | null {
+  switch (node.kind) {
+    case 'gate':
+      return (edge === 'then' ? node.then : node.else) ?? null
+    case 'switch': {
+      if (edge === 'default') return node.default ?? null
+      const idx = Number(edge.slice('case:'.length))
+      return node.cases[idx]?.to ?? null
+    }
+    case 'script':
+      return node.next ?? null
+    case 'delay':
+      return node.next ?? null
+    default:
+      return null
+  }
+}
+
 /**
  * The workflow orchestrator (MVP 05 §1.2, plan 211 §4.5) — a `kind: 'workflow'`
  * job's own executor. It spawns NO child process of its own: each script
@@ -130,11 +179,52 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
       const doc = parseWorkflowDoc(job.workflowDoc)
       if (!doc) throw new EnkakuError('E_WORKFLOW_INVALID', `workflow job ${job.id} carries no valid workflow document`)
 
-      const params: Record<string, unknown> = isPlainObject(job.params) ? job.params : {}
+      // `__nodeTest` (plan 304 §4.6) is a reserved key `POST
+      // /:name/run-node` (`api/workflows.ts`) uses to hand this run its
+      // seeded predecessor — stripped out here so it can never reach a
+      // `{ param }` binding as an ordinary workflow parameter.
+      const rawParams = isPlainObject(job.params) ? job.params : {}
+      const nodeTestSeed = isPlainObject(rawParams.__nodeTest) ? (rawParams.__nodeTest as { predecessorId?: unknown; value?: unknown }) : null
+      const params: Record<string, unknown> = Object.fromEntries(Object.entries(rawParams).filter(([k]) => k !== '__nodeTest'))
       const outputs = new Map<string, unknown>()
       const summary: RunSummaryEntry[] = []
       const nodesById = new Map(doc.nodes.map((n) => [n.id, n]))
       const runCounts = new Map<string, number>()
+
+      // Plan 304 §3.2, §4.6 — `run-node` seeds the target's own predecessor
+      // (found by the route from the REAL published document) so `$input`
+      // and a direct `{ from: predecessorId }` binding both resolve exactly
+      // as they would in the real workflow. In-memory only: no
+      // `workflow_steps` row for a node this run never actually reached.
+      if (ctx.run.trigger === 'node-test' && nodeTestSeed && typeof nodeTestSeed.predecessorId === 'string') {
+        outputs.set(nodeTestSeed.predecessorId, nodeTestSeed.value)
+        const seedAt = new Date()
+        summary.push({
+          nodeId: nodeTestSeed.predecessorId,
+          script: null,
+          status: 'success',
+          startedAt: toSec(seedAt),
+          finishedAt: toSec(seedAt),
+          durationMs: 0,
+          output: nodeTestSeed.value,
+        })
+      }
+
+      // Plan 304 §3.3 — pins are read from exactly ONE place, guarded by the
+      // trigger. A `schedule`/`batch` run never reaches `deps.pins.readPins`
+      // at all: production ignores pins by not looking, not by a flag.
+      const pinsAllowed = PIN_AWARE_TRIGGERS.has(ctx.run.trigger)
+      const activePins: ReadonlyMap<string, unknown> = pinsAllowed && job.workflowName ? deps.pins.readPins(job.workflowName) : new Map()
+
+      /** `$input` for the step about to run — the previous step's own output, or `null` for the first (plan 304 §3.1, §4.7). */
+      const currentInputValue = (): unknown => (summary.length > 0 ? (summary[summary.length - 1]?.output ?? null) : null)
+
+      /** Caps a value to `WORKFLOW_LIMITS.maxNodeOutputBytes`, dropping it to `null` over the limit (same rule `capOutput` applies to `output`; `workflow_steps.input` has no truncation-marker column of its own, so an oversized input is logged and dropped rather than half-recorded). */
+      const capInput = (value: unknown): unknown => {
+        const { output, truncated } = capOutput(value)
+        if (truncated) deps.log.warn(`workflow ${job.id}: a step's $input was ${truncated} — dropped, not truncated (no marker column for input)`)
+        return output
+      }
 
       let seqOffset = 0
       const carriedOverIds = new Set<string>()
@@ -166,6 +256,9 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
               finishedAt: s.finishedAt,
               output: s.output,
               outputTruncated: s.outputTruncated,
+              input: s.input,
+              takenEdge: s.takenEdge,
+              pinned: s.pinned,
               verdict: s.verdict,
               error: null,
               errorCode: null,
@@ -181,6 +274,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
       async function runScriptStep(
         node: ScriptNode,
         stepSeq: number,
+        rowSeq: number,
         stepStartedAt: Date,
       ): Promise<{ ok: true; run: JobRunRow; scriptRef: { id: string; name: string; version: string } } | { ok: false; code: string; message: string; run?: JobRunRow; scriptRef?: { id: string; name: string; version: string } }> {
         let entry: ScriptEntry
@@ -198,10 +292,11 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         // `now` is the STEP's own start time (plan 302 §3.3) — built once
         // here and reused by every `{ expr }` binding this step resolves
         // (`resolveValue`'s own scope cache, keyed on THIS object's
-        // identity). `randomSeed` is left absent: no run-level seed column
-        // exists yet (plan 304 §4.1), so `resolveValue` falls back to a
-        // fixed `0` (plan 302 §11's recorded deferral).
-        const scope: ResolveScope = { params, outputs, summary, now: stepStartedAt.getTime() }
+        // identity). `randomSeed` is `deriveRandom(seed, seq)` (plan 304
+        // §3.4) — the RUN's own seed, folded with this step's own workflow
+        // step sequence number, so a replay or a resume evaluates the exact
+        // same value.
+        const scope: ResolveScope = { params, outputs, summary, now: stepStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, rowSeq) }
         const resolvedParams: Record<string, unknown> = {}
         for (const [key, expr] of Object.entries(node.params)) {
           const outcome = resolveValue(expr, scope)
@@ -307,6 +402,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           runCounts.set(node.id, (runCounts.get(node.id) ?? 0) + 1)
           const rowId = crypto.randomUUID()
           const rowStartedAt = new Date()
+          const inputValue = capInput(currentInputValue())
           deps.db
             .insert(workflowSteps)
             .values({
@@ -322,18 +418,51 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
               finishedAt: null,
               output: null,
               outputTruncated: null,
+              input: inputValue,
+              takenEdge: null,
+              pinned: false,
               verdict: null,
               error: null,
               errorCode: null,
             })
             .run()
 
+          // Plan 304 §3.3, §4.2 — a pinned node is never executed: its pin
+          // is substituted, and the walk moves on exactly as it would have
+          // on a real output. Checked ONCE, ahead of every kind's own
+          // dispatch below, so no kind can accidentally reach a device while
+          // pinned.
+          if (pinsAllowed && activePins.has(node.id)) {
+            const pinnedOutput = activePins.get(node.id) ?? null
+            const takenEdge = defaultEdgeFor(node)
+            const finishedAt = new Date()
+            deps.db
+              .update(workflowSteps)
+              .set({ status: 'success', finishedAt, output: pinnedOutput, pinned: true, takenEdge })
+              .where(eq(workflowSteps.id, rowId))
+              .run()
+            outputs.set(node.id, pinnedOutput)
+            summary.push({
+              nodeId: node.id,
+              script: node.kind === 'script' ? `${node.script} (pinned)` : null,
+              status: 'success',
+              startedAt: toSec(rowStartedAt),
+              finishedAt: toSec(finishedAt),
+              durationMs: finishedAt.getTime() - rowStartedAt.getTime(),
+              output: pinnedOutput,
+            })
+            step += 1
+            cursor = edgeTarget(node, takenEdge)
+            continue
+          }
+
           if (node.kind === 'gate') {
-            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime() }
+            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const { value, trace } = evaluatePredicate(node.when, scope)
             const chosen = value ? node.then : node.else
+            const takenEdge = value ? 'then' : 'else'
             const finishedAt = new Date()
-            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, verdict: trace, output: { value, branch: chosen ?? null } }).where(eq(workflowSteps.id, rowId)).run()
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, verdict: trace, output: { value, branch: chosen ?? null }, takenEdge }).where(eq(workflowSteps.id, rowId)).run()
             summary.push({
               nodeId: node.id,
               script: null,
@@ -357,7 +486,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // match wins; `default` fires when none do. Reuses
             // `evaluatePredicate` unchanged — a case's `when` is the exact
             // same `Predicate` a gate already evaluates.
-            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime() }
+            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             let chosen: string | undefined
             let firedIndex: number | null = null
             for (let ci = 0; ci < node.cases.length; ci++) {
@@ -373,7 +502,8 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             if (firedIndex === null) chosen = node.default
             const finishedAt = new Date()
             const output = { case: firedIndex, branch: chosen ?? null }
-            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output }).where(eq(workflowSteps.id, rowId)).run()
+            const takenEdge = firedIndex === null ? 'default' : `case:${firedIndex}`
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output, takenEdge }).where(eq(workflowSteps.id, rowId)).run()
             summary.push({
               nodeId: node.id,
               script: null,
@@ -399,14 +529,14 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // not a budget. A non-numeric or unresolved `ms` degrades to `0`
             // rather than failing the step: a delay is advisory timing, not
             // a binding whose absence should fail a run.
-            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime() }
+            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const msOutcome = resolveValue(node.ms, scope)
             const rawMs = msOutcome.ok && typeof msOutcome.value === 'number' && Number.isFinite(msOutcome.value) ? msOutcome.value : 0
             const waitMs = Math.max(0, Math.min(rawMs, node.maxMs))
             await cancellableDelay(waitMs, ctx.signal)
             const finishedAt = new Date()
             const output = { ms: waitMs }
-            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output }).where(eq(workflowSteps.id, rowId)).run()
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output, takenEdge: 'next' }).where(eq(workflowSteps.id, rowId)).run()
             summary.push({
               nodeId: node.id,
               script: null,
@@ -424,7 +554,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           }
 
           // A script step.
-          const outcome = await runScriptStep(node, step, rowStartedAt)
+          const outcome = await runScriptStep(node, step, seq, rowStartedAt)
           if (outcome.run) currentChildRunId = outcome.run.id
           const finishedAt = new Date()
 
@@ -433,7 +563,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             const { output, truncated } = capOutput(outcome.run.result)
             deps.db
               .update(workflowSteps)
-              .set({ status: 'success', finishedAt, jobId: outcome.run.jobId, jobRunId: outcome.run.id, output, outputTruncated: truncated })
+              .set({ status: 'success', finishedAt, jobId: outcome.run.jobId, jobRunId: outcome.run.id, output, outputTruncated: truncated, takenEdge: 'next' })
               .where(eq(workflowSteps.id, rowId))
               .run()
             const scriptLabel = `${outcome.scriptRef.name}@${outcome.scriptRef.version}`
@@ -462,6 +592,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
               finishedAt,
               error: outcome.message,
               errorCode: outcome.code,
+              takenEdge: outcome.run?.status === 'cancelled' || outcome.code === 'job_cancelled' ? null : 'onFailure',
               ...(outcome.run ? { jobId: outcome.run.jobId, jobRunId: outcome.run.id } : {}),
             })
             .where(eq(workflowSteps.id, rowId))
@@ -540,7 +671,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         // genuine failure (never on a cancel).
         if (finalStatus === 'failed' && !cancelled && doc.onFail) {
           try {
-            const cleanupScope: ResolveScope = { params, outputs, summary, now: Date.now() }
+            const cleanupScope: ResolveScope = { params, outputs, summary, now: Date.now(), randomSeed: deriveRandom(ctx.run.seed, skipSeq) }
             const cleanupEntry = deps.registry.resolve(doc.onFail.script)
             const resolvedParams: Record<string, unknown> = {}
             let bindingOk = true

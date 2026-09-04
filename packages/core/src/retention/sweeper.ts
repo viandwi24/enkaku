@@ -6,7 +6,7 @@ import type { Db } from '../db'
 import { AUDIT_RETENTION_DAYS, EVENT_MAX_ROWS_PER_DEVICE, INPUT_EVENT_RETENTION_DAYS } from '../config/constants'
 import { artifacts, auditLog, deviceEvents, jobEvents, jobRuns, jobs } from '../db/schema'
 import { createTraceFrameStore } from '../jobs/trace/frame-store'
-import type { CreateRunRetentionSweeper, RunRetentionPolicy } from '../jobs/runs/sweeper'
+import { latestWorkflowRunIds, type CreateRunRetentionSweeper, type RunRetentionPolicy } from '../jobs/runs/sweeper'
 import type { RunStore } from '../jobs/runs/store'
 import { recomputeStorageUsage } from './storage-usage'
 import type { FarmSettingsStore } from '../settings/farm-settings'
@@ -71,9 +71,10 @@ export function createRetentionSweeper(deps: {
     return { runDays: deps.settings.get().storage.historyDays, keepLatest: true, chunk: RUN_SWEEP_CHUNK }
   }
 
-  /** Candidate run ids: terminal, older than the cutoff, and not their job's latest run. Same predicate `jobs/runs/sweeper.ts` applies internally — read-only here, used for the cascade (traces/events/artifacts) and for the dry run. */
+  /** Candidate run ids: terminal, older than the cutoff, not their job's latest run, and — for a workflow job — not the single most recent run of that WORKFLOW across every job it ever had (plan 304 §4.4, G8). Same predicate `jobs/runs/sweeper.ts` applies internally — read-only here, used for the cascade (traces/events/artifacts) and for the dry run. */
   function candidateRunIds(policy: RunRetentionPolicy): string[] {
     const cutoffSec = Math.floor((Date.now() - policy.runDays * 86_400_000) / 1000)
+    const exemptWorkflowRuns = latestWorkflowRunIds(deps.db)
     return deps.db
       .select({ id: jobRuns.id })
       .from(jobRuns)
@@ -87,6 +88,7 @@ export function createRetentionSweeper(deps: {
       )
       .all()
       .map((r) => r.id)
+      .filter((id) => !exemptWorkflowRuns.has(id))
   }
 
   /** Every job with zero runs that no schedule or parent workflow job owns — whether it never ran at all, or was reduced to zero by this sweep. */

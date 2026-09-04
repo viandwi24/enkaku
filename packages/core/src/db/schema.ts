@@ -513,6 +513,8 @@ export const jobRuns = sqliteTable(
     errorPhase: text('error_phase'),
     /** How many times THIS run was requeued for an infrastructure failure (MVP 14 §1: infra retries never consume a run number). */
     infraAttempts: integer('infra_attempts').notNull().default(0),
+    /** Plan 304 §3.4 — the per-run seed `$random` derives from (`(seed, seq)`, `@enkaku/expr`'s `deriveRandom`). Generated at run creation; a `resume` run reuses its parent run's seed so a step that branched one way on an expression yesterday branches the same way today. */
+    seed: integer('seed').notNull().default(0),
     peakRssBytes: integer('peak_rss_bytes'),
     /** Resolved when the run is created, never re-derived; 0/null both mean unlimited to the claim. */
     maxConcurrent: integer('max_concurrent'),
@@ -535,7 +537,7 @@ export const jobRuns = sqliteTable(
   ],
 )
 
-export type RunTrigger = 'manual' | 'rerun' | 'schedule' | 'batch' | 'resume' | 'workflow-step'
+export type RunTrigger = 'manual' | 'rerun' | 'schedule' | 'batch' | 'resume' | 'workflow-step' | 'node-test'
 export type JobRunRow = typeof jobRuns.$inferSelect
 
 /**
@@ -566,6 +568,12 @@ export const workflowSteps = sqliteTable(
     /** The step's output, size-capped by `WORKFLOW_LIMITS.maxNodeOutputBytes`. For a script step this is the child run's `result`. */
     output: text('output', { mode: 'json' }),
     outputTruncated: text('output_truncated'),
+    /** The value this step received as `$input` (plan 304 §3.1) — the previous step's output, size-capped the same way `output` is, truncation marked the same way. `null` for the first real step of a run, which has none. */
+    input: text('input', { mode: 'json' }),
+    /** Which edge the step left by: `'next' | 'onFailure' | 'then' | 'else' | 'case:<i>' | 'default'`, or `null` when the run ended here (plan 304 §4.1). */
+    takenEdge: text('taken_edge'),
+    /** True when the step was satisfied from a pin instead of executed (plan 304 §3.3) — no device or child process contact. */
+    pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
     /** A gate's `PredicateTrace` and the branch it took. Null for a script step. */
     verdict: text('verdict', { mode: 'json' }),
     error: text('error'),
@@ -575,6 +583,28 @@ export const workflowSteps = sqliteTable(
 )
 
 export type WorkflowStepRow = typeof workflowSteps.$inferSelect
+
+/**
+ * A pinned node output (plan 300 P10, plan 304 §3.3) — authoring state, kept
+ * OUTSIDE `workflows.doc` and therefore outside `jobs.workflow_doc`: a
+ * pinned mock never gets published and never rides along on a queued job.
+ * `readPins()` (`workflows/pins.ts`) is the ONLY reader, called only on the
+ * `manual`, `rerun` and `node-test` trigger paths — a production run
+ * (`schedule`, `batch`) never looks, which is what makes "production ignores
+ * pins" true by construction rather than by a flag that could be inverted.
+ */
+export const workflowPins = sqliteTable(
+  'workflow_pins',
+  {
+    workflowName: text('workflow_name').notNull(),
+    nodeId: text('node_id').notNull(),
+    data: text('data', { mode: 'json' }).notNull(),
+    createdBy: text('created_by'),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.workflowName, t.nodeId] })],
+)
+export type WorkflowPinRow = typeof workflowPins.$inferSelect
 
 /**
  * A group is a container, not a selector (plan 22.0 §3.1–§3.3, superseding

@@ -6,6 +6,7 @@ import { jobRuns, jobs, workflowSteps } from '../../db/schema'
 import { createRunStore } from '../runs/store'
 import { createRunWatcher } from '../runs/watcher'
 import { createWorkflowOrchestrator, type WorkflowOrchestratorDeps } from './workflow'
+import { createPinStore } from '../../workflows/pins'
 import type { ScriptEntry, ScriptRegistry } from '../../scripts/registry'
 import type { Logger } from '../../util/logger'
 
@@ -153,6 +154,7 @@ function setUp(plan: Map<string, { status: 'success' | 'failed' | 'cancelled'; r
     runs,
     watcher,
     registry: fakeRegistry(),
+    pins: createPinStore(db),
     enqueueStep(input) {
       const job = runs.createJob({
         kind: 'script',
@@ -179,9 +181,9 @@ function setUp(plan: Map<string, { status: 'success' | 'failed' | 'cancelled'; r
   return { db, runs, deps, cancelledRunIds }
 }
 
-function workflowJobFor(runs: ReturnType<typeof createRunStore>, doc: WorkflowDoc | Record<string, unknown>) {
+function workflowJobFor(runs: ReturnType<typeof createRunStore>, doc: WorkflowDoc | Record<string, unknown>, overrides: Partial<Parameters<ReturnType<typeof createRunStore>['addRun']>[1]> = {}) {
   const job = runs.createJob({ kind: 'workflow', workflowName: doc.name as string, workflowDoc: doc, deviceId: 'dev-1', params: {}, scriptName: doc.name as string, scriptVersion: null })
-  const run = runs.addRun(job.id, { trigger: 'manual' })
+  const run = runs.addRun(job.id, { trigger: 'manual', ...overrides })
   return { job, run }
 }
 
@@ -476,5 +478,124 @@ describe('createWorkflowOrchestrator (plan 211 §4.5, doc v2 by plan 301)', () =
       const elapsed = Date.now() - started
       expect(elapsed).toBeLessThan(5_000)
     })
+  })
+})
+
+describe('plan 304 — executor v2: per-step input/edge recording, pins, deterministic $random', () => {
+  test('every step records the input it received, the output it produced, and the edge it took (G1)', async () => {
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: { n: 1 } }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, threeStepDoc())
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all().sort((a, b) => a.seq - b.seq)
+    const s1 = stepRows.find((s) => s.stepId === 's1')
+    const s2 = stepRows.find((s) => s.stepId === 's2')
+    expect(s1?.input).toBeNull() // nothing ran before it
+    expect(s1?.takenEdge).toBe('next')
+    expect(s1?.pinned).toBe(false)
+    expect(s2?.input).toEqual({ n: 1 }) // s1's own output
+    expect(s2?.takenEdge).toBe('next')
+  })
+
+  test('the recorded input is exactly what an expression saw as $input (G2)', async () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'input-equals-scope',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 's1' }),
+        scriptNode({ id: 's1', script: 'demo/s1@1.0.0', next: 's2' }),
+        scriptNode({ id: 's2', script: 'demo/s2@1.0.0', params: { seen: { expr: '$input.count' } } }),
+      ],
+    })
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: { count: 7 } }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    const s2Row = stepRows.find((s) => s.stepId === 's2')
+    expect(s2Row?.input).toEqual({ count: 7 })
+    const s2Job = deps.db.select().from(jobs).where(eq(jobs.parentWorkflowJobId, job.id)).all().find((j) => j.stepSeq === 1)
+    expect(s2Job?.params).toEqual({ seen: 7 })
+  })
+
+  test('a pinned node is not executed; its pin is substituted and downstream nodes receive it (G4)', async () => {
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: { real: true } }]]))
+    deps.pins.set('three-steps', 's1', { pinned: true, n: 99 }, 'u1')
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, threeStepDoc(), { trigger: 'manual' })
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    const s1Row = stepRows.find((s) => s.stepId === 's1')
+    expect(s1Row?.pinned).toBe(true)
+    expect(s1Row?.status).toBe('success')
+    expect(s1Row?.jobId).toBeNull() // never executed
+    expect(s1Row?.output).toEqual({ pinned: true, n: 99 })
+
+    const s2Row = stepRows.find((s) => s.stepId === 's2')
+    expect(s2Row?.input).toEqual({ pinned: true, n: 99 }) // downstream saw the pin, not the real output
+  })
+
+  test('a production run (schedule/batch) ignores every pin — it is never even read (G5)', async () => {
+    for (const trigger of ['schedule', 'batch'] as const) {
+      const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: { real: true } }]]))
+      deps.pins.set('three-steps', 's1', { pinned: true }, 'u1')
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, threeStepDoc(), { trigger })
+      await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+      const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+      const s1Row = stepRows.find((s) => s.stepId === 's1')
+      expect(s1Row?.pinned).toBe(false)
+      expect(s1Row?.output).toEqual({ real: true })
+      expect(s1Row?.jobId).not.toBeNull()
+    }
+  })
+
+  test('$random is reproducible from the run\'s own seed — a replay/resume with the same seed yields the same value (G7)', async () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'random-doc',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 's1' }), scriptNode({ id: 's1', script: 'demo/s1@1.0.0', params: { r: { expr: '$random' } } })],
+    })
+
+    const { runs: runsA, deps: depsA } = setUp(new Map())
+    const orchestratorA = createWorkflowOrchestrator(depsA)
+    const jobA = runsA.createJob({ kind: 'workflow', workflowName: doc.name, workflowDoc: doc, deviceId: 'dev-1', params: {}, scriptName: doc.name, scriptVersion: null })
+    const runA = runsA.addRun(jobA.id, { trigger: 'manual', seed: 12345 })
+    await orchestratorA.run(jobA, { runId: runA.id, run: runA, signal: new AbortController().signal, heartbeat: () => {}, log: depsA.log })
+    const s1JobA = depsA.db.select().from(jobs).where(eq(jobs.parentWorkflowJobId, jobA.id)).all()[0]
+
+    const { runs: runsB, deps: depsB } = setUp(new Map())
+    const orchestratorB = createWorkflowOrchestrator(depsB)
+    const jobB = runsB.createJob({ kind: 'workflow', workflowName: doc.name, workflowDoc: doc, deviceId: 'dev-1', params: {}, scriptName: doc.name, scriptVersion: null })
+    const runB = runsB.addRun(jobB.id, { trigger: 'manual', seed: 12345 })
+    await orchestratorB.run(jobB, { runId: runB.id, run: runB, signal: new AbortController().signal, heartbeat: () => {}, log: depsB.log })
+    const s1JobB = depsB.db.select().from(jobs).where(eq(jobs.parentWorkflowJobId, jobB.id)).all()[0]
+
+    expect(s1JobA?.params).toEqual(s1JobB?.params) // same seed, same step number → same $random
+
+    // A DIFFERENT seed gives a DIFFERENT value — proves this is not just always 0.
+    const { runs: runsC, deps: depsC } = setUp(new Map())
+    const orchestratorC = createWorkflowOrchestrator(depsC)
+    const jobC = runsC.createJob({ kind: 'workflow', workflowName: doc.name, workflowDoc: doc, deviceId: 'dev-1', params: {}, scriptName: doc.name, scriptVersion: null })
+    const runC = runsC.addRun(jobC.id, { trigger: 'manual', seed: 999 })
+    await orchestratorC.run(jobC, { runId: runC.id, run: runC, signal: new AbortController().signal, heartbeat: () => {}, log: depsC.log })
+    const s1JobC = depsC.db.select().from(jobs).where(eq(jobs.parentWorkflowJobId, jobC.id)).all()[0]
+    expect(s1JobC?.params).not.toEqual(s1JobA?.params)
+
+    // A resume inherits the ORIGINAL run's seed automatically (jobs/runs/store.ts's own rule).
+    const resumeRun = runsA.addRun(jobA.id, { trigger: 'resume', resumedFromRunId: runA.id, resumedFromStep: 0 })
+    expect(resumeRun.seed).toBe(runA.seed)
   })
 })

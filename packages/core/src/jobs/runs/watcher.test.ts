@@ -25,6 +25,7 @@ function run(overrides: Partial<JobRunRow> = {}): JobRunRow {
     failureClass: null,
     errorPhase: null,
     infraAttempts: 0,
+    seed: 0,
     peakRssBytes: null,
     maxConcurrent: null,
     runtimeOverride: null,

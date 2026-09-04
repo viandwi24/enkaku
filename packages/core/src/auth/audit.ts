@@ -83,6 +83,10 @@ export type AuditAction =
   | 'workflow.create'
   | 'workflow.update'
   | 'workflow.delete'
+  // Plan 304 §4.3 — pinning/unpinning a node's output is authoring state,
+  // not a document edit, but it is still an act worth answering for later.
+  | 'workflow.pin.set'
+  | 'workflow.pin.remove'
   // Named parameter sets (plan 95 §4.7, §4.8, §5 step 95.8) — a preset is
   // "standing intent" about a script the same way a schedule is, and gets
   // the same answerability its sibling `script.*` verbs already have.

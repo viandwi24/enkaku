@@ -512,6 +512,13 @@
       "when": 1788517892694,
       "tag": "0072_dapper_kulan_gath",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "6",
+      "when": 1788546589361,
+      "tag": "0073_tranquil_red_skull",
+      "breakpoints": true
     }
   ]
 }

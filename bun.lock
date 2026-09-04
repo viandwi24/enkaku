@@ -45,6 +45,7 @@
         "@ai-sdk/anthropic": "^4.0.33",
         "@enkaku/adb": "workspace:*",
         "@enkaku/drivers": "workspace:*",
+        "@enkaku/expr": "workspace:*",
         "@enkaku/harness": "workspace:*",
         "@enkaku/protocol": "workspace:*",
         "@enkaku/scrcpy": "workspace:*",
@@ -281,7 +282,7 @@
     },
     "plugins/tiktok-automation-pack": {
       "name": "@enkaku/plugin-tiktok",
-      "version": "1.16.0",
+      "version": "1.17.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -290,7 +291,7 @@
     },
     "plugins/youtube-automation-pack": {
       "name": "@enkaku/plugin-youtube",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",

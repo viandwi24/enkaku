@@ -4,6 +4,7 @@ export { ExprParseError, parse } from './parse'
 export { toScopeValue } from './scope'
 export { evaluate } from './eval'
 export type { ExprScope } from './eval'
+export { deriveRandom } from './random'
 
 /**
  * A shallow type view of a scope, for plan 306's autocomplete (§9 Q4). Not

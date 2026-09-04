@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { and, desc, eq, ne } from 'drizzle-orm'
 import {
   checkDeclaredSchema,
   checkWorkflow,
@@ -8,19 +9,29 @@ import {
   WorkflowResponseSchema,
   WorkflowsListResponseSchema,
   WorkflowDeleteResponseSchema,
+  WorkflowPinsListResponseSchema,
+  WorkflowPinDataResponseSchema,
+  WorkflowPinSetRequestSchema,
+  WorkflowRunNodeRequestSchema,
+  WorkflowRunNodeResponseSchema,
   type ResolvedNodeScript,
   type ScriptRef,
   type WorkflowBudget,
   type WorkflowDoc,
   type WorkflowFinding,
+  type WorkflowNode,
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
+import { jobRuns, jobs, workflowSteps } from '../db/schema'
+import { rowToJobInfo } from '../queue/job-store'
 import type { ScriptRegistry } from '../scripts/registry'
 import type { WorkflowStore } from '../workflows/store'
 import { upgradeWorkflowDoc } from '../workflows/upgrade'
+import type { PinStore } from '../workflows/pins'
+import type { RunStore } from '../jobs/runs/store'
 import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
 import { WORKFLOW_MAX_TOTAL_MS } from '../config/constants'
@@ -49,6 +60,10 @@ const ERROR_STATUS: Record<string, number> = {
   E_PARAMS_SCHEMA_INVALID: 400,
   E_WORKFLOW_SCHEMA_UNKNOWN: 400,
   E_WORKFLOW_UPGRADE_FAILED: 400,
+  E_NODE_UNKNOWN: 400,
+  E_NODE_NO_INPUT: 400,
+  E_PIN_TOO_LARGE: 400,
+  pin_not_found: 404,
 }
 
 function parseErrorFindings(issues: readonly { path: readonly PropertyKey[]; message: string }[]): WorkflowFinding[] {
@@ -190,7 +205,80 @@ function validateForWrite(
   return { ok: true, doc, paramsSchema }
 }
 
-export function createWorkflowRoutes(deps: { db: Db; registry: ScriptRegistry; store: WorkflowStore; audit?: AuditLogger; settings?: () => WorkflowBudget }): Hono<AuthEnv> {
+/**
+ * The node whose edge points AT `nodeId` — the one candidate for "the
+ * predecessor's output" (plan 304 §3.2's option 2, and the value a `run-node`
+ * request seeds `$input` from). `null` when `nodeId` is the document's own
+ * `entry` successor with no other node pointing at it, or when nothing does.
+ */
+function findPredecessorId(doc: WorkflowDoc, nodeId: string): string | null {
+  for (const n of doc.nodes) {
+    switch (n.kind) {
+      case 'start':
+      case 'delay':
+        if (n.next === nodeId) return n.id
+        break
+      case 'script':
+        if (n.next === nodeId || n.onFailure === nodeId) return n.id
+        break
+      case 'gate':
+        if (n.then === nodeId || n.else === nodeId) return n.id
+        break
+      case 'switch':
+        if (n.default === nodeId || n.cases.some((c) => c.to === nodeId)) return n.id
+        break
+      case 'finish':
+        break
+    }
+  }
+  return null
+}
+
+/** A copy of `node` with every outbound edge removed — the one-node document `run-node` builds ends at this node, whatever it decides. */
+function stripSuccessors(node: WorkflowNode): WorkflowNode {
+  switch (node.kind) {
+    case 'script':
+      return { ...node, next: undefined, onFailure: undefined }
+    case 'gate':
+      return { ...node, then: undefined, else: undefined }
+    case 'switch':
+      return { ...node, cases: node.cases.map((c) => ({ ...c, to: undefined })), default: undefined }
+    case 'delay':
+      return { ...node, next: undefined }
+    default:
+      return node
+  }
+}
+
+/**
+ * The most recently recorded `$input` for `nodeId` (plan 304 §3.2 option 1)
+ * — `workflow_steps.input` from the latest REAL run (never a `node-test`
+ * run, so running a node alone twice in a row does not bootstrap off its own
+ * synthetic predecessor). `undefined` when the node has never run.
+ */
+function lastRecordedInput(db: Db, workflowName: string, nodeId: string): { ok: true; value: unknown } | { ok: false } {
+  const row = db
+    .select({ input: workflowSteps.input })
+    .from(workflowSteps)
+    .innerJoin(jobRuns, eq(jobRuns.id, workflowSteps.runId))
+    .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+    .where(and(eq(jobs.workflowName, workflowName), eq(workflowSteps.stepId, nodeId), ne(jobRuns.trigger, 'node-test')))
+    .orderBy(desc(workflowSteps.startedAt))
+    .limit(1)
+    .get()
+  return row ? { ok: true, value: row.input } : { ok: false }
+}
+
+export function createWorkflowRoutes(deps: {
+  db: Db
+  registry: ScriptRegistry
+  store: WorkflowStore
+  runs: RunStore
+  pins: PinStore
+  scheduler: { kick: () => void }
+  audit?: AuditLogger
+  settings?: () => WorkflowBudget
+}): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
   const { registry, store } = deps
   const actorId = (c: { get(k: 'user'): { id: string } | undefined }): string | null => c.get('user')?.id ?? null
@@ -253,8 +341,135 @@ export function createWorkflowRoutes(deps: { db: Db; registry: ScriptRegistry; s
     const workflow = store.get(name)
     if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
     store.remove(name)
+    deps.pins.removeAll(name)
     deps.audit?.record({ userId: actorId(c), action: 'workflow.delete', target: workflow.id, meta: { name } })
     return typedJson(c, WorkflowDeleteResponseSchema, { ok: true })
+  })
+
+  // ---- Pins (plan 300 P10, plan 304 §3.3, §4.3) ----
+
+  app.get('/:name/pins', requirePermission('script.view'), (c) => {
+    const name = c.req.param('name')
+    if (!store.get(name)) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+    return typedJson(c, WorkflowPinsListResponseSchema, { pins: deps.pins.list(name) })
+  })
+
+  app.get('/:name/pins/:nodeId', requirePermission('script.view'), (c) => {
+    const name = c.req.param('name')
+    if (!store.get(name)) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+    const pin = deps.pins.get(name, c.req.param('nodeId'))
+    if (!pin) throw new EnkakuError('pin_not_found', `no pin on node "${c.req.param('nodeId')}"`)
+    return typedJson(c, WorkflowPinDataResponseSchema, { data: pin.data })
+  })
+
+  app.put('/:name/pins/:nodeId', requirePermission('script.publish'), async (c) => {
+    const name = c.req.param('name')
+    const nodeId = c.req.param('nodeId')
+    const workflow = store.get(name)
+    if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+    const body = WorkflowPinSetRequestSchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => i.message).join('; '))
+    let data: unknown
+    if ('data' in body.data) {
+      data = body.data.data
+    } else {
+      // `{ from: 'last-run' }` pins the last recorded OUTPUT of nodeId
+      // itself, not its predecessor's input — the same value the canvas
+      // already shows for that node's last run.
+      const row = deps.db
+        .select({ output: workflowSteps.output })
+        .from(workflowSteps)
+        .innerJoin(jobRuns, eq(jobRuns.id, workflowSteps.runId))
+        .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+        .where(and(eq(jobs.workflowName, name), eq(workflowSteps.stepId, nodeId), ne(jobRuns.trigger, 'node-test')))
+        .orderBy(desc(workflowSteps.startedAt))
+        .limit(1)
+        .get()
+      if (!row) throw new EnkakuError('E_NODE_NO_INPUT', `node "${nodeId}" has no recorded run to pin from`)
+      data = row.output
+    }
+    deps.pins.set(name, nodeId, data, actorId(c))
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.pin.set', target: workflow.id, meta: { name, nodeId } })
+    return c.body(null, 204)
+  })
+
+  app.delete('/:name/pins/:nodeId', requirePermission('script.publish'), (c) => {
+    const name = c.req.param('name')
+    const nodeId = c.req.param('nodeId')
+    const workflow = store.get(name)
+    if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+    deps.pins.remove(name, nodeId)
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.pin.remove', target: workflow.id, meta: { name, nodeId } })
+    return c.body(null, 204)
+  })
+
+  // ---- Run one node (plan 300 P9, plan 304 §3.2, §4.3, §4.6) ----
+
+  app.post('/:name/run-node', requirePermission('job.run'), async (c) => {
+    const name = c.req.param('name')
+    const workflow = store.get(name)
+    if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+    const body = WorkflowRunNodeRequestSchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => i.message).join('; '))
+    const { nodeId, deviceId, input } = body.data
+
+    const targetNode = workflow.doc.nodes.find((n) => n.id === nodeId)
+    if (!targetNode || targetNode.kind === 'start' || targetNode.kind === 'finish') {
+      throw new EnkakuError('E_NODE_UNKNOWN', `"${nodeId}" is not a runnable node of workflow "${name}"`)
+    }
+
+    const predecessorId = findPredecessorId(workflow.doc, nodeId)
+    const source = input?.from ?? 'last-run'
+    let inputValue: unknown
+    if (source === 'literal') {
+      inputValue = input && 'value' in input ? input.value : undefined
+    } else if (source === 'pin') {
+      const pin = predecessorId ? deps.pins.get(name, predecessorId) : null
+      if (!pin) {
+        throw new EnkakuError(
+          'E_NODE_NO_INPUT',
+          `node "${nodeId}" has no pinned predecessor to run from — pin its predecessor, supply literal input, or run the workflow once first`,
+        )
+      }
+      inputValue = pin.data
+    } else {
+      const last = lastRecordedInput(deps.db, name, nodeId)
+      if (!last.ok) {
+        throw new EnkakuError(
+          'E_NODE_NO_INPUT',
+          `node "${nodeId}" has never run — supply { input: { from: 'literal', value } } or { from: 'pin' } against its predecessor`,
+        )
+      }
+      inputValue = last.value
+    }
+
+    const startNode: WorkflowNode = { kind: 'start', id: 'run-node-start', title: '', ui: { x: 0, y: 0 }, next: nodeId }
+    const syntheticDoc = WorkflowDocSchema.parse({
+      schema: 2,
+      name,
+      title: workflow.doc.title,
+      description: '',
+      params: [],
+      entry: 'run-node-start',
+      nodes: [startNode, stripSuccessors(targetNode)],
+      maxSteps: 2,
+    })
+
+    const job = deps.runs.createJob({
+      kind: 'workflow',
+      workflowName: name,
+      workflowDoc: syntheticDoc,
+      deviceId,
+      // The seed for the executor's own node-test seeding (plan 304 §4.6) —
+      // never a real workflow parameter; stripped from `$params` before an
+      // `{ expr }`/`{ param }` binding can see it (`jobs/executors/workflow.ts`).
+      params: predecessorId ? { __nodeTest: { predecessorId, value: inputValue } } : {},
+      scriptName: name,
+      scriptVersion: null,
+    })
+    const run = deps.runs.addRun(job.id, { trigger: 'node-test' })
+    deps.scheduler.kick()
+    return typedJson(c, WorkflowRunNodeResponseSchema, { job: rowToJobInfo(job, run), runId: run.id }, 202)
   })
 
   app.onError((err, c) => {

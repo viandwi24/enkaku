@@ -49,6 +49,17 @@ export interface AddRunInput {
   runtimeOverride?: unknown
   resumedFromRunId?: string | null
   resumedFromStep?: number | null
+  /**
+   * The seed `$random` derives from (plan 304 §3.4). Omitted generates a
+   * fresh one, EXCEPT for `trigger: 'resume'` with a `resumedFromRunId`: that
+   * combination inherits the ORIGINAL run's own seed, so an expression that
+   * branched one way on the first pass through a step branches the same way
+   * on the resume (G7) — the same "reuse unless explicit" shape
+   * `runtimeOverride` already has above, but keyed on `resume` specifically
+   * rather than on every run of the same job, since an ordinary `rerun` is a
+   * fresh attempt and is meant to get fresh randomness.
+   */
+  seed?: number
 }
 
 export interface SettleRunInput {
@@ -160,6 +171,12 @@ export function createRunStore(db: Db): RunStore {
         const seq = job.runCount + 1
         const previous = job.latestRunId ? (tx.select().from(jobRuns).where(eq(jobRuns.id, job.latestRunId)).get() ?? null) : null
         const runtimeOverride = input.runtimeOverride !== undefined ? input.runtimeOverride : (previous?.runtimeOverride ?? null)
+        // Plan 304 §3.4: a fresh seed per run, EXCEPT a resume, which
+        // inherits the ORIGINAL run's own seed (looked up directly — the
+        // run being resumed from is not necessarily `previous`, the job's
+        // current latest run).
+        const resumedFrom = input.trigger === 'resume' && input.resumedFromRunId ? (tx.select().from(jobRuns).where(eq(jobRuns.id, input.resumedFromRunId)).get() ?? null) : null
+        const seed = input.seed ?? resumedFrom?.seed ?? crypto.randomInt(0, 2_147_483_647)
         const runRow: typeof jobRuns.$inferInsert = {
           id: crypto.randomUUID(),
           jobId: job.id,
@@ -177,6 +194,7 @@ export function createRunStore(db: Db): RunStore {
           maxConcurrent: input.maxConcurrent ?? null,
           runtimeOverride: runtimeOverride as typeof jobRuns.$inferInsert.runtimeOverride,
           infraAttempts: 0,
+          seed,
           resumedFromRunId: input.resumedFromRunId ?? null,
           resumedFromStep: input.resumedFromStep ?? null,
         }

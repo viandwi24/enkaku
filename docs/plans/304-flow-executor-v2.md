@@ -1,7 +1,7 @@
 # Plan 304 — Flow : Executor v2 — graph walk, per-step input, run one node, pinned outputs
 
-> Status: draft
-> Ships: `packages/core/src/workflows/pins.ts`
+> Status: implemented
+> Ships: packages/core/src/workflows/pins.ts
 > Depends on: plans 301, 302, 303
 > Spec references: §4.6, §4.8, §12, §16
 
@@ -9,16 +9,16 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | Every step records the input it received, the output it produced, and the edge it took | 3 new columns, all populated | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `step record` passes | [ ] |
-| G2 | The recorded input is exactly what an expression saw as `$input` | byte-equal to the scope value | same file → `input equals scope` passes | [ ] |
-| G3 | A single node can be run on its own, against the last run's input, without running the workflow | `POST /api/workflows/:name/run-node` → a run with `trigger = 'node-test'` | `bun test packages/core/src/api/workflows.test.ts` → `run one node` passes | [ ] |
-| G4 | A pinned node is not executed; its pin is substituted and downstream nodes receive it | 1 step skipped, marked `pinned` | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `pin substitution` passes | [ ] |
-| G5 | A production run ignores every pin | `trigger` ∈ {`schedule`, `batch`} ⇒ pins not read at all | same file → `production ignores pins` passes | [ ] |
-| G6 | Pins live outside the document and outside the job snapshot | `workflow_pins` table; `rg` finds no pin field in the doc schema | `rg -n "pin" packages/protocol/src/workflow.ts` → empty | [ ] |
-| G7 | `$random` and `$now` are reproducible on a replay | a run carries a seed; replaying yields the same expression values | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `deterministic replay` passes | [ ] |
-| G8 | The most recent run of each workflow survives retention | 1 run per workflow is exempt from the age rule | `bun test packages/core/src/retention/` (the directory only) → `keeps last workflow run` passes | [ ] |
-| G9 | A migration adds the columns and the table without rewriting existing rows | 1 generated migration; existing runs read back unchanged | `bun run --cwd packages/core db:generate`, then `bun test packages/core/src/db/` (the directory only) | [ ] |
-| G10 | `bun run typecheck` clean | 0 errors | exits 0 | [ ] |
+| G1 | Every step records the input it received, the output it produced, and the edge it took | 3 new columns, all populated | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `step record` passes | [x] |
+| G2 | The recorded input is exactly what an expression saw as `$input` | byte-equal to the scope value | same file → `input equals scope` passes | [x] |
+| G3 | A single node can be run on its own, against the last run's input, without running the workflow | `POST /api/workflows/:name/run-node` → a run with `trigger = 'node-test'` | `bun test packages/core/src/api/workflows.test.ts` → `run one node` passes | [x] |
+| G4 | A pinned node is not executed; its pin is substituted and downstream nodes receive it | 1 step skipped, marked `pinned` | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `pin substitution` passes | [x] |
+| G5 | A production run ignores every pin | `trigger` ∈ {`schedule`, `batch`} ⇒ pins not read at all | same file → `production ignores pins` passes | [x] |
+| G6 | Pins live outside the document and outside the job snapshot | `workflow_pins` table; `rg` finds no pin field in the doc schema | `rg -n "pin" packages/protocol/src/workflow.ts` → empty | [x] |
+| G7 | `$random` and `$now` are reproducible on a replay | a run carries a seed; replaying yields the same expression values | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `deterministic replay` passes | [x] |
+| G8 | The most recent run of each workflow survives retention | 1 run per workflow is exempt from the age rule | `bun test packages/core/src/retention/` (the directory only) → `keeps last workflow run` passes | [x] |
+| G9 | A migration adds the columns and the table without rewriting existing rows | 1 generated migration; existing runs read back unchanged | `bun run --cwd packages/core db:generate`, then `bun test packages/core/src/db/` (the directory only) | [x] |
+| G10 | `bun run typecheck` clean | 0 errors | exits 0 | [x] |
 
 ## 1. Goals
 
@@ -243,4 +243,58 @@ workflow from a schedule and confirm the pin was ignored and node 2 executed.
 
 ## 11. Handoff report
 
-_To be written by the executing agent._
+- **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ G5 ✅ G6 ✅ G7 ✅ G8 ✅ G9 ✅ G10 ✅ — all ten goals are software-verifiable and green; none needed an `owner` row.
+
+- **Branch**: `flow-304-workflow-executor-v2`, cut from `mvp` (worktree `/Users/solpochi/Projects/oss/openpf/.claude/worktrees/agent-a66bb04354ac7e06e`).
+
+- **Commits**: see `git log flow-304-workflow-executor-v2 --not mvp` in this worktree; committed as a small series of `feat(flow-304): …` commits alongside this report, plus one `chore(flow-304): …` for the generated migration.
+
+- **Typecheck**: clean (`bash scripts/typecheck.sh` — every package `OK`, including `core`, `protocol`, `expr`, `studio`).
+
+- **Tests run** (one invocation at a time, never the full suite):
+  - `bun test packages/expr/src/` → 166 pass, 0 fail (6 files) — the new `deriveRandom` PRNG plus every pre-existing expr test, unaffected by the added export.
+  - `bun test packages/core/src/jobs/executors/workflow.test.ts` → 19 pass, 0 fail (14 pre-existing + 5 new: step record (G1), input-equals-scope (G2), pin substitution (G4), production ignores pins (G5), deterministic $random (G7)).
+  - `bun test packages/core/src/workflows/pins.test.ts` → 8 pass, 0 fail (new file, `pins.ts`'s own CRUD/size/scoping suite).
+  - `bun test packages/core/src/api/workflows.test.ts` → 27 pass, 0 fail (20 pre-existing + 7 new: run-node's three input sources, E_NODE_NO_INPUT, E_NODE_UNKNOWN, and pins-over-HTTP CRUD + cascade-delete).
+  - `bun test packages/core/src/db/` (directory) → 57 pass, 0 fail — migration 0073 applies cleanly across every existing migration fixture in this directory (G9).
+  - `bun test packages/core/src/retention/` (directory) → 14 pass, 0 fail (13 pre-existing + 1 new: `keeps last workflow run`, G8).
+  - `bun test packages/core/src/jobs/runs/` (directory, touched by the `seed` addition) → 17 pass, 0 fail.
+  - `bun test packages/core/src/api/workflows-wiring.test.ts` (daemon-wiring guard, touched by the new `daemon.ts` deps) → 2 pass, 0 fail.
+  - Not run: any other directory. `bun test` (bare) was never invoked.
+
+- **Removed, proven**: §10 declares nothing removed (additive plan). No proof command applies.
+
+- **§6 acceptance greps, with real output**:
+  - `rg -n "readPins" packages/core/src` →
+    ```
+    packages/core/src/workflows/pins.ts:34:  readPins(workflowName: string): ReadonlyMap<string, unknown>
+    packages/core/src/workflows/pins.ts:72:    readPins(workflowName) {
+    packages/core/src/workflows/pins.test.ts:55:    const all = pins.readPins('wf-a')
+    packages/core/src/db/schema.ts:591: * `readPins()` (`workflows/pins.ts`) is the ONLY reader, called only on the
+    packages/core/src/jobs/executors/workflow.ts:214:      // trigger. A `schedule`/`batch` run never reaches `deps.pins.readPins`
+    packages/core/src/jobs/executors/workflow.ts:217:      const activePins: ReadonlyMap<string, unknown> = pinsAllowed && job.workflowName ? deps.pins.readPins(job.workflowName) : new Map()
+    ```
+    One CALL site (`workflow.ts:217`), guarded by `pinsAllowed = PIN_AWARE_TRIGGERS.has(ctx.run.trigger)` where `PIN_AWARE_TRIGGERS = {'manual', 'rerun', 'node-test'}` — `schedule`/`batch` never reach it.
+  - `rg -n "'node-test'" packages/core/src packages/protocol/src` → the `RunTrigger` enum (`schema.ts`, `messages/job.ts`), the route's three uses in `api/workflows.ts` (the two `lastRecordedInput`-family exclusions and the `addRun` call), the executor's guard (`PIN_AWARE_TRIGGERS`, the seeding branch), and the one test assertion in `workflows.test.ts`. Nothing else.
+  - `rg -n -i "pin" packages/protocol/src/workflow.ts` → empty (G6).
+  - `test -e packages/core/src/workflows/pins.ts` → exists (the `Ships:` artefact).
+
+- **Migration**: `packages/core/drizzle/0073_tranquil_red_skull.sql`, index **73** (the next free index in `_journal.json` at the time of generation — 0072 was the last). Read in full before accepting: **one `CREATE TABLE workflow_pins`** and **four `ALTER TABLE … ADD COLUMN`** statements — `job_runs.seed`, `workflow_steps.input`, `workflow_steps.taken_edge`, `workflow_steps.pinned`. No table rewrite, no data loss, no `DROP`, no index change on an existing table.
+
+- **Discrepancies between plan and code**:
+  - **`workflow-resolve.ts`'s real location** (flagged in advance by the task brief): the file lives at `packages/protocol/src/workflow-resolve.ts`, not `packages/core/src/workflows/workflow-resolve.ts` as plan 304 and plan 302 both say. Used the real path throughout.
+  - **§5's migration count**: the plan's step 304.1 says "three `ALTER TABLE ADD COLUMN`s and one `CREATE TABLE`". The generated migration has **four** `ALTER TABLE ADD COLUMN`s (the plan's own §4.1 schema block lists exactly four new columns across two tables — `workflow_steps.input`/`.taken_edge`/`.pinned` plus `job_runs.seed` — so the plan's step text undercounted its own schema by one; the schema block was followed, not the step's prose count). Still purely additive; no table rewrite.
+  - **`input`'s truncation marker**: §3.1 says "the same truncation marker is reused" for `input`, but §4.1's schema block declares only 3 new `workflow_steps` columns (`input`, `taken_edge`, `pinned`) — no `input_truncated` column exists to reuse `output`'s marker into. Implemented `input` as capped-to-`null`-over-the-limit with a `deps.log.warn` at truncation time instead of inventing a fifth column the plan's own schema block did not declare.
+  - **§3.2 point 3, "literal input validated against the node's params schema"**: `$input` (what `workflow_steps.input` records, and what `run-node`'s three sources all resolve to per §3.2's own point 1) is the *previous node's raw output*, not the target node's own resolved parameter object — the two have no schema relationship (a script's `paramsSchema` describes named parameters, `$input` is an arbitrary JSON value). Implemented `run-node`'s literal source as accepting any JSON value (still size-capped implicitly by request-body limits), not validated against the target's params schema, which would have been a category error. Recorded here rather than silently reinterpreting the plan.
+  - **`run-node`'s predecessor-only input model**: a node's `params` bindings may read `{ from: X }` for *any* earlier node, not only its immediate predecessor. §3.2's three input sources ("the last run's recorded input for THAT node", "a pin on the node's PREDECESSOR", "literal JSON") only ever name the node itself or its one predecessor, so this plan's `run-node` seeds exactly one synthetic predecessor entry (found by scanning the real published document's edges) before running the stripped-down one-node graph. A node whose params read a *non-adjacent* ancestor will fail to resolve that specific binding when run alone (an ordinary `E_WORKFLOW_BINDING_UNRESOLVED`-shaped step failure inside the synthetic run, not a route-level error) — this is a scope limitation inherent to the plan's own three-source model, not a bug; the common single-hop case (the one plan 300 R6/P9 is about) works correctly and is tested.
+  - **Pin substitution's edge choice for control nodes**: the plan's §4.2 pseudocode treats pin substitution uniformly across all node kinds but does not say which edge a pinned `gate`/`switch` takes (neither evaluates a predicate when pinned). Implemented `defaultEdgeFor`: the node's *first declared* successor (`then` over `else`; the first case with a `to`, else `default`) — documented in code, not silently arbitrary.
+  - **`{ from: 'last-run' }` pin semantics**: §4.3's route table gives the pin-set body as `{ data }` or `{ from: 'last-run' }` without specifying which value the latter captures. Implemented it as the pinned node's own last-recorded *output* (the value the canvas already shows for that node), not its `$input` — the natural reading of "pin this node's data."
+
+- **Observed, not done**:
+  - `packages/core/src/api/workflow-jobs.ts`'s `createWorkflowJobRoutes` (steps/resume) is not mounted anywhere in `daemon.ts`/`server/http.ts` — a pre-existing gap unrelated to this plan, left alone (not in scope, not caused by this work).
+  - `run-node`'s synthetic document does not carry the real workflow's declared `params[]`, so a target node whose bindings use `{ param: X }` will not resolve `X` unless the caller's literal/pin path happens to satisfy it incidentally. Not required by any G-row; noted for plan 306's UI to account for (it will need to supply workflow params too, or the route will need extending).
+  - No `workflow_steps` row is written for the synthetic seeded predecessor in a `node-test` run (kept in-memory only) — a deliberate simplification (§3.2 discrepancy above) since that node did not actually run in this run.
+
+- **Open questions hit**: none of §9's four questions blocked a step. Q1 (pin expiry), Q2 (`finish`'s structured result), Q3 (node-test and the activity policy — confirmed unchanged, ordinary job), and Q4 (pin export) were all left exactly as their "current answer" rows say; no step required deciding them.
+
+- **Processes**: `ps -Ao pid=,command= | grep -i "[o]penpf"` → (no output; nothing left running from this session).

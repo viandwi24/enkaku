@@ -162,6 +162,7 @@ import { createWorkflowRoutes } from './api/workflows'
 import { createRecordingRoutes } from './api/recordings'
 import { createScriptRegistry } from './scripts/registry'
 import { createWorkflowStore } from './workflows/store'
+import { createPinStore } from './workflows/pins'
 import { createDevSlotStore } from './plugins/dev-slots'
 import { createPluginRuntime } from './plugins/runtime'
 import { createRuntimeHost, type RuntimeHost } from './plugins/runtime-host'
@@ -1600,6 +1601,10 @@ let blobGc: BlobGc | null = null
       const scriptRegistry = createScriptRegistry({ db, dataDir: cfg.dataDir, devSlots: pluginDevSlots })
       // Plan 210 §4.4 — one instance per boot, beside `scriptRegistry`.
       const workflowStore = createWorkflowStore(db)
+      // Plan 304 §3.3, §4.4 — pins live in their own table, outside the
+      // document; one instance, shared by the orchestrator (read-only,
+      // trigger-gated) and the pin routes (read/write).
+      const pinStore = createPinStore(db)
 
       // Check the `scripts` table for a non-built-in scriptId (M4) — shared by
       // the job service, batch dispatch and schedule dispatch (plans 04, 20, 21)
@@ -1635,6 +1640,7 @@ let blobGc: BlobGc | null = null
             runs,
             watcher: runWatcher,
             registry: scriptRegistry,
+            pins: pinStore,
             enqueueStep: (input) => jobService.enqueueStep(input),
             cancelRun: (runId) => jobService.cancelRun(runId),
             settings: () => ({ maxTotalMs: WORKFLOW_MAX_TOTAL_MS }),
@@ -3352,7 +3358,16 @@ let blobGc: BlobGc | null = null
         // executor's runtime clock already enforced (the `createWorkflowExecutor`
         // call below, wired since plan 99 §5 items 1-2). Guarded by
         // `daemon-wiring.test.ts`'s workflow-routes describe block.
-        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, store: workflowStore, audit, settings: () => ({ maxTotalMs: WORKFLOW_MAX_TOTAL_MS }) }),
+        workflowRoutes: createWorkflowRoutes({
+          db,
+          registry: scriptRegistry,
+          store: workflowStore,
+          runs,
+          pins: pinStore,
+          scheduler: { kick: () => scheduler!.kick() },
+          audit,
+          settings: () => ({ maxTotalMs: WORKFLOW_MAX_TOTAL_MS }),
+        }),
         // Plan 94 §4.9, §5 step 94.5 — `workspaceStore` and `recordingService` are the
         // SAME instances every other route/service in this file already shares (one
         // workspace, one recorder — F16/F11's own "never a second store/bundler").

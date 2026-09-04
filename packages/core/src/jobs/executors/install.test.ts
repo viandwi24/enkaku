@@ -33,6 +33,7 @@ const FAKE_RUN: import('../../db/schema').JobRunRow = {
   failureClass: null,
   errorPhase: null,
   infraAttempts: 0,
+  seed: 0,
   peakRssBytes: null,
   maxConcurrent: null,
   runtimeOverride: null,
