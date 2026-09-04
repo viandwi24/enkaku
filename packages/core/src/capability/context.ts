@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { DeviceCall } from '@enkaku/session'
-import { createDeviceExecutor, type TimingSettings, type TransferPort } from '@enkaku/session'
+import { createDeviceExecutor, needsInspector, type TimingSettings, type TransferPort } from '@enkaku/session'
 import { newSession, type Session } from '@enkaku/harness'
 import { JobTraceEventSchema, type ActionRequest, type ActionResponse, type ActivityActor, type ActivityKind, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type PolicyDecision, type UiNode } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
@@ -552,6 +552,12 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
       const onFrame = () => {}
       const session = await sessions.acquire(deviceId, onFrame)
       try {
+        // MVP 02 §2.5, plan 208 §3.5: an agent, REST or MCP read uses the
+        // session's own engine, the same one a script uses — it never lands
+        // on an ad-hoc dump. Only for the four methods that actually need
+        // it: a `tap` from an agent must not wait on an engine it does not
+        // use, and the prewarm has usually finished by the time an agent acts.
+        if (needsInspector(call)) await session.whenInspectorReady()
         const execute = createDeviceExecutor({
           session,
           ...(deps.timing ? { timing: deps.timing } : {}),

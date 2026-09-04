@@ -41,9 +41,9 @@ export const MAIN_EVENT_KINDS = [
   'device.artifact.mismatch',
   /** `desired` readiness changed, by a human or a policy (plan 43 §4.5) — carries { from, to }. */
   'device.readiness',
-  /** The inspector engine was started (or joined) for the Inspect tab (plan 56 §3.7) — carries { engineId }. Individual dumps are NOT recorded here (§3.7): they are reads, many per minute, and would drown the log. */
+  /** An Inspect tab attached to the session's already-running engine (plan 56 §3.7, plan 208 §3.2) — carries { engineId, tookMs }. Individual dumps are NOT recorded here (§3.7): they are reads, many per minute, and would drown the log. */
   'inspect.attached',
-  /** The last Inspect tab viewer left and the inspector engine was released (plan 56 §3.7). */
+  /** An Inspect tab viewer left; the engine keeps running with the session (plan 56 §3.7, plan 208 §3.2). */
   'inspect.detached',
   /** Bounded automatic network-route recovery gave up after its attempt bound (plan 90 §3.7 rule 5, fixes F20) — carries { attempts, message }. */
   'network.recovery.exhausted',

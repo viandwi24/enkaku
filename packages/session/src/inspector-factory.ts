@@ -99,12 +99,19 @@ export async function createInspectorForSession(
       // session, not the lane's default idle/absolute budgets. Bounded
       // anyway — the handle is stopped in `release()` below, and Plan 24's
       // `stopForDevice` already fires when a device goes away.
+      //
+      // `onData` is forwarded, not discarded (plan 208 §3.3): the bytes are
+      // the `am instrument -w -r` status stream, which `lifecycle.ts`'s line
+      // parser reads for the fail-fast verdict. `pinned: true` (plan 208
+      // §3.6): this stream now lives for the whole session, so it must not
+      // compete with a bursty user for the counted per-device cap of 4.
       execStream: (cmd, streamOpts) =>
         deps.execStream(opts.transport.serial, cmd, {
-          onData: () => {},
+          onData: streamOpts.onData,
           onEnd: (reason, err) => streamOpts.onEnd(reason, err),
           idleTimeoutMs: 0,
           absoluteTimeoutMs: 0,
+          pinned: true,
         }),
       onLog: (level, msg) => deps.log[level](msg),
     })
@@ -128,6 +135,7 @@ export async function createInspectorForSession(
     })
     await inspector.start()
     if (inspector.isDead()) throw new Error('the watchdog gave up during start')
+    deps.log.debug(`ui-server ready on ${opts.deviceId} in ${inspector.startedInMs()} ms`)
 
     const claimedPort = port
     return {

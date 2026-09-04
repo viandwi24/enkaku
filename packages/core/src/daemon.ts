@@ -4202,8 +4202,9 @@ let blobGc: BlobGc | null = null
             // just force-dropped outside the activity registry's own bookkeeping
             // (plan 26 §3.7, §4.4) — harmless if there was none.
             releaseShellSession?.(deviceId)
-            // Nor a stale Inspect tab ref count (plan 56 §4.2 step 7) — the
-            // inspector engine itself already went down with the session.
+            // Nor a stale Inspect tab bookkeeping entry (plan 56 §4.2 step
+            // 7; plan 208 §3.2) — the inspector engine itself already went
+            // down with the session.
             resetInspectForDevice?.(deviceId)
             // A device that just went offline cannot usefully carry an adb
             // endpoint either (plan 27 §4.2) — the smartsocket backend it

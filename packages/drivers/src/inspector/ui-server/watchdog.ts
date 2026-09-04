@@ -1,5 +1,5 @@
 import type { UiServerClient } from './client'
-import type { UiServerLauncher } from './launcher'
+import type { UiServerLauncher, UiServerStartHooks } from './launcher'
 
 export type UiServerStatus =
   | { state: 'starting' }
@@ -16,6 +16,17 @@ export type UiServerStatus =
  * raised above the array's length).
  */
 export const DEFAULT_RESTART_BACKOFF_MS = [1000, 3000, 10_000, 30_000]
+
+/**
+ * The budget for a start that prints nothing (plan 208 §3.3, §4.4). Kept
+ * equal to `lifecycle.ts`'s `INSTRUMENTATION_START_SILENCE_MS` by value, not
+ * by import: `lifecycle.ts` already imports `createWatchdog` from this
+ * module, and a value import back from here would make the two modules
+ * genuinely circular (a real risk with `const` — the module that evaluates
+ * second would read the other's export before it exists). Both constants
+ * are `15_000`; a future change to either must change both.
+ */
+export const DEFAULT_START_TIMEOUT_MS = 15_000
 
 /**
  * `cycle` is 1-based — the first restart cycle in the window uses
@@ -50,6 +61,13 @@ export interface WatchdogOptions {
   restartWindowMs?: number
   /** Overrides `DEFAULT_RESTART_BACKOFF_MS` — exposed so tests can shrink the real delays instead of waiting through them. */
   restartBackoffMs?: number[]
+  /**
+   * Awaited after every successful `waitReady` (start and restart), BEFORE
+   * `healthy` is reported (plan 208 §4.4) — this is where the lifecycle
+   * applies the openatx configurator. Errors are the hook's to log; they
+   * never fail the start.
+   */
+  onReady?: () => Promise<void>
 }
 
 export interface Watchdog {
@@ -80,7 +98,7 @@ export interface Watchdog {
  */
 export function createWatchdog(opts: WatchdogOptions): Watchdog {
   const idlePingMs = opts.idlePingMs ?? 5000
-  const startTimeoutMs = opts.startTimeoutMs ?? 15_000
+  const startTimeoutMs = opts.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS
   const maxRestartsPerWindow = opts.maxRestartsPerWindow ?? 3
   const restartWindowMs = opts.restartWindowMs ?? 10 * 60 * 1000
   const restartBackoffMs = opts.restartBackoffMs ?? DEFAULT_RESTART_BACKOFF_MS
@@ -100,13 +118,30 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
     timer = null
   }
 
-  async function waitReady(): Promise<boolean> {
+  /**
+   * Consults the launcher's fail-fast verdict on every tick BEFORE pinging
+   * (plan 208 §3.3, §4.4): a fatal line or an early stream exit rejects
+   * within ~250ms of being reported, instead of paying the full silence
+   * ceiling. Silence alone — nothing fatal reported, no pong either — still
+   * pays the whole `startTimeoutMs` budget, which is what it always claimed
+   * to be: the budget for a server that says nothing.
+   */
+  async function waitReady(verdict: { fatal: string | null }): Promise<{ ok: true } | { ok: false; reason: string }> {
     const deadline = Date.now() + startTimeoutMs
-    while (Date.now() < deadline) {
-      if (await opts.client.ping()) return true
+    for (;;) {
+      if (verdict.fatal !== null) return { ok: false, reason: verdict.fatal }
+      if (await opts.client.ping()) return { ok: true }
+      if (Date.now() >= deadline) break
       await Bun.sleep(250)
     }
-    return false
+    if (verdict.fatal !== null) return { ok: false, reason: verdict.fatal }
+    return { ok: false, reason: 'the server was not ready within the start timeout' }
+  }
+
+  /** `reportFailure`'s own guard, reused by the launcher's `onExit` hook (plan 208 §4.4). */
+  function reportFailureFromExit(reason: string): void {
+    if (dead || restarting || !healthy) return
+    void restart(reason)
   }
 
   async function restart(reason: string): Promise<void> {
@@ -143,14 +178,22 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
       await opts.launcher.stop(opts.localPort).catch(() => undefined)
       await Bun.sleep(restartCycleBackoffMs(cycle, restartBackoffMs))
       try {
-        await opts.launcher.start(opts.localPort)
-        if (await waitReady()) {
+        const verdict: { fatal: string | null } = { fatal: null }
+        await opts.launcher.start(opts.localPort, {
+          onFatal: (r) => {
+            verdict.fatal = r
+          },
+          onExit: (r) => reportFailureFromExit(r),
+        })
+        const ready = await waitReady(verdict)
+        if (ready.ok) {
+          await opts.onReady?.().catch(() => undefined)
           healthy = true
           consecutiveFailures = 0
           setStatus({ state: 'healthy' })
           return
         }
-        opts.onLog?.('warn', `restart cycle ${cycle}/${maxRestartsPerWindow} did not bring the server back up within the start timeout`)
+        opts.onLog?.('warn', `restart cycle ${cycle}/${maxRestartsPerWindow} did not bring the server back up: ${ready.reason}`)
       } catch (err) {
         opts.onLog?.('warn', `restart failed: ${String(err)}`)
       }
@@ -162,8 +205,16 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
   return {
     async start() {
       setStatus({ state: 'starting' })
-      await opts.launcher.start(opts.localPort)
-      if (!(await waitReady())) {
+      const verdict: { fatal: string | null } = { fatal: null }
+      const hooks: UiServerStartHooks = {
+        onFatal: (r) => {
+          verdict.fatal = r
+        },
+        onExit: (r) => reportFailureFromExit(r),
+      }
+      await opts.launcher.start(opts.localPort, hooks)
+      const ready = await waitReady(verdict)
+      if (!ready.ok) {
         // (plan 129 §3.2/§4.1, M94) No restart cycle here, deliberately. The
         // old code called `restart()` and never checked its outcome, so a
         // start that never became ready was still reported `healthy` to
@@ -173,12 +224,17 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
         // second 15s wait on the start path has never once turned into a
         // healthy server here, and only delays the fallback the factory
         // already has ready to use.
+        //
+        // Plan 208 §3.3, §4.4: `ready.reason` is now one of several — a
+        // fatal instrumentation line (often well under 2s), an early stream
+        // exit, or the silence ceiling — instead of always the same
+        // "was not ready within the start timeout" sentence.
         dead = true
         healthy = false
-        const reason = 'the server was not ready within the start timeout'
-        setStatus({ state: 'dead', reason })
-        throw new Error(`ui-server was not ready within the start timeout`)
+        setStatus({ state: 'dead', reason: ready.reason })
+        throw new Error(`ui-server did not start: ${ready.reason}`)
       }
+      await opts.onReady?.().catch(() => undefined)
       healthy = true
       setStatus({ state: 'healthy' })
       // Guarded on `dead` too: a first attempt that already exhausts the
@@ -212,6 +268,11 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
       if (dead || restarting) return
       void restart(reason)
     },
+    // Note: `reportFailureFromExit` above uses `!healthy` in its guard too
+    // (dropping a fatal-during-restart exit that races the restart itself);
+    // `reportFailure` keeps its original, slightly looser guard unchanged —
+    // it is called by `UiServerInspector.call()` only while a real request
+    // just failed, which already implies the watchdog believed itself healthy.
 
     isHealthy: () => healthy,
     isDead: () => dead,

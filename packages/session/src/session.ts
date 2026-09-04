@@ -117,21 +117,19 @@ export interface DeviceSession {
   /** This session's inspector engine (ui-server / uiautomator-dump). Null until it is ready. */
   inspector: Inspector | null
   /**
-   * Starts the inspector if it is not running yet, and resolves when it is
-   * ready (or has given up). Jobs call this; manual control never starts it
-   * IMPLICITLY — the Inspect tab (plan 56 §4.3) is the one caller that starts
-   * it explicitly, through `inspect.attach`, so the adb queue stays free for
-   * video the rest of the time.
+   * Starts the inspector if nothing has yet, and resolves once it is ready
+   * (or has fallen back). Start-once; every caller joins the same start.
+   * Never rejects (plan 208 §3.2). The engine is session-scoped: started
+   * here or by `prewarmInspector()` below, whichever runs first, and
+   * released only by `close()` — a tab attaching to it (`inspect.attach`)
+   * is a viewer, never an owner.
    */
   whenInspectorReady(): Promise<void>
   /**
-   * Start the inspector in the background once the session has a picture
-   * (plan 206 §3.9, MVP 02 §2.1). This plan ships it as a no-op that
-   * resolves immediately and starts nothing; plan 208 implements the
-   * session-scoped, fail-fast body. Called by the always-on builder
-   * `INSPECTOR_PREWARM_DELAY_MS` after the first frame, once per build —
-   * never `whenInspectorReady()` itself, which is the eager start MVP 02
-   * §2.1 measured as starving the screencap loop.
+   * The same start as `whenInspectorReady()`, invoked by the always-on
+   * builder `INSPECTOR_PREWARM_DELAY_MS` after the first frame (plan 206
+   * §3.9). Identical to `whenInspectorReady` on purpose: there is one
+   * engine per session and one way to start it (plan 208 §3.2).
    */
   prewarmInspector(): Promise<void>
   /**
@@ -173,15 +171,10 @@ export interface DeviceSession {
    * plan.
    */
   whenTextInputReady?(): Promise<void>
-  /**
-   * Gives the inspector engine back (plan 56 §3.2, §4.3) — releases the
-   * handle's own `release()` (stops the watchdog, frees its port/lock) and
-   * resets `inspector`/`inspectorEngineId` so the NEXT `whenInspectorReady()`
-   * builds a fresh engine rather than resolving against a dead handle. The
-   * Inspect tab calls this once its last viewer detaches; jobs never call it
-   * — a script's inspector lives for the session, not for one `find`.
-   */
-  releaseInspector(): Promise<void>
+  // `releaseInspector` is gone (plan 208 §3.2): a method that exists and
+  // does nothing is the compatibility shim plan 200 §2.1 forbids. `close()`
+  // below is the only release — the engine is session-scoped, not
+  // tab-scoped, so a tab detaching (`inspect.detach`) releases nothing.
   /** The effective engine id — it can differ from the DB column after a fallback. */
   inspectorEngineId: string
   /** The waitFor polling interval that suits the active engine. */
@@ -479,49 +472,42 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   await transport.connect()
 
   /**
-   * The inspector is started lazily, on first use, and never IMPLICITLY for
-   * manual control.
+   * The inspector is session-scoped (plan 208 §3.2): started once, by
+   * whichever of `prewarmInspector()` (the always-on builder, plan 206
+   * §3.9) or `whenInspectorReady()` (a job, or an Inspect tab's
+   * `inspect.attach`) runs first, and torn down only by this session's
+   * `close()` below — never released early by a tab detaching.
    *
-   * Two measurements on a real moto g06 power (Android 15) drove this:
+   * Two measurements on a real moto g06 power (Android 15) are why the
+   * start is not moved earlier than the first frame:
    *   - awaiting it up front delayed the first video frame by ~50 s, because
    *     ui-server's watchdog retries twice before giving up;
    *   - starting it in the background instead was worse in a subtler way. adb
    *     access is serialised per device, so the watchdog's installs starved the
    *     screencap loop: 1 frame in 20 s, versus 11 once it gave up.
    *
-   * Scripts need an inspector through waitFor/find, so the job runner starts
-   * it. Manual control never starts it on its own either — but the Inspect
-   * tab (plan 56 §3.2, §4.3) DOES, explicitly, through `inspect.attach`: an
-   * operator who opens that tab has consciously chosen to pay the
-   * instrumentation-lock and adb-queue cost `whenInspectorReady` was written
-   * to avoid paying by default. `releaseInspector` below is what lets that
-   * cost be given back once the tab closes, rather than being paid for the
-   * rest of the session.
+   * `prewarmInspector()` runs `INSPECTOR_PREWARM_DELAY_MS` after the first
+   * frame (plan 206's `onFirstFrame`), which respects that measurement
+   * without leaving the engine lazy for the rest of the session.
    */
   let inspectorHandle: Awaited<ReturnType<NonNullable<CreateSessionDeps['makeInspector']>>> | null = null
   let inspectorPromise: Promise<void> | null = null
   const startInspector = (): Promise<void> => {
     if (!deps.makeInspector) return Promise.resolve()
-    inspectorPromise ??= deps
-      .makeInspector(opts.deviceId, transport, opts.inspection ?? null)
-      .then((h) => {
+    inspectorPromise ??= (async () => {
+      const t0 = Date.now()
+      try {
+        const h = await deps.makeInspector!(opts.deviceId, transport, opts.inspection ?? null)
         inspectorHandle = h
         session.inspector = h.inspector
         session.inspectorEngineId = h.engineId
         session.inspectorPollIntervalMs = h.pollIntervalMs
-      })
-      .catch((err) => {
-        log.warn(`inspector could not start: ${String(err)} — scripts will use an ad-hoc dump`)
-      })
+        log.info(`inspector ready: ${h.engineId} on ${opts.deviceId} in ${Date.now() - t0} ms`)
+      } catch (err) {
+        log.warn(`inspector could not start: ${String(err)}`)
+      }
+    })()
     return inspectorPromise
-  }
-  const releaseInspector = async (): Promise<void> => {
-    const handle = inspectorHandle
-    inspectorHandle = null
-    inspectorPromise = null
-    session.inspector = null
-    session.inspectorEngineId = 'starting'
-    await handle?.release()
   }
 
   // Plan 100 §4.2, §5 step 100.4: the fast-path control build skips this
@@ -858,10 +844,12 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     inspectorEngineId: 'starting',
     inspectorPollIntervalMs: 500,
     whenInspectorReady: startInspector,
-    // Plan 206 §3.9: a no-op here; plan 208 replaces the body.
-    prewarmInspector: async () => {},
+    // Plan 208 §3.2: identical to `whenInspectorReady` — one engine, one way
+    // to start it. The always-on builder calls this `INSPECTOR_PREWARM_DELAY_MS`
+    // after the first frame (plan 206 §3.9); a job or `inspect.attach` that
+    // reaches `whenInspectorReady()` first just joins the same start.
+    prewarmInspector: startInspector,
     whenTextInputReady: startTextInput,
-    releaseInspector,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
     clipboard,
     textInput: {

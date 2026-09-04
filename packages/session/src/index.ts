@@ -54,7 +54,7 @@ export {
 } from './always-on'
 export { createInspectorForSession, type InspectorHandle, type InspectorFactoryDeps } from './inspector-factory'
 export { PortAllocator, parsePortRange, isPortFree } from './port-allocator'
-export { createDeviceExecutor, DEFAULT_TIMING, type TimingSettings } from './device-executor'
+export { createDeviceExecutor, DEFAULT_TIMING, INSPECTOR_METHODS, needsInspector, type TimingSettings } from './device-executor'
 export {
   createInputArbiter,
   type InputArbiter,
@@ -85,6 +85,8 @@ export {
   redactArgs,
   ARG_REDACTION,
   MAX_ARG_BYTES,
+  reusableTree,
+  TRACE_TREE_REUSE_MS,
   type TraceTee,
   type TraceTeeDeps,
   type TraceToken,

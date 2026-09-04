@@ -20,6 +20,8 @@ export class UiautomatorDumpInspector implements Inspector {
   readonly id = 'uiautomator-dump'
   /** The dump path is probed once per device and then cached. */
   private useTty: boolean | null = null
+  /** The last tree a successful `dump()` produced and when (plan 208 §4.6, "the cheap cache"). */
+  private last: { root: UiNode; at: number } | null = null
 
   constructor(
     private transport: Transport,
@@ -67,12 +69,19 @@ export class UiautomatorDumpInspector implements Inspector {
         continue
       }
       try {
-        return parseUiDump(raw)
+        const root = parseUiDump(raw)
+        this.last = { root, at: Date.now() }
+        return root
       } catch (err) {
         lastError = `failed to parse the dump: ${String(err)}`
       }
     }
     throw new InspectorError('INSPECTOR_DUMP_FAILED', lastError || 'the dump failed with no detail')
+  }
+
+  /** The last tree `dump()` returned and when, or null (plan 208 §4.6). */
+  lastDump(): { root: UiNode; at: number } | null {
+    return this.last
   }
 
   async find(sel: Selector): Promise<UiNode | null> {

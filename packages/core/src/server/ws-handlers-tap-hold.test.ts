@@ -68,7 +68,6 @@ function fakeSession(deviceId: string, sink: InputSink): DeviceSession {
     videoKeyframe: () => null,
     inspector: null,
     whenInspectorReady: async () => {},
-    releaseInspector: async () => {},
     inspectorEngineId: 'ui-server',
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },

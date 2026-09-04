@@ -48,24 +48,26 @@ function seedDevice(db: Db, id: string, status: 'online' | 'offline' = 'online')
 interface FakeInspectorCalls {
   dumps: number
   finds: Selector[]
-  released: number
 }
 
 /**
- * Mirrors the REAL `session.ts` lazily-populated shape: `inspector` starts
- * `null`, and `whenInspectorReady()` — resolving without throwing — is what
- * sets it, unless `noDump` simulates the session's own silent-fallback path
- * (session.ts §"inspector could not start" catches and warns, but still
- * RESOLVES, leaving `inspector` null). This is what makes "attach before
- * dump" and "no dump capability" actually exercise the handler's real gates,
- * rather than the fake pre-populating state the real session only builds
- * lazily.
+ * Mirrors the REAL `session.ts` session-scoped shape (plan 208 §3.2):
+ * `inspector` starts `null`, and `whenInspectorReady()` — resolving without
+ * throwing, never rejecting — is what sets it, unless `noDump` simulates the
+ * session's own silent-fallback path (session.ts's "inspector could not
+ * start" catches and warns, but still RESOLVES, leaving `inspector` null).
+ * There is no `releaseInspector` any more: the engine lives with the
+ * session, and only `close()` gives it back — nothing in this router's
+ * `inspect.*` handling touches the session at all besides `whenInspectorReady()`.
  */
-function fakeSession(deviceId: string, opts?: { engineId?: string; noDump?: boolean; startFails?: boolean }): {
+function fakeSession(
+  deviceId: string,
+  opts?: { engineId?: string; noDump?: boolean; startFails?: boolean; startsStarting?: boolean },
+): {
   session: DeviceSession
   calls: FakeInspectorCalls
 } {
-  const calls: FakeInspectorCalls = { dumps: 0, finds: [], released: 0 }
+  const calls: FakeInspectorCalls = { dumps: 0, finds: [] }
   const engineId = opts?.engineId ?? 'ui-server'
   const inspectorImpl = {
     id: engineId,
@@ -98,11 +100,11 @@ function fakeSession(deviceId: string, opts?: { engineId?: string; noDump?: bool
       if (!opts?.noDump) session.inspector = inspectorImpl
     },
     prewarmInspector: async () => {},
-    releaseInspector: async () => {
-      calls.released++
-      session.inspector = null
-    },
-    inspectorEngineId: engineId,
+    // `opts.startsStarting` mirrors the "still starting" window (plan 208
+    // §3.8): a real session's `inspectorEngineId` reads 'starting' until the
+    // prewarm settles, unrelated to `whenInspectorReady()`, which this
+    // fixture deliberately never calls for that case.
+    inspectorEngineId: opts?.startsStarting ? 'starting' : engineId,
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },
     clipboard: null,
@@ -306,7 +308,7 @@ describe('inspect.* refusal matrix (plan 56 §4.2, §6 acceptance #6, #9)', () =
   })
 })
 
-describe('inspect.attach/detach ref-counting (plan 56 §3.2, §5.4, acceptance #8)', () => {
+describe('inspect.attach attaches to the session\'s engine (plan 208 §3.2)', () => {
   /**
    * Attach is control-grade (§3.7): it takes the SAME `control` activity
    * policy row `input.*` uses (plan 205 §4.9). A bare online device admits
@@ -317,7 +319,7 @@ describe('inspect.attach/detach ref-counting (plan 56 §3.2, §5.4, acceptance #
   test('with control.overControl: forbid, a second client is refused, not silently ignored — the holder\'s own attachment is unaffected', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1')
-    const { session, calls } = fakeSession('dev-1')
+    const { session } = fakeSession('dev-1')
     const { handler, events } = setUpHandler(db, session, undefined, 'forbid')
     const holder = fakeConn()
     const bystander = fakeConn()
@@ -333,33 +335,46 @@ describe('inspect.attach/detach ref-counting (plan 56 §3.2, §5.4, acceptance #
     expect(events.filter((e) => e.kind === 'inspect.attached')).toHaveLength(1) // only the holder's attach counted
 
     await handler.handleMessage(holder.ws, JSON.stringify({ type: 'inspect.detach', payload: { deviceId: 'dev-1' } }))
-    expect(calls.released).toBe(1) // the holder was the only real attachment — one attach, one release
+    expect(session.inspector).not.toBeNull() // detach never touches the session's engine
   })
 
-  /** Plan 56 §7 test plan: "ref-count reaching zero releases exactly once" — exercised across two independent attach/detach cycles from the same connection, never over- or under-released. */
-  test('ref-count reaching zero releases exactly once, and a fresh attach afterwards starts cleanly', async () => {
+  test('attach records inspect.attached once per connection with engineId and tookMs', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1')
-    const { session, calls } = fakeSession('dev-1')
+    const { session } = fakeSession('dev-1')
+    const { handler, events } = setUpHandler(db, session)
+    const a = fakeConn()
+
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
+
+    const attached = events.filter((e) => e.kind === 'inspect.attached')
+    expect(attached).toHaveLength(1)
+    expect(attached[0]?.meta?.engineId).toBe('ui-server')
+    expect(typeof attached[0]?.meta?.tookMs).toBe('number')
+    expect(session.inspector).not.toBeNull()
+  })
+
+  test('inspect.detach records the event and never touches the session', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1')
+    const { session } = fakeSession('dev-1')
     const { handler, events } = setUpHandler(db, session)
     const a = fakeConn()
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.detach', payload: { deviceId: 'dev-1' } }))
-    expect(calls.released).toBe(1)
 
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i2', payload: { deviceId: 'dev-1' } }))
-    await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.detach', payload: { deviceId: 'dev-1' } }))
-    expect(calls.released).toBe(2) // exactly one release per independent attach/detach cycle
-
-    expect(events.filter((e) => e.kind === 'inspect.attached')).toHaveLength(2)
-    expect(events.filter((e) => e.kind === 'inspect.detached')).toHaveLength(2)
+    expect(events.filter((e) => e.kind === 'inspect.detached')).toHaveLength(1)
+    // The fake session's own type has no `releaseInspector` at all any more
+    // (plan 208 §3.2) — this asserts the behaviour, not merely the absent
+    // method: the engine the attach reached is still set afterwards.
+    expect(session.inspector).not.toBeNull()
   })
 
-  test('a second attach from the SAME connection is idempotent — it does not inflate the ref count', async () => {
+  test('a second attach from the same connection records nothing new', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1')
-    const { session, calls } = fakeSession('dev-1')
+    const { session } = fakeSession('dev-1')
     const { handler, events } = setUpHandler(db, session)
     const a = fakeConn()
 
@@ -368,22 +383,22 @@ describe('inspect.attach/detach ref-counting (plan 56 §3.2, §5.4, acceptance #
     expect(events.filter((e) => e.kind === 'inspect.attached')).toHaveLength(1)
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.detach', payload: { deviceId: 'dev-1' } }))
-    expect(calls.released).toBe(1) // one attach's worth released, not stuck at "still 1 more to go"
+    expect(events.filter((e) => e.kind === 'inspect.detached')).toHaveLength(1)
   })
 
-  test('closing the WS releases this connection\'s attachment — a dropped tab does not leak the engine', async () => {
+  test('closing the WS records inspect.detached and never touches the session', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1')
-    const { session, calls } = fakeSession('dev-1')
-    const { handler } = setUpHandler(db, session)
+    const { session } = fakeSession('dev-1')
+    const { handler, events } = setUpHandler(db, session)
     const a = fakeConn()
 
     await handler.handleMessage(a.ws, JSON.stringify({ type: 'inspect.attach', id: 'i1', payload: { deviceId: 'dev-1' } }))
-    expect(calls.released).toBe(0)
+    expect(events.filter((e) => e.kind === 'inspect.detached')).toHaveLength(0)
 
     handler.handleClose(a.ws)
-    await new Promise((r) => setTimeout(r, 0))
-    expect(calls.released).toBe(1)
+    expect(events.filter((e) => e.kind === 'inspect.detached')).toHaveLength(1)
+    expect(session.inspector).not.toBeNull() // the engine lives with the session, not the connection
   })
 })
 
@@ -453,7 +468,11 @@ describe('inspect.dump / inspect.find (plan 56 §4.2 steps 5-6, acceptance #1, #
   test('a dump attempted without attaching first is refused, not a fabricated tree', async () => {
     const db = setUpDb()
     seedDevice(db, 'dev-1')
-    const { session } = fakeSession('dev-1')
+    // `engineId: 'ui-server'`, `noDump: true`: the fixture's inspector never
+    // gets set (attach is never called here anyway), and the engine id is
+    // NOT 'starting' — so the refusal is E_INSPECT_UNAVAILABLE, not the
+    // "still starting" code the next test covers.
+    const { session } = fakeSession('dev-1', { engineId: 'ui-server', noDump: true })
     const { handler } = setUpHandler(db, session)
     const a = fakeConn()
 
@@ -464,6 +483,29 @@ describe('inspect.dump / inspect.find (plan 56 §4.2 steps 5-6, acceptance #1, #
 
     const err = a.sent.find((m) => m.type === 'error')
     expect(err).toBeDefined()
+    if (err?.type === 'error') expect(err.payload.code).toBe('E_INSPECT_UNAVAILABLE')
+    expect(a.sent.some((m) => m.type === 'inspect.tree')).toBe(false)
+  })
+
+  test('a dump while the engine is still starting answers E_INSPECTOR_STARTING, not unavailable (plan 208 §3.8)', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1')
+    // `inspector: null`, `inspectorEngineId: 'starting'`: the session's
+    // prewarm has not settled yet. `whenInspectorReady()` is deliberately
+    // never called before the dump — this is the window between the
+    // session opening and the prewarm (or the first job/attach) resolving.
+    const { session } = fakeSession('dev-1', { startsStarting: true })
+    const { handler } = setUpHandler(db, session)
+    const a = fakeConn()
+
+    await handler.handleMessage(
+      a.ws,
+      JSON.stringify({ type: 'inspect.dump', id: 'd1', payload: { deviceId: 'dev-1', requestId: 1, screenshot: false } }),
+    )
+
+    const err = a.sent.find((m) => m.type === 'error')
+    expect(err).toBeDefined()
+    if (err?.type === 'error') expect(err.payload.code).toBe('E_INSPECTOR_STARTING')
     expect(a.sent.some((m) => m.type === 'inspect.tree')).toBe(false)
   })
 })

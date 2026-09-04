@@ -28,14 +28,14 @@ function fakeInspector(): Inspector {
 }
 
 /**
- * Plan 56 §5.3: `releaseInspector()` gives the engine back, and a LATER
- * `whenInspectorReady()` must build a fresh one rather than resolving
- * against the now-dead handle. Counts both `makeInspector` calls and
- * `release()` calls so the test fails if either the re-build or the
- * original release stops happening.
+ * Plan 208 §3.2, §4.8 — the inspector is session-scoped, not tab-scoped:
+ * `prewarmInspector()` (the always-on builder's call) and
+ * `whenInspectorReady()` (a job, or an Inspect tab's `inspect.attach`) are
+ * the SAME start-once, join, never-reject contract. `releaseInspector` is
+ * gone entirely — `close()` is the only release.
  */
-describe('DeviceSession.releaseInspector (plan 56 §4.3, §5.3)', () => {
-  test('a second whenInspectorReady() after release() builds a NEW engine', async () => {
+describe('DeviceSession — the session-scoped inspector (plan 208 §3.2, §4.8)', () => {
+  test('prewarmInspector starts the engine once and whenInspectorReady joins it', async () => {
     let built = 0
     let released = 0
     const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => {
@@ -55,34 +55,70 @@ describe('DeviceSession.releaseInspector (plan 56 §4.3, §5.3)', () => {
       { client: fakeClient(), log: silentLog(), makeInspector },
     )
 
-    await session.whenInspectorReady()
+    // The always-on builder's call.
+    await session.prewarmInspector()
     expect(built).toBe(1)
     expect(session.inspector).not.toBeNull()
     expect(session.inspectorEngineId).toBe('ui-server')
 
-    // A second call before any release must NOT build a second engine —
-    // the in-flight/completed promise is reused (baseline behaviour).
+    // A job or an Inspect tab reaching whenInspectorReady() afterward joins
+    // the SAME start — no second engine.
+    await session.whenInspectorReady()
+    expect(built).toBe(1)
     await session.whenInspectorReady()
     expect(built).toBe(1)
 
-    await session.releaseInspector()
-    expect(released).toBe(1)
-    expect(session.inspector).toBeNull()
+    expect(released).toBe(0) // nothing releases early; only close() does
+
+    await session.close()
+    expect(released).toBe(1) // released exactly once, by close()
+  })
+
+  test('close releases the inspector handle exactly once', async () => {
+    let released = 0
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => ({
+      inspector: fakeInspector(),
+      engineId: 'ui-server',
+      pollIntervalMs: 80,
+      release: async () => {
+        released++
+      },
+    })
+
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
 
     await session.whenInspectorReady()
-    expect(built).toBe(2) // a genuinely fresh engine, not the dead handle
-    expect(released).toBe(1) // the fresh one was not released again by this call
-    expect(session.inspector).not.toBeNull()
+    await session.close()
+    expect(released).toBe(1)
+  })
+
+  test('a failed makeInspector leaves inspector null and inspectorEngineId starting, and resolves', async () => {
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => {
+      throw new Error('ui-server cannot be used on this device')
+    }
+
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
+
+    await expect(session.whenInspectorReady()).resolves.toBeUndefined()
+    expect(session.inspector).toBeNull()
+    expect(session.inspectorEngineId).toBe('starting')
 
     await session.close()
   })
 
-  test('releaseInspector() before the inspector was ever started is a harmless no-op', async () => {
+  test('no makeInspector at all (manual-control fixture shape): whenInspectorReady and prewarmInspector both resolve harmlessly', async () => {
     const session = await createSession(
       { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
       { client: fakeClient(), log: silentLog() },
     )
-    await expect(session.releaseInspector()).resolves.toBeUndefined()
+    await expect(session.whenInspectorReady()).resolves.toBeUndefined()
+    await expect(session.prewarmInspector()).resolves.toBeUndefined()
     await session.close()
   })
 })
@@ -815,10 +851,13 @@ describe('createSession — the guest-agent bootstrap is off the critical line (
 
 /**
  * Plan 206 §3.9, §4.4 — `prewarmInspector` and `requireScrcpy` on every
- * build, not only the fast path.
+ * build, not only the fast path. Plan 208 §3.2, §4.8 replaces the no-op
+ * body: `prewarmInspector` really does start the engine now, identical to
+ * `whenInspectorReady` — see the "session-scoped inspector" describe block
+ * above for the fuller coverage of that contract.
  */
-describe('DeviceSession.prewarmInspector (plan 206 §3.9)', () => {
-  test('resolves and starts nothing — plan 208 implements the body', async () => {
+describe('DeviceSession.prewarmInspector (plan 206 §3.9, plan 208 §3.2)', () => {
+  test('starts the engine (plan 208 replaces the no-op body plan 206 shipped)', async () => {
     let makeInspectorCalls = 0
     const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => {
       makeInspectorCalls++
@@ -829,8 +868,8 @@ describe('DeviceSession.prewarmInspector (plan 206 §3.9)', () => {
       { client: fakeClient(), log: silentLog(), makeInspector },
     )
     await expect(session.prewarmInspector()).resolves.toBeUndefined()
-    expect(makeInspectorCalls).toBe(0)
-    expect(session.inspector).toBeNull()
+    expect(makeInspectorCalls).toBe(1)
+    expect(session.inspector).not.toBeNull()
     await session.close()
   })
 })

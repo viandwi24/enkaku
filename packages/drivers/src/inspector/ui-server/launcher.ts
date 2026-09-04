@@ -1,6 +1,7 @@
 import type { AdbStreamEndReason } from '@enkaku/adb'
 import type { TransportExecOptions } from '@enkaku/protocol'
 import { installWithGrantFallback } from '../../install/grant-fallback'
+import { createInstrumentationParser } from './lifecycle'
 import { verifyDeviceArtifact } from './verify'
 
 /** The pinned openatx APK package and component (plan 06 §3.2/§4.6). */
@@ -111,14 +112,21 @@ export interface UiServerLauncherDeps {
    */
   execStream: (
     cmd: string,
-    opts: { onEnd: (reason: AdbStreamEndReason, err?: unknown) => void },
+    opts: { onData: (chunk: Uint8Array) => void; onEnd: (reason: AdbStreamEndReason, err?: unknown) => void },
   ) => Promise<{ stop: () => Promise<void> }>
   onLog?: (level: 'debug' | 'info' | 'warn', msg: string) => void
 }
 
+export interface UiServerStartHooks {
+  /** Called at most once per `start()`: a definitive failure line, or the stream ending during the start. */
+  onFatal?: (reason: string) => void
+  /** Called when the stream ends after `start()` resolved (any reason but `stopped`); the watchdog restarts sooner than its ping would. */
+  onExit?: (reason: string) => void
+}
+
 export interface UiServerLauncher {
   ensureInstalled(): Promise<void>
-  start(localPort: number): Promise<void>
+  start(localPort: number, hooks?: UiServerStartHooks): Promise<void>
   stop(localPort: number): Promise<void>
   isInstalled(): Promise<boolean>
   /**
@@ -385,7 +393,7 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
       throw new Error(`ui-server artifact verification failed after one repair attempt: ${result.reason}`)
     },
 
-    async start(localPort) {
+    async start(localPort, hooks) {
       await this.ensureInstalled()
       // The instrumentation runs detached from the caller's perspective — it
       // never "finishes" while the server is alive — but unlike the old
@@ -394,23 +402,46 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
       // not once (or if) the instrumentation itself exits, so awaiting it
       // does not block on the server's lifetime.
       const cmd = `am instrument -w -r -e debug false -e class ${UI_SERVER_STUB_CLASS} ${UI_SERVER_INSTRUMENTATION}`
+      // `started` flips once `assertForward` below has succeeded — it decides
+      // whether a later `onEnd` is `onFatal` (during the start) or `onExit`
+      // (a runtime death, plan 208 §4.3).
+      let started = false
+      let fatalReported = false
+      const parser = createInstrumentationParser({
+        onFatal: (reason, line) => {
+          if (fatalReported) return
+          fatalReported = true
+          deps.onLog?.('warn', `ui-server instrumentation on ${deps.serial} failed to start: ${reason} (${line})`)
+          hooks?.onFatal?.(`${reason}: ${line}`)
+        },
+        onLine: (line) => deps.onLog?.('debug', `instrumentation: ${line}`),
+      })
       instrumentation = await deps.execStream(cmd, {
+        onData: (chunk) => parser.feed(chunk),
         onEnd: (reason, err) => {
           instrumentation = null
+          parser.end()
           // `'stopped'` is `stop()` tearing this down on purpose — anything
           // else is the instrumentation dying (or never starting) on its
           // own, which per plan 34 §8's risk table must be visible rather
           // than swallowed at debug level the way the pre-plan `.catch()` did.
-          if (reason !== 'stopped') {
-            deps.onLog?.(
-              'warn',
-              `ui-server instrumentation (class ${UI_SERVER_STUB_CLASS}) ended unexpectedly on ${deps.serial}: ${reason}${err ? ` (${String(err)})` : ''}`,
-            )
+          if (reason === 'stopped') return
+          const why = `the instrumentation ended: ${reason}${err ? ` (${String(err)})` : ''}`
+          deps.onLog?.(
+            'warn',
+            `ui-server instrumentation (class ${UI_SERVER_STUB_CLASS}) ended unexpectedly on ${deps.serial}: ${reason}${err ? ` (${String(err)})` : ''}`,
+          )
+          if (started) {
+            hooks?.onExit?.(why)
+          } else if (!fatalReported) {
+            fatalReported = true
+            hooks?.onFatal?.(why)
           }
         },
       })
       try {
         await assertForward(localPort)
+        started = true
       } catch (err) {
         // The stream is now the thing holding the instrumentation open, so a
         // failure past this point (a lost port race, a dead hostAdb) must not

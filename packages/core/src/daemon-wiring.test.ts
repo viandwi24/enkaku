@@ -804,7 +804,6 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
         videoKeyframe: () => null,
         inspector: null,
         whenInspectorReady: async () => {},
-        releaseInspector: async () => {},
         inspectorEngineId: 'ui-server',
         inspectorPollIntervalMs: 200,
         frameSize: { width: 1080, height: 2400 },

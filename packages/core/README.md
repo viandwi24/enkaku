@@ -275,6 +275,10 @@ semantics `adb.maxConcurrent` already had — see `packages/adb/README.md` for
 stored `4` (the old fixed default) is rewritten to `0` by a Zod `preprocess`
 (`normaliseLegacyAdb`, `packages/protocol/src/settings.ts`) on first boot
 after upgrading — tracked for removal, see `docs/plans/00-overview.md` §9.
+Since plan 208, the ui-server instrumentation is a **pinned** stream (holds
+no slot on either cap, reported separately in `GET /api/adb/stats`'s
+`streams.pinned`), because it now lives for the whole session rather than
+only while an Inspect tab is open.
 
 **Crash detection that resubscribes instead of dying.** The always-on crash
 watcher (plan 37) used to inherit the streaming lane's generic clocks and,

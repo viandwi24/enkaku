@@ -86,7 +86,12 @@ import { join } from 'node:path'
 // `package.json` dependency wiring of its own.
 import { AdbClient } from '../packages/adb/src/client'
 import { ToolchainManager, type ToolInstallStore } from '../packages/toolchain/src/manager'
-import { createUiServerLauncher, UiServerInspector } from '../packages/drivers/src/inspector/ui-server/index'
+import {
+  createUiServerLauncher,
+  UiServerInspector,
+  UI_SERVER_PACKAGE,
+  UI_SERVER_TEST_PACKAGE,
+} from '../packages/drivers/src/inspector/ui-server/index'
 import type { UiNode } from '../packages/protocol/src/ui-node'
 import { startScrcpySession, type AdbExecutor } from '../packages/scrcpy/src/session'
 import type { ScrcpyPacket } from '../packages/scrcpy/src/demuxer'
@@ -102,6 +107,9 @@ function usage(): string {
   --find-iterations <N>  per-find RPC samples (default 30)
   --fps-window-sec <N>   scrcpy capture window in seconds (default 5)
   --skip-inspector       skip the ui-server attach/find/dump stages
+  --attach-cycles <N>    cold-attach cycles to measure (default 3; plan 208 §4.13) — force-stops
+                         both openatx packages before each cycle, so the reported p50/max are
+                         genuinely cold starts, not a warm re-attach
   --skip-video           skip the scrcpy FPS/time-to-first-frame stages
   --latency              server-side latency leg: time to first packet, first keyframe, PTS interval, arrival jitter (needs --serial)
   --warmup               plan 206 (always-on sessions) mode: boots a real core against --data-dir and measures
@@ -291,6 +299,7 @@ async function main() {
   const dataDir = flag(args, 'data-dir') ?? process.env.ENKAKU_DATA_DIR ?? join(ROOT, '.dev-data')
   const localPort = Number(flag(args, 'port') ?? 27510)
   const findIterations = Number(flag(args, 'find-iterations') ?? 30)
+  const attachCycles = Number(flag(args, 'attach-cycles') ?? 3)
   const fpsWindowSec = Number(flag(args, 'fps-window-sec') ?? 5)
   const skipInspector = args.includes('--skip-inspector')
   const skipVideo = args.includes('--skip-video')
@@ -358,12 +367,16 @@ async function main() {
         app: await toolchain.resolveToolPath('ui-server'),
         test: await toolchain.resolveToolPath('ui-server-test'),
       }),
+      // `onData` forwarded and `pinned: true` (plan 208 §3.3, §3.6, §4.13):
+      // the bench uses a bare `AdbClient`, so pinning only keeps the stats
+      // honest, but the fail-fast parser still needs the real bytes.
       execStream: (cmd, streamOpts) =>
         client.execStream(serial, cmd, {
-          onData: () => {},
+          onData: streamOpts.onData,
           onEnd: (reason, err) => streamOpts.onEnd(reason, err),
           idleTimeoutMs: 0,
           absoluteTimeoutMs: 0,
+          pinned: true,
         }),
       onLog: (level, msg) => console.log(`  [launcher:${level}] ${msg}`),
     })
@@ -381,11 +394,28 @@ async function main() {
     })
 
     try {
-      const t0 = performance.now()
-      await inspector.start()
-      const attachMs = performance.now() - t0
-      rows.push({ metric: 'ui-server attach', value: `${attachMs.toFixed(0)} ms`, note: 'device-bound half of "job overhead" (spec §16)' })
-      console.log(`  attached in ${attachMs.toFixed(0)}ms`)
+      // Plan 208 §4.13, §5 step 208.13: `--attach-cycles` cold-attach
+      // rows — before each cycle (but the first, which is already cold on
+      // a freshly booted bench run) both openatx packages are force-stopped
+      // so the reported p50/max are genuinely cold starts, never a warm
+      // re-attach to a process the previous cycle left running.
+      const attachSamples: number[] = []
+      for (let cycle = 0; cycle < attachCycles; cycle++) {
+        if (cycle > 0) {
+          await inspector.stop().catch(() => undefined)
+          await exec(`am force-stop ${UI_SERVER_PACKAGE}`).catch(() => undefined)
+          await exec(`am force-stop ${UI_SERVER_TEST_PACKAGE}`).catch(() => undefined)
+        }
+        const t0 = performance.now()
+        await inspector.start()
+        attachSamples.push(performance.now() - t0)
+      }
+      attachSamples.sort((a, b) => a - b)
+      const attachP50 = percentile(attachSamples, 50)
+      const attachMax = attachSamples[attachSamples.length - 1] ?? 0
+      rows.push({ metric: 'ui-server attach cold p50', value: `${attachP50.toFixed(0)} ms`, note: `device-bound half of "job overhead" (spec §16), n=${attachCycles}` })
+      rows.push({ metric: 'ui-server attach cold max', value: `${attachMax.toFixed(0)} ms`, note: '' })
+      console.log(`  attach cold p50=${attachP50.toFixed(0)}ms max=${attachMax.toFixed(0)}ms over ${attachCycles} cycle(s)`)
 
       const dumpT0 = performance.now()
       const tree = await inspector.dump()

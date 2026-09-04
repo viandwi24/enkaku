@@ -1,4 +1,4 @@
-import type { DeviceCallMethod, JobTraceEvent } from '@enkaku/protocol'
+import type { DeviceCallMethod, JobTraceEvent, UiNode } from '@enkaku/protocol'
 import type { DeviceCall } from './ipc'
 
 /**
@@ -235,6 +235,27 @@ export function resolveFramePolicy(engineId: string | null): FramePolicy {
   if (engineId === null) return 'none'
   if (engineId === 'ui-server') return 'per-action'
   return 'on-failure'
+}
+
+/**
+ * Plan 208 §3.7, §4.9 — the failing-action trace capture's "cheap cache"
+ * window. The script has usually just paid for a dump (`find`/`waitFor`/
+ * `dump` are the actions that fail on an absent element); reusing it avoids
+ * a second round trip on the channel the script's own calls share. Short on
+ * purpose: a tree from thirty seconds ago is not the picture a debugger came
+ * for.
+ */
+export const TRACE_TREE_REUSE_MS = 2_000
+
+/**
+ * `cached` is an engine's `lastDump()` (optional on `Inspector` — an engine
+ * that does not track one, or has never dumped, answers `null`/`undefined`
+ * here too). Returns the cached root when it is at most `TRACE_TREE_REUSE_MS`
+ * old, `null` otherwise — the caller dumps fresh in that case.
+ */
+export function reusableTree(cached: { root: UiNode; at: number } | null | undefined, now: number): UiNode | null {
+  if (!cached) return null
+  return now - cached.at <= TRACE_TREE_REUSE_MS ? cached.root : null
 }
 
 /** §4.4 — one arg value, truncated to a marker when its JSON exceeds `MAX_ARG_BYTES`. */

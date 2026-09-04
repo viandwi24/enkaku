@@ -29,6 +29,18 @@ export {
   type UiServerStatus,
   type DeviceArtifactExpectation,
   type VerifyResult,
+  type UiServerStartHooks,
+  ConfiguratorInfoSchema,
+  DEFAULT_CONFIGURATOR,
+  type ConfiguratorInfo,
+  createUiServerLifecycle,
+  classifyInstrumentationLine,
+  createInstrumentationParser,
+  INSTRUMENTATION_FATAL_PATTERNS,
+  INSTRUMENTATION_START_SILENCE_MS,
+  type UiServerLifecycle,
+  type UiServerLifecycleOptions,
+  type UiServerLifecycleState,
 } from './inspector/ui-server/index'
 export { ScrcpyDisplay } from './display/scrcpy'
 export { ScrcpySdkInput, ScrcpyUhidInput, type ScrcpyInputDeps } from './input/scrcpy-input'

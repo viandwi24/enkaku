@@ -829,6 +829,55 @@ describe('AdbClient.execStream — the streaming lane, never PerDeviceQueue (pla
     }
   })
 
+  test('a pinned stream takes neither a per-device nor a farm-wide slot (plan 208 §3.6, §4.9)', async () => {
+    let logTimer1: ReturnType<typeof setInterval> | null = null
+    let logTimer2: ReturnType<typeof setInterval> | null = null
+    const listener = fakeStreamingServer({
+      onStream(s, cmd) {
+        if (cmd !== 'logcat') return
+        s.write(Buffer.from('OKAY'))
+        s.write(Buffer.from('1\n'))
+        const timer = setInterval(() => s.write(Buffer.from('x\n')), 5)
+        if (!logTimer1) logTimer1 = timer
+        else logTimer2 = timer
+      },
+    })
+    try {
+      const client = new AdbClient({
+        adbPath: 'unused',
+        host: '127.0.0.1',
+        port: listener.port,
+        // Both caps at 1 — if the pinned stream below counted against
+        // either, the second (counted) stream on the SAME device would be
+        // refused with E_ADB_STREAM_LIMIT.
+        maxStreamsPerDevice: 1,
+        maxStreams: 1,
+      })
+      const pinned = await client.execStream('serial-pinned', 'logcat', {
+        onData: () => {},
+        onEnd: () => {},
+        pinned: true,
+      })
+      expect(client.streamStats().pinned).toBe(1)
+      expect(client.streamStats().streams).toBe(0)
+
+      const counted = await client.execStream('serial-pinned', 'logcat', { onData: () => {}, onEnd: () => {} })
+      expect(client.streamStats().streams).toBe(1)
+      expect(client.streamStats().pinned).toBe(1)
+
+      await counted.stop()
+      expect(client.streamStats().streams).toBe(0)
+      expect(client.streamStats().pinned).toBe(1) // unaffected by the counted stream's release
+
+      await pinned.stop()
+      expect(client.streamStats().pinned).toBe(0)
+    } finally {
+      if (logTimer1) clearInterval(logTimer1)
+      if (logTimer2) clearInterval(logTimer2)
+      listener.stop(true)
+    }
+  })
+
   test('exceeding the farm-wide maxStreams rejects E_ADB_STREAM_LIMIT even across different devices', async () => {
     let logTimer1: ReturnType<typeof setInterval> | null = null
     let logTimer2: ReturnType<typeof setInterval> | null = null

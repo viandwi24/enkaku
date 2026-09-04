@@ -77,6 +77,12 @@ function fakeSession(overrides: Partial<DeviceSession> = {}): DeviceSession {
     transport: { exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }), execOut: async () => new Uint8Array() },
     input: { tap: async () => {}, swipe: async () => {}, key: async () => {}, text: async () => {} },
     inspector: null,
+    // Plan 208 §3.5, §5 step 208.8 — a never-rejecting no-op by default: most
+    // fixtures here set `inspector` directly (the start already "happened").
+    // The one variant that actually exercises `deviceCall`'s await is below
+    // (`fakeSessionStartingInspector`).
+    whenInspectorReady: async () => {},
+    inspectorEngineId: 'ui-server',
     frameSize: { width: 1080, height: 1920 },
     clipboard: null,
     ...overrides,
@@ -214,6 +220,72 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
     expect(state.tapped).toEqual({ x: 10, y: 20 })
     expect(calls.acquire).toBe(1)
     expect(calls.release).toBe(1)
+  })
+
+  /**
+   * Plan 208 §3.5, §4.10 — an agent, REST or MCP read reaches the SAME
+   * engine a script would, through `session.whenInspectorReady()`, never an
+   * ad-hoc dump. The fixture's `whenInspectorReady` mimics the real
+   * session's start-once/join contract: it sets `inspector` on first call.
+   */
+  test('deviceCall awaits whenInspectorReady for find and never builds a dump engine', async () => {
+    const db = setUp()
+    insertDevice(db, 'd1', null)
+    let readyCalls = 0
+    const execCalls: string[] = []
+    const session = fakeSession({
+      inspector: null,
+      whenInspectorReady: async () => {
+        readyCalls++
+        ;(session as unknown as { inspector: unknown }).inspector = {
+          id: 'fake',
+          find: async () => ({
+            resourceId: 'x',
+            text: '',
+            desc: '',
+            className: 'android.widget.Button',
+            packageName: 'com.example',
+            bounds: { left: 0, top: 0, right: 10, bottom: 10 },
+            clickable: true,
+            enabled: true,
+            focused: false,
+            index: 0,
+            children: [],
+          }),
+        }
+      },
+      transport: {
+        exec: async (cmd: string) => {
+          execCalls.push(cmd)
+          return { stdout: '', stderr: '', exitCode: 0 }
+        },
+        execOut: async (cmd: string) => {
+          execCalls.push(cmd)
+          return new Uint8Array()
+        },
+      } as unknown as DeviceSession['transport'],
+    })
+    const { manager } = fakeSessionManager(session)
+    const ctx = createCapabilityContext(
+      { db, activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
+      { id: 'u1', role: 'operator' },
+    )
+    const result = await invoke(deviceFind, ctx, { deviceId: 'd1', sel: { text: 'x' } })
+    expect(result.ok).toBe(true)
+    expect(readyCalls).toBe(1)
+    expect(execCalls.some((c) => c.includes('uiautomator dump'))).toBe(false)
+  })
+
+  test('deviceCall does not await whenInspectorReady for tap', async () => {
+    let readyCalls = 0
+    const session = fakeSession({ whenInspectorReady: async () => { readyCalls++ } })
+    const { manager } = fakeSessionManager(session)
+    const ctx = createCapabilityContext(
+      { db: setUp(), activities: fakeActivities(), controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => manager, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace, timing: ZERO_JITTER_TIMING },
+      { id: 'u1', role: 'operator' },
+    )
+    await ctx.deviceCall('d1', { method: 'tap', args: { target: { point: { x: 1, y: 1 } } } })
+    expect(readyCalls).toBe(0)
   })
 
   test('end-to-end: device.tap through invoke() hits the fake driver, not a reimplementation', async () => {
