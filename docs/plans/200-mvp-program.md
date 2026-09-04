@@ -31,6 +31,7 @@ These are hard rules. A plan may add rules; it may not relax these.
 - **Delete everything the plan's §10 names**, and nothing it does not name. Deletion is part of the deliverable: a plan whose §10 still greps to a live reference is not done.
 - **Do not add compatibility shims, feature flags, `Legacy*` names, or "kept for one release" paths.** `00-overview.md` §4.3 applies: replace, never version. The only exception is a Drizzle migration for data already on disk.
 - **Do not touch a file the plan does not name** unless the plan's own step requires it to compile or to keep an existing test green; say so in the report.
+- **Before you generate a migration, read `packages/core/drizzle/meta/_journal.json` and take the next free index — and say in §11 which index you took.** Two rounds in a row produced a collision: 206 and 207 both generated 0066, then 210 and 214 both generated 0068. A collision between two schema migrations cannot be fixed by renumbering, because the later plan's snapshot was generated against a schema that never existed; it has to be discarded and regenerated from the merged tree. Cheap to avoid, expensive to discover.
 - **Commit a checkpoint every few files, never only at the end.** Two executors in this programme lost their connection mid-sweep, one with 176 files and 12 000 deletions uncommitted, and the work survived only because a checkpoint had just been taken. A `wip(mvp-NNN): <what>, mid step NNN.x` commit costs nothing and is the only thing standing between a dropped stream and hours of lost work. The round gate squashes nothing: checkpoints merge as they are.
 - **A test your change broke is yours to fix, whatever its path.** "Out of scope" applies to work you were not asked to do, never to damage you caused. Plan 205's executor left nine failing tests in a plugin because the file was not in its §7; the fix was one word (§8.7).
 - **Do not decide an open question.** §9 of each plan lists them. If execution reaches a point where an open question blocks a step, stop that step, finish every step that does not depend on it, and report.
@@ -384,3 +385,16 @@ All four are fixed. Two lessons:
 2. **Scoped testing has a real hole, and it is now named rather than discovered again.** Running only the files a plan lists means a change can break a test in a file nobody looks at. The round gate closes it: **before merging a round, run every test file that names a symbol the round deleted or renamed.** That is a grep, not a full suite, and it is cheap.
 
 The second lesson also exposes a policy question this programme should answer rather than drift on: `daemon-wiring.test.ts` asserts wiring by matching source text, which §8.3 explicitly lists under "not tested". It has now cost two false alarms and caught nothing a typecheck would not. Plan 224 should decide whether it survives the test-strategy reset; it is not deleted here, because deleting an 88-test file mid-merge is not a call to make at a round gate.
+
+
+### 8.8 Round R4 reconciliation, 2026-09-04
+
+Merged 208, 209, 210, 214 into `mvp`; all nine gates green; the cross-round test sweep (§8.7) clean.
+
+| Finding | From | Reconciled |
+|---|---|---|
+| **A second migration collision, and a worse one.** 210 and 214 both generated 0068, and unlike R3's pair both change the schema. 214's snapshot was generated without the `workflows` table and with `scripts.kind` still present, so renumbering it would have shipped a snapshot that contradicts its own database. | the merge | 210 keeps 0068; 214's artefacts were discarded and `db:generate` re-ran against the merged schema, producing 0069 with exactly `ALTER TABLE devices ADD model text`. The rule is now in §2.1: read the journal first, and say which index you took. |
+| Plan 208's own §4 would have created a **circular ES-module dependency** through a value re-export | plan 208 | The executor kept two independently defined constants with a cross-reference comment, and said so. Nothing to propagate. |
+| Plan 209's §4 example for the scroll encoder used the **wrong fixed-point scale**; the real device protocol divides by 16 | plan 209 | Fixed against the verified v3.3.1 source, not against the plan. A plan's worked example is not evidence. |
+| Plan 214 could not delete `use-bulk-selection.ts`: plan 220's Agents page still imports it | plan 214 | 214 marked itself `partial` with the row unchecked rather than claiming done. **Plan 216 owns the bulk removal and must finish it**; carried into 216's launch brief. |
+| Three executors each found an error in their own plan document rather than only following it | 208, 209, 214 | No action, but it is the signal worth watching: an executor that never contradicts its plan is probably not reading the code. |
