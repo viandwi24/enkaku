@@ -709,7 +709,7 @@ describe('SessionManager — resolveProfile threads a resolved video profile int
         maxSize: 480,
         maxFps: 3,
         bitRate: 800_000,
-        source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+        source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' },
       }),
     })
 
@@ -721,7 +721,7 @@ describe('SessionManager — resolveProfile threads a resolved video profile int
       maxSize: 480,
       maxFps: 3,
       bitRate: 800_000,
-      source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+      source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' },
     })
     await manager.closeAll()
   })
@@ -789,7 +789,7 @@ describe('SessionManager.restartAt / reprofile (plan 92 §3.8, §4.3, §5 step 9
         maxSize: 480,
         maxFps: deviceId === 'dev-changed' ? wallFps.current : 5,
         bitRate: 800_000,
-        source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+        source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' },
       }),
     })
 
@@ -826,7 +826,7 @@ describe('SessionManager.restartAt / reprofile (plan 92 §3.8, §4.3, §5 step 9
         maxSize: 480,
         maxFps: wallFps.current,
         bitRate: 800_000,
-        source: { maxSize: 'preset', maxFps: 'farm', bitRate: 'preset' },
+        source: { maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' },
       }),
       hasRunningJob: (deviceId) => runningJobDeviceIds.has(deviceId),
     })

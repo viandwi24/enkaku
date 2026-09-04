@@ -165,7 +165,7 @@ describe('DeviceSession.videoProfile (plan 92 §3.8 rule 1, §4.3, §5 step 92.2
       maxSize: 320,
       maxFps: 3,
       bitRate: 400_000,
-      source: { maxSize: 'preset' as const, maxFps: 'farm' as const, bitRate: 'preset' as const },
+      source: { maxSize: 'preset' as const, maxFps: 'preset' as const, bitRate: 'preset' as const },
     }
     const session = await createSession(
       { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', quality: 'wall', videoProfile: profile },
