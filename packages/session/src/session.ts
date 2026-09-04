@@ -171,10 +171,11 @@ export interface DeviceSession {
    * plan.
    */
   whenTextInputReady?(): Promise<void>
-  // `releaseInspector` is gone (plan 208 §3.2): a method that exists and
-  // does nothing is the compatibility shim plan 200 §2.1 forbids. `close()`
-  // below is the only release — the engine is session-scoped, not
-  // tab-scoped, so a tab detaching (`inspect.detach`) releases nothing.
+  // The separate early-release method plan 56 once gave the Inspect tab is
+  // gone (plan 208 §3.2): a method that exists and does nothing is the
+  // compatibility shim plan 200 §2.1 forbids. `close()` below is the only
+  // release — the engine is session-scoped, not tab-scoped, so a tab
+  // detaching (`inspect.detach`) releases nothing.
   /** The effective engine id — it can differ from the DB column after a fallback. */
   inspectorEngineId: string
   /** The waitFor polling interval that suits the active engine. */

@@ -208,7 +208,7 @@ describe('createWatchdog — start() fails the start, and fails it once (plan 12
       onStatus: (s) => statuses.push(s),
     })
 
-    await expect(watchdog.start()).rejects.toThrow('ui-server did not start: the server was not ready within the start timeout')
+    await expect(watchdog.start()).rejects.toThrow('ui-server did not start: no ping answered within the')
 
     // Exactly one launcher.start() call — the old code's swallowed restart
     // cycle inside start() (a second launcher.start + a second 15s wait)
@@ -219,7 +219,7 @@ describe('createWatchdog — start() fails the start, and fails it once (plan 12
 
     const dead = statuses.filter((s) => s.state === 'dead')
     expect(dead).toHaveLength(1)
-    expect((dead[0] as Extract<UiServerStatus, { state: 'dead' }>).reason).toContain('start timeout')
+    expect((dead[0] as Extract<UiServerStatus, { state: 'dead' }>).reason).toContain('silence ceiling')
     // No `restarting` status was ever emitted — the start path never enters
     // the restart cycle at all.
     expect(statuses.some((s) => s.state === 'restarting')).toBe(false)
@@ -359,7 +359,7 @@ describe('createWatchdog — verdict-aware waitReady, onReady (plan 208 §3.3, �
     const watchdog = createWatchdog({ client, launcher, localPort: 1, startTimeoutMs: 50, idlePingMs: 100_000 })
 
     const startedAt = Date.now()
-    await expect(watchdog.start()).rejects.toThrow('ui-server did not start: the server was not ready within the start timeout')
+    await expect(watchdog.start()).rejects.toThrow('ui-server did not start: no ping answered within the')
     const elapsed = Date.now() - startedAt
     expect(elapsed).toBeGreaterThanOrEqual(45) // close to the 50ms ceiling, never near-instant
   })

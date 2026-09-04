@@ -553,10 +553,11 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
       const session = await sessions.acquire(deviceId, onFrame)
       try {
         // MVP 02 §2.5, plan 208 §3.5: an agent, REST or MCP read uses the
-        // session's own engine, the same one a script uses — it never lands
-        // on an ad-hoc dump. Only for the four methods that actually need
-        // it: a `tap` from an agent must not wait on an engine it does not
-        // use, and the prewarm has usually finished by the time an agent acts.
+        // session's own engine, the same one a script uses — never a
+        // substitute dump engine built on the spot. Only for the four
+        // methods that actually need it: a `tap` from an agent must not wait
+        // on an engine it does not use, and the prewarm has usually finished
+        // by the time an agent acts.
         if (needsInspector(call)) await session.whenInspectorReady()
         const execute = createDeviceExecutor({
           session,

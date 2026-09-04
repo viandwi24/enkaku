@@ -135,7 +135,7 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
       await Bun.sleep(250)
     }
     if (verdict.fatal !== null) return { ok: false, reason: verdict.fatal }
-    return { ok: false, reason: 'the server was not ready within the start timeout' }
+    return { ok: false, reason: `no ping answered within the ${startTimeoutMs}ms silence ceiling` }
   }
 
   /** `reportFailure`'s own guard, reused by the launcher's `onExit` hook (plan 208 §4.4). */
@@ -227,8 +227,8 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
         //
         // Plan 208 §3.3, §4.4: `ready.reason` is now one of several — a
         // fatal instrumentation line (often well under 2s), an early stream
-        // exit, or the silence ceiling — instead of always the same
-        // "was not ready within the start timeout" sentence.
+        // exit, or the silence ceiling — instead of always the same one
+        // sentence regardless of which of those actually happened.
         dead = true
         healthy = false
         setStatus({ state: 'dead', reason: ready.reason })
