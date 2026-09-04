@@ -16,5 +16,5 @@ export async function screenshotDevice(
   const filename = `screenshot-${Math.floor(Date.now() / 1000)}.png`
   const abs = join(dir, filename)
   await Bun.write(abs, data)
-  return registerDeviceArtifact({ db: deps.db }, { deviceId, label: filename, relPath: join(relDir, filename), sizeBytes: data.length, jobId: null })
+  return registerDeviceArtifact({ db: deps.db }, { deviceId, label: filename, relPath: join(relDir, filename), sizeBytes: data.length, runId: null })
 }

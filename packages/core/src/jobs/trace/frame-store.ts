@@ -9,8 +9,8 @@ import { EnkakuError } from '../../util/errors'
  * for one job's timeline, content-addressed by the SHA-256 of their bytes:
  *
  * ```
- * <dataDir>/traces/<jobId>/<sha256>.png      # a frame — the filename IS the hash
- * <dataDir>/traces/<jobId>/<sha256>.json.gz  # a gzipped UI tree snapshot
+ * <dataDir>/traces/<runId>/<sha256>.png      # a frame — the filename IS the hash
+ * <dataDir>/traces/<runId>/<sha256>.json.gz  # a gzipped UI tree snapshot
  * ```
  *
  * Two actions on an unchanged screen write ONE file and produce two events
@@ -26,7 +26,7 @@ import { EnkakuError } from '../../util/errors'
  * function; the `agent_blobs` table is never touched here.
  *
  * The lifetime rule falls out of the layout: deleting a job is
- * `removeJob(jobId)` plus one `DELETE FROM job_events WHERE job_id = ?`. No
+ * `removeRun(runId)` plus one `DELETE FROM job_events WHERE job_id = ?`. No
  * reference counting, no orphan sweep, and no query anywhere that has to be
  * kept in step — the price is that identical frames in two different jobs are
  * stored twice, given up deliberately in §2.
@@ -43,18 +43,18 @@ const HASH_RE = /^[0-9a-f]{64}$/
  * everywhere in this repo, so this is deliberately narrower than "anything
  * without a slash": no separator, no `..`, no NUL, no drive letter.
  */
-const JOB_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+const RUN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 
 /**
- * Both of these guards exist because `<dataDir>/traces/<jobId>/<hash>.png` is
+ * Both of these guards exist because `<dataDir>/traces/<runId>/<hash>.png` is
  * built from two values that arrive from a URL (`GET /api/jobs/:id/trace/frames/:hash`,
  * §4.3). A path is never built from unvalidated input: a `hash` of
  * `../../../etc/passwd` must be refused here, at the store, rather than
  * relied upon to be caught by whatever route happens to call it next.
  */
-function assertJobId(jobId: string): void {
-  if (!JOB_ID_RE.test(jobId)) {
-    throw new EnkakuError('E_BAD_REQUEST', `invalid job id "${jobId}" for a trace path`)
+function assertRunId(runId: string): void {
+  if (!RUN_ID_RE.test(runId)) {
+    throw new EnkakuError('E_BAD_REQUEST', `invalid run id "${runId}" for a trace path`)
   }
 }
 
@@ -65,32 +65,32 @@ function assertHash(hash: string): void {
 }
 
 export interface TraceFrameStore {
-  /** `<dataDir>/traces/<jobId>` — absolute; not created until something is written. */
-  jobDir(jobId: string): string
+  /** `<dataDir>/traces/<runId>` — absolute; not created until something is written. */
+  runDir(runId: string): string
   /**
    * Stores a frame under its own content hash and returns that hash. Writes
    * only when the file is absent, so a second identical frame costs one hash
    * and one `existsSync` (plan 128 §3.5, criterion 6).
    */
-  putFrame(jobId: string, bytes: Uint8Array): Promise<string>
+  putFrame(runId: string, bytes: Uint8Array): Promise<string>
   /** The same, for a UI tree: the JSON is gzipped before it is written. */
-  putUiTree(jobId: string, node: UiNode): Promise<string>
+  putUiTree(runId: string, node: UiNode): Promise<string>
   /** The frame's bytes, or null when the file is gone (swept, or never captured) — a 404 upstream. */
-  readFrame(jobId: string, hash: string): Promise<Bytes | null>
+  readFrame(runId: string, hash: string): Promise<Bytes | null>
   /** The snapshot, gunzipped and re-validated, or null when the file is gone. */
-  readUiTree(jobId: string, hash: string): Promise<UiNode | null>
+  readUiTree(runId: string, hash: string): Promise<UiNode | null>
   /** Removes the whole job directory. Idempotent — a job that never captured anything has none. */
-  removeJob(jobId: string): Promise<void>
+  removeRun(runId: string): Promise<void>
 }
 
 export function createTraceFrameStore(deps: { dataDir: string }): TraceFrameStore {
-  function dirFor(jobId: string): string {
-    assertJobId(jobId)
-    return join(deps.dataDir, 'traces', jobId)
+  function dirFor(runId: string): string {
+    assertRunId(runId)
+    return join(deps.dataDir, 'traces', runId)
   }
 
-  async function put(jobId: string, bytes: Uint8Array, ext: string): Promise<string> {
-    const dir = dirFor(jobId)
+  async function put(runId: string, bytes: Uint8Array, ext: string): Promise<string> {
+    const dir = dirFor(runId)
     const hash = sha256Hex(bytes)
     const abs = join(dir, `${hash}.${ext}`)
     // Content-addressed: identical bytes are already on disk, byte for byte.
@@ -101,8 +101,8 @@ export function createTraceFrameStore(deps: { dataDir: string }): TraceFrameStor
     return hash
   }
 
-  async function read(jobId: string, hash: string, ext: string): Promise<Bytes | null> {
-    const dir = dirFor(jobId)
+  async function read(runId: string, hash: string, ext: string): Promise<Bytes | null> {
+    const dir = dirFor(runId)
     assertHash(hash)
     const abs = join(dir, `${hash}.${ext}`)
     if (!existsSync(abs)) return null
@@ -110,23 +110,23 @@ export function createTraceFrameStore(deps: { dataDir: string }): TraceFrameStor
   }
 
   return {
-    jobDir: dirFor,
+    runDir: dirFor,
 
-    putFrame(jobId, bytes) {
-      return put(jobId, bytes, 'png')
+    putFrame(runId, bytes) {
+      return put(runId, bytes, 'png')
     },
 
-    putUiTree(jobId, node) {
+    putUiTree(runId, node) {
       const json = new TextEncoder().encode(JSON.stringify(node))
-      return put(jobId, Bun.gzipSync(json), 'json.gz')
+      return put(runId, Bun.gzipSync(json), 'json.gz')
     },
 
-    readFrame(jobId, hash) {
-      return read(jobId, hash, 'png')
+    readFrame(runId, hash) {
+      return read(runId, hash, 'png')
     },
 
-    async readUiTree(jobId, hash) {
-      const gz = await read(jobId, hash, 'json.gz')
+    async readUiTree(runId, hash) {
+      const gz = await read(runId, hash, 'json.gz')
       if (!gz) return null
       // Content off disk is external input like any other (00-overview §4.2):
       // parsed, never cast. A file that survived a truncated write or a disk
@@ -137,17 +137,17 @@ export function createTraceFrameStore(deps: { dataDir: string }): TraceFrameStor
       try {
         parsed = JSON.parse(new TextDecoder().decode(Bun.gunzipSync(gz)))
       } catch (err) {
-        throw new EnkakuError('E_TRACE_CORRUPT', `trace ui snapshot ${hash} for job ${jobId} is unreadable`, err)
+        throw new EnkakuError('E_TRACE_CORRUPT', `trace ui snapshot ${hash} for run ${runId} is unreadable`, err)
       }
       const result = UiNodeSchema.safeParse(parsed)
       if (!result.success) {
-        throw new EnkakuError('E_TRACE_CORRUPT', `trace ui snapshot ${hash} for job ${jobId} is not a ui tree`)
+        throw new EnkakuError('E_TRACE_CORRUPT', `trace ui snapshot ${hash} for run ${runId} is not a ui tree`)
       }
       return result.data
     },
 
-    async removeJob(jobId) {
-      rmSync(dirFor(jobId), { recursive: true, force: true })
+    async removeRun(runId) {
+      rmSync(dirFor(runId), { recursive: true, force: true })
     },
   }
 }

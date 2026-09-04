@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test'
-import type { JobRow } from '../db/schema'
+import type { JobRow, JobRunRow } from '../db/schema'
+import type { RunStore } from '../jobs/runs/store'
 import { createLogger } from '../util/logger'
 import { createScheduler, MAX_CONTROL_WAIT_SEC, type SchedulerDeps } from './scheduler'
 import type { ClaimedJob, JobStore } from './job-store'
@@ -14,6 +15,9 @@ import type { ActivityKind, DeviceActivity } from '@enkaku/protocol'
  * `install` activity excludes a device from claiming silently (the policy
  * row "job over install = forbid"), without ever being reported as waiting.
  *
+ * Re-keyed to runs by plan 211 §4.6, §4.9: the claim, `nextQueuedRunId` and
+ * `onJobWaiting` all carry a run id now, alongside the job id.
+ *
  * `Scheduler.kick()` calls an internally-async `loop()` whose body never
  * actually `await`s anything (every dependency below is synchronous, exactly
  * like the real `JobStore`/`ExecutorHost` methods it stands in for) — so by
@@ -21,59 +25,99 @@ import type { ActivityKind, DeviceActivity } from '@enkaku/protocol'
  * has already happened. Tests assert immediately, with no `await` needed.
  */
 
-function fakeJobRow(id: string, deviceId: string): JobRow {
+function fakeJobRow(id: string): JobRow {
   return {
     id,
-    deviceId,
+    kind: 'script',
     scriptId: 'script-1',
+    workflowName: null,
+    workflowDoc: null,
+    deviceId: 'unused',
+    params: null,
+    batchId: null,
+    batchSeq: null,
+    scheduleId: null,
+    parentWorkflowJobId: null,
+    stepSeq: null,
     scriptName: 'internal:sleep',
+    scriptVersion: null,
+    triggeredByJobId: null,
+    rootJobId: null,
+    depth: 0,
+    triggerKey: null,
+    createdBy: null,
+    createdAt: new Date(),
+    latestRunId: null,
+    runCount: 1,
+  } as unknown as JobRow
+}
+
+function fakeRunRow(id: string, jobId: string, deviceId: string, notBefore: number | null = null): JobRunRow {
+  return {
+    id,
+    jobId,
+    seq: 1,
+    trigger: 'manual',
     status: 'queued',
+    deviceId,
+    scriptName: 'internal:sleep',
     priority: 0,
-    error: null,
-    failureClass: null,
-    errorPhase: null,
     createdAt: new Date(),
     startedAt: null,
     finishedAt: null,
     heartbeatExpiresAt: null,
-    attempt: 1,
-    batchId: null,
-    batchSeq: null,
     expiresAt: null,
-    params: null,
+    notBefore,
+    batchRepeat: null,
+    pacedDelayMs: null,
     result: null,
-  } as unknown as JobRow
+    error: null,
+    failureClass: null,
+    errorPhase: null,
+    infraAttempts: 0,
+    peakRssBytes: null,
+    maxConcurrent: null,
+    runtimeOverride: null,
+    resultStatus: null,
+    resultBytes: null,
+    resultSummary: null,
+    resultIssues: null,
+    resumedFromRunId: null,
+    resumedFromStep: null,
+  } as unknown as JobRunRow
 }
 
 function fakeJobStore(opts: {
   queuedDeviceIds: string[]
   deviceId?: string
   jobId?: string
-  /** Plan 94 §3.8, §4.8, step 94.6 — wired onto the fake row `get()` returns, so a test can exercise `computePacedBlocked` the same way `computeControlBlocked` is exercised. `undefined` (the default) matches every fixture row elsewhere in this tree that predates this column. */
+  runId?: string
+  /** Plan 94 §3.8, §4.8, step 94.6 — wired onto the fake run `getRun()` returns, so a test can exercise `computePacedBlocked` the same way `computeControlBlocked` is exercised. `undefined` (the default) matches every fixture row elsewhere in this tree that predates this column. */
   notBefore?: number | null
-}): JobStore {
+}): { store: JobStore; runs: RunStore; claimedCalls: string[][] } {
   const deviceId = opts.deviceId ?? 'd1'
   const jobId = opts.jobId ?? 'job-1'
+  const runId = opts.runId ?? 'run-1'
   const claimed: string[][] = [] // records the `excludeDeviceIds` argument of every claimNext call
   let alreadyClaimed = false
-  const store: Partial<JobStore> & { claimedCalls: string[][] } = {
-    claimedCalls: claimed,
+  const run = fakeRunRow(runId, jobId, deviceId, opts.notBefore ?? null)
+  const store: Partial<JobStore> = {
     queuedDeviceIds: () => opts.queuedDeviceIds,
-    nextQueuedJobId: (id) => (id === deviceId && !alreadyClaimed ? jobId : null),
-    // Plan 94 §3.8, §4.8, step 94.6 — `computePacedBlocked` reads this back
-    // for whatever `nextQueuedJobId` names.
-    get: (id) => (id === jobId ? { ...fakeJobRow(jobId, deviceId), notBefore: opts.notBefore ?? null } : null),
+    nextQueuedRunId: (id) => (id === deviceId && !alreadyClaimed ? runId : null),
     scriptNames: () => new Map([['script-1', { name: 'internal:sleep', version: '1.0.0' }]]),
     claimNext: (_jobTtlSec, excludeDeviceIds = []) => {
       claimed.push(excludeDeviceIds)
       if (alreadyClaimed) return null
       if (excludeDeviceIds.includes(deviceId)) return null
       alreadyClaimed = true
-      const claimedJob: ClaimedJob = { job: fakeJobRow(jobId, deviceId), deviceId }
+      const claimedJob: ClaimedJob = { job: fakeJobRow(jobId), run, deviceId }
       return claimedJob
     },
   }
-  return store as JobStore
+  const runs: Partial<RunStore> = {
+    getRun: (id) => (id === runId ? run : null),
+  }
+  return { store: store as JobStore, runs: runs as RunStore, claimedCalls: claimed }
 }
 
 function fakeHost(): ExecutorHost {
@@ -105,9 +149,10 @@ function fakeActivities(opts: { liveControls?: () => DeviceActivity[]; installDe
   }
 }
 
-function baseDeps(overrides: Partial<SchedulerDeps> = {}): SchedulerDeps {
+function baseDeps(jobStore: JobStore, runs: RunStore, overrides: Partial<SchedulerDeps> = {}): SchedulerDeps {
   return {
-    jobStore: fakeJobStore({ queuedDeviceIds: ['d1'] }),
+    jobStore,
+    runs,
     host: fakeHost(),
     log: createLogger('test'),
     jobTtlSec: 60,
@@ -121,12 +166,11 @@ function baseDeps(overrides: Partial<SchedulerDeps> = {}): SchedulerDeps {
 
 describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () => {
   test('a live control marker blocks the job — not claimed, and the wait is broadcast visibly naming the conflicting activity', () => {
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'] })
-    const waitingEvents: Array<{ jobId: string; deviceId: string; waiting: boolean; reason: 'control' | 'paced'; conflicting: DeviceActivity | null; remainingSec: number }> = []
+    const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
+    const waitingEvents: Array<{ jobId: string; runId: string; deviceId: string; waiting: boolean; reason: 'control' | 'paced'; conflicting: DeviceActivity | null; remainingSec: number }> = []
     const marker = controlActivity('client-1')
     const scheduler = createScheduler(
-      baseDeps({
-        jobStore,
+      baseDeps(store, runs, {
         activities: fakeActivities({ liveControls: () => [marker] }),
         onJobWaiting: (info) => waitingEvents.push(info),
       }),
@@ -135,19 +179,18 @@ describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () =
     scheduler.kick()
 
     // The device was excluded from the claim — the job was never actually claimed.
-    expect((jobStore as unknown as { claimedCalls: string[][] }).claimedCalls.some((ex) => ex.includes('d1'))).toBe(true)
+    expect(claimedCalls.some((ex) => ex.includes('d1'))).toBe(true)
     expect(waitingEvents).toHaveLength(1)
-    expect(waitingEvents[0]).toMatchObject({ jobId: 'job-1', deviceId: 'd1', waiting: true, reason: 'control', conflicting: marker })
+    expect(waitingEvents[0]).toMatchObject({ jobId: 'job-1', runId: 'run-1', deviceId: 'd1', waiting: true, reason: 'control', conflicting: marker })
     expect(waitingEvents[0]!.remainingSec).toBeGreaterThan(0)
     expect(waitingEvents[0]!.remainingSec).toBeLessThanOrEqual(MAX_CONTROL_WAIT_SEC)
   })
 
   test('no live control marker at all does NOT block — the job is claimed immediately', () => {
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'] })
+    const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
     const waitingEvents: unknown[] = []
     const scheduler = createScheduler(
-      baseDeps({
-        jobStore,
+      baseDeps(store, runs, {
         activities: fakeActivities({ liveControls: () => [] }),
         onJobWaiting: (info) => waitingEvents.push(info),
       }),
@@ -157,18 +200,16 @@ describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () =
 
     expect(waitingEvents).toHaveLength(0)
     // claimNext was called with an EMPTY exclude list (nothing blocked) and actually claimed the job.
-    const calls = (jobStore as unknown as { claimedCalls: string[][] }).claimedCalls
-    expect(calls.some((ex) => ex.length === 0)).toBe(true)
+    expect(claimedCalls.some((ex) => ex.length === 0)).toBe(true)
   })
 
   test('the MAX_CONTROL_WAIT_SEC cap forces the job to proceed even though a control marker is still live (never waits past the cap)', () => {
     const realNow = Date.now()
     const nowSpy = spyOn(Date, 'now').mockReturnValue(realNow)
     try {
-      const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'] })
+      const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
       const scheduler = createScheduler(
-        baseDeps({
-          jobStore,
+        baseDeps(store, runs, {
           activities: fakeActivities({ liveControls: () => [controlActivity('client-1')] }),
           onJobWaiting: () => {},
         }),
@@ -176,13 +217,13 @@ describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () =
 
       // First tick: observed blocked, the wait clock starts here.
       scheduler.kick()
-      expect((jobStore as unknown as { claimedCalls: string[][] }).claimedCalls.at(-1)).toEqual(['d1'])
+      expect(claimedCalls.at(-1)).toEqual(['d1'])
 
       // Advance the clock past the cap and tick again — the job proceeds
       // even though the control marker is still live.
       nowSpy.mockReturnValue(realNow + (MAX_CONTROL_WAIT_SEC + 1) * 1000)
       scheduler.kick()
-      expect((jobStore as unknown as { claimedCalls: string[][] }).claimedCalls.at(-1)).toEqual([])
+      expect(claimedCalls.at(-1)).toEqual([])
     } finally {
       nowSpy.mockRestore()
     }
@@ -190,38 +231,35 @@ describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () =
 
   test('a job is never silently dropped by the control gate — it keeps its place and is claimed the moment the marker ends', () => {
     let live: DeviceActivity[] = [controlActivity('client-1')]
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'] })
+    const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
     const scheduler = createScheduler(
-      baseDeps({
-        jobStore,
+      baseDeps(store, runs, {
         activities: fakeActivities({ liveControls: () => live }),
         onJobWaiting: () => {},
       }),
     )
 
     scheduler.kick() // blocked — not claimed
-    expect((jobStore as unknown as { claimedCalls: string[][] }).claimedCalls.at(-1)).toEqual(['d1'])
+    expect(claimedCalls.at(-1)).toEqual(['d1'])
 
     // The marker ends.
     live = []
     scheduler.kick()
-    expect((jobStore as unknown as { claimedCalls: string[][] }).claimedCalls.at(-1)).toEqual([])
+    expect(claimedCalls.at(-1)).toEqual([])
   })
 
   test('without wiring `onJobWaiting` at all, behaviour is unchanged — nothing is ever reported (a host that predates this plan)', () => {
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'] })
-    const scheduler = createScheduler(baseDeps({ jobStore })) // no onJobWaiting
+    const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
+    const scheduler = createScheduler(baseDeps(store, runs)) // no onJobWaiting
     scheduler.kick()
-    const calls = (jobStore as unknown as { claimedCalls: string[][] }).claimedCalls
-    expect(calls.some((ex) => ex.length === 0)).toBe(true)
+    expect(claimedCalls.some((ex) => ex.length === 0)).toBe(true)
   })
 
   test('a device with a live install activity is excluded from claimNext silently — never reported as waiting (policy row "job over install = forbid")', () => {
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'] })
+    const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
     const waitingEvents: unknown[] = []
     const scheduler = createScheduler(
-      baseDeps({
-        jobStore,
+      baseDeps(store, runs, {
         activities: fakeActivities({ liveControls: () => [], installDevices: ['d1'] }),
         onJobWaiting: (info) => waitingEvents.push(info),
       }),
@@ -230,19 +268,18 @@ describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () =
     scheduler.kick()
 
     expect(waitingEvents).toHaveLength(0)
-    const calls = (jobStore as unknown as { claimedCalls: string[][] }).claimedCalls
-    expect(calls.some((ex) => ex.includes('d1'))).toBe(true)
+    expect(claimedCalls.some((ex) => ex.includes('d1'))).toBe(true)
   })
 
-  test('claiming a job starts a job:<id> activity labelled with the resolved script name', () => {
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'] })
+  test('claiming a job starts a job:<runId> activity labelled with the resolved script name', () => {
+    const { store, runs } = fakeJobStore({ queuedDeviceIds: ['d1'] })
     const activities = fakeActivities()
-    const scheduler = createScheduler(baseDeps({ jobStore, activities }))
+    const scheduler = createScheduler(baseDeps(store, runs, { activities }))
 
     scheduler.kick()
 
     expect(activities.startCalls).toHaveLength(1)
-    expect(activities.startCalls[0]).toMatchObject({ deviceId: 'd1', id: 'job:job-1', kind: 'job' })
+    expect(activities.startCalls[0]).toMatchObject({ deviceId: 'd1', id: 'job:run-1', kind: 'job' })
     expect(activities.startCalls[0]!.label).toContain('internal:sleep')
   })
 })
@@ -259,27 +296,26 @@ describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () =
 describe('createScheduler — paced wait (plan 94 §3.8, §4.8, step 94.6)', () => {
   test('a job whose notBefore is in the future is reported waiting with reason: "paced" and a positive remainingSec — and is NOT excluded from claimNext (pacing is per-row, never device-wide)', () => {
     const now = Math.floor(Date.now() / 1000)
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now + 5 })
-    const waitingEvents: Array<{ jobId: string; deviceId: string; waiting: boolean; reason: 'control' | 'paced'; conflicting: DeviceActivity | null; remainingSec: number }> = []
-    const scheduler = createScheduler(baseDeps({ jobStore, onJobWaiting: (info) => waitingEvents.push(info) }))
+    const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now + 5 })
+    const waitingEvents: Array<{ jobId: string; runId: string; deviceId: string; waiting: boolean; reason: 'control' | 'paced'; conflicting: DeviceActivity | null; remainingSec: number }> = []
+    const scheduler = createScheduler(baseDeps(store, runs, { onJobWaiting: (info) => waitingEvents.push(info) }))
 
     scheduler.kick()
 
     expect(waitingEvents).toHaveLength(1)
-    expect(waitingEvents[0]).toMatchObject({ jobId: 'job-1', deviceId: 'd1', waiting: true, reason: 'paced', conflicting: null })
+    expect(waitingEvents[0]).toMatchObject({ jobId: 'job-1', runId: 'run-1', deviceId: 'd1', waiting: true, reason: 'paced', conflicting: null })
     expect(waitingEvents[0]!.remainingSec).toBeGreaterThan(0)
     expect(waitingEvents[0]!.remainingSec).toBeLessThanOrEqual(5)
     // The control gate's own exclusion list is empty — a paced job's own SQL
     // predicate (job-store.ts) is what keeps it from claiming, not the
     // scheduler excluding its device wholesale.
-    const calls = (jobStore as unknown as { claimedCalls: string[][] }).claimedCalls
-    expect(calls.some((ex) => ex.length === 0)).toBe(true)
+    expect(claimedCalls.some((ex) => ex.length === 0)).toBe(true)
   })
 
   test('notBefore null (the overwhelming majority of jobs, and every job before this column existed) never reports a paced wait', () => {
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: null })
+    const { store, runs } = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: null })
     const waitingEvents: unknown[] = []
-    const scheduler = createScheduler(baseDeps({ jobStore, onJobWaiting: (info) => waitingEvents.push(info) }))
+    const scheduler = createScheduler(baseDeps(store, runs, { onJobWaiting: (info) => waitingEvents.push(info) }))
 
     scheduler.kick()
 
@@ -288,9 +324,9 @@ describe('createScheduler — paced wait (plan 94 §3.8, §4.8, step 94.6)', () 
 
   test('notBefore already in the past does not report a paced wait', () => {
     const now = Math.floor(Date.now() / 1000)
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now - 5 })
+    const { store, runs } = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now - 5 })
     const waitingEvents: unknown[] = []
-    const scheduler = createScheduler(baseDeps({ jobStore, onJobWaiting: (info) => waitingEvents.push(info) }))
+    const scheduler = createScheduler(baseDeps(store, runs, { onJobWaiting: (info) => waitingEvents.push(info) }))
 
     scheduler.kick()
 
@@ -299,11 +335,10 @@ describe('createScheduler — paced wait (plan 94 §3.8, §4.8, step 94.6)', () 
 
   test('a device that is both control-blocked AND paced reports "control" — the control gate is what is actually excluding it from claimNext right now', () => {
     const now = Math.floor(Date.now() / 1000)
-    const jobStore = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now + 5 })
+    const { store, runs } = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now + 5 })
     const waitingEvents: Array<{ reason: 'control' | 'paced' }> = []
     const scheduler = createScheduler(
-      baseDeps({
-        jobStore,
+      baseDeps(store, runs, {
         activities: fakeActivities({ liveControls: () => [controlActivity('client-1')] }),
         onJobWaiting: (info) => waitingEvents.push(info),
       }),

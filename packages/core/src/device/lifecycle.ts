@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../db'
-import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobs, type DeviceRow } from '../db/schema'
+import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobRuns, jobs, type DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
 import { deleteJobsWithHistory } from '../jobs/purge'
 import type { ActivityRegistry } from '../activity/registry'
@@ -173,23 +173,29 @@ function toBlockedDevice(row: typeof blockedDevices.$inferSelect): BlockedDevice
   }
 }
 
-/** Every job id belonging to a device — used to find ITS artifacts too, since a job artifact carries `jobId`, not `deviceId` (schema.ts). */
+/** Every job id belonging to a device — used to find ITS runs' artifacts too, since a run artifact carries `runId`, not `deviceId` (schema.ts). */
 function jobIdsOf(db: Db, deviceId: string): string[] {
   return db.select({ id: jobs.id }).from(jobs).where(eq(jobs.deviceId, deviceId)).all().map((r) => r.id)
+}
+
+/** Every run id belonging to a set of jobs (plan 211 §3.2 decision 9 — `artifacts.run_id`, not `job_id`). */
+function runIdsOf(db: Db, jobIds: string[]): string[] {
+  return jobIds.length > 0 ? db.select({ id: jobRuns.id }).from(jobRuns).where(inArray(jobRuns.jobId, jobIds)).all().map((r) => r.id) : []
 }
 
 /**
  * "Artifacts belonging to this device" spans two shapes (schema.ts's comment
  * on `artifacts`): device-scoped ones (Monitor tab "save last N lines",
- * `deviceId` set) AND every artifact of every one of the device's OWN jobs
- * (`jobId` set, `deviceId` null). Both count toward the number shown before
- * "delete history" is enabled, and both are what gets deleted — otherwise a
- * job's screenshots would survive as artifacts pointing at a `jobId` that
- * `historyCounts` promised was gone too.
+ * `deviceId` set) AND every artifact of every run of every one of the
+ * device's OWN jobs (`runId` set, `deviceId` null). Both count toward the
+ * number shown before "delete history" is enabled, and both are what gets
+ * deleted — otherwise a job's screenshots would survive as artifacts
+ * pointing at a `runId` that `historyCounts` promised was gone too.
  */
 function countArtifacts(db: Db, deviceId: string, jobIds: string[]): number {
   const ownDeviceScoped = db.select().from(artifacts).where(eq(artifacts.deviceId, deviceId)).all().length
-  const ownJobScoped = jobIds.length > 0 ? db.select().from(artifacts).where(inArray(artifacts.jobId, jobIds)).all().length : 0
+  const runIds = runIdsOf(db, jobIds)
+  const ownJobScoped = runIds.length > 0 ? db.select().from(artifacts).where(inArray(artifacts.runId, runIds)).all().length : 0
   return ownDeviceScoped + ownJobScoped
 }
 

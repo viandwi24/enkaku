@@ -4,6 +4,7 @@ import type { Db } from '../db'
 import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
 import type { JobStore } from '../queue/job-store'
+import type { RunStore } from './runs/store'
 import type { ScriptRegistry } from '../scripts/registry'
 import type { JobRow } from '../db/schema'
 import { createScriptJobsReader } from './script-jobs'
@@ -25,6 +26,7 @@ import { createJobTrigger, type TriggerBudgets, type TriggerResult } from './tri
 export interface JobsRunnerPortDeps {
   db: Db
   jobStore: JobStore
+  runs: RunStore
   /** `ctx.jobs.trigger()`'s reference resolution and pinning (plan 81 §3.4) — the same registry every other caller resolves through. */
   registry: ScriptRegistry
   /** Read fresh per call, not captured at daemon start — a Settings change reaches the very next trigger. */
@@ -47,9 +49,10 @@ export interface JobsRunnerPort {
 }
 
 export function createJobsRunnerPort(deps: JobsRunnerPortDeps): JobsRunnerPort {
-  const reader = createScriptJobsReader({ jobStore: deps.jobStore, db: deps.db })
+  const reader = createScriptJobsReader({ jobStore: deps.jobStore, db: deps.db, runs: deps.runs })
   const trigger = createJobTrigger({
     db: deps.db,
+    runs: deps.runs,
     registry: deps.registry,
     budgets: deps.triggerBudgets,
     ...(deps.farmJobSettings ? { farmJobSettings: deps.farmJobSettings } : {}),

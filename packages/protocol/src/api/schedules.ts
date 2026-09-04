@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { ScheduleInfoSchema, ScheduleRunInfoSchema } from '../messages/schedule'
+import { ScheduleInfoSchema } from '../messages/schedule'
+import { JobInfoSchema } from '../messages/job'
 import { pageSchema } from './pagination'
 
 /** `GET/POST/PATCH /api/schedules(/:id)` — `resolvesTo` is null for an agent-target schedule. */
@@ -15,5 +16,5 @@ export const ValidateResponseSchema = z.object({
   error: z.string().optional(),
 })
 
-/** `GET /api/schedules/:id/runs` (keyset). */
-export const ScheduleRunsPageResponseSchema = pageSchema(ScheduleRunInfoSchema)
+/** `GET /api/schedules/:id/jobs` (keyset) — the schedule's member jobs (plan 211 §3.2 decision 4). */
+export const ScheduleJobsPageResponseSchema = pageSchema(JobInfoSchema)

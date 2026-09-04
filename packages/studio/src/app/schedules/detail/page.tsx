@@ -10,15 +10,16 @@ import {
   BatchInfoSchema,
   BatchResponseSchema,
   BatchStopResponseSchema,
+  ScheduleJobsPageResponseSchema,
   ScheduleResponseSchema,
-  ScheduleRunsPageResponseSchema,
   ValidateResponseSchema,
   type BatchInfo,
   type TargetPreview,
   type DeviceInfo,
+  type JobInfo,
   type ScheduleInfo,
-  type ScheduleRunInfo,
 } from '@enkaku/protocol'
+import { JobStatusBadge } from '@/components/StatusBadge'
 import { ConfirmDialog, ErrorState, LoadingRows, Button, TableCell, TableHead, api, formatDeviceName, useAction, relativeTime } from '@enkaku/ui'
 import { ScheduleEditorDialog, type ScheduleRow } from '@/components/ScheduleEditorDialog'
 import { EntityTabs } from '@/components/layout/EntityTabs'
@@ -91,7 +92,7 @@ function ScheduleDetail() {
   // its own "View" link into the full batch detail page.
   const [lastBatch, setLastBatch] = useState<BatchInfo | null>(null)
   const { run, isPending } = useAction()
-  const runsRef = useRef<PaginatedTableHandle<ScheduleRunInfo>>(null)
+  const runsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
 
   const load = () => {
     if (!scheduleId) return
@@ -113,17 +114,17 @@ function ScheduleDetail() {
   }, [])
 
   useEffect(() => {
-    if (!schedule?.lastBatchId) {
+    if (!schedule?.batchId) {
       setLastBatch(null)
       return
     }
-    void api(`/api/batches/${schedule.lastBatchId}`, BatchResponseSchema)
+    void api(`/api/batches/${schedule.batchId}`, BatchResponseSchema)
       .then((b) => setLastBatch(b.batch))
       .catch(() => setLastBatch(null))
-  }, [schedule?.lastBatchId])
+  }, [schedule?.batchId])
 
   useEffect(() => {
-    const lastBatchId = schedule?.lastBatchId
+    const lastBatchId = schedule?.batchId
     if (!lastBatchId) return
     const off = ws.on((m) => {
       if (m.type === 'batch.status' && m.payload.batchId === lastBatchId) {
@@ -131,7 +132,7 @@ function ScheduleDetail() {
       }
     })
     return off
-  }, [schedule?.lastBatchId])
+  }, [schedule?.batchId])
 
   useEffect(() => {
     if (!schedule) return
@@ -196,14 +197,14 @@ function ScheduleDetail() {
   // route rather than a schedule-specific one — a schedule's last run is
   // still, underneath, an ordinary batch.
   const stopLastRun = () =>
-    run('stop-last-run', () => api(`/api/batches/${schedule.lastBatchId}/stop`, BatchStopResponseSchema, { method: 'POST' }), {
+    run('stop-last-run', () => api(`/api/batches/${schedule.batchId}/stop`, BatchStopResponseSchema, { method: 'POST' }), {
       failure: 'Could not stop the last run',
       onSuccess: (b) => {
         const parts = [`${b.cancelled} queued job${b.cancelled === 1 ? '' : 's'} cancelled`, `${b.aborted} running job${b.aborted === 1 ? '' : 's'} aborted`]
         if (b.refused > 0) parts.push(`${b.refused} refused (you do not own ${b.refused === 1 ? 'that device' : 'those devices'})`)
         toast.success(parts.join(' · '))
-        if (schedule.lastBatchId) {
-          void api(`/api/batches/${schedule.lastBatchId}`, BatchResponseSchema)
+        if (schedule.batchId) {
+          void api(`/api/batches/${schedule.batchId}`, BatchResponseSchema)
             .then((r) => setLastBatch(r.batch))
             .catch(() => undefined)
         }
@@ -324,6 +325,21 @@ function ScheduleDetail() {
             </ul>
           </div>
 
+          {/* Plan 211 §3.2 decision 5 — the last FIRE's own decision, straight
+              off the schedule row (`lastFireOutcome`/`lastFireDetail`
+              replace the deleted `schedule_runs` ledger). Shown even when
+              no batch resulted (a skipped or errored fire) — `lastBatch`
+              alone would hide those entirely. */}
+          {schedule.lastFireOutcome && !lastBatch && (
+            <div className="rounded-lg border bg-surface p-4">
+              <h2 className="text-[14px] font-semibold tracking-tight">Last fire</h2>
+              <p className="mt-1 text-[12.5px] text-fg-muted">
+                {OUTCOME_LABEL[schedule.lastFireOutcome] ?? schedule.lastFireOutcome}
+              </p>
+              {schedule.lastFireDetail && <p className="mt-0.5 text-[12px] text-fg-subtle">{schedule.lastFireDetail}</p>}
+            </div>
+          )}
+
           {lastBatch && (
             <div className="rounded-lg border bg-surface p-4">
               <div className="flex items-center justify-between">
@@ -377,53 +393,55 @@ function ScheduleDetail() {
         </div>
       )}
 
+      {/* Plan 211 §3.2 decision 5 — the `schedule_runs` ledger (one row per
+          FIRE, with its own outcome/detail/missedCount) is gone; the
+          schedule's history is its member jobs' runs now, one row per JOB
+          this schedule ever created (`GET /api/schedules/:id/jobs`). The
+          Overview tab's "Last run" card above still shows the last FIRE's
+          own outcome (`schedule.lastFireOutcome`/`lastFireDetail`) — that
+          scalar survives the ledger's deletion — but a skipped fire that
+          created no job has no row here at all; this is a real narrowing
+          from the pre-211 UI, not silently ported. */}
       {tab === 'runs' && (
         <div className="px-5 py-4">
-          <PaginatedTable<ScheduleRunInfo>
+          <PaginatedTable<JobInfo>
             ref={runsRef}
             resetKey={scheduleId}
             fetchPage={(cursor) =>
               api(
-                `/api/schedules/${scheduleId}/runs?limit=50${cursor ? `&cursor=${cursor}` : ''}`,
-                ScheduleRunsPageResponseSchema,
+                `/api/schedules/${scheduleId}/jobs?limit=50${cursor ? `&cursor=${cursor}` : ''}`,
+                ScheduleJobsPageResponseSchema,
               ).then((page) => {
                 setRunsTotal(page.total)
                 return page
               })
             }
-            rowKey={(r) => r.id}
+            rowKey={(r) => r.jobId}
             header={
               <>
-                <TableHead>Due</TableHead>
-                <TableHead>Fired</TableHead>
-                <TableHead>Outcome</TableHead>
-                <TableHead>Missed</TableHead>
-                <TableHead className="text-right">Batch</TableHead>
+                <TableHead>Queued</TableHead>
+                <TableHead>Script</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Job</TableHead>
               </>
             }
             renderRow={(r) => (
               <>
-                <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(r.dueAt)}</TableCell>
-                <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(r.firedAt)}</TableCell>
-                <TableCell className="text-[12px]">
-                  {OUTCOME_LABEL[r.outcome] ?? r.outcome}
-                  {r.detail && <p className="mt-0.5 line-clamp-1 text-[11px] text-fg-subtle">{r.detail}</p>}
+                <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(r.createdAt)}</TableCell>
+                <TableCell className="text-[12px]">{r.scriptName ?? r.scriptId}</TableCell>
+                <TableCell>
+                  <JobStatusBadge status={r.status} />
                 </TableCell>
-                <TableCell className="readout text-[12px] text-fg-muted">{r.missedCount > 0 ? r.missedCount : '—'}</TableCell>
                 <TableCell className="text-right">
-                  {r.batchId ? (
-                    <Button asChild variant="ghost" size="sm" className="h-7 text-[12px]">
-                      <Link href={`/batches/detail?id=${r.batchId}`}>View</Link>
-                    </Button>
-                  ) : (
-                    <span className="text-[12px] text-fg-subtle">—</span>
-                  )}
+                  <Button asChild variant="ghost" size="sm" className="h-7 text-[12px]">
+                    <Link href={`/jobs/detail?id=${r.jobId}`}>View</Link>
+                  </Button>
                 </TableCell>
               </>
             )}
             empty={{
               title: 'No runs yet',
-              description: 'Every fire decision — including skipped ones — appears here, with its reason.',
+              description: 'Every job this schedule has fired appears here.',
             }}
           />
         </div>

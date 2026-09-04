@@ -4,11 +4,11 @@ import type {
   DeviceInfo,
   DeviceNetworkConfig,
   DiscoveredDeviceInfo,
-  JobNodeInfo,
   NetworkEngineId,
   RouteCheckId,
   WorkflowDoc,
   WorkflowFinding,
+  WorkflowStepInfo,
 } from '@enkaku/protocol'
 import { api, BadResponseError, formatDeviceName } from '@enkaku/ui'
 import { coreBase } from './ws'
@@ -766,4 +766,4 @@ export async function estimateWorkflowDuration(
   return { nodeCount: doc.nodes.length, totalMs, unknownNodes }
 }
 
-export type { JobNodeInfo }
+export type { WorkflowStepInfo }

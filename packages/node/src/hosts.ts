@@ -359,7 +359,11 @@ export function createNodeHosts(deps: {
             // `scriptExportId` (plan 82 §3.2) selects which member of a plugin
             // bundle to run — undefined for a bundle with no `scripts` array, exactly the
             // same optional field the local executor threads through.
-            const result = await runner.execute({ id: jobId, deviceId, bundlePath, params, ...(scriptExportId ? { scriptExportId } : {}) })
+            // Plan 211 §3.2 decision 9 — a node-dispatched job has no local
+            // `job_runs` row (the control plane owns that record); `runId:
+            // jobId` is the same pragmatic simplification `daemon.ts`'s
+            // remote job bridge uses for its own hooks/artifact wiring.
+            const result = await runner.execute({ id: jobId, runId: jobId, deviceId, bundlePath, params, ...(scriptExportId ? { scriptExportId } : {}) })
             send({
               type: 'job.progress',
               payload: {

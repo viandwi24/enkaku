@@ -36,15 +36,13 @@ function harness(opts: {
   /** Undefined installs no `capture` at all, which forces the policy to `'none'`. */
   capture?: (req: TraceCaptureRequest) => Promise<TraceCaptureResult>
   attempt?: number
-  nodeId?: string | null
 } = {}): Harness {
   const events: TraceEventInput[] = []
   const captures: TraceCaptureRequest[] = []
   let clock = 1_756_000_000_000
   const capture = opts.capture
   const tee = createTraceTee({
-    jobId: 'job-1',
-    ...(opts.nodeId !== undefined ? { nodeId: opts.nodeId } : {}),
+    runId: 'run-1',
     attempt: () => opts.attempt ?? 1,
     engineId: () => (opts.engineId === undefined ? 'ui-server' : opts.engineId),
     emit: (e) => events.push(e),
@@ -131,12 +129,11 @@ describe('createTraceTee — ordering and measurement (plan 128 §3.1, §3.3)', 
     expect(h.events.filter((e) => e.kind === 'action')).toHaveLength(1)
   })
 
-  test('every event carries the live attempt and the workflow node axis', async () => {
-    const h = harness({ engineId: null, attempt: 3, nodeId: 'scroll-fyp' })
+  test('every event carries the live attempt', async () => {
+    const h = harness({ engineId: null, attempt: 3 })
     h.tee.end(h.tee.begin(tap()), { ok: true, value: null })
     await drain()
     expect(h.events[0]?.attempt).toBe(3)
-    expect(h.events[0]?.nodeId).toBe('scroll-fyp')
   })
 })
 
@@ -421,7 +418,7 @@ describe('createTraceTee — a capture that fails (plan 128 §3.4, criterion 5)'
   test('an emit that throws does not take the job with it', async () => {
     const events: TraceEventInput[] = []
     const tee = createTraceTee({
-      jobId: 'job-1',
+      runId: 'run-1',
       attempt: () => 1,
       engineId: () => null,
       emit: (e) => {
@@ -454,7 +451,7 @@ describe('createTraceTee — the other lanes (plan 128 §4.1)', () => {
     let engine = 'ui-server'
     const events: TraceEventInput[] = []
     const tee = createTraceTee({
-      jobId: 'job-1',
+      runId: 'run-1',
       attempt: () => 1,
       engineId: () => engine,
       emit: (e) => events.push(e),

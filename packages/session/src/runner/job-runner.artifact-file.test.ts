@@ -29,7 +29,7 @@ import type { Logger } from '../logger'
  */
 
 const DEVICE_ID = 'dev-1'
-const JOB: JobSpec = { id: 'job-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
+const JOB: JobSpec = { id: 'job-1', runId: 'run-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
 
 const silentLog = (): Logger => {
   const l = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => l }

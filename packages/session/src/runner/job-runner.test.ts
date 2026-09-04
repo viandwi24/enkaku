@@ -30,7 +30,7 @@ const silentLog = (): Logger => {
  */
 
 const DEVICE_ID = 'dev-1'
-const JOB: JobSpec = { id: 'job-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
+const JOB: JobSpec = { id: 'job-1', runId: 'run-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
 
 function fakeSession(execImpl: (cmd: string) => Promise<string>): DeviceSession {
   return {
@@ -326,85 +326,6 @@ describe('createJobRunner — job.reset "none" (plan 99 §3.3, §4.8)', () => {
   })
 })
 
-describe('createJobRunner — job.nodeId threaded into the child\'s init (plan 99 §3.2, §4.8)', () => {
-  test('nodeId reaches init.job when set on the JobSpec', async () => {
-    const session = fakeSession(async () => '')
-    const { isolation, sentPerSpawn } = fakeIsolation([successBehavior()])
-    const runner = createJobRunner({
-      isolation,
-      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
-      sessions: fakeSessions(session),
-      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
-      log: silentLog(),
-      onLog: () => {},
-      onArtifact: () => {},
-      onPhase: () => {},
-      heartbeat: () => {},
-      resetPolicy: () => ({
-        resetPolicy: 'none',
-        resetTimeoutMs: 15_000,
-        resetStrict: false,
-        retry: DEFAULT_RETRY,
-        crashPolicy: 'declared',
-        defaultTimeoutMs: 3_600_000,
-        startupTimeoutMs: 60_000,
-        maxTimeoutMs: null,
-        memory: { defaultMaxRssBytes: null, maxRssBytes: null, enforce: 'kill', sampleIntervalMs: 2_000 },
-        trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
-  // Plan 97 §3.4, §3.7, §4.9 — landed concurrently with plan 99's own tests here.
-  maxResultBytes: 65_536,
-  progressIntervalMs: 1_000,
-      }),
-    })
-
-    const result = await runner.execute({ ...JOB, nodeId: 'scroll1' })
-    expect(result.ok).toBe(true)
-    const init = sentPerSpawn[0]?.find((m) => m.t === 'init')
-    expect(init && 'job' in init ? init.job : undefined).toEqual({
-      id: JOB.id,
-      attempt: 1,
-      deviceId: DEVICE_ID,
-      nodeId: 'scroll1',
-    })
-  })
-
-  test('a standalone job (no nodeId) sends init.job exactly as before — no `nodeId` key at all', async () => {
-    const session = fakeSession(async () => '')
-    const { isolation, sentPerSpawn } = fakeIsolation([successBehavior()])
-    const runner = createJobRunner({
-      isolation,
-      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
-      sessions: fakeSessions(session),
-      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
-      log: silentLog(),
-      onLog: () => {},
-      onArtifact: () => {},
-      onPhase: () => {},
-      heartbeat: () => {},
-      resetPolicy: () => ({
-        resetPolicy: 'none',
-        resetTimeoutMs: 15_000,
-        resetStrict: false,
-        retry: DEFAULT_RETRY,
-        crashPolicy: 'declared',
-        defaultTimeoutMs: 3_600_000,
-        startupTimeoutMs: 60_000,
-        maxTimeoutMs: null,
-        memory: { defaultMaxRssBytes: null, maxRssBytes: null, enforce: 'kill', sampleIntervalMs: 2_000 },
-        trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
-  // Plan 97 §3.4, §3.7, §4.9 — landed concurrently with plan 99's own tests here.
-  maxResultBytes: 65_536,
-  progressIntervalMs: 1_000,
-      }),
-    })
-
-    const result = await runner.execute(JOB)
-    expect(result.ok).toBe(true)
-    const init = sentPerSpawn[0]?.find((m) => m.t === 'init')
-    expect(init && 'job' in init ? init.job : undefined).toEqual({ id: JOB.id, attempt: 1, deviceId: DEVICE_ID })
-    expect(init && 'job' in init ? 'nodeId' in init.job : undefined).toBe(false)
-  })
-})
 
 describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () => {
   test('a failing reset step, under resetStrict, fails the job with a coded error and the script never runs', async () => {
@@ -640,8 +561,8 @@ describe('createJobRunner — a finish() salvage survives the finish-only re-att
 
 describe('createJobRunner — the contamination regression (plan 35 §5.5)', () => {
   test('a second job on the same device still gets its own reset, even after the first was aborted mid-run', async () => {
-    const JOB1: JobSpec = { id: 'job-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
-    const JOB2: JobSpec = { id: 'job-2', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
+    const JOB1: JobSpec = { id: 'job-1', runId: 'run-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
+    const JOB2: JobSpec = { id: 'job-2', runId: 'run-2', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
 
     const execCalls: string[] = []
     // Both jobs run on the SAME session — exactly the back-to-back-on-one-
@@ -661,7 +582,7 @@ describe('createJobRunner — the contamination regression (plan 35 §5.5)', () 
       {
         ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
         onInit: () => {
-          runnerHandle?.abort(JOB1.id, 'cancelled')
+          runnerHandle?.abort(JOB1.runId, 'cancelled')
         },
         onAbort: (_reason, _emit, exit) => exit(137),
       },
@@ -704,7 +625,7 @@ describe('createJobRunner — the contamination regression (plan 35 §5.5)', () 
     // One reset for job 1 (its full attempt), none for its finish-only
     // retry, and — the point of this test — one MORE for job 2, proving the
     // second job does not inherit whatever state the aborted first job left.
-    expect(resetCalls.map((r) => r.jobId)).toEqual([JOB1.id, JOB2.id])
+    expect(resetCalls.map((r) => r.jobId)).toEqual([JOB1.runId, JOB2.runId])
     expect(sentPerSpawn).toHaveLength(3)
     // The "home" sequence's HOME intent runs once per reset — twice total
     // (once for job 1, once for job 2), never for the finish-only retry.
@@ -721,7 +642,7 @@ describe('createJobRunner — the "crashed" abort reason (plan 37 §3.5, §4.4)'
       {
         ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
         onInit: () => {
-          runnerHandle?.abort(JOB.id, 'crashed', 'com.example.app crashed: java.lang.NullPointerException')
+          runnerHandle?.abort(JOB.runId, 'crashed', 'com.example.app crashed: java.lang.NullPointerException')
         },
         onAbort: (_reason, emit) => {
           // The child still runs finish() before reporting its result — the
@@ -762,7 +683,7 @@ describe('createJobRunner — the "crashed" abort reason (plan 37 §3.5, §4.4)'
       {
         ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
         onInit: () => {
-          runnerHandle?.abort(JOB.id, 'crashed')
+          runnerHandle?.abort(JOB.runId, 'crashed')
         },
         onAbort: (_reason, emit) => {
           emit({ t: 'result', ok: false, error: { code: 'TIMEOUT', message: 'x', phase: 'timeout' }, finishRan: true })
@@ -1074,7 +995,7 @@ describe('createJobRunner — target-package tracking for the crash policy (plan
     })
 
     await runner.execute(JOB)
-    expect(targetEvents.at(-1)).toEqual({ jobId: JOB.id, packages: ['com.example.app'] })
+    expect(targetEvents.at(-1)).toEqual({ jobId: JOB.runId, packages: ['com.example.app'] })
   })
 
   test('with no declared packages, a launched app becomes the fallback target', async () => {
@@ -1114,8 +1035,8 @@ describe('createJobRunner — target-package tracking for the crash policy (plan
     const outcome = await runner.execute(JOB)
     expect(outcome.ok).toBe(true)
     expect(targetEvents).toEqual([
-      { jobId: JOB.id, packages: [] }, // reported once `ready` arrives with no declared packages
-      { jobId: JOB.id, packages: ['com.example.launched'] }, // then updated on app.launch
+      { jobId: JOB.runId, packages: [] }, // reported once `ready` arrives with no declared packages
+      { jobId: JOB.runId, packages: ['com.example.launched'] }, // then updated on app.launch
     ])
   })
 })
@@ -2272,7 +2193,7 @@ describe('createJobRunner — ctx.progress() forwarding (plan 97 §3.7, §4.3, �
     const resultPromise = runner.execute(JOB)
     await Bun.sleep(5)
 
-    expect(progressCalls).toEqual([{ jobId: JOB.id, value: { videos: 3, watchSeconds: 90 } }])
+    expect(progressCalls).toEqual([{ jobId: JOB.runId, value: { videos: 3, watchSeconds: 90 } }])
 
     finishChild?.()
     const result = await resultPromise
@@ -2420,8 +2341,8 @@ describe('createJobRunner — the job trace tee (plan 128 §3.1, §3.4, step 128
       heartbeat: () => {},
       resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
       timing: () => NO_TIMING,
-      onTraceEvent: (jobId, event) => {
-        expect(jobId).toBe(JOB.id)
+      onTraceEvent: (runId, event) => {
+        expect(runId).toBe(JOB.runId)
         events.push(event)
       },
       traceStore: store.store,

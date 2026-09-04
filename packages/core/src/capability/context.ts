@@ -192,7 +192,8 @@ export interface CapabilityContext {
 
 /** `job.trace`'s decoded cursor shape — the same `{ sortValue, id }` pair `decodeCursor` (`api/pagination.ts`) already returns; kept here rather than re-exported from there, since only this service consumes it. */
 export interface JobTraceListParams {
-  jobId: string
+  /** Re-keyed from `jobId` to `runId` by plan 211 §3.2 decision 9, matching `job_events.run_id`. */
+  runId: string
   kind?: JobTraceEvent['kind'][]
   limit: number
   cursor: { sortValue: number; id: string } | null
@@ -218,15 +219,15 @@ export interface JobTraceListResult {
  * they SELECT, only in where the query text lives.
  *
  * `readFrame`/`readUiTree` are the opposite: NOT reimplemented. They
- * delegate straight to `TraceFrameStore`, which owns the hash/jobId
+ * delegate straight to `TraceFrameStore`, which owns the hash/runId
  * path-traversal guards (`jobs/trace/frame-store.ts`) — a malformed hash is
  * refused there, never sanitised here.
  */
 export interface JobTraceCapabilityService {
   list(params: JobTraceListParams): JobTraceListResult
   /** `null` when the store has no file for this hash (never captured, or swept) — a 404 upstream, same as the REST route. */
-  readFrame(jobId: string, hash: string): Promise<Uint8Array | null>
-  readUiTree(jobId: string, hash: string): Promise<UiNode | null>
+  readFrame(runId: string, hash: string): Promise<Uint8Array | null>
+  readUiTree(runId: string, hash: string): Promise<UiNode | null>
 }
 
 function toTraceEvent(row: typeof jobEvents.$inferSelect): JobTraceEvent {
@@ -240,8 +241,8 @@ function toTraceEvent(row: typeof jobEvents.$inferSelect): JobTraceEvent {
 /** Exported so a test builds the SAME service the real context does (mirrors `buildScriptService` above). */
 export function buildJobTraceService(db: Db, traceStore?: TraceFrameStore): JobTraceCapabilityService {
   return {
-    list({ jobId, kind, limit, cursor }) {
-      const scope = and(eq(jobEvents.jobId, jobId), kind && kind.length > 0 ? inArray(jobEvents.kind, kind) : undefined)
+    list({ runId, kind, limit, cursor }) {
+      const scope = and(eq(jobEvents.runId, runId), kind && kind.length > 0 ? inArray(jobEvents.kind, kind) : undefined)
       const counted = db.select({ n: sql<number>`count(*)` }).from(jobEvents).where(scope).get()
       const rows = db
         .select()
@@ -260,13 +261,13 @@ export function buildJobTraceService(db: Db, traceStore?: TraceFrameStore): JobT
         total: counted?.n ?? 0,
       }
     },
-    async readFrame(jobId, hash) {
+    async readFrame(runId, hash) {
       if (!traceStore) throw new EnkakuError('E_NOT_SUPPORTED', 'trace frame storage is not available on this host')
-      return traceStore.readFrame(jobId, hash)
+      return traceStore.readFrame(runId, hash)
     },
-    async readUiTree(jobId, hash) {
+    async readUiTree(runId, hash) {
       if (!traceStore) throw new EnkakuError('E_NOT_SUPPORTED', 'trace ui storage is not available on this host')
-      return traceStore.readUiTree(jobId, hash)
+      return traceStore.readUiTree(runId, hash)
     },
   }
 }

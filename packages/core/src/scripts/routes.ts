@@ -14,7 +14,7 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { jobs, plugins, scripts } from '../db/schema'
+import { jobRuns, jobs, plugins, scripts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { createLogger, type Logger } from '../util/logger'
 import { typedJson } from '../api/typed-json'
@@ -152,10 +152,12 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string; audit?
         `${row.name} is a member of plugin ${ownerRef}; remove that plugin version instead: DELETE /api/plugins/${owner?.name ?? row.pluginId}/${owner?.version ?? ''}`,
       )
     }
+    // Plan 211 §3.2 decision 9 — `jobs.status` moved to `job_runs.status` (via `latestRunId`).
     const active = db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.scriptId, id), inArray(jobs.status, ['queued', 'running'])))
+      .innerJoin(jobRuns, eq(jobs.latestRunId, jobRuns.id))
+      .where(and(eq(jobs.scriptId, id), inArray(jobRuns.status, ['queued', 'running'])))
       .all()
     if (active.length > 0) {
       throw new EnkakuError('script_in_use', `${active.length} queued or running job(s) still use this script`)

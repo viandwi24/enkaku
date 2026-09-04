@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import type { BatchCounts } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { batches, devices, jobs } from '../db/schema'
+import { batches, devices, jobRuns } from '../db/schema'
+import { createRunStore } from '../jobs/runs/store'
 import { createJobStore } from '../queue/job-store'
 import { computeBatchStatus, recomputeBatchStatus } from './status'
 
@@ -17,15 +18,29 @@ function seedBatch(db: Db, id: string, status: 'queued' | 'running' | 'stopping'
 }
 
 let seq = 0
-function seedJob(db: Db, batchId: string, status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'expired') {
+/** A job plus one run at the given status, through the real `RunStore` — mirrors `queue/job-store.test.ts`'s own `seedJobAndRun`. */
+function seedJob(db: Db, batchId: string, status: 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'expired'): { jobId: string; runId: string } {
   const id = `job-${++seq}`
   db.insert(devices)
-    .values({ id: `dev-${id}`, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'idle' })
+    .values({ id: `dev-${id}`, stableId: `stable-${id}`, serial: `serial-${id}`, label: id, status: 'online' })
     .run()
-  db.insert(jobs)
-    .values({ id, scriptId: 'internal:sleep', deviceId: `dev-${id}`, status, createdAt: new Date(), batchId, batchSeq: 0 })
+  const runs = createRunStore(db)
+  const job = runs.createJob({
+    kind: 'script',
+    scriptId: 'internal:sleep',
+    deviceId: `dev-${id}`,
+    params: null,
+    scriptName: null,
+    scriptVersion: null,
+    batchId,
+    batchSeq: 0,
+  })
+  const run = runs.addRun(job.id, { trigger: 'batch' })
+  db.update(jobRuns)
+    .set({ status, finishedAt: status === 'queued' || status === 'running' ? null : new Date() })
+    .where(eq(jobRuns.id, run.id))
     .run()
-  return id
+  return { jobId: job.id, runId: run.id }
 }
 
 describe('computeBatchStatus (plan 20 §3.5; plan 21 §3.3 adds `expired`)', () => {
@@ -82,18 +97,19 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
   test('flips to success and sets finishedAt when the last job finishes', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
     seedBatch(db, 'b1')
     const j1 = seedJob(db, 'b1', 'running')
     seedJob(db, 'b1', 'success')
 
     const broadcasts: unknown[] = []
-    recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    recomputeBatchStatus({ db, jobStore, runs, broadcast: (m) => broadcasts.push(m) }, 'b1')
     let row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
     expect(row?.status).toBe('running')
     expect(row?.finishedAt).toBeNull()
 
-    db.update(jobs).set({ status: 'success' }).where(eq(jobs.id, j1)).run()
-    recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    db.update(jobRuns).set({ status: 'success' }).where(eq(jobRuns.id, j1.runId)).run()
+    recomputeBatchStatus({ db, jobStore, runs, broadcast: (m) => broadcasts.push(m) }, 'b1')
     row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
     expect(row?.status).toBe('success')
     expect(row?.finishedAt).not.toBeNull()
@@ -101,7 +117,7 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
 
     const finishedAtFirst = row?.finishedAt
     // A further recompute must not move finishedAt (set exactly once).
-    recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    recomputeBatchStatus({ db, jobStore, runs, broadcast: (m) => broadcasts.push(m) }, 'b1')
     row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
     expect(row?.finishedAt?.getTime()).toBe(finishedAtFirst?.getTime())
   })
@@ -109,13 +125,14 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
   test('always broadcasts, even when the overall status text is unchanged (progress ticking)', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
     seedBatch(db, 'b1')
     seedJob(db, 'b1', 'running')
     seedJob(db, 'b1', 'queued')
     seedJob(db, 'b1', 'queued')
 
     const broadcasts: { payload: { counts: BatchCounts } }[] = []
-    recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    recomputeBatchStatus({ db, jobStore, runs, broadcast: (m) => broadcasts.push(m) }, 'b1')
     expect(broadcasts[0]?.payload.counts).toEqual({
       total: 3,
       queued: 2,
@@ -132,30 +149,32 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
   test('all-cancelled batch flips to cancelled with finishedAt set', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
     seedBatch(db, 'b1')
     seedJob(db, 'b1', 'cancelled')
     seedJob(db, 'b1', 'cancelled')
 
-    recomputeBatchStatus({ db, jobStore, broadcast: () => {} }, 'b1')
+    recomputeBatchStatus({ db, jobStore, runs, broadcast: () => {} }, 'b1')
     const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
     expect(row?.status).toBe('cancelled')
     expect(row?.finishedAt).not.toBeNull()
   })
 
-  test('plan 36 §4.4 — failed jobs split into failedScript vs failedInfra by jobs.failureClass', () => {
+  test('plan 36 §4.4 — failed jobs split into failedScript vs failedInfra by the run\'s failureClass', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
     seedBatch(db, 'b1')
     const scriptFail = seedJob(db, 'b1', 'failed')
     const infraFail = seedJob(db, 'b1', 'failed')
     const loadFail = seedJob(db, 'b1', 'failed')
     seedJob(db, 'b1', 'success')
-    db.update(jobs).set({ failureClass: 'script' }).where(eq(jobs.id, scriptFail)).run()
-    db.update(jobs).set({ failureClass: 'infra' }).where(eq(jobs.id, infraFail)).run()
-    db.update(jobs).set({ failureClass: 'load' }).where(eq(jobs.id, loadFail)).run()
+    db.update(jobRuns).set({ failureClass: 'script' }).where(eq(jobRuns.id, scriptFail.runId)).run()
+    db.update(jobRuns).set({ failureClass: 'infra' }).where(eq(jobRuns.id, infraFail.runId)).run()
+    db.update(jobRuns).set({ failureClass: 'load' }).where(eq(jobRuns.id, loadFail.runId)).run()
 
     const broadcasts: { payload: { counts: BatchCounts } }[] = []
-    recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    recomputeBatchStatus({ db, jobStore, runs, broadcast: (m) => broadcasts.push(m) }, 'b1')
     const counts = broadcasts[0]?.payload.counts
     expect(counts?.failed).toBe(3)
     expect(counts?.failedScript).toBe(1)
@@ -167,12 +186,13 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
   test('plan 21 §4.3 — a batch with one expired job (the rest terminal) reaches "failed", not stuck at "queued"', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
     seedBatch(db, 'b1')
     seedJob(db, 'b1', 'success')
     seedJob(db, 'b1', 'expired')
 
     const broadcasts: { payload: { status: string } }[] = []
-    recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    recomputeBatchStatus({ db, jobStore, runs, broadcast: (m) => broadcasts.push(m) }, 'b1')
     const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
     expect(row?.status).toBe('failed')
     expect(row?.finishedAt).not.toBeNull()
@@ -196,12 +216,13 @@ describe('recomputeBatchStatus — a batch with zero jobs resolves to a terminal
   test('`stopping` with no jobs left reaches `cancelled`, not held forever — reproduces the owner\'s stuck tray entry', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
     seedBatch(db, 'b1', 'stopping')
     // No jobs at all — mirrors `stopBatch`'s own call site on a batch whose
     // only device was already forgotten before the operator hit Stop.
 
     const broadcasts: { payload: { status: string } }[] = []
-    const result = recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    const result = recomputeBatchStatus({ db, jobStore, runs, broadcast: (m) => broadcasts.push(m) }, 'b1')
 
     const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
     expect(row?.status).toBe('cancelled')
@@ -213,9 +234,10 @@ describe('recomputeBatchStatus — a batch with zero jobs resolves to a terminal
   test('a stale `running`/`queued` row with zero jobs also resolves to `cancelled`, not just `stopping`', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
     seedBatch(db, 'b1', 'running')
 
-    recomputeBatchStatus({ db, jobStore, broadcast: () => {} }, 'b1')
+    recomputeBatchStatus({ db, jobStore, runs, broadcast: () => {} }, 'b1')
     const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
     expect(row?.status).toBe('cancelled')
     expect(row?.finishedAt).not.toBeNull()
@@ -224,11 +246,12 @@ describe('recomputeBatchStatus — a batch with zero jobs resolves to a terminal
   test('a batch already terminal with zero jobs is left alone — no re-broadcast, no finishedAt disturbed', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
     seedBatch(db, 'b1', 'success')
     const before = db.select().from(batches).where(eq(batches.id, 'b1')).get()
 
     const broadcasts: unknown[] = []
-    const result = recomputeBatchStatus({ db, jobStore, broadcast: (m) => broadcasts.push(m) }, 'b1')
+    const result = recomputeBatchStatus({ db, jobStore, runs, broadcast: (m) => broadcasts.push(m) }, 'b1')
 
     expect(result).toBeNull()
     expect(broadcasts).toHaveLength(0)
@@ -240,6 +263,7 @@ describe('recomputeBatchStatus — a batch with zero jobs resolves to a terminal
   test('an unknown batch id still returns null (unaffected by the new branch)', () => {
     const db = setUp()
     const jobStore = createJobStore(db)
-    expect(recomputeBatchStatus({ db, jobStore, broadcast: () => {} }, 'no-such-batch')).toBeNull()
+    const runs = createRunStore(db)
+    expect(recomputeBatchStatus({ db, jobStore, runs, broadcast: () => {} }, 'no-such-batch')).toBeNull()
   })
 })

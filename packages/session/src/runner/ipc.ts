@@ -301,14 +301,6 @@ export const ParentToChildSchema = z.discriminatedUnion('t', [
       id: z.string(),
       attempt: z.number().int(),
       deviceId: z.string(),
-      /**
-       * The workflow node this execution belongs to (plan 99 §3.2, §4.8) —
-       * absent for every job outside a workflow. Threaded through to
-       * `createJobsApiFor` (`jobs-client.ts`) so `ctx.jobs.trigger()`'s
-       * default idempotency key does not collide across two nodes sharing
-       * one `jobId` (plan 99 F20).
-       */
-      nodeId: z.string().optional(),
     }),
     params: z.unknown(),
     priorError: z.object({ code: z.string(), message: z.string(), phase: z.string() }).optional(),

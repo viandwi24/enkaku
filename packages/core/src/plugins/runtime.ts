@@ -11,7 +11,7 @@ import {
   type PluginVersionRemovalScope,
 } from '@enkaku/protocol'
 import type { Db } from '../db'
-import { devices, jobs, plugins, scripts, type PluginRow } from '../db/schema'
+import { devices, jobRuns, jobs, plugins, scripts, type PluginRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { changedRows } from '../db'
 import type { KvStore } from '../kv/store'
@@ -854,13 +854,16 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       const scriptsMoved = manifest.scripts.length
       const previousMemberIds =
         previous.length === 0 ? [] : tx.select({ id: scripts.id }).from(scripts).where(inArray(scripts.pluginId, previous.map((r) => r.id))).all().map((r) => r.id)
+      // Plan 211 §3.2 decision 9 — `jobs.status` is gone; live status lives on the job's latest
+      // run row (`jobs.latestRunId` → `job_runs.status`).
       const queuedKeepingPrevious =
         previousMemberIds.length === 0
           ? 0
           : tx
               .select({ id: jobs.id })
               .from(jobs)
-              .where(and(inArray(jobs.scriptId, previousMemberIds), inArray(jobs.status, ['queued', 'running'])))
+              .innerJoin(jobRuns, eq(jobs.latestRunId, jobRuns.id))
+              .where(and(inArray(jobs.scriptId, previousMemberIds), inArray(jobRuns.status, ['queued', 'running'])))
               .all().length
       for (const old of previous) {
         tx.update(plugins).set({ status: 'superseded' }).where(eq(plugins.id, old.id)).run()
@@ -978,16 +981,19 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
      * deletion and miss eleven, which is the wrong way round.
      */
     if (rows.length > 0) {
+      // Plan 211 §3.2 decision 9 — same `jobs.status` → `job_runs.status` (via `latestRunId`) move
+      // as the activation guard above.
       const blocking = db
         .select({ id: jobs.id })
         .from(jobs)
+        .innerJoin(jobRuns, eq(jobs.latestRunId, jobRuns.id))
         .where(
           and(
             inArray(
               jobs.scriptId,
               rows.map((s) => s.id),
             ),
-            inArray(jobs.status, ['queued', 'running']),
+            inArray(jobRuns.status, ['queued', 'running']),
           ),
         )
         .all()

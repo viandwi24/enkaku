@@ -433,20 +433,20 @@ export {
   JobCancelMessage,
   JobStatusEventMessage,
   JobWaitingMessage,
-  /** Plan 99 §4.6, §4.9 — `job_nodes.status`'s domain, shared by `job.status`'s `node` block. */
-  JobNodeStatusSchema,
-  /** Plan 99 §3.5, §4.9, step 99.8 — resume. The node timeline's own schemas come from `./api/jobs` via `export * from './api'` above. */
-  JobResumeRequestSchema,
-  JobResumeResponseSchema,
+  RunTriggerSchema,
+  JobKindSchema,
+  JobRunInfoSchema,
+  JobRunDetailSchema,
   type JobStatus,
   type JobInfo,
   type JobDetail,
   type JobSummary,
   type ArtifactInfo,
   type SleepJobParams,
-  type JobNodeStatus,
-  type JobResumeRequest,
-  type JobResumeResponse,
+  type RunTrigger,
+  type JobKind,
+  type JobRunInfo,
+  type JobRunDetail,
 } from './messages/job'
 export {
   BatchOrderSchema,
@@ -478,7 +478,6 @@ export {
   ScheduleThreadModeSchema,
   OnApprovalRequiredSchema,
   ScheduleInfoSchema,
-  ScheduleRunInfoSchema,
   ScheduleFiredMessage,
   type OnOverlap,
   type CatchUp,
@@ -487,7 +486,6 @@ export {
   type ScheduleThreadMode,
   type OnApprovalRequired,
   type ScheduleInfo,
-  type ScheduleRunInfo,
   type ScheduleFiredEvent,
 } from './messages/schedule'
 export {
