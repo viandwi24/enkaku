@@ -498,6 +498,13 @@
       "when": 1788501027687,
       "tag": "0070_robust_nightshade",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "6",
+      "when": 1788511237386,
+      "tag": "0071_thick_thunderbolt_ross",
+      "breakpoints": true
     }
   ]
 }

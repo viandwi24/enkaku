@@ -28,7 +28,7 @@ export const devices = sqliteTable(
     transport: text('transport').default('adb-usb'),
     display: text('display').default('scrcpy'),
     input: text('input').default('scrcpy-uhid'),
-    inspection: text('inspection').default('ui-server'),
+    inspection: text('inspection').default('ui-tree'),
 
     battery: text('battery', { mode: 'json' }),
     settings: text('settings', { mode: 'json' }),

@@ -19,7 +19,14 @@ import type { PluginContext } from './runtime'
 export interface WaitForOptions {
   /** Default 10_000 ms. */
   timeout?: number
-  /** Defaults to 1_000 ms — realistic for uiautomator-dump; ui-server (Plan 06) can be far shorter. */
+  /**
+   * Default 1_000 ms, and on the default engine it is a CEILING rather than a
+   * cadence: `ui-tree` subscribes to the device's own change notifications and
+   * re-evaluates when the screen changes, using this only as a bounded
+   * safety-net re-check (plan 222 §3.5). On `ui-server` and `uiautomator-dump`
+   * there is nothing to subscribe to and this is a real polling interval,
+   * clamped down to what that engine can sustain.
+   */
   intervalMs?: number
 }
 
@@ -175,13 +182,32 @@ export interface DeviceApi {
    * a value that only makes sense relative to its neighbours, a count of
    * matching rows. Ordinary TypeScript over `node.children` does all of it.
    *
-   * **It costs a full dump: 334–584 ms measured on a moto g06 power** (a
-   * `find` is ~80 ms by comparison). Fetch it once and walk the result; do
-   * not call it per assertion. Nothing stops you paying repeatedly if you
-   * mean to — the cost is stated here rather than enforced.
+   * **It is the most expensive call on this object**, on every engine. Measured
+   * per engine, so the number you are paying is the number for the engine your
+   * device is on (`GET /api/devices/:id`'s `liveInspection` says which):
+   *
+   * - `ui-tree` (default): `dump()` costs TBD-222-DUMP-MS.
+   * - `ui-tree` (default): `find()` costs TBD-222-FIND-MS.
+   * - `ui-server`: `dump()` costs 334 to 584 ms, `find()` about 80 ms (moto g06 power, plan 74).
+   * - `uiautomator-dump`: `dump()` costs 334 to 584 ms (same device); `find()` pays for a whole dump plus the walk.
+   *
+   * Fetch it once and walk the result; do not call it per assertion. Nothing
+   * stops you paying repeatedly if you mean to — the cost is stated here rather
+   * than enforced.
    */
   dump(): Promise<UiNode>
-  /** Polls the inspector — rejects with ScriptError('WAITFOR_TIMEOUT') when time runs out. */
+  /**
+   * Wait for a selector to appear, up to `opts.timeout`. Rejects with
+   * ScriptError('WAITFOR_TIMEOUT') when time runs out.
+   *
+   * On the default `ui-tree` engine this does not poll: the condition is
+   * evaluated once immediately, so something already on screen returns at once,
+   * and then the core waits on the device's own change notifications
+   * (plan 222 §3.5). A condition that becomes true resolves about
+   * TBD-222-WAITFOR-MS after the screen changes, rather than at the next poll
+   * tick. On `ui-server` and `uiautomator-dump` it polls at `opts.intervalMs`
+   * clamped to what the engine sustains.
+   */
   waitFor(sel: Selector, opts?: WaitForOptions): Promise<UiNode>
   /** Raw PNG (without saving an artifact). */
   screenshot(): Promise<Uint8Array>

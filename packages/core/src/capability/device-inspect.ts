@@ -15,6 +15,11 @@ import { defineCapability } from './types'
  * driver call already returns a base64 PNG string
  * (`device-executor.ts`'s `screenshot` case) — wrapped here in
  * `{ image, format }` rather than returned as-is.
+ *
+ * The four `deadline`s below are ceilings sized for the SLOWEST rung of the
+ * inspector ladder (`uiautomator dump`, plan 222 §3.8), not a budget for
+ * whichever engine happens to be the default. They do not change when the
+ * default engine does — `ui-tree` and `ui-server` both finish well inside them.
  */
 
 export const deviceFind = defineCapability({

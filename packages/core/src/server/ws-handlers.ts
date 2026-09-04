@@ -131,7 +131,12 @@ function withDeadline<T>(promise: Promise<T>, ms: number, code: string, message:
   })
 }
 
-/** `EngineDescriptor.capabilities` for an inspector engine id, or `[]` for one the registry does not know (plan 56 §4.2 step 4). */
+/**
+ * `EngineDescriptor.capabilities` for an inspector engine id, or `[]` for one
+ * the registry does not know (plan 56 §4.2 step 4). Three engines are
+ * registered (plan 222 §3.8): `ui-tree` (the default), `ui-server`, and
+ * `uiautomator-dump`.
+ */
 function inspectorCapabilities(engineId: string): string[] {
   return engineDescriptors.find((d) => d.kind === 'inspector' && d.id === engineId)?.capabilities ?? []
 }
