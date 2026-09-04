@@ -778,7 +778,10 @@ export default definePlugin({
   // `device.list`'s new `activities` list instead of the old per-holder
   // field (an empty list is now what "unheld" means) — invisible to an
   // operator, since eligibility is unchanged, only what it is computed from.
-  version: '1.15.1',
+  // 1.15.2 — groups rename, MVP 15 §0.1 (plan 207): `queue.ts`'s own doc
+  // comment cited `clusters/dispatch.ts`, the core-side module plan 207
+  // renamed to `groups/dispatch.ts` — reworded to match. No behavior change.
+  version: '1.15.2',
   title: 'TikTok automation pack',
   description: 'Watch, scroll, search, browse shop and live, and read notifications on the TikTok feed, with human-shaped timing.',
   scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript, searchKeyword, keywordVideos, liveBrowse, shopBrowse, notificationActivity],

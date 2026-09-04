@@ -227,6 +227,12 @@ import verifyEgressScript from './verify-egress'
  *
  * Minor, not patch: a new column, a new button, and two new warnings.
  *
+ * **0.13.1 → 0.13.2 — groups rename, MVP 15 §0.1 (plan 207).** One
+ * doc-comment rework (`src/index.ts` here, two lines) that cited "cluster"
+ * — the core-side rename that plan 207 carried all the way to the DB
+ * table and the `/api/groups` route — as "group" instead. No behavior
+ * change. Patch: invisible to an operator.
+ *
  * **0.13.0 → 0.13.1 — plan 205 vocabulary sweep.** Three doc-comment
  * reworks (`src/index.ts` here, `src/verify-egress.ts`,
  * `src/ui/parts/settings.tsx`) that cited terms plan 205 retired core-side —
@@ -433,7 +439,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.13.1',
+  version: '0.13.2',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',
