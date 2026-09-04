@@ -285,28 +285,11 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     expect(daemonSource.slice(forLoopStart, sweepCallStart + 600)).toContain('} catch (err) {')
   })
 
-  describe('workflow executor (plan 99 §3.1, §4.7, step 99.7): constructed and registered as the kind: \'workflow\' fallback', () => {
-    test('createWorkflowExecutor(...) is actually constructed and registered via executors.setFallback(workflowExecutor, \'workflow\') — not just imported and left uncalled', () => {
-      // `DEFAULT_WORKFLOW_MAX_TOTAL_MS` was dropped from this import once
-      // `workflow-settings-wiring.test.ts` closed (the executor now reads
-      // `settingsStore.get().workflow` instead of that literal constant) —
-      // nothing else in daemon.ts still referenced it.
-      expect(daemonSource).toContain("import { createWorkflowExecutor } from './jobs/executors/workflow'")
-      const call = extractCall(daemonSource, 'createWorkflowExecutor({')
-      // Reuses the SAME runner/sessions/registry every standalone job already
-      // shares (plan 99 §3.4: "a node is a script child, not a job") — a
-      // second, independent JobRunner or SessionManager here would be a
-      // silent second runtime, exactly what §3.1 rejects.
-      expect(call).toContain('registry: scriptRegistry')
-      expect(call).toContain('runner,')
-      expect(call).toContain('sessions,')
-      expect(call).toContain('nodeTracker: jobNodeTracker')
-      // The literal `setFallback(workflowExecutor, 'workflow')` call — the
-      // ONE line that actually wires the executor into the registry.
-      // Without it, `createWorkflowExecutor` would be dead code: built,
-      // never reachable through `ExecutorRegistry.get(id, 'workflow')`.
-      expect(daemonSource).toContain("executors.setFallback(workflowExecutor, 'workflow')")
-    })
+  describe('workflow executor (plan 210 §4.8): the child-spawning executor is unregistered, but its node-aware plumbing stays for plan 211', () => {
+    // Plan 210 §4.8 — `createWorkflowExecutor(...)`'s construction and
+    // registration are deleted from daemon.ts (the fallback was unreachable
+    // in production: `daemon.ts` never passed `scriptKind`). `jobNodeTracker`
+    // and its node-aware artifact plumbing stay, for plan 211's orchestrator.
 
     test('the artifacts factory feeding createJobRunner(...) is node-aware — without it, no artifact a workflow node saves is ever attributed to that node', () => {
       const call = extractCall(daemonSource, 'createJobRunner({')
