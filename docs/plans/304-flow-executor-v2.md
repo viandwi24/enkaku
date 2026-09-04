@@ -1,0 +1,246 @@
+# Plan 304 — Flow : Executor v2 — graph walk, per-step input, run one node, pinned outputs
+
+> Status: draft
+> Ships: `packages/core/src/workflows/pins.ts`
+> Depends on: plans 301, 302, 303
+> Spec references: §4.6, §4.8, §12, §16
+
+## 0. Goal checklist
+
+| # | Goal | Parameter | Verified by | Done |
+|---|---|---|---|---|
+| G1 | Every step records the input it received, the output it produced, and the edge it took | 3 new columns, all populated | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `step record` passes | [ ] |
+| G2 | The recorded input is exactly what an expression saw as `$input` | byte-equal to the scope value | same file → `input equals scope` passes | [ ] |
+| G3 | A single node can be run on its own, against the last run's input, without running the workflow | `POST /api/workflows/:name/run-node` → a run with `trigger = 'node-test'` | `bun test packages/core/src/api/workflows.test.ts` → `run one node` passes | [ ] |
+| G4 | A pinned node is not executed; its pin is substituted and downstream nodes receive it | 1 step skipped, marked `pinned` | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `pin substitution` passes | [ ] |
+| G5 | A production run ignores every pin | `trigger` ∈ {`schedule`, `batch`} ⇒ pins not read at all | same file → `production ignores pins` passes | [ ] |
+| G6 | Pins live outside the document and outside the job snapshot | `workflow_pins` table; `rg` finds no pin field in the doc schema | `rg -n "pin" packages/protocol/src/workflow.ts` → empty | [ ] |
+| G7 | `$random` and `$now` are reproducible on a replay | a run carries a seed; replaying yields the same expression values | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `deterministic replay` passes | [ ] |
+| G8 | The most recent run of each workflow survives retention | 1 run per workflow is exempt from the age rule | `bun test packages/core/src/retention/` (the directory only) → `keeps last workflow run` passes | [ ] |
+| G9 | A migration adds the columns and the table without rewriting existing rows | 1 generated migration; existing runs read back unchanged | `bun run --cwd packages/core db:generate`, then `bun test packages/core/src/db/` (the directory only) | [ ] |
+| G10 | `bun run typecheck` clean | 0 errors | exits 0 | [ ] |
+
+## 1. Goals
+
+- The run record carries enough to draw plan 307's canvas replay and to fill
+  plan 306's data panes **without re-running anything**.
+- An author can iterate on step 6 of 8 without driving steps 1–5 on a real
+  phone (plan 300 P9, P10) — the single largest time cost in authoring device
+  automation.
+- Pins can never lie: a scheduled farm job that silently used a pinned output
+  would be a fabricated result, and §3.3 makes that structurally impossible.
+
+## 2. Non-goals
+
+| Not done here | Where |
+|---|---|
+| Any UI | plans 305, 306, 307 |
+| Fan-out, per-node targets | plan 308 |
+| Changing job, retry, or `finish()` semantics | never — plan 211 owns them |
+| Storing artefacts (screenshots) differently | plan 307 §4.6 renders what the run already stores |
+
+## 3. Context and design decisions
+
+### 3.1 The run record is the data panel's storage, and most of it already exists
+
+`workflow_steps` already holds `runId`, `seq`, `stepId`, and `output` capped by
+`WORKFLOW_LIMITS.maxNodeOutputBytes`
+([schema.ts:547](../../packages/core/src/db/schema.ts)). Three columns turn it
+into everything plan 306 P6 and plan 307 P11 need: `input`, `takenEdge`, and
+`pinned`. No new table for run data, no new size budget — the same 256 KB cap
+applies to `input`, and the same truncation marker is reused.
+
+### 3.2 Running one node needs an input, and there are exactly three places to get one
+
+In order of preference, and the API takes whichever the caller names:
+
+1. **The last run's recorded input for that node** (`workflow_steps.input`) —
+   the default, and the reason G1 exists.
+2. **A pin** on the node's predecessor.
+3. **Literal JSON** supplied by the caller, validated against the node's
+   params schema.
+
+If none is available the request is refused with `E_NODE_NO_INPUT` naming the
+three options, rather than running the node against `undefined` and producing
+a confusing failure.
+
+### 3.3 Pins are authoring state, not document state
+
+A pin is stored in `workflow_pins (workflow_name, node_id, data, updated_at,
+created_by)` — **not** in `workflows.doc`, and therefore never in
+`jobs.workflow_doc`. Three consequences, all wanted:
+
+- Publishing a workflow does not publish someone's mock data.
+- A queued job cannot acquire a pin after it was enqueued.
+- Production ignores pins by *not looking*, not by a flag that could be
+  inverted: `readPins()` is called only on the `manual`, `rerun` and
+  `node-test` paths. n8n reaches the same rule (plan 300 R6) and this plan
+  copies it deliberately.
+
+The canvas marks a pinned node (plan 305 §4.6) so nobody debugs a workflow for
+an hour without noticing that step 3 has not run since Tuesday.
+
+### 3.4 Determinism, and the seed
+
+Plan 302 §3.3 injects `$now` and `$random` rather than letting the evaluator
+reach a clock. The run row gains `seed` (an integer, generated at run
+creation); `$random` for step *n* is derived from `(seed, n)` with a small
+pure PRNG in `@enkaku/expr`. A replayed or resumed run reuses the stored seed,
+so an expression that branched one way yesterday branches the same way today
+(G7). `$now` is the step's own recorded `startedAt`, which is already stored.
+
+## 4. Technical design
+
+### 4.1 Schema
+
+```ts
+// packages/core/src/db/schema.ts — workflowSteps gains:
+  /** The value the step received as `$input` (plan 304 §3.1), size-capped by `WORKFLOW_LIMITS.maxNodeOutputBytes`, truncation marked the same way `output` marks it. */
+  input: text('input', { mode: 'json' }),
+  /** Which edge the step left by: 'next' | 'onFailure' | 'then' | 'else' | 'case:<i>' | 'default' | null when the run ended here. */
+  takenEdge: text('taken_edge'),
+  /** True when the step was satisfied from a pin instead of executed (plan 304 §3.3). */
+  pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
+
+// jobRuns gains:
+  /** Plan 304 §3.4 — the per-run seed `$random` derives from. */
+  seed: integer('seed').notNull().default(0),
+
+// new table:
+export const workflowPins = sqliteTable(
+  'workflow_pins',
+  {
+    workflowName: text('workflow_name').notNull(),
+    nodeId: text('node_id').notNull(),
+    data: text('data', { mode: 'json' }).notNull(),
+    createdBy: text('created_by'),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.workflowName, t.nodeId] })],
+)
+```
+
+`RunTrigger` gains `'node-test'`:
+`'manual' | 'rerun' | 'schedule' | 'batch' | 'resume' | 'workflow-step' | 'node-test'`.
+
+### 4.2 The walk
+
+```
+cursor = doc.entry
+steps = 0
+while cursor and steps < doc.maxSteps:
+    node = doc.nodes[cursor]
+    input = scopeValueOf(previous step's output)      # $input
+    if pinsAllowed and pins[node.id]: output, pinned = pins[node.id], true
+    else: output = execute(node, input)                # unchanged per kind
+    record(seq=steps, stepId=node.id, input, output, pinned, takenEdge)
+    cursor = successorOf(node, output)                 # plan 301 §3.2 rules
+    steps += 1
+```
+
+`execute` is untouched for `script` (still a child job through the same
+`JobRunner`), and is in-process and device-free for `gate`, `switch`, `delay`,
+`start`, `finish` — exactly as `gate` already is.
+
+`maxSteps` exhaustion keeps its existing error. A `start` and a `finish` node
+each record a step so the canvas can highlight them; they cost no device time
+and are exempt from the budget walk (plan 301 §4.2).
+
+### 4.3 Routes
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| `POST` | `/api/workflows/:name/run-node` | `{ nodeId, deviceId, input?: { from: 'last-run' \| 'pin' \| 'literal', value?: unknown } }` | `202 { runId }` |
+| `GET` | `/api/workflows/:name/pins` | — | `{ pins: [{ nodeId, updatedAt, bytes }] }` (never the data — it can be 256 KB) |
+| `GET` | `/api/workflows/:name/pins/:nodeId` | — | `{ data }` |
+| `PUT` | `/api/workflows/:name/pins/:nodeId` | `{ data }` or `{ from: 'last-run' }` | `204` |
+| `DELETE` | `/api/workflows/:name/pins/:nodeId` | — | `204` |
+
+Permissions: `script.view` to read, `script.publish` to write a pin,
+`job.run` to run a node. Error codes: `E_NODE_NO_INPUT`,
+`E_NODE_UNKNOWN`, `E_PIN_TOO_LARGE` (over `maxNodeOutputBytes`).
+
+### 4.4 Retention (spec §16)
+
+The most recent run of each workflow is exempt from the age rule (G8), because
+plan 306's data panes are empty without it and an author returning to a
+workflow after a fortnight would otherwise find a dead editor. Everything else
+is unchanged. This is a one-line predicate in the retention sweep and a row in
+the settings documentation, not a new setting.
+
+## 5. Implementation steps
+
+**304.1 — Schema and migration.** Edit `packages/core/src/db/schema.ts` per
+§4.1; `bun run --cwd packages/core db:generate`; read the generated SQL and
+confirm it is three `ALTER TABLE ADD COLUMN`s and one `CREATE TABLE`, with no
+table rewrite. *Result*: G9.
+
+**304.2 — Recording.** The executor writes `input`, `takenEdge` and `pinned`
+on every step, using the existing truncation helper for `input`. *Result*:
+G1, G2.
+
+**304.3 — The seed.** Generate at run creation; store; derive `$random` in
+`@enkaku/expr` from `(seed, seq)`; feed `$now` from the step's `startedAt`.
+*Result*: G7.
+
+**304.4 — Pins: store and routes.** New `packages/core/src/workflows/pins.ts`
+(the artefact) and the four routes of §4.3. *Result*: G6, and
+`bun test packages/core/src/workflows/pins.test.ts` green.
+
+**304.5 — Pins: substitution.** `readPins()` is called on `manual`, `rerun`
+and `node-test` only; a pinned node records a step with `pinned = true` and no
+device contact. *Result*: G4, G5.
+
+**304.6 — Run one node.** `POST /api/workflows/:name/run-node` per §3.2 and
+§4.3: build a one-node document in memory (`start` → the node → `finish`),
+enqueue it as an ordinary workflow job with `trigger = 'node-test'`, and let
+the existing runner do the rest. **Do not** add a second execution path.
+*Result*: G3.
+
+**304.7 — Retention.** The exemption of §4.4, plus its test. *Result*: G8.
+
+**304.8 — Status and report.**
+
+## 6. Acceptance criteria
+
+- G1–G10.
+- `rg -n "readPins" packages/core/src` → called from exactly one file, guarded
+  by a trigger check.
+- `rg -n "'node-test'" packages/core/src packages/protocol/src` → the enum, the
+  route, the guard, and their tests; nothing else.
+- A `node-test` run appears in the Jobs list like any other run (no hidden
+  execution).
+
+## 7. Test plan
+
+| File | Covers |
+|---|---|
+| `packages/core/src/jobs/executors/workflow.test.ts` | step record; `$input` equality; pin substitution; production ignoring pins; deterministic replay; `maxSteps` unchanged |
+| `packages/core/src/workflows/pins.test.ts` | CRUD; size refusal; pins are per workflow+node |
+| `packages/core/src/api/workflows.test.ts` | run-one-node with each of the three input sources; `E_NODE_NO_INPUT` |
+| `packages/core/src/db/` (directory) | the migration applies to a populated database |
+| `packages/core/src/retention/` (directory) | last run per workflow kept |
+
+Manual smoke (owner, 10 minutes, one device): run a 4-node workflow; open the
+run and confirm each step shows an input and an output; pin node 2's output;
+run node 3 alone and confirm it used the pin and never woke the device; run the
+workflow from a schedule and confirm the pin was ignored and node 2 executed.
+
+## 9. Open questions
+
+| # | Question | Current answer |
+|---|---|---|
+| Q1 | Should a pin expire? | Not automatically. It shows its `updatedAt` in the UI (plan 306) and an author clears it. An expiry that fires mid-debug is worse than a stale pin that is labelled. |
+| Q2 | Should `finish` carry a structured result onto the job row? | Deferred. `message` is enough for the MVP of this programme; a structured result needs a place in the job row's own schema. |
+| Q3 | Does a `node-test` run count against the device's activity policy? | Yes, unchanged — it is an ordinary job. Anything else would be an invisible device consumer. |
+| Q4 | Should pins be exportable with a workflow? | No. §3.3's whole point is that they are not part of the document. |
+
+## 10. Removed
+
+| What | Where it was | Proof |
+|---|---|---|
+| Nothing | — | Additive; the columns replace nothing |
+
+## 11. Handoff report
+
+_To be written by the executing agent._
