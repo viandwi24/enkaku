@@ -8,6 +8,7 @@ import {
   MoonIcon,
   PlayIcon,
   PlugsIcon,
+  RobotIcon,
   TerminalIcon,
   TrashIcon,
   UploadSimpleIcon,
@@ -63,6 +64,14 @@ export const GENERIC_ACTIONS: readonly GenericAction[] = [
   { id: 'push', label: 'Upload file', icon: UploadSimpleIcon },
   { id: 'clear-cache', label: 'Clear cache', icon: BroomIcon },
   { id: 'settings', label: 'Settings', icon: GearIcon },
+  // The guest agent, by hand (CEO, 2026-09-04). An outdated agent is already
+  // reinstalled automatically; these are for when production disagrees with
+  // the happy path — an install that reported success and did not stick, a
+  // local build the version check cannot see — and for turning the agent off
+  // on one phone. Overflow, because an operator reaches for them rarely and
+  // deliberately, never in the course of ordinary work.
+  { id: 'install-agent', label: 'Install guest agent', icon: RobotIcon, overflow: true },
+  { id: 'uninstall-agent', label: 'Uninstall guest agent', icon: RobotIcon, overflow: true, danger: true },
   { id: 'forget', label: 'Forget', icon: TrashIcon, danger: true },
 ]
 export type GenericActionId = GenericAction['id']

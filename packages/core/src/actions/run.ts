@@ -36,7 +36,7 @@ import { reconnectDevice, disconnectDevice, cutoverStart, cutoverCancel } from '
 import { forgetDevice, blockDevice, unquarantineDevice } from './impl/lifecycle'
 import { setLabel, clearLabel } from './impl/labelling'
 import { setGroup, setTags } from './impl/membership'
-import { prepareDevice, retryPrepareComponent, type PreparationDeps } from './impl/preparation'
+import { installGuestAgent, prepareDevice, retryPrepareComponent, uninstallGuestAgent, type PreparationDeps } from './impl/preparation'
 import { installOnDevice, pushToDevice, pullFromDevice, type TransferDeps } from './impl/transfer'
 import { runShellCommand } from './impl/shell'
 import { applySettings } from './impl/settings'
@@ -461,6 +461,10 @@ async function dispatchAsyncVerb(
       return { detail: await prepareDevice(deps.preparation, deviceId, { force: request.forceRecheck }) }
     case 'retry-prepare':
       return { detail: await retryPrepareComponent(deps.preparation, deviceId, request.component) }
+    case 'install-agent':
+      return { detail: await installGuestAgent(deps.preparation, deviceId) }
+    case 'uninstall-agent':
+      return { detail: await uninstallGuestAgent(deps.preparation, deviceId, activityActor.id) }
     case 'screenshot':
       return { detail: await screenshotDevice({ db: deps.db, dataDir: deps.dataDir, screenshot: deps.screenshot }, deviceId) }
     default:

@@ -37,6 +37,13 @@ export const VERBS: Record<ActionVerb, VerbSpec> = {
   prepare:        { gate: { permission: 'device.settings' },    policyKind: 'prep',          offline: 'skip',  mode: 'async' },
   'retry-prepare':{ gate: { permission: 'device.settings' },    policyKind: 'prep',          offline: 'skip',  mode: 'async' },
   reprofile:      { gate: { permission: 'device.settings' },    policyKind: 'wake',          offline: 'skip',  mode: 'sync' },
+  // Both take minutes on a slow phone and both write an APK, so: `async`
+  // (the operator gets an operation to watch, not a hung request), `prep`
+  // (the same policy row every other provisioning step evaluates), and
+  // `device.settings` (installing the agent is a device-configuration act,
+  // not a control gesture).
+  'install-agent':  { gate: { permission: 'device.settings' },  policyKind: 'prep',          offline: 'skip',  mode: 'async' },
+  'uninstall-agent':{ gate: { permission: 'device.settings' },  policyKind: 'prep',          offline: 'skip',  mode: 'async' },
   screenshot:     { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'async' },
   'clear-cache':  { gate: { permission: 'device.control' },     policyKind: 'command',       offline: 'skip',  mode: 'async' },
   settings:       { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },

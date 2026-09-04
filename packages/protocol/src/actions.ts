@@ -41,6 +41,16 @@ export const ACTION_VERBS = [
   'set-tags',
   'prepare',
   'retry-prepare',
+  // The guest agent, reachable by hand (CEO, 2026-09-04). Detecting an
+  // outdated agent already reinstalls it automatically — these exist because
+  // production is not the happy path: an install that reported success and
+  // did not stick, a phone that refused the accessibility grant, a local
+  // build the version check cannot see. `install-agent` forces the
+  // uninstall+reinstall+reverify cycle the launcher already owns;
+  // `uninstall-agent` removes it, which is also how an operator turns the
+  // agent off for one device.
+  'install-agent',
+  'uninstall-agent',
   'reprofile',
   'screenshot',
   'clear-cache',
@@ -160,6 +170,8 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
   CommonSchema.extend({ verb: z.literal('set-tags'), tags: z.array(z.string()) }),
   CommonSchema.extend({ verb: z.literal('prepare'), forceRecheck: z.boolean().default(false) }),
   CommonSchema.extend({ verb: z.literal('retry-prepare'), component: z.string().min(1) }),
+  CommonSchema.extend({ verb: z.literal('install-agent') }),
+  CommonSchema.extend({ verb: z.literal('uninstall-agent') }),
   CommonSchema.extend({ verb: z.literal('reprofile') }),
   CommonSchema.extend({ verb: z.literal('screenshot') }),
   CommonSchema.extend({ verb: z.literal('clear-cache'), package: z.string().min(1).max(256) }),

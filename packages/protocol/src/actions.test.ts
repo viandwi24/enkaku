@@ -32,6 +32,8 @@ const MINIMAL_PARAMS: Record<(typeof ACTION_VERBS)[number], Record<string, unkno
   'set-tags': { tags: ['a'] },
   prepare: {},
   'retry-prepare': { component: 'guest-agent' },
+  'install-agent': {},
+  'uninstall-agent': {},
   reprofile: {},
   screenshot: {},
   'clear-cache': { package: 'com.example' },
@@ -46,8 +48,8 @@ describe('ActionVerbSchema', () => {
   // set-tags, prepare, retry-prepare, reprofile, screenshot, clear-cache,
   // settings). Recorded as a plan/plan discrepancy in §11; the verb table
   // is the fact this test pins.
-  test('has exactly 25 verbs', () => {
-    expect(ACTION_VERBS.length).toBe(25)
+  test('has exactly 27 verbs', () => {
+    expect(ACTION_VERBS.length).toBe(27)
   })
 
   test('an unknown verb fails', () => {

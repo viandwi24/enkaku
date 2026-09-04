@@ -130,7 +130,7 @@ export interface AgentProvisionReport {
 
 export interface AgentProvisioner {
   /** Verify → install → repair once → degrade (F8). Idempotent; safe to call on every hook. Never throws for a device that exists — every failure is captured as `state: 'failed'`. */
-  ensure(deviceId: string, opts?: { force?: boolean }): Promise<AgentStatus>
+  ensure(deviceId: string, opts?: { force?: boolean; reinstall?: boolean }): Promise<AgentStatus>
   /** The persisted row, Zod-validated — never issues an adb call of its own. */
   status(deviceId: string): Promise<AgentStatus>
   /** Every device currently online (offline devices are unreachable by construction — nothing to verify), bounded by the install lane. Returns a per-device report. */
@@ -425,7 +425,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
 
   const inFlight = new Map<string, Promise<AgentStatus>>()
 
-  async function ensureImpl(deviceId: string, opts?: { force?: boolean }): Promise<AgentStatus> {
+  async function ensureImpl(deviceId: string, opts?: { force?: boolean; reinstall?: boolean }): Promise<AgentStatus> {
     const row = mustGet(deviceId)
     const prior = readCached(row, deps.log)
     const checkedAt = nowSeconds(now)
@@ -486,7 +486,17 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // `return prior` below.
     runningSinceMap.set(row.id, checkedAt)
     try {
-      result = await runOnePass(row, prior.appVersion, false)
+      // `reinstall` is the operator saying "put the APK I have on this
+      // phone", and it is a DIFFERENT intent from `force`. `force` only
+      // bypasses the provision-mode and backoff gates and then verifies
+      // presence — which is why a phone holding an obsolete agent stayed on
+      // it forever whenever the APK came from a local build, where there is
+      // no manifest pin to version-check against (owner, 2026-09-04). The
+      // fleet-wide `ensureAll({ force: true })` deliberately does NOT set
+      // this: uninstall+reinstall across a hundred phones is not what
+      // "provision all" means, and it would drop every accessibility grant
+      // on the farm to fix a problem most of them do not have.
+      result = await runOnePass(row, prior.appVersion, opts?.reinstall === true)
     } catch (err) {
       // 96.25 fix 2: a core-side `E_ADB_UNAVAILABLE` (rethrown by
       // `runOnePass` above) means this pass never reached the device at
@@ -531,7 +541,11 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
 
   return {
     async ensure(deviceId, opts) {
-      const key = opts?.force ? `${deviceId}:force` : deviceId
+      // `reinstall` gets its own in-flight key: a forced verify already in
+      // flight must not satisfy an operator who asked for a reinstall, or
+      // the button would silently return the very result it was pressed to
+      // change.
+      const key = opts?.reinstall ? `${deviceId}:reinstall` : opts?.force ? `${deviceId}:force` : deviceId
       const existing = inFlight.get(key)
       if (existing) return existing
       const p = ensureImpl(deviceId, opts).finally(() => {

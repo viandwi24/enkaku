@@ -671,6 +671,47 @@ const prepare: VerbDialogSpec<PrepareValue> = {
 }
 
 // ---------------------------------------------------------------------------
+// 13b. Guest agent, by hand (CEO, 2026-09-04)
+// ---------------------------------------------------------------------------
+/**
+ * Both are confirmations, not forms: neither takes a parameter, and both
+ * write to a phone for minutes. The sentences say what the operator is
+ * actually buying, because the automatic path already covers the ordinary
+ * case and someone reaching here is reaching past it.
+ */
+const installAgent: VerbDialogSpec<Record<string, never>> = {
+  verb: 'install-agent',
+  title: (c) => `Install the guest agent on ${n(c)}`,
+  submitLabel: (c) => `Install on ${n(c)}`,
+  initial: {},
+  Fields: () => (
+    <p className="text-body text-dim">
+      Reinstalls the agent even when one is already there, then verifies it. An outdated agent is normally replaced without
+      being asked — reach for this when that did not happen: an install that reported success and did not stick, or a locally
+      built APK, which carries no version the core can check.
+    </p>
+  ),
+  canSubmit: () => true,
+  toParams: async () => ({}),
+}
+const uninstallAgent: VerbDialogSpec<Record<string, never>> = {
+  verb: 'uninstall-agent',
+  title: (c) => `Uninstall the guest agent from ${n(c)}`,
+  submitLabel: (c) => `Uninstall from ${n(c)}`,
+  destructive: true,
+  initial: {},
+  Fields: () => (
+    <p className="text-body text-dim">
+      Removes the agent and everything it holds on the phone, including its accessibility grant. Scripts fall back to the
+      slower inspector, and network routing through the agent stops. If this farm provisions agents automatically, the next
+      pass reinstalls it — turn provisioning off in Settings to keep it gone.
+    </p>
+  ),
+  canSubmit: () => true,
+  toParams: async () => ({}),
+}
+
+// ---------------------------------------------------------------------------
 // 14. Label (overflow)
 // ---------------------------------------------------------------------------
 const setLabel: VerbDialogSpec<Record<string, never>> = {
@@ -748,6 +789,8 @@ export type ActionDialogVerb =
   | 'prepare'
   | 'set-label'
   | 'set-network'
+  | 'install-agent'
+  | 'uninstall-agent'
 
 export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   reconnect,
@@ -765,5 +808,7 @@ export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   forget,
   prepare,
   'set-label': setLabel,
+  'install-agent': installAgent,
+  'uninstall-agent': uninstallAgent,
   'set-network': setNetwork,
 }
