@@ -3,6 +3,7 @@ import { WorkflowDocSchema, type WorkflowDoc } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { workflows, type WorkflowRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
+import { upgradeWorkflowDoc } from './upgrade'
 
 export interface WorkflowRecord {
   id: string
@@ -38,11 +39,17 @@ export interface WorkflowStore {
  * The one reader of a stored workflow document (`workflows.doc`,
  * `jobs.workflow_doc`): Zod-validated, never an `as`-cast (00-overview §4.2),
  * `null` on a parse failure so a caller decides between "skip" (`list`) and
- * "name it" (`get`).
+ * "name it" (`get`). A v1 document is upgraded to v2 IN MEMORY here (plan
+ * 301 §4.5, G7) — never written back; the next real `PUT`/`POST` persists v2
+ * naturally, because `store.update`/`store.create` are only ever handed an
+ * already-validated v2 `WorkflowDoc` by the API route.
  */
 export function parseWorkflowDoc(value: unknown): WorkflowDoc | null {
-  const parsed = WorkflowDocSchema.safeParse(value)
-  return parsed.success ? parsed.data : null
+  try {
+    return upgradeWorkflowDoc(value)
+  } catch {
+    return null
+  }
 }
 
 const toSec = (d: Date): number => Math.floor(d.getTime() / 1000)
