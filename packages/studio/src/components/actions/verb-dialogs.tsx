@@ -8,6 +8,7 @@ import {
   Checkbox,
   Input,
   Label,
+  Combobox,
   Select,
   SelectContent,
   SelectItem,
@@ -179,18 +180,29 @@ function RunScriptFields({ value, onChange }: { value: RunScriptValue; onChange:
     <div className="space-y-3">
       <div className="space-y-1.5">
         <Label htmlFor="run-script-select">Script</Label>
-        <Select value={value.scriptId ?? ''} onValueChange={(id) => onChange({ ...value, scriptId: id, params: undefined })}>
-          <SelectTrigger id="run-script-select" className="w-full">
-            <SelectValue placeholder={scripts === null ? 'Loading…' : 'Choose a script'} />
-          </SelectTrigger>
-          <SelectContent>
-            {(scripts ?? []).map((s) => (
-              <SelectItem key={s.id} value={s.id}>
-                {s.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/*
+          A `Combobox`, not a `Select`: a farm's plugins publish dozens of
+          scripts (23 on the owner's own farm the day this changed), and a
+          native select over that is a scroll hunt with no way to type. The
+          plugin name is both the hint under each row and a search term, so
+          "tiktok" narrows to one plugin's scripts even though the label
+          already carries the prefix.
+        */}
+        <Combobox
+          ariaLabel="Script"
+          value={value.scriptId ?? ''}
+          onValueChange={(id) => onChange({ ...value, scriptId: id, params: undefined })}
+          options={(scripts ?? []).map((s) => ({
+            value: s.id,
+            label: s.name,
+            hint: `${s.plugin.name}@${s.plugin.version}`,
+            keywords: [s.plugin.name, s.exportId],
+          }))}
+          placeholder={scripts === null ? 'Loading…' : 'Choose a script'}
+          searchPlaceholder="Filter scripts…"
+          emptyText={scripts === null ? 'Loading…' : 'No script matches.'}
+          triggerClassName="w-full"
+        />
       </div>
       {selected?.paramsSchema && (
         <SchemaForm
@@ -274,18 +286,16 @@ function RunWorkflowFields({ value, onChange }: { value: RunWorkflowValue; onCha
       {!value.workflowName && (
         <div className="space-y-1.5">
           <Label htmlFor="run-workflow-select">Workflow</Label>
-          <Select value={value.workflowName} onValueChange={(name) => onChange({ workflowName: name, params: undefined })}>
-            <SelectTrigger id="run-workflow-select" className="w-full">
-              <SelectValue placeholder="Choose a workflow" />
-            </SelectTrigger>
-            <SelectContent>
-              {workflows.map((w) => (
-                <SelectItem key={w.name} value={w.name}>
-                  {w.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Combobox
+            ariaLabel="Workflow"
+            value={value.workflowName}
+            onValueChange={(name) => onChange({ workflowName: name, params: undefined })}
+            options={workflows.map((w) => ({ value: w.name, label: w.name }))}
+            placeholder="Choose a workflow"
+            searchPlaceholder="Filter workflows…"
+            emptyText="No workflow matches."
+            triggerClassName="w-full"
+          />
         </div>
       )}
       {schema ? (

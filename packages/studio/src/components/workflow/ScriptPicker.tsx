@@ -1,7 +1,7 @@
 'use client'
 
 import { compareSemver } from '@enkaku/protocol'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@enkaku/ui'
+import { Combobox, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@enkaku/ui'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 
 /** One published, ordinary (`kind: 'script'`) row — the shape `ScriptListItemSchema` already returns. */
@@ -18,7 +18,7 @@ export interface ScriptNameGroup {
   versions: ScriptOption[]
 }
 
-/** Mirrors `RunScriptDialog.tsx`'s own `groupByName`/`groupByPlugin` (plan 99 §4.11: "reusing the run dialog's ..."), reimplemented here rather than imported — those two are private to that file, and this picker's job (build a `ScriptRef`, not a `scriptId`) is different enough to want its own small copy rather than an export that file's own owner did not ask for. */
+/** Groups a flat script list by owning plugin. It no longer drives a `SelectGroup` — the picker is a searchable `Combobox` now — but the plugin name it derives is what each row's hint and search terms are built from. `RunScriptDialog.tsx`, the file this was mirrored from, was deleted with the legacy dialogs. */
 export function groupScriptsByName(scripts: readonly ScriptOption[]): ScriptNameGroup[] {
   const byName = new Map<string, ScriptOption[]>()
   for (const s of scripts) byName.set(s.name, [...(byName.get(s.name) ?? []), s])
@@ -72,34 +72,30 @@ export function ScriptPicker({
 
   return (
     <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-      <Select
+      {/*
+        A `Combobox`, not the grouped `Select` this replaces. The grouping by
+        plugin was worth having when a farm published a handful of scripts;
+        past a couple of dozen it is a scroll hunt with no way to type (owner,
+        2026-09-04). The plugin name survives as each row's hint AND as a
+        search term, so it is still visible and now filterable — which the
+        `SelectGroup` label never was.
+      */}
+      <Combobox
+        ariaLabel="Script"
         value={pickedName}
         onValueChange={(name) => onChange(`${name}@latest`)}
-      >
-        <SelectTrigger className="h-8 w-full text-[12.5px]" aria-label="Script">
-          <SelectValue placeholder={groups.length === 0 ? 'No scripts published' : 'Pick a script'} />
-        </SelectTrigger>
-        <SelectContent>
-          {groupByPlugin(groups).map((run, i) =>
-            run.pluginName ? (
-              <SelectGroup key={`${run.pluginName}-${i}`}>
-                <SelectLabel>{run.pluginName}</SelectLabel>
-                {run.items.map((g) => (
-                  <SelectItem key={g.name} value={g.name}>
-                    {g.name}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            ) : (
-              run.items.map((g) => (
-                <SelectItem key={g.name} value={g.name}>
-                  {g.name}
-                </SelectItem>
-              ))
-            ),
-          )}
-        </SelectContent>
-      </Select>
+        options={groupByPlugin(groups).flatMap((run) =>
+          run.items.map((g) => ({
+            value: g.name,
+            label: g.name,
+            ...(run.pluginName ? { hint: run.pluginName, keywords: [run.pluginName] } : {}),
+          })),
+        )}
+        placeholder={groups.length === 0 ? 'No scripts published' : 'Pick a script'}
+        searchPlaceholder="Filter scripts…"
+        emptyText="No script matches."
+        triggerClassName="h-8 w-full text-[12.5px]"
+      />
 
       <Select value={pickedVersion} onValueChange={(version) => onChange(`${pickedName}@${version}`)} disabled={!pickedGroup}>
         <SelectTrigger className="readout h-8 min-w-32 text-[12px]" aria-label="Version">

@@ -33,6 +33,7 @@ import {
   DialogTitle,
   Input,
   Label,
+  Combobox,
   Select,
   SelectContent,
   SelectItem,
@@ -371,7 +372,10 @@ export function ScheduleDialog({
             <>
               <div className="space-y-1.5">
                 <Label className="text-row font-normal">Script</Label>
-                <Select
+                {/* Searchable for the same reason the Run script dialog is: a
+                    farm's plugins publish dozens of scripts. */}
+                <Combobox
+                  ariaLabel="Script"
                   value={scriptName}
                   onValueChange={(v) => {
                     setScriptName(v)
@@ -379,18 +383,12 @@ export function ScheduleDialog({
                     setServerIssues(undefined)
                     setFormCanSubmit(true)
                   }}
-                >
-                  <SelectTrigger className="h-8 w-full text-body">
-                    <SelectValue placeholder="Pick a script" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {scripts.map((s) => (
-                      <SelectItem key={s.id} value={s.name}>
-                        {s.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  options={scripts.map((s) => ({ value: s.name, label: s.name, keywords: [s.name.split('/')[0] ?? ''] }))}
+                  placeholder="Pick a script"
+                  searchPlaceholder="Filter scripts…"
+                  emptyText="No script matches."
+                  triggerClassName="h-8 w-full text-body"
+                />
               </div>
 
               {scriptOption?.paramsSchema ? (
