@@ -353,7 +353,7 @@ Layout: the handoff's two columns and groups (General; Connection: Host & daemon
 
 ## 16. Retention
 
-Per kind, with defaults: jobs and logs 30 days, trace frames 7 days, artifacts 30 days or a size cap, audit 90 days. Retention applies per run: old runs of a job expire individually; the job row stays while it has any run or while a schedule owns it, and is deleted by the same nightly sweeper otherwise. A Storage row in Settings shows usage per kind. TBD by plan 224 (source: MVP 09 §6, MVP 14 §5).
+Per kind, with defaults: jobs and logs 30 days, trace frames 7 days, artifacts 30 days or a size cap, audit 90 days (`packages/protocol/src/settings.ts`'s `storage` block; `AUDIT_RETENTION_DAYS` in `packages/core/src/config/constants.ts`). Retention applies per run: old runs of a job expire individually; the job row stays while it has any run or while a schedule owns it, and is deleted by the same sweeper otherwise (`packages/core/src/retention/sweeper.ts`). The sweep runs on the existing hourly cadence (`retention.sweepIntervalMinutes` in `enkaku.config.json`, default 60 — looser than the nightly floor this section names, never looser than daily; there is no per-field env override for it, only the config file). A Storage row in Settings shows usage per kind (`GET /api/storage/usage`), computed from a cache (the `storage_usage` table) the sweeper recomputes once at boot and once every 24 hours, never on the request path.
 
 ## 17. Non-functional targets (measured, not promised)
 
@@ -377,7 +377,7 @@ A number in this table is a **target** until the Measured column names a plan, a
 | Devices per host | 20 (owner's farm), then 100 on the lab host with the USB topology documented | not measured |
 | First run to first device visible, without reading the guide | under 5 minutes | not measured |
 | First-run tool provisioning | under 90 s | not measured |
-| Full test suite on a laptop | under 2 minutes (then the "never run a full suite" rule is retired) | not measured |
+| Full test suite on a laptop | under 2 minutes (then the "never run a full suite" rule is retired) | 140.66 s, plan 224, maintainer's laptop, 2026-09-04 — over target, rule stays in force |
 | Settings schema file | under 600 lines | 2 694 today |
 
 Plans 203 (latency), 208 and 152 (inspector), 206 (warm-up), 223 (lifecycle and scale), 224 (first run, test strategy) fill the Measured column. The harness is `scripts/bench-device-nfrs.ts`, extended by plan 203.
@@ -387,8 +387,8 @@ Plans 203 (latency), 208 and 152 (inspector), 206 (warm-up), 223 (lifecycle and 
 - The release workflow builds per-OS core binaries on a `v*` tag, boots each and checks `/api/health` before publishing. The binary embeds the Studio export and the bundled packs.
 - The release workflow builds the guest agent APK, signs it, computes its sha256, and writes the pin into the toolchain manifest in the same commit as the core release; a core release never ships with an agent pin it did not build (plan 221, source: MVP 10 §3).
 - First run: tools are downloaded and verified in under 90 s; provisioning progress is the first thing Studio shows on a fresh install; `bun run doctor` becomes a screen, not only a CLI.
-- Packaging for the MVP: single binary plus a browser is the CTO's recommendation; the desktop app (`apps/desktop`, Tauri) is parked outside the MVP definition of done, not deleted. Decision: CEO, `docs/mvp/README.md` Open decisions 6 and MVP 09 §4. TBD by plan 224 (source: MVP 09 §4).
-- Test strategy: colocated unit tests; Studio component tests in one process with per-file mock hygiene or shrunk to the components with logic; one hardware smoke suite on the lab device on every merge to `main`. TBD by plan 224 (source: MVP 09 §5).
+- Packaging for the MVP: a single binary plus a browser. The desktop app (`apps/desktop`, Tauri) stays parked outside the MVP definition of done — not built, not wired to CI or the release workflow, not deleted. Decided by the CEO (`docs/mvp/README.md` Open decisions 6, MVP 09 §4), recorded by plan 224.
+- Test strategy: the full backend `bun test` is measured at 140.66 s on the maintainer's laptop (plan 224, §11 handoff report). At or over the 60 s target — deferred; `packages/core` (91.19 s of the total, 234 of 364 files) is the named cause, and the rule stays in force until a later plan lowers the number. One hardware smoke suite on the lab device on every merge to `main` remains a target, not yet built (plan 223 or later; not this plan's scope).
 
 ## 19. Guest agent
 
