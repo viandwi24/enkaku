@@ -18,10 +18,12 @@ import { ws } from './ws'
 /**
  * Plan 107 (M72) §3.1–§3.4, §4, steps 107.3/107.4 — one shared, farm-wide
  * view of every long operation Studio can discover, read by `useOperations`
- * (below) and by `OperationTray` (`components/operations/OperationTray.tsx`)
- * plus the two dialogs that re-attach to a running one instead of offering a
- * fresh start (`InstallBatchDialog`, `BulkTransferDialog`, plan 107 §3.6,
- * step 107.5).
+ * (below). The farm-wide tray that used to mount this on every page was
+ * deleted by plan 213 §3.6 (the handoff draws no such floating surface);
+ * today the only callers are the two dialogs that re-attach to a running
+ * operation instead of offering a fresh start (`InstallBatchDialog`,
+ * `BulkTransferDialog`, plan 107 §3.6, step 107.5), which plan 216 owns
+ * alongside this file.
  *
  * §3.2's two classes, kept visibly distinct (`Operation.durable`):
  *
@@ -114,10 +116,10 @@ export interface Operation {
   kind: OperationKind
   /**
    * False only for `kind: 'transfer'` — the one kind an in-memory registry
-   * can forget on a core restart (plan 107 §3.2, §3.4). `OperationTray`
-   * renders this distinctly rather than treating every row the same way —
-   * §3.2's own rule: showing durable and ephemeral identically teaches a
-   * reload rule that is false for half of them.
+   * can forget on a core restart (plan 107 §3.2, §3.4). A consumer renders
+   * this distinctly rather than treating every row the same way — §3.2's
+   * own rule: showing durable and ephemeral identically teaches a reload
+   * rule that is false for half of them.
    */
   durable: boolean
   label: string
@@ -673,10 +675,12 @@ export interface UseOperationsResult {
   /**
    * A device's operator-facing name — `#7 Galaxy A15`, or the bare label when
    * it has no number (plan 124 §4.4, step 124.3). Composed here rather than at
-   * each render site because `OperationTray` is mounted at the shell and is
-   * visible on EVERY screen: it is the one surface an operator sees while
-   * looking at something else entirely, which is exactly when a row reading
-   * `SM-F721U1, SM-F721U1 +3` tells them nothing about which phones are busy.
+   * each render site because the farm-wide tray this hook fed used to be
+   * mounted at the shell and visible on EVERY screen: it was the one surface
+   * an operator saw while looking at something else entirely, which is
+   * exactly when a row reading `SM-F721U1, SM-F721U1 +3` tells them nothing
+   * about which phones are busy. The tray itself is gone (plan 213 §3.6); the
+   * composition stays here for its remaining callers (plan 216).
    *
    * Falls back to the raw id for a device that is not (or no longer) in the
    * store's snapshot, unnumbered — an operation can outlive the device row it
@@ -687,12 +691,13 @@ export interface UseOperationsResult {
 
 /**
  * Plan 107 §3.1, §4, step 107.3 — "one hook, mounted once at the shell,
- * that reads the endpoint on mount and then follows WS events." `OperationTray`
- * is the one component that mount is meant for; this hook is also called
- * directly by `InstallBatchDialog`/`BulkTransferDialog` for their own
- * re-attach check (step 107.5) — safe because the underlying fetch/poll/
- * subscribe lifecycle is the shared singleton above, ref-counted, not
- * duplicated per caller.
+ * that reads the endpoint on mount and then follows WS events." The
+ * farm-wide tray that mount was meant for is gone (plan 213 §3.6); today
+ * this hook is called directly by `InstallBatchDialog`/`BulkTransferDialog`
+ * for their own re-attach check (step 107.5) — safe because the underlying
+ * fetch/poll/subscribe lifecycle is the shared singleton above, ref-counted,
+ * not duplicated per caller, and costing nothing on a page where neither
+ * dialog is open (plan 213 §3.6).
  */
 export function useOperations(store: OperationsStore = operationsStore): UseOperationsResult {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot)

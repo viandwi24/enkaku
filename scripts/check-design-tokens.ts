@@ -276,6 +276,16 @@ function toPascalIconName(kebab: string): string {
 }
 
 const GROUP_2 = ['CaretRightIcon', 'CaretUpIcon', 'CaretUpDownIcon', 'CheckCircleIcon', 'CircleNotchIcon', 'InfoIcon', 'TrayIcon', 'WarningIcon', 'XCircleIcon']
+/**
+ * Group 3 (plan 213 §3.4): names added after the handoff was drawn, for a
+ * screen the handoff itself does not draw. `RobotIcon` is the Agents rail
+ * entry. This script's own count check below is updated alongside it —
+ * plan 213 found this check asserts an EXACT total (53 + 9), not merely
+ * presence as its own §3.4 assumed, so adding a name here requires widening
+ * the total by the same amount or this script fails on the addition it was
+ * meant to tolerate.
+ */
+const GROUP_3 = ['RobotIcon']
 
 async function checkIcons(): Promise<void> {
   console.log('\n== icons.ts (G4) ==')
@@ -287,7 +297,7 @@ async function checkIcons(): Promise<void> {
   if (handoffNames.length !== 53) fail(`design handoff README: expected 53 distinct ph-* names, found ${handoffNames.length}`)
   else ok('the design handoff README names exactly 53 ph-* icons')
 
-  const expected = [...handoffNames.map(toPascalIconName), ...GROUP_2].sort()
+  const expected = [...handoffNames.map(toPascalIconName), ...GROUP_2, ...GROUP_3].sort()
 
   let icons: Record<string, unknown>
   try {
@@ -306,13 +316,14 @@ async function checkIcons(): Promise<void> {
       missing++
     }
   }
-  if (missing === 0) ok(`all ${expected.length} expected icon names (53 handoff + 9 primitive) are exported as components`)
+  if (missing === 0) ok(`all ${expected.length} expected icon names (53 handoff + 9 primitive + ${GROUP_3.length} group 3) are exported as components`)
 
   const exportedIconNames = Object.keys(icons).filter((k) => k.endsWith('Icon') && k !== 'IconProps')
-  if (exportedIconNames.length !== 62) {
-    fail(`icons.ts: expected exactly 62 icon exports (53 + 9), found ${exportedIconNames.length}`)
+  const expectedTotal = 62 + GROUP_3.length
+  if (exportedIconNames.length !== expectedTotal) {
+    fail(`icons.ts: expected exactly ${expectedTotal} icon exports (53 + 9 + ${GROUP_3.length} group 3), found ${exportedIconNames.length}`)
   } else {
-    ok('icons.ts exports exactly 62 icon components — nothing extra')
+    ok(`icons.ts exports exactly ${expectedTotal} icon components — nothing extra`)
   }
 }
 
