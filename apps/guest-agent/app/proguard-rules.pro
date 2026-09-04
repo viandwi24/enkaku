@@ -42,3 +42,8 @@
 # by name" reason `ControlService`/`RouteVpnService` are kept above (SharedPreferences keys are
 # plain strings, not reflectable, so nothing else here needs a rule). ---
 -keep class dev.enkaku.guestagent.label.WallpaperFacet { *; }
+
+# --- The inspector (plan 221 §4.2): bound by the system (BIND_ACCESSIBILITY_SERVICE) exactly like
+# the IME above, and resolved by component name when the host writes
+# `enabled_accessibility_services` — R8 cannot see either reference. ---
+-keep class dev.enkaku.guestagent.ui.UiTreeService { *; }
