@@ -18,6 +18,7 @@ export {
   startScrcpySession,
   parseScrcpyServerList,
   sweepStrayScrcpyServers,
+  isOwnScrcpyForwardRemote,
   type ScrcpySession,
   type ScrcpySessionOptions,
   type ScrcpyControl,
