@@ -273,6 +273,12 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
             intervalMs: [schedule.intervalMinMs, schedule.intervalMaxMs],
             deviceIntervalMs: schedule.deviceIntervalMs,
           },
+          // G10's own parameter ("every run trigger = 'schedule'") and
+          // `GET /api/schedules/:id/jobs` both need this stamped from the
+          // FIRST fire, not only from a later one that goes through
+          // `addRunsToBatch` below.
+          scheduleId: schedule.id,
+          trigger: 'schedule',
         })
         batchId = batch.id
         // Every member job's own first run was created by `createBatch` —

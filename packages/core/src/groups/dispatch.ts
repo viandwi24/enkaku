@@ -52,6 +52,10 @@ export interface CreateBatchInput {
   runtimeOverride?: unknown
   expiresAt?: number | null
   pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number } | null
+  /** A schedule's own batch (plan 211 §3.2 decision 4) — stamped onto every member job so `GET /api/schedules/:id/jobs` finds them from their very first fire, not only from a later one. Null/omitted for an ordinary (non-schedule) batch. */
+  scheduleId?: string | null
+  /** The first run's own trigger (MVP 14 §1). Defaults to `'batch'` — the schedule dispatcher is the one caller that overrides it to `'schedule'`, so its first fire's run reads the same as every later one. */
+  trigger?: RunTrigger
 }
 
 export interface BatchDispatchDeps {
@@ -172,9 +176,10 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
         scriptVersion: named?.version ?? null,
         batchId,
         batchSeq: i,
+        scheduleId: input.scheduleId ?? null,
         createdBy: input.createdBy ?? null,
       })
-      deps.runs.addRun(job.id, { trigger: 'batch', priority, expiresAt, maxConcurrent, runtimeOverride })
+      deps.runs.addRun(job.id, { trigger: input.trigger ?? 'batch', priority, expiresAt, maxConcurrent, runtimeOverride })
     })
   })
 
