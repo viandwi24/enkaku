@@ -48,9 +48,23 @@ object Protocol {
    * `text-input` (plan 90 §3.2, §3.3, §4.1, step 90.5): gates [METHOD_TEXT_COMMIT] /
    * [METHOD_TEXT_STATUS], backed by `input/EnkakuIme.kt` / `input/TextFacet.kt` and the matching
    * `ControlService.handle()` branches.
+   *
+   * `ui-tree` (plan 221 §4.2, MVP 02 §4 phase 2, MVP 10 §1.1): gates [METHOD_UI_DUMP] /
+   * [METHOD_UI_FIND] / [METHOD_UI_WATCH] / [METHOD_UI_UNWATCH] / [METHOD_UI_STATUS], backed by
+   * `ui/UiTreeService.kt`. Advertised by every build that CONTAINS the service, whether or not the
+   * service is currently enabled in Settings: the capability says what the build can do, and
+   * `ui.status` says whether it can do it right now. Conflating the two would make an unenabled
+   * service look like an old APK, which is a different repair.
+   *
+   * `activity` (plan 221 §4.5, MVP 10 §1.3): gates [METHOD_ACTIVITY_SET] and
+   * [METHOD_DEVICE_DESCRIBE]. Read-only on the device: nothing here acts on the list, it only
+   * lets the phone's own screen say what the farm is doing to it.
    */
   val CAPABILITIES: List<String> =
-    listOf("socks5-route", "vpn-status", "egress-probe", "route-hold", "mock-location", "screen-label", "text-input")
+    listOf(
+      "socks5-route", "vpn-status", "egress-probe", "route-hold", "mock-location",
+      "screen-label", "text-input", "ui-tree", "activity",
+    )
 
   // Requests
   const val METHOD_HELLO = "hello"
@@ -77,10 +91,30 @@ object Protocol {
   const val METHOD_TEXT_COMMIT = "text.commit"
   const val METHOD_TEXT_STATUS = "text.status"
 
+  /** Plan 221 §4.2. */
+  const val METHOD_UI_DUMP = "ui.dump"
+  const val METHOD_UI_FIND = "ui.find"
+  const val METHOD_UI_WATCH = "ui.watch"
+  const val METHOD_UI_UNWATCH = "ui.unwatch"
+  const val METHOD_UI_STATUS = "ui.status"
+
+  /** Plan 221 §4.5. */
+  const val METHOD_ACTIVITY_SET = "activity.set"
+  const val METHOD_DEVICE_DESCRIBE = "device.describe"
+
+  /** Plan 221 §4.6. */
+  const val METHOD_TEXT_PREFS = "text.prefs"
+
+  /** The event frame's own `event` value — never a `method`, so a reader can tell a push from a reply. */
+  const val EVENT_UI_CHANGED = "ui.changed"
+
   // Error codes. Mirrored on the host so failures are matched on a code, never on message text.
   const val ERR_UNAUTHORISED = "E_UNAUTHORISED"
   const val ERR_BAD_REQUEST = "E_BAD_REQUEST"
   const val ERR_UNKNOWN_METHOD = "E_UNKNOWN_METHOD"
   const val ERR_NOT_PAIRED = "E_NOT_PAIRED"
   const val ERR_NOT_PREPARED = "E_NOT_PREPARED"
+
+  /** Plan 221 §4.2: the service is in the build but is not enabled in Settings, or is enabled and not yet connected. */
+  const val ERR_UI_TREE_UNAVAILABLE = "E_UI_TREE_UNAVAILABLE"
 }

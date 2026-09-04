@@ -90,7 +90,7 @@ export interface RecordingSession {
   readonly stepCount: number
   /** `null` while open; the reason a BOUND ended it, once one has (never set by an operator `stop`/`cancel`). */
   readonly stoppedReason: 'max-steps' | 'max-duration' | null
-  /** Called from the input tee, after the lease check, before the device call (plan 94 §4.6). Synchronous, non-throwing, never alters what it observes. */
+  /** Called from the input tee, after the admission check, before the device call (plan 94 §4.6). Synchronous, non-throwing, never alters what it observes. */
   observe(step: ObservedInput): void
   /** Stops, resolves every step's candidate against the anchor that was current when that step was observed, waits for any in-flight screenshot/anchor capture, and returns the document. Idempotent: a second call returns the same already-built document. */
   finishAndBuild(): Promise<RecordingDoc>

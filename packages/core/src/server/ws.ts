@@ -7,6 +7,8 @@ export interface WsMessageRouter {
   handleClose(ws: ServerWebSocket<unknown>): void
   /** Sends `hello` (plan 31 §4.2) — optional so a router set up before this plan still works. */
   handleOpen?(ws: ServerWebSocket<unknown>): void
+  /** Bun's own `websocket.drain` (plan 206 §3.8, §4.8, R8) — optional so a router set up before this plan still works. */
+  handleDrain?(ws: ServerWebSocket<unknown>): void
 }
 
 /**
@@ -92,6 +94,9 @@ export class WsHub {
           return
         }
         void this.router.handleMessage(ws, typeof message === 'string' ? message : message.toString())
+      },
+      drain: (ws) => {
+        this.router?.handleDrain?.(ws)
       },
     }
   }

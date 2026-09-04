@@ -230,6 +230,8 @@ export interface PlannedField {
   path: string
   label: string
   help?: string
+  /** plan 219 §4.9 — an advanced field's "raise or lower if" sentence, from `x-enkaku.hint`, rendered below the control. */
+  hint?: string
   /** Section heading, from a run of equal `group` values (plan 95 §3.5). */
   group?: string
   advanced: boolean
@@ -661,6 +663,7 @@ function planPlannedField(key: string, child: JsonSchemaNode, required: boolean,
     path: key,
     label: labelFor(child, ctx.root, key),
     help: typeof resolved.description === 'string' ? resolved.description : undefined,
+    hint: typeof hints.hint === 'string' ? hints.hint : undefined,
     group: hints.group,
     advanced: hints.advanced ?? false,
     required,

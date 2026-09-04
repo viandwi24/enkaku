@@ -1,4 +1,4 @@
-import type { GestureSample, InputSink, Point, Transport } from '@enkaku/protocol'
+import type { GestureSample, InputSink, KeyDescriptor, KeyMeta, Point, Transport } from '@enkaku/protocol'
 import { AdbInput } from './adb-input'
 
 /**
@@ -41,5 +41,17 @@ export function withAdbKeyFallback(primary: InputSink, transport: Transport): In
     ...(primary.typeText
       ? { typeText: (text: string, opts: { perCharMs: [number, number]; rng?: () => number }) => primary.typeText!(text, opts) }
       : {}),
+    // Plan 209 §4.7: same rule as `gesture`/`typeText` — attach only when the
+    // primary actually has the verb, so an `AdbInput` primary yields a façade
+    // without any of these rather than a silent no-op.
+    ...(primary.touch ? { touch: (action: 'down' | 'move' | 'up', p: Point, pointerId: number) => primary.touch!(action, p, pointerId) } : {}),
+    ...(primary.scroll ? { scroll: (p: Point, h: number, v: number) => primary.scroll!(p, h, v) } : {}),
+    ...(primary.pinch
+      ? { pinch: (opts: { center: Point; radiusFromPx: number; radiusToPx: number; durationMs: number }) => primary.pinch!(opts) }
+      : {}),
+    ...(primary.keyDown ? { keyDown: (key: KeyDescriptor, meta: KeyMeta) => primary.keyDown!(key, meta) } : {}),
+    ...(primary.keyUp ? { keyUp: (key: KeyDescriptor, meta: KeyMeta) => primary.keyUp!(key, meta) } : {}),
+    ...(primary.releaseKeys ? { releaseKeys: () => primary.releaseKeys!() } : {}),
+    ...(primary.prepareKeyboard ? { prepareKeyboard: () => primary.prepareKeyboard!() } : {}),
   }
 }

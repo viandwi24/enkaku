@@ -88,16 +88,14 @@ export interface JobsApiClient {
  * `job` (plan 81 §3.3, §4.2) is the caller's own `{ id, attempt }` — needed
  * ONLY to derive `trigger()`'s default idempotency key. It is not read from
  * anywhere else in this module: `list`/`previous`/`queuedAfter`/`resultOf`
- * are unaffected by plan 81 and take no such parameter. `nodeId` (plan 99
- * §3.2, §4.8, closes F20) is the workflow node this execution belongs to —
- * undefined for every job outside a workflow — folded into the SAME key
- * derivation, because several nodes of one workflow share one `jobId` and
- * one `attempt` counter and would otherwise derive colliding default keys,
- * silently deduping node 2's trigger into node 1's.
+ * are unaffected by plan 81 and take no such parameter. `nodeId` is deleted
+ * (plan 211): a workflow step is a job of its own now, with its own `id` and
+ * `attempt` counter, so it derives an idempotency key like any other job —
+ * no folding needed.
  */
 export function createJobsApiFor(
   request: <T>(call: JobsCall) => Promise<T>,
-  job: { id: string; attempt: number; nodeId?: string },
+  job: { id: string; attempt: number },
 ): JobsApiClient {
   // The count of `trigger()` calls made so far in THIS attempt (§3.3) — a
   // plain in-process counter, not a database query: a fresh process (a
@@ -147,7 +145,7 @@ export function createJobsApiFor(
 
     async trigger(input) {
       const idx = triggerCallIndex++
-      const key = input.key ?? `${job.id}:${job.nodeId ?? ''}:${job.attempt}:${idx}`
+      const key = input.key ?? `${job.id}:${job.attempt}:${idx}`
       const raw = await request<unknown>({
         method: 'trigger',
         script: input.script,

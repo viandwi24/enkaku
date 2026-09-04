@@ -92,8 +92,8 @@ export function createThreadRoutes(deps: { runner: AgentRunner; threads: ThreadS
     return typedJson(c, ThreadDeleteResponseSchema, { deleted: true, counts })
   })
 
-  // The fetch half of fetch-then-subscribe (plan 66 §3.4) — a client GETs history, THEN sends
-  // `agent.subscribe` over /ws. `/ws` itself never replays a snapshot (CLAUDE.md).
+  // The fetch half of fetch-then-subscribe (plan 66 §3.4) — a client GETs history, THEN attaches
+  // to the SSE stream (`agent-chat-stream.ts`). `/ws` itself never replays a snapshot (CLAUDE.md).
   app.get('/threads/:id/messages', requirePermission('agent.view'), (c) => {
     const id = c.req.param('id')
     const afterRaw = c.req.query('after')
@@ -116,7 +116,7 @@ export function createThreadRoutes(deps: { runner: AgentRunner; threads: ThreadS
   // Plan 78 §4.3 — the ported `ai-elements` composer's transport. `useChat`'s `fetch` transport (NOT
   // `EventSource`, which cannot set the auth header — plan 78 §3.4) posts here and streams the
   // response back as AI SDK `UIMessageChunk`s. Behind the scenes this is the SAME `runner.postMessage`
-  // the plain REST endpoint above uses (identical approval/lease/tree/budget path — see
+  // the plain REST endpoint above uses (identical approval/activity/tree/budget path — see
   // `agent-chat-stream.ts`'s own header comment for why `agentUIResponse()` cannot be used directly).
   app.post('/threads/:id/chat', requirePermission('agent.run'), async (c) => {
     const id = c.req.param('id')

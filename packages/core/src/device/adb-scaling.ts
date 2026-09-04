@@ -18,10 +18,12 @@ export function computeAutoConcurrency(nonOfflineDeviceCount: number): number {
 
 /**
  * The streaming lane's farm-wide budget (plan 85 §3.1). Derived from what a
- * device actually holds at steady state — the ui-server instrumentation and
- * the crash feed, one slot each, both for the life of the session — plus
- * half a slot of headroom for the bursty users of the lane (a Monitor tab,
- * a file transfer, an APK install).
+ * device holds at steady state on the counted lane: the crash feed (one
+ * slot for the life of the session) plus one and a half slots of headroom
+ * for the bursty users of the lane (a Monitor tab, a file transfer, an APK
+ * install). The ui-server instrumentation is pinned since plan 208 and
+ * holds no slot on this counted budget — the formula's constant is
+ * unchanged (plan 223 measures it), only its rationale.
  *
  *  5 devices → 13    10 → 25    20 → 50    26+ → 64 (the adb server, not
  *  this budget, is the limit past there)

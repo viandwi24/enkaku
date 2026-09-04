@@ -706,6 +706,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
   id: 'post-video',
   title: 'Post a video',
   description: `Pushes a video artifact to the device and drives TikTok's own upload flow to post it, sweeping every known blocking modal along the way.`,
+  node: { category: 'device', icon: 'upload', summary: [], keywords: ['post', 'upload', 'video'] },
   params,
   result,
   // Generous: six screens, up to four modal-sweep rounds each, and the confirmation's own bounded

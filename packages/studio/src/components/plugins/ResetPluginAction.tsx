@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   PluginDataCountResponseSchema,
   PluginResetResponseSchema,
@@ -60,11 +60,14 @@ export function ResetPluginAction({
   selected,
   onChanged,
   dense = true,
+  trigger,
 }: {
   /** The version whose row/page this sits on. Reset always acts on the plugin's ACTIVE version, whichever row it was pressed from — see below. */
   selected: PluginListRow
   onChanged: () => void
   dense?: boolean
+  /** plan 219 §3.3.4 — a menu-row trigger for the plugin table's ⋯ overflow. Default: the plain inline button every other caller keeps. */
+  trigger?: ReactNode
 }) {
   const p = selected
   const { run, isPending } = useAction()
@@ -156,9 +159,13 @@ export function ResetPluginAction({
           if (!next) setOpen(false)
         }}
         trigger={
-          <Button size="sm" variant="ghost" className={btn} disabled={isPending('reset-' + p.name)} onClick={openConfirm}>
-            Reset data
-          </Button>
+          trigger ? (
+            <span onClick={openConfirm}>{trigger}</span>
+          ) : (
+            <Button size="sm" variant="ghost" className={btn} disabled={isPending('reset-' + p.name)} onClick={openConfirm}>
+              Reset data
+            </Button>
+          )
         }
         title={`Reset ${p.name}'s data?`}
         description={

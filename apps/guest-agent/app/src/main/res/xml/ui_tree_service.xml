@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The declarative half of UiTreeService's configuration. `onServiceConnected` overwrites
+  `serviceInfo` with the same values at runtime (see UiTreeService.kt) because a service that is
+  enabled by an adb `settings put` never passes through the Settings UI that would otherwise apply
+  these; both halves are kept in step deliberately.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="0"
+    android:description="@string/ui_tree_service_description"
+    android:settingsActivity="dev.enkaku.guestagent.StatusActivity" />

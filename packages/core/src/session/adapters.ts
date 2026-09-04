@@ -20,11 +20,16 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
       const prep = settings.success ? settings.data.prep : defaultDeviceSettings().prep
       const identity = settings.success ? settings.data.identity : defaultDeviceSettings().identity
       const instrumentation = settings.success ? settings.data.instrumentation : defaultDeviceSettings().instrumentation
-      // Plan 92 §3.5, §4.4 — same dead-config guard as identity/tagTraffic
-      // below: a device's own video override must be read here, at the one
-      // seam session creation actually consults, or `resolveVideoProfile`
-      // would only ever see the farm's numbers (F18).
-      const video = settings.success ? settings.data.video : defaultDeviceSettings().video
+      // Plan 92 §3.5, §4.4; reduced to `controlQuality`/`wallQuality` by
+      // plan 212 §4.6 — same dead-config guard as identity/tagTraffic below:
+      // a device's own picture override must be read here, at the one seam
+      // session creation actually consults, or `resolveVideoProfile` would
+      // only ever see the farm's numbers (F18).
+      const overrides = settings.success ? settings.data.overrides : defaultDeviceSettings().overrides
+      // Plan 212 §4.1 D6 — `input.preferredMode` is gone; derive it from
+      // `engines.input` instead (the one enum that still exists).
+      const engineInput = settings.success ? settings.data.engines.input : defaultDeviceSettings().engines.input
+      const preferredInputMode = engineInput === 'scrcpy-uhid' ? 'uhid' : 'sdk'
       return {
         id: row.id,
         stableId: row.stableId,
@@ -39,9 +44,7 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
         display: row.display,
         input: row.input,
         inspection: row.inspection,
-        preferredInputMode:
-          (row.settings as { input?: { preferredMode?: 'uhid' | 'sdk' | 'aoa' } } | null)?.input?.preferredMode ??
-          'uhid',
+        preferredInputMode,
         keepAwake: prep.keepAwake,
         standbyScreenOff: prep.standbyScreenOff,
         rotation: prep.rotation,
@@ -58,9 +61,10 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
         // above: the farm-tagging setting must be read here, not just saved,
         // or "on by default" (spec §17) would be true only in the schema.
         tagTraffic: instrumentation.tagTraffic,
-        // Plan 92 §3.5, §4.4 — this device's own video override, resolved
-        // against the farm's settings by `resolveVideoProfile`.
-        video,
+        // Plan 92 §3.5, §4.4; reduced by plan 212 §4.6 — this device's own
+        // picture override, resolved against the farm's settings by
+        // `resolveVideoProfile`.
+        overrides: { controlQuality: overrides.controlQuality, wallQuality: overrides.wallQuality },
       }
     },
   }
@@ -70,10 +74,8 @@ export function createDbDeviceSource(db: Db): DeviceSnapshotSource {
 export function createDbArtifactSink(deps: {
   db: Db
   dataDir: string
-  jobId: string
+  runId: string
   onSaved: (info: ArtifactInfo) => void
-  /** Plan 99 §3.2, §4.6, §4.7 — forwarded straight to `createArtifactStore`; see its own doc comment. */
-  nodeId?: () => string | null
   /** Plan 115 §3.6 — forwarded straight to `createArtifactStore`; see its own doc comment. */
   maxFileBytes: () => number
 }): ArtifactSink {

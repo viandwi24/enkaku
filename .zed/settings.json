@@ -1,0 +1,13 @@
+{
+  "// note": "Project-level Zed config. The agent worktrees under .claude/worktrees/ are full checkouts with their own node_modules; leaving them in Zed's scan makes its git integration re-run `git diff --numstat HEAD` across several copies of the monorepo every time an agent writes a file. That drove the maintainer's machine to a load average of 116 on 2026-09-04. Delete this file if you want the old behaviour back.",
+  "file_scan_exclusions": [
+    "**/.claude/worktrees",
+    "**/node_modules",
+    "**/.next",
+    "**/.git",
+    "**/dist",
+    "**/.dev-data",
+    "**/.dev-cloud",
+    "**/.dev-node"
+  ]
+}

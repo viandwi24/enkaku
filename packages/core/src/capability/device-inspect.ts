@@ -15,6 +15,11 @@ import { defineCapability } from './types'
  * driver call already returns a base64 PNG string
  * (`device-executor.ts`'s `screenshot` case) — wrapped here in
  * `{ image, format }` rather than returned as-is.
+ *
+ * The four `deadline`s below are ceilings sized for the SLOWEST rung of the
+ * inspector ladder (`uiautomator dump`, plan 222 §3.8), not a budget for
+ * whichever engine happens to be the default. They do not change when the
+ * default engine does — `ui-tree` and `ui-server` both finish well inside them.
  */
 
 export const deviceFind = defineCapability({
@@ -26,7 +31,7 @@ export const deviceFind = defineCapability({
   // instead of the narrowed `{ ok:false, reason:'not-found' }` placeholder.
   output: FindOutcomeSchema,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 10_000,
   effect: 'read',
   description:
@@ -45,7 +50,7 @@ export const deviceDump = defineCapability({
   input: DumpArgsSchema.extend({ deviceId: z.string() }),
   output: UiNodeSchema,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 15_000,
   effect: 'read',
   description:
@@ -80,7 +85,7 @@ export const deviceWaitFor = defineCapability({
   input: WaitForArgsSchema.extend({ deviceId: z.string() }),
   output: WaitForOutput,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 65_000,
   effect: 'read',
   description:
@@ -117,7 +122,7 @@ export const deviceScreenshot = defineCapability({
   input: ScreenshotArgsSchema.extend({ deviceId: z.string() }),
   output: ScreenshotOutput,
   permission: 'device.control',
-  lease: 'device',
+  activity: { kind: 'read' },
   deadline: 10_000,
   effect: 'read',
   description: 'Take a screenshot of the device right now. Returns a base64-encoded PNG.',

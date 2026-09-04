@@ -25,12 +25,12 @@ const silentLog = (): Logger => {
  * finish-only attempt must skip the reset entirely.
  *
  * No real subprocess is spawned: a fake `IsolationProvider` stands in for
- * child-entry.ts, scripted per test to mirror what the real child does
+ * child-entry.ts, scripted per test to match what the real child does
  * (self-import → `ready`, hold for `init`, then run).
  */
 
 const DEVICE_ID = 'dev-1'
-const JOB: JobSpec = { id: 'job-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
+const JOB: JobSpec = { id: 'job-1', runId: 'run-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
 
 function fakeSession(execImpl: (cmd: string) => Promise<string>): DeviceSession {
   return {
@@ -46,11 +46,17 @@ function fakeSessions(session: DeviceSession): SessionManager {
   return {
     acquire: async () => session,
     release: () => {},
+    attachViewer: async () => ({ session, quality: 'wall' }),
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => session,
+    state: () => 'ready',
     get: () => session,
+    getByQuality: () => session,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
+    forwards: () => [],
   }
 }
 
@@ -119,8 +125,6 @@ const HOME_SETTINGS: JobSettings = {
   resetStrict: false,
   retry: DEFAULT_RETRY,
   crashPolicy: 'declared',
-  quietPeriodSec: 10,
-  maxWaitSec: 120,
   defaultTimeoutMs: 3_600_000,
   startupTimeoutMs: 60_000,
   maxTimeoutMs: null,
@@ -238,8 +242,6 @@ describe('createJobRunner — the ready → reset → init ordering (plan 35 §4
         resetStrict: false,
         retry: DEFAULT_RETRY,
         crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
@@ -325,89 +327,6 @@ describe('createJobRunner — job.reset "none" (plan 99 §3.3, §4.8)', () => {
   })
 })
 
-describe('createJobRunner — job.nodeId threaded into the child\'s init (plan 99 §3.2, §4.8)', () => {
-  test('nodeId reaches init.job when set on the JobSpec', async () => {
-    const session = fakeSession(async () => '')
-    const { isolation, sentPerSpawn } = fakeIsolation([successBehavior()])
-    const runner = createJobRunner({
-      isolation,
-      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
-      sessions: fakeSessions(session),
-      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
-      log: silentLog(),
-      onLog: () => {},
-      onArtifact: () => {},
-      onPhase: () => {},
-      heartbeat: () => {},
-      resetPolicy: () => ({
-        resetPolicy: 'none',
-        resetTimeoutMs: 15_000,
-        resetStrict: false,
-        retry: DEFAULT_RETRY,
-        crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
-        defaultTimeoutMs: 3_600_000,
-        startupTimeoutMs: 60_000,
-        maxTimeoutMs: null,
-        memory: { defaultMaxRssBytes: null, maxRssBytes: null, enforce: 'kill', sampleIntervalMs: 2_000 },
-        trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
-  // Plan 97 §3.4, §3.7, §4.9 — landed concurrently with plan 99's own tests here.
-  maxResultBytes: 65_536,
-  progressIntervalMs: 1_000,
-      }),
-    })
-
-    const result = await runner.execute({ ...JOB, nodeId: 'scroll1' })
-    expect(result.ok).toBe(true)
-    const init = sentPerSpawn[0]?.find((m) => m.t === 'init')
-    expect(init && 'job' in init ? init.job : undefined).toEqual({
-      id: JOB.id,
-      attempt: 1,
-      deviceId: DEVICE_ID,
-      nodeId: 'scroll1',
-    })
-  })
-
-  test('a standalone job (no nodeId) sends init.job exactly as before — no `nodeId` key at all', async () => {
-    const session = fakeSession(async () => '')
-    const { isolation, sentPerSpawn } = fakeIsolation([successBehavior()])
-    const runner = createJobRunner({
-      isolation,
-      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
-      sessions: fakeSessions(session),
-      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
-      log: silentLog(),
-      onLog: () => {},
-      onArtifact: () => {},
-      onPhase: () => {},
-      heartbeat: () => {},
-      resetPolicy: () => ({
-        resetPolicy: 'none',
-        resetTimeoutMs: 15_000,
-        resetStrict: false,
-        retry: DEFAULT_RETRY,
-        crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
-        defaultTimeoutMs: 3_600_000,
-        startupTimeoutMs: 60_000,
-        maxTimeoutMs: null,
-        memory: { defaultMaxRssBytes: null, maxRssBytes: null, enforce: 'kill', sampleIntervalMs: 2_000 },
-        trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
-  // Plan 97 §3.4, §3.7, §4.9 — landed concurrently with plan 99's own tests here.
-  maxResultBytes: 65_536,
-  progressIntervalMs: 1_000,
-      }),
-    })
-
-    const result = await runner.execute(JOB)
-    expect(result.ok).toBe(true)
-    const init = sentPerSpawn[0]?.find((m) => m.t === 'init')
-    expect(init && 'job' in init ? init.job : undefined).toEqual({ id: JOB.id, attempt: 1, deviceId: DEVICE_ID })
-    expect(init && 'job' in init ? 'nodeId' in init.job : undefined).toBe(false)
-  })
-})
 
 describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () => {
   test('a failing reset step, under resetStrict, fails the job with a coded error and the script never runs', async () => {
@@ -439,8 +358,6 @@ describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () =>
         resetStrict: true,
         retry: DEFAULT_RETRY,
         crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
@@ -480,8 +397,6 @@ describe('createJobRunner — resetStrict (plan 35 §4.1, acceptance #5)', () =>
         resetStrict: false,
         retry: DEFAULT_RETRY,
         crashPolicy: 'declared',
-        quietPeriodSec: 10,
-        maxWaitSec: 120,
         defaultTimeoutMs: 3_600_000,
         startupTimeoutMs: 60_000,
         maxTimeoutMs: null,
@@ -647,8 +562,8 @@ describe('createJobRunner — a finish() salvage survives the finish-only re-att
 
 describe('createJobRunner — the contamination regression (plan 35 §5.5)', () => {
   test('a second job on the same device still gets its own reset, even after the first was aborted mid-run', async () => {
-    const JOB1: JobSpec = { id: 'job-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
-    const JOB2: JobSpec = { id: 'job-2', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
+    const JOB1: JobSpec = { id: 'job-1', runId: 'run-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
+    const JOB2: JobSpec = { id: 'job-2', runId: 'run-2', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
 
     const execCalls: string[] = []
     // Both jobs run on the SAME session — exactly the back-to-back-on-one-
@@ -668,7 +583,7 @@ describe('createJobRunner — the contamination regression (plan 35 §5.5)', () 
       {
         ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
         onInit: () => {
-          runnerHandle?.abort(JOB1.id, 'cancelled')
+          runnerHandle?.abort(JOB1.runId, 'cancelled')
         },
         onAbort: (_reason, _emit, exit) => exit(137),
       },
@@ -711,75 +626,11 @@ describe('createJobRunner — the contamination regression (plan 35 §5.5)', () 
     // One reset for job 1 (its full attempt), none for its finish-only
     // retry, and — the point of this test — one MORE for job 2, proving the
     // second job does not inherit whatever state the aborted first job left.
-    expect(resetCalls.map((r) => r.jobId)).toEqual([JOB1.id, JOB2.id])
+    expect(resetCalls.map((r) => r.jobId)).toEqual([JOB1.runId, JOB2.runId])
     expect(sentPerSpawn).toHaveLength(3)
     // The "home" sequence's HOME intent runs once per reset — twice total
     // (once for job 1, once for job 2), never for the finish-only retry.
     expect(execCalls.filter((c) => c === 'am start -a android.intent.action.MAIN -c android.intent.category.HOME')).toHaveLength(2)
-  })
-})
-
-describe('createJobRunner — notifyAssist (plan 91 §3.6, §4.8, §5 step 91.5)', () => {
-  test('delivers {t:"assist", at, actor} to the running child — the second unsolicited push ever, NOT an abort', async () => {
-    const session = fakeSession(async () => '')
-    let finishChild: (() => void) | undefined
-    const { isolation, sentPerSpawn } = fakeIsolation([
-      {
-        ready: { t: 'ready', scriptId: 'test-script', version: '1.0.0' },
-        onInit: (_init, emit) => {
-          // Held open deliberately: `notifyAssist` must reach a child that
-          // is still mid-run, not merely one that already finished.
-          finishChild = () => emit({ t: 'result', ok: true, value: 'done', finishRan: true })
-        },
-      },
-    ])
-    const runner = createJobRunner({
-      isolation,
-      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
-      sessions: fakeSessions(session),
-      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
-      log: silentLog(),
-      onLog: () => {},
-      onArtifact: () => {},
-      onPhase: () => {},
-      heartbeat: () => {},
-      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
-    })
-
-    const resultPromise = runner.execute(JOB)
-    // Let `init` actually reach the (fake) child before asserting anything about it.
-    await Bun.sleep(5)
-
-    const handled = runner.notifyAssist(JOB.id, { at: 1_700_000_000, actor: 'user-1' })
-    expect(handled).toBe(true)
-    expect(sentPerSpawn[0]).toContainEqual({ t: 'assist', at: 1_700_000_000, actor: 'user-1' })
-    // Never an abort — no `{t:'abort'}` was ever sent, and the child is still alive.
-    expect(sentPerSpawn[0]?.some((m) => m.t === 'abort')).toBe(false)
-
-    finishChild?.()
-    const result = await resultPromise
-    expect(result.ok).toBe(true)
-  })
-
-  test('notifyAssist for an unknown job, or one that already finished, is a harmless no-op', async () => {
-    const session = fakeSession(async () => '')
-    const { isolation } = fakeIsolation([successBehavior()])
-    const runner = createJobRunner({
-      isolation,
-      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
-      sessions: fakeSessions(session),
-      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
-      log: silentLog(),
-      onLog: () => {},
-      onArtifact: () => {},
-      onPhase: () => {},
-      heartbeat: () => {},
-      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
-    })
-    expect(runner.notifyAssist('no-such-job', { at: 1, actor: null })).toBe(false)
-
-    await runner.execute(JOB)
-    expect(runner.notifyAssist(JOB.id, { at: 1, actor: null })).toBe(false)
   })
 })
 
@@ -792,7 +643,7 @@ describe('createJobRunner — the "crashed" abort reason (plan 37 §3.5, §4.4)'
       {
         ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
         onInit: () => {
-          runnerHandle?.abort(JOB.id, 'crashed', 'com.example.app crashed: java.lang.NullPointerException')
+          runnerHandle?.abort(JOB.runId, 'crashed', 'com.example.app crashed: java.lang.NullPointerException')
         },
         onAbort: (_reason, emit) => {
           // The child still runs finish() before reporting its result — the
@@ -833,7 +684,7 @@ describe('createJobRunner — the "crashed" abort reason (plan 37 §3.5, §4.4)'
       {
         ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
         onInit: () => {
-          runnerHandle?.abort(JOB.id, 'crashed')
+          runnerHandle?.abort(JOB.runId, 'crashed')
         },
         onAbort: (_reason, emit) => {
           emit({ t: 'result', ok: false, error: { code: 'TIMEOUT', message: 'x', phase: 'timeout' }, finishRan: true })
@@ -872,8 +723,6 @@ function settingsWithRetry(retry: Partial<JobSettings['retry']>): JobSettings {
     resetStrict: false,
     retry: { ...DEFAULT_RETRY, ...retry },
     crashPolicy: 'declared',
-    quietPeriodSec: 10,
-    maxWaitSec: 120,
     defaultTimeoutMs: 3_600_000,
     startupTimeoutMs: 60_000,
     maxTimeoutMs: null,
@@ -912,7 +761,7 @@ function attemptBehavior(result: 'success' | { failCode: string }, retries = 2):
   }
 }
 
-/** Records acquire/release ordering so backoff-vs-lease timing is observable (acceptance #4). */
+/** Records acquire/release ordering so backoff-vs-session timing is observable (acceptance #4). */
 function trackingSessions(session: DeviceSession, sequence: string[]): SessionManager {
   let n = 0
   return {
@@ -921,11 +770,17 @@ function trackingSessions(session: DeviceSession, sequence: string[]): SessionMa
       return session
     },
     release: () => sequence.push(`release:${n}`),
+    attachViewer: async () => ({ session, quality: 'wall' }),
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => session,
+    state: () => 'ready',
     get: () => session,
+    getByQuality: () => session,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
+    forwards: () => [],
   }
 }
 
@@ -1142,7 +997,7 @@ describe('createJobRunner — target-package tracking for the crash policy (plan
     })
 
     await runner.execute(JOB)
-    expect(targetEvents.at(-1)).toEqual({ jobId: JOB.id, packages: ['com.example.app'] })
+    expect(targetEvents.at(-1)).toEqual({ jobId: JOB.runId, packages: ['com.example.app'] })
   })
 
   test('with no declared packages, a launched app becomes the fallback target', async () => {
@@ -1182,8 +1037,8 @@ describe('createJobRunner — target-package tracking for the crash policy (plan
     const outcome = await runner.execute(JOB)
     expect(outcome.ok).toBe(true)
     expect(targetEvents).toEqual([
-      { jobId: JOB.id, packages: [] }, // reported once `ready` arrives with no declared packages
-      { jobId: JOB.id, packages: ['com.example.launched'] }, // then updated on app.launch
+      { jobId: JOB.runId, packages: [] }, // reported once `ready` arrives with no declared packages
+      { jobId: JOB.runId, packages: ['com.example.launched'] }, // then updated on app.launch
     ])
   })
 })
@@ -1300,8 +1155,8 @@ describe('createJobRunner — Timing settings reach the executor (plan 34 §3.3,
         heartbeat: () => {},
         resetPolicy: () => HOME_SETTINGS,
         // Read fresh every call — the SAME closure over `current`, exactly
-        // like `daemon.ts` reading `settingsStore.get().defaults.timing`
-        // fresh per attempt rather than once at startup.
+        // like `daemon.ts` reading `TOUCH_PROFILES[touchProfile]` fresh per
+        // attempt rather than once at startup.
         timing: () => current,
       })
 
@@ -1671,7 +1526,7 @@ describe('createJobRunner — peak RSS accumulation (plan 98 §4.7, §4.8, H1)',
     expect(outcome.ok).toBe(true)
     // ready + phase + result = 3 heartbeat-triggering messages; the rss
     // sample must not add a 4th (plan 98 §4.7: a fast sample cadence must
-    // not multiply lease-renewal writes).
+    // not multiply heartbeat-renewal writes).
     expect(heartbeatCalls).toHaveLength(3)
   })
 
@@ -2310,7 +2165,7 @@ describe('createJobRunner — the per-job override (plan 98 §3.8, §4.4, §5 st
 })
 
 describe('createJobRunner — ctx.progress() forwarding (plan 97 §3.7, §4.3, §4.9, §5 step 97.7)', () => {
-  test('a `progress` message from the child reaches `deps.onProgress(jobId, value)` VERBATIM, and does not trip the lease heartbeat callback the way every other message does', async () => {
+  test('a `progress` message from the child reaches `deps.onProgress(jobId, value)` VERBATIM, and does not trip the job heartbeat callback the way every other message does', async () => {
     const heartbeats: string[] = []
     const progressCalls: Array<{ jobId: string; value: unknown }> = []
     let finishChild: (() => void) | undefined
@@ -2340,7 +2195,7 @@ describe('createJobRunner — ctx.progress() forwarding (plan 97 §3.7, §4.3, �
     const resultPromise = runner.execute(JOB)
     await Bun.sleep(5)
 
-    expect(progressCalls).toEqual([{ jobId: JOB.id, value: { videos: 3, watchSeconds: 90 } }])
+    expect(progressCalls).toEqual([{ jobId: JOB.runId, value: { videos: 3, watchSeconds: 90 } }])
 
     finishChild?.()
     const result = await resultPromise
@@ -2488,8 +2343,8 @@ describe('createJobRunner — the job trace tee (plan 128 §3.1, §3.4, step 128
       heartbeat: () => {},
       resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
       timing: () => NO_TIMING,
-      onTraceEvent: (jobId, event) => {
-        expect(jobId).toBe(JOB.id)
+      onTraceEvent: (runId, event) => {
+        expect(runId).toBe(JOB.runId)
         events.push(event)
       },
       traceStore: store.store,

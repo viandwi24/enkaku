@@ -4,7 +4,7 @@ import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { sleep, tapNode, YOUTUBE_PACKAGE } from './youtube'
 import { flatten } from './tree'
-import { advanceFeedVerified, browseComments, frameOf, makeRng, between, pickWatchMs, pressLike } from './behavior'
+import { advanceFeedVerified, browseComments, frameOf, makeRng, between, pickWatchMs, pressLike, keywordBoost, readableStrings } from './behavior'
 
 /**
  * `scroll-shorts` — browse the Shorts feed like a person browsing it.
@@ -53,6 +53,14 @@ const paramsSchema = z.object({
     .default(3)
     .describe('How many randomised scrolls inside the comment sheet.')
     .meta(ui({ title: 'Comment scrolls' })),
+  keywordBoostFactor: z
+    .number()
+    .min(1)
+    .max(10)
+    .default(3)
+    .describe('Multiplier applied to like/comment chance when a keyword matches the Short\'s caption or channel.')
+    .meta(ui({ title: 'Keyword boost' })),
+  keywords: z.array(z.string()).default([]).describe('Keywords to tilt behaviour toward. A Short whose caption or channel name contains any of these gets the boosted chance.').meta(ui({ title: 'Keywords' })),
   seed: z
     .number()
     .int()
@@ -67,6 +75,7 @@ const resultSchema = z.object({
   advanced: z.number().int().describe('Swipes verified to have turned the page (byte-diff of two screenshots).').meta(ui({ title: 'Advanced', summary: true })),
   stuckAt: z.number().int().describe('Which video a swipe failed to advance past after three harder attempts; -1 when it never got stuck.').meta(ui({ title: 'Stuck at' })),
   likes: z.array(z.enum(['liked', 'already-liked', 'not-signed-in', 'no-button', 'not-confirmed'])).describe('One outcome per attempted like, in order.').meta(ui({ title: 'Likes' })),
+  keywordMatches: z.number().int().describe('Shorts whose readable text contained at least one keyword — the ones whose chances were boosted.').meta(ui({ title: 'Keyword matches', summary: true })),
   comments: z.array(z.enum(['browsed', 'no-button', 'not-signed-in', 'no-close'])).describe('One outcome per comment-sheet visit, in order.').meta(ui({ title: 'Comments' })),
   signedIn: z.boolean().describe('Whether the device could write at all. False whenever any action answered with the account sheet.').meta(ui({ title: 'Signed in', summary: true })),
   steps: z.array(z.string()).describe('Each step reached, in order — where a failed run stopped.').meta(ui({ title: 'Steps' })),
@@ -77,9 +86,19 @@ const LAUNCH_SETTLE_MS = 5_000
 type LikeOutcome = 'liked' | 'already-liked' | 'not-signed-in' | 'no-button' | 'not-confirmed'
 type CommentOutcome = 'browsed' | 'no-button' | 'not-signed-in' | 'no-close'
 
-/** The bottom-nav entry into Shorts. Ids are absent on the pivot items (measured), so the desc ladder is the anchor. */
+/**
+ * The bottom-nav entry into Shorts. Ids are absent on the pivot items
+ * (measured), so the desc ladder is the anchor — BUT the ladder is bounded to
+ * the nav band: a home feed that happens to carry a Shorts SHELF has a
+ * clickable "Shorts" header node earlier in the DFS walk than the tab itself,
+ * and tapping that shelf header was measured (2026-09-04, job 24ca474e) to do
+ * nothing at all. The nav band is the bottom 15% of the screen (measured
+ * [1433,1556] on a 1640-tall display).
+ */
 function shortsTabOf(tree: UiNode): UiNode | null {
-  const items = flatten(tree).filter((n) => n.clickable && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE))
+  let height = 0
+  for (const n of flatten(tree)) if (n.bounds.bottom > height) height = n.bounds.bottom
+  const items = flatten(tree).filter((n) => n.clickable && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE) && (height === 0 || n.bounds.top > height * 0.85))
   const byName = items.find((n) => /^(shorts)\b/i.test(n.desc.trim()) || n.text.trim().toLowerCase() === 'shorts')
   if (byName) return byName
   return items.find((n) => n.desc.trim().toLowerCase() === 'videokortingen' || n.desc.trim().toLowerCase() === 'video pendek') ?? null
@@ -92,6 +111,7 @@ export function inShorts(tree: UiNode): boolean {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'scroll-shorts',
+  node: { category: 'device', icon: 'activity', summary: ['videos'], keywords: ['shorts', 'scroll', 'watch'] },
   title: 'Scroll Shorts',
   description: 'Browses the Shorts feed with randomised, verified swipes and human-shaped dwell, with optional likes and comment reading.',
   params: paramsSchema,
@@ -109,6 +129,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const steps: string[] = []
     const likes: LikeOutcome[] = []
     const comments: CommentOutcome[] = []
+    let keywordMatches = 0
 
     // --- enter Shorts from the bottom nav -----------------------------------
     let tree = await ctx.device.dump()
@@ -126,15 +147,21 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     for (let i = 0; i < ctx.params.videos; i++) {
       ctx.progress({ video: i + 1, of: ctx.params.videos, steps })
 
+      // The Short's own words — caption, channel, counts — feed the keyword tilt.
+      const text = readableStrings(await ctx.device.dump()).join(' ')
+      if (ctx.params.keywords.some((k) => k.trim() !== '' && text.toLowerCase().includes(k.toLowerCase()))) keywordMatches += 1
+      const likeP = keywordBoost(text, ctx.params.keywords, ctx.params.likeProbability, ctx.params.keywordBoostFactor)
+      const comP = keywordBoost(text, ctx.params.keywords, ctx.params.commentProbability, ctx.params.keywordBoostFactor)
+
       const dwell = pickWatchMs(rng)
       await sleep(dwell.ms)
 
-      if (rng() < ctx.params.likeProbability) {
+      if (rng() < likeP) {
         const outcome = await pressLike(ctx, rng)
         likes.push(outcome)
         ctx.log.info(`youtube: short ${i + 1} like → ${outcome}`)
       }
-      if (rng() < ctx.params.commentProbability) {
+      if (rng() < comP) {
         const outcome = await browseComments(ctx, rng, { scrollTimes: ctx.params.commentScrollTimes })
         comments.push(outcome)
         ctx.log.info(`youtube: short ${i + 1} comments → ${outcome}`)
@@ -162,6 +189,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       advanced: steps.filter((s) => s.includes('video') && !s.includes('STUCK')).length,
       stuckAt,
       likes,
+      keywordMatches,
       comments,
       signedIn,
       steps,

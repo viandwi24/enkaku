@@ -18,7 +18,8 @@ function fakeContext(overrides: { notify?: NotifyService; currentRunId?: string 
     actor: overrides.actor ?? null,
     hasPermission: () => true,
     canReachDevice: () => true,
-    controlLeaseBlockedBy: () => null,
+    evaluateActivity: () => ({ decision: 'allow' as const, message: '' }),
+    touchActivity: () => {},
     isDeviceOnline: () => true,
     ensureAwake: async () => {},
     deviceCall: async () => {
@@ -98,7 +99,7 @@ describe('notifySend handler — deriving source/context from the caller (plan 6
   test('declares the registry metadata plan 68 §4.3 specifies', () => {
     expect(notifySend.id).toBe('notify.send')
     expect(notifySend.permission).toBe('notify.send')
-    expect(notifySend.lease).toBe('none')
+    expect(notifySend.activity).toBeUndefined()
     expect(notifySend.effect).toBe('write')
     expect(notifySend.deadline).toBe(10_000)
   })

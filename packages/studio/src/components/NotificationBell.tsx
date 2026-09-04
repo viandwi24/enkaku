@@ -2,10 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Bell } from 'lucide-react'
 import { z } from 'zod'
 import { NotificationSchema, NotificationsResponseSchema, RunResponseSchema, ThreadResponseSchema, type Notification } from '@enkaku/protocol'
-import { Button, Popover, PopoverContent, PopoverTrigger, cn, relativeTime, api } from '@enkaku/ui'
+import { BellIcon, Popover, PopoverContent, PopoverTrigger, cn, relativeTime, api } from '@enkaku/ui'
 import { ws } from '@/lib/ws'
 
 // `POST /api/notifications/:id/read` and `/read-all` (`packages/core/src/api/notifications.ts`)
@@ -15,10 +14,12 @@ const MarkReadResponseSchema = z.object({ notification: NotificationSchema })
 const MarkAllReadResponseSchema = z.object({ count: z.number() })
 
 /**
- * The Studio minimum for plan 68 §4.5: "a bell in the app shell shows
- * unread notifications and links to the run that produced each." The
- * fuller notification interface (filtering, a dedicated page, richer
- * context) is Plan 69's job — this is deliberately just a bell and a list.
+ * The status bar's Alerts button (plan 213 §4.7, §5 step 213.6), re-skinned
+ * in place from the old sidebar's bell: a 32×32 `rounded-button` trigger with
+ * a `BellIcon`, and — per the handoff — a plain 6px `var(--danger)` dot when
+ * there is anything unread, with no count on it. The count is not lost: it
+ * moves into the trigger's `aria-label`/`title`, where a hover or a screen
+ * reader still gets it (the old `9+` badge is gone).
  */
 export function NotificationBell() {
   const [items, setItems] = useState<Notification[]>([])
@@ -84,30 +85,32 @@ export function NotificationBell() {
     }
   }
 
+  const label = unreadCount > 0 ? `Alerts, ${unreadCount} unread` : 'Alerts'
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Notifications" className="relative">
-          <Bell className="size-4" />
-          {unreadCount > 0 && (
-            <span className="readout absolute -right-0.5 -top-0.5 grid size-4 place-items-center rounded-full bg-led-danger text-[9px] text-white">
-              {unreadCount > 9 ? '9+' : unreadCount}
-            </span>
-          )}
-        </Button>
+      <PopoverTrigger
+        aria-label={label}
+        title={label}
+        className="relative flex size-8 items-center justify-center rounded-button text-faint transition-colors hover:bg-muted-2 hover:text-text"
+      >
+        <BellIcon className="size-4" aria-hidden />
+        {unreadCount > 0 && (
+          <span aria-hidden className="absolute top-[5px] right-[5px] size-[6px] rounded-pill bg-danger" />
+        )}
       </PopoverTrigger>
       <PopoverContent className="w-80 p-0">
-        <div className="flex items-center justify-between border-b px-3 py-2">
-          <p className="text-[13px] font-medium">Notifications</p>
+        <div className="flex items-center justify-between border-b border-line px-3 py-2">
+          <p className="text-row font-medium">Notifications</p>
           {unreadCount > 0 && (
-            <button type="button" onClick={() => void markAllRead()} className="text-[11.5px] text-fg-muted hover:text-fg">
+            <button type="button" onClick={() => void markAllRead()} className="text-meta text-faint hover:text-text">
               Mark all read
             </button>
           )}
         </div>
         <div className="max-h-96 overflow-y-auto">
           {items.length === 0 ? (
-            <p className="px-3 py-6 text-center text-[12.5px] text-fg-muted">No notifications yet.</p>
+            <p className="px-3 py-6 text-center text-body text-faint">No notifications yet.</p>
           ) : (
             items.map((n) => (
               <button
@@ -115,22 +118,22 @@ export function NotificationBell() {
                 type="button"
                 onClick={() => void goToNotification(n)}
                 className={cn(
-                  'flex w-full flex-col items-start gap-0.5 border-b px-3 py-2 text-left last:border-b-0 hover:bg-surface-2/60',
-                  !n.readAt && 'bg-surface-2/30',
+                  'flex w-full flex-col items-start gap-0.5 border-b border-line px-3 py-2 text-left last:border-b-0 hover:bg-muted',
+                  !n.readAt && 'bg-muted-2',
                 )}
               >
                 <div className="flex w-full items-center gap-1.5">
                   <span
                     className={cn(
                       'size-1.5 shrink-0 rounded-full',
-                      n.level === 'error' ? 'bg-led-danger' : n.level === 'warn' ? 'bg-led-warn' : 'bg-led-ok',
+                      n.level === 'error' ? 'bg-danger' : n.level === 'warn' ? 'bg-warn' : 'bg-ok',
                     )}
                     aria-hidden
                   />
-                  <span className="flex-1 truncate text-[12.5px] font-medium">{n.title}</span>
-                  <span className="readout shrink-0 text-[10.5px] text-fg-subtle">{relativeTime(n.createdAt)}</span>
+                  <span className="flex-1 truncate text-body font-medium">{n.title}</span>
+                  <span className="shrink-0 font-mono text-badge text-faint-2">{relativeTime(n.createdAt)}</span>
                 </div>
-                {n.body && <p className="line-clamp-2 pl-3 text-[11.5px] text-fg-muted">{n.body}</p>}
+                {n.body && <p className="line-clamp-2 pl-3 text-meta text-faint">{n.body}</p>}
               </button>
             ))
           )}

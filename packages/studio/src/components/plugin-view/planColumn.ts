@@ -144,7 +144,7 @@ function planAgainst(plan: FieldPlan, value: unknown, now: number): PlannedColum
 export function planColumn(schema: WireJsonSchemaNode | undefined, value: unknown, now: number = Date.now()): PlannedColumn {
   // `@enkaku/protocol`'s `JsonSchemaNode` is a bare index signature and this
   // package's own is the narrower, keyword-aware twin — the SAME
-  // reconciliation `JobResultSection` and `RunScriptDialog` already document
+  // reconciliation the Jobs screen's `JsonSnapshot` and `RunScriptDialog` already document
   // at their own boundary, done once here so no call site has to. `planField`
   // is total over anything, so a node that does not fit the narrower shape
   // lands on its `json` terminal rather than misbehaving.

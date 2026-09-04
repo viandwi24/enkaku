@@ -156,7 +156,7 @@ export function createCutoverManager(deps: CutoverManagerDeps): CutoverManager {
     if (entry.state.expiresAt !== null && Date.now() >= entry.state.expiresAt) {
       setState(stableId, {
         step: 'failed',
-        detail: `no phone answered within the watch window (tried ${entry.state.triedAddresses} address(es), ${entry.state.answered} answered). Likely causes, in order: the port did not flip, the chassis port has no DHCP lease yet, or the configured network is wrong.`,
+        detail: `no phone answered within the watch window (tried ${entry.state.triedAddresses} address(es), ${entry.state.answered} answered). Likely causes, in order: the port did not flip, the chassis port has not been assigned an address yet, or the configured network is wrong.`,
         expiresAt: null,
       })
       clearTimer(stableId)

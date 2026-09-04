@@ -1,9 +1,10 @@
 # Plan 217 — MVP wave 3 : Scripts, Workflows and Schedules
 
-> Status: draft — not started; written 2026-09-03 by the plan author for the MVP series
+> Status: partial (software) — implemented 2026-09-04 by the executing agent; every software goal (G1, G2, G5, G8-G13) verified, G4 and G7 verified against this plan's own scope with a discrepancy noted (see §11), and G3/G6/G14 left `owner` for the manual smoke, which needs plan 215/216's Device Control and Run dialog on the same farm to exercise fully.
 > Depends on: plan 213 (Studio shell — the rail's `/scripts` entry, `scripts/check-routes.ts` and its `PENDING_REMOVAL` list, `lib/overlays.ts`'s `useOverlay`/`registerOverlay`), plan 210 (scripts only through plugins — `GET /api/scripts` grouped by active plugin, the `workflows` table and its five routes, `WorkflowStore`, the Studio compiling edits in its §4.9), plan 211 (jobs and runs — `job_runs`, a schedule owns one batch, `GET /api/schedules/:id/jobs`, `schedules.batchId`/`lastFireOutcome`/`lastFireDetail`, `schedule_runs` deleted). Plan 216 (action dialogs) is a sibling in the same execution stage (plan 200 §8, stage 6: 212, 215, 216, 217, 218 wait on 211 and 214) — merge order within a stage follows the plan number (plan 200 §8.1), so 216 is already on `mvp` by the time this plan starts, and this plan's Run affordances assume `useActionDialogs()`/`VERB_DIALOGS` exist and that plan 216 already deleted `components/ScheduleEditorDialog.tsx` and the whole `packages/studio/src/app/schedules/` directory (plan 216 §3.4, §10.1, row "The schedule editor dialog and the `/schedules` route").
 > Spec references: `docs/mvp/design_handoff_enkaku_openpf/README.md` "Screen: Scripts & workflows" (quoted verbatim in §4.3), "Global shell" (icon rail order, quoted in §3.4), `docs/mvp/15-ui-migration.md` §0.1 items 1 ("Schedules is the third tab of Scripts & Workflows") and 5 (recordings deferred, no Recordings tab), §1 row "Script versions and Enabled switch", §2 ("The workflow editor: the handoff draws only the Workflows card list"), `docs/mvp/03-navigation-and-pages.md` §1 ("Scripts & Workflows" absorbs `/plugins?tab=scripts`, `/scripts/detail`, `/workflows`, `/workflows/editor`, `/schedules`, `/schedules/detail`), §2.3 (Scripts tab lists active-plugin members; script detail keeps Overview/Source/Runs/Settings, drops the version dropdown, shows a plugin badge; version history/rollback live only on Plugins; one word, `active`), `docs/mvp/14-jobs-and-runs.md` §1 ("Schedules own one job per target device; every fire adds a run"), §2 ("A schedule's page shows its jobs and their runs, not a separate run table"), `docs/mvp/16-consolidated-plan.md` §1 (nouns: script, workflow, schedule, job, run), §2 (the Scripts and Navigation rows), §3 (wave 3). Where `docs/spec.md` still describes a script's own version or a schedule's `schedule_runs` table, `docs/mvp/16` wins (plan 200 header).
 > Ships: packages/studio/src/components/scripts/ScriptsTable.tsx
+> **Testing override, read before §5 and §7:** §12 supersedes every Studio and `@enkaku/ui` test named anywhere below. Create no test and run no test under `packages/studio` or `packages/ui`; delete a surviving one that breaks and list it in §11. Verification for UI is `bun run typecheck`, the design-token and route scripts, and the owner smoke.
 
 ---
 
@@ -11,20 +12,24 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | The Scripts table has no version column and no Enabled switch | 0 matches for the deleted wire types in the new files | `rg -n "ScriptGroupsPageResponseSchema\|ScriptToggleResponseSchema\|ScriptVersionsResponseSchema\|latestVersion\|versionCount" packages/studio/src/app/scripts packages/studio/src/components/scripts packages/studio/src/components/schedules` prints nothing | [ ] |
-| G2 | No script UI copy says "latest" or "enabled" (MVP 03 §2.2 rule 5) | 0 matches | `rg -n -i "\blatest\b\|\benabled\b" packages/studio/src/app/scripts packages/studio/src/components/scripts` prints nothing (schedules' own `enabled` toggle is a real per-schedule field and is exempt — see §3.3) | [ ] |
+| G1 | The Scripts table has no version column and no Enabled switch | 0 matches for the deleted wire types in the new files | `rg -n "ScriptGroupsPageResponseSchema\|ScriptToggleResponseSchema\|ScriptVersionsResponseSchema\|latestVersion\|versionCount" packages/studio/src/app/scripts packages/studio/src/components/scripts packages/studio/src/components/schedules` prints nothing | [x] |
+| G2 | No script UI copy says "latest" or "enabled" (MVP 03 §2.2 rule 5) | 0 matches | `rg -n -i "\blatest\b\|\benabled\b" packages/studio/src/app/scripts packages/studio/src/components/scripts` prints nothing (schedules' own `enabled` toggle is a real per-schedule field and is exempt — see §3.3) | [x] |
 | G3 | `/scripts` renders three tabs — Scripts, Workflows, Schedules — each with a live count | three `<button data-tab>` elements read from the DOM carry the three labels and a numeral | owner smoke step 1 (§7) | owner |
-| G4 | The Scripts table's columns are Name (mono `plugin/script`) · Plugin (version chip) · Params · Last run · Run | 5 header cells, in that order | `rg -n "Name</TableHead>\|Plugin</TableHead>\|Params</TableHead>\|Last run</TableHead>\|Run</TableHead>" packages/studio/src/components/scripts/ScriptsTable.tsx` → 5 lines | [ ] |
-| G5 | The Workflows tab lists rows of the `workflows` table (plan 210), not `scripts` rows | 0 matches for the old grouped-scripts fetch | `rg -n "kind=workflow\|ScriptGroupsPageResponseSchema" packages/studio/src/components/scripts/WorkflowsGrid.tsx` prints nothing; `rg -n "listWorkflows\|/api/workflows" packages/studio/src/components/scripts/WorkflowsGrid.tsx` finds a match | [ ] |
+| G4 | The Scripts table's columns are Name (mono `plugin/script`) · Plugin (version chip) · Params · Last run · Run | 5 header cells, in that order | `rg -n "Name</TableHead>\|Plugin</TableHead>\|Params</TableHead>\|Last run</TableHead>\|Run</TableHead>" packages/studio/src/components/scripts/ScriptsTable.tsx` → 5 lines | [ ]† |
+| G5 | The Workflows tab lists rows of the `workflows` table (plan 210), not `scripts` rows | 0 matches for the old grouped-scripts fetch | `rg -n "kind=workflow\|ScriptGroupsPageResponseSchema" packages/studio/src/components/scripts/WorkflowsGrid.tsx` prints nothing; `rg -n "listWorkflows\|/api/workflows" packages/studio/src/components/scripts/WorkflowsGrid.tsx` finds a match | [x] |
 | G6 | The workflow editor is reachable at `/scripts/editor` and saves through plan 210's routes | `POST /api/workflows` on create, `PUT /api/workflows/:name` on edit | owner smoke step 5 (§7) | owner |
-| G7 | The Schedules tab lists schedules and opens a create/edit surface with no `ScheduleEditorDialog` import | 0 matches, file absent | `rg -n "ScheduleEditorDialog" packages/studio/src` prints nothing; `test ! -e packages/studio/src/components/ScheduleEditorDialog.tsx` | [ ] |
-| G8 | A schedule's detail page shows its jobs and their runs, not a separate run table (MVP 14 §2) | 0 matches for the deleted schema | `rg -n "ScheduleRunsPageResponseSchema\|ScheduleRunInfo\b" packages/studio/src/app/scripts` prints nothing | [ ] |
-| G9 | `/workflows` and `/schedules` no longer exist as top-level routes | both absent | `test ! -d packages/studio/src/app/workflows && test ! -d packages/studio/src/app/schedules` exits 0 | [ ] |
-| G10 | `scripts/check-routes.ts` passes with both rows pruned | exit 0, "routes ok" | `bun run scripts/check-routes.ts` exits 0 | [ ] |
-| G11 | Running a script goes through plan 216's Run dialog with the target pre-filled and the script fixed; no dialog is built by this plan | 0 matches for a new run dialog component | `rg -n "function RunScriptDialog\|function RunWorkflowDialog" packages/studio/src/app/scripts packages/studio/src/components/scripts` prints nothing | [ ] |
-| G12 | A script's "Last run" cell links into the Jobs detail page for that job | `href` starts with `/jobs/detail?id=` | `rg -n "/jobs/detail\?id=" packages/studio/src/components/scripts/ScriptsTable.tsx` finds a match | [ ] |
-| G13 | `bun run typecheck` is clean | 0 errors | `bun run typecheck` exits 0 | [ ] |
+| G7 | The Schedules tab lists schedules and opens a create/edit surface with no `ScheduleEditorDialog` import | 0 matches, file absent | `rg -n "ScheduleEditorDialog" packages/studio/src` prints nothing; `test ! -e packages/studio/src/components/ScheduleEditorDialog.tsx` | [ ]‡ |
+| G8 | A schedule's detail page shows its jobs and their runs, not a separate run table (MVP 14 §2) | 0 matches for the deleted schema | `rg -n "ScheduleRunsPageResponseSchema\|ScheduleRunInfo\b" packages/studio/src/app/scripts` prints nothing | [x] |
+| G9 | `/workflows` and `/schedules` no longer exist as top-level routes | both absent | `test ! -d packages/studio/src/app/workflows && test ! -d packages/studio/src/app/schedules` exits 0 | [x] |
+| G10 | `scripts/check-routes.ts` passes with both rows pruned | exit 0, "routes ok" | `bun run scripts/check-routes.ts` exits 0 | [x] |
+| G11 | Running a script goes through plan 216's Run dialog with the target pre-filled and the script fixed; no dialog is built by this plan | 0 matches for a new run dialog component | `rg -n "function RunScriptDialog\|function RunWorkflowDialog" packages/studio/src/app/scripts packages/studio/src/components/scripts` prints nothing | [x] |
+| G12 | A script's "Last run" cell links into the Jobs detail page for that job | `href` starts with `/jobs/detail?id=` | `rg -n "/jobs/detail\?id=" packages/studio/src/components/scripts/ScriptsTable.tsx` finds a match | [x] |
+| G13 | `bun run typecheck` is clean | 0 errors | `bun run typecheck` exits 0 | [x] |
 | G14 | Owner smoke passes, itemised per tab | 7 steps below all pass | §7 "Manual smoke" | owner |
+
+† The literal grep looks for `<TableHead>` elements; `ScriptsTable.tsx` uses a hand-rolled grid of `<div>`s (§3.2, §5 step 217.5's own instruction not to use `PaginatedTable`/its `TableHead`), so the grep finds 0 lines. The five columns — Name · Plugin · Params · Last run · Run, in that order — are present as plain header `<div>`s; see §11.
+
+‡ The literal grep over the whole `packages/studio/src` tree finds 3 pre-existing comment mentions of the deleted dialog's name in `components/schema-form/SchemaForm.tsx` and `components/ParamSetPicker.tsx` — neither file is touched by this plan, and neither imports the dialog (it is prose only, in files this plan does not own). Scoped to this plan's own new/edited directories (`packages/studio/src/components/schedules`, `packages/studio/src/app/scripts`) the grep is empty, and the file itself is absent. See §11.
 
 ## 1. Goals
 
@@ -1270,7 +1275,7 @@ Read plan 200 §2 and `CLAUDE.md` before the first edit. Every `path:line` above
 ### 217.3 `packages/ui/src/icons.ts`
 
 - Files changed: `packages/ui/src/icons.ts` (§4.12).
-- Test file: none (plan 200 §8.3); if `packages/ui/src/icons.test.ts` exists and its assertion needs `ClockIcon` added to an allowlist, edit that one assertion only.
+- Test file: none — §12: Studio and `@enkaku/ui` have zero tests. Verify with `bun run typecheck` and the owner smoke.
 - Verifiable result: `rg -n "ClockIcon" packages/ui/src/icons.ts` finds the new export.
 - Do not: add any other icon speculatively; this plan needs exactly one.
 
@@ -1394,15 +1399,67 @@ No step needs `ENKAKU_TEST_DEVICE=1` beyond the farm the owner already runs.
 
 ## 11. Handoff report
 
-- **Checklist**:
-- **Commits**:
-- **Typecheck**:
-- **Tests run**:
+- **Branch**: `worktree-agent-a1ad7bac8638d75f4`, fast-forwarded onto `mvp` at `e6e86b4` (rounds R1-R5: plans 201-211, 213-216, 221, 223) before starting.
+
+- **Checklist**: §0 updated in place. Done: G1, G2, G5, G8, G9, G10, G11, G12, G13. Owner-gated (unchanged): G3, G6, G14. Verified with a discrepancy noted: G4, G7 (see below).
+
+- **Commits** (on the worktree branch, off `mvp`):
+  - `588d0eb` chore(mvp-217): delete /workflows, prune check-routes PENDING_REMOVAL
+  - `73bce7d` feat(mvp-217): add ClockIcon for the Schedules tab, widen the design-token check
+  - `a943094` feat(mvp-217): schedules — SchedulesList, ScheduleDialog, GroupOrDevicesField
+  - `390d2e9` feat(mvp-217): ScriptsTable, WorkflowsGrid, and a run-workflow verb dialog
+  - `47e3d48` feat(mvp-217): /scripts — the three-tab Scripts & Workflows shell
+  - plus this report's own commit (below)
+
+- **Typecheck**: `bun run typecheck` — clean, all nineteen workspace packages (`protocol ui adb toolchain drivers scrcpy sdk session harness core node studio probe-server networking proxy-manager tiktok-automation-pack mikrotik-routing google-automation-pack youtube-automation-pack examples`). Note: the first run after fast-forwarding onto `mvp` failed on every package with "Cannot find module 'zod'"/`'@enkaku/protocol'` etc. — `node_modules` was stale for the merged tree; `bun install` (940 packages, no lockfile change) fixed it. Unrelated to this plan's own edits, recorded since a future executor hitting the same wall should reach for `bun install`, not debug the code.
+
+- **Build**: `bun run build:studio` — succeeds, static export completes, 28 routes generated including all four `/scripts*` routes (`/scripts`, `/scripts/detail`, `/scripts/editor`, `/scripts/schedule`).
+
+- **`bun run scripts/check-routes.ts`**: `routes ok: 6 in nav, 7 exempt`.
+
+- **`bun run scripts/check-design-tokens.ts`**: `design tokens ok` (after widening `GROUP_3`/the exact-count check per §12's own amendment for exactly this addition).
+
+- **Tests run**: none. Studio and `@enkaku/ui` have zero tests by policy (plan 200 §8.3); no `*.test.tsx` was written or run. No pre-existing Studio test file needed deletion in the files this plan touched.
+
 - **Removed, proven**:
+  - `packages/studio/src/app/scripts/page.tsx`'s redirect stub — `rg -n "router.replace\('/plugins'" packages/studio/src/app/scripts/page.tsx` → no matches (the file's body is fully replaced, not merely a path that still exists).
+  - `packages/studio/src/app/workflows/` (whole directory, both `.tsx` files, no `.test.tsx` present to begin with) — `test ! -d packages/studio/src/app/workflows` → exit 0.
+  - The `/workflows` row of `scripts/check-routes.ts`'s `PENDING_REMOVAL` — `rg -n "'/workflows':" scripts/check-routes.ts` → no matches.
+  - The version-pin block ("Float on the latest version" switch, pinned-version `Select`) — not carried into `ScheduleDialog.tsx` — `rg -n "useLatest|pinnedVersion|resolveLatest|Float on the latest version" packages/studio/src/components/schedules` → no matches.
+  - `clusterId` in any file this plan wrote — `rg -n "clusterId" packages/studio/src/app/scripts packages/studio/src/components/schedules` → no matches (one draft comment used the literal string and was reworded during verification).
+  - The "Delete this script" card on `/scripts/detail`'s Settings tab — `rg -n "ScriptDeleteResponseSchema|DELETE /api/scripts" packages/studio/src/app/scripts/detail/page.tsx` → no matches.
+  - `PaginatedTable` as the Scripts table's mechanism — `rg -n "PaginatedTable" packages/studio/src/components/scripts/ScriptsTable.tsx` → no matches.
+  - GREP_217 (`float on the latest version|pinned version|start from version|\bcluster\b` over this plan's own directories) — no matches.
+  - **Already removed by an earlier plan, re-proven** — `components/ScheduleEditorDialog.tsx` and `app/schedules/`: `test ! -e .../ScheduleEditorDialog.tsx && test ! -d .../app/schedules` → **ok, both gone**. `components/RunScriptDialog.tsx` and `components/DevicePicker.tsx`: **both still present** — see Discrepancies below; not this plan's to fix.
+
 - **Discrepancies between plan and code**:
+  1. **Two `> Ships:`-adjacent Next.js page rules the plan's own code blocks did not anticipate.** `app/scripts/page.tsx`'s §4.4 excerpt exports `matchesScript`/`matchesWorkflow`/`matchesSchedule` directly from the page file; Next's App Router (`output: 'export'`) rejects any named export from a `page.tsx` other than the recognised page fields ("`matchesScript` is not a valid Page export field"), and `bun run build:studio` fails on it while `bun run typecheck` does not catch it at all (plan 200 §2.6's own lesson — a plan's code block is an excerpt, not a file to paste unread — applies again here). Moved the three predicates into a sibling `app/scripts/matchers.ts` and repointed `ScriptsTable.tsx`/`WorkflowsGrid.tsx`/`SchedulesList.tsx`'s imports there instead of `@/app/scripts/page`. Recorded as a general Studio rule worth adding to plan 200 §2.6 for the next plan author.
+  2. **`node_modules` was stale after fast-forwarding onto `mvp`.** Every package failed typecheck with "Cannot find module" errors until `bun install` ran (see Typecheck above) — unrelated to this plan, just a step a fresh worktree needs.
+  3. **G4's literal grep looks for `<TableHead>` elements; `ScriptsTable.tsx` is a hand-rolled grid of `<div>`s**, exactly as §3.2/§5 step 217.5 instruct ("`PaginatedTable` is built for the cursor case ... do not reuse it here"). The design intent — five columns, Name · Plugin · Params · Last run · Run, in that order — is met; the specific `</TableHead>` string is not, because this table was never built with `<TableHead>` in the first place. §0's own row is annotated with this note rather than silently marked done.
+  4. **G7's literal grep over the whole `packages/studio/src` tree** finds three pre-existing prose mentions of `ScheduleEditorDialog` in `components/schema-form/SchemaForm.tsx` and `components/ParamSetPicker.tsx` — neither file is touched by this plan, and neither imports the dialog (both predate this plan; they explain a wiring parallel in a code comment). Scoped to this plan's own new/edited directories the grep is empty and the file is absent, which is the real criterion the row's Parameter column describes ("no `ScheduleEditorDialog` import"). Not fixed, since editing those two files is outside this plan's named scope (plan 200 §2.1).
+  5. **`components/RunScriptDialog.tsx` and `components/DevicePicker.tsx` are still on disk**, even though plan 216's §10 lists them as removed and this plan's own §10 asks to "re-prove" that removal. Plan 216's own §11 recorded these as *blocked* (their only remaining importers were `device-popup/` and `app/device/page.tsx`, both owned by plan 215 and not yet merged when 216 ran) and marked itself `partial` for exactly this reason. Plan 215 has since merged and both blocking directories are confirmed gone from the tree (`test ! -d packages/studio/src/app/device`, `test ! -d packages/studio/src/components/device-popup` both pass), which means the blocker plan 216 named is now cleared — but nobody has gone back to finish plan 216's deletions. Verified their only remaining importers today: `packages/studio/src/lib/script-row.ts` imports a type from `RunScriptDialog.tsx`, and `packages/studio/src/components/target/TargetPicker.tsx` imports `DevicePicker` from `components/DevicePicker.tsx`. Neither file is named by plan 217's own §4/§5 steps, and plan 200 §2.1 forbids touching a file the plan does not name unless a named step requires it to compile — completing plan 216's blocked cleanup is not one of this plan's steps, so it is reported here rather than done silently. Whoever next executes plan 216's follow-up (or the wave-3 removal gate, plan 200 §6) should pick this up: with the blockers gone, `RunScriptDialog.tsx`, `DevicePicker.tsx`, and their two importer files can likely be migrated/deleted now.
+  6. **The "Last run" View link on `/scripts/schedule`'s Overview tab** does not point at `/jobs/detail?batchId=` — plan 218 (not merged) has not defined that query parameter, and `/jobs` also has no Batches tab yet for the plan's own suggested fallback (`/jobs?tab=batches`). Linked to plain `/jobs` instead, with a code comment recording the reason; plan 218's executor should correct this link once its own batch-scoped navigation exists (§9 Q2 of this plan already anticipated this).
+  7. **`ArrowLeftIcon` does not exist in `@enkaku/ui`'s icon set** (only Group 1/2/3 names the design-token script derives or allowlists); `app/scripts/editor/page.tsx` keeps the original file's `ArrowLeft` from `lucide-react` instead, matching the "the editor's own internals are untouched" instruction (§3.1, MVP 15 §2 — the editor is undesigned).
+
 - **Observed, not done**:
+  - `/scripts/schedule`'s Overview tab renders plain summary cards (Runs/Target/Policy) rather than the deleted detail page's fuller identity/policy layout — the plan's own §4.9 marks these blocks as "unchanged in content from the deleted file, re-skinned" with a `{/* ... */}` placeholder; since the deleted file no longer exists on the working tree (only in git history, read via `git show` for this execution), the replacement cards are a compressed but complete summary of the same facts (script/agent target, group/device target, concurrency/order/overlap policy), not a line-for-line port. If the owner wants the exact old layout back, it is a follow-up, not a defect — every field the deleted page showed is still reachable from `ScheduleDialog`'s Settings-tab edit flow.
+  - Per plan §2 non-goals: no Recordings tab, no schedule-targets-a-workflow support (§9 Q1, undecided), no changes to `app/plugins/page.tsx`'s own (soon-redundant) Scripts section — plan 219's to delete.
+
 - **Open questions hit**:
+  - §9 Q1 (whether a schedule can target a workflow): not decided; `ScheduleDialog`'s work-kind toggle stays `script`/`agent` only, matching the wire shape as it exists today.
+  - §9 Q2 (the "Last run" View link's exact route): hit directly — see Discrepancy 6 above.
+  - §9 Q3 (a Schedules-tab design pass): not decided; this plan matched the Scripts table's grammar for internal consistency, per the plan's own instruction.
+  - §9 Q4 (`JobsList`'s `filter.scriptId` not actually filtering anything): not touched — pre-existing gap, inherited unedited by `/scripts/detail`'s Runs tab, exactly as the plan's own §9 Q4 describes.
+
 - **Processes**:
+
+```
+$ ps -Ao pid=,command= | grep -i "[o]penpf"
+7321 /Users/solpochi/Projects/oss/openpf/.dev-data/tools/adb/... (scrcpy server, device ZP2222RMBS)
+8303 /Users/solpochi/Projects/oss/openpf/.dev-data/tools/adb/... (scrcpy server, device ZP2222RMBS)
+```
+
+Both are pre-existing adb/scrcpy device-mirroring processes that predate this session — this execution never ran `bun run dev`, `bun run dev:studio`, or touched a physical device, and started no process of its own (confirmed separately: no `bun`/`next`/`node` process traces to this session). Left running, since killing another session's live device connection is not this report's call to make.
 
 ---
 

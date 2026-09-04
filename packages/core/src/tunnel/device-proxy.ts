@@ -83,7 +83,10 @@ export function createDeviceProxy(deps: { router: TunnelRouter; deviceId: string
           height: proxy.frameSize.height,
           codec: proxy.codec,
           seq: seq++,
-          capturedAt: Date.now(),
+          // The tunnel carries no frame metadata (MVP 01 §1.6); cloud is
+          // post-MVP (plan 203 §2).
+          ptsUs: 0n,
+          hostReceivedAt: Date.now(),
           keyframe: proxy.codec === 'png' ? true : isH264Keyframe(payload),
         }
         for (const sub of subscribers) sub(payload, meta)

@@ -1,7 +1,7 @@
 /**
  * The `device::...` system banner the shim's CNXN reply carries (plan 27
  * §4.1) — built from the device row (model, product, API level), not
- * queried live: the endpoint is short-lived and per-lease, so there is no
+ * queried live: the endpoint is short-lived and scoped to one control marker, so there is no
  * value in a round-trip to the device just to describe it to the user's own
  * adb client.
  *

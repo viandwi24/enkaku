@@ -58,6 +58,7 @@ export const DoctorCheckResultSchema = z.object({
   observed: z.string(),
   remedy: z.string().optional(),
 })
+export type DoctorCheckResult = z.infer<typeof DoctorCheckResultSchema>
 export const DoctorResponseSchema = z.object({
   results: z.array(DoctorCheckResultSchema),
   exitCode: z.union([z.literal(0), z.literal(1)]),

@@ -15,6 +15,8 @@ export const devices = sqliteTable(
     /** The current adb transport address — it can change (USB ↔ ip:port). */
     serial: text('serial').notNull(),
     label: text('label').notNull(),
+    /** Best-effort `ro.product.model` from the registry probe (plan 214 §3.7) — the handoff's Device cell shows it under the name. Null until a probe has seen this device. */
+    model: text('model'),
     ownerId: text('owner_id'),
 
     androidVersion: text('android_version'),
@@ -26,10 +28,11 @@ export const devices = sqliteTable(
     transport: text('transport').default('adb-usb'),
     display: text('display').default('scrcpy'),
     input: text('input').default('scrcpy-uhid'),
-    inspection: text('inspection').default('ui-server'),
+    inspection: text('inspection').default('ui-tree'),
 
     battery: text('battery', { mode: 'json' }),
     settings: text('settings', { mode: 'json' }),
+    /** offline | online | quarantined (MVP 04 §0.1, §4, plan 205 §4.6) — "busy" and "controlled" are derived from the activity registry and never stored. */
     status: text('status').default('offline'),
     /** Quarantine reason (e.g. 'thermal:47.3C') — null when not quarantined. */
     quarantineReason: text('quarantine_reason'),
@@ -38,13 +41,13 @@ export const devices = sqliteTable(
     tenantId: text('tenant_id'),
     lastSeen: integer('last_seen', { mode: 'timestamp' }),
     /**
-     * The owning cluster (plan 22.0 §3.2), or null when unclustered. A device
-     * belongs to at most one cluster; this column IS that guarantee — there
-     * is no membership table to keep consistent and no code path that can
-     * leave a device in two clusters, because assigning one is an UPDATE
+     * The owning group (plan 22.0 §3.2, renamed per MVP 15 §0.1), or null. A
+     * device belongs to at most one group; this column IS that guarantee —
+     * there is no membership table to keep consistent and no code path that
+     * can leave a device in two groups, because assigning one is an UPDATE
      * that necessarily clears any previous value.
      */
-    clusterId: text('cluster_id'),
+    groupId: text('group_id'),
     /**
      * The operator's standing readiness intent (plan 43 §3.3, §4.2) — never
      * changed by a hold (§3.6): a job or viewer can wake a device without
@@ -161,7 +164,7 @@ export const devices = sqliteTable(
     // `/api/devices` sorts by label ASC, id ASC — the browse list, not a
     // feed (plan 30 §4.2).
     index('idx_devices_label').on(t.label, t.id),
-    index('idx_devices_cluster').on(t.clusterId),
+    index('idx_devices_group').on(t.groupId),
   ],
 )
 
@@ -184,7 +187,7 @@ export const deviceTags = sqliteTable(
   },
   (t) => [
     primaryKey({ columns: [t.deviceId, t.tag] }),
-    // Plan 20 resolves clusters with this one.
+    // Plan 20 resolves groups with this one.
     index('idx_device_tags_tag').on(t.tag),
   ],
 )
@@ -213,8 +216,8 @@ export type BlockedDeviceRow = typeof blockedDevices.$inferSelect
  * Phones adb has seen that nobody has admitted to the farm yet (plan 56 §3.3).
  *
  * A separate table rather than a sixth `DeviceStatus` on purpose: `devices`
- * rows ARE farm members — the scheduler picks from them, the lease manager
- * leases them, the wall renders them. A status would mean every one of those
+ * rows ARE farm members — the scheduler picks from them, the activity
+ * registry tracks them, the wall renders them. A status would mean every one of those
  * paths has to remember to exclude it, a filter that must be right in a dozen
  * places and only has to be wrong once to hand someone's personal phone to a
  * job. Keyed on `stableId`, exactly like `blocked_devices` above, because
@@ -367,9 +370,9 @@ export type NetworkCredentialRow = typeof networkCredentials.$inferSelect
 
 /**
  * One-shot data migrations that cannot be expressed as plain SQL — currently
- * just the cluster materialisation (plan 22.0 §3.4, §4.1) — guarded so each
- * runs exactly once no matter how many times the core starts (acceptance
- * #8: a restart must not reassign or duplicate).
+ * just the pre-`0014` group membership materialisation (plan 22.0 §3.4,
+ * §4.1) — guarded so each runs exactly once no matter how many times the
+ * core starts (acceptance #8: a restart must not reassign or duplicate).
  */
 export const migrationMarkers = sqliteTable('migration_markers', {
   id: text('id').primaryKey(),
@@ -391,241 +394,64 @@ export const toolInstalls = sqliteTable('tool_installs', {
 export type ToolInstallRow = typeof toolInstalls.$inferSelect
 
 /** The per-device job queue (spec §12, §10.3). */
+/**
+ * A job is an INTENT (MVP 14 §1, plan 211): what to run, with which
+ * parameters, on which device, made by whom. Its id is stable for its whole
+ * life and it holds no execution state at all: every execution is a
+ * `job_runs` row, and a job's displayed status is `latestRun.status`.
+ * Re-running adds a run; changing the parameters creates a new job.
+ */
 export const jobs = sqliteTable(
   'jobs',
   {
     id: text('id').primaryKey(),
-    scriptId: text('script_id').notNull(), // M3: 'internal:sleep'
+    /** 'script' | 'workflow' (MVP 05 §1.2). A workflow job orchestrates script jobs as steps; it never runs a bundle itself. */
+    kind: text('kind').notNull().default('script').$type<JobKind>(),
+    /** The RESOLVED `scripts.id`, pinned at creation. Null exactly when `kind = 'workflow'`. */
+    scriptId: text('script_id'),
+    /** The `workflows.name` this job was created from. Null exactly when `kind = 'script'`. */
+    workflowName: text('workflow_name'),
+    /** Plan 210: the workflow document, copied at creation so a later edit never changes a queued or running job. Null for a script job. Written by `runs/store.ts`'s `createJob` through `WorkflowStore.snapshotForJob`. */
+    workflowDoc: text('workflow_doc', { mode: 'json' }),
     deviceId: text('device_id').notNull(),
     params: text('params', { mode: 'json' }),
-    priority: integer('priority').default(0),
-    status: text('status').default('queued'), // queued|running|success|failed|cancelled
-    /** Epoch seconds — the job lease, extended by the runner's heartbeat (spec §10.2). */
-    leaseExpiresAt: integer('lease_expires_at'),
-    result: text('result', { mode: 'json' }),
-    error: text('error'),
-    createdAt: integer('created_at', { mode: 'timestamp' }),
-    startedAt: integer('started_at', { mode: 'timestamp' }),
-    finishedAt: integer('finished_at', { mode: 'timestamp' }),
-    /** Plan 20 §4.1 — null for a standalone job. */
+    /** Null for a standalone job (plan 20 §4.1). A batch's members are jobs; a re-run adds a run to each (MVP 14 §1). */
     batchId: text('batch_id'),
-    /** Position within the batch; the shuffle for `random` order is baked in here (plan 20 §3.2). */
     batchSeq: integer('batch_seq'),
-    /** Unix seconds; the reaper expires the job if it has not started by then (plan 21 §3.3, §4.1). Null = wait forever. */
-    expiresAt: integer('expires_at'),
-    /**
-     * Plan 94 §3.8, §4.8, step 94.6 — unix seconds; `claimNext`'s one claim
-     * predicate (`queue/job-store.ts`) will not claim this job before this
-     * instant. Null = claimable now, the state of every job written before
-     * this plan and of every ordinary job after it — step 94.6 adds only
-     * this column and the predicate; nothing writes a non-null value here
-     * until 94.7's pacer exists. It is a floor, not a promise: the device
-     * still has to be idle and pass every other gate below (§3.8).
-     */
-    notBefore: integer('not_before'),
-    /**
-     * Plan 94 §3.8, §4.8, step 94.6 — 0-based repetition index within the
-     * batch, FOR THIS DEVICE (a different axis from `batchSeq` above, which
-     * is the batch-wide dispatch order, plan 20 §4.1). Null for a job the
-     * pacer never touched — every job before this plan, and every ordinary
-     * standalone/batch job after it that is not part of a paced repeat.
-     */
-    batchRepeat: integer('batch_repeat'),
-    /**
-     * Plan 94 §3.7, §3.8, §4.8, step 94.6 — the delay (milliseconds)
-     * actually drawn for this repetition, materialised so the wait is
-     * legible without re-deriving it from `notBefore - createdAt`
-     * (following `clusters/dispatch.ts:54-59`'s own precedent for
-     * `batchSeq`'s random-order draw, F29 — "nothing depends on a random
-     * number that no longer exists"). Null for a job the pacer never
-     * touched, same as `batchRepeat` above.
-     */
-    pacedDelayMs: integer('paced_delay_ms'),
-    /**
-     * Plan 36 §4.3 — set on the final settle of a `failed` job: 'infra' |
-     * 'script' | 'load' (see `jobs/failure-class.ts`). Nullable: a
-     * pre-existing row, or a job that never failed, has none.
-     */
-    failureClass: text('failure_class'),
-    /**
-     * Plan 60 §3.4 — the phase a failure happened in ('prepare' | 'run' |
-     * 'finish', plus the runner's own 'reset' | 'acquire' | 'timeout'). The
-     * runner has always known this and threw it away at the executor
-     * boundary, so "it failed" was answerable from the job row and "where"
-     * was only answerable by reading the log. Null for a job that never
-     * failed, and for any row written before this column existed.
-     */
-    errorPhase: text('error_phase'),
-    /**
-     * Plan 36 §3.4, §3.6 — how many times this job has been requeued for an
-     * infrastructure failure (rebind on another eligible device for a batch
-     * member). Nullable/defaulted so existing rows keep reading; 0 for a job
-     * that has never rebound.
-     */
-    infraAttempts: integer('infra_attempts').default(0),
-    /**
-     * Plan 82 §3.4 — denormalised at enqueue from the resolving registry
-     * entry, so a job's script name survives even the script row it
-     * pointed at disappearing (a deleted publish, or — the case this plan
-     * adds — a dev slot that has since been dropped, criterion 13). Both
-     * nullable: a pre-existing row has neither, and keeps resolving its
-     * name the old way, through `jobs.scriptId` → the `scripts` table
-     * (`queue/job-store.ts`'s `scriptNames()` falls back to that lookup
-     * whenever these are null). Also read by plan 80's `jobs/script-jobs.ts`
-     * (`JobSummary.scriptName`/`.scriptVersion`) for a running script's own
-     * view of its neighbours on the queue.
-     */
+    /** The schedule that owns this job (MVP 14 §1). Null for a job nothing schedules. */
+    scheduleId: text('schedule_id'),
+    /** The workflow job this job is a step of (MVP 05 §1.2). Null for every ordinary job. */
+    parentWorkflowJobId: text('parent_workflow_job_id'),
+    /** 0-based position in the parent workflow run's step list. Null when `parentWorkflowJobId` is null. */
+    stepSeq: integer('step_seq'),
+    /** Denormalised at creation (plan 82 §3.4): the name survives the `scripts` row disappearing. For a workflow job it is `workflowName`. */
     scriptName: text('script_name'),
     scriptVersion: text('script_version'),
-    /**
-     * Plan 81 §3.2, §4.1 — lineage. `triggeredByJobId` is the job whose
-     * script called `ctx.jobs.trigger()`; null for a job a human, schedule,
-     * or batch created. `rootJobId` is the origin of the chain — null on the
-     * origin's OWN row (a job with no trigger IS its own root, but that is
-     * never written back onto it; every existing pre-plan-81 row already
-     * satisfies "null root, depth 0", which is exactly true of it). `depth`
-     * is 0 for a root, parent's depth + 1 otherwise — both `rootJobId` and
-     * `depth` are set by the PARENT at enqueue time from the triggering
-     * job's own row, never from anything the child sends (`jobs/triggers.ts`
-     * §3.2) — a child that could name its own depth could name zero.
-     */
+    /** Plan 81 §3.2, §4.1: lineage between INTENTS, unchanged in meaning. */
     triggeredByJobId: text('triggered_by_job_id'),
     rootJobId: text('root_job_id'),
     depth: integer('depth').default(0),
-    /**
-     * Plan 81 §3.3 — idempotency key for a trigger call, scoped by
-     * `rootJobId` via the unique index below. A second trigger with the same
-     * key (root, key) pair returns the existing row instead of inserting —
-     * the mechanism that makes a re-run `finish()` (or a retried `run()`
-     * that derives the same key) a no-op rather than a duplicate job.
-     */
     triggerKey: text('trigger_key'),
+    createdBy: text('created_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     /**
-     * Plan 98 §3.9 item 4, §4.4, H1 — the highest RSS the runner ever saw
-     * reported for this job, across every attempt (retries and the
-     * finish-only re-run alike). Recorded UNCONDITIONALLY, whether or not any
-     * `job.memory.*` limit is configured anywhere (no limit exists yet — this
-     * step is deliberately "measure before limiting", step 98.3's own title):
-     * a memory ceiling cannot be chosen from a guess, only from an observed
-     * distribution. A plain byte COUNT, never a duration — do not confuse it
-     * with the unix-SECONDS timestamp columns elsewhere on this row. Null for
-     * every job that never spawned a child that reported at least one
-     * sample (an acquire failure, a built-in executor with no subprocess),
-     * and for every row written before this column existed.
+     * Denormalised for lists (MVP 14 §1): the `job_runs.id` with the highest
+     * `seq` that still exists, and how many runs exist. Both are written in
+     * the SAME transaction as every run insert, settle and delete
+     * (`runs/store.ts`); nothing else may write them, and nothing may read
+     * a job's status from anywhere else.
      */
-    peakRssBytes: integer('peak_rss_bytes'),
-    /**
-     * Plan 91 §3.5, §4.9 — how many times a human sent input to this job's
-     * device while it was running (a co-control/assist action, never the
-     * job's own input). On the row rather than derived, so a job list can
-     * badge it with no join, and so it outlives `retention.eventInputDays`
-     * (3 days by default, F19) with the job it belongs to. Same shape as
-     * `infraAttempts` above. Incremented once per ACCEPTED assist action
-     * (`packages/core/src/server/ws-handlers.ts`'s `input.*` branch), never
-     * per `assist.start`/`assist.stop`.
-     */
-    assistCount: integer('assist_count').default(0),
-    /**
-     * Plan 98 §3.7, §4.4, §4.6, step 98.5 — the ONLY resolved runtime value
-     * ever written to a row (every other field `resolveRuntime` produces —
-     * `timeoutMs`, `maxRssBytes` — stays unresolved on `scripts.runtime`/
-     * `jobs.runtime_override` and is re-resolved fresh per attempt; see that
-     * function's own comment for why this one is the sole, deliberate
-     * exception). It has to be, because the gate it feeds
-     * (`claimNext`'s correlated `COUNT(*)`) runs inside a SQL transaction,
-     * which cannot call into `@enkaku/protocol`'s resolver — so the resolved
-     * integer must already be sitting on the row before the claim runs.
-     * Resolved once at enqueue (`services/job-service.ts`, `jobs/triggers.ts`)
-     * via `resolveRuntime({ farm, script: entry.runtime, override: null })`
-     * and pinned exactly like `scriptName`/`scriptVersion` above — a job
-     * keeps the cap it was born with even if the script is republished with
-     * a different `runtime.maxConcurrent` afterward (spec §11.6). `null`
-     * (every pre-plan-98 row, and a script that declares no cap at all) and
-     * `0` (a script that explicitly declares `maxConcurrent: 0`) are BOTH
-     * "unlimited" to the claim clause below — `resolveRuntime` itself never
-     * produces `null` (it defaults to `0`), so `null` only ever means "this
-     * row predates the column".
-     */
-    maxConcurrent: integer('max_concurrent'),
-    /**
-     * Plan 98 §3.7, §3.8, §4.4, step 98.7 — the operator's own per-job layer
-     * (`RuntimeEnvelopeSchema`, the SAME shape `scripts.runtime` uses — see
-     * that column's own comment for why one schema serves both: they are
-     * layers `resolveRuntime` tells apart, never a second schema). This is
-     * the DECLARATION only, exactly like `scripts.runtime`: nothing writes a
-     * RESOLVED envelope onto a row except `jobs.max_concurrent` above, which
-     * §3.8 rule 2 and that column's own comment already name as the sole,
-     * deliberate exception — this column is not a second one. Pinned once,
-     * at enqueue (`services/job-service.ts`), validated against
-     * `RuntimeEnvelopeSchema` and checked against the farm's own ceiling
-     * BEFORE the row is written (`E_RUNTIME_OVER_CEILING`, refused outright
-     * rather than clamped — §3.8's asymmetry: a human typed this number, so
-     * silently narrowing it is the worse failure, unlike a script's own
-     * declaration, which the farm clamps and logs instead). `resume()`
-     * carries the ORIGINAL job's own override forward, re-checked against
-     * whatever the farm ceiling is NOW (the same "re-resolve, never copy
-     * blind" rule `maxConcurrent`'s own resume path already follows).
-     * Nullable: every job created before this column existed, and any job
-     * enqueued with no override at all, has none — which `resolveRuntime`
-     * already treats identically to an explicitly empty layer. Read back
-     * through `RuntimeEnvelopeSchema`, never an `as`-cast, degrading to
-     * `null` on a parse failure exactly like `scripts.runtime`'s own
-     * precedent (`queue/job-store.ts`'s `parseJobRuntimeOverride`).
-     */
-    runtimeOverride: text('runtime_override', { mode: 'json' }),
-    /**
-     * Plan 97 §3.3, §4.4 — five states ('undeclared' | 'valid' | 'invalid' |
-     * 'partial' | 'oversize', `@enkaku/protocol`'s `ResultStatus`), written
-     * exactly once by the settle path for a `success` job whose executor
-     * reported an outcome, AND (as of step 97.4) for a `failed`/`cancelled`
-     * job whose executor reported one too — always `partial` in that case (a
-     * `finish()` salvage; §3.5 — never validated, and never overwriting an
-     * already-recorded `valid`, see `result-store.ts`'s `recordResult`). NULL
-     * while queued or running, for every row written before this column
-     * existed, and for any settle whose executor never reported an outcome
-     * at all (sleep, install, workflow — none of which declare a result
-     * schema — and the overwhelming majority of ordinary failures, which
-     * have nothing to salvage).
-     */
-    resultStatus: text('result_status'),
-    /**
-     * Plan 97 §3.4, §4.4 — serialised UTF-8 bytes of what the script
-     * returned, INCLUDING a value too large to store (`resultStatus:
-     * 'oversize'`) — the only record that it existed at all, since `result`
-     * itself is NULL in that case. Measured independently by the parent
-     * (`result-store.ts`'s `recordResult`) wherever it actually received a
-     * value; trusts the child's own self-report only when it did not (the
-     * value never crossed IPC). Null wherever `resultStatus` is null.
-     */
-    resultBytes: integer('result_bytes'),
-    /**
-     * Plan 97 §3.6, §4.4 — ≤ 120 chars, built at settle from the result
-     * schema's `summary: true` fields (`summaryFields`/`buildResultSummary`,
-     * `@enkaku/protocol`). NULL when the schema marks none, when there is no
-     * schema, or when `resultStatus` itself is null/`oversize`. Carried on
-     * the LIST projection (`JobInfo`, plan 97 §4.6/step 97.5) precisely
-     * because `result` itself is deliberately absent there (F18) — computing
-     * this on read would mean loading every result to render every row.
-     */
-    resultSummary: text('result_summary'),
-    /**
-     * Plan 97 §3.3, §4.4 — `ParamIssue[]` (`@enkaku/protocol`), only for
-     * `resultStatus: 'invalid'` and only from the child's own real Zod run —
-     * NOT recomputed on read: the read side only ever has the published JSON
-     * Schema, the child had the real Zod schema (`.refine()` included), and
-     * those two can legitimately disagree (F26). Truncated to
-     * `RESULT_LIMITS.maxIssues` entries / `maxIssueMessageChars` characters
-     * each by `result-store.ts` before it ever reaches this column.
-     */
-    resultIssues: text('result_issues', { mode: 'json' }),
+    latestRunId: text('latest_run_id'),
+    runCount: integer('run_count').notNull().default(0),
   },
   (t) => [
-    index('idx_jobs_claim').on(t.status, t.deviceId, t.priority, t.createdAt),
     index('idx_jobs_device').on(t.deviceId, t.createdAt),
     index('idx_jobs_batch').on(t.batchId, t.batchSeq),
     // The unfiltered `/api/jobs` keyset list — `(createdAt DESC, id DESC)`
     // (plan 30 §4.2). idx_jobs_device only helps once a deviceId is given.
     index('idx_jobs_created').on(t.createdAt, t.id),
+    index('idx_jobs_schedule').on(t.scheduleId, t.deviceId),
+    index('idx_jobs_parent').on(t.parentWorkflowJobId, t.stepSeq),
     // Plan 81 §4.1 — idempotency (a partial unique index: SQLite only
     // enforces uniqueness among rows where `trigger_key IS NOT NULL`, so
     // every job with no trigger key at all — which is most jobs — never
@@ -634,36 +460,141 @@ export const jobs = sqliteTable(
     uniqueIndex('idx_jobs_trigger_key').on(t.rootJobId, t.triggerKey).where(sql`${t.triggerKey} is not null`),
     index('idx_jobs_root').on(t.rootJobId),
     index('idx_jobs_triggered_by').on(t.triggeredByJobId),
-    // Plan 98 §4.6, step 98.5 — keeps `claimNext`'s correlated
-    // `SELECT COUNT(*) FROM jobs r WHERE r.script_name = j.script_name AND
-    // r.status = 'running'` cheap: without it, every claim attempt on a farm
-    // with a `maxConcurrent`-bearing script would be an unindexed scan of the
-    // whole `jobs` table for each candidate row the outer query considers.
-    index('idx_jobs_script_running').on(t.status, t.scriptName),
   ],
 )
 
+export type JobKind = 'script' | 'workflow'
 export type JobRow = typeof jobs.$inferSelect
 
 /**
- * A cluster is a container, not a selector (plan 22.0 §3.1–§3.3, superseding
- * plan 20 §3.1): devices are put into it and taken out of it, and
- * `devices.cluster_id` is the sole source of membership. This table carries
- * only the cluster's own identity — no tags, no device list, nothing that
- * could disagree with the owning field on `devices`.
+ * One EXECUTION of a job (MVP 14 §1, plan 211). Created `queued` the moment
+ * an execution is requested (a manual run, a re-run, a schedule fire, a batch
+ * generation, a resume, a workflow step), flipped to `running` by
+ * `claimNext`, settled by `executor-host.ts`. Logs, trace events, trace
+ * frames, UI captures and artifacts are all keyed by `id`, so a re-run's
+ * output sits beside the run it repeats instead of on top of it.
+ *
+ * `deviceId` and `scriptName` are DENORMALISED copies of the owning job's
+ * (plan 211 §3.2 decision 7): they exist only so `claimNext`'s gates and its
+ * two correlated `COUNT(*)`s stay single-table scans inside one transaction.
+ * Nothing that displays a run may read them; read the job.
  */
-export const clusters = sqliteTable(
-  'clusters',
+export const jobRuns = sqliteTable(
+  'job_runs',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id').notNull(),
+    /** 1..n, dense per job, assigned inside the same transaction as the insert. */
+    seq: integer('seq').notNull(),
+    /** Why this execution exists (MVP 14 §1). Shown in the Jobs detail meta line (design handoff, "Screen: Jobs"). */
+    trigger: text('trigger').notNull().$type<RunTrigger>(),
+    /** 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'expired'. The same domain `jobs.status` had. */
+    status: text('status').notNull().default('queued'),
+    /** Denormalised from `jobs.device_id`; rewritten by `requeueForRebind` together with the job's own. */
+    deviceId: text('device_id').notNull(),
+    /** Denormalised from `jobs.script_name`; the key of the `maxConcurrent` gate. */
+    scriptName: text('script_name'),
+    priority: integer('priority').notNull().default(0),
+    /** Unix seconds; the claim's ordering key and the "queued at" a client shows. */
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    startedAt: integer('started_at', { mode: 'timestamp' }),
+    finishedAt: integer('finished_at', { mode: 'timestamp' }),
+    /** Epoch seconds; the job heartbeat (plan 205 §4.4), extended by the runner. */
+    heartbeatExpiresAt: integer('heartbeat_expires_at'),
+    /** Unix seconds; the reaper expires the run if it has not started by then. Null = wait forever. */
+    expiresAt: integer('expires_at'),
+    /** Unix seconds; the claim will not take this run before this instant (the pacer's own column). */
+    notBefore: integer('not_before'),
+    batchRepeat: integer('batch_repeat'),
+    pacedDelayMs: integer('paced_delay_ms'),
+    result: text('result', { mode: 'json' }),
+    error: text('error'),
+    failureClass: text('failure_class'),
+    errorPhase: text('error_phase'),
+    /** How many times THIS run was requeued for an infrastructure failure (MVP 14 §1: infra retries never consume a run number). */
+    infraAttempts: integer('infra_attempts').notNull().default(0),
+    peakRssBytes: integer('peak_rss_bytes'),
+    /** Resolved when the run is created, never re-derived; 0/null both mean unlimited to the claim. */
+    maxConcurrent: integer('max_concurrent'),
+    runtimeOverride: text('runtime_override', { mode: 'json' }),
+    resultStatus: text('result_status'),
+    resultBytes: integer('result_bytes'),
+    resultSummary: text('result_summary'),
+    resultIssues: text('result_issues', { mode: 'json' }),
+    /** Set only when `trigger = 'resume'`: the run this one continues, and the `workflow_steps.seq` it restarts at. */
+    resumedFromRunId: text('resumed_from_run_id'),
+    resumedFromStep: integer('resumed_from_step'),
+  },
+  (t) => [
+    uniqueIndex('idx_job_runs_seq').on(t.jobId, t.seq),
+    index('idx_job_runs_job').on(t.jobId, t.seq),
+    /** The claim: status first, then the device and the ordering columns. */
+    index('idx_job_runs_claim').on(t.status, t.deviceId, t.priority, t.createdAt),
+    /** The `maxConcurrent` gate's correlated COUNT (replaces `idx_jobs_script_running`). */
+    index('idx_job_runs_script_running').on(t.status, t.scriptName),
+  ],
+)
+
+export type RunTrigger = 'manual' | 'rerun' | 'schedule' | 'batch' | 'resume' | 'workflow-step'
+export type JobRunRow = typeof jobRuns.$inferSelect
+
+/**
+ * One step of one workflow RUN (MVP 05 §1.2 as amended by MVP 14). A script
+ * step points at the child script job it enqueued and that job's own run; a
+ * gate step carries its verdict and owns no job. `jobNodes` is deleted: a
+ * step is not a node, it is a job.
+ */
+export const workflowSteps = sqliteTable(
+  'workflow_steps',
+  {
+    id: text('id').primaryKey(),
+    /** The `job_runs.id` of the WORKFLOW job's run this step belongs to. */
+    runId: text('run_id').notNull(),
+    /** 0-based execution order within this run. A loop makes this exceed the document's step count. */
+    seq: integer('seq').notNull(),
+    /** The document's step id (`WorkflowDoc.nodes[].id`). `_on_fail` for the document's cleanup step. */
+    stepId: text('step_id').notNull(),
+    /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds — `start`/`finish` are never logged (plan 301 §3.2, §3.4). */
+    kind: text('kind').notNull().$type<'script' | 'gate' | 'switch' | 'delay'>(),
+    /** The child script job and the run of it this step waited on. Both null for a gate and until the job is created. */
+    jobId: text('job_id'),
+    jobRunId: text('job_run_id'),
+    /** 'running' | 'success' | 'failed' | 'skipped' | 'carried-over' | 'cancelled'. */
+    status: text('status').notNull(),
+    startedAt: integer('started_at', { mode: 'timestamp' }),
+    finishedAt: integer('finished_at', { mode: 'timestamp' }),
+    /** The step's output, size-capped by `WORKFLOW_LIMITS.maxNodeOutputBytes`. For a script step this is the child run's `result`. */
+    output: text('output', { mode: 'json' }),
+    outputTruncated: text('output_truncated'),
+    /** A gate's `PredicateTrace` and the branch it took. Null for a script step. */
+    verdict: text('verdict', { mode: 'json' }),
+    error: text('error'),
+    errorCode: text('error_code'),
+  },
+  (t) => [uniqueIndex('idx_workflow_steps_seq').on(t.runId, t.seq), index('idx_workflow_steps_run').on(t.runId, t.stepId)],
+)
+
+export type WorkflowStepRow = typeof workflowSteps.$inferSelect
+
+/**
+ * A group is a container, not a selector (plan 22.0 §3.1–§3.3, superseding
+ * plan 20 §3.1; renamed per MVP 15 §0.1): devices are put into it and taken
+ * out of it, and `devices.group_id` is the sole source of membership. This
+ * table carries only the group's own identity — no tags, no device list,
+ * nothing that could disagree with the owning field on `devices`.
+ */
+export const groups = sqliteTable(
+  'groups',
   {
     id: text('id').primaryKey(),
     name: text('name').notNull(),
     description: text('description'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   },
-  (t) => [index('idx_clusters_created').on(t.createdAt, t.id)],
+  (t) => [index('idx_groups_created').on(t.createdAt, t.id)],
 )
 
-export type ClusterRow = typeof clusters.$inferSelect
+export type GroupRow = typeof groups.$inferSelect
 
 /**
  * A batch is one script run across a resolved set of devices (plan 20 §3.2,
@@ -675,7 +606,7 @@ export const batches = sqliteTable(
   {
     id: text('id').primaryKey(),
     /** Null when the batch targeted an ad-hoc device list. */
-    clusterId: text('cluster_id'),
+    groupId: text('group_id'),
     scriptId: text('script_id').notNull(),
     params: text('params', { mode: 'json' }),
     /** 0 = unlimited, else the max jobs running at once (plan 20 §3.2). */
@@ -685,10 +616,10 @@ export const batches = sqliteTable(
      * 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'stopping'
      * (plan 94 §3.9, §4.8, step 94.7). Every value but the last is a cached
      * PROJECTION of the batch's jobs, recomputed by `recomputeBatchStatus`
-     * (`clusters/status.ts`) and never written any other way. `'stopping'`
+     * (`groups/status.ts`) and never written any other way. `'stopping'`
      * is the one exception — a STATE, not a flag, written directly by
      * `POST /api/batches/:id/stop` (step 94.8) and read nowhere else but
-     * `BatchPacer.onMemberSettled` (`clusters/pacer.ts`):
+     * `BatchPacer.onMemberSettled` (`groups/pacer.ts`):
      *   - MAY still happen while `stopping`: an already-`running` member
      *     keeps running until its own abort completes (`JobService.cancel`,
      *     step 94.8) and settles normally — `recomputeBatchStatus` still
@@ -712,7 +643,7 @@ export const batches = sqliteTable(
      * (repeatCount) with the three ms fields at `0` is today's behaviour
      * exactly — every batch dispatched before this plan, and every batch
      * dispatched after it with no `pacing` block on `POST /api/batches`
-     * (§4.9) — a single repetition, no delay, no stagger. `clusters/pacer.ts`
+     * (§4.9) — a single repetition, no delay, no stagger. `groups/pacer.ts`
      * is the only writer of anything DERIVED from these (a job's own
      * `notBefore`/`batchRepeat`/`pacedDelayMs`, plan 94 §4.8 step 94.6); this
      * row is never mutated after `createBatch` writes it.
@@ -722,7 +653,7 @@ export const batches = sqliteTable(
     intervalMaxMs: integer('interval_max_ms').notNull().default(0),
     /**
      * The phase offset applied ONCE, at a device's first repetition
-     * (`clusters/pacer.ts`'s `planFirst`) — never re-applied per repetition
+     * (`groups/pacer.ts`'s `planFirst`) — never re-applied per repetition
      * (plan 94 §3.8: after repetition 1, independent per-device interval
      * draws keep devices de-phased on their own).
      */
@@ -733,7 +664,7 @@ export const batches = sqliteTable(
     /**
      * Plan 93 §3.12, §4.2, closing F11 — every device that was in the
      * batch's resolved target but never got a job row, with why:
-     * `{ deviceId, reason }[]`. `createBatch` (`clusters/dispatch.ts`)
+     * `{ deviceId, reason }[]`. `createBatch` (`groups/dispatch.ts`)
      * already computes this at dispatch time and used to throw it away into
      * an audit `meta` field, so an operator could never see "17 of 20 — 3
      * were offline" anywhere but the audit log. Null for a batch dispatched
@@ -746,148 +677,17 @@ export const batches = sqliteTable(
 
 export type BatchRow = typeof batches.$inferSelect
 
-/**
- * One fleet command (plan 93 §3.3, §3.4, §4.2). A single-device terminal
- * command is a run with ONE member — there is one history, not "terminal
- * history" and "console history" — and re-running something from history
- * does not care where it originally came from.
- *
- * NOT a duplicate of `device_events` (plan 18). That table is the 3-day
- * `input`-stream AUDIT of everything that touched a device — retained by
- * `retention.eventInputDays` (default 3), redacted, no user dimension, and
- * queried per device. THIS table is the operator's own 14-day
- * (`retention.commandRunDays`), per-user, re-runnable record of commands
- * they issued, queried across devices. Different retention, different
- * reader, different question — do not merge them. A fan-out command writes
- * to BOTH: this table for history, `device_events` for the audit trail, and
- * the console writer records to `device_events` exactly as `shell.exec`
- * already does today.
- */
-export const commandRuns = sqliteTable(
-  'command_runs',
-  {
-    id: text('id').primaryKey(),
-    /** Redacted at write time by `redactShellCommand` — log hygiene, not a security control. */
-    cmd: text('cmd').notNull(),
-    /** `{ deviceIds } | { clusterId } | { tags }` — what the operator asked for, before resolution. */
-    target: text('target', { mode: 'json' }).notNull(),
-    /** Provenance only; a deleted saved command leaves this dangling by design (plan 93 §3.10). */
-    savedCommandId: text('saved_command_id'),
-    /** 0 = unstaged. Otherwise the size of stage 1 (plan 93 §3.7). */
-    stageFirstN: integer('stage_first_n').notNull().default(0),
-    stage: integer('stage').notNull().default(1),
-    concurrency: integer('concurrency').notNull().default(0),
-    /** 'running' | 'awaiting-continue' | 'ok' | 'failed' | 'cancelled' */
-    status: text('status').notNull().default('running'),
-    /** True when the shared high-consequence guard matched and the operator acknowledged it. An audit fact, not a control (plan 93 §3.14). */
-    acknowledged: integer('acknowledged', { mode: 'boolean' }).notNull().default(false),
-    createdBy: text('created_by'),
-    startedAt: integer('started_at', { mode: 'timestamp' }).notNull(),
-    finishedAt: integer('finished_at', { mode: 'timestamp' }),
-  },
-  (t) => [
-    // `GET /api/command-runs?mine=1`, keyset on (startedAt DESC, id DESC).
-    index('idx_command_runs_user').on(t.createdBy, t.startedAt),
-    // The retention sweep's own age scan, and the unfiltered admin list.
-    index('idx_command_runs_at').on(t.startedAt),
-  ],
-)
-
-export type CommandRunRow = typeof commandRuns.$inferSelect
-export type CommandRunInsert = typeof commandRuns.$inferInsert
-
-/**
- * One device's outcome within a fleet command (plan 93 §3.4, §4.2). No
- * surrogate id: `(runId, deviceId)` is already unique — a device appears at
- * most once per run — so the primary key IS the identity, matching
- * `device_tags`' own reasoning for the same shape.
- */
-export const commandRunMembers = sqliteTable(
-  'command_run_members',
-  {
-    runId: text('run_id').notNull(),
-    deviceId: text('device_id').notNull(),
-    /** Dispatch order within the run — what `idx_command_members_run` sorts a report by. */
-    seq: integer('seq').notNull(),
-    /** 'pending' | 'running' | 'ok' | 'failed' | 'skipped' | 'cancelled' */
-    status: text('status').notNull().default('pending'),
-    exitCode: integer('exit_code'),
-    durationMs: integer('duration_ms'),
-    /** Capped at `shell.fanoutMaxOutputBytes`. Never an artifact (plan 93 §3.6) — a fan-out is a survey, not a capture. */
-    stdout: text('stdout'),
-    stderr: text('stderr'),
-    truncated: integer('truncated', { mode: 'boolean' }).notNull().default(false),
-    /** `Bun.hash` (wyhash) over `exitCode + "\0" + stdout + "\0" + stderr`, as text — the grouping key for the report (plan 93 §3.6, §3.15). Null before the member finishes. */
-    outputHash: text('output_hash'),
-    /** `checkInputAllowed`'s own code, verbatim — never a paraphrase (plan 93 §3.8). Null unless `status = 'skipped'`. */
-    skipCode: text('skip_code'),
-    skipMessage: text('skip_message'),
-    /** A device-side failure (adb error, deadline) distinct from a non-zero exit — see `exitCode` being a number vs null (plan 93 §3.4). */
-    error: text('error'),
-    /** Which stage of a staged run (§3.7) this member belongs to; 1 for an unstaged run. */
-    stageIndex: integer('stage_index').notNull().default(1),
-  },
-  (t) => [
-    primaryKey({ columns: [t.runId, t.deviceId] }),
-    index('idx_command_members_run').on(t.runId, t.seq),
-  ],
-)
-
-export type CommandRunMemberRow = typeof commandRunMembers.$inferSelect
-export type CommandRunMemberInsert = typeof commandRunMembers.$inferInsert
-
-/**
- * A farm-scoped, owned saved command (plan 93 §3.10) — a team asset, not a
- * personal bookmark, on the same reasoning `clusters` and `scripts` already
- * follow: visible to everyone, editable and deletable by the owner or an
- * admin. `name` is unique per farm so "which `battery` do you mean" is never
- * a question anyone has to ask.
- */
-export const savedCommands = sqliteTable(
-  'saved_commands',
-  {
-    id: text('id').primaryKey(),
-    name: text('name').notNull(),
-    description: text('description'),
-    cmd: text('cmd').notNull(),
-    /** `{ clusterId } | { tags } | { deviceIds } | null` — prefilled on the run form, never enforced. */
-    defaultTarget: text('default_target', { mode: 'json' }),
-    createdBy: text('created_by'),
-    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
-    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
-    sortOrder: integer('sort_order').notNull().default(0),
-  },
-  (t) => [uniqueIndex('idx_saved_commands_name').on(t.name)],
-)
-
-export type SavedCommandRow = typeof savedCommands.$inferSelect
-export type SavedCommandInsert = typeof savedCommands.$inferInsert
-
-/** The domain of `scripts.kind` (plan 99 §3.1) — read only where §4.5 says. */
-export type ScriptKind = 'script' | 'workflow'
+// The fleet-wide command screen's three tables — one for a fleet-wide run,
+// one for its per-device members, one for a farm's saved shell one-liners —
+// are removed entirely by plan 207 (MVP 15 §0.1 item 4): the `adb` verb is
+// one operation with an activity per device (plan 205), and no history
+// table replaces them.
 
 /** Published scripts (spec §12, §11.4 — finished bundles, not raw source). */
 export const scripts = sqliteTable(
   'scripts',
   {
     id: text('id').primaryKey(),
-    /**
-     * Plan 99 §3.1 — what `bundle` holds and which executor runs it.
-     * 'script'   : an ESM bundle, run by the script executor (every row before this plan).
-     * 'workflow' : a validated WorkflowDoc as JSON, run by the workflow executor.
-     * Read in exactly three places (acceptance criterion 3): the executor
-     * registry (`jobs/executor.ts`'s `ExecutorRegistry.get`), the publish
-     * routes, and Studio's list filter. `default('script')` means every row
-     * written before this column existed reads back correct with NO backfill.
-     * `.$type<ScriptKind>()` (compile-time only — this column is never
-     * written from untrusted input, only by `publishScript()` and, once
-     * 99.6 lands, the workflow publish route) is what lets every OTHER
-     * reader of a `ScriptRow` carry the value through with no branch of its
-     * own — a comparison against the literal 'workflow' should appear in
-     * exactly the three sanctioned files, not wherever a `ScriptRow`
-     * happens to pass through.
-     */
-    kind: text('kind').notNull().default('script').$type<ScriptKind>(),
     name: text('name').notNull(),
     version: text('version').notNull(),
     /** The output of `enkaku publish` (a single-file ESM bundle). */
@@ -936,6 +736,14 @@ export const scripts = sqliteTable(
      * plan did not anticipate.
      */
     runtime: text('runtime', { mode: 'json' }),
+    /**
+     * Plan 210 (MVP 03 §2.2 rule 5) — storage for plugin `disable`/`enable`
+     * (`plugins/runtime.ts`'s `disableImpl`/`enableImpl`) and nothing else. It
+     * is never on the wire, never toggled per script, and never shown: a
+     * plugin is active or it is not. `resolve.ts` still refuses a disabled
+     * row with `script_disabled` so a pinned reference to a disabled plugin's
+     * member fails by name.
+     */
     enabled: integer('enabled', { mode: 'boolean' }).default(true),
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }),
@@ -989,77 +797,44 @@ export const scriptParamSets = sqliteTable(
 export type ScriptParamSetRow = typeof scriptParamSets.$inferSelect
 
 /**
- * One row per NODE EXECUTION within a workflow job (plan 99 §3.5, §4.6, H4).
- * Not one row per node: a loop runs a node several times and each run is a
- * fact. Modelled on `schedule_runs` above, which writes a row for every fire
- * decision including the ones that ran nothing, "so a schedule's history is
- * never a blank gap" (spec §12.3) — applied here to a pipeline's steps
- * instead of a schedule's firings.
- *
- * No producer yet: nothing writes this table until 99.7's workflow executor
- * lands (plan 99 §4.7). Added now, alongside `scripts.kind`, because both are
- * read by the executor-selection seam this step also builds.
+ * A workflow document (plan 210, MVP 03 §2.2 rule 4): owned by the farm,
+ * authored in Studio, no version. `name` is unique. `doc` is the validated
+ * `WorkflowDoc` as JSON, re-validated through `WorkflowDocSchema` on every
+ * read (`workflows/store.ts`'s `parseWorkflowDoc`), never `as`-cast. Editing
+ * a workflow never changes a queued or running job: a job holds its own
+ * snapshot in `jobs.workflow_doc`.
  */
-export const jobNodes = sqliteTable(
-  'job_nodes',
+export const workflows = sqliteTable(
+  'workflows',
   {
     id: text('id').primaryKey(),
-    jobId: text('job_id').notNull(),
-    /** 0-based execution order within this job. A loop makes this exceed the node count. */
-    seq: integer('seq').notNull(),
-    /** The document's node id. */
-    nodeId: text('node_id').notNull(),
-    kind: text('kind').notNull(), // 'script' | 'gate'
-    /** Resolved at execution, never `@latest` — what actually ran. Null for a gate. */
-    scriptId: text('script_id'),
-    scriptName: text('script_name'),
-    scriptVersion: text('script_version'),
-    status: text('status').notNull(), // running|success|failed|skipped|skipped-on-resume|cancelled
-    /** Attempts spent on THIS execution (the node's own retries). */
-    attempts: integer('attempts').notNull().default(0),
-    startedAt: integer('started_at', { mode: 'timestamp' }),
-    finishedAt: integer('finished_at', { mode: 'timestamp' }),
-    /** The node's return value, size-capped (plan 99 §4.10). Null for a gate. */
-    output: text('output', { mode: 'json' }),
-    /** Set when `output` was too large to store: the cap, and what was dropped. */
-    outputTruncated: text('output_truncated'),
-    /** A gate's PredicateTrace and the branch it took (plan 99 §3.7, §4.4). Null for a script node. */
-    verdict: text('verdict', { mode: 'json' }),
-    error: text('error'),
-    errorCode: text('error_code'),
-    /** Set on seq 0 of a resumed job (plan 99 §3.5). */
-    resumedFromJobId: text('resumed_from_job_id'),
-    resumedFromNode: text('resumed_from_node'),
+    name: text('name').notNull(),
+    doc: text('doc', { mode: 'json' }).notNull(),
+    createdBy: text('created_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   },
-  (t) => [
-    uniqueIndex('idx_job_nodes_seq').on(t.jobId, t.seq),
-    index('idx_job_nodes_job').on(t.jobId, t.nodeId),
-  ],
+  (t) => [uniqueIndex('idx_workflows_name').on(t.name)],
 )
 
-export type JobNodeRow = typeof jobNodes.$inferSelect
+export type WorkflowRow = typeof workflows.$inferSelect
 
 /**
- * Per-job (and, since plan 24 §4.6, per-device) artifacts (spec §12). `path`
- * is relative to app-data. Exactly one of `jobId` / `deviceId` is set: a job
- * artifact (screenshot, log, file from a script run) keeps `jobId` as
- * before; a device artifact ("save last N lines" from the Monitor tab) has
- * no job to belong to, hence `deviceId` and a nullable `jobId`.
+ * Per-run (and, since plan 24 §4.6, per-device) artifacts (spec §12). `path`
+ * is relative to app-data. Exactly one of `runId` / `deviceId` is set: a run
+ * artifact (screenshot, log, file from a script run) keeps `runId` as
+ * before (renamed from `jobId`, plan 211); a device artifact ("save last N
+ * lines" from the Monitor tab) has no run to belong to, hence `deviceId` and
+ * a nullable `runId`.
  */
 export const artifacts = sqliteTable(
   'artifacts',
   {
     id: text('id').primaryKey(),
-    jobId: text('job_id'),
-    /** Set only for a device-scoped artifact (plan 24 §4.6); null for a job artifact. */
+    /** The RUN that produced this artifact (plan 211). Null for a device-scoped artifact. */
+    runId: text('run_id'),
+    /** Set only for a device-scoped artifact (plan 24 §4.6); null for a run artifact. */
     deviceId: text('device_id'),
-    /**
-     * Plan 99 §3.2, §4.6 — the workflow node that produced this artifact.
-     * Null for every artifact of a non-workflow job, which is every row
-     * before this plan. No producer yet: set only once 99.7's workflow
-     * executor stamps a node-scoped `ArtifactSink` wrapper (§4.6's own note).
-     */
-    nodeId: text('node_id'),
     kind: text('kind').notNull(), // screenshot|log|file|video
     label: text('label'),
     path: text('path').notNull(),
@@ -1067,7 +842,7 @@ export const artifacts = sqliteTable(
     createdAt: integer('created_at', { mode: 'timestamp' }),
   },
   (t) => [
-    index('idx_artifacts_job').on(t.jobId, t.createdAt),
+    index('idx_artifacts_run').on(t.runId, t.createdAt),
     index('idx_artifacts_device').on(t.deviceId, t.createdAt),
   ],
 )
@@ -1075,16 +850,16 @@ export const artifacts = sqliteTable(
 export type ArtifactRow = typeof artifacts.$inferSelect
 
 /**
- * The job trace: one append-only event stream per job (plan 128 §4.1). Every
+ * The run trace: one append-only event stream per run (plan 128 §4.1, re-keyed by plan 211). Every
  * device action a script takes, with its arguments, duration and outcome;
- * every log line; every phase boundary; every artifact; every human assist —
+ * every log line; every phase boundary; every artifact —
  * all on one time axis, so a failed run can be answered with "here is what
  * the phone was doing" rather than a re-run.
  *
  * Rows are written by the buffer-and-flush recorder (plan 128 §3.6), never by
  * the running script's own critical path. Frames and UI trees are not stored
- * here: `frameHash` / `uiHash` name files under `<dataDir>/traces/<jobId>/`,
- * whose lifetime is the job's own — deleting a job deletes these rows and
+ * here: `frameHash` / `uiHash` name files under `<dataDir>/traces/<runId>/`,
+ * whose lifetime is the run.s own — deleting a run deletes these rows and
  * that directory together (plan 128 §3.5), which is exactly why the shared
  * agent blob store is not reused for them (§0.4).
  */
@@ -1092,8 +867,9 @@ export const jobEvents = sqliteTable(
   'job_events',
   {
     id: text('id').primaryKey(),
-    jobId: text('job_id').notNull(),
-    /** Per-job monotonic. The sort key and the keyset cursor — never the clock (plan 128 §3.3). */
+    /** The RUN this event belongs to (renamed from `jobId`, plan 211). */
+    runId: text('run_id').notNull(),
+    /** Per-run monotonic. The sort key and the keyset cursor — never the clock (plan 128 §3.3). */
     seq: integer('seq').notNull(),
     /**
      * Unix MILLISECONDS, deliberately NOT `{ mode: 'timestamp' }`. This is a
@@ -1115,9 +891,7 @@ export const jobEvents = sqliteTable(
     attempt: integer('attempt').notNull().default(1),
     /** 'reset' | 'prepare' | 'run' | 'finish', or null for an event outside a phase. */
     phase: text('phase'),
-    /** Plan 99's workflow node axis, mirroring `artifacts.nodeId`. Null for every non-workflow job. */
-    nodeId: text('node_id'),
-    /** 'phase' | 'action' | 'log' | 'artifact' | 'progress' | 'assist' | 'error' */
+    /** 'phase' | 'action' | 'log' | 'artifact' | 'progress' | 'error' */
     kind: text('kind').notNull(),
     /** For kind 'action': the DeviceCall method. For 'log': the level. For 'phase': 'start' | 'end'. */
     name: text('name').notNull(),
@@ -1128,7 +902,7 @@ export const jobEvents = sqliteTable(
     errorCode: text('error_code'),
     /** Kind-specific detail; always an object. Args are redacted per plan 128 §4.4. */
     meta: text('meta', { mode: 'json' }),
-    /** SHA-256 hex of the frame in `traces/<jobId>/`, or null. */
+    /** SHA-256 hex of the frame in `traces/<runId>/`, or null. */
     frameHash: text('frame_hash'),
     /** 'ok' | 'skipped-policy' | 'skipped-busy' | 'failed' — never null when the policy wanted a frame. */
     frameStatus: text('frame_status'),
@@ -1136,38 +910,13 @@ export const jobEvents = sqliteTable(
     uiHash: text('ui_hash'),
   },
   (t) => [
-    uniqueIndex('idx_job_events_seq').on(t.jobId, t.seq),
+    uniqueIndex('idx_job_events_seq').on(t.runId, t.seq),
     index('idx_job_events_at').on(t.atMs),
   ],
 )
 
 export type JobEventRow = typeof jobEvents.$inferSelect
 export type JobEventInsert = typeof jobEvents.$inferInsert
-
-/**
- * `POST /api/jobs/:id/resume` (plan 99 §3.5, §4.9, step 99.8) — one row per
- * RESUMED job, keyed on the NEW job's own id (never the original). Records
- * what a resumed job continues from, so the workflow executor (once the gap
- * this step's own report names is closed — `jobs/executors/workflow.ts` is
- * outside this step's file list) can start its interpreter's cursor at
- * `resumedFromNode` and seed `scope.outputs` from `resumedFromJobId`'s own
- * `job_nodes` rows instead of a fresh run at node 0 with nothing known.
- *
- * Deliberately a SIDE TABLE rather than two columns on `jobs` itself:
- * `JobRow` (`jobs.$inferSelect`) is built as a hand-written literal fixture
- * in several files this step does not own (`packages/core/src/jobs/executors/**`,
- * `executor-host.test.ts`) — two more required keys on that type would force
- * an edit to every one of them for no logic reason, which is not this step's
- * cost to spend against files it has no permission to touch. A side table
- * costs nothing on `JobRow`.
- */
-export const jobResumes = sqliteTable('job_resumes', {
-  jobId: text('job_id').primaryKey(),
-  resumedFromJobId: text('resumed_from_job_id').notNull(),
-  resumedFromNode: text('resumed_from_node').notNull(),
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
-})
-export type JobResumeRow = typeof jobResumes.$inferSelect
 
 /** Farm-wide settings — always exactly one row (id = 1). */
 export const farmSettings = sqliteTable('farm_settings', {
@@ -1219,6 +968,23 @@ export const auditLog = sqliteTable(
 )
 
 export type AuditRow = typeof auditLog.$inferSelect
+
+/**
+ * The Storage usage cache (plan 224, MVP 09 §6): one row per kind, recomputed
+ * once at boot and once every 24h by `retention/storage-usage.ts`, never on
+ * the API request path. `GET /api/storage/usage` reads this table and
+ * nothing else — a trace-directory byte count is the one figure here that
+ * needs a filesystem walk to produce, and that walk happens on the sweeper's
+ * own clock, not a client's.
+ */
+export const storageUsage = sqliteTable('storage_usage', {
+  kind: text('kind').primaryKey(), // 'jobsAndLogs' | 'traceFrames' | 'artifacts' | 'audit'
+  bytes: integer('bytes').notNull().default(0),
+  rows: integer('rows').notNull().default(0),
+  computedAt: integer('computed_at', { mode: 'timestamp' }).notNull(),
+})
+
+export type StorageUsageRow = typeof storageUsage.$inferSelect
 
 /**
  * One row per device event, `main` (lifecycle) or `input` (every injected
@@ -1328,8 +1094,8 @@ export const schedules = sqliteTable(
      */
     scriptRef: text('script_ref').notNull(),
     params: text('params', { mode: 'json' }),
-    /** Exactly one of clusterId / deviceIds is populated (plan 21 §9 open question #3 — no "all devices"). */
-    clusterId: text('cluster_id'),
+    /** Exactly one of groupId / deviceIds is populated (plan 21 §9 open question #3 — no "all devices"). */
+    groupId: text('group_id'),
     deviceIds: text('device_ids', { mode: 'json' }), // string[]
 
     // Batch shape, passed straight through to plan 20's dispatcher (script targets only).
@@ -1362,7 +1128,11 @@ export const schedules = sqliteTable(
     deviceIntervalMs: integer('device_interval_ms').notNull().default(0),
 
     lastFiredAt: integer('last_fired_at', { mode: 'timestamp' }),
-    lastBatchId: text('last_batch_id'),
+    /** The batch this schedule OWNS (plan 211 §3.2 decision 4); its member jobs are one per target device. */
+    batchId: text('batch_id'),
+    /** The last fire's decision (plan 211 §3.2 decision 5), replacing the deleted `schedule_runs` ledger. */
+    lastFireOutcome: text('last_fire_outcome'),
+    lastFireDetail: text('last_fire_detail'),
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   },
@@ -1373,41 +1143,6 @@ export const schedules = sqliteTable(
 )
 
 export type ScheduleRow = typeof schedules.$inferSelect
-
-/**
- * One row per fire decision, including the ones that ran nothing (plan 21
- * §4.1) — a schedule that has been quietly skipping for a week should be
- * obvious from its history, not just its process logs.
- */
-export const scheduleRuns = sqliteTable(
-  'schedule_runs',
-  {
-    id: text('id').primaryKey(),
-    scheduleId: text('schedule_id').notNull(),
-    /** When it was due, not when it ran — jitter separates the two. */
-    dueAt: integer('due_at', { mode: 'timestamp' }).notNull(),
-    firedAt: integer('fired_at', { mode: 'timestamp' }),
-    outcome: text('outcome').notNull(), // 'dispatched'|'skipped-overlap'|'skipped-missed'|'no-targets'|'error'
-    batchId: text('batch_id'),
-    detail: text('detail'),
-    missedCount: integer('missed_count').notNull().default(0),
-    /**
-     * The value `pickJitterMs` actually drew for this fire (plan 94 §3.7,
-     * F28) — milliseconds, unlike every OTHER timestamp-shaped column in
-     * this table, which are unix seconds; the range it was drawn from
-     * (`schedules.jitterSec`) is seconds, but the draw itself is fine-
-     * grained enough that seconds would round it away. `0` for a schedule
-     * with no jitter configured AND for every row written before this
-     * column existed — both mean "nothing to attribute a delay to," so a
-     * run that fired late for some other reason is never mistaken for one
-     * that jittered.
-     */
-    jitterMs: integer('jitter_ms').notNull().default(0),
-  },
-  (t) => [index('idx_schedule_runs_sched').on(t.scheduleId, t.dueAt)],
-)
-
-export type ScheduleRunRow = typeof scheduleRuns.$inferSelect
 
 /**
  * A schedule's AGENT target (plan 68 §3.1, §4.1) — a companion row, one per
@@ -1441,7 +1176,7 @@ export const scheduleAgentTargets = sqliteTable(
     threadId: text('thread_id'),
     /** Plan 68 §3.5 — 'deny' (default) or 'pause'. */
     onApprovalRequired: text('on_approval_required').notNull().default('deny'),
-    /** The most recent agent run this schedule started, for overlap tracking (parallels `schedules.lastBatchId` for the script branch). */
+    /** The most recent agent run this schedule started, for overlap tracking (parallels `schedules.batchId` for the script branch). */
     lastAgentRunId: text('last_agent_run_id'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   },
@@ -1475,7 +1210,8 @@ export const workspaceFiles = sqliteTable(
     hash: text('hash').notNull(),
     /** Which driver holds this row's bytes — `inline` (the `content` column above) or `fs` (plan
      * 115 §3.1, §3.2). Every row written before plan 115 reads back `'inline'` with NO backfill,
-     * matching plan 99's `scripts.kind` precedent exactly: existing rows keep their bytes in the
+     * the same "default on the column, never a backfill pass" discipline this codebase already
+     * uses for a column added under an existing row set: existing rows keep their bytes in the
      * row and are read through the `inline` driver forever, deliberately (§3.2, no migration). */
     storage: text('storage').notNull().default('inline'),
     /** Meaningless to everyone except the driver named by `storage` — for `fs` it is the sha256

@@ -3,6 +3,7 @@ import { createClipboardControl } from './control'
 import { createDeviceMessageReader, type DeviceMessage } from './control/device-messages'
 import {
   encodeInjectKeycode,
+  encodeInjectScroll,
   encodeInjectText,
   encodeInjectTouch,
   encodeResetVideo,
@@ -105,7 +106,7 @@ export interface ScrcpySessionOptions {
 }
 
 export interface ScrcpyControl {
-  injectTouch(action: 'down' | 'up' | 'move', x: number, y: number, w: number, h: number): void
+  injectTouch(action: 'down' | 'up' | 'move', x: number, y: number, w: number, h: number, pointerId?: bigint): void
   injectKeycode(action: 'down' | 'up', keycode: number, meta?: number): void
   injectText(text: string): void
   uhidCreate(id: number, name: string, reportDesc: Uint8Array): void
@@ -128,10 +129,16 @@ export interface ScrcpyControl {
    * `paste` defaults to false.
    */
   setClipboard(text: string, opts?: { paste?: boolean; timeoutMs?: number }): Promise<void>
+  /** `INJECT_SCROLL_EVENT`: a wheel tick at (x, y); `hscroll`/`vscroll` in -1..1 (one notch = 1). Plan 209 §4.3. */
+  injectScroll(x: number, y: number, w: number, h: number, hscroll: number, vscroll: number): void
 }
 
 export interface ScrcpySession {
   readonly meta: VideoMeta | null
+  /** The host port this session's video/control forward is bound to (plan 223 §4.2) — the forward ledger's join key. Set once, at connect, never reused after `close()`. */
+  readonly port: number
+  /** This session's `scid`, always prefixed `SCID_MARKER_PREFIX` (plan 223 §4.2) — lets a forward ledger, and the boot-time cleanup below, recognise a forward this codebase created without knowing which process created it. */
+  readonly scid: string
   onPacket(cb: (p: ScrcpyPacket) => void): void
   onMetaChange(cb: (m: VideoMeta) => void): void
   onClose(cb: (reason: string) => void): void
@@ -139,9 +146,10 @@ export interface ScrcpySession {
    * Device→host messages on the control socket (plan 38 §3.2, §4.2) —
    * clipboard replies today, UHID output reports in future work. `control`'s
    * `getClipboard`/`setClipboard` are built on this same channel; most
-   * callers never need to subscribe directly.
+   * callers never need to subscribe directly. Returns an unsubscribe (plan
+   * 209 §4.3).
    */
-  onDeviceMessage(cb: (m: DeviceMessage) => void): void
+  onDeviceMessage(cb: (m: DeviceMessage) => void): () => void
   control: ScrcpyControl
   close(): Promise<void>
 }
@@ -151,8 +159,12 @@ export interface ScrcpySession {
  *
  * With `tunnel_forward=true` the host opens a connection to the localabstract
  * socket via `adb forward`. The FIRST socket to connect is video, the second
- * is control (this ordering is part of the internal protocol — TODO-verify on
- * a real device).
+ * is control (this ordering is part of the internal protocol).
+ * verified against v3.3.1 server/src/main/java/com/genymobile/scrcpy/device/DesktopConnection.java
+ * on 2026-09-03: `DesktopConnection.open`'s `tunnelForward` branch accepts in
+ * the fixed order video, then audio (if enabled), then control — this
+ * package never enables audio, so the effective order is video then control,
+ * exactly as assumed.
  */
 /**
  * Reserved top byte of every `scid` this codebase mints. Cuts the random
@@ -175,7 +187,23 @@ export interface ScrcpySession {
  * distinctive while staying inside the signed range.
  */
 const SCID_MARKER_BYTE = 0x7f
-export const SCID_MARKER_PREFIX = SCID_MARKER_BYTE.toString(16).padStart(2, '0')
+const SCID_MARKER_PREFIX = SCID_MARKER_BYTE.toString(16).padStart(2, '0')
+
+/**
+ * Matches this codebase's OWN scrcpy forward remotes — `localabstract:scrcpy_<scid>`
+ * where `<scid>` carries `SCID_MARKER_PREFIX` (plan 223 §4.4) — the same
+ * property `sweepStrayScrcpyServers` already relies on for the DEVICE-side
+ * process list (`scid.startsWith(SCID_MARKER_PREFIX)`, above), applied here
+ * to the HOST-side forward table instead. `scid` is always exactly
+ * SCID_MARKER_PREFIX (2 hex chars) + 6 more hex chars (`crypto.getRandomValues`
+ * over 3 bytes, above), so the match is exact-length, not a loose prefix
+ * scan that could also match an unrelated `localabstract:` socket some other
+ * tool on the same adb server happens to have forwarded.
+ */
+const OWN_SCRCPY_FORWARD_RE = new RegExp(`^localabstract:scrcpy_${SCID_MARKER_PREFIX}[0-9a-f]{6}$`)
+export function isOwnScrcpyForwardRemote(remote: string): boolean {
+  return OWN_SCRCPY_FORWARD_RE.test(remote)
+}
 
 export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOptions): Promise<ScrcpySession> {
   const log = opts.onLog ?? (() => {})
@@ -210,7 +238,7 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
   const cmd = `CLASSPATH=${DEVICE_JAR_PATH} app_process / com.genymobile.scrcpy.Server ${SCRCPY_VERSION} ${args.join(' ')}`
   // Launched through the adb CLI, deliberately NOT through `adb.exec`.
   //
-  // Per-device adb access is serialised through a queue, and this command runs
+  // Per-device adb access is serialised through a queue, and this process runs
   // for as long as the session lives — routing it through the queue parked a
   // slot forever, so every later shell command on that device queued behind a
   // process that never exits. Volume keys did nothing, the ui-server inspector
@@ -296,6 +324,10 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     onPacket: (packet) => {
       for (const cb of packetHandlers) cb(packet)
     },
+    onError: (err) => {
+      log('warn', `video demuxer stopped: ${err.message}`)
+      for (const cb of closeHandlers) cb('demuxer error')
+    },
   })
 
   // Device→host messages (plan 38 §3.2): the control socket was write-only
@@ -344,6 +376,11 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
   const videoSocket = opened.video
   const controlSocket = opened.control
 
+  // Plan 209 §3.2 D2: 14..32-byte control writes at up to 125/s during a drag
+  // are exactly what Nagle delays. Bun's Socket.setNoDelay is only honoured
+  // on a connected socket, which this is (connectSockets resolved).
+  if (!controlSocket.setNoDelay(true)) log('debug', 'setNoDelay(true) was refused on the control socket')
+
   const write = (bytes: Uint8Array) => {
     try {
       controlSocket.write(bytes)
@@ -364,13 +401,18 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     get meta() {
       return currentMeta
     },
+    port,
+    scid,
     onPacket: (cb) => void packetHandlers.add(cb),
     onMetaChange: (cb) => void metaHandlers.add(cb),
     onClose: (cb) => void closeHandlers.add(cb),
-    onDeviceMessage: (cb) => void deviceMessageHandlers.add(cb),
+    onDeviceMessage: (cb) => {
+      deviceMessageHandlers.add(cb)
+      return () => deviceMessageHandlers.delete(cb)
+    },
     control: {
-      injectTouch: (action, x, y, w, h) =>
-        write(encodeInjectTouch({ action, x, y, screenWidth: w, screenHeight: h })),
+      injectTouch: (action, x, y, w, h, pointerId) =>
+        write(encodeInjectTouch({ action, x, y, screenWidth: w, screenHeight: h, pointerId })),
       injectKeycode: (action, keycode, meta = 0) => write(encodeInjectKeycode(action, keycode, meta)),
       injectText: (text) => write(encodeInjectText(text)),
       uhidCreate: (id, name, desc) => write(encodeUhidCreate(id, name, desc)),
@@ -380,6 +422,8 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
       resetVideo: () => write(encodeResetVideo()),
       getClipboard: (opts) => clipboardControl.getClipboard(opts),
       setClipboard: (text, opts) => clipboardControl.setClipboard(text, opts),
+      injectScroll: (x, y, w, h, hscroll, vscroll) =>
+        write(encodeInjectScroll({ x, y, screenWidth: w, screenHeight: h, hscroll, vscroll })),
     },
     async close() {
       try {

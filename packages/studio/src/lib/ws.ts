@@ -67,7 +67,7 @@ export interface WsClientDeps {
 /**
  * `ws.request` rejects with this instead of a plain `Error` when the core
  * replies with a coded `error` message (plan 71 §3.4, criterion 8) — a
- * takeover's CAS failure (`lease_holder_changed`) needs to be told apart
+ * device conflict (`E_DEVICE_CONFLICT`) needs to be told apart
  * from any other refusal so the dialog can re-ask rather than just failing.
  * Every existing `catch (err)`/`err instanceof Error` call site keeps
  * working unchanged; this only adds a `code` alongside `message`.

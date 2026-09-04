@@ -4,7 +4,7 @@
  * H2 both explain the field report ("the page loads slowly, closing the tab
  * fixes it"), and only numbers separate them. `bufferedBytes*` and
  * `controlReplyMs*` are the H1 evidence (a control reply queued behind
- * already-buffered H.264); the browser console's watchdog-reconnect log is
+ * already-buffered H.264); the browser's own developer-tools watchdog-reconnect log is
  * H2's (`packages/studio/src/lib/ws.ts`) — `watchdogReconnects` here is a
  * best-effort SERVER-side proxy only, see its own doc comment below.
  *
@@ -24,6 +24,8 @@ export interface TransportSnapshot {
   controlReplyMsP50: number
   controlReplyMsP95: number
   watchdogReconnects: number
+  /** Cumulative since boot (plan 223 §4.7) — never reset on `snapshot()` read, unlike `videoBytesPerSec`'s rolling window. */
+  framesDroppedTotal: number
 }
 
 export interface TransportMetricsStore {
@@ -45,6 +47,13 @@ export interface TransportMetricsStore {
    * reason — a watchdog trip, a network blip, a refresh) adds 3.
    */
   noteOpen(currentConnections: number): void
+  /**
+   * A frame was dropped for backpressure (plan 223 §4.7) — either `ws.send()`
+   * returned `0` (R8) or the drop-to-keyframe-under-congestion branch fired.
+   * Cumulative; never reset except by a core restart, so `soak.ts` can diff
+   * it across an arbitrary run window.
+   */
+  recordFrameDropped(): void
   snapshot(currentConnections: number): TransportSnapshot
 }
 
@@ -75,6 +84,7 @@ export function createTransportMetricsStore(): TransportMetricsStore {
   let videoWindowStartedAt = Date.now()
   let totalOpens = 0
   let peakConnections = 0
+  let framesDroppedTotal = 0
 
   return {
     recordBufferedBytes(n) {
@@ -89,6 +99,9 @@ export function createTransportMetricsStore(): TransportMetricsStore {
     noteOpen(currentConnections) {
       totalOpens += 1
       peakConnections = Math.max(peakConnections, currentConnections)
+    },
+    recordFrameDropped() {
+      framesDroppedTotal += 1
     },
     snapshot(currentConnections) {
       peakConnections = Math.max(peakConnections, currentConnections)
@@ -115,6 +128,7 @@ export function createTransportMetricsStore(): TransportMetricsStore {
         controlReplyMsP50: percentile(replySorted, 0.5),
         controlReplyMsP95: percentile(replySorted, 0.95),
         watchdogReconnects: Math.max(0, totalOpens - peakConnections),
+        framesDroppedTotal,
       }
     },
   }

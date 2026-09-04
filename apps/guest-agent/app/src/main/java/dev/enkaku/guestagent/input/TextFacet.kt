@@ -19,7 +19,18 @@ import android.content.Context
 object TextFacet {
 
   data class CommitOutcome(val committed: Int, val current: Boolean)
-  data class StatusOutcome(val ime: String, val id: String, val connected: Boolean)
+
+  /**
+   * `softKeyboardShown`/`showSoftKeyboardWithHardware` are additions (plan 221 §4.6, MVP 08
+   * §1.2) — `ime`, `id` and `connected` keep their exact prior meaning.
+   */
+  data class StatusOutcome(
+    val ime: String,
+    val id: String,
+    val connected: Boolean,
+    val softKeyboardShown: Boolean,
+    val showSoftKeyboardWithHardware: Boolean,
+  )
 
   /**
    * Commits [text] through the live IME. One code point at a time, sleeping between commits for a
@@ -63,6 +74,8 @@ object TextFacet {
       ime = state,
       id = EnkakuIme.COMPONENT_ID,
       connected = EnkakuIme.instance()?.hasConnection() == true,
+      softKeyboardShown = EnkakuIme.instance()?.isInputViewShown == true,
+      showSoftKeyboardWithHardware = ImePrefs.showSoftKeyboardWithHardware(context),
     )
   }
 

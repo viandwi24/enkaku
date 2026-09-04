@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { capture, firstMatch, sleep, tapNode, waitForTree, YOUTUBE_PACKAGE } from './youtube'
 import { flatten } from './tree'
 import { SEARCH_ENTRY, SEARCH_FIELD, adEvidence, clickableFor, hasResultRows, playerEvidence, skipControlOf, titleFromRow } from './search-channel'
-import { between, browseComments, bytesEqual, makeRng, pick, pressLike } from './behavior'
+import { between, browseComments, bytesEqual, keywordBoost, makeRng, pick, pressLike, readableStrings } from './behavior'
 
 /**
  * `scroll-live` — browse the list of LIVE streams, then optionally open one
@@ -62,6 +62,14 @@ const paramsSchema = z.object({
     .default(0)
     .describe('Chance to open the comment section, scroll it, and close it. Reading only.')
     .meta(ui({ title: 'Comment chance' })),
+  keywordBoostFactor: z
+    .number()
+    .min(1)
+    .max(10)
+    .default(3)
+    .describe('Multiplier applied to like/comment chance when a keyword matches the stream title or channel.')
+    .meta(ui({ title: 'Keyword boost' })),
+  keywords: z.array(z.string()).default([]).describe('Keywords to tilt behaviour toward; matched against the stream title read off its row.').meta(ui({ title: 'Keywords' })),
   seed: z.number().int().min(0).default(0).describe('RNG seed; 0 derives one per run.').meta(ui({ title: 'Seed (0 = random)' })),
 })
 
@@ -99,6 +107,7 @@ function liveRows(tree: UiNode): UiNode[] {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'scroll-live',
+  node: { category: 'device', icon: 'activity', summary: ['query', 'scrolls'], keywords: ['live', 'scroll'] },
   title: 'Scroll live streams',
   description: 'Searches for LIVE streams, scrolls the results with randomised flings and human dwell, and optionally opens one and watches.',
   params: paramsSchema,
@@ -206,14 +215,17 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     steps.push('watching')
     let like = 'not attempted'
     let comments = 'not attempted'
+    const tiltText = `${streamTitle} ${ctx.params.query} ${readableStrings(player).join(' ')}`
+    const likeP = keywordBoost(tiltText, ctx.params.keywords, ctx.params.likeProbability, ctx.params.keywordBoostFactor)
+    const comP = keywordBoost(tiltText, ctx.params.keywords, ctx.params.commentProbability, ctx.params.keywordBoostFactor)
     const until = Date.now() + ctx.params.watchMs
     while (Date.now() < until) {
       await sleep(between(rng, 3_000, 8_000))
-      if (like === 'not attempted' && ctx.params.likeProbability > 0 && rng() < ctx.params.likeProbability) {
+      if (like === 'not attempted' && rng() < likeP) {
         like = await pressLike(ctx, rng)
         steps.push(`like:${like}`)
       }
-      if (comments === 'not attempted' && ctx.params.commentProbability > 0 && rng() < ctx.params.commentProbability) {
+      if (comments === 'not attempted' && rng() < comP) {
         comments = await browseComments(ctx, rng, { scrollTimes: 4 })
         steps.push(`comments:${comments}`)
       }

@@ -6,10 +6,10 @@ import { createRecordingSession, type RecordingSession } from './session'
 
 /**
  * The recorder's per-farm registry (plan 94 §4.6, step 94.3) — one
- * `RecordingSession` at a time per device, owned by whoever holds that
- * device's manual lease (enforced by `ws-handlers.ts`'s `checkInputAllowed`
- * gate, never by this module). `ws-handlers.ts` is the ONLY caller; this file
- * knows nothing about WS messages, leases, or sessions — it is handed
+ * `RecordingSession` at a time per device, owned by whoever controls that
+ * device (enforced by `ws-handlers.ts`'s `admit()` gate, plan 205 §4.8, never
+ * by this module). `ws-handlers.ts` is the ONLY caller; this file knows
+ * nothing about WS messages, activities, or sessions — it is handed
  * everything a recording needs to run through `RecordingStartContext`.
  */
 
@@ -50,14 +50,13 @@ export interface RecordingService {
    */
   lastFinished(deviceId: string): RecordingDoc | null
   /**
-   * The manual lease on this device just ended, however that happened —
-   * release, idle timeout, quarantine, or a takeover (plan 94 §4.6: "In
-   * memory, keyed by deviceId, one at a time, owned by the lease holder;
-   * released when the lease is released"). Ends any open recording exactly
-   * like a bound does (`finishAndBuild`, then `onBoundStopped` with
-   * `reason: 'lease-lost'`) — a no-op when nothing is open on this device.
+   * The connection controlling this device just disconnected (plan 94 §4.6:
+   * "In memory, keyed by deviceId, one at a time, owned by whoever controls
+   * the device"). Ends any open recording exactly like a bound does
+   * (`finishAndBuild`, then `onBoundStopped` with `reason: 'disconnected'`)
+   * — a no-op when nothing is open on this device.
    */
-  stopForLeaseLost(deviceId: string): void
+  stopForDisconnect(deviceId: string): void
   /**
    * Registers the ONE listener for every finished step, across every device
    * (plan 94 §4.9) — `ws-handlers.ts` calls this once, at router
@@ -75,7 +74,7 @@ export interface RecordingService {
    * push naming the reason. `doc` is the document the bound just finished
    * building, so the listener needs no second lookup.
    */
-  onBoundStopped(cb: (deviceId: string, reason: 'max-steps' | 'max-duration' | 'lease-lost', doc: RecordingDoc) => void): void
+  onBoundStopped(cb: (deviceId: string, reason: 'max-steps' | 'max-duration' | 'disconnected', doc: RecordingDoc) => void): void
 }
 
 export interface RecordingServiceDeps {
@@ -97,10 +96,10 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
   const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
   const clearTimer = deps.clearTimer ?? ((h: ReturnType<typeof setTimeout>) => clearTimeout(h))
   let stepListener: ((deviceId: string, index: number, kind: RecordingStepKind, hasCandidate: boolean) => void) | null = null
-  let boundListener: ((deviceId: string, reason: 'max-steps' | 'max-duration' | 'lease-lost', doc: RecordingDoc) => void) | null = null
+  let boundListener: ((deviceId: string, reason: 'max-steps' | 'max-duration' | 'disconnected', doc: RecordingDoc) => void) | null = null
 
-  /** Shared by a session's own bound stop and `stopForLeaseLost` below — the only difference between them is which `reason` the listener is told. */
-  const finishAndReport = (deviceId: string, session: RecordingSession, reason: 'max-steps' | 'max-duration' | 'lease-lost'): void => {
+  /** Shared by a session's own bound stop and `stopForDisconnect` below — the only difference between them is which `reason` the listener is told. */
+  const finishAndReport = (deviceId: string, session: RecordingSession, reason: 'max-steps' | 'max-duration' | 'disconnected'): void => {
     sessions.delete(deviceId)
     void session
       .finishAndBuild()
@@ -171,10 +170,10 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
       return lastFinishedByDevice.get(deviceId) ?? null
     },
 
-    stopForLeaseLost(deviceId) {
+    stopForDisconnect(deviceId) {
       const session = sessions.get(deviceId)
       if (!session) return
-      finishAndReport(deviceId, session, 'lease-lost')
+      finishAndReport(deviceId, session, 'disconnected')
     },
 
     onStep(cb) {

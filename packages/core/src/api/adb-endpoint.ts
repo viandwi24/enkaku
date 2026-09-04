@@ -1,20 +1,21 @@
 import { Hono } from 'hono'
-import { AdbEndpointCreateResponseSchema, AdbEndpointResponseSchema, type ShellMode } from '@enkaku/protocol'
+import { AdbEndpointCreateResponseSchema, AdbEndpointResponseSchema, E_DEVICE_CONFLICT, type ShellMode } from '@enkaku/protocol'
 import { z } from 'zod'
 import type { AuthEnv } from '../auth/middleware'
 import { canUseAdbEndpoint, canUseDevice } from '../auth/acl'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { DeviceStateMachine } from '../device/state-machine'
+import { requireAdmission } from '../activity/admission'
+import type { ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
 
 const ERROR_STATUS: Record<string, number> = {
   'auth.forbidden': 403,
   device_not_found: 404,
-  device_busy: 409,
-  no_lease: 409,
-  not_lease_holder: 409,
   device_unavailable: 409,
+  [E_DEVICE_CONFLICT]: 409,
   E_ADB_UNAVAILABLE: 503,
   E_BAD_REQUEST: 400,
 }
@@ -23,13 +24,12 @@ const OpenBody = z.object({
   /**
    * The requesting browser tab's WS session id (the `sessionId` its `hello`
    * message carried — plan 31 §4.2 already sends this on every connection).
-   * The adb endpoint is lease-scoped, and a manual lease's holder IS a WS
-   * `clientId` (plan 04 §4.1) — there is no HTTP-native notion of "the
-   * client currently holding control", so the browser tells us which WS
-   * session it is, and `leases.checkInputAllowed` verifies that session
-   * really does hold the lease before anything opens. Never trusted for
-   * identity (the user is still whoever `authMiddleware` resolved); only for
-   * "which lease".
+   * The activity this endpoint starts is keyed on it
+   * (`command:adb-endpoint:<clientId>`, plan 205 §4.9) — there is no
+   * HTTP-native notion of "which client is asking", so the browser tells us
+   * which WS session it is. Never trusted for identity (the user is still
+   * whoever `authMiddleware` resolved); only for which marker to start and
+   * later end.
    */
   clientId: z.string().min(1),
 })
@@ -37,13 +37,16 @@ const OpenBody = z.object({
 /**
  * `POST/DELETE/GET /api/devices/:id/adb-endpoint` (plan 27 §4.3). All three
  * require `device.adb` (widened by the SAME `shell.mode` switch the
- * terminal uses, `canUseAdbEndpoint`) AND the manual lease, checked with the
- * same `leases.checkInputAllowed` call plan 26 uses for `shell.exec` — one
- * policy, one implementation, reused rather than re-derived.
+ * terminal uses, `canUseAdbEndpoint`) AND the device activity policy
+ * (plan 205 §4.9) — the same `requireAdmission` door `shell.exec` takes for
+ * its own `command` marker.
  */
 export function createAdbEndpointRoutes(deps: {
   manager: AdbEndpointManager
-  leases: LeaseManager
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
+  controlSettings: () => ControlPolicySettings
+  states: Pick<DeviceStateMachine, 'current'>
+  userLabel?: (userId: string | null) => string | null
   shellSettings: () => { mode: ShellMode; endpointEnabled: boolean }
   /** `canUseDevice`'s device half (plan 34 §3.5, §4.4). */
   getDevice: (deviceId: string) => { ownerId: string | null } | null
@@ -65,8 +68,7 @@ export function createAdbEndpointRoutes(deps: {
     if (device && !canUseDevice(user, device)) {
       throw new EnkakuError('auth.forbidden', 'this device belongs to another user')
     }
-    const allowed = deps.leases.checkInputAllowed(deviceId, clientId)
-    if (!allowed.ok) throw new EnkakuError(allowed.code, allowed.message)
+    requireAdmission(deps.activities, deps.controlSettings, deps.states, deviceId, 'command', { selfIds: [`command:adb-endpoint:${clientId}`] })
   }
 
   app.post('/:id/adb-endpoint', async (c) => {
@@ -76,6 +78,12 @@ export function createAdbEndpointRoutes(deps: {
     authorize(c.get('user'), deviceId, body.data.clientId)
     const userId = c.get('user')?.id ?? null
     const { host, port, expiresAt } = await deps.manager.open(deviceId, body.data.clientId, userId)
+    deps.activities.start(deviceId, {
+      id: `command:adb-endpoint:${body.data.clientId}`,
+      kind: 'command',
+      label: 'adb endpoint open',
+      actor: { kind: 'user', id: userId ?? body.data.clientId, label: deps.userLabel?.(userId) ?? 'a signed-out client' },
+    })
     return typedJson(c, AdbEndpointCreateResponseSchema, { host, port, expiresAt, command: `adb connect ${host}:${port}` })
   })
 
@@ -85,6 +93,7 @@ export function createAdbEndpointRoutes(deps: {
     if (!clientId) throw new EnkakuError('E_BAD_REQUEST', 'a clientId query parameter is required')
     authorize(c.get('user'), deviceId, clientId)
     deps.manager.close(deviceId, 'closed_by_user')
+    deps.activities.end(deviceId, `command:adb-endpoint:${clientId}`)
     return c.json({ ok: true })
   })
 

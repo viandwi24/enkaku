@@ -4,6 +4,8 @@ import type { Db } from '../db'
 import { farmSettings } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import type { AuthMode } from '../config'
+import { createLogger, type Logger } from '../util/logger'
+import { migrateFarmSettings } from './migrate-settings'
 
 export interface FarmSettingsStore {
   get(): FarmSettings
@@ -19,26 +21,34 @@ const ROW_ID = 1
  * opinion about it keeps compiling unchanged — it only matters the ONE time
  * a farm settings row is created from scratch.
  */
-export function createFarmSettingsStore(db: Db, opts?: { authMode?: AuthMode }): FarmSettingsStore {
+export function createFarmSettingsStore(db: Db, opts?: { authMode?: AuthMode; log?: Logger }): FarmSettingsStore {
+  const log = opts?.log ?? createLogger('settings')
   const listeners = new Set<(s: FarmSettings) => void>()
   let cached: FarmSettings
 
   const row = db.select().from(farmSettings).where(eq(farmSettings.id, ROW_ID)).get()
-  const parsed = row ? FarmSettingsSchema.safeParse(row.value) : null
-  cached = parsed?.success ? parsed.data : defaultFarmSettings()
+  // Plan 212 §4.8 — a row written by ANY earlier schema is migrated onto
+  // the nine-key one before it is ever parsed against the current schema:
+  // renamed keys mapped, unknown keys dropped, out-of-range values clamped
+  // (one `log.warn` each). `get(raw, 'general')` inside the migration is
+  // what tells it a row is ALREADY the new shape, so this never re-runs
+  // once a farm has migrated once.
+  const wasPreMigration = row ? typeof row.value === 'object' && row.value !== null && !('general' in (row.value as object)) : false
+  cached = row ? migrateFarmSettings(row.value, log) : defaultFarmSettings()
   if (!row) {
-    // The server-mode `shell.mode: 'off'` default (plan 26 §3.2, §4.1) can
-    // only be applied HERE, not in the Zod schema: the schema has no way to
-    // see the bind address the auth mode is derived from (00-overview's
-    // config precedence rule — never a silent fallback, so this only ever
-    // touches a BRAND NEW row, never overwrites an operator's own choice on
-    // an existing farm).
-    // Plan 93 §3.8, §4.1 — fleet fan-out gets the SAME server-mode override
-    // as `shell.mode` above, forced off alongside it: running one gated
-    // shell and running a hundred at once on a network-exposed farm are two
-    // different decisions, and the second must never be a discovery either.
-    if (opts?.authMode === 'server') cached = { ...cached, shell: { ...cached.shell, mode: 'off', fanoutEnabled: false } }
+    // The server-mode `privacy.adbCommand: false` default (plan 26 §3.2,
+    // §4.1; plan 212 §4.1 F44) can only be applied HERE, not in the Zod
+    // schema: the schema has no way to see the bind address the auth mode
+    // is derived from (00-overview's config precedence rule — never a
+    // silent fallback, so this only ever touches a BRAND NEW row, never
+    // overwrites an operator's own choice on an existing farm).
+    if (opts?.authMode === 'server') cached = { ...cached, privacy: { ...cached.privacy, adbCommand: false } }
     db.insert(farmSettings).values({ id: ROW_ID, value: cached, updatedAt: new Date() }).run()
+  } else if (wasPreMigration) {
+    // The migration runs once, not on every boot: a migrated row is written
+    // straight back so the next boot's `get(raw, 'general')` check finds
+    // the new shape already in place.
+    db.update(farmSettings).set({ value: cached, updatedAt: new Date() }).where(eq(farmSettings.id, ROW_ID)).run()
   }
 
   return {

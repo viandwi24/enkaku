@@ -2,19 +2,21 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
+  GroupInfoSchema,
   PluginActionResponseSchema,
   type ActionSpec,
   type Binding,
   type DeviceInfo,
+  type GroupInfo,
   type JsonSchemaNode as WireJsonSchemaNode,
 } from '@enkaku/protocol'
 import { ConfirmDialog, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, api, formatDeviceName, useAction } from '@enkaku/ui'
 import { readRowField, rowPayload, type PluginViewRow } from '@/components/plugin-view/rows'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { TargetPicker } from '@/components/target/TargetPicker'
-import { useTargetSelection } from '@/components/target/useTargetSelection'
-import { fetchDevices } from '@/lib/api'
+import { DevicePicker } from '@/components/target/DevicePicker'
+import { useTarget } from '@/components/target/useTarget'
+import { fetchAllPages, fetchDevices } from '@/lib/api'
 
 /**
  * Plan 108 §3.4, §4.5, §5 step 108.7 — running ONE declared action.
@@ -180,43 +182,53 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
   const needsPicker = (terminal.kind === 'job' && terminal.device === 'picker') || (terminal.kind === 'batch' && terminal.target === 'picker')
 
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null)
+  const [groups, setGroups] = useState<GroupInfo[]>([])
   const [formValue, setFormValue] = useState<unknown>(() => (action.kind === 'form' && action.prefill ? evaluatePrefill(action.prefill, row) : undefined))
   const [formCanSubmit, setFormCanSubmit] = useState(true)
   const [stage, setStage] = useState<Stage>(formSchema ? 'form' : needsPicker ? 'target' : 'confirm')
   const { run, pending } = useAction()
 
-  const selection = useTargetSelection({ usableCount: devices?.length ?? 0 })
-  const { reset } = selection
+  // plan 200 §8.10 — migrated onto plan 216's DevicePicker/useTarget system,
+  // the same shell `ActionDialog` (`components/actions/`) uses. A `job`
+  // action's `device: 'picker'` is exactly the single-device case
+  // `useTarget`'s own `maxTargets: 1` doc comment names as its one real
+  // consumer ("no MVP verb does" — a plugin verb does). `initial: {}`: unlike
+  // the old `useTargetSelection`, `useTarget` re-derives its resolved target
+  // from `devices`/`groups` on every render, so no explicit `reset()` call is
+  // needed once the fetch below lands.
+  const selection = useTarget({ devices: devices ?? [], groups, initial: {}, maxTargets: terminal.kind === 'job' ? 1 : undefined })
 
   useEffect(() => {
     if (!needsDevices) return
     let cancelled = false
     void fetchDevices()
       .then((list) => {
-        if (cancelled) return
-        setDevices(list)
-        if (needsPicker) reset({ devices: list, allow: terminal.kind === 'job' ? ['single'] : ['devices'] })
+        if (!cancelled) setDevices(list)
       })
       .catch(() => {
         if (!cancelled) setDevices([])
       })
+    void fetchAllPages('/api/groups', undefined, GroupInfoSchema)
+      .then((list) => {
+        if (!cancelled) setGroups(list)
+      })
+      .catch(() => undefined)
     return () => {
       cancelled = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needsDevices, needsPicker])
+  }, [needsDevices])
 
   /** Which devices this run targets, as the body's `deviceIds`. Empty for
    *  `device: 'row'` (the server takes it from `$device.id`) and for
    *  `target: 'all'` (the server enumerates the farm itself). */
   const deviceIds = useMemo(() => {
-    if (terminal.kind === 'job' && terminal.device === 'picker') return selection.deviceId ? [selection.deviceId] : []
+    if (terminal.kind === 'job' && terminal.device === 'picker') return selection.deviceIds
     if (terminal.kind === 'batch') {
       if (terminal.target === 'selection') return selectedDeviceIds
       if (terminal.target === 'picker') return selection.deviceIds
     }
     return []
-  }, [terminal, selection.deviceId, selection.deviceIds, selectedDeviceIds])
+  }, [terminal, selection.deviceIds, selectedDeviceIds])
 
   /**
    * The thing at stake, in words, built from facts — never from the author's
@@ -235,15 +247,15 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
     if (name) return name
     if (device) return device
     if (terminal.kind === 'job' && terminal.device === 'picker') {
-      const picked = devices?.find((d) => d.id === selection.deviceId)
-      // The picker itself lists `#7 Galaxy A15` (`DevicePicker`, plan 89 §3.3);
-      // the confirmation that follows it has to name the same device the same
-      // way, or the operator is asked to confirm something they cannot match to
-      // the row they just clicked.
+      const picked = devices?.find((d) => d.id === selection.deviceIds[0])
+      // The picker itself lists `#7 Galaxy A15` (`DevicePicker`, plan 216
+      // §4.4); the confirmation that follows it has to name the same device
+      // the same way, or the operator is asked to confirm something they
+      // cannot match to the row they just clicked.
       return picked ? formatDeviceName(picked.number, picked.label || picked.stableId) : 'no device chosen yet'
     }
     return null
-  }, [row, rowKey, terminal, devices, deviceIds.length, selection.deviceId])
+  }, [row, rowKey, terminal, devices, deviceIds.length, selection.deviceIds])
 
   const successMessage =
     terminal.kind === 'job' ? 'Job created' : terminal.kind === 'batch' ? 'Batch created' : terminal.kind === 'kv.set' ? 'Saved' : 'Deleted'
@@ -319,7 +331,7 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
           <SchemaForm
             // The reconciliation between `@enkaku/protocol`'s bare-index-signature
             // `JsonSchemaNode` and this package's narrower one, the same cast
-            // `RunScriptDialog` and `JobResultSection` already document.
+            // `RunScriptDialog` and the Jobs screen's `JsonSnapshot` already document.
             schema={formSchema as JsonSchemaNode}
             value={formValue}
             onChange={setFormValue}
@@ -331,7 +343,10 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
           (devices === null ? (
             <p className="text-[12.5px] text-fg-muted">Loading devices…</p>
           ) : (
-            <TargetPicker selection={selection} devices={devices} allow={terminal.kind === 'job' ? ['single'] : ['devices']} />
+            // `forceExpanded`: this dialog IS the picker at this stage — the
+            // same shape `DevicePickerDialog` (`components/host`) uses for a
+            // non-verb picker (plan 216 §4.10).
+            <DevicePicker state={selection} forceExpanded />
           ))}
 
         <DialogFooter>
@@ -340,7 +355,7 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
           </Button>
           <Button
             onClick={() => setStage(stage === 'form' && needsPicker ? 'target' : 'confirm')}
-            disabled={pending === actionId || (stage === 'form' ? !formCanSubmit : !selection.hasTarget || !selection.fleetConfirmed)}
+            disabled={pending === actionId || (stage === 'form' ? !formCanSubmit : selection.target === null || selection.allForbidden)}
           >
             {stage === 'form' && !needsPicker ? submitLabelOf(action) : 'Continue'}
           </Button>

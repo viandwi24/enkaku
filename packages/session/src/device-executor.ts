@@ -1,5 +1,5 @@
 import { shellQuote } from '@enkaku/adb'
-import { buildGesturePath, supportsElementActions, UiautomatorDumpInspector } from '@enkaku/drivers'
+import { buildGesturePath, supportsElementActions } from '@enkaku/drivers'
 import {
   centerOf,
   matchSelector,
@@ -9,6 +9,7 @@ import {
   type GestureSample,
   type Inspector,
   type InputSink,
+  type InspectorWatch,
   type KeyCode,
   type NormGestureSample,
   type NormPoint,
@@ -17,6 +18,7 @@ import {
   type TimingSettings,
   type UiNode,
 } from '@enkaku/protocol'
+import { createChangeSignal } from './change-signal'
 import { SessionError } from './errors'
 import type { InputSource } from './input-arbiter'
 import type { DeviceCall } from './runner/ipc'
@@ -32,6 +34,36 @@ import type { TransferPort } from './types'
  * threading its own identity through simply passes `source` itself.
  */
 const DEFAULT_INPUT_SOURCE: InputSource = { kind: 'job', id: 'device-executor', userId: null }
+
+/**
+ * The methods that need the session's inspector (plan 208 §3.5, §4.10):
+ * `deviceCall` (`packages/core/src/capability/context.ts`) awaits
+ * `whenInspectorReady()` for exactly these, so a `tap` from an agent never
+ * waits on an engine it does not use. Exported so the capability path and
+ * this executor cannot disagree.
+ */
+export const INSPECTOR_METHODS: ReadonlySet<string> = new Set(['find', 'dump', 'waitFor', 'screenshot'])
+
+export function needsInspector(call: { method: string }): boolean {
+  return INSPECTOR_METHODS.has(call.method)
+}
+
+/**
+ * The safety-net re-check for a watch-backed `waitFor` (plan 222 §3.5). Not a
+ * poll: the event is the mechanism and this is the bound on how wrong the
+ * event stream can be. It exists because `TYPE_WINDOW_CONTENT_CHANGED` is not
+ * emitted for every visible change — a SurfaceView, a TextureView, a game
+ * canvas or a WebView repaint can change the screen with no accessibility
+ * event at all — and because a frame can simply be lost.
+ *
+ * 1000 ms is the SDK's own default interval (`runner/child-entry.ts`'s
+ * `intervalMs: opts?.intervalMs ?? 1_000`), so a watch-backed wait is never
+ * slower than what the SDK already promised, and is normally bounded by the
+ * event instead. Deliberately NOT the caller's `intervalMs`: a script that
+ * asked for 50 ms polling gets pushes plus a one-second net, which is the
+ * point of the change.
+ */
+export const WAITFOR_WATCH_RECHECK_MS = 1_000
 
 export type { TimingSettings }
 
@@ -119,7 +151,7 @@ export function createDeviceExecutor(deps: {
    * (every caller before plan 94) OR a getter (plan 94 §4.5, §5 step 94.2,
    * F10) — resolved FRESH ON EVERY DEVICE CALL, not once when this executor
    * is built. This is the fix for a defect this repo has shipped repeatedly
-   * (most recently a co-control queue budget read once and never again): a
+   * (most recently an input-arbiter queue budget read once and never again): a
    * value captured at construction cannot respond to a farm/device setting
    * an operator changes while a script is still mid-run — `job-runner.ts`
    * already re-resolves `deps.timing()` once per ATTEMPT (a real freshness
@@ -160,13 +192,27 @@ export function createDeviceExecutor(deps: {
     const t = deps.timing
     return typeof t === 'function' ? t() : (t ?? DEFAULT_TIMING)
   }
-  // The session's own inspector (ui-server / uiautomator-dump). When a session
-  // is created without one (manual control mode), fall back to an ad-hoc dump engine.
-  const inspector: Inspector = deps.session.inspector ?? new UiautomatorDumpInspector(deps.session.transport)
+  /**
+   * Read per call, never captured at construction (plan 208 §3.5): the
+   * session's inspector is `null` until the prewarm settles. A `null` is now
+   * an error, `E_INSPECTOR_STARTING`, never a substitute engine — the old
+   * ad-hoc `uiautomator dump` fallback took the `instrumentation` lock and
+   * could kill a healthy ui-server in another session (MVP 02 §2.5). The
+   * dump engine is built in exactly one place now, the factory's own
+   * fallback (`inspector-factory.ts`).
+   */
+  const inspectorOrThrow = (): Inspector => {
+    const i = deps.session.inspector
+    if (i) return i
+    throw new SessionError(
+      'E_INSPECTOR_STARTING',
+      `the inspector on ${deps.session.deviceId} is still starting (engine: ${deps.session.inspectorEngineId}); retry in a moment`,
+    )
+  }
   // Plan 91 §3.1, §3.3, §4.1 — fixes F6/H1: every pointer/key/text write goes
   // through the arbiter's lanes rather than the raw `session.input` sink, so
-  // this job's actions never interleave with a concurrently assisting
-  // human's. Lazy and memoised: built on first actual use, not at executor
+  // this job's actions never interleave with a person controlling the same
+  // device. Lazy and memoised: built on first actual use, not at executor
   // construction — a `DeviceSession` fixture that never sends input (most of
   // this package's own tests: `app.launch`, `dump`, `find`, `push`, ...) must
   // not be required to supply a working `arbiter` just because SOME executor
@@ -203,7 +249,7 @@ export function createDeviceExecutor(deps: {
 
   async function resolveTarget(sel: Selector): Promise<Point> {
     if ('point' in sel) return sel.point
-    const node = await inspector.find(sel)
+    const node = await inspectorOrThrow().find(sel)
     if (!node) throw new SessionError('element_not_found', `element not found: ${JSON.stringify(sel)}`)
     return centerOf(node.bounds)
   }
@@ -216,6 +262,7 @@ export function createDeviceExecutor(deps: {
    * still gets an honest, if less specific, outcome rather than an error.
    */
   async function findOutcome(sel: Selector): Promise<FindOutcome> {
+    const inspector = inspectorOrThrow()
     if (inspector.findDetailed) return inspector.findDetailed(sel)
     const node = await inspector.find(sel)
     return node ? { ok: true, node } : { ok: false, reason: 'not-found', matches: 0 }
@@ -226,9 +273,11 @@ export function createDeviceExecutor(deps: {
 
   /**
    * Curved-gesture dispatch shared by `swipe`, `scroll`, and `fling` (plan 40
-   * §4.4): `profile: 'instant'` (or an engine with no `gesture` method —
-   * `AdbInput`, already reported once at session creation, §3.6) skips
-   * straight to a plain linear swipe, byte-for-byte the pre-plan-40 call.
+   * §4.4, touch profile naming reduced by plan 212 §4.1): a profile with
+   * `gestureCurvature: 0` (the `precise` profile, the old `instant`'s
+   * replacement) or an engine with no `gesture` method — `AdbInput`,
+   * already reported once at session creation, §3.6 — skips straight to a
+   * plain linear swipe, byte-for-byte the pre-plan-40 call.
    */
   async function runSwipe(
     from: Point,
@@ -238,7 +287,7 @@ export function createDeviceExecutor(deps: {
     opts?: { curvature?: number; easing?: Easing },
   ): Promise<void> {
     const s = sink()
-    if (timing.profile !== 'instant' && s.gesture) {
+    if (timing.gestureCurvature > 0 && s.gesture) {
       const samples = buildGesturePath({
         from,
         to,
@@ -377,7 +426,7 @@ export function createDeviceExecutor(deps: {
       }
       case 'type': {
         await pause(timing)
-        const instant = call.args.instant ?? timing.profile === 'instant'
+        const instant = call.args.instant ?? timing.gestureCurvature === 0
         // `instant` — including the pre-plan-40 default of always-instant
         // when the caller supplies no timing settings at all — reproduces
         // the pre-plan-40 order exactly: setText when the inspector supports
@@ -387,8 +436,13 @@ export function createDeviceExecutor(deps: {
         // §3.3): ui-server's element-scoped `set_text` is already unicode-clean (F26) and is
         // tried first whenever a selector-based tap makes it applicable, before the ladder is
         // ever consulted — unchanged from before this plan.
-        if (instant && supportsElementActions(inspector) && lastTarget) {
-          await inspector.setText(lastTarget, call.args.text)
+        //
+        // Read directly, never `inspectorOrThrow()` (plan 208 §3.5): `type`
+        // is not one of `INSPECTOR_METHODS`, so a still-starting engine
+        // falls straight to the text ladder below rather than throwing.
+        const currentInspector = deps.session.inspector
+        if (instant && currentInspector && supportsElementActions(currentInspector) && lastTarget) {
+          await currentInspector.setText(lastTarget, call.args.text)
           return { via: 'ui-server-set-text', clobberedClipboard: false }
         }
 
@@ -467,34 +521,84 @@ export function createDeviceExecutor(deps: {
         // has always had this method; nothing but the script ever asked for
         // it. The four-shape selector grammar cannot reach a node that has a
         // resource id and no text, and ordinary TypeScript over the tree can.
-        return inspector.dump()
+        return inspectorOrThrow().dump()
       }
       case 'waitFor': {
-        // The polling loop lives in the parent — one call, one meaning, pacing in
-        // one place. The interval follows the active engine: ui-server is cheap
-        // (~80ms), a dump is expensive.
-        const interval = Math.min(call.args.intervalMs, deps.session.inspectorPollIntervalMs)
+        // Thrown up front, before the loop's own `.catch` below — otherwise
+        // an `E_INSPECTOR_STARTING` from `findOutcome()` would be swallowed
+        // into a plain `not-found` and reported as a timeout instead of the
+        // real reason (plan 208 §3.5, §4.10).
+        inspectorOrThrow()
         const deadline = Date.now() + call.args.timeout
         // Plan 74 §3.5, §4.3 — carries the LAST outcome into the timeout
         // error, so "every match was refused as rejected-oversized" reports
-        // as that, not a bare timeout (criterion 9).
-        let last: FindOutcome = { ok: false, reason: 'not-found', matches: 0 }
+        // as that, not a bare timeout (criterion 9). Unchanged. Typed to the
+        // ok:false branch only — every assignment site below is already
+        // narrowed there (an `outcome.ok` return happens first), and reading
+        // `last.reason`/`last.matches` from inside a closure declared before
+        // those assignments needs that narrower type: TypeScript cannot carry
+        // a control-flow narrowing of a `let` through a nested function.
+        let last: Extract<FindOutcome, { ok: false }> = { ok: false, reason: 'not-found', matches: 0 }
+        const evaluate = (): Promise<FindOutcome> =>
+          findOutcome(call.args.sel).catch((): FindOutcome => ({ ok: false, reason: 'not-found', matches: 0 }))
+        const timedOut = (): SessionError =>
+          new SessionError(
+            'waitfor_timeout',
+            `waiting for ${JSON.stringify(call.args.sel)} exceeded ${call.args.timeout}ms (last: ${last.reason}, ${last.matches} matches)`,
+            { reason: last.reason, matches: last.matches },
+          )
+
+        // One evaluation before anything is subscribed or slept on: a
+        // condition that is ALREADY true resolves with a single round trip on
+        // every engine (plan 222 §3.5 phase 1).
+        const first = await evaluate()
+        if (first.ok) return first.node
+        last = first
+
+        const inspector = inspectorOrThrow()
+        if (inspector.watch) {
+          const signal = createChangeSignal()
+          let subscription: InspectorWatch | null = null
+          try {
+            subscription = await inspector.watch(() => signal.fire())
+          } catch {
+            // A subscription that cannot be opened is a degraded engine, not a
+            // failed wait: fall through to the poll below. `DeviceSession`
+            // carries no logger this executor can reach (plan 222 §4.4's own
+            // instruction: drop the line rather than adding one) — the
+            // fallback is already visible through `session.inspectorEngineId`.
+          }
+          if (subscription) {
+            try {
+              for (;;) {
+                const budget = deadline - Date.now()
+                if (budget <= 0) throw timedOut()
+                await signal.wait(Math.min(budget, WAITFOR_WATCH_RECHECK_MS))
+                const outcome = await evaluate()
+                if (outcome.ok) return outcome.node
+                last = outcome
+              }
+            } finally {
+              await subscription.close().catch(() => undefined)
+            }
+          }
+        }
+
+        // No watch on this engine (`ui-server`, `uiautomator-dump`), or the
+        // subscription could not be opened. The interval follows the active
+        // engine, exactly as before: ui-server is cheap (~80 ms), a dump is
+        // expensive.
+        const interval = Math.min(call.args.intervalMs, deps.session.inspectorPollIntervalMs)
         for (;;) {
-          const outcome = await findOutcome(call.args.sel).catch((): FindOutcome => ({ ok: false, reason: 'not-found', matches: 0 }))
+          if (Date.now() >= deadline) throw timedOut()
+          await Bun.sleep(interval)
+          const outcome = await evaluate()
           if (outcome.ok) return outcome.node
           last = outcome
-          if (Date.now() >= deadline) {
-            throw new SessionError(
-              'waitfor_timeout',
-              `waiting for ${JSON.stringify(call.args.sel)} exceeded ${call.args.timeout}ms (last: ${last.reason}, ${last.matches} matches)`,
-              { reason: last.reason, matches: last.matches },
-            )
-          }
-          await Bun.sleep(interval)
         }
       }
       case 'screenshot': {
-        const png = await inspector.screenshot()
+        const png = await inspectorOrThrow().screenshot()
         return Buffer.from(png).toString('base64')
       }
       case 'app.launch': {

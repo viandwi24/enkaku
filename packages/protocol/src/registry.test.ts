@@ -53,3 +53,39 @@ describe('validateEngineSelection — network engines (plan 44 §5.3)', () => {
     if (!result.ok) expect(result.code).toBe('LOCK_CONFLICT')
   })
 })
+
+describe('validateEngineSelection — ui-tree holds no instrumentation lock (plan 222 §3.8, §4.2)', () => {
+  // This test builds its own descriptor shapes rather than importing
+  // `packages/drivers/src/descriptors.ts`'s real `engineDescriptors`:
+  // `@enkaku/drivers` depends on `@enkaku/protocol`, never the reverse
+  // (CLAUDE.md), so a protocol-package test cannot import from drivers. The
+  // shapes below are copied by hand from `descriptors.ts`'s `ui-tree`,
+  // `scrcpy-uhid`, `scrcpy-sdk`, and `adb-input` entries (id, kind, locks) —
+  // exactly what `validateEngineSelection` reads.
+  test('ui-tree holds no lock, so no inspector/input combination conflicts', () => {
+    const uiTree = descriptor({ id: 'ui-tree', kind: 'inspector', locks: [] })
+    const inputs = [
+      descriptor({ id: 'scrcpy-uhid', kind: 'input', locks: ['input-injection'] }),
+      descriptor({ id: 'scrcpy-sdk', kind: 'input', locks: ['input-injection'] }),
+      descriptor({ id: 'adb-input', kind: 'input', locks: ['input-injection'] }),
+    ]
+    for (const input of inputs) {
+      const reg: RegistryResponse = {
+        transports: [descriptor({ id: 't', kind: 'transport' })],
+        displays: [descriptor({ id: 'd', kind: 'display' })],
+        inputs: [input],
+        inspectors: [uiTree],
+        networks: [descriptor({ id: 'none', locks: [] })],
+        tools: [],
+      }
+      const result = validateEngineSelection(reg, {
+        transport: 't',
+        display: 'd',
+        input: input.id,
+        inspection: 'ui-tree',
+        network: 'none',
+      })
+      expect(result).toEqual({ ok: true })
+    }
+  })
+})

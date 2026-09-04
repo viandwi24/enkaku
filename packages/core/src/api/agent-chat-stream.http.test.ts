@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, users } from '../db/schema'
 import { createLogger } from '../util/logger'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createDeviceStateMachine } from '../device/state-machine'
 import type { CapabilityContextDeps } from '../capability/context'
 import { buildCapabilityRegistry } from '../capability/registry'
@@ -86,7 +86,6 @@ function slowCapability(ms: number): AnyCoreCapability {
     input: z.object({}),
     output: z.object({ ok: z.boolean() }),
     permission: 'agent.run' as never,
-    lease: 'none',
     deadline: 30_000,
     effect: 'read',
     description: 'deliberately slow — a REAL wall-clock delay, not a scripted one',
@@ -119,17 +118,12 @@ function bootServer(opts: { caps?: AnyCoreCapability[]; turns?: FakeProviderTurn
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db as Db
-  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone', status: 'online' }).run()
   db.insert(users).values({ id: 'admin-user', email: 'admin@test', role: 'admin', passwordHash: null, createdAt: new Date() }).run()
 
   const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-  const leases = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: createLogger('test'),
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+  const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
 
   const registry = buildCapabilityRegistry(caps.map((cap) => ({ cap, file: 'test' })))
   const threads = createThreadStore(db)
@@ -140,7 +134,8 @@ function bootServer(opts: { caps?: AnyCoreCapability[]; turns?: FakeProviderTurn
 
   const capContextDeps: CapabilityContextDeps = {
     db,
-    leases,
+    activities,
+    controlSettings,
     states,
     sessions: () => null,
     readiness: () => null,
@@ -174,10 +169,12 @@ function bootServer(opts: { caps?: AnyCoreCapability[]; turns?: FakeProviderTurn
     connectors,
     registry,
     capContextDeps,
-    leases,
+    activities,
+    controlSettings,
     settings: () =>
       ({
-        agentDefaults: {
+        // Plan 212 §4.7: the agent settings store's key is `defaults`.
+        defaults: {
           connectorId: connector.id,
           model: 'fake-model',
           systemPrompt: '',

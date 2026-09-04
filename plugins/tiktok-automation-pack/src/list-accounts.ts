@@ -58,6 +58,7 @@ const listAccountsScript: PluginMemberScript<typeof paramsSchema, typeof resultS
   title: 'List accounts',
   description:
     "Reads the switch-account sheet and stores which TikTok accounts are signed in on this device, so the TikTok accounts screen can show them. Never taps an account — it changes nothing about which account is signed in.",
+  node: { category: 'device', icon: 'list', summary: [], keywords: ['accounts', 'list'] },
   params: paramsSchema,
   result: resultSchema,
   // Shorter than `switch-account`'s: this member walks the same five screens but does none of the

@@ -122,7 +122,7 @@ describe('backfillScheduleScriptRefs (plan 62 §4.3)', () => {
         cron: '0 * * * *',
         timezone: 'UTC',
         scriptRef: 'checkout@latest',
-        clusterId: 'c1',
+        groupId: 'c1',
         concurrency: 0,
         order: 'as-listed',
         onOverlap: 'skip',

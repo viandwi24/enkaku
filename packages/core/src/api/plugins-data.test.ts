@@ -80,11 +80,11 @@ async function activate(runtime: PluginRuntime, name: string): Promise<void> {
   runtime.activate(staged.id)
 }
 
-function seedDevice(db: Db, n: number, over: { clusterId?: string | null } = {}): { id: string; stableId: string } {
+function seedDevice(db: Db, n: number, over: { groupId?: string | null } = {}): { id: string; stableId: string } {
   const id = `d${String(n).padStart(4, '0')}`
   const stableId = `s${String(n).padStart(4, '0')}`
   db.insert(devices)
-    .values({ id, stableId, serial: `ser-${n}`, label: `Pixel ${n}`, status: 'idle', clusterId: over.clusterId ?? null })
+    .values({ id, stableId, serial: `ser-${n}`, label: `Pixel ${n}`, status: 'idle', groupId: over.groupId ?? null })
     .run()
   return { id, stableId }
 }
@@ -194,7 +194,7 @@ describe('the five data routes, happy path', () => {
   test('GET /:name/data/scan returns one row per device, joined to the key', async () => {
     const { app, runtime, db, kv } = setUp()
     await activate(runtime, 'tiktok')
-    const d1 = seedDevice(db, 1, { clusterId: 'c1' })
+    const d1 = seedDevice(db, 1, { groupId: 'c1' })
     seedDevice(db, 2)
     kv.set({ kind: 'device', stableId: d1.stableId }, 'tiktok', 'accounts', ['alice'])
 
@@ -203,7 +203,7 @@ describe('the five data routes, happy path', () => {
     const body = PluginDataScanResponseSchema.parse(await res.json())
     expect(body.items.length).toBe(2)
     expect(body.items[0]?.entry?.value).toEqual(['alice'])
-    expect(body.items[0]?.clusterId).toBe('c1')
+    expect(body.items[0]?.groupId).toBe('c1')
     // A device with no entry is still a row — that is what the LEFT JOIN buys.
     expect(body.items[1]?.entry).toBeNull()
     expect(body.nextCursor).toBeNull()
@@ -440,13 +440,13 @@ describe('GET /:name/data/scan — the allowlist, paging, and the N+1 tripwire',
   test('exposes exactly the six allowlisted device fields and no others', async () => {
     const { app, runtime, db, kv } = setUp()
     await activate(runtime, 'tiktok')
-    const d = seedDevice(db, 1, { clusterId: 'c1' })
+    const d = seedDevice(db, 1, { groupId: 'c1' })
     kv.set({ kind: 'device', stableId: d.stableId }, 'tiktok', 'accounts', ['alice'])
 
     const body = await jsonBody(await app.request('/tiktok/data/scan?key=accounts'))
     const row = (body.items as Record<string, unknown>[])[0]
     expect(row).toBeDefined()
-    expect(Object.keys(row as Record<string, unknown>).sort()).toEqual(['clusterId', 'deviceId', 'entry', 'label', 'number', 'stableId', 'status'])
+    expect(Object.keys(row as Record<string, unknown>).sort()).toEqual(['deviceId', 'entry', 'groupId', 'label', 'number', 'stableId', 'status'])
     // The columns a device row actually has but a view may never see (§3.6).
     for (const forbidden of ['serial', 'ownerId', 'settings', 'battery', 'nodeId', 'agent', 'preparation', 'networkRoute']) {
       expect(Object.keys(row as Record<string, unknown>)).not.toContain(forbidden)

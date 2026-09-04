@@ -7,6 +7,7 @@ export { buildGesturePath, type GesturePathOpts } from './input/gesture'
 export { escapeInputText, InputTextError } from './input/escape'
 export { engineDescriptors } from './descriptors'
 export { UiautomatorDumpInspector, InspectorError } from './inspector/uiautomator-dump'
+export { UiTreeInspector, type UiTreeInspectorDeps, type UiTreeWatchHandle } from './inspector/ui-tree/index'
 export { parseUiDump, parseBounds } from './inspector/xml-parser'
 export {
   UiServerInspector,
@@ -29,6 +30,18 @@ export {
   type UiServerStatus,
   type DeviceArtifactExpectation,
   type VerifyResult,
+  type UiServerStartHooks,
+  ConfiguratorInfoSchema,
+  DEFAULT_CONFIGURATOR,
+  type ConfiguratorInfo,
+  createUiServerLifecycle,
+  classifyInstrumentationLine,
+  createInstrumentationParser,
+  INSTRUMENTATION_FATAL_PATTERNS,
+  INSTRUMENTATION_START_SILENCE_MS,
+  type UiServerLifecycle,
+  type UiServerLifecycleOptions,
+  type UiServerLifecycleState,
 } from './inspector/ui-server/index'
 export { ScrcpyDisplay } from './display/scrcpy'
 export { ScrcpySdkInput, ScrcpyUhidInput, type ScrcpyInputDeps } from './input/scrcpy-input'
@@ -39,7 +52,6 @@ export {
   type InputSelectionResult,
 } from './input/select'
 export { AppiumInspector, type AppiumInspectorOptions } from './inspector/appium'
-export { ScrcpyAoaInput } from './input/scrcpy-aoa'
 export {
   grantRuntimePermissions,
   installWithGrantFallback,
@@ -53,10 +65,12 @@ export {
   GuestAgentClientError,
   createGuestAgentClient,
   createGuestAgentLauncher,
+  createGuestAgentWatch,
   createVpnHelperRoute,
   GUEST_AGENT_PACKAGE,
   GUEST_AGENT_RUNTIME_PERMISSIONS,
   GUEST_AGENT_SOCKET,
+  GUEST_AGENT_UI_TREE_SERVICE,
   GUEST_AGENT_REPAIRABLE_ERROR_CODES,
   type CreateVpnHelperRouteOptions,
   type GuestAgentClient,
@@ -68,8 +82,11 @@ export {
   type GuestAgentLauncherDeps,
   type GuestAgentArtifactMismatch,
   type GuestAgentVpnConsent,
+  type GuestAgentAccessibility,
   type GuestAgentSocketHandle,
   type GuestAgentSocketHandlers,
+  type GuestAgentWatch,
+  type GuestAgentWatchOptions,
   type NetworkRoute,
 } from './network/guest-agent/index'
 export {

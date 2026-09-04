@@ -21,7 +21,7 @@ export interface AdbEndpointManager {
   /**
    * Opens (or, for a device that already has one, returns) the endpoint for
    * `deviceId` — "one endpoint per device" (plan §4.2). The caller has
-   * already verified `device.adb` plus the manual lease before reaching this.
+   * already verified `device.adb` plus activity admission before reaching this.
    */
   open(deviceId: string, clientId: string, userId: string | null): Promise<{ host: string; port: number; expiresAt: number }>
   /** Idempotent — closing an endpoint that does not exist is a no-op. */
@@ -87,9 +87,9 @@ interface EndpointRecord {
 }
 
 /**
- * The lease-scoped adb endpoint's lifecycle (plan 27 §4.2): one `Bun.listen`
+ * The activity-gated adb endpoint's lifecycle (plan 27 §4.2): one `Bun.listen`
  * per device, created on `open()` and torn down on `close()` — by an
- * explicit lease-release, a device going offline, or a WS disconnect (the
+ * explicit control-marker end, a device going offline, or a WS disconnect (the
  * same three triggers `shell-session.ts`'s cwd store resets on), or by its
  * own idle timer. This module owns none of those trigger wires itself
  * (matching this codebase's daemon.ts forward-ref pattern, not a shared

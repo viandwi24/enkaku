@@ -1,10 +1,10 @@
 import { join } from 'node:path'
-import { UiautomatorDumpInspector } from '@enkaku/drivers'
 import {
-  defaultFarmSettings,
+  defaultJobSettings,
   FindOutcomeSchema,
   resolveRuntime,
   RESULT_LIMITS,
+  type Inspector,
   type JobSettings,
   type ResultOutcome,
   type RuntimeEnvelope,
@@ -36,6 +36,7 @@ import { resolveIsolation, type IsolationProvider } from './isolation'
 import {
   createNoopTraceTee,
   createTraceTee,
+  reusableTree,
   type TraceCaptureRequest,
   type TraceCaptureResult,
   type TraceEventInput,
@@ -106,7 +107,15 @@ export interface AttemptOutcome {
  * The runner knows nothing about the database or the `scripts` table.
  */
 export interface JobSpec {
+  /** The JOB id. Author-facing: `ENKAKU_JOB_ID`, the KV namespace fallback, `ctx.jobs`'s `jobId`, `InputSource.id` (plan 211 §3.2 decision 10). */
   id: string
+  /**
+   * The RUN id (plan 211). Everything this execution STORES or that tracks
+   * its liveness keys on it: artifacts, trace events, trace frames and UI
+   * captures, the phase/heartbeat/progress/retry callbacks, and the
+   * runner's own `active` map (so `abort()` takes a run id).
+   */
+  runId: string
   deviceId: string
   /** Path to the ESM bundle file the child will import. */
   bundlePath: string
@@ -127,15 +136,6 @@ export interface JobSpec {
    * wipe. Undefined for every job outside a workflow.
    */
   reset?: 'farm' | 'none'
-  /**
-   * Plan 99 §3.2, §4.8. The workflow node this execution belongs to.
-   * Threaded into the child's `init` and into `ctx.jobs.trigger()`'s default
-   * idempotency key, because several nodes share one `jobId` and one
-   * `attempt` counter and would otherwise derive colliding keys (plan 99
-   * F20). Undefined for a standalone job, which keeps deriving the exact key
-   * shape it always has.
-   */
-  nodeId?: string
   /**
    * Plan 99 §3.5, §4.8 — overrides `ScriptDefinition.retries` for this
    * execution (a workflow's per-node override). Undefined defers entirely to
@@ -254,7 +254,7 @@ export interface JobRunnerDeps {
   onArtifact: (jobId: string, artifact: { kind: string; label: string; path: string; sizeBytes: number }) => void
   /** `reset` (plan 35 §3.5, §4.4) always precedes `prepare`, for a 'full' attempt only. */
   onPhase: (jobId: string, attempt: number, phase: 'reset' | 'prepare' | 'run' | 'finish') => void
-  /** Extend the job lease (child heartbeat or device activity). */
+  /** Extend the job heartbeat (child heartbeat or device activity). */
   heartbeat: (jobId: string) => void
   /**
    * Read fresh per attempt, not captured at daemon start (plan 35 §4.4) — the
@@ -333,8 +333,8 @@ export interface JobRunnerDeps {
   onProgress?: (jobId: string, value: unknown) => void
   /**
    * The job trace (plan 128 §3.1, §4.2, step 128.4) — one event per device
-   * action, log line, phase boundary, artifact, progress push and human
-   * assist, on one millisecond-resolution axis.
+   * action, log line, phase boundary, artifact and progress push, on one
+   * millisecond-resolution axis.
    *
    * Optional, exactly like `transfer`/`timing`/`kv`/`jobs` above: **a host
    * that does not wire it loses tracing and nothing else.** The tee it feeds
@@ -355,7 +355,7 @@ export interface JobRunnerDeps {
    * with attempt 1 on `uniqueIndex(jobId, seq)`. Order is the tee's contract;
    * numbering is the recorder's.
    */
-  onTraceEvent?: (jobId: string, event: TraceEventInput) => void
+  onTraceEvent?: (runId: string, event: TraceEventInput) => void
   /**
    * Where trace frames and UI-tree snapshots are stored (plan 128 §3.5, step
    * 128.5) — `<dataDir>/traces/<jobId>/<sha256>.png` and `.json.gz`, one
@@ -409,26 +409,32 @@ export type AbortReason = 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startu
 export interface RunningJob {
   /** `detail` is a human-readable cause, used only for `reason: 'crashed'` (plan 37 §4.4) — e.g. "com.example.app crashed: java.lang.NullPointerException". */
   abort(reason: AbortReason, detail?: string): void
-  /** Plan 91 §3.6, §4.8 — delivers `{t:'assist', at, actor}` to the running child. NOT an abort — no grace timer, no kill, the process is entirely unaffected beyond receiving the message. */
-  notifyAssist(e: { at: number; actor: string | null }): void
 }
 
 export interface JobRunner {
   execute(job: JobSpec): Promise<{ ok: boolean; value?: unknown; error?: ScriptFailure; peakRssBytes?: number; outcome?: ResultOutcome }>
   abort(jobId: string, reason: AbortReason, detail?: string): boolean
-  /**
-   * Plan 91 §3.6, §4.8 — the second unsolicited parent→child push ever
-   * (`abort` is the first). Returns whether a live child was found — a job
-   * that finished (or was never running) between the assist and this call is
-   * a harmless no-op, the same shape `abort` above already has.
-   */
-  notifyAssist(jobId: string, e: { at: number; actor: string | null }): boolean
 }
 
 const childEntryPath = join(import.meta.dir, 'child-entry.ts')
 const defaultIsolation = resolveIsolation()
 /** Plan 97 §3.7, §4.9 — mirrors `job.progressIntervalMs`'s own zod default (`packages/protocol/src/settings.ts`). */
 const DEFAULT_PROGRESS_INTERVAL_MS = 1_000
+
+/**
+ * Plan 208 §3.5, §4.10: a `null` session inspector is `E_INSPECTOR_STARTING`,
+ * never an ad-hoc substitute engine — the substitute is exactly what seized
+ * the `instrumentation` lock from a healthy ui-server in another session
+ * (MVP 02 §2.5). The dump engine is built in one place only,
+ * `inspector-factory.ts`'s own fallback.
+ */
+function inspectorOrThrow(session: DeviceSession): Inspector {
+  if (session.inspector) return session.inspector
+  throw new SessionError(
+    'E_INSPECTOR_STARTING',
+    `the inspector on ${session.deviceId} is still starting (engine: ${session.inspectorEngineId}); retry in a moment`,
+  )
+}
 
 /** The `ScriptFailure.code` an abort reason settles as (plan 37 §4.4, plan 74 §4.2). */
 function abortErrorCode(reason: AbortReason): string {
@@ -484,7 +490,7 @@ function runtimeEnvelopesDiffer(a: RuntimeEnvelope | null | undefined, b: Runtim
 
 export function createJobRunner(deps: JobRunnerDeps): JobRunner {
   const active = new Map<string, RunningJob>()
-  const getResetSettings = deps.resetPolicy ?? (() => defaultFarmSettings().job)
+  const getResetSettings = deps.resetPolicy ?? (() => defaultJobSettings())
 
   async function runAttempt(opts: {
     job: JobSpec
@@ -501,8 +507,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     logger: ReturnType<typeof createJobLogger>
     artifacts: ArtifactSink
     aborter: { current: ((reason: AbortReason, detail?: string) => void) | null }
-    /** Plan 91 §3.6, §4.8 — the `notifyAssist` counterpart to `aborter` above, same ref-cell shape. */
-    assistNotifier: { current: ((e: { at: number; actor: string | null }) => void) | null }
     /** Filled from the `ready` message — timeout and retries belong to ScriptDefinition. */
     meta?: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string; pluginId?: string }
     /**
@@ -528,7 +532,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
      * no memory budget of its own, deliberately) and for a farm/script that
      * declared no ceiling at all. `maxRssBytes: null` inside a defined object
      * never happens in practice (the caller only builds this when a ceiling
-     * resolved to a real number) but stays nullable here to mirror
+     * resolved to a real number) but stays nullable here, matching
      * `ResolvedRuntime.maxRssBytes`'s own shape rather than inventing a second one.
      */
     memory?: { maxRssBytes: number | null; enforce: 'kill' | 'warn' | 'off'; sampleIntervalMs: number }
@@ -545,7 +549,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     // silence watchdog) is decided purely by whether a CEILING NUMBER
     // resolved, never by `enforce`: even `enforce: 'off'` benefits from a
     // more accurate recorded peak, and sampling faster costs nothing extra
-    // (an `rss` message never triggers a lease-renewal write — see below).
+    // (an `rss` message never triggers a heartbeat-renewal write — see below).
     const memory = opts.memory
     const memoryLimitConfigured = memory !== undefined && memory.maxRssBytes !== null
     const effectiveRssSampleMs = memory !== undefined && memory.maxRssBytes !== null ? memory.sampleIntervalMs : RSS_SAMPLE_MS
@@ -567,12 +571,12 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     let declaredPackages: string[] = []
     const launchedPackages = new Set<string>()
     const reportTargetPackages = (): void => {
-      deps.onTargetPackages?.(job.id, declaredPackages.length > 0 ? declaredPackages : [...launchedPackages])
+      deps.onTargetPackages?.(job.runId, declaredPackages.length > 0 ? declaredPackages : [...launchedPackages])
     }
     // Plan 91 §3.3, §4.1 — this attempt's identity for the input arbiter's
-    // attribution and priority lane. `id: job.id` (not `attempt`): an assist
-    // and a retry both belong to the SAME job for §3.5's attribution, and the
-    // arbiter's `job`/`agent` priority tier does not distinguish attempts.
+    // priority lane. `id: job.id` (not `attempt`): a retry belongs to the
+    // SAME job, and the arbiter's `job`/`agent` priority tier does not
+    // distinguish attempts.
     const source: InputSource = { kind: 'job', id: job.id, userId: null }
     const execDevice = createDeviceExecutor({
       session,
@@ -590,7 +594,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       // over "captured at daemon start" (still the comment's own point), but
       // a setting change made while THIS attempt's script was still running
       // never reached it — the same shape of bug this repo has shipped
-      // before (a co-control queue budget read once and never again).
+      // before (an input-arbiter queue budget read once and never again).
       ...(deps.timing ? { timing: deps.timing } : {}),
     })
 
@@ -649,7 +653,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         tee.closePhase()
         for (const t of [killTimer, timeoutTimer, startupTimer, graceTimer, silenceTimer]) if (t) clearTimeout(t)
         opts.aborter.current = null
-        opts.assistNotifier.current = null
         try {
           child.kill()
         } catch {
@@ -767,27 +770,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       }
 
       opts.aborter.current = doAbort
-      // Plan 91 §3.6, §4.8 — NOT gated on `settled`/`abortReason` the way
-      // `doAbort` is: an assist notification is not mutually exclusive with
-      // anything else that can happen to this attempt, and firing it after
-      // `finish()` already nulled the ref is exactly the harmless no-op
-      // `opts.assistNotifier.current?.(e)` at the call site expects.
-      opts.assistNotifier.current = (e) => {
-        // Plan 128 §0.1 — a human touching the device mid-run is delivered to
-        // the script and, until now, sat on no shared time axis at all.
-        tee.assist(e)
-        send({ t: 'assist', at: e.at, actor: e.actor })
-      }
 
       const sendInit = () => {
         if (settled) return
         send({
           t: 'init',
           mode,
-          // `nodeId` (plan 99 §3.2, §4.8) is the workflow node this
-          // execution belongs to — undefined for every job outside a
-          // workflow, which keeps this shape exactly what it was before.
-          job: { id: job.id, attempt, deviceId: job.deviceId, ...(job.nodeId !== undefined ? { nodeId: job.nodeId } : {}) },
+          job: { id: job.id, attempt, deviceId: job.deviceId },
           params: job.params ?? {},
           ...(opts.priorError ? { priorError: opts.priorError } : {}),
           // Plan 98 §4.7 — `job.memory.sampleIntervalMs` once a ceiling is
@@ -848,7 +837,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         }
         logger.append('info', 'runner', `reset: policy=${plan.policy}`)
         tee.phase('reset')
-        deps.onPhase(job.id, attempt, 'reset')
+        deps.onPhase(job.runId, attempt, 'reset')
         // The child is idle while this runs — deliberately, it is waiting
         // for `init` — so the "no message in 30s = hung" watchdog is paused
         // for the duration rather than misreading a quiet reset as a dead
@@ -871,7 +860,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           `reset done: applied=${outcome.applied.length} warnings=${outcome.warnings.length} durationMs=${outcome.durationMs}`,
           { applied: outcome.applied, warnings: outcome.warnings },
         )
-        deps.onReset?.(job.id, job.deviceId, outcome, plan)
+        deps.onReset?.(job.runId, job.deviceId, outcome, plan)
         if (settled) return
         // The reset is over — resume watching for child activity.
         resetSilenceTimer()
@@ -893,10 +882,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         const msg = parsed.data as ChildToParent
         resetSilenceTimer()
         // Plan 98 §4.7 — an `rss` sample is proof of life (the silence timer
-        // above still resets) but NOT lease-renewal activity: at a fast
+        // above still resets) but NOT heartbeat-renewal activity: at a fast
         // sample cadence, treating every sample as a heartbeat would multiply
-        // lease-renewal writes for no benefit.
-        if (msg.t !== 'rss') deps.heartbeat(job.id)
+        // heartbeat-renewal writes for no benefit.
+        if (msg.t !== 'rss') deps.heartbeat(job.runId)
 
         if (msg.t === 'rss') {
           if (peakRssBytes === null || msg.bytes > peakRssBytes) peakRssBytes = msg.bytes
@@ -970,7 +959,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           // mid-run and the session falls back, so a job really can change
           // capture policy while it is running.
           tee.phase(msg.phase)
-          deps.onPhase(job.id, attempt, msg.phase)
+          deps.onPhase(job.runId, attempt, msg.phase)
           if (msg.phase === 'finish') finishRan = true
         } else if (msg.t === 'log') {
           logger.append(msg.level, 'script', msg.msg, msg.fields)
@@ -979,9 +968,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           // child's own timer. No DB write, no size check, no rate limit
           // here — those live one hop further out (`executor-host.ts`).
           tee.progress(msg.value)
-          deps.onProgress?.(job.id, msg.value)
+          deps.onProgress?.(job.runId, msg.value)
         } else if (msg.t === 'heartbeat') {
-          // already handled by resetSilenceTimer and the lease heartbeat
+          // already handled by resetSilenceTimer and the job heartbeat
         } else if (msg.t === 'device.call') {
           const call = DeviceCallSchema.safeParse(msg)
           if (!call.success) {
@@ -1139,7 +1128,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               const data =
                 msg.kind === 'screenshot'
                   ? // The screenshot is taken IN THE CORE → its ordering follows the per-device queue.
-                    await (session.inspector ?? new UiautomatorDumpInspector(session.transport)).screenshot()
+                    // Plan 208 §3.5: a null inspector is E_INSPECTOR_STARTING, never an
+                    // ad-hoc substitute engine — the substitute is what seized the
+                    // instrumentation lock from a healthy ui-server in another session.
+                    await inspectorOrThrow(session).screenshot()
                   : Uint8Array.from(Buffer.from(msg.dataBase64 ?? '', 'base64'))
               const saved = await artifacts.save({
                 kind: msg.kind,
@@ -1152,7 +1144,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               // artifact's OWN bytes. No second capture, for the same
               // recursion reason `method: 'screenshot'` gets.
               tee.artifact({ kind: msg.kind, label: msg.label, sizeBytes: saved.sizeBytes, ...(msg.kind === 'screenshot' ? { frameBytes: data } : {}) })
-              deps.onArtifact(job.id, { kind: msg.kind, label: msg.label, ...saved })
+              deps.onArtifact(job.runId, { kind: msg.kind, label: msg.label, ...saved })
               // Plan 115 §3.6 — the bridge: `saved.id` is what
               // `ctx.artifact.file()` hands back to the script, so it can
               // pass it straight to `ctx.device.push({ artifactId })`.
@@ -1235,13 +1227,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       return true
     },
 
-    notifyAssist(jobId, e) {
-      const running = active.get(jobId)
-      if (!running) return false
-      running.notifyAssist(e)
-      return true
-    },
-
     async execute(job) {
       // timeout, retries, and the kv namespace (plan 79 §3.2) are only known
       // once the child has imported the bundle; it sends them in the `ready`
@@ -1275,17 +1260,21 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         let frameHash: string | null = null
         if (req.frame === 'reuse') {
           const bytes = toFrameBytes(req.frameValue)
-          if (bytes) frameHash = await store.putFrame(job.id, bytes)
+          if (bytes) frameHash = await store.putFrame(job.runId, bytes)
         } else if (req.frame === 'capture' && inspector) {
-          frameHash = await store.putFrame(job.id, await inspector.screenshot())
+          frameHash = await store.putFrame(job.runId, await inspector.screenshot())
         }
         let uiHash: string | null = null
         try {
           if (req.uiTree === 'reuse') {
             const tree = toTraceUiTree(req.method, req.treeValue)
-            if (tree !== null) uiHash = await store.putUiTree(job.id, tree)
+            if (tree !== null) uiHash = await store.putUiTree(job.runId, tree)
           } else if (req.uiTree === 'capture' && inspector) {
-            uiHash = await store.putUiTree(job.id, await inspector.dump())
+            // Plan 208 §3.7, §4.9 — reuse the dump the script just paid for
+            // when it is still fresh, instead of a second round trip on the
+            // RPC channel the script's own calls share.
+            const reused = reusableTree(inspector.lastDump?.(), Date.now())
+            uiHash = await store.putUiTree(job.runId, reused ?? (await inspector.dump()))
           }
         } catch {
           uiHash = null
@@ -1295,14 +1284,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 
       const tee: TraceTee = deps.onTraceEvent
         ? createTraceTee({
-            jobId: job.id,
-            ...(job.nodeId !== undefined ? { nodeId: job.nodeId } : {}),
+            runId: job.runId,
             attempt: () => traceAttempt,
             // Read fresh, never captured: `inspectorEngineId` is `'starting'`
             // until an engine actually resolves, and changes again after a
             // watchdog fallback (§3.4).
             engineId: () => (session?.inspector ? session.inspectorEngineId : null),
-            emit: (event) => deps.onTraceEvent!(job.id, event),
+            emit: (event) => deps.onTraceEvent!(job.runId, event),
             // No store wired ⇒ no `capture` ⇒ the policy resolves to `'none'`
             // while the engine id is still reported honestly on every phase
             // event, so the timeline says "no frames", not "no inspector".
@@ -1325,16 +1313,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         },
         redact: deps.kv ? (text) => deps.kv!.redact({ deviceId: job.deviceId, namespace: meta.pluginId ?? meta.scriptId }, text) : undefined,
       })
-      const artifacts = deps.artifacts(job.id)
+      const artifacts = deps.artifacts(job.runId)
       const aborter: { current: ((reason: AbortReason, detail?: string) => void) | null } = { current: null }
-      // Plan 91 §3.6, §4.8 — the `notifyAssist` counterpart to `aborter`
-      // above, same ref-cell indirection (`runAttempt` assigns the real
-      // sender once the child is actually spawned; `active` is populated
-      // here, before that happens).
-      const assistNotifier: { current: ((e: { at: number; actor: string | null }) => void) | null } = { current: null }
-      active.set(job.id, {
+      active.set(job.runId, {
         abort: (reason, detail) => aborter.current?.(reason, detail),
-        notifyAssist: (e) => assistNotifier.current?.(e),
       })
 
       let outcome: AttemptOutcome = { ok: false, finishRan: false, error: { code: 'NOT_RUN', message: 'not run yet', phase: 'run' } }
@@ -1377,7 +1359,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             session = await deps.sessions.acquire(job.deviceId, noopFrame)
             // Manual control does not wait for the inspector, but a script
             // does: its very first waitFor should use the real engine rather
-            // than the slower ad-hoc dump fallback.
+            // than an engine that is still starting (plan 208 §3.2, §5 step
+            // 208.8 — there is no ad-hoc fallback to wait out any more).
             await session.whenInspectorReady()
           } catch (err) {
             session = null
@@ -1473,7 +1456,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               logger,
               artifacts,
               aborter,
-              assistNotifier,
               meta,
               tee,
             })
@@ -1502,7 +1484,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               logger,
               artifacts,
               aborter,
-              assistNotifier,
               // `finish()` may call ctx.kv too — carry the namespace already learned from this job's
               // earlier `ready` message (plan 79 §3.2) rather than leaving a finish-only attempt with
               // no namespace at all.
@@ -1550,7 +1531,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               'runner',
               `attempt ${attempt} failed (${classified.class}:${classified.code}) — retrying after ${delayMs}ms backoff`,
             )
-            deps.onRetry?.(job.id, { attempt, class: classified.class, code: classified.code, delayMs })
+            deps.onRetry?.(job.runId, { attempt, class: classified.class, code: classified.code, delayMs })
             if (delayMs > 0) await Bun.sleep(delayMs)
           } else {
             // Plan 99 §3.5, §4.8: `job.retries` (a workflow's per-node
@@ -1560,7 +1541,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             if (scriptAttempts >= (job.retries ?? meta.retries ?? 0)) break
             scriptAttempts += 1
             logger.append('warn', 'runner', `attempt ${attempt} failed (${classified.class}:${classified.code}) — retrying`)
-            deps.onRetry?.(job.id, { attempt, class: classified.class, code: classified.code, delayMs: 0 })
+            deps.onRetry?.(job.runId, { attempt, class: classified.class, code: classified.code, delayMs: 0 })
           }
         }
       } catch (err) {
@@ -1568,7 +1549,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         logger.append('error', 'runner', `runner failed: ${message}`)
         outcome = { ok: false, finishRan: false, error: { code: 'RUNNER_FAILED', message, phase: 'run' } }
       } finally {
-        active.delete(job.id)
+        active.delete(job.runId)
         if (session) deps.sessions.release(job.deviceId, noopFrame)
         const { bytes } = await logger.close()
         await artifacts

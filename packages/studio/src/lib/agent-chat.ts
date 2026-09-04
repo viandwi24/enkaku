@@ -123,26 +123,6 @@ export function composerDraftKey(threadId: string): string {
   return `enkaku:composer-draft:${threadId}`
 }
 
-/**
- * Plan 70 §3.6, §3.7 — a client-side approximation of the agent's own image
- * window: the oldest image-bearing tool results, beyond the budget, are no
- * longer in the provider's view even though the stored transcript keeps
- * them. `maxImages` defaults to `AgentDefaultsSchema`'s own default (10).
- */
-export function computeImageInContext(messages: AgentMessage[], maxImages = 10): Record<string, boolean> {
-  const order: string[] = []
-  for (const m of messages) {
-    for (const block of m.content) {
-      if (block.type === 'tool_result' && block.content.some((c) => c.type === 'image')) order.push(block.toolUseId)
-    }
-  }
-  const dropCount = Math.max(0, order.length - maxImages)
-  const dropped = new Set(order.slice(0, dropCount))
-  const out: Record<string, boolean> = {}
-  for (const id of order) out[id] = !dropped.has(id)
-  return out
-}
-
 // ---------------------------------------------------------------------------
 // History → `useChat`'s `initialMessages` (plan 78 §3.5 — fetch-then-
 // subscribe still holds: history loads over HTTP, `useChat` streams from

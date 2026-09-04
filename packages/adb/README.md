@@ -65,6 +65,15 @@ boot after upgrading — a tracked removal, see `docs/plans/00-overview.md`
 4) is the companion **per-device** cap on the same lane — a device may not
 exceed it even when the farm-wide budget has room.
 
+**Pinned streams (plan 208 §3.6).** `execStream(serial, cmd, { pinned: true, ... })`
+takes no slot on either cap above — it is counted separately (`streamStats().pinned`)
+and gates nothing. Only for a stream whose lifetime is bounded by something
+else (a session): the ui-server instrumentation is pinned since plan 208,
+because it now lives for the whole session rather than only while an Inspect
+tab is open, and competing with a bursty user (a Monitor tab, a transfer, an
+install) for the same per-device cap of 4 was the wrong budget for something
+session-lifetime. A bursty user never sets it.
+
 ### Why the two formulas differ
 
 `computeAutoConcurrency`'s constant (`0.75`, floor 6, ceiling 24) exists so

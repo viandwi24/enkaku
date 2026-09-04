@@ -3,18 +3,17 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ArrowLeft, RotateCcw, Search } from 'lucide-react'
 import { z } from 'zod'
 import type { AgentRun, AgentThread, AgentTreeNode } from '@enkaku/protocol'
 import type { DeviceInfo } from '@enkaku/protocol'
 import {
   AgentResponseSchema,
   ConnectorModelsResponseSchema,
+  FarmAgentSettingsResponseSchema,
   ListCapabilitiesResponseSchema,
   ListConnectorsResponseSchema,
   ListThreadsResponseSchema,
   RunResponseSchema,
-  SettingsResponseSchema,
   ThreadResponseSchema,
 } from '@enkaku/protocol'
 import {
@@ -27,8 +26,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
+  ArrowCounterClockwiseIcon,
   Badge,
   Button,
+  CaretLeftIcon,
   ConfirmDialog,
   DeviceName,
   EmptyState,
@@ -36,6 +37,7 @@ import {
   Input,
   Label,
   LoadingRows,
+  MagnifyingGlassIcon,
   Select,
   SelectContent,
   SelectItem,
@@ -97,7 +99,7 @@ function OverrideRow({ label, overridden, farmValueLabel, onEnable, onClear, chi
         <Label className="text-[13px] font-normal">{label}</Label>
         {overridden ? (
           <button type="button" onClick={onClear} className="flex items-center gap-1 text-[11.5px] text-fg-muted hover:text-fg">
-            <RotateCcw className="size-3" aria-hidden />
+            <ArrowCounterClockwiseIcon className="size-3" aria-hidden />
             Reset to farm default
           </button>
         ) : (
@@ -194,8 +196,9 @@ function AgentDetail() {
   useEffect(loadThreads, [id])
 
   useEffect(() => {
-    api('/api/settings', SettingsResponseSchema)
-      .then((b) => setFarmDefaults(b.settings.agentDefaults))
+    // Plan 212 §4.7 — agent defaults moved off `/api/settings` onto their own route.
+    api('/api/agents/settings', FarmAgentSettingsResponseSchema)
+      .then((b) => setFarmDefaults(b.settings.defaults))
       .catch(() => undefined)
     api('/api/connectors', ListConnectorsResponseSchema)
       .then((b) => setConnectors(b.connectors))
@@ -225,7 +228,7 @@ function AgentDetail() {
   }, [connectorId])
 
   // Reset the run/tree the moment the open thread changes — `Chat` itself resets on mount (a fresh
-  // `key={threadId}`) for a new `threadId`, but the PARENT's own mirror (used only for the header's
+  // `key={threadId}`) for a new `threadId`, but the PARENT's own copy (used only for the header's
   // Cancel button) must not go on showing a previous thread's run while a new one loads.
   useEffect(() => {
     setRun(null)
@@ -334,12 +337,12 @@ function AgentDetail() {
           <div className="flex items-center gap-1">
             <Button asChild variant="ghost" size="sm">
               <Link href="/agents">
-                <ArrowLeft className="size-3.5" aria-hidden />
+                <CaretLeftIcon className="size-3.5" aria-hidden />
                 Agents
               </Link>
             </Button>
             <Button asChild variant="ghost" size="sm">
-              <Link href={`/agents/runs?agent=${id}`}>Runs</Link>
+              <Link href={`/agents?tab=runs&agent=${id}`}>Runs</Link>
             </Button>
           </div>
         }
@@ -842,7 +845,7 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
           // to look at and to type into. The live count beside the label is
           // what makes the scoped bulk button above legible.
           <div className="relative mb-2">
-            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden />
+            <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden />
             <Input
               value={deviceQuery}
               onChange={(e) => setDeviceQuery(e.target.value)}
@@ -1000,7 +1003,7 @@ function ConnectorsSection({ connectors }: { connectors: Connector[] }) {
         )}
       </div>
       <Button asChild variant="outline" size="sm">
-        <Link href="/settings?tab=connectors">Manage connectors in Settings</Link>
+        <Link href="/agents?tab=settings">Manage connectors in Settings</Link>
       </Button>
     </SectionCard>
   )

@@ -93,7 +93,7 @@ export function ContextPanel({ agent, devices, capabilities }: { agent: Agent; d
         )}
       </Section>
 
-      <Section title="Workspace" hint={`/agents/${agent.slug}/`}>
+      <Section title="Files" hint={`/agents/${agent.slug}/`}>
         <div className="space-y-1.5 text-[11.5px]">
           <div>
             <p className="text-fg-subtle">read</p>
@@ -104,8 +104,8 @@ export function ContextPanel({ agent, devices, capabilities }: { agent: Agent; d
             {agent.workspaceScope.write.length === 0 ? <p className="text-fg-subtle">(none)</p> : agent.workspaceScope.write.map((p) => <p key={p} className="readout truncate">{p}</p>)}
           </div>
         </div>
-        <Link href={`/workspace?path=${encodeURIComponent(`/agents/${agent.slug}/`)}`} className="mt-1.5 inline-block text-[11.5px] text-accent hover:underline">
-          Open in Workspace
+        <Link href={`/agents?tab=files&path=${encodeURIComponent(`/agents/${agent.slug}/`)}`} className="mt-1.5 inline-block text-[11.5px] text-accent hover:underline">
+          Open in Files
         </Link>
       </Section>
 

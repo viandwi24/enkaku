@@ -281,7 +281,9 @@ describe('createCutoverManager — arm, flip, watch (plan 88 §3.4 step 3)', () 
     const state = manager.get('stable-a')
     expect(state?.step).toBe('failed')
     expect(state?.detail).toMatch(/port did not flip/)
-    expect(state?.detail).toMatch(/DHCP lease/)
+    // Plan 205 replaced the jargon ("DHCP lease") with plain language; the
+    // three causes are what this asserts, not the words they were first written in.
+    expect(state?.detail).toMatch(/has not been assigned an address yet/)
     expect(state?.detail).toMatch(/configured network is wrong/)
     expect(state?.expiresAt).toBeNull()
   })

@@ -2,7 +2,16 @@ import { CONTROL_MSG, KEY_ACTION, MOTION_ACTION, POINTER_ID_GENERIC_FINGER } fro
 
 /**
  * Encoder control message host→device (plan 08 §4.2).
- * Byte layout is TODO-verify against the pinned version's source.
+ * verified against v3.3.1 server/src/main/java/com/genymobile/scrcpy/control/ControlMessageReader.java
+ * on 2026-09-03: every encoder below matches its `parse*` counterpart field
+ * for field and byte width for byte width — `parseInjectKeycode` (action,
+ * keycode, repeat, metaState), `parseInjectText` (u32 length + UTF-8),
+ * `parseInjectTouchEvent` (action, pointerId u64, position, u16 pressure,
+ * actionButton, buttons), `parseUhidCreate` (id/vendorId/productId u16 each,
+ * a 1-byte-length-prefixed name, a 2-byte-length-prefixed report),
+ * `parseUhidInput`/`parseUhidDestroy`, `RESET_VIDEO` (type byte only, no
+ * payload — `ControlMessageReader.read()`'s `createEmpty` branch),
+ * `parseGetClipboard`/`parseSetClipboard`, and `parseSetDisplayPower`.
  */
 
 const enc = new TextEncoder()
@@ -65,6 +74,32 @@ export function encodeInjectTouch(opts: {
   dv.setUint16(22, Math.round(Math.min(1, Math.max(0, pressure)) * 0xffff), false)
   dv.setUint32(24, opts.actionButton ?? 0, false)
   dv.setUint32(28, opts.buttons ?? 0, false)
+  return buf
+}
+
+/**
+ * `INJECT_SCROLL_EVENT` (plan 209 §4.3): [type u8][x i32][y i32][w u16][h u16]
+ * [hscroll i16 fixed-point][vscroll i16 fixed-point][buttons u32] = 21 bytes.
+ * `ControlMessageReader.parseInjectScrollEvent` decodes each i16 with
+ * `Binary.i16FixedPointToFloat` (range -1..1) and then MULTIPLIES the result
+ * by 16 — its own comment reads "the actual range is [-16, 16]" — so a caller
+ * that wants one notch (`hscroll`/`vscroll` in -1..1, one notch = 1, matching
+ * this package's own `injectScroll` contract) must pre-divide by 16 before
+ * packing the fixed-point value, or the device sees 16x the requested scroll.
+ * verified against v3.3.1 control/ControlMessageReader.java on 2026-09-04 (step 209.2).
+ */
+export function encodeInjectScroll(opts: { x: number; y: number; screenWidth: number; screenHeight: number; hscroll: number; vscroll: number; buttons?: number }): Uint8Array {
+  const fp = (v: number) => Math.round((Math.min(1, Math.max(-1, v)) / 16) * 0x7fff)
+  const buf = new Uint8Array(21)
+  const dv = new DataView(buf.buffer)
+  dv.setUint8(0, CONTROL_MSG.INJECT_SCROLL_EVENT)
+  dv.setInt32(1, Math.round(opts.x), false)
+  dv.setInt32(5, Math.round(opts.y), false)
+  dv.setUint16(9, opts.screenWidth, false)
+  dv.setUint16(11, opts.screenHeight, false)
+  dv.setInt16(13, fp(opts.hscroll), false)
+  dv.setInt16(15, fp(opts.vscroll), false)
+  dv.setUint32(17, opts.buttons ?? 0, false)
   return buf
 }
 

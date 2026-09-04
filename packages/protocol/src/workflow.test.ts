@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { EXPR_LIMITS } from '@enkaku/expr'
 import {
   GATE_OPS,
-  GateOutcomeSchema,
   PredicateSchema,
   ValueExprSchema,
   WORKFLOW_LIMITS,
@@ -10,7 +10,7 @@ import {
   WorkflowNodeIdSchema,
   WorkflowNodeSchema,
   WorkflowPathSchema,
-  WorkflowVersionSchema,
+  WorkflowPointSchema,
 } from './workflow'
 
 /** A minimal, otherwise-valid script node — callers override only what the test cares about. */
@@ -18,76 +18,211 @@ function scriptNode(overrides: Record<string, unknown> = {}) {
   return {
     kind: 'script',
     id: 'n0',
+    title: '',
+    ui: { x: 0, y: 0 },
     script: 'tiktok/auto-scroll@1.4.0',
+    params: {},
     ...overrides,
   }
 }
 
-describe('WorkflowDocSchema — round trip (99.1 verifiable result)', () => {
-  // The owner's own example (plan 99 §0, verbatim): Scroll FYP (warm-up) →
-  // Search Keywords & Scroll Posts → [gate: enough matches?] → Scroll FYP
-  // again → Report. Four SCRIPT nodes plus one GATE — five nodes in the
-  // array, matching the literal "four nodes and one gate" of 99.1's
-  // verifiable result. The gate's `else` branch loops backward to `scroll1`
-  // ("if not enough matches yet, scroll again", §3.9) — the loop `maxSteps`
-  // exists to bound.
+function startNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, ...overrides }
+}
+
+function finishNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'finish', id: 'finish', title: '', ui: { x: 0, y: 0 }, ...overrides }
+}
+
+function switchNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'switch', id: 'sw', title: '', ui: { x: 0, y: 0 }, cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, label: '' }], ...overrides }
+}
+
+function delayNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'delay', id: 'dl', title: '', ui: { x: 0, y: 0 }, ms: { const: 1000 }, maxMs: 5000, ...overrides }
+}
+
+describe('WorkflowDocSchema — v2 shape', () => {
+  // The owner's own example (plan 99 §0, adapted to doc v2, plan 301): start
+  // → Scroll FYP (warm-up) → Search Keywords & Scroll Posts → [gate: enough
+  // matches?] → Scroll FYP again → Report → finish. The gate's `else` branch
+  // loops backward to `scroll1` ("if not enough matches yet, scroll again",
+  // §3.9) — the loop `maxSteps` exists to bound.
   const doc = {
-    schema: 1,
+    schema: 2,
     name: 'tiktok-search-pipeline',
-    version: '1.0.0',
     title: 'TikTok search pipeline',
     description: 'Warm up the feed, search a keyword, and report what was found.',
     params: [{ name: 'keyword', type: 'string', required: true, title: 'Search keyword' }],
+    entry: 'start',
     nodes: [
-      scriptNode({ id: 'scroll1', title: 'Scroll FYP (warm-up)' }),
+      startNode({ next: 'scroll1' }),
+      scriptNode({ id: 'scroll1', title: 'Scroll FYP (warm-up)', next: 'search1' }),
       scriptNode({
         id: 'search1',
         title: 'Search Keywords & Scroll Posts',
         script: 'tiktok/searched-follow@1.4.0',
         params: { keyword: { param: 'keyword' } },
+        next: 'enough',
       }),
       {
         kind: 'gate',
         id: 'enough',
         title: 'Enough matches?',
+        ui: { x: 0, y: 0 },
         when: { left: { from: 'search1', path: 'matches' }, op: 'notEmpty' },
-        then: { go: 'continue' },
-        else: { go: 'goto', node: 'scroll1' },
+        then: 'scroll2',
+        else: 'scroll1',
       },
-      scriptNode({ id: 'scroll2', title: 'Scroll FYP again' }),
+      scriptNode({ id: 'scroll2', title: 'Scroll FYP again', next: 'report' }),
       scriptNode({
         id: 'report',
         title: 'Report',
         script: 'tiktok/report@1.0.0',
         params: { videos: { from: 'scroll1', path: 'videos' }, all: { run: 'summary' } },
+        next: 'finish',
       }),
+      finishNode(),
     ],
     onFail: { script: 'tiktok/switch-account@1.0.0', params: {} },
   }
 
-  test('a hand-written four-node-plus-one-gate document parses', () => {
+  test('a hand-written seven-node document parses', () => {
     const result = WorkflowDocSchema.safeParse(doc)
     expect(result.success).toBe(true)
     if (!result.success) return
-    expect(result.data.nodes).toHaveLength(5)
+    expect(result.data.nodes).toHaveLength(7)
     expect(result.data.nodes.filter((n) => n.kind === 'gate')).toHaveLength(1)
     expect(result.data.nodes.filter((n) => n.kind === 'script')).toHaveLength(4)
+    expect(result.data.nodes.filter((n) => n.kind === 'start')).toHaveLength(1)
+    expect(result.data.nodes.filter((n) => n.kind === 'finish')).toHaveLength(1)
   })
 
-  test('round-trips through JSON unchanged (this is what scripts.bundle/scripts.source actually store, §4.5)', () => {
+  test('round-trips through JSON unchanged (this is what workflows.doc/jobs.workflow_doc actually store, plan 301 §4.5)', () => {
     const first = WorkflowDocSchema.parse(doc)
     const second = WorkflowDocSchema.parse(JSON.parse(JSON.stringify(first)))
     expect(second).toEqual(first)
+  })
+
+  test('array order carries no control meaning — a shuffled copy of the same nodes parses to an equivalent document', () => {
+    const shuffled = { ...doc, nodes: [...doc.nodes].reverse() }
+    const result = WorkflowDocSchema.safeParse(shuffled)
+    expect(result.success).toBe(true)
+  })
+})
+
+describe('WorkflowDocSchema — schema literal is 2, not 1', () => {
+  test('schema: 1 is refused', () => {
+    const result = WorkflowDocSchema.safeParse({
+      schema: 1,
+      name: 'old',
+      entry: 'start',
+      nodes: [startNode({ next: undefined })],
+    })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe('WorkflowDocSchema — start and finish', () => {
+  test('exactly one start node is required — zero is refused', () => {
+    const result = WorkflowDocSchema.safeParse({
+      schema: 2,
+      name: 'no-start',
+      entry: 'a',
+      nodes: [scriptNode({ id: 'a' })],
+    })
+    expect(result.success).toBe(false)
+  })
+
+  test('two start nodes is refused', () => {
+    const result = WorkflowDocSchema.safeParse({
+      schema: 2,
+      name: 'two-starts',
+      entry: 'start',
+      nodes: [startNode({ id: 'start' }), startNode({ id: 'start-2' })],
+    })
+    expect(result.success).toBe(false)
+  })
+
+  test('entry must name a node in the document', () => {
+    const result = WorkflowDocSchema.safeParse({
+      schema: 2,
+      name: 'bad-entry',
+      entry: 'ghost',
+      nodes: [startNode()],
+    })
+    expect(result.success).toBe(false)
+    if (result.success) return
+    expect(result.error.issues.some((i) => i.message.includes('entry'))).toBe(true)
+  })
+
+  test('entry must name a "start" node, not any node', () => {
+    const result = WorkflowDocSchema.safeParse({
+      schema: 2,
+      name: 'entry-not-start',
+      entry: 'a',
+      nodes: [startNode({ next: 'a' }), scriptNode({ id: 'a' })],
+    })
+    expect(result.success).toBe(false)
+  })
+
+  test('a start node with no `next` (dangling) is legal — an empty document skeleton', () => {
+    const result = WorkflowDocSchema.safeParse({
+      schema: 2,
+      name: 'empty-skeleton',
+      entry: 'start',
+      nodes: [startNode()],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  test('a finish node defaults to status "succeed" and an empty message', () => {
+    const result = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'finish-defaults',
+      entry: 'start',
+      nodes: [startNode({ next: 'finish' }), finishNode({ id: 'finish' })],
+    })
+    const finish = result.nodes.find((n) => n.kind === 'finish')
+    expect(finish).toMatchObject({ status: 'succeed', message: '' })
+  })
+
+  test('a finish node may declare status "fail" with a message', () => {
+    const result = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'finish-fail',
+      entry: 'start',
+      nodes: [startNode({ next: 'finish' }), finishNode({ id: 'finish', status: 'fail', message: 'no matches found' })],
+    })
+    const finish = result.nodes.find((n) => n.kind === 'finish')
+    expect(finish).toMatchObject({ status: 'fail', message: 'no matches found' })
+  })
+})
+
+describe('WorkflowNodeSchema — every node requires `ui` (plan 300 D2)', () => {
+  test('a node with no `ui` is refused', () => {
+    const result = WorkflowNodeSchema.safeParse({ kind: 'start', id: 'a', title: '' })
+    expect(result.success).toBe(false)
+  })
+
+  test('a `ui` value outside the bound is refused', () => {
+    expect(WorkflowPointSchema.safeParse({ x: 100_001, y: 0 }).success).toBe(false)
+    expect(WorkflowPointSchema.safeParse({ x: 0, y: -100_001 }).success).toBe(false)
+    expect(WorkflowPointSchema.safeParse({ x: 1.5, y: 0 }).success).toBe(false)
+  })
+
+  test('a `ui` value inside the bound is accepted', () => {
+    expect(WorkflowPointSchema.safeParse({ x: -100_000, y: 100_000 }).success).toBe(true)
   })
 })
 
 describe('WorkflowDocSchema — duplicate node id is refused, naming the id', () => {
   test('two nodes sharing one id fail, and the message names the id', () => {
     const doc = {
-      schema: 1,
+      schema: 2,
       name: 'dup',
-      version: '1.0.0',
-      nodes: [scriptNode({ id: 'same' }), scriptNode({ id: 'same' })],
+      entry: 'start',
+      nodes: [startNode({ next: 'same' }), scriptNode({ id: 'same' }), scriptNode({ id: 'same' })],
     }
     const result = WorkflowDocSchema.safeParse(doc)
     expect(result.success).toBe(false)
@@ -98,10 +233,10 @@ describe('WorkflowDocSchema — duplicate node id is refused, naming the id', ()
 
   test('distinct ids are fine', () => {
     const doc = {
-      schema: 1,
+      schema: 2,
       name: 'nodup',
-      version: '1.0.0',
-      nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b' })],
+      entry: 'start',
+      nodes: [startNode({ next: 'a' }), scriptNode({ id: 'a' }), scriptNode({ id: 'b' })],
     }
     expect(WorkflowDocSchema.safeParse(doc).success).toBe(true)
   })
@@ -109,16 +244,16 @@ describe('WorkflowDocSchema — duplicate node id is refused, naming the id', ()
 
 describe('WorkflowDocSchema — maxNodes (99.1 verifiable result: a 51-node document is refused)', () => {
   function nodesOfLength(n: number) {
-    return Array.from({ length: n }, (_, i) => scriptNode({ id: `n${i}` }))
+    return [startNode({ next: 'n0' }), ...Array.from({ length: n - 1 }, (_, i) => scriptNode({ id: `n${i}` }))]
   }
 
   test(`exactly WORKFLOW_LIMITS.maxNodes (${WORKFLOW_LIMITS.maxNodes}) nodes is fine`, () => {
-    const doc = { schema: 1, name: 'big', version: '1.0.0', nodes: nodesOfLength(WORKFLOW_LIMITS.maxNodes) }
+    const doc = { schema: 2, name: 'big', entry: 'start', nodes: nodesOfLength(WORKFLOW_LIMITS.maxNodes) }
     expect(WorkflowDocSchema.safeParse(doc).success).toBe(true)
   })
 
   test(`${WORKFLOW_LIMITS.maxNodes + 1} nodes is refused`, () => {
-    const doc = { schema: 1, name: 'toobig', version: '1.0.0', nodes: nodesOfLength(WORKFLOW_LIMITS.maxNodes + 1) }
+    const doc = { schema: 2, name: 'toobig', entry: 'start', nodes: nodesOfLength(WORKFLOW_LIMITS.maxNodes + 1) }
     const result = WorkflowDocSchema.safeParse(doc)
     expect(result.success).toBe(false)
   })
@@ -179,10 +314,35 @@ describe('ValueExprSchema — the four closed forms', () => {
     expect(ValueExprSchema.safeParse({ run: 'anything-else' }).success).toBe(false)
   })
 
-  test('a fifth shape, or two forms mixed together, is refused (the union is closed and every arm is `.strict()`)', () => {
+  test('a sixth shape, or two forms mixed together, is refused (the union is closed and every arm is `.strict()`)', () => {
     expect(ValueExprSchema.safeParse({ eval: '1+1' }).success).toBe(false)
     expect(ValueExprSchema.safeParse({ const: 1, param: 'x' }).success).toBe(false)
     expect(ValueExprSchema.safeParse({}).success).toBe(false)
+  })
+})
+
+describe('ValueExpr five forms', () => {
+  test('the four old forms still work unchanged (plan 302 G8)', () => {
+    expect(ValueExprSchema.safeParse({ const: 42 }).success).toBe(true)
+    expect(ValueExprSchema.safeParse({ param: 'keyword' }).success).toBe(true)
+    expect(ValueExprSchema.safeParse({ from: 'scroll1', path: 'videos' }).success).toBe(true)
+    expect(ValueExprSchema.safeParse({ run: 'summary' }).success).toBe(true)
+  })
+
+  test('the fifth form: `{ expr }`, a bounded source string', () => {
+    const result = ValueExprSchema.safeParse({ expr: '$nodes.scroll1.videos > 3' })
+    expect(result.success).toBe(true)
+  })
+
+  test('`expr` must be a non-empty string, no other keys', () => {
+    expect(ValueExprSchema.safeParse({ expr: '' }).success).toBe(false)
+    expect(ValueExprSchema.safeParse({ expr: 1 }).success).toBe(false)
+    expect(ValueExprSchema.safeParse({ expr: '$now', const: 1 }).success).toBe(false)
+  })
+
+  test('`expr` is bounded by `EXPR_LIMITS.maxSourceBytes`', () => {
+    const tooLong = '1'.repeat(EXPR_LIMITS.maxSourceBytes + 1)
+    expect(ValueExprSchema.safeParse({ expr: tooLong }).success).toBe(false)
   })
 })
 
@@ -236,21 +396,6 @@ describe('GATE_OPS / PredicateSchema — closed operator set (99.1 verifiable re
   })
 })
 
-describe('GateOutcomeSchema', () => {
-  test.each(['continue', 'stop', 'fail'] as const)('go: %s needs no node', (go) => {
-    expect(GateOutcomeSchema.safeParse({ go }).success).toBe(true)
-  })
-
-  test('goto requires a node id', () => {
-    expect(GateOutcomeSchema.safeParse({ go: 'goto', node: 'scroll1' }).success).toBe(true)
-    expect(GateOutcomeSchema.safeParse({ go: 'goto' }).success).toBe(false)
-  })
-
-  test('an unknown `go` value is refused', () => {
-    expect(GateOutcomeSchema.safeParse({ go: 'restart' }).success).toBe(false)
-  })
-})
-
 describe('WorkflowNodeIdSchema', () => {
   test.each(['a', 'scroll1', 'search-keywords', 'n0'])('accepts %s', (id) => {
     expect(WorkflowNodeIdSchema.safeParse(id).success).toBe(true)
@@ -261,7 +406,7 @@ describe('WorkflowNodeIdSchema', () => {
   })
 })
 
-describe('WorkflowNameSchema / WorkflowVersionSchema — the SAME grammar a script name/version already use', () => {
+describe('WorkflowNameSchema — the SAME grammar a script name already uses', () => {
   test.each(['checkout', 'my-workflow', 'tiktok/pipeline'])('name accepts %s', (name) => {
     expect(WorkflowNameSchema.safeParse(name).success).toBe(true)
   })
@@ -269,13 +414,18 @@ describe('WorkflowNameSchema / WorkflowVersionSchema — the SAME grammar a scri
   test.each(['', 'Checkout', '/leading', 'trailing/'])('name rejects %s', (name) => {
     expect(WorkflowNameSchema.safeParse(name).success).toBe(false)
   })
+})
 
-  test.each(['1.0.0', '1.0.0-beta.1', '1.0.0+build.5'])('version accepts %s', (version) => {
-    expect(WorkflowVersionSchema.safeParse(version).success).toBe(true)
-  })
-
-  test.each(['1.0', 'v1.0.0', 'latest'])('version rejects %s (a workflow row is a concrete published version, never `latest`)', (version) => {
-    expect(WorkflowVersionSchema.safeParse(version).success).toBe(false)
+describe('WorkflowDocSchema — plan 210: a document carries no version', () => {
+  test('a doc with a version key is refused (the schema is .strict())', () => {
+    const result = WorkflowDocSchema.safeParse({
+      schema: 2,
+      name: 'versioned',
+      version: '1.0.0',
+      entry: 'start',
+      nodes: [startNode({ next: 'a' }), scriptNode({ id: 'a' })],
+    })
+    expect(result.success).toBe(false)
   })
 })
 
@@ -290,6 +440,8 @@ describe('WORKFLOW_LIMITS — pinned so a future change to these numbers is a de
       maxNodeOutputBytes: 256 * 1024,
       maxRunSummaryBytes: 512 * 1024,
       maxSawKeys: 20,
+      maxSwitchCases: 10,
+      maxDelayMs: 5 * 60_000,
     })
   })
 })
@@ -310,11 +462,10 @@ describe('export surface — packages/protocol/src/index.ts re-exports (permanen
       'WorkflowNodeIdSchema',
       'WorkflowPathSchema',
       'WorkflowNameSchema',
-      'WorkflowVersionSchema',
       'ValueExprSchema',
       'GATE_OPS',
       'PredicateSchema',
-      'GateOutcomeSchema',
+      'WorkflowPointSchema',
       'WorkflowNodeSchema',
       'WorkflowDocSchema',
       'WorkflowParamNameSchema',
@@ -334,10 +485,76 @@ describe('export surface — packages/protocol/src/index.ts re-exports (permanen
 // implicitly by every WorkflowDocSchema test in this file — `nodes` is an
 // array of it — but it is also worth a direct assertion that a gate node
 // without `when` is refused, since that is the one required field a
-// discriminated union's OTHER arm (`kind: 'script'`) would never catch.
+// discriminated union's OTHER arm would never catch.
 describe('WorkflowNodeSchema — a gate without `when` is refused', () => {
   test('missing `when`', () => {
-    const result = WorkflowNodeSchema.safeParse({ kind: 'gate', id: 'g' })
+    const result = WorkflowNodeSchema.safeParse({ kind: 'gate', id: 'g', ui: { x: 0, y: 0 } })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe('six kinds (plan 303 G1)', () => {
+  test('start, script, gate, switch, delay, finish all parse as WorkflowNodeSchema', () => {
+    const gateNode = { kind: 'gate', id: 'g', title: '', ui: { x: 0, y: 0 }, when: { left: { const: 1 }, op: 'eq', right: { const: 1 } } }
+    const kinds = [startNode(), scriptNode(), gateNode, switchNode(), delayNode(), finishNode()]
+    for (const node of kinds) {
+      const result = WorkflowNodeSchema.safeParse(node)
+      expect(result.success, `kind "${(node as { kind: string }).kind}" should parse`).toBe(true)
+    }
+    expect(kinds.map((n) => (n as { kind: string }).kind).sort()).toEqual(['delay', 'finish', 'gate', 'script', 'start', 'switch'])
+  })
+
+  test('a seventh kind is refused — the union is closed (plan 300 D8)', () => {
+    const result = WorkflowNodeSchema.safeParse({ kind: 'forEach', id: 'x', title: '', ui: { x: 0, y: 0 } })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe('switch (plan 303 §3.3, §4.1)', () => {
+  test('a single case with a default parses, first match wins by array order', () => {
+    const result = WorkflowNodeSchema.safeParse(
+      switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, to: 'a', label: 'one' }], default: 'b' }),
+    )
+    expect(result.success).toBe(true)
+  })
+
+  test('a case may omit `to` — dangling, ends the run succeeded (plan 301 §3.2)', () => {
+    const result = WorkflowNodeSchema.safeParse(switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, label: '' }] }))
+    expect(result.success).toBe(true)
+  })
+
+  test('an empty `cases` array is refused', () => {
+    const result = WorkflowNodeSchema.safeParse(switchNode({ cases: [] }))
+    expect(result.success).toBe(false)
+  })
+
+  test(`up to ${WORKFLOW_LIMITS.maxSwitchCases} cases parse; one more is refused`, () => {
+    const oneCase = { when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, label: '' }
+    const atCeiling = WorkflowNodeSchema.safeParse(switchNode({ cases: Array.from({ length: WORKFLOW_LIMITS.maxSwitchCases }, () => oneCase) }))
+    expect(atCeiling.success).toBe(true)
+    const overCeiling = WorkflowNodeSchema.safeParse(switchNode({ cases: Array.from({ length: WORKFLOW_LIMITS.maxSwitchCases + 1 }, () => oneCase) }))
+    expect(overCeiling.success).toBe(false)
+  })
+})
+
+describe('delay (plan 303 §3.4, §4.1)', () => {
+  test('a const-valued ms with maxMs at the ceiling parses', () => {
+    const result = WorkflowNodeSchema.safeParse(delayNode({ ms: { const: 1000 }, maxMs: WORKFLOW_LIMITS.maxDelayMs }))
+    expect(result.success).toBe(true)
+  })
+
+  test('ms may be any ValueExpr, including an expression', () => {
+    const result = WorkflowNodeSchema.safeParse(delayNode({ ms: { expr: '$nodes.a.waitMs' } }))
+    expect(result.success).toBe(true)
+  })
+
+  test('maxMs over the ceiling is refused', () => {
+    const result = WorkflowNodeSchema.safeParse(delayNode({ maxMs: WORKFLOW_LIMITS.maxDelayMs + 1 }))
+    expect(result.success).toBe(false)
+  })
+
+  test('a negative maxMs is refused', () => {
+    const result = WorkflowNodeSchema.safeParse(delayNode({ maxMs: -1 }))
     expect(result.success).toBe(false)
   })
 })

@@ -57,6 +57,7 @@ const enqueueVideo: PluginMemberScript<typeof params, typeof result> = {
   title: 'Add a video to the post queue',
   description:
     'Writes one entry to the farm-wide post queue, keyed by the video\'s own artifact id. Used by the "content" screen\'s Add video button; nothing on the device is touched.',
+  node: { category: 'data', icon: 'upload', summary: ['artifactId'], keywords: ['queue', 'video'] },
   params,
   result,
   // Generous for a single KV round trip — this member does no device work at all, so there is no

@@ -14,15 +14,12 @@
  *
  * ## The order
  *
- * 1. **An explicit `setCoreBase()`** — nothing in this repo calls it. It
- *    exists so a host that genuinely knows better (an embedder, a test) can
- *    say so without this file growing a special case for it.
- * 2. **`NEXT_PUBLIC_ENKAKU_CORE_URL`** — the only rung that can be right when
+ * 1. **`NEXT_PUBLIC_ENKAKU_CORE_URL`** — the only rung that can be right when
  *    the page and the core are on different origins, which is exactly
  *    `bun run dev:studio` (page on :3001, core on :7700).
- * 3. **`location.origin`** — Studio served by the core, the normal
+ * 2. **`location.origin`** — Studio served by the core, the normal
  *    deployment.
- * 4. **`http://localhost:7700`** — no DOM at all (a unit test, SSR), the
+ * 3. **`http://localhost:7700`** — no DOM at all (a unit test, SSR), the
  *    default dev port.
  *
  * Every rung is normalised without its trailing slash, so a caller can always
@@ -51,13 +48,6 @@
  * where they would need it. Bun (which builds a plugin's UI) leaves
  * `import.meta.url` alone, so it resolves to the served URL there.
  */
-
-let explicit: string | null = null
-
-/** Override the resolution chain entirely. `null` restores it. */
-export function setCoreBase(base: string | null): void {
-  explicit = base === null ? null : base.replace(/\/$/, '')
-}
 
 /**
  * `NEXT_PUBLIC_ENKAKU_CORE_URL`, read as a bare member expression inside a
@@ -96,7 +86,6 @@ function envBase(): string | undefined {
 }
 
 export function coreBase(): string {
-  if (explicit !== null) return explicit
   const env = envBase()
   if (env) return env.replace(/\/$/, '')
   // `"null"` is the OPAQUE origin, not a missing one: a `file:` document, a

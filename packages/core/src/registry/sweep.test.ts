@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
 import type { AdbClient, TrackedDevice } from '@enkaku/adb'
-import type { ServerMessage } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, discoveredDevices } from '../db/schema'
@@ -103,7 +102,6 @@ interface Harness {
   db: Db
   endpoints: EndpointStore
   onOnlineCalls: string[]
-  hubMessages: ServerMessage[]
   sweeper: Sweeper
   state: FakeAdbState
 }
@@ -119,7 +117,6 @@ function setUp(opts: {
   const endpoints = createEndpointStore({ db, settings: () => ({ endpointsPerDevice: 4, endpointRetireAfter: 10 }) })
   const state = fakeAdbState(opts.stateOverrides)
   const onOnlineCalls: string[] = []
-  const hubMessages: ServerMessage[] = []
 
   // A REALISTIC (not merely recording) fake `onOnline`, matching exactly the
   // slice of `device-registry.ts`'s own admission behaviour this step's
@@ -159,12 +156,11 @@ function setUp(opts: {
     endpoints,
     registry: { onOnline: opts.onOnline ?? defaultOnOnline },
     settings: () => settings,
-    hub: { broadcast: (msg) => hubMessages.push(msg) },
     log: fakeLogger() as unknown as SweeperDeps['log'],
     tcpPreProbe: opts.tcpPreProbe,
   }
   const sweeper = createSweeper(deps)
-  return { db, endpoints, onOnlineCalls, hubMessages, sweeper, state }
+  return { db, endpoints, onOnlineCalls, sweeper, state }
 }
 
 describe('Sweeper.sweep — availability gates (plan 88 §3.5, §4.5)', () => {
@@ -181,6 +177,39 @@ describe('Sweeper.sweep — availability gates (plan 88 §3.5, §4.5)', () => {
   test('rejects E_SCAN_UNAVAILABLE with zero configured networks', async () => {
     const h = setUp({})
     await expect(h.sweeper.sweep()).rejects.toMatchObject({ code: 'E_SCAN_UNAVAILABLE' })
+  })
+})
+
+describe('Sweeper.sweep — `only` narrows, and can never widen (Devices → Scan networks, per-range Scan)', () => {
+  const twoNetworks = [
+    { cidr: '10.0.0.0/30', label: 'A', medium: 'wired' as const, scan: true },
+    { cidr: '10.9.9.0/30', label: 'B', medium: 'wired' as const, scan: true },
+  ]
+
+  test('sweeps only the named range, leaving the other configured one untouched', async () => {
+    const h = setUp({ settings: { networks: twoNetworks }, tcpPreProbe: async () => 'refused' })
+    const report = await h.sweeper.sweep({ only: ['10.9.9.0/30'] })
+    expect(report.networks.map((n) => n.cidr)).toEqual(['10.9.9.0/30'])
+  })
+
+  test('an unconfigured range is refused, never probed — `only` is a filter, not a second address space', async () => {
+    const h = setUp({ settings: { networks: twoNetworks }, tcpPreProbe: async () => 'refused' })
+    await expect(h.sweeper.sweep({ only: ['192.168.1.0/24'] })).rejects.toMatchObject({ code: 'E_SCAN_UNAVAILABLE' })
+    expect(h.state.connectCalls).toEqual([])
+  })
+
+  test('a configured but unticked range is refused, exactly as it is in a whole-farm sweep', async () => {
+    const h = setUp({
+      settings: { networks: [{ cidr: '10.0.0.0/30', label: 'A', medium: 'wired', scan: false }] },
+      tcpPreProbe: async () => 'refused',
+    })
+    await expect(h.sweeper.sweep({ only: ['10.0.0.0/30'] })).rejects.toMatchObject({ code: 'E_SCAN_UNAVAILABLE' })
+  })
+
+  test('an empty `only` is the whole-farm sweep, not an empty one', async () => {
+    const h = setUp({ settings: { networks: twoNetworks }, tcpPreProbe: async () => 'refused' })
+    const report = await h.sweeper.sweep({ only: [] })
+    expect(report.networks.map((n) => n.cidr)).toEqual(['10.0.0.0/30', '10.9.9.0/30'])
   })
 })
 
@@ -457,19 +486,5 @@ describe('Sweeper.sweep — last-octet-first ordering (plan 88 §3.5, §5 step 8
 
     expect(probedOrder[0]).toBe('10.0.0.1')
     expect(probedOrder[1]).toBe('10.0.0.2')
-  })
-})
-
-describe('Sweeper.sweep — scan.progress broadcasts (plan 88 §4.6, §5 step 88.3)', () => {
-  test('broadcasts scan.progress at least once, and the FINAL one reports scanned === total', async () => {
-    const h = setUp({
-      settings: { networks: [{ cidr: '10.0.0.0/28', label: '', medium: 'wired', scan: true }] }, // 14 usable addresses — small and fast
-      tcpPreProbe: async () => 'refused',
-    })
-    const report = await h.sweeper.sweep()
-    const progressMessages = h.hubMessages.filter((m) => m.type === 'scan.progress')
-    expect(progressMessages.length).toBeGreaterThan(0)
-    const last = progressMessages[progressMessages.length - 1]
-    expect(last).toMatchObject({ type: 'scan.progress', payload: { scanned: report.scanned, total: report.scanned, answered: 0 } })
   })
 })

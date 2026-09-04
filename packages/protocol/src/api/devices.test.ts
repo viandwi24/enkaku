@@ -1,11 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   AgentProvisionReportSchema,
-  classifyDeviceNetworkApply,
   DeviceHttpProxyNetworkConfigSchema,
-  DeviceNetworkApplyBodySchema,
-  DeviceNetworkApplyResponseSchema,
-  DeviceNetworkApplyResultSchema,
   DeviceNetworkConfigSchema,
   DeviceNetworkStatusResponseSchema,
   DeviceRefSchema,
@@ -15,7 +11,6 @@ import {
   GuestAgentStatusResponseSchema,
   GuestAgentSummaryResponseSchema,
   StoredDeviceNetworkConfigSchema,
-  type DeviceNetworkApplyResult,
 } from './devices'
 
 /**
@@ -270,111 +265,6 @@ describe('DeviceVpnNetworkConfigSchema is NARROWER than the protocol union — p
       expect(Object.keys(shape)).not.toContain('username')
       expect(Object.keys(shape)).not.toContain('password')
     }
-  })
-})
-
-describe('classifyDeviceNetworkApply (plan 114 §3.9, step 114.8)', () => {
-  const result = (over: Partial<DeviceNetworkApplyResult>): DeviceNetworkApplyResult => ({
-    deviceId: 'dev-1',
-    status: null,
-    skip: null,
-    error: null,
-    ...over,
-  })
-
-  test('a clean row with a status is "applied"', () => {
-    const status = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
-    expect(classifyDeviceNetworkApply(result({ status }))).toBe('applied')
-  })
-
-  test('an unverified status is still APPLIED — it is the normal terminal state of both HTTP rungs (§3.5)', () => {
-    const status = DeviceNetworkStatusResponseSchema.parse({
-      ...PRE_114_BODY,
-      engine: 'adb-proxy',
-      config: { engine: 'adb-proxy', host: '10.0.0.2', port: 8899 },
-      health: 'unverified',
-      checks: [
-        { id: 'setting', state: 'pass', at: 1 },
-        { id: 'egress', state: 'skip', at: null },
-      ],
-    })
-    expect(status.health).toBe('unverified')
-    expect(classifyDeviceNetworkApply(result({ status }))).toBe('applied')
-  })
-
-  test('an error alone is "failed"', () => {
-    expect(classifyDeviceNetworkApply(result({ error: { code: 'E_SETTING_NOT_ACCEPTED', message: 'declined' } }))).toBe('failed')
-  })
-
-  test('a skip alone is "skipped"', () => {
-    expect(classifyDeviceNetworkApply(result({ skip: { code: 'E_DEVICE_OFFLINE', message: 'not reachable' } }))).toBe('skipped')
-  })
-
-  test('SKIP WINS OVER ERROR — a skipped device may legally carry neither a status nor an error, and the check order says so', () => {
-    const row = result({
-      skip: { code: 'E_DEVICE_HELD', message: 'somebody else is driving it' },
-      error: { code: 'E_REVERSE_FAILED', message: 'adb reverse did not establish' },
-    })
-    expect(classifyDeviceNetworkApply(row)).toBe('skipped')
-  })
-
-  test('ERROR WINS OVER APPLIED — a route persisted and then failing to apply produces BOTH a status and an error', () => {
-    const status = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
-    const row = result({ status, error: { code: 'E_SETTING_NOT_ACCEPTED', message: 'the device reports ""' } })
-    expect(classifyDeviceNetworkApply(row)).toBe('failed')
-  })
-
-  test('a skip on a row that also has a status still classifies as skipped', () => {
-    const status = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
-    expect(classifyDeviceNetworkApply(result({ status, skip: { code: 'E_UNSUPPORTED', message: 'old phone' } }))).toBe('skipped')
-  })
-})
-
-describe('the bulk apply envelope round-trips (plan 114 §3.9, step 114.8)', () => {
-  test('a mixed four-device response parses and re-classifies to four distinct outcomes', () => {
-    const status = DeviceNetworkStatusResponseSchema.parse(PRE_114_BODY)
-    const body = {
-      total: 4,
-      results: [
-        { deviceId: 'ok-1', status, skip: null, error: null },
-        { deviceId: 'offline-1', status: null, skip: { code: 'E_DEVICE_OFFLINE', message: 'not reachable' }, error: null },
-        { deviceId: 'held-1', status: null, skip: { code: 'E_DEVICE_HELD', message: 'in use' }, error: null },
-        { deviceId: 'broken-1', status: null, skip: null, error: { code: 'E_SETTING_NOT_ACCEPTED', message: 'declined' } },
-      ],
-    }
-    const parsed = DeviceNetworkApplyResponseSchema.parse(body)
-    expect(parsed.total).toBe(4)
-    expect(parsed.results.map(classifyDeviceNetworkApply)).toEqual(['applied', 'skipped', 'skipped', 'failed'])
-    // Round-trip: re-parsing what we parsed changes nothing.
-    expect(DeviceNetworkApplyResponseSchema.parse(parsed)).toEqual(parsed)
-  })
-
-  test('a single result round-trips through its own schema', () => {
-    const row = { deviceId: 'dev-1', status: null, skip: null, error: { code: 'E_REVERSE_FAILED', message: 'no' } }
-    expect(DeviceNetworkApplyResultSchema.parse(row)).toEqual(row)
-  })
-
-  test('the request body keeps `route` UNPARSED — a username survives to the core’s own door rather than being silently stripped', () => {
-    // This is the single most load-bearing decision in the envelope: a Zod object strips unknown
-    // keys, so declaring `route: DeviceNetworkConfigSchema` here would drop a `password` before
-    // `assertNoHttpProxyAuth` ever saw it, and the operator would be told an authenticated proxy
-    // had been applied to forty phones when an anonymous one was written.
-    const parsed = DeviceNetworkApplyBodySchema.parse({
-      deviceIds: ['a', 'b'],
-      route: { engine: 'adb-proxy', host: 'h', port: 8080, username: 'sam', password: 'hunter2' },
-    })
-    expect(parsed.route.username).toBe('sam')
-    expect(parsed.route.password).toBe('hunter2')
-  })
-
-  test('`route` still has to BE an object — a string, an array and null are all refused', () => {
-    for (const route of ['nope', [{ engine: 'adb-proxy' }], null]) {
-      expect(DeviceNetworkApplyBodySchema.safeParse({ deviceIds: ['a'], route }).success).toBe(false)
-    }
-  })
-
-  test('an empty deviceIds list is refused', () => {
-    expect(DeviceNetworkApplyBodySchema.safeParse({ deviceIds: [], route: {} }).success).toBe(false)
   })
 })
 

@@ -4,7 +4,7 @@ import { z } from 'zod'
  * Device clipboard get/set over WS (plan 38 §4.5).
  *
  * `clipboard.get`/`clipboard.set` are request/reply, correlated by `id` like
- * `monitor.oneshot` and `lease.acquire` — NOT broadcast to every viewer the
+ * `monitor.oneshot` and `input.text` — NOT broadcast to every viewer the
  * way `shell.echo`/`shell.result` are (plan 26 §3.8). Clipboard content is
  * very often a password or a one-time token, so `clipboard.value` goes ONLY
  * to the requesting connection (§4.5); fanning it out to every viewer of the
@@ -44,4 +44,14 @@ export const ClipboardOkMessage = z.object({
   type: z.literal('clipboard.ok'),
   id: z.string(),
   payload: z.object({ deviceId: z.string() }),
+})
+
+/**
+ * The device copied something (plan 209 §3.2 D10; MVP 08 §1.3): scrcpy's `CLIPBOARD` device
+ * message, forwarded to every connection holding a `control`-quality stream binding on this
+ * device and to nobody else. Unicast for the same reason `clipboard.value` is (§4.5 of plan 38).
+ */
+export const ClipboardChangedMessage = z.object({
+  type: z.literal('clipboard.changed'),
+  payload: z.object({ deviceId: z.string(), text: z.string() }),
 })

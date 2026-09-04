@@ -274,16 +274,19 @@ export const PluginStageResponseSchema = z.object({
 export const PluginVerifyResponseSchema = z.object({ verify: VerifyReportSchema })
 
 /**
- * `POST /api/plugins/:id/activate`, `POST /api/plugins/:name/rollback`, and
- * `POST /api/plugins/:name/enable` — the three routes that end with one row
- * now `active` and report which one. (`disable` has no such row and answers
- * `PluginOkResponseSchema` instead.)
- *
- * All three carry the same projected row every other `{ plugin }` on this
- * router carries (step 126.6) — a click on Activate, Roll back or Enable used
- * to pull that version's whole bundle down with the acknowledgement.
+ * `POST /api/plugins/:id/activate` (plan 210 §4.7, MVP 03 §2.3 item 5): the
+ * activated row plus the consequence, so a client can say what just moved.
+ * `scriptsMoved`: members this version registers (its manifest's script
+ * count). `queuedKeepingPrevious`: queued or running jobs pinned to the
+ * previously active version's members; they keep it (MVP 03 §2.1).
  */
-export const PluginActivateResponseSchema = z.object({ plugin: PluginRowSchema })
+export const PluginActivateResponseSchema = z.object({
+  plugin: PluginRowSchema,
+  scriptsMoved: z.number().int().nonnegative(),
+  queuedKeepingPrevious: z.number().int().nonnegative(),
+})
+/** `POST /api/plugins/:name/rollback` and `POST /api/plugins/:name/enable`: unchanged. */
+export const PluginRowResponseSchema = z.object({ plugin: PluginRowSchema })
 
 /** `POST /api/plugins/restart`. */
 export const PluginRestartResponseSchema = z.object({ ok: z.number(), failed: z.number() })
@@ -689,7 +692,7 @@ export type PluginDataCountResponse = z.infer<typeof PluginDataCountResponseSche
  * not it holds the key (`entry: null` when it does not).
  *
  * The device fields are the FIXED allowlist of plan §3.6 — `deviceId`,
- * `stableId`, `label`, `status`, `clusterId`, `number` — and nothing else.
+ * `stableId`, `label`, `status`, `groupId`, `number` — and nothing else.
  * Anything richer is a handler, and handlers are plan 109.
  *
  * `number` is the device's short, human-facing number (`device_numbers`,
@@ -702,7 +705,7 @@ export const PluginDataScanRowSchema = z.object({
   stableId: z.string(),
   label: z.string(),
   status: z.string().nullable(),
-  clusterId: z.string().nullable(),
+  groupId: z.string().nullable(),
   number: z.number().int().nullable(),
   entry: KvEntrySchema.nullable(),
 })
@@ -736,7 +739,7 @@ export const PluginQueryDeviceSchema = z.object({
   stableId: z.string(),
   label: z.string().nullable().default(null),
   status: z.string().nullable().default(null),
-  clusterId: z.string().nullable().default(null),
+  groupId: z.string().nullable().default(null),
   number: z.number().int().nullable().default(null),
 })
 

@@ -11,7 +11,7 @@ import type { Lease } from './router-driver'
  *
  * `DeviceInfoSchema.parse(...)` builds each fixture rather than a hand-typed
  * object literal, so every field this module does not care about (battery,
- * readiness, heldBy, ...) comes from the schema's own defaults and a
+ * readiness, activities, ...) comes from the schema's own defaults and a
  * malformed fixture fails the test file loudly instead of silently drifting
  * from the real `DeviceInfo` shape.
  */
@@ -27,7 +27,7 @@ function makeDevice(overrides: { id?: string; stableId?: string; label?: string;
     screenW: null,
     screenH: null,
     density: null,
-    status: 'idle',
+    status: 'online',
     lastSeen: null,
     connection: overrides.connection,
   })

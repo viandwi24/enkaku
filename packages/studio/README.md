@@ -105,7 +105,7 @@ ambient global `JSX` namespace; writing the bare form fails with
 
 The device page's tabs stay mounted and are hidden with the `hidden` HTML attribute (`TabPanel` in `app/device/page.tsx`) instead of being conditionally rendered — a tab switch no longer unmounts `LiveView`, which is what makes returning to Control instant instead of replaying the wake-up sequence. **Monitor and Crashes are the deliberate exception**: each holds a device-side `logcat` stream, so they stay mount-on-demand exactly as before, with their own cleanup effect stopping the stream on unmount. A gated panel like `FilesPanel` renders its controls disabled with one explanatory line rather than an empty panel, so "Take control" from any tab takes effect immediately without a tab switch.
 
-The devices list's **Wall** mode (`components/wall/`) shows every device's screen live in a grid — the same `LiveView` component in a `compact`, read-only mode, subscribed at the `wall` quality profile. `TileGrid` is the one responsive grid layout, reused by the topology page's `ClusterSection` too. Offline and quarantined devices always render a static card with the reason, never a blank tile.
+The devices list's **Wall** mode (`components/wall/`) shows every device's screen live in a grid — the same `LiveView` component in a `compact`, read-only mode, subscribed at the `wall` quality profile. `TileGrid` is the one responsive grid layout. Offline and quarantined devices always render a static card with the reason, never a blank tile.
 
 ## The Wall is the front door (plan 92 §1, §3.1, §3.10, §9 Q1)
 
@@ -190,14 +190,13 @@ rule never overrides an earlier one:
    already decoding being displaced by a same-tier newcomer (`liveIds`
    feeds back into every call precisely so that stability holds).
 
-The server-side half of the safety story lives in `@enkaku/session`
-(`session.maxConcurrentBuilds`, the build lane): the client's ramp
+Sessions are always on now (plan 206): a wall tile's `stream.start` attaches
+to an already-built entry rather than racing a build, so there is no
+server-side stampede left to guard against. The client's ramp
 (`wall.rampConcurrency`, at most N tiles asking for a stream at once while
-the wall fills in) is a courtesy that makes the fill-in orderly, never the
-thing that actually prevents a stampede — two browser tabs (or a tab and a
-script) defeat any client-side ramp, so the authoritative bound is always
-server-side. Do not read `useLiveSet`'s ramp as a safety mechanism when
-reasoning about a new caller of it.
+the wall fills in) is still a courtesy that makes the fill-in orderly, not a
+safety mechanism — do not read `useLiveSet`'s ramp as one when reasoning
+about a new caller of it.
 
 ## The tile grammar (plan 92 §4.8) — a rule for the next field, not a precedent to copy
 

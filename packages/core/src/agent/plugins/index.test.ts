@@ -10,7 +10,6 @@ function fakeCap(id: string): AnyCoreCapability {
     input: z.object({}),
     output: z.object({ ok: z.literal(true) }),
     permission: 'device.view',
-    lease: 'none',
     deadline: 1_000,
     effect: 'read',
     description: 'a test capability',

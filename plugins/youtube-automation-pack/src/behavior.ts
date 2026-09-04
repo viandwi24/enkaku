@@ -318,3 +318,28 @@ export function snackbarText(tree: UiNode): string {
   const hit = youtubeNodes(tree).find((n) => hasId(n, 'message') || hasId(n, 'snackbar_text') || hasId(n, 'toast_message'))
   return hit ? (hit.text.trim() || hit.desc.trim()) : ''
 }
+
+/**
+ * If any keyword appears in `text` (case-insensitive), the effective
+ * probability is boosted.  No penalty on non-match — the operator's base
+ * chance stays untouched, and only matched content gets the lift.
+ */
+export function keywordBoost(text: string, keywords: string[], base: number, factor: number): number {
+  if (!keywords.length || base <= 0) return base
+  const lower = text.toLowerCase()
+  const hit = keywords.some((k) => k.trim() !== '' && lower.includes(k.toLowerCase()))
+  return hit ? Math.min(1, base * factor) : base
+}
+
+/** Every non-empty desc/text in the tree, first-seen order — the words a keyword tilt can match against. */
+export function readableStrings(tree: UiNode): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const n of flatten(tree)) {
+    for (const raw of [n.desc, n.text]) {
+      const v = raw.trim()
+      if (v && !seen.has(v)) { seen.add(v); out.push(v) }
+    }
+  }
+  return out
+}

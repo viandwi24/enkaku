@@ -1,43 +1,208 @@
 'use client'
 
-import { Suspense, useEffect } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { Suspense, useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import Link from 'next/link'
+import { ClockIcon, FlowArrowIcon, PuzzlePieceIcon, MagnifyingGlassIcon, XIcon, Button, api, cn } from '@enkaku/ui'
+import { ScriptsListResponseSchema, type ScriptListItem, type ScheduleInfo } from '@enkaku/protocol'
+import { InstallPluginDialog } from '@/components/plugins/InstallPluginDialog'
+import { ScriptsTable } from '@/components/scripts/ScriptsTable'
+import { WorkflowsGrid } from '@/components/scripts/WorkflowsGrid'
+import { SchedulesList } from '@/components/schedules/SchedulesList'
+import { ScheduleDialog, type ScheduleRow } from '@/components/schedules/ScheduleDialog'
+import { listWorkflows, fetchAllPages, type WorkflowInfo } from '@/lib/api'
+import { matchesScript, matchesWorkflow, matchesSchedule } from './matchers'
 
-/**
- * Scripts and Plugins merge into one page (owner's own ask, 2026-08-17:
- * *"halaman scripts menurut saya jadi satu aja dengan plugins"*) — one screen
- * for "what code can this farm run" instead of two, since a plugin's scripts
- * were listed on both anyway. The route stays, as a redirect, so an old
- * bookmark or link still lands somewhere useful instead of a 404; the
- * `scripts/detail` pages underneath it are untouched and still the only place
- * a script's versions, source and param sets live.
- *
- * The query is carried over rather than dropped: `?device=`/`?cluster=` are
- * what make the Run flow open its dialog on arrival, so a bookmarked or
- * in-flight `/scripts?device=…` must reach `/plugins` still carrying it.
- *
- * `/plugins` is two tabs now (`?tab=plugins|scripts`), and nothing here has to
- * say so: either of those parameters arriving with no explicit `?tab=` selects
- * the Scripts tab on the other side, which is what "run a script on this
- * device" meant in the first place. A bare `/scripts` still lands on Plugins,
- * the same first thing the screen has always shown.
- */
-function ScriptsRedirect() {
-  const router = useRouter()
+type TabKey = 'scripts' | 'workflows' | 'schedules'
+
+const TAB_LABEL: Record<TabKey, string> = { scripts: 'Scripts', workflows: 'Workflows', schedules: 'Schedules' }
+const TAB_SUBTITLE: Record<TabKey, string> = {
+  scripts: 'Registered by your active plugins. Install a plugin to add scripts; there is no other way in.',
+  workflows: 'Pipelines of scripts on one device.',
+  schedules: 'Recurring runs of a script or an agent, on a cron expression.',
+}
+const SEARCH_PLACEHOLDER: Record<TabKey, string> = {
+  scripts: 'Search scripts…',
+  workflows: 'Search workflows…',
+  schedules: 'Search schedules…',
+}
+
+function ScriptsWorkflowsScreen() {
   const params = useSearchParams()
-  const query = params.toString()
+  const tabParam = params.get('tab')
+  const tab: TabKey = tabParam === 'workflows' || tabParam === 'schedules' ? tabParam : 'scripts'
 
+  const [scripts, setScripts] = useState<ScriptListItem[] | null>(null)
+  const [workflows, setWorkflows] = useState<WorkflowInfo[] | null>(null)
+  const [schedules, setSchedules] = useState<ScheduleInfo[] | null>(null)
+  const [query, setQuery] = useState(params.get('q') ?? '')
+  const [creatingSchedule, setCreatingSchedule] = useState(false)
+  const [editingSchedule, setEditingSchedule] = useState<ScheduleRow | null>(null)
+
+  const loadScripts = () => void api('/api/scripts', ScriptsListResponseSchema).then((b) => setScripts(b.items))
+  const loadWorkflows = () => void listWorkflows().then(setWorkflows)
+  const loadSchedules = () => void fetchAllPages<ScheduleInfo>('/api/schedules').then(setSchedules)
+
+  // All three load on mount, not on tab switch — the counts in the tab strip
+  // must be right the instant the screen paints (design handoff: "each with
+  // a count"), and every one of the three lists is small (plan 217 §3.2, §3.7).
   useEffect(() => {
-    router.replace(query ? `/plugins?${query}` : '/plugins')
-  }, [router, query])
+    loadScripts()
+    loadWorkflows()
+    loadSchedules()
+  }, [])
 
-  return null
+  // `?q=` mirrored with `replaceState`, matching `app/plugins/page.tsx`'s
+  // existing convention: a reload or a shared link must land on the same
+  // filtered screen without the router re-resolving the route under a live
+  // list.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const next = new URLSearchParams(window.location.search)
+    if (query) next.set('q', query)
+    else next.delete('q')
+    const search = next.toString()
+    const url = search ? `${window.location.pathname}?${search}` : window.location.pathname
+    if (url !== window.location.pathname + window.location.search) window.history.replaceState(null, '', url)
+  }, [query])
+
+  const hrefFor = (key: TabKey) => {
+    const next = new URLSearchParams(params.toString())
+    next.set('tab', key)
+    return `/scripts?${next.toString()}`
+  }
+
+  const counts: Record<TabKey, number | null> = {
+    scripts: scripts?.length ?? null,
+    workflows: workflows?.length ?? null,
+    schedules: schedules?.length ?? null,
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between gap-3 px-[14px] pt-[14px]">
+        <div className="min-w-0">
+          <h1 className="text-title font-semibold text-text">Scripts & workflows</h1>
+          <p className="mt-0.5 truncate text-meta text-dim">{TAB_SUBTITLE[tab]}</p>
+        </div>
+        {tab === 'scripts' && (
+          <InstallPluginDialog
+            onInstalled={loadScripts}
+            trigger={
+              /*
+               * "Install plugin", not "New script".
+               *
+               * A script cannot be created or uploaded — the only way one
+               * reaches a farm is inside a plugin (MVP 03 §2, plan 210). This
+               * button already opened `InstallPluginDialog`; only its label
+               * and icon still described the model that decision removed, and
+               * the owner read them as a leftover upload path that should not
+               * exist (2026-09-04). The mechanism was right and the words were
+               * wrong, which is the worse way round: the UI was teaching a
+               * rule the product does not have.
+               */
+              <Button className="rounded-button bg-accent text-on-accent hover:bg-accent-2">
+                <PuzzlePieceIcon className="size-4" aria-hidden />
+                Install plugin
+              </Button>
+            }
+          />
+        )}
+        {tab === 'workflows' && (
+          <Button asChild className="rounded-button bg-accent text-on-accent hover:bg-accent-2">
+            <Link href="/scripts/editor">
+              <FlowArrowIcon className="size-4" aria-hidden />
+              New workflow
+            </Link>
+          </Button>
+        )}
+        {tab === 'schedules' && (
+          <Button className="rounded-button bg-accent text-on-accent hover:bg-accent-2" onClick={() => setCreatingSchedule(true)}>
+            <ClockIcon className="size-4" aria-hidden />
+            New schedule
+          </Button>
+        )}
+      </div>
+
+      {/*
+        The tab pills sit clear of the strip's bottom border (`py-[10px]`,
+        `rounded-input`) instead of sitting ON it. The previous
+        `rounded-t-[9px]` with no vertical padding put the active tab's
+        filled background directly over the border line, so the line ran
+        across the tab's bottom edge and read as a rendering fault (owner,
+        2026-09-04). This is the same strip Jobs already uses
+        (`components/jobs/JobsTabStrip.tsx`), which is the reason to match it
+        rather than nudge this one over the line.
+      */}
+      <div className="mt-3 flex items-center gap-[3px] border-b border-line px-[14px] py-[10px]">
+        {(['scripts', 'workflows', 'schedules'] as const).map((key) => (
+          <Link
+            key={key}
+            href={hrefFor(key)}
+            data-tab={key}
+            className={cn(
+              'flex flex-none items-center gap-[7px] rounded-input px-3 py-[7px] text-row transition-colors',
+              tab === key ? 'bg-accent-soft font-semibold text-accent' : 'font-medium text-faint hover:text-text',
+            )}
+          >
+            {TAB_LABEL[key]}
+            {counts[key] !== null && <span className="text-label font-normal opacity-65">{counts[key]}</span>}
+          </Link>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2 px-[14px] py-3">
+        <div className="relative min-w-0 max-w-sm flex-1">
+          <MagnifyingGlassIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={SEARCH_PLACEHOLDER[tab]}
+            aria-label={SEARCH_PLACEHOLDER[tab]}
+            className="h-9 w-full rounded-input border-0 bg-muted pr-8 pl-8 text-body text-text placeholder:text-faint focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+          {query && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => setQuery('')}
+              className="absolute top-1/2 right-2 -translate-y-1/2 text-faint hover:text-text"
+            >
+              <XIcon className="size-3.5" aria-hidden />
+            </button>
+          )}
+        </div>
+        <span className="shrink-0 text-meta text-faint">
+          {tab === 'scripts' && scripts !== null && `${scripts.filter((s) => matchesScript(s, query)).length} shown`}
+          {tab === 'workflows' && workflows !== null && `${workflows.filter((w) => matchesWorkflow(w, query)).length} shown`}
+          {tab === 'schedules' && schedules !== null && `${schedules.filter((s) => matchesSchedule(s, query)).length} shown`}
+        </span>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-[14px] pb-[14px]">
+        {tab === 'scripts' && <ScriptsTable items={scripts} query={query} onReload={loadScripts} />}
+        {tab === 'workflows' && <WorkflowsGrid items={workflows} query={query} onReload={loadWorkflows} />}
+        {tab === 'schedules' && (
+          <SchedulesList items={schedules} query={query} onReload={loadSchedules} onEdit={(s) => setEditingSchedule(s)} />
+        )}
+      </div>
+
+      <ScheduleDialog
+        schedule={creatingSchedule ? 'new' : editingSchedule}
+        onClose={() => {
+          setCreatingSchedule(false)
+          setEditingSchedule(null)
+        }}
+        onSaved={loadSchedules}
+      />
+    </div>
+  )
 }
 
 export default function ScriptsPage() {
   return (
     <Suspense fallback={null}>
-      <ScriptsRedirect />
+      <ScriptsWorkflowsScreen />
     </Suspense>
   )
 }

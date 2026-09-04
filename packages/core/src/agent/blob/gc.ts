@@ -4,10 +4,11 @@ import type { Db } from '../../db'
 import { agentBlobs } from '../../db/schema'
 import type { FarmSettingsStore } from '../../settings/farm-settings'
 import type { Logger } from '../../util/logger'
+import { BLOB_ORPHAN_GRACE_HOURS } from '../../config/constants'
 
 /**
  * Retention for `agent_blobs` (spec §18's "artifact retention and GC", the
- * shape `maintenance/retention.ts` already applies to `artifacts` and
+ * shape `retention/sweeper.ts` already applies to `artifacts` and
  * `device_events`) — the one case that policy could not just be reused for,
  * because a blob is content-addressed and shared across threads
  * (`agent/blob/store.ts`'s dedupe, `agent/thread/store.ts`'s `deleteThread`
@@ -15,7 +16,8 @@ import type { Logger } from '../../util/logger'
  * GC's problem, not this one"). A blob still referenced by ANY message,
  * anywhere, is never a deletion candidate regardless of age — only a blob no
  * message references (an orphan) is ever swept, and only once it has sat
- * unreferenced past a grace window (protocol's `retention.blobOrphanGraceHours`).
+ * unreferenced past a grace window (`BLOB_ORPHAN_GRACE_HOURS`; plan 212 §4.1
+ * replaced the old `retention.blobOrphanGraceHours` setting with it).
  *
  * This deliberately does NOT bound a blob still referenced by a long-lived,
  * never-deleted thread — every screenshot an active agent thread's tool
@@ -74,7 +76,7 @@ export function createBlobGc(deps: {
   let timer: ReturnType<typeof setInterval> | null = null
 
   function sweepOnce(): { deleted: number; freedBytes: number } {
-    const graceHours = deps.settings.get().retention.blobOrphanGraceHours
+    const graceHours = BLOB_ORPHAN_GRACE_HOURS
     const cutoff = new Date(Date.now() - graceHours * 60 * 60 * 1000)
 
     // Old enough to be a candidate at all — the common case (a screenshot from minutes ago,

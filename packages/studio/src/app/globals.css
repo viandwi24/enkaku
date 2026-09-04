@@ -33,6 +33,7 @@
  * `@layer base` and `@layer components` below stay here on purpose: they style
  * Studio's page, they are not vocabulary a plugin could name.
  */
+@import '@enkaku/ui/palette.css';
 @import '@enkaku/ui/theme.css';
 
 /*
@@ -49,39 +50,50 @@
 
 @layer base {
   * {
-    border-color: var(--color-line);
+    border-color: var(--border);
   }
 
+  /*
+   * The palette follows the attribute, so `color-scheme` has to as well: with
+   * no explicit choice the page follows the system preference exactly the way
+   * `palette.css`'s media block does (plan 204 §3.3), and an explicit choice
+   * wins in both directions. The prototype's flat `color-scheme: dark` is
+   * gone with the prototype's single theme.
+   */
   html {
+    color-scheme: light dark;
+  }
+  html[data-theme='light'] {
+    color-scheme: light;
+  }
+  html[data-theme='dark'] {
     color-scheme: dark;
   }
 
+  /*
+   * The handoff's root, verbatim: `background: var(--bg)` with the shell's own
+   * `font-family: 'Geist'`, `font-size: 13px`, `color: var(--text)`. The
+   * prototype Studio's dot-grid `radial-gradient` is deleted; the handoff's
+   * page is a flat surface, and the gradient was built out of a block-D token
+   * (`--color-fg`) that goes with the last old screen.
+   */
   body {
-    /*
-     * Plan 101 (M66) step 101.3 — the reference's dot-grid page background
-     * (`refs/ui`): a repeating `radial-gradient`, not a filter, so it costs
-     * one GPU texture regardless of page size (plan 101 §3.7) — cheap enough
-     * to apply everywhere, unlike blur (§3.6, kept off the body).
-     */
-    background-color: var(--color-bg);
-    background-image: radial-gradient(color-mix(in oklch, var(--color-fg) 7%, transparent) 1px, transparent 1px);
-    background-size: 26px 26px;
-    color: var(--color-fg);
+    background-color: var(--bg);
+    color: var(--text);
     font-family: var(--font-sans);
-    font-size: 14px;
+    font-size: 13px;
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Focus is always visible — a working tool has to be usable without a mouse. */
   :focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: 2px solid var(--accent);
     outline-offset: 2px;
     border-radius: 3px;
   }
 
   ::selection {
-    background: var(--color-accent);
-    color: var(--color-accent-fg);
+    background: var(--accent);
+    color: var(--on-accent);
   }
 
   @media (prefers-reduced-motion: reduce) {

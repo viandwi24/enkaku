@@ -3,7 +3,7 @@ import type { ActionSpec, Binding, PluginActionResult } from '@enkaku/protocol'
 import { canUseDevice, type Permission } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { Role } from '../auth/service'
-import { createBatch, type BatchDispatchDeps } from '../clusters/dispatch'
+import { createBatch, type BatchDispatchDeps } from '../groups/dispatch'
 import { devices } from '../db/schema'
 import type { KvScope, KvStore } from '../kv/store'
 import type { ScriptRegistry } from '../scripts/registry'
@@ -32,7 +32,7 @@ import { resolvePluginSurface } from './surface-registry'
  *    was created". `plugin.action` is that row.
  *
  * **What it can and cannot reach.** Every kind dispatches through a function
- * the farm already has — `JobService.enqueue`, `clusters/dispatch.ts`'s
+ * the farm already has — `JobService.enqueue`, `groups/dispatch.ts`'s
  * `createBatch`, `KvStore` — never SQL of its own. So a plugin action is
  * bounded by exactly the same gates the equivalent hand-made request is:
  * `canUseDevice`, `validateScriptForRun`, the params schema, the runtime
@@ -134,7 +134,7 @@ const RowDeviceSchema = z
     stableId: z.string().optional(),
     label: z.string().nullable().optional(),
     status: z.string().nullable().optional(),
-    clusterId: z.string().nullable().optional(),
+    groupId: z.string().nullable().optional(),
     /** The short human-facing number (plan 89 §3.1). `null` for a device with no reservation — a real state, never an error. */
     number: z.number().int().nullable().optional(),
   })

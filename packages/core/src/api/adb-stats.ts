@@ -8,7 +8,6 @@ import { can } from '../auth/acl'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
 import { formatDeviceLabel, loadDeviceNumbers } from '../registry/device-number'
-import type { CommandConsoleStats } from '../command-console/runner'
 import type { AdbMetricsStore } from '../device/adb-metrics'
 import type { DeviceHealth } from '../device/health'
 import { EnkakuError } from '../util/errors'
@@ -45,29 +44,22 @@ const ZERO_ADB_HEALTH: AdbHealthStats = {
   symptoms: [],
   restartAdvised: false,
 }
-/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. `queueWaitMs` zero-fills to the arbiter's own shipped default rather than `0`, so a probe hitting this brief window never reports a nonsensical "budget is 0ms". */
+/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. Narrowed to `lanes` only by plan 205 (MVP 04) — the subordinate-grant and per-client fan-out fields this used to carry had no producer once the activity model replaced their source subsystems. */
 const ZERO_INPUT: InputStats = {
   lanes: {
     pointer: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
     keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
     text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
   },
-  assistsActive: 0,
-  mirrorGroups: 0,
-  mirrorMembers: 0,
-  mirrorFanoutMsP50: 0,
-  mirrorFanoutMsP95: 0,
-  queueWaitMs: 5_000,
-  uncollectedGrants: 0,
-  orphanedMirrorGroups: 0,
 }
-/** Same zero-fill contract (plan 92 §3.3, §4.5, §5 step 92.3) — reported before `sessions()` returns a manager (e.g. under the orchestrator, or the brief window before `daemon.ts` constructs one) or before `deps.video` is wired at all. */
+/** Same zero-fill contract (plan 206 §4.10) — reported before `sessions()` returns a manager (e.g. under the orchestrator, or the brief window before `daemon.ts` constructs one) or before `deps.video` is wired at all. */
 const ZERO_VIDEO: VideoStats = {
   controlStreams: 0,
   wallStreams: 0,
   buildsRunning: 0,
   buildQueueDepth: 0,
-  maxConcurrentBuilds: 0,
+  buildsPerUsbRoot: 0,
+  farmCeiling: 0,
   maxTiles: 0,
   maxTilesAuto: false,
   // Plan 100 §3.1, §4.1, step 100.3 — a harmless default for the same brief
@@ -75,15 +67,6 @@ const ZERO_VIDEO: VideoStats = {
   // the real classification once `deps.video` is wired.
   transport: 'loopback',
 }
-/** Same zero-fill contract (plan 93 §5 step 93.12) — reported before `deps.commandConsole` is wired (today: always, until `daemon.ts` passes `() => commandRunner?.stats() ?? null` through — see `adb-stats-command-console-wiring.test.ts`, the self-detecting gap this step could not close itself). `distinctOutputRatio: 0` is deliberate, not a claim that grouping never helps — it means "no member has settled yet", the same "0 is not NaN" reasoning `adbHealth.window.timeoutRate` already documents. */
-const ZERO_COMMAND_CONSOLE: NonNullable<AdbStatsResponse['commandConsole']> = {
-  runsInFlight: 0,
-  membersInFlight: 0,
-  coalescedFramesPerSec: 0,
-  distinctOutputRatio: 0,
-  leaseChangedPerMinute: 0,
-}
-
 /**
  * `GET /api/adb/stats` (plan 23 §4.6, permission `device.view`) — the global
  * semaphore's live state plus per-device queue depth, latency percentiles,
@@ -97,8 +80,10 @@ export function createAdbStatsRoutes(deps: {
   health: () => DeviceHealth | null
   /** Whether the current global cap comes from the autoscaler (true) or a pinned `adb.maxConcurrent` (false). */
   auto: () => boolean
-  /** Idle session TTL (plan 42 §4.4) — exposed so the effect is measurable rather than assumed. Null under the orchestrator. */
+  /** Encoder states per device (plan 206 §4.3's `encoders()`) — null under the orchestrator. */
   sessions: () => SessionManager | null
+  /** The always-on builder's own occupancy (plan 206 §4.2's `stats()`) — same optional/zero-default contract as `transport`/`hostAdb` below. */
+  alwaysOn?: () => { running: number; queued: number } | null
   /**
    * The shared `/ws` transport's own health (plan 85 §3.6, §4.6) — from
    * `ws-handlers.ts`'s `transportStats()`, wired through `daemon.ts`'s usual
@@ -114,26 +99,18 @@ export function createAdbStatsRoutes(deps: {
   /** `packages/core/src/server/ws-handlers.ts`'s `inputStats()` (plan 91 §4.10, §5 step 91.10) — same optional/zero-default contract as `transport`/`hostAdb`/`adbHealth` above. */
   input?: () => InputStats | null
   /**
-   * The build lane's farm-wide settings (plan 92 §3.3, §3.7, §4.5, §5 step
-   * 92.3) — `session.maxConcurrentBuilds` plus `wall.maxTiles` AS ACTUALLY
-   * APPLIED (the derived number when the stored setting is `0`, never the
-   * raw `0` itself) and whether it is currently being derived. Read fresh
-   * from `settingsStore` at request time by `daemon.ts`'s wiring. The
-   * stream counts and build-lane occupancy come from `sessions()`'s own
-   * `videoStats()` instead — this accessor carries only the settings half,
-   * mirroring `auto` above (`adb.maxConcurrent`'s own settings/live split).
-   * Same optional/zero-default contract as `transport`/`hostAdb`/`adbHealth`
-   * above.
+   * The session build settings (plan 206 §4.5, §4.10) — `session.buildsPerUsbRoot`
+   * plus the farm ceiling constant, and `wall.maxTiles` AS ACTUALLY APPLIED
+   * (the derived number when the stored setting is `0`, never the raw `0`
+   * itself) and whether it is currently being derived. Read fresh from
+   * `settingsStore` at request time by `daemon.ts`'s wiring. The stream
+   * counts come from `sessions()`'s own `encoders()`, and the build-lane
+   * occupancy from `alwaysOn()`'s own `stats()` — this accessor carries only
+   * the settings half, mirroring `auto` above (`adb.maxConcurrent`'s own
+   * settings/live split). Same optional/zero-default contract as
+   * `transport`/`hostAdb`/`adbHealth` above.
    */
-  video?: () => { maxConcurrentBuilds: number; maxTiles: number; maxTilesAuto: boolean; transport: NonNullable<VideoStats>['transport'] } | null
-  /**
-   * The command console's own observability (plan 93 §3.5, §3.8, §7.3, §5
-   * step 93.12) — `command-console/runner.ts`'s `CommandRunner.stats()`,
-   * wired through the same forward-ref pattern `transport`/`hostAdb`/
-   * `adbHealth`/`input`/`video` above already use. Same optional/zero-default
-   * contract as those.
-   */
-  commandConsole?: () => CommandConsoleStats | null
+  video?: () => { buildsPerUsbRoot: number; farmCeiling: number; maxTiles: number; maxTilesAuto: boolean; transport: NonNullable<VideoStats>['transport'] } | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -147,7 +124,7 @@ export function createAdbStatsRoutes(deps: {
     // The streaming lane's own occupancy (plan 24 §3.2, §8 risks — "shows
     // lane occupancy for verification") — deliberately reported separately
     // from `global` above, since it draws from a completely different budget.
-    const streamStats = client?.streamStats() ?? { maxStreams: 0, maxStreamsPerDevice: 0, streams: 0, perDevice: {} }
+    const streamStats = client?.streamStats() ?? { maxStreams: 0, maxStreamsPerDevice: 0, streams: 0, pinned: 0, perDevice: {} }
     const health = deps.health()
     const rows = deps.db.select().from(devices).all()
     // stableId → number for the whole fleet, in ONE statement (plan 124 §3.7,
@@ -156,23 +133,21 @@ export function createAdbStatsRoutes(deps: {
     // a per-row `lookupDeviceNumber` here would be the textbook N+1 on the
     // one endpoint an operator watches while the farm is under load.
     const numbers = loadDeviceNumbers(deps.db)
-    // Idle session TTL (plan 42 §4.4) — every session currently held open
-    // with no subscriber, oldest first, so the setting's effect is
-    // measurable rather than assumed.
-    const idle = deps.sessions()?.idleSessions() ?? []
-    // The build lane's own occupancy (plan 92 §3.3, §4.3, §4.5, §5 step
-    // 92.3, tests H1) — `videoStats()` reads the SAME semaphore
-    // `createEntry` queues behind, so `buildsRunning`/`buildQueueDepth`
-    // reflect the lane's actual state, never an estimate.
-    const videoBuild = deps.sessions()?.videoStats?.()
+    // Plan 206 §4.3, §4.10 — encoder states per device replace the old,
+    // now-deleted per-quality stream counter; `alwaysOn().stats()` is the
+    // builder's own occupancy, the same counters `GET /api/video/sessions` reports.
+    const sessionManager = deps.sessions()
+    const encoders = sessionManager?.encoders() ?? null
+    const alwaysOnStats = deps.alwaysOn?.()
     const videoSettings = deps.video?.()
-    const video: VideoStats = videoBuild
+    const video: VideoStats = encoders
       ? {
-          controlStreams: videoBuild.streams.control,
-          wallStreams: videoBuild.streams.wall,
-          buildsRunning: videoBuild.buildsRunning,
-          buildQueueDepth: videoBuild.buildQueueDepth,
-          maxConcurrentBuilds: videoSettings?.maxConcurrentBuilds ?? 0,
+          controlStreams: encoders.filter((e) => e.control !== null).length,
+          wallStreams: encoders.filter((e) => e.wall !== null).length,
+          buildsRunning: alwaysOnStats?.running ?? 0,
+          buildQueueDepth: alwaysOnStats?.queued ?? 0,
+          buildsPerUsbRoot: videoSettings?.buildsPerUsbRoot ?? 0,
+          farmCeiling: videoSettings?.farmCeiling ?? 0,
           maxTiles: videoSettings?.maxTiles ?? 0,
           maxTilesAuto: videoSettings?.maxTilesAuto ?? false,
           transport: videoSettings?.transport ?? 'loopback',
@@ -190,9 +165,9 @@ export function createAdbStatsRoutes(deps: {
         maxStreams: streamStats.maxStreams,
         maxStreamsPerDevice: streamStats.maxStreamsPerDevice,
         active: streamStats.streams,
+        pinned: streamStats.pinned,
         perDevice: streamStats.perDevice,
       },
-      idleSessions: idle,
       devices: rows.map((row) => {
         const m = deps.metrics.forSerial(row.serial)
         return {
@@ -218,7 +193,11 @@ export function createAdbStatsRoutes(deps: {
       adbHealth: deps.adbHealth?.() ?? ZERO_ADB_HEALTH,
       input: deps.input?.() ?? ZERO_INPUT,
       video,
-      commandConsole: deps.commandConsole?.() ?? ZERO_COMMAND_CONSOLE,
+      // Plan 223 §4.2, §4.3 — every live scrcpy forward this process holds,
+      // owner-tagged. Absent (never `[]`-defaulted through a ZERO_ constant)
+      // when `sessions()` returns null, matching the `.optional()` contract
+      // `input`/`video` above already established.
+      forwards: sessionManager?.forwards(),
     })
   })
 

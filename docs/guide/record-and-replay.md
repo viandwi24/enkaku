@@ -5,7 +5,7 @@ presses, key presses, typed text — and turns it into an ordinary script:
 versioned, runnable from the run dialog, schedulable, batchable, and callable
 from an AI agent. There is exactly one runnable artefact in Enkaku; a
 recording is source for it, not a second kind of thing. The full design is
-`docs/plans/94-m59-action-recorder-and-task-scheduling.md`; the SDK's
+`docs/archive/plans/94-m59-action-recorder-and-task-scheduling.md`; the SDK's
 interpreter and the three timing layers are `packages/sdk/README.md`; the
 recorder and the pacer are `packages/core/README.md`.
 

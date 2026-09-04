@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
+import { DEVICE_LABEL_SURFACE } from '../config/constants'
 import { defaultDeviceSettings } from '@enkaku/protocol'
 import { openDb, runMigrations } from '../db'
 import { devices } from '../db/schema'
@@ -36,9 +37,11 @@ function unhappyDataDir(): string {
       serial: 'serial-unhappy-label',
       label: 'Stuck Phone',
       status: 'offline',
-      settings: { ...defaultDeviceSettings(), labelling: { mode: 'wallpaper', showName: true } },
+      // Plan 212 §4.1: the per-device labelling block is `overrides.deviceLabel`
+      // (content) plus the constant `DEVICE_LABEL_SURFACE` (surface).
+      settings: { ...defaultDeviceSettings(), overrides: { ...defaultDeviceSettings().overrides, deviceLabel: 'number-and-name' as const } },
       labelState: {
-        mode: 'wallpaper',
+        mode: DEVICE_LABEL_SURFACE,
         state: 'unavailable',
         reason: 'no guest agent',
         fingerprint: null,
@@ -108,23 +111,6 @@ function unhappyContext(): DoctorContext {
           { symptom: 'server-unresponsive', detail: 'host:version has not answered within 2000ms across 2 consecutive probes', since: 900 },
         ],
         restartAdvised: true,
-      }),
-    },
-    coControl: {
-      probe: async () => ({
-        lanes: {
-          pointer: { depth: 5, waitMsP50: 2000, waitMsP95: 4500, refusals: 3 },
-          keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
-          text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
-        },
-        assistsActive: 2,
-        mirrorGroups: 1,
-        mirrorMembers: 3,
-        mirrorFanoutMsP50: 40,
-        mirrorFanoutMsP95: 120,
-        queueWaitMs: 5_000,
-        uncollectedGrants: 1,
-        orphanedMirrorGroups: 1,
       }),
     },
   })
@@ -224,7 +210,6 @@ describe('doctor package — never runs adb kill-server (repo rule, plan 41 §6.
     'checks/streams.ts',
     'checks/host-adb.ts',
     'checks/adb-health.ts',
-    'checks/co-control.ts',
     'checks/labelling.ts',
   ]
 

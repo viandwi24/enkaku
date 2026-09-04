@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { AdbRestartPreviewSchema, AdbRestartReportSchema } from '@enkaku/protocol'
+import { AdbRestartPreviewSchema, AdbRestartReportSchema, type AdbRestartPreview } from '@enkaku/protocol'
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, api, describeApiError, formatDeviceName } from '@enkaku/ui'
 
 /**
@@ -20,22 +20,13 @@ import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogH
  * `kill-server` prohibition this restart is an audited exception to.
  */
 
-interface Preview {
-  devicesTotal: number
-  sessionsActive: number
-  leasesHeld: number
-  jobsRunning: number
-  networkDevicesWithEndpoint: number
-  restartCooldownSec: number
-}
-
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`
 }
 
 export function AdbRestartDialog({ trigger }: { trigger: ReactNode }) {
   const [open, setOpen] = useState(false)
-  const [preview, setPreview] = useState<Preview | null>(null)
+  const [preview, setPreview] = useState<AdbRestartPreview | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [force, setForce] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -54,7 +45,7 @@ export function AdbRestartDialog({ trigger }: { trigger: ReactNode }) {
       .catch((e) => setLoadError(describeApiError(e)))
   }, [open])
 
-  const busyFarm = preview !== null && (preview.jobsRunning > 0 || preview.leasesHeld > 0)
+  const busyFarm = preview !== null && (preview.jobsRunning > 0 || preview.controlled > 0)
   const canConfirm = preview !== null && (!busyFarm || force)
 
   const confirm = async () => {
@@ -68,7 +59,7 @@ export function AdbRestartDialog({ trigger }: { trigger: ReactNode }) {
       // server-side. The two were conflated once; this one carries `number`
       // as its own field and is composed HERE, exactly once, so a caller
       // that also holds a `DeviceInfo` cannot render `#7 #7 SM-F721U1`
-      // (plan 124 §10's `MirrorMember` lesson).
+      // (plan 124 §10's own lesson, from a similarly-shaped row type).
       //
       // A device with no number composes to its bare label, which is the
       // point: `formatDeviceName` is total, so the "did not reconnect" list
@@ -106,7 +97,7 @@ export function AdbRestartDialog({ trigger }: { trigger: ReactNode }) {
                     {preview.sessionsActive > 0
                       ? `${plural(preview.sessionsActive, 'live screen')} stop and resume.`
                       : 'No live screens are open right now.'}
-                    {preview.leasesHeld > 0 && ` Control is released on ${plural(preview.leasesHeld, 'device')}.`}
+                    {preview.controlled > 0 && ` Control is released on ${plural(preview.controlled, 'device')}.`}
                     {preview.jobsRunning > 0 && ` ${plural(preview.jobsRunning, 'running job')} fail${preview.jobsRunning === 1 ? 's' : ''}.`}
                   </p>
                   <p>
@@ -131,7 +122,7 @@ export function AdbRestartDialog({ trigger }: { trigger: ReactNode }) {
                       />
                       <span>
                         Restart anyway — this fails {plural(preview.jobsRunning, 'running job')} and releases control on{' '}
-                        {plural(preview.leasesHeld, 'device')}.
+                        {plural(preview.controlled, 'device')}.
                       </span>
                     </label>
                   )}

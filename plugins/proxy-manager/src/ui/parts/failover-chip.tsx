@@ -25,7 +25,7 @@ import type { ProxyFailoverSnapshot } from './api'
  * **Why this reads its data from a poll, not a WS subscription** — the
  * plan's own §4.5 asks for a `proxy.failover` WS message "consumed by the
  * new chip for live updates without a poll". That message exists as a
- * structured `plugin.log` line (`service/failover.ts`'s `emitFailoverEvent`,
+ * structured runtime-log line (`service/failover.ts`'s `emitFailoverEvent`,
  * `shared.ts`'s `PROXY_FAILOVER_EVENT`) — but there is no WS surface this
  * chip can reach: `@enkaku/ui`'s exports (the only farm-provided API a
  * tier-C plugin's bundle has, via `UI_EXTERNALS`) do not include a WS client,

@@ -13,13 +13,12 @@ const log = createLogger('jobs.trace')
  * only the caller knows the instant an event really happened.
  */
 export interface TraceRecordInput {
-  jobId: string
+  runId: string
   /** Unix MILLISECONDS. Defaults to `Date.now()` — pass it explicitly when the event's real instant is earlier than the moment it reaches the recorder (an action's frame settles after the action did). */
   atMs?: number
   /** 1-based; a rebound job has more than one. Defaults to 1. */
   attempt?: number
   phase?: JobTraceEvent['phase']
-  nodeId?: string | null
   kind: JobTraceEvent['kind']
   name: string
   durationMs?: number | null
@@ -45,11 +44,11 @@ export interface TraceRecorder {
    * (plan 128 §3.6, step 128.5) — a Timeline tab opened on the job the
    * millisecond it turns `failed` must not be missing its last 250 ms.
    *
-   * `jobId` also releases that job's in-memory `seq` counter: the buffer is
+   * `runId` also releases that job's in-memory `seq` counter: the buffer is
    * empty afterwards, so the next event for the same id re-seeds from the
    * rows already on disk (see `nextSeq`) rather than restarting at 1.
    */
-  flush(jobId?: string): void
+  flush(runId?: string): void
   /** Flush and stop — called on daemon shutdown. */
   stop(): Promise<void>
 }
@@ -94,7 +93,7 @@ export interface TraceRecorder {
 export function createTraceRecorder(deps: {
   db: Db
   /** Fan an event out to subscribed WS clients as `job.trace`. Called synchronously from `record()`. */
-  publish: (jobId: string, ev: JobTraceEvent) => void
+  publish: (runId: string, ev: JobTraceEvent) => void
   flushIntervalMs?: number
   maxBufferedRows?: number
 }): TraceRecorder {
@@ -104,14 +103,14 @@ export function createTraceRecorder(deps: {
   let buffer: JobEventInsert[] = []
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
-  /** Per-job `seq` cursor; seeded lazily from the DB and released on `flush(jobId)`. */
-  const seqByJob = new Map<string, number>()
+  /** Per-job `seq` cursor; seeded lazily from the DB and released on `flush(runId)`. */
+  const seqByRun = new Map<string, number>()
 
-  function nextSeq(jobId: string): number {
-    const known = seqByJob.get(jobId)
+  function nextSeq(runId: string): number {
+    const known = seqByRun.get(runId)
     if (known !== undefined) {
       const next = known + 1
-      seqByJob.set(jobId, next)
+      seqByRun.set(runId, next)
       return next
     }
     // First event for this job in this process. `(job_id, seq)` is unique, so
@@ -120,12 +119,12 @@ export function createTraceRecorder(deps: {
     const highest = deps.db
       .select({ seq: jobEvents.seq })
       .from(jobEvents)
-      .where(eq(jobEvents.jobId, jobId))
+      .where(eq(jobEvents.runId, runId))
       .orderBy(desc(jobEvents.seq))
       .limit(1)
       .get()
     const next = (highest?.seq ?? 0) + 1
-    seqByJob.set(jobId, next)
+    seqByRun.set(runId, next)
     return next
   }
 
@@ -139,7 +138,7 @@ export function createTraceRecorder(deps: {
         tx.insert(jobEvents).values(batch).run()
       })
     } catch (err) {
-      log.error('dropped a trace batch', { rows: batch.length, jobId: batch[0]?.jobId, err: String(err) })
+      log.error('dropped a trace batch', { rows: batch.length, runId: batch[0]?.runId, err: String(err) })
     }
   }
 
@@ -163,12 +162,11 @@ export function createTraceRecorder(deps: {
       // must not burn a `seq` either, so the counter is never touched here.
       const event: JobTraceEvent = {
         id: crypto.randomUUID(),
-        jobId: e.jobId,
-        seq: stopped ? 0 : nextSeq(e.jobId),
+        runId: e.runId,
+        seq: stopped ? 0 : nextSeq(e.runId),
         atMs: e.atMs ?? Date.now(),
         attempt: e.attempt ?? 1,
         phase: e.phase ?? null,
-        nodeId: e.nodeId ?? null,
         kind: e.kind,
         name: e.name,
         durationMs: e.durationMs ?? null,
@@ -185,24 +183,24 @@ export function createTraceRecorder(deps: {
       // `publish` fans out to WS clients: a broadcast that throws must not
       // travel back up into a running script's device call.
       try {
-        deps.publish(e.jobId, event)
+        deps.publish(e.runId, event)
       } catch (err) {
-        log.warn('trace publish failed', { jobId: e.jobId, seq: event.seq, err: String(err) })
+        log.warn('trace publish failed', { runId: e.runId, seq: event.seq, err: String(err) })
       }
       if (buffer.length >= maxBufferedRows) flushNow()
       else scheduleFlush()
       return event
     },
 
-    flush(jobId) {
+    flush(runId) {
       flushNow()
-      if (jobId !== undefined) seqByJob.delete(jobId)
+      if (runId !== undefined) seqByRun.delete(runId)
     },
 
     async stop() {
       stopped = true
       flushNow()
-      seqByJob.clear()
+      seqByRun.clear()
     },
   }
 }

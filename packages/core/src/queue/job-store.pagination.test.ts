@@ -1,12 +1,16 @@
+import { eq } from 'drizzle-orm'
 import { describe, expect, test } from 'bun:test'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, jobs } from '../db/schema'
+import { createRunStore } from '../jobs/runs/store'
 import { createJobStore } from './job-store'
 
 /**
  * `JobStore.list` keyset pagination (plan 30 §4.2, §7) — `/api/jobs` is a
  * thin wrapper around this, so the paging correctness is tested here where a
- * seeded DB is cheap to build.
+ * seeded DB is cheap to build. Lists JOBS, not runs (plan 211 §3.2 decision
+ * 12 — a job's row never disappears when it re-runs), so a bare job with no
+ * run is enough to exercise the pagination itself.
  */
 
 function setUp() {
@@ -16,26 +20,25 @@ function setUp() {
 }
 
 function seedDevice(db: Db, id: string) {
-  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status: 'idle' }).run()
+  db.insert(devices).values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: `device ${id}`, status: 'online' }).run()
 }
 
-let seq = 0
 function seedJob(db: Db, deviceId: string, createdAt: Date) {
-  const id = `job-${String(++seq).padStart(4, '0')}`
-  db.insert(jobs)
-    .values({
-      id,
-      scriptId: 'internal:sleep',
-      deviceId,
-      params: null,
-      priority: 0,
-      status: 'queued',
-      createdAt,
-      batchId: null,
-      batchSeq: null,
-    })
-    .run()
-  return id
+  const runs = createRunStore(db)
+  const job = runs.createJob({
+    kind: 'script',
+    scriptId: 'internal:sleep',
+    deviceId,
+    params: null,
+    scriptName: null,
+    scriptVersion: null,
+    batchId: null,
+    batchSeq: null,
+  })
+  // `createJob` stamps its own `createdAt` (now); the pagination test needs
+  // an explicit, spread-out or same-second value instead.
+  db.update(jobs).set({ createdAt }).where(eq(jobs.id, job.id)).run()
+  return job.id
 }
 
 describe('JobStore.list keyset pagination', () => {

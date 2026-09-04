@@ -1,6 +1,6 @@
 import type { AdbClient } from '@enkaku/adb'
 import { probeDeviceIdentity } from '@enkaku/session'
-import type { ConnectionMedium, ServerMessage, SweepReport } from '@enkaku/protocol'
+import type { ConnectionMedium, SweepReport } from '@enkaku/protocol'
 import { addressCount } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { EnkakuError } from '../util/errors'
@@ -45,8 +45,18 @@ export interface SweepNetwork {
  * (00-overview §4.4, plan 72 §3.2).
  */
 export interface Sweeper {
-  /** Rejects `E_SCAN_BUSY` if one is already running; `E_SCAN_UNAVAILABLE` when scanning is off or no scannable network is configured. */
-  sweep(opts?: { expect?: string[] }): Promise<SweepReport>
+  /**
+   * Rejects `E_SCAN_BUSY` if one is already running; `E_SCAN_UNAVAILABLE`
+   * when scanning is off or no scannable network is configured.
+   *
+   * `only` NARROWS the sweep to the named CIDRs and can never widen it: a
+   * range that is not configured, or is configured with `scan: false`, stays
+   * unswept whatever the caller passes. That is what keeps §3.5's "explicit
+   * address space" property true for the per-range Scan button the Devices
+   * page grew — the button names a row the operator already saved, it does
+   * not smuggle in an address space nobody configured.
+   */
+  sweep(opts?: { expect?: string[]; only?: string[] }): Promise<SweepReport>
   running(): boolean
 }
 
@@ -65,7 +75,6 @@ export interface SweeperDeps {
   /** The exact admission-gated path every other adopt/discover route uses (plan 56, F14) — see the module comment on WHY nothing here writes to `devices` or `discovered_devices` directly. */
   registry: { onOnline(serial: string): Promise<void> }
   settings: () => SweeperSettings
-  hub: { broadcast(msg: ServerMessage): void }
   log: Logger
   /** Injectable so a test proves this against a fake, never a real socket — same discipline as `reconnect.ts`. Defaults to `defaultTcpPreProbe`. */
   tcpPreProbe?: TcpPreProbe
@@ -178,18 +187,6 @@ async function runPool<T>(items: T[], concurrency: number, worker: (item: T) => 
   await Promise.all(lanes)
 }
 
-/** Throttles `scan.progress` broadcasts (plan 88 §4.6) to at most one per 200ms, plus always the final one — 254 raw per-address broadcasts for one `/24` would be noise, not progress. */
-function createProgressBroadcaster(hub: SweeperDeps['hub'], total: number) {
-  let lastSentAt = 0
-  return (scanned: number, answered: number) => {
-    const now = Date.now()
-    const isFinal = scanned >= total
-    if (!isFinal && now - lastSentAt < 200) return
-    lastSentAt = now
-    hub.broadcast({ type: 'scan.progress', payload: { scanned, total, answered } })
-  }
-}
-
 /**
  * Builds the sweeper (plan 88 §4.5). A singleton BY CONSTRUCTION, not by
  * locking a shared resource: one process constructs one `Sweeper`, and its
@@ -201,15 +198,30 @@ function createProgressBroadcaster(hub: SweeperDeps['hub'], total: number) {
 export function createSweeper(deps: SweeperDeps): Sweeper {
   const tcpPreProbe = deps.tcpPreProbe ?? defaultTcpPreProbe
 
-  async function sweepImpl(opts?: { expect?: string[] }): Promise<SweepReport> {
+  async function sweepImpl(opts?: { expect?: string[]; only?: string[] }): Promise<SweepReport> {
     const started = Date.now()
     const cfg = deps.settings()
-    const scannable = cfg.networks.filter((n) => n.scan)
+    const ticked = cfg.networks.filter((n) => n.scan)
+    // `only` filters what is ALREADY allowed — never a second source of
+    // address space. See `Sweeper.sweep`'s own comment above.
+    const only = opts?.only && opts.only.length > 0 ? new Set(opts.only) : null
+    const scannable = only ? ticked.filter((n) => only.has(n.cidr)) : ticked
 
     if (cfg.scan.mode === 'off') {
       throw new EnkakuError('E_SCAN_UNAVAILABLE', 'network scanning is turned off (discovery.scan.mode) — turn it on in Settings to sweep')
     }
     if (scannable.length === 0) {
+      // Two different empty sets, told apart: nothing configured at all, and
+      // a narrowing that matched nothing. The second is the one an operator
+      // hits by pressing Scan on a row they edited but did not save, and
+      // "no scannable network is configured" would be a lie about a list
+      // they can see on screen.
+      if (only) {
+        throw new EnkakuError(
+          'E_SCAN_UNAVAILABLE',
+          'none of the requested ranges is a saved network with "Include in a sweep" ticked — save the range first, then scan it',
+        )
+      }
       throw new EnkakuError('E_SCAN_UNAVAILABLE', 'no scannable network is configured — add one under Settings → Farm networks')
     }
 
@@ -255,18 +267,15 @@ export function createSweeper(deps: SweeperDeps): Sweeper {
     const adopted: string[] = []
     const discovered: string[] = []
     const conflicts: SweepReport['conflicts'] = []
-    const sendProgress = createProgressBroadcaster(deps.hub, capped.length)
 
     await runPool(capped, Math.max(1, cfg.scan.concurrency), async (address) => {
       const { host, port } = splitHostPort(address)
       const preProbeResult = await tcpPreProbe(host, port, cfg.scan.probeTimeoutMs)
       scanned++
       if (preProbeResult !== 'accepted') {
-        sendProgress(scanned, answered)
         return
       }
       answered++
-      sendProgress(scanned, answered)
 
       let connectReply: string
       try {
@@ -321,8 +330,6 @@ export function createSweeper(deps: SweeperDeps): Sweeper {
       await deps.registry.onOnline(address)
     })
 
-    sendProgress(capped.length, answered) // final, unthrottled
-
     return {
       networks: networksReport,
       scanned,
@@ -339,7 +346,7 @@ export function createSweeper(deps: SweeperDeps): Sweeper {
 
   let inFlight: Promise<SweepReport> | null = null
 
-  async function sweep(opts?: { expect?: string[] }): Promise<SweepReport> {
+  async function sweep(opts?: { expect?: string[]; only?: string[] }): Promise<SweepReport> {
     if (inFlight) {
       throw new EnkakuError('E_SCAN_BUSY', 'a sweep is already running — wait for it to finish before starting another')
     }

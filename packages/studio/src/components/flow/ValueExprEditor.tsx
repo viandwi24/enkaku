@@ -207,7 +207,6 @@ function FromEditor({
       />
       <label className="flex items-center gap-1.5 text-[11.5px] text-fg-muted">
         <Switch
-          size="sm"
           checked={value.optional}
           onCheckedChange={(optional) => onChange({ ...value, optional, default: optional ? (value.default ?? '') : undefined })}
           aria-label="Optional, with a default"

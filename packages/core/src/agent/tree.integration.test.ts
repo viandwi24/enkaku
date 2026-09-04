@@ -8,7 +8,7 @@ import { AGENT_TREE_CAPABILITIES } from '../capability/agent'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, users } from '../db/schema'
 import { createLogger } from '../util/logger'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createDeviceStateMachine } from '../device/state-machine'
 import type { CapabilityContextDeps } from '../capability/context'
 import { buildCapabilityRegistry, type CapabilityRegistry } from '../capability/registry'
@@ -37,7 +37,6 @@ function echoCapability(): AnyCoreCapability {
     input: z.object({ text: z.string() }),
     output: z.object({ echoed: z.string() }),
     permission: 'agent.run',
-    lease: 'none',
     deadline: 5_000,
     effect: 'read',
     description: 'echoes',
@@ -51,7 +50,6 @@ function slowCapability(ms: number): AnyCoreCapability {
     input: z.object({}),
     output: z.object({ ok: z.boolean() }),
     permission: 'agent.run',
-    lease: 'none',
     deadline: 30_000,
     effect: 'read',
     description: 'deliberately slow',
@@ -65,7 +63,7 @@ function deviceTapCapability(): AnyCoreCapability {
     input: z.object({ deviceId: z.string() }),
     output: z.object({ ok: z.boolean() }),
     permission: 'device.control',
-    lease: 'control',
+    activity: { kind: 'control' },
     deadline: 30_000,
     effect: 'write',
     description: 'test device tap',
@@ -73,7 +71,7 @@ function deviceTapCapability(): AnyCoreCapability {
   }
 }
 
-/** Holds its device.control lease until released by the test — long enough to assert a lease is
+/** Holds its device.control claim until released by the test — long enough to assert the claim is
  * genuinely held mid-run (cascade-cancel tests). Keyed by deviceId (via the shared `releases` map)
  * so ONE capability definition can back several concurrently-held devices — the registry refuses a
  * duplicate capability id (plan 63 §6.2), so this can only be registered once per test. */
@@ -83,10 +81,10 @@ function holdDeviceCapability(releases: Map<string, () => void>): AnyCoreCapabil
     input: z.object({ deviceId: z.string() }),
     output: z.object({ ok: z.boolean() }),
     permission: 'device.control',
-    lease: 'control',
+    activity: { kind: 'control' },
     deadline: 60_000,
     effect: 'write',
-    description: 'holds the lease until released',
+    description: 'holds the claim until released',
     handler: (_ctx, input: { deviceId: string }) => new Promise((resolve) => releases.set(input.deviceId, () => resolve({ ok: true }))),
   }
 }
@@ -99,7 +97,6 @@ function gateCapability(gate: { release: (() => void) | null }): AnyCoreCapabili
     input: z.object({}),
     output: z.object({ ok: z.boolean() }),
     permission: 'agent.run',
-    lease: 'none',
     deadline: 30_000,
     effect: 'read',
     description: 'blocks until released by the test',
@@ -169,18 +166,13 @@ function setUp(caps: AnyCoreCapability[]) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db as Db
-  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone 1', status: 'idle' }).run()
-  db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'SER2', label: 'Phone 2', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone 1', status: 'online' }).run()
+  db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'SER2', label: 'Phone 2', status: 'online' }).run()
   db.insert(users).values({ id: 'u1', email: 'u1@test', role: 'operator', passwordHash: null, createdAt: new Date() }).run()
 
   const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-  const leases: LeaseManager = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: createLogger('test'),
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+  const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
 
   const allCaps = [...caps, ...AGENT_TREE_CAPABILITIES]
   const registry: CapabilityRegistry = buildCapabilityRegistry(allCaps.map((cap) => ({ cap, file: 'test' })))
@@ -192,7 +184,8 @@ function setUp(caps: AnyCoreCapability[]) {
 
   const capContextDeps: CapabilityContextDeps = {
     db,
-    leases,
+    activities,
+    controlSettings,
     states,
     sessions: () => null,
     readiness: () => null,
@@ -230,11 +223,13 @@ function setUp(caps: AnyCoreCapability[]) {
       connectors,
       registry,
       capContextDeps,
-      leases,
+      activities,
+      controlSettings,
       tree: treeStore,
       settings: () =>
         ({
-          agentDefaults: {
+          // Plan 212 §4.7: the agent settings store's key is `defaults`.
+          defaults: {
             connectorId: null,
             model: 'fake-model',
             systemPrompt: '',
@@ -258,7 +253,10 @@ function setUp(caps: AnyCoreCapability[]) {
     })
   }
 
-  return { db, threads, approvals, treeStore, leases, agentsStore, connectors, emittedLog, published, finishedEvents, startedEvents, createAgent, makeRunner }
+  /** The device-tree's own `agent:<rootRunId>` claim marker, or null — the direct equivalent of the deleted manual-control-grant lookup for these tests' purposes (plan 205 §4.4, §5 step 205.8). */
+  const agentHolderOf = (deviceId: string) => activities.list(deviceId).find((a) => a.kind === 'agent') ?? null
+
+  return { db, threads, approvals, treeStore, activities, agentHolderOf, agentsStore, connectors, emittedLog, published, finishedEvents, startedEvents, createAgent, makeRunner }
 }
 
 describe('tree — waitFor: true (plan 67 §3.2, criterion 1)', () => {
@@ -529,8 +527,8 @@ describe('tree — caps fail the SPAWN call, not the run (plan 67 §3.6, criteri
   }, 12_000) // 26 real spawns against SQLite comfortably exceeds bun:test's default 5s timeout
 })
 
-describe('tree — cascading cancellation is depth-first and releases every lease (plan 67 §3.5, criterion 12)', () => {
-  test('cancelling the root cancels every descendant; afterwards no device in the tree is leased', async () => {
+describe('tree — cascading cancellation is depth-first and releases every device claim (plan 67 §3.5, criterion 12)', () => {
+  test('cancelling the root cancels every descendant; afterwards no device in the tree is claimed', async () => {
     const releases = new Map<string, () => void>()
     const env = setUp([holdDeviceCapability(releases)])
 
@@ -557,8 +555,8 @@ describe('tree — cascading cancellation is depth-first and releases every leas
     const thread = runner.createThread({ agentId: root.id })
     const rootRun = runner.postMessage(thread.id, 'go', 'user:u1')
 
-    // Wait until BOTH leases (d1 held by mid, d2 held by leaf) are actually acquired.
-    await waitUntil(() => env.leases.getLease('d1') !== null && env.leases.getLease('d2') !== null)
+    // Wait until BOTH claims (d1 held by mid, d2 held by leaf) are actually acquired.
+    await waitUntil(() => env.agentHolderOf('d1') !== null && env.agentHolderOf('d2') !== null)
 
     runner.cancelRun(rootRun.id, 'user:tester')
     // Cancellation waits for an in-flight capability call to finish rather than aborting it (plan 66
@@ -577,9 +575,9 @@ describe('tree — cascading cancellation is depth-first and releases every leas
     const descendants = env.threads.listRunsForRoot(rootRun.id).filter((r) => r.id !== rootRun.id)
     expect(descendants.length).toBeGreaterThanOrEqual(2)
     expect(descendants.every((r) => r.status === 'cancelled')).toBe(true)
-    // The assertion that matters (plan 67 §3.5, §8): the ABSENCE of leases afterwards, not the order.
-    expect(env.leases.getLease('d1')).toBeNull()
-    expect(env.leases.getLease('d2')).toBeNull()
+    // The assertion that matters (plan 67 §3.5, §8): the ABSENCE of claims afterwards, not the order.
+    expect(env.agentHolderOf('d1')).toBeNull()
+    expect(env.agentHolderOf('d2')).toBeNull()
   })
 })
 
@@ -625,23 +623,23 @@ describe('tree — a parent killed by maxRunSeconds cancels its still-running ch
       const rows = env.threads.listRunsForRoot(parentRun.id).filter((r) => r.id !== parentRun.id)
       return rows.length === 2 && rows.every((r) => r.status === 'cancelled')
     })
-    expect(env.leases.getLease('d1')).toBeNull()
-    expect(env.leases.getLease('d2')).toBeNull()
+    expect(env.agentHolderOf('d1')).toBeNull()
+    expect(env.agentHolderOf('d2')).toBeNull()
   })
 })
 
-describe('tree — one lease holder, sibling contention refused naming the winner (plan 67 §3.7, criterion 14)', () => {
+describe('tree — one device holder, sibling contention refused naming the winner (plan 67 §3.7, criterion 14)', () => {
   test('a child may use a device its own ancestor holds; a SIBLING contending for the SAME device is refused, naming the winner', async () => {
     const releases = new Map<string, () => void>()
     const parentGate = { release: null as (() => void) | null }
     const env = setUp([holdDeviceCapability(releases), gateCapability(parentGate), deviceTapCapability()])
 
     const parent = env.createAgent(
-      'lease-parent',
+      'device-parent',
       [
-        toolTurn('c1', 'agent_spawn', { agent: 'lease-child-a', prompt: 'hold it', waitFor: false }),
+        toolTurn('c1', 'agent_spawn', { agent: 'device-child-a', prompt: 'hold it', waitFor: false }),
         toolTurn('g1', 'test_gate', {}),
-        toolTurn('c2', 'agent_spawn', { agent: 'lease-child-b', prompt: 'try it', waitFor: false }),
+        toolTurn('c2', 'agent_spawn', { agent: 'device-child-b', prompt: 'try it', waitFor: false }),
         textTurn('done'),
       ],
       // Includes both children's device capabilities even though the parent never calls them itself
@@ -649,30 +647,30 @@ describe('tree — one lease holder, sibling contention refused naming the winne
       { tools: ['agent.spawn', 'test.gate', 'test.device.hold', 'test.device.tap'], permissions: ['agent.run', 'device.control'] },
     )
     // Child A claims and HOLDS d1 (a blocking capability) — its claim stays live for the whole test.
-    env.createAgent('lease-child-a', [toolTurn('h1', 'test_device_hold', { deviceId: 'd1' })], {
+    env.createAgent('device-child-a', [toolTurn('h1', 'test_device_hold', { deviceId: 'd1' })], {
       tools: ['test.device.hold'],
       permissions: ['agent.run', 'device.control'],
     })
     // Child B (a SIBLING of A — both children of `parent`, not ancestor/descendant of each other)
     // tries to tap the SAME device while A still holds it.
-    env.createAgent('lease-child-b', [toolTurn('t1', 'test_device_tap', { deviceId: 'd1' }), textTurn('b done')], {
+    env.createAgent('device-child-b', [toolTurn('t1', 'test_device_tap', { deviceId: 'd1' }), textTurn('b done')], {
       tools: ['test.device.tap'],
       permissions: ['agent.run', 'device.control'],
     })
-    env.treeStore.grantSpawn(parent.id, env.agentsStore.getBySlug('lease-child-a')!.id)
-    env.treeStore.grantSpawn(parent.id, env.agentsStore.getBySlug('lease-child-b')!.id)
+    env.treeStore.grantSpawn(parent.id, env.agentsStore.getBySlug('device-child-a')!.id)
+    env.treeStore.grantSpawn(parent.id, env.agentsStore.getBySlug('device-child-b')!.id)
 
     const runner = env.makeRunner()
     const thread = runner.createThread({ agentId: parent.id })
     runner.postMessage(thread.id, 'go', 'user:u1')
 
-    // Wait until child A has genuinely claimed the device (the real lease is held) before letting
+    // Wait until child A has genuinely claimed the device (the real claim is held) before letting
     // the parent proceed to spawn child B — deterministic, not timing-dependent.
-    await waitUntil(() => env.leases.getLease('d1') !== null)
+    await waitUntil(() => env.agentHolderOf('d1') !== null)
     await waitUntil(() => parentGate.release !== null)
     parentGate.release!()
 
-    const childBThread = () => env.threads.listThreads({ agentId: env.agentsStore.getBySlug('lease-child-b')!.id })[0]
+    const childBThread = () => env.threads.listThreads({ agentId: env.agentsStore.getBySlug('device-child-b')!.id })[0]
     await waitUntil(() => childBThread() !== undefined)
     const bThread = childBThread()!
     await waitUntil(() => env.threads.listRuns(bThread.id).length > 0 && env.threads.listRuns(bThread.id)[0]!.status === 'succeeded')
@@ -680,8 +678,9 @@ describe('tree — one lease holder, sibling contention refused naming the winne
     const toolResult = env.threads.listMessages(bThread.id).find((m) => m.role === 'tool')!
     expect((toolResult.content[0] as { isError?: boolean }).isError).toBe(true)
     const text = JSON.stringify(toolResult.content)
-    expect(text).toContain('E_NEEDS_LEASE')
-    expect(text).toContain('lease-child-a') // names the winner, by agent name
+    expect(text).toContain('E_DEVICE_CONFLICT')
+    expect(text).toContain('is already driving')
+    expect(text).toContain('device-child-a') // names the winner, by agent name
 
     releases.get('d1')?.()
   })

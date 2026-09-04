@@ -36,6 +36,17 @@ export type VerifyChildMessage =
         /** Plan 108 §0.2 P8, step 108.3 — reported at last, so a screen can name a script the way its author did. Present only when the member declared one, so a bundle that declares neither reports exactly what it reported before. */
         title?: string
         description?: string
+        /**
+         * Plan 303 §4.2, §5 step 303.5 — the member's workflow node
+         * descriptor, RAW, exactly as the bundle states it. `unknown` on
+         * purpose, same reasoning as `surface`/`service` below: the PARENT
+         * (`verify-child.ts`'s `finalizeReport`) re-validates it
+         * independently through `WorkflowNodeDescriptorSchema`, since a
+         * hand-crafted bundle need never have gone through `definePlugin()`.
+         * Absent when the member declares none — byte-identical to before
+         * this field existed.
+         */
+        node?: unknown
       }[]
       /**
        * Plan 108 §3.9, step 108.3 — the plugin's declared surface, RAW,
@@ -150,7 +161,19 @@ async function main(): Promise<void> {
       // been through `definePlugin()`. A non-string is DROPPED rather than
       // refused: this metadata is cosmetic, it gates nothing, and refusing a
       // whole plugin over a mistyped label would be out of proportion.
-      const meta = s as { title?: unknown; description?: unknown }
+      const meta = s as { title?: unknown; description?: unknown; node?: unknown }
+      // Plan 303 §4.2, §5 step 303.5 — the node descriptor, JSON round-tripped
+      // before it crosses the IPC boundary, same reasoning as `surface` below:
+      // it is stored as JSON (inside `plugins.manifest`), and a hand-authored
+      // descriptor could otherwise carry something JSON cannot express.
+      let node: unknown
+      if (meta.node !== undefined) {
+        try {
+          node = JSON.parse(JSON.stringify(meta.node)) as unknown
+        } catch (err) {
+          throw new Error(`E_PLUGIN_NODE_INVALID: script "${s.id}"'s node descriptor cannot be serialised to JSON: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
       return {
         id: s.id,
         paramsSchema,
@@ -158,6 +181,7 @@ async function main(): Promise<void> {
         runtime: runtimeParse.data,
         ...(typeof meta.title === 'string' && meta.title.length > 0 ? { title: meta.title } : {}),
         ...(typeof meta.description === 'string' && meta.description.length > 0 ? { description: meta.description } : {}),
+        ...(node !== undefined ? { node } : {}),
       }
     })
     // Plan 108 §3.9, §5 step 108.3 — the surface, JSON round-tripped before

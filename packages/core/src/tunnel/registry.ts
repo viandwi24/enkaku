@@ -26,9 +26,9 @@ export interface TunnelRegistry {
 
 /**
  * A registry of node connections plus a device→node map (plan 11 §4.3).
- * A dropped tunnel marks all of that node's devices offline; any running lease
- * or job is resolved by the Plan 04 lease-expiry mechanism — there is no special
- * path that could become a bug source of its own.
+ * A dropped tunnel marks all of that node's devices offline; any running job
+ * is resolved by the heartbeat-expiry mechanism (plan 205 §4.7) — there is no
+ * special path that could become a bug source of its own.
  */
 export function createTunnelRegistry(deps: {
   db: Db

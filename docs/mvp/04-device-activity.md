@@ -89,7 +89,9 @@ Before starting activity X on a device whose list holds Y, the core evaluates a 
 
 **Why control over control defaults to allow (CEO, 2026-09-03).** In field use the lease repeatedly showed a device as controlled by a user who had already disconnected: a lease is released only when the core observes the WS close (`ws-handlers.ts:2584`) or after the 300 s idle reaper, so a close the core never sees leaves a five-minute ghost holder. A marker that lives only from the last input has no release step to miss. Panda and similar tools let several operators touch one device with no warning at all, and that is what the CEO observed to be safe in practice.
 
-The scheduler's quiet period after a manual release is replaced by the same table: a queued job whose device has a fresh `control` entry waits until the entry ends or `maxWaitSec` elapses.
+~~The scheduler's quiet period after a manual release is replaced by the same table: a queued job whose device has a fresh `control` entry waits until the entry ends or `maxWaitSec` elapses.~~
+
+**Struck by the CEO on 2026-09-04, on hardware.** A job sat queued purely because a person had the device open in Device Control — which is the lease this whole document exists to remove, wearing a different name. There is no wait. The model is the state dot and nothing else: **green** free, **amber** a person is driving, **red** the system is (today that means a job). Amber never blocks anything. The only exclusion left is job-over-job, and it lives in the SQL claim, not in a gate. A person may take over a device a job is driving — that is help, not interference — so `control` over `job` is `allow` with no sentence to dismiss (§2's table row updated).
 
 ### 1.4 What stays underneath
 

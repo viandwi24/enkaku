@@ -77,7 +77,7 @@ export function createArtifactRoutes(deps: {
 
   const rowToItem = (r: ArtifactRow): ArtifactInfo => ({
     id: r.id,
-    jobId: r.jobId,
+    runId: r.runId,
     deviceId: r.deviceId,
     kind: r.kind as ArtifactInfo['kind'],
     label: r.label,
@@ -87,27 +87,27 @@ export function createArtifactRoutes(deps: {
   })
 
   app.get('/', (c) => {
-    const jobId = c.req.query('jobId')
+    const runId = c.req.query('runId')
     const deviceId = c.req.query('deviceId')
     const kind = c.req.query('kind')
     // Plan 93 §3.13, §4.4, §4.7, step 93.10, closing F14 — an UPLOADED
-    // artifact has jobId AND deviceId both null (the "exactly one of" rule
-    // just above is for a JOB or DEVICE artifact; an upload is neither), so
-    // it can never be reached by `?jobId=`/`?deviceId=` and needed its own
+    // artifact has runId AND deviceId both null (the "exactly one of" rule
+    // just above is for a RUN or DEVICE artifact; an upload is neither), so
+    // it can never be reached by `?runId=`/`?deviceId=` and needed its own
     // query mode: `?kind=upload` lists exactly the ownerless rows, the
     // prerequisite for an artifact picker to ever browse a previously
     // uploaded file again.
     const where: SQL | undefined =
-      kind === 'upload' ? and(isNull(artifacts.jobId), isNull(artifacts.deviceId)) : undefined
-    if (!where && !jobId && !deviceId) {
-      throw new EnkakuError('E_BAD_REQUEST', 'either ?jobId=, ?deviceId=, or ?kind=upload is required')
+      kind === 'upload' ? and(isNull(artifacts.runId), isNull(artifacts.deviceId)) : undefined
+    if (!where && !runId && !deviceId) {
+      throw new EnkakuError('E_BAD_REQUEST', 'either ?runId=, ?deviceId=, or ?kind=upload is required')
     }
-    // The owner column (plan 24 §4.6 — exactly one of jobId/deviceId is set
+    // The owner column (plan 24 §4.6 — exactly one of runId/deviceId is set
     // on any row, so this is never ambiguous) — only reached when `where`
     // above was not already built from `?kind=upload`.
-    const ownerColumn = jobId ? artifacts.jobId : artifacts.deviceId
-    const ownerValue = jobId ?? deviceId
-    if (!where && !ownerValue) throw new EnkakuError('E_BAD_REQUEST', 'either ?jobId= or ?deviceId= is required')
+    const ownerColumn = runId ? artifacts.runId : artifacts.deviceId
+    const ownerValue = runId ?? deviceId
+    if (!where && !ownerValue) throw new EnkakuError('E_BAD_REQUEST', 'either ?runId= or ?deviceId= is required')
     const baseWhere = where ?? eq(ownerColumn, ownerValue as string)
     const { cursor: cursorParam, limit } = parsePageQuery(c)
     const cursor = decodeCursor(cursorParam)
@@ -180,7 +180,7 @@ export function createArtifactRoutes(deps: {
 
     const info: ArtifactInfo = {
       id: crypto.randomUUID(),
-      jobId: null,
+      runId: null,
       deviceId: null,
       kind: 'file',
       label,
@@ -192,7 +192,7 @@ export function createArtifactRoutes(deps: {
       .insert(artifacts)
       .values({
         id: info.id,
-        jobId: null,
+        runId: null,
         deviceId: null,
         kind: info.kind,
         label: info.label,

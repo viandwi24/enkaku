@@ -61,7 +61,7 @@ const SCAFFOLD_CSS = `@import 'tailwindcss/theme.css' theme(reference);
 
 const VIEW_TSX = `export function View() {
   return (
-    <div className="bg-surface text-fg-muted rounded-card p-6 grid-cols-[200px_1fr]">
+    <div className="bg-panel text-faint rounded-card p-6 grid-cols-[200px_1fr]">
       <button className="opacity-0 hover-none:opacity-100">b</button>
     </div>
   )
@@ -118,10 +118,10 @@ describe('a plugin ships its own compiled stylesheet (plan 111 §9 Q1, step 111.
     // Not `--color-surface: <value>` anywhere — only `var(--color-surface, …)`,
     // so Studio's live token wins and the build-time value is a fallback for a
     // token Studio never emitted.
-    expect(css).not.toContain('--color-surface:')
+    expect(css).not.toContain('--color-panel:')
     expect(css).not.toContain('--spacing:')
     expect(css).not.toContain(':root')
-    expect(css).toContain('var(--color-surface,')
+    expect(css).toContain('var(--panel)')
     expect(css).toContain('var(--spacing,')
   }, 60000)
 
@@ -151,7 +151,7 @@ describe('the theme is defined once and read by both compilers (plan 111 §3.3)'
     expect(existsSync(THEME_CSS)).toBe(true)
 
     const theme = await Bun.file(THEME_CSS).text()
-    expect(theme).toContain('--color-surface:')
+    expect(theme).toContain('--color-panel:')
     expect(theme).toContain('@custom-variant hover-none')
     // Studio's own page styling stays in Studio: a plugin importing this file
     // with `theme(reference)` must not be able to pick up a base reset or a
@@ -163,9 +163,10 @@ describe('the theme is defined once and read by both compilers (plan 111 §3.3)'
   test("Studio's globals.css imports that same file rather than holding a second copy", async () => {
     const globals = await Bun.file(fileURLToPath(new URL('../../../studio/src/app/globals.css', import.meta.url))).text()
     expect(globals).toContain("@import '@enkaku/ui/theme.css';")
+    expect(globals).toContain("@import '@enkaku/ui/palette.css';")
     // The tokens must exist in exactly one place. If a value reappears here,
     // Studio and every published plugin have started drifting apart.
-    expect(globals).not.toContain('--color-surface:')
+    expect(globals).not.toContain('--panel:')
     expect(globals).toContain('@layer base')
   })
 })

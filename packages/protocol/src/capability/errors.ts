@@ -8,15 +8,16 @@ import { z } from 'zod'
  * unchanged, because collapsing "the job does not exist" into `E_INTERNAL`
  * would be a worse answer than the coded error the service already has.
  * This list is only the fixed set `invoke`'s SIX pipeline steps themselves
- * are allowed to produce (parse, permission, device grant, lease, readiness,
- * deadline) — one code per step, so a caller can act on "which check failed"
- * rather than parsing English.
+ * are allowed to produce (parse, permission, device grant, activity policy,
+ * readiness, deadline) — one code per step, so a caller can act on "which
+ * check failed" rather than parsing English. `E_DEVICE_CONFLICT` (plan 205,
+ * MVP 04) is what a `forbid` activity-policy decision produces.
  */
 export const CAPABILITY_REFUSAL_CODES = [
   'E_BAD_INPUT',
   'E_FORBIDDEN',
   'E_NO_GRANT',
-  'E_NEEDS_LEASE',
+  'E_DEVICE_CONFLICT',
   'E_DEVICE_OFFLINE',
   'E_DEADLINE',
   'E_INTERNAL',

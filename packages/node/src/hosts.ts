@@ -35,7 +35,7 @@ export interface NodeHosts {
  * Handling control-plane commands on the node side (plan 12 §4.3):
  * `session.start/stop`, `input.forward`, `job.dispatch`, `job.cancel.forward`.
  *
- * Every policy decision (leases, busy status, queue priority) was already made
+ * Every policy decision (control activities, busy status, queue priority) was already made
  * by the control plane before a message reaches here. The node re-checks only
  * what it alone knows — the device is still present, the session still alive —
  * as a second layer, never as a competing policy.
@@ -84,6 +84,11 @@ export function createNodeHosts(deps: {
           // The Plan 24 streaming lane, bound to this node's own adb client
           // (plan 34 §4.1) — same as the core's local wiring in `daemon.ts`.
           execStream: (serial, cmd, streamOpts) => deps.client.execStream(serial, cmd, streamOpts),
+          // No `uiTree` key (plan 222 §4.6, §9 Q1's cloud-node non-goal): this
+          // node has no guest-agent session of its own, so a node-owned
+          // device's session always starts at the ui-server rung, exactly as
+          // `createInspectorForSession`'s own doc comment for an absent
+          // `deps.uiTree` describes.
         },
         { deviceId, transport, requested },
       ),
@@ -212,13 +217,18 @@ export function createNodeHosts(deps: {
     onPhase: (jobId, attempt, phase) =>
       send({ type: 'job.progress', payload: { jobId, kind: 'phase', phase, attempt } }),
     heartbeat: () => {
-      // The control plane holds the lease; every job.progress doubles as a heartbeat.
+      // The control plane owns the job heartbeat; every job.progress doubles as one.
     },
   })
 
   async function startSession(deviceId: string): Promise<void> {
     const noop = () => {}
     try {
+      // Plan 206 §4.3, §5 step 206.5 — `acquire` never builds any more; the
+      // node has no always-on builder of its own yet (cloud parity is
+      // post-MVP, MVP 16 §1), so it builds the base entry directly here,
+      // once, before acquiring it.
+      await sessions.build(deviceId, { requireScrcpy: false })
       const session = await sessions.acquire(deviceId, noop)
       send({
         type: 'session.started',
@@ -354,7 +364,11 @@ export function createNodeHosts(deps: {
             // `scriptExportId` (plan 82 §3.2) selects which member of a plugin
             // bundle to run — undefined for a bundle with no `scripts` array, exactly the
             // same optional field the local executor threads through.
-            const result = await runner.execute({ id: jobId, deviceId, bundlePath, params, ...(scriptExportId ? { scriptExportId } : {}) })
+            // Plan 211 §3.2 decision 9 — a node-dispatched job has no local
+            // `job_runs` row (the control plane owns that record); `runId:
+            // jobId` is the same pragmatic simplification `daemon.ts`'s
+            // remote job bridge uses for its own hooks/artifact wiring.
+            const result = await runner.execute({ id: jobId, runId: jobId, deviceId, bundlePath, params, ...(scriptExportId ? { scriptExportId } : {}) })
             send({
               type: 'job.progress',
               payload: {

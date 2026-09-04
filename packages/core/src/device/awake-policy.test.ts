@@ -204,19 +204,17 @@ describe('awake policy — apply (plan 125 §3.3, acceptance criterion 4)', () =
     expect(calls).toEqual([GET_TIMEOUT, GET_STAYON])
   })
 
-  test('`prep.screenOffTimeoutMs: null` leaves the device’s own timeout alone', async () => {
-    const db = setUpDb()
-    const row = admit(db, 'a')
+  /**
+   * Plan 212 §4.1 D18 turned `prep.screenOffTimeoutMs` into the constant
+   * `DEVICE_SCREEN_OFF_TIMEOUT_MS`, so a device can no longer opt out of the
+   * write — the test that covered `null` covers a capability that is gone.
+   * What replaces it guards the failure that removal invites: a settings key
+   * put back by hand, stored and rendered and never read, which is the exact
+   * class the rotation and video overrides were both caught on.
+   */
+  test('`prep` carries no per-device screen-timeout key — a stored one would be written, rendered, and never read', () => {
     const settings = defaultDeviceSettings()
-    db.update(devices)
-      .set({ settings: { ...settings, prep: { ...settings.prep, screenOffTimeoutMs: null } } })
-      .where(eq(devices.id, row.id))
-      .run()
-    const { transport, calls, state } = fakeDevice({ timeout: '60000' })
-    const result = await createAwakePolicy(makeDeps(db, transport)).apply(row.id, 'always')
-    expect(calls.some((c) => c.startsWith('settings put system screen_off_timeout'))).toBe(false)
-    expect(state.timeout).toBe('60000')
-    expect(result.screenOffTimeout).toBe('unchanged')
+    expect(Object.keys(settings.prep)).not.toContain('screenOffTimeoutMs')
   })
 
   test('an offline device is `refused` on both, and nothing is written', async () => {

@@ -1,6 +1,13 @@
 import { countMatches, matchSelector, type FindOutcome, type Inspector, type Selector, type Transport, type UiNode } from '@enkaku/protocol'
 import { parseUiDump } from './xml-parser'
 
+/** A device's reply, bounded for a log line: a real dump is a whole view tree. */
+function short(raw: string): string {
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) return '(nothing)'
+  return trimmed.length > 200 ? `${JSON.stringify(trimmed.slice(0, 200))}… (${trimmed.length} chars)` : JSON.stringify(trimmed)
+}
+
 export class InspectorError extends Error {
   constructor(
     public code: 'INSPECTOR_DUMP_FAILED',
@@ -20,6 +27,8 @@ export class UiautomatorDumpInspector implements Inspector {
   readonly id = 'uiautomator-dump'
   /** The dump path is probed once per device and then cached. */
   private useTty: boolean | null = null
+  /** The last tree a successful `dump()` produced and when (plan 208 §4.6, "the cheap cache"). */
+  private last: { root: UiNode; at: number } | null = null
 
   constructor(
     private transport: Transport,
@@ -35,12 +44,22 @@ export class UiautomatorDumpInspector implements Inspector {
         this.useTty = true
         return out
       }
+      /**
+       * Output with no `<?xml` is not a dump, whatever this device did last
+       * time. The `else` this replaces returned it verbatim once `/dev/tty`
+       * had worked ONCE, so a later failure — `uiautomator` printing an
+       * error, an empty read, a truncated pipe — was handed to the parser and
+       * surfaced as "the XML dump has no <hierarchy> element", which names
+       * the symptom and hides the sentence the phone actually printed (owner,
+       * 2026-09-05). A device that answered XML before can still fail now;
+       * the file path is the answer either way.
+       */
       if (this.useTty === null) {
         this.onLog?.('debug', 'dump via /dev/tty is unsupported — falling back to the file path')
-        this.useTty = false
       } else {
-        return out
+        this.onLog?.('warn', `dump via /dev/tty stopped returning XML (${short(out)}) — using the file path`)
       }
+      this.useTty = false
     }
     // Fallback: dump to a file, then cat it.
     const path = '/sdcard/enkaku-dump.xml'
@@ -67,12 +86,22 @@ export class UiautomatorDumpInspector implements Inspector {
         continue
       }
       try {
-        return parseUiDump(raw)
+        const root = parseUiDump(raw)
+        this.last = { root, at: Date.now() }
+        return root
       } catch (err) {
-        lastError = `failed to parse the dump: ${String(err)}`
+        // With what the phone actually sent: the parser's own message names
+        // the element it wanted, never the text it was given, and on a device
+        // where `uiautomator` is failing that text IS the diagnosis.
+        lastError = `failed to parse the dump: ${String(err)} — the device sent ${short(raw)}`
       }
     }
     throw new InspectorError('INSPECTOR_DUMP_FAILED', lastError || 'the dump failed with no detail')
+  }
+
+  /** The last tree `dump()` returned and when, or null (plan 208 §4.6). */
+  lastDump(): { root: UiNode; at: number } | null {
+    return this.last
   }
 
   async find(sel: Selector): Promise<UiNode | null> {

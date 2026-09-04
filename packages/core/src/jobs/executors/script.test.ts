@@ -40,13 +40,19 @@ const silentLog = (): Logger => {
 
 function fakeSessions() {
   return {
-    acquire: async () => ({ deviceId: 'd1', inspector: null, whenInspectorReady: async () => {} }) as never,
+    acquire: async () => ({ deviceId: 'd1', inspector: null, whenInspectorReady: async () => {}, prewarmInspector: async () => {} }) as never,
     release: () => {},
+    attachViewer: async () => ({ session: null, quality: 'wall' }) as never,
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => null as never,
+    state: () => 'ready' as const,
     get: () => null as never,
+    getByQuality: () => null as never,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
+    forwards: () => [],
   }
 }
 
@@ -109,6 +115,12 @@ describe('createScriptExecutor — dev shadow logging (criterion 16)', () => {
     const ctx = {
       signal: new AbortController().signal,
       heartbeat: () => {},
+      // Plan 211 §4.1.1 moved `runtimeOverride` (and `trigger`,
+      // `resumedFromRunId`) off the job and onto the RUN row, and made
+      // `ExecutorContext.run` required. These fixtures predate that and were
+      // cast with `as never`, so nothing typed noticed the missing row —
+      // every test here threw on `ctx.run.runtimeOverride` instead.
+      run: { runtimeOverride: null } as never,
       log: { debug: () => {}, info: (m: string) => logged.push(m), warn: () => {}, error: () => {}, child: () => ctx.log } as unknown as Logger,
     }
 
@@ -143,6 +155,12 @@ describe('createScriptExecutor — dev shadow logging (criterion 16)', () => {
     const ctx = {
       signal: new AbortController().signal,
       heartbeat: () => {},
+      // Plan 211 §4.1.1 moved `runtimeOverride` (and `trigger`,
+      // `resumedFromRunId`) off the job and onto the RUN row, and made
+      // `ExecutorContext.run` required. These fixtures predate that and were
+      // cast with `as never`, so nothing typed noticed the missing row —
+      // every test here threw on `ctx.run.runtimeOverride` instead.
+      run: { runtimeOverride: null } as never,
       log: { debug: () => {}, info: (m: string) => logged.push(m), warn: () => {}, error: () => {}, child: () => ctx.log } as unknown as Logger,
     }
     const job = { id: 'job-solo-1', scriptId: 's-solo', deviceId: 'd1', params: {} } as never
@@ -195,7 +213,7 @@ describe("ctx.kv's namespace for a plugin member is the PLUGIN's id, shared acro
       kv,
     })
     const executor = createScriptExecutor({ registry, runner })
-    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
 
     await executor.run({ id: 'job-ns-1', scriptId: 's-login', deviceId: 'd1', params: {} } as never, ctx as never)
     await executor.run({ id: 'job-ns-2', scriptId: 's-warmup', deviceId: 'd1', params: {} } as never, ctx as never)
@@ -296,7 +314,7 @@ describe("createScriptExecutor threads the registry entry's runtime through to J
     const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-runtime-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
-    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
 
     await executor.run({ id: 'job-rt-1', scriptId: 'checkout', deviceId: 'd1', params: {} } as never, ctx as never)
 
@@ -309,7 +327,7 @@ describe("createScriptExecutor threads the registry entry's runtime through to J
     const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-runtime-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
-    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
 
     await executor.run({ id: 'job-rt-2', scriptId: 'no-runtime', deviceId: 'd1', params: {} } as never, ctx as never)
 
@@ -354,6 +372,12 @@ describe('createScriptExecutor — a finish() salvage on failure (plan 97 §3.5,
     const ctx = {
       signal: new AbortController().signal,
       heartbeat: () => {},
+      // Plan 211 §4.1.1 moved `runtimeOverride` (and `trigger`,
+      // `resumedFromRunId`) off the job and onto the RUN row, and made
+      // `ExecutorContext.run` required. These fixtures predate that and were
+      // cast with `as never`, so nothing typed noticed the missing row —
+      // every test here threw on `ctx.run.runtimeOverride` instead.
+      run: { runtimeOverride: null } as never,
       log: silentLog(),
       onResultOutcome: (o: unknown) => outcomesSeen.push(o),
     }
@@ -380,6 +404,12 @@ describe('createScriptExecutor — a finish() salvage on failure (plan 97 §3.5,
     const ctx = {
       signal: new AbortController().signal,
       heartbeat: () => {},
+      // Plan 211 §4.1.1 moved `runtimeOverride` (and `trigger`,
+      // `resumedFromRunId`) off the job and onto the RUN row, and made
+      // `ExecutorContext.run` required. These fixtures predate that and were
+      // cast with `as never`, so nothing typed noticed the missing row —
+      // every test here threw on `ctx.run.runtimeOverride` instead.
+      run: { runtimeOverride: null } as never,
       log: silentLog(),
       onResultOutcome: (o: unknown) => outcomesSeen.push(o),
     }
@@ -404,6 +434,12 @@ describe('createScriptExecutor — a finish() salvage on failure (plan 97 §3.5,
     const ctx = {
       signal: new AbortController().signal,
       heartbeat: () => {},
+      // Plan 211 §4.1.1 moved `runtimeOverride` (and `trigger`,
+      // `resumedFromRunId`) off the job and onto the RUN row, and made
+      // `ExecutorContext.run` required. These fixtures predate that and were
+      // cast with `as never`, so nothing typed noticed the missing row —
+      // every test here threw on `ctx.run.runtimeOverride` instead.
+      run: { runtimeOverride: null } as never,
       log: silentLog(),
       onResultOutcome: (o: unknown) => outcomesSeen.push(o),
     }
@@ -445,10 +481,10 @@ describe("createScriptExecutor threads jobs.runtime_override through to JobRunne
     const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
-    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
     const override = { maxRssBytes: 256 * 1024 * 1024 }
 
-    await executor.run({ id: 'job-rto-1', scriptId: 'checkout', deviceId: 'd1', params: {}, runtimeOverride: override } as never, ctx as never)
+    await executor.run({ id: 'job-rto-1', scriptId: 'checkout', deviceId: 'd1', params: {} } as never, { ...ctx, run: { runtimeOverride: override } } as never)
 
     expect((seen.spec as { runtimeOverride?: unknown })?.runtimeOverride).toEqual(override)
   })
@@ -459,9 +495,9 @@ describe("createScriptExecutor threads jobs.runtime_override through to JobRunne
     const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
-    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
 
-    await executor.run({ id: 'job-rto-2', scriptId: 'checkout', deviceId: 'd1', params: {}, runtimeOverride: null } as never, ctx as never)
+    await executor.run({ id: 'job-rto-2', scriptId: 'checkout', deviceId: 'd1', params: {} } as never, { ...ctx, run: { runtimeOverride: null } } as never)
 
     expect(seen.spec).toHaveProperty('runtimeOverride', null)
   })
@@ -472,10 +508,10 @@ describe("createScriptExecutor threads jobs.runtime_override through to JobRunne
     const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
-    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog() }
+    const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
 
     await executor.run(
-      { id: 'job-rto-3', scriptId: 'checkout', deviceId: 'd1', params: {}, runtimeOverride: { retries: -99 } } as never,
+      { id: 'job-rto-3', scriptId: 'checkout', deviceId: 'd1', params: {} } as never,
       ctx as never,
     )
 

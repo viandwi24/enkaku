@@ -10,7 +10,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceLifecycle } from '../device/lifecycle'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
 import { createJobStore } from '../queue/job-store'
 import { createLogger } from '../util/logger'
 import { createDeviceRoutes } from './devices'
@@ -50,35 +50,19 @@ function engineRegistry(): RegistryResponse {
     transports: [engine('adb-usb', 'transport')],
     displays: [engine('scrcpy', 'display')],
     inputs: [engine('scrcpy-uhid', 'input')],
-    inspectors: [engine('ui-server', 'inspector')],
+    inspectors: [engine('ui-tree', 'inspector'), engine('ui-server', 'inspector')],
     networks: [engine('none', 'network')],
     tools: [],
   }
 }
 
-function fakeLeases(): LeaseManager {
-  return {
-    acquireManual: (): never => {
-      throw new Error('not used in this test')
-    },
-    touchManual: () => {},
-    releaseManual: () => false,
-    releaseAllForClient: () => {},
-    noteJobLease: () => {},
-    clearJobLease: () => {},
-    getLease: () => null,
-    getHolder: () => null,
-    lastManualReleaseAt: () => null,
-    lastManualHolder: () => null,
-    checkInputAllowed: () => ({ ok: true }),
-    startReaper: () => {},
-    stopReaper: () => {},
-  } as unknown as LeaseManager
+function fakeActivities(): Pick<ActivityRegistry, 'list' | 'endWhere'> {
+  return { list: () => [], endWhere: () => 0 }
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' = 'idle'): void {
+function seedDevice(db: Db, id: string): void {
   db.insert(devices)
-    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: 'Test Phone', status })
+    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: 'Test Phone', status: 'online' })
     .run()
 }
 
@@ -108,14 +92,15 @@ function fakeSessionsWithOpenSession(
   }
 }
 
-function makeApp(opts: { sessions?: ReturnType<typeof fakeSessionsWithOpenSession> } = {}) {
+function makeApp(opts: { sessions?: ReturnType<typeof fakeSessionsWithOpenSession>; runningJobDeviceIds?: Set<string> } = {}) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
   const audit = createAuditLogger(db)
   const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-video-reprofile-test-'))
-  const leases = fakeLeases()
-  const lifecycle = createDeviceLifecycle({ db, leases, log: createLogger('test') })
+  const activities = fakeActivities()
+  const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
+  const lifecycle = createDeviceLifecycle({ db, activities, controlSettings, log: createLogger('test') })
   const app = withAdmin(
     createDeviceRoutes({
       db,
@@ -124,9 +109,10 @@ function makeApp(opts: { sessions?: ReturnType<typeof fakeSessionsWithOpenSessio
       audit,
       dataDir,
       lifecycle,
-      heldByOf: () => null,
+      activitiesOf: () => ({ activities: [], lastControl: null }),
+      activities,
+      runningJobOf: (deviceId) => opts.runningJobDeviceIds?.has(deviceId) ?? false,
       broadcast: () => {},
-      leases,
       jobStore: createJobStore(db),
       ...(opts.sessions ? { connection: { reconnector: () => null, sessions: () => opts.sessions! } } : {}),
     }),
@@ -146,16 +132,16 @@ describe('PATCH /api/devices/:id restarts an OPEN session when changedKeys inclu
     const { db, app } = makeApp({ sessions })
     seedDevice(db, 'a')
 
-    const res = await app.request('/a', patchReq({ settings: { video: { wallMaxFps: 3 } } }))
+    const res = await app.request('/a', patchReq({ settings: { overrides: { wallQuality: 'light' } } }))
     expect(res.status).toBe(200)
 
     expect(sessions.restarted).toEqual([{ deviceId: 'a', quality: 'wall', detail: 'applying new video settings' }])
   })
 
-  test('a device running a job (status: busy) is NEVER restarted — spec §10.1, the blast-radius bound', async () => {
+  test('a device running a job (a live job activity) is NEVER restarted — spec §10.1, the blast-radius bound', async () => {
     const sessions = fakeSessionsWithOpenSession('a', { quality: 'control' })
-    const { db, app } = makeApp({ sessions })
-    seedDevice(db, 'a', 'busy')
+    const { db, app } = makeApp({ sessions, runningJobDeviceIds: new Set(['a']) })
+    seedDevice(db, 'a')
 
     const res = await app.request('/a', patchReq({ settings: { video: { controlMaxFps: 15 } } }))
     expect(res.status).toBe(200) // the PATCH itself still succeeds — only the restart is refused
@@ -179,7 +165,7 @@ describe('PATCH /api/devices/:id restarts an OPEN session when changedKeys inclu
     const { db, app } = makeApp({ sessions })
     seedDevice(db, 'a')
 
-    const res = await app.request('/a', patchReq({ settings: { video: { wallMaxFps: 3 } } }))
+    const res = await app.request('/a', patchReq({ settings: { overrides: { wallQuality: 'light' } } }))
     expect(res.status).toBe(200)
 
     expect(sessions.restarted).toEqual([])
@@ -189,7 +175,7 @@ describe('PATCH /api/devices/:id restarts an OPEN session when changedKeys inclu
     const { db, app } = makeApp()
     seedDevice(db, 'a')
 
-    const res = await app.request('/a', patchReq({ settings: { video: { wallMaxFps: 3 } } }))
+    const res = await app.request('/a', patchReq({ settings: { overrides: { wallQuality: 'light' } } }))
     expect(res.status).toBe(200)
   })
 })

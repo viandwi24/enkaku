@@ -1,21 +1,36 @@
-// werift (via tsyringe) needs the Reflect polyfill before its module
-// initialisers run; in a compiled binary the bundler's module order no longer
-// guarantees that, so the entrypoint imports it first.
-import 'reflect-metadata'
+// No static import remains in this file (every dependency below is a dynamic
+// `import()`, deliberately, to keep `--version`/`--json` fast) — this empty
+// export is only so TypeScript treats the file as a module, which top-level
+// `await` requires.
+export {}
 
 /**
  * Starts the daemon and keeps the process alive until SIGINT/SIGTERM.
  * The default path — everything the entrypoint did before plan 41.
  */
 async function startDaemon(): Promise<void> {
-  const { loadConfig } = await import('./config')
-  const { createDaemon } = await import('./daemon')
   const { EnkakuError } = await import('./util/errors')
   const { createLogger } = await import('./util/logger')
   const { maybeOpenBrowser, buildStudioUrl } = await import('./util/open-browser')
 
   const log = createLogger('main')
-  const cfg = loadConfig()
+
+  // `./config` imports `./config/constants` as its first import (plan 212
+  // §4.4), and both a support override read at module load and `loadConfig()`
+  // itself can throw `E_BAD_CONFIG`. Either failure prints the code and
+  // message and exits 1 rather than an unhandled-rejection stack.
+  let cfg: import('./config').CoreConfig
+  let createDaemon: typeof import('./daemon').createDaemon
+  try {
+    const configModule = await import('./config')
+    cfg = configModule.loadConfig()
+    createDaemon = (await import('./daemon')).createDaemon
+  } catch (err) {
+    if (err instanceof EnkakuError) log.error(`failed to start [${err.code}]: ${err.message}`)
+    else log.error(`failed to start: ${String(err)}`)
+    process.exit(1)
+  }
+
   const daemon = createDaemon(cfg)
 
   let shuttingDown = false
@@ -29,12 +44,12 @@ async function startDaemon(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
-  // Plan 85 §3.4, §5 step 85.3: on Windows, closing the console window (or a
+  // Plan 85 §3.4, §5 step 85.3: on Windows, closing the terminal window (or a
   // logoff) does not deliver SIGTERM the way it does on POSIX — Node/Bun's
   // own docs describe `SIGHUP` as exactly the event that DOES fire there
-  // ("emitted on Windows when the console window is closed, and on other
-  // platforms under various similar conditions"), so it gets the same clean
-  // shutdown SIGINT/SIGTERM already get, on every platform.
+  // (paraphrased: emitted on Windows when the terminal window is closed, and
+  // on other platforms under various similar conditions), so it gets the
+  // same clean shutdown SIGINT/SIGTERM already get, on every platform.
   process.on('SIGHUP', () => void shutdown('SIGHUP'))
   // Best-effort belt-and-suspenders for any OTHER quiet-exit path neither
   // signal covers: `beforeExit` fires once the event loop has nothing left
@@ -61,12 +76,25 @@ async function startDaemon(): Promise<void> {
   // every mode, including orchestrator's early return, which still happens
   // after `listen`). Suppressed by default for anything that is not an
   // interactive desktop session — see `shouldOpenBrowser`'s own doc comment.
+  // Which guest agent APK this core would install, said ONCE at boot.
+  //
+  // Nothing used to say it, and the silence cost an afternoon: a phone
+  // running an August build with no `ui-tree` capability sent every script
+  // back to `ui-server`'s ~32 s attach while two landed plans sat dormant
+  // (2026-09-04). One line here answers "is the build I am working on the one
+  // that reaches the phone?" before anyone has to ask it. `doctor` says the
+  // same thing with a remedy; the status bar renders that.
+  void import('./api/guest-agent')
+    .then(({ describeGuestAgentApk }) => describeGuestAgentApk())
+    .then(({ detail }) => log.info(`guest agent APK: ${detail}`))
+    .catch(() => undefined)
+
   maybeOpenBrowser({
     url: buildStudioUrl(cfg),
     mode: process.env.ENKAKU_MODE,
     host: cfg.host,
     isTTY: process.stdout.isTTY === true,
-    noOpen: process.env.ENKAKU_NO_OPEN,
+    open: process.env.ENKAKU_OPEN,
     log,
   })
 }

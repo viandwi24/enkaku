@@ -19,7 +19,14 @@ import type { PluginContext } from './runtime'
 export interface WaitForOptions {
   /** Default 10_000 ms. */
   timeout?: number
-  /** Defaults to 1_000 ms — realistic for uiautomator-dump; ui-server (Plan 06) can be far shorter. */
+  /**
+   * Default 1_000 ms, and on the default engine it is a CEILING rather than a
+   * cadence: `ui-tree` subscribes to the device's own change notifications and
+   * re-evaluates when the screen changes, using this only as a bounded
+   * safety-net re-check (plan 222 §3.5). On `ui-server` and `uiautomator-dump`
+   * there is nothing to subscribe to and this is a real polling interval,
+   * clamped down to what that engine can sustain.
+   */
   intervalMs?: number
 }
 
@@ -175,13 +182,32 @@ export interface DeviceApi {
    * a value that only makes sense relative to its neighbours, a count of
    * matching rows. Ordinary TypeScript over `node.children` does all of it.
    *
-   * **It costs a full dump: 334–584 ms measured on a moto g06 power** (a
-   * `find` is ~80 ms by comparison). Fetch it once and walk the result; do
-   * not call it per assertion. Nothing stops you paying repeatedly if you
-   * mean to — the cost is stated here rather than enforced.
+   * **It is the most expensive call on this object**, on every engine. Measured
+   * per engine, so the number you are paying is the number for the engine your
+   * device is on (`GET /api/devices/:id`'s `liveInspection` says which):
+   *
+   * - `ui-tree` (default): `dump()` costs TBD-222-DUMP-MS.
+   * - `ui-tree` (default): `find()` costs TBD-222-FIND-MS.
+   * - `ui-server`: `dump()` costs 334 to 584 ms, `find()` about 80 ms (moto g06 power, plan 74).
+   * - `uiautomator-dump`: `dump()` costs 334 to 584 ms (same device); `find()` pays for a whole dump plus the walk.
+   *
+   * Fetch it once and walk the result; do not call it per assertion. Nothing
+   * stops you paying repeatedly if you mean to — the cost is stated here rather
+   * than enforced.
    */
   dump(): Promise<UiNode>
-  /** Polls the inspector — rejects with ScriptError('WAITFOR_TIMEOUT') when time runs out. */
+  /**
+   * Wait for a selector to appear, up to `opts.timeout`. Rejects with
+   * ScriptError('WAITFOR_TIMEOUT') when time runs out.
+   *
+   * On the default `ui-tree` engine this does not poll: the condition is
+   * evaluated once immediately, so something already on screen returns at once,
+   * and then the core waits on the device's own change notifications
+   * (plan 222 §3.5). A condition that becomes true resolves about
+   * TBD-222-WAITFOR-MS after the screen changes, rather than at the next poll
+   * tick. On `ui-server` and `uiautomator-dump` it polls at `opts.intervalMs`
+   * clamped to what the engine sustains.
+   */
   waitFor(sel: Selector, opts?: WaitForOptions): Promise<UiNode>
   /** Raw PNG (without saving an artifact). */
   screenshot(): Promise<Uint8Array>
@@ -414,7 +440,7 @@ export interface ScriptError {
  * criterion 2).
  *
  * Everything declared below is the honest asymmetry §3.1 names: it needs a
- * leased device and a job, and therefore exists in a script handler only.
+ * claimed device and a job, and therefore exists in a script handler only.
  */
 export interface ScriptContext<P = unknown> extends PluginContext {
   device: DeviceApi
@@ -438,14 +464,6 @@ export interface ScriptContext<P = unknown> extends PluginContext {
   kv: { device: KvApi; global: KvApi }
   /** A running script's own view of the queue on its own device (plan 80). */
   jobs: JobsApi
-  /**
-   * Called when a human sent input to this job's device while it was running
-   * (plan 91 §3.6). NOT an abort — the job keeps running exactly as before,
-   * and `finish()` is not invoked because of this. A script that never
-   * registers a callback is affected in NO way. `actor` is the assisting
-   * operator's userId, or null when they were unauthenticated (local mode).
-   */
-  onAssist?(cb: (e: { at: number; actor: string | null }) => void): void
   /**
    * A live, unpersisted snapshot of how the run is going (plan 97 §3.7).
    * Coalesced to at most one push per `job.progressIntervalMs`
@@ -551,13 +569,6 @@ export interface ScriptDefinition<S extends z.ZodTypeAny = z.ZodTypeAny, R exten
     /** `pm clear` as well as force-stop. Destructive — opt in per script. */
     clearData?: boolean
   }
-  /**
-   * Whether an operator may assist this script's job (plan 91 §3.6) — reach
-   * into a `busy` device this job holds, without taking it. Default `'allow'`.
-   * `'deny'` disables the Assist button in Studio, naming this script; the
-   * job is still cancellable — refusing help is not refusing control.
-   */
-  assist?: 'allow' | 'deny'
   /**
    * Overrides the DEVICE's input-realism settings for this script's OWN
    * calls (plan 94 §3.6, §4.5, F10). Merged over `DeviceSettings.timing`

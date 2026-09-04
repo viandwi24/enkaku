@@ -74,24 +74,6 @@ export function groupPlugins(items: readonly PluginListRow[]): PluginGroup[] {
     })
 }
 
-/**
- * The version a group POINTS AT by default: the live one when there is one,
- * otherwise the newest. Shared by the row and the detail page so a link from
- * one lands on what the other was showing.
- */
-export function defaultVersion(group: PluginGroup): PluginListRow | undefined {
-  return group.versions.find((v) => v.status === 'active') ?? group.versions[0]
-}
-
-/** Every member script id any version of this plugin declared, deduplicated, in declaration order. */
-export function declaredScriptIds(group: PluginGroup): string[] {
-  const ids: string[] = []
-  for (const v of group.versions) {
-    for (const s of v.declaredScripts) if (!ids.includes(s.id)) ids.push(s.id)
-  }
-  return ids
-}
-
 function norm(s: string): string {
   return s.trim().toLowerCase()
 }
@@ -156,13 +138,11 @@ export function devSlotMatches(slot: DevSlotView, query: string): boolean {
   return slot.scripts.some((s) => norm(s.exportId).includes(q))
 }
 
-/**
- * What the Scripts tab's search covers: the script's full name — which is
- * always `<plugin>/<script>`, so the plugin half is searchable without a
- * separate field — and the version `@latest` currently resolves to.
- */
-export function scriptMatches(row: { name: string; latestVersion: string }, query: string): boolean {
-  const q = norm(query)
-  if (!q) return true
-  return norm(row.name).includes(q) || norm(row.latestVersion).includes(q)
+const ParamsShapeSchema = z.object({ properties: z.record(z.string(), z.unknown()).optional() })
+
+/** Moved from `plugins/detail/page.tsx` (plan 210 §4.9) so the Scripts tab can share it. `paramsSchema` is `unknown` on the wire — read, never cast (CLAUDE.md). */
+export function paramCount(schema: unknown): number | null {
+  const parsed = ParamsShapeSchema.safeParse(schema)
+  if (!parsed.success) return null
+  return Object.keys(parsed.data.properties ?? {}).length
 }

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentStateSchema, ConnectionMediumSchema, DeviceConnectionSchema, DeviceInfoSchema, LeaseHolderSchema } from '../device'
+import { AgentStateSchema, ConnectionMediumSchema, DeviceConnectionSchema, DeviceInfoSchema } from '../device'
 import { DeviceEventSchema } from '../messages/device-event'
 import { DeviceReadinessSchema } from '../readiness'
 import { NetworkEngineIdSchema, RouteCheckSchema, tagUntaggedRouteConfig } from '../network'
@@ -77,9 +77,21 @@ export const DeviceDetailSchema = DeviceInfoSchema.extend({
   liveDisplay: z.string().nullable(),
   input: z.string(),
   inspection: z.string(),
+  /**
+   * Plan 222 §3.10 — the inspector engine ACTUALLY running, sourced live from
+   * the open session, distinct from `inspection` above (the stored, CONFIGURED
+   * column). The two are allowed to disagree, and on a farm where some phones
+   * cannot enable the accessibility service they routinely will: the device
+   * reports `inspection: 'ui-tree'` (nothing rewrote the configured value)
+   * while `liveInspection: 'ui-server'` says which engine the session fell back
+   * to. `'starting'` is reported verbatim while the session's prewarm is still
+   * in flight (plan 208), never guessed at; `null` when no session is open.
+   */
+  liveInspection: z.string().nullable(),
   settings: z.unknown(),
   nodeId: z.string().nullable(),
 })
+export type DeviceDetail = z.infer<typeof DeviceDetailSchema>
 export const DeviceDetailResponseSchema = z.object({ device: DeviceDetailSchema })
 
 /** `GET /api/devices/blocked`. */
@@ -159,6 +171,25 @@ export const ReconcileReportSchema = z.object({
   retriesPending: z.number(),
 })
 export type ReconcileReport = z.infer<typeof ReconcileReportSchema>
+
+/**
+ * `POST /api/devices/scan`'s optional body — the ONE thing the route did not
+ * accept until the Devices page grew a per-range "Scan" button beside every
+ * row it lists (owner, 2026-09-04). Without it a sweep is all-or-nothing:
+ * every network with `scan` ticked, every time, which is the wrong tool for
+ * "did the range I just typed find anything?".
+ *
+ * `cidrs` NARROWS the sweep to the listed ranges; it can never widen one. A
+ * range that is not configured, or is configured with `scan: false`, stays
+ * unswept no matter what a client asks for — the ceiling, the concurrency
+ * and the "explicit address space" rule of `registry/sweep.ts` §3.5 are all
+ * unchanged, and an empty intersection is an `E_SCAN_UNAVAILABLE` refusal
+ * rather than a silent full sweep.
+ */
+export const SweepRequestSchema = z.object({
+  cidrs: z.array(z.string()).max(64).optional(),
+})
+export type SweepRequest = z.infer<typeof SweepRequestSchema>
 
 /**
  * `POST /api/devices/scan` (plan 88 §3.5, §4.5, §4.6, §5 step 88.3) — the
@@ -328,10 +359,9 @@ export const DeviceEventsResponseSchema = pageSchema(DeviceEventSchema).extend({
   /** Older/narrower reads (`CrashesPanel.tsx`) claim only `items`, ignoring `nextCursor`/`total` — a valid subset. */
 })
 
-/** `POST /api/clusters/:id/devices` — moving devices into (or out of) a cluster. */
-export const ClusterMoveResponseSchema = z.object({
-  moved: z.array(z.object({ deviceId: z.string(), from: z.string().nullable() })),
-})
+// `set-group` (an actions API verb, plan 207) replaces the old per-group
+// membership route; its per-device result is `ActionResultSchema` with
+// `detail: { movedFrom: string | null }`.
 
 // ---- Network route + guest agent (`packages/core/src/api/guest-agent.ts`) ----
 // Deliberately NOT the same shape as `NetworkStatusSchema` in `../network`
@@ -489,7 +519,7 @@ export const DeviceNetworkStatusResponseSchema = z.object({
    * The full union as of step 114.6 (plan 114 §4.1), no longer the VPN arm
    * alone — Studio's `NetworkRouteForm` now switches on `config.engine`
    * instead of reading `config.host`/`config.udpMode` unconditionally, and
-   * its hand-written `NetworkConfig` mirror is gone in favour of the types
+   * its hand-written `NetworkConfig` reflection is gone in favour of the types
    * exported above.
    *
    * `Stored…` rather than the bare union on purpose: this is a RESPONSE, and
@@ -611,91 +641,6 @@ export const DeviceNetworkStatusResponseSchema = z.object({
 export type DeviceNetworkStatusResponse = z.infer<typeof DeviceNetworkStatusResponseSchema>
 
 /**
- * `POST /api/devices/network/apply` (plan 114 §3.9, step 114.8) — one route
- * across a selection, synchronously.
- *
- * `route` is deliberately **unparsed here**, and that is the single most
- * load-bearing decision in this envelope. A Zod object strips unknown keys, so
- * declaring `route: DeviceNetworkConfigSchema` would silently drop a `username`
- * or `password` before `assertNoHttpProxyAuth` (`packages/core/src/network/
- * route-service.ts`) ever saw it — and the operator would be told their
- * authenticated proxy had been applied to forty phones when what was actually
- * written was an anonymous one. The core validates the same body twice, on
- * purpose: once up front for the WHOLE request (a malformed route or a
- * credential is a bad request, not forty identical per-device failures), and
- * again inside the one door per device, because the door is the door.
- *
- * `z.record(z.string(), z.unknown())` rather than `z.unknown()`: it still
- * refuses a string, an array or a null — "route must be an object" is a real
- * check — while passing every key through untouched.
- */
-export const DeviceNetworkApplyBodySchema = z.object({
-  deviceIds: z.array(z.string()).min(1),
-  route: z.record(z.string(), z.unknown()),
-})
-export type DeviceNetworkApplyBody = z.infer<typeof DeviceNetworkApplyBodySchema>
-
-/**
- * One device's outcome. `DeviceLabelsApplyResultSchema`'s three-way split
- * (F19), plus a fourth thing that split did not need: a `skip`.
- *
- * - **applied** — `status` present, `skip` and `error` both null. Note that a
- *   `status.health` of `unverified` is an APPLIED outcome, not a failure: it is
- *   the normal terminal state of both HTTP rungs (§3.5), and counting it as a
- *   failure would tell an operator that thirty-seven working phones were broken.
- * - **skipped** — `skip` present. Nothing was attempted on the device, or it
- *   was deliberately not attempted; the code says which of §3.9's cases, and
- *   `skip.message` carries the per-device reason verbatim so twenty identically
- *   -blocked phones collapse into one row while a twenty-first with a different
- *   reason stays visible.
- * - **failed** — `error` present. Something was attempted and did not work.
- *
- * **`error` is a coded object, not the bare string `DeviceLabelsApplyResult`
- * uses.** This is a correction to plan 114 §3.9, which specifies
- * `error: z.string().nullable()` while its own classification table gives
- * failures codes (`E_SETTING_NOT_ACCEPTED`, `E_REVERSE_FAILED`). A free-text
- * message cannot be classified by a client, so the two halves of §3.9 could not
- * both be honoured as written — and the whole point of the classification is
- * that "the device declined the setting" and "the tunnel to this machine could
- * not be established" are different problems with different next actions. The
- * code is what keeps them apart; `skip` and `error` are symmetric for the same
- * reason.
- */
-export const DeviceNetworkApplyResultSchema = z.object({
-  deviceId: z.string(),
-  /** Null whenever the call did not produce one — every `skip`, and every `error`. */
-  status: DeviceNetworkStatusResponseSchema.nullable(),
-  skip: z.object({ code: z.string(), message: z.string() }).nullable(),
-  error: z.object({ code: z.string(), message: z.string() }).nullable(),
-})
-export type DeviceNetworkApplyResult = z.infer<typeof DeviceNetworkApplyResultSchema>
-
-export const DeviceNetworkApplyResponseSchema = z.object({
-  total: z.number().int(),
-  results: z.array(DeviceNetworkApplyResultSchema),
-})
-export type DeviceNetworkApplyResponse = z.infer<typeof DeviceNetworkApplyResponseSchema>
-
-export type DeviceNetworkApplyOutcome = 'applied' | 'skipped' | 'failed'
-
-/**
- * The one rule that turns a result row into an outcome class, declared beside
- * the schema and used by both sides — the same discipline `deriveHealth` in
- * `../network` follows, and for the same reason: two copies of a
- * classification drift, and the moment they do, a count on screen stops
- * matching the list underneath it.
- *
- * Order matters. `skip` is checked first because a skipped device may legally
- * carry neither a status nor an error, and `error` before the applied case
- * because a route that was persisted and then failed to apply produces both.
- */
-export function classifyDeviceNetworkApply(result: DeviceNetworkApplyResult): DeviceNetworkApplyOutcome {
-  if (result.skip !== null) return 'skipped'
-  if (result.error !== null) return 'failed'
-  return 'applied'
-}
-
-/**
  * `POST /api/devices/:id/network/credential/reveal` — the ONE response in this
  * package that carries a stored secret's plaintext, and the only place in the
  * REST surface where one crosses the wire outward at all.
@@ -728,26 +673,6 @@ export const DeviceNetworkCredentialRevealResponseSchema = z.object({
   revealedAt: z.number().int(),
 })
 export type DeviceNetworkCredentialRevealResponse = z.infer<typeof DeviceNetworkCredentialRevealResponseSchema>
-
-/**
- * §3.9's classification, as the codes the core actually raises. Exported so
- * Studio can label each one from the user's side without re-deriving the set
- * (and so a code the UI has no label for is visibly a code, rather than being
- * quietly folded into "something went wrong").
- *
- * Skips — nothing was written to the phone:
- * - `E_DEVICE_OFFLINE`   the phone is not reachable.
- * - `E_DEVICE_HELD`      somebody else is driving it; bulk never takes over (§9 Q2).
- * - `E_AGENT_NOT_READY`  VPN was asked for and this phone's guest agent is not ready.
- * - `E_UNSUPPORTED`      this phone cannot run the agent at all (an old phone is not a broken one).
- *
- * Failures — something was attempted:
- * - `E_SETTING_NOT_ACCEPTED` the write went through and the read-back disagreed.
- * - `E_REVERSE_FAILED`       rung 2's `adb reverse` did not establish.
- * - `E_ROUTE_LOCK_HELD`      an incumbent route could not be turned off first.
- * - anything else, carrying its own code and message.
- */
-export const DEVICE_NETWORK_APPLY_SKIP_CODES = ['E_DEVICE_OFFLINE', 'E_DEVICE_HELD', 'E_AGENT_NOT_READY', 'E_UNSUPPORTED'] as const
 
 /**
  * `GET/POST/DELETE /api/devices/:id/guest-agent` — bare, no wrapper.
@@ -878,7 +803,7 @@ export type DeviceNumberReleased = z.infer<typeof DeviceNumberReleasedSchema>
  * /api/devices/:id`, which is twenty requests for one setting on a farm that is
  * about to be twenty phones.
  */
-export const DEVICE_PREP_KEYS = ['disableAnimations', 'keepAwake', 'standbyScreenOff', 'rotation', 'textInput'] as const
+export const DEVICE_PREP_KEYS = ['keepAwake', 'standbyScreenOff', 'rotation', 'textInput'] as const
 export type DevicePrepKey = (typeof DEVICE_PREP_KEYS)[number]
 
 /**
@@ -902,7 +827,6 @@ export type DevicePrepKey = (typeof DEVICE_PREP_KEYS)[number]
  * not a fleet-wide reset to defaults).
  */
 export const DevicePrepPatchSchema = z.object({
-  disableAnimations: z.boolean().optional(),
   keepAwake: KeepAwakeModeSchema.optional(),
   standbyScreenOff: z.boolean().optional(),
   rotation: RotationModeSchema.optional(),
@@ -924,25 +848,11 @@ export type DevicePrepPatch = z.infer<typeof DevicePrepPatchSchema>
  */
 const _prepPatchIsASubsetOfPrep: (patch: DevicePrepPatch) => Partial<DeviceSettings['prep']> = (patch) => patch
 /**
- * **`screenOffTimeoutMs` is deliberately not bulk-settable (yet)** — the guard
- * below offers exactly this choice, and this is the documented half of it.
- *
- * It is a genuinely good candidate for a bulk apply: plan 125's whole subject
- * is a twelve-plus device farm sealed in a box, where doing anything one
- * device at a time is the problem. It is excluded here only because the bulk
- * surface is not just a schema — `BulkPrepDialog` renders one control per key
- * and its `Record<DevicePrepKey, …>` maps make a new key a compile error
- * there, and a numeric/nullable duration is the first key in this list that is
- * not a checkbox or a small enum. Adding it is a Studio change with a real
- * design question in it (what does "leave it alone" look like next to a
- * number field?), not a line in this file, so plan 125 step 125.1/125.2 left
- * it out rather than shipping half of it.
- *
- * Nothing is blocked by the omission: `PATCH /api/devices/:id` sets it per
- * device today, and the farm-wide default (`DeviceSettingsSchema.prep`) is
- * what every newly admitted device picks up.
+ * Plan 212 §4.1 D18 removed `prep.screenOffTimeoutMs` from `DeviceSettingsSchema`
+ * entirely (it is the constant `DEVICE_SCREEN_OFF_TIMEOUT_MS` now), so this
+ * guard covers every remaining `prep` key with no exception.
  */
-type _EveryPrepKeyIsCovered = Exclude<keyof DeviceSettings['prep'], DevicePrepKey | 'screenOffTimeoutMs'> extends never
+type _EveryPrepKeyIsCovered = Exclude<keyof DeviceSettings['prep'], DevicePrepKey> extends never
   ? true
   : 'a prep setting is missing from DEVICE_PREP_KEYS — add it, or document why it is not bulk-settable'
 const _everyPrepKeyIsCovered: _EveryPrepKeyIsCovered = true
@@ -1026,3 +936,17 @@ export function classifyDevicePrepApply(result: DevicePrepApplyResult): DevicePr
   if (result.rotation?.state === 'busy') return 'deferred'
   return 'applied'
 }
+
+/** `GET /api/devices/discovered` (plan 56 §4.3), longest-waiting first. */
+export const DiscoveredDeviceSchema = z.object({
+  stableId: z.string(),
+  serial: z.string(),
+  /** `ro.product.model` when the probe could read it. */
+  label: z.string().nullable(),
+  androidVersion: z.string().nullable(),
+  /** Unix seconds. */
+  firstSeen: z.number().int().nullable(),
+  lastSeen: z.number().int().nullable(),
+})
+export type DiscoveredDeviceInfo = z.infer<typeof DiscoveredDeviceSchema>
+export const DiscoveredDevicesResponseSchema = z.object({ discovered: z.array(DiscoveredDeviceSchema) })

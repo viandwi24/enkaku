@@ -1,17 +1,25 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
 import { describe, expect, test } from 'bun:test'
+import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { scripts } from '../db/schema'
 import { createDevSlotStore } from '../plugins/dev-slots'
 import { createScriptRegistry, type ScriptRegistry } from '../scripts/registry'
+import { createWorkflowStore, type WorkflowStore } from '../workflows/store'
 import { createWorkflowRoutes } from './workflows'
 
 /**
- * `POST /api/workflows`, `POST /api/workflows/validate`, `GET
- * /api/workflows/:name/versions` (plan 99 §4.5, §4.9, §5 step 99.6).
+ * `GET/POST/PUT/DELETE /api/workflows`, `POST /api/workflows/validate` (plan
+ * 210 §4.3, §4.4). A workflow is its own table now, no version, edited in
+ * place — the writer under test is `WorkflowStore`, not the old per-script
+ * publish path.
  */
+
+function fakeAudit(): { audit: AuditLogger; calls: Parameters<AuditLogger['record']>[0][] } {
+  const calls: Parameters<AuditLogger['record']>[0][] = []
+  return { audit: { record: (input) => void calls.push(input), list: () => [] }, calls }
+}
 
 function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
   const wrapper = new Hono<AuthEnv>()
@@ -23,14 +31,15 @@ function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono
   return wrapper
 }
 
-function setUp(): { db: Db; registry: ScriptRegistry } {
+function setUp(): { db: Db; registry: ScriptRegistry; store: WorkflowStore } {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const registry = createScriptRegistry({ db: opened.db, dataDir: `/tmp/enkaku-workflows-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
-  return { db: opened.db, registry }
+  const store = createWorkflowStore(opened.db)
+  return { db: opened.db, registry, store }
 }
 
-/** Publishes an ordinary (kind: 'script') row directly, bypassing HTTP — a node's script reference must resolve to something real before a workflow document naming it can be checked at all. */
+/** Publishes a plugin member row directly, bypassing HTTP — a node's script reference must resolve to something real before a workflow document naming it can be checked at all. */
 function publishScriptRow(db: Db, name: string, version: string, opts: { enabled?: boolean; timeoutMs?: number } = {}) {
   const id = `${name.replace(/\//g, '-')}-${version}`
   db.insert(scripts)
@@ -40,7 +49,6 @@ function publishScriptRow(db: Db, name: string, version: string, opts: { enabled
       id,
       name,
       version,
-      kind: 'script',
       bundle: 'export {}',
       enabled: opts.enabled ?? true,
       createdAt: new Date(),
@@ -50,30 +58,11 @@ function publishScriptRow(db: Db, name: string, version: string, opts: { enabled
   return id
 }
 
-function publishWorkflowRow(db: Db, name: string, version: string) {
-  const doc = {
-    schema: 1,
-    name,
-    version,
-    title: '',
-    description: '',
-    params: [],
-    nodes: [{ kind: 'script', id: 'n1', title: '', script: 'demo@1.0.0', params: {}, onFailure: { go: 'fail' } }],
-    maxSteps: 50,
-  }
-  const id = `${name}-${version}`
-  db.insert(scripts)
-    .values({ id, name, version, kind: 'workflow', bundle: JSON.stringify(doc), source: JSON.stringify(doc, null, 2), enabled: true, createdAt: new Date() })
-    .run()
-  return id
-}
-
-/** The owner's own example (plan 99 §0), as an unparsed JSON document — exactly what a real HTTP client would POST. */
-function ownerExampleDocInput(name = 'tiktok-search-pipeline', version = '1.0.0') {
+/** The owner's own example (plan 99 §0), as an unparsed JSON document — exactly what a real HTTP client would POST. No version key (plan 210). */
+function ownerExampleDocInput(name = 'tiktok-search-pipeline') {
   return {
     schema: 1,
     name,
-    version,
     title: 'TikTok search pipeline',
     description: 'Warm up the feed, search a keyword, and report what was found.',
     params: [{ name: 'keyword', type: 'string', required: true, title: 'Search keyword' }],
@@ -116,41 +105,27 @@ function seedOwnerExampleDeps(db: Db) {
   publishScriptRow(db, 'tiktok/switch-account', '1.0.0')
 }
 
-describe('POST /api/workflows — the owner\'s example (step 99.6 verifiable result)', () => {
-  test('publishes a scripts row indistinguishable from a hand-written script\'s to every existing consumer', async () => {
-    const { db, registry } = setUp()
+describe('POST /api/workflows — the owner\'s example (plan 210 §4.4)', () => {
+  test('creates a workflows row and answers 201 { workflow }', async () => {
+    const { db, registry, store } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const { audit, calls } = fakeAudit()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, audit }))
 
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(201)
-    const body = (await res.json()) as { script: { id: string; name: string; version: string } }
-    expect(body.script.name).toBe('tiktok-search-pipeline')
-    expect(body.script.version).toBe('1.0.0')
-
-    // The exact same row `(name, version)` uniqueness, `enabled`, `createdAt`
-    // etc. every OTHER `scripts` row has (F15/F16) — read straight from the
-    // table, not through any workflow-specific accessor.
-    const row = db.select().from(scripts).where(eq(scripts.id, body.script.id)).get()
-    expect(row?.kind).toBe('workflow')
-    expect(row?.enabled).toBe(true)
-    expect(row?.paramsSchema).not.toBeNull()
-    // `bundle` is the canonical WorkflowDoc JSON; `source` is the SAME
-    // document pretty-printed (plan 99 §4.5).
-    expect(() => JSON.parse(row!.bundle)).not.toThrow()
-    expect(row?.source).toContain('"name": "tiktok-search-pipeline"')
-    // Plan 110 §3.3, criterion 2 — a workflow publishes with NO owning plugin,
-    // and that is not an exemption from "a script cannot exist outside a
-    // plugin": the rule is written about a `kind: 'script'` row, and this is
-    // not one. The writer that refuses a plugin-less script wrote this row.
-    expect(row?.pluginId).toBeNull()
-    expect(row?.exportId).toBeNull()
+    const body = (await res.json()) as { workflow: { id: string; name: string; doc: { name: string }; createdBy: string | null; createdAt: number; updatedAt: number } }
+    expect(body.workflow.name).toBe('tiktok-search-pipeline')
+    expect(body.workflow.doc.name).toBe('tiktok-search-pipeline')
+    expect('version' in body.workflow.doc).toBe(false)
+    expect(body.workflow.createdBy).toBe('u1')
+    expect(calls.at(-1)).toMatchObject({ userId: 'u1', action: 'workflow.create', target: body.workflow.id, meta: { name: 'tiktok-search-pipeline' } })
   })
 
-  test('a duplicate name@version is refused with script_version_exists — the EXISTING writer\'s own conflict check, not a second one', async () => {
-    const { db, registry } = setUp()
+  test('a second POST with the same name is 409 workflow_name_exists', async () => {
+    const { db, registry, store } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
     const doc = ownerExampleDocInput()
 
     const first = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc }) })
@@ -159,28 +134,117 @@ describe('POST /api/workflows — the owner\'s example (step 99.6 verifiable res
     const second = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc }) })
     expect(second.status).toBe(409)
     const body = (await second.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('script_version_exists')
+    expect(body.error.code).toBe('workflow_name_exists')
   })
 
-  test('requires script.publish — an operator with no publish right (viewer-shaped: no user at all) is refused', async () => {
-    const { db, registry } = setUp()
+  test('requires script.publish — no authenticated user is refused', async () => {
+    const { db, registry, store } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser(null, createWorkflowRoutes({ db, registry }))
+    const app = withUser(null, createWorkflowRoutes({ db, registry, store }))
     const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(403)
   })
 })
 
+describe('PUT /api/workflows/:name', () => {
+  test('replaces the document and bumps updatedAt', async () => {
+    const { db, registry, store } = setUp()
+    seedOwnerExampleDeps(db)
+    const { audit, calls } = fakeAudit()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, audit }))
+    const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
+    const { workflow } = (await created.json()) as { workflow: { id: string; updatedAt: number } }
+
+    const edited = { ...ownerExampleDocInput(), description: 'edited' }
+    const res = await app.request('/tiktok-search-pipeline', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: edited }) })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { workflow: { id: string; doc: { description: string }; updatedAt: number } }
+    expect(body.workflow.doc.description).toBe('edited')
+    expect(body.workflow.updatedAt).toBeGreaterThanOrEqual(workflow.updatedAt)
+    expect(calls.at(-1)).toMatchObject({ userId: 'u1', action: 'workflow.update', target: workflow.id })
+  })
+
+  test('a mismatched name is 400', async () => {
+    const { db, registry, store } = setUp()
+    seedOwnerExampleDeps(db)
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
+
+    const res = await app.request('/tiktok-search-pipeline', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ doc: ownerExampleDocInput('a-different-name') }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  test('PUT on an unknown name is 404 workflow_not_found', async () => {
+    const { db, registry, store } = setUp()
+    seedOwnerExampleDeps(db)
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/nope', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput('nope') }) })
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('workflow_not_found')
+  })
+})
+
+describe('GET /api/workflows, GET /api/workflows/:name', () => {
+  test('list and one', async () => {
+    const { db, registry, store } = setUp()
+    seedOwnerExampleDeps(db)
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
+
+    const list = await app.request('/')
+    expect(list.status).toBe(200)
+    const listBody = (await list.json()) as { items: Array<{ name: string }>; total: number }
+    expect(listBody.items.map((i) => i.name)).toEqual(['tiktok-search-pipeline'])
+    expect(listBody.total).toBe(1)
+
+    const one = await app.request('/tiktok-search-pipeline')
+    expect(one.status).toBe(200)
+    const oneBody = (await one.json()) as { workflow: { name: string } }
+    expect(oneBody.workflow.name).toBe('tiktok-search-pipeline')
+
+    const missing = await app.request('/nope')
+    expect(missing.status).toBe(404)
+  })
+})
+
+describe('DELETE /api/workflows/:name', () => {
+  test('DELETE then GET is 404', async () => {
+    const { db, registry, store } = setUp()
+    seedOwnerExampleDeps(db)
+    const { audit, calls } = fakeAudit()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, audit }))
+    await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
+
+    const del = await app.request('/tiktok-search-pipeline', { method: 'DELETE' })
+    expect(del.status).toBe(200)
+    expect(calls.at(-1)).toMatchObject({ userId: 'u1', action: 'workflow.delete', meta: { name: 'tiktok-search-pipeline' } })
+
+    const after = await app.request('/tiktok-search-pipeline')
+    expect(after.status).toBe(404)
+  })
+
+  test('DELETE on an unknown name is 404', async () => {
+    const { db, registry, store } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/nope', { method: 'DELETE' })
+    expect(res.status).toBe(404)
+  })
+})
+
 describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
   test('a document binding to a node that runs LATER is refused with E_WORKFLOW_FORWARD_REF, naming both nodes', async () => {
-    const { db, registry } = setUp()
+    const { db, registry, store } = setUp()
     publishScriptRow(db, 'demo', '1.0.0')
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
 
     const doc = {
       schema: 1,
       name: 'forward-ref-doc',
-      version: '1.0.0',
       params: [],
       nodes: [
         { kind: 'script', id: 'first', script: 'demo@1.0.0', params: { x: { from: 'second' } }, onFailure: { go: 'fail' } },
@@ -196,36 +260,15 @@ describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
     expect(forwardRef?.message).toContain('"first"')
     expect(forwardRef?.message).toContain('"second"')
     // Refused BEFORE any row was written.
-    const row = db.select().from(scripts).where(eq(scripts.name, 'forward-ref-doc')).get()
-    expect(row).toBeUndefined()
-  })
-
-  test('a document naming another workflow as a node is refused with E_WORKFLOW_NESTED', async () => {
-    const { db, registry } = setUp()
-    publishScriptRow(db, 'demo', '1.0.0')
-    publishWorkflowRow(db, 'inner-workflow', '1.0.0')
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
-
-    const doc = {
-      schema: 1,
-      name: 'outer-workflow',
-      version: '1.0.0',
-      params: [],
-      nodes: [{ kind: 'script', id: 'a', script: 'inner-workflow@1.0.0', params: {}, onFailure: { go: 'fail' } }],
-    }
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc }) })
-    expect(res.status).toBe(400)
-    const body = (await res.json()) as { error: { code: string; findings: Array<{ code: string }> } }
-    expect(body.error.findings.some((f) => f.code === 'E_WORKFLOW_NESTED')).toBe(true)
+    expect(store.get('forward-ref-doc')).toBeNull()
   })
 
   test('a node naming a script that does not exist is refused with E_WORKFLOW_SCRIPT_UNRESOLVED, not a 500', async () => {
-    const { db, registry } = setUp()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const { db, registry, store } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
     const doc = {
       schema: 1,
       name: 'ghost-script',
-      version: '1.0.0',
       params: [],
       nodes: [{ kind: 'script', id: 'a', script: 'no-such-script@1.0.0', params: {}, onFailure: { go: 'fail' } }],
     }
@@ -235,26 +278,56 @@ describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
     expect(body.error.findings.some((f) => f.code === 'E_WORKFLOW_SCRIPT_UNRESOLVED')).toBe(true)
   })
 
-  test('a malformed document (fails WorkflowDocSchema itself) is refused with E_WORKFLOW_INVALID findings, not a crash', async () => {
-    const { db, registry } = setUp()
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 1, name: 'x', version: '1.0.0', nodes: [] } }) })
+  test('a malformed v2 document (fails WorkflowDocSchema itself) is refused with E_WORKFLOW_INVALID findings, not a crash', async () => {
+    const { db, registry, store } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 2, name: 'x', entry: 'a', nodes: [] } }) })
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { findings: Array<{ code: string }> } }
     expect(body.error.findings.length).toBeGreaterThan(0)
     expect(body.error.findings.every((f) => f.code === 'E_WORKFLOW_INVALID')).toBe(true)
   })
+
+  test('a malformed v1 document (does not satisfy the frozen v1 shape) is refused with E_WORKFLOW_UPGRADE_FAILED, not a crash (plan 301 §4.6)', async () => {
+    const { db, registry, store } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 1, name: 'x', nodes: [] } }) })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string; findings: Array<{ code: string }> } }
+    expect(body.error.code).toBe('E_WORKFLOW_UPGRADE_FAILED')
+  })
+
+  test('a document declaring an unknown schema is refused with E_WORKFLOW_SCHEMA_UNKNOWN (plan 301 §4.6)', async () => {
+    const { db, registry, store } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 3, name: 'x', nodes: [] } }) })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_WORKFLOW_SCHEMA_UNKNOWN')
+  })
+})
+
+describe('POST /api/workflows — accepts a v1 body and stores v2 (plan 301 §4.5)', () => {
+  test('a v1 document is upgraded before checkWorkflow ever sees it, and stored as schema 2', async () => {
+    const { db, registry, store } = setUp()
+    seedOwnerExampleDeps(db)
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { workflow: { doc: { schema: number; entry: string } } }
+    expect(body.workflow.doc.schema).toBe(2)
+    expect(body.workflow.doc.entry).toBeDefined()
+  })
 })
 
 describe('POST /api/workflows/validate', () => {
   test('returns the same findings the publish gate would, and writes nothing', async () => {
-    const { db, registry } = setUp()
+    const { db, registry, store } = setUp()
     publishScriptRow(db, 'demo', '1.0.0')
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
     const doc = {
       schema: 1,
       name: 'validate-only',
-      version: '1.0.0',
       params: [],
       nodes: [
         { kind: 'script', id: 'first', script: 'demo@1.0.0', params: { x: { from: 'second' } }, onFailure: { go: 'fail' } },
@@ -265,14 +338,13 @@ describe('POST /api/workflows/validate', () => {
     expect(res.status).toBe(200)
     const findings = (await res.json()) as Array<{ code: string }>
     expect(findings.some((f) => f.code === 'E_WORKFLOW_FORWARD_REF')).toBe(true)
-    const row = db.select().from(scripts).where(eq(scripts.name, 'validate-only')).get()
-    expect(row).toBeUndefined()
+    expect(store.get('validate-only')).toBeNull()
   })
 
   test('a valid document validates clean (only the @latest / unchecked-binding warnings the owner\'s example always carries)', async () => {
-    const { db, registry } = setUp()
+    const { db, registry, store } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(200)
     const findings = (await res.json()) as Array<{ code: string; severity: string }>
@@ -280,32 +352,25 @@ describe('POST /api/workflows/validate', () => {
   })
 
   test('requires only script.view, not script.publish', async () => {
-    const { db, registry } = setUp()
+    const { db, registry, store } = setUp()
     seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
     expect(res.status).toBe(200)
   })
 })
 
 /**
- * `workflow.maxTotalMs` (docs/settings-audit.md #3, `docs/plans/
- * 96-m61-hotfixes.md`) — `daemon.ts`'s `createWorkflowRoutes({...})` call now
- * passes a live `settings` accessor; before that fix, `budgetFor` (`./workflows.ts`)
- * always fell back to the hardcoded schema default (21_600_000ms, 6h)
- * regardless of what an operator set from Studio, silently disagreeing with
- * the workflow executor's own runtime clock (`workflow-settings-wiring.test.ts`
- * proves that half). This proves the ROUTE half: the exact same two-node
- * document is flagged when a small custom `maxTotalMs` is wired in, and NOT
- * flagged when no accessor is passed at all (the schema-default fallback) —
- * the live setting, not the default, is what the preflight actually checks.
+ * `workflow.maxTotalMs` (docs/settings-audit.md #3) — the ROUTE half: the
+ * exact same two-node document is flagged when a small custom `maxTotalMs`
+ * is wired in, and NOT flagged when no accessor is passed at all (the
+ * schema-default fallback).
  */
 describe('POST /api/workflows/validate — workflow.maxTotalMs preflight honours a live, non-default setting (docs/settings-audit.md #3)', () => {
   function twoNodeDoc() {
     return {
       schema: 1,
       name: 'budget-preflight',
-      version: '1.0.0',
       params: [],
       nodes: [
         { kind: 'script', id: 'a', script: 'node-a@1.0.0', params: {}, onFailure: { go: 'fail' } },
@@ -315,15 +380,11 @@ describe('POST /api/workflows/validate — workflow.maxTotalMs preflight honours
   }
 
   test('a custom, SMALL maxTotalMs (well under the 6h schema default) flags a document whose declared node timeouts sum past it', async () => {
-    const { db, registry } = setUp()
-    // 400s + 400s = 800s — comfortably under the 21_600_000ms (6h) schema
-    // default, so this document would pass a fallback-to-default check.
+    const { db, registry, store } = setUp()
     publishScriptRow(db, 'node-a', '1.0.0', { timeoutMs: 400_000 })
     publishScriptRow(db, 'node-b', '1.0.0', { timeoutMs: 400_000 })
 
-    // The live accessor `daemon.ts` now wires — a custom 500s ceiling, far
-    // below both the 800s sum AND the 6h schema default.
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, settings: () => ({ maxTotalMs: 500_000 }) }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, settings: () => ({ maxTotalMs: 500_000 }) }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeDoc() }) })
     expect(res.status).toBe(200)
     const findings = (await res.json()) as Array<{ code: string; message: string }>
@@ -334,32 +395,14 @@ describe('POST /api/workflows/validate — workflow.maxTotalMs preflight honours
   })
 
   test('the IDENTICAL document, with no settings accessor passed at all, falls back to the schema default and is NOT flagged', async () => {
-    const { db, registry } = setUp()
+    const { db, registry, store } = setUp()
     publishScriptRow(db, 'node-a', '1.0.0', { timeoutMs: 400_000 })
     publishScriptRow(db, 'node-b', '1.0.0', { timeoutMs: 400_000 })
 
-    // No `settings` key at all — `budgetFor`'s own fallback branch, exercised
-    // deliberately (a test harness, or any future host, that constructs this
-    // router without wiring one).
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
     const res = await app.request('/validate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeDoc() }) })
     expect(res.status).toBe(200)
     const findings = (await res.json()) as Array<{ code: string }>
     expect(findings.some((f) => f.code === 'E_WORKFLOW_BUDGET_IMPOSSIBLE')).toBe(false)
-  })
-})
-
-describe('GET /api/workflows/:name/versions', () => {
-  test('lists every published version, newest semver first', async () => {
-    const { db, registry } = setUp()
-    seedOwnerExampleDeps(db)
-    const app = withUser('operator', createWorkflowRoutes({ db, registry }))
-    await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput('tiktok-search-pipeline', '1.0.0') }) })
-    await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput('tiktok-search-pipeline', '2.0.0') }) })
-
-    const res = await app.request('/tiktok-search-pipeline/versions')
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { items: Array<{ version: string }> }
-    expect(body.items.map((i) => i.version)).toEqual(['2.0.0', '1.0.0'])
   })
 })

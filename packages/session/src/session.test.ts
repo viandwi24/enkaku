@@ -3,10 +3,12 @@ import type { AdbClient, TrackedDevice } from '@enkaku/adb'
 import type { GuestAgentClient, GuestAgentClientRunner } from '@enkaku/drivers'
 import type { Inspector, UiNode } from '@enkaku/protocol'
 import type { ScrcpySession } from '@enkaku/scrcpy'
-import { FARM_TAG_PROPERTY } from './farm-tag'
 import { createSession, type CreateSessionDeps } from './session'
 import { ENKAKU_IME_COMPONENT_ID } from './text-input'
 import type { Logger } from './logger'
+
+/** Mirrors farm-tag.ts's private constant; a test that pins the shipped value. */
+const FARM_TAG_PROPERTY = 'debug.enkaku.instrumented'
 
 const silentLog = (): Logger => {
   const l = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => l }
@@ -25,15 +27,42 @@ function fakeInspector(): Inspector {
   }
 }
 
+/** A scrcpy session that never produces frames and never closes on its own — used to check that createSession threads its port/scid onto DeviceSession (plan 223 §4.3). */
+function fakeScrcpySession(opts: { port?: number; scid?: string } = {}): ScrcpySession {
+  return {
+    meta: null,
+    port: opts.port ?? 27183,
+    scid: opts.scid ?? '7f000001',
+    onPacket: () => {},
+    onMetaChange: () => {},
+    onClose: () => {},
+    onDeviceMessage: () => () => {},
+    control: {
+      injectTouch: () => {},
+      injectKeycode: () => {},
+      injectText: () => {},
+      uhidCreate: () => {},
+      uhidInput: () => {},
+      uhidDestroy: () => {},
+      setDisplayPower: () => {},
+      resetVideo: () => {},
+      getClipboard: async () => '',
+      setClipboard: async () => {},
+      injectScroll: () => {},
+    },
+    close: async () => {},
+  } as unknown as ScrcpySession
+}
+
 /**
- * Plan 56 §5.3: `releaseInspector()` gives the engine back, and a LATER
- * `whenInspectorReady()` must build a fresh one rather than resolving
- * against the now-dead handle. Counts both `makeInspector` calls and
- * `release()` calls so the test fails if either the re-build or the
- * original release stops happening.
+ * Plan 208 §3.2, §4.8 — the inspector is session-scoped, not tab-scoped:
+ * `prewarmInspector()` (the always-on builder's call) and
+ * `whenInspectorReady()` (a job, or an Inspect tab's `inspect.attach`) are
+ * the SAME start-once, join, never-reject contract. `releaseInspector` is
+ * gone entirely — `close()` is the only release.
  */
-describe('DeviceSession.releaseInspector (plan 56 §4.3, §5.3)', () => {
-  test('a second whenInspectorReady() after release() builds a NEW engine', async () => {
+describe('DeviceSession — the session-scoped inspector (plan 208 §3.2, §4.8)', () => {
+  test('prewarmInspector starts the engine once and whenInspectorReady joins it', async () => {
     let built = 0
     let released = 0
     const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => {
@@ -53,34 +82,83 @@ describe('DeviceSession.releaseInspector (plan 56 §4.3, §5.3)', () => {
       { client: fakeClient(), log: silentLog(), makeInspector },
     )
 
-    await session.whenInspectorReady()
+    // The always-on builder's call.
+    await session.prewarmInspector()
     expect(built).toBe(1)
     expect(session.inspector).not.toBeNull()
     expect(session.inspectorEngineId).toBe('ui-server')
 
-    // A second call before any release must NOT build a second engine —
-    // the in-flight/completed promise is reused (baseline behaviour).
+    // A job or an Inspect tab reaching whenInspectorReady() afterward joins
+    // the SAME start — no second engine.
+    await session.whenInspectorReady()
+    expect(built).toBe(1)
     await session.whenInspectorReady()
     expect(built).toBe(1)
 
-    await session.releaseInspector()
-    expect(released).toBe(1)
-    expect(session.inspector).toBeNull()
+    expect(released).toBe(0) // nothing releases early; only close() does
+
+    await session.close()
+    expect(released).toBe(1) // released exactly once, by close()
+  })
+
+  test('close releases the inspector handle exactly once', async () => {
+    let released = 0
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => ({
+      inspector: fakeInspector(),
+      engineId: 'ui-server',
+      pollIntervalMs: 80,
+      release: async () => {
+        released++
+      },
+    })
+
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
 
     await session.whenInspectorReady()
-    expect(built).toBe(2) // a genuinely fresh engine, not the dead handle
-    expect(released).toBe(1) // the fresh one was not released again by this call
-    expect(session.inspector).not.toBeNull()
+    await session.close()
+    expect(released).toBe(1)
+  })
+
+  test('a failed makeInspector says `failed`, not `starting`, and the NEXT call genuinely retries', async () => {
+    // This used to assert `'starting'` and a resolved promise, which is what
+    // the code did — and it was the bug: every later caller was told "the
+    // inspector is still starting; retry in a moment" forever, while the
+    // `??=` memo guaranteed no start would be attempted again. Nothing to
+    // wait for, and waiting the only thing offered (owner, 2026-09-04).
+    let attempts = 0
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => {
+      attempts += 1
+      throw new Error('ui-server cannot be used on this device')
+    }
+
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
+
+    // Still resolves rather than rejecting: a session whose inspector cannot
+    // start is degraded, never dead — video and input are unaffected.
+    await expect(session.whenInspectorReady()).resolves.toBeUndefined()
+    expect(session.inspector).toBeNull()
+    expect(session.inspectorEngineId).toBe('failed')
+    expect(attempts).toBe(1)
+
+    await expect(session.whenInspectorReady()).resolves.toBeUndefined()
+    expect(attempts).toBe(2)
 
     await session.close()
   })
 
-  test('releaseInspector() before the inspector was ever started is a harmless no-op', async () => {
+  test('no makeInspector at all (manual-control fixture shape): whenInspectorReady and prewarmInspector both resolve harmlessly', async () => {
     const session = await createSession(
       { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
       { client: fakeClient(), log: silentLog() },
     )
-    await expect(session.releaseInspector()).resolves.toBeUndefined()
+    await expect(session.whenInspectorReady()).resolves.toBeUndefined()
+    await expect(session.prewarmInspector()).resolves.toBeUndefined()
     await session.close()
   })
 })
@@ -100,7 +178,7 @@ describe('DeviceSession.videoProfile (plan 92 §3.8 rule 1, §4.3, §5 step 92.2
       maxSize: 320,
       maxFps: 3,
       bitRate: 400_000,
-      source: { maxSize: 'preset' as const, maxFps: 'farm' as const, bitRate: 'preset' as const },
+      source: { maxSize: 'preset' as const, maxFps: 'preset' as const, bitRate: 'preset' as const },
     }
     const session = await createSession(
       { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', quality: 'wall', videoProfile: profile },
@@ -527,6 +605,54 @@ describe('screencap-loop fallback retry (plan 100 §4.3, step 100.6)', () => {
   })
 })
 
+describe('DeviceSession.onClipboardChanged (plan 209 §3.2 D10, §4.9, §5 step 209.5)', () => {
+  function fakeScrcpySessionWithClipboard(): { session: ScrcpySession; emitClipboard: (text: string) => void } {
+    const handlers = new Set<(m: { type: 'clipboard'; text: string }) => void>()
+    const session = {
+      meta: { deviceName: 'test phone', codec: 'h264', width: 1080, height: 2400 },
+      onPacket: () => {},
+      onMetaChange: () => {},
+      onClose: () => {},
+      onDeviceMessage: (cb: (m: { type: 'clipboard'; text: string }) => void) => {
+        handlers.add(cb)
+        return () => handlers.delete(cb)
+      },
+      control: {
+        injectTouch: () => {},
+        injectKeycode: () => {},
+        injectText: () => {},
+        uhidCreate: () => {},
+        uhidInput: () => {},
+        uhidDestroy: () => {},
+        setDisplayPower: () => {},
+        resetVideo: () => {},
+        getClipboard: async () => '',
+        setClipboard: async () => {},
+        injectScroll: () => {},
+      },
+      close: async () => {},
+    } as unknown as ScrcpySession
+    return { session, emitClipboard: (text) => { for (const cb of handlers) cb({ type: 'clipboard', text }) } }
+  }
+
+  test('onClipboardChanged forwards clipboard device messages and the unsubscribe stops them', async () => {
+    const { session: scrcpy, emitClipboard } = fakeScrcpySessionWithClipboard()
+    const client = fakeClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client, log: silentLog(), makeScrcpy: async () => scrcpy },
+    )
+    const received: string[] = []
+    const unsubscribe = session.onClipboardChanged((text) => received.push(text))
+    emitClipboard('hello')
+    expect(received).toEqual(['hello'])
+    unsubscribe()
+    emitClipboard('world')
+    expect(received).toEqual(['hello'])
+    await session.close()
+  })
+})
+
 /**
  * **Plan 125 §3.7, §4.5, §5 step 125.7 — acceptance criterion 11**: *"`wakeDevice`
  * runs at most once per session start, and zero times for a device already awake
@@ -807,6 +933,149 @@ describe('createSession — the guest-agent bootstrap is off the critical line (
     await session.whenTextInputReady?.()
     expect(calls.some((c) => c.startsWith('ime '))).toBe(false)
     expect(session.textInput.agentCapabilities).toBeNull()
+    await session.close()
+  })
+})
+
+/**
+ * Plan 206 §3.9, §4.4 — `prewarmInspector` and `requireScrcpy` on every
+ * build, not only the fast path. Plan 208 §3.2, §4.8 replaces the no-op
+ * body: `prewarmInspector` really does start the engine now, identical to
+ * `whenInspectorReady` — see the "session-scoped inspector" describe block
+ * above for the fuller coverage of that contract.
+ */
+describe('DeviceSession.prewarmInspector (plan 206 §3.9, plan 208 §3.2)', () => {
+  test('starts the engine (plan 208 replaces the no-op body plan 206 shipped)', async () => {
+    let makeInspectorCalls = 0
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => {
+      makeInspectorCalls++
+      return { inspector: fakeInspector(), engineId: 'ui-server', pollIntervalMs: 80, release: async () => {} }
+    }
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
+    await expect(session.prewarmInspector()).resolves.toBeUndefined()
+    expect(makeInspectorCalls).toBe(1)
+    expect(session.inspector).not.toBeNull()
+    await session.close()
+  })
+})
+
+describe('createSession — requireScrcpy applies to every build, not only the fast path (plan 206 §3.6, §4.4)', () => {
+  function recordingClient(): { client: AdbClient; calls: string[] } {
+    const calls: string[] = []
+    const client = {
+      exec: async (_serial: string, cmd: string) => {
+        calls.push(cmd)
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+      execOut: async () => new Uint8Array(),
+    } as unknown as AdbClient
+    return { client, calls }
+  }
+
+  test('requireScrcpy without skipDevicePrep throws E_SCRCPY_UNAVAILABLE and reverts stayon/rotation/tag', async () => {
+    const { client, calls } = recordingClient()
+    await expect(
+      createSession(
+        { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always', requireScrcpy: true },
+        { client, log: silentLog(), makeScrcpy: async () => null },
+      ),
+    ).rejects.toMatchObject({ name: 'SessionError', code: 'E_SCRCPY_UNAVAILABLE' })
+    // Nothing this (failed) build claimed is left applied on the device.
+    expect(calls).toContain('svc power stayon false')
+    expect(calls).toContain(`setprop ${FARM_TAG_PROPERTY} ''`)
+  })
+
+  test('display: "screencap-loop" (the operator\'s own configuration) with requireScrcpy still opens the screencap loop — never a false E_SCRCPY_UNAVAILABLE', async () => {
+    const { client } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', display: 'screencap-loop', requireScrcpy: true },
+      { client, log: silentLog(), makeScrcpy: async () => null },
+    )
+    expect(session.displayEngineId).toBe('screencap-loop')
+    await session.close()
+  })
+})
+
+describe('createSession — forwardPort/scrcpyScid (plan 223 §4.3)', () => {
+  test('forwardPort and scrcpyScid are null on the screencap-loop engine, set from the scrcpy handle otherwise', async () => {
+    const screencapSession = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', display: 'screencap-loop', requireScrcpy: true },
+      { client: fakeClient(), log: silentLog(), makeScrcpy: async () => null },
+    )
+    expect(screencapSession.forwardPort).toBeNull()
+    expect(screencapSession.scrcpyScid).toBeNull()
+    await screencapSession.close()
+
+    const scrcpySession = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client: fakeClient(), log: silentLog(), makeScrcpy: async () => fakeScrcpySession({ port: 27700, scid: '7f00ee11' }) },
+    )
+    expect(scrcpySession.forwardPort).toBe(27700)
+    expect(scrcpySession.scrcpyScid).toBe('7f00ee11')
+    await scrcpySession.close()
+  })
+})
+
+/**
+ * The inspector must be there when someone reaches for it.
+ *
+ * `ui-server` runs a JSON-RPC server inside an `am instrument` process on the
+ * phone, and on some builds — the owner's Android 15 phone every session —
+ * that process dies seconds after reporting ready. The session then held a
+ * dead engine and every later call hit a closed port, so the Inspector tab's
+ * first press failed every time (2026-09-04). `uiautomator-dump` shells a
+ * command instead: slower, and with nothing to lose.
+ */
+describe('demoteInspector — the engine can go down, the feature cannot', () => {
+  test('after a demote the next start asks for uiautomator-dump, whatever the device was configured for', async () => {
+    const requested: Array<string | null> = []
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async (_id, _t, req) => {
+      requested.push(req)
+      return { inspector: {} as never, engineId: req ?? 'ui-server', pollIntervalMs: 500, release: async () => {} }
+    }
+
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', inspection: 'ui-server' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
+
+    await session.whenInspectorReady()
+    expect(requested).toEqual(['ui-server'])
+    expect(session.inspectorEngineId).toBe('ui-server')
+
+    session.demoteInspector('Unable to connect')
+    expect(session.inspector).toBeNull()
+    expect(session.inspectorEngineId).toBe('failed')
+
+    await session.whenInspectorReady()
+    expect(requested).toEqual(['ui-server', 'uiautomator-dump'])
+    expect(session.inspectorEngineId).toBe('uiautomator-dump')
+
+    await session.close()
+  })
+
+  test('demoting twice does not thrash — the bottom rung has nowhere to fall', async () => {
+    const requested: Array<string | null> = []
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async (_id, _t, req) => {
+      requested.push(req)
+      return { inspector: {} as never, engineId: req ?? 'ui-server', pollIntervalMs: 500, release: async () => {} }
+    }
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', inspection: 'ui-server' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
+
+    await session.whenInspectorReady()
+    session.demoteInspector('Unable to connect')
+    await session.whenInspectorReady()
+    session.demoteInspector('Unable to connect again')
+
+    // The second demote is a no-op: the engine it would fall to is the one
+    // already running.
+    expect(session.inspectorEngineId).toBe('uiautomator-dump')
     await session.close()
   })
 })

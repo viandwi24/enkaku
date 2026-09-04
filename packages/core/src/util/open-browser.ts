@@ -59,35 +59,35 @@ export interface ShouldOpenBrowserInput {
   host: string
   /** `process.stdout.isTTY` — `false` when this process was spawned by systemd, Docker, or CI, none of which attach a controlling terminal. */
   isTTY: boolean
-  /** `process.env.ENKAKU_NO_OPEN` — an explicit escape hatch that always wins, for anyone who finds the default unwanted (a devcontainer with no display, a sandboxed `bun run dev`). */
-  noOpen: string | undefined
+  /** `process.env.ENKAKU_OPEN` — opt IN to a spawned browser. Absent or falsy means no browser, which is the default (CEO, 2026-09-04). */
+  open: string | undefined
   /** Injectable for the same reason `browserOpenCommand`'s platform is — defaults to the real `isLoopback` from `../config`. */
   isLoopbackHost?: (host: string) => boolean
 }
 
 /**
- * Whether this run looks like a person double-clicking the binary on a
- * desktop, as opposed to a systemd unit, a Docker container, a CI job, or
- * the cloud orchestrator — every one of which `docs/guide/install.md`
- * documents as first-class and NONE of which may ever get a spawned
- * browser (getting this wrong means a server tries to launch a browser on
- * every restart).
+ * Whether to spawn a browser at boot. **The default is no.**
  *
- * Three signals, all reused from how this codebase already distinguishes
- * modes rather than invented fresh for this feature:
- *  - `ENKAKU_MODE=orchestrator` is already the cloud-control-plane switch
- *    (`daemon.ts`, `server/http.ts`) — always headless.
- *  - A non-loopback bind is already what flips auth from `local` to
- *    `server` mode (`resolveAuthMode` in `../config`) — and it is exactly
- *    the signal `docker-compose.yml` and `deploy/enkaku.service` both set
- *    (`ENKAKU_BIND=0.0.0.0`) to describe themselves as headless.
- *  - A missing TTY is the one signal that catches what the other two do
- *    NOT: a headless run that never overrides the (loopback) default bind —
- *    a CI job or a sandboxed `bun run dev`, for instance. Favors NOT
- *    opening whenever this is uncertain, per instructions.
+ * It used to be yes for anything that looked like a person double-clicking
+ * the binary on a desktop. In practice the people who actually run this
+ * command are developers restarting the core dozens of times an hour, and
+ * every restart stole focus with a new tab. The CEO set the default to off on
+ * 2026-09-04: opening someone's browser is a side effect, and a side effect
+ * belongs behind an explicit request.
+ *
+ * `ENKAKU_OPEN=1` opts in, and the three headless guards still apply on top
+ * of it, because they exist to stop a server from trying to launch a browser
+ * on a machine with no display — a mistake an explicit opt-in in a shared
+ * `.env` could otherwise still make:
+ *  - `ENKAKU_MODE=orchestrator` is the cloud control plane, always headless.
+ *  - A non-loopback bind is what `docker-compose.yml` and
+ *    `deploy/enkaku.service` both set (`ENKAKU_BIND=0.0.0.0`) to describe
+ *    themselves as headless.
+ *  - A missing TTY catches what the other two do not: a CI job, or a
+ *    sandboxed run that never overrides the loopback default.
  */
 export function shouldOpenBrowser(input: ShouldOpenBrowserInput): boolean {
-  if (isTruthyEnv(input.noOpen)) return false
+  if (!isTruthyEnv(input.open)) return false
   if (input.mode === 'orchestrator') return false
   const loopback = (input.isLoopbackHost ?? isLoopback)(input.host)
   if (!loopback) return false
@@ -107,7 +107,7 @@ export interface MaybeOpenBrowserOptions {
   mode: string | undefined
   host: string
   isTTY: boolean
-  noOpen: string | undefined
+  open: string | undefined
   log: Logger
   platform?: typeof process.platform
   spawn?: BrowserSpawner
@@ -136,7 +136,7 @@ export function maybeOpenBrowser(opts: MaybeOpenBrowserOptions): void {
     mode: opts.mode,
     host: opts.host,
     isTTY: opts.isTTY,
-    noOpen: opts.noOpen,
+    open: opts.open,
     isLoopbackHost: opts.isLoopbackHost,
   })
   if (!open) return

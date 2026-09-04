@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test'
-import { ProxyRecordSchema, ProxySecretSchema, SECRET_PREFIX_IS_DISJOINT } from './record'
 import {
   DEFAULT_BIND_HOST,
   DEFAULT_DRAIN_MS,
@@ -50,21 +49,7 @@ describe('the v2 record', () => {
   test('round-trips through write → read, and parses as a ProxyRecord', () => {
     const typed = record({ enabled: true, logDestinations: true, notes: 'expires in March' })
     const stored = writeProxyRecord(typed)
-    expect(Object.keys(stored)).toEqual(Object.keys(ProxyRecordSchema.shape))
-    const parsed = ProxyRecordSchema.safeParse(stored)
-    expect(parsed.error?.issues ?? []).toEqual([])
     expect(readProxyRecord(stored)).toEqual(typed)
-  })
-
-  test('everything the defensive reader can produce also parses against the schema', () => {
-    // The invariant that keeps the two halves from drifting apart in the one
-    // direction a round-trip test cannot see: `readProxyRecord` is deliberately
-    // more permissive than the schema, so the schema has to accept its whole
-    // output range — including the blanks it invents for a junk row.
-    for (const junk of [null, 42, 'nonsense', [], { nonsense: true }, { listen: 'no' }, { upstream: [] }]) {
-      const parsed = ProxyRecordSchema.safeParse(writeProxyRecord(readProxyRecord(junk)))
-      expect(parsed.error?.issues ?? []).toEqual([])
-    }
   })
 
   test('a stored row this pack never wrote renders as blanks instead of throwing inside a table', () => {
@@ -157,13 +142,6 @@ describe('plan 121 — fallbackUpstreams and failover (§4.1)', () => {
     expect(migrated).toEqual(record())
   })
 
-  test('a record captured before this plan still parses against the schema, with the new fields defaulted', () => {
-    const parsed = ProxyRecordSchema.safeParse(captured())
-    expect(parsed.error?.issues ?? []).toEqual([])
-    expect(parsed.data?.fallbackUpstreams).toEqual([])
-    expect(parsed.data?.failover).toEqual({ failureThreshold: 3, autoFailback: true })
-  })
-
   test('a configured backup list and non-default failover settings round-trip exactly', () => {
     const typed = record({
       fallbackUpstreams: [
@@ -173,9 +151,6 @@ describe('plan 121 — fallbackUpstreams and failover (§4.1)', () => {
       failover: { failureThreshold: 5, autoFailback: false },
     })
     const stored = writeProxyRecord(typed)
-    expect(Object.keys(stored)).toEqual(Object.keys(ProxyRecordSchema.shape))
-    const parsed = ProxyRecordSchema.safeParse(stored)
-    expect(parsed.error?.issues ?? []).toEqual([])
     expect(readProxyRecord(stored)).toEqual(typed)
   })
 
@@ -574,7 +549,6 @@ describe('vpnRouteForRecord — vendor and `direct` records (plan 117 §3.6)', (
 
 describe('the two-key split (§3.6)', () => {
   test('the secret prefix can never be picked up by a list of the record prefix', () => {
-    expect(SECRET_PREFIX_IS_DISJOINT).toBe(true)
     expect(PROXY_SECRET_KEY_PREFIX.startsWith(PROXY_KEY_PREFIX)).toBe(false)
     expect(proxySecretKeyFor('office-uk').startsWith(PROXY_KEY_PREFIX)).toBe(false)
     // The control: the record key DOES match that prefix, so the assertion
@@ -593,12 +567,6 @@ describe('the two-key split (§3.6)', () => {
     expect(proxyIdFromKey(proxySecretKeyFor('office-uk'))).toBeNull()
     expect(proxyIdFromKey('assigned')).toBeNull()
     expect(proxyIdFromKey(PROXY_KEY_PREFIX)).toBeNull()
-  })
-
-  test('the secret is an object with one field, and the schema says so', () => {
-    expect(ProxySecretSchema.safeParse({ password: 'hunter2hunter2' }).success).toBe(true)
-    expect(ProxySecretSchema.safeParse('hunter2hunter2').success).toBe(false)
-    expect(Object.keys(ProxySecretSchema.shape)).toEqual(['password'])
   })
 
   test('plan 121.4 — the per-slot secret key widens the bare key rather than replacing it', () => {

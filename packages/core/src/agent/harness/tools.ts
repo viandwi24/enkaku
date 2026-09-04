@@ -30,7 +30,7 @@ import type { AnyCoreCapability } from '../../capability/types'
  * harness step ends with the assistant's `tool_use` block(s) and NO
  * `tool_result`; `harness/run.ts`'s outer loop persists that assistant
  * message first, then resolves every pending call itself (approval gate,
- * lease, and `invoke()` — the SAME logic `agent/loop/run.ts`'s
+ * activity admission, and `invoke()` — the SAME logic `agent/loop/run.ts`'s
  * `processPendingCalls` always used, moved here almost unchanged) before the
  * next model call. Every capability still reaches `invoke()` and ONLY
  * `invoke()` — criterion 2 — just not synchronously inside the AI SDK's own

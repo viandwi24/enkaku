@@ -400,4 +400,104 @@ describe('createGuestAgentClient (plan 44 §5.5)', () => {
     await expect(client.labelStatus()).rejects.toMatchObject({ code: 'E_UNKNOWN_METHOD' })
     await expect(client.textStatus()).rejects.toMatchObject({ code: 'E_UNKNOWN_METHOD' })
   })
+
+  // ---- plan 221 §4.11: ui-tree and activity ----
+
+  test('uiDump parses a tree in the ui-node shape', async () => {
+    const { connect } = scriptedConnect((req) => {
+      expect(req.method).toBe('ui.dump')
+      return {
+        id: req.id,
+        ok: true,
+        result: {
+          root: {
+            resourceId: '',
+            text: '',
+            desc: '',
+            className: 'hierarchy',
+            packageName: '',
+            bounds: { left: 0, top: 0, right: 0, bottom: 0 },
+            clickable: false,
+            enabled: true,
+            focused: false,
+            index: 0,
+            children: [],
+          },
+          widthPx: 1080,
+          heightPx: 2400,
+          nodeCount: 1,
+          truncated: false,
+          tookMs: 12,
+        },
+      }
+    })
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    const result = await client.uiDump()
+    expect(result.root.className).toBe('hierarchy')
+    expect(result.nodeCount).toBe(1)
+    expect(result.truncated).toBe(false)
+  })
+
+  test('uiFind sends the selector verbatim', async () => {
+    const { connect } = scriptedConnect((req) => {
+      expect(req.method).toBe('ui.find')
+      expect(req.selector).toEqual({ id: 'login-button' })
+      return { id: req.id, ok: true, result: { node: null, matches: 0, tookMs: 3 } }
+    })
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    const result = await client.uiFind({ id: 'login-button' })
+    expect(result.matches).toBe(0)
+  })
+
+  test('uiFind rejects a point selector before the wire', async () => {
+    const { connect, callCount } = scriptedConnect((req) => ({ id: req.id, ok: true, result: { node: null, matches: 0, tookMs: 0 } }))
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    await expect(client.uiFind({ point: { x: 1, y: 2 } })).rejects.toMatchObject({ code: 'E_BAD_REQUEST' })
+    expect(callCount()).toBe(0)
+  })
+
+  test('activitySet sends every activity and a null video', async () => {
+    const { connect } = scriptedConnect((req) => {
+      expect(req.method).toBe('activity.set')
+      expect(req.activities).toEqual([{ id: 'job:1', kind: 'job', label: 'Running x', actorLabel: 'Scheduler', startedAt: 1 }])
+      expect(req.video).toBeNull()
+      return { id: req.id, ok: true, result: { accepted: 1 } }
+    })
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    const result = await client.activitySet(
+      [{ id: 'job:1', kind: 'job', label: 'Running x', actorLabel: 'Scheduler', startedAt: 1 }],
+      null,
+    )
+    expect(result.accepted).toBe(1)
+  })
+
+  test('textPrefs returns the device read-back, not the value sent', async () => {
+    const { connect } = scriptedConnect((req) => {
+      expect(req.method).toBe('text.prefs')
+      expect(req.showSoftKeyboardWithHardware).toBe(true)
+      // The device reports the read-back, which can genuinely differ from what was sent.
+      return { id: req.id, ok: true, result: { showSoftKeyboardWithHardware: false } }
+    })
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    const result = await client.textPrefs(true)
+    expect(result.showSoftKeyboardWithHardware).toBe(false)
+  })
+
+  test('hello omits expectVersionCode when it is not given', async () => {
+    const { connect } = scriptedConnect((req) => {
+      expect(req).not.toHaveProperty('expectVersionCode')
+      return { id: req.id, ok: true, result: { protocol: GUEST_AGENT_PROTOCOL, appVersion: '1.0.0', androidSdkInt: 35, capabilities: [] } }
+    })
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    await client.hello()
+  })
+
+  test('hello sends expectVersionCode when given', async () => {
+    const { connect } = scriptedConnect((req) => {
+      expect(req.expectVersionCode).toBe(1042)
+      return { id: req.id, ok: true, result: { protocol: GUEST_AGENT_PROTOCOL, appVersion: '1.0.0', androidSdkInt: 35, capabilities: [] } }
+    })
+    const client = createGuestAgentClient({ port: 1, token: 't', connect })
+    await client.hello({ expectVersionCode: 1042 })
+  })
 })

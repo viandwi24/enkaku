@@ -1,4 +1,4 @@
-export type { Capability, AnyCapability, CapabilityResult, CapabilityEffect, CapabilityLease } from './types'
+export type { Capability, AnyCapability, CapabilityResult, CapabilityEffect, CapabilityActivity } from './types'
 export { CAPABILITY_REFUSAL_CODES, CapabilityRefusalCodeSchema, CapabilityErrorSchema, type CapabilityRefusalCode, type CapabilityError } from './errors'
 export { toJsonSchema } from './to-json-schema'
 export {

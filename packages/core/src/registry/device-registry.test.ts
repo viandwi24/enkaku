@@ -3,7 +3,7 @@ import type { AdbClient } from '@enkaku/adb'
 import { defaultDeviceSettings, type DeviceSettings } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations } from '../db'
-import { blockedDevices, clusters, deviceEvents, devices, discoveredDevices } from '../db/schema'
+import { blockedDevices, groups, deviceEvents, devices, discoveredDevices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { WsHub } from '../server/ws'
 import { createLogger } from '../util/logger'
@@ -37,7 +37,7 @@ function fakeAdb(): AdbClient {
   } as unknown as AdbClient
 }
 
-async function enrollOnce(deviceDefaults?: () => DeviceSettings) {
+async function enrollOnce() {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
@@ -61,7 +61,6 @@ async function enrollOnce(deviceDefaults?: () => DeviceSettings) {
     hub: new WsHub(log),
     log,
     states: createDeviceStateMachine({ db, log, onChange: () => {} }),
-    ...(deviceDefaults ? { deviceDefaults } : {}),
   })
   await registry.start()
   for (const cb of listeners) cb({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
@@ -72,63 +71,24 @@ async function enrollOnce(deviceDefaults?: () => DeviceSettings) {
   // the farm defaults are applied at the moment an operator admits it — which
   // is the moment this helper is really about.
   expect(db.select().from(devices).where(eq(devices.stableId, 'HW-SERIAL-1')).get()).toBeUndefined()
-  const row = admitDevice(db, 'HW-SERIAL-1', { ...(deviceDefaults ? { deviceDefaults } : {}) })
+  const row = admitDevice(db, 'HW-SERIAL-1')
   await registry.stop()
   return row
 }
 
 describe('device enrollment', () => {
-  test('a new device inherits the farm defaults, in both the columns and the settings JSON', async () => {
-    const farmDefaults: DeviceSettings = {
-      ...defaultDeviceSettings(),
-      engines: {
-        transport: 'adb-tcp',
-        display: 'screencap-loop',
-        input: 'adb-input',
-        inspection: 'uiautomator-dump',
-      },
-      autoReconnect: false,
-    }
-
-    const row = await enrollOnce(() => farmDefaults)
-    expect(row).toBeTruthy()
-
-    // The columns the session builder reads.
-    expect(row!.transport).toBe('adb-tcp')
-    expect(row!.display).toBe('screencap-loop')
-    expect(row!.input).toBe('adb-input')
-    expect(row!.inspection).toBe('uiautomator-dump')
-
-    // The settings JSON the device screen edits — the same values, one source.
-    const settings = row!.settings as DeviceSettings
-    expect(settings.engines).toEqual(farmDefaults.engines)
-    expect(settings.autoReconnect).toBe(false)
-    expect(settings.prep).toEqual(farmDefaults.prep)
-  })
-
-  test('without a farm defaults provider it falls back to the schema defaults', async () => {
+  /**
+   * Plan 212 §4.1, §3.3 decision 3: `FarmSettingsSchema.defaults` is gone —
+   * there is no more farm-wide device-defaults accessor anywhere in this
+   * path. A new device always starts from `defaultDeviceSettings()`, with a
+   * fresh, empty identity (docs/settings-audit.md #1's original concern:
+   * identity must never be a farm-wide, centrally-set value).
+   */
+  test('a new device gets the schema defaults, in both the columns and the settings JSON, with a fresh empty identity', async () => {
     const row = await enrollOnce()
     const settings = row!.settings as DeviceSettings
     expect(settings).toEqual(defaultDeviceSettings())
     expect(row!.display).toBe(defaultDeviceSettings().engines.display)
-  })
-
-  /**
-   * docs/settings-audit.md #1 (highest-severity finding, docs/plans/
-   * 96-m61-hotfixes.md): a farm-wide default GPS/timezone/locale used to be
-   * spread onto every device enrolled through THIS live-tracker path too —
-   * `createDeviceRegistry`'s own inline `defaultsForNewDevice`, not just
-   * `admission.ts`'s `admitDevice` path `admission.test.ts` covers. A new
-   * device gets a valid, EMPTY identity, never `undefined` and never
-   * whatever a farm operator set centrally.
-   */
-  test('a new device enrolled through the live tracker gets a fresh, empty identity — never a farm-wide one, even if the accessor carries one', async () => {
-    const farmDefaultsWithIdentity: DeviceSettings = {
-      ...defaultDeviceSettings(),
-      identity: { timezone: 'Asia/Jakarta', locale: 'id-ID', gps: { lat: -6.2, lng: 106.8, accuracy: 50 } },
-    }
-    const row = await enrollOnce(() => farmDefaultsWithIdentity)
-    const settings = row!.settings as DeviceSettings
     expect(settings.identity).toEqual({})
     expect(settings.identity).not.toBeUndefined()
   })
@@ -184,12 +144,12 @@ describe('registry — blocked devices (plan 47 §3.3, §4.2)', () => {
   })
 })
 
-describe('listDevicesWithTags — cluster (plan 22.0 §4.4, acceptance #10)', () => {
-  test('DeviceInfo.cluster is populated, in one query total regardless of device count', () => {
+describe('listDevicesWithTags — group (plan 22.0 §4.4, acceptance #10)', () => {
+  test('DeviceInfo.group is populated, in one query total regardless of device count', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(clusters).values({ id: 'cl-1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
+    db.insert(groups).values({ id: 'cl-1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
     for (let i = 0; i < 30; i++) {
       db.insert(devices)
         .values({
@@ -197,28 +157,28 @@ describe('listDevicesWithTags — cluster (plan 22.0 §4.4, acceptance #10)', ()
           stableId: `stable-${i}`,
           serial: `serial-${i}`,
           label: `Phone ${i}`,
-          status: 'idle',
-          clusterId: i < 10 ? 'cl-1' : null,
+          status: 'online',
+          groupId: i < 10 ? 'cl-1' : null,
         })
         .run()
     }
 
     // Every drizzle bun-sqlite query goes through `client.prepare(sql)` — count
-    // how many touch the clusters table (acceptance #10: one query, not N+1).
-    let clusterQueries = 0
+    // how many touch the groups table (acceptance #10: one query, not N+1).
+    let groupQueries = 0
     const originalPrepare = opened.sqlite.prepare.bind(opened.sqlite) as (sql: string, params?: unknown) => unknown
     opened.sqlite.prepare = ((sql: string, params?: unknown) => {
-      if (sql.includes('"clusters"')) clusterQueries++
+      if (sql.includes('"groups"')) groupQueries++
       return originalPrepare(sql, params)
     }) as typeof opened.sqlite.prepare
 
     const infos = listDevicesWithTags(db)
     expect(infos).toHaveLength(30)
-    const clustered = infos.filter((d) => d.cluster !== null)
-    expect(clustered).toHaveLength(10)
-    for (const d of clustered) expect(d.cluster).toEqual({ id: 'cl-1', name: 'Jakarta' })
-    expect(infos.filter((d) => d.cluster === null)).toHaveLength(20)
-    expect(clusterQueries).toBe(1)
+    const grouped = infos.filter((d) => d.group !== null)
+    expect(grouped).toHaveLength(10)
+    for (const d of grouped) expect(d.group).toEqual({ id: 'cl-1', name: 'Jakarta' })
+    expect(infos.filter((d) => d.group === null)).toHaveLength(20)
+    expect(groupQueries).toBe(1)
   })
 })
 
@@ -297,9 +257,9 @@ describe('listDevicesWithTags — lastCrashAt, the device card badge (plan 37 §
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd-recent', stableId: 's1', serial: 'SER1', label: 'Recent', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd-old', stableId: 's2', serial: 'SER2', label: 'Old', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd-none', stableId: 's3', serial: 'SER3', label: 'None', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd-recent', stableId: 's1', serial: 'SER1', label: 'Recent', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd-old', stableId: 's2', serial: 'SER2', label: 'Old', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd-none', stableId: 's3', serial: 'SER3', label: 'None', status: 'online' }).run()
 
     const nowSec = Math.floor(Date.now() / 1000)
     db.insert(deviceEvents)
@@ -425,9 +385,9 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd-usb', stableId: 's-usb', serial: 'ZP2222RMBS', label: 'USB phone', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd-tcp-known', stableId: 's-tcp-known', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd-tcp-unknown', stableId: 's-tcp-unknown', serial: '192.168.1.51:5555', label: 'Mystery phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd-usb', stableId: 's-usb', serial: 'ZP2222RMBS', label: 'USB phone', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd-tcp-known', stableId: 's-tcp-known', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd-tcp-unknown', stableId: 's-tcp-unknown', serial: '192.168.1.51:5555', label: 'Mystery phone', status: 'online' }).run()
 
     const networks: FarmNetwork[] = [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]
     const infos = listDevicesWithTags(db, undefined, undefined, networks)
@@ -463,7 +423,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Phone', status: 'online' }).run()
     const infos = listDevicesWithTags(db)
     expect(infos[0]?.connection.kind).toBe('tcp')
     expect(infos[0]?.connection.mediumSource).toBe('unknown')
@@ -473,7 +433,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
     const info = rowToDeviceInfo(row)
     expect(info.connection.kind).toBe('usb')
@@ -491,7 +451,7 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
         stableId: 's1',
         serial: 'ZP2222RMBS',
         label: 'Phone',
-        status: 'idle',
+        status: 'online',
         preparation: { 'guest-agent': { state: 'outdated', version: '1.2.0', reason: 'update available', checkedAt: 1, attempts: 0, nextAttemptAt: null } },
         // A stale/absent devices.agent must not win — preparation is authoritative.
         agent: { appVersion: '1.2.0', versionCode: 3, androidSdkInt: 30, capabilities: [] },
@@ -512,7 +472,7 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
         stableId: 's1',
         serial: 'ZP2222RMBS',
         label: 'Phone',
-        status: 'idle',
+        status: 'online',
         agent: { state: 'failed', appVersion: null, versionCode: null, androidSdkInt: 30, capabilities: [], reason: 'device offline mid-install', checkedAt: 1, attempts: 3, nextAttemptAt: null },
         // No `preparation` column at all — exactly a row written before this migration.
       })
@@ -526,7 +486,7 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
     expect(deriveAgentState(row)).toBe('absent')
   })
@@ -538,15 +498,15 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
  * `rowToDeviceInfo` defaults `number` to `null` so every existing call site
  * that omits it keeps parsing exactly as before this plan; `listDevicesWithTags`
  * resolves it once for the whole fleet, the same N+1 discipline `networks`/
- * `tags`/`clusters` above already follow.
+ * `tags`/`groups` above already follow.
  */
 describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3)', () => {
   test('listDevicesWithTags populates every device\'s number from one query, never N+1', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone 1', status: 'idle' }).run()
-    db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'ZP2222RMBT', label: 'Phone 2', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone 1', status: 'online' }).run()
+    db.insert(devices).values({ id: 'd2', stableId: 's2', serial: 'ZP2222RMBT', label: 'Phone 2', status: 'online' }).run()
     allocateDeviceNumber(db, 's1')
     allocateDeviceNumber(db, 's2')
 
@@ -568,7 +528,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const infos = listDevicesWithTags(db)
     expect(infos[0]?.number).toBeNull()
   })
@@ -577,7 +537,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
     const info = rowToDeviceInfo(row)
     expect(info.number).toBeNull()
@@ -587,9 +547,9 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()!
-    const info = rowToDeviceInfo(row, [], null, null, null, null, [], new Map(), 7)
+    const info = rowToDeviceInfo(row, [], null, null, null, undefined, [], new Map(), 7)
     expect(info.number).toBe(7)
   })
 
@@ -600,7 +560,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
     db.insert(discoveredDevices).values({ stableId: 'sid-new', serial: 'serial-new', label: 'New Phone', firstSeen: new Date(), lastSeen: new Date() }).run()
     const row = admitDevice(db, 'sid-new')
     expect(row).not.toBeNull()
-    const info = rowToDeviceInfo(row!, [], null, null, null, null, [], new Map(), lookupDeviceNumber(db, row!.stableId))
+    const info = rowToDeviceInfo(row!, [], null, null, null, undefined, [], new Map(), lookupDeviceNumber(db, row!.stableId))
     expect(info.number).toBe(1)
   })
 })
@@ -620,7 +580,7 @@ describe('DeviceRegistry — networks (plan 88 §3.6, §4.1, residual gap)', () 
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'online' }).run()
 
     const registry = createDeviceRegistry({
       client: fakeAdb(),
@@ -641,7 +601,7 @@ describe('DeviceRegistry — networks (plan 88 §3.6, §4.1, residual gap)', () 
     runMigrations(opened.db)
     const db = opened.db
     const log = createLogger('test')
-    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Chassis phone', status: 'online' }).run()
 
     const registry = createDeviceRegistry({
       client: fakeAdb(),

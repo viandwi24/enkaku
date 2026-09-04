@@ -11,6 +11,7 @@ import {
 import { Button, api, cn, duration, useAction } from '@enkaku/ui'
 import { usePreparation } from '@/lib/use-preparation'
 import { useNow } from '@/lib/useNow'
+import { runOnDevice } from '@/lib/actions'
 
 /**
  * VPN mode's guest-agent precondition (plan 114 §3.4) — the owner asked for
@@ -93,7 +94,7 @@ export function useGuestAgentReadiness(deviceId: string): AgentReadiness {
  *
  * **False while the state is unknown**, deliberately. Blocking the one control
  * that could work, on the strength of a read that failed, would be the
- * mirror-image mistake of the one this step fixes: a phone whose agent is
+ * inverse mistake of the one this step fixes: a phone whose agent is
  * perfectly ready would be refused by Studio because Studio could not read a
  * record. The server checks the agent itself on every apply and refuses with a
  * real reason, so an unknown state costs at most one honest server error —
@@ -189,7 +190,7 @@ export function VpnAgentPrecondition({
   onChooseHttp,
 }: {
   deviceId: string
-  /** The same server-authoritative lease gate every other mutating control on this page reads. */
+  /** The same server-authoritative control-activity gate every other mutating control on this page reads. */
   canUse: boolean
   agent: AgentReadiness
   /**
@@ -237,10 +238,8 @@ export function VpnAgentPrecondition({
       // Plan 114 §3.4's own instruction for `failed`: the preparation retry
       // endpoint, which clears that ONE component's standing bound, rather
       // than a second retry path of this panel's own.
-      () =>
-        api(`/api/devices/${deviceId}/preparation/${GUEST_AGENT_COMPONENT_ID}/retry`, PreparationComponentStatusSchema, {
-          method: 'POST',
-        }),
+      async () =>
+        PreparationComponentStatusSchema.parse((await runOnDevice('retry-prepare', deviceId, { component: GUEST_AGENT_COMPONENT_ID })).detail),
       {
         success: `${label} finished`,
         failure: `Could not ${label.toLowerCase()} the guest agent`,

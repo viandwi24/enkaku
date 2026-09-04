@@ -24,7 +24,7 @@ import { describe, expect, test } from 'bun:test'
  * identifier, which is why this guard matches `.sdk` rather than a bare
  * `\bsdk\b` word: the bare word ALSO appears for unrelated things this guard
  * must not flag — Android's own `ro.build.version.sdk` (`session/probe.ts`)
- * and the `'sdk'` input-mode string literal (`'uhid' | 'sdk' | 'aoa'`,
+ * and the `'sdk'` input-mode string literal (`'uhid' | 'sdk'`,
  * `session/types.ts`/`session.ts`) — neither of which is ever written as
  * `.sdk` (a property access), so scoping to that substring avoids both
  * false-positive classes without special-casing either file by name.
@@ -175,7 +175,7 @@ describe('workspace guard — S2 (plan 98 §3.3): no source file in packages/cor
       "checkRuntimeMajor(named?.runtime?.sdk)",
       "sdk: override?.sdk ?? script?.sdk ?? SCRIPT_RUNTIME_MAJOR,",
       "client.exec(serial, 'getprop ro.build.version.sdk', { profile: 'probe' })",
-      "preferredInputMode: 'uhid' | 'sdk' | 'aoa'",
+      "preferredInputMode: 'uhid' | 'sdk'",
       "mode === 'sdk'",
     ]
     for (const line of safe) {

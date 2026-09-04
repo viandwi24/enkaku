@@ -31,10 +31,18 @@ import { defineCapability } from './types'
  * inventing a URL scheme or a second blob API for one new capability.
  */
 
-function assertJobExists(ctx: CapabilityContext, jobId: string): void {
-  if (!ctx.jobService.get(jobId)) {
-    throw new EnkakuError('job_not_found', `no such job: ${jobId}`)
-  }
+/**
+ * The public capability input stays `jobId` (agent-facing, plan 130's
+ * original contract) — but `job_events`/`TraceFrameStore` are keyed on
+ * `runId` since plan 211 §3.2 decision 9. This resolves to the job's LATEST
+ * run, matching the Jobs list's own "current" view; there is no per-run
+ * variant of these three capabilities yet (open question, not decided here).
+ */
+function requireLatestRunId(ctx: CapabilityContext, jobId: string): string {
+  const job = ctx.jobService.get(jobId)
+  if (!job) throw new EnkakuError('job_not_found', `no such job: ${jobId}`)
+  if (!job.runId) throw new EnkakuError('job_not_found', `job ${jobId} has no run`)
+  return job.runId
 }
 
 /** `ctx.jobTrace` is optional only so a pre-plan-130 test fixture keeps compiling unedited
@@ -56,7 +64,6 @@ export const jobTrace = defineCapability({
   }),
   output: z.object({ items: z.array(JobTraceEventSchema), nextCursor: z.string().nullable(), total: z.number().int().nonnegative() }),
   permission: 'job.view',
-  lease: 'none',
   deadline: 5_000,
   effect: 'read',
   description:
@@ -66,9 +73,9 @@ export const jobTrace = defineCapability({
     'frameHash/uiHash — read those one at a time with job.trace.frame and job.trace.ui. Use this to see WHAT a ' +
     'job did, not just whether it succeeded.',
   handler: (ctx, { jobId, kind, limit, cursor }) => {
-    assertJobExists(ctx, jobId)
+    const runId = requireLatestRunId(ctx, jobId)
     const decoded = decodeCursor(cursor ?? null)
-    const result = requireJobTrace(ctx).list({ jobId, ...(kind ? { kind } : {}), limit: limit ?? 50, cursor: decoded })
+    const result = requireJobTrace(ctx).list({ runId, ...(kind ? { kind } : {}), limit: limit ?? 50, cursor: decoded })
     return Promise.resolve({
       items: result.items,
       nextCursor: result.nextCursor ? encodeCursor(result.nextCursor.sortValue, result.nextCursor.id) : null,
@@ -82,7 +89,6 @@ export const jobTraceUi = defineCapability({
   input: z.object({ jobId: z.string(), uiHash: z.string() }),
   output: UiNodeSchema,
   permission: 'job.view',
-  lease: 'none',
   deadline: 10_000,
   effect: 'read',
   description:
@@ -91,8 +97,8 @@ export const jobTraceUi = defineCapability({
     'explaining what was actually on screen at that moment, and it is text, so prefer it over job.trace.frame ' +
     'when the question is "what element was there" rather than "what did the screen look like". One tree per call.',
   handler: async (ctx, { jobId, uiHash }) => {
-    assertJobExists(ctx, jobId)
-    const node = await requireJobTrace(ctx).readUiTree(jobId, uiHash)
+    const runId = requireLatestRunId(ctx, jobId)
+    const node = await requireJobTrace(ctx).readUiTree(runId, uiHash)
     if (!node) throw new EnkakuError('ui_snapshot_not_found', `no such ui snapshot: ${uiHash}`)
     return node
   },
@@ -105,7 +111,6 @@ export const jobTraceFrame = defineCapability({
   input: z.object({ jobId: z.string(), frameHash: z.string() }),
   output: FrameOutput,
   permission: 'job.view',
-  lease: 'none',
   deadline: 10_000,
   effect: 'read',
   description:
@@ -118,8 +123,8 @@ export const jobTraceFrame = defineCapability({
   // asserts "image" actually exists on `FrameOutput` above.
   imageOutputs: [{ dataField: 'image', mediaType: 'image/png' }],
   handler: async (ctx, { jobId, frameHash }) => {
-    assertJobExists(ctx, jobId)
-    const bytes = await requireJobTrace(ctx).readFrame(jobId, frameHash)
+    const runId = requireLatestRunId(ctx, jobId)
+    const bytes = await requireJobTrace(ctx).readFrame(runId, frameHash)
     if (!bytes) throw new EnkakuError('frame_not_found', `no such trace frame: ${frameHash}`)
     return { image: Buffer.from(bytes).toString('base64'), format: 'png' as const }
   },

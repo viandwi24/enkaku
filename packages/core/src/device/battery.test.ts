@@ -41,6 +41,7 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
       settings: createFarmSettingsStore(db),
       log: createLogger('test'),
       onBattery: () => {},
+      onMetrics: () => {},
     })
 
     const start = Date.now()
@@ -50,7 +51,11 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
     // Sequential (the old behaviour) would take at least 5*5 + 150 = 175ms
     // dominated by 5 sequential waits; bounded parallelism must land close to
     // the single slow device's 150ms, well under the sequential sum.
-    expect(elapsed).toBeLessThan(150 + 80) // generous margin for scheduler jitter
+    //
+    // Plan 214 §3.7, §4.3 added a second `exec` per device in the same poll
+    // (the metrics probe, right after the battery read) — SER4's slow path
+    // is now paid twice per device (300ms), so the margin widens with it.
+    expect(elapsed).toBeLessThan(300 + 160) // generous margin for scheduler jitter
     expect(elapsed).toBeGreaterThanOrEqual(140) // must still have waited for the slow one
 
     // Every device's battery still got recorded — one slow device must not
@@ -83,6 +88,7 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
       settings: createFarmSettingsStore(db),
       log: createLogger('test'),
       onBattery: () => {},
+      onMetrics: () => {},
     })
 
     await expect(monitor.pollOnce()).resolves.toBeUndefined()
@@ -118,8 +124,11 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
       settings: createFarmSettingsStore(db),
       log: createLogger('test'),
       onBattery: () => {},
+      onMetrics: () => {},
     })
     await monitor.pollOnce()
-    expect(called).toEqual(['SER-ON'])
+    // Two calls per online device (plan 214 §3.7, §4.3): `dumpsys battery`
+    // then the metrics probe, both against the same serial, in the same poll.
+    expect(called).toEqual(['SER-ON', 'SER-ON'])
   })
 })

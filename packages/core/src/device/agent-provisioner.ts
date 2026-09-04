@@ -15,6 +15,7 @@ import {
   GUEST_AGENT_PACKAGE,
   GUEST_AGENT_REPAIRABLE_ERROR_CODES,
   createGuestAgentLauncher,
+  type GuestAgentAccessibility,
   type GuestAgentArtifactMismatch,
   type GuestAgentLauncher,
 } from '@enkaku/drivers'
@@ -27,6 +28,18 @@ import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
 import { hasExhaustedRetryBudget, isWithinBackoffWindow, nextBoundedRetry } from './bounded-retry'
 import { GUEST_AGENT_COMPONENT_ID, deriveGuestAgentIdentity, deriveGuestAgentPreparation } from './preparation/guest-agent-status'
+
+/**
+ * Plan 221 §4.10, §5 step 221.9 — the `ui-tree` inspector's own on/off fact, kept alongside (not
+ * inside) `GUEST_AGENT_COMPONENT_ID`'s state machine: registering it as its own
+ * `devices.preparation` entry is exactly the "a future component is a registry entry, not a new
+ * subsystem" extension point `DevicePreparationSchema`'s own doc comment describes, and it means
+ * `AgentStateSchema`'s six-state machine (ready/outdated/failed/...) never has to grow a seventh
+ * value for a fact that is not "is the agent working", only "is one of its facets enabled".
+ * `pending` here NEVER fails the pass or changes `devices.agent`'s own `ready`/`consent-required`
+ * verdict — an unreachable inspector is a degraded engine, not a broken agent (§4.10).
+ */
+export const GUEST_AGENT_UI_TREE_COMPONENT_ID = 'guest-agent-ui-tree'
 
 /**
  * Provisioning: one agent on every phone (plan 90 §3.8, §4.3, fixes F7, F9,
@@ -117,7 +130,7 @@ export interface AgentProvisionReport {
 
 export interface AgentProvisioner {
   /** Verify → install → repair once → degrade (F8). Idempotent; safe to call on every hook. Never throws for a device that exists — every failure is captured as `state: 'failed'`. */
-  ensure(deviceId: string, opts?: { force?: boolean }): Promise<AgentStatus>
+  ensure(deviceId: string, opts?: { force?: boolean; reinstall?: boolean }): Promise<AgentStatus>
   /** The persisted row, Zod-validated — never issues an adb call of its own. */
   status(deviceId: string): Promise<AgentStatus>
   /** Every device currently online (offline devices are unreachable by construction — nothing to verify), bounded by the install lane. Returns a per-device report. */
@@ -188,6 +201,15 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
   /** Plan 106 §5 step 106.7 — see `AgentProvisioner.runningSince`'s own doc comment. Keyed by deviceId; one entry, since a device has exactly one guest agent. */
   const runningSinceMap = new Map<string, number>()
 
+  /**
+   * Plan 221 §4.10 — this pass's `ensureAccessibilityEnabled()` result, bridged from `runOnePass`
+   * (which has the launcher) to `writeCached` (which owns the one `devices.preparation` write) via
+   * this deviceId-keyed map rather than widening `AgentStatus` itself: the inspector's on/off fact
+   * is not part of what `AgentStatus`'s six-state machine or its many other callers need to know.
+   * Consumed and cleared by `writeCached` in the same pass that sets it.
+   */
+  const accessibilityMap = new Map<string, GuestAgentAccessibility>()
+
   const mustGet = (id: string): DeviceRow => {
     const row = db.select().from(devices).where(eq(devices.id, id)).get()
     if (!row) throw new EnkakuError('device_not_found', `no such device: ${id}`)
@@ -221,6 +243,22 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
         attempts: status.attempts,
         nextAttemptAt: status.nextAttemptAt,
       },
+    }
+    // Plan 221 §4.10 — best-effort, and NEVER present when this pass never reached a live
+    // `ensureAccessibilityEnabled()` call (e.g. the agent was not installed or not reachable):
+    // an absent entry is what `render()`'s omit-unknown rule and this schema's own record shape
+    // both already treat as "no fact", so nothing here needs to invent one.
+    const accessibility = accessibilityMap.get(deviceId)
+    if (accessibility) {
+      nextPrep[GUEST_AGENT_UI_TREE_COMPONENT_ID] = {
+        state: accessibility.state === 'enabled' ? 'ready' : 'failed',
+        version: null,
+        reason: accessibility.reason,
+        checkedAt: status.checkedAt,
+        attempts: 0,
+        nextAttemptAt: null,
+      }
+      accessibilityMap.delete(deviceId)
     }
     db.update(devices)
       .set({
@@ -344,6 +382,16 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
         deps.log.warn(`agent-provisioner: could not read VPN consent on device ${row.id}, reporting the agent as ready on the hello() evidence alone: ${String(consentErr)}`)
         return { state: 'granted' as const, reason: null }
       })
+      // Plan 221 §4.10, §5 step 221.9 — run on every pass that reaches this far (the agent is
+      // demonstrably alive), same discipline as the consent read above: best-effort, never
+      // thrown onward, and never allowed to change the `ready`/`consent-required` verdict this
+      // function is about to return. `writeCached` (below, same pass) is what persists it.
+      const accessibility = await launcher.ensureAccessibilityEnabled().catch((accessibilityErr: unknown) => {
+        deps.log.warn(`agent-provisioner: could not check ui-tree accessibility on device ${row.id}: ${String(accessibilityErr)}`)
+        return { state: 'pending' as const, reason: String(accessibilityErr) }
+      })
+      accessibilityMap.set(row.id, accessibility)
+
       if (consent.state === 'pending') {
         return {
           state: 'consent-required',
@@ -377,7 +425,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
 
   const inFlight = new Map<string, Promise<AgentStatus>>()
 
-  async function ensureImpl(deviceId: string, opts?: { force?: boolean }): Promise<AgentStatus> {
+  async function ensureImpl(deviceId: string, opts?: { force?: boolean; reinstall?: boolean }): Promise<AgentStatus> {
     const row = mustGet(deviceId)
     const prior = readCached(row, deps.log)
     const checkedAt = nowSeconds(now)
@@ -438,7 +486,17 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // `return prior` below.
     runningSinceMap.set(row.id, checkedAt)
     try {
-      result = await runOnePass(row, prior.appVersion, false)
+      // `reinstall` is the operator saying "put the APK I have on this
+      // phone", and it is a DIFFERENT intent from `force`. `force` only
+      // bypasses the provision-mode and backoff gates and then verifies
+      // presence — which is why a phone holding an obsolete agent stayed on
+      // it forever whenever the APK came from a local build, where there is
+      // no manifest pin to version-check against (owner, 2026-09-04). The
+      // fleet-wide `ensureAll({ force: true })` deliberately does NOT set
+      // this: uninstall+reinstall across a hundred phones is not what
+      // "provision all" means, and it would drop every accessibility grant
+      // on the farm to fix a problem most of them do not have.
+      result = await runOnePass(row, prior.appVersion, opts?.reinstall === true)
     } catch (err) {
       // 96.25 fix 2: a core-side `E_ADB_UNAVAILABLE` (rethrown by
       // `runOnePass` above) means this pass never reached the device at
@@ -483,7 +541,11 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
 
   return {
     async ensure(deviceId, opts) {
-      const key = opts?.force ? `${deviceId}:force` : deviceId
+      // `reinstall` gets its own in-flight key: a forced verify already in
+      // flight must not satisfy an operator who asked for a reinstall, or
+      // the button would silently return the very result it was pressed to
+      // change.
+      const key = opts?.reinstall ? `${deviceId}:reinstall` : opts?.force ? `${deviceId}:force` : deviceId
       const existing = inFlight.get(key)
       if (existing) return existing
       const p = ensureImpl(deviceId, opts).finally(() => {

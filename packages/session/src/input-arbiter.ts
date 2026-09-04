@@ -17,14 +17,12 @@ import type { Logger } from './logger'
  *
  * **No `onAction` callback here.** §4.1's original design sketched one — a
  * generic `{lane, source, verb, waitedMs, ranMs}` completion event, meant to
- * feed step 91.5's attribution work (`jobs.assistCount`, the `device_events`
- * `meta.assist`/`meta.jobId`, the `device.assist` audit row). 91.5 shipped a
- * different mechanism instead: `ws-handlers.ts`'s `input.*` branch resolves
- * `assistJobId` and records attribution directly, inline, at the same call
- * site that already knows the verb-specific payload (tap position, swipe
- * endpoints, redacted text) this arbiter's generic event never carried; the
- * mirror path (`mirror/group.ts`'s `dispatch`) does the same, independently.
- * `SessionManagerDeps`/`CreateSessionDeps` briefly carried an `onAction`-style
+ * feed step 91.5's attribution work, a subordinate-grant mechanism plan 205
+ * §3.2 item 8 deleted outright rather than renamed. `ws-handlers.ts`'s `input.*`
+ * branch instead records the control marker directly, inline, at the same
+ * call site that already knows the verb-specific payload (tap position,
+ * swipe endpoints, redacted text) this arbiter's generic event never
+ * carried. `SessionManagerDeps`/`CreateSessionDeps` briefly carried an `onAction`-style
  * field (`onInputAction`) with no production caller EVER wired to it and
  * nothing anywhere reading its output — a callback nobody produced and nobody
  * consumed, investigated and removed 2026-08-13
@@ -36,11 +34,13 @@ import type { Logger } from './logger'
 export type InputLane = 'pointer' | 'keys' | 'text'
 
 /**
- * Who asked for this action. The `id` is the same identifier `Lease.holder`
- * uses, so an arbiter record and a lease record name the same thing.
+ * Who asked for this action. The `id` is the same id the activity registry
+ * keys a marker on (`control:<clientId>`/`job:<jobId>`/`agent:<rootRunId>`,
+ * plan 205 §4.2), so an arbiter record and an activity marker name the same
+ * thing.
  */
 export interface InputSource {
-  kind: 'lease' | 'assist' | 'job' | 'agent'
+  kind: 'user' | 'job' | 'agent'
   id: string
   userId: string | null
 }
@@ -70,13 +70,13 @@ export interface CreateInputArbiterOpts {
 const LANES: readonly InputLane[] = ['pointer', 'keys', 'text']
 
 /**
- * Non-preemptive priority (§3.3, §4.1): `assist` jumps every QUEUED `job`/
- * `agent` action, but never interrupts one already running — a human is
- * there to unstick, not to fight the thing they are unsticking. `lease`
- * (the ordinary manual operator) sits between the two. `job` and `agent`
- * share a priority: neither preempts the other, FIFO decides between them.
+ * Non-preemptive priority (§3.3, §4.1, reworked by plan 205 §5 step 205.10):
+ * a person (`user`) jumps every QUEUED `job`/`agent` action, but never
+ * interrupts one already running — a human is there to drive, not to fight
+ * something already in flight. `job` and `agent` share a priority: neither
+ * preempts the other, FIFO decides between them.
  */
-const PRIORITY_OF: Record<InputSource['kind'], number> = { assist: 0, lease: 1, job: 2, agent: 2 }
+const PRIORITY_OF: Record<InputSource['kind'], number> = { user: 0, job: 1, agent: 1 }
 
 /** Bounds each lane's wait-time sample buffer so `stats()` stays cheap forever on a long-lived session. */
 const MAX_WAIT_SAMPLES = 500
@@ -229,6 +229,38 @@ export function createInputArbiter(sink: InputSink, opts: CreateInputArbiterOpts
     if (sink.typeText) {
       const typeTextFn = sink.typeText.bind(sink)
       facade.typeText = (text: string, textOpts) => submit('text', source, 'typeText', () => typeTextFn(text, textOpts))
+    }
+    // Plan 209 §4.8: key events on the `keys` lane (they must not queue
+    // behind a pointer drag's landing sleep); scroll, pinch and touch on
+    // `pointer` (the same lane a tap/swipe/gesture already uses, so a touch
+    // stream and a scripted swipe never interleave on one contact).
+    if (sink.touch) {
+      const f = sink.touch.bind(sink)
+      facade.touch = (a, p, id) => submit('pointer', source, 'touch', () => f(a, p, id))
+    }
+    if (sink.scroll) {
+      const f = sink.scroll.bind(sink)
+      facade.scroll = (p, h, v) => submit('pointer', source, 'scroll', () => f(p, h, v))
+    }
+    if (sink.pinch) {
+      const f = sink.pinch.bind(sink)
+      facade.pinch = (o) => submit('pointer', source, 'pinch', () => f(o))
+    }
+    if (sink.keyDown) {
+      const f = sink.keyDown.bind(sink)
+      facade.keyDown = (k, m) => submit('keys', source, 'keyDown', () => f(k, m))
+    }
+    if (sink.keyUp) {
+      const f = sink.keyUp.bind(sink)
+      facade.keyUp = (k, m) => submit('keys', source, 'keyUp', () => f(k, m))
+    }
+    if (sink.releaseKeys) {
+      const f = sink.releaseKeys.bind(sink)
+      facade.releaseKeys = () => submit('keys', source, 'releaseKeys', () => f())
+    }
+    if (sink.prepareKeyboard) {
+      const f = sink.prepareKeyboard.bind(sink)
+      facade.prepareKeyboard = () => submit('keys', source, 'prepareKeyboard', () => f())
     }
     return facade
   }

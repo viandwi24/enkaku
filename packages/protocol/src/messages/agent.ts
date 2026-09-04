@@ -7,7 +7,8 @@ import { z } from 'zod'
  *
  * `CLAUDE.md`'s rule shapes every message here: `/ws` has NO SNAPSHOT
  * REPLAY. Attaching to a run is `GET /api/v1/threads/:id/messages?after=`
- * for history, then `agent.subscribe` for live updates from that point —
+ * for history, then the SSE stream (`GET /api/v1/threads/:id/stream`,
+ * `packages/core/src/api/agent-chat-stream.ts`) for live updates from that point —
  * never a subscribe that replays. Messages carry a monotonic `seq` within
  * their thread (enforced unique by `(threadId, seq)` in
  * `packages/core/src/db/schema.ts`) so a client can detect a gap between
@@ -176,7 +177,7 @@ export const AgentTreeNodeSchema = z.object({
   steps: z.number().int(),
   startedAt: z.number().int().nullable(),
   finishedAt: z.number().int().nullable(),
-  /** Every device this run currently holds the tree's shared control lease on (plan 67 §3.7). */
+  /** Every device this run currently has a live `agent:<rootRunId>` activity on (plan 67 §3.7, plan 205). */
   drivingDeviceIds: z.array(z.string()),
 })
 export type AgentTreeNode = z.infer<typeof AgentTreeNodeSchema>
@@ -259,19 +260,6 @@ export type AgentBlobInfo = z.infer<typeof AgentBlobInfoSchema>
 // ---------------------------------------------------------------------------
 // WS — client → server
 // ---------------------------------------------------------------------------
-
-/** Subscribe this connection to a thread's live events (§3.4) — never a snapshot; fetch history first over HTTP. */
-export const AgentSubscribeMessage = z.object({
-  type: z.literal('agent.subscribe'),
-  id: z.string().optional(),
-  payload: z.object({ threadId: z.string() }),
-})
-
-export const AgentUnsubscribeMessage = z.object({
-  type: z.literal('agent.unsubscribe'),
-  id: z.string().optional(),
-  payload: z.object({ threadId: z.string() }),
-})
 
 /** §3.7's six-step cancellation, triggered over WS (also reachable via `POST /api/v1/runs/:id/cancel`). */
 export const AgentRunCancelMessage = z.object({
@@ -386,16 +374,4 @@ export const AgentChildFinishedMessage = z.object({
     status: AgentRunStatusSchema,
     stopReason: AgentStopReasonSchema.nullable(),
   }),
-})
-
-/** Written the instant `agent.send`/`agent.reply` append to the inbox (§3.3) — before delivery. */
-export const AgentMessageQueuedMessage = z.object({
-  type: z.literal('agent.message.queued'),
-  payload: z.object({ inboxId: z.string(), targetRunId: z.string(), fromRunId: z.string().nullable(), kind: z.enum(['message', 'child-result']) }),
-})
-
-/** Written when the target's loop actually drains it, at its next turn boundary (§3.3). */
-export const AgentMessageDeliveredMessage = z.object({
-  type: z.literal('agent.message.delivered'),
-  payload: z.object({ inboxId: z.string(), targetRunId: z.string(), fromRunId: z.string().nullable(), kind: z.enum(['message', 'child-result']) }),
 })

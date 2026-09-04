@@ -13,8 +13,8 @@ import { newId, ws, WsRequestError } from '@/lib/ws'
  *
  * Deliberately called ONCE, at `ScreenCard`'s own top level, not inside a
  * component that only renders while `mode === 'record'` — the same
- * "attachment follows the lease, not the mode" reasoning `InspectorPanel`
- * documents for itself (plan 59 §3.3). Switching to `Live` or `Inspect` and
+ * "attachment follows whether the device is online, not the mode" reasoning
+ * `InspectorPanel` documents for itself (plan 59 §3.3). Switching to `Live` or `Inspect` and
  * back must not lose a single step already captured, and the only way to
  * guarantee that in React is to keep the hook mounted for the life of the
  * screen card, not the life of whichever mode happens to be on screen.
@@ -40,9 +40,9 @@ export interface RecordingState {
   startedAt: number | null
   /** Set the moment this tab learns the recording ended, whether by its own `stop()` or a push it did not ask for. */
   endedAt: number | null
-  /** Set only when the recording ended WITHOUT this tab's own `stop()` — a bound (`max-steps`/`max-duration`) or the lease going away (§4.6, §4.9). */
+  /** Set only when the recording ended WITHOUT this tab's own `stop()` — a bound (`max-steps`/`max-duration`) or the device's control marker ending (§4.6, §4.9). */
   stoppedReason: RecordingStoppedReason | null
-  /** The last `start()`/`stop()` refusal, human-readable (`E_RECORDING_ACTIVE`, `E_NO_RECORDING`, a lease refusal code) — cleared on the next attempt. */
+  /** The last `start()`/`stop()` refusal, human-readable (`E_RECORDING_ACTIVE`, `E_NO_RECORDING`, a device-conflict code) — cleared on the next attempt. */
   error: string | null
   start: () => void
   stop: () => void
@@ -98,8 +98,8 @@ export function useRecording(deviceId: string): RecordingState {
         // `WsClient.request()` matches a reply by `id` and resolves the
         // waiting promise WITHOUT ever forwarding it to an `on()` handler
         // (`lib/ws.ts`'s own `onmessage`) — so a `recording.state` reaching
-        // this callback is always a PUSH: a bound firing, or the lease going
-        // away, never the reply to this tab's own start/stop/cancel.
+        // this callback is always a PUSH: a bound firing, or the device's
+        // control marker going away, never the reply to this tab's own start/stop/cancel.
         if (phaseRef.current !== 'active' && phaseRef.current !== 'stopping') return
         setStepCount(msg.payload.stepCount)
         setStoppedReason(msg.payload.stoppedReason ?? null)

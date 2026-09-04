@@ -5,6 +5,7 @@ import { devices, jobs, type JobRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import type { ScriptRegistry } from '../scripts/registry'
+import type { RunStore } from './runs/store'
 
 /**
  * `ctx.jobs.trigger()` (plan 81) — a running script enqueues another job on
@@ -47,6 +48,7 @@ export interface TriggerBudgets {
 
 export interface JobTriggerDeps {
   db: Db
+  runs: RunStore
   registry: ScriptRegistry
   log?: Logger
   /** Read fresh per call (the same freshness pattern `adb.maxConcurrent`/`resetPolicy` use) — a Settings change reaches the very next trigger, no restart. */
@@ -74,7 +76,7 @@ export interface JobTrigger {
 }
 
 export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
-  const { db, registry, budgets, log } = deps
+  const { db, runs, registry, budgets, log } = deps
   const farmJobSettings = () => deps.farmJobSettings?.() ?? DEFAULT_FARM_JOB_SETTINGS
 
   return {
@@ -163,77 +165,44 @@ export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
           )
         }
 
-        const ownFanOut = tx.select({ n: count() }).from(jobs).where(eq(jobs.triggeredByJobId, from.id)).get()?.n ?? 0
-        if (ownFanOut >= limits.maxPerJob) {
-          log?.warn('trigger refused: fan-out', { fromJobId: from.id, ownFanOut, maxPerJob: limits.maxPerJob })
+        const triggeredByThisJob = tx.select({ n: count() }).from(jobs).where(eq(jobs.triggeredByJobId, from.id)).get()?.n ?? 0
+        if (triggeredByThisJob >= limits.maxPerJob) {
+          log?.warn('trigger refused: fan-out', { fromJobId: from.id, triggeredByThisJob, maxPerJob: limits.maxPerJob })
           throw new EnkakuError(
             'E_TRIGGER_FAN_OUT',
-            `trigger refused: this job has already triggered ${ownFanOut} jobs, at the farm's jobs.trigger.maxPerJob (${limits.maxPerJob})`,
+            `trigger refused: this job has already triggered ${triggeredByThisJob} jobs, at the farm's jobs.trigger.maxPerJob (${limits.maxPerJob})`,
           )
         }
 
         // §8 risk table — a chain triggered by, say, a 02:00 schedule
         // cannot outlive its root's own expiry window unless the caller
         // deliberately asks for a different one (explicit `null` = no
-        // expiry; explicit number = an explicit override).
-        const expiresAt = input.expiresAt !== undefined ? input.expiresAt : (from.expiresAt ?? null)
+        // expiry; explicit number = an explicit override). The triggering
+        // job's own expiry lives on its latest RUN now (plan 211 §4.1.1).
+        const fromRun = runs.latestRun(from.id)
+        const expiresAt = input.expiresAt !== undefined ? input.expiresAt : (fromRun?.expiresAt ?? null)
 
-        const row: JobRow = {
-          id: crypto.randomUUID(),
+        const maxConcurrent = resolveRuntime({ farm: farmJobSettings(), script: entry.runtime, override: null }).resolved.maxConcurrent
+
+        const job = runs.createJob({
+          kind: 'script',
           scriptId: entry.id,
           deviceId: targetDeviceId,
           params: input.params ?? null,
-          priority: input.priority ?? 0,
-          status: 'queued',
-          leaseExpiresAt: null,
-          result: null,
-          error: null,
-          createdAt: new Date(),
-          startedAt: null,
-          finishedAt: null,
-          batchId: null,
-          batchSeq: null,
-          expiresAt,
-          failureClass: null,
-          errorPhase: null,
-          infraAttempts: 0,
           scriptName: entry.name,
           scriptVersion: entry.version,
           triggeredByJobId: from.id,
           rootJobId,
           depth,
           triggerKey: input.key,
-          peakRssBytes: null,
-          // Plan 91 §3.5, §4.9 — a freshly triggered job has not been
-          // assisted yet, same as an ordinary `enqueue()`.
-          assistCount: 0,
-          // Plan 98 §3.7, §4.6, step 98.5 — same resolution `job-service.ts`
-          // performs at enqueue, from the SAME registry entry this function
-          // already resolved above (`entry.runtime`) rather than a second
-          // lookup.
-          maxConcurrent: resolveRuntime({ farm: farmJobSettings(), script: entry.runtime, override: null }).resolved.maxConcurrent,
-          // Plan 98 §3.8, §4.4, step 98.7 — a triggered job has no per-job
-          // override layer: `ctx.jobs.trigger()` is a SCRIPT calling itself,
-          // never an operator typing a number at enqueue time, and §3.8's
-          // whole design is that layer belonging to a human at the moment
-          // they enqueue. Always `null` here, exactly like `override: null`
-          // immediately above on the SAME `resolveRuntime` call.
-          runtimeOverride: null,
-          // Plan 94 §3.8, §4.8, step 94.6 — a freshly triggered job is not
-          // paced: nothing writes a non-null value here until 94.7's pacer
-          // exists.
-          notBefore: null,
-          batchRepeat: null,
-          pacedDelayMs: null,
-          // Plan 97 §3.3, §4.4 — a freshly triggered job has not settled
-          // yet, same as an ordinary `enqueue()`.
-          resultStatus: null,
-          resultBytes: null,
-          resultSummary: null,
-          resultIssues: null,
-        }
-        tx.insert(jobs).values(row).run()
-        return { jobId: row.id, deduped: false }
+        })
+        // Plan 98 §3.8, §4.4, step 98.7 — a triggered job has no per-job
+        // override layer: `ctx.jobs.trigger()` is a SCRIPT calling itself,
+        // never an operator typing a number at enqueue time, and §3.8's
+        // whole design is that layer belonging to a human at the moment
+        // they enqueue. Always `null` here.
+        runs.addRun(job.id, { trigger: 'manual', priority: input.priority ?? 0, expiresAt, maxConcurrent, runtimeOverride: null })
+        return { jobId: job.id, deduped: false }
       })
     },
   }

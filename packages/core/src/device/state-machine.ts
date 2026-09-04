@@ -4,30 +4,19 @@ import { changedRows, type Db } from '../db'
 import { devices } from '../db/schema'
 import type { Logger } from '../util/logger'
 
-export type DeviceEvent =
-  | 'DEVICE_CONNECTED'
-  | 'DEVICE_DISCONNECTED'
-  | 'MANUAL_ACQUIRED'
-  | 'MANUAL_RELEASED'
-  | 'JOB_CLAIMED'
-  | 'JOB_FINISHED'
-  | 'QUARANTINE'
-  | 'UNQUARANTINE'
+export type DeviceEvent = 'DEVICE_CONNECTED' | 'DEVICE_DISCONNECTED' | 'QUARANTINE' | 'UNQUARANTINE'
 
 /**
- * The transition table (plan 04 §4.1). An event outside the table is an illegal
- * transition → rejected (the CAS fails) and logged as a warning. `manual` and
- * `busy` are structurally mutually exclusive: both are only reachable from `idle`.
+ * The transition table (MVP 04 §0.1, §4, plan 205 §4.6). An event outside the
+ * table is an illegal transition → rejected (the CAS fails) and logged as a
+ * warning. "busy" and "controlled" are no longer stored: they are derived
+ * from the activity registry and never appear here.
  */
 const TRANSITIONS: Record<DeviceEvent, Partial<Record<DeviceStatus, DeviceStatus>>> = {
-  DEVICE_CONNECTED: { offline: 'idle', quarantined: 'quarantined' },
-  DEVICE_DISCONNECTED: { idle: 'offline', manual: 'offline', busy: 'offline', quarantined: 'quarantined' },
-  MANUAL_ACQUIRED: { idle: 'manual' },
-  MANUAL_RELEASED: { manual: 'idle' },
-  JOB_CLAIMED: { idle: 'busy' },
-  JOB_FINISHED: { busy: 'idle' },
-  QUARANTINE: { idle: 'quarantined', manual: 'quarantined', busy: 'quarantined' },
-  UNQUARANTINE: { quarantined: 'idle' },
+  DEVICE_CONNECTED: { offline: 'online', quarantined: 'quarantined' },
+  DEVICE_DISCONNECTED: { online: 'offline', quarantined: 'quarantined' },
+  QUARANTINE: { online: 'quarantined' },
+  UNQUARANTINE: { quarantined: 'online' },
 }
 
 export function nextStatus(event: DeviceEvent, from: DeviceStatus): DeviceStatus | null {

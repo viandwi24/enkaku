@@ -1,5 +1,16 @@
 import { z } from 'zod'
 import { WallTransportSchema } from '../settings'
+import { QualitySchema } from '../messages/stream'
+
+/** One live scrcpy forward this process currently owns (plan 223 §4.2, §4.3) — `SessionManager.forwards()` verbatim. */
+export const ForwardRecordSchema = z.object({
+  deviceId: z.string(),
+  quality: QualitySchema,
+  port: z.number().int(),
+  scid: z.string(),
+  openedAt: z.number().int(),
+})
+export type ForwardRecord = z.infer<typeof ForwardRecordSchema>
 
 /**
  * "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — five distinct
@@ -65,9 +76,10 @@ export const AdbStatsResponseSchema = z.object({
     maxStreams: z.number(),
     maxStreamsPerDevice: z.number(),
     active: z.number(),
+    /** Session-lifetime streams (plan 208 §3.6, the ui-server instrumentation) — counted, never gated by either cap above. */
+    pinned: z.number(),
     perDevice: z.record(z.string(), z.number()),
   }),
-  idleSessions: z.array(z.unknown()),
   devices: z.array(
     z.object({
       deviceId: z.string(),
@@ -99,8 +111,9 @@ export const AdbStatsResponseSchema = z.object({
    * detect on its own). `watchdogReconnects` counts connection churn the
    * SERVER can observe (opens beyond peak concurrency) — it can never be
    * attributed to the client's silence watchdog specifically, since
-   * `ClientMessage` deliberately carries no such signal; the browser console
-   * is the source of truth for a genuinely watchdog-caused reconnect.
+   * `ClientMessage` deliberately carries no such signal; the browser's own
+   * developer tools are the source of truth for a genuinely watchdog-caused
+   * reconnect.
    */
   transport: z.object({
     connections: z.number(),
@@ -110,6 +123,8 @@ export const AdbStatsResponseSchema = z.object({
     controlReplyMsP50: z.number(),
     controlReplyMsP95: z.number(),
     watchdogReconnects: z.number(),
+    /** Cumulative since boot (plan 223 §4.7) — every time a viewer's `ws.send()` returned `0` (R8) or a drop-to-keyframe fired under congestion. Never resets except on core restart. `.optional()`, same reason as `hostAdb.installsByRoot`. */
+    framesDroppedTotal: z.number().int().optional(),
   }),
   /** `packages/core/src/device/host-adb.ts`'s `HostAdb.stats()`, verbatim (plan 85 §3.4, §4.6). */
   hostAdb: z.object({
@@ -117,21 +132,25 @@ export const AdbStatsResponseSchema = z.object({
     maxConcurrent: z.number(),
     installsRunning: z.number(),
     longLived: z.number(),
+    /**
+     * Per-USB-root install occupancy (plan 223 §4.3, §4.6/G13) — keyed by
+     * `usbRootOf`'s own root string (`@enkaku/session`, plan 206 §4.2;
+     * `'network'`/`'unknown'` for a TCP device or one adb has not yet listed
+     * with a `usb:` field). `.optional()` for the same reason `input`/`video`
+     * are on this schema: a consumer built before this field lands must keep
+     * parsing; the real running core always sends it.
+     */
+    installsByRoot: z.record(z.string(), z.object({ running: z.number().int(), queued: z.number().int() })).optional(),
   }),
   /** "Is adb stuck?" (plan 88 §3.9, §4.7) — see `AdbServerHealthSchema` above. */
   adbHealth: AdbServerHealthSchema,
   /**
-   * Co-control observability (plan 91 §4.10, §5 step 91.10, tests H2/H4) —
-   * `packages/core/src/server/ws-handlers.ts`'s `inputStats()`, wired into
-   * this route through the same forward-ref pattern `transport`/`hostAdb`/
-   * `adbHealth` above already use. `lanes`/`assistsActive`/`mirrorGroups`/
-   * `mirrorMembers`/`mirrorFanoutMsP50`/`mirrorFanoutMsP95` are §4.10's own
-   * literal fields; `queueWaitMs`/`uncollectedGrants`/`orphanedMirrorGroups`
-   * are this step's own extension — the `co-control` doctor check needs the
-   * CONFIGURED wait budget (to compare against the observed `waitMsP95`s
-   * below) and the two leak counts (a grant or a mirror group that outlives
-   * the connection it was subordinate to), neither of which §4.10's
-   * pseudocode names but both of which the step's own brief asks for.
+   * Input-lane observability — `packages/core/src/server/ws-handlers.ts`'s
+   * `inputStats()`, wired into this route through the same forward-ref
+   * pattern `transport`/`hostAdb`/`adbHealth` above already use. Narrowed by
+   * plan 205 (MVP 04) to `lanes` only: the subordinate-grant and multi-client
+   * spread observability fields this block used to carry had no producer
+   * once the activity model replaced their source subsystems (plan 205 §3.2).
    *
    * `.optional()`, unlike `transport`/`hostAdb`/`adbHealth` right above —
    * deliberately, and ONLY for this field: this step's own file-ownership
@@ -150,28 +169,15 @@ export const AdbStatsResponseSchema = z.object({
     .object({
       /** Per-lane depth/wait percentiles/refusals, aggregated across every currently-open local `DeviceSession`'s own arbiter (there is no farm-wide arbiter) — `depth`/`refusals` summed, `waitMsP50`/`waitMsP95` the WORST value observed among live devices for that lane (`ws-handlers.ts`'s `inputStats()` doc comment has the full reasoning). Keyed by `InputLane` (`pointer`/`keys`/`text`), reported as `z.record` rather than three named fields so an older/newer core adding a fourth lane never breaks this schema. */
       lanes: z.record(z.string(), z.object({ depth: z.number(), waitMsP50: z.number(), waitMsP95: z.number(), refusals: z.number() })),
-      /** Farm-wide count of currently-live co-control (Assist) grants. */
-      assistsActive: z.number(),
-      /** Farm-wide count of currently-live mirror groups. */
-      mirrorGroups: z.number(),
-      /** Farm-wide count of live mirror-group members, summed across every group. */
-      mirrorMembers: z.number(),
-      mirrorFanoutMsP50: z.number(),
-      mirrorFanoutMsP95: z.number(),
-      /** The farm's currently-configured `coControl.queueWaitMs` (settings §4.5) — the budget the `co-control` doctor check compares each lane's OBSERVED `waitMsP95` against. */
-      queueWaitMs: z.number(),
-      /** Leak detector: grants whose `expiresAt` is well past due despite the reaper's sweep — see `co-control.ts`'s `rawGrantSnapshot()`. */
-      uncollectedGrants: z.number(),
-      /** Leak detector: mirror groups whose owner's WS connection is no longer open — see `mirror/group.ts`'s `allGroups()`. */
-      orphanedMirrorGroups: z.number(),
     })
     .optional(),
   /**
-   * The build lane's own occupancy plus live streams by quality (plan 92
-   * §3.3, §4.3, §4.5, §5 step 92.3, tests H1) —
-   * `packages/session/src/manager.ts`'s `SessionManager.videoStats()`, wired
-   * into this route through the same forward-ref pattern `transport`/
-   * `hostAdb`/`adbHealth`/`input` above already use. `maxTiles`/
+   * The always-on builder's own occupancy plus live streams by quality
+   * (plan 92 §3.3, §4.3, §4.5, §5 step 92.3, tests H1; reworked by plan 206
+   * §4.10) — `packages/session/src/manager.ts`'s `SessionManager.encoders()`
+   * joined with `@enkaku/session`'s `AlwaysOn.stats()`, wired into this
+   * route through the same forward-ref pattern `transport`/`hostAdb`/
+   * `adbHealth`/`input` above already use. `maxTiles`/
    * `maxTilesAuto` report `wall.maxTiles` AS IT IS ACTUALLY BEING APPLIED —
    * the derived number when the setting is `0` (auto, §3.7), never the raw
    * stored `0` itself — so the Wall's status strip and the settings
@@ -191,7 +197,9 @@ export const AdbStatsResponseSchema = z.object({
       wallStreams: z.number().int(),
       buildsRunning: z.number().int(),
       buildQueueDepth: z.number().int(),
-      maxConcurrentBuilds: z.number().int(),
+      /** The one remaining session build knob (plan 206 §4.5) and the farm-wide ceiling constant (`SESSION_BUILD_FARM_CEILING`, overridable by `ENKAKU_SESSION_BUILD_CEILING`). */
+      buildsPerUsbRoot: z.number().int(),
+      farmCeiling: z.number().int(),
       maxTiles: z.number().int(),
       maxTilesAuto: z.boolean(),
       /**
@@ -208,33 +216,8 @@ export const AdbStatsResponseSchema = z.object({
       transport: WallTransportSchema,
     })
     .optional(),
-  /**
-   * The command console's own observability (plan 93 §3.5, §3.8, §7.3, §5
-   * step 93.12) — the numbers hypotheses H1, H2 and H4 are settled by. Wired
-   * from `packages/core/src/command-console/runner.ts`'s `CommandRunner.stats()`
-   * through the same forward-ref pattern `transport`/`hostAdb`/`adbHealth`/
-   * `input`/`video` above already use.
-   *
-   * `.optional()` for the SAME reason `input`/`video` above are: a consumer
-   * that predates this field must keep parsing. The real running core
-   * always sends it, zero-filled the same way the other forward-ref blocks
-   * are, once `daemon.ts` wires the dependency through (tracked separately
-   * — see `adb-stats-command-console-wiring.test.ts`).
-   */
-  commandConsole: z
-    .object({
-      /** `active.size` in the runner — command runs currently dispatching or awaiting-continue. */
-      runsInFlight: z.number().int(),
-      /** Members with an exec genuinely outstanding right now, summed across every in-flight run — bounded by `MAX_POOL_CONCURRENCY` (32) per run, not farm-wide. */
-      membersInFlight: z.number().int(),
-      /** `command.progress` frames actually broadcast per second, averaged over the trailing 60s — the coalescer's own effect, measured (H2: ≤4/s at 100 members is the spec's own ceiling, §3.5). */
-      coalescedFramesPerSec: z.number(),
-      /** Distinct output hashes ÷ total settled execs, cumulative across every run this core process has driven since it started (not time-windowed, unlike the two rate fields below — a run's own grouping is a property of that run, and the cumulative view is what tells whether H1 holds across many runs, not just the latest one) — H1's own number: near 1.0 means grouping is not helping and the default should flip to a flat table (§7.3's 20-device rung). `0` when nothing has settled yet, never `NaN`. */
-      distinctOutputRatio: z.number(),
-      /** How many `lease.changed` broadcasts the console's own per-member acquire/release traffic produced in the trailing 60s (H4) — an acquire and its later release each count once, mirroring the two real broadcasts `onManualRevoked`/`lease.acquire` emit in production for the same hold. Only the console's own short-lived `purpose: 'command'` holds are counted; a manual lease already held by the operator before the run contributes nothing, since `admitMember`'s first branch acquires nothing. */
-      leaseChangedPerMinute: z.number(),
-    })
-    .optional(),
+  /** Every live forward this process holds (plan 223 §4.2). `.optional()` for the same reason as `input`/`video` above. */
+  forwards: z.array(ForwardRecordSchema).optional(),
 })
 
 /**
@@ -248,8 +231,8 @@ export const AdbRestartPreviewSchema = z.object({
   devicesTotal: z.number(),
   /** Live sessions (wall tiles / control) that will stop and resume. */
   sessionsActive: z.number(),
-  /** Manual leases that will be released. */
-  leasesHeld: z.number(),
+  /** Live control/command activities that will end. */
+  controlled: z.number(),
   /** Jobs that will fail unless the restart is cancelled. */
   jobsRunning: z.number(),
   /** How many devices have a remembered network address and will be dialled again after the restart (plan 88 §3.2, §3.10). */
@@ -269,7 +252,7 @@ export const AdbRestartReportSchema = z.object({
   reason: z.enum(['swap', 'restart']),
   durationMs: z.number(),
   sessionsClosed: z.number(),
-  leasesReleased: z.number(),
+  controlsEnded: z.number(),
   jobsFailed: z.array(z.string()),
   devicesBefore: z.number(),
   devicesAfter: z.number(),
@@ -282,10 +265,10 @@ export const AdbRestartReportSchema = z.object({
    * `number` rides alongside `label` rather than being baked into it (plan
    * 124 §3.1, §3.7) — a farm of identical models reports three rows reading
    * `SM-F721U1` otherwise, which names nothing. It is a SEPARATE field, not a
-   * pre-composed string, for the reason plan 124 §10 records against
-   * `MirrorMember`: the renderer composes once, so a caller that also holds a
-   * `DeviceInfo` cannot end up rendering `#7 #7 SM-F721U1`. `null` for a
-   * device whose reservation was explicitly released.
+   * pre-composed string, for the same reason plan 124 §10 gave for a
+   * different payload's per-member rows: the renderer composes once, so a
+   * caller that also holds a `DeviceInfo` cannot end up rendering
+   * `#7 #7 SM-F721U1`. `null` for a device whose reservation was explicitly released.
    *
    * Note this is a DIFFERENT payload from the adb pool stats
    * (`AdbStatsResponseSchema` above), whose `label` plan 124 step 124.5 did

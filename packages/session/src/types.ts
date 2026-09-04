@@ -21,7 +21,7 @@ export interface DeviceSnapshot {
   display: string | null
   input: string | null
   inspection: string | null
-  preferredInputMode: 'uhid' | 'sdk' | 'aoa'
+  preferredInputMode: 'uhid' | 'sdk'
   /** DeviceSettings.prep.keepAwake (Plan 17 §3.4). */
   keepAwake?: KeepAwakeMode
   /** DeviceSettings.prep.standbyScreenOff (Plan 17 §3.5). */
@@ -49,15 +49,16 @@ export interface DeviceSnapshot {
     gps?: { lat: number; lng: number; accuracy?: number }
   }
   /**
-   * DeviceSettings.video (plan 92 §3.5, §4.4) — this device's own video
-   * picture override, projected at the same seam as `keepAwake`/`identity`
-   * above so it cannot be saved-and-never-read (F18). `resolveVideoProfile`
+   * DeviceSettings.overrides (plan 92 §3.5, §4.4; reduced to `controlQuality`/
+   * `wallQuality` presets by plan 212 §4.6) — this device's own picture
+   * override, projected at the same seam as `keepAwake`/`identity` above so
+   * it cannot be saved-and-never-read (F18). `resolveVideoProfile`
    * (`./video-profile.ts`) reads it as the "device" layer, farm settings
    * underneath. Undefined behaves exactly like `{}` (follow the farm on
    * every field) — the default a device with no override, or no row at all,
    * always resolves to.
    */
-  video?: DeviceSettings['video']
+  overrides?: Pick<DeviceSettings['overrides'], 'controlQuality' | 'wallQuality'>
 }
 
 export interface DeviceSnapshotSource {

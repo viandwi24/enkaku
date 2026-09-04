@@ -60,35 +60,40 @@ describe('buildStudioUrl', () => {
   })
 })
 
-describe('shouldOpenBrowser — the interactive-desktop decision', () => {
+describe('shouldOpenBrowser — opening is opt-in (CEO, 2026-09-04)', () => {
   const loopback = (h: string) => h === '127.0.0.1' || h === 'localhost' || h === '::1'
-  const interactive = { mode: undefined, host: '127.0.0.1', isTTY: true, noOpen: undefined, isLoopbackHost: loopback }
+  /** Everything a spawned browser needs EXCEPT the opt-in itself. */
+  const eligible = { mode: undefined, host: '127.0.0.1', isTTY: true, open: '1', isLoopbackHost: loopback }
 
-  test('opens for the plain double-click case: local mode, loopback bind, a real TTY', () => {
-    expect(shouldOpenBrowser(interactive)).toBe(true)
+  test('the default is NO — a plain local run with a TTY opens nothing', () => {
+    expect(shouldOpenBrowser({ ...eligible, open: undefined })).toBe(false)
   })
 
-  test('suppressed: ENKAKU_MODE=orchestrator (the cloud control plane, spec §5.3) even on a loopback dev bind with a TTY', () => {
-    expect(shouldOpenBrowser({ ...interactive, mode: 'orchestrator' })).toBe(false)
+  test('ENKAKU_OPEN=1 opts in, on a local loopback run with a real TTY', () => {
+    expect(shouldOpenBrowser(eligible)).toBe(true)
   })
 
-  test('suppressed: non-loopback bind — the exact signal docker-compose.yml and deploy/enkaku.service both set (ENKAKU_BIND=0.0.0.0)', () => {
-    expect(shouldOpenBrowser({ ...interactive, host: '0.0.0.0' })).toBe(false)
+  test('the opt-in does NOT override orchestrator mode (the cloud control plane, spec §5.3)', () => {
+    expect(shouldOpenBrowser({ ...eligible, mode: 'orchestrator' })).toBe(false)
   })
 
-  test('suppressed: no controlling TTY — a systemd unit or a Docker container with no `-t`, or a CI job, none of which override the default loopback bind', () => {
-    expect(shouldOpenBrowser({ ...interactive, isTTY: false })).toBe(false)
+  test('the opt-in does NOT override a non-loopback bind — the signal docker-compose.yml and deploy/enkaku.service both set (ENKAKU_BIND=0.0.0.0)', () => {
+    expect(shouldOpenBrowser({ ...eligible, host: '0.0.0.0' })).toBe(false)
+  })
+
+  test('the opt-in does NOT override a missing TTY — a systemd unit, a Docker container with no `-t`, or a CI job', () => {
+    expect(shouldOpenBrowser({ ...eligible, isTTY: false })).toBe(false)
   })
 
   for (const value of ['1', 'true', 'YES', 'on']) {
-    test(`suppressed: ENKAKU_NO_OPEN=${value} always wins, even on an otherwise-interactive session`, () => {
-      expect(shouldOpenBrowser({ ...interactive, noOpen: value })).toBe(false)
+    test(`ENKAKU_OPEN=${value} counts as opting in`, () => {
+      expect(shouldOpenBrowser({ ...eligible, open: value })).toBe(true)
     })
   }
 
   for (const value of ['0', 'false', '', undefined]) {
-    test(`not suppressed by ENKAKU_NO_OPEN=${JSON.stringify(value)}`, () => {
-      expect(shouldOpenBrowser({ ...interactive, noOpen: value })).toBe(true)
+    test(`ENKAKU_OPEN=${JSON.stringify(value)} is not an opt-in`, () => {
+      expect(shouldOpenBrowser({ ...eligible, open: value })).toBe(false)
     })
   }
 })
@@ -110,7 +115,7 @@ describe('maybeOpenBrowser', () => {
     mode: undefined,
     host: '127.0.0.1',
     isTTY: true,
-    noOpen: undefined,
+    open: '1',
     isLoopbackHost: (h: string) => h === '127.0.0.1',
   }
 

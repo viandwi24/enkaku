@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
 import type { AdbClient } from '@enkaku/adb'
-import type { AgentStatus, ShellResult, TransportExecOptions } from '@enkaku/protocol'
+import type { AgentStatus, GuestAgentActivity, GuestAgentVideo, ShellResult, TransportExecOptions, UiChangedEvent } from '@enkaku/protocol'
 import {
   GUEST_AGENT_PACKAGE,
   GuestAgentClientError,
   createGuestAgentClient,
   createGuestAgentLauncher,
+  createGuestAgentWatch,
   type GuestAgentClient,
   type GuestAgentClientOptions,
   type GuestAgentLauncher,
@@ -16,7 +17,9 @@ import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
 import type { DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
+import type { DeviceStateMachine } from '../device/state-machine'
 import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
 // Single source of truth for "is this device eligible for the guest agent"
@@ -27,7 +30,7 @@ import {
   ERROR_STATUS,
   createRouteService,
   mustGetDevice,
-  requireHeldLease,
+  withNetworkAdmission,
   type DeviceNetworkPort,
   type DeviceSession,
   type DeviceSessionCallOpts,
@@ -123,6 +126,27 @@ const LOCAL_BUILD_PATHS = [
   'apps/guest-agent/app/build/outputs/apk/debug/app-debug.apk',
 ]
 
+/**
+ * Which tier `resolveGuestAgentApkPath` WOULD take, without taking it.
+ *
+ * Provisions nothing and downloads nothing, so it is safe to call at boot.
+ * The daemon logs it once at startup because "is the build I am working on
+ * actually the one installed on the phone?" had no answer anywhere: the
+ * owner spent an afternoon on an inspector that was falling back to
+ * `ui-server` because the phone held an August APK with no `ui-tree`
+ * capability, and every layer involved was behaving correctly and saying
+ * nothing (2026-09-04). `doctor/checks/guest-agent.ts` reports the same fact
+ * with a remedy, and the status bar renders it.
+ */
+export async function describeGuestAgentApk(): Promise<{ source: 'override' | 'local-build' | 'pinned'; detail: string }> {
+  const override = process.env.ENKAKU_GUEST_AGENT_PATH
+  if (override) return { source: 'override', detail: `ENKAKU_GUEST_AGENT_PATH → ${override}` }
+  for (const candidate of LOCAL_BUILD_PATHS) {
+    if (await Bun.file(candidate).exists()) return { source: 'local-build', detail: `local Gradle build → ${candidate}` }
+  }
+  return { source: 'pinned', detail: 'the pinned release, downloaded and sha256-verified on first install' }
+}
+
 export async function resolveGuestAgentApkPath(
   opts: {
     toolchain?: { resolveToolPath(id: string): Promise<string>; ensureRequiredTools(ids: string[]): Promise<void> }
@@ -203,7 +227,11 @@ export interface GuestAgentRoutesDeps {
   exec: (serial: string, cmd: string, opts?: TransportExecOptions) => Promise<ShellResult>
   apkPath: () => Promise<string>
   ports: Pick<PortAllocator, 'claim' | 'release'>
-  leases: LeaseManager
+  /** The device activity registry (plan 205 §4.2, §4.8) — the one admission door every mutating endpoint here and in `route-service.ts` takes. */
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
+  /** `control.overControl`/`control.idleSec`, read fresh on every admission check (plan 205 §4.5). */
+  controlSettings: () => ControlPolicySettings
+  states: Pick<DeviceStateMachine, 'current'>
   /** Where the credential store's encryption key lives (plan 52 §4.2) — `<dataDir>/network-credentials.key`, created on first use with mode 0600. */
   dataDir: string
   /** Main-stream device events: guest-agent.installed/uninstalled, network.applied/reverted. */
@@ -263,11 +291,11 @@ export interface GuestAgentRoutesHandle {
   /**
    * Tears down any applied network route for a device, idempotently.
    *
-   * A route is a property of the DEVICE now, not of whoever holds the lease
+   * A route is a property of the DEVICE now, not of whoever is in control
    * (plan 52 §0, §3.1): this is called ONLY for an operator's explicit act —
    * `/disable`, `DELETE /network`, and `DELETE /guest-agent` (uninstall) —
-   * never automatically on lease release/expiry/disconnect, and never on the
-   * device going offline (see `handleDeviceOffline` for that case). `actor` is
+   * never automatically on a control marker ending or a disconnect, and never
+   * on the device going offline (see `handleDeviceOffline` for that case). `actor` is
    * `null` only for the uninstall path's own internal call.
    */
   revertNetwork: (deviceId: string, actor?: string | null) => Promise<void>
@@ -312,10 +340,43 @@ export interface GuestAgentRoutesHandle {
    * a plugin holding `device.network` reaches through `ctx.farm.call`.
    *
    * It is the SAME three functions the HTTP routes above call — not a parallel
-   * implementation — so a plugin's route change takes the same lease admission,
-   * the same lock, and writes the same attributed device event.
+   * implementation — so a plugin's route change takes the same activity
+   * admission, the same lock, and writes the same attributed device event.
    */
   deviceNetwork: DeviceNetworkPort
+  /** The `set-network` actions API verb's one door (plan 207 §4.2, §5 step 207.4) — the SAME five functions the HTTP routes above call. */
+  routeActions: RouteService['actions']
+  /**
+   * Plan 221 §4.5, §5 step 221.14 — pushes plan 205's own activity list (and the video block) to
+   * the device's `ActivityMirror`, read-only there. Routed through `withGuestAgentClient` (never a
+   * second `GuestAgentSession`), capability-gated on `hello().capabilities` including `activity`,
+   * and best-effort: an `E_UNKNOWN_METHOD` from an older build is logged at `debug` once per
+   * device and never thrown onward — this is a status-screen convenience, never load-bearing.
+   */
+  pushActivity: (deviceId: string, activities: GuestAgentActivity[], video: GuestAgentVideo | null) => Promise<void>
+  /** Plan 221 §4.5, §5 step 221.14 — the farm's own facts about a device, for the phone's own Device section. Same gate and same best-effort discipline as `pushActivity`. */
+  pushDescribe: (
+    deviceId: string,
+    device: { stableId: string | null; label: string | null; number: string | null; group: string | null; tags: string[] },
+  ) => Promise<void>
+  /**
+   * Plan 222 §4.6 — a LONG-LIVED `ui.watch` subscription for the `ui-tree`
+   * inspector. It takes the same reference on the device's shared guest-agent
+   * session that `withGuestAgentClient` takes for the length of one call, and
+   * holds it until `close()`, so the forwarded port and the pairing token stay
+   * valid for as long as the subscription does and no second token is ever
+   * minted (plan 44 §8b's "Bug 1").
+   */
+  watchGuestAgentUi: (
+    deviceId: string,
+    hooks: { onEvent: (event: UiChangedEvent) => void; onGap: (expected: number, received: number) => void; onClose: (reason: string) => void },
+  ) => Promise<GuestAgentUiWatch>
+}
+
+/** A live `ui.watch` subscription plus the reference it holds on the device's guest-agent session. */
+export interface GuestAgentUiWatch {
+  /** Closes the subscription and releases the session reference. Idempotent. */
+  close(): Promise<void>
 }
 
 export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRoutesHandle {
@@ -372,6 +433,11 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
   }): DeviceSession {
     let port: number | null = null
     let client: GuestAgentClient | null = null
+    // The token currently live on the device, mirrored here so `withEndpoint`
+    // (plan 222 §4.6) can hand it to a caller that needs the raw endpoint
+    // rather than a `GuestAgentClient` — `ui.watch`'s own connection. Set the
+    // moment `bootstrap()` succeeds, alongside `client`.
+    let activeToken: string | null = null
     // Coalesces concurrent first-use (or concurrent re-auth) calls onto ONE in-flight bootstrap —
     // without this, two callers racing `withClient()` before either has set `client` would each
     // start their OWN bootstrap and mint TWO tokens, reintroducing the exact race plan 44 §8b's
@@ -416,6 +482,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
           await newClient.hello()
           if (round > 1) deps.log.info(`guest-agent session[${opts.deviceId}]: re-pairing round ${round} was accepted`)
           client = newClient
+          activeToken = token
           return newClient
         } catch (err) {
           if (!(err instanceof GuestAgentClientError) || !REAUTH_CODES.has(err.code)) throw err
@@ -478,8 +545,16 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
           return await fn(fresh)
         }
       },
+      async withEndpoint(fn, callOpts) {
+        await ensureClient(callOpts)
+        // `port`/`activeToken` are set by the SAME bootstrap `ensureClient` just
+        // awaited (or an earlier one this call reused) — never read before it,
+        // so a caller can never see a null port.
+        return fn({ port: port!, token: activeToken! })
+      },
       async close() {
         client = null
+        activeToken = null
         const held = port
         port = null
         if (held === null) return
@@ -549,29 +624,129 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
    * egress probe in front of a status read, and would deadlock outright if a future caller ever
    * nested one guest-agent call inside another.
    */
-  async function withEphemeralSession<T>(
-    row: DeviceRow,
-    fn: (client: GuestAgentClient) => Promise<T>,
-    opts?: DeviceSessionCallOpts,
-  ): Promise<T> {
+  /**
+   * The shared half of `withEphemeralSession` and `watchGuestAgentUi` (plan 222
+   * §4.6, step 222.4): reuse the route's live session when there is one, else
+   * the ref-counted ephemeral one, `refs += 1` either way — and hand back a
+   * `release()` the caller runs exactly once, in its own `finally`. Factored
+   * out of `withEphemeralSession` so a long-lived `ui.watch` subscription can
+   * hold the SAME kind of reference a one-shot call holds, for as long as it
+   * runs, instead of a second, parallel bookkeeping scheme.
+   */
+  function acquireSessionHold(row: DeviceRow): { session: DeviceSession; release: () => Promise<void> } {
     const shared = routeService?.activeSessionOf(row.id) ?? null
-    if (shared) return shared.withClient(fn, opts)
+    if (shared) return { session: shared, release: async () => {} }
     let holder = ephemeralSessions.get(row.id)
     if (!holder) {
       holder = { session: makeSession(row), refs: 0 }
       ephemeralSessions.set(row.id, holder)
     }
-    holder.refs += 1
+    const mine = holder
+    mine.refs += 1
+    let released = false
+    return {
+      session: mine.session,
+      release: async () => {
+        if (released) return
+        released = true
+        mine.refs -= 1
+        if (mine.refs === 0 && ephemeralSessions.get(row.id) === mine) {
+          ephemeralSessions.delete(row.id)
+          await mine.session.close().catch((err: unknown) => {
+            deps.log.warn(`guest-agent ephemeral session[${row.id}] close() failed, tolerated: ${String(err)}`)
+          })
+        }
+      },
+    }
+  }
+
+  /**
+   * Runs `fn` against `row`'s shared device session — reusing the one already backing an applied
+   * network route (`routeService.activeSessionOf`) when there is one, exactly the fix for plan 44
+   * §8b's "Bug 1": a guest-agent status probe or a cold network read must never mint a SEPARATE
+   * token that rotates the live route's token out from under it. When no route is applied for this
+   * device, a fresh session is built, used, and closed again — never held across calls for a
+   * device with no applied route (the port-allocator contract).
+   *
+   * **Concurrent callers share that ephemeral session too**, reference-counted, which is the part
+   * that used to be missing. A device holds exactly ONE pairing token at a time; two callers that
+   * each built their own session each minted a token, and the second `am start` overwrote the
+   * first, leaving the first caller retrying `E_UNAUTHORISED` against a token the agent had already
+   * forgotten. That is plan 44 §8b's "Bug 1" again, in the branch where no VPN route happens to be
+   * applied — and it is reachable on any ordinary admission, because `daemon.ts`'s `onDeviceReady`
+   * fires `agentProvisioner.ensure`, `labelling.reconcile` and `preparationRunner.ensure` with no
+   * `await` between them, and the session manager's IME ladder and `device-identity`'s GPS apply
+   * can land in the same window. `DeviceSession.withClient` already coalesces concurrent
+   * bootstraps onto one in-flight token; sharing the session is what puts every caller behind that
+   * one coalescing point instead of beside it.
+   *
+   * The count is what preserves the old contract: the LAST caller out closes the session and
+   * releases the forwarded port, so a device with no applied route still holds nothing between
+   * calls. Reference counting rather than a queue on purpose — a queue would serialise a 30-second
+   * egress probe in front of a status read, and would deadlock outright if a future caller ever
+   * nested one guest-agent call inside another.
+   */
+  async function withEphemeralSession<T>(
+    row: DeviceRow,
+    fn: (client: GuestAgentClient) => Promise<T>,
+    opts?: DeviceSessionCallOpts,
+  ): Promise<T> {
+    const hold = acquireSessionHold(row)
     try {
-      return await holder.session.withClient(fn, opts)
+      return await hold.session.withClient(fn, opts)
     } finally {
-      holder.refs -= 1
-      if (holder.refs === 0 && ephemeralSessions.get(row.id) === holder) {
-        ephemeralSessions.delete(row.id)
-        await holder.session.close().catch((err: unknown) => {
-          deps.log.warn(`guest-agent ephemeral session[${row.id}] close() failed, tolerated: ${String(err)}`)
-        })
+      await hold.release()
+    }
+  }
+
+  /**
+   * Plan 222 §4.6, step 222.4 — a long-lived `ui.watch` subscription for the
+   * `ui-tree` inspector. It takes the same kind of hold `withEphemeralSession`
+   * takes for the length of one call, and keeps it until `close()`, so the
+   * forwarded port and the pairing token stay valid for as long as the
+   * subscription does and no second token is ever minted (plan 44 §8b's
+   * "Bug 1"). `hooks.onClose` is wrapped so a subscription the agent itself
+   * dropped also releases the hold exactly once — the two paths (an explicit
+   * `close()` and an agent-initiated drop) share one `closed` flag, because a
+   * hold released twice is a bug that leaks a forwarded port.
+   */
+  async function watchGuestAgentUi(
+    deviceId: string,
+    hooks: { onEvent: (event: UiChangedEvent) => void; onGap: (expected: number, received: number) => void; onClose: (reason: string) => void },
+  ): Promise<GuestAgentUiWatch> {
+    const row = mustGet(deviceId)
+    const hold = acquireSessionHold(row)
+    let closed = false
+    const releaseOnce = async (): Promise<void> => {
+      if (closed) return
+      closed = true
+      await hold.release()
+    }
+    try {
+      const watch = await hold.session.withEndpoint(({ port, token }) =>
+        Promise.resolve(
+          createGuestAgentWatch({
+            port,
+            token,
+            onEvent: hooks.onEvent,
+            onGap: hooks.onGap,
+            onClose: (reason) => {
+              hooks.onClose(reason)
+              void releaseOnce()
+            },
+          }),
+        ),
+      )
+      await watch.ready
+      return {
+        close: async () => {
+          await watch.close().catch(() => undefined)
+          await releaseOnce()
+        },
       }
+    } catch (err) {
+      await releaseOnce()
+      throw err
     }
   }
 
@@ -581,7 +756,9 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     db,
     exec: deps.exec,
     apkPath: deps.apkPath,
-    leases: deps.leases,
+    activities: deps.activities,
+    controlSettings: deps.controlSettings,
+    states: deps.states,
     dataDir: deps.dataDir,
     log: deps.log,
     ...(deps.record ? { record: deps.record } : {}),
@@ -684,45 +861,46 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
 
   app.post('/:id/guest-agent', requirePermission('device.network'), async (c) => {
     const row = mustGet(c.req.param('id'))
-    requireHeldLease(deps.leases, row.id)
-    const result = await installAndProbe(row)
-    deps.record?.({
-      deviceId: row.id,
-      stream: 'main',
-      kind: 'guest-agent.installed',
-      actor: c.get('user')?.id ?? null,
-      meta: { state: result.state },
-    })
-    // Plan 90 §3.8, §4.7 — keeps `devices.agent`/the fleet summary in sync with an operator's
-    // explicit Install/Repair click. Fire-and-forget and tolerant: a failure here must never turn
-    // an otherwise-successful install+probe into a 500 for the operator who just watched it work.
-    void deps.agentProvisioner
-      ?.ensure(row.id, { force: true })
-      .catch((err) => deps.log.warn(`agent-provisioner ensure() after POST /:id/guest-agent failed, tolerated: ${String(err)}`))
-    return c.json(result)
+    const actor = c.get('user')?.id ?? null
+    return c.json(
+      await withNetworkAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, async () => {
+        const result = await installAndProbe(row)
+        deps.record?.({ deviceId: row.id, stream: 'main', kind: 'guest-agent.installed', actor, meta: { state: result.state } })
+        // Plan 90 §3.8, §4.7 — keeps `devices.agent`/the fleet summary in sync with an operator's
+        // explicit Install/Repair click. Fire-and-forget and tolerant: a failure here must never turn
+        // an otherwise-successful install+probe into a 500 for the operator who just watched it work.
+        void deps.agentProvisioner
+          ?.ensure(row.id, { force: true })
+          .catch((err) => deps.log.warn(`agent-provisioner ensure() after POST /:id/guest-agent failed, tolerated: ${String(err)}`))
+        return result
+      }),
+    )
   })
 
   app.delete('/:id/guest-agent', requirePermission('device.network'), async (c) => {
     const row = mustGet(c.req.param('id'))
-    requireHeldLease(deps.leases, row.id)
     const actor = c.get('user')?.id ?? null
-    // Any active route is torn down first (Studio's own uninstall confirm dialog already says so)
-    // — reinstalling later starts from scratch.
-    await service.revertNetwork(row.id, actor)
-    // Clear the PERSISTED route too, not just the live one — and stop the heartbeat if that was
-    // the last enabled VPN route. See `RouteService.clearRoute`'s doc comment for the defect this
-    // prevents.
-    service.clearRoute(row.id)
-    const launcher = makeLauncher(row)
-    await launcher.stop().catch(() => undefined)
-    await deps.hostAdb(['-s', row.serial, 'uninstall', GUEST_AGENT_PACKAGE]).catch(() => undefined)
-    deps.record?.({ deviceId: row.id, stream: 'main', kind: 'guest-agent.uninstalled', actor, meta: {} })
-    // Gap 2 fix's own follow-on: clears `devices.agent` so a GET right after this does not keep
-    // reporting a stale ready/outdated/failed state.
-    void deps.agentProvisioner
-      ?.remove?.(row.id, actor)
-      .catch((err) => deps.log.warn(`agent-provisioner remove() after DELETE /:id/guest-agent failed, tolerated: ${String(err)}`))
-    return c.json({ ok: true })
+    return c.json(
+      await withNetworkAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, async () => {
+        // Any active route is torn down first (Studio's own uninstall confirm dialog already says so)
+        // — reinstalling later starts from scratch.
+        await service.revertNetwork(row.id, actor)
+        // Clear the PERSISTED route too, not just the live one — and stop the heartbeat if that was
+        // the last enabled VPN route. See `RouteService.clearRoute`'s doc comment for the defect this
+        // prevents.
+        service.clearRoute(row.id)
+        const launcher = makeLauncher(row)
+        await launcher.stop().catch(() => undefined)
+        await deps.hostAdb(['-s', row.serial, 'uninstall', GUEST_AGENT_PACKAGE]).catch(() => undefined)
+        deps.record?.({ deviceId: row.id, stream: 'main', kind: 'guest-agent.uninstalled', actor, meta: {} })
+        // Gap 2 fix's own follow-on: clears `devices.agent` so a GET right after this does not keep
+        // reporting a stale ready/outdated/failed state.
+        void deps.agentProvisioner
+          ?.remove?.(row.id, actor)
+          .catch((err) => deps.log.warn(`agent-provisioner remove() after DELETE /:id/guest-agent failed, tolerated: ${String(err)}`))
+        return { ok: true }
+      }),
+    )
   })
 
   app.onError((err, c) => {
@@ -745,6 +923,9 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     .reconcileNetworkRoutes()
     .catch((err) => deps.log.warn(`network boot reconciliation failed, tolerated: ${String(err)}`))
 
+  /** Plan 221 §5 step 221.14 — logged once per device, never repeated for a build known not to support it. */
+  const activityCapabilityWarned = new Set<string>()
+
   return {
     routes: app,
     revertNetwork: service.revertNetwork,
@@ -753,6 +934,38 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     reconcileNetworkRoutes: service.reconcileNetworkRoutes,
     isRouteEnabled: service.isRouteEnabled,
     withGuestAgentClient: (deviceId, fn) => withEphemeralSession(mustGet(deviceId), fn),
+    watchGuestAgentUi,
     deviceNetwork: service.device,
+    routeActions: service.actions,
+    async pushActivity(deviceId, activities, video) {
+      try {
+        await withEphemeralSession(mustGet(deviceId), async (client) => {
+          const hello = await client.hello()
+          if (!hello.capabilities.includes('activity')) return
+          await client.activitySet(activities, video)
+        })
+      } catch (err) {
+        if (err instanceof GuestAgentClientError && err.code === 'E_UNKNOWN_METHOD') {
+          if (!activityCapabilityWarned.has(deviceId)) {
+            activityCapabilityWarned.add(deviceId)
+            deps.log.debug(`guest-agent: device ${deviceId}'s agent does not support activity.set — the status screen will not show it`)
+          }
+          return
+        }
+        deps.log.debug(`guest-agent: pushActivity to device ${deviceId} failed, tolerated: ${String(err)}`)
+      }
+    },
+    async pushDescribe(deviceId, device) {
+      try {
+        await withEphemeralSession(mustGet(deviceId), async (client) => {
+          const hello = await client.hello()
+          if (!hello.capabilities.includes('activity')) return
+          await client.deviceDescribe(device)
+        })
+      } catch (err) {
+        if (err instanceof GuestAgentClientError && err.code === 'E_UNKNOWN_METHOD') return
+        deps.log.debug(`guest-agent: pushDescribe to device ${deviceId} failed, tolerated: ${String(err)}`)
+      }
+    },
   }
 }

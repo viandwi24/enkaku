@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createLogger } from '../util/logger'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createDeviceStateMachine } from '../device/state-machine'
 import type { CapabilityContextDeps } from '../capability/context'
 import { buildCapabilityRegistry, type CapabilityRegistry } from '../capability/registry'
@@ -42,7 +42,6 @@ function echoCapability(): AnyCoreCapability {
     input: z.object({ text: z.string() }),
     output: z.object({ echoed: z.string() }),
     permission: 'device.control' as never,
-    lease: 'none',
     deadline: 5000,
     effect: 'read',
     description: 'echoes',
@@ -128,16 +127,11 @@ function setUp(kind: ConnectorKind) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db as Db
-  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone', status: 'online' }).run()
 
   const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-  const leases: LeaseManager = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: createLogger('test'),
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+  const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
 
   const caps = [echoCapability()]
   const registry: CapabilityRegistry = buildCapabilityRegistry(caps.map((cap) => ({ cap, file: 'test' })))
@@ -149,7 +143,8 @@ function setUp(kind: ConnectorKind) {
 
   const capContextDeps: CapabilityContextDeps = {
     db,
-    leases,
+    activities,
+    controlSettings,
     states,
     sessions: () => null,
     readiness: () => null,
@@ -175,10 +170,12 @@ function setUp(kind: ConnectorKind) {
       connectors,
       registry,
       capContextDeps,
-      leases,
+      activities,
+      controlSettings,
       settings: () =>
         ({
-          agentDefaults: {
+          // Plan 212 §4.7: the agent settings store's key is `defaults`.
+          defaults: {
             connectorId: connector.id,
             model: agent.model,
             systemPrompt: 'You are a test agent.',

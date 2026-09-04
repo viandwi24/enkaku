@@ -27,7 +27,7 @@ function fakeAdbClient(): AdbClient {
   return {
     stats: () => ({ maxConcurrent: 8, inFlight: 2, waiting: 1 }),
     pending: (serial: string) => (serial === 'SER1' ? 3 : 0),
-    streamStats: () => ({ maxStreams: 4, maxStreamsPerDevice: 1, streams: 1, perDevice: { SER1: 1 } }),
+    streamStats: () => ({ maxStreams: 4, maxStreamsPerDevice: 1, streams: 1, pinned: 2, perDevice: { SER1: 1 } }),
   } as unknown as AdbClient
 }
 
@@ -73,6 +73,29 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
     const d2 = body.devices.find((d) => d.deviceId === 'd2')
     expect(d2?.queueDepth).toBe(0)
     expect(d2?.consecutiveFailures).toBe(0)
+  })
+
+  test('the streams block carries pinned, separately from the counted active figure (plan 208 §3.6, §4.9)', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'd1', 'SER1')
+
+    const inner = createAdbStatsRoutes({
+      db,
+      client: () => fakeAdbClient(),
+      metrics: createAdbMetricsStore(),
+      health: () => null,
+      auto: () => true,
+      sessions: () => null,
+    })
+    const app = withUser('operator', inner)
+
+    const res = await app.request('/')
+    const body = (await res.json()) as {
+      streams: { maxStreams: number; maxStreamsPerDevice: number; active: number; pinned: number; perDevice: Record<string, number> }
+    }
+    expect(body.streams).toEqual({ maxStreams: 4, maxStreamsPerDevice: 1, active: 1, pinned: 2, perDevice: { SER1: 1 } })
   })
 
   /**
@@ -201,14 +224,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
         keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
         text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
       },
-      assistsActive: 0,
-      mirrorGroups: 0,
-      mirrorMembers: 0,
-      mirrorFanoutMsP50: 0,
-      mirrorFanoutMsP95: 0,
-      queueWaitMs: 5_000,
-      uncollectedGrants: 0,
-      orphanedMirrorGroups: 0,
     })
   })
 
@@ -221,14 +236,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
         keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
         text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
       },
-      assistsActive: 3,
-      mirrorGroups: 1,
-      mirrorMembers: 5,
-      mirrorFanoutMsP50: 40,
-      mirrorFanoutMsP95: 90,
-      queueWaitMs: 5_000,
-      uncollectedGrants: 0,
-      orphanedMirrorGroups: 0,
     }
     const inner = createAdbStatsRoutes({
       db: opened.db,
@@ -245,7 +252,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
     expect(body.input).toEqual(live)
   })
 
-  test('video is zero-filled when sessions() is null (plan 92 §3.3, §4.5, §5 step 92.3)', async () => {
+  test('video is zero-filled when sessions() is null (plan 206 §4.10)', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const inner = createAdbStatsRoutes({
@@ -264,24 +271,24 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       wallStreams: 0,
       buildsRunning: 0,
       buildQueueDepth: 0,
-      maxConcurrentBuilds: 0,
+      buildsPerUsbRoot: 0,
+      farmCeiling: 0,
       maxTiles: 0,
       maxTilesAuto: false,
       transport: 'loopback',
     })
   })
 
-  test('video reports the live SessionManager.videoStats() combined with the video settings dep (plan 92 §3.3, §4.5, §5 step 92.3)', async () => {
+  test('video reports the live SessionManager.encoders() combined with the always-on builder stats and the video settings dep (plan 206 §4.10)', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const fakeSessions = {
-      idleSessions: () => [],
-      videoStats: () => ({
-        streams: { control: 2, wall: 9 },
-        buildsRunning: 1,
-        buildQueueDepth: 3,
-        profiles: [],
-      }),
+      encoders: () => [
+        { deviceId: 'd1', wall: { engine: 'scrcpy' }, control: { engine: 'scrcpy' } },
+        { deviceId: 'd2', wall: { engine: 'scrcpy' }, control: null },
+        { deviceId: 'd3', wall: null, control: null },
+      ],
+      forwards: () => [],
     } as unknown as import('@enkaku/session').SessionManager
     const inner = createAdbStatsRoutes({
       db: opened.db,
@@ -290,68 +297,61 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       health: () => null,
       auto: () => true,
       sessions: () => fakeSessions,
-      video: () => ({ maxConcurrentBuilds: 2, maxTiles: 25, maxTilesAuto: true, transport: 'loopback' }),
+      alwaysOn: () => ({ running: 1, queued: 3 }),
+      video: () => ({ buildsPerUsbRoot: 4, farmCeiling: 16, maxTiles: 25, maxTilesAuto: true, transport: 'loopback' }),
     })
     const app = withUser('operator', inner)
     const res = await app.request('/')
     const body = (await res.json()) as { video: unknown }
     expect(body.video).toEqual({
-      controlStreams: 2,
-      wallStreams: 9,
+      controlStreams: 1,
+      wallStreams: 2,
       buildsRunning: 1,
       buildQueueDepth: 3,
-      maxConcurrentBuilds: 2,
+      buildsPerUsbRoot: 4,
+      farmCeiling: 16,
       maxTiles: 25,
       maxTilesAuto: true,
       transport: 'loopback',
     })
   })
 
-  test('commandConsole is zero-filled when the dep is absent (plan 93 §5 step 93.12, not yet wired into daemon.ts)', async () => {
+  test('GET / reports forwards and installsByRoot when the underlying accessors are wired, and omits/zero-fills them when absent (plan 223 §4.6)', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
+    const forwardRow = { deviceId: 'd1', quality: 'wall' as const, port: 27500, scid: '7f00aabb', openedAt: 12345 }
+    const fakeSessions = {
+      encoders: () => [],
+      forwards: () => [forwardRow],
+    } as unknown as import('@enkaku/session').SessionManager
     const inner = createAdbStatsRoutes({
       db: opened.db,
       client: () => null,
       metrics: createAdbMetricsStore(),
       health: () => null,
       auto: () => true,
-      sessions: () => null,
+      sessions: () => fakeSessions,
+      hostAdb: () => ({ running: 0, maxConcurrent: 2, installsRunning: 1, longLived: 0, installsByRoot: { 'usb-1': { running: 1, queued: 0 } } }),
     })
     const app = withUser('operator', inner)
     const res = await app.request('/')
-    const body = (await res.json()) as { commandConsole: unknown }
-    expect(body.commandConsole).toEqual({
-      runsInFlight: 0,
-      membersInFlight: 0,
-      coalescedFramesPerSec: 0,
-      distinctOutputRatio: 0,
-      leaseChangedPerMinute: 0,
-    })
-  })
+    const body = (await res.json()) as { forwards: unknown; hostAdb: { installsByRoot: unknown } }
+    expect(body.forwards).toEqual([forwardRow])
+    expect(body.hostAdb.installsByRoot).toEqual({ 'usb-1': { running: 1, queued: 0 } })
 
-  test('commandConsole reports the live CommandRunner.stats() verbatim when the dep is supplied (plan 93 §5 step 93.12)', async () => {
-    const opened = openDb(':memory:')
-    runMigrations(opened.db)
-    const inner = createAdbStatsRoutes({
+    const innerAbsent = createAdbStatsRoutes({
       db: opened.db,
       client: () => null,
       metrics: createAdbMetricsStore(),
       health: () => null,
       auto: () => true,
       sessions: () => null,
-      commandConsole: () => ({ runsInFlight: 2, membersInFlight: 14, coalescedFramesPerSec: 3.5, distinctOutputRatio: 0.08, leaseChangedPerMinute: 40 }),
     })
-    const app = withUser('operator', inner)
-    const res = await app.request('/')
-    const body = (await res.json()) as { commandConsole: unknown }
-    expect(body.commandConsole).toEqual({
-      runsInFlight: 2,
-      membersInFlight: 14,
-      coalescedFramesPerSec: 3.5,
-      distinctOutputRatio: 0.08,
-      leaseChangedPerMinute: 40,
-    })
+    const appAbsent = withUser('operator', innerAbsent)
+    const resAbsent = await appAbsent.request('/')
+    const bodyAbsent = (await resAbsent.json()) as { forwards: unknown; hostAdb: { installsByRoot: unknown } }
+    expect(bodyAbsent.forwards).toBeUndefined()
+    expect(bodyAbsent.hostAdb.installsByRoot).toBeUndefined()
   })
 
   test('requires device.view — an unauthenticated request is rejected with 403', async () => {

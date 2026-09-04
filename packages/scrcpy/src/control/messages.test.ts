@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { CONTROL_MSG } from '../version'
-import { encodeGetClipboard, encodeResetVideo, encodeSetClipboard, encodeSetDisplayPower } from './messages'
+import { encodeGetClipboard, encodeInjectScroll, encodeResetVideo, encodeSetClipboard, encodeSetDisplayPower } from './messages'
 
 describe('encodeSetDisplayPower (Plan 17 §3.5) — control type 10, one boolean byte', () => {
   test('on → [10, 1]', () => {
@@ -86,5 +86,31 @@ describe('encodeSetClipboard (Plan 38 §4.1) — control type 9: [type][seq u64B
     expect(dv.getUint32(10, false)).toBe(expectedByteLen)
     expect(bytes.length).toBe(1 + 8 + 1 + 4 + expectedByteLen)
     expect(new TextDecoder().decode(bytes.subarray(14))).toBe(text)
+  })
+})
+
+describe('encodeInjectScroll (plan 209 §4.3) — control type 3: 21 bytes, i16 fixed-point deltas', () => {
+  test('encodeInjectScroll: 21 bytes, i16 fixed-point deltas', () => {
+    const bytes = encodeInjectScroll({ x: 540, y: 1200, screenWidth: 1080, screenHeight: 2400, hscroll: 0.5, vscroll: -1 })
+    expect(bytes.length).toBe(21)
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    expect(dv.getUint8(0)).toBe(CONTROL_MSG.INJECT_SCROLL_EVENT)
+    expect(dv.getInt32(1, false)).toBe(540)
+    expect(dv.getInt32(5, false)).toBe(1200)
+    expect(dv.getUint16(9, false)).toBe(1080)
+    expect(dv.getUint16(11, false)).toBe(2400)
+    // The server decodes with Binary.i16FixedPointToFloat (range -1..1) and then
+    // multiplies by 16 (its own comment: "the actual range is [-16, 16]"), so the
+    // encoder must pre-divide the -1..1 "one notch" input by 16 before packing.
+    expect(dv.getInt16(13, false)).toBe(Math.round((0.5 / 16) * 0x7fff))
+    expect(dv.getInt16(15, false)).toBe(Math.round((-1 / 16) * 0x7fff))
+    expect(dv.getUint32(17, false)).toBe(0)
+  })
+
+  test('a value beyond -1..1 is clamped before packing', () => {
+    const bytes = encodeInjectScroll({ x: 0, y: 0, screenWidth: 100, screenHeight: 100, hscroll: 5, vscroll: -5 })
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    expect(dv.getInt16(13, false)).toBe(Math.round((1 / 16) * 0x7fff))
+    expect(dv.getInt16(15, false)).toBe(Math.round((-1 / 16) * 0x7fff))
   })
 })

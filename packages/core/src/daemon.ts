@@ -8,14 +8,106 @@ import {
   DeviceSettingsSchema,
   parsePluginSocketPath,
   type ArtifactInfo,
+  type DeviceActivity,
   type DeviceEvent,
   type DeviceStatus,
+  type FarmSettings,
+  type GuestAgentActivity,
+  type GuestAgentVideo,
+  type JobSettings,
+  type Quality,
   type ServerMessage,
   type ShellResult,
   type TransportExecOptions,
   type Viewer,
 } from '@enkaku/protocol'
 import type { Server } from 'bun'
+import {
+  ADB_DRAIN_TIMEOUT_MS,
+  TOUCH_PROFILES,
+  ADB_ENDPOINT_BIND,
+  ADB_ENDPOINT_ENABLED,
+  ADB_ENDPOINT_IDLE_SEC,
+  ADB_ENDPOINT_MAX_STREAMS,
+  ADB_MAX_HOST_PROCESSES,
+  ADB_MAX_STREAMS_FARM,
+  ADB_MAX_STREAMS_PER_DEVICE,
+  ADB_RESTART_COOLDOWN_SEC,
+  ADB_TCP_PORT,
+  ADB_TIMEOUT_STORM_RATE,
+  AUDIT_RETENTION_DAYS,
+  BATTERY_POLL_INTERVAL_SEC,
+  BLOB_ORPHAN_GRACE_HOURS,
+  CONTROL_IDLE_SEC,
+  CRASH_WATCH,
+  CUTOVER_POLL_SEC,
+  CUTOVER_WINDOW_SEC,
+  DEVICE_AUTO_QUARANTINE,
+  DEVICE_CONNECT_SETTLE_MS,
+  DEVICE_ENDPOINTS_REMEMBERED,
+  DEVICE_ENDPOINT_RETIRE_AFTER,
+  DEVICE_LABEL_SURFACE,
+  DEVICE_OFFLINE_GRACE_SEC,
+  DEVICE_RECOVERY_COOLDOWN_SEC,
+  DEVICE_RECOVERY_PROBE_INTERVAL_SEC,
+  DEVICE_RESCAN_INTERVAL_SEC,
+  DEVICE_SCREEN_OFF_TIMEOUT_MS,
+  DISPLAY_FALLBACK_RETRIES,
+  EVENT_MAX_ROWS_PER_DEVICE,
+  GEO_PROVIDER_URL,
+  GEO_RECHECK_INTERVAL_SEC,
+  GUEST_AGENT_PROVISION,
+  GUEST_AGENT_RECOVERY_REARM_SEC,
+  INPUT_EVENT_RETENTION_DAYS,
+  INPUT_MAX_QUEUE_DEPTH,
+  INPUT_WAIT_BUDGET_MS,
+  JOB_CRASH_POLICY,
+  JOB_MAX_RESULT_BYTES,
+  JOB_MAX_TIMEOUT_MS,
+  JOB_MEMORY_ENFORCE,
+  JOB_MEMORY_MAX_BYTES,
+  JOB_MEMORY_SAMPLE_INTERVAL_MS,
+  JOB_PROGRESS_INTERVAL_MS,
+  JOB_REBIND_ON_INFRA,
+  JOB_RESET_STRICT,
+  JOB_RESET_TIMEOUT_MS,
+  JOB_RETRY_BACKOFF_MAX_MS,
+  JOB_STARTUP_TIMEOUT_MS,
+  JOB_TIMEOUT_IS_INFRA,
+  JOB_TRIGGER_MAX_DEPTH,
+  JOB_TRIGGER_MAX_PER_CHAIN,
+  JOB_TRIGGER_MAX_PER_JOB,
+  KV_MAX_ENTRIES_PER_DEVICE,
+  KV_MAX_ENTRIES_PER_NAMESPACE,
+  KV_MAX_KEY_LENGTH,
+  KV_MAX_VALUE_BYTES,
+  LABEL_WRITE_CONCURRENCY,
+  READINESS_DEFAULT_DESIRED,
+  READINESS_MAX_HOT,
+  RECORDING_ANCHOR_MIN_INTERVAL_MS,
+  RECORDING_ANCHOR_QUIET_MS,
+  RECORDING_CAPTURE_SCREENSHOTS,
+  RECORDING_LONG_PRESS_MS,
+  RECORDING_MAX_DURATION_SEC,
+  RECORDING_MAX_STEPS,
+  SCAN_CONCURRENCY,
+  SCAN_MAX_ADDRESSES,
+  SCAN_MODE,
+  SCAN_PROBE_TIMEOUT_MS,
+  SHELL_EXEC_TIMEOUT_MS,
+  SHELL_MAX_OUTPUT_BYTES,
+  TRANSFER_ENABLED,
+  WALL_DECODE_TILE_CEILING,
+  WALL_LAN_BANDWIDTH_BPS,
+  WALL_MAX_TILES,
+  WALL_RAMP_CONCURRENCY,
+  WALL_TRANSPORT_OVERRIDE,
+  WORKFLOW_MAX_TOTAL_MS,
+  WORKSPACE_INLINE_MAX_BYTES,
+  WORKSPACE_MAX_BYTES_PER_SCOPE,
+  WORKSPACE_MAX_FILES_PER_SCOPE,
+  WORKSPACE_MAX_FILE_BYTES,
+} from './config/constants'
 
 import { createNodeRoutes } from './api/nodes'
 import { createNodeAuth } from './tunnel/node-auth'
@@ -25,14 +117,14 @@ import { createTunnelRpc, type TunnelRpc } from './tunnel/rpc'
 import { createRemoteSessionManager, type RemoteSessionManager } from './tunnel/remote-sessions'
 import { createRemoteJobBridge } from './jobs/executors/remote'
 import { createJobLogBuffer } from './jobs/log-buffer'
-import { createWebRtcRelay } from './relay/webrtc-relay'
-import { createWeriftFactory } from './relay/werift-peer'
 import { createAuditLogger } from './auth/audit'
 import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
 import { createApiTokenService } from './auth/api-tokens'
 import { createTokenRoutes } from './api/tokens'
-import { createRetentionGc, type RetentionGc } from './maintenance/retention'
+import { createRetentionSweeper, type RetentionSweeper } from './retention/sweeper'
+import { createStorageRoutes } from './api/storage'
+import { createRunRetentionSweeper } from './jobs/runs/sweeper'
 import { createBlobGc, type BlobGc } from './agent/blob/gc'
 import { assertTlsPolicy, resolveAuthMode } from './config'
 import { createArtifactRoutes, MAX_REQUEST_BODY_BYTES } from './api/artifacts'
@@ -41,17 +133,17 @@ import { createDeviceRoutes } from './api/devices'
 import { createDeviceIdentityRoutes } from './api/device-identity'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-agent'
 import { createTagRoutes } from './api/tags'
-import { createClusterRoutes } from './api/clusters'
-import { createTopologyRoutes } from './api/topology'
+import { createGroupRoutes } from './api/groups'
 import { createBatchRoutes, createBatchDispatchDeps } from './api/batches'
 import { createScheduleRoutes } from './api/schedules'
-import { recomputeBatchStatus } from './clusters/status'
+import { recomputeBatchStatus } from './groups/status'
 import { createJobRoutes } from './api/jobs'
 import { createSettingsRoutes } from './api/settings'
 import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
 import { computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling'
 import { createAdbMetricsStore } from './device/adb-metrics'
 import { createHostAdb, type HostAdb } from './device/host-adb'
+import { createUsbRootCache } from './device/usb-root-cache'
 import { createDeviceHealth, type DeviceHealth } from './device/health'
 import { createAdbServerHealth, type AdbServerHealthMonitor } from './device/adb-health'
 import { createAgentProvisioner, createAgentProvisionerRoutes, type AgentProvisioner } from './device/agent-provisioner'
@@ -63,11 +155,13 @@ import { createAdbStatsRoutes } from './api/adb-stats'
 import { createVideoRoutes } from './api/video'
 import { createDoctorRoutes } from './api/doctor'
 import { createFarmSettingsStore } from './settings/farm-settings'
+import { createAgentSettingsStore } from './settings/agent-settings'
 import { buildRegistryResponse } from './registry/engines'
 import { createScriptRoutes } from './scripts/routes'
 import { createWorkflowRoutes } from './api/workflows'
 import { createRecordingRoutes } from './api/recordings'
 import { createScriptRegistry } from './scripts/registry'
+import { createWorkflowStore } from './workflows/store'
 import { createDevSlotStore } from './plugins/dev-slots'
 import { createPluginRuntime } from './plugins/runtime'
 import { createRuntimeHost, type RuntimeHost } from './plugins/runtime-host'
@@ -81,7 +175,8 @@ import { createFarmBroker, createFarmRunnerPort, type FarmBroker } from './plugi
 import { seedEmbeddedPacks } from './plugins/seed-embedded'
 import { embeddedAssets } from './embedded'
 import { createPluginRoutes, pluginRouteErrorStatus } from './api/plugins'
-import { buildCoreCapabilityRegistry, type CapabilityContextDeps } from './capability'
+import { createNodeTypeRoutes } from './api/node-types'
+import { buildCoreCapabilityRegistry, createCapabilityContext, type CapabilityContextDeps } from './capability'
 import { createCapRoutes } from './api/cap'
 import { buildOpenApiDocument } from './api/openapi'
 import { createMcpServer } from './mcp/server'
@@ -114,6 +209,7 @@ import type { ScheduleAgentDispatch } from './schedules/runner'
 import {
   createJobRunner,
   createSessionManager,
+  createAlwaysOn,
   createInspectorForSession,
   PortAllocator,
   parsePortRange,
@@ -121,17 +217,22 @@ import {
   computeAutoTiles,
   resolveWallTransport,
   resolveWallBandwidthBps,
+  SESSION_BUILD_FARM_CEILING,
+  type AlwaysOn,
+  type ActivityPort,
   type SessionManager,
   type TransferPort,
 } from '@enkaku/session'
 import { createScriptExecutor } from './jobs/executors/script'
-import { createWorkflowExecutor } from './jobs/executors/workflow'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, runMigrationsUpTo, type OpenedDb } from './db'
-import { materialiseClusters, DROP_CLUSTER_SELECTOR_COLUMNS_TAG } from './db/migrations/cluster-materialise'
+import { materialiseMembership, DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG } from './db/migrations/materialise-0014'
 import { backfillScheduleScriptRefs } from './db/migrations/backfill-schedule-refs'
 import { backfillScheduleTargets } from './db/migrations/schedule-target-backfill'
 import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
+import { parkSyntheticRecordingsOwner } from './db/migrations/park-synthetic-recordings'
+import { migrateWorkflowsFromScripts } from './db/migrations/workflows-from-scripts'
+import { migrateJobsToRuns } from './db/migrations/jobs-to-runs'
 import { devices, plugins } from './db/schema'
 import { createReverseRegistry, parseDevicePortRange, parseReverseList, removeReverse } from './network/reverse-registry'
 import { createDeviceStateMachine } from './device/state-machine'
@@ -150,38 +251,40 @@ import { EnkakuError } from './util/errors'
 import { ExecutorRegistry } from './jobs/executor'
 import { createExecutorHost } from './jobs/executor-host'
 import { classifyFailure } from './jobs/failure-class'
-import { pickRebindDevice } from './clusters/dispatch'
-import { createBatchPacer, replanAfterRestart, type BatchPacer } from './clusters/pacer'
+import { pickRebindDevice } from './groups/dispatch'
+import { createBatchPacer, replanAfterRestart, type BatchPacer } from './groups/pacer'
 import { sleepExecutor } from './jobs/executors/sleep'
 import { createInstallExecutor } from './jobs/executors/install'
 import { createPushExecutor } from './jobs/executors/push'
 import { createPullExecutor } from './jobs/executors/pull'
-import { createLeaseManager } from './lease/lease-manager'
-import { createCoControlManager, type CoControlManager } from './lease/co-control'
-import { createCommandRunStore } from './command-console/store'
-import { createCommandRunner, resolveCommandTarget, type CommandRunner, type CommandRunnerEvent } from './command-console/runner'
-import { createCommandRunRoutes } from './api/command-runs'
-import { createSavedCommandRoutes } from './api/saved-commands'
+import { createActivityRegistry, type ActivityRegistry } from './activity/registry'
+import { createOperationRegistry } from './actions/operations'
+import type { ActionsDeps } from './actions/run'
+import { createActionRoutes } from './api/actions'
 import { createJobStore } from './queue/job-store'
+import { createRunStore } from './jobs/runs/store'
+import { createRunWatcher } from './jobs/runs/watcher'
+import { createWorkflowOrchestrator } from './jobs/executors/workflow'
 import { createExpiryReaper } from './queue/expiry'
 import { createScheduler } from './queue/scheduler'
 import { createScheduleRunner } from './schedules/runner'
 import { validateScriptForRun } from './jobs/validate-script'
-import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type DeviceRegistry } from './registry/device-registry'
+import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type DeviceActivityState, type DeviceRegistry } from './registry/device-registry'
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
 import { createEndpointStore, type EndpointStore } from './registry/endpoints'
 import { createDeviceReconnector, type DeviceReconnector } from './registry/reconnect'
 import { createSweeper, type Sweeper } from './registry/sweep'
 import { createCutoverManager, type CutoverManager } from './registry/cutover'
+import { shouldRemoveBootForward, parseForwardListLine } from './registry/boot-forward-cleanup'
 import { formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber } from './registry/device-number'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
-import { createWsMessageHandler, type InputStatsBlock } from './server/ws-handlers'
+import { createWsMessageHandler, BACKPRESSURE_LIMIT_BYTES, type InputStatsBlock } from './server/ws-handlers'
 import type { TransportSnapshot } from './server/transport-metrics'
 import { createJobService } from './services/job-service'
-import { startScrcpySession, sweepStrayScrcpyServers } from '@enkaku/scrcpy'
+import { startScrcpySession, sweepStrayScrcpyServers, isOwnScrcpyForwardRemote } from '@enkaku/scrcpy'
 import { createDbArtifactSink, createDbDeviceSource } from './session/adapters'
-import { saveForDevice, createJobNodeTracker } from './runner/artifact-store'
+import { saveForDevice } from './runner/artifact-store'
 import { materializeBundle } from './scripts/bundle-cache'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { createAdbServerControl, type AdbServerControl } from './tools/adb-server-control'
@@ -283,6 +386,96 @@ export interface Daemon {
   reopenHttpPort(): Promise<void>
 }
 
+/**
+ * Plan 212 §5 step 212.4 — every one of these helpers rebuilds the shape a
+ * consumer already expects (discovery, adb, shell, transfer, job) from the
+ * post-212 farm settings plus the constants that replaced most of that
+ * shape's fields, so the consumer itself never has to change. Free
+ * functions, not closures: each takes the current `FarmSettings` snapshot
+ * as its only argument.
+ */
+function discoveryConstants(s: FarmSettings) {
+  return {
+    scanIntervalSec: DEVICE_RESCAN_INTERVAL_SEC,
+    offlineGraceSec: DEVICE_OFFLINE_GRACE_SEC,
+    recoveryCooldownSec: DEVICE_RECOVERY_COOLDOWN_SEC,
+    tcpPort: ADB_TCP_PORT,
+    endpointsPerDevice: DEVICE_ENDPOINTS_REMEMBERED,
+    endpointRetireAfter: DEVICE_ENDPOINT_RETIRE_AFTER,
+    connectSettleMs: DEVICE_CONNECT_SETTLE_MS,
+    networks: s.networkScan.networks,
+    scan: { mode: SCAN_MODE, maxAddresses: SCAN_MAX_ADDRESSES, concurrency: SCAN_CONCURRENCY, probeTimeoutMs: SCAN_PROBE_TIMEOUT_MS },
+    cutover: { armWindowSec: CUTOVER_WINDOW_SEC, armPollSec: CUTOVER_POLL_SEC },
+  }
+}
+
+function adbConstants(s: FarmSettings) {
+  return {
+    maxConcurrent: s.advanced.adbMaxConcurrent,
+    maxStreamsPerDevice: ADB_MAX_STREAMS_PER_DEVICE,
+    maxStreams: ADB_MAX_STREAMS_FARM,
+    maxHostConcurrent: ADB_MAX_HOST_PROCESSES,
+    maxInstallConcurrent: s.advanced.installsPerUsbRoot,
+  }
+}
+
+function shellConstants(s: FarmSettings) {
+  return {
+    mode: (s.privacy.adbCommand ? 'operator' : 'off') as 'operator' | 'off',
+    execTimeoutMs: SHELL_EXEC_TIMEOUT_MS,
+    maxOutputBytes: SHELL_MAX_OUTPUT_BYTES,
+    endpointEnabled: ADB_ENDPOINT_ENABLED,
+    endpointBind: ADB_ENDPOINT_BIND,
+    endpointIdleSec: ADB_ENDPOINT_IDLE_SEC,
+    maxEndpointStreams: ADB_ENDPOINT_MAX_STREAMS,
+  }
+}
+
+function transferConstants(s: FarmSettings) {
+  return {
+    enabled: TRANSFER_ENABLED,
+    maxPushBytes: s.advanced.transferCaps.maxPushBytes,
+    maxPullBytes: s.advanced.transferCaps.maxPullBytes,
+    installTimeoutMs: s.advanced.installTimeoutMs,
+    maxArchiveBytes: s.advanced.transferCaps.maxArchiveBytes,
+  }
+}
+
+/**
+ * The pre-212 `JobSettings` shape, rebuilt from the farm's current settings
+ * so the job runner and workflow orchestrator (plan 211's own shape) never
+ * see a change (plan 212 §5 step 212.4). `resetPolicy` maps the new
+ * three-value enum back onto the old four-value one it replaced.
+ */
+function jobConstants(s: FarmSettings): JobSettings {
+  const resetPolicy = s.jobRunner.resetPolicy === 'never' ? 'none' : s.jobRunner.resetPolicy === 'on-failure' ? 'declared' : 'home'
+  return {
+    resetPolicy,
+    resetTimeoutMs: JOB_RESET_TIMEOUT_MS,
+    resetStrict: JOB_RESET_STRICT,
+    retry: {
+      maxInfraAttempts: s.advanced.infraRetry.attempts,
+      backoffBaseMs: s.advanced.infraRetry.backoffBaseMs,
+      backoffMaxMs: JOB_RETRY_BACKOFF_MAX_MS,
+      timeoutIsInfra: JOB_TIMEOUT_IS_INFRA,
+      rebindOnInfra: JOB_REBIND_ON_INFRA,
+    },
+    crashPolicy: JOB_CRASH_POLICY,
+    defaultTimeoutMs: s.jobRunner.defaultTimeoutMs,
+    startupTimeoutMs: JOB_STARTUP_TIMEOUT_MS,
+    maxTimeoutMs: JOB_MAX_TIMEOUT_MS,
+    memory: {
+      defaultMaxRssBytes: s.advanced.jobMemoryLimitBytes,
+      maxRssBytes: JOB_MEMORY_MAX_BYTES,
+      enforce: JOB_MEMORY_ENFORCE,
+      sampleIntervalMs: JOB_MEMORY_SAMPLE_INTERVAL_MS,
+    },
+    trigger: { maxDepth: JOB_TRIGGER_MAX_DEPTH, maxPerChain: JOB_TRIGGER_MAX_PER_CHAIN, maxPerJob: JOB_TRIGGER_MAX_PER_JOB },
+    maxResultBytes: JOB_MAX_RESULT_BYTES,
+    progressIntervalMs: JOB_PROGRESS_INTERVAL_MS,
+  }
+}
+
 export function createDaemon(cfg: CoreConfig): Daemon {
   const log = createLogger('core')
   let server: Server<unknown> | null = null
@@ -337,14 +530,15 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   /** The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) — null until `reconnector` exists (it reuses that SAME ladder to watch), mirrors `reconnector` above, cleared in `stop()`. */
   let cutoverManager: CutoverManager | null = null
   let sessions: SessionManager | null = null
+/** The always-on builder (plan 206 §4.2) — constructed right after `sessions`, once adb is ready. */
+let alwaysOn: AlwaysOn | null = null
   let battery: BatteryMonitor | null = null
   let health: DeviceHealth | null = null
   /** "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — null until the adb subsystem comes up (mirrors `health` above), stopped/cleared in `stop()`. Read-only: it never touches the adb server itself. */
   let adbHealthMonitor: AdbServerHealthMonitor | null = null
   let remoteSessions: RemoteSessionManager | null = null
   let tunnelRpc: TunnelRpc | null = null
-  let webrtcRelayRef: ReturnType<typeof createWebRtcRelay> | null = null
-  let retention: RetentionGc | null = null
+  let retention: RetentionSweeper | null = null
 let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
   /**
@@ -373,6 +567,15 @@ let blobGc: BlobGc | null = null
    */
   let agentProvisionerRef: AgentProvisioner | null = null
   /**
+   * Plan 221 §4.5, §5 step 221.14 — `guestAgent.pushActivity`, read through the same forward-ref
+   * shape `agentProvisionerRef` above uses: the activity registry (built well before `guestAgent`)
+   * needs somewhere to push a change to, and nothing exists to push to yet at that point in boot.
+   * `null` until `guestAgent` is constructed, which is correct rather than merely convenient — a
+   * push attempted in that vanishingly short window is simply skipped, same as every other
+   * forward-ref in this file.
+   */
+  let guestAgentActivityPushRef: ((deviceId: string, activities: GuestAgentActivity[], video: GuestAgentVideo | null) => Promise<void>) | null = null
+  /**
    * Plan 114 §4.3, step 114.3 — the reverse registry's `routeEnabled` veto,
    * bound to the persisted route's own `enabled` flag once
    * `createGuestAgentRoutes` exists. The registry is constructed beside
@@ -399,16 +602,12 @@ let blobGc: BlobGc | null = null
    * closure shape `onDeviceReady` already uses for `agentProvisionerRef`.
    */
   let labellingRef: LabellingService | null = null
-  /** Device readiness (plan 43) — constructed once `leases` exists (below), used by every module below that reconciles or holds on it. */
+  /** Device readiness (plan 43) — constructed once `activities` exists (below), used by every module below that reconciles or admits against it. */
   let readiness: ReadinessManager | null = null
-  /** The command console's runner (plan 93 §4.5, §5 step 93.3) — constructed right after `leases`, since `admitMember`'s lease policy needs it. `stop()` drains it before `recorder` (its own `record` dep) is torn down. */
-  let commandRunner: CommandRunner | null = null
   let stopScheduler: (() => void) | null = null
   /** The batch pacer's dynamic timer (plan 94 §3.8, §4.8, step 94.7) — cleared in `stop()` like every other periodic timer here (`00-overview.md` §7 item 7). */
   let stopPacer: (() => void) | null = null
   let stopReaper: (() => void) | null = null
-  /** The co-control grant TTL reaper (plan 91 §4.2, §5 step 91.2) — stopped in `stop()` like every other periodic timer here (`00-overview.md` §7 item 7). */
-  let stopCoControlReaper: (() => void) | null = null
   let stopExpiryReaper: (() => void) | null = null
   let stopScheduleRunner: (() => void) | null = null
   let dataDirLock: DataDirLock | null = null
@@ -455,14 +654,15 @@ let blobGc: BlobGc | null = null
 
       // 1. DB + migrasi
       opened = openDb(join(cfg.dataDir, 'enkaku.db'))
-      // The cluster materialisation (plan 22.0 §3.4, §4.1) is a one-shot
-      // TypeScript data step that has to run strictly between two generated
-      // migrations: after `devices.cluster_id` exists, before
-      // `clusters.tags`/`device_ids` are dropped. `runMigrationsUpTo` opens
-      // that window; the trailing `runMigrations` applies the remainder
-      // (idempotent either way — see `cluster-materialise.test.ts`).
-      runMigrationsUpTo(opened.db, DROP_CLUSTER_SELECTOR_COLUMNS_TAG)
-      materialiseClusters(opened.db, { dataDir: cfg.dataDir, log: log.child('cluster-materialise') })
+      // The pre-0014 membership materialisation (plan 22.0 §3.4, §4.1) is a
+      // one-shot TypeScript data step that has to run strictly between two
+      // generated migrations: after the pre-rename membership column exists,
+      // before the pre-`0014` selector columns are dropped. `runMigrationsUpTo` opens
+      // that window; the trailing `runMigrations` applies the remainder,
+      // including plan 207's group-rename migration (idempotent either way —
+      // see `materialise-0014.test.ts`).
+      runMigrationsUpTo(opened.db, DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG)
+      materialiseMembership(opened.db, { dataDir: cfg.dataDir, log: log.child('materialise-0014') })
       // `opened.sqlite` is passed so the runner can realign a poisoned
       // `__drizzle_migrations.created_at` watermark before drizzle reads it
       // (see `runMigrations`'s own note — plans 61/62's hand-written
@@ -473,8 +673,8 @@ let blobGc: BlobGc | null = null
       // pre-existing row still holds a raw `scripts.id` where a reference
       // belongs. This one-shot step converts each to the EXACT version it
       // was already pinned to, never to `@latest` (acceptance #9). No
-      // "up to" window is needed here (unlike cluster materialisation):
-      // nothing later drops data this step needs to read.
+      // "up to" window is needed here (unlike the pre-0014 membership
+      // materialisation above): nothing later drops data this step needs to read.
       backfillScheduleScriptRefs(opened.db, { log: log.child('schedule-ref-backfill') })
       // Plan 68 §4.1 — the `target` migration: every schedule already reads
       // as `{kind: 'script'}` via the new column's own default, this pass is
@@ -487,11 +687,102 @@ let blobGc: BlobGc | null = null
       // now requires `content` to be an array) — the very next line already does (`agentThreadStore`
       // etc., built below), so this stays right here in migration order.
       migrateToolResultContentBlocks(opened.db, { log: log.child('tool-result-content-blocks') })
+      // Plan 210 §4.6 — two more one-shot boot steps, marker-guarded exactly
+      // like the three above, and run in THIS order: parking the synthetic
+      // `recordings` owner first, so its member rows are already ordinary
+      // unowned rows by the time the workflow migration classifies what is
+      // left. Both run before `createScriptRegistry` (below), so its
+      // unowned-row warning already sees the result.
+      parkSyntheticRecordingsOwner(opened.db, { log: log.child('park-synthetic-recordings') })
+      migrateWorkflowsFromScripts(opened.db, { log: log.child('workflows-from-scripts') })
+      migrateJobsToRuns(opened.db, { log: log.child('jobs-to-runs'), dataDir: cfg.dataDir })
       log.info('db ready (migrations applied)')
       const db = opened.db
+      // A job is an intent; a run is an execution (MVP 14 §1, plan 211).
+      // Constructed early — several closures below (crash trace saving) need
+      // it before the queue/scheduler section that used to be its only home.
+      const runs = createRunStore(db)
+      const runWatcher = createRunWatcher({ getRun: (runId) => runs.getRun(runId) })
 
       // 2. WS hub + Toolchain Manager (emit → broadcast)
       const hub = new WsHub(log.child('ws'))
+
+      // The device activity registry (MVP 04, plan 205 §4.4, §5 step 205.9) —
+      // one in-memory registry per boot, replacing the whole deleted
+      // manual-hold/secondary-operator subsystem outright. Built here,
+      // immediately after `hub`, because — unlike what it replaces — it has
+      // no circular dependency on anything constructed later in this
+      // function (no agent label resolver, no secondary-operator
+      // cross-reference): `settingsStore`/`recorder` below are read fresh,
+      // through the same forward-ref
+      // pattern `adbServerControl`'s own `getClient: () => adb` already uses
+      // a few lines down, so declaring this before either exists is safe —
+      // neither closure runs until well after both are assigned.
+      /**
+       * Plan 221 §4.5, §5 step 221.14 — at most one `activity.set` per device per second,
+       * trailing-edge, so a burst of registry changes on a busy device is one shell round trip,
+       * not one per change. Best-effort and never blocking the registry: `onChange` below only
+       * schedules and returns, the adb round trip happens on the timer.
+       */
+      const activityPushTimers = new Map<string, ReturnType<typeof setTimeout>>()
+      function scheduleActivityPush(deviceId: string): void {
+        if (activityPushTimers.has(deviceId)) return
+        const timer = setTimeout(() => {
+          activityPushTimers.delete(deviceId)
+          const list: GuestAgentActivity[] = activities.list(deviceId).map((a: DeviceActivity) => ({
+            id: a.id,
+            kind: a.kind,
+            label: a.label,
+            actorLabel: a.actor.label,
+            startedAt: a.startedAt,
+          }))
+          guestAgentActivityPushRef?.(deviceId, list, null)?.catch(() => undefined)
+        }, 1_000)
+        activityPushTimers.set(deviceId, timer)
+      }
+
+      const activities: ActivityRegistry = createActivityRegistry({
+        log: log.child('activity'),
+        controlIdleSec: () => CONTROL_IDLE_SEC,
+        onChange: (deviceId, change, activity, lastControl) => {
+          scheduleActivityPush(deviceId)
+          hub.broadcast({ type: 'device.activity', payload: { deviceId, change, activity, lastControl } })
+          // Only the two terminal transitions are worth a permanent row
+          // (plan 18 §3.5) — a marker refresh (`change === 'updated'`, a job
+          // heartbeat, a repeated tap) would flood the main stream with an
+          // event for every touch; the live broadcast above already carries
+          // that.
+          if (change === 'added' || change === 'ended') {
+            recorder?.record({
+              deviceId,
+              stream: 'main',
+              kind: change === 'ended' ? 'activity.ended' : 'activity.started',
+              actor: activity.actor.kind === 'user' ? activity.actor.id : null,
+              meta: { activityId: activity.id, kind: activity.kind, label: activity.label },
+            })
+          }
+          // A `control` marker ending for ANY reason — idle sweep,
+          // quarantine, an operator's forced disconnect, or an explicit
+          // release — must reset the terminal's emulated cwd and end any
+          // open recording (plan 26 §3.7, §4.4; plan 94 §4.6). A plain WS
+          // drop already reaches both through `handleClose` itself; this is
+          // what reaches the other paths, which leave the WS connection
+          // open (`releaseShellSession`/`stopRecordingForDisconnect` are
+          // both idempotent no-ops when there is nothing to reset).
+          if (change === 'ended' && activity.kind === 'control') {
+            releaseShellSession?.(deviceId)
+            stopRecordingForDisconnect?.(deviceId)
+          }
+        },
+      })
+      // The actions router's operation registry (plan 207 §4.2, §4.8) — an
+      // in-memory, TTL+cap-evicted record of every async verb's dispatch
+      // result, `GET /api/operations/:id`'s only backing store. Built beside
+      // `activities` (no persistence, no circular dependency on anything
+      // constructed later), swept on the same cadence as the activity
+      // registry (`operations.startSweep()`/`stopSweep()`, alongside
+      // `activities.startSweep()`/`stopSweep()` below).
+      const operations = createOperationRegistry({})
 
       // Notifications and webhooks (plan 68 §3.4, §4.1, §4.4) — built early: farm-wide, minimal
       // deps (db, dataDir), and needed by both the capability registry (`notify.send`), the
@@ -524,7 +815,7 @@ let blobGc: BlobGc | null = null
       //
       // Every dependency below is a forward reference — the same pattern
       // `stopTracker`/`startTracker` already used for `registry` two lines
-      // down. `sessions`, `leases`, `jobStore`, `host`, `reconnector`,
+      // down. `sessions`, `activities`, `jobStore`, `host`, `reconnector`,
       // `reconciler` and `endpoints` do not exist yet at this point in
       // `start()`; `cycle()` itself is never CALLED until long after every
       // one of them does, because a version swap or a restart can only ever
@@ -539,14 +830,14 @@ let blobGc: BlobGc | null = null
         },
         // F19: `drainSessions` was an unwired optional dep since M1 ("a
         // no-op in M1 — filled in by Plan 04"). Plan 04 shipped long ago;
-        // the hook was never filled until now. Sessions and manual leases
-        // are always drained; a running JOB is force-failed only when the
+        // the hook was never filled until now. Sessions and manual control
+        // markers are always drained; a running JOB is force-failed only when the
         // caller already decided to proceed despite it (`force` — see the
         // route's own `E_ADB_BUSY_FARM` guard, which runs BEFORE `cycle()`
         // is ever called).
         drainSessions: async ({ force }) => {
           const sessionsClosed = (await sessions?.closeAll('adb-server-restart')) ?? 0
-          const leasesReleased = leases.releaseAll?.({ reason: 'adb-server-restart' }) ?? 0
+          const controlsEnded = activities.endWhere((_, a) => a.kind === 'control' || a.kind === 'command')
           const jobsFailed: string[] = []
           if (force) {
             const running = jobStore.list({ status: 'running', limit: 1000 })
@@ -555,7 +846,7 @@ let blobGc: BlobGc | null = null
               jobsFailed.push(job.id)
             }
           }
-          return { sessionsClosed, leasesReleased, jobsFailed }
+          return { sessionsClosed, controlsEnded, jobsFailed }
         },
         // Reattach every remembered network address (plan 88 §3.2, §3.10) —
         // after a stop, adb's transport table is empty and it will not go
@@ -572,8 +863,8 @@ let blobGc: BlobGc | null = null
           // than being composed into it here: the report is rendered by
           // `AdbRestartDialog`, and a pre-composed string would double up the
           // moment that dialog also holds a `DeviceInfo` — the failure plan
-          // 124 §10 records against `MirrorMember`. One row per failed
-          // reattach, so a per-row lookup is bounded by the failure count,
+          // 124 §10 records against a similarly-shaped row type. One row per
+          // failed reattach, so a per-row lookup is bounded by the failure count,
           // not by the fleet size.
           const namedFor = (stableId: string): { label: string; number: number | null } => {
             const row = db.select({ label: devices.label }).from(devices).where(eq(devices.stableId, stableId)).get()
@@ -612,12 +903,12 @@ let blobGc: BlobGc | null = null
         // finished building it. Same pattern as `registry`/`sessions`/etc.
         // elsewhere in this function, just against a `const` rather than a
         // nullable `let` — read fresh on every call, never captured.
-        drainTimeoutMs: () => settingsStore.get().adbControl.drainTimeoutMs,
+        drainTimeoutMs: () => ADB_DRAIN_TIMEOUT_MS,
       })
 
       // "Restart Enkaku" (plan 120) — the whole core process, a materially
       // bigger blast radius than `adbServerControl` just above, so it gets
-      // the SAME draining discipline (sessions/leases always, a running job
+      // the SAME draining discipline (sessions/control markers always, a running job
       // only when the caller's own busy-farm guard already decided to
       // proceed) rather than a second, divergent one. Deliberately does NOT
       // touch adb's own lifecycle at all — `app-restart-control.ts` never
@@ -627,7 +918,7 @@ let blobGc: BlobGc | null = null
       const appRestartControl: AppRestartControl = createAppRestartControl({
         drain: async ({ force }) => {
           const sessionsClosed = (await sessions?.closeAll('app-restart')) ?? 0
-          const leasesReleased = leases.releaseAll?.({ reason: 'app-restart' }) ?? 0
+          const controlsEnded = activities.endWhere((_, a) => a.kind === 'control' || a.kind === 'command')
           const jobsFailed: string[] = []
           if (force) {
             const running = jobStore.list({ status: 'running', limit: 1000 })
@@ -636,7 +927,7 @@ let blobGc: BlobGc | null = null
               jobsFailed.push(job.id)
             }
           }
-          return { sessionsClosed, leasesReleased, jobsFailed }
+          return { sessionsClosed, controlsEnded, jobsFailed }
         },
         // `daemon.stop()` cannot be referenced as `this` from inside its own
         // construction (the returned object literal is not built yet) — the
@@ -670,7 +961,10 @@ let blobGc: BlobGc | null = null
       // else that used to read `authMode` below still does; this does not
       // move that logic, just the one function call it was already making.
       const authMode = resolveAuthMode(cfg)
-      const settingsStore = createFarmSettingsStore(db, { authMode })
+      const settingsStore = createFarmSettingsStore(db, { authMode, log })
+      // Plan 212 §4.7 — row 2 of `farm_settings`; the five AI blocks that
+      // moved out of `FarmSettingsSchema`.
+      const agentSettingsStore = createAgentSettingsStore(db)
 
       // The address book (plan 88 §3.2, §4.3, fixes F10) — read-only about
       // adb itself, so it can be built here, well before the adb subsystem
@@ -680,7 +974,7 @@ let blobGc: BlobGc | null = null
       // `adbServerControl`'s `reattachEndpoints` above (via forward ref).
       const endpoints: EndpointStore = createEndpointStore({
         db,
-        settings: () => settingsStore.get().discovery,
+        settings: () => discoveryConstants(settingsStore.get()),
       })
 
       // The ONE bounded adb CLI helper (plan 85 §3.4, §4.5, fixes F11/F12) —
@@ -705,7 +999,8 @@ let blobGc: BlobGc | null = null
           if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
           return adb.binaryPath
         },
-        settings: () => settingsStore.get().adb,
+        settings: () => adbConstants(settingsStore.get()),
+        usbRootOf: createUsbRootCache({ listDevices: () => (adb ? adb.listDevices() : Promise.resolve([])) }).rootOf,
         onLog: (level, msg) => log.child('host-adb')[level](msg),
       })
       hostAdb = hostAdbHandle
@@ -750,7 +1045,7 @@ let blobGc: BlobGc | null = null
       // poll would make later performance reports unreadable (plan 23 §4.3).
       const recomputeAdbConcurrency = () => {
         if (!adb) return
-        const cfg = settingsStore.get().adb
+        const cfg = adbConstants(settingsStore.get())
         const nonOfflineCount = db
           .select({ status: devices.status })
           .from(devices)
@@ -800,10 +1095,9 @@ let blobGc: BlobGc | null = null
        * farm's video on every one of those would be worse than not honouring
        * the setting at all (§3.8's own words) — so this waits 500ms after the
        * LAST change before running one pass, the same order of magnitude as
-       * every other "settle, then act" debounce in this codebase (plan 42's
-       * `enforceIdleCap` is deliberately immediate instead, because closing an
-       * idle session has no user-visible interruption risk; a video restart
-       * does, which is exactly why THIS one debounces and that one does not).
+       * every other "settle, then act" debounce in this codebase. A video
+       * restart is user-visible (the picture goes dark for one rebuild),
+       * which is exactly why this one debounces.
        * `reprofile` itself is a no-op for a device that turns out not to need
        * restarting (rule 1) or is `busy` (rule 4), so debouncing only changes
        * how OFTEN the farm re-checks, never what it does once it checks.
@@ -832,11 +1126,11 @@ let blobGc: BlobGc | null = null
       // router once it exists — the two reference each other, same forward-ref
       // pattern used below for the tunnel hooks.
       let publishDeviceEvent: ((deviceId: string, ev: DeviceEvent) => void) | null = null
-      // Same forward-ref pattern as `publishDeviceEvent`: the lease manager
-      // (below) and the device routes (further below) are both built before
-      // the WS router exists, but both need to reach into it once it does
-      // (plan 31 §4.2 — presence broadcast on lease revoke, and the
-      // GET /:id/viewers route).
+      // Same forward-ref pattern as `publishDeviceEvent`: the activity
+      // registry (below) and the device routes (further below) are both
+      // built before the WS router exists, but both need to reach into it
+      // once it does (plan 31 §4.2 — presence broadcast on a control marker
+      // ending, and the GET /:id/viewers route).
       let broadcastDeviceViewers: ((deviceId: string) => void) | null = null
       let viewersOfDevice: ((deviceId: string) => Viewer[]) | null = null
       // Same forward-ref pattern: a device going offline (below) must stop
@@ -845,40 +1139,29 @@ let blobGc: BlobGc | null = null
       // further down.
       let stopMonitorsForDevice: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: the terminal's emulated cwd (plan 26 §3.7,
-      // §4.4) must reset to `/` whenever a manual lease is released — for
-      // ANY reason, including the automatic ones (idle timeout, quarantine)
-      // handled below in `onManualRevoked`, which fires before the WS router
-      // exists.
+      // §4.4) must reset to `/` whenever a client's control marker ends —
+      // for any reason, including the automatic ones (idle timeout,
+      // quarantine, disconnect) — before the WS router exists.
       let releaseShellSession: ((deviceId: string) => void) | null = null
+      // Same forward-ref pattern: an open recording (plan 94 §4.6) must end
+      // whenever a client's control marker ends for one of those SAME
+      // automatic reasons — a plain WS drop is already covered by
+      // `handleClose` itself, but an idle-swept or quarantine-ended marker
+      // leaves the WS connection open, so nothing else would ever call this.
+      // Resolved below, right beside `releaseShellSession`, once the WS
+      // router (which owns the real `RecordingService` handle) exists.
+      let stopRecordingForDisconnect: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: a device going offline must clear its
       // Inspect tab ref-count bookkeeping (plan 56 §4.2 step 7) — the
       // inspector itself is already released as part of the session's own
       // `close()`, this only resets what the WS router tracks so a later
       // `inspect.attach` does not inherit a stale count.
       let resetInspectForDevice: ((deviceId: string) => void) | null = null
-      // Same forward-ref pattern: a manual lease's readiness hold (plan 43
-      // §5 step 43.7) must not outlive the lease however it ends either —
-      // an explicit `lease.release`/WS disconnect already release it inline
-      // in `ws-handlers.ts`; this covers the automatic paths (idle timeout,
-      // quarantine) handled below in `onManualRevoked`.
-      let releaseLeaseReadinessHold: ((deviceId: string) => void) | null = null
-      // Same forward-ref pattern: an open recording (plan 94 §4.6) must not
-      // outlive the manual lease it was made under either — an explicit
-      // `lease.release`/WS disconnect already call `deps.recording?.stopForLeaseLost`
-      // inline in `ws-handlers.ts`; this covers the automatic paths (idle
-      // timeout, quarantine, a takeover) handled below in `onManualRevoked`/
-      // `onManualTakenOver`, which fire before the WS router exists. Without
-      // this, a recording started under one holder keeps capturing whatever
-      // the NEXT holder does after an automatic revoke, with no record of
-      // where the handover happened.
-      let stopRecordingForLeaseLost: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: a device going offline must mark its
       // `vpn-helper` network route's checks unknown (never tear the route
-      // down — plan 52 §4.1 reverses plan 44 §5.7's lease-scoped teardown),
+      // down — plan 52 §4.1 reverses plan 44 §5.7's activity-scoped teardown),
       // and a device coming back online must restore it, probe-first (plan
-      // 52 §3.2, §5.3). `createGuestAgentRoutes` needs `leases` itself,
-      // which does not exist until `createLeaseManager` below returns.
-      // Resolved once `guestAgent` is built further down.
+      // 52 §3.2, §5.3). Resolved once `guestAgent` is built further down.
       let handleNetworkDeviceOffline: ((deviceId: string) => Promise<void>) | null = null
       let restoreNetworkRoute: ((deviceId: string) => Promise<void>) | null = null
       // Same forward-ref pattern: crash detection (plan 37 §3.3) starts when
@@ -887,38 +1170,40 @@ let blobGc: BlobGc | null = null
       // before the WS router (which owns the actual `CrashWatcher`) exists.
       let watchCrashesForDevice: ((deviceId: string) => void) | null = null
       let unwatchCrashesForDevice: ((deviceId: string) => void) | null = null
-      // Same forward-ref pattern: a job finishing must re-resolve any mirror
-      // group the job's device was skipped from (plan 91 §3.9, §4.7, §5 step
-      // 91.7) — F27's re-admit, most notably: an `internal:install` job
-      // ending is what lets that device rejoin a mirror it was `skipped:
-      // installing` from. `host`'s `onJobFinished` (below) fires long before
-      // `attachWsRouter` — the mirror manager it needs to re-resolve against
-      // lives inside the WS router — ever runs.
-      let reconcileMirrorForDevice: ((deviceId: string) => void) | null = null
       // Same forward-ref pattern: `/api/adb/stats`'s `transport` block (plan
       // 85 §3.6, §4.6) lives on the WS router's own connection bookkeeping,
       // but `createAdbStatsRoutes` is built (below, in step 4) before
       // `attachWsRouter` ever runs.
       let transportStats: (() => TransportSnapshot) | null = null
       // Same forward-ref pattern: `/api/adb/stats`'s `input` block (plan 91
-      // §4.10, §5 step 91.10) lives on the WS router's own arbiter/mirror/
-      // co-control bookkeeping, but `createAdbStatsRoutes` is built (below,
+      // §4.10, §5 step 91.10) lives on the WS router's own arbiter
+      // bookkeeping, but `createAdbStatsRoutes` is built (below,
       // in step 4) before `attachWsRouter` ever runs.
       let inputStats: (() => InputStatsBlock) | null = null
-      // Same forward-ref pattern: the command runner (plan 93 §3.17, §4.5,
-      // §5 step 93.4) is constructed right after `leases`, well before
-      // `attachWsRouter` runs — but its `broadcast` dep needs
-      // `commandTargets(runId)`'s subscriber bookkeeping, which lives on the
-      // WS router's own connection state. Resolved once `attachWsRouter`
-      // runs, same as `transportStats`/`inputStats` immediately above.
-      let broadcastCommandEvent: ((runId: string, msg: CommandRunnerEvent) => void) | null = null
+      // Same forward-ref pattern: `GET /api/video/latency`'s per-stream
+      // counters (plan 203 §4.6) live on the WS router's own congestion/
+      // keyframe bookkeeping, but `createVideoRoutes` is built (below, in
+      // step 4) before `attachWsRouter` ever runs.
+      let videoStreamStats:
+        | ((deviceId: string) => Array<{ quality: Quality; keyframeRequests: number; congestionDrops: number }>)
+        | null = null
+      // Same forward-ref pattern: `GET /api/video/latency`'s `input` block
+      // (plan 209 §4.11) lives on the WS router's own dispatch-time
+      // bookkeeping, but `createVideoRoutes` is built (below, in step 4)
+      // before `attachWsRouter` ever runs.
+      let inputDispatchStats: ((deviceId: string) => { dispatchMsP50: number; dispatchMsP95: number; samples: number } | null) | null = null
+      // Same forward-ref pattern: a device-side clipboard change (plan 209
+      // §3.2 D10, §4.9) is pushed to Device Control viewers through the WS
+      // router's own connection bookkeeping, but `createSessionManager`
+      // (below, in step 5) is built before `attachWsRouter` ever runs.
+      let handleClipboardChanged: ((deviceId: string, text: string) => void) | null = null
       // Same forward-ref pattern (plan 93 §4.6, §5 step 93.9 — closes F27):
       // `transferBroadcast` (below, in step 3) is constructed well before
       // `attachWsRouter` runs, but scoping `transfer.progress`/`transfer.done`
       // to viewers of the device (matching `shell.result`) needs
       // `deviceTargets(deviceId)`'s connection bookkeeping, which lives on
       // the WS router. Resolved once `attachWsRouter` runs, same as
-      // `broadcastCommandEvent` immediately above.
+      // `transportStats`/`inputStats` above.
       let broadcastTransferEvent: ((deviceId: string, msg: ServerMessage) => void) | null = null
       // Same forward-ref pattern: the shared reaper (`expiryReaper`, built well before the agent
       // runner exists) sweeps overdue agent approvals on its own cadence (plan 66 §4.3) instead of
@@ -962,14 +1247,17 @@ let blobGc: BlobGc | null = null
       // handed.
       traceRecorder = createTraceRecorder({
         db,
-        publish: (jobId, event) => hub.broadcast({ type: 'job.trace', payload: { jobId, event } }),
+        publish: (runId, event) => {
+          const jobId = runs.getRun(runId)?.jobId ?? runId
+          hub.broadcast({ type: 'job.trace', payload: { jobId, runId, event } })
+        },
       })
       // `<dataDir>/traces/<jobId>/` — one directory per job, one lifetime
       // (§3.5). Passed BOTH into the local runner (as `traceStore`, the only
       // route a screenshot's bytes have out of `@enkaku/session`) and into
       // `createJobRoutes` (which reads the same files back out).
       const traceFrameStore = createTraceFrameStore({ dataDir: cfg.dataDir })
-      // The lease-scoped adb endpoint (plan 27 §4.2, cloud devices plan 28
+      // The activity-gated adb endpoint (plan 27 §4.2, cloud devices plan 28
       // §4.4). Constructed unconditionally, even before adb or the tunnel
       // layer are ready — `deps.adb`/`deps.rpc`/`deps.router` all read their
       // outer variables fresh on every `open()` call (the same forward-ref
@@ -985,7 +1273,7 @@ let blobGc: BlobGc | null = null
         remoteNodeIdFor: (deviceId) => remoteSessions?.nodeIdFor(deviceId) ?? null,
         rpc: () => tunnelRpc,
         router: () => tunnelRouter,
-        shellSettings: () => settingsStore.get().shell,
+        shellSettings: () => shellConstants(settingsStore.get()),
         listen: bunAdbEndpointListen,
         createShim: createAdbdShim,
         // Readiness hold (plan 43 §5 step 43.7) — same forward-ref pattern as
@@ -1023,7 +1311,7 @@ let blobGc: BlobGc | null = null
 
       // `canUseDevice`'s device half (plan 34 §3.5, §4.4) — a minimal lookup
       // shared by every ownership check below (job enqueue, batch dispatch,
-      // lease acquire, the Plan 27 adb endpoint) so there is one query shape,
+      // control acquisition, the Plan 27 adb endpoint) so there is one query shape,
       // not four.
       const getDeviceOwner = (deviceId: string): { ownerId: string | null } | null => {
         const row = db.select({ ownerId: devices.ownerId }).from(devices).where(eq(devices.id, deviceId)).get()
@@ -1033,25 +1321,28 @@ let blobGc: BlobGc | null = null
       // Writes a crash trace as an artifact (plan 37 §3.6): job-scoped
       // (reusing the exact sink every other job artifact goes through, so it
       // shows up on the job detail page and broadcasts `job.artifact` like
-      // any other) when a job lease was held, device-scoped via
+      // any other) when a job was running, device-scoped via
       // `saveForDevice` (plan 24 §4.6) otherwise.
       const saveCrashTrace = async (opts: { deviceId: string; jobId: string | null; label: string; text: string }): Promise<ArtifactInfo> => {
         const data = new TextEncoder().encode(opts.text)
-        if (opts.jobId) {
+        // A crash trace is job-scoped only while that job has a RUNNING run
+        // (plan 211): the run is what the artifact is actually keyed by now.
+        const runId = opts.jobId ? runs.latestRun(opts.jobId)?.id ?? null : null
+        if (opts.jobId && runId) {
           const jobId = opts.jobId
           let saved: ArtifactInfo | undefined
           const sink = createDbArtifactSink({
             db,
             dataDir: cfg.dataDir,
-            jobId,
+            runId,
             // Plan 115 §3.6 — this path only ever saves `kind: 'log'` (the
             // crash trace, above), so the cap never actually fires here; kept
             // in step with every other `createDbArtifactSink` call for the
             // same reason nothing imports the settings singleton directly.
-            maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
+            maxFileBytes: () => settingsStore.get().advanced.transferCaps.maxPushBytes,
             onSaved: (info) => {
               saved = info
-              hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } })
+              hub.broadcast({ type: 'job.artifact', payload: { jobId, runId, artifact: info } })
             },
           })
           await sink.save({ kind: 'log', label: opts.label, data, ext: 'txt' })
@@ -1140,7 +1431,7 @@ let blobGc: BlobGc | null = null
         `auth mode: ${authMode}${authMode === 'server' && !auth.hasAnyAdmin() ? ' (admin setup required)' : ''}`,
       )
 
-      // 3. Queue / lease / scheduler (M3)
+      // 3. Queue / heartbeat / scheduler (M3)
       const jobStore = createJobStore(db)
       const orphans = jobStore.failOrphanRunning()
       if (orphans > 0) log.warn(`recovery boot: ${orphans} job 'running' yatim ditandai failed (core restarted)`)
@@ -1163,14 +1454,16 @@ let blobGc: BlobGc | null = null
           // (plan 23 §4.3) — DEVICE_CONNECTED/DISCONNECTED most obviously,
           // but recomputing on all of them is cheap and simplest to reason about.
           recomputeAdbConcurrency()
-          // An idle session must not survive a quarantine (Plan 42 §3.4,
-          // §4.4) — a no-op when someone is actively watching (video keeps
-          // streaming while a device is busy/quarantined, spec §10.1).
-          if (status === 'quarantined') void sessions?.closeIfIdle(deviceId)
+          // Plan 206 §9 Q5 (left open, not decided here): a session now lives
+          // until offline or forgotten, so a quarantined device keeps its
+          // session running — the idle-eviction call this used to make is
+          // gone with the idle model it belonged to. Whether quarantine
+          // should shed heat by stopping the encoder is for a later plan to
+          // decide.
           // Every status transition can move readiness too (Plan 43 §5 step
           // 43.6): connect/disconnect and quarantine/unquarantine most
-          // obviously, but also JOB_CLAIMED/JOB_FINISHED and manual
-          // acquire/release, since any of them can change whether a standing
+          // obviously, but also a job's claim/finish and a control marker
+          // starting/ending, since any of them can change whether a standing
           // `desired: hot` device is still reachable. Cheap and idempotent —
           // reconciling on every transition is simplest to reason about.
           //
@@ -1196,7 +1489,7 @@ let blobGc: BlobGc | null = null
       // Subscriber-scoped (plan 93 §4.6, §5 step 93.9 — closes F27) — the
       // forward-ref into `ws-handlers.ts`'s `deviceTargets(deviceId)`/
       // `broadcastTransfer`, resolved once `attachWsRouter` runs (the SAME
-      // pattern `broadcastCommandEvent` above uses). Never `hub.broadcast`:
+      // pattern `transportStats`/`inputStats` above use). Never `hub.broadcast`:
       // a farm-wide broadcast put every open tab on every device's progress
       // ticks, both a wire-cost bug and a privacy one at 100 devices. Falls
       // back to a debug log before `attachWsRouter` has run.
@@ -1241,7 +1534,7 @@ let blobGc: BlobGc | null = null
         // than being silently attempted over a transport that does not
         // exist for it.
         isRemote: (deviceId) => (remoteSessions?.nodeIdFor(deviceId) ?? null) !== null,
-        settings: () => settingsStore.get().transfer,
+        settings: () => transferConstants(settingsStore.get()),
       })
       // The script API's `ctx.device.install`/`push`/`pull` (plan 39 §4.6) —
       // every call also broadcasts `transfer.progress`/`transfer.done`, the
@@ -1305,6 +1598,8 @@ let blobGc: BlobGc | null = null
       // `resolveScriptRef` call site further down this function reads through it.
       const pluginDevSlots = createDevSlotStore()
       const scriptRegistry = createScriptRegistry({ db, dataDir: cfg.dataDir, devSlots: pluginDevSlots })
+      // Plan 210 §4.4 — one instance per boot, beside `scriptRegistry`.
+      const workflowStore = createWorkflowStore(db)
 
       // Check the `scripts` table for a non-built-in scriptId (M4) — shared by
       // the job service, batch dispatch and schedule dispatch (plans 04, 20, 21)
@@ -1318,21 +1613,11 @@ let blobGc: BlobGc | null = null
       }
 
       let scheduler: ReturnType<typeof createScheduler> | null = null
-      let leaseManager: ReturnType<typeof createLeaseManager> | null = null
       let scheduleRunner: ReturnType<typeof createScheduleRunner> | null = null
-      // Plan 91 §4.2, §5 step 91.2 — same forward-ref pattern as `leaseManager`
-      // just above: `createLeaseManager`'s own `onPrimaryEnded` hook (below)
-      // needs to call into the co-control grant store, but that store is not
-      // constructed until right after `leases` itself is (it reads `leases`
-      // back via `leases.getLease`), which is a few hundred lines further
-      // down this same function. Read fresh, so the wiring is correct the
-      // instant both sides exist, in either construction order.
-      let coControlRef: CoControlManager | null = null
-      // Plan 94 §3.8, §4.8, step 94.7 — same forward-ref pattern as
-      // `leaseManager`/`coControlRef` above: `onBatchChanged` (below) needs
-      // to call into the pacer, which is not constructed until right after
-      // `scheduler` itself is, a few hundred lines further down this same
-      // function (it needs `scheduler.kick`).
+      // Plan 94 §3.8, §4.8, step 94.7 — a forward ref: `onBatchChanged`
+      // (below) needs to call into the pacer, which is not constructed until
+      // right after `scheduler` itself is, a few hundred lines further down
+      // this same function (it needs `scheduler.kick`).
       let pacerRef: BatchPacer | null = null
       // A batch member job reached a terminal state (or was cancelled while
       // queued) → recompute the batch's cached status and broadcast it
@@ -1341,15 +1626,27 @@ let blobGc: BlobGc | null = null
       // the ONE hook into the pacer (F32) — see `onBatchChanged`'s own
       // `ExecutorHostDeps` comment for exactly which callers pass it.
       const onBatchChanged = (batchId: string, deviceId?: string) =>
-        recomputeBatchStatus({ db, jobStore, broadcast: (msg) => hub.broadcast(msg), pacer: pacerRef ?? undefined }, batchId, deviceId)
+        recomputeBatchStatus({ db, jobStore, runs, broadcast: (msg) => hub.broadcast(msg), pacer: pacerRef ?? undefined }, batchId, deviceId)
       const host = createExecutorHost({
         registry: executors,
+        workflowExecutor: () =>
+          createWorkflowOrchestrator({
+            db,
+            runs,
+            watcher: runWatcher,
+            registry: scriptRegistry,
+            enqueueStep: (input) => jobService.enqueueStep(input),
+            cancelRun: (runId) => jobService.cancelRun(runId),
+            settings: () => ({ maxTotalMs: WORKFLOW_MAX_TOTAL_MS }),
+            log: log.child('workflow'),
+          }),
         jobStore,
-        states,
-        leases: () => leaseManager!,
+        runs,
+        watcher: runWatcher,
+        activities: () => activities,
         log: log.child('executor'),
-        jobTtlSec: cfg.lease.jobTtlSec,
-        heartbeatMs: cfg.lease.heartbeatMs,
+        jobTtlSec: cfg.heartbeat.jobTtlSec,
+        heartbeatMs: cfg.heartbeat.heartbeatMs,
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
         onFinished: () => scheduler?.kick(),
         onBatchChanged,
@@ -1374,13 +1671,6 @@ let blobGc: BlobGc | null = null
           // `readinessHold` below was never wired (a host built without it,
           // e.g. some tests).
           void readiness?.reconcile(deviceId)
-          // F27's re-admit (plan 91 §3.9, §4.7, §5 step 91.7): a device
-          // running `internal:install` is `skipped: installing` in every
-          // mirror group that requested it — this is what lets it rejoin on
-          // its own the instant that job (or any other) settles, with no
-          // client asking. A harmless no-op for a device that belongs to no
-          // group, or before `attachWsRouter` has run.
-          reconcileMirrorForDevice?.(deviceId)
         },
         // Readiness hold (plan 43 §3.6, §5 step 43.7) — a job on a sleeping
         // device wakes it, then proceeds; never blocks a claim (§4.3
@@ -1388,9 +1678,9 @@ let blobGc: BlobGc | null = null
         readinessHold: (deviceId, reason) => readiness?.hold(deviceId, reason) ?? Promise.resolve({ id: 'noop', release() {} }),
         // Retry classification (plan 36 §3.2, §4.1, §4.3) — read fresh per
         // settle, the same pattern `adb.maxConcurrent` uses.
-        timeoutIsInfra: () => settingsStore.get().job.retry.timeoutIsInfra,
-        rebindOnInfra: () => settingsStore.get().job.retry.rebindOnInfra,
-        // Lazy, like `leases` above — `health` is created later, once adb is ready.
+        timeoutIsInfra: () => JOB_TIMEOUT_IS_INFRA,
+        rebindOnInfra: () => JOB_REBIND_ON_INFRA,
+        // Lazy, like `activities` above — `health` is created later, once adb is ready.
         health: () => health,
         deviceSerial: (deviceId) => db.select({ serial: devices.serial }).from(devices).where(eq(devices.id, deviceId)).get()?.serial ?? null,
         pickRebindDevice: (job) => pickRebindDevice(db, job),
@@ -1407,7 +1697,7 @@ let blobGc: BlobGc | null = null
         // `rebindOnInfra` just above already use. Without this the default
         // (65_536, `RESULT_LIMITS.defaultMaxResultBytes`) is still correct
         // out of the box (97.3's own note) but not live-tunable from Studio.
-        maxResultBytes: () => settingsStore.get().job.maxResultBytes,
+        maxResultBytes: () => JOB_MAX_RESULT_BYTES,
         // `scripts.result_schema` has no producer yet — publish-time storage
         // and serving are plan 97 step 97.2's own remaining items, out of
         // this file's `packages/core/src/scripts/**` reach — so this always
@@ -1421,19 +1711,21 @@ let blobGc: BlobGc | null = null
         // the one-warn-per-job rule before ever calling this. No DB write
         // anywhere on this path (§3.7 — progress is live state, not
         // history).
-        onProgress: (jobId, deviceId, value) => hub.broadcast({ type: 'job.progress', payload: { jobId, deviceId, value } }),
+        onProgress: (jobId, runId, deviceId, value) => hub.broadcast({ type: 'job.progress', payload: { jobId, runId, deviceId, value } }),
       })
 
-      // Resolves a lease holder's id to a display label (plan 71 §3.3) — the
-      // lease manager itself never learns about users, agents, or jobs
-      // directly; this closure is the one place that does. `agentStoreRef`
-      // is the same forward-ref pattern used throughout this function
-      // (`agentStore` is not built until later, well below this point) — by
-      // the time this is actually CALLED (a lease exists), boot has long
-      // finished and the ref is populated. A holder id this cannot resolve
-      // becomes a truthful, non-empty phrase — never an empty string, never
-      // the raw id (plan 71 §3.3, criterion 14).
-      const resolveLeaseLabel = (kind: 'user' | 'agent' | 'job', id: string): string => {
+      // Resolves an actor id to a display label (plan 71 §3.3, kept and
+      // renamed by plan 205 §5 step 205.9 — the manual-hold subsystem that
+      // used to be the only caller is gone, but the registry's own activity actors
+      // still need the SAME resolution for a `user`/`agent`/`job` id, so the
+      // one place that learns about users, agents, and jobs stays exactly
+      // one place). `agentStoreRef` is the same forward-ref pattern used
+      // throughout this function (`agentStore` is not built until later,
+      // well below this point) — by the time this is actually CALLED, boot
+      // has long finished and the ref is populated. An id this cannot
+      // resolve becomes a truthful, non-empty phrase — never an empty
+      // string, never the raw id (plan 71 §3.3, criterion 14).
+      const resolveActorLabel = (kind: 'user' | 'agent' | 'job', id: string): string => {
         if (kind === 'user') {
           const user = id ? auth.listUsers().find((u) => u.id === id) : null
           return user?.email ?? 'a signed-out client'
@@ -1444,141 +1736,23 @@ let blobGc: BlobGc | null = null
         }
         const job = jobStore.get(id)
         if (!job) return 'a deleted job'
+        if (!job.scriptId) return job.workflowName ? `${job.workflowName} (workflow)` : 'a job'
         const script = jobStore.scriptNames([job.scriptId]).get(job.scriptId)
         return script ? `${script.name}@${script.version}` : 'a job'
       }
 
-      const leases = createLeaseManager({
-        states,
-        jobStore,
-        config: {
-          jobTtlSec: cfg.lease.jobTtlSec,
-          manualIdleTimeoutSec: cfg.lease.manualIdleTimeoutSec,
-          reaperIntervalMs: cfg.lease.reaperIntervalMs,
-        },
-        log: log.child('lease'),
-        resolveLabel: resolveLeaseLabel,
-        // Plan 36 §3.2: a force-expired job lease is the farm's problem, not
-        // the script's — coded so it classifies infra rather than falling to
-        // the (safer, but less specific) unknown-code default.
-        onJobLeaseExpired: (jobId, reason) => host.finishExternally(jobId, 'failed', reason, 'LEASE_FORCE_RELEASED'),
-        onManualRevoked: (deviceId, reason, holderUserId) => {
-          hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason, takenBy: null } })
-          // The holder learns why from lease.revoked; everyone else just needs
-          // to know the device is free again.
-          hub.broadcast({ type: 'lease.changed', payload: { deviceId, heldBy: null, expiresAt: null } })
-          broadcastDeviceViewers?.(deviceId)
-          recorder?.record({ deviceId, stream: 'main', kind: 'control.revoked', actor: holderUserId, meta: { reason } })
-          // A forced release is security-relevant, not just a device fact
-          // (plan 18 §3.2, §18.4) — it also lands in the audit trail.
-          audit.record({ userId: holderUserId, action: 'device.control', target: deviceId, meta: { action: 'revoked', reason } })
-          // The terminal's emulated cwd must not survive an automatic
-          // revocation either (plan 26 §3.7, §4.4) — only an explicit
-          // `lease.release` message is handled inline in `ws-handlers.ts`.
-          releaseShellSession?.(deviceId)
-          // Nor does the lease's readiness hold (plan 43 §5 step 43.7) — an
-          // automatic revocation must let the device drift back toward its
-          // `desired` readiness exactly like an explicit release does.
-          releaseLeaseReadinessHold?.(deviceId)
-          // Nor does an open recording (plan 94 §4.6) — an automatic
-          // revocation (idle timeout, quarantine) must end it exactly like
-          // `lease.release`/WS-close already do inline in `ws-handlers.ts`;
-          // otherwise it keeps capturing whatever the NEXT holder does,
-          // with no record of where the handover happened.
-          stopRecordingForLeaseLost?.(deviceId)
-          // Nor does an open adb endpoint (plan 27 §4.2, acceptance #5): the
-          // endpoint is created by the lease holder and dies with the
-          // lease, however the lease ends — idle timeout, disconnect, or
-          // quarantine, not just the explicit release ws-handlers.ts handles.
-          adbEndpointManager?.close(deviceId, reason)
-          // A `vpn-helper` route is deliberately left ALONE here (plan 52
-          // §0, §3.1, §4.1 — superseding plan 44 §5.7's lease-scoped
-          // teardown): a route is a property of the device, not of whoever
-          // held the lease, so an idle timeout, disconnect, or quarantine
-          // must not tear it down. Turning a route off is now an explicit
-          // act only (`/disable`, `DELETE /network`, agent uninstall).
-        },
-        // A takeover (plan 71 §3.4, §3.5) — the displaced holder is told (by
-        // name, of who took it) and it is recorded. Mirrors `onManualRevoked`
-        // above for every side effect that must not survive the lease ending,
-        // regardless of WHY it ended.
-        onManualTakenOver: ({ deviceId, from, toUserId, takenByLabel }) => {
-          // `lease.changed` (naming the NEW holder) is broadcast by the
-          // `lease.acquire` handler itself right after this call returns
-          // (`server/ws-handlers.ts`) — the same one unconditional broadcast
-          // a plain acquire already sends, so a takeover does not need a
-          // second copy of it here. `lease.revoked` (naming the reason and
-          // the taker) has no other sender, so it belongs here.
-          hub.broadcast({ type: 'lease.revoked', payload: { deviceId, reason: 'taken-over', takenBy: takenByLabel } })
-          broadcastDeviceViewers?.(deviceId)
-          recorder?.record({ deviceId, stream: 'main', kind: 'control.revoked', actor: toUserId, meta: { reason: 'taken-over', from: from?.label ?? null, to: takenByLabel } })
-          audit.record({
-            userId: toUserId,
-            action: 'device.control',
-            target: deviceId,
-            meta: { action: 'taken-over', from: from?.label ?? null, fromKind: from?.kind ?? null, to: takenByLabel },
-          })
-          releaseShellSession?.(deviceId)
-          releaseLeaseReadinessHold?.(deviceId)
-          // Nor does an open recording (plan 94 §4.6) survive a takeover —
-          // the displaced holder's in-progress recording must not go on
-          // capturing the NEW holder's actions (see `onManualRevoked` above
-          // for why this matters).
-          stopRecordingForLeaseLost?.(deviceId)
-          adbEndpointManager?.close(deviceId, 'taken-over')
-          // An agent whose lease was taken over does NOT get pushed a
-          // notification here (plan 71 §3.5, §3.6): its next attempt to use
-          // the device detects the loss itself (`agent/loop/run.ts`'s
-          // `ensureControlLease` re-checks the real lease on every step) and
-          // reports it as an error `tool_result` — the same "the loop
-          // discovers it, nothing pushes it" shape plan 63's `invoke()` uses
-          // for every other refusal.
-          //
-          // Plan 91 §3.2, §4.2 — a takeover never calls `release()` (it is
-          // an atomic revoke-then-acquire, `lease-manager.ts`'s own comment
-          // on this branch explains why), so it is the one way a manual
-          // hold can end that the `onPrimaryEnded` hook below never sees.
-          // Called directly here instead: any grant that was subordinate to
-          // the DISPLACED holder must not survive them being displaced.
-          coControlRef?.onPrimaryEnded(deviceId)
-        },
-        onDeviceFreed: () => scheduler?.kick(),
-        // Plan 91 §3.2, §4.2, §5 step 91.2 — a co-control grant "may only
-        // exist while somebody else holds the device"; this is the single
-        // wiring point that keeps that true for every OTHER way a manual or
-        // job hold can end (voluntary release, idle timeout, disconnect,
-        // quarantine, adb-server-restart, and `clearJobLease`) — fired
-        // unconditionally from inside `lease-manager.ts`'s own `release()`
-        // and `clearJobLease()`, regardless of whether a `reason` was given
-        // (unlike `onManualRevoked` above, which stays silent on a plain
-        // voluntary release because that hook's job is different: telling
-        // the ex-holder something was taken from them, not asking).
-        onPrimaryEnded: (deviceId) => coControlRef?.onPrimaryEnded(deviceId),
-      })
-      leaseManager = leases
-
-      // The command console's runner (plan 93 §3.5-§3.8, §4.5, §5 step 93.3)
-      // — built right here, immediately after `leases`, because `admitMember`'s
-      // lease policy needs a live `LeaseManager` and nothing else below this
-      // point does. `sweepOrphans()` is called right away, one line down:
-      // the same boot-recovery phase ("3. Queue / lease / scheduler", above)
-      // `jobStore.failOrphanRunning()` already opened for jobs — a command
-      // run left `running`/`awaiting-continue` by a previous process's crash
-      // is exactly the same kind of orphan (plan 93 §3.7, mirroring F29), it
-      // is just discovered one step later in this file because it needs a
-      // lease manager to exist first and `jobStore`'s own sweep does not.
-      const commandRunStore = createCommandRunStore(db)
-      // The SAME local-vs-remote decision `ws-handlers.ts`'s own (module-
-      // private, unexported) `shellPortFor` makes (plan 25 §3.4, §4.3),
-      // duplicated here rather than imported because that closure cannot be
-      // imported and `ws-handlers.ts` is held by a concurrent worker this
-      // step must not touch (plan 93 step 93.3's own brief). Reads
-      // `adb`/`remoteSessions`/`tunnelRpc`/`tunnelRouter` fresh on every
-      // call — the same forward-ref pattern `adbEndpointManager` above
+      // The actions router's shell port resolver (plan 207 §4.8) — the SAME
+      // local-vs-remote decision `ws-handlers.ts`'s own (module-private,
+      // unexported) `shellPortFor` makes (plan 25 §3.4, §4.3), duplicated
+      // here rather than imported because that closure cannot be imported.
+      // Reads `adb`/`remoteSessions`/`tunnelRpc`/`tunnelRouter` fresh on
+      // every call — the same forward-ref pattern `adbEndpointManager` above
       // already relies on (none of the four is assigned yet at the point
       // this closure is BUILT; only at the point it is CALLED, well after
-      // `start()` finishes booting).
-      const commandShellPortFor = (deviceId: string): ShellPort => {
+      // `start()` finishes booting). Formerly `commandShellPortFor`, built
+      // for the deleted fleet command surface's runner (plan 93); kept, renamed,
+      // for the `adb` verb's own dispatch.
+      const actionShellPortFor = (deviceId: string): ShellPort => {
         const remoteNode = remoteSessions?.nodeIdFor(deviceId) ?? null
         if (remoteNode) {
           if (!tunnelRpc || !tunnelRouter) {
@@ -1591,86 +1765,21 @@ let blobGc: BlobGc | null = null
         if (!row) throw new EnkakuError('device_not_found', 'no such device')
         return createLocalShellPort({ client: adb, serial: row.serial })
       }
-      commandRunner = createCommandRunner({
-        db,
-        store: commandRunStore,
-        leases,
-        shellPortFor: commandShellPortFor,
-        resolve: (target) => resolveCommandTarget(db, target),
-        settings: () => settingsStore.get().shell,
-        recorder: (e) => recorder?.record(e),
-        audit,
-        // Subscriber-scoped (plan 93 §3.17, §4.3, F27, step 93.4) — the
-        // forward-ref into `ws-handlers.ts`'s `commandTargets(runId)`/
-        // `broadcastCommand`, resolved once `attachWsRouter` runs (same
-        // pattern `transportStats`/`inputStats` above use). Never
-        // `hub.broadcast`: a fleet command's output must not reach every
-        // open tab — `transfer.progress`/`transfer.done` (F27) got the same
-        // fix, below, in step 93.9. Falls back to a debug log before
-        // `attachWsRouter` has run (boot's own `sweepOrphans()` call below
-        // never broadcasts, so this only matters if something else calls
-        // `start()` implausibly early).
-        broadcast: (runId, msg) =>
-          broadcastCommandEvent?.(runId, msg) ?? log.child('command-console').debug(`command run event (WS router not attached yet): ${runId} ${msg.type}`),
-        // Same role-resolution expression the WS router below builds for its
-        // own `roleOf` dep (plan 26 §4.1, §4.3) — local mode's one implicit
-        // admin ignores the userId entirely.
-        roleOf: authMode === 'local' ? () => 'admin' : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
-        // `canUseDevice` (plan 34 §3.5, §4.4) — the SAME device-ownership
-        // lookup every other ownership gate in this file already shares.
-        getDevice: getDeviceOwner,
-        log: log.child('command-console'),
-      })
-      const orphanedCommandRuns = commandRunner.sweepOrphans()
-      if (orphanedCommandRuns > 0) {
-        log.warn(`recovery boot: ${orphanedCommandRuns} command run(s) orphaned by the previous process, marked cancelled`)
-      }
 
-      // The co-control grant store (plan 91 §3.2, §4.2, §5 step 91.2) — the
-      // subordinate, short-lived authorisation that lets a second party
-      // touch a device someone/something else already holds, without ever
-      // moving the hold itself. Built right after `leases`, which it only
-      // ever READS (`leases.getLease`, to snapshot the primary holder a new
-      // grant is subordinate to) — it never acquires, releases, or otherwise
-      // mutates a lease. `resolveLeaseLabel` is the SAME resolver `leases`
-      // itself uses (built above, before `leases`), so an assisting
-      // operator's label and a lease holder's label are worded identically
-      // for the same id, never two different phrases for one person.
-      const coControl = createCoControlManager({
-        leases,
-        config: {
-          grantTtlSec: () => settingsStore.get().coControl.grantTtlSec,
-          maxConcurrentPerDevice: () => settingsStore.get().coControl.maxConcurrentPerDevice,
-          mode: () => settingsStore.get().coControl.mode,
-        },
-        log: log.child('co-control'),
-        resolveLabel: resolveLeaseLabel,
-        // Plan 91 §3.4 item 4, §4.2, §5 step 91.4 — "everyone else sees it":
-        // every viewer of a device needs to know who is assisting it, live,
-        // with no polling (F25), the exact broadcast shape `lease.changed`
-        // already gets from `onManualRevoked`/`onManualTakenOver` above.
-        // Wired HERE, at construction (through `hub.broadcast`, already in
-        // scope at this point in boot), rather than only inside
-        // `assist.start`/`assist.stop` in `ws-handlers.ts`, so EVERY
-        // termination path broadcasts — TTL expiry, a WS disconnect
-        // (`releaseAllForClient`), the primary hold ending
-        // (`onPrimaryEnded`) — not only the two explicit WS messages.
-        // `coControlRef` (not `coControl`) is used inside the closures
-        // because `onGranted`/`onReleased` are never invoked synchronously
-        // during this very construction call — only later, once `grant()`/
-        // `release()` run — by which time `coControlRef` below has already
-        // been assigned, the same forward-ref safety `onManualTakenOver`
-        // above already relies on for the same variable.
-        onGranted: (grant) =>
-          hub.broadcast({ type: 'assist.changed', payload: { deviceId: grant.deviceId, assistedBy: coControlRef?.assistedBy(grant.deviceId) ?? [] } }),
-        onReleased: (grant) =>
-          hub.broadcast({ type: 'assist.changed', payload: { deviceId: grant.deviceId, assistedBy: coControlRef?.assistedBy(grant.deviceId) ?? [] } }),
+      // The single accessor every device-listing route needs to fill
+      // `DeviceInfo.activities`/`.lastControl` (plan 205 §4.10) — replaces
+      // the separate primary-holder and secondary-operator accessors this file
+      // carried before that plan. Both fields come from the SAME
+      // `ActivityRegistry`, so they can never disagree about whether a
+      // device is currently controlled.
+      const activitiesOf = (deviceId: string): DeviceActivityState => ({
+        activities: activities.list(deviceId),
+        lastControl: activities.lastControl(deviceId),
       })
-      coControlRef = coControl
 
       // Device lifecycle — Forget and Block (plan 47 §4.3). Constructed
-      // unconditionally, right beside `leaseManager` itself: it depends only
-      // on `db` and `leases`, both of which exist in every mode, including
+      // unconditionally, right beside `activities` itself: it depends only
+      // on `db` and `activities`, both of which exist in every mode, including
       // the orchestrator (this line runs before that mode's early return,
       // further below in this function).
       /**
@@ -1686,7 +1795,7 @@ let blobGc: BlobGc | null = null
       // well before the workspace/agent stores further down: it depends only
       // on `db` and `cfg.dataDir`, both available from the very top of this
       // function, in every mode.
-      const kvStore = createKvStore(db, cfg.dataDir, () => settingsStore.get().kv)
+      const kvStore = createKvStore(db, cfg.dataDir, () => ({ maxValueBytes: KV_MAX_VALUE_BYTES, maxKeyLength: KV_MAX_KEY_LENGTH, maxEntriesPerNamespace: KV_MAX_ENTRIES_PER_NAMESPACE, maxEntriesPerDevice: KV_MAX_ENTRIES_PER_DEVICE }))
       // The plugin runtime (plan 82 §4.3) — stage/verify/activate/rollback/disable/remove/
       // reload/restart, plus the dev slot lifecycle. Built right here: it needs `kvStore`
       // (a plugin's KV namespace, §3.10) and `scriptRegistry` (built earlier, alongside
@@ -1731,9 +1840,9 @@ let blobGc: BlobGc | null = null
       // window that survives, and a limiter rebuilt with the router would reset
       // every count.
       const pluginWebhookLimiter = createWebhookRateLimiter()
-      // Plan 109 §4.5, step 109.8 — the per-plugin ring, the rotated file, the
-      // redactor, and the `plugin.log` broadcast. R3's shape (`jobs/log-buffer.ts`
-      // is the precedent), one ring per plugin with every line optionally
+      // Plan 109 §4.5, step 109.8 — the per-plugin ring, the rotated file, and
+      // the redactor. R3's shape (`jobs/log-buffer.ts` is the precedent),
+      // one ring per plugin with every line optionally
       // tagged, so "logs for one thing this plugin manages" is a filter rather
       // than a second stream.
       const pluginLogs = createPluginLogStore({
@@ -1757,7 +1866,6 @@ let blobGc: BlobGc | null = null
               return []
             }
           }),
-        broadcast: (plugin, line) => hub.broadcast({ type: 'plugin.log', payload: { plugin, ...line } }),
         log: log.child('plugin-logs'),
       })
       pluginHost = createRuntimeHost({
@@ -1866,8 +1974,9 @@ let blobGc: BlobGc | null = null
       const jobsRunnerPort = createJobsRunnerPort({
         db,
         jobStore,
+        runs,
         registry: scriptRegistry,
-        triggerBudgets: () => settingsStore.get().job.trigger,
+        triggerBudgets: () => ({ maxDepth: JOB_TRIGGER_MAX_DEPTH, maxPerChain: JOB_TRIGGER_MAX_PER_CHAIN, maxPerJob: JOB_TRIGGER_MAX_PER_JOB }),
         onTriggered: (from, targetDeviceId, result) =>
           recorder?.record({
             deviceId: targetDeviceId,
@@ -1880,7 +1989,8 @@ let blobGc: BlobGc | null = null
       })
       const deviceLifecycle = createDeviceLifecycle({
         db,
-        leases,
+        activities,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
         record: recorder!.record,
         log: log.child('device-lifecycle'),
         // Plan 128 §4.5, §10 item 8 — `forget(deleteHistory)` cascades through
@@ -1928,7 +2038,7 @@ let blobGc: BlobGc | null = null
       const awakePolicy = createAwakePolicy({ db, client: () => adb, log: log.child('awake-policy') })
 
       // Device readiness (plan 43): a second, orthogonal axis to
-      // `DeviceStatus` (§3.1) — constructed here, once `leases` exists,
+      // `DeviceStatus` (§3.1) — constructed here, once `activities` exists,
       // using the same lazy-accessor forward-ref pattern every other
       // adb-dependent module in this function already uses (`adb: () =>
       // adb`, `sessions: () => sessions`), since `sessions` itself is not
@@ -1937,8 +2047,8 @@ let blobGc: BlobGc | null = null
         db,
         client: () => adb,
         sessions: () => sessions,
-        leases,
-        maxHot: () => settingsStore.get().readiness.maxHot,
+        activities,
+        maxHot: () => READINESS_MAX_HOT,
         awakePolicy: () => awakePolicy,
         // Cloud/node-owned devices are out of scope for this plan (§2, §9
         // open question #2) — never attempt a local wake/session acquire
@@ -1952,46 +2062,45 @@ let blobGc: BlobGc | null = null
 
       scheduler = createScheduler({
         jobStore,
+        runs,
         host,
         log: log.child('scheduler'),
-        jobTtlSec: cfg.lease.jobTtlSec,
+        jobTtlSec: cfg.heartbeat.jobTtlSec,
         fallbackIntervalMs: cfg.scheduler.fallbackIntervalMs,
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
-        onDeviceBusy: (deviceId) => {
-          broadcastDeviceStatus(deviceId, 'busy')
-          // A job claiming a device closes its idle session immediately
-          // (Plan 42 §3.4, §4.4, acceptance #8) — an idle TTL must never hold
-          // a device away from the scheduler, and the job starts a fresh
-          // `control`-quality session rather than inheriting a stale one.
-          void sessions?.closeIfIdle(deviceId)
+        // Plan 205 §4.7 renames this from `onDeviceBusy` since `devices.status`
+        // is never flipped to `busy` any more — "busy" is now derived purely
+        // from the `job:<id>` activity the claim itself starts.
+        onJobClaimed: (deviceId) => {
+          // Plan 206 §4.3: sessions are always on now — a job's `acquire()`
+          // attaches to the one already-open base entry directly, so there
+          // is no idle session left for a claim to close (the idle-eviction
+          // call this used to make is gone with the idle model it belonged to).
           // Job claim (plan 43 §5 step 43.6, acceptance #11) — never blocked
           // by readiness; this just keeps the broadcast readiness in step
-          // with `busy`.
+          // with the device's derived busy state.
           void readiness?.reconcile(deviceId)
         },
         onJobStarted: (deviceId, jobId, scriptId) =>
           recorder?.record({ deviceId, stream: 'main', kind: 'job.started', actor: `job:${jobId}`, meta: { jobId, scriptId } }),
-        // A job waits for the device to go quiet before claiming it (plan 71
-        // §3.7) — both settings read fresh on every tick, the same pattern
-        // `adb.maxConcurrent` and every other settings-derived accessor in
-        // this function already uses.
-        quiet: {
-          quietPeriodSec: () => settingsStore.get().job.quietPeriodSec,
-          maxWaitSec: () => settingsStore.get().job.maxWaitSec,
-          lastManualReleaseAt: (deviceId) => leases.lastManualReleaseAt(deviceId),
-          lastManualHolder: (deviceId) => leases.lastManualHolder(deviceId),
-        },
+        // A queued job waits while a `control` marker is live on its device
+        // (plan 205 §3.2 item 6, MVP 12 §3) instead of interrupting whatever
+        // a person is mid-gesture on — read fresh on every loop tick, the
+        // same activity registry every other admission check in this file
+        // already shares.
+        activities,
         onJobWaiting: (info) => hub.broadcast({ type: 'job.waiting', payload: info }),
       })
 
       // Plan 94 §3.8, §4.8, step 94.7 — needs `scheduler.kick`, so built
       // right after it, same as `host` above needs it. Populates the
       // forward-ref `pacerRef` `onBatchChanged` (above) already closes over.
-      const pacer = createBatchPacer({ db, scheduler, log: log.child('pacer') })
+      const pacer = createBatchPacer({ db, runs, scheduler, log: log.child('pacer') })
       pacerRef = pacer
 
       const jobService = createJobService({
         jobStore,
+        runs,
         registry: executors,
         scheduler,
         host,
@@ -2008,26 +2117,28 @@ let blobGc: BlobGc | null = null
         // so a single job's `runtimeOverride` ceiling check binds against
         // the farm's REAL `job` settings, not the built-in "no ceiling"
         // default `resolveJobRuntime` falls back to when this is absent.
-        farmJobSettings: () => settingsStore.get().job,
+        farmJobSettings: () => jobConstants(settingsStore.get()),
         // Plan 93 §3.12, §4.6, step 93.8 — closes F10's "POST /api/jobs
         // checks no permission at all": `internal:install`'s declared
         // `requires` gate is now evaluated against the farm's REAL
         // `shell.mode`/`transfer.enabled`, the same live accessors
         // `api/transfer.ts`'s own REST install/push/pull already read.
-        shellMode: () => settingsStore.get().shell.mode,
-        transferEnabled: () => settingsStore.get().transfer.enabled,
+        shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+        transferEnabled: () => TRANSFER_ENABLED,
       })
 
       // The expiry reaper (plan 21 §4.3): a `queued` job past its
-      // `expiresAt` becomes `expired` instead of waiting forever. It runs on
-      // the same cadence as the lease reaper but is its own module — a
-      // `running` job stays governed entirely by the job lease.
+      // `expiresAt` becomes `expired` instead of waiting forever. Since plan
+      // 205 §4.7 it also sweeps the job heartbeat — the deleted manual-hold
+      // subsystem's own reaper used to do that on its own interval; this is
+      // the one reaper left standing.
       const expiryReaper = createExpiryReaper({
         jobStore,
-        intervalMs: cfg.lease.reaperIntervalMs,
+        intervalMs: cfg.heartbeat.reaperIntervalMs,
         log: log.child('expiry'),
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
         onBatchChanged,
+        onHeartbeatExpired: (jobId) => host.finishExternally(jobId, 'failed', 'job heartbeat expired', 'HEARTBEAT_EXPIRED'),
         sweepApprovals: () => sweepAgentApprovals?.(),
       })
 
@@ -2055,6 +2166,7 @@ let blobGc: BlobGc | null = null
       scheduleRunner = createScheduleRunner({
         db,
         jobStore,
+        runs,
         scheduler,
         audit,
         log: log.child('schedule'),
@@ -2071,12 +2183,12 @@ let blobGc: BlobGc | null = null
         // (or what clock) triggered the dispatch.
         validateScript: (scriptId, params) =>
           validateScriptForRun(
-            { registry: executors, findScript, shellMode: () => settingsStore.get().shell.mode, transferEnabled: () => settingsStore.get().transfer.enabled },
+            { registry: executors, findScript, shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'), transferEnabled: () => TRANSFER_ENABLED },
             scriptId,
             params,
           ),
         agentDispatch: scheduleAgentDispatch,
-        scheduledAgentCeilings: () => settingsStore.get().scheduledAgents,
+        scheduledAgentCeilings: () => agentSettingsStore.get().scheduled,
         notifySystem: (input) => {
           notifyAndBroadcast({ level: input.level, title: input.title, body: input.body ?? null, context: input.context ?? null, source: 'system' })
         },
@@ -2096,6 +2208,10 @@ let blobGc: BlobGc | null = null
         router: tunnelRouter,
         log: log.child('remote-job'),
         hooks: {
+          // A node-owned job's execution has no local `job_runs` row of its
+          // own on THIS core (the node holds it) — `jobId` stands in for the
+          // run id on this bridge's wire messages, the same simplification
+          // this bridge has always made for a remote execution's identity.
           onLog: (jobId, entry) => {
             // A node-owned job takes the same path: retained for a mid-run
             // fetch, then broadcast. See the local runner's own note below.
@@ -2106,17 +2222,18 @@ let blobGc: BlobGc | null = null
               type: 'job.log',
               payload: {
                 jobId,
+                runId: jobId,
                 ts: entry.ts,
                 level,
                 source,
                 msg: entry.msg,
               },
             })
-            traceRecorder?.record({ jobId, kind: 'log', name: level, meta: { source, msg: entry.msg } })
+            traceRecorder?.record({ runId: jobId, kind: 'log', name: level, meta: { source, msg: entry.msg } })
           },
           onArtifact: (jobId, artifact) => {
-            hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact } })
-            traceRecorder?.record({ jobId, kind: 'artifact', name: artifact.kind, meta: { label: artifact.label, sizeBytes: artifact.sizeBytes } })
+            hub.broadcast({ type: 'job.artifact', payload: { jobId, runId: jobId, artifact } })
+            traceRecorder?.record({ runId: jobId, kind: 'artifact', name: artifact.kind, meta: { label: artifact.label, sizeBytes: artifact.sizeBytes } })
           },
           onPhase: (jobId, attempt, phase) => {
             const info = jobService.get(jobId)
@@ -2129,19 +2246,19 @@ let blobGc: BlobGc | null = null
             // not. Discovered by step 128.5b's worker: §2 CLAIMED this
             // already happened through the existing hooks, and it did not —
             // `hooks` only ever broadcast, and nothing here wrote a row.
-            traceRecorder?.record({ jobId, kind: 'phase', name: phase ? 'start' : 'end', phase: phase ?? null, ...(attempt ? { attempt } : {}), meta: { remote: true } })
+            traceRecorder?.record({ runId: jobId, kind: 'phase', name: phase ? 'start' : 'end', phase: phase ?? null, ...(attempt ? { attempt } : {}), meta: { remote: true } })
           },
-          heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
+          heartbeat: (jobId) => jobStore.renewHeartbeat(jobId, cfg.heartbeat.jobTtlSec),
         },
         saveArtifact: async (jobId, a) => {
           const sink = createDbArtifactSink({
             db,
             dataDir: cfg.dataDir,
-            jobId,
+            runId: jobId,
             // Plan 115 §3.6 — a node-owned device's `ctx.artifact.file()`
             // relays here to actually mint the row, so this is where its
             // cap has to be real too, not just the local-runner path below.
-            maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
+            maxFileBytes: () => settingsStore.get().advanced.transferCaps.maxPushBytes,
             onSaved: () => {},
           })
           const saved = await sink.save({
@@ -2152,7 +2269,7 @@ let blobGc: BlobGc | null = null
           })
           return {
             id: crypto.randomUUID(),
-            jobId,
+            runId: jobId,
             deviceId: null,
             kind: a.kind as 'screenshot' | 'log' | 'file' | 'video',
             label: a.label,
@@ -2167,25 +2284,7 @@ let blobGc: BlobGc | null = null
       // in-process runner (registered once adb is ready).
       executors.setFallback(remoteBridge.executor)
 
-      // The WebRTC relay serves node-owned devices (cloud mode). On a LAN,
-      // Studio stays on the simpler WS + WebCodecs path.
-      const webrtcRelay = createWebRtcRelay({
-        factory: createWeriftFactory(),
-        log: log.child('webrtc'),
-        subscribeVideo: (deviceId, cb) =>
-          tunnelRouter.subscribeVideo(deviceId, (payload) => cb(payload, BigInt(Date.now()) * 1000n)),
-        requestKeyframe: (deviceId) => {
-          // scrcpy 3.3.1: request a fresh IDR through the reset-video control message.
-          tunnelRouter.sendToDevice(deviceId, {
-            type: 'session.start',
-            payload: { deviceId, engines: {} },
-          } as never)
-        },
-      })
-
-      webrtcRelayRef = webrtcRelay
-
-      // Plan 44 §5.7/§5.8: `guestAgent` needs `leases` (built above) and
+      // Plan 44 §5.7/§5.8: `guestAgent` needs `activities` (built above) and
       // `ports` (built earlier, unconditionally) but must exist before `adb`
       // is ready, since it is mounted into `createApp` below — the same
       // "lazy, adb-not-ready-yet-safe deps" pattern `adbEndpointManager`/
@@ -2258,18 +2357,20 @@ let blobGc: BlobGc | null = null
             onLog: (level, msg) => log.child('guest-agent')[level](msg),
           }),
         ports,
-        leases,
+        activities,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
+        states,
         dataDir: cfg.dataDir,
         record: recorder!.record,
         log: log.child('guest-agent'),
         // Plan 55 §3.2, §5.1 — read fresh on every call, same as every other `settingsStore.get()`
         // getter dep in this file.
-        networkSettings: () => settingsStore.get().network,
+        networkSettings: () => ({ geoProvider: GEO_PROVIDER_URL ?? undefined, geoIntervalSec: GEO_RECHECK_INTERVAL_SEC }),
         // Plan 90 §3.7, §4.4 — the residual gap 90.4's own status note flagged: `maxRecoveryCyclesPerHour`/
         // `recoveryRearmSec` are fully wired inside `guest-agent.ts` (proven by that step's own tests),
         // but until THIS line existed an operator changing them in Studio had no effect on a running
         // core — the getter fell back to the schema's own defaults regardless of what was saved.
-        guestAgentSettings: () => settingsStore.get().guestAgent,
+        guestAgentSettings: () => ({ provision: GUEST_AGENT_PROVISION, maxRecoveryCyclesPerHour: settingsStore.get().advanced.recoveryResetsPerHour, recoveryRearmSec: GUEST_AGENT_RECOVERY_REARM_SEC }),
         // Plan 90 §3.8, §4.7 — the "on demand, single device" provisioning hook: forward-ref, same
         // pattern as `onAdmitted`/`rescan` elsewhere in this function, because `agentProvisioner`
         // (built just below, since IT needs `guestAgent.withGuestAgentClient`) does not exist yet at
@@ -2288,6 +2389,9 @@ let blobGc: BlobGc | null = null
         // no forward-ref is needed here.
         reverse: reverseRegistry,
       })
+      // Plan 221 §4.5, §5 step 221.14 — the activity registry's own forward-ref, resolved the
+      // instant `guestAgent` exists (same moment every other `*Ref` beside it resolves).
+      guestAgentActivityPushRef = guestAgent.pushActivity
       // The other half of the same wiring: the registry asks whether a route is
       // still enabled before re-establishing its reverse on reconnect.
       networkRouteEnabledRef = guestAgent.isRouteEnabled
@@ -2316,8 +2420,27 @@ let blobGc: BlobGc | null = null
           }),
         expectedArtifact: () => toolchain.deviceArtifactExpectation('guest-agent'),
         hello: (deviceId) => guestAgent.withGuestAgentClient(deviceId, (client) => client.hello()),
-        provision: () => settingsStore.get().guestAgent.provision,
-        record: recorder!.record,
+        provision: () => GUEST_AGENT_PROVISION,
+        /**
+         * Record the transition AND refresh the device row.
+         *
+         * The card's agent badge reads `DeviceInfo.agent`, which only changes
+         * when a device row is broadcast; the detail panel refetches on the
+         * `device.agent` EVENT. So after a successful retry the panel said
+         * `ready` while the badge beside it still said `Agent failed` — the
+         * panel even apologised for the badge, which is a UI explaining a bug
+         * rather than a state (owner, 2026-09-05). One broadcast keeps them
+         * from disagreeing.
+         */
+        record: (event) => {
+          recorder!.record(event)
+          if (event.kind === 'device.agent') {
+            const row = listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)).find(
+              (d) => d.id === event.deviceId,
+            )
+            if (row) hub.broadcast({ type: 'device.updated', payload: row })
+          }
+        },
         log: log.child('agent-provisioner'),
       })
       agentProvisionerRef = agentProvisioner
@@ -2384,9 +2507,9 @@ let blobGc: BlobGc | null = null
       // no comparable cap on this lane before this step and still does not;
       // widening that is a separate, pre-existing condition this step does
       // not take on (plan 106 §9 Q5's own status note names it explicitly).
-      const preparationInstallSem = new Semaphore(Math.max(1, settingsStore.get().adb.maxInstallConcurrent))
+      const preparationInstallSem = new Semaphore(Math.max(1, settingsStore.get().advanced.installsPerUsbRoot))
       const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test', packageName: string): Promise<void> => {
-        const wanted = Math.max(1, settingsStore.get().adb.maxInstallConcurrent)
+        const wanted = Math.max(1, settingsStore.get().advanced.installsPerUsbRoot)
         if (wanted !== preparationInstallSem.max) preparationInstallSem.resize(wanted)
         return preparationInstallSem.acquire().then((release) =>
           runTransfer({
@@ -2436,7 +2559,9 @@ let blobGc: BlobGc | null = null
       const deviceIdentity = createDeviceIdentityRoutes({
         db,
         exec: guestAgentExec,
-        leases,
+        activities,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
+        states,
         record: recorder!.record,
         log: log.child('identity'),
         withGuestAgentClient: guestAgent.withGuestAgentClient,
@@ -2453,7 +2578,8 @@ let blobGc: BlobGc | null = null
         db,
         client: () => adb,
         withGuestAgentClient: guestAgent.withGuestAgentClient,
-        maxConcurrent: () => settingsStore.get().labelling.maxConcurrent,
+        maxConcurrent: () => LABEL_WRITE_CONCURRENCY,
+        farmDeviceLabel: () => settingsStore.get().general.deviceLabel,
         record: recorder!.record,
         log: log.child('labelling'),
       })
@@ -2470,7 +2596,7 @@ let blobGc: BlobGc | null = null
       // boot, quotas read fresh from settings on every call, the same
       // pattern every other settings-derived accessor in this function uses.
       const workspaceStore = withAutoRebuild(
-        createWorkspaceStore(db, () => settingsStore.get().workspace, {
+        createWorkspaceStore(db, () => ({ maxFileBytes: WORKSPACE_MAX_FILE_BYTES, maxFilesPerScope: WORKSPACE_MAX_FILES_PER_SCOPE, maxTotalBytesPerScope: WORKSPACE_MAX_BYTES_PER_SCOPE, inlineMaxBytes: WORKSPACE_INLINE_MAX_BYTES }), {
           // plan 115 §3.3, §9 Q1 — the `fs` driver's root. A plain wiring parameter today; making
           // it a farm setting later is a wiring change here, not a redesign.
           fsContentRoot: join(cfg.dataDir, 'workspace-content'),
@@ -2493,7 +2619,8 @@ let blobGc: BlobGc | null = null
       const modelListCache = createModelListCache()
       const capContextDeps: CapabilityContextDeps = {
         db,
-        leases,
+        activities,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
         states,
         sessions: () => sessions,
         readiness: () => readiness,
@@ -2524,26 +2651,24 @@ let blobGc: BlobGc | null = null
         // `capability/job.ts`) resolves a plugin member the same as a standalone script.
         registry: scriptRegistry,
         // Plan 88 §3.6, §4.1, §5 step 88.5 — the SAME two accessors
-        // `deviceRoutes`/`topologyRoutes` get below, so an agent script's
+        // `deviceRoutes` gets below, so an agent script's
         // `ctx.listDevices()`/`ctx.getDevice()` badges a device identically
-        // to `GET /api/devices` and the fleet map, never disagreeing about
-        // whether a phone reads OTG/WI-FI/TCP.
-        networks: () => settingsStore.get().discovery.networks,
+        // to `GET /api/devices`, never disagreeing about whether a phone
+        // reads OTG/WI-FI/TCP.
+        networks: () => settingsStore.get().networkScan.networks,
         declaredMedia: () => loadDeclaredMedia(endpoints),
-        // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
-        // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
-        // accessor `deviceRoutes`/`clusterRoutes`/`topologyRoutes` already get,
-        // so an agent script's `ctx.listDevices()`/`ctx.getDevice()` reports an
-        // assisting holder the same as every other surface.
-        assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
         // Plan 114 §3.3, step 114.9 — the network layer's one door. It is the
         // SAME three functions `PUT`/`DELETE /api/devices/:id/network` call, not
         // a parallel path, which is the whole point: a plugin reaching
-        // `device.network.set` through `ctx.farm` takes the same lease
+        // `device.network.set` through `ctx.farm` takes the same activity
         // admission, the same credential refusal and the same one-route lock an
         // operator's own click does, and the route it writes is stamped with the
         // plugin's principal rather than a person's.
         network: guestAgent.deviceNetwork,
+        // `plugin.stage`'s one door (plan 210 §4.8) — a thunk, matching
+        // `sessions`/`readiness` above, even though `pluginRuntime` is
+        // already constructed by this point in this host.
+        plugins: () => pluginRuntime,
       }
       const openApiDocument = buildOpenApiDocument(capabilityRegistry, CORE_VERSION)
 
@@ -2591,7 +2716,7 @@ let blobGc: BlobGc | null = null
       // start/anchor/bound check, the same freshness discipline every other farm-settings
       // accessor in this function already uses.
       const recordingService = createRecordingService({
-        settings: () => settingsStore.get().recording,
+        settings: () => ({ anchorQuietMs: RECORDING_ANCHOR_QUIET_MS, anchorMinIntervalMs: RECORDING_ANCHOR_MIN_INTERVAL_MS, longPressMs: RECORDING_LONG_PRESS_MS, maxSteps: RECORDING_MAX_STEPS, maxDurationSec: RECORDING_MAX_DURATION_SEC, captureScreenshots: RECORDING_CAPTURE_SCREENSHOTS }),
         blobs: agentBlobStore,
         log: log.child('recording'),
       })
@@ -2603,13 +2728,14 @@ let blobGc: BlobGc | null = null
         connectors: connectorStore,
         registry: capabilityRegistry,
         capContextDeps,
-        leases,
-        settings: () => settingsStore.get(),
+        activities,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
+        settings: () => agentSettingsStore.get(),
         modelListCache,
         tree: agentTreeStore,
         // Plan 70 §4.1, §4.4 — threaded straight through to every `executeRun` call.
         blobs: agentBlobStore,
-        // Plan 67 §3.3, §4.4 — `agent.message.queued`/`agent.child.started`/`.finished` are
+        // Plan 67 §3.3, §4.4 — `agent.child.started`/`.finished` are
         // addressed to a DIFFERENT run's thread than the one whose execution produced them.
         publishToThread: (threadId, msg) => agentWsHandler.publishRaw(threadId, msg),
         audit,
@@ -2644,11 +2770,98 @@ let blobGc: BlobGc | null = null
       // constructed long before `agentRunner` exists.
       sweepAgentApprovals = () => agentRunner.sweepExpiredApprovals()
 
+      // The actions router (plan 207 §4.2, §4.8) — one endpoint per verb,
+      // taking a target; replaces every per-device action route, every bulk
+      // twin, and the deleted fleet command surface entirely. Built from the SAME
+      // live accessors and forward-refs every other router in this function
+      // already reads (`deviceRoutes` below gets the identical
+      // `reconnector`/`sessions`/`cutover`/`labelling`/`lifecycle`/`battery`
+      // pattern). `batchesFor` is the one field that is a FUNCTION of the
+      // per-request actor rather than a static object: `run-script`'s own
+      // gate (`checkGate`, `VERBS['run-script'].gate` — only `job.run`) is
+      // coarser than `validate-script.ts`'s F10 fix (an `internal:install`
+      // script needs `device.files`/`transfer.enabled` too), and that fix is
+      // enforced by `BatchDispatchDeps.validateScript`'s `actorRole` closure
+      // — a fixed `null` actor here would silently reopen F10 for run-script
+      // on the one surviving path to it (`POST /api/batches` and
+      // `POST /api/jobs` are both gone). `createBatchDispatchDeps` is the
+      // SAME factory `api/batches.ts`'s own routes call for their own
+      // per-request actor, never a second copy of that literal.
+      const actionsDeps: ActionsDeps = {
+        db,
+        audit,
+        record: (e) => recorder?.record(e),
+        broadcast: (msg) => hub.broadcast(msg as ServerMessage),
+        activities,
+        jobService,
+        workflows: workflowStore,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
+        states,
+        operations,
+        userLabel: (userId) => resolveActorLabel('user', userId),
+        shellSettings: () => shellConstants(settingsStore.get()),
+        transferSettings: () => transferConstants(settingsStore.get()),
+        batchesFor: (actor) =>
+          createBatchDispatchDeps(
+            {
+              db,
+              runs,
+              scheduler: scheduler!,
+              audit,
+              registry: executors,
+              findScript,
+              scriptRegistry,
+              farmJobSettings: () => jobConstants(settingsStore.get()),
+              pacer,
+              shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+              transferEnabled: () => TRANSFER_ENABLED,
+            },
+            actor,
+          ),
+        resolveScriptRef: (ref) => scriptRegistry.resolve(ref),
+        transfer: {
+          transfer: transferService,
+          broadcast: transferBroadcast,
+          holdFor: readinessHoldForTransfer,
+        },
+        shellPortFor: actionShellPortFor,
+        readiness,
+        reconnector: () => reconnector,
+        sessions: () => sessions,
+        cutover: () => cutoverManager,
+        lifecycle: deviceLifecycle,
+        battery: () => battery,
+        // The address book's own actions door (plan 52, plan 207 §4.2) —
+        // `guestAgent.routeActions` is the SAME `RouteService['actions']`
+        // object `createGuestAgentRoutes` builds once, unconditionally,
+        // well before this point.
+        routeService: () => guestAgent.routeActions,
+        labelling,
+        preparation: { runner: preparationRunner, agentProvisioner },
+        // Wraps the capability context's own `deviceCall` (plan 207 §4.8) —
+        // the SAME path `capability/device-inspect.ts`'s `device.screenshot`
+        // uses, which returns a base64 PNG string
+        // (`@enkaku/session`'s `device-executor.ts`'s `screenshot` case).
+        // No caller-specific auditing applies here (`actor: null`) — this
+        // router's own `audit.record` call on the settled result is the
+        // action's audit trail, not a second capability-shaped one.
+        screenshot: async (deviceId) => {
+          const value = await createCapabilityContext(capContextDeps, null).deviceCall(deviceId, { method: 'screenshot', args: {} }, 'wall')
+          return new Uint8Array(Buffer.from(String(value), 'base64'))
+        },
+        dataDir: cfg.dataDir,
+        networks: () => settingsStore.get().networkScan.networks,
+        infoWithTags: (deviceId) => getDeviceOwner(deviceId) ?? { ownerId: null },
+        // The same accessor `listDevices` below is wired to — one read for a
+        // whole `set-group`, never one per device.
+        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)),
+      }
+      const actionRoutesHandle = createActionRoutes(actionsDeps)
+
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithTags` call in this function gets.
-        listDevices: () =>
-          listDevicesWithTags(db, undefined, (deviceId) => leases.getHolder(deviceId), settingsStore.get().discovery.networks, loadDeclaredMedia(endpoints)),
+        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)),
         deviceCount: () => db.select().from(devices).all().length,
         // Plan 126 §3.5, step 126.5 — the sidebar's farm-health badge, read
         // off the health poll Studio already makes instead of the whole
@@ -2718,18 +2931,17 @@ let blobGc: BlobGc | null = null
               id: j.id,
               label: `${j.scriptName ?? 'a script'} on ${deviceLabels.get(j.deviceId) ?? j.deviceId}`,
             }))
-            const heldDevices = db
-              .select({ id: devices.id, label: devices.label, stableId: devices.stableId })
-              .from(devices)
-              .where(eq(devices.status, 'manual'))
-              .all()
-              .map((d) => ({ deviceId: d.id, label: formatDeviceLabel(numbers.get(d.stableId) ?? null, d.label) }))
-            return { runningJobs, heldDevices }
+            // Plan 205 §4.7 — `devices.status` is never `manual` any more; "controlled" is a live
+            // `control` marker on the activity registry, not a stored status.
+            const controlledDevices = activities
+              .devicesWith('control')
+              .map((deviceId) => ({ deviceId, label: deviceLabels.get(deviceId) ?? deviceId }))
+            return { runningJobs, controlledDevices }
           },
           // `adbControl.restartCooldownSec` (plan 88 §4.2, promoted to a real
           // setting in step 88.9) — read fresh on every call, same as every
           // other "settings, read live" dep in this codebase.
-          restartCooldownSec: () => settingsStore.get().adbControl.restartCooldownSec,
+          restartCooldownSec: () => ADB_RESTART_COOLDOWN_SEC,
         },
         // "Restart Enkaku" (plan 120 §4) — the whole core process's route
         // deps, mirroring `adbControl` immediately above. `preview()`
@@ -2743,19 +2955,19 @@ let blobGc: BlobGc | null = null
             mode: detectSupervisionMode(),
             devicesTotal: db.select().from(devices).all().length,
             sessionsActive: sessions?.activeDeviceIds?.().length ?? 0,
-            leasesHeld: db.select().from(devices).where(eq(devices.status, 'manual')).all().length,
+            // Plan 205 §4.7 — `devices.status` is never `manual` any more; "controlled" counts
+            // live `control` markers on the activity registry, not a stored status.
+            controlled: activities.devicesWith('control').length,
             jobsRunning: jobStore.list({ status: 'running', limit: 1000 }).rows.length,
           }),
         },
-        // `scriptRef` resolution (plan 62 §4.4) — resolved before the job row
-        // is written, so `jobs.scriptId` is always concrete.
         jobRoutes: createJobRoutes(jobService, {
+          runs,
           log: log.child('jobs'),
-          resolveScriptRef: (ref) => scriptRegistry.resolve(ref),
           logBuffer: jobLogBuffer,
           // `canCancelJob`'s ownership half (`auth/acl.ts`) — the same
           // `getDeviceOwner` closure `jobService`'s own `enqueue` check,
-          // `lease.acquire`, batch dispatch, and the adb endpoint already
+          // control acquisition, batch dispatch, and the adb endpoint already
           // share, so `POST /:id/cancel` gets the identical ownership answer
           // the WS `job.cancel` path (wired below) gets.
           getDeviceOwner,
@@ -2774,14 +2986,15 @@ let blobGc: BlobGc | null = null
           db,
           registry: () => buildRegistryResponse(toolchain),
           battery: () => battery,
+          metricsOf: (id) => battery?.metricsOf(id) ?? null,
           audit,
           dataDir: cfg.dataDir,
           record: recorder!.record,
           // Farm defaults now land at admission rather than at first sight
           // (plan 56 §4.3) — same accessors the registry is given below, so
           // the two cannot disagree about what a new device inherits.
-          deviceDefaults: () => settingsStore.get().defaults,
-          defaultDesiredReadiness: () => settingsStore.get().readiness.defaultDesired,
+          // plan 212 §5 step 212.4: `deviceDefaults` dep removed; `defaultsForNewDevice` uses `defaultDeviceSettings()` directly.
+          defaultDesiredReadiness: () => READINESS_DEFAULT_DESIRED,
           // `registry` is assigned later in boot, so this reads it at call
           // time rather than capturing a null — admitting a device cannot
           // happen before the registry exists anyway.
@@ -2819,20 +3032,19 @@ let blobGc: BlobGc | null = null
           // Device readiness (plan 43 §4.5) — `readiness` is constructed
           // synchronously above, well before `createApp` is reached.
           readiness: readiness ?? undefined,
-          // Who holds a device's manual lease (plan 71 §4.4) — `leases` is
-          // constructed synchronously above too.
-          heldByOf: (deviceId) => leases.getHolder(deviceId),
-          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4,
-          // §5 step 91.4) — `coControl` is constructed synchronously above
-          // too, right after `leases`.
-          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
+          // A device's live activities and its last control tail (plan 205
+          // §4.10) — `activities` is constructed synchronously above too.
+          activitiesOf,
           // Per-device disconnect/reconnect (plan 88 §3.7, §4.6, §5 step
-          // 88.4) — `leases`/`endpoints`/`jobStore` are constructed
-          // synchronously above, the same reasoning as `heldByOf` just above.
+          // 88.4) — `activities`/`endpoints`/`jobStore` are constructed
+          // synchronously above, the same reasoning `activitiesOf` just above relies on.
           // `reconnector`/`sessions` are forward-refs: both are assigned
           // later in boot (or never, in orchestrator mode / if the adb
           // subsystem failed to start), same pattern as `rescan`/`onAdmitted`.
-          leases,
+          activities,
+          // Plan 205 §4.9 — replaces the old `status === 'busy'` read: a
+          // device with a live `job`/`workflow-job`/`install` activity.
+          runningJobOf: (deviceId) => activities.list(deviceId).some((a) => a.kind === 'job' || a.kind === 'workflow-job' || a.kind === 'install'),
           jobStore,
           connection: {
             reconnector: () => reconnector,
@@ -2850,24 +3062,19 @@ let blobGc: BlobGc | null = null
           // `deriveConnection` never sees a network to match a `tcp`
           // device's address against, and `mediumSource` could only ever
           // read `'declared'` or `'unknown'`.
-          networks: () => settingsStore.get().discovery.networks,
-          // The lease-scoped adb endpoint (plan 27 §4.3) — `manager` is
-          // constructed unconditionally above, before this point is reached.
-          adbEndpoint: { manager: adbEndpointManager!, leases, shellSettings: () => settingsStore.get().shell },
-          // File transfer and APK install (plan 39 §4.3, §4.4) —
-          // `transferService`/`transferBroadcast` are constructed
-          // unconditionally above too, the same reasoning as `adbEndpoint`.
-          transfer: {
-            transfer: transferService,
-            leases,
-            record: recorder!.record,
-            shellSettings: () => settingsStore.get().shell,
-            transferSettings: () => settingsStore.get().transfer,
-            broadcast: transferBroadcast,
-            holdFor: readinessHoldForTransfer,
+          networks: () => settingsStore.get().networkScan.networks,
+          // The activity-gated adb endpoint (plan 27 §4.3, plan 205 §4.9) —
+          // `manager` is constructed unconditionally above, before this
+          // point is reached.
+          adbEndpoint: {
+            manager: adbEndpointManager!,
+            activities,
+            controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
+            states,
+            shellSettings: () => shellConstants(settingsStore.get()),
           },
           // Device lifecycle — Forget and Block (plan 47 §4.4) — `deviceLifecycle`
-          // is constructed unconditionally above, beside `leaseManager`.
+          // is constructed unconditionally above, beside `activities`.
           lifecycle: deviceLifecycle,
           broadcast: (msg) => hub.broadcast(msg),
           // Physical labelling (plan 89 §4.3, §4.6, §5 step 89.6's own noted
@@ -2896,41 +3103,25 @@ let blobGc: BlobGc | null = null
         // own doc comment for why it is bridged rather than registered).
         devicePreparationRoutes: createDevicePreparationRoutes({ db, runner: preparationRunner, agentProvisioner }).routes,
         tagRoutes: createTagRoutes({ db }),
-        clusterRoutes: createClusterRoutes({
+        // Group CRUD and read-only membership (plan 22.0 §4.4, renamed to
+        // `groups` by plan 207 — MVP 15 §0.1 item 3). `/api/topology`'s
+        // fleet map is gone entirely (plan 207 §4.7); nothing replaces it.
+        groupRoutes: createGroupRoutes({
           db,
           audit,
-          heldByOf: (deviceId) => leases.getHolder(deviceId),
-          // Plan 88 §3.6, §4.1, residual gap closed by plan 90 (also recorded at
-          // docs/plans/96-m61-hotfixes.md §96.5): `createClusterRoutes` itself has carried
-          // `networks`/`declaredMedia` since that entry's fix — only THIS call site never
-          // threaded them through, so a device's connection badge on its own device page
-          // could read `OTG` while the identical row, viewed through its cluster's device
-          // list, read the honest-but-incomplete `TCP`. Same accessors `deviceRoutes`/
-          // `topologyRoutes` already get, a few lines away in this same function.
-          networks: () => settingsStore.get().discovery.networks,
+          // Same accessors `deviceRoutes` above gets, so a device's
+          // connection badge never disagrees between the device list and
+          // its group's own device list.
+          networks: () => settingsStore.get().networkScan.networks,
           declaredMedia: () => loadDeclaredMedia(endpoints),
-          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
-          // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
-          // accessor `deviceRoutes` above already gets; `coControl` is constructed
-          // synchronously above, well before this object literal.
-          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
-        }),
-        topologyRoutes: createTopologyRoutes({
-          db,
-          readinessOf: (deviceId, row) => readiness?.get(deviceId) ?? staticReadinessFallback(row),
-          heldByOf: (deviceId) => leases.getHolder(deviceId),
-          // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors `deviceRoutes` above gets, so the
-          // fleet map's badges never disagree with the device list's.
-          networks: () => settingsStore.get().discovery.networks,
-          declaredMedia: () => loadDeclaredMedia(endpoints),
-          // Who is currently assisting a device (plan 91 §3.4 item 4, §4.4, §5 step
-          // 91.4; residual closed per docs/plans/96-m61-hotfixes.md §96.10) — same
-          // accessor `deviceRoutes` above already gets.
-          assistedByOf: (deviceId) => coControl.assistedBy(deviceId),
+          // A device's live activities and its last control tail (plan 205 §4.10) —
+          // `activities` is constructed synchronously above, well before this object literal.
+          activitiesOf,
         }),
         batchRoutes: createBatchRoutes({
           db,
           jobStore,
+          runs,
           scheduler: scheduler!,
           audit,
           broadcastBatchStatus: (msg) => hub.broadcast(msg),
@@ -2944,7 +3135,7 @@ let blobGc: BlobGc | null = null
           // `resetPolicy` below reads from, so a batch's `runtimeOverride`
           // ceiling check binds against the farm's REAL `job` settings
           // instead of always resolving to "no ceiling".
-          farmJobSettings: () => settingsStore.get().job,
+          farmJobSettings: () => jobConstants(settingsStore.get()),
           // Plan 94 §3.7, §3.8, §4.8, §4.9, step 94.7 — a batch created
           // through this route can now carry a `pacing` block.
           pacer,
@@ -2958,8 +3149,8 @@ let blobGc: BlobGc | null = null
           // no `device.files`, no `transfer.enabled`. The SAME live
           // accessors `createJobService` above and `scheduleRoutes` below
           // both read.
-          shellMode: () => settingsStore.get().shell.mode,
-          transferEnabled: () => settingsStore.get().transfer.enabled,
+          shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+          transferEnabled: () => TRANSFER_ENABLED,
           // Plan 93 §3.13, §4.4, §4.7, step 93.10 — `GET /:id/artifacts.zip`
           // resolves each collected file's stored relative path against
           // app-data, the same root `artifactRoutes` below is given.
@@ -2967,42 +3158,17 @@ let blobGc: BlobGc | null = null
           // Same live `transfer` settings `transferEnabled` above reads,
           // just the one extra field the archive route's pre-flight cap
           // needs.
-          archiveSettings: () => settingsStore.get().transfer,
+          archiveSettings: () => transferConstants(settingsStore.get()),
         }),
-        // The fleet command console's REST surface (plan 93 §4.4, step
-        // 93.4) — `commandRunStore`/`commandRunner` are both constructed
-        // unconditionally above, right after `leases`.
-        commandRunRoutes: createCommandRunRoutes({
-          db,
-          store: commandRunStore,
-          runner: commandRunner!,
-          settings: () => settingsStore.get().shell,
-          // The SAME role-resolution expression `commandRunner`'s own
-          // construction above uses — an operator's fleet-command
-          // permission must agree between the REST gate and the runner's
-          // defense-in-depth re-check of it.
-          roleOf:
-            authMode === 'local'
-              ? () => 'admin'
-              : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
-          getDeviceOwner,
-        }),
-        // Saved commands (plan 93 §3.10, §4.4, step 93.6) — the SAME
-        // role-resolution expression `commandRunRoutes` above uses, so a
-        // saved command's owner-or-admin edit/delete gate agrees with the
-        // fleet command console's own permission model.
-        savedCommandRoutes: createSavedCommandRoutes({
-          db,
-          settings: () => settingsStore.get().shell,
-          roleOf:
-            authMode === 'local'
-              ? () => 'admin'
-              : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
-          audit,
-        }),
+        // One endpoint per verb, taking a target (plan 207 §4.2, §4.8) —
+        // `actionsDeps`/`actionRoutesHandle` are both constructed
+        // unconditionally above, right after the agent runner.
+        actionRoutes: actionRoutesHandle.actions,
+        operationRoutes: actionRoutesHandle.operations,
         scheduleRoutes: createScheduleRoutes({
           db,
           jobStore,
+          runs,
           scheduler: scheduler!,
           audit,
           log: log.child('schedule-api'),
@@ -3021,7 +3187,7 @@ let blobGc: BlobGc | null = null
             const agent = agentStore.get(agentId)
             return !!agent && agent.enabled
           },
-          scheduledAgentCeilings: () => settingsStore.get().scheduledAgents,
+          scheduledAgentCeilings: () => agentSettingsStore.get().scheduled,
           notifySystem: (input) => {
             notifyAndBroadcast({ level: input.level, title: input.title, body: input.body ?? null, context: input.context ?? null, source: 'system' })
           },
@@ -3031,17 +3197,18 @@ let blobGc: BlobGc | null = null
           // above and `scheduleRunner`'s own construction get, so a
           // schedule's `internal:install` is gated identically whether it
           // fires at create/edit time, `run-now`, or on its own cron.
-          shellMode: () => settingsStore.get().shell.mode,
-          transferEnabled: () => settingsStore.get().transfer.enabled,
+          shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+          transferEnabled: () => TRANSFER_ENABLED,
         }),
         settingsRoutes: createSettingsRoutes(settingsStore),
+        storageRoutes: createStorageRoutes(db),
         artifactRoutes: createArtifactRoutes({
           db,
           dataDir: cfg.dataDir,
           // The one way a file enters the artifact store from outside a job
           // (plan 39 §4.4) — gated by the same `device.files`/`shell.mode`
           // switch install/push/pull use, and audited.
-          upload: { audit, shellSettings: () => settingsStore.get().shell },
+          upload: { audit, shellSettings: () => shellConstants(settingsStore.get()) },
         }),
         // The one way a file enters the WORKSPACE from outside `fs.write`
         // (plan 115 §4.3, §5 step 115.3) — the same `workspaceStore`
@@ -3049,14 +3216,14 @@ let blobGc: BlobGc | null = null
         // gated and audited exactly like `artifactRoutes` above.
         workspaceFileRoutes: createWorkspaceFileRoutes({
           workspace: workspaceStore,
-          upload: { audit, shellSettings: () => settingsStore.get().shell },
+          upload: { audit, shellSettings: () => shellConstants(settingsStore.get()) },
         }),
         adbStatsRoutes: createAdbStatsRoutes({
           db,
           client: () => adb,
           metrics: adbMetrics,
           health: () => health,
-          auto: () => settingsStore.get().adb.maxConcurrent === 0,
+          auto: () => settingsStore.get().advanced.adbMaxConcurrent === 0,
           sessions: () => sessions,
           // `hostAdbHandle` is unconditional and non-null from construction
           // (see its own comment above); `transportStats` is the forward-ref
@@ -3067,15 +3234,6 @@ let blobGc: BlobGc | null = null
           // `inputStats` is the forward-ref resolved once `attachWsRouter`
           // runs (plan 91 §4.10, §5 step 91.10), same pattern as `transport`.
           input: () => inputStats?.() ?? null,
-          // Plan 93 §5 step 93.12 — `commandRunner` is constructed
-          // unconditionally above (right after `leases`, same as
-          // `batchRoutes`'s own `commandRunRoutes` wiring reads), well
-          // before this call. Without this line `GET /api/adb/stats`
-          // reports the whole `commandConsole` block zero-filled forever,
-          // even while command runs are genuinely in flight
-          // (`adb-stats-command-console-wiring.test.ts`, the self-detecting
-          // gap step 93.12 could not close on its own file list).
-          commandConsole: () => commandRunner?.stats() ?? null,
           // plan 92 §3.3, §3.7, §4.5, §5 step 92.3 — the build lane's
           // farm-wide settings. `maxTiles` reports `wall.maxTiles` AS
           // ACTUALLY APPLIED: the derived count (`computeAutoTiles`) when
@@ -3086,42 +3244,68 @@ let blobGc: BlobGc | null = null
           // budget, not a per-device one), via `resolveVideoProfile` with
           // no device override.
           //
-          // Plan 100 §3.1/§4.1/§4.1, step 100.3 — `computeAutoTiles` combines
-          // a decode bound (`wall.decodeTileCeiling`) with a bandwidth bound
-          // that is now transport-aware: `resolveWallTransport` classifies
-          // the deployment the same way auth mode already is (CLAUDE.md:
-          // "auth mode derives from the bind address") — orchestrator/cloud
-          // reads as `wan`, everything else as `loopback`, unless
-          // `wall.transportOverride` names one explicitly — and
-          // `resolveWallBandwidthBps` hard-pins the WAN branch to
-          // `WALL_VIDEO_BUDGET_BPS` (byte-identical to pre-plan-100 cloud
-          // behaviour, §3.6) while loopback/LAN use the farm's own generous
-          // `wall.bandwidthBps` instead, so the decode bound is what actually
-          // governs a local wall rather than a WAN-shaped constant it never
-          // needed.
+          // Plan 100 §3.1/§4.1, step 100.3, reworked by plan 212 §212.5 —
+          // `computeAutoTiles` combines a decode bound (`WALL_DECODE_TILE_
+          // CEILING`) with a bandwidth bound that is transport-aware:
+          // `resolveWallTransport` classifies the deployment the same way
+          // auth mode already is (CLAUDE.md: "auth mode derives from the
+          // bind address") — orchestrator/cloud reads as `wan`, everything
+          // else as `loopback`, unless `WALL_TRANSPORT_OVERRIDE` names one
+          // explicitly — and `resolveWallBandwidthBps` takes the WAN branch
+          // from `advanced.wallWanBandwidthBps` (the farm's own advanced
+          // field, default 20 Mbit/s, byte-identical to pre-plan-100 cloud
+          // behaviour) while loopback/LAN use `WALL_LAN_BANDWIDTH_BPS`
+          // instead, so the decode bound is what actually governs a local
+          // wall rather than a WAN-shaped constant it never needed.
           video: () => {
-            const wallMaxTiles = settingsStore.get().wall.maxTiles
+            const wallMaxTiles = WALL_MAX_TILES
             const maxTilesAuto = wallMaxTiles === 0
-            const wallSettings = settingsStore.get().wall
-            const transport = resolveWallTransport(process.env.ENKAKU_MODE === 'orchestrator', wallSettings.transportOverride)
+            const s = settingsStore.get()
+            const transport = resolveWallTransport(process.env.ENKAKU_MODE === 'orchestrator', WALL_TRANSPORT_OVERRIDE)
             return {
-              maxConcurrentBuilds: settingsStore.get().session.maxConcurrentBuilds,
+              // Plan 206 §4.5, §4.10 — the one remaining session build knob
+              // plus the farm-wide ceiling constant (overridable by
+              // `ENKAKU_SESSION_BUILD_CEILING`); the old three-field session
+              // block (a per-viewer idle TTL, a farm-wide idle cap, and a
+              // build-lane cap) is gone with the idle model it governed.
+              buildsPerUsbRoot: s.advanced.sessionBuildsPerUsbRoot,
+              farmCeiling: Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
               maxTiles: maxTilesAuto
-                ? computeAutoTiles(resolveVideoProfile(settingsStore.get().video, null, 'wall').bitRate, {
-                    decodeTileCeiling: wallSettings.decodeTileCeiling,
-                    bandwidthBps: resolveWallBandwidthBps(transport, wallSettings.bandwidthBps),
+                ? computeAutoTiles(resolveVideoProfile(s.capture, null, 'wall').bitRate, {
+                    decodeTileCeiling: WALL_DECODE_TILE_CEILING,
+                    bandwidthBps: resolveWallBandwidthBps(transport, s.advanced.wallWanBandwidthBps, WALL_LAN_BANDWIDTH_BPS),
                   })
                 : wallMaxTiles,
               maxTilesAuto,
               transport,
             }
           },
+          // Plan 206 §4.2, §4.10 — the always-on builder's own occupancy.
+          alwaysOn: () => (alwaysOn ? { running: alwaysOn.stats().running, queued: alwaysOn.stats().queued } : null),
         }),
         // `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2) —
         // the manual "apply now" the settings section's own button (and
         // anyone with `settings.manage` from curl) calls; the automatic
         // debounced path above calls the exact same `sessions.reprofile()`.
-        videoRoutes: createVideoRoutes({ sessions: () => sessions }),
+        // `GET /api/video/sessions` (plan 206 §4.6) — the bench harness's
+        // `--warmup` mode and operator/owner debugging.
+        videoRoutes: createVideoRoutes({
+          sessions: () => sessions,
+          streamStats: (id) => videoStreamStats?.(id) ?? null,
+          inputStats: (id) => inputDispatchStats?.(id) ?? null,
+          alwaysOn: () => alwaysOn,
+          // One statement for the whole fleet's numbers (plan 124 §3.7, plan
+          // 19 §4.3's no-N+1 rule) — the same `loadDeviceNumbers` pattern
+          // `adb-stats.ts`'s own per-device table already uses.
+          deviceIds: () => {
+            const numbers = loadDeviceNumbers(db)
+            return db
+              .select({ id: devices.id, stableId: devices.stableId })
+              .from(devices)
+              .all()
+              .map((row) => ({ deviceId: row.id, number: numbers.get(row.stableId) ?? null }))
+          },
+        }),
         doctorRoutes: createDoctorRoutes({
           dataDir: cfg.dataDir,
           coreProbe: async () => ({
@@ -3168,7 +3352,7 @@ let blobGc: BlobGc | null = null
         // executor's runtime clock already enforced (the `createWorkflowExecutor`
         // call below, wired since plan 99 §5 items 1-2). Guarded by
         // `daemon-wiring.test.ts`'s workflow-routes describe block.
-        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, audit, settings: () => settingsStore.get().workflow }),
+        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, store: workflowStore, audit, settings: () => ({ maxTotalMs: WORKFLOW_MAX_TOTAL_MS }) }),
         // Plan 94 §4.9, §5 step 94.5 — `workspaceStore` and `recordingService` are the
         // SAME instances every other route/service in this file already shares (one
         // workspace, one recorder — F16/F11's own "never a second store/bundler").
@@ -3211,15 +3395,16 @@ let blobGc: BlobGc | null = null
               createBatchDispatchDeps(
                 {
                   db,
+                  runs,
                   scheduler: scheduler!,
                   audit,
                   registry: executors,
                   findScript,
                   scriptRegistry,
-                  farmJobSettings: () => settingsStore.get().job,
+                  farmJobSettings: () => jobConstants(settingsStore.get()),
                   pacer,
-                  shellMode: () => settingsStore.get().shell.mode,
-                  transferEnabled: () => settingsStore.get().transfer.enabled,
+                  shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+                  transferEnabled: () => TRANSFER_ENABLED,
                 },
                 actor,
               ),
@@ -3238,6 +3423,11 @@ let blobGc: BlobGc | null = null
           // bounds nothing.
           ...(pluginHost ? { service: { host: pluginHost, webhooks: { store: pluginWebhookStore, limiter: pluginWebhookLimiter } } } : {}),
         }),
+        // The flow editor's node catalog (plan 303 §4.3, §5 step 303.6) —
+        // `pluginRuntime` is the SAME instance `pluginRoutes` above already
+        // shares; the registry reads its manifests fresh on every request,
+        // never a second cache to keep in step with activate/rollback.
+        nodeTypeRoutes: createNodeTypeRoutes({ plugins: pluginRuntime }),
         // The capability registry's three generated surfaces (plan 63 §3.5,
         // §4.4, §4.5) — `capabilityRegistry`/`capContextDeps`/`openApiDocument`
         // are all built just above, before this call.
@@ -3245,8 +3435,10 @@ let blobGc: BlobGc | null = null
         openApiDocument,
         mcpRoutes: createMcpServer({ registry: capabilityRegistry, contextDeps: capContextDeps, audit, serverVersion: CORE_VERSION }),
         // AI agents and connectors (plan 65 §4.5) — `agentStore`/`connectorStore`/`modelListCache` are built just above.
-        // `tree: agentTreeStore` (plan 67 §4.1) backs `/:id/spawn-grants`.
-        agentRoutes: createAgentRoutes({ store: agentStore, tree: agentTreeStore, audit }),
+        // `agentTreeStore` no longer feeds this route: plan 220 §3.5 deletes the sub-agent spawn
+        // grant routes (no Studio caller ever reached them); `agentTreeStore` keeps its OTHER,
+        // unrelated wiring into the runner below, untouched.
+        agentRoutes: createAgentRoutes({ store: agentStore, audit, settings: agentSettingsStore }),
         // The durable kv store's admin surface (plan 79 §4.3, step 4) — `kvStore` is built early,
         // alongside `deviceLifecycle`, since the job runner also needs it.
         kvRoutes: createKvRoutes({ store: kvStore, audit }),
@@ -3256,7 +3448,7 @@ let blobGc: BlobGc | null = null
         // Content-addressed image blobs (plan 70 §4.6) — `agentBlobStore` is built just above,
         // alongside the other agent-loop stores; the cap matches the farm's own per-image budget
         // (`agentDefaults.maxImageBytes`) so an upload and a stored screenshot are held to the same limit.
-        blobRoutes: createBlobRoutes({ blobs: agentBlobStore, audit, maxUploadBytes: () => settingsStore.get().agentDefaults.maxImageBytes }),
+        blobRoutes: createBlobRoutes({ blobs: agentBlobStore, audit, maxUploadBytes: () => agentSettingsStore.get().defaults.maxImageBytes }),
         // Notifications and webhooks (plan 68 §4.5) — `notificationStore`/`webhookStore` are built early, alongside `hub`.
         notificationRoutes: createNotificationRoutes({ store: notificationStore }),
         webhookRoutes: createWebhookRoutes({ store: webhookStore, audit }),
@@ -3375,7 +3567,7 @@ let blobGc: BlobGc | null = null
             if (url.pathname === '/ws') {
               // A WS handshake does not always carry cookies → support single-use tickets.
               // The resolved user rides along on `ws.data` (plan 18 §4.2, §18.4):
-              // control.acquired/control.revoked and input events need an actor,
+              // activity.started/activity.ended and input events need an actor,
               // not just an anonymous per-connection clientId.
               let userId: string | null = null
               if (authMode === 'server') {
@@ -3402,6 +3594,15 @@ let blobGc: BlobGc | null = null
             // actually reads (a browser cannot observe the protocol-level one).
             idleTimeout: 120,
             sendPings: true,
+            // Plan 206 §3.8, §4.10 (R8) — Bun's own backpressure ceiling and
+            // the drain handler that reacts to it. Set explicitly for the
+            // same reason `idleTimeout`/`sendPings` above are: a value
+            // nobody wrote down is not a value anyone can review.
+            backpressureLimit: BACKPRESSURE_LIMIT_BYTES,
+            closeOnBackpressureLimit: false,
+            drain: (ws) => {
+              hub.handlers.drain?.(ws)
+            },
             open: (ws) => {
               const data = ws.data as WsConnectionData
               if (data?.nodeId) {
@@ -3501,14 +3702,18 @@ let blobGc: BlobGc | null = null
         })
       }
 
-      // Artifact retention (spec §18) — the policy comes from farm settings.
-      retention = createRetentionGc({
+      // Retention sweep (MVP 09 §6, MVP 14 §5; plan 211's run/job interface plus
+      // events, traces, artifacts and audit) and the storage-usage cache it
+      // maintains for GET /api/storage/usage.
+      retention = createRetentionSweeper({
         db,
         dataDir: cfg.dataDir,
         settings: settingsStore,
+        runs,
+        createRunRetentionSweeper,
         log: log.child('retention'),
         intervalMinutes: cfg.retention.sweepIntervalMinutes,
-        onSwept: (r) => audit.record({ userId: null, action: 'retention.gc', meta: r }),
+        onSwept: (r) => audit.record({ userId: null, action: 'retention.sweep', meta: r }),
       })
       retention.start()
 
@@ -3525,10 +3730,16 @@ let blobGc: BlobGc | null = null
       })
       blobGc.start()
 
-      leases.startReaper()
-      stopReaper = () => leases.stopReaper()
-      coControl.startReaper()
-      stopCoControlReaper = () => coControl.stopReaper()
+      activities.startSweep()
+      operations.startSweep()
+      stopReaper = () => {
+        activities.stopSweep()
+        operations.stopSweep()
+        // Plan 221 §5 step 221.14 — a pending coalesced push must not fire after `stop()`, which
+        // is when the guest-agent session machinery it would reach through is torn down.
+        for (const timer of activityPushTimers.values()) clearTimeout(timer)
+        activityPushTimers.clear()
+      }
       expiryReaper.start()
       stopExpiryReaper = () => expiryReaper.stop()
       scheduler.start()
@@ -3540,10 +3751,10 @@ let blobGc: BlobGc | null = null
       // `jobs` rows) — this is idempotent for every batch that lost nothing.
       // `jobStore`/`broadcast`/`log` wired (step 94.11) so the same sweep
       // also closes a paced batch left `queued`/`running` with zero live
-      // jobs after a crash — see `clusters/pacer.ts`'s own doc comment on
+      // jobs after a crash — see `groups/pacer.ts`'s own doc comment on
       // `replanAfterRestart` for why this is a real gap and not merely
       // belt-and-braces.
-      replanAfterRestart({ db, pacer, jobStore, broadcast: (msg) => hub.broadcast(msg), log: log.child('pacer') })
+      replanAfterRestart({ db, runs, pacer, jobStore, broadcast: (msg) => hub.broadcast(msg), log: log.child('pacer') })
       stopPacer = () => pacer.stop()
       scheduleRunner.start()
       const runner = scheduleRunner
@@ -3556,28 +3767,18 @@ let blobGc: BlobGc | null = null
         const handler = createWsMessageHandler({
           sessions: localSessions,
           ...(remoteSessions ? { remote: remoteSessions } : {}),
-          webrtc: webrtcRelay,
           pairing: pairingService,
-          leases,
+          // The device activity registry (plan 205 §4.2) — the one door
+          // every gated case goes through via `admit()`. `controlSettings`
+          // is read fresh on every admission check, the same freshness
+          // discipline every other farm settings accessor here already
+          // follows.
+          activities,
+          controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
           jobs: jobService,
-          // Co-control — Assist (plan 91 §3.2, §4.6, §5 step 91.4): the
-          // `input.*` fallback and the `assist.start`/`assist.stop` handlers
-          // both live in `ws-handlers.ts`; `coControl` itself was constructed
-          // right after `leases`, above, and its reaper is already started/
-          // stopped alongside `leases.startReaper()`/`stopReaper()`.
-          coControl,
-          coControlMode: () => settingsStore.get().coControl.mode,
-          // `/api/adb/stats`'s `input.queueWaitMs` (plan 91 §4.10, §5 step
-          // 91.10) — the co-control doctor check's budget, read fresh like
-          // every other farm setting accessor here.
-          coControlQueueWaitMs: () => settingsStore.get().coControl.queueWaitMs,
-          // Mirror groups (plan 91 §3.9, §4.7, §5 step 91.7) — `states` is
-          // the SAME `DeviceStateMachine` `leases`/`host` above already
-          // read; `mirrorSettings` is read fresh, the same freshness
-          // discipline `shellSettings`/`crashPolicy` already give their own
-          // farm settings blocks.
+          // `states` is the SAME `DeviceStateMachine` `activities`/`host`
+          // above already read.
           states,
-          mirrorSettings: () => settingsStore.get().mirror,
           // The Monitor tab (plan 24) works on node-owned devices too now
           // (plan 25): `adb` still serves local devices; `rpc`/`router` are
           // what let `shellPortFor` build the remote `ShellPort` for the rest.
@@ -3604,29 +3805,25 @@ let blobGc: BlobGc | null = null
             authMode === 'local'
               ? () => 'admin'
               : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
-          // `canUseDevice` (plan 34 §3.5, §4.4) — `lease.acquire`'s ownership check.
+          // `canUseDevice` (plan 34 §3.5, §4.4) — control acquisition's ownership check.
           getDeviceOwner,
-          shellSettings: () => settingsStore.get().shell,
-          // Plan 93 §3.3, §3.17, §5 step 93.5 — `shell.exec` records through
-          // the SAME store the fan-out runner writes to (`commandRunStore`,
-          // built right after `leases`, above), so `/console`'s History has
-          // one mechanism for both, not two. This is the store only; the
-          // runner itself (`commandRunner`) is unrelated to `shell.exec` and
-          // stays wired only into `commandRunRoutes` below.
-          commandRunStore,
-          // The lease-scoped adb endpoint (plan 27 §4.2) — explicit
-          // `lease.release` and WS-disconnect teardown both live in
-          // `ws-handlers.ts` already (that is where the WS-level lease and
-          // connection lifecycle already are); the automatic-revocation and
-          // device-offline paths are wired directly above, outside the WS
-          // router, since those originate in the lease manager and the
-          // device registry rather than from a client message.
+          shellSettings: () => shellConstants(settingsStore.get()),
+          // The activity-gated adb endpoint (plan 27 §4.2) — WS-disconnect
+          // teardown already lives in `ws-handlers.ts` (that is where the
+          // WS-level control-marker and connection lifecycle already are);
+          // the automatic-expiry and device-offline paths are wired directly
+          // above, outside the WS router, since those originate in the
+          // activity registry and the device registry rather than from a
+          // client message.
           adbEndpoint: adbEndpointManager!,
           // Device readiness (plan 43 §5 step 43.7) — `readiness` is
           // constructed unconditionally above, before this point is reached
-          // (the same `leases`/`leaseManager` ordering this router already
-          // depends on).
+          // (the same `activities` ordering this router already depends on).
           readiness: readiness ?? undefined,
+          // Plan 206 §4.8 — `stream.start`'s `E_SESSION_PREPARING` sentence.
+          // `alwaysOn` is a plain module-level `let`, read fresh through this
+          // closure the same way `sessions`/`readiness` are.
+          alwaysOn: alwaysOn ?? undefined,
           // `transfer.cancel` (plan 39 §4.4, acceptance #9) — `transferService`
           // is constructed unconditionally above, the same as `adbEndpoint`.
           transfer: transferService,
@@ -3635,22 +3832,14 @@ let blobGc: BlobGc | null = null
           // already uses; `onJobCrash` reaches the SAME `host` the scheduler
           // and the settle path use, so a crash-driven abort classifies and
           // records exactly like any other job failure.
-          crashPolicy: () => settingsStore.get().job.crashPolicy,
+          crashPolicy: () => JOB_CRASH_POLICY,
           // `monitor.crashWatch` (plan 85 §3.2) — read fresh for the same
           // reason `crashPolicy` is, so an operator who turns crash detection
           // off on a large farm does not have to restart the core.
-          crashWatch: () => settingsStore.get().monitor.crashWatch,
+          crashWatch: () => CRASH_WATCH,
           targetPackagesForJob: (jobId) => targetPackagesByJob.get(jobId) ?? [],
           saveCrashTrace,
           onJobCrash: (jobId, e) => host.notifyCrash(jobId, e),
-          // Plan 91 §3.6, §4.8, §5 step 91.5/91.10 — the last line of the
-          // assist→child notification chain (`WsHandlerDeps.onAssist` →
-          // `ExecutorHost.notifyAssist` → the runner's IPC → `ctx.onAssist`).
-          // Shaped identically to `onJobCrash` right above: a running
-          // script's `ctx.onAssist` was fully built and unit-tested in
-          // isolation by step 91.5 but structurally unreachable in a real
-          // boot until this line existed.
-          onAssist: (jobId, e) => host.notifyAssist(jobId, e),
           // The agent chat protocol's subscribe/unsubscribe/cancel half (plan 66 §4.4) — built
           // once, above, before `attachWsRouter` is even defined (it does not depend on `sessions`).
           agent: agentWsHandler,
@@ -3668,15 +3857,15 @@ let blobGc: BlobGc | null = null
         viewersOfDevice = handler.viewersOf
         stopMonitorsForDevice = handler.stopMonitorsForDevice
         releaseShellSession = handler.releaseShellSession
+        stopRecordingForDisconnect = handler.stopRecordingForDisconnect
         resetInspectForDevice = handler.resetInspectForDevice
-        releaseLeaseReadinessHold = handler.releaseLeaseHold
-        stopRecordingForLeaseLost = handler.stopRecordingForLeaseLost
         watchCrashesForDevice = handler.watchDevice
         unwatchCrashesForDevice = handler.unwatchDevice
-        reconcileMirrorForDevice = handler.reconcileMirror
         transportStats = handler.transportStats
         inputStats = handler.inputStats
-        broadcastCommandEvent = handler.broadcastCommand
+        videoStreamStats = handler.videoStreamStats
+        inputDispatchStats = handler.inputDispatchStats
+        handleClipboardChanged = handler.handleClipboardChanged
         broadcastTransferEvent = handler.broadcastTransfer
       }
 
@@ -3713,44 +3902,47 @@ let blobGc: BlobGc | null = null
         const adbVersion = await adb.version()
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
-        // Boot-time forward cleanup (plan 85 §4.8, §5 85.6, fixes F20) —
-        // `adb forward` entries live in the adb SERVER, not in this process,
-        // so they survive a crash and accumulate across restarts. Every
-        // entry whose LOCAL port falls inside the configured ui-server range
-        // and whose REMOTE is `tcp:9008` is ours by construction — nothing
-        // else binds that exact pair — so it is safe to remove
-        // unconditionally. scrcpy's own forwards are deliberately left
-        // alone: they use `tcp:0` (a random local port) and are therefore
-        // both harmless leftovers and indistinguishable from another tool's,
-        // so reaching into the shared adb server to remove one would be
-        // guessing, not cleanup.
+        // Boot-time forward cleanup (plan 85 §4.8, §5 85.6, fixes F20; widened
+        // by plan 223 §3.4/§4.4 to close the leaked scrcpy-forward field
+        // incident, MVP 09 §2). `adb forward` entries live in the adb
+        // SERVER, not in this process, so they survive a crash and
+        // accumulate across restarts. Two independent reasons make a listed
+        // entry ours by construction, either sufficient on its own
+        // (`shouldRemoveBootForward`): its LOCAL port falls inside the
+        // configured ui-server range and its REMOTE is `tcp:9008` — nothing
+        // else binds that exact pair; or its REMOTE matches this codebase's
+        // own scrcpy socket-name pattern (`isOwnScrcpyForwardRemote`,
+        // `@enkaku/scrcpy`), regardless of its LOCAL port. At the moment this
+        // loop runs, nothing in this process has opened a forward yet (this
+        // is before `sessions = createSessionManager(...)` and before
+        // `alwaysOn.start()`), so every scrcpy-shaped remote `adb forward
+        // --list` reports here is provably a leftover from before this boot
+        // — the same argument `sweepStrayScrcpyServers` above already makes
+        // for the device-side process list, applied here to the host-side
+        // forward table.
         try {
           const { rangeStart, rangeEnd } = parsePortRange(process.env.ENKAKU_UI_SERVER_PORT_RANGE)
           const list = await hostAdbHandle.run(['forward', '--list'])
           let removed = 0
           for (const rawLine of list.split('\n')) {
-            const fields = rawLine.trim().split(/\s+/)
-            const serial = fields[0]
-            const local = fields[1]
-            const remote = fields[2]
-            if (!serial || !local || !remote || remote !== `tcp:${UI_SERVER_DEVICE_PORT}`) continue
-            const portMatch = /^tcp:(\d+)$/.exec(local)
-            if (!portMatch) continue
-            const port = Number.parseInt(portMatch[1]!, 10)
-            if (port < rangeStart || port > rangeEnd) continue
+            const entry = parseForwardListLine(rawLine)
+            if (!entry) continue
+            if (!shouldRemoveBootForward(entry, { uiServerDevicePort: UI_SERVER_DEVICE_PORT, uiServerRangeStart: rangeStart, uiServerRangeEnd: rangeEnd }, isOwnScrcpyForwardRemote)) {
+              continue
+            }
             try {
               // `-s serial`, matching `launcher.ts`'s own `forward --remove`
               // call — the removal is scoped to the exact (serial, local)
               // pair the listing reported, never a bare port number.
-              await hostAdbHandle.run(['-s', serial, 'forward', '--remove', local])
+              await hostAdbHandle.run(['-s', entry.serial, 'forward', '--remove', entry.local])
               removed += 1
             } catch (err) {
-              log.warn(`boot-time forward cleanup: failed to remove ${local} (${serial}): ${String(err)}`)
+              log.warn(`boot-time forward cleanup: failed to remove ${entry.local} (${entry.serial}): ${String(err)}`)
             }
           }
           if (removed > 0) {
             log.info(
-              `boot-time cleanup: removed ${removed} leaked ui-server adb forward(s) (range ${rangeStart}-${rangeEnd}, remote tcp:${UI_SERVER_DEVICE_PORT})`,
+              `boot-time cleanup: removed ${removed} leaked adb forward(s) (ui-server range ${rangeStart}-${rangeEnd}, remote tcp:${UI_SERVER_DEVICE_PORT}; or a matching scrcpy socket)`,
             )
           }
         } catch (err) {
@@ -3877,13 +4069,13 @@ let blobGc: BlobGc | null = null
           // (`handshakeRetries`) is dropped because the public seam does not accept it either (only
           // `guest-agent.ts`'s own internal `probeReachability` gets that knob).
           withGuestAgentClient: (deviceId) => (fn) => guestAgent.withGuestAgentClient(deviceId, fn),
-          onSessionEnded: (deviceId, reason) =>
-            hub.broadcast({ type: 'stream.ended', payload: { deviceId, reason } }),
-          // The wake-up progress panel (Plan 17 §3.3, §4.7): one broadcast per
-          // start-up phase turns the dead time before the first frame into
-          // something Studio can show instead of a black rectangle.
-          onPhase: (deviceId, phase, detail) =>
-            hub.broadcast({ type: 'session.progress', payload: { deviceId, phase, ...(detail ? { detail } : {}) } }),
+          // Plan 206 §3.6, §4.10 — the always-on builder reacts to a dead
+          // BASE session with its own backoff-and-rebuild; `stream.ended`
+          // still tells every viewer their picture just went dark.
+          onSessionEnded: (deviceId, reason) => {
+            hub.broadcast({ type: 'stream.ended', payload: { deviceId, reason } })
+            alwaysOn?.sessionEnded(deviceId, reason)
+          },
           // Main-stream device events: session.opened / session.closed / session.degraded (plan 18 §4.2).
           onEvent: (deviceId, kind, meta) => {
             recorder?.record({ deviceId, stream: 'main', kind, meta })
@@ -3895,22 +4087,16 @@ let blobGc: BlobGc | null = null
             else if (kind === 'session.closed') unwatchCrashesForDevice?.(deviceId)
             // Session open/close is one of the events readiness reconciles
             // on (plan 43 §5 step 43.6) — a session appearing (someone
-            // else's hold, a viewer) or disappearing (Plan 42's idle TTL
-            // finally firing) both change `actual`.
+            // else's hold, a viewer) or disappearing (the base entry closing
+            // on `onDeviceGone`, plan 206 §4.3) both change `actual`.
             if (kind === 'session.opened' || kind === 'session.closed') void readiness?.reconcile(deviceId)
           },
-          // Idle session TTL (Plan 42 §4.4) — read fresh on every release, the
-          // same pattern `resetPolicy`/`adb.maxConcurrent` already use.
-          idleTtlSec: () => settingsStore.get().session.idleTtlSec,
-          maxIdleSessions: () => settingsStore.get().session.maxIdleSessions,
+          // Plan 209 §3.2 D10, §4.9: a device-side copy on the base (wall)
+          // entry, pushed to Device Control viewers only.
+          onClipboardChanged: (deviceId, text) => handleClipboardChanged?.(deviceId, text),
           // plan 92 §3.5, §4.2, §4.3 — farm video settings plus this
-          // device's own override, read fresh on every session build (the
-          // same freshness discipline as the two accessors right above).
-          resolveProfile: (deviceId, quality) => resolveVideoProfile(settingsStore.get().video, deviceSource.get(deviceId)?.video ?? null, quality),
-          // plan 92 §3.3, §4.3, §5 step 92.3 (fixes F9, tests H1) — the
-          // farm-wide build lane's cap, read fresh on every acquire like
-          // every other accessor above.
-          maxConcurrentBuilds: () => settingsStore.get().session.maxConcurrentBuilds,
+          // device's own override, read fresh on every session build.
+          resolveProfile: (deviceId, quality) => resolveVideoProfile(settingsStore.get().capture, deviceSource.get(deviceId)?.overrides ?? null, quality),
           // Plan 125 §3.7, step 125.7 — the readiness manager is the ONE authority on whether
           // this phone's screen is already being held awake, so `createSession` stops calling
           // `wakeDevice` blindly.
@@ -3927,15 +4113,14 @@ let blobGc: BlobGc | null = null
           // boot, which would skip the wake on exactly the builds that most need it. A missing
           // readiness manager must mean "wake it", never "assume it is awake".
           deviceIsAwake: (deviceId) => (readiness ? readiness.actual(deviceId) !== 'asleep' : false),
-          // Plan 91 §4.1, §4.5 — the input arbiter's bounded-queue budget, read fresh on every
-          // submission (docs/plans/96-m61-hotfixes.md §96.13: before this fix `SessionManagerDeps`
-          // had no field to receive these at all, so every session ran the plan's own hardcoded
-          // stand-in defaults regardless of what an operator configured in Studio).
-          arbiterQueueWaitMs: () => settingsStore.get().coControl.queueWaitMs,
-          arbiterMaxQueueDepth: () => settingsStore.get().coControl.maxQueueDepth,
+          // The input arbiter's bounded-queue budget (plan 91 §4.1, §4.5) has no operator-facing
+          // setting any more — the old second-operator-grant subsystem is gone (plan 205 §2.4) and
+          // with it the only farm setting that ever fed these two accessors. Both are optional on
+          // `SessionManagerDeps`; omitting them falls back to `@enkaku/session`'s own
+          // `DEFAULT_ARBITER_QUEUE_WAIT_MS`/`DEFAULT_ARBITER_MAX_QUEUE_DEPTH`.
           // Plan 100 §4.3, step 100.6 — the screencap-loop fallback's background
           // retry budget, read fresh like every other settings accessor above.
-          fallbackRetryCount: () => settingsStore.get().display.fallbackRetryCount,
+          fallbackRetryCount: () => DISPLAY_FALLBACK_RETRIES,
           makeScrcpy: async (deviceId, transport, profile) => {
             // Jar di-manage Toolchain & versi dikunci ke core (spec §7.6).
             const jarPath = await toolchain.resolveToolPath('scrcpy-server').catch(() => null)
@@ -4046,40 +4231,78 @@ let blobGc: BlobGc | null = null
                     kind: 'device.artifact.mismatch',
                     meta: { package: UI_SERVER_PACKAGE, reason: info.reason, ...(info.observed ? { observed: info.observed } : {}) },
                   }),
+                // Plan 222 §3.8, §4.6 — the ui-tree rung. Present only for a
+                // core that owns a real guest-agent session for this device
+                // (a node has none — `packages/node/src/hosts.ts` passes no
+                // `uiTree` at all, so a node-owned device starts at ui-server).
+                uiTree: {
+                  agentStatus: async (deviceId) => {
+                    const s = await agentProvisioner.status(deviceId)
+                    return { state: s.state, capabilities: s.capabilities }
+                  },
+                  withClient: (deviceId, fn) => guestAgent.withGuestAgentClient(deviceId, fn),
+                  openWatch: (deviceId, hooks) => guestAgent.watchGuestAgentUi(deviceId, hooks),
+                },
               },
               { deviceId, transport, requested },
             ),
         })
 
-        // Plan 99 §3.2, §4.6, §4.7 — which workflow node is CURRENTLY
-        // executing, per jobId. Read by the `artifacts` factory below (so a
-        // node script's `ctx.artifact.save()` — untouched at the child
-        // boundary — lands with `artifacts.node_id` stamped) and by the
-        // `onPhase` hook just below it (so `job_nodes.attempts` has an
-        // honest number). The workflow executor (`jobs/executors/workflow.ts`,
-        // constructed further down once `runner`/`sessions` both exist)
-        // calls `begin`/`end` around each node's `runner.execute()` call —
-        // see `runner/artifact-store.ts`'s own doc comment for the full
-        // mechanism. A standalone (non-workflow) job never touches this
-        // tracker, so its artifacts and attempts read back exactly as they
-        // did before this plan.
-        const jobNodeTracker = createJobNodeTracker()
+        // Plan 206 §4.10 — the always-on builder: queues a build the
+        // instant a device comes online (`onDeviceReady` below), staggers by
+        // USB root and the farm ceiling, and retries a dead session under
+        // backoff. `activities` plan 205's real registry, adapted to the
+        // port `@enkaku/session` defines (it cannot import `ActivityRegistry`
+        // directly — core depends on session, never the reverse).
+        const activityPortAdapter: ActivityPort = {
+          start: (deviceId, input) => {
+            const id = `prep:${deviceId}`
+            activities.start(deviceId, { id, kind: input.kind, label: input.label, actor: input.actor, ...(input.meta ? { meta: input.meta } : {}) })
+            return id
+          },
+          update: (deviceId, id, patch) => {
+            activities.update(deviceId, id, patch)
+          },
+          end: (deviceId, id) => {
+            activities.end(deviceId, id)
+          },
+        }
+        alwaysOn = createAlwaysOn({
+          sessions,
+          devices: deviceSource,
+          listDevices: () => adbClient.listDevices(),
+          deviceNumber: (deviceId) => {
+            const row = deviceSource.get(deviceId)
+            return row ? lookupDeviceNumber(db, row.stableId) : null
+          },
+          activities: activityPortAdapter,
+          buildsPerUsbRoot: () => settingsStore.get().advanced.sessionBuildsPerUsbRoot,
+          farmCeiling: () => Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
+          log: log.child('always-on'),
+        })
 
         // The script executor (M4) needs SessionManager → registered once adb is ready.
         const runner = createJobRunner({
           logDir: cfg.dataDir,
           sessions,
-          artifacts: (jobId) =>
+          // Plan 211 §3.2 decision 9 — `deps.artifacts` is called with the RUN
+          // id (`job.runId`), despite the interface's parameter still being
+          // named `jobId`; a workflow step's own `runner.execute()` call now
+          // enqueues a real job, so there is no per-node tracker left to
+          // consult (`createJobNodeTracker`/`job_nodes` are gone — plan 211 §10).
+          artifacts: (runId) =>
             createDbArtifactSink({
               db,
               dataDir: cfg.dataDir,
-              jobId,
-              onSaved: (info) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } }),
-              nodeId: () => jobNodeTracker.current(jobId),
+              runId,
+              onSaved: (info) => {
+                const jobId = runs.getRun(runId)?.jobId ?? runId
+                hub.broadcast({ type: 'job.artifact', payload: { jobId, runId, artifact: info } })
+              },
               // Plan 115 §3.6, W5/W6 — a script's `ctx.artifact.file()`
               // lands here; the cap follows the same push limit that would
               // gate the artifact once it reaches `ctx.device.push()`.
-              maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
+              maxFileBytes: () => settingsStore.get().advanced.transferCaps.maxPushBytes,
             }),
           log: log.child('runner'),
           onLog: (entry) => {
@@ -4088,10 +4311,16 @@ let blobGc: BlobGc | null = null
             // happened, and the `job.log` artifact does not exist until the
             // job ends. `GET /api/jobs/:id/logs` serves this.
             jobLogBuffer.append(entry)
+            // Plan 211 §3.2 decision 9 — `JobLogEntry.jobId` is genuinely the
+            // JOB id here (`createJobLogger` is keyed on `job.id`, not
+            // `job.runId`), but the wire message carries both; the run id is
+            // the job's current one.
+            const runId = runs.latestRun(entry.jobId)?.id ?? entry.jobId
             hub.broadcast({
               type: 'job.log',
               payload: {
                 jobId: entry.jobId,
+                runId,
                 ts: entry.ts,
                 level: entry.level,
                 source: entry.source,
@@ -4123,38 +4352,38 @@ let blobGc: BlobGc | null = null
             traceRecorder?.record(event)
           },
           traceStore: traceFrameStore,
-          onPhase: (jobId, attempt, phase) => {
-            // Plan 99 §4.6, §4.7 — `job_nodes.attempts`'s only source: this
-            // fires on every attempt of every execution, and `attempt` resets
-            // to 1 at the top of every `runner.execute()` call, so the
-            // highest value seen between a workflow node's own `begin`/`end`
-            // pair is exactly how many attempts THAT node execution spent.
-            // A no-op for every non-workflow job (no `begin` was ever called
-            // for its jobId).
-            jobNodeTracker.noteAttempt(jobId, attempt)
+          // Plan 211 §3.2 decision 9 — `onPhase` fires with the RUN id
+          // (`job.runId`), despite the interface's parameter still being
+          // named `jobId`; `job_nodes.attempts` is gone with the node
+          // tracker (plan 211 §10) — a workflow step is now a real job with
+          // its own row, so nothing here needs a per-node attempt count.
+          onPhase: (runId, attempt, phase) => {
+            const jobId = runs.getRun(runId)?.jobId ?? runId
             const info = jobService.get(jobId)
             if (info) hub.broadcast({ type: 'job.status', payload: { ...info, attempt, phase } })
           },
-          heartbeat: (jobId) => jobStore.renewLease(jobId, cfg.lease.jobTtlSec),
+          heartbeat: (runId) => jobStore.renewHeartbeat(runId, cfg.heartbeat.jobTtlSec),
           // Read fresh per attempt, not captured here at daemon start (plan
           // 35 §4.4) — the same pattern `adb.maxConcurrent` uses (plan 23) —
           // so a Settings change applies to the very next job.
-          resetPolicy: () => settingsStore.get().job,
+          resetPolicy: () => jobConstants(settingsStore.get()),
           // One `job.reset` main-stream device event per pre-job reset (plan
           // 35 §3.5, §4.4).
-          onReset: (jobId, deviceId, outcome, plan) =>
+          onReset: (runId, deviceId, outcome, plan) => {
+            const jobId = runs.getRun(runId)?.jobId ?? runId
             recorder?.record({
               deviceId,
               stream: 'main',
               kind: 'job.reset',
               actor: `job:${jobId}`,
               meta: { policy: plan.policy, packages: plan.packages ?? [], applied: outcome.applied, warnings: outcome.warnings, durationMs: outcome.durationMs },
-            }),
+            })
+          },
           // Retry classification (plan 36 §4.1, §4.3) — the same canonical
           // table `executor-host.ts` uses for the final settle, so a job's
           // per-attempt log lines and its eventual `jobs.failureClass` always
           // agree on why it failed.
-          classify: (err) => classifyFailure(err, { timeoutIsInfra: settingsStore.get().job.retry.timeoutIsInfra }),
+          classify: (err) => classifyFailure(err, { timeoutIsInfra: JOB_TIMEOUT_IS_INFRA }),
           // One `job.retry` main-stream device event per in-place retry
           // (plan 36 §4.4) — `rebound` is always false here; the host emits
           // its own `job.retry` event, with `rebound: true`, only when a
@@ -4183,7 +4412,21 @@ let blobGc: BlobGc | null = null
           // `defaults` because `timing` is defined once, on `DeviceSettingsSchema`,
           // and reused verbatim by `FarmSettingsSchema.defaults` (settings.ts) —
           // there is no separate top-level `timing` field.
-          timing: () => settingsStore.get().defaults.timing,
+          // `TOUCH_PROFILES` names its tap-hold field `tapHoldMs` (plan 212
+          // §4.4); `TimingSettings` (the runtime shape session consumes)
+          // still calls it `tapJitterMs` — mapped here, at the one seam
+          // between the constant and the consumer.
+          timing: () => {
+            const p = TOUCH_PROFILES[settingsStore.get().jobRunner.touchProfile]
+            return {
+              tapJitterMs: p.tapHoldMs,
+              betweenActionMs: p.betweenActionMs,
+              coordJitterPx: p.coordJitterPx,
+              gestureCurvature: p.gestureCurvature,
+              gestureSampleIntervalMs: p.gestureSampleIntervalMs,
+              perCharMs: p.perCharMs,
+            }
+          },
           // `ctx.kv` (plan 79 §4.4, §4.7) — the same store `deviceLifecycle` and
           // `kvRoutes` share; `call`/`redact` are the two things a job actually needs.
           kv: kvRunnerPort,
@@ -4215,49 +4458,14 @@ let blobGc: BlobGc | null = null
           },
         })
 
-        // The workflow executor (plan 99 §3.1, §4.7, step 99.7) — registered
-        // as the `kind: 'workflow'` fallback, beside the script executor's
-        // `kind: 'script'` fallback immediately above. It reuses the SAME
-        // `runner`/`sessions`/`scriptRegistry` every standalone job already
-        // shares — a node is a script child, not a job (§3.4) — and drives
-        // `jobNodeTracker` (built above, alongside `runner`) so a node's
-        // artifacts and attempts are attributed correctly with zero changes
-        // to `@enkaku/session` or the child boundary.
-        //
-        // KNOWN GAP, reported rather than silently unbuilt: unlike the
-        // script fallback immediately above, this does NOT branch on
-        // `remoteSessions?.nodeIdFor(job.deviceId)` — a workflow job on a
-        // node-owned (cloud) device would try to run through the LOCAL
-        // `runner` regardless and fail. Nothing in plan 99 §3–§5 asks for
-        // cloud-device workflow support in this step, and building the
-        // remote-bridge equivalent of this executor is its own undertaking
-        // (`jobs/executors/remote.ts` is a comparably sized subsystem) — left
-        // for a follow-up rather than half-built here silently.
-        //
-        // `settings: () => settingsStore.get().workflow` reads the live farm
-        // setting (`packages/protocol/src/settings.ts`'s `workflow` group),
-        // read fresh on every check — never captured — matching every other
-        // farm-wide knob in this file. `WorkflowSettings` is structurally
-        // `{ maxTotalMs: number }`, exactly what `settingsStore.get().workflow`
-        // already is once `settings.ts` carries the field. `checkWorkflow`'s
-        // publish-time arithmetic reads the same setting through
-        // `api/workflows.ts`'s own `deps.settings`; this is the runtime
-        // clock's matching wire (`jobs/executors/workflow.ts`'s own module
-        // doc has the history).
-        const workflowExecutor = createWorkflowExecutor({
-          db,
-          registry: scriptRegistry,
-          runner,
-          sessions,
-          nodeTracker: jobNodeTracker,
-          settings: () => settingsStore.get().workflow,
-          log: log.child('workflow'),
-          onNode: (jobId, node) => {
-            const info = jobService.get(jobId)
-            if (info) hub.broadcast({ type: 'job.status', payload: { ...info, node } })
-          },
-        })
-        executors.setFallback(workflowExecutor, 'workflow')
+        // Plan 210 §4.8 — the workflow executor's construction and
+        // registration are deleted: `daemon.ts` never passed a per-kind
+        // selector to `createExecutorHost`, so this fallback was unreachable in
+        // production (MVP 13 B.1 "Built but not wired"). `jobs/executors/
+        // workflow.ts` stays in the tree, unregistered, for plan 211 to
+        // rewrite against the `workflows` table; `jobNodeTracker` (built
+        // above, alongside `runner`) still feeds the runner's artifact
+        // factory.
 
         pairingService = createPairingService({ client: adb, log: log.child('pairing') })
         attachWsRouter(sessions)
@@ -4271,6 +4479,7 @@ let blobGc: BlobGc | null = null
           log: log.child('battery'),
           onBattery: (deviceId, state) =>
             hub.broadcast({ type: 'device.battery', payload: { deviceId, battery: state } }),
+          onMetrics: (deviceId, metrics) => hub.broadcast({ type: 'device.metrics', payload: { deviceId, metrics } }),
           record: recorder!.record,
         })
         battery.start()
@@ -4299,8 +4508,8 @@ let blobGc: BlobGc | null = null
           // automatic, on a path that already ran.
           endpoints,
           // A newly enrolled device inherits the farm defaults (spec §12).
-          deviceDefaults: () => settingsStore.get().defaults,
-          defaultDesiredReadiness: () => settingsStore.get().readiness.defaultDesired,
+          // plan 212 §5 step 212.4: `deviceDefaults` dep removed; `defaultsForNewDevice` uses `defaultDeviceSettings()` directly.
+          defaultDesiredReadiness: () => READINESS_DEFAULT_DESIRED,
           record: recorder!.record,
           // Plan 88 §3.6, §4.1, residual gap closed by plan 90 (also
           // recorded at docs/plans/96-m61-hotfixes.md §96.5): without this,
@@ -4311,10 +4520,14 @@ let blobGc: BlobGc | null = null
           // badged the honest-but-incomplete `TCP` on the very broadcast
           // every connected Studio tab renders immediately, then silently
           // flipped to `OTG`/`WI-FI` the next ordinary `GET /api/devices`.
-          // Same accessor `deviceRoutes`/`topologyRoutes`/`clusterRoutes`
+          // Same accessor `deviceRoutes`/`groupRoutes`
           // already get, a few lines away in this same function.
-          networks: () => settingsStore.get().discovery.networks,
+          networks: () => settingsStore.get().networkScan.networks,
           onDeviceGone: (deviceId) => {
+            // Plan 206 §4.10 — cancels the pending build/retry timer and
+            // activity FIRST; `sessions.closeDevice` right after is what
+            // actually tears the entries down.
+            alwaysOn?.deviceOffline(deviceId)
             void sessions?.closeDevice(deviceId)
             // Any job running on that device → failed (spec §10.1).
             const running = jobStore.runningByDevice(deviceId)
@@ -4324,16 +4537,17 @@ let blobGc: BlobGc | null = null
             // A dropped device must not leave a logcat/top/thermal stream
             // running against a socket that no longer exists (plan 24 §4.5).
             stopMonitorsForDevice?.(deviceId)
-            // Nor a stale emulated cwd for a lease the state machine just
-            // force-dropped outside the lease manager's own bookkeeping
+            // Nor a stale emulated cwd for a control marker the state machine
+            // just force-dropped outside the activity registry's own bookkeeping
             // (plan 26 §3.7, §4.4) — harmless if there was none.
             releaseShellSession?.(deviceId)
-            // Nor a stale Inspect tab ref count (plan 56 §4.2 step 7) — the
-            // inspector engine itself already went down with the session.
+            // Nor a stale Inspect tab bookkeeping entry (plan 56 §4.2 step
+            // 7; plan 208 §3.2) — the inspector engine itself already went
+            // down with the session.
             resetInspectForDevice?.(deviceId)
             // A device that just went offline cannot usefully carry an adb
             // endpoint either (plan 27 §4.2) — the smartsocket backend it
-            // bridges to is gone regardless of whether the lease itself
+            // bridges to is gone regardless of whether the control marker itself
             // survives the disconnect.
             adbEndpointManager?.close(deviceId, 'device_offline')
             // A `vpn-helper` route's stored config/enabled survives the
@@ -4353,6 +4567,12 @@ let blobGc: BlobGc | null = null
             reverseRegistry.handleDeviceOffline(deviceId)
           },
           onDeviceReady: (deviceId) => {
+            // Plan 206 §4.10 — a session is built when a device comes
+            // online, not when a browser asks (G1). First line, so a core
+            // restart's own re-probe of every attached serial
+            // (`registry.start()` below) enqueues one build per device with
+            // no browser ever involved.
+            alwaysOn?.deviceOnline(deviceId)
             scheduler?.kick()
             recomputeAdbConcurrency()
             // The device just came online — restore any persisted `vpn-helper`
@@ -4404,6 +4624,12 @@ let blobGc: BlobGc | null = null
           },
         })
         await registry.start()
+        // Plan 206 §4.10 — enable the pump AFTER the boot re-probe above:
+        // `registry.start()` already called `onDeviceReady` (thus
+        // `alwaysOn.deviceOnline`) once per online device, queuing every one
+        // of them; starting the pump only now means the very first pass
+        // already sees the whole farm, not a device or two that raced ahead.
+        alwaysOn?.start()
 
         // The bounded subnet sweep (plan 88 §3.5, §4.5, §5 step 88.3) — built
         // right before the reconnect ladder below, since the ladder's own
@@ -4420,8 +4646,7 @@ let blobGc: BlobGc | null = null
           db,
           endpoints,
           registry,
-          settings: () => settingsStore.get().discovery,
-          hub: { broadcast: (msg) => hub.broadcast(msg) },
+          settings: () => discoveryConstants(settingsStore.get()),
           log: log.child('sweep'),
         })
         sweeperRef = sweeper
@@ -4441,8 +4666,8 @@ let blobGc: BlobGc | null = null
           endpoints,
           registry,
           settings: () => ({
-            connectSettleMs: settingsStore.get().discovery.connectSettleMs,
-            probeTimeoutMs: settingsStore.get().discovery.scan.probeTimeoutMs,
+            connectSettleMs: DEVICE_CONNECT_SETTLE_MS,
+            probeTimeoutMs: SCAN_PROBE_TIMEOUT_MS,
           }),
           log: log.child('reconnect'),
           sweeper,
@@ -4461,9 +4686,9 @@ let blobGc: BlobGc | null = null
           endpoints,
           reconnector,
           settings: () => ({
-            tcpPort: settingsStore.get().discovery.tcpPort,
-            armWindowSec: settingsStore.get().discovery.cutover.armWindowSec,
-            armPollSec: settingsStore.get().discovery.cutover.armPollSec,
+            tcpPort: ADB_TCP_PORT,
+            armWindowSec: CUTOVER_WINDOW_SEC,
+            armPollSec: CUTOVER_POLL_SEC,
           }),
           broadcast: (msg) => hub.broadcast(msg),
           log: log.child('cutover'),
@@ -4481,7 +4706,7 @@ let blobGc: BlobGc | null = null
         reconciler = createDeviceReconciler({
           client: adb,
           registry,
-          settings: () => settingsStore.get().discovery,
+          settings: () => discoveryConstants(settingsStore.get()),
           log: log.child('discovery'),
           broadcast: (msg) => hub.broadcast(msg),
         })
@@ -4510,7 +4735,7 @@ let blobGc: BlobGc | null = null
           metrics: adbMetrics,
           nudgeCounts: () => reconcilerRef.nudgeCounts(),
           offlineSerials: () => reconcilerRef.offlineSerials(),
-          settings: () => settingsStore.get().adbControl,
+          settings: () => ({ healthIntervalSec: settingsStore.get().advanced.adbHealthIntervalSec, stuckTimeoutRate: ADB_TIMEOUT_STORM_RATE, restartCooldownSec: ADB_RESTART_COOLDOWN_SEC, drainTimeoutMs: ADB_DRAIN_TIMEOUT_MS }),
           onTransition: (h) => hub.broadcast({ type: 'adb.health', payload: h }),
           log: log.child('adb-health'),
         })
@@ -4567,15 +4792,8 @@ let blobGc: BlobGc | null = null
       stopScheduler?.()
       stopPacer?.()
       stopReaper?.()
-      stopCoControlReaper?.()
       stopExpiryReaper?.()
       stopScheduleRunner?.()
-      // Plan 93 §5 step 93.3, `00-overview.md` §7 — every active fan-out run's
-      // pending members are cancelled, in-flight execs aborted, and every
-      // timer cleared, BEFORE `recorder` (its own `record` dep) is torn down
-      // a few lines below.
-      commandRunner?.stop()
-      commandRunner = null
       battery?.stop()
       battery = null
       health?.stop()
@@ -4599,12 +4817,18 @@ let blobGc: BlobGc | null = null
       await pluginHost?.unloadAll('the core is shutting down')
       pluginHost?.dispose()
       pluginHost = null
+      // Plan 206 §4.10 — the always-on builder stops FIRST: cancels every
+      // pending build/retry timer and awaits any build still running, so a
+      // shutdown never races a fresh build against the `closeAll` right
+      // after it.
+      await alwaysOn?.stop()
       // Sessions close first: closing one emits `session.closed`, which the
       // recorder must still be alive to receive. Stopping it first made a
       // clean Ctrl-C crash with `null is not an object (recorder.record)`
       // and exit 1, after the work was already done.
       await sessions?.closeAll()
       sessions = null
+      alwaysOn = null
       await recorder?.stop()
       recorder = null
       // Same placement and the same reason as `recorder` just above: the job
@@ -4615,8 +4839,6 @@ let blobGc: BlobGc | null = null
       traceRecorder = null
       await remoteSessions?.closeAll()
       remoteSessions = null
-      await webrtcRelayRef?.closeAll()
-      webrtcRelayRef = null
       // Stopped before the registry it depends on (plan 85 §5 step 85.2) —
       // a pending reconcile pass calling into a torn-down registry would be
       // the exact kind of "process left running past stop()" 00-overview §7

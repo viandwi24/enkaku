@@ -10,7 +10,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceLifecycle } from '../device/lifecycle'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
 import { createJobStore } from '../queue/job-store'
 import { createLogger } from '../util/logger'
 import { createDeviceRoutes } from './devices'
@@ -45,35 +45,19 @@ function engineRegistry(): RegistryResponse {
     transports: [engine('adb-usb', 'transport')],
     displays: [engine('scrcpy', 'display')],
     inputs: [engine('scrcpy-uhid', 'input')],
-    inspectors: [engine('ui-server', 'inspector')],
+    inspectors: [engine('ui-tree', 'inspector'), engine('ui-server', 'inspector')],
     networks: [engine('none', 'network')],
     tools: [],
   }
 }
 
-function fakeLeases(): LeaseManager {
-  return {
-    acquireManual: (): never => {
-      throw new Error('not used in this test')
-    },
-    touchManual: () => {},
-    releaseManual: () => false,
-    releaseAllForClient: () => {},
-    noteJobLease: () => {},
-    clearJobLease: () => {},
-    getLease: () => null,
-    getHolder: () => null,
-    lastManualReleaseAt: () => null,
-    lastManualHolder: () => null,
-    checkInputAllowed: () => ({ ok: true }),
-    startReaper: () => {},
-    stopReaper: () => {},
-  } as unknown as LeaseManager
+function fakeActivities(): Pick<ActivityRegistry, 'list' | 'endWhere'> {
+  return { list: () => [], endWhere: () => 0 }
 }
 
-function seedDevice(db: Db, id: string, status: 'idle' | 'busy' = 'idle'): void {
+function seedDevice(db: Db, id: string): void {
   db.insert(devices)
-    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: 'Test Phone', status })
+    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: 'Test Phone', status: 'online' })
     .run()
 }
 
@@ -106,14 +90,15 @@ function fakeSessions(outcome: RotationOutcome | null): SessionsStub {
   }
 }
 
-function makeApp(opts: { sessions?: SessionsStub } = {}) {
+function makeApp(opts: { sessions?: SessionsStub; runningJobDeviceIds?: Set<string> } = {}) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
   const audit = createAuditLogger(db)
   const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-devices-rotation-test-'))
-  const leases = fakeLeases()
-  const lifecycle = createDeviceLifecycle({ db, leases, log: createLogger('test') })
+  const activities = fakeActivities()
+  const controlSettings = () => ({ overControl: 'allow' as const, idleSec: 30 })
+  const lifecycle = createDeviceLifecycle({ db, activities, controlSettings, log: createLogger('test') })
   const events: Array<{ kind: string; meta: unknown }> = []
   const app = withAdmin(
     createDeviceRoutes({
@@ -123,9 +108,10 @@ function makeApp(opts: { sessions?: SessionsStub } = {}) {
       audit,
       dataDir,
       lifecycle,
-      heldByOf: () => null,
+      activitiesOf: () => ({ activities: [], lastControl: null }),
+      activities,
+      runningJobOf: (deviceId) => opts.runningJobDeviceIds?.has(deviceId) ?? false,
       broadcast: () => {},
-      leases,
       jobStore: createJobStore(db),
       record: (e) => {
         events.push({ kind: e.kind, meta: e.meta ?? null })
@@ -213,8 +199,8 @@ describe('PATCH /api/devices/:id applies prep.rotation to a LIVE session (plan 8
   // under a running script.
   test('a device running a job is never re-locked live; the save still succeeds and says why it waited', async () => {
     const sessions = fakeSessions(applied('lock-portrait', '0'))
-    const { db, app } = makeApp({ sessions })
-    seedDevice(db, 'a', 'busy')
+    const { db, app } = makeApp({ sessions, runningJobDeviceIds: new Set(['a']) })
+    seedDevice(db, 'a')
 
     const res = await app.request('/a', patchReq({ settings: { prep: { rotation: 'lock-portrait' } } }))
     expect(res.status).toBe(200)

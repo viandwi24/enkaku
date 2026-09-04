@@ -21,8 +21,9 @@ import java.util.concurrent.atomic.AtomicLong
  * the TUN stays established, forwarding stops, and traffic goes nowhere rather than somewhere real.
  *
  * It has to live here rather than on the host for the obvious reason — **the host may be the thing
- * that died**, and a dead process runs no cleanup. Host-side lease teardown is still the normal
- * path; this is the backstop for when there is no host left to run it.
+ * that died**, and a dead process runs no cleanup. Host-side teardown, when the farm ends the
+ * activity that owns the route, is still the normal path; this is the backstop for when there is
+ * no host left to run it.
  *
  * The contract with the core: while a route is enabled it pings every [HEARTBEAT_HINT_MS]. Missing
  * a few in a row is normal (a slow adb queue, a device asleep), so the deadline is several times

@@ -8,6 +8,8 @@ import {
   MAX_ARG_BYTES,
   redactArgs,
   resolveFramePolicy,
+  reusableTree,
+  TRACE_TREE_REUSE_MS,
   type TraceCaptureRequest,
   type TraceCaptureResult,
   type TraceEventInput,
@@ -34,15 +36,13 @@ function harness(opts: {
   /** Undefined installs no `capture` at all, which forces the policy to `'none'`. */
   capture?: (req: TraceCaptureRequest) => Promise<TraceCaptureResult>
   attempt?: number
-  nodeId?: string | null
 } = {}): Harness {
   const events: TraceEventInput[] = []
   const captures: TraceCaptureRequest[] = []
   let clock = 1_756_000_000_000
   const capture = opts.capture
   const tee = createTraceTee({
-    jobId: 'job-1',
-    ...(opts.nodeId !== undefined ? { nodeId: opts.nodeId } : {}),
+    runId: 'run-1',
     attempt: () => opts.attempt ?? 1,
     engineId: () => (opts.engineId === undefined ? 'ui-server' : opts.engineId),
     emit: (e) => events.push(e),
@@ -129,12 +129,11 @@ describe('createTraceTee — ordering and measurement (plan 128 §3.1, §3.3)', 
     expect(h.events.filter((e) => e.kind === 'action')).toHaveLength(1)
   })
 
-  test('every event carries the live attempt and the workflow node axis', async () => {
-    const h = harness({ engineId: null, attempt: 3, nodeId: 'scroll-fyp' })
+  test('every event carries the live attempt', async () => {
+    const h = harness({ engineId: null, attempt: 3 })
     h.tee.end(h.tee.begin(tap()), { ok: true, value: null })
     await drain()
     expect(h.events[0]?.attempt).toBe(3)
-    expect(h.events[0]?.nodeId).toBe('scroll-fyp')
   })
 })
 
@@ -419,7 +418,7 @@ describe('createTraceTee — a capture that fails (plan 128 §3.4, criterion 5)'
   test('an emit that throws does not take the job with it', async () => {
     const events: TraceEventInput[] = []
     const tee = createTraceTee({
-      jobId: 'job-1',
+      runId: 'run-1',
       attempt: () => 1,
       engineId: () => null,
       emit: (e) => {
@@ -452,7 +451,7 @@ describe('createTraceTee — the other lanes (plan 128 §4.1)', () => {
     let engine = 'ui-server'
     const events: TraceEventInput[] = []
     const tee = createTraceTee({
-      jobId: 'job-1',
+      runId: 'run-1',
       attempt: () => 1,
       engineId: () => engine,
       emit: (e) => events.push(e),
@@ -489,14 +488,11 @@ describe('createTraceTee — the other lanes (plan 128 §4.1)', () => {
     expect((h.events.at(-1)?.meta as { fields: unknown }).fields).toEqual({ ms: 900 })
   })
 
-  test('progress and assist land on the same axis as everything else', () => {
+  test('progress lands on the same axis as everything else', () => {
     const h = harness({ engineId: null })
     h.tee.progress({ done: 3, total: 10 })
-    h.tee.assist({ at: 99, actor: 'operator-1' })
     expect(h.events[0]).toMatchObject({ kind: 'progress', name: 'progress' })
     expect(h.events[0]?.meta).toEqual({ value: { done: 3, total: 10 } })
-    expect(h.events[1]).toMatchObject({ kind: 'assist', name: 'assist', atMs: 99 })
-    expect(h.events[1]?.meta).toEqual({ actor: 'operator-1' })
   })
 
   test('an oversized progress value is truncated by the same rule the args use', () => {
@@ -525,7 +521,34 @@ describe('createNoopTraceTee (plan 128 step 128.4)', () => {
       tee.log({ ts: 1, level: 'info', source: 'runner', msg: 'x' })
       tee.artifact({ kind: 'screenshot', label: 'x', sizeBytes: 1, frameBytes: new Uint8Array([1]) })
       tee.progress(1)
-      tee.assist({ at: 1, actor: null })
     }).not.toThrow()
+  })
+})
+
+describe('reusableTree — the cheap cache (plan 208 §3.7, §4.9)', () => {
+  const NODE = {
+    resourceId: 'x',
+    text: '',
+    desc: '',
+    className: 'android.widget.Button',
+    packageName: 'com.example',
+    bounds: { left: 0, top: 0, right: 10, bottom: 10 },
+    clickable: true,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: [],
+  }
+
+  test('returns the cached root within 2 s and null after', () => {
+    const now = 10_000
+    expect(reusableTree({ root: NODE, at: now - 1999 }, now)).toBe(NODE)
+    expect(reusableTree({ root: NODE, at: now - TRACE_TREE_REUSE_MS }, now)).toBe(NODE) // exactly at the boundary counts as fresh
+    expect(reusableTree({ root: NODE, at: now - 2001 }, now)).toBeNull()
+  })
+
+  test('null and undefined both return null', () => {
+    expect(reusableTree(null, 10_000)).toBeNull()
+    expect(reusableTree(undefined, 10_000)).toBeNull()
   })
 })

@@ -1,136 +1,75 @@
-import { useEffect, useMemo, useState } from 'react'
-import { z } from 'zod'
+import { useEffect, useState } from 'react'
 import {
   JobLogsResponseSchema,
   JobResponseSchema,
-  RuntimeEnvelopeSchema,
-  WorkflowDocSchema,
+  JobRunResponseSchema,
+  RunArtifactsResponseSchema,
+  WorkflowStepsResponseSchema,
   type ArtifactInfo,
-  type JobNodeStatus,
-  type ParamIssue,
-  type JsonSchemaNode as ProtocolJsonSchemaNode,
-  type ResultStatus,
-  type RuntimeEnvelope,
-  type WorkflowDoc,
+  type JobDetail,
+  type JobRunDetail,
+  type JobRunInfo,
+  type WorkflowStepInfo,
 } from '@enkaku/protocol'
 import { api } from '@enkaku/ui'
-import { fetchAllPages, fetchDeviceRefs, type DeviceRef } from './api'
-import { isRunnerLog, producedArtifacts, type JobWithPhase } from './jobs'
+import { fetchDeviceRefs, type DeviceRef } from './api'
+import { isRunnerLog } from './jobs'
 import { coreBase, ws } from './ws'
 
 /**
- * The job-detail data layer — extracted from `app/jobs/detail/page.tsx`
- * (2026-08-16, closing plan 103 step 103.11's audit row 4: "the Jobs popup
- * lists jobs and stops there"). `/jobs/detail` is 1,570 lines and nothing in
- * it was ever a reusable unit before this pass — the standalone page and
- * `JobDetailPanel.tsx` (the device popup's in-place job detail, plan 103 §9
- * Q2) both call THIS hook now rather than one forking a thinner copy of the
- * other's fetch logic. §9 Q2's own instruction ("reuse what `/jobs/detail`
- * already renders … rather than writing thinner versions") applies to the
- * DATA layer exactly as much as the components built on top of it
- * (`JobResultSection`, `JobLogsPanel`, `JobArtifactsPanel`,
- * `JobFailureDetail`, all in `components/jobs/`) — a merge algorithm this
- * subtle (see `logs` below) is exactly the kind of thing a second,
- * "close enough" copy quietly drifts from.
- *
- * **What stayed on the page, deliberately not folded in here**: the
- * workflow node timeline (`nodes`/`workflowDoc`'s OWN gate-verdict
- * rendering), lineage (`chainNodes`/`rootInfo`), assist history
- * (`assists`), and the farm's memory-limit setting (`farmJobSettings`).
- * None of those are among the four surfaces plan 103's own gap named
- * ("result, response, input params, logs, artifact") — they stay page-only,
- * a narrower scope named here rather than silently ported, the same
- * discipline `SettingsPopup.tsx` already uses for its own six-of-many
- * sections.
+ * The job-detail data layer, rewritten for the run-scoped shape plan 211
+ * landed (plan 218 §4.3.1). Replaces the pre-211 version, whose reads were
+ * job-scoped only (`/api/jobs/:id/logs`, no `runId` anywhere) — the run
+ * picker, run comparison and the Timeline tab all need a SPECIFIC run's
+ * data, not just the job's.
  */
 
 export interface LogLine {
   ts: number
-  level: string
-  source: string
+  level: 'debug' | 'info' | 'warn' | 'error'
+  source: 'script' | 'stdout' | 'stderr' | 'runner'
   msg: string
 }
-
-/** `job.status`'s live `node` block (plan 99 §4.9) — carried on `JobWithNode` below so a live update can attach it, even though this hook itself never reads it (the node timeline stays page-only). */
-export interface JobNodeLive {
-  id: string
-  seq: number
-  total: number
-  kind: 'script' | 'gate'
-  script: string | null
-  status: JobNodeStatus
-}
-
-/**
- * Plan 97 §4.6, step 97.5's own note, carried over verbatim: `JobDetail`
- * does not yet carry these on the wire type, so they are declared locally,
- * all optional, and degrade to the `<pre>` fallback exactly like before the
- * day the server starts sending them.
- */
-export interface JobWithResultInfo {
-  resultStatus?: ResultStatus | null
-  resultBytes?: number | null
-  resultIssues?: ParamIssue[] | null
-  resultSchema?: ProtocolJsonSchemaNode | null
-}
-export type JobWithNode = JobWithPhase & JobWithResultInfo & { node?: JobNodeLive | null }
-
-/**
- * `GET /api/scripts/:id` returns a full `ScriptRowSchema`, but this hook
- * only reads `.script.source`/`.script.workflow`/`.script.runtime` — the
- * same narrower ad-hoc schema `/jobs/detail` always used (plan 72's own
- * brief allows it).
- */
-const ScriptSourceResponseSchema = z.object({
-  script: z.object({
-    source: z.string().nullable().optional(),
-    workflow: WorkflowDocSchema.nullable().optional(),
-    runtime: RuntimeEnvelopeSchema.nullable().optional(),
-  }),
-})
 
 export type LogsPhase = 'loading' | 'live' | 'saved'
 
 export interface JobDetailState {
-  job: JobWithNode | null
+  /** `GET /api/jobs/:id`. Null while loading and when the read failed. */
+  job: JobDetail | null
+  /** `job.runs`, newest first, exactly as the route returns them (plan 211 §4.2.1). */
+  runs: JobRunInfo[]
+  /** The run named by `runId`, or the latest when `runId` is null. `GET /api/jobs/:id/runs/:runId`. */
+  run: JobRunDetail | null
+  /** Resolved for the meta line and the Open device button. `deleted` marks a forgotten device (plan 47 §3.4). */
   deviceRef: DeviceRef | undefined
-  source: string | null | undefined
-  workflowDoc: WorkflowDoc | null
-  scriptRuntime: RuntimeEnvelope | null
+  /** `GET /api/jobs/:id/runs/:runId/artifacts`, minus the runner's own `job.log` (`isRunnerLog`). */
   artifacts: ArtifactInfo[]
-  produced: ArtifactInfo[]
-  images: ArtifactInfo[]
-  files: ArtifactInfo[]
-  crashTraceArtifact: ArtifactInfo | undefined
+  /** The three-source merge, unchanged in algorithm from the file this replaces. */
   logs: LogLine[]
   logsTruncated: boolean
   logsPhase: LogsPhase
+  /** `GET /api/workflow-jobs/:id/runs/:runId/steps`; always empty for `kind === 'script'`. */
+  steps: WorkflowStepInfo[]
+  stepsFinalized: boolean
   error: string | null
-  /** Re-fetches job/source/deviceRef/artifacts/logs — the same set `load()` re-fetched on the page before this extraction. */
-  load: () => void
+  reload: () => void
 }
 
-/**
- * The four surfaces plan 103's audit named — job/result/params (`job`
- * itself, read through `ResultView`/`formatResult` by the caller), logs
- * (`logs`/`logsTruncated`/`logsPhase`), and artifacts
- * (`artifacts`/`produced`/`images`/`files`) — plus the script source and
- * device reference every one of those needs to render correctly. Used by
- * BOTH `/jobs/detail` (the full page) and `JobDetailPanel.tsx` (the device
- * popup's in-place Jobs tab).
- */
-export function useJobDetail(jobId: string | null): JobDetailState {
-  const [job, setJob] = useState<JobWithNode | null>(null)
+/** `runId` null means "the job's latest run" (`job.runId`). */
+export function useJobDetail(jobId: string | null, runId: string | null): JobDetailState {
+  const [job, setJob] = useState<JobDetail | null>(null)
+  const [run, setRun] = useState<JobRunDetail | null>(null)
   const [deviceRef, setDeviceRef] = useState<DeviceRef | undefined>(undefined)
-  const [source, setSource] = useState<string | null | undefined>(undefined)
-  const [workflowDoc, setWorkflowDoc] = useState<WorkflowDoc | null>(null)
-  const [scriptRuntime, setScriptRuntime] = useState<RuntimeEnvelope | null>(null)
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([])
   const [liveLogs, setLiveLogs] = useState<LogLine[]>([])
   const [savedLogs, setSavedLogs] = useState<LogLine[] | null>(null)
   const [backfillLogs, setBackfillLogs] = useState<LogLine[] | null>(null)
   const [logsTruncated, setLogsTruncated] = useState(false)
+  const [steps, setSteps] = useState<WorkflowStepInfo[]>([])
+  const [stepsFinalized, setStepsFinalized] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const effectiveRunId = runId ?? job?.runId ?? null
 
   function load(): void {
     if (!jobId) return
@@ -138,48 +77,18 @@ export function useJobDetail(jobId: string | null): JobDetailState {
     void api(`/api/jobs/${jobId}`, JobResponseSchema)
       .then((b) => {
         setJob(b.job)
-        // The script row is version-specific, so its source (and workflow
-        // document, and declared runtime envelope) is exactly what ran.
-        void api(`/api/scripts/${b.job.scriptId}`, ScriptSourceResponseSchema)
-          .then((s) => {
-            setSource(s.script.source ?? null)
-            setWorkflowDoc(s.script.workflow ?? null)
-            setScriptRuntime(s.script.runtime ?? null)
-          })
-          .catch(() => {
-            setSource(null)
-            setWorkflowDoc(null)
-            setScriptRuntime(null)
-          })
         void fetchDeviceRefs([b.job.deviceId])
           .then((refs) => setDeviceRef(refs[b.job.deviceId]))
           .catch(() => undefined)
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-    // A job's artifacts are usually a handful, but a script producing many
-    // screenshots is not unbounded here (plan 30 §4.2) — every page is walked.
-    void fetchAllPages<ArtifactInfo>('/api/artifacts', { jobId }).then(setArtifacts).catch(() => undefined)
-    // What the job has ALREADY logged (`/ws` has no snapshot replay, so
-    // without this a page opened mid-run showed nothing that happened
-    // before it subscribed — the fetch half of fetch-then-subscribe).
-    void api(`/api/jobs/${jobId}/logs`, JobLogsResponseSchema)
-      .then((r) => {
-        setBackfillLogs(r.lines)
-        setLogsTruncated(r.truncated)
-      })
-      .catch(() => setBackfillLogs([]))
   }
 
+  // Job — fetch, then subscribe. Reset on job id change only: switching the
+  // run does not re-read the job itself.
   useEffect(() => {
     setJob(null)
     setDeviceRef(undefined)
-    setSource(undefined)
-    setWorkflowDoc(null)
-    setScriptRuntime(null)
-    setArtifacts([])
-    setLiveLogs([])
-    setSavedLogs(null)
-    setBackfillLogs(null)
     setError(null)
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -188,12 +97,9 @@ export function useJobDetail(jobId: string | null): JobDetailState {
   useEffect(() => {
     if (!jobId) return
     const off = ws.on((m) => {
-      if (m.type === 'job.log' && m.payload.jobId === jobId) {
-        setLiveLogs((p) => [...p.slice(-2000), m.payload])
-      } else if (m.type === 'job.artifact' && m.payload.jobId === jobId) {
-        setArtifacts((p) => [...p.filter((a) => a.id !== m.payload.artifact.id), m.payload.artifact])
-      } else if (m.type === 'job.status' && m.payload.jobId === jobId) {
-        setJob((p) => ({ ...(p ?? {}), ...m.payload }) as JobWithNode)
+      if (m.type === 'job.status' && m.payload.jobId === jobId) {
+        setJob((p) => (p ? { ...p, ...m.payload } : p))
+        // A terminal status settles the run list and the artifacts.
         if (['success', 'failed', 'cancelled', 'expired'].includes(m.payload.status)) load()
       }
     })
@@ -201,9 +107,75 @@ export function useJobDetail(jobId: string | null): JobDetailState {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId])
 
-  // A finished job's log lives in its `job.log` artifact — matched by label
+  // The specific run — a separate read, keyed on (jobId, effectiveRunId).
+  useEffect(() => {
+    setRun(null)
+    setArtifacts([])
+    setLiveLogs([])
+    setSavedLogs(null)
+    setBackfillLogs(null)
+    setLogsTruncated(false)
+    if (!jobId || !effectiveRunId) return
+    let disposed = false
+    void api(`/api/jobs/${jobId}/runs/${effectiveRunId}`, JobRunResponseSchema)
+      .then((b) => {
+        if (!disposed) setRun(b.run)
+      })
+      .catch((e) => {
+        if (!disposed) setError(e instanceof Error ? e.message : String(e))
+      })
+    void api(`/api/jobs/${jobId}/runs/${effectiveRunId}/artifacts`, RunArtifactsResponseSchema)
+      .then((b) => {
+        if (!disposed) setArtifacts(b.items)
+      })
+      .catch(() => undefined)
+    void api(`/api/jobs/${jobId}/runs/${effectiveRunId}/logs`, JobLogsResponseSchema)
+      .then((r) => {
+        if (disposed) return
+        setBackfillLogs(r.lines)
+        setLogsTruncated(r.truncated)
+      })
+      .catch(() => {
+        if (!disposed) setBackfillLogs([])
+      })
+    return () => {
+      disposed = true
+    }
+  }, [jobId, effectiveRunId])
+
+  useEffect(() => {
+    if (!jobId || !effectiveRunId) return
+    const off = ws.on((m) => {
+      if (m.type === 'job.log' && m.payload.jobId === jobId && m.payload.runId === effectiveRunId) {
+        setLiveLogs((p) => [...p.slice(-2000), m.payload])
+      } else if (m.type === 'job.artifact' && m.payload.jobId === jobId && m.payload.runId === effectiveRunId) {
+        setArtifacts((p) => [...p.filter((a) => a.id !== m.payload.artifact.id), m.payload.artifact])
+      }
+    })
+    return off
+  }, [jobId, effectiveRunId])
+
+  // Steps — only for a workflow job, re-read on every `job.status` for this job.
+  useEffect(() => {
+    setSteps([])
+    setStepsFinalized(false)
+    if (!jobId || !effectiveRunId || job?.kind !== 'workflow') return
+    let disposed = false
+    void api(`/api/workflow-jobs/${jobId}/runs/${effectiveRunId}/steps`, WorkflowStepsResponseSchema)
+      .then((b) => {
+        if (disposed) return
+        setSteps(b.items)
+        setStepsFinalized(b.finalized)
+      })
+      .catch(() => undefined)
+    return () => {
+      disposed = true
+    }
+  }, [jobId, effectiveRunId, job?.kind, job?.status])
+
+  // A finished run's log lives in its `job.log` artifact — matched by label
   // as well as kind (a crash trace is a `log` artifact too, and picking that
-  // one would render a stack trace as the job's log).
+  // one would render a stack trace as the run's log).
   const logArtifact = artifacts.find(isRunnerLog)
   useEffect(() => {
     if (!logArtifact || savedLogs !== null) return
@@ -226,44 +198,30 @@ export function useJobDetail(jobId: string | null): JobDetailState {
       .catch(() => setSavedLogs([]))
   }, [logArtifact, savedLogs])
 
-  // The three sources are MERGED, not chosen between — see the long-standing
-  // reasoning this carries over verbatim from `app/jobs/detail/page.tsx`: a
-  // WS reconnect has no replay, and the runner writes its log file once, in
-  // its `finally`, not progressively, so neither source alone is complete.
-  const logs = useMemo(() => {
-    const byKey = new Map<string, LogLine>()
-    for (const line of [...(savedLogs ?? []), ...(backfillLogs ?? []), ...liveLogs]) {
-      byKey.set(`${line.ts}|${line.level}|${line.msg}`, line)
-    }
-    return [...byKey.values()].sort((a, b) => a.ts - b.ts)
-  }, [savedLogs, backfillLogs, liveLogs])
+  // The three sources are MERGED, not chosen between: a WS reconnect has no
+  // replay, and the runner writes its log file once, in its `finally`, not
+  // progressively, so neither source alone is complete.
+  const byKey = new Map<string, LogLine>()
+  for (const line of [...(savedLogs ?? []), ...(backfillLogs ?? []), ...liveLogs]) {
+    byKey.set(`${line.ts}|${line.level}|${line.msg}`, line)
+  }
+  const logs = [...byKey.values()].sort((a, b) => a.ts - b.ts)
 
   const logsPhase: LogsPhase =
     liveLogs.length > 0 || (backfillLogs?.length ?? 0) > 0 ? 'live' : backfillLogs === null && savedLogs === null ? 'loading' : 'saved'
 
-  const produced = useMemo(() => producedArtifacts(artifacts), [artifacts])
-  const images = useMemo(() => produced.filter((a) => a.kind === 'screenshot'), [produced])
-  const files = useMemo(() => produced.filter((a) => a.kind !== 'screenshot'), [produced])
-  const crashTraceArtifact = useMemo(
-    () => artifacts.find((a) => a.kind === 'log' && (a.label?.startsWith('crash-') || a.label?.startsWith('anr-'))),
-    [artifacts],
-  )
-
   return {
     job,
+    runs: job?.runs ?? [],
+    run,
     deviceRef,
-    source,
-    workflowDoc,
-    scriptRuntime,
-    artifacts,
-    produced,
-    images,
-    files,
-    crashTraceArtifact,
+    artifacts: artifacts.filter((a) => !isRunnerLog(a)),
     logs,
     logsTruncated,
     logsPhase,
+    steps,
+    stepsFinalized,
     error,
-    load,
+    reload: load,
   }
 }

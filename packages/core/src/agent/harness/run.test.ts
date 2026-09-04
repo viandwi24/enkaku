@@ -4,8 +4,8 @@ import type { Agent, AgentContentBlock, ConnectorKind, ResolvedAgentConfig } fro
 import { openDb, runMigrations, type Db } from '../../db'
 import { devices } from '../../db/schema'
 import { createLogger } from '../../util/logger'
-import { createLeaseManager, type LeaseManager } from '../../lease/lease-manager'
-import { createDeviceStateMachine } from '../../device/state-machine'
+import { createActivityRegistry, type ActivityRegistry } from '../../activity/registry'
+import { evaluate, type ControlPolicySettings } from '../../activity/policy'
 import type { CapabilityContext } from '../../capability/context'
 import type { AnyCoreCapability } from '../../capability/types'
 import { createThreadStore, type ThreadStore } from '../thread/store'
@@ -18,9 +18,9 @@ import { executeRun, type RunEmitEvent, type ToolPolicy } from './run'
 /**
  * Integration tests for the loop, ported from `agent/loop/run.test.ts` onto the harness
  * (plan 76 §7's own test plan: "one tool call; a refusal continuing the run; each budget
- * stop; loop detection; cancellation mid-stream with no lease held afterwards; approve and
+ * stop; loop detection; cancellation mid-stream with no activity held afterwards; approve and
  * deny; a restart with a paused run"). Real SQLite (thread/approval stores), a real
- * `LeaseManager`/`DeviceStateMachine`, and a scripted fake `LanguageModel` (via
+ * `ActivityRegistry`, and a scripted fake `LanguageModel` (via
  * `createFakeProvider`) — no real network call anywhere, and `runAgentLoop` (the harness) is
  * the actual code driving every model turn here, exactly like production.
  */
@@ -74,7 +74,6 @@ function echoCapability(): AnyCoreCapability {
     input: z.object({ text: z.string() }),
     output: z.object({ echoed: z.string() }),
     permission: 'device.control' as never,
-    lease: 'none',
     deadline: 5000,
     effect: 'read',
     description: 'echoes text back',
@@ -88,7 +87,6 @@ function destructiveCapability(): AnyCoreCapability {
     input: z.object({ path: z.string() }),
     output: z.object({ ok: z.boolean() }),
     permission: 'device.control' as never,
-    lease: 'none',
     deadline: 5000,
     effect: 'destructive',
     description: 'deletes something',
@@ -102,7 +100,7 @@ function tapCapability(): AnyCoreCapability {
     input: z.object({ deviceId: z.string(), x: z.number(), y: z.number() }),
     output: z.object({ ok: z.boolean() }),
     permission: 'device.control' as never,
-    lease: 'control',
+    activity: { kind: 'control' },
     deadline: 5000,
     effect: 'write',
     description: 'taps the screen',
@@ -110,16 +108,16 @@ function tapCapability(): AnyCoreCapability {
   }
 }
 
-/** Acquires the device's control lease (via `invoke`'s own lease step, BEFORE the handler runs)
- * and then blocks until the test releases it — lets a test deterministically observe "the lease is
- * held, mid-invoke" before cancelling, rather than racing a timer against the fake model. */
+/** Starts the agent's own device activity (via `admitAgentActivity`, BEFORE the handler runs)
+ * and then blocks until the test releases it — lets a test deterministically observe "the activity is
+ * live, mid-invoke" before cancelling, rather than racing a timer against the fake model. */
 function blockingTapCapability(gate: { release: (() => void) | null }): AnyCoreCapability {
   return {
     id: 'test.tap',
     input: z.object({ deviceId: z.string(), x: z.number(), y: z.number() }),
     output: z.object({ ok: z.boolean() }),
     permission: 'device.control' as never,
-    lease: 'control',
+    activity: { kind: 'control' },
     deadline: 30_000,
     effect: 'write',
     description: 'taps the screen, blocking until released by the test',
@@ -133,7 +131,7 @@ function screenshotCapability(): AnyCoreCapability {
     input: z.object({}),
     output: z.object({ image: z.string(), format: z.literal('png') }),
     permission: 'device.control' as never,
-    lease: 'none',
+    activity: { kind: 'read' },
     deadline: 5000,
     effect: 'read',
     description: 'takes a screenshot',
@@ -151,18 +149,19 @@ function registryOf(caps: AnyCoreCapability[]) {
   return { get: (id: string) => map.get(id) }
 }
 
-function fakeContext(actorId: string, leases: LeaseManager): CapabilityContext {
+const fakeControlSettings: ControlPolicySettings = { overControl: 'allow', idleSec: 30 }
+
+function fakeContext(actorId: string, activities: ActivityRegistry): CapabilityContext {
   return {
     actor: { id: actorId, role: 'operator' },
     currentRunId: null,
     agentTree: null,
     hasPermission: () => true,
     canReachDevice: () => true,
-    controlLeaseBlockedBy: (deviceId) => {
-      const lease = leases.getLease(deviceId)
-      if (!lease || lease.type !== 'manual') return 'nobody — no manual lease is held; acquire it first'
-      if (lease.holderUserId === actorId) return null
-      return lease.holderUserId ?? lease.holder
+    evaluateActivity: (deviceId, kind, exclusiveWith) =>
+      evaluate(kind, activities.list(deviceId), fakeControlSettings, { selfIds: [`control:user:${actorId}`], ...(exclusiveWith ? { exclusiveWith } : {}) }),
+    touchActivity: (deviceId, kind) => {
+      if (kind === 'control') activities.touchControl(deviceId, `user:${actorId}`, { kind: 'user', id: actorId, label: actorId })
     },
     isDeviceOnline: () => true,
     ensureAwake: async () => {},
@@ -171,7 +170,8 @@ function fakeContext(actorId: string, leases: LeaseManager): CapabilityContext {
     listDevices: () => [],
     getDevice: () => null,
     jobService: {} as never,
-    scripts: { listGroups: () => [], get: () => null, publish: () => ({ id: '', name: '', version: '' }) },
+    scripts: { list: () => [], get: () => null },
+    plugins: () => null,
     resolveScriptRef: () => ({ id: '' }),
     workspace: {} as never,
     workspaceScope: () => ({ read: ['/'], write: ['/'] }),
@@ -182,15 +182,12 @@ function setUp(caps: AnyCoreCapability[] = [echoCapability(), destructiveCapabil
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db as Db
-  db.insert(devices).values({ id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'online' }).run()
 
-  const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-  const leases: LeaseManager = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
+  const activities: ActivityRegistry = createActivityRegistry({
     log: createLogger('test'),
-    onJobLeaseExpired: () => {},
+    controlIdleSec: () => 30,
+    onChange: () => {},
   })
 
   const threads = createThreadStore(db)
@@ -199,9 +196,9 @@ function setUp(caps: AnyCoreCapability[] = [echoCapability(), destructiveCapabil
   const { tools: toolSet, capabilityIdForToolName } = buildToolSet(caps)
   const toolPolicy: ToolPolicy = { capabilityIdForToolName, requiresApprovalCapabilityIds: new Set() }
   const agent = fakeAgent({ tools: caps.map((c) => c.id) })
-  const capabilityContext = fakeContext(agent.id, leases)
+  const capabilityContext = fakeContext(agent.id, activities)
 
-  return { db, threads, approvals, leases, registry, toolSet, toolPolicy, agent, capabilityContext }
+  return { db, threads, approvals, activities, controlSettings: () => fakeControlSettings, registry, toolSet, toolPolicy, agent, capabilityContext }
 }
 
 function textEvents(text: string): FakeModelEvent[] {
@@ -254,7 +251,8 @@ function runHarness(opts: RunHarnessOpts) {
     capabilityContext: env.capabilityContext,
     threads: env.threads,
     approvals: env.approvals,
-    leases: env.leases,
+    activities: env.activities,
+    controlSettings: env.controlSettings,
     emit: (e) => events.push(e),
     isCancelled: () => cancelled,
     cancelledBy: () => cancelledByValue,
@@ -433,7 +431,8 @@ describe('executeRun — approval gate (plan 66 §3.6, plan 76 criterion 3)', ()
       capabilityContext: h.capabilityContext,
       threads: h.threads,
       approvals: h.approvals,
-      leases: h.leases,
+      activities: h.activities,
+      controlSettings: h.controlSettings,
       emit: () => {},
       isCancelled: () => false,
       cancelledBy: () => null,
@@ -466,7 +465,8 @@ describe('executeRun — approval gate (plan 66 §3.6, plan 76 criterion 3)', ()
       capabilityContext: h.capabilityContext,
       threads: h.threads,
       approvals: h.approvals,
-      leases: h.leases,
+      activities: h.activities,
+      controlSettings: h.controlSettings,
       emit: () => {},
       isCancelled: () => false,
       cancelledBy: () => null,
@@ -479,26 +479,26 @@ describe('executeRun — approval gate (plan 66 §3.6, plan 76 criterion 3)', ()
 })
 
 describe('executeRun — cancellation (plan 66 §3.7, plan 76 criterion 4, 7)', () => {
-  test('cancelling mid-run releases every acquired lease', async () => {
+  test('cancelling mid-run ends every activity the run started', async () => {
     const gate = { release: null as (() => void) | null }
     const h = runHarness({
       caps: [blockingTapCapability(gate)],
       agentOverrides: { tools: ['test.tap'] },
       turns: [toolCallEvents('c1', 'test_tap', { deviceId: 'd1', x: 1, y: 1 })],
     })
-    // Wait until invoke() has actually entered the handler — the control lease is acquired BEFORE
-    // this point (`ensureControlLease` runs before `invoke()` is even called).
+    // Wait until invoke() has actually entered the handler — the agent activity is started BEFORE
+    // this point (`admitAgentActivity` runs before `invoke()` is even called).
     const start = Date.now()
     while (gate.release === null) {
       if (Date.now() - start > 4000) throw new Error('timed out waiting for the blocking capability to start')
       await new Promise((resolve) => setTimeout(resolve, 4))
     }
-    expect(h.leases.getLease('d1')).not.toBeNull()
+    expect(h.activities.list('d1').some((a) => a.kind === 'agent')).toBe(true)
     h.cancel('user:test')
     gate.release() // let the in-flight invoke() finish — cancellation is only checked at a boundary
     const outcome = await h.outcomePromise
     expect(outcome.status).toBe('cancelled')
-    expect(h.leases.getLease('d1')).toBeNull()
+    expect(h.activities.list('d1').some((a) => a.kind === 'agent')).toBe(false)
   })
 })
 

@@ -46,13 +46,35 @@ import searchPlay from './search-play'
  */
 export default definePlugin({
   id: 'youtube',
-  version: '0.9.0',
+  version: '0.12.0',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments and download in the YouTube app on a farm device.',
   scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay],
 
   /**
    * ## Changelog
+   *
+   * **0.12.0 — every member is now a workflow flow-editor node (plan 303
+   * §4.5).** Each of the five scripts gains a `node` descriptor (category,
+   * icon, up to 3 summary params, keywords) so the flow editor's palette can
+   * present it — presentation only; nothing about how any member EXECUTES
+   * changes (plan 300 D6, D7).
+   *
+   * **0.11.0 — a Shorts SHELF is not the Shorts TAB.** Job 24ca474e failed on a
+   * home feed that happened to carry a Shorts row: the walk matched the shelf
+   * header (DFS reaches feed content before the bottom nav) and tapping it did
+   * nothing. `shortsTabOf` is now bounded to the nav band — the bottom 15% of
+   * the screen, measured — which is the same lesson 0.1.4 recorded for the
+   * results page, learned again from the other direction.
+   *
+   * **0.10.0 — keyword tilt.** `scroll-shorts`, `search-play` and `scroll-live`
+   * take `keywords` + `keywordBoostFactor`: when the content's own words
+   * (caption/channel/title read off the live tree) contain a keyword, the
+   * like/comment chance is multiplied — a non-match keeps the base chance
+   * untouched, because punishing content the operator never mentioned is a
+   * different product decision. `behavior.ts` exports `keywordBoost` and
+   * `readableStrings`; the result now reports `keywordMatches` so a run says
+   * how often the tilt actually fired.
    *
    * **0.9.0 — a thumb that lands on the same pixel every time is the tell.**
    * `tapNode` now aims at a uniform random point in the MIDDLE 70% of the node

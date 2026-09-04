@@ -29,7 +29,7 @@ import type { Logger } from '../logger'
  */
 
 const DEVICE_ID = 'dev-1'
-const JOB: JobSpec = { id: 'job-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
+const JOB: JobSpec = { id: 'job-1', runId: 'run-1', deviceId: DEVICE_ID, bundlePath: '/does/not/matter.mjs', params: {} }
 
 const silentLog = (): Logger => {
   const l = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => l }
@@ -50,11 +50,17 @@ function fakeSessions(session: DeviceSession): SessionManager {
   return {
     acquire: async () => session,
     release: () => {},
+    attachViewer: async () => ({ session, quality: 'wall' }),
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => session,
+    state: () => 'ready',
     get: () => session,
+    getByQuality: () => session,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
+    forwards: () => [],
   }
 }
 
@@ -95,8 +101,6 @@ const NO_RESET_SETTINGS = {
   resetStrict: false,
   retry: { maxInfraAttempts: 2, backoffBaseMs: 2_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true },
   crashPolicy: 'declared' as const,
-  quietPeriodSec: 10,
-  maxWaitSec: 120,
   defaultTimeoutMs: 3_600_000,
   startupTimeoutMs: 60_000,
   maxTimeoutMs: null,

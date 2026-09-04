@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import type { AdbExecutor } from './session'
-import { parseScrcpyServerList, sweepStrayScrcpyServers, startScrcpySession, SCID_MARKER_PREFIX } from './session'
+import { parseScrcpyServerList, sweepStrayScrcpyServers, startScrcpySession, isOwnScrcpyForwardRemote } from './session'
+
+/** Mirrors session.ts's private marker (SCID_MARKER_BYTE = 0x7f); a test that pins the shipped value. */
+const SCID_MARKER_PREFIX = '7f'
 
 /**
  * The marker byte shipped as `0xec` for a short window and broke scrcpy on
@@ -159,7 +162,13 @@ describe('close() sends a scid-scoped device-side stop (96.23)', () => {
    * does and asserting against the reimplementation.
    */
   async function withFakeDevice(
-    run: (opts: { close: () => Promise<void>; adb: ReturnType<typeof createFakeAdb>; scid: string }) => Promise<void>,
+    run: (opts: {
+      close: () => Promise<void>
+      adb: ReturnType<typeof createFakeAdb>
+      scid: string
+      port: number
+      serverPort: number
+    }) => Promise<void>,
     execOpts: { execImpl?: (cmd: string) => Promise<string> } = {},
   ) {
     let connectionCount = 0
@@ -214,7 +223,13 @@ describe('close() sends a scid-scoped device-side stop (96.23)', () => {
       }
       const session = await startScrcpySession(adb, { jarPath: '/fake/scrcpy-server.jar' })
       if (!capturedScid) throw new Error('test setup: never captured a scid from spawnLongLived')
-      await run({ close: () => session.close(), adb: fakeAdb, scid: capturedScid })
+      await run({
+        close: () => session.close(),
+        adb: fakeAdb,
+        scid: capturedScid,
+        port: session.port,
+        serverPort: server.port,
+      })
     } finally {
       server.stop(true)
     }
@@ -239,6 +254,33 @@ describe('close() sends a scid-scoped device-side stop (96.23)', () => {
         },
       },
     )
+  })
+
+  test("startScrcpySession's returned session exposes port and scid", async () => {
+    await withFakeDevice(async ({ close, scid, port, serverPort }) => {
+      expect(port).toBe(serverPort)
+      expect(scid).toMatch(new RegExp(`^${SCID_MARKER_PREFIX}[0-9a-f]{6}$`))
+      await close()
+    })
+  })
+})
+
+describe('isOwnScrcpyForwardRemote', () => {
+  test('matches a well-formed scrcpy remote', () => {
+    expect(isOwnScrcpyForwardRemote(`localabstract:scrcpy_${SCID_MARKER_PREFIX}0000aa`)).toBe(true)
+  })
+
+  test('rejects a remote with the wrong scid prefix', () => {
+    expect(isOwnScrcpyForwardRemote('localabstract:scrcpy_110000aa')).toBe(false)
+  })
+
+  test('rejects a remote of the wrong length', () => {
+    expect(isOwnScrcpyForwardRemote(`localabstract:scrcpy_${SCID_MARKER_PREFIX}0000aaff`)).toBe(false)
+    expect(isOwnScrcpyForwardRemote(`localabstract:scrcpy_${SCID_MARKER_PREFIX}00aa`)).toBe(false)
+  })
+
+  test('rejects an unrelated localabstract remote', () => {
+    expect(isOwnScrcpyForwardRemote('localabstract:some_other_socket')).toBe(false)
   })
 })
 

@@ -61,3 +61,57 @@ describe('UiautomatorDumpInspector.findDetailed (plan 74 §3.4, §4.3)', () => {
     if (outcome.ok) expect(outcome.node.className).toBe('synthetic-point')
   })
 })
+
+describe('UiautomatorDumpInspector.lastDump (plan 208 §4.6, "the cheap cache")', () => {
+  test('null before the first dump', () => {
+    const inspector = new UiautomatorDumpInspector(fakeTransport(XML_NO_MATCH))
+    expect(inspector.lastDump()).toBeNull()
+  })
+
+  test('dump() records lastDump on success', async () => {
+    const inspector = new UiautomatorDumpInspector(fakeTransport(XML_ONE_MATCH))
+    const before = Date.now()
+    const root = await inspector.dump()
+    const last = inspector.lastDump()
+    expect(last).not.toBeNull()
+    expect(last!.root).toEqual(root)
+    expect(last!.at).toBeGreaterThanOrEqual(before)
+  })
+})
+
+/**
+ * `/dev/tty` working once must not make its later output trusted.
+ *
+ * The `else` branch this pins used to return whatever came back as soon as
+ * the tty path had succeeded even once — so a device that later printed an
+ * error, or nothing, handed that straight to the XML parser and surfaced as
+ * "the XML dump has no <hierarchy> element": the symptom named, the phone's
+ * own sentence lost (owner, 2026-09-05).
+ */
+test('a device whose /dev/tty dump stops returning XML falls back to the file path instead of returning junk', async () => {
+  const calls: string[] = []
+  let ttyCall = 0
+  const transport = {
+    exec: async (cmd: string) => {
+      calls.push(cmd)
+      return { stdout: '', stderr: '', exitCode: 0 }
+    },
+    execOut: async (cmd: string) => {
+      calls.push(cmd)
+      if (cmd.includes('/dev/tty')) {
+        ttyCall += 1
+        // First call: a real dump. Second: the phone has stopped cooperating.
+        return new TextEncoder().encode(ttyCall === 1 ? XML_ONE_MATCH : 'ERROR: something went wrong')
+      }
+      return new TextEncoder().encode(XML_ONE_MATCH)
+    },
+  } as never
+
+  const inspector = new UiautomatorDumpInspector(transport)
+  await inspector.dump()
+  expect(calls.filter((c) => c.includes('cat '))).toHaveLength(0)
+
+  await inspector.dump()
+  // The second dump must have gone through the file, not returned the error.
+  expect(calls.filter((c) => c.includes('cat '))).toHaveLength(1)
+})

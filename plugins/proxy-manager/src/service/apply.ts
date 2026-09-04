@@ -39,7 +39,7 @@ import type { ListenerCredential } from './auth'
  *   the button;
  * - the call is audited under that principal, so *what has this plugin done to
  *   my farm* stays one query;
- * - the device's own lease admission applies — a phone somebody is actively
+ * - the device's own activity admission applies — a phone somebody is actively
  *   driving is refused, naming them, never taken over;
  * - and the route is stamped `set by proxy-manager`, which the device's Network
  *   panel renders.
@@ -548,7 +548,7 @@ export async function applyAssignment(host: ApplyHost, input: { stableId: string
         }
       : { ...resolved.route }
 
-  // The one door. Everything below this line belongs to the farm: the lease
+  // The one door. Everything below this line belongs to the farm: the activity
   // admission, the `network-route` lock, the capture of whatever proxy the
   // phone already had, the credential's encryption into `network_credentials`,
   // the read-back, and the attribution.
@@ -566,8 +566,8 @@ export async function applyAssignment(host: ApplyHost, input: { stableId: string
      * agent could not be reached. The operator needs to read which of those it
      * was, and "Request failed (HTTP 502)" tells them none of it.
      *
-     * The farm's own code travels with the message, so a lease refusal stays
-     * distinguishable from a lock refusal. `scrubSecrets` runs over the message
+     * The farm's own code travels with the message, so an activity-conflict
+     * refusal stays distinguishable from a lock refusal. `scrubSecrets` runs over the message
      * because this is the one place a string from code this pack does not own
      * becomes something a person reads.
      */

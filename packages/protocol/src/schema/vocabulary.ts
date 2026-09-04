@@ -103,7 +103,7 @@ export const PARAM_SOURCES = [
   'registry.inspectors',
   'registry.networks',
   'devices',
-  'clusters',
+  'groups',
   'scripts',
 ] as const
 export type ParamSource = (typeof PARAM_SOURCES)[number]
@@ -164,6 +164,13 @@ export interface ParamHints {
    * consumer must understand forever.
    */
   summary?: boolean
+  /**
+   * One sentence telling a reader when to change this from its default —
+   * MVP 12 §2's "raise or lower if". Rendered under the control, beside the
+   * default. Meaning, not presentation: it is a fact about the value, the
+   * same way `enforcement` is.
+   */
+  hint?: string
 }
 
 /**
@@ -198,6 +205,7 @@ export const ParamHintsSchema: z.ZodType<ParamHints> = z
     showWhen: ShowWhenSchema.optional(),
     enforcement: z.enum(ENFORCEMENT_LEVELS).optional(),
     summary: z.boolean().optional(),
+    hint: z.string().max(200).optional(),
   })
   .superRefine((val, ctx) => {
     if (val.kind === 'duration' && val.unit === undefined) {

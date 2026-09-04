@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import type { Transport } from '@enkaku/protocol'
-import { defaultDeviceSettings, type DeviceSettings } from '@enkaku/protocol'
+import { defaultDeviceSettings } from '@enkaku/protocol'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import { admitDevice, recordSighting } from '../registry/admission'
@@ -35,11 +35,19 @@ function admit(db: Db, stableId: string, opts: { screenW?: number; screenH?: num
   return db.select().from(devices).where(eq(devices.id, row.id)).get()!
 }
 
-function withLabelling(db: Db, id: string, labelling: DeviceSettings['labelling']): void {
+/**
+ * Sets the device's own label content override (plan 212 §4.1 — the old
+ * per-device `labelling.mode`/`showName` pair is gone). Every call site in
+ * this file used `showName: true`, so the content is always
+ * `'number-and-name'`; the SURFACE (the old `mode`) is supplied to
+ * `makeDeps` as `surfaceOverride` instead, since it is a single farm-wide
+ * constant now, not a per-device field.
+ */
+function withLabelling(db: Db, id: string, _surface: 'lock-screen' | 'wallpaper'): void {
   const row = db.select().from(devices).where(eq(devices.id, id)).get()!
   const settings = defaultDeviceSettings()
   db.update(devices)
-    .set({ settings: { ...settings, labelling } })
+    .set({ settings: { ...settings, overrides: { ...settings.overrides, deviceLabel: 'number-and-name' } } })
     .where(eq(devices.id, row.id))
     .run()
 }
@@ -71,6 +79,7 @@ function makeDeps(db: Db, opts: Partial<LabellingServiceDeps> & { agentClient?: 
       return fn(agentClient as never)
     },
     maxConcurrent: () => 2,
+    farmDeviceLabel: () => 'off',
     log: { debug() {}, info() {}, warn() {}, error() {}, child: () => makeDeps(db).log } as LabellingServiceDeps['log'],
     now: () => 1_700_000_000_000,
     buildTransport: () => {
@@ -109,7 +118,7 @@ describe('createLabellingService — tier 1 (wallpaper), §3.5, §4.6', () => {
   test('no screen-label capability → unavailable, never a silent downgrade, and label.apply is never called', async () => {
     const db = setUpDb()
     const row = admit(db, 'W1')
-    withLabelling(db, row.id, { mode: 'wallpaper', showName: true })
+    withLabelling(db, row.id, 'wallpaper')
     let applyCalled = false
     const agentClient = fakeGuestAgentClient({
       capabilities: [],
@@ -118,7 +127,7 @@ describe('createLabellingService — tier 1 (wallpaper), §3.5, §4.6', () => {
         return { applied: [], fingerprint: 'x', rendererVersion: 1, widthPx: 0, heightPx: 0, wallpaperIdHome: null, wallpaperIdLock: null }
       },
     })
-    const deps = makeDeps(db, { agentClient })
+    const deps = makeDeps(db, { agentClient, surfaceOverride: 'wallpaper' })
     const svc = createLabellingService(deps)
 
     const result = await svc.reconcile(row.id)
@@ -130,7 +139,7 @@ describe('createLabellingService — tier 1 (wallpaper), §3.5, §4.6', () => {
   test('both surfaces accepted → applied, and a second reconcile at the same fingerprint issues no label.apply call', async () => {
     const db = setUpDb()
     const row = admit(db, 'W2')
-    withLabelling(db, row.id, { mode: 'wallpaper', showName: true })
+    withLabelling(db, row.id, 'wallpaper')
     let applyCount = 0
     let lastFingerprint: string | null = null
     const agentClient = fakeGuestAgentClient({
@@ -141,7 +150,7 @@ describe('createLabellingService — tier 1 (wallpaper), §3.5, §4.6', () => {
         return { applied: ['home', 'lock'], fingerprint: params.fingerprint, rendererVersion: 1, widthPx: 1080, heightPx: 2400, wallpaperIdHome: 1, wallpaperIdLock: 2 }
       },
     })
-    const deps = makeDeps(db, { agentClient })
+    const deps = makeDeps(db, { agentClient, surfaceOverride: 'wallpaper' })
     const svc = createLabellingService(deps)
 
     const first = await svc.reconcile(row.id)
@@ -157,11 +166,11 @@ describe('createLabellingService — tier 1 (wallpaper), §3.5, §4.6', () => {
   test('only one surface accepted → partial, naming which, never rounded up to applied', async () => {
     const db = setUpDb()
     const row = admit(db, 'W3')
-    withLabelling(db, row.id, { mode: 'wallpaper', showName: true })
+    withLabelling(db, row.id, 'wallpaper')
     const agentClient = fakeGuestAgentClient({
       labelApply: (params) => ({ applied: ['home'], fingerprint: params.fingerprint, rendererVersion: 1, widthPx: 1080, heightPx: 2400, wallpaperIdHome: 1, wallpaperIdLock: null }),
     })
-    const deps = makeDeps(db, { agentClient })
+    const deps = makeDeps(db, { agentClient, surfaceOverride: 'wallpaper' })
     const svc = createLabellingService(deps)
 
     const result = await svc.reconcile(row.id)
@@ -172,12 +181,12 @@ describe('createLabellingService — tier 1 (wallpaper), §3.5, §4.6', () => {
   test('a device with no reserved number reads unavailable rather than crashing or guessing a number', async () => {
     const db = setUpDb()
     const row = admit(db, 'W4')
-    withLabelling(db, row.id, { mode: 'wallpaper', showName: true })
+    withLabelling(db, row.id, 'wallpaper')
     // Simulate a released reservation the way `releaseDeviceNumber` would leave it.
     const { deviceNumbers } = await import('../db/schema')
     db.delete(deviceNumbers).where(eq(deviceNumbers.stableId, 'W4')).run()
 
-    const deps = makeDeps(db)
+    const deps = makeDeps(db, { surfaceOverride: 'wallpaper' })
     const svc = createLabellingService(deps)
     const result = await svc.reconcile(row.id)
     expect(result.state).toBe('unavailable')
@@ -187,7 +196,7 @@ describe('createLabellingService — tier 1 (wallpaper), §3.5, §4.6', () => {
   test('clear() is idempotent: a second call performs the identical device call and the identical resulting state', async () => {
     const db = setUpDb()
     const row = admit(db, 'W5')
-    withLabelling(db, row.id, { mode: 'wallpaper', showName: true })
+    withLabelling(db, row.id, 'wallpaper')
     let clearCalls = 0
     const agentClient = fakeGuestAgentClient({
       labelApply: (params) => ({ applied: ['home', 'lock'], fingerprint: params.fingerprint, rendererVersion: 1, widthPx: 1080, heightPx: 2400, wallpaperIdHome: 1, wallpaperIdLock: 2 }),
@@ -196,7 +205,7 @@ describe('createLabellingService — tier 1 (wallpaper), §3.5, §4.6', () => {
         return { restored: restoreOriginal ? ('original' as const) : ('system-default' as const), fingerprint: null }
       },
     })
-    const deps = makeDeps(db, { agentClient })
+    const deps = makeDeps(db, { agentClient, surfaceOverride: 'wallpaper' })
     const svc = createLabellingService(deps)
 
     await svc.apply(row.id, { userId: 'u1' })
@@ -245,9 +254,9 @@ describe('createLabellingService — tier 0 (lock-screen), §3.5 H2, §4.5', () 
   test('applies, verifies by reading back, and captures the original exactly once', async () => {
     const db = setUpDb()
     const row = admit(db, 'L1')
-    withLabelling(db, row.id, { mode: 'lock-screen', showName: true })
+    withLabelling(db, row.id, 'lock-screen')
     const { transport, writes } = fakeTransport({ text: 'previous owner text', enabled: false })
-    const deps = makeDeps(db, { buildTransport: () => transport })
+    const deps = makeDeps(db, { buildTransport: () => transport, surfaceOverride: 'lock-screen' })
     const svc = createLabellingService(deps)
 
     const first = await svc.reconcile(row.id)
@@ -265,7 +274,7 @@ describe('createLabellingService — tier 0 (lock-screen), §3.5 H2, §4.5', () 
   test('a read-back mismatch is reported unavailable, never applied (H2 is unproven — CLAUDE.md’s unverified rule)', async () => {
     const db = setUpDb()
     const row = admit(db, 'L2')
-    withLabelling(db, row.id, { mode: 'lock-screen', showName: true })
+    withLabelling(db, row.id, 'lock-screen')
     const { transport } = fakeTransport({ text: '', enabled: false })
     // Sabotage the transport so the write never actually lands.
     const brokenTransport: Transport = {
@@ -275,7 +284,7 @@ describe('createLabellingService — tier 0 (lock-screen), §3.5 H2, §4.5', () 
         return { stdout: 'null', stderr: '', exitCode: 0 } // always reads back unset
       },
     }
-    const deps = makeDeps(db, { buildTransport: () => brokenTransport })
+    const deps = makeDeps(db, { buildTransport: () => brokenTransport, surfaceOverride: 'lock-screen' })
     const svc = createLabellingService(deps)
 
     const result = await svc.reconcile(row.id)
@@ -286,9 +295,9 @@ describe('createLabellingService — tier 0 (lock-screen), §3.5 H2, §4.5', () 
   test('restoring after a captured original writes back exactly what was captured', async () => {
     const db = setUpDb()
     const row = admit(db, 'L3')
-    withLabelling(db, row.id, { mode: 'lock-screen', showName: true })
+    withLabelling(db, row.id, 'lock-screen')
     const { transport } = fakeTransport({ text: 'operator text', enabled: true })
-    const deps = makeDeps(db, { buildTransport: () => transport })
+    const deps = makeDeps(db, { buildTransport: () => transport, surfaceOverride: 'lock-screen' })
     const svc = createLabellingService(deps)
 
     await svc.apply(row.id, { userId: 'u1' })

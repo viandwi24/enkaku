@@ -267,7 +267,7 @@ export default definePlugin({
         try {
           // Typed as a real message type by the SDK; the point is that the
           // MANIFEST does not declare it, which is what must be refused.
-          ctx.onEvent('lease.changed', () => {})
+          ctx.onEvent('device.activity', () => {})
         } catch (err) {
           control.subscribeError = describeRefusal(err)
         }
@@ -377,7 +377,7 @@ export default definePlugin({
         }
         return {
           rows: [
-            { id: 'a', value: { label: 'alpha' }, device: { id: 'd1', stableId: 's1', label: 'Pixel', status: 'online', clusterId: null, number: 7 } },
+            { id: 'a', value: { label: 'alpha' }, device: { id: 'd1', stableId: 's1', label: 'Pixel', status: 'online', groupId: null, number: 7 } },
             { value: { label: 'beta' } },
           ],
         }

@@ -17,9 +17,9 @@ import { addressCount } from '@enkaku/protocol'
  * downstream of `discovery.networks[]` ever sees an IP range.
  *
  * IPv4 only, matching `CidrSchema`'s own scope (`packages/protocol/src/
- * settings.ts`'s own comment: "every example and every cost-model number in
- * the plan is IPv4 ... a farm chassis switch does not hand out IPv6 leases
- * in practice"). No bitwise operators anywhere below — `x << n`/`x & y`
+ * settings.ts`'s own comment: every example and every cost-model number in
+ * the plan is IPv4 — a farm chassis switch does not hand out IPv6 addresses
+ * in practice). No bitwise operators anywhere below — `x << n`/`x & y`
  * coerce JS numbers to signed Int32, which corrupts anything past
  * 0x7FFFFFFF (i.e. the top half of the IPv4 space, 128.0.0.0 and up). Every
  * address here is instead carried as a plain `number` (0..4294967295, exact

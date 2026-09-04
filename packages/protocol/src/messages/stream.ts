@@ -31,34 +31,16 @@ export const StreamStartedMessage = z.object({
     codec: z.enum(['png', 'h264']),
     width: z.number(),
     height: z.number(),
-    /**
-     * The quality this viewer actually got. Plan 100 §4.2 gives `wall` and
-     * `control` independent, concurrent sessions per device — a `wall`
-     * request always gets its own `wall` entry and a `control` request
-     * always gets its own `control` entry, so this normally just echoes
-     * back what was asked for. The one exception is `degradedReason` below:
-     * when a `control` request's dedicated second session could not be
-     * built, this reads `wall` (the substitute) even though `control` was
-     * requested — never silently reported as `control` when it is not.
-     */
+    /** The quality this viewer is receiving RIGHT NOW. `wall` for a `control` request while `substitute` is set. */
     quality: QualitySchema,
     /**
-     * Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.5 — set only when a
-     * `control` request's fast-path second session could not be built
-     * (`SessionManager.acquire` threw `E_CONTROL_SESSION_UNAVAILABLE`) and
-     * the server substituted the device's already-open `wall` entry rather
-     * than leaving the viewer with nothing. Carried on this EXISTING
-     * message rather than a new type, per §3.7's "two tiers, no silent
-     * fallback" rule: the client must render this honestly (§4.4's exact
-     * wording) and offer Retry — never show the substituted picture under
-     * an ordinary Control label. Absent in every other case, including an
-     * ordinary `wall` request that simply got what it asked for.
+     * MVP 11 §1.2: a `control` request is served by the always-on wall encoder until the
+     * control encoder's first keyframe; the switch is announced by `stream.meta` carrying
+     * `quality: 'control'`. Absent for a `wall` request and once the switch has happened.
      */
-    degradedReason: z.literal('control_session_unavailable').optional(),
-    /** Human-readable detail behind `degradedReason` (the underlying
-     * `SessionError`'s own message, e.g. why `makeScrcpy` rejected) — shown
-     * alongside §4.4's fixed wording, the same "reason code plus free-text
-     * detail" shape `SessionProgressMessage.payload.detail` already uses. */
+    substitute: z.literal('wall').optional(),
+    /** The device cannot run a second scrcpy encoder (its display engine is not scrcpy); the viewer stays on `wall`. */
+    degradedReason: z.literal('control_encoder_unavailable').optional(),
     degradedDetail: z.string().optional(),
   }),
 })
@@ -80,10 +62,17 @@ export const StreamKeyframeMessage = z.object({
   payload: z.object({ streamId: z.number().int() }),
 })
 
-/** Rotation or resize — the frame dimensions changed. */
+/** Rotation, resize, or the encoder switch (MVP 11 §1.2): `quality` is set only on a switch. */
 export const StreamMetaMessage = z.object({
   type: z.literal('stream.meta'),
-  payload: z.object({ streamId: z.number().int(), width: z.number(), height: z.number() }),
+  payload: z.object({
+    streamId: z.number().int(),
+    width: z.number(),
+    height: z.number(),
+    quality: QualitySchema.optional(),
+    /** Set with `quality: 'wall'` when the control encoder failed after `substitute` was reported. */
+    detail: z.string().optional(),
+  }),
 })
 
 /**
@@ -96,7 +85,7 @@ export const StreamEndedMessage = z.object({
   payload: z.object({ deviceId: z.string(), reason: z.string() }),
 })
 
-/** Phases a session goes through before the first frame (Plan 17 §3.3). */
+/** Phases of one session build, in order (plan 206 §3.3). Internal to `@enkaku/session`; no message carries it. */
 export const SessionPhaseSchema = z.enum([
   'connecting', // opening the adb transport
   'waking', // wake + keyguard + keep-awake
@@ -105,14 +94,3 @@ export const SessionPhaseSchema = z.enum([
   'ready', // first frame delivered
 ])
 export type SessionPhase = z.infer<typeof SessionPhaseSchema>
-
-export const SessionProgressMessage = z.object({
-  type: z.literal('session.progress'),
-  payload: z.object({
-    deviceId: z.string(),
-    phase: SessionPhaseSchema,
-    /** Optional human-readable detail, e.g. 'ui-server fell back to dump'. */
-    detail: z.string().optional(),
-  }),
-})
-export type SessionProgress = z.infer<typeof SessionProgressMessage>

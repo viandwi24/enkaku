@@ -4,9 +4,10 @@ import { useState } from 'react'
 import { Check, ChevronDown, ChevronRight, Copy, Loader2 } from 'lucide-react'
 import { PreparationComponentStatusSchema, type AgentState, type PreparationComponentStatus } from '@enkaku/protocol'
 import { toast } from 'sonner'
-import { Button, ErrorState, api, cn, describeApiError, relativeTime } from '@enkaku/ui'
+import { Button, ErrorState, cn, describeApiError, relativeTime } from '@enkaku/ui'
 import { usePreparation } from '@/lib/use-preparation'
 import { useNow } from '@/lib/useNow'
+import { runOnDevice } from '@/lib/actions'
 
 /**
  * What the `Agent failed` chip opens (the owner's own ask: *"kalau ada agent
@@ -150,7 +151,11 @@ function stateNote(state: string): string | null {
     case 'unsupported':
       return 'This device is below the guest agent’s Android version floor. Retrying cannot change that — nothing here is broken, this phone is simply not eligible.'
     case 'ready':
-      return 'The agent is ready. The badge was showing an older reading; this panel is the current one.'
+      // The badge no longer lags: the provisioner broadcasts the device row
+      // on every `device.agent` transition, so the card updates with this
+      // panel. The old sentence apologised for a bug instead of describing a
+      // state, which taught operators to distrust the badge.
+      return 'The agent is ready on this device.'
     case 'provisioning':
       return 'A pass is running on this device right now. It will settle on its own.'
     case 'consent-required':
@@ -244,18 +249,16 @@ export function AgentAlertDetail({
     setBusy(true)
     setOutcome(null)
     try {
-      // `POST /api/devices/:id/preparation/:componentId/retry` — the
-      // single-device, single-component route (plan 106 §3.3), not the
-      // fleet-wide `POST /api/guest-agent/provision`, which has no way to
-      // scope a run to one phone and would provision the whole farm. It calls
-      // `AgentProvisioner.ensure(id, { force: true })`, and `force` is what
-      // makes this honest: `nextBoundedRetry` resets `priorAttempts` to 0 for
-      // a forced pass, so the standing backoff window and an exhausted
-      // attempt budget are both cleared rather than waited out. That is
-      // exactly what the button below is worded to promise.
-      const next = await api(`/api/devices/${deviceId}/preparation/${GUEST_AGENT_ID}/retry`, PreparationComponentStatusSchema, {
-        method: 'POST',
-      })
+      // `retry-prepare` (plan 207 §4.2), the single-device, single-component
+      // verb (plan 106 §3.3), not the fleet-wide `POST /api/guest-agent/
+      // provision`, which has no way to scope a run to one phone and would
+      // provision the whole farm. It calls `AgentProvisioner.ensure(id, {
+      // force: true })`, and `force` is what makes this honest:
+      // `nextBoundedRetry` resets `priorAttempts` to 0 for a forced pass, so
+      // the standing backoff window and an exhausted attempt budget are both
+      // cleared rather than waited out. That is exactly what the button
+      // below is worded to promise.
+      const next = PreparationComponentStatusSchema.parse((await runOnDevice('retry-prepare', deviceId, { component: GUEST_AGENT_ID })).detail)
       patch(GUEST_AGENT_ID, next)
       const result = outcomeOf(next, deviceLabel)
       setOutcome(result)

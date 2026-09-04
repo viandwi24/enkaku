@@ -57,7 +57,7 @@ export class ScreencapLoop implements DisplaySource {
           this.config.onLog?.('warn', `corrupt frame from ${this.transport.serial} (${png.length} bytes) — skipping`)
         } else {
           const { width, height } = parsePngSize(png)
-          this.cb?.(png, { width, height, codec: 'png', seq: this.seq++, capturedAt: t0 })
+          this.cb?.(png, { width, height, codec: 'png', seq: this.seq++, ptsUs: 0n, hostReceivedAt: t0 })
         }
       } catch (err) {
         consecutiveFailures++

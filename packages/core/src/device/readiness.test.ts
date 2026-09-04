@@ -7,21 +7,21 @@ import { CapturedPowerStateSchema, type DeviceReadiness } from '@enkaku/protocol
 import { openDb, runMigrations } from '../db'
 import { devices } from '../db/schema'
 import { createLogger } from '../util/logger'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
 import { createAwakePolicy } from './awake-policy'
 import { createDeviceStateMachine } from './state-machine'
 import { createReadinessManager, type ReadinessManager } from './readiness'
 
 const D1 = 'd1'
 
-function seedDevice(db: ReturnType<typeof openDb>['db'], overrides: Partial<{ status: string; desiredReadiness: string | null }> = {}) {
+function seedDevice(db: ReturnType<typeof openDb>['db'], overrides: Partial<{ status: 'online' | 'offline' | 'quarantined'; desiredReadiness: string | null }> = {}) {
   db.insert(devices)
     .values({
       id: D1,
       stableId: 'stable-1',
       serial: 'SER1',
       label: 'Phone One',
-      status: overrides.status ?? 'idle',
+      status: overrides.status ?? 'online',
       desiredReadiness: overrides.desiredReadiness ?? null,
     })
     .run()
@@ -112,17 +112,19 @@ function flush(): Promise<void> {
  */
 function fakeSessionManager() {
   const subs = new Map<string, Set<unknown>>()
-  const acquireCalls: { deviceId: string; quality: string }[] = []
+  const acquireCalls: { deviceId: string }[] = []
   const sessions: SessionManager = {
-    async acquire(deviceId, onFrame, quality = 'control') {
-      acquireCalls.push({ deviceId, quality })
+    // Plan 206 §4.3 — `acquire` no longer takes a quality: it always serves
+    // the one base (`wall`) entry.
+    async acquire(deviceId, onFrame) {
+      acquireCalls.push({ deviceId })
       let set = subs.get(deviceId)
       if (!set) {
         set = new Set()
         subs.set(deviceId, set)
       }
       set.add(onFrame)
-      return { deviceId, quality } as never
+      return { deviceId } as never
     },
     release(deviceId, onFrame) {
       const set = subs.get(deviceId)
@@ -130,15 +132,34 @@ function fakeSessionManager() {
       set.delete(onFrame)
       if (set.size === 0) subs.delete(deviceId)
     },
+    async attachViewer(deviceId) {
+      return { session: { deviceId } as never, quality: 'wall' }
+    },
+    detachViewer() {},
+    async build() {},
+    async whenReady(deviceId) {
+      return { deviceId } as never
+    },
+    state() {
+      return 'ready'
+    },
     get(deviceId) {
       const set = subs.get(deviceId)
       return set && set.size > 0 ? ({ deviceId } as never) : null
     },
+    getByQuality(deviceId) {
+      const set = subs.get(deviceId)
+      return set && set.size > 0 ? ({ deviceId } as never) : null
+    },
     async closeDevice() {},
-    async closeIfIdle() {},
-    idleSessions: () => [],
     async closeAll() {
       return 0
+    },
+    encoders() {
+      return []
+    },
+    forwards() {
+      return []
     },
   }
   return { sessions, acquireCalls, isLive: (deviceId: string) => subs.get(deviceId)?.size !== 0 && subs.has(deviceId) }
@@ -174,13 +195,7 @@ function setUp(
       if (opts.reconcileOnStatusChange) void readiness.reconcile(deviceId)
     },
   })
-  const leases: LeaseManager = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: createLogger('test'),
-    onJobLeaseExpired: () => {},
-  })
+  const activities: ActivityRegistry = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
   const broadcasts: { deviceId: string; readiness: DeviceReadiness }[] = []
   const events: { deviceId: string; actor: string | null; from: string; to: string }[] = []
   const { sessions, acquireCalls, isLive } = fakeSessionManager()
@@ -190,14 +205,14 @@ function setUp(
     db,
     client: () => client,
     sessions: () => (opts.withSessions === false ? null : sessions),
-    leases,
+    activities,
     maxHot: () => maxHot,
     awakePolicy: () => (opts.withAwakePolicy === false ? null : awakePolicy),
     broadcast: (deviceId, r) => broadcasts.push({ deviceId, readiness: r }),
     record: (e) => events.push(e),
     log: createLogger('test'),
   })
-  return { db, states, leases, readiness, execCalls, broadcasts, events, acquireCalls, isLive }
+  return { db, states, activities, readiness, execCalls, broadcasts, events, acquireCalls, isLive }
 }
 
 /** The observation a healthy fake device produces — spelled out once so the expectations below stay readable. */
@@ -215,7 +230,7 @@ describe('ReadinessManager.get / actual — derivation order (plan 43 §4.3, §7
 
   test('a live session means hot, regardless of desired', async () => {
     const { db, readiness, acquireCalls } = setUp()
-    seedDevice(db, { status: 'idle', desiredReadiness: 'asleep' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     const hold = await readiness.hold(D1, 'viewer')
     // hold() only guarantees "awake" (no session) — simulate the caller's
     // own session acquire, exactly as `stream.start` does after the hold.
@@ -226,13 +241,13 @@ describe('ReadinessManager.get / actual — derivation order (plan 43 §4.3, §7
 
   test('no session, no manager-applied keep-awake: asleep', () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online' })
     expect(readiness.actual(D1)).toBe('asleep')
   })
 
   test('desired survives being read back after being set, even while offline (acceptance #4, #9)', async () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online' })
     await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
     db.update(devices).set({ status: 'offline' }).where(eq(devices.id, D1)).run()
     const r = readiness.get(D1)
@@ -245,7 +260,11 @@ describe('ReadinessManager.get / actual — derivation order (plan 43 §4.3, §7
 describe('ReadinessManager.set — the §3.4 permission matrix', () => {
   test('Wake is refused for an offline device, with the reason', () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'offline' })
+    // Plan 206 §3.7 — `desired` defaults to `awake` now, so this device must
+    // be explicitly `asleep` for the requested `awake` to be a real
+    // transition (a same-value `set` is a no-op that never reaches §3.4's
+    // offline check at all).
+    seedDevice(db, { status: 'offline', desiredReadiness: 'asleep' })
     expect(readiness.set(D1, 'awake', { userId: 'u1', clientId: null })).rejects.toMatchObject({ code: 'device_offline' })
   })
 
@@ -255,13 +274,11 @@ describe('ReadinessManager.set — the §3.4 permission matrix', () => {
     expect(readiness.set(D1, 'hot', { userId: 'u1', clientId: null })).rejects.toMatchObject({ code: 'device_quarantined' })
   })
 
-  test('Wake is allowed for idle, manual, and busy', async () => {
-    for (const status of ['idle', 'manual', 'busy']) {
-      const { db, readiness } = setUp()
-      seedDevice(db, { status })
-      const r = await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
-      expect(r.desired).toBe('awake')
-    }
+  test('Wake is allowed for online, whatever else is currently live on the device', async () => {
+    const { db, readiness } = setUp()
+    seedDevice(db, { status: 'online' })
+    const r = await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
+    expect(r.desired).toBe('awake')
   })
 
   // Plan 49 §3.1/§4.1 replaced the viewer-based rule: watching NEVER blocks
@@ -270,9 +287,32 @@ describe('ReadinessManager.set — the §3.4 permission matrix', () => {
   // defect. These four cases pin the corrected rule; the previous
   // viewer-based tests they replace are gone, not merely deleted.
 
+  test('Sleep actually darkens the panel — a live session no longer skips it (spec.md:199, owner 2026-09-05)', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    expect(execCalls).toContain('svc power stayon true')
+
+    // A control stream is open — the exact condition that used to skip the
+    // whole asleep branch, which is why Sleep did nothing from Device Control.
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
+    expect(execCalls).toContain('svc power stayon false')
+    expect(execCalls).toContain('input keyevent 223')
+  })
+
+  test('Sleep leaves a device alone while something holds it awake', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    const hold = await readiness.hold(D1, 'job')
+    const before = execCalls.length
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
+    expect(execCalls.slice(before)).not.toContain('input keyevent 223')
+    hold.release()
+  })
+
   test('Sleep succeeds with watchers present, including from a Wall tile the actor is looking at (plan 49 §3.1)', async () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'idle', desiredReadiness: 'hot' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'hot' })
     // There is no `viewersOf` dependency in `ReadinessManagerDeps` any more
     // (plan 49 §4.1) — watching is simply never consulted, so any number of
     // viewers, including the actor's own Wall tile, cannot block this.
@@ -280,39 +320,42 @@ describe('ReadinessManager.set — the §3.4 permission matrix', () => {
     expect(r.desired).toBe('asleep')
   })
 
-  test('Sleep succeeds while the actor holds the manual lease themselves', async () => {
-    const { db, readiness, leases } = setUp()
-    seedDevice(db, { status: 'idle' })
-    leases.acquireManual(D1, 'my-client', 'me')
+  test("Sleep succeeds while the actor holds their OWN control marker", async () => {
+    const { db, readiness, activities } = setUp()
+    seedDevice(db, { status: 'online' })
+    activities.touchControl(D1, 'my-client', { kind: 'user', id: 'me', label: 'me' })
     await readiness.set(D1, 'hot', { userId: 'me', clientId: 'my-client' })
     const r = await readiness.set(D1, 'asleep', { userId: 'me', clientId: 'my-client' })
     expect(r.desired).toBe('asleep')
   })
 
-  test('Sleep is refused for a running job (status busy), with the reason', () => {
-    const { db, readiness } = setUp()
-    seedDevice(db, { status: 'busy', desiredReadiness: 'hot' })
+  test('Sleep is refused for a running job, with the reason', () => {
+    const { db, readiness, activities } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'hot' })
+    activities.start(D1, { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     expect(readiness.set(D1, 'asleep', { userId: 'u1', clientId: null })).rejects.toMatchObject({ code: 'job_running' })
   })
 
-  test('Sleep is refused for another holder\'s manual lease, naming the reason', async () => {
-    const { db, readiness, leases } = setUp()
-    seedDevice(db, { status: 'idle' })
-    leases.acquireManual(D1, 'other-client', 'other-user')
+  test("Sleep is refused for another operator's control marker, naming the reason", async () => {
+    const { db, readiness, activities } = setUp()
+    seedDevice(db, { status: 'online' })
+    activities.touchControl(D1, 'other-client', { kind: 'user', id: 'other-user', label: 'other-user' })
     await readiness.set(D1, 'hot', { userId: 'other-user', clientId: 'other-client' })
     expect(readiness.set(D1, 'asleep', { userId: 'me', clientId: 'me-client' })).rejects.toMatchObject({ code: 'device_in_use' })
   })
 
   test('setting the same value twice is a no-op that does not throw', async () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'idle', desiredReadiness: 'asleep' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     const r = await readiness.set(D1, 'asleep', { userId: 'u1', clientId: null })
     expect(r.desired).toBe('asleep')
   })
 
   test('every change is recorded with actor, from, and to (acceptance #12)', async () => {
     const { db, readiness, events } = setUp()
-    seedDevice(db, { status: 'idle' })
+    // Explicit `asleep` so `set(D1, 'awake', ...)` below is a real transition
+    // (plan 206 §3.7 — the default is `awake`, which would make this a no-op).
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
     expect(events).toEqual([{ deviceId: D1, actor: 'u1', from: 'asleep', to: 'awake' }])
   })
@@ -321,8 +364,8 @@ describe('ReadinessManager.set — the §3.4 permission matrix', () => {
 describe('ReadinessManager — the hot budget (plan 43 §3.5, §7)', () => {
   test('desired hot accepts the request but reports blocked hot_budget_full once the cap is reached, and evicts nothing', async () => {
     const { db, readiness } = setUp({ maxHot: 1 })
-    seedDevice(db, { status: 'idle' })
-    db.insert(devices).values({ id: 'd2', stableId: 'stable-2', serial: 'SER2', label: 'Phone Two', status: 'idle' }).run()
+    seedDevice(db, { status: 'online' })
+    db.insert(devices).values({ id: 'd2', stableId: 'stable-2', serial: 'SER2', label: 'Phone Two', status: 'online' }).run()
 
     const r1 = await readiness.set(D1, 'hot', { userId: 'u1', clientId: null })
     expect(r1).toEqual({ desired: 'hot', actual: 'hot', blocked: null, since: expect.any(Number), observed: OBSERVED_ON })
@@ -340,7 +383,7 @@ describe('ReadinessManager — the hot budget (plan 43 §3.5, §7)', () => {
 describe('ReadinessManager — offline retains desired, and job pre-emption (plan 43 §4.3, acceptance #9, #11)', () => {
   test('a device that goes offline keeps its desired and reconcile returns it to hot automatically on reconnect', async () => {
     const { db, readiness, states } = setUp()
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online' })
     await readiness.set(D1, 'hot', { userId: 'u1', clientId: null })
     expect(readiness.actual(D1)).toBe('hot')
 
@@ -353,25 +396,30 @@ describe('ReadinessManager — offline retains desired, and job pre-emption (pla
     expect(readiness.get(D1)).toMatchObject({ desired: 'hot', actual: 'hot', blocked: null })
   })
 
-  test('a job claiming a hot device is never blocked by readiness, and does not change desired (acceptance #11)', async () => {
-    const { db, readiness, states } = setUp()
-    seedDevice(db, { status: 'idle' })
+  test('a job starting on a hot device is never blocked by readiness, and does not change desired (acceptance #11)', async () => {
+    const { db, readiness, activities } = setUp()
+    seedDevice(db, { status: 'online' })
     await readiness.set(D1, 'hot', { userId: 'u1', clientId: null })
-    // JOB_CLAIMED is unconditional on readiness — the state machine does not consult it.
-    const applied = states.apply(D1, 'JOB_CLAIMED')
-    expect(applied?.to).toBe('busy')
+    // Starting a job activity is unconditional on readiness — the two are entirely independent now
+    // (a running job is an ACTIVITY, never a device status; readiness never consults the registry
+    // except inside `set()`'s own sleep-refusal branch).
+    activities.start(D1, { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     expect(readiness.actual(D1)).toBe('hot')
     expect(readiness.get(D1).desired).toBe('hot')
   })
 })
 
 describe('ReadinessManager.hold — never mutates desired (plan 43 §3.6, acceptance #14, #15)', () => {
-  test('a hold on a device desired asleep wakes it (awake) without ever touching desiredReadiness', async () => {
+  test('a NULL row reads desired: awake (plan 206 §3.7, migration 0065) — a hold on it still wakes the phone and never writes the column', async () => {
     const { db, readiness, execCalls } = setUp()
-    seedDevice(db, { status: 'idle', desiredReadiness: null })
+    seedDevice(db, { status: 'online', desiredReadiness: null })
+    // The NULL fallback (plan 206 §3.7): every row, old and new, reads `awake` by default.
+    expect(readiness.get(D1).desired).toBe('awake')
+
     const hold = await readiness.hold(D1, 'job')
+    // Nothing has reconciled this device yet, so `actual` still starts
+    // `asleep` — `hold()` wakes on ACTUAL, never on `desired` (§3.6).
     expect(readiness.actual(D1)).toBe('awake')
-    expect(readiness.get(D1).desired).toBe('asleep')
     expect(execCalls).toContain('input keyevent KEYCODE_WAKEUP')
 
     const rowMidHold = db.select({ d: devices.desiredReadiness }).from(devices).where(eq(devices.id, D1)).get()
@@ -381,15 +429,35 @@ describe('ReadinessManager.hold — never mutates desired (plan 43 §3.6, accept
     // Give the fire-and-forget reconcile a tick.
     await Promise.resolve()
     await Promise.resolve()
-    expect(readiness.actual(D1)).toBe('asleep')
+    // Stays awake: `desired` defaults to `awake` now, so releasing the last
+    // hold settles back TOWARD `desired`, not toward asleep (the whole point
+    // of always-on — MVP 11 §1.1).
+    expect(readiness.actual(D1)).toBe('awake')
 
     const rowAfter = db.select({ d: devices.desiredReadiness }).from(devices).where(eq(devices.id, D1)).get()
     expect(rowAfter?.d).toBeNull()
   })
 
+  test('a device explicitly desired asleep settles back to asleep once the last hold releases', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
+    const hold = await readiness.hold(D1, 'job')
+    expect(readiness.actual(D1)).toBe('awake')
+    expect(readiness.get(D1).desired).toBe('asleep')
+    expect(execCalls).toContain('input keyevent KEYCODE_WAKEUP')
+
+    hold.release()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(readiness.actual(D1)).toBe('asleep')
+
+    const rowAfter = db.select({ d: devices.desiredReadiness }).from(devices).where(eq(devices.id, D1)).get()
+    expect(rowAfter?.d).toBe('asleep') // hold() never mutates desiredReadiness
+  })
+
   test('two overlapping holds only reconcile back to desired once the LAST one releases', async () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     const h1 = await readiness.hold(D1, 'job')
     const h2 = await readiness.hold(D1, 'viewer')
     expect(readiness.actual(D1)).toBe('awake')
@@ -403,7 +471,7 @@ describe('ReadinessManager.hold — never mutates desired (plan 43 §3.6, accept
 
   test('a device explicitly set hot stays hot through a hold released after it (acceptance #16)', async () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online' })
     await readiness.set(D1, 'hot', { userId: 'u1', clientId: null })
     const hold = await readiness.hold(D1, 'job')
     hold.release()
@@ -415,10 +483,29 @@ describe('ReadinessManager.hold — never mutates desired (plan 43 §3.6, accept
   })
 })
 
+describe('ReadinessManager.ensureAwake — a wake activity around the wakeDevice call (plan 205 §4.9, plan 206 §4.11)', () => {
+  test('starts and ends a wake activity, visible to other viewers of the device for the length of the wake', async () => {
+    const { db, readiness, activities } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
+    const seenDuringWake: string[] = []
+    // A hold is the ordinary trigger for ensureAwake; peek at the registry
+    // synchronously inside it — `wakeDevice` itself is async, so the
+    // activity must already be live before `hold()`'s own promise settles.
+    const holdPromise = readiness.hold(D1, 'job')
+    // The activity is started synchronously, before the first await inside ensureAwake.
+    seenDuringWake.push(...activities.list(D1).map((a) => a.kind))
+    const hold = await holdPromise
+    expect(seenDuringWake).toContain('wake')
+    // Once the wake sequence finishes, the activity is gone.
+    expect(activities.list(D1).some((a) => a.kind === 'wake')).toBe(false)
+    hold.release()
+  })
+})
+
 describe('ReadinessManager — the readiness hold counts as a Plan 42 session subscriber, and there is no second timer (plan 43 §3.7, acceptance #17)', () => {
   test('a desired: hot device is kept warm by a STANDING SessionManager subscriber, released only when desired changes away from hot', async () => {
     const { db, readiness, isLive } = setUp()
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online' })
     await readiness.set(D1, 'hot', { userId: 'u1', clientId: null })
     expect(isLive(D1)).toBe(true)
     await readiness.set(D1, 'asleep', { userId: 'u1', clientId: null })
@@ -438,7 +525,7 @@ describe('ReadinessManager — the readiness hold counts as a Plan 42 session su
 
   test('a monitor-stream-shaped hold keeps the device from sleeping while it is open (acceptance #17)', async () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     const hold = await readiness.hold(D1, 'monitor')
     expect(readiness.actual(D1)).not.toBe('asleep')
     hold.release()
@@ -455,7 +542,9 @@ describe('ReadinessManager — the readiness hold counts as a Plan 42 session su
 describe('ReadinessManager — the awake policy is WIRED, so the persisted writes happen (plan 125 §3.3, §0.2)', () => {
   test('a wake issues the persisted screen_off_timeout write AND records the device’s original first', async () => {
     const { db, readiness, execCalls } = setUp()
-    seedDevice(db, { status: 'idle' })
+    // Explicit `asleep` (plan 206 §3.7 changed the default to `awake`) so the
+    // `set(D1, 'awake', ...)` below is a real transition, not a same-value no-op.
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
 
     await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
 
@@ -476,7 +565,7 @@ describe('ReadinessManager — the awake policy is WIRED, so the persisted write
 
   test('with NO policy wired the persisted timeout write is withheld — a refusal, not a silent degradation', async () => {
     const { db, readiness, execCalls } = setUp({ withAwakePolicy: false })
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
 
     await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
 
@@ -492,7 +581,7 @@ describe('ReadinessManager — the awake policy is WIRED, so the persisted write
 describe('ReadinessManager — `observed`, beside `actual` and never instead of it (plan 125 §3.6, §4.2, acceptance #5)', () => {
   test('nothing has been probed yet: `observed` is null, and `actual` keeps its own meaning', () => {
     const { db, readiness } = setUp()
-    seedDevice(db, { status: 'idle' })
+    seedDevice(db, { status: 'online' })
     const r = readiness.get(D1)
     expect(r.observed).toBeNull()
     expect(r.actual).toBe('asleep')
@@ -500,7 +589,7 @@ describe('ReadinessManager — `observed`, beside `actual` and never instead of 
 
   test('reconcile probes the phone and carries the answer on the wire, beside `actual`', async () => {
     const { db, readiness, broadcasts } = setUp()
-    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
 
     await readiness.reconcile(D1)
 
@@ -513,7 +602,7 @@ describe('ReadinessManager — `observed`, beside `actual` and never instead of 
 
   test('a probe that cannot run reaches the client as `unknown` WITH a reason — never collapsed into `off` (acceptance #5)', async () => {
     const { db, readiness, broadcasts } = setUp({ adb: { wakefulness: null } })
-    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
 
     await readiness.reconcile(D1)
 
@@ -529,21 +618,21 @@ describe('ReadinessManager — `observed`, beside `actual` and never instead of 
 
   test('an unrecognised wakefulness token is `unknown`, not `off`', async () => {
     const { db, readiness } = setUp({ adb: { wakefulness: 'Bananas' } })
-    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
     await readiness.reconcile(D1)
     expect(readiness.get(D1).observed?.state).toBe('unknown')
   })
 
   test('a genuinely dark panel DOES read `off` — `unknown` is not a blanket excuse for never answering', async () => {
     const { db, readiness } = setUp({ adb: { wakefulness: 'Asleep' } })
-    seedDevice(db, { status: 'idle', desiredReadiness: 'asleep' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     await readiness.reconcile(D1)
     expect(readiness.get(D1).observed?.state).toBe('off')
   })
 
   test('a device that goes offline loses its stale observation to `unknown`, never to `off`', async () => {
     const { db, readiness, states } = setUp()
-    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
     await readiness.reconcile(D1)
     expect(readiness.get(D1).observed?.state).toBe('on')
 
@@ -558,7 +647,7 @@ describe('ReadinessManager — `observed`, beside `actual` and never instead of 
 
   test('observe() is on demand and ignores the reconcile cache — an operator who asks gets a fresh answer', async () => {
     const { db, readiness, execCalls } = setUp()
-    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
     await readiness.reconcile(D1)
     const afterReconcile = execCalls.filter((c) => c.startsWith('dumpsys power')).length
     expect(afterReconcile).toBe(1)
@@ -575,7 +664,7 @@ describe('ReadinessManager — `observed`, beside `actual` and never instead of 
 
   test('with no policy wired, `observed` stays null (never asked) and observe() still answers `unknown`, never `off`', async () => {
     const { db, readiness } = setUp({ withAwakePolicy: false })
-    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
     await readiness.reconcile(D1)
     expect(readiness.get(D1).observed).toBeNull()
 
@@ -593,7 +682,7 @@ describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §
     // wiring were missing, the phone would simply stay dark — and it lives in
     // a sealed box where staying dark is unrecoverable (§0.2).
     const { db, readiness, states, execCalls } = setUp({ reconcileOnStatusChange: true })
-    seedDevice(db, { status: 'idle', desiredReadiness: 'awake' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
 
     await readiness.reconcile(D1)
     expect(readiness.actual(D1)).toBe('awake')
@@ -613,7 +702,7 @@ describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §
 
   test('a device desired asleep is NOT woken when it reconnects', async () => {
     const { db, readiness, states, execCalls } = setUp({ reconcileOnStatusChange: true })
-    seedDevice(db, { status: 'idle', desiredReadiness: 'asleep' })
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
 
     states.apply(D1, 'DEVICE_DISCONNECTED')
     await flush()
@@ -644,10 +733,10 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
   test('wakes every device whose desired is not asleep, and leaves the asleep ones alone', async () => {
     const { db, readiness, execCalls } = setUp()
     seedFarm(db, [
-      { id: 'a', status: 'idle', desired: 'awake' },
-      { id: 'b', status: 'idle', desired: 'hot' },
-      { id: 'c', status: 'idle', desired: 'asleep' },
-      { id: 'd', status: 'idle', desired: null }, // never set — `desiredOf` reads it as asleep
+      { id: 'a', status: 'online', desired: 'awake' },
+      { id: 'b', status: 'online', desired: 'hot' },
+      { id: 'c', status: 'online', desired: 'asleep' },
+      { id: 'd', status: 'online', desired: null }, // never set — plan 206 §3.7: `desiredOf` reads a NULL row as `awake` now, same as `a`
     ])
 
     readiness.start()
@@ -656,10 +745,10 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
     expect(readiness.actual('a')).toBe('awake')
     expect(readiness.actual('b')).toBe('hot')
     expect(readiness.actual('c')).toBe('asleep')
-    expect(readiness.actual('d')).toBe('asleep')
-    // Exactly one phone was physically nudged: `a`. `b` reached `hot` through
-    // a session, and `c`/`d` were never touched at all.
-    expect(execCalls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length).toBe(1)
+    expect(readiness.actual('d')).toBe('awake')
+    // Two phones were physically nudged: `a` and `d` (its NULL row defaults
+    // to awake). `b` reached `hot` through a session, and `c` was never touched.
+    expect(execCalls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length).toBe(2)
   })
 
   test('an offline or quarantined device is SKIPPED with a reason, and no adb call is made against it', async () => {
@@ -697,7 +786,7 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
     const { db, readiness } = setUp({ adb: { park } })
     seedFarm(
       db,
-      Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, status: 'idle', desired: 'awake' })),
+      Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, status: 'online', desired: 'awake' })),
     )
 
     readiness.start()
@@ -718,7 +807,7 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
 
   test('it runs ONCE: a second start() sweeps nothing', async () => {
     const { db, readiness, execCalls } = setUp()
-    seedFarm(db, [{ id: 'a', status: 'idle', desired: 'awake' }])
+    seedFarm(db, [{ id: 'a', status: 'online', desired: 'awake' }])
 
     readiness.start()
     await flush()
@@ -742,7 +831,7 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
     const { db, readiness } = setUp({ adb: { park } })
     seedFarm(
       db,
-      Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, status: 'idle', desired: 'awake' })),
+      Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, status: 'online', desired: 'awake' })),
     )
 
     readiness.start()

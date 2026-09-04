@@ -2,17 +2,17 @@ import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import {
   CreateNetworkCredentialRequestSchema,
-  DeviceNetworkApplyBodySchema,
+  E_DEVICE_CONFLICT,
   GeoProviderResponseSchema,
   NetworkRouteConfigSchema,
   PersistedNetworkRouteSchema,
   deriveHealth,
+  type ActivityActor,
   matchGeoExpectation,
   pushExitHistory,
   redactRouteConfig,
   renderStickyUsername,
   tagUntaggedRouteConfig,
-  type DeviceNetworkApplyResult,
   type EgressProbeResult,
   type GeoObservation,
   type HttpProxyRouteConfig,
@@ -47,7 +47,10 @@ import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import { deriveGuestAgentPreparation } from '../device/preparation/guest-agent-status'
 import type { EventRecorder } from '../events/recorder'
-import type { LeaseManager } from '../lease/lease-manager'
+import type { ActivityRegistry } from '../activity/registry'
+import { evaluate, type ControlPolicySettings } from '../activity/policy'
+import { requireAdmission } from '../activity/admission'
+import type { DeviceStateMachine } from '../device/state-machine'
 import { pluginNameFromPrincipal } from '../plugins/principal'
 import type { Logger } from '../util/logger'
 import { EnkakuError } from '../util/errors'
@@ -230,9 +233,7 @@ function generateSessionId(): string {
 export const ERROR_STATUS: Record<string, number> = {
   device_not_found: 404,
   E_BAD_REQUEST: 400,
-  no_lease: 409,
-  not_lease_holder: 409,
-  device_busy: 409,
+  [E_DEVICE_CONFLICT]: 409,
   device_unavailable: 409,
   E_GUEST_AGENT_APK_MISSING: 503,
   E_PORT_RANGE_EXHAUSTED: 503,
@@ -297,7 +298,7 @@ export interface NetworkRecoveryStatus {
 /**
  * The route config as an API response, per engine (plan 114 §4.1). Every arm is
  * tagged, so a client switches on `engine` rather than sniffing for fields —
- * and Studio's own hand-written mirror is replaced by this shape in step 114.6.
+ * and Studio's own hand-written type duplicate is replaced by this shape in step 114.6.
  *
  * `vpn-helper`'s arm is byte-for-byte what this endpoint answered before plan
  * 114 plus the tag, so nothing that reads `config.host`/`config.udpMode` today
@@ -382,20 +383,6 @@ export interface NetworkStatusResult {
   pendingClear: { engine: NetworkEngineId; devicePort?: number; forget: boolean; reason: string; since: number } | null
 }
 
-/**
- * One row of `POST /network/apply`'s report (plan 114 §3.9, step 114.8).
- *
- * `DeviceNetworkApplyResultSchema` with its `status` swapped for this module's
- * own `NetworkStatusResult`, rather than the protocol's response type. The two
- * describe the same object from opposite ends of the wire — this side carries
- * `captured`, which the response schema does not declare and therefore strips
- * on parse — and re-shaping a status here purely to satisfy a type would mean
- * writing a second, silently-diverging serialiser for the one thing
- * `GET /:id/network` already answers with. The bulk endpoint hands back exactly
- * what a single `PUT` does, per device.
- */
-export type BulkApplyResult = Omit<DeviceNetworkApplyResult, 'status'> & { status: NetworkStatusResult | null }
-
 /** Optional per-call knobs for a guest-agent client call — see `guest-agent.ts`'s `createDeviceSession`. */
 export interface DeviceSessionCallOpts {
   handshakeRetries?: number
@@ -411,6 +398,15 @@ export interface DeviceSessionCallOpts {
  */
 export interface DeviceSession {
   withClient<T>(fn: (client: GuestAgentClient) => Promise<T>, opts?: DeviceSessionCallOpts): Promise<T>
+  /**
+   * Runs `fn` against this session's bootstrapped ENDPOINT — the forwarded host
+   * port and the pairing token it already owns — bootstrapping exactly as
+   * `withClient` does and minting no second token. It exists for `ui.watch`,
+   * the one guest-agent call that is a subscription rather than a request
+   * (plan 222 §4.6): `createGuestAgentWatch` opens its own connection to the
+   * SAME forwarded port and must never allocate a forward of its own.
+   */
+  withEndpoint<T>(fn: (endpoint: { port: number; token: string }) => Promise<T>, opts?: DeviceSessionCallOpts): Promise<T>
   readonly active: boolean
   close(): Promise<void>
 }
@@ -420,7 +416,11 @@ export interface RouteServiceDeps {
   /** Per-device shell exec, through the adb queue (the same shape `Transport.exec` uses). */
   exec: (serial: string, cmd: string, opts?: TransportExecOptions) => Promise<ShellResult>
   apkPath: () => Promise<string>
-  leases: LeaseManager
+  /** The device activity registry (plan 205 §4.2, §4.8) — every mutating endpoint's one admission door. */
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>
+  /** `control.overControl`/`control.idleSec`, read fresh on every admission check (plan 205 §4.5). */
+  controlSettings: () => ControlPolicySettings
+  states: Pick<DeviceStateMachine, 'current'>
   /** Where the credential store's encryption key lives (plan 52 §4.2). */
   dataDir: string
   log: Logger
@@ -483,7 +483,7 @@ export interface RouteServiceDeps {
  * exactly this — today that is `device.network.get`/`.set`/`.clear`
  * (`packages/core/src/capability/device-network.ts`), which is how a plugin
  * with `device.network` gets there. It is deliberately not wider than the HTTP
- * surface it mirrors, and deliberately not narrower: `set` runs the SAME lease
+ * surface it matches, and deliberately not narrower: `set` runs the SAME activity
  * admission, the SAME credential refusal, the SAME `network-route` lock and
  * writes the SAME attributed device event that `PUT /api/devices/:id/network`
  * does, because it IS that handler's body.
@@ -526,23 +526,43 @@ export interface RouteService {
   clearRoute: (deviceId: string) => void
   /** The live `DeviceSession` a `vpn-helper` route is holding for this device, if any — `guest-agent.ts`'s `withEphemeralSession` consults this so a status probe never mints a second token. */
   activeSessionOf: (deviceId: string) => DeviceSession | null
+  /** The five per-device network operations, for the actions API's `set-network` verb (plan 207 §4.2, §5 step 207.4) — the exact functions `PUT/POST/DELETE /:id/network*` call. */
+  actions: {
+    set: (deviceId: string, raw: unknown, actor: string | null, opts?: { admission?: 'checked' | 'precleared' }) => Promise<NetworkStatusResult>
+    clear: (deviceId: string, actor: string | null) => Promise<NetworkStatusResult>
+    enable: (deviceId: string, actor: string | null) => Promise<NetworkStatusResult>
+    disable: (deviceId: string, actor: string | null) => Promise<NetworkStatusResult>
+    retry: (deviceId: string, actor: string | null) => Promise<NetworkStatusResult>
+  }
 }
 
-/** The lease admission check every mutating network/guest-agent endpoint takes (plan 44 §5.7). Exported so `guest-agent.ts`'s own install/uninstall endpoints take the identical one rather than a second, drifting copy. */
-export function requireHeldLease(leases: LeaseManager, deviceId: string): void {
-  const lease = leases.getLease(deviceId)
-  const allowed = leases.checkInputAllowed(deviceId, lease?.holder ?? '')
-  if (!allowed.ok) throw new EnkakuError(allowed.code, allowed.message)
+/**
+ * The activity admission check every mutating network/guest-agent endpoint
+ * takes (plan 44 §5.7, reworked by plan 205 §4.8) — evaluates the
+ * `network-apply` policy row (forbid only against a live `job`/
+ * `workflow-job`/`install`; a `control` marker no longer blocks a route
+ * write at all, plan 205 §2.4). Exported so `guest-agent.ts`'s own
+ * install/uninstall endpoints take the identical one rather than a second,
+ * drifting copy.
+ */
+export function requireNetworkAdmission(
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>,
+  controlSettings: () => ControlPolicySettings,
+  states: Pick<DeviceStateMachine, 'current'>,
+  deviceId: string,
+): void {
+  requireAdmission(activities, controlSettings, states, deviceId, 'network-apply')
 }
 
 /**
  * **The DISARM direction's admission — the one place `device_unavailable` is
  * not the end of the request.**
  *
- * `requireHeldLease` above refuses an offline device outright, because every
- * endpoint it guards writes something to a phone. That is the right rule for
- * turning a route ON: applying a route to a phone you cannot reach is a promise
- * you cannot keep, and `/enable`, `PUT` and `/retry` keep taking it unchanged.
+ * `requireNetworkAdmission` above refuses an offline device outright, because
+ * every endpoint it guards writes something to a phone. That is the right
+ * rule for turning a route ON: applying a route to a phone you cannot reach
+ * is a promise you cannot keep, and `/enable`, `PUT` and `/retry` keep taking
+ * it unchanged.
  *
  * It is the WRONG rule for turning one off, and offline is exactly the case
  * where turning it off matters most. The measured shape of the problem: two
@@ -555,9 +575,10 @@ export function requireHeldLease(leases: LeaseManager, deviceId: string): void {
  * farm has already had: a `RouteVpnService` armed with a kill switch and no
  * farm connection left a phone with no internet at all.
  *
- * A lease is not merely unheld for such a device, it is **unobtainable**:
- * `acquireManual` refuses any status but `idle`/`manual` with this same code.
- * So the gate is not "take control first", it is "you may never turn this off".
+ * An offline/quarantined device is not merely hard to reach for this
+ * purpose, it is a state in which the device can never satisfy an ordinary
+ * admission check at all — so the gate for THIS direction only is "you may
+ * still turn this off", never "you may never turn this on".
  *
  * What makes widening it safe is that the machinery for "we could not reach the
  * phone" already exists and predates nothing: `revertNetwork` records the
@@ -566,30 +587,88 @@ export function requireHeldLease(leases: LeaseManager, deviceId: string): void {
  * not a bookkeeping-only clear — on the device's next admission. The gate was
  * refusing the request *before* the machinery built for it could run.
  *
- * **Exactly one code is let through, and nothing else about the check changes:**
+ * **Exactly one case is let through, and nothing else about the check changes:**
  *
- * - `device_unavailable` (`offline`, and `quarantined`) — allowed. Both are
- *   states in which no lease can be taken, so the off button is unreachable for
- *   the same reason; and a quarantined phone still carrying a farm route
- *   through somebody's paid upstream is the same hazard as an offline one. A
- *   quarantined device is often still reachable over adb, in which case the
- *   teardown below simply lands and no debt is recorded at all.
- * - `device_busy` — still refused. A job is driving that phone right now, and
- *   pulling its route out from under it is not a disarm, it is a collision.
- * - `no_lease` / `not_lease_holder` — still refused. The device is ONLINE and
- *   takeable; "take control first" is a real instruction there, and somebody
- *   else may be driving it.
+ * - `device_unavailable` (`offline`, and `quarantined`) — allowed. A
+ *   quarantined phone still carrying a farm route through somebody's paid
+ *   upstream is the same hazard as an offline one. A quarantined device is
+ *   often still reachable over adb, in which case the teardown below simply
+ *   lands and no debt is recorded at all.
+ * - a `network-apply` `forbid` decision (a job/workflow-job/install running)
+ *   — still refused. A job is driving that phone right now, and pulling its
+ *   route out from under it is not a disarm, it is a collision.
  * - `device_not_found` — still refused, obviously.
  */
-export function requireDisarmAdmission(leases: LeaseManager, deviceId: string): void {
-  const lease = leases.getLease(deviceId)
-  const allowed = leases.checkInputAllowed(deviceId, lease?.holder ?? '')
-  if (allowed.ok) return
-  if (allowed.code === 'device_unavailable') return
-  throw new EnkakuError(allowed.code, allowed.message)
+export function requireNetworkDisarmAdmission(
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>,
+  controlSettings: () => ControlPolicySettings,
+  states: Pick<DeviceStateMachine, 'current'>,
+  deviceId: string,
+): void {
+  const status = states.current(deviceId)
+  if (status === null) throw new EnkakuError('device_not_found', `no such device: ${deviceId}`)
+  if (status === 'offline' || status === 'quarantined') return
+  requireAdmission(activities, controlSettings, states, deviceId, 'network-apply')
 }
 
-/** Reads a device row or throws `device_not_found`. Exported for the same reason `requireHeldLease` is. */
+/**
+ * A bare principal string (a userId, or `plugin:<name>` — plan 109 §4.3) as a
+ * `network-apply` marker's `ActivityActor`. The SAME split `stampSetBy` makes
+ * for the persisted route's own `setBy`, so a marker and a device event never
+ * disagree about who is writing.
+ */
+function activityActorFor(actor: string | null): ActivityActor {
+  if (actor === null) return { kind: 'system', id: 'core', label: 'System' }
+  const plugin = pluginNameFromPrincipal(actor)
+  return plugin ? { kind: 'plugin', id: plugin, label: plugin } : { kind: 'user', id: actor, label: actor }
+}
+
+/**
+ * `requireNetworkAdmission` plus a `network-apply:<uuid>` marker for the
+ * duration of `fn()` (plan 205 §4.9) — visible to any other viewer of the
+ * device exactly the way a job or an install already are, ended in `finally`
+ * whether `fn()` resolves or throws. The shared wrapper every mutating
+ * network/guest-agent endpoint's arm direction takes, exported so
+ * `guest-agent.ts`'s own install/uninstall endpoints take the identical one.
+ */
+export async function withNetworkAdmission<T>(
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>,
+  controlSettings: () => ControlPolicySettings,
+  states: Pick<DeviceStateMachine, 'current'>,
+  deviceId: string,
+  actor: string | null,
+  fn: () => Promise<T>,
+): Promise<T> {
+  requireNetworkAdmission(activities, controlSettings, states, deviceId)
+  const id = `network-apply:${crypto.randomUUID()}`
+  activities.start(deviceId, { id, kind: 'network-apply', label: 'Applying network route', actor: activityActorFor(actor) })
+  try {
+    return await fn()
+  } finally {
+    activities.end(deviceId, id)
+  }
+}
+
+/** `requireNetworkDisarmAdmission` plus the same marker `withNetworkAdmission` starts, for the disarm direction. */
+export async function withNetworkDisarmAdmission<T>(
+  activities: Pick<ActivityRegistry, 'list' | 'start' | 'end'>,
+  controlSettings: () => ControlPolicySettings,
+  states: Pick<DeviceStateMachine, 'current'>,
+  deviceId: string,
+  actor: string | null,
+  fn: () => Promise<T>,
+): Promise<T> {
+  requireNetworkDisarmAdmission(activities, controlSettings, states, deviceId)
+  const id = `network-apply:${crypto.randomUUID()}`
+  activities.start(deviceId, { id, kind: 'network-apply', label: 'Applying network route', actor: activityActorFor(actor) })
+  try {
+    return await fn()
+  } finally {
+    activities.end(deviceId, id)
+  }
+}
+
+/** Reads a device row or throws `device_not_found`. Exported for the same reason `requireNetworkAdmission` is. */
 export function mustGetDevice(db: Db, id: string): DeviceRow {
   const row = db.select().from(devices).where(eq(devices.id, id)).get()
   if (!row) throw new EnkakuError('device_not_found', `no such device: ${id}`)
@@ -1440,7 +1519,7 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
   /**
    * A `Transport` over this service's per-device `exec`, for an engine that
    * needs nothing more than a shell (plan 114 F8: "a device-scoped settings
-   * write needs no session and no lease-bound machinery"). Only `exec` is
+   * write needs no session and no activity-bound machinery"). Only `exec` is
    * implemented, because only `exec` is used — `connect`/`disconnect` are
    * no-ops (the adb queue owns the transport's lifetime, not this object), and
    * `execOut` refuses rather than pretending, so a future engine that reaches
@@ -2390,7 +2469,7 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
     // has marked offline without `handleDeviceOffline` having cleared the entry, which is exactly
     // what a reconciler-driven transition looks like — took the early return and reported a clean
     // off for a phone that is not there. That is "an off that did not happen, recorded as done",
-    // and it is now reachable by an operator on purpose, because `requireDisarmAdmission` lets the
+    // and it is now reachable by an operator on purpose, because `requireNetworkDisarmAdmission` lets the
     // disarm doors through for an offline device. The wording matches each engine's own teardown:
     // the advisory rungs clear a setting, the VPN is told to stop.
     if (row.status === 'offline') {
@@ -2861,7 +2940,7 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
    * (`packages/core/src/capability/device-network.ts`), which is how a plugin
    * reaches a device's route: through the capability broker, under the
    * `plugin:<name>` principal, checked against the plugin's own manifest before
-   * `invoke()` is ever entered. Both callers therefore take the SAME lease
+   * `invoke()` is ever entered. Both callers therefore take the SAME activity
    * admission check, the SAME `E_HTTP_PROXY_NO_AUTH` refusal, the SAME
    * `network-route` lock, and write the SAME `network.applied` device event
    * with an actor on it.
@@ -2876,32 +2955,42 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
    * the session — `stampSetBy` is what decides whether it names a person or a
    * plugin, and it is the only place that decides.
    *
-   * `opts.admission` (plan 114 §3.9, step 114.8) is the ONE thing a caller may
-   * vary, and it does not widen what this function does — it names which
-   * admission check has already been taken:
+   * `opts.admission` (plan 114 §3.9, step 114.8; reworked by plan 205 §4.8) is
+   * the ONE thing a caller may vary, and it does not widen what this function
+   * does — it names which admission check has already been taken:
    *
-   * - `'lease'` (the default, and what every existing caller gets by omitting
-   *   it) takes `requireHeldLease` right here, unchanged.
-   * - `'bulk'` means the caller has already taken a **strictly stronger** check
-   *   of its own: `applyRouteInBulk` below reads the device's real holder, skips
-   *   any device somebody else is driving instead of taking it over (§9 Q2), and
-   *   holds a transient manual lease of its own for the length of the call on
-   *   every device that can take one. It exists because `requireHeldLease`
-   *   refuses an OFFLINE device outright, and §3.9 requires a bulk apply to
-   *   *save* an offline device's route so it lands when the phone comes back —
-   *   which is this function's own persist-before-apply order (see below), not a
-   *   second write path. Everything else the door does — the union parse, the
-   *   credential refusal, `assertLockFree`, the capture, the attributed device
-   *   event — is unchanged and unskippable in both modes.
+   * - `'checked'` (the default, and what every existing caller gets by
+   *   omitting it) takes `withNetworkAdmission` right here, unchanged —
+   *   `requireNetworkAdmission` plus its `network-apply:<uuid>` marker for the
+   *   length of the write.
+   * - `'precleared'` means the CALLER has already decided admission itself,
+   *   for one of two reasons `applyRouteInBulk` below covers: its
+   *   offline/quarantined branch persists a route for a phone that cannot be
+   *   reached right now (§3.9 requires a bulk apply to *save* it so it lands
+   *   when the phone comes back) — a normal admission check would refuse
+   *   that device outright, so there is nothing to check; its ONLINE branch
+   *   runs `evaluate('network-apply', ...)` itself and starts/ends its OWN
+   *   marker around this call, so a second identical check and a second
+   *   marker here would just be redundant bookkeeping. Everything else the
+   *   door does — the union parse, the credential refusal, `assertLockFree`,
+   *   the capture, the attributed device event — is unchanged and
+   *   unskippable in both modes.
    */
   async function setRouteFromRequest(
     deviceId: string,
     raw: unknown,
     actor: string | null,
-    opts?: { admission?: 'lease' | 'bulk' },
+    opts?: { admission?: 'checked' | 'precleared' },
   ): Promise<NetworkStatusResult> {
     const row = mustGet(deviceId)
-    if ((opts?.admission ?? 'lease') === 'lease') requireHeldLease(deps.leases, row.id)
+    if ((opts?.admission ?? 'checked') === 'checked') {
+      return withNetworkAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, () => applyRouteBody(row, raw, actor))
+    }
+    return applyRouteBody(row, raw, actor)
+  }
+
+  /** The actual write `setRouteFromRequest` performs, once admission (or the `'precleared'` skip) has already been decided. */
+  async function applyRouteBody(row: DeviceRow, raw: unknown, actor: string | null): Promise<NetworkStatusResult> {
     /**
      * `tagUntaggedRouteConfig` in front of the bare union, and the reason is a real constraint
      * rather than caution: a Zod discriminated union builds a map from the discriminator VALUE to
@@ -2980,372 +3069,115 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
    */
   async function clearRouteFromRequest(deviceId: string, actor: string | null): Promise<NetworkStatusResult> {
     const row = mustGet(deviceId)
-    // The disarm direction, same as `/network/disable` — `requireDisarmAdmission` carries the whole
-    // argument.
+    // The disarm direction, same as `/network/disable` — `requireNetworkDisarmAdmission` carries
+    // the whole argument.
     //
     // The plugin path into this function (`device.network.clear`) now follows the SAME rule:
-    // `createDeviceNetworkService`'s `withDevice` takes its own `admitMember` hold first and lets
-    // exactly `device_unavailable` through for the clear direction, refusing `device_busy` and
-    // `not_lease_holder` unchanged. (This comment previously said the plugin path was not widened;
-    // that was true when written. Reset data is what changed it — a plugin's stored data can be the
-    // only record of which phones carry its routes, and the phones that most need un-routing are
-    // exactly the ones that are away. See `capability/device-network.ts`'s `withDevice`.)
-    requireDisarmAdmission(deps.leases, row.id)
-    await revertNetwork(row.id, actor, { forget: true })
-    // **The row only goes when the phone was actually told.** Erasing it on a teardown that never
-    // reached the device throws away the capture the revert still owes it and the device port the
-    // reverse still has to be removed from — and leaves a phone carrying a proxy that nothing on
-    // disk remembers writing. `revertNetwork` records that debt as `pendingClear`; admission
-    // settles it and erases the row then, because `forget` travelled with it.
-    const after = readPersistedRoute(mustGet(row.id))
-    if (after?.pendingClear) writePersistedRoute(row.id, { ...after, enabled: false })
-    else writePersistedRoute(row.id, null)
-    maybeStopHeartbeat()
-    return currentNetworkStatus(mustGet(row.id))
-  }
-
-  // ---- bulk (plan 114 §3.9, step 114.8) ----
-
-  /**
-   * The transient lease holder a bulk apply acquires under. A constant, not a
-   * per-request id, so a lease this path somehow failed to release is
-   * recognisable in `getHolder()`'s output rather than looking like an
-   * anonymous client.
-   */
-  const BULK_LEASE_CLIENT = 'bulk:network-apply'
-
-  /**
-   * §3.9's classification, on the way OUT of a thrown error.
-   *
-   * Only lease-admission and reachability codes become skips. Everything else
-   * keeps its own code and becomes a failure, which is what keeps
-   * `E_SETTING_NOT_ACCEPTED` (the phone declined the write) apart from
-   * `E_REVERSE_FAILED` (the tunnel never came up) apart from `E_ROUTE_LOCK_HELD`
-   * (an incumbent route could not be turned off first). Three different problems
-   * with three different next actions; flattening them into "3 failed" is the
-   * exact thing this step exists to not do.
-   */
-  const BULK_SKIP_FOR_CODE: Record<string, string> = {
-    // `checkInputAllowed`'s offline/quarantined answer, and `acquireManual`'s.
-    device_unavailable: 'E_DEVICE_OFFLINE',
-    // Someone else is driving the phone. Bulk names them and moves on; it never
-    // takes a device over from a live session (plan 114 §9 Q2 — a route change
-    // on a phone somebody is actively driving is exactly the change they will
-    // not notice).
-    device_held_by_other: 'E_DEVICE_HELD',
-    lease_holder_changed: 'E_DEVICE_HELD',
-    not_lease_holder: 'E_DEVICE_HELD',
-    // A job holds the device. Still "someone else holds control" from the
-    // operator's side, and the message that travels with it says which.
-    device_busy_job: 'E_DEVICE_HELD',
-    device_busy: 'E_DEVICE_HELD',
+    // `capability/device-network.ts`'s `withDevice` takes its own `network-apply` admission check
+    // and, unlike this HTTP route, has no separate disarm widening of its own — a `forbid`
+    // decision (a live job/workflow-job/install) still refuses it unchanged. (This comment
+    // previously said the plugin path was not widened; that was true when written. Reset data is
+    // what changed it — a plugin's stored data can be the only record of which phones carry its
+    // routes, and the phones that most need un-routing are exactly the ones that are away.)
+    return withNetworkDisarmAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, async () => {
+      await revertNetwork(row.id, actor, { forget: true })
+      // **The row only goes when the phone was actually told.** Erasing it on a teardown that never
+      // reached the device throws away the capture the revert still owes it and the device port the
+      // reverse still has to be removed from — and leaves a phone carrying a proxy that nothing on
+      // disk remembers writing. `revertNetwork` records that debt as `pendingClear`; admission
+      // settles it and erases the row then, because `forget` travelled with it.
+      const after = readPersistedRoute(mustGet(row.id))
+      if (after?.pendingClear) writePersistedRoute(row.id, { ...after, enabled: false })
+      else writePersistedRoute(row.id, null)
+      maybeStopHeartbeat()
+      return currentNetworkStatus(mustGet(row.id))
+    })
   }
 
   /**
-   * VPN mode's per-device precondition, server side (plan 114 §3.4, §3.9).
-   *
-   * **This is where "never silently downgrade" is enforced in bulk.** Step
-   * 114.7 built the single-device version of the rule; a bulk path that quietly
-   * gave an agent-less phone an HTTP proxy instead would undo it forty times at
-   * once, invisibly — the report would read "40 applied" and twenty of those
-   * phones would be running a proxy an app can ignore while the operator
-   * believed they were tunnelled.
-   *
-   * Reads `devices.preparation['guest-agent']`, which is authoritative since
-   * plan 106 step 106.5 — the same record `VpnAgentPrecondition` reads in
-   * Studio, not the parallel `GET /:id/guest-agent` vocabulary.
-   *
-   * `unsupported` is `E_UNSUPPORTED`, not `E_AGENT_NOT_READY`: plan 106's own
-   * distinction is that an old phone is not a broken one, and a report that
-   * files it under "not ready yet" invites an operator to keep retrying
-   * something that can never work.
+   * `POST /:id/network/enable`, as a function (plan 207 §5 step 207.4) —
+   * extracted so the actions API's `set-network` verb (`op: 'enable'`) and
+   * the HTTP route below call the exact same body.
    */
-  function vpnPrecondition(row: DeviceRow): { code: string; message: string } | null {
-    const prep = deriveGuestAgentPreparation(row, deps.log)
-    switch (prep.state) {
-      case 'ready':
-        return null
-      case 'unsupported':
-        return {
-          code: 'E_UNSUPPORTED',
-          message: `this phone cannot run the Enkaku guest agent${prep.reason ? `: ${prep.reason}` : ''}`,
-        }
-      case 'absent':
-        return { code: 'E_AGENT_NOT_READY', message: 'the Enkaku guest agent is not installed on this phone, and VPN mode needs it' }
-      case 'provisioning':
-        return { code: 'E_AGENT_NOT_READY', message: 'the guest agent is still installing on this phone' }
-      case 'outdated':
-        return { code: 'E_AGENT_NOT_READY', message: 'the installed guest agent is older than this farm’s and has to be updated first' }
-      case 'consent-required':
-        // The one state where the agent itself is fine and only THIS layer is
-        // blocked — so it refuses by name rather than borrowing `failed`'s
-        // wording, and carries the provisioner's verbatim reason, which names
-        // the dialog a human has to accept on the phone.
-        return {
-          code: 'E_AGENT_NOT_READY',
-          message: `this phone has not granted Android VPN consent to the guest agent, so a VPN route cannot be applied${prep.reason ? `: ${prep.reason}` : ''}`,
-        }
-      case 'failed':
-        // Verbatim, so twenty phones that failed for the same reason collapse
-        // into one row and a twenty-first that failed differently stays visible.
-        return { code: 'E_AGENT_NOT_READY', message: `the guest agent could not be prepared on this phone${prep.reason ? `: ${prep.reason}` : ''}` }
-    }
-  }
-
-  /**
-   * One device's worth of a bulk apply. Returns a row of §3.9's envelope; it
-   * throws nothing, because a bulk report's job is to say what happened to every
-   * device rather than to stop at the first one that did not work.
-   *
-   * The order below is the classification, and each step exists because the case
-   * it catches actually happens across forty phones:
-   *
-   * 1. the device id does not resolve — a **failure**, not a skip: nothing about
-   *    the phone is wrong, the request named something that is not there.
-   * 2. VPN asked for on a phone whose agent is not ready — **skipped**, named,
-   *    never downgraded.
-   * 3. the phone is offline — **skipped**, but the route is *saved* first, so it
-   *    lands when the phone comes back (`restoreAdvisoryRoute`/`restoreDeviceRoute`
-   *    is the mechanism, unchanged). It goes through the same door, which is why
-   *    an offline phone holding a DIFFERENT engine's route still gets refused by
-   *    `assertLockFree` rather than silently overwritten.
-   * 4. somebody else is driving it — **skipped**, naming them.
-   * 5. otherwise, a transient lease, the door, and the lease released again.
-   */
-  async function applyRouteInBulk(
-    deviceId: string,
-    raw: unknown,
-    engine: NetworkEngineId,
-    actor: string | null,
-  ): Promise<BulkApplyResult> {
-    const skipped = (code: string, message: string): BulkApplyResult => ({ deviceId, status: null, skip: { code, message }, error: null })
-    const failed = (err: unknown): BulkApplyResult => {
-      const coded = toCodedError(err, 'E_NETWORK_APPLY_FAILED')
-      const skipCode = BULK_SKIP_FOR_CODE[coded.code]
-      if (skipCode) return skipped(skipCode, coded.message)
-      return { deviceId, status: null, skip: null, error: coded }
-    }
-
-    let row: DeviceRow
-    try {
-      row = mustGet(deviceId)
-    } catch (err) {
-      return failed(err)
-    }
-
-    if (engine === 'vpn-helper') {
-      const blocked = vpnPrecondition(row)
-      if (blocked) return skipped(blocked.code, blocked.message)
-    }
-
-    // `row.status` is the same signal `restoreDeviceRoute` trusts for "leave it
-    // alone, it is not there". A device that comes back between this read and
-    // the apply below simply applies successfully, which is the harmless
-    // direction for this race to go.
-    if (row.status === 'offline' || row.status === 'quarantined') {
-      try {
-        const status = await setRouteFromRequest(deviceId, raw, actor, { admission: 'bulk' })
-        return { deviceId, status, skip: null, error: null }
-      } catch (err) {
-        // Did the door get as far as persisting the intent? `setRouteFromRequest`
-        // writes the route BEFORE attempting the apply precisely so a config
-        // survives a failed attempt, so this is a fact on disk rather than a
-        // guess about which line threw.
-        const after = readPersistedRoute(mustGet(deviceId))
-        if (after?.enabled && after.config.engine === engine) {
-          return skipped(
-            'E_DEVICE_OFFLINE',
-            'the phone is not reachable — the route was saved and the farm applies it when the phone comes back',
-          )
-        }
-        // Nothing was persisted, so the phone being offline is NOT what stopped
-        // this — `assertLockFree` refused the switch (`E_ROUTE_LOCK_HELD`), or a
-        // named credential was missing, or the device row vanished. Reporting
-        // any of those as "offline" would send an operator to look at a phone
-        // when the problem is on this side, so each keeps its own code.
-        return failed(err)
+  async function enableRoute(deviceId: string, actor: string | null): Promise<NetworkStatusResult> {
+    const row = mustGet(deviceId)
+    return withNetworkAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, async () => {
+      const persisted = readPersistedRoute(row)
+      if (!persisted) {
+        throw new EnkakuError('E_NO_ROUTE_CONFIG', 'no route config is stored for this device — PUT one first')
       }
-    }
+      const { pendingClear: _superseded, ...carried } = persisted
+      writePersistedRoute(row.id, {
+        ...carried,
+        enabled: true,
+        failClosed: resolveFailClosed(persisted),
+        ...stampSetBy(actor),
+      })
+      if (persisted.config.engine === 'vpn-helper') ensureHeartbeat()
+      await applyRoute(row, persisted.config, actor)
+      return currentNetworkStatus(mustGet(row.id))
+    })
+  }
 
-    const holder = deps.leases.getHolder(row.id)
-    if (holder) {
-      // The operator's own hold is not somebody else's. `holderUserId` is only
-      // comparable when this request is authenticated at all — in a local farm
-      // with no login there is no id to match, so the honest answer is that we
-      // cannot tell whose session it is, and the message says exactly that
-      // rather than claiming the device is held by a stranger.
-      const mine = actor !== null && holder.kind === 'user' && holder.id === actor
-      if (!mine) {
-        return skipped(
-          'E_DEVICE_HELD',
-          `${holder.label} is using this device — a bulk apply never takes a device over from a live session, so nothing was changed`,
+  /**
+   * `POST /:id/network/disable`, as a function (plan 207 §5 step 207.4) —
+   * the disarm direction, same as `clearRouteFromRequest` above: accepts an
+   * offline/quarantined device.
+   */
+  async function disableRoute(deviceId: string, actor: string | null): Promise<NetworkStatusResult> {
+    const row = mustGet(deviceId)
+    return withNetworkDisarmAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, async () => {
+      const persisted = readPersistedRoute(row)
+      if (persisted) {
+        await revertNetwork(row.id, actor)
+        const after = readPersistedRoute(mustGet(row.id)) ?? persisted
+        writePersistedRoute(row.id, { ...after, enabled: false, ...stampSetBy(actor) })
+        maybeStopHeartbeat()
+      }
+      return currentNetworkStatus(mustGet(row.id))
+    })
+  }
+
+  /**
+   * `POST /:id/network/retry`, as a function (plan 207 §5 step 207.4) —
+   * clears the recovery bound unconditionally and applies once, immediately
+   * (plan 90 §3.7 rule 4). Refused on the advisory rungs.
+   */
+  async function retryRoute(deviceId: string, actor: string | null): Promise<NetworkStatusResult> {
+    const row = mustGet(deviceId)
+    return withNetworkAdmission(deps.activities, deps.controlSettings, deps.states, row.id, actor, async () => {
+      const persisted = readPersistedRoute(row)
+      if (!persisted?.enabled) {
+        throw new EnkakuError('E_NO_ROUTE_CONFIG', 'no enabled route for this device — enable one first')
+      }
+      if (persisted.config.engine !== 'vpn-helper') {
+        throw new EnkakuError(
+          'E_NOT_SUPPORTED',
+          'this proxy mode has no automatic recovery to retry — the setting either reads back or it does not. Save the route again to re-apply it.',
         )
       }
-      try {
-        const status = await setRouteFromRequest(deviceId, raw, actor)
-        return { deviceId, status, skip: null, error: null }
-      } catch (err) {
-        return failed(err)
-      }
-    }
-
-    try {
-      deps.leases.acquireManual(row.id, BULK_LEASE_CLIENT, actor)
-    } catch (err) {
-      return failed(err)
-    }
-    try {
-      const status = await setRouteFromRequest(deviceId, raw, actor, { admission: 'bulk' })
-      return { deviceId, status, skip: null, error: null }
-    } catch (err) {
-      return failed(err)
-    } finally {
-      // No reason passed: a transient hold ending is not a revocation anybody
-      // needs to be told about, and `onManualRevoked` is how operators get told.
-      deps.leases.releaseManual(row.id, BULK_LEASE_CLIENT)
-    }
+      resetRecovery(row.id)
+      ensureHeartbeat()
+      await applyRoute(row, persisted.config, actor)
+      return currentNetworkStatus(mustGet(row.id))
+    })
   }
 
-  /**
-   * `POST /api/devices/network/apply` (plan 114 §3.9, §4.5) — one route across a
-   * selection, synchronously, in `POST /labels/apply`'s envelope (F19).
-   *
-   * A static route, registered before every `/:id/...` route below for the same
-   * shadowing reason `/network/credentials` above is — and, like it, it cannot
-   * actually collide, because no device-scoped route here has a literal second
-   * segment of `apply`.
-   *
-   * **Not a batch and not a tray operation** (F20, §2). A settings write is
-   * sub-second; minting a job row and a tray entry for something that finishes
-   * before the dialog repaints is how a tray becomes noise. §3.9 names the
-   * escape hatch if measurement ever contradicts that: mint a batch and inherit
-   * cancel, concurrency and the tray for free.
-   *
-   * Serial, not concurrent. Forty parallel `settings put`s would contend on the
-   * one adb server this farm shares with everything else on the machine, and the
-   * per-device work here is a shell round trip, not a wait.
-   */
-  app.post('/network/apply', requirePermission('device.network'), async (c) => {
-    const body = DeviceNetworkApplyBodySchema.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) {
-      throw new EnkakuError('E_BAD_REQUEST', `a body of { deviceIds: string[], route: {...} } is required — ${body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`)
-    }
-    // Validated ONCE for the whole request, against the RAW route object: a
-    // malformed route, or one carrying a credential, is a defect in the request
-    // and not forty identical per-device outcomes. The door re-parses and
-    // re-refuses the same body per device — deliberately, because the door is
-    // what every other caller goes through and it does not get to trust this one.
-    const raw = body.data.route
-    const parsed = NetworkRouteConfigSchema.safeParse(tagUntaggedRouteConfig(raw))
-    if (!parsed.success) {
-      throw new EnkakuError('E_BAD_REQUEST', parsed.error.issues.map((i) => `route.${i.path.join('.')}: ${i.message}`).join('; '))
-    }
-    assertNoHttpProxyAuth(raw, parsed.data.engine)
-
-    const actor = c.get('user')?.id ?? null
-    // Deduped: a selection that names the same device twice is an operator
-    // mistake, not an instruction to apply twice, and a duplicate row in the
-    // report would inflate every count under it.
-    const deviceIds = [...new Set(body.data.deviceIds)]
-    const results: BulkApplyResult[] = []
-    for (const deviceId of deviceIds) {
-      results.push(await applyRouteInBulk(deviceId, raw, parsed.data.engine, actor))
-    }
-    return c.json({ total: results.length, results })
-  })
-
   // ---- endpoints ----
+  //
+  // Reads stay per device (plan 207 §1.4/§4.9's "reads stay per device" rule,
+  // same precedent as `api/device-preparation.ts`'s surviving GET) — only
+  // `GET /:id/network` remains here. `PUT/POST/DELETE /:id/network*` (plan
+  // 207 §10's removal register) are gone: `setRouteFromRequest`/
+  // `enableRoute`/`disableRoute`/`retryRoute`/`clearRouteFromRequest` are
+  // kept as plain functions — `service.actions` below still calls them — but
+  // the ONLY door to them now is the `set-network` verb
+  // (`POST /api/actions/set-network`, `actions/impl/network.ts`'s
+  // `applyNetworkAction`), not a per-device HTTP route.
 
   app.get('/:id/network', async (c) => {
     const row = mustGet(c.req.param('id'))
     return c.json(await currentNetworkStatus(row))
-  })
-
-  app.put('/:id/network', requirePermission('device.network'), async (c) => {
-    const raw: unknown = await c.req.json().catch(() => null)
-    return c.json(await setRouteFromRequest(c.req.param('id'), raw, c.get('user')?.id ?? null))
-  })
-
-  app.post('/:id/network/enable', requirePermission('device.network'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    requireHeldLease(deps.leases, row.id)
-    const persisted = readPersistedRoute(row)
-    if (!persisted) {
-      // Hard server-side refusal (plan 44 step 5.4) — the default config is null, and with
-      // nothing stored there is nothing to enable.
-      throw new EnkakuError('E_NO_ROUTE_CONFIG', 'no route config is stored for this device — PUT one first')
-    }
-    const actor = c.get('user')?.id ?? null
-    // The SAME already-declared config/session is turning back on — every field but `enabled`
-    // carries over unchanged (plan 52 §4.3). `pendingClear` is the one exception: an owed
-    // teardown describes the route being turned back on right now, and the apply below either
-    // lands (nothing is owed) or fails with its own error. Carrying it would leave admission
-    // trying to take back a route the operator has just asked for.
-    const { pendingClear: _superseded, ...carried } = persisted
-    writePersistedRoute(row.id, {
-      ...carried,
-      enabled: true,
-      failClosed: resolveFailClosed(persisted),
-      ...stampSetBy(actor),
-    })
-    if (persisted.config.engine === 'vpn-helper') ensureHeartbeat()
-    await applyRoute(row, persisted.config, actor)
-    return c.json(await currentNetworkStatus(mustGet(row.id)))
-  })
-
-  app.post('/:id/network/disable', requirePermission('device.network'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    // The disarm direction — see `requireDisarmAdmission` for why this one endpoint and `DELETE`
-    // accept a device no lease can be taken on, and why `/enable`, `PUT` and `/retry` do not.
-    requireDisarmAdmission(deps.leases, row.id)
-    const persisted = readPersistedRoute(row)
-    const actor = c.get('user')?.id ?? null
-    if (persisted) {
-      await revertNetwork(row.id, actor)
-      // Tears the route down but KEEPS the config, the session id and the capture, so it can be
-      // switched back on without retyping the upstream (plan 52 §4.1, §4.3) — and, for an
-      // advisory route, without losing the device's own original proxy settings.
-      //
-      // Re-read rather than reusing `persisted`: the revert above may have just recorded a
-      // `pendingClear` on this row, and spreading the pre-revert copy over it would erase the one
-      // record that says the phone was never told.
-      const after = readPersistedRoute(mustGet(row.id)) ?? persisted
-      writePersistedRoute(row.id, { ...after, enabled: false, ...stampSetBy(actor) })
-      maybeStopHeartbeat()
-    }
-    return c.json(await currentNetworkStatus(mustGet(row.id)))
-  })
-
-  /**
-   * Plan 90 §3.7 rule 4 — the honest version of the disable-then-enable workaround (F17): clears
-   * the recovery bound unconditionally and applies once, immediately.
-   *
-   * Refused on the advisory rungs (plan 114 §4.5). There is no recovery loop to clear there and
-   * nothing a retry would do that a plain re-apply does not, so answering "retried" would be a
-   * word with no mechanism behind it.
-   */
-  app.post('/:id/network/retry', requirePermission('device.network'), async (c) => {
-    const row = mustGet(c.req.param('id'))
-    requireHeldLease(deps.leases, row.id)
-    const persisted = readPersistedRoute(row)
-    if (!persisted?.enabled) {
-      throw new EnkakuError('E_NO_ROUTE_CONFIG', 'no enabled route for this device — enable one first')
-    }
-    if (persisted.config.engine !== 'vpn-helper') {
-      throw new EnkakuError(
-        'E_NOT_SUPPORTED',
-        'this proxy mode has no automatic recovery to retry — the setting either reads back or it does not. Save the route again to re-apply it.',
-      )
-    }
-    const actor = c.get('user')?.id ?? null
-    resetRecovery(row.id)
-    ensureHeartbeat()
-    await applyRoute(row, persisted.config, actor)
-    return c.json(await currentNetworkStatus(mustGet(row.id)))
-  })
-
-  app.delete('/:id/network', requirePermission('device.network'), async (c) => {
-    return c.json(await clearRouteFromRequest(c.req.param('id'), c.get('user')?.id ?? null))
   })
 
   /**
@@ -3395,9 +3227,9 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
    *   trace is the half of the log that matters most. Every request through
    *   here writes exactly one row.
    *
-   * **No lease is required, deliberately.** Every other mutating route in this
-   * file takes `requireHeldLease`, because it touches the phone. This one never
-   * goes near the phone — it reads a row and decrypts it. Demanding a lease
+   * **No control marker is required, deliberately.** Every other mutating route in this
+   * file takes `requireNetworkAdmission`, because it touches the phone. This one never
+   * goes near the phone — it reads a row and decrypts it. Demanding one
    * would mean an admin could not read a credential to hand to a colleague
    * while a job was running on that device, which is one of the situations the
    * feature exists for.
@@ -3536,6 +3368,13 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
       get: async (deviceId) => currentNetworkStatus(mustGet(deviceId)),
       set: setRouteFromRequest,
       clear: clearRouteFromRequest,
+    },
+    actions: {
+      set: setRouteFromRequest,
+      clear: clearRouteFromRequest,
+      enable: enableRoute,
+      disable: disableRoute,
+      retry: retryRoute,
     },
   }
 }

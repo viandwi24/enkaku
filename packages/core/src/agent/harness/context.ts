@@ -1,6 +1,7 @@
 import type { Agent } from '@enkaku/protocol'
 import { createCapabilityContext, fileToolsSessionFor, type AgentTreeOps, type CapabilityContext, type CapabilityContextDeps } from '../../capability/context'
 import type { Role } from '../../auth/service'
+import { evaluate } from '../../activity/policy'
 import { agentCanReachDevice, effectivePermissions } from '../agent-store'
 import { effectiveAuthorityForRun, type AuthorityLookupDeps } from '../tree/authority'
 
@@ -21,23 +22,24 @@ import { effectiveAuthorityForRun, type AuthorityLookupDeps } from '../tree/auth
  */
 export interface TreeRunContext {
   runId: string
-  /** The tree's shared lease-holder identity (plan 67 §3.7) — `agent-run:<rootRunId>`, i.e. what
-   * `harness/run.ts`'s `ensureControlLease` actually calls `leases.acquireManual` with. Needed so
-   * `controlLeaseBlockedBy` can recognise "already held by MY tree" without the base check's
-   * per-AGENT `holderUserId === actor.id` comparison, which does not hold between two DIFFERENT
-   * agents sharing one tree (a parent and a spawned child are never the same agent). */
-  leaseClientId: string
+  /** The tree's shared activity marker id (plan 205 §4.4, §5 step 205.8) — `agent:<rootRunId>`, the
+   * SAME id `harness/run.ts`'s `admitAgentActivity` starts and refreshes directly on the registry.
+   * Needed so `evaluateActivity` excludes the tree's own marker from its own conflict check —
+   * without this, a run's SECOND capability call on a device it is already working on would see its
+   * own tree's `agent` marker and refuse or warn against itself. */
+  agentActivityId: string
   lookup: AuthorityLookupDeps
   /** Plan 67 §4.2 — `agent.spawn`'s `deviceIds`, when given: narrows THIS run below the authority
    * intersection, never widens it. Null/absent/empty means no extra narrowing. Snapshotted once per
    * launch (unlike the rest of this context) because it is set only at spawn and never changes. */
   deviceIdsOverride?: string[] | null
-  /** Plan 67 §3.7 — at most one run in the tree may hold control of a device at a time, EXCEPT an
-   * ancestor/descendant pair (a child may use a device its parent already holds). Already bound to
+  /** Plan 67 §3.7 — at most one run in the tree may DRIVE a device at a time, EXCEPT an
+   * ancestor/descendant pair (a child may use a device its parent already drives). Already bound to
    * this run's own id by whoever builds it (`agent/runner.ts`). `claim` returns null (granted) or a
-   * human-readable label naming whichever unrelated run already holds it; `release` decides whether
-   * the underlying real lease can actually be freed yet (another related run may still be using it)
-   * and is called from `harness/run.ts`'s `releaseAcquiredLeases` on every terminal path. */
+   * human-readable label naming whichever unrelated run already drives it; `release` decides whether
+   * the shared `agent:<rootRunId>` activity can actually be ended yet (another related run may still
+   * be using it) and is called from `harness/run.ts` on every terminal path. Consumed entirely by
+   * `harness/run.ts` now — this context no longer calls either method itself. */
   deviceLock?: {
     claim(deviceId: string): string | null
     release(deviceId: string): void
@@ -65,10 +67,13 @@ export interface TreeRunContext {
  */
 export function createAgentCapabilityContext(deps: CapabilityContextDeps, agent: Agent, ownerRole: Role | null, tree?: TreeRunContext): CapabilityContext {
   const actor = { id: agent.id, role: ownerRole ?? ('operator' as Role) }
-  // Built with the agent's OWN actor id so `controlLeaseBlockedBy`'s
-  // `lease.holderUserId === actor.id` check (capability/context.ts) compares
-  // against the agent, exactly as it would for a human caller.
   const base = createCapabilityContext(deps, actor)
+
+  // An agent's own presence on a device is entirely the shared `agent:<rootRunId>` marker
+  // `harness/run.ts`'s `admitAgentActivity` starts and refreshes directly on the registry — a
+  // per-capability `control` touch here would create a SECOND, redundant marker under this actor's
+  // own id, plan 205 §4.4. Both branches below share this override.
+  const touchActivity: CapabilityContext['touchActivity'] = () => {}
 
   if (!tree) {
     const perms = new Set(effectivePermissions(agent, ownerRole))
@@ -78,10 +83,11 @@ export function createAgentCapabilityContext(deps: CapabilityContextDeps, agent:
       hasPermission: (permission) => perms.has(permission),
       canReachDevice: (deviceId) => agentCanReachDevice(agent, deviceId),
       workspaceScope: () => agent.workspaceScope,
+      touchActivity,
     }
   }
 
-  const { runId, leaseClientId, lookup, deviceLock, treeOps, deviceIdsOverride } = tree
+  const { runId, agentActivityId, lookup, treeOps, deviceIdsOverride } = tree
   return {
     ...base,
     actor,
@@ -99,20 +105,13 @@ export function createAgentCapabilityContext(deps: CapabilityContextDeps, agent:
       return grants.length === 0 || grants.includes(deviceId)
     },
     workspaceScope: () => effectiveAuthorityForRun(lookup, runId).workspaceScope,
-    // Deliberately NOT delegating to `base.controlLeaseBlockedBy` here (plan 67 §3.7): that check
-    // recognises "already mine" via `holderUserId === actor.id`, a per-AGENT identity — but the
-    // tree is one SHARED lease holder across many different agents (a parent and its spawned
-    // children are never the same agent), so that comparison would wrongly treat every ancestor/
-    // descendant pair as "blocked by someone else". This reimplements the same OUTSIDE-the-tree
-    // behaviour (name whoever holds it) using the tree's actual identity, `leaseClientId`, and
-    // defers the INSIDE-the-tree decision entirely to `deviceLock` (ancestor/descendant allowed,
-    // unrelated siblings refused by name).
-    controlLeaseBlockedBy: (deviceId) => {
-      const lease = deps.leases.getLease(deviceId)
-      if (!lease || lease.type !== 'manual') return 'nobody — no manual lease is held; acquire it first'
-      if (lease.holder !== leaseClientId) return lease.holderUserId ?? lease.holder
-      if (!deviceLock) return null
-      return deviceLock.claim(deviceId)
-    },
+    // Deliberately NOT delegating straight to `base.evaluateActivity` (plan 67 §3.7, plan 205 §5 step
+    // 205.8): the base implementation only excludes THIS actor's own `control:user:<agentId>` marker,
+    // which an agent never creates (see `touchActivity` above) — without also excluding the tree's
+    // own `agent:<rootRunId>` marker, a run's SECOND capability call on a device it is already
+    // working on would see its own tree's marker and warn or refuse against itself.
+    evaluateActivity: (deviceId, kind, exclusiveWith) =>
+      evaluate(kind, deps.activities.list(deviceId), deps.controlSettings(), { selfIds: [agentActivityId], ...(exclusiveWith ? { exclusiveWith } : {}) }),
+    touchActivity,
   }
 }

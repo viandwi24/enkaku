@@ -21,7 +21,7 @@ import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createKvStore, type KvQuotas, type KvStore } from '../kv/store'
 import { createKvRunnerPort } from '../kv/runner-port'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
 import { createFarmBroker } from './farm-broker'
 import { createPluginContext } from './plugin-context'
@@ -67,8 +67,8 @@ function setUp(opts?: { coreDeviceId?: string; farm?: (id: string, input: unknow
   tmpDirs.push(dataDir)
   const db = opened.db
   const store = createKvStore(db, dataDir, () => QUOTAS)
-  db.insert(devices).values({ id: 'dev-1', stableId: 'stable-1', serial: 'ser-1', label: 'Pixel', status: 'idle' }).run()
-  db.insert(devices).values({ id: 'dev-2', stableId: 'stable-2', serial: 'ser-2', label: 'Moto', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'dev-1', stableId: 'stable-1', serial: 'ser-1', label: 'Pixel', status: 'online' }).run()
+  db.insert(devices).values({ id: 'dev-2', stableId: 'stable-2', serial: 'ser-2', label: 'Moto', status: 'online' }).run()
 
   const logs: Harness['logs'] = []
   const farmCalls: string[] = []
@@ -278,13 +278,8 @@ describe('criterion 11 — no Db, KvStore, or capability registry is reachable f
     const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
     const contextDeps: CapabilityContextDeps = {
       db,
-      leases: createLeaseManager({
-        states,
-        jobStore: { expiredRunning: () => [] } as never,
-        config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-        log: createLogger('test'),
-        onJobLeaseExpired: () => {},
-      }),
+      activities: createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} }),
+      controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
       states,
       sessions: () => null,
       readiness: () => null,

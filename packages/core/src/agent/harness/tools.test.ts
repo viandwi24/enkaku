@@ -16,7 +16,6 @@ function cap(id: string, overrides: Partial<AnyCoreCapability> = {}): AnyCoreCap
     input: z.object({}),
     output: z.object({}),
     permission: 'device.control' as never,
-    lease: 'none',
     deadline: 5000,
     effect: 'read',
     description: `describes ${id}`,

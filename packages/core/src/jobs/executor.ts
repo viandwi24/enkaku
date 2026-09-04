@@ -1,11 +1,15 @@
 import type { ResultOutcome } from '@enkaku/protocol'
-import type { JobRow, ScriptKind } from '../db/schema'
+import type { JobRow, JobRunRow } from '../db/schema'
 import type { Logger } from '../util/logger'
 
 export interface ExecutorContext {
+  /** The RUN this execution is (plan 211) — everything an executor stores or reports keys on this, not on the job. */
+  runId: string
+  /** The full run row — its `runtimeOverride`, `trigger`, `resumedFromRunId`/`resumedFromStep` live here, not on the job (plan 211 §4.1.1). */
+  run: JobRunRow
   /** Aborted on cancel or force-release. */
   signal: AbortSignal
-  /** Extend the job lease (called by the host on every heartbeat). */
+  /** Extend the run's heartbeat (called by the host on every tick). */
   heartbeat(): void
   log: Logger
   /**
@@ -26,15 +30,6 @@ export interface ExecutorContext {
    * executors have no subprocess to measure.
    */
   onPeakRss?: (bytes: number) => void
-  /**
-   * Registers a callback for a co-control assist action (plan 91 §3.6, §4.8)
-   * — the second unsolicited "the core tells a running job something
-   * happened" mechanism, after `onCrash` above. NOT an abort: the job keeps
-   * running exactly as before. Optional, the same reasoning `onCrash`/
-   * `onPeakRss` already give: only the script executor wires this today (the
-   * sleep and remote-bridge executors have no child process to notify).
-   */
-  onAssist?: (cb: (e: { at: number; actor: string | null }) => void) => void
   /**
    * Reports the child's own verdict on `run()`'s return value (plan 97 §3.3,
    * §3.4, §3.8, §4.5) — called at most once, right before `run()` resolves
@@ -63,7 +58,7 @@ export interface JobExecutor {
    * which script's `paramsSchema` applies. Throws `EnkakuError` on an
    * invalid value — `validateScriptForRun` never catches it, so a bad
    * params object fails BEFORE a job row exists and BEFORE any device is
-   * leased, whether the caller is a single job or a batch.
+   * claimed, whether the caller is a single job or a batch.
    */
   validateParams(params: unknown, scriptId: string): unknown
   /** Run to completion; resolve means success, reject means failure. */
@@ -96,32 +91,28 @@ export interface JobExecutor {
  * scriptId lain (row tabel `scripts`) jatuh ke fallback = script executor
  * built on child processes (M4).
  *
- * Plan 99 §3.1, §4.5 — the fallback is now keyed by `ScriptKind`, not
- * singular: a workflow row (`kind: 'workflow'`) must fall through to a
- * DIFFERENT executor than a script row does, once one is registered for it
- * (99.7). `kind` defaults to `'script'` on both `get` and `setFallback`, so
- * every pre-plan-99 call site — `get(scriptId)` and `setFallback(executor)`,
- * both single-argument, both still called that way throughout the tree —
- * keeps exactly its old behaviour: `get(id, 'script')` returns exactly what
- * `get(id)` returned before this step. No caller needs to change here; the
- * concurrent `ExecutorHost` work is what will start passing a real `kind`
- * read from the row (99.7's job, not this one).
+ * Plan 210 §4.8 — one fallback, not one per kind: the old kind-discriminator column is gone, and
+ * `daemon.ts` never passed a per-kind selector to `ExecutorHost` (the
+ * workflow executor registered at its old fallback slot was unreachable in
+ * production), so the dispatch this class used to carry was dead weight.
+ * Plan 211 rewrites the orchestrator against the `workflows` table; nothing
+ * here decides that.
  */
 export class ExecutorRegistry {
   private map = new Map<string, JobExecutor>()
-  private fallbackByKind = new Map<ScriptKind, JobExecutor>()
+  private fallback: JobExecutor | null = null
 
   register(scriptId: string, executor: JobExecutor): void {
     this.map.set(scriptId, executor)
   }
 
-  /** The executor for every scriptId of this KIND that is not built in. */
-  setFallback(executor: JobExecutor, kind: ScriptKind = 'script'): void {
-    this.fallbackByKind.set(kind, executor)
+  /** The executor for every scriptId that is not built in. */
+  setFallback(executor: JobExecutor): void {
+    this.fallback = executor
   }
 
-  get(scriptId: string, kind: ScriptKind = 'script'): JobExecutor | null {
-    return this.map.get(scriptId) ?? this.fallbackByKind.get(kind) ?? null
+  get(scriptId: string): JobExecutor | null {
+    return this.map.get(scriptId) ?? this.fallback
   }
 
   isBuiltIn(scriptId: string): boolean {

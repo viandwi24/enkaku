@@ -6,7 +6,8 @@ import { z } from 'zod'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createLogger } from '../util/logger'
-import { createLeaseManager, type LeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry, type ActivityRegistry } from '../activity/registry'
+import type { ControlPolicySettings } from '../activity/policy'
 import { createDeviceStateMachine } from '../device/state-machine'
 import type { CapabilityContextDeps } from '../capability/context'
 import { buildCapabilityRegistry, type CapabilityRegistry } from '../capability/registry'
@@ -37,7 +38,6 @@ function destructiveCapability(): AnyCoreCapability {
     input: z.object({ path: z.string() }),
     output: z.object({ ok: z.boolean() }),
     permission: 'device.control' as never,
-    lease: 'none',
     deadline: 5000,
     effect: 'destructive',
     description: 'deletes something',
@@ -49,7 +49,7 @@ function destructiveCapability(): AnyCoreCapability {
  * plugin-grouping lookup keys on id alone, so this is enough to exercise the real gating logic
  * without touching a live device. */
 function destructiveCapabilityWithId(id: string): AnyCoreCapability {
-  return { ...destructiveCapability(), id, permission: 'device.control' as never, lease: 'none' }
+  return { ...destructiveCapability(), id, permission: 'device.control' as never }
 }
 
 function echoCapability(): AnyCoreCapability {
@@ -58,7 +58,6 @@ function echoCapability(): AnyCoreCapability {
     input: z.object({ text: z.string() }),
     output: z.object({ echoed: z.string() }),
     permission: 'device.control' as never,
-    lease: 'none',
     deadline: 5000,
     effect: 'read',
     description: 'echoes',
@@ -74,16 +73,11 @@ function setUp(caps: AnyCoreCapability[] = [echoCapability(), destructiveCapabil
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db as Db
-  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone', status: 'idle' }).run()
+  db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'SER1', label: 'Phone', status: 'online' }).run()
 
   const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
-  const leases: LeaseManager = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: createLogger('test'),
-    onJobLeaseExpired: () => {},
-  })
+  const activities: ActivityRegistry = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
+  const controlSettings = (): ControlPolicySettings => ({ overControl: 'allow', idleSec: 30 })
 
   const registry: CapabilityRegistry = buildCapabilityRegistry(caps.map((cap) => ({ cap, file: 'test' })))
   const threads = createThreadStore(db)
@@ -93,7 +87,8 @@ function setUp(caps: AnyCoreCapability[] = [echoCapability(), destructiveCapabil
 
   const capContextDeps: CapabilityContextDeps = {
     db,
-    leases,
+    activities,
+    controlSettings,
     states,
     sessions: () => null,
     readiness: () => null,
@@ -127,10 +122,12 @@ function setUp(caps: AnyCoreCapability[] = [echoCapability(), destructiveCapabil
       connectors,
       registry,
       capContextDeps,
-      leases,
+      activities,
+      controlSettings,
       settings: () =>
         ({
-          agentDefaults: {
+          // Plan 212 §4.7: the agent settings store's key is `defaults`.
+          defaults: {
             connectorId: connector.id,
             model: 'fake-model',
             systemPrompt: '',
@@ -156,7 +153,7 @@ function setUp(caps: AnyCoreCapability[] = [echoCapability(), destructiveCapabil
     })
   }
 
-  return { db, threads, approvals, leases, agentsStore, connectors, agent, registry, treeStore, published, startedEvents, finishedEvents, emitted, makeRunner, blobs }
+  return { db, threads, approvals, activities, agentsStore, connectors, agent, registry, treeStore, published, startedEvents, finishedEvents, emitted, makeRunner, blobs }
 }
 
 function textTurn(text: string): FakeProviderTurn {

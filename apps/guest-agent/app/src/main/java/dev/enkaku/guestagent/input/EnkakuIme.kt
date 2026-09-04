@@ -53,6 +53,15 @@ class EnkakuIme : InputMethodService() {
     connected = false
   }
 
+  /**
+   * MVP 08 §1.2's UHID side effect, answered on the device: when scrcpy creates a virtual hardware
+   * keyboard, Android hides the soft keyboard, and an operator who wants to see it has no way to
+   * ask. This is that way. Per device, applied here, persisted in SharedPreferences so it survives
+   * the session that set it and the next reboot.
+   */
+  override fun onEvaluateInputViewShown(): Boolean =
+    if (ImePrefs.showSoftKeyboardWithHardware(this)) true else super.onEvaluateInputViewShown()
+
   override fun onDestroy() {
     if (active?.get() === this) active = null
     super.onDestroy()

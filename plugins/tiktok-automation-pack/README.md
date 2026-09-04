@@ -130,8 +130,8 @@ exhaustive — nothing in this pack calls a capability this array does not also 
 - **`fs.list`** *(plan 115 §1 goal 5, W8)* — lists a workspace folder's contents so folder mode can
   find its video candidates (`src/folder.ts`'s `listVideoCandidates`).
 - **`job.run`** — the auto-post timer enqueues `post-video` jobs on its own clock.
-- **`device.list`** — the auto-post timer reads each device's `status`/`heldBy` to decide who is
-  eligible. `job.list` is deliberately **not** declared: `device.list`'s own `heldBy` already
+- **`device.list`** — the auto-post timer reads each device's `status`/`activities` to decide who is
+  eligible. `job.list` is deliberately **not** declared: `device.list`'s own `activities` list already
   answers "is this device already mid-job" without it.
 
 ## Read this before you rely on it

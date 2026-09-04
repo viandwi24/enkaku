@@ -39,7 +39,7 @@ function makeRow(): DeviceRow {
     nodeId: null,
     tenantId: null,
     lastSeen: null,
-    clusterId: null,
+    groupId: null,
     desiredReadiness: null,
     networkRoute: null,
     agent: null,

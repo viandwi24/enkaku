@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { BatteryStateSchema } from './settings'
 import { DeviceReadinessSchema, ReadinessSchema } from './readiness'
 import { GuestAgentCapabilitySchema } from './guest-agent'
+import { DeviceActivitySchema, LastControlSchema } from './activity'
 
 /** How a device's transport is reached — OBSERVED from adb (plan 88 §3.1, §4.1). */
 export const ConnectionKindSchema = z.enum(['usb', 'tcp'])
@@ -44,33 +45,12 @@ export function connectionBadge(c: DeviceConnection): 'USB' | 'WI-FI' | 'OTG' | 
 }
 
 /**
- * Device status (spec §12): M0 only ever produces 'offline' | 'idle'; the
- * full enum is declared now to avoid a schema migration in M3.
+ * Device status (MVP 04 §0.1, §4): a single-slot state machine plus an
+ * activity list. "busy" and "controlled" are derived from the activity list
+ * and never stored (plan 205 §3.2 item 5).
  */
-export const DeviceStatusSchema = z.enum(['offline', 'idle', 'manual', 'busy', 'quarantined'])
+export const DeviceStatusSchema = z.enum(['offline', 'online', 'quarantined'])
 export type DeviceStatus = z.infer<typeof DeviceStatusSchema>
-
-/**
- * Who holds a device's manual (control) lease — a person, an agent, or a job
- * (plan 71 §3.2). The lease manager already knew this (`Lease.holder`,
- * `Lease.holderUserId`); nothing propagated it past the lease manager itself,
- * so an agent driving a phone was invisible to every surface. One field
- * fixes the badge, the takeover dialog, and the wall.
- */
-export const LeaseHolderSchema = z.object({
-  kind: z.enum(['user', 'agent', 'job']),
-  /** clientId for a user (or the authenticated userId when known), agentId for an agent, jobId for a job. */
-  id: z.string(),
-  /** For display: a username, an agent's name, a script's `name@version` — resolved server-side (plan 71 §3.3). */
-  label: z.string(),
-  /** Agent only — the ROOT run id, so a whole tree reads as one holder (plan 67 §3.7). */
-  runId: z.string().nullable(),
-  /** Whether this hold can be taken over at all (plan 71 §3.4) — computed server-side, never derived by a client. */
-  takeable: z.boolean(),
-  acquiredAt: z.number(),
-  expiresAt: z.number().nullable(),
-})
-export type LeaseHolder = z.infer<typeof LeaseHolderSchema>
 
 /**
  * The on-device Enkaku guest agent's provisioning state (plan 90 §3.8, §4.3) —
@@ -132,7 +112,7 @@ export type AgentState = z.infer<typeof AgentStateSchema>
  *
  * `reason` is always verbatim, never summarised (§3.8) — `AgentProvisioner`
  * callers show it directly to an operator. `attempts`/`nextAttemptAt`
- * mirror the bounded-retry shape network route recovery already uses (plan
+ * match the bounded-retry shape network route recovery already uses (plan
  * 90 §3.7; `packages/core/src/device/bounded-retry.ts` since plan 106 §5
  * step 106.2).
  */
@@ -196,6 +176,40 @@ export const DEFAULT_GUEST_AGENT_IDENTITY: GuestAgentIdentity = {
   capabilities: [],
 }
 
+/**
+ * Live host-side metrics for one device (plan 214 §3.7). NOT persisted: these
+ * are facts about a phone that is plugged in right now, sampled by the poller
+ * that already reads `dumpsys battery` (`packages/core/src/device/battery.ts`)
+ * and projected into `DeviceInfo` the way plan 205 projects activities. A
+ * device with no sample yet, or one that is offline, carries `null` here and
+ * every metric column renders an em dash, which is the handoff's own rule for
+ * a disconnected row.
+ *
+ * Every field is independently nullable because they are independently
+ * knowable: `/proc/stat` needs two samples before a percentage exists, and an
+ * OEM that refuses `df /data` still answers `/proc/uptime`.
+ */
+export const DeviceMetricsSchema = z.object({
+  /** Whole-device CPU over the interval between the last two samples. `null` on the first sample. */
+  cpuPercent: z.number().min(0).max(100).nullable(),
+  /** `(MemTotal - MemAvailable) / MemTotal`, from `/proc/meminfo`. */
+  memPercent: z.number().min(0).max(100).nullable(),
+  /** `df /data`'s use percentage. */
+  diskPercent: z.number().min(0).max(100).nullable(),
+  /** `/proc/uptime`'s first field, truncated to seconds. */
+  uptimeSec: z.number().int().min(0).nullable(),
+  /** Unix epoch seconds. */
+  updatedAt: z.number().int(),
+})
+export type DeviceMetrics = z.infer<typeof DeviceMetricsSchema>
+
+/** One device's metrics sample (plan 214 §4.3). Broadcast, no subscribe message. */
+export const DeviceMetricsMessage = z.object({
+  type: z.literal('device.metrics'),
+  payload: z.object({ deviceId: z.string(), metrics: DeviceMetricsSchema }),
+})
+export type DeviceMetricsEvent = z.infer<typeof DeviceMetricsMessage>
+
 export const DeviceInfoSchema = z.object({
   id: z.string(),
   stableId: z.string(),
@@ -217,11 +231,11 @@ export const DeviceInfoSchema = z.object({
   /** Sorted, normalised. Empty array rather than null, so callers need no guard. */
   tags: z.array(z.string()).default([]),
   /**
-   * The owning cluster (plan 22.0 §4.2), or null when unclustered. An object
-   * rather than a bare id so every list and picker can render the name
-   * without a second lookup — the same reasoning that put `tags` inline.
+   * The owning group (plan 22.0 §4.2, renamed by MVP 15 §0.1), or null. An
+   * object rather than a bare id so every list and picker can render the
+   * name without a second lookup — the same reasoning that put `tags` inline.
    */
-  cluster: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
+  group: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
   /**
    * When this device last had an application crash or ANR, IF it was within
    * the last hour — otherwise null (plan 37 §4.5). Only the fleet list
@@ -240,25 +254,21 @@ export const DeviceInfoSchema = z.object({
    */
   readiness: DeviceReadinessSchema.default(() => ({ desired: 'asleep' as const, actual: 'asleep' as const, blocked: null, since: 0 })),
   /**
-   * Who currently holds this device's manual lease, or `null` when nobody
-   * does (plan 71 §3.2) — replaces the three polling workarounds
-   * `packages/studio/src/lib/agent-holders.ts` used to need. Defaulted so a
-   * caller that constructs a `DeviceInfo` without it (existing tests, or a
-   * fallback with no lease manager to hand) still parses.
+   * The device's live activity list (MVP 04 §1.1) — everything touching it
+   * right now: a running job, a control marker, a transfer, an install, a
+   * preparation pass, an agent, a command, a network write, a wake sequence.
+   * Empty, never null, so callers need no guard (the same reasoning `tags`
+   * above uses). Defaulted so a caller that constructs a `DeviceInfo`
+   * without it (existing tests, or a fallback with no activity registry to
+   * hand) still parses; every production call site populates it for real.
    */
-  heldBy: LeaseHolderSchema.nullable().default(null),
+  activities: z.array(DeviceActivitySchema).default([]),
   /**
-   * Who is currently assisting this device — a narrow, subordinate grant to
-   * touch a device someone/something else already controls, never a
-   * takeover (plan 91 §3.2, §3.4 item 4, F25). Empty, never null, so callers
-   * need no guard (the same reasoning `tags` above uses). Every entry's
-   * `takeable` is `false`: an assist is granted or refused, never taken over
-   * (§3.2), so the takeover dialog must never target one. Defaulted so a
-   * caller that constructs a `DeviceInfo` without it (existing tests, or a
-   * fallback with no co-control manager to hand) still parses; every
-   * production call site populates it alongside `heldBy`.
+   * The "last controlled N seconds ago by X" tail (MVP 04 §1.2), kept for
+   * `LAST_CONTROL_TAIL_SEC` after a control marker ends; `null` when no
+   * marker has ever ended or the tail has expired.
    */
-  assistedBy: z.array(LeaseHolderSchema).default([]),
+  lastControl: LastControlSchema.nullable().default(null),
   /**
    * How this device is reached (plan 88 §3.1, §4.1) — computed by
    * `deriveConnection` (`packages/core/src/registry/device-registry.ts`),
@@ -294,6 +304,16 @@ export const DeviceInfoSchema = z.object({
    * concatenated into it (§3.3).
    */
   number: z.number().int().positive().nullable().default(null),
+  /**
+   * `ro.product.model` as the registry probe read it (plan 214 §3.7).
+   * The handoff's Device cell is a name over a model, and `label` is the
+   * operator's name for the phone, which on a renamed device is not the
+   * model at all. Null for a row admitted before this column existed and
+   * never probed since.
+   */
+  model: z.string().nullable().default(null),
+  /** Live metrics, or null when nothing has been sampled (plan 214 §4.2). */
+  metrics: DeviceMetricsSchema.nullable().default(null),
 })
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>
 
@@ -302,6 +322,23 @@ export const DeviceAddedMessage = z.object({
   payload: DeviceInfoSchema,
 })
 export type DeviceAdded = z.infer<typeof DeviceAddedMessage>
+
+/**
+ * A device row changed in a way a client cannot derive from the narrower
+ * broadcasts (`device.status`, `device.battery`, `device.metrics`).
+ *
+ * Added for `set-group`, which wrote the database and told nobody: the tab
+ * counts and the row's own group stayed stale in every open browser until a
+ * hard refresh (owner, 2026-09-04). Carries the whole `DeviceInfo` rather
+ * than a `{ deviceId, groupId }` pair so the next field that moves needs no
+ * third message — a client replaces the row IN PLACE, which is what makes
+ * this different from `device.added` (that one appends).
+ */
+export const DeviceUpdatedMessage = z.object({
+  type: z.literal('device.updated'),
+  payload: DeviceInfoSchema,
+})
+export type DeviceUpdated = z.infer<typeof DeviceUpdatedMessage>
 
 export const DeviceRemovedMessage = z.object({
   type: z.literal('device.removed'),
@@ -313,7 +350,7 @@ export type DeviceRemoved = z.infer<typeof DeviceRemovedMessage>
  * A phone adb has seen that nobody has admitted to the farm (plan 56).
  *
  * Deliberately NOT a `DeviceInfo`: a discovered device has no id, no status,
- * no cluster, no readiness and no tags, because it has no `devices` row at
+ * no group, no readiness and no tags, because it has no `devices` row at
  * all. Reusing the device shape would mean inventing values for all of those,
  * and an invented status is exactly how something unadmitted ends up looking
  * schedulable.
@@ -345,8 +382,8 @@ export type DeviceStatusEvent = z.infer<typeof DeviceStatusMessage>
  * Client → server: set the operator's standing intent (plan 43 §4.1).
  * NEVER changes anything by itself — the server derives `actual` and reports
  * it back on the `device.readiness` broadcast below. Refused server-side per
- * §3.4 (offline/quarantined for a Wake; a running job or another viewer/lease
- * holder for a Sleep) — crafting this message directly is refused exactly
+ * §3.4 (offline/quarantined for a Wake; a running job or another live
+ * control marker for a Sleep) — crafting this message directly is refused exactly
  * the same way the UI's button would be (acceptance #7).
  */
 export const DeviceReadinessSetMessage = z.object({

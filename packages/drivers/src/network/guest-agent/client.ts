@@ -30,6 +30,18 @@ import {
   TextCommitResultSchema,
   TextStatusRequestSchema,
   TextStatusResultSchema,
+  UiDumpRequestSchema,
+  UiDumpResultSchema,
+  UiFindRequestSchema,
+  UiFindResultSchema,
+  ActivitySetRequestSchema,
+  ActivitySetResultSchema,
+  DeviceDescribeRequestSchema,
+  DeviceDescribeResultSchema,
+  TextPrefsRequestSchema,
+  TextPrefsResultSchema,
+  UiStatusRequestSchema,
+  UiStatusResultSchema,
   type GuestAgentErrorCode,
   type GuestAgentRequest,
   type HelloResult,
@@ -47,6 +59,15 @@ import {
   type TextCommitResult,
   type TextStatusResult,
   type Socks5RouteConfig,
+  type UiDumpResult,
+  type UiFindResult,
+  type ActivitySetResult,
+  type DeviceDescribeResult,
+  type TextPrefsResult,
+  type UiStatusResult,
+  type GuestAgentActivity,
+  type GuestAgentVideo,
+  type Selector,
 } from '@enkaku/protocol'
 
 /**
@@ -54,7 +75,7 @@ import {
  * §5.5). Every call opens its own short-lived TCP connection to the forwarded
  * port, writes exactly one newline-delimited JSON request, reads exactly one
  * line back, and closes — mirroring the agent's own accept-handle-close loop
- * (verified against a real device by `scripts/guest-agent.ts`, plan 44 §5.1),
+ * (verified against a real device in plan 44 §5.1),
  * rather than assuming a persistent multiplexed connection the agent does not
  * actually offer.
  */
@@ -142,7 +163,12 @@ export interface GuestAgentClientOptions {
 }
 
 export interface GuestAgentClient {
-  hello(): Promise<HelloResult>
+  /**
+   * `expectVersionCode` (plan 221 §4.9) — the host's own toolchain pin, echoed by the agent's
+   * status screen as "host expects build N". Optional: omitted, the agent simply shows no such
+   * row, which is what a caller with no pin to compare against should get.
+   */
+  hello(opts?: { expectVersionCode?: number }): Promise<HelloResult>
   ping(): Promise<PingResult>
   routeStart(config: Socks5RouteConfig): Promise<RouteStartResult>
   routeStop(): Promise<RouteStopResult>
@@ -192,6 +218,31 @@ export interface GuestAgentClient {
   textCommit(text: string, perCharMs?: [number, number]): Promise<TextCommitResult>
   /** Plan 90 §3.2, §3.3, §4.1. Same gate as `textCommit` — reports whether the agent's IME is currently the live one. */
   textStatus(): Promise<TextStatusResult>
+  /**
+   * Plan 221 §4.2. Same "always present on the client, gated on `hello().capabilities`" treatment
+   * as every other method here — an older build answers `E_UNKNOWN_METHOD`, which plan 222's
+   * engine ladder reads as "the `ui-tree` engine is unavailable on this device" and falls back to
+   * ui-server, never as a device failure. A build that has the service but has not had it enabled
+   * answers `E_UI_TREE_UNAVAILABLE`, which is a DIFFERENT thing and gets a different repair
+   * (`ensureAccessibilityEnabled`, launcher.ts).
+   */
+  uiDump(opts?: { maxDepth?: number; maxNodes?: number }): Promise<UiDumpResult>
+  /** Plan 221 §4.2. Throws `E_BAD_REQUEST` locally, before the wire, for a `{ point }` selector. */
+  uiFind(selector: Selector, opts?: { maxDepth?: number; maxNodes?: number }): Promise<UiFindResult>
+  /** Plan 221 §4.5. The activity mirror push; read-only on the device. */
+  activitySet(activities: GuestAgentActivity[], video: GuestAgentVideo | null): Promise<ActivitySetResult>
+  /** Plan 221 §4.5. The farm's own facts about this device, for the status screen's Device section. */
+  deviceDescribe(device: {
+    stableId: string | null
+    label: string | null
+    number: string | null
+    group: string | null
+    tags: string[]
+  }): Promise<DeviceDescribeResult>
+  /** Plan 221 §4.6. Writes the per-device soft-keyboard preference; returns the device's read-back. */
+  textPrefs(showSoftKeyboardWithHardware: boolean): Promise<TextPrefsResult>
+  /** Plan 221 §4.2. Cheap enough to call on every provisioning pass; never starts anything. */
+  uiStatus(): Promise<UiStatusResult>
 }
 
 /** One connect → write one line → read one line → close, with a hard timeout. */
@@ -290,6 +341,30 @@ async function call<TResult>(
     )
   }
 
+  /**
+   * The answer must belong to the question.
+   *
+   * Every request carries a `crypto.randomUUID()` id and every response
+   * echoes it, and this checked neither — so ANY line arriving on the socket
+   * was accepted as the answer. Chasing `ui.status` on real hardware
+   * (2026-09-04) the host was handed `{"watching":false}`, which is the
+   * `ui.unwatch` branch's reply, and reported it as a malformed `ui.status`
+   * result: three fields short, cause invisible, and the real fault — a
+   * response belonging to a different request — never named.
+   *
+   * A mismatch is a protocol fault, not a bad value, so it fails loudly with
+   * both ids rather than being silently retried: retrying would paper over
+   * whatever desynchronised the stream in the first place. The device omits
+   * `id` when a request carried none, which ours never do, so a missing id is
+   * treated the same way.
+   */
+  if (envelope.data.id !== request.id) {
+    throw new GuestAgentClientError(
+      'E_UNEXPECTED_RESPONSE',
+      `guest agent answered request ${envelope.data.id ?? '(no id)'} on a channel waiting for ${request.id} (${request.method}) — the response stream is out of step`,
+    )
+  }
+
   if (!envelope.data.ok) {
     // Carries the agent's own code so callers match on it, never on message text (CLAUDE.md).
     throw new GuestAgentClientError(envelope.data.error.code, envelope.data.error.message)
@@ -297,9 +372,42 @@ async function call<TResult>(
 
   const result = resultSchema.safeParse(envelope.data.result)
   if (!result.success) {
+    /**
+     * The payload the phone actually sent, beside the fields the host wanted.
+     *
+     * Without it this error says only which keys are missing, which is the
+     * same sentence whether the agent sent the wrong shape, an empty object,
+     * or a correct object one level deeper — three different bugs, one
+     * message. Chasing `ui.status` on a real phone (2026-09-04) it cost an
+     * hour of reading both sides of a protocol that looked right in the
+     * source on both sides.
+     *
+     * Bounded to 400 characters: a `ui.dump` result is an entire view tree,
+     * and a log line is not the place for it. The agent's responses carry no
+     * secret — the token travels in the REQUEST — so this leaks nothing.
+     */
+    const raw = JSON.stringify(envelope.data.result)
+    const shown = raw.length > 400 ? `${raw.slice(0, 400)}… (${raw.length} bytes)` : raw
+    /**
+     * The request line as it went onto the wire, with the token redacted.
+     *
+     * `request.method` is read off the object we built, not off the bytes we
+     * sent, so every message so far has been asserting what we MEANT to send
+     * rather than what we did. Chasing `ui.status` (2026-09-04) the agent
+     * answered with the `ui.unwatch` body under our own request id, which
+     * only two things can explain: the device dispatched the wrong branch, or
+     * we sent a different method than we think. One of those is ruled out by
+     * printing this.
+     */
+    const sent = JSON.stringify({ ...(request as Record<string, unknown>), token: '<redacted>' })
+    // The agent echoes the method it PARSED (guest agent build 2026-09-05).
+    // An older build sends none, which reads as `(no echo)` — itself the
+    // answer to "is the phone running the build I just installed?".
+    const echoed = (json as { method?: unknown } | null)?.method
+    const dispatched = typeof echoed === 'string' ? echoed : '(no echo)'
     throw new GuestAgentClientError(
       'E_UNEXPECTED_RESPONSE',
-      `guest agent ${request.method} result did not match its schema: ${result.error.message}`,
+      `guest agent ${request.method} result did not match its schema: ${result.error.message} — we sent ${sent}, the agent dispatched on '${dispatched}' and sent ${shown}`,
     )
   }
   return result.data
@@ -317,11 +425,16 @@ export function createGuestAgentClient(opts: GuestAgentClientOptions): GuestAgen
   const handshakeRetryDelayMs = opts.handshakeRetryDelayMs ?? 500
 
   return {
-    async hello() {
+    async hello(helloOpts) {
       let lastErr: unknown
       for (let attempt = 1; attempt <= handshakeRetries; attempt++) {
         try {
-          const req = HelloRequestSchema.parse({ id: crypto.randomUUID(), token: opts.token, method: 'hello' })
+          const req = HelloRequestSchema.parse({
+            id: crypto.randomUUID(),
+            token: opts.token,
+            method: 'hello',
+            ...(helloOpts?.expectVersionCode !== undefined ? { expectVersionCode: helloOpts.expectVersionCode } : {}),
+          })
           const result = await call(connect, opts.port, timeoutMs, req, HelloResultSchema)
           if (result.protocol !== GUEST_AGENT_PROTOCOL) {
             // Refuse rather than degrade (CLAUDE.md, plan 44 §4.2): a major-version mismatch
@@ -474,6 +587,77 @@ export function createGuestAgentClient(opts: GuestAgentClientOptions): GuestAgen
         method: 'text.status',
       })
       return call(connect, opts.port, timeoutMs, req, TextStatusResultSchema)
+    },
+
+    uiDump(dumpOpts) {
+      const req = UiDumpRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'ui.dump',
+        ...(dumpOpts?.maxDepth !== undefined ? { maxDepth: dumpOpts.maxDepth } : {}),
+        ...(dumpOpts?.maxNodes !== undefined ? { maxNodes: dumpOpts.maxNodes } : {}),
+      })
+      return call(connect, opts.port, timeoutMs, req, UiDumpResultSchema)
+    },
+
+    async uiFind(selector, findOpts) {
+      // `{ point }` is a host-side synthetic node (`selector-match.ts`'s `matchSelector`) — there
+      // is nothing on the device to look up, so this is refused here, before the wire, rather than
+      // relying on the device's own `E_BAD_REQUEST` for a mistake the client can catch for free.
+      // `async` so this rejects rather than throws synchronously — the same shape every other
+      // failure on this interface arrives in, and what lets a caller `await` uniformly.
+      if ('point' in selector) {
+        throw new GuestAgentClientError('E_BAD_REQUEST', 'ui.find does not accept a point selector')
+      }
+      const req = UiFindRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'ui.find',
+        selector,
+        ...(findOpts?.maxDepth !== undefined ? { maxDepth: findOpts.maxDepth } : {}),
+        ...(findOpts?.maxNodes !== undefined ? { maxNodes: findOpts.maxNodes } : {}),
+      })
+      return call(connect, opts.port, timeoutMs, req, UiFindResultSchema)
+    },
+
+    activitySet(activities, video) {
+      const req = ActivitySetRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'activity.set',
+        activities,
+        video,
+      })
+      return call(connect, opts.port, timeoutMs, req, ActivitySetResultSchema)
+    },
+
+    deviceDescribe(device) {
+      const req = DeviceDescribeRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'device.describe',
+        ...device,
+      })
+      return call(connect, opts.port, timeoutMs, req, DeviceDescribeResultSchema)
+    },
+
+    textPrefs(showSoftKeyboardWithHardware) {
+      const req = TextPrefsRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'text.prefs',
+        showSoftKeyboardWithHardware,
+      })
+      return call(connect, opts.port, timeoutMs, req, TextPrefsResultSchema)
+    },
+
+    uiStatus() {
+      const req = UiStatusRequestSchema.parse({
+        id: crypto.randomUUID(),
+        token: opts.token,
+        method: 'ui.status',
+      })
+      return call(connect, opts.port, timeoutMs, req, UiStatusResultSchema)
     },
   }
 }

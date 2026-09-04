@@ -1,3 +1,4 @@
+import { evaluate, ExprEvalError, ExprParseError, parse, toScopeValue, type ExprScope } from '@enkaku/expr'
 import type { GateOp, Predicate, ValueExpr } from './workflow'
 import { WORKFLOW_LIMITS } from './workflow'
 
@@ -29,6 +30,21 @@ export interface ResolveScope {
   params: Record<string, unknown>
   outputs: ReadonlyMap<string, unknown>
   summary: readonly RunSummaryEntry[]
+  /**
+   * The step's start time, for an `{ expr }` binding's `$now` (plan 302
+   * §3.3, §4.7) — an explicit value the CALLER supplies, never read from the
+   * host clock by the evaluator itself. Defaults to `Date.now()` when
+   * absent, which only ever happens in a test that does not care.
+   */
+  now?: number
+  /**
+   * An `{ expr }` binding's `$random` (plan 302 §3.3). Plan 304 §4.1 is
+   * where a per-run seed is meant to live; until that column exists, every
+   * caller passes (or omits, defaulting to) a fixed `0` — deterministic,
+   * reproducible on replay, and honestly not yet a real seed (see plan 302
+   * §11's handoff for the record of this deferral).
+   */
+  randomSeed?: number
 }
 
 /**
@@ -88,15 +104,78 @@ function optionalFallback(expr: Extract<ValueExpr, { from: string }>): ResolveOu
 }
 
 /**
- * Resolves one `ValueExpr` against `scope` (plan 99 §4.4). TOTAL — every
- * branch below returns a `ResolveOutcome`; none of them throws, on any input,
- * including a `from` node that never ran, a `path` that runs into `null`, or
- * a workflow parameter that was declared but never supplied.
+ * Memoises the `ExprScope` built for one `ResolveScope` OBJECT (plan 302
+ * §4.7): "build the scope once per step, not once per binding". Every call
+ * site in this repo builds exactly one `ResolveScope` per step and reuses
+ * it for every binding that step resolves
+ * (`packages/core/src/jobs/executors/workflow.ts`'s three `scope`
+ * constructions), so keying the cache on the `ResolveScope` object's own
+ * identity — a `WeakMap`, so a scope that goes out of scope is not held —
+ * is exactly "once per step" without threading a separate cache handle
+ * through every call site.
+ */
+const exprScopeCache = new WeakMap<ResolveScope, ExprScope>()
+
+/**
+ * Builds the `ExprScope` an `{ expr }` binding evaluates against (plan 302
+ * §3.3, §4.7): `$params`/`$nodes`/`$run` are the SAME `outputs`/`params`/
+ * `summary` every other `ValueExpr` form already reads, copied through
+ * `toScopeValue` so nothing with a live prototype ever reaches the
+ * evaluator. `$input` is the last node the cursor actually passed through —
+ * under plan 300 D5's single cursor that is always exactly one node, so the
+ * last `summary` entry (plan 302 §9 Q2) — `undefined` for the very first
+ * node, whose predecessor is `start` and produced nothing. `$now`/`$random`
+ * are the two purity escape valves (plan 302 §3.3): the caller supplies
+ * them via `scope.now`/`scope.randomSeed`, never read from the host clock
+ * or an entropy source here; `$random` is a fixed `0` until plan 304 §4.1
+ * gives a run its own seed column (see `ResolveScope.randomSeed`'s own doc
+ * comment).
+ */
+function buildExprScope(scope: ResolveScope): ExprScope {
+  const cached = exprScopeCache.get(scope)
+  if (cached) return cached
+  const lastOutput = scope.summary.length > 0 ? scope.summary[scope.summary.length - 1]?.output : undefined
+  const built: ExprScope = {
+    $params: toScopeValue(scope.params) as Readonly<Record<string, unknown>>,
+    $nodes: toScopeValue(Object.fromEntries(scope.outputs)) as Readonly<Record<string, unknown>>,
+    $input: toScopeValue(lastOutput),
+    $run: { summary: toScopeValue(scope.summary) },
+    $now: scope.now ?? Date.now(),
+    $random: scope.randomSeed ?? 0,
+  }
+  exprScopeCache.set(scope, built)
+  return built
+}
+
+/**
+ * Resolves one `ValueExpr` against `scope` (plan 99 §4.4, plan 302 §4.7).
+ * TOTAL — every branch below returns a `ResolveOutcome`; none of them
+ * throws, on any input, including a `from` node that never ran, a `path`
+ * that runs into `null`, a workflow parameter that was declared but never
+ * supplied, or an `{ expr }` that fails to parse or to evaluate (the
+ * `@enkaku/expr` error is caught here and turned into an `'unresolved'`
+ * outcome, exactly as an unresolvable `{ from }` binding already is —
+ * `checkWorkflow`'s `E_WORKFLOW_EXPR_PARSE`/`E_WORKFLOW_EXPR_UNKNOWN_NODE`
+ * are the publish-time backstop; this run-time catch is what keeps a
+ * document that somehow reached the executor unchecked from throwing
+ * instead of failing the step with a named reason).
  */
 export function resolveValue(expr: ValueExpr, scope: ResolveScope): ResolveOutcome {
   if ('const' in expr) return { ok: true, value: expr.const }
 
   if ('run' in expr) return { ok: true, value: scope.summary }
+
+  if ('expr' in expr) {
+    try {
+      const ast = parse(expr.expr)
+      const value = evaluate(ast, buildExprScope(scope))
+      return { ok: true, value }
+    } catch (err) {
+      const offset = err instanceof ExprParseError || err instanceof ExprEvalError ? ` (offset ${err.offset})` : ''
+      const detail = err instanceof Error ? err.message : String(err)
+      return { ok: false, code: 'unresolved', detail: `expression "${expr.expr}" failed: ${detail}${offset}` }
+    }
+  }
 
   if ('param' in expr) {
     if (Object.prototype.hasOwnProperty.call(scope.params, expr.param)) {

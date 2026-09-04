@@ -51,17 +51,29 @@ export function useNetworkRanges(opts: { includePort?: boolean } = {}) {
   // is excluded here on purpose — see this file's header comment; a caller
   // that also edits the port (`ScanNetworkDialog`) compares that itself.
   const savedRowsSnapshot = useRef<string | null>(null)
+  /**
+   * The rows as the server currently stores them, serialised one by one —
+   * what the per-row Scan button needs to answer "is THIS row saved?".
+   * `dirty` above answers the whole-table question and cannot: a table with
+   * one edited row is dirty, and the other five rows are still perfectly
+   * scannable.
+   */
+  const [savedRowKeys, setSavedRowKeys] = useState<Set<string>>(new Set())
 
   const load = () => {
     setError(null)
     setRows(null)
     api('/api/settings', SettingsResponseSchema)
       .then((b) => {
-        const nextRows = networksToRanges(b.settings.discovery.networks)
+        // Plan 212 §4.1 — `discovery.scan.maxAddresses` and `discovery.tcpPort`
+        // are constants now (`SCAN_MAX_ADDRESSES`, `ADB_TCP_PORT`,
+        // `packages/core/src/config/constants.ts`), not part of the settings
+        // response; this hook keeps its own literal defaults for them
+        // (1024, 5555) rather than reading a field the API no longer serves.
+        const nextRows = networksToRanges(b.settings.networkScan.networks)
         setRows(nextRows)
-        setMaxAddresses(b.settings.discovery.scan.maxAddresses)
-        setTcpPort(b.settings.discovery.tcpPort)
         savedRowsSnapshot.current = JSON.stringify(nextRows)
+        setSavedRowKeys(new Set(nextRows.map((r) => JSON.stringify(r))))
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
@@ -91,30 +103,42 @@ export function useNetworkRanges(opts: { includePort?: boolean } = {}) {
     if (!rows || hasInvalidRow || overLimit) return Promise.resolve(null)
     const networks = rangeRowsToNetworks(rows)
     if (!networks) return Promise.resolve(null)
-    const effectivePort = overridePort ?? tcpPort
+    // Plan 212 §4.1 — `discovery.tcpPort` is the constant `ADB_TCP_PORT` now;
+    // `includePort`/`overridePort` no longer have a settings field to reach,
+    // so the port argument is accepted for call-site compatibility but is
+    // not sent. `plugins 219 owns rebuilding this editor against the new
+    // schema.
+    void overridePort
+    void includePort
     return run(
       'save-networks',
       () =>
         api('/api/settings', UpdateSettingsResponseSchema, {
           method: 'PATCH',
-          json: includePort ? { discovery: { networks, tcpPort: effectivePort } } : { discovery: { networks } },
+          json: { networkScan: { networks } },
         }),
       {
         success: 'Farm networks saved',
         failure: 'Could not save these networks',
         onSuccess: (b) => {
-          const nextRows = networksToRanges(b.settings.discovery.networks)
+          const nextRows = networksToRanges(b.settings.networkScan.networks)
           setRows(nextRows)
-          setMaxAddresses(b.settings.discovery.scan.maxAddresses)
-          setTcpPort(b.settings.discovery.tcpPort)
           savedRowsSnapshot.current = JSON.stringify(nextRows)
+          setSavedRowKeys(new Set(nextRows.map((r) => JSON.stringify(r))))
         },
       },
     )
   }
 
+  /** Indexes of rows that are byte-for-byte what the server stores — see `savedRowKeys` above. */
+  const savedRowIndexes = new Set<number>()
+  ;(rows ?? []).forEach((r, i) => {
+    if (savedRowKeys.has(JSON.stringify(r))) savedRowIndexes.add(i)
+  })
+
   return {
     rows,
+    savedRowIndexes,
     maxAddresses,
     tcpPort,
     error,

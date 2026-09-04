@@ -29,8 +29,9 @@ const noopJobService = {
 function contextDeps(db: Db): CapabilityContextDeps {
   return {
     db,
-    leases: { getLease: () => null } as unknown as CapabilityContextDeps['leases'],
-    states: { current: () => 'idle' } as unknown as CapabilityContextDeps['states'],
+    activities: { list: () => [] } as unknown as CapabilityContextDeps['activities'],
+    controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
+    states: { current: () => 'online' } as unknown as CapabilityContextDeps['states'],
     sessions: () => null,
     readiness: () => null,
     transfer: null,

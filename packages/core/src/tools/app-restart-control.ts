@@ -13,7 +13,7 @@ export type { SupervisionMode }
  * live session/stream drops, every in-flight job is interrupted, and for the
  * span of the restart the farm is unreachable — so this module is held to
  * at least the same safety discipline `cycle()` already established
- * (drain sessions/leases/jobs BEFORE acting), and in the one mode where it
+ * (drain sessions/control activities/jobs BEFORE acting), and in the one mode where it
  * can (`bare`), to a stricter one still: never trade a working process for
  * one that might not come up.
  *
@@ -83,7 +83,7 @@ export type { SupervisionMode }
 export const RESTART_SENTINEL_EXIT_CODE = 75
 
 export interface AppRestartOpts {
-  /** Same meaning as `adb-server-control.ts`'s `AdbCycleOpts.force` — the caller (the route) already decided to proceed despite running jobs / held leases; threaded through to `drain` so it, not this function, decides whether a still-running job gets force-failed. Sessions and leases are always drained regardless. */
+  /** Same meaning as `adb-server-control.ts`'s `AdbCycleOpts.force` — the caller (the route) already decided to proceed despite running jobs / live control markers; threaded through to `drain` so it, not this function, decides whether a still-running job gets force-failed. Sessions and control activities are always drained regardless. */
   force?: boolean
 }
 
@@ -93,7 +93,7 @@ export interface AppRestartReport {
   outcome: 'initiated' | 'verified'
   durationMs: number
   sessionsClosed: number
-  leasesReleased: number
+  controlsEnded: number
   jobsFailed: string[]
 }
 
@@ -101,8 +101,8 @@ export interface AppRestartDeps {
   /** Injectable for tests; defaults to the real `detectSupervisionMode()`. */
   detectMode?: () => SupervisionMode
   /**
-   * Drain live sessions, leases, and (if the caller already decided to
-   * proceed despite them) running jobs — BEFORE anything else happens.
+   * Drain live sessions, control activities, and (if the caller already
+   * decided to proceed despite them) running jobs — BEFORE anything else happens.
    * Mirrors `adb-server-control.ts`'s own `drainSessions` dep exactly
    * (same `DrainResult` shape, reused rather than redefined) rather than
    * inventing a second, divergent draining discipline for an action with a
@@ -269,8 +269,8 @@ export function createAppRestartControl(deps: AppRestartDeps): AppRestartControl
     const mode = (deps.detectMode ?? detectSupervisionMode)()
     const log = deps.log
 
-    log.warn(`app restart requested (mode: ${mode}) — draining sessions/leases${opts.force ? '/jobs' : ''} first`)
-    const { sessionsClosed, leasesReleased, jobsFailed } = await deps.drain({ force: Boolean(opts.force) })
+    log.warn(`app restart requested (mode: ${mode}) — draining sessions/control activities${opts.force ? '/jobs' : ''} first`)
+    const { sessionsClosed, controlsEnded, jobsFailed } = await deps.drain({ force: Boolean(opts.force) })
 
     if (mode === 'docker' || mode === 'systemd') {
       const exitCode = mode === 'docker' ? 0 : RESTART_SENTINEL_EXIT_CODE
@@ -299,7 +299,7 @@ export function createAppRestartControl(deps: AppRestartDeps): AppRestartControl
         await deps.stopDaemon()
         exit(exitCode)
       })
-      return { mode, outcome: 'initiated', durationMs: Date.now() - started, sessionsClosed, leasesReleased, jobsFailed }
+      return { mode, outcome: 'initiated', durationMs: Date.now() - started, sessionsClosed, controlsEnded, jobsFailed }
     }
 
     // `bare` — the only mode this function can prove succeeded before the
@@ -342,7 +342,7 @@ export function createAppRestartControl(deps: AppRestartDeps): AppRestartControl
     log.warn('app restart: the new process is healthy — stopping this one')
     await deps.stopDaemon()
     exit(0)
-    return { mode, outcome: 'verified', durationMs: Date.now() - started, sessionsClosed, leasesReleased, jobsFailed }
+    return { mode, outcome: 'verified', durationMs: Date.now() - started, sessionsClosed, controlsEnded, jobsFailed }
   }
 
   let inFlight: Promise<AppRestartReport> | null = null

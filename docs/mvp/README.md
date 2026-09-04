@@ -8,7 +8,7 @@
 - **Start with [16](16-consolidated-plan.md)**: it is the wired-up picture and wins over any earlier document where they disagree. Documents 01–15 hold the evidence and the history of each decision.
 - Each document opens with the complaint as it was reported, then the evidence from the code, then the proposed plan ranked by cost. A claim without a `file:line` reference is an opinion and is marked as such.
 - These are **research and decision documents**, not milestone plans. Once a decision is taken, the work is written up as a normal plan under `docs/plans/` following `docs/plans/00-overview.md`, and the MVP document links to it.
-- `docs/spec.md` remains the single source of truth. Where an MVP document proposes changing a spec commitment, it says so explicitly.
+- `docs/spec.md` was rewritten from these documents by plan 202 (the prototype spec is `docs/archive/spec-prototype.md`). A spec section with decided text wins over the document it was written from; a section marked `TBD by plan NNN` defers to the document it names until that plan lands. Where a document here cites `docs/spec.md:NNNN` by line, it means the prototype spec.
 
 ## Documents
 

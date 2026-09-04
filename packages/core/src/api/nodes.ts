@@ -6,7 +6,6 @@ import { can } from '../auth/acl'
 import type { AuthEnv } from '../auth/middleware'
 import type { Db } from '../db'
 import { nodes } from '../db/schema'
-import { buildIceServers } from '../relay/ice-credentials'
 import type { NodeAuth } from '../tunnel/node-auth'
 import { EnkakuError } from '../util/errors'
 import { type Page, decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
@@ -96,9 +95,6 @@ export function createNodeRoutes(deps: { nodeAuth: NodeAuth; db: Db }): Hono<Aut
     deps.nodeAuth.disable(c.req.param('id'))
     return c.json({ ok: true })
   })
-
-  /** ICE configuration for the browser (self-hosted STUN/TURN, time-limited credentials). */
-  app.get('/ice-config', (c) => c.json({ iceServers: buildIceServers(c.get('user')?.id ?? 'anon') }))
 
   app.onError((err, c) => {
     if (err instanceof EnkakuError) return c.json(err.toJSON(), (ERROR_STATUS[err.code] ?? 400) as 400)

@@ -51,8 +51,8 @@ describe('ChildToParentSchema — ready.runtime (plan 98 §3.1, §4.7, §5 step 
   })
 })
 
-describe('ParentToChildSchema — init.job.nodeId (plan 99 §3.2, §4.8)', () => {
-  test('a standalone init (no nodeId) parses exactly as before this field existed', () => {
+describe('ParentToChildSchema — init.job (plan 211 removes nodeId: a workflow step is a job of its own)', () => {
+  test('a standalone init parses with no nodeId field at all', () => {
     const parsed = ParentToChildSchema.parse({
       t: 'init',
       mode: 'full',
@@ -63,18 +63,6 @@ describe('ParentToChildSchema — init.job.nodeId (plan 99 §3.2, §4.8)', () =>
     })
     expect(parsed).toMatchObject({ job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' } })
     if (parsed.t === 'init') expect('nodeId' in parsed.job).toBe(false)
-  })
-
-  test('a workflow node init carries its nodeId through', () => {
-    const parsed = ParentToChildSchema.parse({
-      t: 'init',
-      mode: 'full',
-      job: { id: 'job-1', attempt: 1, deviceId: 'dev-1', nodeId: 'scroll1' },
-      params: {},
-      rssSampleMs: 10_000,
-      maxResultBytes: 65_536,
-    })
-    if (parsed.t === 'init') expect(parsed.job.nodeId).toBe('scroll1')
   })
 })
 

@@ -4,20 +4,27 @@ import { Slot } from "radix-ui"
 
 import { cn } from "../lib/utils"
 
+/**
+ * The handoff's task chip, status pill and state badge are one component
+ * (plan 204 §4.6).
+ */
 const badgeVariants = cva(
-  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3",
+  "inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap rounded-pill px-[9px] py-[3px] text-meta font-medium [&>svg]:pointer-events-none [&>svg]:size-3",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
-        secondary:
-          "bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
-        destructive:
-          "bg-destructive text-white focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40 [a&]:hover:bg-destructive/90",
-        outline:
-          "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
-        ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
-        link: "text-primary underline-offset-4 [a&]:hover:underline",
+        /** Script running: accent-soft / accent. */
+        default: "bg-accent-soft text-accent",
+        /** System action: warn-soft / warn. */
+        warn: "bg-warn-soft text-warn",
+        /** Queued: muted-2 / dim. */
+        secondary: "bg-muted-2 text-dim",
+        destructive: "bg-danger-soft text-danger",
+        /** The version chip: `var(--muted)`, radius 6. */
+        outline: "rounded-[6px] bg-muted text-text-2",
+        /** Idle: plain `faint-2` text, no pill. */
+        ghost: "bg-transparent px-0 py-0 text-faint-2",
+        link: "bg-transparent px-0 py-0 text-accent underline-offset-2 hover:underline",
       },
     },
     defaultVariants: {

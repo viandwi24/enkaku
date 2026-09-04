@@ -51,13 +51,13 @@ export const deviceTap = defineCapability({
   input: TapArgsSchema.extend({ deviceId: z.string() }),
   output: TapOutput,
   permission: 'device.control',
-  lease: 'control',
+  activity: { kind: 'control' },
   deadline: 15_000,
   effect: 'write',
   description:
     'Tap a UI element on the device, located by selector (id, text, desc, or an exact point). ' +
     'Returns { ok: false, reason: "not-found" } without tapping anything if the selector matches ' +
-    'nothing on screen — it never guesses. Take the control lease on the device first.',
+    'nothing on screen — it never guesses.',
   handler: (ctx, { deviceId, target }) => tappable(() => ctx.deviceCall(deviceId, { method: 'tap', args: { target } })),
 })
 
@@ -66,7 +66,7 @@ export const deviceSwipe = defineCapability({
   input: SwipeArgsSchema.extend({ deviceId: z.string() }),
   output: OkOutput,
   permission: 'device.control',
-  lease: 'control',
+  activity: { kind: 'control' },
   deadline: 15_000,
   effect: 'write',
   description: 'Drag from one point to another over a duration, with an optional curved gesture path and easing.',
@@ -81,7 +81,7 @@ export const deviceScroll = defineCapability({
   input: ScrollArgsSchema.extend({ deviceId: z.string() }),
   output: OkOutput,
   permission: 'device.control',
-  lease: 'control',
+  activity: { kind: 'control' },
   deadline: 15_000,
   effect: 'write',
   description: 'A controlled drag that ends at low velocity and stops where it is put — scroll a list a bounded distance.',
@@ -96,7 +96,7 @@ export const deviceFling = defineCapability({
   input: FlingArgsSchema.extend({ deviceId: z.string() }),
   output: OkOutput,
   permission: 'device.control',
-  lease: 'control',
+  activity: { kind: 'control' },
   deadline: 15_000,
   effect: 'write',
   description: 'A short, fast gesture that ends at high velocity and lets a list coast — use for a big, imprecise scroll.',
@@ -111,7 +111,7 @@ export const deviceType = defineCapability({
   input: TypeArgsSchema.extend({ deviceId: z.string() }),
   output: OkOutput,
   permission: 'device.control',
-  lease: 'control',
+  activity: { kind: 'control' },
   deadline: 30_000,
   effect: 'write',
   description:
@@ -128,7 +128,7 @@ export const deviceKey = defineCapability({
   input: KeyArgsSchema.extend({ deviceId: z.string() }),
   output: OkOutput,
   permission: 'device.control',
-  lease: 'control',
+  activity: { kind: 'control' },
   deadline: 10_000,
   effect: 'write',
   description: 'Send one hardware/software key event (a keycode number, or a name like "BACK", "HOME", "ENTER").',

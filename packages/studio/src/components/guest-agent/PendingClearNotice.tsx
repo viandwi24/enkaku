@@ -11,7 +11,7 @@ type PendingClear = NonNullable<NetworkStatus['pendingClear']>
  * **A teardown this farm owes a phone it could not reach.**
  *
  * `DELETE /:id/network` and `POST /:id/network/disable` now accept an OFFLINE
- * device (`requireDisarmAdmission`, `packages/core/src/network/
+ * device (`requireNetworkDisarmAdmission`, `packages/core/src/network/
  * route-service.ts`) — before that, "turn this off" was unreachable for an
  * absent phone, so a device could go offline carrying an armed, fail-closed
  * VPN and re-apply it on reconnect before an operator could get near it. The

@@ -8,7 +8,7 @@ import type { CapabilityContextDeps } from '../capability/context'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
-import { createLeaseManager } from '../lease/lease-manager'
+import { createActivityRegistry } from '../activity/registry'
 import type { Logger } from '../util/logger'
 import { createFarmBroker, createFarmRunnerPort, pluginNameFromPrincipal, type BrokerPlugins, type FarmBroker } from './farm-broker'
 import type { PluginRow } from '../db/schema'
@@ -57,7 +57,6 @@ function buildRegistry(ran: Ran) {
     output: z.object({ n: z.number() }),
     // In the OPERATOR set — a plugin published by an operator may call it.
     permission: 'script.view',
-    lease: 'none',
     deadline: 1_000,
     effect: 'read',
     description: 'a capability that records whether it ran',
@@ -72,7 +71,6 @@ function buildRegistry(ran: Ran) {
     output: z.object({ ok: z.literal(true) }),
     // NOT in the OPERATOR set (see `auth/acl.ts`) — admin only.
     permission: 'kv.manage',
-    lease: 'none',
     deadline: 1_000,
     effect: 'destructive',
     description: 'an admin-only capability that records whether it ran',
@@ -86,7 +84,6 @@ function buildRegistry(ran: Ran) {
     input: z.object({ deviceId: z.string() }),
     output: z.object({ ok: z.literal(true) }),
     permission: 'script.view',
-    lease: 'none',
     deadline: 1_000,
     effect: 'read',
     description: 'a capability that names a device, so invoke checks the grant',
@@ -147,22 +144,17 @@ function setUp(opts?: { audit?: boolean }): Harness {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
-  db.insert(devices).values({ id: 'free', stableId: 's-free', serial: 'S1', label: 'Free', status: 'idle', ownerId: null }).run()
-  db.insert(devices).values({ id: 'owned', stableId: 's-owned', serial: 'S2', label: 'Owned', status: 'idle', ownerId: 'someone-else' }).run()
+  db.insert(devices).values({ id: 'free', stableId: 's-free', serial: 'S1', label: 'Free', status: 'online', ownerId: null }).run()
+  db.insert(devices).values({ id: 'owned', stableId: 's-owned', serial: 'S2', label: 'Owned', status: 'online', ownerId: 'someone-else' }).run()
 
   const ran: Ran = { read: 0, admin: 0, device: 0 }
   const audit = createAuditLogger(db)
   const states = createDeviceStateMachine({ db, log: silentLog(), onChange: () => {} })
-  const leases = createLeaseManager({
-    states,
-    jobStore: { expiredRunning: () => [] } as never,
-    config: { jobTtlSec: 60, manualIdleTimeoutSec: 60, reaperIntervalMs: 1_000_000 },
-    log: silentLog(),
-    onJobLeaseExpired: () => {},
-  })
+  const activities = createActivityRegistry({ log: silentLog(), controlIdleSec: () => 30, onChange: () => {} })
   const contextDeps: CapabilityContextDeps = {
     db,
-    leases,
+    activities,
+    controlSettings: () => ({ overControl: 'allow', idleSec: 30 }),
     states,
     sessions: () => null,
     readiness: () => null,

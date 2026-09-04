@@ -1,147 +1,155 @@
 /*
- * `@enkaku/ui/theme.css` — the design-token vocabulary, and the ONE definition
- * of it (plan 111 §9 Q1, step 111.9).
+ * `@enkaku/ui/theme.css`: the design-token VOCABULARY, the Tailwind v4
+ * utility names, and nothing that states a colour (plan 204 §4.3).
  *
- * Two compilers read this file. Studio's stylesheet imports it and EMITS the
- * variables into the document (`packages/studio/src/app/globals.css`); a
- * plugin's own stylesheet imports it with `theme(reference)` and emits
- * nothing, so `bg-surface` in a plugin resolves against the very
- * `--color-surface` Studio already put on `:root`. That is the whole point: a
- * fork of these values would drift the moment the palette moved, and a
- * plugin's copy — its `<link>` is injected after Studio's — would win the
- * cascade and repaint every other screen with the stale one.
- *
- * So: tokens and vocabulary live here, and nothing else. Studio's base reset
- * and its component classes stay in Studio's own stylesheet, because they
- * style Studio's page rather than name a value a plugin could use — a plugin
- * importing this file must not be able to pick either of them up.
+ * Two compilers read this file (plan 111 §9 Q1). Studio's stylesheet imports
+ * it after `palette.css`; a plugin's own stylesheet imports it with
+ * `theme(reference)` and emits nothing. Tailwind refuses a plain rule in a
+ * `theme(reference)` import, which is why the VALUES are in `palette.css` and
+ * this file holds only `@theme` blocks and one `@custom-variant` (plan 204
+ * §3.4, measured). `@theme inline` makes `bg-panel` compile to
+ * `background-color: var(--panel)`, so a plugin's utilities resolve against
+ * Studio's live palette and can never repaint the farm with a frozen copy.
  */
 
-/*
- * A coarse pointer (touch) reports `hover: none` — there is no mouse to
- * reveal a `group-hover` overlay, so this variant gives those controls a
- * permanently-visible fallback instead (Plan 48 §3.3 rule 2, `WallTile`'s
- * action overlay).
- *
- * It lives with the tokens rather than with `WallTile` because it names a
- * DEVICE CAPABILITY, not a component: any plugin drawing a hover-revealed
- * control has the same problem on the same touchscreen. And an unknown
- * variant fails the way this whole step exists to prevent — Tailwind emits
- * nothing for `hover-none:opacity-100` and reports no error — so the two
- * compilers have to share the vocabulary, not just the values.
- */
+/* A coarse pointer (touch) reports `hover: none`; a hover-revealed control
+   needs a permanently visible fallback there (plan 48 §3.3 rule 2). A device
+   capability, not a component, so it is vocabulary both compilers share. */
 @custom-variant hover-none (@media (hover: none));
 
-/*
- * Enkaku Studio — an instrument panel, not a SaaS dashboard.
- *
- * The subject is physical hardware: phones on a rack, cables, heat, batteries.
- * So the base is cool graphite (not near-black), measurements are set in
- * monospace, and saturated colour is used ONLY for status — which is what
- * makes one red dot among a dozen devices catch the eye immediately.
- */
+/* ---- A. Values that need no palette: radii, type scale, animations ---- */
 @theme {
-  /*
-   * Plan 101 (M66) step 101.1 — values moved from `refs/ui/Enkaku
-   * Dashboard.dc.html`, converted to OKLCH (never pasted as hex, so this
-   * file does not drift into two notations). Every value below is a VALUE
-   * change only — no token was added or removed except where noted, so the
-   * 125 component files that already name these tokens pick up the new
-   * palette with zero edits (plan 101 §3.1).
-   *
-   * `--color-bg` is the one deliberate exception: plan 101 H3 (owner-run,
-   * §7) decides whether the reference's near-black `#0a0a0a` replaces this
-   * cool-graphite value or whether `docs/design.md`'s "pure black makes
-   * status colours shout" argument stands. Left at its pre-refresh value
-   * until that judgement is recorded — see `docs/design.md` §Direction for
-   * the same note.
-   */
-  --color-bg: oklch(0.185 0.012 245);
-  --color-surface: oklch(0.209 0.004 245); /* #181818 */
-  /* Repurposed by plan 101: the reference's "surface-2" is a RECESSED panel
-     (#0d0d0d, darker than --color-surface), not the elevated one this token
-     meant before the refresh — the mapping plan 101 §4.1 states explicitly. */
-  --color-surface-2: oklch(0.159 0.004 245); /* #0d0d0d */
-  /* No reference counterpart (the mockup never needed a third surface
-     step) — kept as the ELEVATED surface existing components (dialogs,
-     popovers, skeletons) already rely on, continuing the pre-refresh
-     progression above --color-surface rather than guessing a new role. */
-  --color-surface-3: oklch(0.27 0.006 245);
-  --color-line: oklch(0.325 0.002 245); /* rgba(255,255,255,0.12) composited on #181818 */
-  --color-line-strong: oklch(0.341 0.002 245); /* rgba(255,255,255,0.14) composited on #181818 */
+  /* Radii (handoff "Radii"): 16 page panels, 18 floating window and cast,
+     14 cards/sheets/status bar, 12 inner cards, 10 buttons and rows,
+     9 settings inputs and nav items, 8 small buttons, 7 compact chips,
+     5 checkboxes, 999 pills. */
+  --radius-panel: 16px;
+  --radius-window: 18px;
+  --radius-card: 14px;
+  --radius-inner: 12px;
+  --radius-button: 10px;
+  --radius-input: 9px;
+  --radius-small: 8px;
+  --radius-chip: 7px;
+  --radius-check: 5px;
+  --radius-pill: 999px;
 
-  --color-fg: oklch(0.961 0.002 245); /* #f2f2f2 */
-  /* The reference expresses muted/subtle text as alpha-white; converted to
-     solid tokens (composited over --color-surface) so opacity modifiers on
-     THESE tokens stay available for callers that genuinely want them,
-     rather than the tokens themselves being semi-transparent. */
-  --color-fg-muted: oklch(0.64 0.004 245); /* rgba(255,255,255,0.5) composited on #181818 */
-  --color-fg-subtle: oklch(0.52 0.004 245); /* rgba(255,255,255,0.35) composited on #181818 */
+  /* Type scale (handoff "Typography"), one name per step. */
+  --text-section: 19px;
+  --text-sheet: 16px;
+  --text-title: 15px;
+  --text-name: 14px;
+  --text-row: 13px;
+  --text-body: 12.5px;
+  --text-meta: 11.5px;
+  --text-label: 11px;
+  --text-badge: 10.5px;
+  --text-tip: 10px;
 
-  /* Interactive: the reference's backlit blue. */
-  --color-accent: oklch(0.756 0.130 250.5); /* #6db5ff */
-  --color-accent-strong: oklch(0.82 0.14 250.5);
-  --color-accent-fg: oklch(0.16 0.02 245);
-
-  /* Status = an equipment indicator LED. `led-ok`/`led-warn`/`led-danger`
-     map 1:1 onto the reference's three status colours (plan 101 G6).
-     `led-active`/`led-off` have NO reference counterpart — the mockup never
-     had to render an idle rack — so they are RE-DERIVED against the new
-     palette, never dropped (plan 101 §3.2): `led-active`'s hue now matches
-     the new accent (250.5, was 245) so "streaming" still reads as an
-     extension of the interactive colour; `led-off`'s lightness is nudged
-     down slightly to keep it legible against the still-fairly-dark
-     `--color-surface` above. */
-  --color-led-ok: oklch(0.800 0.182 151.7); /* #4ade80 */
-  --color-led-active: oklch(0.72 0.13 250.5);
-  /* The reference's warn (#fefa3d) converts to oklch(0.958 0.192 108.3) —
-     markedly brighter than anything else in this palette, exactly the
-     contrast risk plan 101 §4.1/§8 flagged. Landed a step down in both L
-     and C (still clearly brighter than the pre-refresh warn) rather than
-     adopted verbatim. */
-  --color-led-warn: oklch(0.88 0.17 108);
-  --color-led-danger: oklch(0.691 0.199 23.9); /* #ff5c5c */
-  --color-led-off: oklch(0.46 0.006 245);
-
-  --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, monospace;
-
-  --radius-card: 0.5rem;
+  /* The only two animations the handoff allows (README "Interactions"). */
+  --animate-enkaku-pulse: enkaku-pulse 2.6s ease-in-out infinite;
+  --animate-enkaku-spin: enkaku-spin 0.9s linear infinite;
+  @keyframes enkaku-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  @keyframes enkaku-spin {
+    to { transform: rotate(360deg); }
+  }
 }
 
+/* ---- B. Colours, fonts and shadows: names over palette.css's values ---- */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-panel-a: var(--panel-a);
+  --color-muted: var(--muted);
+  --color-muted-2: var(--muted-2);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-border: var(--border);
+  --color-border-2: var(--border-2);
+  --color-border-3: var(--border-3);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-dim: var(--dim);
+  --color-faint: var(--faint);
+  --color-faint-2: var(--faint-2);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-accent-a1: var(--accent-a1);
+  --color-accent-a2: var(--accent-a2);
+  --color-accent-a3: var(--accent-a3);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-warn-2: var(--warn-2);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-avatar-bg: var(--avatar-bg);
+  --color-avatar-fg: var(--avatar-fg);
+  --color-tooltip-bg: var(--tooltip-bg);
+  --color-tooltip-fg: var(--tooltip-fg);
+  --color-scrim: var(--scrim);
 
-/*
- * Bridge to shadcn/ui: its components use their own token names. They map onto
- * the instrument palette above so the whole interface draws from one palette
- * rather than two that fight each other.
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
+
+  /* Shadows (handoff "Shadows"), plus the two the table and the card dot draw. */
+  --shadow-active-pill: 0 1px 3px #00000014;
+  --shadow-cast: 0 8px 24px #00000014;
+  --shadow-bulk-pill: 0 10px 24px var(--accent-a3);
+  --shadow-popover: 0 16px 40px #0000001f;
+  --shadow-menu: 0 20px 50px #00000024;
+  --shadow-window: 0 30px 80px #00000033;
+  --shadow-selected-row: inset 2px 0 0 var(--accent);
+  --shadow-dot-ring: 0 0 0 3px var(--panel-a);
+}
+
+/* ---- C. (reserved: nothing; the section letter keeps §4.3's numbering stable) ---- */
+
+/* ---- D. Prototype vocabulary, retained until its importers are deleted ----
+ *
+ * NOT part of the design. These are the v0.1.32 Studio's token names, kept
+ * verbatim so the old screens and the two plugin views keep rendering on the
+ * `mvp` branch until wave 3 replaces them (plan 204 §3.5, §9 Q1). A NEW
+ * screen must never name one of these. Deleted by: the last of plans 213–220
+ * to delete an importer (Studio), and the plugin-view migration plan
+ * (plan 204 §9 Q2). Old names that collide with a handoff name
+ * (`--color-accent`, `--color-line`, `--color-muted`, `--color-border`,
+ * `--radius-card`) are already gone; the handoff value wins.
  */
 @theme {
-  --color-background: var(--color-bg);
+  --color-bg: oklch(0.185 0.012 245);
+  --color-surface: oklch(0.209 0.004 245);
+  --color-surface-2: oklch(0.159 0.004 245);
+  --color-surface-3: oklch(0.27 0.006 245);
+  --color-line-strong: oklch(0.341 0.002 245);
+  --color-fg: oklch(0.961 0.002 245);
+  --color-fg-muted: oklch(0.64 0.004 245);
+  --color-fg-subtle: oklch(0.52 0.004 245);
+  --color-accent-strong: oklch(0.82 0.14 250.5);
+  --color-accent-fg: oklch(0.16 0.02 245);
+  --color-led-ok: oklch(0.800 0.182 151.7);
+  --color-led-active: oklch(0.72 0.13 250.5);
+  --color-led-warn: oklch(0.88 0.17 108);
+  --color-led-danger: oklch(0.691 0.199 23.9);
+  --color-led-off: oklch(0.46 0.006 245);
+
   --color-foreground: var(--color-fg);
-
   --color-card: var(--color-surface);
-  --color-card-foreground: var(--color-fg);
   --color-popover: var(--color-surface-2);
-  --color-popover-foreground: var(--color-fg);
-
-  --color-primary: var(--color-accent);
-  --color-primary-foreground: var(--color-accent-fg);
-  --color-secondary: var(--color-surface-2);
-  --color-secondary-foreground: var(--color-fg);
-
-  --color-muted: var(--color-surface-2);
+  --color-primary: var(--accent);
   --color-muted-foreground: var(--color-fg-muted);
-
-  --color-accent-foreground: var(--color-fg);
-
   --color-destructive: var(--color-led-danger);
-  --color-destructive-foreground: oklch(0.98 0 0);
-
-  --color-border: var(--color-line);
   --color-input: var(--color-line-strong);
-  --color-ring: var(--color-accent);
+  --color-ring: var(--accent);
 
-  --radius: 0.5rem;
   --radius-sm: 0.3rem;
   --radius-md: 0.45rem;
   --radius-lg: 0.6rem;

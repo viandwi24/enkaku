@@ -11,12 +11,13 @@ import { api, useAction } from '@enkaku/ui'
  * This closes a real gap: `devices.ts`'s own doc comment above the route
  * claimed "the Studio 'Rescan / scan all networks' button" already called
  * it, but nothing under `packages/studio/src` ever did — confirmed by grep
- * before this file existed. Two screens need the trigger (Settings →
- * Discovery & monitoring's `FarmNetworksEditor`, where the ranges are
- * configured, and the Devices page's own fleet menu, where an operator
- * would actually run one day to day) and both share this hook rather than
- * each hand-rolling its own fetch + report wording, the same "one path for
- * every action" reasoning `useAction` itself already documents.
+ * before this file existed. One screen needs the trigger now: the Devices
+ * page's own fleet menu → Scan networks (`ScanNetworkDialog.tsx`), which is
+ * where the ranges are BOTH configured and swept since the owner asked for
+ * the Settings section to go (2026-09-04). The hook stays a hook rather
+ * than folding into that dialog: the report wording below is shared with
+ * the audit trail's own vocabulary, and a second door (a fleet-wide
+ * schedule, say) must not grow a second dialect.
  *
  * Deliberately thin: `sweeper.sweep()` already enforces `scan.mode`/"no
  * scannable network" (`E_SCAN_UNAVAILABLE`) and the singleton mutex
@@ -31,8 +32,16 @@ export function useNetworkScan(onScanned?: (report: SweepReport) => void) {
   const { run, isPending } = useAction()
   const [lastReport, setLastReport] = useState<SweepReport | null>(null)
 
-  const scan = () =>
-    run('scan-network', () => api('/api/devices/scan', SweepReportSchema, { method: 'POST' }), {
+  /**
+   * `cidrs` narrows the sweep to those ranges — the per-row Scan button
+   * beside a range in the Devices page's Scan dialog. Omitted, this is the
+   * whole-farm sweep it always was. The narrowing is enforced server-side
+   * (`SweepRequestSchema`, `registry/sweep.ts`'s `only`): a range that is
+   * not saved, or is saved untick, is refused rather than swept, so the
+   * button can never probe an address space nobody configured.
+   */
+  const scan = (cidrs?: string[]) =>
+    run('scan-network', () => api('/api/devices/scan', SweepReportSchema, { method: 'POST', json: cidrs ? { cidrs } : {} }), {
       failure: 'Could not scan the network',
       onSuccess: (report) => {
         setLastReport(report)
@@ -83,6 +92,6 @@ export function hasScannableNetwork(networks: { scan: boolean }[]): boolean {
 export function scanDisabledReason(networks: { scan: boolean }[] | null): string | null {
   if (networks === null) return 'Checking farm networks…'
   if (networks.length === 0) return 'No networks configured — the sweep cannot run'
-  if (!hasScannableNetwork(networks)) return 'No network has "Include in a sweep" turned on — check Farm networks under Settings → Discovery & monitoring'
+  if (!hasScannableNetwork(networks)) return 'No range has "Include in a sweep" turned on — tick one in the table above'
   return null
 }

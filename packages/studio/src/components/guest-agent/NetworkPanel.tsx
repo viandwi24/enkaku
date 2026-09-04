@@ -52,7 +52,7 @@ export function NetworkPanel({
   /**
    * The same server-authoritative gate every other mutating control on this
    * page uses (`iHoldControl && !busy`) — a convenience only, the server
-   * checks the lease itself on every `network` request regardless.
+   * checks the control activity itself on every `network` request regardless.
    */
   canUse: boolean
 }) {

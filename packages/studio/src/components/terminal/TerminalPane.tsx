@@ -1,8 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import Link from 'next/link'
-import { CommandRunsPageResponseSchema, isHighConsequence, type ServerMessage } from '@enkaku/protocol'
+import { isHighConsequence, type ServerMessage } from '@enkaku/protocol'
 import { newId, ws } from '@/lib/ws'
 import {
   AlertDialog,
@@ -16,7 +15,6 @@ import {
   Button,
   EmptyState,
   Input,
-  api,
   cn,
 } from '@enkaku/ui'
 
@@ -24,8 +22,8 @@ import {
  * The interactive device terminal (plan 26 §4.5). Beside the Monitor pane:
  * arbitrary `adb shell` commands, gated server-side (the input box being
  * enabled here is a convenience, never the control — spec §10.1). Everyone
- * viewing this device sees the transcript live; only the lease holder can
- * type (§3.8).
+ * viewing this device sees the transcript live; only the control-marker
+ * holder can type (§3.8).
  *
  * No xterm.js (§4.5): there is no pty here, so there is nothing for a
  * terminal emulator to emulate — no cursor addressing, no colours, no
@@ -60,7 +58,7 @@ export function TerminalPane({
   onRunAsStream,
 }: {
   deviceId: string
-  /** Only the lease holder may type (plan 26 §3.8) — everyone else watches. */
+  /** Only the control-marker holder may type (plan 26 §3.8) — everyone else watches. */
   canType: boolean
   /** The `stream_suggested` hint (§3.6): opens the Monitor pane on the same command. */
   onRunAsStream: (cmd: string) => void
@@ -118,39 +116,12 @@ export function TerminalPane({
     if (el) el.scrollTop = el.scrollHeight
   }, [entries])
 
-  // Plan 93 §3.5, §3.9 — arrow-up recall used to live only in this
-  // component's own `useState` (F3), so a remount (a page reload, or
-  // navigating away and back) wiped it. `shell.exec` now records through
-  // the same store the fan-out console uses (`ws-handlers.ts`), so the last
-  // 50 entries of the operator's OWN history — across every device, not
-  // just this one, per §3.9 — are fetched once on mount and seeded ahead of
-  // anything typed locally this session. History is a convenience, never
-  // load-bearing: a failed fetch (offline, `device.view` missing, an old
-  // core without this route) leaves arrow-up exactly as empty as it was
-  // before this step, never an error the operator has to dismiss.
-  useEffect(() => {
-    let cancelled = false
-    api('/api/command-runs?mine=1&limit=50', CommandRunsPageResponseSchema)
-      .then((page) => {
-        if (cancelled) return
-        // The API returns newest-first (`startedAt DESC`); `history` is
-        // oldest-to-newest, the same order `submit()` already appends in
-        // below, so ArrowUp keeps landing on the most recent command first.
-        const seeded = page.items.map((r) => r.cmd).reverse()
-        setHistory((h) => [...seeded, ...h])
-      })
-      .catch(() => {
-        // See the comment above the effect — silently leave history as-is.
-      })
-    return () => {
-      cancelled = true
-    }
-    // Seeded once per mount, not per device: plan 93 §3.9 is explicit that
-    // this is "the last 50 entries of your OWN history", not this device's,
-    // so switching `deviceId` on an already-mounted pane neither refetches
-    // nor clears it — matching how `history` already behaves today.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // Plan 207 §4.7, §4.9 — the fleet command surface (and its history-seed
+  // fetch) is gone entirely: ArrowUp
+  // recall is now exactly what was typed THIS session, in this component's
+  // own `useState` (the same limitation plan 93 §3.5's F3 originally
+  // reported and then fixed by seeding from history — that history no
+  // longer exists to seed from).
 
   function submit(cmd: string): void {
     const trimmed = cmd.trim()
@@ -161,7 +132,7 @@ export function TerminalPane({
     setHistoryIndex(null)
     setDraft('')
     const id = newId()
-    // A refusal (no lease, no permission, mode off, ...) arrives as `error`
+    // A refusal (no control marker, no permission, mode off, ...) arrives as `error`
     // with this id — success is NOT replied to the sender alone, it is
     // broadcast as `shell.echo`/`shell.result` to every viewer (§3.8), so
     // this listener only needs to catch the immediate-refusal case.
@@ -268,7 +239,7 @@ export function TerminalPane({
                 <code className="readout mt-1 block rounded-md bg-surface-2 px-2 py-1.5 text-[12px] break-all">{confirmCmd}</code>
                 <p className="mt-2">
                   This looks like it could affect the whole device (reboot, power, or adb settings). This is a
-                  Studio-side reminder, not a server-side restriction — the command runs exactly as typed either way.
+                  Studio-side reminder, not a server-side restriction — it runs exactly as typed either way.
                 </p>
               </div>
             </AlertDialogDescription>
@@ -341,14 +312,10 @@ function TranscriptRow({
                 Run as a stream
               </button>
             )}
-            {/* Plan 93 §3.16, step 93.7 — opens the fleet console with this
-                exact command prefilled and this device preselected. The
-                console is a SEPARATE surface (§3.17): this link does not run
-                anything itself, it only hands the same text to the one place
-                that starts a fan-out run. */}
-            <Link href={`/console?cmd=${encodeURIComponent(cmd)}&deviceId=${encodeURIComponent(deviceId)}`} className="text-accent underline">
-              Run on more devices…
-            </Link>
+            {/* Plan 207 §4.7 — the fleet command surface this used to link to
+                is gone entirely; running the same command on more devices is
+                now the device popup's own "Adb command" row (`AdbCommandDialog`,
+                a modal `TerminalPane` cannot reach into from here). */}
           </div>
         </>
       )}

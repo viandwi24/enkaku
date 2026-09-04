@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { EXPR_LIMITS } from '@enkaku/expr'
 import { ScriptRefSchema } from './script-ref'
 import { WorkflowParamNameSchema, WorkflowParamSchema, type WorkflowParam } from './workflow-params'
 
@@ -26,6 +27,10 @@ export const WORKFLOW_LIMITS = {
   maxRunSummaryBytes: 512 * 1024,
   /** Keys named in an unresolved-binding message (plan 99 §3.6). */
   maxSawKeys: 20,
+  /** A `switch` with more than this many cases is a table, and a table is a script (plan 303 §4.1). */
+  maxSwitchCases: 10,
+  /** The largest a single `delay` node may declare (plan 303 §3.4, §4.1). Longer waits are a schedule, not a workflow. */
+  maxDelayMs: 5 * 60_000,
 } as const
 
 /**
@@ -83,14 +88,9 @@ export const WorkflowNameSchema = z
     'lowercase letters, digits, and . _ - (one optional /-separated segment) — the same grammar a script name uses',
   )
 
-/** Duplicates the VERSION half of the same grammar, for the same reason `WorkflowNameSchema` does. */
-export const WorkflowVersionSchema = z
-  .string()
-  .regex(/^\d+\.\d+\.\d+(?:[-+].+)?$/, 'must be semver: X.Y.Z, optionally with a -prerelease and/or +build suffix')
-
 /**
- * A value a node parameter or a gate operand can take (plan 99 §3.6). Four
- * forms, closed:
+ * A value a node parameter or a gate operand can take (plan 99 §3.6, plan 300
+ * D4). Five forms, closed:
  *
  * - `{ const }` — a literal.
  * - `{ param }` — a WORKFLOW parameter (`workflow-params.ts`).
@@ -99,17 +99,20 @@ export const WorkflowVersionSchema = z
  *   failing the node when the path does not resolve (plan 99 §3.6's
  *   "unchecked" branch, resolved at run time by `workflow-resolve.ts`).
  * - `{ run: 'summary' }` — the run summary: one entry per completed node.
- *
- * Never a fifth form that COMPUTES — see `workflow.ts`'s module doc and plan
- * 99 §3.6: the moment a binding can compute, it is an expression language,
- * and this plan refuses to build one (F27, the same refusal plan 95 §3.8 R2
- * already made for an author-supplied regular expression).
+ * - `{ expr }` — a pure, bounded expression parsed and evaluated by
+ *   `@enkaku/expr` (plan 300 D4, plan 302). Plan 99 §3.6's F27 stance — a
+ *   binding must never compute — is reversed by plan 300 D4, on the grounds
+ *   that `@enkaku/expr` is a closed, pure, prototype-free AST interpreter,
+ *   never `eval`/`new Function`/a library that emits JavaScript — see plan
+ *   300 §3 D4 for the evidence and the boundary. The other four forms are
+ *   unchanged.
  */
 export type ValueExpr =
   | { const: unknown }
   | { param: string }
   | { from: string; path?: string; optional: boolean; default?: unknown }
   | { run: 'summary' }
+  | { expr: string }
 
 export const ValueExprSchema: z.ZodType<ValueExpr> = z.union([
   z.object({ const: z.unknown() }).strict(),
@@ -123,6 +126,7 @@ export const ValueExprSchema: z.ZodType<ValueExpr> = z.union([
     })
     .strict(),
   z.object({ run: z.literal('summary') }).strict(),
+  z.object({ expr: z.string().min(1).max(EXPR_LIMITS.maxSourceBytes) }).strict(),
 ])
 
 /**
@@ -193,26 +197,59 @@ export const PredicateSchema: z.ZodType<Predicate> = PredicateShapeSchema.superR
   }
 })
 
-/** Where the cursor goes next (plan 99 §3.7). `stop` ends the workflow SUCCESSFULLY, here. `fail` ends it FAILED. `goto` may jump forward or backward. */
-export const GateOutcomeSchema = z.union([
-  z.object({ go: z.enum(['continue', 'stop', 'fail']) }).strict(),
-  z.object({ go: z.literal('goto'), node: WorkflowNodeIdSchema }).strict(),
-])
-export type GateOutcome = z.infer<typeof GateOutcomeSchema>
+/**
+ * Canvas position (plan 300 D2, plan 301 §4.1) — integers, bounded, so a
+ * document cannot carry a 1e308 that breaks the viewport maths.
+ */
+export const WorkflowPointSchema = z
+  .object({
+    x: z.number().int().min(-100_000).max(100_000),
+    y: z.number().int().min(-100_000).max(100_000),
+  })
+  .strict()
+export type WorkflowPoint = z.infer<typeof WorkflowPointSchema>
+
+/** Fields every node has, whatever its kind (plan 301 §4.1). */
+const nodeBase = {
+  id: WorkflowNodeIdSchema,
+  title: z.string().max(80).default(''),
+  ui: WorkflowPointSchema,
+}
 
 /**
- * One node in a workflow document (plan 99 §4.1). `kind: 'script'` runs an
- * ordinary published script as a child, through the SAME `JobRunner` every
- * standalone job uses (§3.4) — nothing about a node's `timeout`/`retries`/
- * `finish()` is reimplemented. `kind: 'gate'` evaluates a predicate
- * in-process, spawning no child and making no device call (§3.7).
+ * One node in a workflow document (plan 99 §4.1, rewritten by plan 301 §4.1
+ * for doc v2). Every edge is written down as a node id (plan 300 D1) — array
+ * order (`nodes[]`) carries no control meaning any more. `kind: 'start'` and
+ * `kind: 'finish'` are new (plan 301 §3.2, §3.4): a run begins at the ONE
+ * `start` node named by `doc.entry` and ends at a `finish` node (or a
+ * dangling edge, which behaves as one — see `WorkflowDocSchema`'s own doc
+ * comment). `kind: 'script'` runs an ordinary published script as a child,
+ * through the SAME `JobRunner` every standalone job uses (§3.4) — nothing
+ * about a node's `timeout`/`retries`/`finish()` is reimplemented. `kind:
+ * 'gate'` evaluates a predicate in-process, spawning no child and making no
+ * device call (§3.7). `kind: 'switch'` and `kind: 'delay'` are new (plan 303
+ * §3.2, §4.1): `switch` is the owner's "conditions C -> 1 / 2 / 3" as one
+ * node — an ordered list of predicate-plus-target cases, first match wins,
+ * `default` otherwise — and `delay` is a bounded, cancellable wait, core-
+ * owned because its budget contribution (`maxMs`) must be known statically.
+ * Six kinds total, and the list is closed (plan 300 D8): a plugin may never
+ * define a seventh.
  */
+export const WORKFLOW_NODE_KINDS = ['start', 'script', 'gate', 'switch', 'delay', 'finish'] as const
 export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
   z
     .object({
+      ...nodeBase,
+      kind: z.literal('start'),
+      /** Absent = dangling; reaching it ends the run succeeded (plan 301 §3.2). */
+      next: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
+
+  z
+    .object({
+      ...nodeBase,
       kind: z.literal('script'),
-      id: WorkflowNodeIdSchema,
-      title: z.string().max(80).default(''),
       /** `name@version` or `name@latest` — the EXISTING reference grammar (F17), no second resolution path. */
       script: ScriptRefSchema,
       params: z.record(WorkflowParamNameSchema, ValueExprSchema).default({}),
@@ -220,20 +257,79 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
       reset: z.enum(['farm', 'none']).optional(),
       /** Overrides the node script's own `ScriptDefinition.retries`. */
       retries: z.number().int().min(0).max(10).optional(),
-      onFailure: GateOutcomeSchema.default({ go: 'fail' }),
-      /** Explicit successor; absent = the next node in the array (plan 99 §3.9). */
+      /** Absent = dangling; reaching it ends the run succeeded (plan 301 §3.2). */
+      next: WorkflowNodeIdSchema.optional(),
+      /** Absent = dangling; reaching it ends the run failed (plan 301 §3.2). */
+      onFailure: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
+
+  z
+    .object({
+      ...nodeBase,
+      kind: z.literal('gate'),
+      when: PredicateSchema,
+      then: WorkflowNodeIdSchema.optional(),
+      else: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
+
+  /**
+   * `switch` (plan 303 §3.3, §4.1) — the owner's "conditions C -> 1 / 2 / 3"
+   * as ONE node, not a chain of gates. A case is a predicate PLUS a target,
+   * never an expression returning an output index (plan 300 R7's n8n
+   * comparison, refused deliberately): an index breaks silently when cases
+   * are reordered on the canvas and the fired branch is not visible on the
+   * edge. Cases are evaluated in array order, first match wins; `default`
+   * fires when none do. It reuses `PredicateSchema` unchanged, so the
+   * existing depth/leaf limits and predicate editor both already apply.
+   */
+  z
+    .object({
+      ...nodeBase,
+      kind: z.literal('switch'),
+      cases: z
+        .array(
+          z
+            .object({
+              when: PredicateSchema,
+              /** Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2), same as every other dangling edge. */
+              to: WorkflowNodeIdSchema.optional(),
+              label: z.string().max(40).default(''),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(WORKFLOW_LIMITS.maxSwitchCases),
+      default: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
+
+  /**
+   * `delay` (plan 303 §3.4, §4.1) — a wait, costing a step, touching no
+   * device. Core-owned rather than a script because its bound must be known
+   * STATICALLY for `checkWorkflow`'s budget walk (§4.7 item 7): `ms` may be
+   * ANY `ValueExpr` (including `{ expr }`, resolved at run time), but
+   * `maxMs` is the document's own declared ceiling, is what the checker
+   * sums into the budget, and is what the executor clamps the resolved
+   * value to — a budget that cannot be computed statically is not a budget.
+   */
+  z
+    .object({
+      ...nodeBase,
+      kind: z.literal('delay'),
+      ms: ValueExprSchema,
+      maxMs: z.number().int().min(0).max(WORKFLOW_LIMITS.maxDelayMs),
       next: WorkflowNodeIdSchema.optional(),
     })
     .strict(),
+
   z
     .object({
-      kind: z.literal('gate'),
-      id: WorkflowNodeIdSchema,
-      title: z.string().max(80).default(''),
-      when: PredicateSchema,
-      then: GateOutcomeSchema.default({ go: 'continue' }),
-      else: GateOutcomeSchema.default({ go: 'stop' }),
-      /** Shown on the job row when this gate ends the workflow. */
+      ...nodeBase,
+      kind: z.literal('finish'),
+      status: z.enum(['succeed', 'fail']).default('succeed'),
+      /** Shown on the job row when this node ends the run — the message `gate.message` used to carry (plan 301 §3.2). */
       message: z.string().max(200).default(''),
     })
     .strict(),
@@ -242,12 +338,13 @@ export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>
 
 const WorkflowDocShapeSchema = z
   .object({
-    schema: z.literal(1),
+    schema: z.literal(2),
     name: WorkflowNameSchema,
-    version: WorkflowVersionSchema,
     title: z.string().max(80).default(''),
     description: z.string().max(300).default(''),
     params: z.array(WorkflowParamSchema).max(WORKFLOW_LIMITS.maxParams).default([]),
+    /** The one `start` node. Never `nodes[0]` (plan 301 §3.4) — reordering the array never moves the start. */
+    entry: WorkflowNodeIdSchema,
     nodes: z.array(WorkflowNodeSchema).min(1).max(WORKFLOW_LIMITS.maxNodes),
     /** Node EXECUTIONS, not nodes (plan 99 §3.9) — a loop can make the step count exceed the node count. */
     maxSteps: z.number().int().min(1).max(500).default(50),
@@ -260,13 +357,26 @@ const WorkflowDocShapeSchema = z
   .strict()
 
 /**
- * The validated workflow document (plan 99 §3.1, §4.1) — this, not an ESM
- * bundle, is what `scripts.bundle` holds for a `kind: 'workflow'` row
- * (§4.5). Only what a per-node regex cannot express is checked here: node id
- * uniqueness. Everything requiring a lookup against OTHER scripts (a
- * dangling `goto`, a binding that reads a node that cannot have run yet, a
+ * The validated workflow document — doc v2 (plan 99 §3.1, §4.1; no version
+ * field of its own as of plan 210, MVP 03 §2.2 rule 4; rewritten to an
+ * explicit-edge graph by plan 301 §4.1, D1/D2). This is what `workflows.doc`
+ * and `jobs.workflow_doc` hold: a farm-owned pipeline, edited in place, with
+ * no version of its own. A job snapshots this document at enqueue time so
+ * editing a workflow never changes a queued or running job.
+ *
+ * Every edge is a node id (`next`/`onFailure`/`then`/`else`), never an array
+ * position: `nodes[]` is storage order and nothing more. A run begins at
+ * `doc.entry` (the one `start` node) and ends at a `finish` node, or at a
+ * dangling edge — an edge field left absent — which behaves as one (plan 301
+ * §3.2): reaching the end of a `next` ends the run succeeded, reaching the
+ * end of an `onFailure` ends it failed.
+ *
+ * Only what a per-node regex or a local invariant cannot express is checked
+ * here: node id uniqueness, and that `entry` names a real `start` node.
+ * Everything requiring a lookup against OTHER nodes or scripts (a dangling
+ * edge, reachability, a binding that reads a node that cannot have run yet, a
  * `{ param }` naming an undeclared workflow parameter) is `checkWorkflow`'s
- * job (`workflow-check.ts`, plan 99 §4.3, step 99.6) — a separate, pure
+ * job (`workflow-check.ts`, plan 99 §4.3 / plan 301 §4.2) — a separate, pure
  * function that needs resolved script metadata this schema does not have.
  */
 export const WorkflowDocSchema = WorkflowDocShapeSchema.superRefine((doc, ctx) => {
@@ -283,5 +393,17 @@ export const WorkflowDocSchema = WorkflowDocShapeSchema.superRefine((doc, ctx) =
       path: ['nodes', index, 'id'],
     })
   })
+
+  const entryIndex = doc.nodes.findIndex((n) => n.id === doc.entry)
+  if (entryIndex === -1) {
+    ctx.addIssue({ code: 'custom', message: `entry "${doc.entry}" is not a node in this document`, path: ['entry'] })
+  } else if (doc.nodes[entryIndex]?.kind !== 'start') {
+    ctx.addIssue({ code: 'custom', message: `entry "${doc.entry}" must name a "start" node`, path: ['entry'] })
+  }
+
+  const startNodes = doc.nodes.filter((n) => n.kind === 'start')
+  if (startNodes.length !== 1) {
+    ctx.addIssue({ code: 'custom', message: `a document must have exactly one "start" node (found ${startNodes.length})`, path: ['nodes'] })
+  }
 })
 export type WorkflowDoc = z.infer<typeof WorkflowDocSchema>

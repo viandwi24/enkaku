@@ -11,9 +11,13 @@ import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.util.Log
 import dev.enkaku.guestagent.R
+import dev.enkaku.guestagent.activity.ActivityMirror
 import dev.enkaku.guestagent.identity.MockLocation
+import dev.enkaku.guestagent.identity.MockLocationState
+import dev.enkaku.guestagent.input.ImePrefs
 import dev.enkaku.guestagent.input.TextFacet
 import dev.enkaku.guestagent.label.WallpaperFacet
 import dev.enkaku.guestagent.route.DeadMansSwitch
@@ -22,6 +26,9 @@ import dev.enkaku.guestagent.route.Ipv6Leak
 import dev.enkaku.guestagent.route.RouteState
 import dev.enkaku.guestagent.route.RouteVpnService
 import dev.enkaku.guestagent.route.Socks5Upstream
+import dev.enkaku.guestagent.ui.UiTreeService
+import dev.enkaku.guestagent.ui.UiTreeState
+import dev.enkaku.guestagent.ui.UiTreeWatch
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.InputStreamReader
@@ -45,7 +52,7 @@ class ControlService : Service() {
 
   private val running = AtomicBoolean(false)
   /**
-   * Backstop for a farm that vanishes. Host-side lease teardown is the normal path; this covers the
+   * Backstop for a farm that vanishes. Host-side teardown is the normal path; this covers the
    * case where the host is the thing that died and so runs no cleanup at all. Holds the route
    * closed rather than tearing it down (plan 54 §3.1) — `RouteVpnService.hold()` re-derives whether
    * this device's route actually wants that (`failClosed`) or the pre-plan-54 tear-down, so this
@@ -141,27 +148,51 @@ class ControlService : Service() {
         .also { it.start() }
   }
 
-  /** One connection, newline-delimited JSON, one response per request, until the peer closes. */
+  /**
+   * One connection, newline-delimited JSON, one response per request, until the peer closes.
+   *
+   * Plan 221 §4.4: a connection that issues `ui.watch` keeps this same loop reading requests
+   * (`ui.unwatch`, or nothing until the peer closes), while [UiTreeWatch] writes unsolicited
+   * `ui.changed` frames onto the SAME connection from its own debounce thread. Both writers take
+   * [writer]'s own monitor before writing a line, so a reply and an event can never interleave
+   * mid-line. `finally` unsubscribes only if THIS connection ever subscribed — an unrelated
+   * connection's own subscription must survive this one closing.
+   */
   private fun serve(client: LocalSocket) {
     client.use {
       val reader = BufferedReader(InputStreamReader(it.inputStream, Charsets.UTF_8))
       val writer = BufferedWriter(OutputStreamWriter(it.outputStream, Charsets.UTF_8))
-      while (running.get()) {
-        val line = reader.readLine() ?: return
-        if (line.isBlank()) continue
-        val response = runCatching { handle(line) }
-          .getOrElse { err ->
-            Log.w(TAG, "request failed", err)
-            error(null, Protocol.ERR_BAD_REQUEST, err.message ?: "malformed request")
+      var subscribedHere = false
+      try {
+        while (running.get()) {
+          val line = reader.readLine() ?: return
+          if (line.isBlank()) continue
+          if (runCatching { JSONObject(line).optString("method") }.getOrNull() == Protocol.METHOD_UI_WATCH) {
+            subscribedHere = true
           }
-        writer.write(response.toString())
-        writer.write("\n")
-        writer.flush()
+          val response = runCatching { handle(line, writer) }
+            .getOrElse { err ->
+              Log.w(TAG, "request failed", err)
+              error(null, Protocol.ERR_BAD_REQUEST, err.message ?: "malformed request")
+            }
+          writeLine(writer, response)
+        }
+      } finally {
+        if (subscribedHere) UiTreeWatch.unsubscribe()
       }
     }
   }
 
-  private fun handle(line: String): JSONObject {
+  /** The one place any thread writes a line onto a control-channel connection — see [serve]'s doc comment. */
+  private fun writeLine(writer: BufferedWriter, obj: JSONObject) {
+    synchronized(writer) {
+      writer.write(obj.toString())
+      writer.write("\n")
+      writer.flush()
+    }
+  }
+
+  private fun handle(line: String, writer: BufferedWriter): JSONObject {
     val request = JSONObject(line)
     val id = request.optString("id").takeIf { it.isNotEmpty() }
     val method = request.optString("method")
@@ -187,14 +218,33 @@ class ControlService : Service() {
     // this, and the dead-man's switch's own `lastContact` is private to it by design.
     ControlChannelState.recordRequest(method)
 
+    /**
+     * Every response echoes the method this service PARSED and dispatched on.
+     *
+     * The host sent `ui.status` — proven from the bytes it wrote — and this
+     * service answered with the `ui.unwatch` body under the host's own
+     * request id. Both sides' source is correct, the compiled arm is in the
+     * installed APK, and force-stopping the process changed nothing
+     * (2026-09-04). One assumption is left untested: that the string this
+     * `when` switches on is the string the host sent. This echo tests it, and
+     * costs one field.
+     */
+    return dispatch(method, id, request, writer).also { it.put("method", method) }
+  }
+
+  private fun dispatch(method: String, id: String?, request: JSONObject, writer: BufferedWriter): JSONObject {
     return when (method) {
-      Protocol.METHOD_HELLO ->
+      Protocol.METHOD_HELLO -> {
+        // Plan 221 §4.8, §4.9 — stored before answering so a status-screen read immediately after
+        // `hello` already sees it; `0` (absent) is simply ignored by `HostExpectation.set`.
+        HostExpectation.set(request.optInt("expectVersionCode", 0))
         ok(id) {
           put("protocol", Protocol.PROTOCOL_VERSION)
           put("appVersion", appVersion())
           put("androidSdkInt", Build.VERSION.SDK_INT)
           put("capabilities", JSONArray(Protocol.CAPABILITIES))
         }
+      }
       Protocol.METHOD_PING -> ok(id) { put("pong", true) }
 
       Protocol.METHOD_ROUTE_START -> {
@@ -303,6 +353,7 @@ class ControlService : Service() {
         val accuracy = request.optDouble("accuracy", 100.0).toFloat()
         try {
           MockLocation.set(this, lat, lng, accuracy)
+          MockLocationState.recordSet(lat, lng)
         } catch (se: SecurityException) {
           // Same code RouteVpnService's missing-VPN-consent path uses (METHOD_ROUTE_START above)
           // — an operator precondition is missing, not a malformed request.
@@ -317,6 +368,7 @@ class ControlService : Service() {
 
       Protocol.METHOD_LOCATION_CLEAR -> {
         MockLocation.clear(this)
+        MockLocationState.recordCleared()
         ok(id) { put("cleared", true) }
       }
 
@@ -354,7 +406,20 @@ class ControlService : Service() {
           put("ime", status.ime)
           put("id", status.id)
           put("connected", status.connected)
+          put("softKeyboardShown", status.softKeyboardShown)
+          put("showSoftKeyboardWithHardware", status.showSoftKeyboardWithHardware)
         }
+      }
+
+      // Plan 221 §4.6 — writes the per-device preference the IME's own `onEvaluateInputViewShown`
+      // reads; the result is always the read-back, never the value that was sent (same discipline
+      // `route.status` uses after `route.start`).
+      Protocol.METHOD_TEXT_PREFS -> {
+        if (!request.has("showSoftKeyboardWithHardware")) {
+          return error(id, Protocol.ERR_BAD_REQUEST, "missing showSoftKeyboardWithHardware")
+        }
+        ImePrefs.setShowSoftKeyboardWithHardware(this, request.optBoolean("showSoftKeyboardWithHardware"))
+        ok(id) { put("showSoftKeyboardWithHardware", ImePrefs.showSoftKeyboardWithHardware(this@ControlService)) }
       }
 
       // Plan 89 §4.5; plan 90 §3.6, §4.1, §4.2 (Task B — no step in plan 90 assigned this facet;
@@ -411,6 +476,140 @@ class ControlService : Service() {
           // `LabelClearResultSchema.fingerprint` is `z.null()` — always JSON null, never absent.
           put("fingerprint", JSONObject.NULL)
         }
+      }
+
+      // Plan 221 §4.2, §4.8 — the first-party inspector. `UiTreeService.instance()` is null both
+      // when the service is not enabled in Settings and when it has not connected yet; the two are
+      // not distinguished here (`ui.status` is where that distinction is reported), because either
+      // way there is nothing on the device to dump or search right now.
+      Protocol.METHOD_UI_DUMP -> {
+        val service = UiTreeService.instance()
+          ?: return error(id, Protocol.ERR_UI_TREE_UNAVAILABLE, "the ui-tree service is not enabled or not connected")
+        val maxDepth = request.optInt("maxDepth", -1).takeIf { it > 0 } ?: UiTreeService.MAX_DEPTH
+        val maxNodes = request.optInt("maxNodes", -1).takeIf { it > 0 } ?: UiTreeService.MAX_NODES
+        val dump = service.dump(maxDepth, maxNodes)
+        ok(id) {
+          put("root", dump.root)
+          put("widthPx", dump.widthPx)
+          put("heightPx", dump.heightPx)
+          put("nodeCount", dump.nodeCount)
+          put("truncated", dump.truncated)
+          put("tookMs", dump.tookMs)
+        }
+      }
+
+      Protocol.METHOD_UI_FIND -> {
+        val service = UiTreeService.instance()
+          ?: return error(id, Protocol.ERR_UI_TREE_UNAVAILABLE, "the ui-tree service is not enabled or not connected")
+        val selector = request.optJSONObject("selector")
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "missing selector")
+        // A `point` key is refused by name — it is a host-side synthetic node
+        // (`selector-match.ts`'s `matchSelector`), never a lookup this device can perform.
+        val kind = when {
+          selector.has("point") -> return error(id, Protocol.ERR_BAD_REQUEST, "selector must be one of id, desc, text")
+          selector.has("id") -> "id"
+          selector.has("desc") -> "desc"
+          selector.has("text") -> "text"
+          else -> return error(id, Protocol.ERR_BAD_REQUEST, "selector must be one of id, desc, text")
+        }
+        val value = selector.optString(kind)
+        val maxDepth = request.optInt("maxDepth", -1).takeIf { it > 0 } ?: UiTreeService.MAX_DEPTH
+        val maxNodes = request.optInt("maxNodes", -1).takeIf { it > 0 } ?: UiTreeService.MAX_NODES
+        val found = service.find(kind, value, maxDepth, maxNodes)
+        ok(id) {
+          put("node", found.node ?: JSONObject.NULL)
+          put("matches", found.matches)
+          put("tookMs", found.tookMs)
+        }
+      }
+
+      // Plan 221 §4.4 — the ack. `serve()` is what actually registers [writer] as the sink (it
+      // inspects the raw method name before dispatching here), and what unsubscribes on close;
+      // this branch only reports the debounce back so the host knows the coalescing window.
+      Protocol.METHOD_UI_WATCH -> {
+        UiTreeWatch.subscribe { event -> writeLine(writer, event) }
+        ok(id) {
+          put("watching", true)
+          put("debounceMs", UiTreeWatch.DEBOUNCE_MS.toInt())
+        }
+      }
+
+      Protocol.METHOD_UI_UNWATCH -> {
+        UiTreeWatch.unsubscribe()
+        ok(id) { put("watching", false) }
+      }
+
+      // `enabled` is the Settings fact, `connected` is the runtime fact — see `UiStatusResultSchema`'s
+      // doc comment for why they are reported separately (the repair differs).
+      Protocol.METHOD_UI_STATUS -> {
+        val enabledList = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        val enabled = enabledList?.contains(UiTreeService.COMPONENT_ID) == true
+        val connected = UiTreeService.instance() != null
+        val lastDumpAt = UiTreeState.lastDumpAt()
+        ok(id) {
+          put("enabled", enabled)
+          put("connected", connected)
+          put("watching", UiTreeWatch.isWatching())
+          if (lastDumpAt != UiTreeState.NEVER) {
+            put("lastDumpAgoMs", (android.os.SystemClock.elapsedRealtime() - lastDumpAt).toInt())
+            put("lastDumpNodes", UiTreeState.lastDumpNodes())
+          } else {
+            put("lastDumpAgoMs", JSONObject.NULL)
+            put("lastDumpNodes", JSONObject.NULL)
+          }
+          put("lastError", UiTreeState.lastError() ?: JSONObject.NULL)
+        }
+      }
+
+      // Plan 221 §4.5, MVP 10 §1.3 — read-only on the device: nothing here acts on the list, no
+      // notification, no route change, no service start. Re-validated the same way every other
+      // branch on this socket is, since the socket is reached by anything holding the token.
+      Protocol.METHOD_ACTIVITY_SET -> {
+        val activitiesArray = request.optJSONArray("activities")
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "missing activities")
+        val activities = mutableListOf<ActivityMirror.Activity>()
+        for (i in 0 until activitiesArray.length()) {
+          val entry = activitiesArray.optJSONObject(i)
+            ?: return error(id, Protocol.ERR_BAD_REQUEST, "activities entries must be objects")
+          val entryId = entry.optString("id").takeIf { it.isNotEmpty() }
+            ?: return error(id, Protocol.ERR_BAD_REQUEST, "activity missing id")
+          val kind = entry.optString("kind").takeIf { it.isNotEmpty() }
+            ?: return error(id, Protocol.ERR_BAD_REQUEST, "activity missing kind")
+          val label = entry.optString("label").takeIf { it.isNotEmpty() }
+            ?: return error(id, Protocol.ERR_BAD_REQUEST, "activity missing label")
+          val actorLabel = entry.optString("actorLabel").takeIf { it.isNotEmpty() }
+            ?: return error(id, Protocol.ERR_BAD_REQUEST, "activity missing actorLabel")
+          if (!entry.has("startedAt")) return error(id, Protocol.ERR_BAD_REQUEST, "activity missing startedAt")
+          activities += ActivityMirror.Activity(entryId, kind, label, actorLabel, entry.optLong("startedAt"))
+        }
+        val videoObj = if (request.isNull("video") || !request.has("video")) null else request.optJSONObject("video")
+        val video = videoObj?.let {
+          ActivityMirror.Video(
+            running = it.optBoolean("running"),
+            widthPx = it.optInt("widthPx"),
+            heightPx = it.optInt("heightPx"),
+            fps = it.optInt("fps"),
+          )
+        }
+        ActivityMirror.setActivities(activities, video)
+        ok(id) { put("accepted", activities.size) }
+      }
+
+      Protocol.METHOD_DEVICE_DESCRIBE -> {
+        if (!request.has("tags")) return error(id, Protocol.ERR_BAD_REQUEST, "missing tags")
+        val tagsArray = request.optJSONArray("tags")
+          ?: return error(id, Protocol.ERR_BAD_REQUEST, "tags must be an array")
+        val tags = (0 until tagsArray.length()).map { tagsArray.optString(it) }
+        ActivityMirror.setDevice(
+          ActivityMirror.Device(
+            stableId = if (request.isNull("stableId")) null else request.optString("stableId").takeIf { it.isNotEmpty() },
+            label = if (request.isNull("label")) null else request.optString("label").takeIf { it.isNotEmpty() },
+            number = if (request.isNull("number")) null else request.optString("number").takeIf { it.isNotEmpty() },
+            group = if (request.isNull("group")) null else request.optString("group").takeIf { it.isNotEmpty() },
+            tags = tags,
+          ),
+        )
+        ok(id) { put("accepted", true) }
       }
 
       else -> error(id, Protocol.ERR_UNKNOWN_METHOD, "unknown method: $method")

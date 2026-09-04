@@ -71,6 +71,7 @@ const resultSchema = z.object({
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'live-browse',
+  node: { category: 'device', icon: 'activity', summary: ['query', 'scrolls'], keywords: ['live', 'browse'] },
   title: 'Browse TikTok LIVE',
   description: 'Searches the keyword, turns the LIVE results grid with verified randomised swipes, and optionally watches one room — proving it plays by screenshot motion, touching nothing inside.',
   params: paramsSchema,
