@@ -66,7 +66,10 @@ function setUp(caps: import('../capability/types').AnyCoreCapability[] = []) {
     controlSettings,
     settings: () =>
       ({
-        agentDefaults: {
+        // Plan 212 §4.7 moved agent settings into their own store: the key the
+        // runner reads is `defaults`, not the old `agentDefaults`. The `as
+        // never` below is why this drifted silently — a cast, not a type.
+        defaults: {
           connectorId: connector.id,
           model: 'fake-model',
           systemPrompt: '',

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { BLOB_ORPHAN_GRACE_HOURS } from '../../config/constants'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../../db'
 import { agentBlobs, agentMessages, agentThreads } from '../../db/schema'
@@ -174,28 +175,24 @@ describe('blob retention GC (agent_blobs)', () => {
     expect(allBlobIds(database)).toHaveLength(0)
   })
 
-  test('the grace period is configurable — a shorter setting sweeps an otherwise-protected recent orphan', () => {
-    const database = db()
-    const orphan = seedBlob(database, { ageHours: 2 })
-    const { gc, settings } = makeGc(database)
-    settings.update({ retention: { blobOrphanGraceHours: 1 } })
+  /**
+   * Plan 212 §4.1 made the grace window the constant `BLOB_ORPHAN_GRACE_HOURS`
+   * (support-overridable through `ENKAKU_BLOB_ORPHAN_GRACE_HOURS`), so the two
+   * tests that drove it through `retention.blobOrphanGraceHours` were driving
+   * a setting nothing reads. What replaces them pins the boundary itself,
+   * which is the part a wrong answer would hide: an orphan one hour inside the
+   * window survives, one hour outside it does not.
+   */
+  test('the grace window is the constant, and it is a real boundary in both directions', () => {
+    const inside = db()
+    const kept = seedBlob(inside, { ageHours: BLOB_ORPHAN_GRACE_HOURS - 1 })
+    expect(makeGc(inside).gc.sweepOnce().deleted).toBe(0)
+    expect(allBlobIds(inside)).toContain(kept)
 
-    const result = gc.sweepOnce()
-
-    expect(result.deleted).toBe(1)
-    expect(allBlobIds(database)).not.toContain(orphan)
-  })
-
-  test('a longer setting protects an orphan the default would have swept', () => {
-    const database = db()
-    const orphan = seedBlob(database, { ageHours: 25 })
-    const { gc, settings } = makeGc(database)
-    settings.update({ retention: { blobOrphanGraceHours: 24 * 7 } })
-
-    const result = gc.sweepOnce()
-
-    expect(result.deleted).toBe(0)
-    expect(allBlobIds(database)).toContain(orphan)
+    const outside = db()
+    const swept = seedBlob(outside, { ageHours: BLOB_ORPHAN_GRACE_HOURS + 1 })
+    expect(makeGc(outside).gc.sweepOnce().deleted).toBe(1)
+    expect(allBlobIds(outside)).not.toContain(swept)
   })
 
   test('mixed sweep: referenced, in-grace, and expired-orphan blobs in the same table are each handled correctly in one pass', () => {

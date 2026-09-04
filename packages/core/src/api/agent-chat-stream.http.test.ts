@@ -173,7 +173,8 @@ function bootServer(opts: { caps?: AnyCoreCapability[]; turns?: FakeProviderTurn
     controlSettings,
     settings: () =>
       ({
-        agentDefaults: {
+        // Plan 212 §4.7: the agent settings store's key is `defaults`.
+        defaults: {
           connectorId: connector.id,
           model: 'fake-model',
           systemPrompt: '',

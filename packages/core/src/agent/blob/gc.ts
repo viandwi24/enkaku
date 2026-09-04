@@ -16,7 +16,8 @@ import { BLOB_ORPHAN_GRACE_HOURS } from '../../config/constants'
  * GC's problem, not this one"). A blob still referenced by ANY message,
  * anywhere, is never a deletion candidate regardless of age — only a blob no
  * message references (an orphan) is ever swept, and only once it has sat
- * unreferenced past a grace window (protocol's `retention.blobOrphanGraceHours`).
+ * unreferenced past a grace window (`BLOB_ORPHAN_GRACE_HOURS`; plan 212 §4.1
+ * replaced the old `retention.blobOrphanGraceHours` setting with it).
  *
  * This deliberately does NOT bound a blob still referenced by a long-lived,
  * never-deleted thread — every screenshot an active agent thread's tool

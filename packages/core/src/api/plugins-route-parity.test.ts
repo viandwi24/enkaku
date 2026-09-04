@@ -70,6 +70,19 @@ const PLUGIN_HTTP_REASON =
   'The two service routes Studio DOES call — GET /:name/query/:queryId and POST /:name/runtime/restart — are not excused here and have ' +
   'real call sites in components/plugin-view/.'
 
+/**
+ * Routes with no Studio caller RIGHT NOW that are not meant to stay that way.
+ *
+ * This is deliberately a separate list from `NOT_IN_STUDIO_BY_DESIGN`: putting
+ * a gap in there would record a decision nobody made, and the next reader
+ * would believe it. An entry here is an admission with an owner attached, and
+ * the test below refuses one that names no plan.
+ */
+const UNREACHABLE_PENDING: Record<string, string> = {
+  'GET /dev':
+    'The dev-slot list lost its last caller when plan 215 deleted `app/device/`, and the Scripts screen plan 217 rebuilt does not merge dev slots back in. Unpublished dev builds of a plugin are therefore invisible in Studio today. Owner: plan 219 (Plugins page), which is where a dev slot belongs — `DELETE /dev/:name` is already driven from there.',
+}
+
 const NOT_IN_STUDIO_BY_DESIGN: Record<string, string> = {
   ...Object.fromEntries(PLUGIN_HTTP_METHODS.map((method) => [`${method} /:name/http/:path{.+}`, PLUGIN_HTTP_REASON])),
   'POST /:name/webhook/:webhookId':
@@ -367,7 +380,22 @@ describe('every /api/plugins route has a way in from Studio (plan 108 step 108.1
       .filter((r) => !claimed.has(r.key))
       .map((r) => r.key)
       .filter((key) => !(key in NOT_IN_STUDIO_BY_DESIGN))
+      .filter((key) => !(key in UNREACHABLE_PENDING))
     expect(unreachable).toEqual([])
+  })
+
+  test('every pending gap names a route that still exists, and an owning plan', () => {
+    // The point of the list is that it shrinks. An entry whose route is gone,
+    // or whose reason names no owner, is a gap nobody is carrying.
+    const keys = new Set(routes.map((r) => r.key))
+    for (const [key, reason] of Object.entries(UNREACHABLE_PENDING)) {
+      expect({ key, exists: keys.has(key) }).toEqual({ key, exists: true })
+      expect(reason).toMatch(/plan \d+/)
+    }
+    // A gap that has since been closed must be REMOVED from the list, not left
+    // as a standing excuse for a route Studio now calls.
+    const claimed = claimedRouteKeys(routes, calls)
+    expect(Object.keys(UNREACHABLE_PENDING).filter((k) => claimed.has(k))).toEqual([])
   })
 
   test('every opt-out names a route that still exists, and gives a real reason', () => {

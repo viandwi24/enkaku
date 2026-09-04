@@ -228,7 +228,8 @@ function setUp(caps: AnyCoreCapability[]) {
       tree: treeStore,
       settings: () =>
         ({
-          agentDefaults: {
+          // Plan 212 §4.7: the agent settings store's key is `defaults`.
+          defaults: {
             connectorId: null,
             model: 'fake-model',
             systemPrompt: '',

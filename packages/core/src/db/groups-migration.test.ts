@@ -7,11 +7,11 @@ import { batches, devices, groups, schedules } from './schema'
  * Plan 207 §4.6 — `clusters` → `groups`, `devices.cluster_id` /
  * `batches.cluster_id` / `schedules.cluster_id` → `group_id`, and the three
  * command-console tables dropped, in one hand-written migration
- * (`drizzle/0066_groups_rename.sql`, generated without a TTY per §4.6's own
+ * (`drizzle/0067_groups_rename.sql`, generated without a TTY per §4.6's own
  * fallback — no interactive rename answer was available in this environment).
  * Modelled on `migrations/rename-agents-to-nodes.test.ts`.
  */
-const RENAME_TAG = '0066_groups_rename'
+const RENAME_TAG = '0067_groups_rename'
 
 test('a pre-existing group, its member device, a batch and a schedule read back through the renamed Drizzle tables', () => {
   const opened = openDb(':memory:')

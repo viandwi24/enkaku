@@ -174,7 +174,8 @@ function setUp(kind: ConnectorKind) {
       controlSettings,
       settings: () =>
         ({
-          agentDefaults: {
+          // Plan 212 §4.7: the agent settings store's key is `defaults`.
+          defaults: {
             connectorId: connector.id,
             model: agent.model,
             systemPrompt: 'You are a test agent.',
