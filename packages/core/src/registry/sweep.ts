@@ -45,8 +45,18 @@ export interface SweepNetwork {
  * (00-overview §4.4, plan 72 §3.2).
  */
 export interface Sweeper {
-  /** Rejects `E_SCAN_BUSY` if one is already running; `E_SCAN_UNAVAILABLE` when scanning is off or no scannable network is configured. */
-  sweep(opts?: { expect?: string[] }): Promise<SweepReport>
+  /**
+   * Rejects `E_SCAN_BUSY` if one is already running; `E_SCAN_UNAVAILABLE`
+   * when scanning is off or no scannable network is configured.
+   *
+   * `only` NARROWS the sweep to the named CIDRs and can never widen it: a
+   * range that is not configured, or is configured with `scan: false`, stays
+   * unswept whatever the caller passes. That is what keeps §3.5's "explicit
+   * address space" property true for the per-range Scan button the Devices
+   * page grew — the button names a row the operator already saved, it does
+   * not smuggle in an address space nobody configured.
+   */
+  sweep(opts?: { expect?: string[]; only?: string[] }): Promise<SweepReport>
   running(): boolean
 }
 
@@ -188,15 +198,30 @@ async function runPool<T>(items: T[], concurrency: number, worker: (item: T) => 
 export function createSweeper(deps: SweeperDeps): Sweeper {
   const tcpPreProbe = deps.tcpPreProbe ?? defaultTcpPreProbe
 
-  async function sweepImpl(opts?: { expect?: string[] }): Promise<SweepReport> {
+  async function sweepImpl(opts?: { expect?: string[]; only?: string[] }): Promise<SweepReport> {
     const started = Date.now()
     const cfg = deps.settings()
-    const scannable = cfg.networks.filter((n) => n.scan)
+    const ticked = cfg.networks.filter((n) => n.scan)
+    // `only` filters what is ALREADY allowed — never a second source of
+    // address space. See `Sweeper.sweep`'s own comment above.
+    const only = opts?.only && opts.only.length > 0 ? new Set(opts.only) : null
+    const scannable = only ? ticked.filter((n) => only.has(n.cidr)) : ticked
 
     if (cfg.scan.mode === 'off') {
       throw new EnkakuError('E_SCAN_UNAVAILABLE', 'network scanning is turned off (discovery.scan.mode) — turn it on in Settings to sweep')
     }
     if (scannable.length === 0) {
+      // Two different empty sets, told apart: nothing configured at all, and
+      // a narrowing that matched nothing. The second is the one an operator
+      // hits by pressing Scan on a row they edited but did not save, and
+      // "no scannable network is configured" would be a lie about a list
+      // they can see on screen.
+      if (only) {
+        throw new EnkakuError(
+          'E_SCAN_UNAVAILABLE',
+          'none of the requested ranges is a saved network with "Include in a sweep" ticked — save the range first, then scan it',
+        )
+      }
       throw new EnkakuError('E_SCAN_UNAVAILABLE', 'no scannable network is configured — add one under Settings → Farm networks')
     }
 
@@ -321,7 +346,7 @@ export function createSweeper(deps: SweeperDeps): Sweeper {
 
   let inFlight: Promise<SweepReport> | null = null
 
-  async function sweep(opts?: { expect?: string[] }): Promise<SweepReport> {
+  async function sweep(opts?: { expect?: string[]; only?: string[] }): Promise<SweepReport> {
     if (inFlight) {
       throw new EnkakuError('E_SCAN_BUSY', 'a sweep is already running — wait for it to finish before starting another')
     }

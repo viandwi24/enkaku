@@ -1,9 +1,9 @@
 import type { CSSProperties } from 'react'
 import type { DeviceInfo } from '@enkaku/protocol'
-import { StatusDot, cn } from '@enkaku/ui'
+import { Spinner, StatusDot, cn } from '@enkaku/ui'
 import { LiveView } from '@/components/LiveView'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
-import { dotStateOf, dotTooltipOf } from './device-state'
+import { dotStateOf, dotTooltipOf, reconnectingAttempt } from './device-state'
 
 /** The handoff's "135° 6px stripe pattern at `opacity: 0.7`" for a screen that is not live. */
 const STRIPE: CSSProperties = {
@@ -45,6 +45,10 @@ export function DeviceScreenCard({
   onMouseDown: (e: React.MouseEvent) => void
   onDoubleClick: () => void
 }) {
+  // A device the farm is actively rebuilding a session for reads as
+  // "Reconnecting", not as an ordinary dead tile — see `reconnectingAttempt`.
+  const reconnecting = reconnectingAttempt(device)
+
   return (
     <div
       data-device-id={device.id}
@@ -86,8 +90,15 @@ export function DeviceScreenCard({
           )}
         </div>
         {!live && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <span className={cn('text-label', device.status === 'quarantined' ? 'text-warn' : 'text-faint-2')}>{idleLabelOf(device)}</span>
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5">
+            {reconnecting !== null ? (
+              <>
+                <Spinner className="size-4 text-accent" />
+                <span className="text-label text-accent">{reconnecting > 0 ? `Reconnecting · ${reconnecting}` : 'Connecting'}</span>
+              </>
+            ) : (
+              <span className={cn('text-label', device.status === 'quarantined' ? 'text-warn' : 'text-faint-2')}>{idleLabelOf(device)}</span>
+            )}
           </div>
         )}
         <StatusDot ring state={dotStateOf(device)} title={dotTooltipOf(device)} className="absolute bottom-1.5 left-1.5" />

@@ -173,6 +173,25 @@ export const ReconcileReportSchema = z.object({
 export type ReconcileReport = z.infer<typeof ReconcileReportSchema>
 
 /**
+ * `POST /api/devices/scan`'s optional body — the ONE thing the route did not
+ * accept until the Devices page grew a per-range "Scan" button beside every
+ * row it lists (owner, 2026-09-04). Without it a sweep is all-or-nothing:
+ * every network with `scan` ticked, every time, which is the wrong tool for
+ * "did the range I just typed find anything?".
+ *
+ * `cidrs` NARROWS the sweep to the listed ranges; it can never widen one. A
+ * range that is not configured, or is configured with `scan: false`, stays
+ * unswept no matter what a client asks for — the ceiling, the concurrency
+ * and the "explicit address space" rule of `registry/sweep.ts` §3.5 are all
+ * unchanged, and an empty intersection is an `E_SCAN_UNAVAILABLE` refusal
+ * rather than a silent full sweep.
+ */
+export const SweepRequestSchema = z.object({
+  cidrs: z.array(z.string()).max(64).optional(),
+})
+export type SweepRequest = z.infer<typeof SweepRequestSchema>
+
+/**
  * `POST /api/devices/scan` (plan 88 §3.5, §4.5, §4.6, §5 step 88.3) — the
  * bounded subnet sweep's own report.
  * `packages/core/src/registry/sweep.ts`'s `Sweeper.sweep()` returns this

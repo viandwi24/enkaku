@@ -18,9 +18,9 @@ import {
 } from '@enkaku/ui'
 import { useOverlay } from '@/lib/overlays'
 import { GroupTabs } from './GroupTabs'
-import { dotStateOf, isDeviceState } from './device-state'
+import { dotStateOf, isDeviceState, reconnectingAttempt } from './device-state'
 
-export type DevicesFilter = 'all' | 'free' | 'controlled' | 'job' | 'quarantined' | 'offline'
+export type DevicesFilter = 'all' | 'online' | 'connecting' | 'offline' | 'quarantined' | 'free' | 'controlled' | 'job'
 export type DevicesView = 'table' | 'screens'
 
 export const CARD_WIDTH_PX = { s: 112, m: 146, l: 190, xl: 240 } as const
@@ -105,17 +105,23 @@ export function DevicesToolbar({
     })
   }
 
-  const filterRows: Array<{ id: DevicesFilter; label: string; dot: ReturnType<typeof dotStateOf> | null; count: number }> = [
+  /*
+   * Two questions, kept apart (CEO, 2026-09-04): "can this device be reached"
+   * and "who is using it". They used to be mixed into one list, so `Free` sat
+   * beside `Disconnected` as if they answered the same thing — and the
+   * connection half had no `Connected` row at all, only its negative.
+   * `deviceState()` derives the activity half; `status` IS the connection
+   * half, which is exactly what spec §4 shrank it to.
+   */
+  const filterRows: Array<{ id: DevicesFilter; label: string; dot: ReturnType<typeof dotStateOf> | null; count: number; group?: string }> = [
     { id: 'all', label: 'All', dot: null, count: devices.length },
-    { id: 'free', label: 'Free', dot: 'free', count: devices.filter((d) => isDeviceState(d, 'free')).length },
-    // The amber state had a dot and a tooltip but no way to filter by it, so
-    // "who is someone driving right now?" was a question you answered by
-    // scanning a wall of tiles (owner, 2026-09-04). `deviceState()` already
-    // computed it; only the row was missing.
-    { id: 'controlled', label: 'Controlled by a user', dot: 'controlled', count: devices.filter((d) => isDeviceState(d, 'controlled')).length },
-    { id: 'job', label: 'Running a job', dot: 'job', count: devices.filter((d) => isDeviceState(d, 'job')).length },
-    { id: 'quarantined', label: 'Quarantined', dot: 'unauthorized', count: devices.filter((d) => d.status === 'quarantined').length },
-    { id: 'offline', label: 'Disconnected', dot: 'offline', count: devices.filter((d) => d.status === 'offline').length },
+    { id: 'online', label: 'Connected', dot: 'free', count: devices.filter((d) => d.status === 'online').length, group: 'Connection' },
+    { id: 'connecting', label: 'Connecting', dot: null, count: devices.filter((d) => reconnectingAttempt(d) !== null).length, group: 'Connection' },
+    { id: 'offline', label: 'Disconnected', dot: 'offline', count: devices.filter((d) => d.status === 'offline').length, group: 'Connection' },
+    { id: 'quarantined', label: 'Quarantined', dot: 'unauthorized', count: devices.filter((d) => d.status === 'quarantined').length, group: 'Connection' },
+    { id: 'free', label: 'Free', dot: 'free', count: devices.filter((d) => isDeviceState(d, 'free')).length, group: 'Activity' },
+    { id: 'controlled', label: 'Controlled by a user', dot: 'controlled', count: devices.filter((d) => isDeviceState(d, 'controlled')).length, group: 'Activity' },
+    { id: 'job', label: 'Running a job', dot: 'job', count: devices.filter((d) => isDeviceState(d, 'job')).length, group: 'Activity' },
   ]
 
   return (
@@ -173,9 +179,14 @@ export function DevicesToolbar({
         </button>
         {filterOpen && (
           <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[216px] rounded-card border border-border bg-panel p-1 shadow-popover">
-            {filterRows.map((row) => (
+            {filterRows.map((row, i) => (
+              <div key={row.id} className="contents">
+                {/* One heading per run of rows sharing a `group`, so the two
+                    questions read as two lists rather than one long one. */}
+                {row.group && row.group !== filterRows[i - 1]?.group && (
+                  <p className="px-[10px] pt-2 pb-1 text-label text-faint-2 uppercase tracking-[.5px]">{row.group}</p>
+                )}
               <button
-                key={row.id}
                 type="button"
                 className={ROW}
                 onClick={() => {
@@ -188,6 +199,7 @@ export function DevicesToolbar({
                 <span className="text-label text-faint">{row.count}</span>
                 {filter === row.id && <CheckIcon className="size-3.5 text-accent" aria-hidden />}
               </button>
+              </div>
             ))}
           </div>
         )}

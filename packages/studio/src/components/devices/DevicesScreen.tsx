@@ -12,7 +12,7 @@ import { BulkPill } from './BulkPill'
 import { DeviceTable } from './DeviceTable'
 import { DiscoverySheet } from './DiscoverySheet'
 import { DevicesToolbar, matchesDevice, type CardWidth, type DevicesFilter, type DevicesView } from './DevicesToolbar'
-import { isDeviceState } from './device-state'
+import { isDeviceState, reconnectingAttempt } from './device-state'
 import { ScreensGrid } from './ScreensGrid'
 import { taskLabelOf } from './TaskCell'
 import { useDeviceSelection } from './useDeviceSelection'
@@ -102,6 +102,11 @@ export function DevicesScreen() {
     () =>
       groupScoped.filter((d) => {
         if (filter === 'all') return true
+        // Connection first — `status` is the physical fact (spec §4), and
+        // `connecting` is derived from the live rebuild activity rather than
+        // from a fourth stored status.
+        if (filter === 'online') return d.status === 'online'
+        if (filter === 'connecting') return reconnectingAttempt(d) !== null
         if (filter === 'quarantined') return d.status === 'quarantined'
         if (filter === 'offline') return d.status === 'offline'
         return isDeviceState(d, filter)

@@ -52,3 +52,25 @@ export function dotTooltipOf(device: DeviceInfo): string {
   if (other) return other.label
   return 'Free · idle'
 }
+
+/**
+ * Is the farm rebuilding this device's session right now?
+ *
+ * The always-on builder already starts a `prep` activity carrying
+ * `meta.recovering` and an attempt number while it reconnects
+ * (`packages/session/src/always-on.ts`), and pushes it live like any other
+ * activity — so the fact has been on the wire all along and nothing rendered
+ * it. A device mid-reconnect looked exactly like one that was simply down,
+ * which is what a competitor's spinner tells you at a glance (CEO,
+ * 2026-09-04).
+ *
+ * Deliberately NOT folded into `deviceState()`: that answers "who is using
+ * this device", and this answers "can it be reached". Two questions, two
+ * indicators — collapsing them is what made the old status field ambiguous.
+ */
+export function reconnectingAttempt(device: Pick<DeviceInfo, 'activities'>): number | null {
+  const a = device.activities.find((x) => x.kind === 'prep' && x.meta?.recovering === true)
+  if (!a) return null
+  const attempt = a.meta?.attempt
+  return typeof attempt === 'number' ? attempt : 0
+}
