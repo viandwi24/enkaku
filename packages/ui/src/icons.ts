@@ -85,5 +85,18 @@ export {
  *
  * - `RobotIcon` for the Agents rail entry (MVP 03 §1; the handoff draws no
  *   Agents item because MVP 15 §4.1 left it open). Plan 213 §3.4.
+ * - `ArrowsLeftRightIcon`, `CopyIcon`, `DeviceMobileIcon`, `ExportIcon`,
+ *   `PauseIcon` for the Jobs screen's transport pause, its three header
+ *   buttons and its Copy JSON / compare controls (plan 218 §4.13). The
+ *   prototype file draws them (`Enkaku Device List.dc.html:1400-1401`,
+ *   `:1541`); only the README's prose, which group 1 is derived from, does
+ *   not name them.
  */
-export { RobotIcon } from '@phosphor-icons/react'
+export {
+  ArrowsLeftRightIcon,
+  CopyIcon,
+  DeviceMobileIcon,
+  ExportIcon,
+  PauseIcon,
+  RobotIcon,
+} from '@phosphor-icons/react'
