@@ -10,6 +10,7 @@ import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import { farmSections } from '@/components/settings/farmSections'
 import { AccessSection } from '@/components/settings/AccessSection'
 import { ToolchainSection } from '@/components/settings/ToolchainSection'
+import { StorageUsageRow } from '@/components/settings/StorageUsageRow'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 
 /**
@@ -85,16 +86,19 @@ function SettingsScreen() {
       if (id === 'toolchain') return <ToolchainSection />
       const scoped = narrowSchema(data.schema as never, keys)
       return (
-        <SchemaForm
-          schema={scoped}
-          value={draft}
-          onChange={setDraft}
-          serverErrors={serverErrors}
-          onSubmit={save}
-          onReset={() => setDraft(data.settings)}
-          busy={isPending('save')}
-          dirty={JSON.stringify(draft) !== JSON.stringify(data.settings)}
-        />
+        <>
+          {id === 'storage' && <StorageUsageRow />}
+          <SchemaForm
+            schema={scoped}
+            value={draft}
+            onChange={setDraft}
+            serverErrors={serverErrors}
+            onSubmit={save}
+            onReset={() => setDraft(data.settings)}
+            busy={isPending('save')}
+            dirty={JSON.stringify(draft) !== JSON.stringify(data.settings)}
+          />
+        </>
       )
     },
   }))

@@ -2,6 +2,7 @@
 
 import { StatusDot, cn } from '@enkaku/ui'
 import { NotificationBell } from '@/components/NotificationBell'
+import { DoctorPopover } from './DoctorPopover'
 import { useNow } from '@/lib/useNow'
 import { useShellState, type HealthState } from '@/lib/shell-state'
 
@@ -62,18 +63,22 @@ export function StatusBar() {
 
   return (
     <div className="flex h-[44px] flex-none items-center gap-[2px] rounded-card border border-border bg-panel pr-[8px] pl-[14px]">
-      <div className="flex flex-none items-center gap-2 pr-[14px]" title={h.title}>
-        {/* The handoff's 7px `var(--ok)` dot with `enkakuPulse 2.6s`. `StatusDot`
-            (plan 204 §4.6) carries the pulse and the five state colours; the
-            size is passed because 7px is this dot's alone. */}
-        <StatusDot
-          state={h.dot === 'ok' ? 'free' : h.dot === 'warn' ? 'unauthorized' : 'job'}
-          pulse={h.pulse}
-          className="size-[7px]"
-          title={h.text}
-        />
-        <span className="text-[12px] text-text-3">{h.text}</span>
-      </div>
+      {/* The handoff's 7px `var(--ok)` dot with `enkakuPulse 2.6s`. `StatusDot`
+          (plan 204 §4.6) carries the pulse and the five state colours; the
+          size is passed because 7px is this dot's alone. Clicking it opens
+          the doctor popover (plan 224 §4.7) — the same checks `bun run
+          doctor` prints, reachable from Studio's first screen. */}
+      <DoctorPopover>
+        <div className="flex items-center gap-2" title={h.title}>
+          <StatusDot
+            state={h.dot === 'ok' ? 'free' : h.dot === 'warn' ? 'unauthorized' : 'job'}
+            pulse={h.pulse}
+            className="size-[7px]"
+            title={h.text}
+          />
+          <span className="text-[12px] text-text-3">{h.text}</span>
+        </div>
+      </DoctorPopover>
 
       <Divider />
 
