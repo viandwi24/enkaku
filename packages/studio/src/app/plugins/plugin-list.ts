@@ -139,12 +139,21 @@ export function devSlotMatches(slot: DevSlotView, query: string): boolean {
 }
 
 /**
- * What the Scripts tab's search covers: the script's full name — which is
- * always `<plugin>/<script>`, so the plugin half is searchable without a
- * separate field — and the version `@latest` currently resolves to.
+ * What the Scripts tab's search covers (plan 210 §4.9): the script's full
+ * name — always `<plugin>/<script>`, so the plugin half is searchable
+ * without a separate field — and the owning plugin's own name.
  */
-export function scriptMatches(row: { name: string; latestVersion: string }, query: string): boolean {
+export function scriptMatches(row: { name: string; plugin: { name: string } }, query: string): boolean {
   const q = norm(query)
   if (!q) return true
-  return norm(row.name).includes(q) || norm(row.latestVersion).includes(q)
+  return norm(row.name).includes(q) || norm(row.plugin.name).includes(q)
+}
+
+const ParamsShapeSchema = z.object({ properties: z.record(z.string(), z.unknown()).optional() })
+
+/** Moved from `plugins/detail/page.tsx` (plan 210 §4.9) so the Scripts tab can share it. `paramsSchema` is `unknown` on the wire — read, never cast (CLAUDE.md). */
+export function paramCount(schema: unknown): number | null {
+  const parsed = ParamsShapeSchema.safeParse(schema)
+  if (!parsed.success) return null
+  return Object.keys(parsed.data.properties ?? {}).length
 }

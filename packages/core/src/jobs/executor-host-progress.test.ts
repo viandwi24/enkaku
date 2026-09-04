@@ -145,6 +145,7 @@ describe('ExecutorHost.progress (plan 97 §3.7, §5 step 97.7)', () => {
       resultBytes: null,
       resultSummary: null,
       resultIssues: null,
+      workflowDoc: null,
     }
     const deps: ExecutorHostDeps = {
       registry: new ExecutorRegistry(),

@@ -2,14 +2,9 @@ import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { describe, expect, test } from 'bun:test'
 import type { RecordingDoc } from '@enkaku/protocol'
-import { defineRecording } from '@enkaku/sdk'
 import type { AuthEnv } from '../auth/middleware'
-import { createAuditLogger } from '../auth/audit'
-import type { ScriptRef } from '@enkaku/protocol'
 import { openDb, runMigrations, type Db } from '../db'
 import { plugins, scripts } from '../db/schema'
-import { createDevSlotStore } from '../plugins/dev-slots'
-import { createScriptRegistry } from '../scripts/registry'
 import { createWorkspaceStore, type WorkspaceStore } from '../workspace/store'
 import type { RecordingService } from '../recording/service'
 import { createRecordingRoutes } from './recordings'
@@ -17,9 +12,9 @@ import { createRecordingRoutes } from './recordings'
 /**
  * `GET/POST/PATCH/DELETE /api/recordings*` (plan 94 §4.9, §5 step 94.5).
  * Exercises the routes exactly as `http.ts` mounts them — through a real
- * SQLite `:memory:` db and a real `WorkspaceStore`, never a mock of either,
- * so `buildScriptFromWorkspace`/`publishScript` run for real (F11: this IS
- * the "no new bundling" claim, proven rather than asserted).
+ * SQLite `:memory:` db and a real `WorkspaceStore`, never a mock of either.
+ * Plan 210 (MVP 06 §2): publishing is parked — `POST /:slug/publish` always
+ * answers `410 E_RECORDINGS_PARKED` and writes nothing.
  */
 
 function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
@@ -256,16 +251,13 @@ describe('PATCH /api/recordings/:slug', () => {
 })
 
 describe('DELETE /api/recordings/:slug', () => {
-  test('deletes the document, the compiled entry, and the detached marker', async () => {
+  test('deletes the document (plan 210: publish no longer compiles an entry to also clean up)', async () => {
     const { db, workspace } = setUp()
     await writeRecording(workspace, sampleDoc())
     const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    await app.request('/checkout-flow/publish', { method: 'POST' })
-    expect(() => workspace.read('/recordings/checkout-flow.ts')).not.toThrow()
     const res = await app.request('/checkout-flow', { method: 'DELETE' })
     expect(res.status).toBe(200)
     expect(() => workspace.read('/recordings/checkout-flow.recording.json')).toThrow()
-    expect(() => workspace.read('/recordings/checkout-flow.ts')).toThrow()
   })
 
   test('404s on a missing slug', async () => {
@@ -276,179 +268,11 @@ describe('DELETE /api/recordings/:slug', () => {
   })
 })
 
-describe('POST /api/recordings/:slug/publish (acceptance criteria 2, 3 — the core of step 94.5)', () => {
-  test('publishing produces a scripts row indistinguishable from a hand-written one', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    const app = withUser('operator', createRecordingRoutes({ db, workspace, audit: createAuditLogger(db) }))
-    const res = await app.request('/checkout-flow/publish', { method: 'POST' })
-    expect(res.status).toBe(201)
-    const body = (await res.json()) as { script: { id: string; name: string; version: string } }
-    // Plan 110 §3.4 — a recording is a member of the synthetic `recordings` plugin.
-    expect(body.script.name).toBe('recordings/checkout-flow')
-    expect(body.script.version).toBe('1.0.0')
-
-    const row = db.select().from(scripts).where(eq(scripts.id, body.script.id)).get()
-    expect(row).toBeTruthy()
-    // The one non-negotiable property (acceptance criterion 2): `kind` is the
-    // DEFAULT a hand-written script gets, never a special marker.
-    expect(row?.kind).toBe('script')
-    expect(row?.enabled).toBe(true)
-    expect(row?.exportId).toBe('checkout-flow')
-
-    // The owner exists, is the reserved name, and holds the member row (plan 110 §3.4, §5 step 110.2).
-    const owner = db.select().from(plugins).where(eq(plugins.name, 'recordings')).get()
-    expect(owner).toBeTruthy()
-    expect(row?.pluginId).toBe(owner?.id as string)
-    expect(owner?.status).toBe('active')
-    // It never went through verification — nothing about it is a real package.
-    expect(owner?.verifiedAt).toBeNull()
-  })
-
-  test('a second recording joins the SAME owner rather than creating a second plugin (plan 110 §3.4)', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    await writeRecording(workspace, sampleDoc({ name: 'login-flow', version: '2.0.0' }))
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    await app.request('/checkout-flow/publish', { method: 'POST' })
-    await app.request('/login-flow/publish', { method: 'POST' })
-    const owners = db.select().from(plugins).where(eq(plugins.name, 'recordings')).all()
-    expect(owners).toHaveLength(1)
-    const members = db.select().from(scripts).where(eq(scripts.pluginId, owners[0]?.id as string)).all()
-    expect(members.map((m) => `${m.name}@${m.version}`).sort()).toEqual(['recordings/checkout-flow@1.0.0', 'recordings/login-flow@2.0.0'])
-  })
-
-  /**
-   * Plan 110 §3.4 — members of the synthetic owner version INDEPENDENTLY (each
-   * recording is compiled and published on its own), so `@latest` for one of
-   * them must not be dragged to the owner row's version the way a real
-   * plugin's members are. This is the carve-out `scripts/registry.ts` makes,
-   * asserted through the registry rather than assumed.
-   */
-  test('each recording resolves at its OWN latest version, not the owner row\'s', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    await writeRecording(workspace, sampleDoc({ name: 'login-flow', version: '2.0.0' }))
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    await app.request('/checkout-flow/publish', { method: 'POST' })
-    await app.request('/login-flow/publish', { method: 'POST' })
-    const registry = createScriptRegistry({ db, dataDir: '/tmp', devSlots: createDevSlotStore() })
-    expect(registry.resolve('recordings/checkout-flow@latest' as ScriptRef).version).toBe('1.0.0')
-    expect(registry.resolve('recordings/login-flow@latest' as ScriptRef).version).toBe('2.0.0')
-    expect(registry.resolve('recordings/checkout-flow@latest' as ScriptRef).origin).toBe('plugin')
-  })
-
-  test('GET /api/scripts/:id-equivalent source is readable generated source (F12, acceptance criterion 3)', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    const res = await app.request('/checkout-flow/publish', { method: 'POST' })
-    const body = (await res.json()) as { script: { id: string } }
-    const row = db.select().from(scripts).where(eq(scripts.id, body.script.id)).get()
-    expect(row?.source).toBeTruthy()
-    const source = row?.source as string
-    expect(source).toContain("import { definePlugin, defineRecording } from '@enkaku/sdk'")
-    expect(source).toContain('export default definePlugin(')
-    expect(source).toContain('defineRecording(')
-    // A human reading this can see exactly what steps will run — not opaque bundle output.
-    expect(source).toContain('"kind": "tap"')
-  })
-
-  /**
-   * Since plan 110 §3.4 the bundle's default export is the one-member
-   * `recordings` PLUGIN, which is what lets `child-entry.ts` select this
-   * recording by the `export_id` on its row and what puts every recording in
-   * one KV namespace. The member itself is still exactly the runnable
-   * `ScriptDefinition` this test has always asserted.
-   */
-  test('the published bundle is a real, runnable plugin member — never executed by the build itself (F11, F18)', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    const res = await app.request('/checkout-flow/publish', { method: 'POST' })
-    const body = (await res.json()) as { script: { id: string } }
-    const row = db.select().from(scripts).where(eq(scripts.id, body.script.id)).get()
-    const tmpPath = `/tmp/enkaku-recordings-test-${crypto.randomUUID()}.mjs`
-    await Bun.write(tmpPath, row?.bundle as string)
-    const mod = (await import(tmpPath)) as { default: { id: string; version: string; scripts: ReturnType<typeof defineRecording>[] } }
-    expect(mod.default.id).toBe('recordings')
-    expect(mod.default.version).toBe('1.0.0')
-    // The member the row's `export_id` names is in the bundle, and is runnable.
-    const member = mod.default.scripts.find((s) => s.id === row?.exportId)
-    expect(member).toBeTruthy()
-    expect(member?.version).toBe('1.0.0')
-    expect(typeof member?.run).toBe('function')
-  })
-
-  test('the declared params schema requires the recording\'s own {param} field', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    const res = await app.request('/checkout-flow/publish', { method: 'POST' })
-    const body = (await res.json()) as { script: { id: string } }
-    const row = db.select().from(scripts).where(eq(scripts.id, body.script.id)).get()
-    const paramsSchema = row?.paramsSchema as { required: string[] }
-    expect(paramsSchema.required).toEqual(['caption'])
-  })
-
-  test('a version override in the body publishes that version and persists it back onto the document', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    const res = await app.request('/checkout-flow/publish', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ version: '1.1.0' }),
-    })
-    expect(res.status).toBe(201)
-    const body = (await res.json()) as { script: { version: string } }
-    expect(body.script.version).toBe('1.1.0')
-    const stored = JSON.parse(new TextDecoder().decode(workspace.read('/recordings/checkout-flow.recording.json').content)) as RecordingDoc
-    expect(stored.version).toBe('1.1.0')
-  })
-
-  test('publishing the same (name, version) twice refuses script_version_exists', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    await app.request('/checkout-flow/publish', { method: 'POST' })
-    const res = await app.request('/checkout-flow/publish', { method: 'POST' })
-    expect(res.status).toBe(409)
-  })
-
-  test('refused once detached — the recording no longer regenerates over the operator\'s file (criterion 4)', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc())
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    await app.request('/checkout-flow/detach', { method: 'POST' })
-    const res = await app.request('/checkout-flow/publish', { method: 'POST' })
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('E_RECORDING_DETACHED')
-  })
-
-  test('recompiling with no edit writes byte-identical bytes to /recordings/:slug.ts', async () => {
-    const { db, workspace } = setUp()
-    await writeRecording(workspace, sampleDoc({ version: '1.0.0' }))
-    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    await app.request('/checkout-flow/publish', { method: 'POST' })
-    const first = workspace.read('/recordings/checkout-flow.ts')
-    // Publish a second version off the SAME unedited document — the entry recompiles, but its
-    // content should be identical bar the version bump this test does not exercise (same version
-    // is refused above; here we assert the compiled TEXT for the CURRENT document is stable).
-    const again = await app.request('/checkout-flow', { method: 'GET' })
-    const detail = (await again.json()) as { generatedSource: string }
-    expect(detail.generatedSource).toBe(new TextDecoder().decode(first.content))
-  })
-})
-
 describe('POST /api/recordings/:slug/detach (acceptance criterion 4)', () => {
   test('writes a one-member plugin to /scripts/:slug.ts and deletes the compiled recording entry', async () => {
     const { db, workspace } = setUp()
     await writeRecording(workspace, sampleDoc())
     const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    await app.request('/checkout-flow/publish', { method: 'POST' }) // compiles /recordings/checkout-flow.ts first
-    expect(() => workspace.read('/recordings/checkout-flow.ts')).not.toThrow()
 
     const res = await app.request('/checkout-flow/detach', { method: 'POST' })
     expect(res.status).toBe(200)
@@ -466,7 +290,7 @@ describe('POST /api/recordings/:slug/detach (acceptance criterion 4)', () => {
     expect(scriptSource).not.toContain('defineRecording')
     expect(scriptSource).not.toContain('defineScript')
 
-    // The recording stops regenerating over it (criterion 4) — the compiled entry is gone.
+    // The compiled entry was never written by publish (parked, plan 210) — nothing to clean up.
     expect(() => workspace.read('/recordings/checkout-flow.ts')).toThrow()
     // The recording document itself is kept, marked detached.
     expect(() => workspace.read('/recordings/checkout-flow.recording.json')).not.toThrow()
@@ -492,7 +316,7 @@ describe('POST /api/recordings/:slug/detach (acceptance criterion 4)', () => {
     expect(source).toBe('// a human wrote this')
   })
 
-  test('a detached recording is listed with detached: true and publish stays refused permanently', async () => {
+  test('a detached recording is listed with detached: true — publish is parked regardless (plan 210)', async () => {
     const { db, workspace } = setUp()
     await writeRecording(workspace, sampleDoc())
     const app = withUser('operator', createRecordingRoutes({ db, workspace }))
@@ -501,6 +325,26 @@ describe('POST /api/recordings/:slug/detach (acceptance criterion 4)', () => {
     const listBody = (await listRes.json()) as { items: { detached: boolean }[] }
     expect(listBody.items[0]?.detached).toBe(true)
     const publishRes = await app.request('/checkout-flow/publish', { method: 'POST' })
-    expect(publishRes.status).toBe(409)
+    expect(publishRes.status).toBe(410)
+  })
+})
+
+describe('POST /api/recordings/:slug/publish is parked (plan 210, MVP 06 §2 and §4 item 3)', () => {
+  test('publish is parked: 410 E_RECORDINGS_PARKED, nothing written', async () => {
+    const { db, workspace } = setUp()
+    await writeRecording(workspace, sampleDoc())
+    const app = withUser('operator', createRecordingRoutes({ db, workspace }))
+    const before = db.select().from(scripts).all().length
+    const beforePlugins = db.select().from(plugins).where(eq(plugins.name, 'recordings')).all().length
+
+    const res = await app.request('/checkout-flow/publish', { method: 'POST' })
+    expect(res.status).toBe(410)
+    const body = (await res.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('E_RECORDINGS_PARKED')
+    expect(body.error.message).toContain('docs/mvp/06-feature-scope.md')
+
+    expect(db.select().from(scripts).all().length).toBe(before)
+    expect(db.select().from(plugins).where(eq(plugins.name, 'recordings')).all().length).toBe(beforePlugins)
+    expect(beforePlugins).toBe(0)
   })
 })

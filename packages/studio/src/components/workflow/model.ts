@@ -38,7 +38,6 @@ export type WorkflowNodeDraft = WorkflowScriptNodeDraft | WorkflowGateNodeDraft
 export interface WorkflowDocDraft {
   schema: 1
   name: string
-  version: string
   title: string
   description: string
   params: WorkflowParam[]
@@ -52,7 +51,6 @@ export function emptyDraft(): WorkflowDocDraft {
   return {
     schema: 1,
     name: '',
-    version: '1.0.0',
     title: '',
     description: '',
     params: [],
@@ -192,11 +190,10 @@ export function zodIssuesToFindings(error: z.ZodError): WorkflowFinding[] {
  * already a valid string for), so this is a plain, non-lossy copy — never a
  * re-derivation of anything `WorkflowDocSchema` already validated.
  */
-export function docToDraft(doc: WorkflowDoc, version: string = doc.version): WorkflowDocDraft {
+export function docToDraft(doc: WorkflowDoc): WorkflowDocDraft {
   return {
     schema: 1,
     name: doc.name,
-    version,
     title: doc.title,
     description: doc.description,
     params: doc.params.map((p) => ({ ...p })),
@@ -204,14 +201,6 @@ export function docToDraft(doc: WorkflowDoc, version: string = doc.version): Wor
     maxSteps: doc.maxSteps,
     onFail: doc.onFail ? { script: doc.onFail.script, params: { ...doc.onFail.params } } : undefined,
   }
-}
-
-/** `1.2.3` → `1.2.4` — the editor's own suggested starting point for a new version, never applied silently (the version field stays a plain, editable `Input`). Anything that does not parse as three dot-separated integers is returned unchanged rather than guessed at. */
-export function bumpPatchVersion(version: string): string {
-  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version)
-  if (!m) return version
-  const [, major, minor, patch] = m
-  return `${major}.${minor}.${Number(patch) + 1}`
 }
 
 export type { WorkflowDoc }

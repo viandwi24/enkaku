@@ -75,9 +75,14 @@ export type AuditAction =
   // log (`settings.changed`, `device.rotation`), which is where an answer to
   // "what happened to THIS phone" belongs.
   | 'device.prep.apply'
-  | 'script.publish'
   | 'script.delete'
-  | 'script.toggle'
+  // Plan 210 (MVP 03 §2.2 rule 4) — the old per-script enable-flip action and
+  // the per-script publish route are gone: a script is a member of a plugin
+  // (`plugin.activate`/`.disable`/`.enable` above cover it), and a workflow
+  // is edited in place through its own table.
+  | 'workflow.create'
+  | 'workflow.update'
+  | 'workflow.delete'
   // Named parameter sets (plan 95 §4.7, §4.8, §5 step 95.8) — a preset is
   // "standing intent" about a script the same way a schedule is, and gets
   // the same answerability its sibling `script.*` verbs already have.

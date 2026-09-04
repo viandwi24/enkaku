@@ -1059,9 +1059,14 @@ export function createPluginRoutes(deps: PluginRoutesDeps): Hono<AuthEnv> {
   // activation, every rollback and every re-enable shipped that version's whole
   // bundle back to a dialog that renders a name and a version out of it.
   app.post('/:id/activate', requirePermission('script.publish'), (c) => {
-    const row = runtime.activate(c.req.param('id'))
-    audit.record({ userId: actorId(c), action: 'plugin.activate', target: row.id, meta: { name: row.name, version: row.version } })
-    return c.json({ plugin: row })
+    const { scriptsMoved, queuedKeepingPrevious, ...plugin } = runtime.activate(c.req.param('id'))
+    audit.record({
+      userId: actorId(c),
+      action: 'plugin.activate',
+      target: plugin.id,
+      meta: { name: plugin.name, version: plugin.version, scriptsMoved, queuedKeepingPrevious },
+    })
+    return c.json({ plugin, scriptsMoved, queuedKeepingPrevious })
   })
 
   app.post('/:name/rollback', requirePermission('script.publish'), async (c) => {

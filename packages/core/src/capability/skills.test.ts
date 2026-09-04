@@ -37,6 +37,7 @@ function fakeCtx(db: Db, currentRunId: string | null = 'run-1'): CapabilityConte
     getDevice: () => null,
     jobService: {} as CapabilityContext['jobService'],
     scripts: {} as CapabilityContext['scripts'],
+    plugins: () => null,
     resolveScriptRef: () => ({ id: 'script-1' }),
     workspace: createWorkspaceStore(db, () => QUOTAS),
     workspaceScope: () => ({ read: ['/'], write: ['/'] }),

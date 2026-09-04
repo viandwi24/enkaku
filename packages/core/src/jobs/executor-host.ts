@@ -67,13 +67,6 @@ export interface ExecutorHostDeps {
    */
   readinessHold?: (deviceId: string, reason: 'job') => Promise<{ release(): void }>
   /**
-   * The kind of `job.scriptId`'s row — 'script' (the default) or 'workflow'
-   * (plan 99 §3.1, §4.5). Read fresh per start, like `pickRebindDevice`
-   * above. Undefined behaves exactly as before this field existed: `start()`
-   * falls back to `'script'`, which is `ExecutorRegistry.get`'s own default.
-   */
-  scriptKind?: (scriptId: string) => import('../db/schema').ScriptKind
-  /**
    * `job.maxResultBytes` (plan 97 §3.4, §3.8, §4.5) — read fresh per settle,
    * the same freshness convention `timeoutIsInfra`/`rebindOnInfra` above
    * already use. Undefined defaults to `RESULT_LIMITS.defaultMaxResultBytes`
@@ -311,8 +304,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
 
   return {
     start(job) {
-      const kind = deps.scriptKind?.(job.scriptId) ?? 'script'
-      const executor = deps.registry.get(job.scriptId, kind)
+      const executor = deps.registry.get(job.scriptId)
       if (!executor) {
         settle(job, 'failed', { error: `unknown_script: ${job.scriptId}`, code: 'unknown_script' })
         return

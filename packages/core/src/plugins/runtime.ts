@@ -21,7 +21,6 @@ import { createPluginAssetStore, type StoredAsset } from './asset-store'
 import type { PluginPackageAsset } from './package'
 import { verifyPluginBundle, type VerifyReport } from './verify-child'
 import { createDevSlotStore, type DevSessionOwner, type DevSlot, type DevSlotStore } from './dev-slots'
-import { isSyntheticPluginName, reservedPluginNameError, syntheticPluginError } from './owner'
 import { buildScriptFromWorkspace } from '../scripts/build'
 import type { WorkspaceStore } from '../workspace/store'
 
@@ -178,6 +177,15 @@ export interface PluginWireRow extends PluginIdentity {
   manifest: unknown
   scriptCount: number
 }
+
+/**
+ * Plan 210 §4.7, MVP 03 §2.3 item 5 — what `activate` alone reports beside
+ * the row: the consequence of the activation, so a client can say what just
+ * moved. `scriptsMoved`: members this version registers. `queuedKeepingPrevious`:
+ * queued or running jobs pinned to the previously active version's members;
+ * they keep it (MVP 03 §2.1) — nothing here cancels or rewrites them.
+ */
+export type PluginActivationRow = PluginWireRow & { scriptsMoved: number; queuedKeepingPrevious: number }
 
 export interface DevSlotView extends DevSlot {
   kvNamespace: string
@@ -350,7 +358,7 @@ export interface PluginRuntime {
    */
   stage(input: StagePluginInput): Promise<PluginWireRow>
   verify(pluginId: string): Promise<VerifyReport>
-  activate(pluginId: string, expectedStatus?: 'staged'): PluginWireRow
+  activate(pluginId: string, expectedStatus?: 'staged'): PluginActivationRow
   rollback(name: string, toVersion: string): PluginWireRow
   disable(name: string): void
   /**
@@ -446,16 +454,6 @@ function requireIdShape(name: string): void {
   if (!ID_SHAPE.test(name)) {
     throw new EnkakuError('E_BAD_REQUEST', `plugin name must match ${ID_SHAPE}, got "${name}"`)
   }
-}
-
-/**
- * Plan 110 §3.4, §4.3 — every lifecycle verb refuses a synthetic owner
- * (`recordings`). Enforced here, in the runtime, and not by omitting a button:
- * `api/plugins.ts`'s routes, the dev-slot path, `reload` and `restart` all
- * come through these same functions, so there is no second door.
- */
-function refuseSynthetic(name: string, verb: string): void {
-  if (isSyntheticPluginName(name)) throw syntheticPluginError(name, verb)
 }
 
 export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
@@ -692,11 +690,6 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
 
   const stageImpl = async (input: StagePluginInput): Promise<PluginWireRow> => {
     requireIdShape(input.name)
-    // Plan 110 §4.3 — refused here as well as at verify (below), so a reserved
-    // name never reaches the database at all: `resolveRecordingsOwner` finds
-    // the farm's own `recordings` row BY NAME, and a foreign staged row of that
-    // name would be indistinguishable from it.
-    if (isSyntheticPluginName(input.name)) throw reservedPluginNameError(input.name)
     if (findRow(input.name, input.version)) {
       throw new EnkakuError('plugin_version_exists', `${input.name}@${input.version} already exists`)
     }
@@ -737,11 +730,6 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
   const verifyImpl = async (pluginId: string): Promise<VerifyReport> => {
     const p = db.select().from(plugins).where(eq(plugins.id, pluginId)).get()
     if (!p) throw new EnkakuError('plugin_not_found', `no such plugin: ${pluginId}`)
-    // Plan 110 §4.3, criterion 5 — a reserved name is refused AT VERIFY, and
-    // the row is left exactly as it was: marking it `failed` the way a genuine
-    // verification failure does would take every published recording offline
-    // with it, since the synthetic owner is the row this would be run against.
-    if (isSyntheticPluginName(p.name)) throw reservedPluginNameError(p.name)
     db.update(plugins).set({ status: 'verifying' }).where(eq(plugins.id, pluginId)).run()
 
     const bundlePath = await materializeBundleText(dataDir, p.bundle)
@@ -827,11 +815,10 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     return report
   }
 
-  const activateImpl = (pluginId: string, expectedStatus: 'staged' = 'staged'): PluginWireRow => {
+  const activateImpl = (pluginId: string, expectedStatus: 'staged' = 'staged'): PluginActivationRow => {
     return db.transaction((tx) => {
       const p = tx.select().from(plugins).where(eq(plugins.id, pluginId)).get()
       if (!p) throw new EnkakuError('plugin_not_found', `no such plugin: ${pluginId}`)
-      refuseSynthetic(p.name, 'activated')
       if (!p.verifiedAt || !p.manifest) {
         throw new EnkakuError('plugin_not_verified', `${p.name}@${p.version} has not passed verification`)
       }
@@ -859,6 +846,22 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
         .where(and(eq(plugins.name, p.name), eq(plugins.status, 'active')))
         .all()
         .filter((r) => r.id !== pluginId)
+      // Plan 210 §4.7, MVP 03 §2.3 item 5 — the activation's consequence,
+      // computed BEFORE the previous version's rows are superseded (nothing
+      // deletes them, but the count is taken of what is about to stop being
+      // the active member set).
+      const manifest = p.manifest as { scripts: { id: string }[] }
+      const scriptsMoved = manifest.scripts.length
+      const previousMemberIds =
+        previous.length === 0 ? [] : tx.select({ id: scripts.id }).from(scripts).where(inArray(scripts.pluginId, previous.map((r) => r.id))).all().map((r) => r.id)
+      const queuedKeepingPrevious =
+        previousMemberIds.length === 0
+          ? 0
+          : tx
+              .select({ id: jobs.id })
+              .from(jobs)
+              .where(and(inArray(jobs.scriptId, previousMemberIds), inArray(jobs.status, ['queued', 'running'])))
+              .all().length
       for (const old of previous) {
         tx.update(plugins).set({ status: 'superseded' }).where(eq(plugins.id, old.id)).run()
       }
@@ -869,12 +872,11 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       // gets, so `POST /:id/activate` cannot echo it (step 126.6). The
       // `scriptCount` inside is read AFTER `writeScriptRows`, so it reports the
       // members this activation just registered rather than the previous zero.
-      return toPluginWire({ ...p, status: 'active' })
+      return { ...toPluginWire({ ...p, status: 'active' }), scriptsMoved, queuedKeepingPrevious }
     })
   }
 
   const rollbackImpl = (name: string, toVersion: string): PluginWireRow => {
-    refuseSynthetic(name, 'rolled back')
     return db.transaction((tx) => {
       const target = tx.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.version, toVersion))).get()
       if (!target) throw new EnkakuError('plugin_not_found', `no such plugin version: ${name}@${toVersion}`)
@@ -893,7 +895,6 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
   }
 
   const disableImpl = (name: string): void => {
-    refuseSynthetic(name, 'disabled')
     db.transaction((tx) => {
       const activeRow = tx.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.status, 'active'))).get()
       if (!activeRow) throw new EnkakuError('plugin_not_found', `no active plugin named "${name}"`)
@@ -905,7 +906,6 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
   }
 
   const enableImpl = (name: string): PluginWireRow => {
-    refuseSynthetic(name, 'enabled')
     const row = db.transaction((tx) => {
       const target = tx.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.status, 'disabled'))).get()
       const current = tx.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.status, 'active'))).get()
@@ -955,7 +955,6 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
   }
 
   const removeImpl = (name: string, version: string, opts: { deleteKv: boolean }): RemovalSummary => {
-    refuseSynthetic(name, 'removed')
     const target = findRow(name, version)
     if (!target) return { removed: false, kvDeleted: 0 }
     const rows = db.select().from(scripts).where(eq(scripts.pluginId, target.id)).all()
@@ -1050,10 +1049,6 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     ui?: readonly PluginPackageAsset[]
   }): Promise<VerifyReport & { slot?: DevSlot }> => {
     requireIdShape(input.name)
-    // A dev slot shadows a published plugin by NAME (`scripts/registry.ts`), so
-    // one named `recordings` would shadow every published recording — the same
-    // collision §4.3 reserves the name against, arriving by a different door.
-    if (isSyntheticPluginName(input.name)) throw reservedPluginNameError(input.name)
     const bundle =
       input.source.kind === 'workspace'
         ? (await buildScriptFromWorkspace(input.source.workspace, input.source.entryPath)).bundle
@@ -1123,7 +1118,6 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
   const devSlotsImpl = (): DevSlotView[] => devSlots.list().map((s) => ({ ...s, kvNamespace: s.pluginName }))
 
   const reloadImpl = async (name: string): Promise<VerifyReport> => {
-    refuseSynthetic(name, 'reloaded')
     const activeRow = activeImpl(name)
     const failedRows = db.select().from(plugins).where(and(eq(plugins.name, name), eq(plugins.status, 'failed'))).all()
     const target = failedRows.sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0))[0] ?? activeRow
@@ -1163,11 +1157,11 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     let failed = 0
     for (const p of db.select().from(plugins).where(eq(plugins.status, 'active')).all()) {
       // Plan 110 §3.4, §4.3 — a row that never passed verification is not
-      // re-verified here. That is the synthetic `recordings` owner (whose
-      // "bundle" is a comment) and any owner row created by a direct publish
-      // (`plugins/owner.ts`), neither of which has a verify child to run:
-      // handing either to one would record a `verifyError` about a bundle the
-      // farm itself wrote and never intended to import. A real plugin always
+      // re-verified here (plan 210 removed the two farm-written rows this
+      // guarded against — the `recordings` owner and an owner row a
+      // now-deleted publish path could create on the fly — but the guard
+      // itself stays: any future farm-written row with no bundle to import
+      // must not be handed to a verify child either). A real plugin always
       // has `verifiedAt` set — `activate` refuses without it — so nothing that
       // was re-verified before this rule stops being.
       if (p.verifiedAt === null) continue
@@ -1237,11 +1231,6 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
   }
 
   const removeVersionsImpl = (name: string, opts: { scope: PluginVersionRemovalScope; deleteKv: boolean }): BulkRemovalReport => {
-    // Request-level refusals throw; version-level ones are reported. A synthetic
-    // owner is refused here as well as inside `removeOne`, so the answer is one
-    // coded error about the request rather than N identical row failures.
-    refuseSynthetic(name, 'removed')
-
     /**
      * **Read every row of this name, unfiltered.** `listImpl` is the same
      * unfiltered `SELECT ... WHERE name = ?` the Plugins page reads, and that is

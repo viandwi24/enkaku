@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import {
-  PublishFromPathResultSchema,
+  PluginStatusSchema,
+  VerifyReportSchema,
   WorkspaceFileContentSchema,
   WorkspaceFileMetaSchema,
   WorkspaceListOutputSchema,
-  type PublishFromPathResult,
   type WorkspaceFileContent,
   type WorkspaceFileMeta,
   type WorkspaceListEntry,
@@ -150,27 +150,15 @@ export async function uploadWorkspaceFile(path: string, file: File): Promise<Wor
   return parsed.data.file
 }
 
-/**
- * The two halves of a published script's name (plan 110 §3.2): a script is
- * always `<plugin>/<script>`, because a script cannot exist outside a plugin.
- *
- * These are `script.publish`'s OWN regex (`MEMBER_NAME_SHAPE` in
- * `packages/core/src/capability/script.ts`) split at the slash — kept split so
- * a form can tell the operator WHICH half is wrong in a field hint, instead of
- * round-tripping to a schema refusal that names neither. The capability still
- * enforces the whole shape; this only moves the same answer earlier.
- */
+/** `plugin.stage`'s own name/version shapes (plan 210 §4.8), copied here for the same reason a form field hint always has: naming which half is wrong before a round trip to the server does. */
 export const PLUGIN_NAME_SHAPE = /^[a-z0-9][a-z0-9-]*$/
-export const SCRIPT_MEMBER_NAME_SHAPE = /^[a-z0-9][a-z0-9._-]*$/
-/** `script.publish`'s `version` field, copied for the same reason. */
 export const SCRIPT_VERSION_SHAPE = /^\d+\.\d+\.\d+(?:[-+].+)?$/
 
 export interface PublishName {
   plugin: string
-  script: string
 }
 
-/** Anything a file name can hold, reduced to the characters both halves allow. */
+/** Anything a file name can hold, reduced to the characters a plugin id allows. */
 function slug(raw: string): string {
   return raw
     .toLowerCase()
@@ -179,32 +167,36 @@ function slug(raw: string): string {
 }
 
 /**
- * The name to offer for a workspace file, so the common case is one click
- * (plan 110 §3.5):
- *
- * - `/scripts/checkout.ts` → `checkout/main` — one plugin per script name with
- *   a member called `main`, which is what `enkaku init` scaffolds.
- * - `/scripts/tiktok/search.ts` → `tiktok/search` — a folder already says which
- *   plugin its files belong to, so it is taken at its word.
- *
- * Always a suggestion: the operator can overwrite either half.
+ * The plugin id to offer for a workspace file, so the common case is one
+ * click (plan 210 §4.9): a script exists only as a member of a plugin now, so
+ * there is no second (member) half to suggest — just the plugin the file's
+ * own name or folder implies. Always a suggestion: the operator can
+ * overwrite it.
  */
 export function defaultPublishName(path: string): PublishName {
   const segments = path.split('/').filter(Boolean)
   const file = segments.pop() ?? ''
-  const script = slug(file.replace(/\.[^.]+$/, ''))
+  const stem = slug(file.replace(/\.[^.]+$/, ''))
   const dir = segments[segments.length - 1]
-  const plugin = dir && dir !== 'scripts' ? slug(dir) : ''
-  return plugin ? { plugin, script } : { plugin: script, script: 'main' }
+  const plugin = dir && dir !== 'scripts' ? slug(dir) : stem
+  return { plugin }
 }
 
+const StageFromPathResultSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  status: PluginStatusSchema,
+  verify: VerifyReportSchema.optional(),
+})
+export type StageFromPathResult = z.infer<typeof StageFromPathResultSchema>
+
 /**
- * `script.publish`'s `{ path }` input form (plan 64 §3.5, §4.4, §4.7) — the
- * core bundles the workspace source itself. `name` is the qualified
- * `<plugin>/<script>` (plan 110 §3.2); the owning plugin is created on first
- * publish and is never asserted by the caller — `PublishScriptCapabilityInput`
- * deliberately has no `pluginId`/`exportId`/`kind` to send.
+ * `plugin.stage`'s `{ path }` input form (plan 210 §4.8) — the core bundles
+ * the workspace source itself and stages (then verifies, unless asked not
+ * to) the resulting plugin package. Activation is a separate, deliberate
+ * step (the Plugins page).
  */
-export function publishScriptFromWorkspace(path: string, name: string, version: string): Promise<PublishFromPathResult> {
-  return invokeCap('script.publish', { path, name, version }, PublishFromPathResultSchema)
+export function stagePluginFromWorkspace(path: string, name: string, version: string): Promise<StageFromPathResult> {
+  return invokeCap('plugin.stage', { path, name, version }, StageFromPathResultSchema)
 }

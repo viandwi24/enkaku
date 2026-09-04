@@ -292,6 +292,9 @@ function toJobRow(input: {
     resultBytes: null,
     resultSummary: null,
     resultIssues: null,
+    // Plan 210 (MVP 03 §2.2 rule 4) — no writer until plan 211; a standalone
+    // job (batch member included) is a script job and has none.
+    workflowDoc: null,
   }
 }
 

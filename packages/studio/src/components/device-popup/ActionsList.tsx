@@ -37,6 +37,7 @@ import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { InstallBatchDialog } from '@/components/InstallBatchDialog'
 import { deriveReadinessAction } from '@/components/ReadinessControl'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
+import { toScriptRow } from '@/lib/script-row'
 import {
   Button,
   Dialog,
@@ -327,8 +328,8 @@ export function ActionsList({
   useEffect(() => {
     let cancelled = false
     void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
-      .then((rows) => {
-        if (!cancelled) setScripts((rows as ScriptRow[]).filter((s) => s.enabled))
+      .then((items) => {
+        if (!cancelled) setScripts(items.map(toScriptRow))
       })
       .catch(() => {
         if (!cancelled) setScripts([])

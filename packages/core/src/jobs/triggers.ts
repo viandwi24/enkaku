@@ -228,6 +228,8 @@ export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
           resultBytes: null,
           resultSummary: null,
           resultIssues: null,
+          // Plan 210 — no writer until plan 211; a triggered job is a script job.
+          workflowDoc: null,
         }
         tx.insert(jobs).values(row).run()
         return { jobId: row.id, deduped: false }

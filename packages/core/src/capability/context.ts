@@ -2,7 +2,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { DeviceCall } from '@enkaku/session'
 import { createDeviceExecutor, needsInspector, type TimingSettings, type TransferPort } from '@enkaku/session'
 import { newSession, type Session } from '@enkaku/harness'
-import { JobTraceEventSchema, type ActionRequest, type ActionResponse, type ActivityActor, type ActivityKind, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type PolicyDecision, type UiNode } from '@enkaku/protocol'
+import { JobTraceEventSchema, type ActionRequest, type ActionResponse, type ActivityActor, type ActivityKind, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type PolicyDecision, type ScriptListItem, type UiNode } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
 import { can, canUseDevice, type Permission } from '../auth/acl'
 import type { Role } from '../auth/service'
@@ -17,8 +17,8 @@ import type { DeviceStateMachine } from '../device/state-machine'
 import type { ReadinessManager } from '../device/readiness'
 import { resolveScriptRef } from '../scripts/resolve'
 import type { ScriptRegistry } from '../scripts/registry'
-import { resolveDirectPublishOwner } from '../plugins/owner'
-import { getScriptDetail, listScriptGroups, publishScript, type PublishScriptInput, type ScriptDetail, type ScriptGroupInfo } from '../scripts/service'
+import { getScriptDetail, listActiveScripts, type ScriptDetail } from '../scripts/service'
+import type { PluginRuntime } from '../plugins/runtime'
 import type { JobService } from '../services/job-service'
 import { groupRefFor, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
 import { lookupDeviceNumber } from '../registry/device-number'
@@ -37,24 +37,17 @@ export interface CapabilityActor {
 }
 
 /**
- * What `script.publish` may ask for (plan 110 §3.2, §5 step 110.3) — a
- * PublishScriptInput minus the three fields the capability is not allowed to
- * choose:
- *
- * - `pluginId`/`exportId`: ownership is DERIVED from the name, never asserted
- *   by the caller, or an agent could publish a member into someone else's
- *   plugin;
- * - `kind`: this capability publishes scripts. A workflow is published through
- *   `POST /api/workflows`, which is where its document is validated.
+ * Plan 210 (MVP 03 §2) — a script exists only as a member of a plugin;
+ * publishing goes through `plugin.stage` (`capability/plugin.ts`), never a
+ * per-script capability.
  */
-export type PublishScriptCapabilityInput = Omit<PublishScriptInput, 'pluginId' | 'exportId' | 'kind'>
-
 export interface ScriptCapabilityService {
-  listGroups(): ScriptGroupInfo[]
+  list(): ScriptListItem[]
   get(id: string): ScriptDetail | null
-  /** Publishes a PLUGIN member (plan 110 §3.2): `input.name` is `<plugin>/<script>`, and the owning plugin row is resolved or created here. */
-  publish(input: PublishScriptCapabilityInput): { id: string; name: string; version: string }
 }
+
+/** What `plugin.stage` needs from the runtime (`capability/plugin.ts`, plan 210 §4.8). */
+export type PluginStagePort = Pick<PluginRuntime, 'stage' | 'verify' | 'get'>
 
 /**
  * What every capability handler receives (plan 63 §3.2, §3.4). This is the
@@ -113,6 +106,8 @@ export interface CapabilityContext {
   getDevice(deviceId: string): DeviceInfo | null
   jobService: JobService
   scripts: ScriptCapabilityService
+  /** `null` when this host cannot stage plugins (orchestrator mode, or a pre-plan-210 test literal). */
+  plugins(): PluginStagePort | null
   /** Plan 62's resolver — `name@version` / `name@latest` → a concrete script
    * row. Thrown `EnkakuError`s (`script_not_found` etc.) pass through
    * `invoke` with their own code, unchanged (`./invoke.ts`). */
@@ -425,36 +420,24 @@ export interface CapabilityContextDeps {
    * name (`E_NOT_SUPPORTED`) rather than throwing something unreadable.
    */
   actionsRun?: (request: ActionRequest, actor: CapabilityActor) => Promise<ActionResponse>
+  /**
+   * `plugin.stage`'s one door (plan 210 §4.8) — threaded in from `daemon.ts`
+   * exactly like `network`/`actionsRun` above: a thunk (the runtime may be
+   * constructed after this literal), optional so an orchestrator-mode host
+   * refuses by name (`E_NOT_SUPPORTED`) rather than throwing.
+   */
+  plugins?: () => PluginStagePort | null
 }
 
 /**
  * Exported (plan 110 §5 step 110.3) so a test builds the SAME service the real
- * context does. A hand-rolled `{ publish: (input) => publishScript(db, input) }`
- * in a fixture would be a second answer to "what does publishing mean", and it
- * is exactly the answer that would miss the owning-plugin rule.
+ * context does — `script.list`/`.get` read straight through `listActiveScripts`/
+ * `getScriptDetail` (plan 210 §4.5); there is no publish path here any more.
  */
 export function buildScriptService(db: Db): ScriptCapabilityService {
   return {
-    listGroups: () => listScriptGroups(db),
+    list: () => listActiveScripts(db),
     get: (id) => getScriptDetail(db, id),
-    /**
-     * Plan 110 §3.2, §5 step 110.3 — `script.publish` publishes a PLUGIN. The
-     * bundle is built exactly as it was (the `{ path }` form still goes
-     * through `buildScriptFromWorkspace` in `capability/script.ts`); what
-     * changed is only what gets written: a member row owned by the plugin
-     * named in `<plugin>/<script>`, resolved or created by the same helper
-     * `POST /api/scripts` uses, so the REST route and the capability still
-     * cannot disagree about what publishing means (plan 63 §6.9).
-     */
-    publish: (input) => {
-      const owner = resolveDirectPublishOwner(db, {
-        name: input.name,
-        version: input.version,
-        bundle: input.bundle,
-        source: input.source ?? null,
-      })
-      return publishScript(db, { ...input, pluginId: owner.pluginId, exportId: owner.exportId })
-    },
   }
 }
 
@@ -610,6 +593,7 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
 
     jobService: deps.jobService,
     scripts,
+    plugins: deps.plugins ?? (() => null),
     // `ScriptRef` (`@enkaku/protocol`) is `z.string().regex(...)` — the
     // inferred TS type is plain `string`, so no cast is involved here; the
     // regex itself is enforced by the capability's OWN input schema at

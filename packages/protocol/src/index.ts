@@ -861,7 +861,6 @@ export {
   WorkflowNodeIdSchema,
   WorkflowPathSchema,
   WorkflowNameSchema,
-  WorkflowVersionSchema,
   ValueExprSchema,
   GATE_OPS,
   PredicateSchema,

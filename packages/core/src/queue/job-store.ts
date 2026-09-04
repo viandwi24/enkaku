@@ -409,6 +409,8 @@ export function createJobStore(db: Db): ConcreteJobStore {
         resultBytes: null,
         resultSummary: null,
         resultIssues: null,
+        // Plan 210 — no writer until plan 211; an ordinary enqueue is a script job.
+        workflowDoc: null,
       }
       db.insert(jobs).values(row).run()
       return row

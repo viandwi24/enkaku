@@ -479,6 +479,16 @@ export const jobs = sqliteTable(
     scriptName: text('script_name'),
     scriptVersion: text('script_version'),
     /**
+     * Plan 210 (MVP 03 §2.2 rule 4) — the workflow document this job was
+     * created from, copied at enqueue so a later edit of the workflow never
+     * changes what a queued or running job does. Null for a script job and
+     * for every row written before this column existed. NO WRITER YET: plan
+     * 211's enqueue calls `WorkflowStore.snapshotForJob(name)` and stores the
+     * result here; plan 211's orchestrator reads it back through
+     * `parseWorkflowDoc`, never an `as`-cast.
+     */
+    workflowDoc: text('workflow_doc', { mode: 'json' }),
+    /**
      * Plan 81 §3.2, §4.1 — lineage. `triggeredByJobId` is the job whose
      * script called `ctx.jobs.trigger()`; null for a job a human, schedule,
      * or batch created. `rootJobId` is the origin of the chain — null on the
@@ -742,31 +752,11 @@ export type BatchRow = typeof batches.$inferSelect
 // one operation with an activity per device (plan 205), and no history
 // table replaces them.
 
-/** The domain of `scripts.kind` (plan 99 §3.1) — read only where §4.5 says. */
-export type ScriptKind = 'script' | 'workflow'
-
 /** Published scripts (spec §12, §11.4 — finished bundles, not raw source). */
 export const scripts = sqliteTable(
   'scripts',
   {
     id: text('id').primaryKey(),
-    /**
-     * Plan 99 §3.1 — what `bundle` holds and which executor runs it.
-     * 'script'   : an ESM bundle, run by the script executor (every row before this plan).
-     * 'workflow' : a validated WorkflowDoc as JSON, run by the workflow executor.
-     * Read in exactly three places (acceptance criterion 3): the executor
-     * registry (`jobs/executor.ts`'s `ExecutorRegistry.get`), the publish
-     * routes, and Studio's list filter. `default('script')` means every row
-     * written before this column existed reads back correct with NO backfill.
-     * `.$type<ScriptKind>()` (compile-time only — this column is never
-     * written from untrusted input, only by `publishScript()` and, once
-     * 99.6 lands, the workflow publish route) is what lets every OTHER
-     * reader of a `ScriptRow` carry the value through with no branch of its
-     * own — a comparison against the literal 'workflow' should appear in
-     * exactly the three sanctioned files, not wherever a `ScriptRow`
-     * happens to pass through.
-     */
-    kind: text('kind').notNull().default('script').$type<ScriptKind>(),
     name: text('name').notNull(),
     version: text('version').notNull(),
     /** The output of `enkaku publish` (a single-file ESM bundle). */
@@ -815,6 +805,14 @@ export const scripts = sqliteTable(
      * plan did not anticipate.
      */
     runtime: text('runtime', { mode: 'json' }),
+    /**
+     * Plan 210 (MVP 03 §2.2 rule 5) — storage for plugin `disable`/`enable`
+     * (`plugins/runtime.ts`'s `disableImpl`/`enableImpl`) and nothing else. It
+     * is never on the wire, never toggled per script, and never shown: a
+     * plugin is active or it is not. `resolve.ts` still refuses a disabled
+     * row with `script_disabled` so a pinned reference to a disabled plugin's
+     * member fails by name.
+     */
     enabled: integer('enabled', { mode: 'boolean' }).default(true),
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }),
@@ -868,6 +866,29 @@ export const scriptParamSets = sqliteTable(
 export type ScriptParamSetRow = typeof scriptParamSets.$inferSelect
 
 /**
+ * A workflow document (plan 210, MVP 03 §2.2 rule 4): owned by the farm,
+ * authored in Studio, no version. `name` is unique. `doc` is the validated
+ * `WorkflowDoc` as JSON, re-validated through `WorkflowDocSchema` on every
+ * read (`workflows/store.ts`'s `parseWorkflowDoc`), never `as`-cast. Editing
+ * a workflow never changes a queued or running job: a job holds its own
+ * snapshot in `jobs.workflow_doc`.
+ */
+export const workflows = sqliteTable(
+  'workflows',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    doc: text('doc', { mode: 'json' }).notNull(),
+    createdBy: text('created_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [uniqueIndex('idx_workflows_name').on(t.name)],
+)
+
+export type WorkflowRow = typeof workflows.$inferSelect
+
+/**
  * One row per NODE EXECUTION within a workflow job (plan 99 §3.5, §4.6, H4).
  * Not one row per node: a loop runs a node several times and each run is a
  * fact. Modelled on `schedule_runs` above, which writes a row for every fire
@@ -876,8 +897,8 @@ export type ScriptParamSetRow = typeof scriptParamSets.$inferSelect
  * instead of a schedule's firings.
  *
  * Written only by `jobs/executors/workflow.ts`, which `daemon.ts` never
- * wires (`scriptKind` is not passed to `createExecutorHost`, so the executor
- * is unreachable in production). Plan 211 replaces this table with workflow
+ * wires (nothing selects it as a job's executor, so it is unreachable in
+ * production, plan 210 §4.8). Plan 211 replaces this table with workflow
  * runs and steps.
  */
 export const jobNodes = sqliteTable(
@@ -1355,7 +1376,8 @@ export const workspaceFiles = sqliteTable(
     hash: text('hash').notNull(),
     /** Which driver holds this row's bytes — `inline` (the `content` column above) or `fs` (plan
      * 115 §3.1, §3.2). Every row written before plan 115 reads back `'inline'` with NO backfill,
-     * matching plan 99's `scripts.kind` precedent exactly: existing rows keep their bytes in the
+     * the same "default on the column, never a backfill pass" discipline this codebase already
+     * uses for a column added under an existing row set: existing rows keep their bytes in the
      * row and are read through the `inline` driver forever, deliberately (§3.2, no migration). */
     storage: text('storage').notNull().default('inline'),
     /** Meaningless to everyone except the driver named by `storage` — for `fs` it is the sha256

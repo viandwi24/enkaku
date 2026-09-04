@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   clampSchema,
   compareSemver,
-  isPrereleaseVersion,
   ListAgentsResponseSchema,
   parseScriptRef,
   reconcileParams,
@@ -42,6 +41,7 @@ import {
   useAction,
 } from '@enkaku/ui'
 import { fetchAllPages } from '@/lib/api'
+import { toScriptRow } from '@/lib/script-row'
 
 export interface ScheduleRow extends ScheduleInfo {}
 
@@ -60,16 +60,12 @@ interface ValidatePreview {
 }
 
 /**
- * What `name@latest` resolves to RIGHT NOW, computed from the already-fetched
- * script list — the exact same rule `resolve.ts` applies server-side (plan 62
- * §3.2): highest semver among ENABLED, NON-PRERELEASE versions. Computed
- * client-side rather than round-tripping on every keystroke, since the full
- * version list is already in hand.
+ * Plan 210 (MVP 03 §2.2 rule 1) — one row per script name (the member of
+ * whichever plugin version is active), so "resolve `name@latest`" is just
+ * finding that row.
  */
 function resolveLatest(scripts: ScriptOption[], name: string): ScriptOption | null {
-  const candidates = scripts.filter((s) => s.name === name && s.enabled && !isPrereleaseVersion(s.version))
-  if (candidates.length === 0) return null
-  return [...candidates].sort((a, b) => compareSemver(b.version, a.version))[0] ?? null
+  return scripts.find((s) => s.name === name) ?? null
 }
 
 const ONOVERLAP_NOTE: Record<OnOverlap, string> = {
@@ -178,7 +174,7 @@ export function ScheduleEditorDialog({
     // `ScriptListItemSchema` (plan 95 §5 step 95.5, fixes F8) — see
     // `device/page.tsx`'s identical fix for the full reasoning.
     void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
-      .then((scripts) => setScripts((scripts as ScriptOption[]).filter((s) => s.enabled)))
+      .then((items) => setScripts(items.map(toScriptRow)))
       .catch(() => setScripts([]))
     void fetchAllPages<GroupInfo>('/api/groups')
       .then(setGroups)

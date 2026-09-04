@@ -278,6 +278,7 @@ describe('pickRebindDevice — moving a batch member after an infra failure (pla
       resultBytes: null,
       resultSummary: null,
       resultIssues: null,
+      workflowDoc: null,
     }
     expect(pickRebindDevice(db, standalone)).toBeNull()
   })

@@ -9,7 +9,6 @@ export interface ScriptOption {
   id: string
   name: string
   version: string
-  enabled: boolean
   paramsSchema: JsonSchemaNode | null
 }
 
@@ -113,7 +112,6 @@ export function ScriptPicker({
           {(pickedGroup?.versions ?? []).map((v) => (
             <SelectItem key={v.id} value={v.version} className="readout">
               {v.version}
-              {!v.enabled ? ' · disabled' : ''}
             </SelectItem>
           ))}
         </SelectContent>

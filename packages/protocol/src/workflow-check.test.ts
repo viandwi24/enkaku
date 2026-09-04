@@ -8,7 +8,7 @@ function scriptNode(overrides: Record<string, unknown> = {}) {
 }
 
 function scriptEntry(overrides: Partial<ResolvedNodeScript> = {}): ResolvedNodeScript {
-  return { name: 'demo', version: '1.0.0', kind: 'script', paramsSchema: null, outputSchema: null, timeoutMs: null, ...overrides }
+  return { name: 'demo', version: '1.0.0', paramsSchema: null, outputSchema: null, timeoutMs: null, ...overrides }
 }
 
 function codesOf(findings: { code: WorkflowFindingCode }[]): WorkflowFindingCode[] {
@@ -24,7 +24,6 @@ function codesOf(findings: { code: WorkflowFindingCode }[]): WorkflowFindingCode
 const ownerExampleDoc: WorkflowDoc = WorkflowDocSchema.parse({
   schema: 1,
   name: 'tiktok-search-pipeline',
-  version: '1.0.0',
   title: 'TikTok search pipeline',
   description: 'Warm up the feed, search a keyword, and report what was found.',
   params: [{ name: 'keyword', type: 'string', required: true, title: 'Search keyword' }],
@@ -86,7 +85,6 @@ describe('checkWorkflow — every finding is returned, never the first (plan 95 
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'multi-problem',
-      version: '1.0.0',
       params: [],
       nodes: [
         scriptNode({ id: 'a', params: { x: { param: 'nope' } } }), // E_WORKFLOW_UNKNOWN_PARAM
@@ -113,7 +111,6 @@ describe('checkWorkflow — E_WORKFLOW_DUP_NODE_ID', () => {
     const doc = {
       schema: 1,
       name: 'dup',
-      version: '1.0.0',
       title: '',
       description: '',
       params: [],
@@ -133,7 +130,6 @@ describe('checkWorkflow — E_WORKFLOW_UNKNOWN_NODE', () => {
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'bad-goto',
-      version: '1.0.0',
       params: [],
       nodes: [{ kind: 'gate', id: 'g1', when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, then: { go: 'goto', node: 'ghost' }, else: { go: 'stop' } }],
     })
@@ -145,7 +141,6 @@ describe('checkWorkflow — E_WORKFLOW_UNKNOWN_NODE', () => {
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'bad-from',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', params: { x: { from: 'ghost' } } })],
     })
@@ -160,7 +155,6 @@ describe('checkWorkflow — E_WORKFLOW_FORWARD_REF (step 99.6 verifiable result)
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'forward-ref',
-      version: '1.0.0',
       params: [],
       nodes: [
         scriptNode({ id: 'first', params: { x: { from: 'second' } } }), // binds to a node that has not run yet
@@ -181,7 +175,6 @@ describe('checkWorkflow — E_WORKFLOW_FORWARD_REF (step 99.6 verifiable result)
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'loop-binding',
-      version: '1.0.0',
       params: [],
       nodes: [
         scriptNode({ id: 'a' }),
@@ -200,7 +193,6 @@ describe('checkWorkflow — E_WORKFLOW_UNKNOWN_PARAM and E_WORKFLOW_BINDING_TYPE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'unknown-param',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', params: { x: { param: 'never_declared' } } })],
     })
@@ -213,7 +205,6 @@ describe('checkWorkflow — E_WORKFLOW_UNKNOWN_PARAM and E_WORKFLOW_BINDING_TYPE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'type-mismatch',
-      version: '1.0.0',
       params: [{ name: 'count', type: 'string', required: true, title: 'Count' }],
       nodes: [scriptNode({ id: 'a', params: { count: { param: 'count' } } })],
     })
@@ -228,7 +219,6 @@ describe('checkWorkflow — E_WORKFLOW_UNKNOWN_PARAM and E_WORKFLOW_BINDING_TYPE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'type-match',
-      version: '1.0.0',
       params: [{ name: 'count', type: 'integer', required: true, title: 'Count' }],
       nodes: [scriptNode({ id: 'a', params: { count: { param: 'count' } } })],
     })
@@ -243,7 +233,6 @@ describe('checkWorkflow — E_WORKFLOW_UNKNOWN_PARAM and E_WORKFLOW_BINDING_TYPE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'type-undetermined',
-      version: '1.0.0',
       params: [{ name: 'count', type: 'string', required: true, title: 'Count' }],
       nodes: [scriptNode({ id: 'a', params: { count: { param: 'count' } } })],
     })
@@ -258,7 +247,6 @@ describe('checkWorkflow — E_WORKFLOW_BINDING_UNRESOLVABLE and W_WORKFLOW_UNCHE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'bad-path',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b', params: { x: { from: 'a', path: 'nope' } } })],
     })
@@ -275,7 +263,6 @@ describe('checkWorkflow — E_WORKFLOW_BINDING_UNRESOLVABLE and W_WORKFLOW_UNCHE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'good-path',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b', params: { x: { from: 'a', path: 'videos' } } })],
     })
@@ -290,7 +277,6 @@ describe('checkWorkflow — E_WORKFLOW_BINDING_UNRESOLVABLE and W_WORKFLOW_UNCHE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'no-output',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b', params: { x: { from: 'a', path: 'anything' } } })],
     })
@@ -304,7 +290,6 @@ describe('checkWorkflow — E_WORKFLOW_BINDING_UNRESOLVABLE and W_WORKFLOW_UNCHE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'optional-binding',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b', params: { x: { from: 'a', path: 'nope', optional: true, default: 0 } } })],
     })
@@ -325,7 +310,6 @@ describe('checkWorkflow — E_WORKFLOW_BINDING_UNRESOLVABLE and W_WORKFLOW_UNCHE
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'from-gate',
-      version: '1.0.0',
       params: [],
       nodes: [
         { kind: 'gate', id: 'g1', when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, then: { go: 'continue' }, else: { go: 'stop' } },
@@ -338,46 +322,11 @@ describe('checkWorkflow — E_WORKFLOW_BINDING_UNRESOLVABLE and W_WORKFLOW_UNCHE
   })
 })
 
-describe('checkWorkflow — E_WORKFLOW_NESTED (step 99.6 verifiable result)', () => {
-  test('a node naming another workflow as its script is refused', () => {
-    const doc = WorkflowDocSchema.parse({
-      schema: 1,
-      name: 'nested',
-      version: '1.0.0',
-      params: [],
-      nodes: [scriptNode({ id: 'a', script: 'other-workflow@1.0.0' })],
-    })
-    const resolved = new Map<string, ResolvedNodeScript>([['other-workflow@1.0.0', scriptEntry({ kind: 'workflow' })]])
-    const findings = checkWorkflow(doc, resolved)
-    const nested = findings.find((f) => f.code === 'E_WORKFLOW_NESTED')
-    expect(nested).toBeDefined()
-    expect(nested?.message).toContain('other-workflow@1.0.0')
-  })
-
-  test('onFail naming another workflow as its script is refused too', () => {
-    const doc = WorkflowDocSchema.parse({
-      schema: 1,
-      name: 'nested-onfail',
-      version: '1.0.0',
-      params: [],
-      nodes: [scriptNode({ id: 'a' })],
-      onFail: { script: 'other-workflow@1.0.0', params: {} },
-    })
-    const resolved = new Map<string, ResolvedNodeScript>([
-      ['tiktok/auto-scroll@1.4.0', scriptEntry()],
-      ['other-workflow@1.0.0', scriptEntry({ kind: 'workflow' })],
-    ])
-    const findings = checkWorkflow(doc, resolved)
-    expect(findings.some((f) => f.code === 'E_WORKFLOW_NESTED' && f.path === 'onFail.script')).toBe(true)
-  })
-})
-
 describe('checkWorkflow — E_WORKFLOW_UNREACHABLE', () => {
   test('a node nothing ever transitions to is named', () => {
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'dead-node',
-      version: '1.0.0',
       params: [],
       nodes: [
         { kind: 'gate', id: 'g1', when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, then: { go: 'stop' }, else: { go: 'stop' } },
@@ -397,7 +346,6 @@ describe('checkWorkflow — E_WORKFLOW_BUDGET_IMPOSSIBLE (plan 98 step 98.4 unbl
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'no-budget-passed',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b' })],
     })
@@ -411,7 +359,6 @@ describe('checkWorkflow — E_WORKFLOW_BUDGET_IMPOSSIBLE (plan 98 step 98.4 unbl
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'over-budget',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', script: 'a@1.0.0' }), scriptNode({ id: 'b', script: 'b@1.0.0' })],
     })
@@ -431,7 +378,6 @@ describe('checkWorkflow — E_WORKFLOW_BUDGET_IMPOSSIBLE (plan 98 step 98.4 unbl
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'within-budget',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', script: 'a@1.0.0' }), scriptNode({ id: 'b', script: 'b@1.0.0' })],
     })
@@ -448,7 +394,6 @@ describe('checkWorkflow — E_WORKFLOW_BUDGET_IMPOSSIBLE (plan 98 step 98.4 unbl
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'unknown-timeout',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', script: 'a@1.0.0' }), scriptNode({ id: 'b', script: 'b@1.0.0' })],
     })
@@ -471,7 +416,6 @@ describe('checkWorkflow — E_WORKFLOW_BUDGET_IMPOSSIBLE (plan 98 step 98.4 unbl
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'gate-is-free',
-      version: '1.0.0',
       params: [],
       nodes: [
         scriptNode({ id: 'a', script: 'a@1.0.0' }),
@@ -488,7 +432,6 @@ describe('checkWorkflow — E_WORKFLOW_BUDGET_IMPOSSIBLE (plan 98 step 98.4 unbl
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'loop-over-budget',
-      version: '1.0.0',
       params: [],
       maxSteps: 500,
       nodes: [scriptNode({ id: 'a', script: 'a@1.0.0', onFailure: { go: 'goto', node: 'a' } })],
@@ -507,7 +450,6 @@ describe('checkWorkflow — E_WORKFLOW_BUDGET_IMPOSSIBLE (plan 98 step 98.4 unbl
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'onfail-counted',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', script: 'a@1.0.0' })],
       onFail: { script: 'cleanup@1.0.0', params: {} },
@@ -541,7 +483,6 @@ describe('checkWorkflow — W_WORKFLOW_LOOP', () => {
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'self-loop',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', onFailure: { go: 'goto', node: 'a' } })],
     })
@@ -556,7 +497,6 @@ describe('checkWorkflow — W_WORKFLOW_LOOP', () => {
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'linear',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a' }), scriptNode({ id: 'b' })],
     })
@@ -571,7 +511,6 @@ describe('checkWorkflow — W_WORKFLOW_LATEST_REF', () => {
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'uses-latest',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', script: 'tiktok/auto-scroll@latest' })],
     })
@@ -586,7 +525,6 @@ describe('checkWorkflow — W_WORKFLOW_LATEST_REF', () => {
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'pinned',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a', script: 'tiktok/auto-scroll@1.4.0' })],
     })
@@ -597,16 +535,13 @@ describe('checkWorkflow — W_WORKFLOW_LATEST_REF', () => {
 })
 
 describe('checkWorkflow — a missing entry in `resolved` degrades gracefully, never throws', () => {
-  test('a node whose script ref is absent from the resolved map produces no crash and no false type/nested finding', () => {
+  test('a node whose script ref is absent from the resolved map produces no crash', () => {
     const doc = WorkflowDocSchema.parse({
       schema: 1,
       name: 'unresolved-in-map',
-      version: '1.0.0',
       params: [],
       nodes: [scriptNode({ id: 'a' })],
     })
     expect(() => checkWorkflow(doc, new Map())).not.toThrow()
-    const findings = checkWorkflow(doc, new Map())
-    expect(codesOf(findings)).not.toContain('E_WORKFLOW_NESTED')
   })
 })

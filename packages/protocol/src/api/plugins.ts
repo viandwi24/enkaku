@@ -274,16 +274,19 @@ export const PluginStageResponseSchema = z.object({
 export const PluginVerifyResponseSchema = z.object({ verify: VerifyReportSchema })
 
 /**
- * `POST /api/plugins/:id/activate`, `POST /api/plugins/:name/rollback`, and
- * `POST /api/plugins/:name/enable` — the three routes that end with one row
- * now `active` and report which one. (`disable` has no such row and answers
- * `PluginOkResponseSchema` instead.)
- *
- * All three carry the same projected row every other `{ plugin }` on this
- * router carries (step 126.6) — a click on Activate, Roll back or Enable used
- * to pull that version's whole bundle down with the acknowledgement.
+ * `POST /api/plugins/:id/activate` (plan 210 §4.7, MVP 03 §2.3 item 5): the
+ * activated row plus the consequence, so a client can say what just moved.
+ * `scriptsMoved`: members this version registers (its manifest's script
+ * count). `queuedKeepingPrevious`: queued or running jobs pinned to the
+ * previously active version's members; they keep it (MVP 03 §2.1).
  */
-export const PluginActivateResponseSchema = z.object({ plugin: PluginRowSchema })
+export const PluginActivateResponseSchema = z.object({
+  plugin: PluginRowSchema,
+  scriptsMoved: z.number().int().nonnegative(),
+  queuedKeepingPrevious: z.number().int().nonnegative(),
+})
+/** `POST /api/plugins/:name/rollback` and `POST /api/plugins/:name/enable`: unchanged. */
+export const PluginRowResponseSchema = z.object({ plugin: PluginRowSchema })
 
 /** `POST /api/plugins/restart`. */
 export const PluginRestartResponseSchema = z.object({ ok: z.number(), failed: z.number() })
