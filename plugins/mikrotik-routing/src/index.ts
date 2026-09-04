@@ -416,13 +416,14 @@ import verifyEgressScript from './verify-egress'
  * and this row would never reach a browser — exactly what plan 124 §0.2 and
  * the 0.7.0/0.8.0 rows above already record happening twice.
  *
- * **0.13.2 → 0.14.0 — plan 216 §4.6/§4.10/§10, the wall picker retired.**
+ * **0.13.2 → 0.14.0 — plan 216 §4.6/§4.10/§10, the live-tile picker retired.**
  * MVP 07 §2.1 unifies every device-choosing surface in the product behind
  * one `DevicePicker`/`useTarget` pair, and the Screens view (plan 214) is
  * now where a device is chosen by looking at its live screen — so this
- * editor's `DeviceWallWithPicker` (0.9.0's own live-tile wall) is replaced by
- * `DevicePickerDialog`, the SAME unified picker every Studio action dialog
- * renders, still reached through `@enkaku/host` (plan 129 §3.4/§4.4) with the
+ * editor's live-tile picker (0.9.0's own component, then named for the
+ * tiles it rendered) is replaced by `DevicePickerDialog`, the SAME unified
+ * picker every Studio action dialog renders, still reached through
+ * `@enkaku/host` (plan 129 §3.4/§4.4) with the
  * identical prop shape (`open`, `onOpenChange`, `value`, `onConfirm`,
  * `filter?`, `title?`) — `addEntry`'s own several-ids-in-one-call shape is
  * therefore unchanged again.

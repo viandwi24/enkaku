@@ -97,7 +97,7 @@ function InstallFields({ value, onChange }: { value: InstallValue; onChange: (v:
       </label>
       <label className="flex items-center gap-2 text-row text-text">
         <Checkbox checked={value.grantPermissions} onCheckedChange={(v) => onChange({ ...value, grantPermissions: v === true })} />
-        Grant every requested permission
+        Allow every permission the app requests
       </label>
       <label className="flex items-center gap-2 text-row text-text">
         <Checkbox checked={value.allowDowngrade} onCheckedChange={(v) => onChange({ ...value, allowDowngrade: v === true })} />
