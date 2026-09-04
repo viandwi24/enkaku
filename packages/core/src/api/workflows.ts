@@ -63,6 +63,7 @@ const ERROR_STATUS: Record<string, number> = {
   E_NODE_UNKNOWN: 400,
   E_NODE_NO_INPUT: 400,
   E_PIN_TOO_LARGE: 400,
+  E_PIN_NOT_PINNABLE: 400,
   pin_not_found: 404,
 }
 
@@ -369,6 +370,21 @@ export function createWorkflowRoutes(deps: {
     if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
     const body = WorkflowPinSetRequestSchema.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => i.message).join('; '))
+    // Plan 300 R6, applied: only a node with ONE main output may be pinned. A
+    // pinned node is never executed, so a pinned `gate` or `switch` would
+    // never evaluate its predicate and the run would leave by a branch nobody
+    // chose — a pin that lies about control flow, which is exactly what plan
+    // 304 §3.3 exists to prevent. `start` and `finish` produce no output at
+    // all. That leaves `script` and `delay`, both of which have a single
+    // unconditional successor.
+    const target = workflow.doc.nodes.find((n) => n.id === nodeId)
+    if (!target) throw new EnkakuError('E_NODE_UNKNOWN', `"${nodeId}" is not a node of workflow "${name}"`)
+    if (target.kind !== 'script' && target.kind !== 'delay') {
+      throw new EnkakuError(
+        'E_PIN_NOT_PINNABLE',
+        `a ${target.kind} node cannot be pinned: only a node with a single main output may be (plan 300 R6). Pinning it would skip the decision that chooses its successor.`,
+      )
+    }
     let data: unknown
     if ('data' in body.data) {
       data = body.data.data

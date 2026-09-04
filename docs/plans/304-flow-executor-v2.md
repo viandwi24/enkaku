@@ -80,6 +80,16 @@ created_by)` — **not** in `workflows.doc`, and therefore never in
 The canvas marks a pinned node (plan 305 §4.6) so nobody debugs a workflow for
 an hour without noticing that step 3 has not run since Tuesday.
 
+**Only a node with one main output may be pinned** — plan 300 R6's rule, which
+this plan cited but did not originally enforce, found in review after the first
+implementation landed and fixed in the same session. A pinned node is never
+executed, so a pinned `gate` or `switch` would never evaluate its predicate and
+the run would leave by whichever successor happened to be declared first: a pin
+that lies about control flow, which is the one thing §3.3 exists to prevent.
+`start` and `finish` produce no output at all. So `PUT /:name/pins/:nodeId`
+refuses anything but a `script` or a `delay`, with `E_PIN_NOT_PINNABLE`, and
+refuses an unknown node id with `E_NODE_UNKNOWN`.
+
 ### 3.4 Determinism, and the seed
 
 Plan 302 §3.3 injects `$now` and `$random` rather than letting the evaluator

@@ -540,6 +540,35 @@ describe('Workflow pins CRUD over HTTP (plan 300 P10, plan 304 §3.3, §4.3)', (
     expect(getAfter.status).toBe(404)
   })
 
+  test('a gate cannot be pinned, and neither can a node that does not exist (plan 300 R6)', async () => {
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    publishScriptRow(db, 'node-a', '1.0.0')
+    publishScriptRow(db, 'node-b', '1.0.0')
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
+    const doc = twoNodeV2Doc()
+    // a → gate → b, so the document carries a node whose successor is a decision.
+    doc.nodes = [
+      { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, next: 'a' },
+      { kind: 'script', id: 'a', title: '', ui: { x: 0, y: 0 }, script: 'node-a@1.0.0', params: {}, next: 'g' },
+      { kind: 'gate', id: 'g', title: '', ui: { x: 0, y: 0 }, when: { left: { from: 'a', path: 'x' }, op: 'notEmpty' }, then: 'b' },
+      { kind: 'script', id: 'b', title: '', ui: { x: 0, y: 0 }, script: 'node-b@1.0.0', params: {} },
+    ] as unknown as typeof doc.nodes
+    const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc }) })
+    expect(created.status).toBe(201)
+
+    const onGate = await app.request('/run-node-doc/pins/g', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: { x: 1 } }) })
+    expect(onGate.status).toBe(400)
+    expect(((await onGate.json()) as { error: { code: string } }).error.code).toBe('E_PIN_NOT_PINNABLE')
+
+    const onGhost = await app.request('/run-node-doc/pins/nope', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: {} }) })
+    expect(onGhost.status).toBe(400)
+    expect(((await onGhost.json()) as { error: { code: string } }).error.code).toBe('E_NODE_UNKNOWN')
+
+    // The script node beside it is still pinnable — the guard is a rule, not a ban.
+    const onScript = await app.request('/run-node-doc/pins/a', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: { x: 1 } }) })
+    expect(onScript.status).toBe(204)
+  })
+
   test('deleting the workflow removes its pins too', async () => {
     const { db, registry, store, runs, pins, scheduler } = setUp()
     publishScriptRow(db, 'node-a', '1.0.0')
