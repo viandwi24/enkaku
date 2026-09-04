@@ -5,6 +5,7 @@ import { z } from 'zod'
 import {
   PluginActionResponseSchema,
   PluginActivateResponseSchema,
+  PluginRowResponseSchema,
   PluginResponseSchema,
   PluginsListResponseSchema,
   PluginStageResponseSchema,
@@ -19,7 +20,7 @@ import {
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { auditLog, plugins, scripts } from '../db/schema'
+import { auditLog, jobs, plugins, scripts } from '../db/schema'
 import { createKvStore } from '../kv/store'
 import { createTarGz } from '../backup/tar'
 import { createDevSlotStore } from '../plugins/dev-slots'
@@ -563,6 +564,23 @@ describe('the write routes echo no plugin source either (plan 126 step 126.6)', 
     expect(plugin.scriptCount).toBe(1)
   })
 
+  test('activate answers scriptsMoved and queuedKeepingPrevious (plan 210 §4.7)', async () => {
+    const { app, db } = setUp()
+    const v1Id = await publishId(app, '1.0.0')
+    await app.request(`/${v1Id}/activate`, { method: 'POST' })
+    const v1Member = db.select().from(scripts).where(eq(scripts.pluginId, v1Id)).all()[0]!
+    db.insert(jobs)
+      .values({ id: 'job-queued', scriptId: v1Member.id, deviceId: 'd1', status: 'queued', createdAt: new Date(), priority: 0 })
+      .run()
+
+    const v2Id = await publishId(app, '2.0.0')
+    const res = await app.request(`/${v2Id}/activate`, { method: 'POST' })
+    expect(res.status).toBe(200)
+    const body = PluginActivateResponseSchema.parse(await res.json())
+    expect(body.scriptsMoved).toBe(1)
+    expect(body.queuedKeepingPrevious).toBe(1)
+  })
+
   test('POST /:name/rollback answers the version it went back to, projected', async () => {
     const { app } = setUp()
     await app.request(`/${await publishId(app, '1.0.0')}/activate`, { method: 'POST' })
@@ -577,7 +595,7 @@ describe('the write routes echo no plugin source either (plan 126 step 126.6)', 
     const raw = await res.text()
 
     expectNoPluginSource(raw)
-    const plugin = PluginActivateResponseSchema.parse(JSON.parse(raw)).plugin
+    const plugin = PluginRowResponseSchema.parse(JSON.parse(raw)).plugin
     expect(plugin.version).toBe('1.0.0')
     expect(plugin.status).toBe('active')
   })
@@ -592,7 +610,7 @@ describe('the write routes echo no plugin source either (plan 126 step 126.6)', 
     const raw = await res.text()
 
     expectNoPluginSource(raw)
-    const plugin = PluginActivateResponseSchema.parse(JSON.parse(raw)).plugin
+    const plugin = PluginRowResponseSchema.parse(JSON.parse(raw)).plugin
     expect(plugin.status).toBe('active')
     expect(plugin.version).toBe('1.0.0')
   })

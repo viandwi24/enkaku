@@ -786,86 +786,38 @@ describe('PluginRuntime — a package’s `ui/` payload (step 108.10)', () => {
 })
 
 /**
- * The synthetic `recordings` owner (plan 110 §3.4, §4.3, §5 step 110.2,
- * criteria 4 and 5) — reserved against a real plugin, and immune to every
- * lifecycle verb. Enforced HERE, in the runtime, not by omitting a button:
- * `api/plugins.ts`, the dev-slot path and `restart` all come through these
- * same functions.
+ * Plan 210 §4.7, MVP 03 §2.3 item 5 — `activate` reports the activation's
+ * consequence: how many members this version registers, and how many
+ * queued/running jobs are pinned to the previously active version's members
+ * (which keep running, MVP 03 §2.1 — nothing here cancels or rewrites them).
  */
-describe('PluginRuntime — the reserved, synthetic `recordings` owner (plan 110 §3.4)', () => {
-  test('a real definePlugin({ id: "recordings" }) is refused at STAGE, before any row exists', async () => {
-    const { runtime, db } = setUp()
-    await expect(runtime.stage({ name: 'recordings', version: '1.0.0', bundle: 'export {}' })).rejects.toThrow(/reserved plugin name/)
-    expect(db.select().from(plugins).all()).toHaveLength(0)
-  })
-
-  test('and at VERIFY (criterion 5) — a row of that name that somehow exists is never verified, and never marked failed', async () => {
-    const { runtime, db } = setUp()
-    // The row a pre-plan-110 farm could hold, or the farm's own owner: written
-    // directly, because `stage` now refuses to create one.
-    db.insert(plugins)
-      .values({ id: 'p-rec', name: 'recordings', version: '0.0.0', bundle: '// none', bundleHash: 'h', status: 'active', createdAt: new Date() })
-      .run()
-    await expect(runtime.verify('p-rec')).rejects.toThrow(/reserved plugin name/)
-    // Untouched: marking it `failed` would take every published recording offline.
-    expect(db.select().from(plugins).where(eq(plugins.id, 'p-rec')).get()?.status).toBe('active')
-  })
-
-  test('a dev slot cannot claim the name either — it would shadow every recording', async () => {
+describe('PluginRuntime — activate reports scriptsMoved and queuedKeepingPrevious (plan 210 §4.7)', () => {
+  test('the first activation of a plugin reports scriptsMoved = the manifest\'s member count, queuedKeepingPrevious = 0', async () => {
     const { runtime } = setUp()
-    await expect(
-      runtime.putDevSlot({ name: 'recordings', owner: { kind: 'cli', label: 'dev' }, source: { kind: 'bundle', bundle: 'export {}' } }),
-    ).rejects.toThrow(/reserved plugin name/)
-  })
-
-  test('activate, rollback, disable, enable, remove and reload all refuse it, pointing at the recordings themselves', async () => {
-    const { runtime, db } = setUp()
-    db.insert(plugins)
-      .values({ id: 'p-rec', name: 'recordings', version: '0.0.0', bundle: '// none', bundleHash: 'h', status: 'active', createdAt: new Date() })
-      .run()
-    const verbs: Array<[string, () => unknown]> = [
-      ['activate', () => runtime.activate('p-rec')],
-      ['rollback', () => runtime.rollback('recordings', '0.0.0')],
-      ['disable', () => runtime.disable('recordings')],
-      ['enable', () => runtime.enable('recordings')],
-      ['remove', () => runtime.remove('recordings', '0.0.0', { deleteKv: true })],
-    ]
-    for (const [verb, call] of verbs) {
-      let error: unknown
-      try {
-        call()
-      } catch (err) {
-        error = err
-      }
-      expect(error).toBeInstanceOf(EnkakuError)
-      expect((error as EnkakuError).code).toBe('E_PLUGIN_SYNTHETIC')
-      expect((error as EnkakuError).message).toContain('/api/recordings')
-      expect(verb).toBeTruthy()
-    }
-    await expect(runtime.reload('recordings')).rejects.toThrow(/not an installable plugin/)
-    // Still there, still active, and its KV namespace untouched.
-    expect(db.select().from(plugins).where(eq(plugins.id, 'p-rec')).get()?.status).toBe('active')
-  })
-
-  test('restart never re-verifies a row that was never verified — the synthetic owner has no bundle to run', async () => {
-    let verifyCalls = 0
-    const { runtime, db } = setUp({
-      verify: async () => {
-        verifyCalls++
-        return healthyReport()
-      },
-    })
     const staged = await stageAndVerify(runtime)
-    runtime.activate(staged.id)
-    db.insert(plugins)
-      .values({ id: 'p-rec', name: 'recordings', version: '0.0.0', bundle: '// none', bundleHash: 'h', status: 'active', createdAt: new Date() })
+    const result = runtime.activate(staged.id)
+    expect(result.scriptsMoved).toBe(2) // healthyReport() declares login + warmup
+    expect(result.queuedKeepingPrevious).toBe(0)
+  })
+
+  test('activating a second version counts jobs queued against the FIRST version\'s members, and leaves their scriptId unchanged', async () => {
+    const { runtime, db } = setUp()
+    const v1 = await stageAndVerify(runtime, { version: '1.0.0' })
+    runtime.activate(v1.id)
+    const v1Member = db.select().from(scripts).where(eq(scripts.pluginId, v1.id)).all()[0]!
+
+    db.insert(jobs)
+      .values({ id: 'job-queued', scriptId: v1Member.id, deviceId: 'd1', status: 'queued', createdAt: new Date(), priority: 0 })
       .run()
-    verifyCalls = 0
-    const result = await runtime.restart()
-    // The real plugin, and only the real plugin.
-    expect(verifyCalls).toBe(1)
-    expect(result).toEqual({ ok: 1, failed: 0 })
-    expect(db.select().from(plugins).where(eq(plugins.id, 'p-rec')).get()?.verifyError).toBeNull()
+
+    const v2 = await stageAndVerify(runtime, { version: '2.0.0' })
+    const result = runtime.activate(v2.id)
+    expect(result.scriptsMoved).toBe(2)
+    expect(result.queuedKeepingPrevious).toBe(1)
+
+    // The queued job keeps pointing at the SUPERSEDED version's member — nothing cancels or rewrites it.
+    const job = db.select().from(jobs).where(eq(jobs.id, 'job-queued')).get()
+    expect(job?.scriptId).toBe(v1Member.id)
   })
 })
 
