@@ -201,14 +201,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
         keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
         text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
       },
-      assistsActive: 0,
-      mirrorGroups: 0,
-      mirrorMembers: 0,
-      mirrorFanoutMsP50: 0,
-      mirrorFanoutMsP95: 0,
-      queueWaitMs: 5_000,
-      uncollectedGrants: 0,
-      orphanedMirrorGroups: 0,
     })
   })
 
@@ -221,14 +213,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
         keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
         text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
       },
-      assistsActive: 3,
-      mirrorGroups: 1,
-      mirrorMembers: 5,
-      mirrorFanoutMsP50: 40,
-      mirrorFanoutMsP95: 90,
-      queueWaitMs: 5_000,
-      uncollectedGrants: 0,
-      orphanedMirrorGroups: 0,
     }
     const inner = createAdbStatsRoutes({
       db: opened.db,
@@ -326,7 +310,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       membersInFlight: 0,
       coalescedFramesPerSec: 0,
       distinctOutputRatio: 0,
-      leaseChangedPerMinute: 0,
     })
   })
 
@@ -340,7 +323,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       health: () => null,
       auto: () => true,
       sessions: () => null,
-      commandConsole: () => ({ runsInFlight: 2, membersInFlight: 14, coalescedFramesPerSec: 3.5, distinctOutputRatio: 0.08, leaseChangedPerMinute: 40 }),
+      commandConsole: () => ({ runsInFlight: 2, membersInFlight: 14, coalescedFramesPerSec: 3.5, distinctOutputRatio: 0.08}),
     })
     const app = withUser('operator', inner)
     const res = await app.request('/')
@@ -350,7 +333,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       membersInFlight: 14,
       coalescedFramesPerSec: 3.5,
       distinctOutputRatio: 0.08,
-      leaseChangedPerMinute: 40,
     })
   })
 
