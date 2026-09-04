@@ -13,7 +13,6 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { AgentStore } from '../agent/agent-store'
-import type { TreeStore } from '../agent/tree/store'
 import type { AgentSettingsStore } from '../settings/agent-settings'
 import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
@@ -25,19 +24,17 @@ import { typedJson } from './typed-json'
  * different from what the agent itself is permitted to DO once it runs
  * (`agent.permissions`, capped at the owner's own set by the store).
  *
- * `/:id/spawn-grants` (plan 67 §3.4, §4.1) — which agents `:id` may spawn via
- * `agent.spawn`. Opt-in per pair, defaulting to none; gated the same way as
- * every other agent-record edit (`agent.manage`), since granting a spawn
- * target is exactly as consequential as widening `tools`/`deviceGrants`.
+ * The sub-agent spawn-grant routes (plan 67 §3.4, §4.1) are deleted by plan
+ * 220 §3.5: no MVP document surfaces sub-agent spawn permissioning on the
+ * compacted Agents page, and no Studio caller ever reached these routes. The
+ * runtime capability is unaffected — `canSpawn`'s default-deny
+ * (`packages/core/src/agent/tree/store.ts`) is checked by `agent.spawn`
+ * directly, and `grantSpawn`/`revokeSpawn` are untouched, ready to be wired
+ * to a new route the moment a screen exists for it.
  */
-export function createAgentRoutes(deps: { store: AgentStore; tree?: TreeStore; audit: AuditLogger; settings: AgentSettingsStore }): Hono<AuthEnv> {
+export function createAgentRoutes(deps: { store: AgentStore; audit: AuditLogger; settings: AgentSettingsStore }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
-  const { store, tree, audit, settings } = deps
-
-  function mustGetTree(): TreeStore {
-    if (!tree) throw new EnkakuError('E_INTERNAL', 'spawn grants are unavailable on this host')
-    return tree
-  }
+  const { store, audit, settings } = deps
 
   // Plan 212 §4.7 — registered BEFORE `/:id` below, or `GET /api/agents/settings`
   // resolves as an agent lookup for id `"settings"` and answers `agent_not_found`.
@@ -80,31 +77,6 @@ export function createAgentRoutes(deps: { store: AgentStore; tree?: TreeStore; a
     const id = c.req.param('id')
     store.remove(id)
     audit.record({ userId: c.get('user')?.id ?? null, action: 'agent.delete', target: id, meta: {} })
-    return c.body(null, 204)
-  })
-
-  app.get('/:id/spawn-grants', requirePermission('agent.view'), (c) => {
-    const id = c.req.param('id')
-    if (!store.get(id)) throw new EnkakuError('agent_not_found', `no such agent: ${id}`)
-    return c.json({ childAgentIds: mustGetTree().listSpawnable(id) })
-  })
-
-  app.post('/:id/spawn-grants', requirePermission('agent.manage'), async (c) => {
-    const id = c.req.param('id')
-    if (!store.get(id)) throw new EnkakuError('agent_not_found', `no such agent: ${id}`)
-    const body = z.object({ childAgentId: z.string() }).safeParse(await c.req.json().catch(() => null))
-    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; '))
-    if (!store.get(body.data.childAgentId)) throw new EnkakuError('agent_not_found', `no such agent: ${body.data.childAgentId}`)
-    mustGetTree().grantSpawn(id, body.data.childAgentId)
-    audit.record({ userId: c.get('user')?.id ?? null, action: 'agent.spawn-grant.create', target: id, meta: { childAgentId: body.data.childAgentId } })
-    return c.json({ childAgentIds: mustGetTree().listSpawnable(id) }, 201)
-  })
-
-  app.delete('/:id/spawn-grants/:childId', requirePermission('agent.manage'), (c) => {
-    const id = c.req.param('id')
-    const childId = c.req.param('childId')
-    mustGetTree().revokeSpawn(id, childId)
-    audit.record({ userId: c.get('user')?.id ?? null, action: 'agent.spawn-grant.delete', target: id, meta: { childAgentId: childId } })
     return c.body(null, 204)
   })
 

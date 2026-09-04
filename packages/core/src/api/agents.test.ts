@@ -2,7 +2,6 @@ import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import { buildCoreCapabilityRegistry } from '../capability'
 import { createAgentStore } from '../agent/agent-store'
-import { createTreeStore } from '../agent/tree/store'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
@@ -28,11 +27,10 @@ function setUp(role: 'admin' | 'operator' | null = 'operator', userId = 'u1') {
   const db = opened.db as Db
   if (role) db.insert(users).values({ id: userId, email: `${userId}@test`, role, passwordHash: null, createdAt: new Date() }).run()
   const store = createAgentStore({ db, registry })
-  const tree = createTreeStore(db)
   const audit = createAuditLogger(db)
   const settings = createAgentSettingsStore(db)
-  const app = withUser(role, userId, createAgentRoutes({ store, tree, audit, settings }))
-  return { db, store, tree, app }
+  const app = withUser(role, userId, createAgentRoutes({ store, audit, settings }))
+  return { db, store, app }
 }
 
 async function jsonBody(res: Response) {
@@ -124,55 +122,6 @@ describe('DELETE /api/agents/:id', () => {
     expect(res.status).toBe(204)
     const got = await app.request(`/${id}`)
     expect(got.status).toBe(404)
-  })
-})
-
-describe('spawn grants — /:id/spawn-grants (plan 67 §3.4, §4.1)', () => {
-  async function createAgent(app: Hono<AuthEnv>, slug: string): Promise<string> {
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slug, name: slug }) })
-    return ((await jsonBody(res)).agent as { id: string }).id
-  }
-
-  test('defaults to none; granting then revoking round-trips through the API', async () => {
-    const { app } = setUp('operator', 'u1')
-    const parentId = await createAgent(app, 'parent')
-    const childId = await createAgent(app, 'child')
-
-    const empty = await jsonBody(await app.request(`/${parentId}/spawn-grants`))
-    expect(empty.childAgentIds).toEqual([])
-
-    const granted = await app.request(`/${parentId}/spawn-grants`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ childAgentId: childId }),
-    })
-    expect(granted.status).toBe(201)
-    expect((await jsonBody(granted)).childAgentIds).toEqual([childId])
-
-    const revoke = await app.request(`/${parentId}/spawn-grants/${childId}`, { method: 'DELETE' })
-    expect(revoke.status).toBe(204)
-    const after = await jsonBody(await app.request(`/${parentId}/spawn-grants`))
-    expect(after.childAgentIds).toEqual([])
-  })
-
-  test('granting to an unknown child agent id is refused with 404', async () => {
-    const { app } = setUp('operator', 'u1')
-    const parentId = await createAgent(app, 'parent2')
-    const res = await app.request(`/${parentId}/spawn-grants`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ childAgentId: 'does-not-exist' }),
-    })
-    expect(res.status).toBe(404)
-  })
-
-  test('reading spawn-grants requires only agent.view, but granting requires agent.manage', async () => {
-    const { app: writer } = setUp('operator', 'u1')
-    const parentId = await createAgent(writer, 'parent3')
-    // A caller with no role at all lacks BOTH permissions — refused at agent.view already.
-    const { app: reader } = setUp(null)
-    const res = await reader.request(`/${parentId}/spawn-grants`)
-    expect(res.status).toBe(403)
   })
 })
 

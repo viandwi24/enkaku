@@ -2,7 +2,6 @@ import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import { buildCoreCapabilityRegistry } from '../capability'
 import { createAgentStore } from '../agent/agent-store'
-import { createTreeStore } from '../agent/tree/store'
 import { createAuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
@@ -26,10 +25,9 @@ function setUp(role: 'admin' | 'operator' | null = 'admin'): { app: Hono<AuthEnv
   runMigrations(opened.db)
   const db = opened.db as Db
   const store = createAgentStore({ db, registry })
-  const tree = createTreeStore(db)
   const audit = createAuditLogger(db)
   const settings = createAgentSettingsStore(db)
-  const app = withUser(role, createAgentRoutes({ store, tree, audit, settings }))
+  const app = withUser(role, createAgentRoutes({ store, audit, settings }))
   return { app, db }
 }
 

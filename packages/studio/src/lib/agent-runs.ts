@@ -1,4 +1,4 @@
-import { ListThreadsResponseSchema, RunResponseSchema, ThreadMessagesResponseSchema, type AgentRun } from '@enkaku/protocol'
+import { ListAgentsResponseSchema, ListThreadsResponseSchema, RunResponseSchema, ThreadMessagesResponseSchema, type AgentRun } from '@enkaku/protocol'
 import { api } from '@enkaku/ui'
 
 /**
@@ -24,8 +24,9 @@ async function runIdsForThread(threadId: string): Promise<string[]> {
 }
 
 /**
- * Run history for one agent (plan 69 §4.1's `/agents/runs?agent=` — status,
- * stop reason, steps, duration, cost). Bounded to `maxThreads` most
+ * Run history for one agent (plan 69 §4.1, and plan 220's Runs tab filtered
+ * to `?agent=` — status, stop reason, steps, duration, cost). Bounded to
+ * `maxThreads` most
  * recently updated threads, same reasoning as `agent-usage.ts`: there is no
  * "list runs for an agent" endpoint, so this is O(threads) HTTP calls
  * rather than one query.
@@ -49,4 +50,34 @@ export async function fetchRecentRuns(agentId: string, opts?: { maxThreads?: num
   found.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
 
   return { runs: found, truncated: bounded.length < sorted.length }
+}
+
+export interface RunWithAgent {
+  run: AgentRun
+  agentId: string
+  agentName: string
+}
+
+/**
+ * Every run across every agent, most recently started first, bounded the
+ * same way `fetchRecentRuns` already is (plan 69) — `maxThreadsPerAgent`
+ * threads per agent, `maxTotal` runs returned overall (plan 220 §4.10). THE
+ * GAP, RECORDED RATHER THAN WORKED AROUND SILENTLY (matching
+ * `agent-approvals.ts`'s own documented gap): no farm-wide "list runs"
+ * endpoint exists, so this is O(agents) list-threads calls plus O(threads)
+ * message-history calls plus O(runs) individual run reads. A
+ * `pendingApprovals()`-shaped fix belongs in a future plan (a real query on
+ * the run store plus a REST route), not here.
+ */
+export async function fetchAllRuns(opts?: { maxThreadsPerAgent?: number; maxTotal?: number }): Promise<{ runs: RunWithAgent[]; truncated: boolean }> {
+  const maxTotal = opts?.maxTotal ?? 200
+  const { agents } = await api('/api/agents', ListAgentsResponseSchema)
+  const perAgent = await Promise.all(
+    agents.map(async (a) => {
+      const { runs } = await fetchRecentRuns(a.id, { maxThreads: opts?.maxThreadsPerAgent ?? 10 }).catch(() => ({ runs: [] as AgentRun[] }))
+      return runs.map((run) => ({ run, agentId: a.id, agentName: a.name }))
+    }),
+  )
+  const all = perAgent.flat().sort((a, b) => (b.run.startedAt ?? 0) - (a.run.startedAt ?? 0))
+  return { runs: all.slice(0, maxTotal), truncated: all.length > maxTotal }
 }
