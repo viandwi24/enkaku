@@ -514,3 +514,49 @@ The rule this adds, for the remaining rounds: **a round gate sweeps every
 backend directory the round changed, not only those with changed test files.**
 The `agent/` directory had no changed test file in R6 and held four failures.
 Plan 224 owns measuring the backend suite; until then the gate is the net.
+
+### 8.13 R7 reconciliation — 219, 220
+
+One conflict, the same additive shape as R6's: each plan deleted its own
+`PENDING_REMOVAL` row in `check-routes.ts`, so the merge keeps neither. That
+list is now **empty** — every route ever parked for removal is actually gone.
+
+Both inherited items from §8.10/§8.11 are closed by 219: `ActionRunner.tsx` is
+migrated to the new DevicePicker/useTarget, `components/target/TargetPicker.tsx`
+and `useTargetSelection.ts` are deleted, and the Plugins page now calls
+`GET /api/plugins/dev`, so `UNREACHABLE_PENDING` is empty too.
+
+Two corrections to what the programme owner wrote earlier:
+
+- §8.11 said `ViewRenderer.tsx` referenced `TargetPicker`. It never did. The
+  gate grep matched the bare name, not an import specifier — the same mistake
+  that made `operations.ts` look orphaned minutes earlier, caught then by
+  re-running with `from '[^']*<specifier>'`. **Match the import, never the
+  name**; a comment mentioning a module is not an importer.
+- The plan's own §3 table carried the same wrong claim, which is where the
+  gate note came from. A plan is a decision record, not an oracle about the
+  tree: 220 likewise found the protocol schema is `FarmAgentSettingsSchema`
+  (not the `AgentSettingsSchema` it assumed) and that several of its steps had
+  already landed with 212.
+
+Two things deliberately NOT done, both recorded rather than quietly resolved:
+
+1. **`RemovePluginAction`'s overflow scopes.** Plan 219 §4.4's code hardcodes
+   `['version']`, which drops the pre-existing "remove all versions" and
+   "remove all except latest" options from the row's `⋯` menu — a
+   `DropdownMenuItem asChild` cannot host a nested multi-item menu. The
+   executor flagged it for the owner instead of silently restoring or silently
+   dropping a capability. **Owner decision needed before release.**
+2. **`lucide-react` is not removed** (220's G6/G7). 49 files outside the agent
+   subsystem still import it, all owned by other plans. Documented as unmet
+   rather than checked off falsely. Owner: plan 224's packaging pass.
+
+Sweep, per §8.12 (every backend directory the round changed, not only those
+with changed test files): `core/src/api` 501 pass, `core/src/agent` 307 pass,
+typecheck across 20 packages, `build:studio` clean, all six `scripts/check-*`
+green. **Zero collateral failures** — the first round with none, and the
+difference is that R6's sweep had already drained three rounds of debt.
+
+The `spawn-grants` HTTP routes are gone; the store and its `canSpawn`
+enforcement remain (`agent/runner.ts:111`). That was the decision in §8.6 and
+it survived the deletion intact.
