@@ -112,6 +112,9 @@ function metaOf(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaK
   return { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey }
 }
 
+/** How often the fps readout may re-render Device Control. The value behind it is a 3-second rolling average, so anything faster is noise. */
+const FPS_PUBLISH_MS = 500
+
 export function useCast(opts: UseCastOptions): UseCast {
   const { deviceId, quality, interactive, targets, active = true, latencyOverlay = false, onRotate } = opts
 
@@ -154,6 +157,34 @@ export function useCast(opts: UseCastOptions): UseCast {
     let disposed = false
     let preparingRetryTimer: ReturnType<typeof setTimeout> | null = null
     const frameTimes: number[] = []
+
+    /**
+     * Publish the frame rate at most `FPS_PUBLISH_MS` apart, and only when the
+     * displayed value actually changes.
+     *
+     * This used to be a bare `setFps(...)` on EVERY decoded frame — 17 to 60
+     * React renders a second, each one re-rendering the whole Device Control
+     * subtree: the shortcut rail, the Actions tab, the Inspector, every
+     * tooltip and popover inside them. The owner reported it as controls
+     * flickering and state resetting "whenever the fps changes" (field
+     * report, 2026-09-04), which is exactly what a 60 Hz re-render of an
+     * interactive tree looks like.
+     *
+     * Nothing is lost by throttling: the number is already a 3-second rolling
+     * average, so publishing it sixty times a second showed sixty samples of
+     * the same window — and an fps counter that changes every 16 ms is
+     * unreadable anyway.
+     */
+    let lastFpsAt = 0
+    let lastFpsValue = -1
+    const publishFps = (now: number) => {
+      const value = Number((frameTimes.length / 3).toFixed(1))
+      if (value === lastFpsValue) return
+      if (now - lastFpsAt < FPS_PUBLISH_MS) return
+      lastFpsAt = now
+      lastFpsValue = value
+      setFps(value)
+    }
 
     async function startStream() {
       try {
@@ -245,7 +276,7 @@ export function useCast(opts: UseCastOptions): UseCast {
         lastFrameRef.current = now
         frameTimes.push(now)
         while (frameTimes.length > 0 && now - frameTimes[0]! > 3000) frameTimes.shift()
-        setFps(Number((frameTimes.length / 3).toFixed(1)))
+        publishFps(now)
         return
       }
 
@@ -256,7 +287,7 @@ export function useCast(opts: UseCastOptions): UseCast {
       lastFrameRef.current = now
       frameTimes.push(now)
       while (frameTimes.length > 0 && now - frameTimes[0]! > 3000) frameTimes.shift()
-      setFps(Number((frameTimes.length / 3).toFixed(1)))
+      publishFps(now)
 
       const canvas = canvasRef.current
       if (!canvas) return
