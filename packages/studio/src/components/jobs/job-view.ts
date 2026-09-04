@@ -46,8 +46,8 @@ export function batchState(status: BatchInfo['status']): JobStatus {
 }
 
 /**
- * The one address shape for a job (plan 218 §3.3). `/jobs/detail` no longer
- * exists; every link into a job goes through this.
+ * The one address shape for a job (plan 218 §3.3). The old detail route no
+ * longer exists; every link into a job goes through this.
  */
 export function jobHref(jobId: string, opts?: { view?: string; run?: string }): string {
   const q = new URLSearchParams({ job: jobId })

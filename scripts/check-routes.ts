@@ -55,7 +55,6 @@ const NOT_IN_NAV_BY_DESIGN: Record<string, string> = {
 const PENDING_REMOVAL: Record<string, string> = {
   '/nodes': 'post-MVP: cloud mode lands after the MVP (MVP 16 §1), so the Nodes tab MVP 03 §1.1 sketches has no owner in waves 3 to 5; plan 224 deletes the route with the packaging pass unless a cloud plan claims it first',
   '/workflows': 'plan 217: second tab of Scripts & workflows (MVP 03 §1)',
-  '/batches': 'plan 218: second tab of Jobs (MVP 15 §1)',
   '/tools': 'plan 219: Toolchain section of Settings (MVP 03 §1.1)',
   '/workspace': 'plan 220: Workspace is renamed Files and lives under Agents (MVP 15 §0.1.2)',
 }

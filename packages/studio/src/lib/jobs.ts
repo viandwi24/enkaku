@@ -8,7 +8,7 @@ import type { ArtifactInfo } from '@enkaku/protocol'
  * that quietly reverts.
  *
  * `JobWithPhase` and `outcomeLine` were removed by plan 218 §4.4: the
- * Summary tab's phase strip is gone with `app/jobs/detail/page.tsx`, and the
+ * Summary tab's phase strip is gone with the old job detail page, and the
  * failure line the new Jobs screen draws instead (§4.9.2) reads straight off
  * `JobRunDetail.errorPhase`/`failureClass`/`error` — it needs no live
  * `phase` field and no sentence-building helper of its own.

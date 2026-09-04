@@ -112,8 +112,8 @@ export function activePluginView(pathname: string, params: URLSearchParams): str
  * The static rail's active test. `/` matches only itself: `/device` used to be
  * folded in here, on the old, deleted nav, and no longer exists as a route
  * after plan 215: Device Control is a window over the Devices page, not an
- * address. Everything else is a prefix match so a detail route
- * (`/jobs/detail`) lights its own entry.
+ * address. Everything else is a prefix match so a nested route lights its
+ * own entry.
  */
 export function isNavActive(href: string, pathname: string): boolean {
   return href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`)

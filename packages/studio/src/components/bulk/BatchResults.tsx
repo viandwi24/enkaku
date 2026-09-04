@@ -14,7 +14,7 @@ import { JobStatusBadge } from '@/components/StatusBadge'
  *
  * A batch's members table shows `resultSummary` — one line, 120 characters,
  * truncated, and only when the script declared `summary` fields. Everything
- * else lived behind a link to `/jobs/detail`, one member at a time. On the
+ * else lived behind a link to the job detail route, one member at a time. On the
  * owner's own farm that is forty round trips to answer "what did this batch
  * actually return", which is the question a batch page exists to answer.
  *
