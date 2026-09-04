@@ -182,6 +182,30 @@ describe('GET /api/video/latency (plan 203 §4.7, §5 step 203.6)', () => {
     expect(body.streams[0]).toMatchObject({ keyframeRequests: 0, congestionDrops: 0 })
   })
 
+  test('GET /latency carries the input dispatch block', async () => {
+    const sessions: Pick<SessionManager, 'videoLatency' | 'encoders'> = { videoLatency: () => [], encoders: () => [] }
+    const withStats = withUser(
+      'operator',
+      createVideoRoutes({
+        sessions: () => sessions,
+        inputStats: (deviceId) => (deviceId === 'dev-1' ? { dispatchMsP50: 4, dispatchMsP95: 9, samples: 40 } : null),
+        alwaysOn: noAlwaysOn,
+        deviceIds: noDeviceIds,
+      }),
+    )
+    const res = await withStats.request('/latency?deviceId=dev-1')
+    const body = (await res.json()) as { input: { dispatchMsP50: number; dispatchMsP95: number; samples: number } | null }
+    expect(body.input).toEqual({ dispatchMsP50: 4, dispatchMsP95: 9, samples: 40 })
+
+    const withoutFixture = withUser(
+      'operator',
+      createVideoRoutes({ sessions: () => sessions, alwaysOn: noAlwaysOn, deviceIds: noDeviceIds }),
+    )
+    const res2 = await withoutFixture.request('/latency?deviceId=dev-1')
+    const body2 = (await res2.json()) as { input: unknown }
+    expect(body2.input).toBeNull()
+  })
+
   test('an operator may read it (device.view); unauthenticated is 403', async () => {
     const sessions: Pick<SessionManager, 'videoLatency' | 'encoders'> = { videoLatency: () => [], encoders: () => [] }
     const authed = withUser('operator', createVideoRoutes({ sessions: () => sessions, alwaysOn: noAlwaysOn, deviceIds: noDeviceIds }))

@@ -83,6 +83,7 @@ function fakeSession(deviceId: string, clipboard: DeviceSession['clipboard']): D
         throw new Error('no guest agent client wired in this fixture')
       },
     },
+    onClipboardChanged: () => () => {},
     close: async () => {},
   }
 }
@@ -377,5 +378,120 @@ describe('clipboard.value is unicast — a second viewer of the same device rece
     expect(holder.sent.some((m) => m.type === 'clipboard.ok')).toBe(true)
     expect(viewer.sent.some((m) => m.type === 'clipboard.value' || m.type === 'clipboard.ok')).toBe(false)
     expect(setCalls).toHaveLength(1)
+  })
+})
+
+/** A `SessionManager` fixture over two devices, for `handleClipboardChanged`'s multi-connection test. */
+function fakeMultiDeviceSessionManager(sessionsByDevice: Map<string, DeviceSession>): SessionManager {
+  return {
+    async acquire(deviceId: string) {
+      const s = sessionsByDevice.get(deviceId)
+      if (!s) throw new Error('not used')
+      return s
+    },
+    release() {},
+    async attachViewer(deviceId: string, quality: 'control' | 'wall') {
+      const s = sessionsByDevice.get(deviceId)
+      if (!s) throw new Error('not used')
+      return { session: s, quality }
+    },
+    detachViewer() {},
+    async build() {},
+    async whenReady(deviceId: string) {
+      const s = sessionsByDevice.get(deviceId)
+      if (!s) throw new Error('not used')
+      return s
+    },
+    state: () => 'ready' as const,
+    get: (deviceId: string) => sessionsByDevice.get(deviceId) ?? null,
+    getByQuality: (deviceId: string) => sessionsByDevice.get(deviceId) ?? null,
+    async closeDevice() {},
+    async closeAll() {
+      return 0
+    },
+    encoders: () => [],
+  }
+}
+
+describe('handleClipboardChanged (plan 209 §3.2 D10, §4.10, §5 step 209.6)', () => {
+  test('a device-side copy is pushed to control viewers only', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1', 'online')
+    seedDevice(db, 'dev-2', 'online')
+    const { clipboard: clip1 } = fakeClipboard({ value: '' })
+    const { clipboard: clip2 } = fakeClipboard({ value: '' })
+    const sessionsByDevice = new Map([
+      ['dev-1', fakeSession('dev-1', clip1)],
+      ['dev-2', fakeSession('dev-2', clip2)],
+    ])
+    const log = createLogger('test')
+    const states = createDeviceStateMachine({ db, log })
+    const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
+    const events: RecordedEvent[] = []
+    const deps: WsHandlerDeps = {
+      sessions: fakeMultiDeviceSessionManager(sessionsByDevice),
+      pairing: {
+        request: async () => {
+          throw new Error('not used')
+        },
+        submitCode: async () => {
+          throw new Error('not used')
+        },
+      },
+      activities,
+      controlSettings: () => ({ overControl: 'allow' as const, idleSec: 30 }),
+      states,
+      jobs: {
+        enqueue: () => {
+          throw new Error('not used')
+        },
+        cancel: () => {
+          throw new Error('not used')
+        },
+        get: () => null,
+        list: () => ({ jobs: [], nextCursor: null, total: 0 }),
+        nodes: () => ({ items: [], finalized: false }),
+        resume: () => {
+          throw new Error('not used')
+        },
+      },
+      broadcast: () => {},
+      recorder: { record: (e) => void events.push(e), stop: async () => {} },
+      audit: { record: () => {}, list: () => [] },
+      isLogInputTextEnabled: () => false,
+      roleOf: () => 'admin',
+      shellSettings: () => ({ mode: 'admin', execTimeoutMs: 15_000, maxOutputBytes: 262_144 }),
+      adbEndpoint: { open: async () => ({ host: '127.0.0.1', port: 0, expiresAt: 0 }), close: () => {}, get: () => null, closeAllForClient: () => {} },
+      adb: () => null as unknown as AdbClient,
+      crashPolicy: () => 'declared',
+      targetPackagesForJob: () => [],
+      saveCrashTrace: async () => ({ id: 'a', jobId: null, deviceId: null, kind: 'log', label: 'x', path: 'x', sizeBytes: 0, createdAt: 0 }),
+      db,
+      log,
+    }
+    const handler = createWsMessageHandler(deps)
+
+    const controlOnDev1 = fakeConn()
+    const wallOnDev1 = fakeConn()
+    const controlOnDev2 = fakeConn()
+    handler.handleOpen(controlOnDev1.ws)
+    handler.handleOpen(wallOnDev1.ws)
+    handler.handleOpen(controlOnDev2.ws)
+    await handler.handleMessage(controlOnDev1.ws, JSON.stringify({ type: 'stream.start', id: 'a1', payload: { deviceId: 'dev-1', quality: 'control' } }))
+    await handler.handleMessage(wallOnDev1.ws, JSON.stringify({ type: 'stream.start', id: 'a2', payload: { deviceId: 'dev-1', quality: 'wall' } }))
+    await handler.handleMessage(controlOnDev2.ws, JSON.stringify({ type: 'stream.start', id: 'a3', payload: { deviceId: 'dev-2', quality: 'control' } }))
+    controlOnDev1.sent.length = 0
+    wallOnDev1.sent.length = 0
+    controlOnDev2.sent.length = 0
+
+    handler.handleClipboardChanged('dev-1', 'copied text')
+
+    const changed = (c: { sent: ServerMessage[] }) => c.sent.filter((m) => m.type === 'clipboard.changed')
+    expect(changed(controlOnDev1)).toHaveLength(1)
+    expect(changed(wallOnDev1)).toHaveLength(0)
+    expect(changed(controlOnDev2)).toHaveLength(0)
+
+    const eventRow = events.find((e) => e.kind === 'clipboard.changed')
+    expect(eventRow?.meta).toEqual({ length: 'copied text'.length })
   })
 })

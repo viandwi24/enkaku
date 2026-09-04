@@ -39,6 +39,8 @@ export function createVideoRoutes(deps: {
   alwaysOn: () => Pick<AlwaysOn, 'stateOf' | 'stats'> | null
   /** Every known device's id and number (plan 206 §4.6) — joined against `sessions().encoders()` and `alwaysOn().stateOf(id)`, no N+1. */
   deviceIds: () => Array<{ deviceId: string; number: number | null }>
+  /** `ws-handlers.ts`'s `inputDispatchStats` (plan 209 §4.11), forward-ref like `streamStats`. Absent or no samples → `null`. */
+  inputStats?: (deviceId: string) => { dispatchMsP50: number; dispatchMsP95: number; samples: number } | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -69,7 +71,7 @@ export function createVideoRoutes(deps: {
       const c2 = counters.find((x) => x.quality === s.quality)
       return { ...s, keyframeRequests: c2?.keyframeRequests ?? 0, congestionDrops: c2?.congestionDrops ?? 0 }
     })
-    return typedJson(c, VideoLatencyResponseSchema, { deviceId, at: Date.now(), streams })
+    return typedJson(c, VideoLatencyResponseSchema, { deviceId, at: Date.now(), streams, input: deps.inputStats?.(deviceId) ?? null })
   })
 
   /**

@@ -242,6 +242,13 @@ export interface DeviceSession {
    * production implementation) always sets it.
    */
   rotation?: RotationLock
+  /**
+   * A device-side clipboard change (plan 209 §3.2 D10, §4.9): scrcpy's
+   * `CLIPBOARD` device message, forwarded from `ScrcpySession.onDeviceMessage`.
+   * `() => () => {}` on a session with no scrcpy control channel. Returns an
+   * unsubscribe.
+   */
+  onClipboardChanged(cb: (text: string) => void): () => void
   close(): Promise<void>
 }
 
@@ -733,6 +740,8 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
 
   let input: InputSink
   let inputEngineId: string
+  /** Plan 209 §4.9: kept so `close()` can `destroy()` the virtual keyboard/pointer before the scrcpy session closes. */
+  let uhidEngine: ScrcpyUhidInput | null = null
   if (scrcpy) {
     const selection = selectInputEngine({
       preferred: opts.preferredInputMode ?? 'uhid',
@@ -749,7 +758,10 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // server is not reading control messages yet and the pointer never
     // materialises, so taps land nowhere. Registering it at the first tap
     // costs that tap about a second, once per session.
-    const engine = selection.engine === 'scrcpy-uhid' ? new ScrcpyUhidInput(inputDeps) : new ScrcpySdkInput(inputDeps)
+    const engine =
+      selection.engine === 'scrcpy-uhid'
+        ? (uhidEngine = new ScrcpyUhidInput(inputDeps))
+        : new ScrcpySdkInput(inputDeps)
     // Volume keys do not survive scrcpy injection on every device; those go
     // over adb so the buttons in the UI actually move the volume.
     input = withAdbKeyFallback(engine, transport)
@@ -869,7 +881,17 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // settings change reaches a session that is already streaming instead of
     // waiting for a cold start that may never come on a wall tile.
     rotation: rotationLock,
+    onClipboardChanged: (cb) =>
+      scrcpy
+        ? scrcpy.onDeviceMessage((m) => {
+            if (m.type === 'clipboard') cb(m.text)
+          })
+        : () => {},
     async close() {
+      // Plan 209 §4.9: UHID_DESTROY the virtual keyboard (if it was ever
+      // created) before the control socket goes away with the rest of the
+      // session — best-effort, matching the rest of this function.
+      await uhidEngine?.destroy().catch(() => undefined)
       // Plan 100 §4.3 step 100.6: stop arming further retries and cancel any
       // in-flight timer FIRST — a retry that fires after close() has already
       // torn the session down must not resurrect a display on a dead session

@@ -88,8 +88,8 @@ export const MAIN_EVENT_KINDS = [
   // without first re-adding a reachable clipboard-paste rung to `packages/session/src/text-input.ts`.
 ] as const
 
-/** Input-stream kinds (§4.2). */
-export const INPUT_EVENT_KINDS = ['input.tap', 'input.swipe', 'input.gesture', 'input.key', 'input.text'] as const
+/** Input-stream kinds (§4.2). `input.touch` has no event kind: a stream is logged as a tap or a gesture on `up` (plan 209 §3.2 D8). */
+export const INPUT_EVENT_KINDS = ['input.tap', 'input.swipe', 'input.gesture', 'input.key', 'input.text', 'input.scroll', 'input.keyEvent', 'input.pinch'] as const
 
 export const DeviceEventSchema = z.object({
   id: z.string(),

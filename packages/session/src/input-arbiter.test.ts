@@ -241,6 +241,39 @@ describe('createInputArbiter — the façade only exposes gesture/typeText when 
   })
 })
 
+describe('createInputArbiter — the six new verbs pick the right lane (plan 209 §4.8, §5 step 209.5)', () => {
+  test('keyDown/keyUp queue on keys; touch, scroll and pinch queue on pointer', async () => {
+    const order: string[] = []
+    let releaseTouch: (() => void) | null = null
+    const richSink: InputSink = {
+      ...fakeSink().sink,
+      touch: async (a: 'down' | 'move' | 'up') => {
+        order.push(`touch:${a}:start`)
+        await new Promise<void>((resolve) => { releaseTouch = resolve })
+        order.push(`touch:${a}:end`)
+      },
+      scroll: async () => { order.push('scroll') },
+      pinch: async () => { order.push('pinch') },
+      keyDown: async () => { order.push('keyDown') },
+      keyUp: async () => { order.push('keyUp') },
+      releaseKeys: async () => { order.push('releaseKeys') },
+    }
+    const arbiter = createInputArbiter(richSink, { queueWaitMs: () => 5_000, maxQueueDepth: () => 32, log: silentLog().log })
+    const facade = arbiter.for(job('job-1'))
+    expect(facade.pinch).toBeInstanceOf(Function)
+
+    // Block the pointer lane with a touch that never resolves until released...
+    const touchPromise = facade.touch!('down', { x: 0.1, y: 0.1 }, 0)
+    // ...a keyDown on the `keys` lane must not wait behind it.
+    await facade.keyDown!({ code: 'KeyA', hidUsage: 0x04, androidKeycode: 29 }, { shift: false, ctrl: false, alt: false, meta: false })
+    expect(order).toEqual(['touch:down:start', 'keyDown'])
+
+    releaseTouch!()
+    await touchPromise
+    expect(order).toEqual(['touch:down:start', 'keyDown', 'touch:down:end'])
+  })
+})
+
 /**
  * `onAction` (a generic `{lane, source, verb, waitedMs, ranMs}` completion
  * event) used to exist here, sketched by §4.1 to feed step 91.5's attribution

@@ -125,6 +125,8 @@ interface Entry {
   live: boolean
   lingerTimer: unknown
   lingerEndsAt: number | null
+  /** Plan 209 §4.9: the base (wall) entry's clipboard subscription unsubscribe, null on a control entry (only the base subscribes). */
+  clipboardUnsubscribe: (() => void) | null
 }
 
 export interface SessionManager {
@@ -177,6 +179,8 @@ export interface SessionManagerDeps {
   hasRunningJob?: (deviceId: string) => boolean
   /** Device event log: session.opened / session.closed / session.degraded (Plan 18 §4.2). */
   onEvent?: (deviceId: string, kind: string, meta: Record<string, unknown>) => void
+  /** Plan 209 §3.2 D10, §4.9: a device-side copy on the BASE (wall) entry only. */
+  onClipboardChanged?: (deviceId: string, text: string) => void
   arbiterQueueWaitMs?: () => number
   arbiterMaxQueueDepth?: () => number
   fallbackRetryCount?: () => number
@@ -286,6 +290,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     if (!entry) return
     entries.delete(key)
     if (entry.lingerTimer) timers.clear(entry.lingerTimer)
+    entry.clipboardUnsubscribe?.()
     for (const sub of entry.frameSubscribers) subscriberEntry.delete(sub)
     await entry.session.close().catch((err) => deps.log.warn(`failed to close session ${entry.deviceId}: ${String(err)}`))
     deps.onEvent?.(entry.deviceId, 'session.closed', { reason })
@@ -405,6 +410,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       live: false,
       lingerTimer: null,
       lingerEndsAt: null,
+      // Plan 209 §3.2 D10, §4.9: only the base (wall) entry's scrcpy session is
+      // subscribed, so a device with both encoders running pushes once.
+      clipboardUnsubscribe: quality === 'wall' && deps.onClipboardChanged ? session.onClipboardChanged((text) => deps.onClipboardChanged!(deviceId, text)) : null,
     }
     entries.set(key, entry)
     await session.display.start()

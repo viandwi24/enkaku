@@ -70,4 +70,12 @@ export class AdbInput implements InputSink {
   // the input engine is chosen and therefore the only place that knows
   // whether this is a genuine degrade or the `instant` profile asking for a
   // straight line on purpose.
+
+  // Deliberately no `touch()`, `scroll()`, `pinch()`, `keyDown()`, `keyUp()`
+  // or `releaseKeys()` (plan 209 §4.7): `adb input` has no live sample-by-
+  // sample stream, no wheel, no multi-touch, and no separable key-down from
+  // key-up (`input keyevent` fires both back to back). The core replays a
+  // touch stream as one `swipe()` on `up` when this sink lacks `touch`, and
+  // a `keyEvent` down/up pair as a single `key()` press on `up` when this
+  // sink lacks `keyDown`.
 }

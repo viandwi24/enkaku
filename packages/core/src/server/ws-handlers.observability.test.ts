@@ -101,6 +101,7 @@ function fakeSession(deviceId: string, sink: InputSink, opts: { queueWaitMs?: nu
         throw new Error('not used')
       },
     },
+    onClipboardChanged: () => () => {},
     close: async () => {},
   }
 }

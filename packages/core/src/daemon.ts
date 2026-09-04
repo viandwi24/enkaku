@@ -943,6 +943,16 @@ let blobGc: BlobGc | null = null
       let videoStreamStats:
         | ((deviceId: string) => Array<{ quality: Quality; keyframeRequests: number; congestionDrops: number }>)
         | null = null
+      // Same forward-ref pattern: `GET /api/video/latency`'s `input` block
+      // (plan 209 §4.11) lives on the WS router's own dispatch-time
+      // bookkeeping, but `createVideoRoutes` is built (below, in step 4)
+      // before `attachWsRouter` ever runs.
+      let inputDispatchStats: ((deviceId: string) => { dispatchMsP50: number; dispatchMsP95: number; samples: number } | null) | null = null
+      // Same forward-ref pattern: a device-side clipboard change (plan 209
+      // §3.2 D10, §4.9) is pushed to Device Control viewers through the WS
+      // router's own connection bookkeeping, but `createSessionManager`
+      // (below, in step 5) is built before `attachWsRouter` ever runs.
+      let handleClipboardChanged: ((deviceId: string, text: string) => void) | null = null
       // Same forward-ref pattern (plan 93 §4.6, §5 step 93.9 — closes F27):
       // `transferBroadcast` (below, in step 3) is constructed well before
       // `attachWsRouter` runs, but scoping `transfer.progress`/`transfer.done`
@@ -2969,6 +2979,7 @@ let blobGc: BlobGc | null = null
         videoRoutes: createVideoRoutes({
           sessions: () => sessions,
           streamStats: (id) => videoStreamStats?.(id) ?? null,
+          inputStats: (id) => inputDispatchStats?.(id) ?? null,
           alwaysOn: () => alwaysOn,
           // One statement for the whole fleet's numbers (plan 124 §3.7, plan
           // 19 §4.3's no-N+1 rule) — the same `loadDeviceNumbers` pattern
@@ -3524,6 +3535,8 @@ let blobGc: BlobGc | null = null
         transportStats = handler.transportStats
         inputStats = handler.inputStats
         videoStreamStats = handler.videoStreamStats
+        inputDispatchStats = handler.inputDispatchStats
+        handleClipboardChanged = handler.handleClipboardChanged
         broadcastTransferEvent = handler.broadcastTransfer
       }
 
@@ -3746,6 +3759,9 @@ let blobGc: BlobGc | null = null
             // on `onDeviceGone`, plan 206 §4.3) both change `actual`.
             if (kind === 'session.opened' || kind === 'session.closed') void readiness?.reconcile(deviceId)
           },
+          // Plan 209 §3.2 D10, §4.9: a device-side copy on the base (wall)
+          // entry, pushed to Device Control viewers only.
+          onClipboardChanged: (deviceId, text) => handleClipboardChanged?.(deviceId, text),
           // plan 92 §3.5, §4.2, §4.3 — farm video settings plus this
           // device's own override, read fresh on every session build.
           resolveProfile: (deviceId, quality) => resolveVideoProfile(settingsStore.get().video, deviceSource.get(deviceId)?.video ?? null, quality),

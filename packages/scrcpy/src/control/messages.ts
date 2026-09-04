@@ -78,6 +78,32 @@ export function encodeInjectTouch(opts: {
 }
 
 /**
+ * `INJECT_SCROLL_EVENT` (plan 209 §4.3): [type u8][x i32][y i32][w u16][h u16]
+ * [hscroll i16 fixed-point][vscroll i16 fixed-point][buttons u32] = 21 bytes.
+ * `ControlMessageReader.parseInjectScrollEvent` decodes each i16 with
+ * `Binary.i16FixedPointToFloat` (range -1..1) and then MULTIPLIES the result
+ * by 16 — its own comment reads "the actual range is [-16, 16]" — so a caller
+ * that wants one notch (`hscroll`/`vscroll` in -1..1, one notch = 1, matching
+ * this package's own `injectScroll` contract) must pre-divide by 16 before
+ * packing the fixed-point value, or the device sees 16x the requested scroll.
+ * verified against v3.3.1 control/ControlMessageReader.java on 2026-09-04 (step 209.2).
+ */
+export function encodeInjectScroll(opts: { x: number; y: number; screenWidth: number; screenHeight: number; hscroll: number; vscroll: number; buttons?: number }): Uint8Array {
+  const fp = (v: number) => Math.round((Math.min(1, Math.max(-1, v)) / 16) * 0x7fff)
+  const buf = new Uint8Array(21)
+  const dv = new DataView(buf.buffer)
+  dv.setUint8(0, CONTROL_MSG.INJECT_SCROLL_EVENT)
+  dv.setInt32(1, Math.round(opts.x), false)
+  dv.setInt32(5, Math.round(opts.y), false)
+  dv.setUint16(9, opts.screenWidth, false)
+  dv.setUint16(11, opts.screenHeight, false)
+  dv.setInt16(13, fp(opts.hscroll), false)
+  dv.setInt16(15, fp(opts.vscroll), false)
+  dv.setUint32(17, opts.buttons ?? 0, false)
+  return buf
+}
+
+/**
  * Register a virtual HID device.
  *
  * `vendorId` and `productId` are two separate u16 fields. Sending one u16 for
