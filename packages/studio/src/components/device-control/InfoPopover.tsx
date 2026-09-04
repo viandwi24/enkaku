@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { ws } from '@/lib/ws'
 import type { DeviceDetail } from '@enkaku/protocol'
 import { Button, Popover, PopoverContent, PopoverTrigger, InfoIcon } from '@enkaku/ui'
 import { fetchGuestAgentStatus, type GuestAgentStatus } from '@/lib/api'
@@ -23,6 +24,28 @@ const ENGINE_ROWS = [
 export function InfoPopover({ device, onChange }: { device: DeviceDetail; onChange: () => void }) {
   const [open, setOpen] = useState(false)
   const [guestAgent, setGuestAgent] = useState<GuestAgentStatus | null>(null)
+  /**
+   * Why the inspector is not the engine this device is configured for.
+   *
+   * The core already broadcasts `device.inspector.fallback` with a written
+   * reason — "the installed guest agent build does not advertise the ui-tree
+   * capability", "the accessibility service is not enabled on this phone" —
+   * and nothing in Studio listened. So a farm silently paying ui-server's
+   * eight-second attach looked exactly like a farm on the fast engine, and
+   * the only way to learn otherwise was to read the core's log (owner,
+   * 2026-09-04). The wire carried the answer the whole time.
+   */
+  const [fallback, setFallback] = useState<{ from: string; to: string; reason: string } | null>(null)
+
+  useEffect(
+    () =>
+      ws.on((msg) => {
+        if (msg.type === 'device.inspector.fallback' && msg.payload.deviceId === device.id) {
+          setFallback({ from: msg.payload.from, to: msg.payload.to, reason: msg.payload.reason })
+        }
+      }),
+    [device.id],
+  )
 
   useEffect(() => {
     if (!open) return
@@ -78,6 +101,11 @@ export function InfoPopover({ device, onChange }: { device: DeviceDetail; onChan
             <Row label="agent can" value={guestAgent.capabilities && guestAgent.capabilities.length > 0 ? guestAgent.capabilities.join(', ') : 'nothing declared'} />
           )}
           <Row label="live inspection" value={device.liveInspection ?? '–'} />
+          {fallback && (
+            <div className="pt-0.5 text-meta text-warn">
+              fell back from {fallback.from} to {fallback.to}: {fallback.reason}
+            </div>
+          )}
         </dl>
         <h3 className="mb-1.5 text-label text-faint">Active engines</h3>
         <dl className="mb-3 space-y-1 text-meta">
