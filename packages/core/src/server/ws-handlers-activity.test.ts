@@ -48,16 +48,17 @@ function tap(conn: { ws: ServerWebSocket<unknown> }, handler: ReturnType<typeof 
   return handler.handleMessage(conn.ws, JSON.stringify({ type: 'input.tap', payload: { deviceId, pos: { x: 0.5, y: 0.5 } } }))
 }
 
+/** Someone else already driving this device — the conflict that still warns when a farm sets `control over control` to `warn` (MVP 04 §1.3), which this fixture does. */
+const otherPerson = { id: 'control:other', kind: 'control', label: 'Controlled by Rani', actor: { kind: 'user' as const, id: 'u-rani', label: 'Rani' } }
+
 describe('device.activity.warning: one per device per minute per connection (MVP 04 §3, plan 205 §4.8)', () => {
   test('a conflicting activity produces exactly one warning for two taps inside the same minute', async () => {
     const db = setUpDb()
     seedDevice(db, 'd1')
-    // POLICY.control.job === 'warn' (packages/core/src/activity/policy.ts):
-    // a running job warns a manual tap rather than blocking it.
     const activitiesDeps = setUpHandlerActivities(db)
     const conn = fakeConn()
 
-    activitiesDeps.start('d1', { id: 'job:j1', kind: 'job', label: 'Running a job', actor: { kind: 'system', id: 'core', label: 'core' } })
+    activitiesDeps.start('d1', otherPerson)
 
     await tap(conn, activitiesDeps.handler, 'd1')
     await tap(conn, activitiesDeps.handler, 'd1')
@@ -71,7 +72,7 @@ describe('device.activity.warning: one per device per minute per connection (MVP
     seedDevice(db, 'd1')
     const activitiesDeps = setUpHandlerActivities(db)
     const conn = fakeConn()
-    activitiesDeps.start('d1', { id: 'job:j1', kind: 'job', label: 'Running a job', actor: { kind: 'system', id: 'core', label: 'core' } })
+    activitiesDeps.start('d1', otherPerson)
 
     await tap(conn, activitiesDeps.handler, 'd1')
     expect(conn.sent.filter((m) => m.type === 'device.activity.warning')).toHaveLength(1)
@@ -84,6 +85,27 @@ describe('device.activity.warning: one per device per minute per connection (MVP
       Date.now = realNow
     }
     expect(conn.sent.filter((m) => m.type === 'device.activity.warning')).toHaveLength(2)
+  })
+
+  /**
+   * The two tests above used a RUNNING JOB as the conflict, because
+   * `POLICY.control.job` was `warn`. The CEO struck that on 2026-09-04: an
+   * operator reaching into a running job is helping it, and the sentence it
+   * used to raise ("your taps will interfere") said the opposite. They now
+   * use a second person's control marker, which still warns when a farm opts
+   * into `control over control: warn` — so the throttle keeps its coverage —
+   * and this pins the decision itself.
+   */
+  test('a running job raises NO warning at all — a person taking over a job is help, not a conflict', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'd1')
+    const activitiesDeps = setUpHandlerActivities(db)
+    const conn = fakeConn()
+
+    activitiesDeps.start('d1', { id: 'job:j1', kind: 'job', label: 'Running a job', actor: { kind: 'system', id: 'core', label: 'core' } })
+    await tap(conn, activitiesDeps.handler, 'd1')
+
+    expect(conn.sent.filter((m) => m.type === 'device.activity.warning')).toHaveLength(0)
   })
 
   test('no conflicting activity: no warning is sent, even though the device has no session', async () => {
@@ -104,11 +126,9 @@ describe('device.activity.warning: one per device per minute per connection (MVP
     seedDevice(db, 'd1')
     const activitiesDeps = setUpHandlerActivities(db)
     const conn = fakeConn()
-    // POLICY.control.control resolves through `overControl` ('warn' in this
-    // fixture's `controlSettings`), so use an existing kind with no `control`
-    // row entry that this suite's own POLICY table forbids instead: there is
-    // none for `control` — every column but `control` itself is `warn`. This
-    // asserts the negative instead: forbid never fires for a bare `job` conflict.
+    // Every column of `POLICY.control` is `allow` now except `control`
+    // itself, which resolves through `overControl` ('warn' here). So this
+    // asserts the negative: a bare `job` conflict never refuses a tap.
     activitiesDeps.start('d1', { id: 'job:j1', kind: 'job', label: 'Running a job', actor: { kind: 'system', id: 'core', label: 'core' } })
     await tap(conn, activitiesDeps.handler, 'd1')
     const errors = conn.sent.filter((m) => m.type === 'error') as Array<{ payload: { code: string } }>
@@ -117,7 +137,7 @@ describe('device.activity.warning: one per device per minute per connection (MVP
 })
 
 /** A thin wrapper so each test gets its own `ActivityRegistry` alongside the handler it feeds. */
-function setUpHandlerActivities(db: Db): { handler: ReturnType<typeof createWsMessageHandler>; start: (deviceId: string, input: { id: string; kind: string; label: string; actor: { kind: 'system'; id: string; label: string } }) => void } {
+function setUpHandlerActivities(db: Db): { handler: ReturnType<typeof createWsMessageHandler>; start: (deviceId: string, input: { id: string; kind: string; label: string; actor: { kind: 'system' | 'user'; id: string; label: string } }) => void } {
   const log = createLogger('test')
   const states = createDeviceStateMachine({ db, log })
   const activities = createActivityRegistry({ log, controlIdleSec: () => 30, onChange: () => {} })
