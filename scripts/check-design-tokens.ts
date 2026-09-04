@@ -286,7 +286,26 @@ const GROUP_2 = ['CaretRightIcon', 'CaretUpIcon', 'CaretUpDownIcon', 'CheckCircl
  * assumed, so adding a name here requires widening the total by the same
  * amount or this script fails on the addition it was meant to tolerate.
  */
-const GROUP_3 = ['ArrowsLeftRightIcon', 'ClockIcon', 'CopyIcon', 'DeviceMobileIcon', 'ExportIcon', 'PauseIcon', 'RobotIcon']
+const GROUP_3 = [
+  'ArrowsLeftRightIcon',
+  'ClockIcon',
+  'CopyIcon',
+  'DeviceMobileIcon',
+  'ExportIcon',
+  'PauseIcon',
+  'RobotIcon',
+  // Plan 220 (Agents page) — the agent subsystem's own lucide-react replacements.
+  'ArrowCounterClockwiseIcon',
+  'ArrowDownIcon',
+  'ArrowSquareOutIcon',
+  'BrainIcon',
+  'EyeSlashIcon',
+  'FloppyDiskIcon',
+  'ImageBrokenIcon',
+  'PaperPlaneRightIcon',
+  'PaperclipIcon',
+  'RocketIcon',
+]
 
 async function checkIcons(): Promise<void> {
   console.log('\n== icons.ts (G4) ==')

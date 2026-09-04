@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Paperclip, X } from 'lucide-react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
 import type { AgentCommand, AgentRun, AgentTreeNode } from '@enkaku/protocol'
@@ -52,7 +51,7 @@ import { ChildRunCard } from './ChildRunCard'
 import { ModelCombobox } from './ModelCombobox'
 import { ToolCallCard } from './ToolCallCard'
 import { UsageBadge } from './UsageBadge'
-import { Button, cn, ErrorState, LoadingRows, api, useAction } from '@enkaku/ui'
+import { Button, PaperclipIcon, XIcon, cn, ErrorState, LoadingRows, api, useAction } from '@enkaku/ui'
 import {
   historyToUIMessages,
   type AgentChatApprovalData,
@@ -514,7 +513,7 @@ function AttachButton({ disabled }: { disabled?: boolean }) {
   const attachments = usePromptInputAttachments()
   return (
     <PromptInputButton disabled={disabled} tooltip="Attach an image" onClick={() => attachments.openFileDialog()}>
-      <Paperclip className="size-4" aria-hidden />
+      <PaperclipIcon className="size-4" aria-hidden />
     </PromptInputButton>
   )
 }
@@ -534,7 +533,7 @@ function AttachmentStrip() {
             aria-label="Remove attachment"
             className="absolute -right-1.5 -top-1.5 flex size-4.5 items-center justify-center rounded-full bg-fg text-bg"
           >
-            <X className="size-3" aria-hidden />
+            <XIcon className="size-3" aria-hidden />
           </button>
         </div>
       ))}

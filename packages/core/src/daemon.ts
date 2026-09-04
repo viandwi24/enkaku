@@ -3404,8 +3404,10 @@ let blobGc: BlobGc | null = null
         openApiDocument,
         mcpRoutes: createMcpServer({ registry: capabilityRegistry, contextDeps: capContextDeps, audit, serverVersion: CORE_VERSION }),
         // AI agents and connectors (plan 65 §4.5) — `agentStore`/`connectorStore`/`modelListCache` are built just above.
-        // `tree: agentTreeStore` (plan 67 §4.1) backs `/:id/spawn-grants`.
-        agentRoutes: createAgentRoutes({ store: agentStore, tree: agentTreeStore, audit, settings: agentSettingsStore }),
+        // `agentTreeStore` no longer feeds this route: plan 220 §3.5 deletes the sub-agent spawn
+        // grant routes (no Studio caller ever reached them); `agentTreeStore` keeps its OTHER,
+        // unrelated wiring into the runner below, untouched.
+        agentRoutes: createAgentRoutes({ store: agentStore, audit, settings: agentSettingsStore }),
         // The durable kv store's admin surface (plan 79 §4.3, step 4) — `kvStore` is built early,
         // alongside `deviceLifecycle`, since the job runner also needs it.
         kvRoutes: createKvRoutes({ store: kvStore, audit }),

@@ -1,10 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronRight, EyeOff, ImageOff } from 'lucide-react'
 import type { ToolResultContent } from '@enkaku/protocol'
 import { blobUrl, extractDeviceIdForDisplay, findImageBlock, textOfToolResult, wireNameToCapabilityId } from '@/lib/agent-chat'
-import { Badge, cn } from '@enkaku/ui'
+import { Badge, CaretRightIcon, EyeSlashIcon, ImageBrokenIcon, cn } from '@enkaku/ui'
 
 export interface ToolCallCardProps {
   /** The wire tool name OR the real capability id — either is accepted; the wire form is reversed for display. */
@@ -42,7 +41,7 @@ export function ToolCallCardView({ name, input, status, durationMs, resultConten
   return (
     <div className={cn('rounded-md border text-[12px]', status === 'error' ? 'border-led-danger/40 bg-led-danger/5' : 'bg-surface')}>
       <button type="button" onClick={onToggle} className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left" aria-expanded={expanded}>
-        <ChevronRight className={cn('size-3 shrink-0 text-fg-subtle transition-transform', expanded && 'rotate-90')} aria-hidden />
+        <CaretRightIcon className={cn('size-3 shrink-0 text-fg-subtle transition-transform', expanded && 'rotate-90')} aria-hidden />
         <span className="readout truncate font-medium text-fg">{capabilityId}</span>
         {deviceId && <span className="readout shrink-0 truncate text-fg-subtle">{deviceId}</span>}
         <span className="flex-1" />
@@ -74,14 +73,14 @@ export function ToolCallCardView({ name, input, status, durationMs, resultConten
               <img src={blobUrl(image.blobId)} alt={`Screenshot from ${deviceId ?? 'the device'}`} className="max-h-96 w-auto rounded border" />
               {inContext === false && (
                 <p className="flex items-center gap-1.5 text-fg-subtle">
-                  <EyeOff className="size-3.5" aria-hidden />
+                  <EyeSlashIcon className="size-3.5" aria-hidden />
                   Dropped from the agent&apos;s current context — it can no longer see this screen.
                 </p>
               )}
             </div>
           ) : status === 'ok' && capabilityId === 'device.screenshot' ? (
             <p className="flex items-center gap-1.5 text-fg-subtle">
-              <ImageOff className="size-3.5" aria-hidden />
+              <ImageBrokenIcon className="size-3.5" aria-hidden />
               Screenshot data could not be read.
             </p>
           ) : text ? (

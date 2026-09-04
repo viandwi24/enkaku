@@ -2,17 +2,18 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { MoreHorizontal, Trash2 } from 'lucide-react'
 import type { AgentThread } from '@enkaku/protocol'
 import { ThreadDeletePreviewResponseSchema, ThreadDeleteResponseSchema } from '@enkaku/protocol'
 import {
   Button,
   ConfirmDialog,
+  DotsThreeIcon,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
   LoadingRows,
+  TrashIcon,
   api,
   cn,
   relativeTime,
@@ -112,7 +113,7 @@ function ThreadRowMenu({ thread, onDeleted }: { thread: AgentThread; onDeleted()
             className="absolute right-1 top-1 hidden size-6 group-hover:flex data-[state=open]:flex"
             onClick={(e) => e.preventDefault()}
           >
-            <MoreHorizontal className="size-3.5" aria-hidden />
+            <DotsThreeIcon className="size-3.5" aria-hidden />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
@@ -123,7 +124,7 @@ function ThreadRowMenu({ thread, onDeleted }: { thread: AgentThread; onDeleted()
               `AlertDialogTrigger`: nesting it INSIDE `DropdownMenuContent` would have unmounted it
               along with the closing menu before the confirm dialog ever appeared. */}
           <DropdownMenuItem variant="destructive" onSelect={openConfirm}>
-            <Trash2 className="size-3.5" aria-hidden />
+            <TrashIcon className="size-3.5" aria-hidden />
             Delete
           </DropdownMenuItem>
         </DropdownMenuContent>
