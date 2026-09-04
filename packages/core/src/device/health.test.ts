@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { AdbClient } from '@enkaku/adb'
-import { defaultFarmSettings, type DeviceEvent, type FarmSettings } from '@enkaku/protocol'
+import { defaultFarmSettings, type DeviceEvent } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations } from '../db'
 import { devices } from '../db/schema'
@@ -11,12 +11,13 @@ import { createLogger } from '../util/logger'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-function fakeSettingsStore(healthOverrides?: Partial<FarmSettings['health']>): FarmSettingsStore {
-  const cfg = { ...defaultFarmSettings(), health: { ...defaultFarmSettings().health, ...healthOverrides } }
+function fakeSettingsStore(failuresBeforeQuarantine?: number): FarmSettingsStore {
+  const base = defaultFarmSettings()
+  const cfg = { ...base, advanced: { ...base.advanced, failuresBeforeQuarantine: failuresBeforeQuarantine ?? base.advanced.failuresBeforeQuarantine } }
   return { get: () => cfg, update: () => cfg, onChange: () => () => {} }
 }
 
-function setUp(healthOverrides?: Partial<FarmSettings['health']>) {
+function setUp(opts?: { failuresBeforeQuarantine?: number; autoQuarantineOverride?: boolean }) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
@@ -30,16 +31,17 @@ function setUp(healthOverrides?: Partial<FarmSettings['health']>) {
     db,
     client: () => null,
     states,
-    settings: fakeSettingsStore(healthOverrides),
+    settings: fakeSettingsStore(opts?.failuresBeforeQuarantine),
     log: createLogger('test'),
     record: (e) => events.push(e as unknown as DeviceEvent),
+    ...(opts?.autoQuarantineOverride !== undefined ? { autoQuarantineOverride: opts.autoQuarantineOverride } : {}),
   })
   return { db, states, health, events }
 }
 
 describe('DeviceHealth.note — which outcomes count (plan 23 §3.6, §6.7)', () => {
   test('E_ADB_TIMEOUT counts toward the consecutive-failure streak', () => {
-    const { health } = setUp({ consecutiveFailures: 3 })
+    const { health } = setUp({ failuresBeforeQuarantine: 3 })
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     expect(health.consecutiveFailures('d1')).toBe(1)
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
@@ -88,7 +90,7 @@ describe('DeviceHealth.note — which outcomes count (plan 23 §3.6, §6.7)', ()
 
 describe('DeviceHealth — auto-quarantine on reaching the threshold (plan 23 §3.5, §4.4, §6.4)', () => {
   test('quarantines with reason adb:unreachable after `consecutiveFailures`, and emits device.unhealthy', () => {
-    const { db, health, events } = setUp({ consecutiveFailures: 3, autoQuarantine: true })
+    const { db, health, events } = setUp({ failuresBeforeQuarantine: 3, autoQuarantineOverride: true })
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     let row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
@@ -104,7 +106,7 @@ describe('DeviceHealth — auto-quarantine on reaching the threshold (plan 23 §
   })
 
   test('autoQuarantine: false counts failures but never quarantines', () => {
-    const { db, health } = setUp({ consecutiveFailures: 2, autoQuarantine: false })
+    const { db, health } = setUp({ failuresBeforeQuarantine: 2, autoQuarantineOverride: false })
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
@@ -114,7 +116,7 @@ describe('DeviceHealth — auto-quarantine on reaching the threshold (plan 23 §
   })
 
   test('a thermally quarantined device is never touched by the adb failure path (different reason prefix)', () => {
-    const { db, states, health } = setUp({ consecutiveFailures: 1, autoQuarantine: true })
+    const { db, states, health } = setUp({ failuresBeforeQuarantine: 1, autoQuarantineOverride: true })
     states.apply('d1', 'QUARANTINE')
     db.update(devices).set({ quarantineReason: 'thermal:47.0C' }).where(eq(devices.id, 'd1')).run()
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
@@ -125,7 +127,7 @@ describe('DeviceHealth — auto-quarantine on reaching the threshold (plan 23 §
   })
 
   test('a refused quarantine attempt (device not in a quarantinable state) is retried on the next failure without throwing', () => {
-    const { db, states, health } = setUp({ consecutiveFailures: 1, autoQuarantine: true })
+    const { db, states, health } = setUp({ failuresBeforeQuarantine: 1, autoQuarantineOverride: true })
     states.apply('d1', 'DEVICE_DISCONNECTED') // → offline, not a legal QUARANTINE source
     expect(() => health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')).not.toThrow()
     let row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
@@ -151,7 +153,7 @@ describe('DeviceHealth — the recovery prober (plan 23 §3.5, §4.4.4, §6.5, �
   }
 
   test('an adb:-quarantined device is un-quarantined once it answers, and emits device.recovered', async () => {
-    const { db, states, events } = setUp({ probeIntervalSec: 10 })
+    const { db, states, events } = setUp()
     states.apply('d1', 'QUARANTINE')
     db.update(devices).set({ quarantineReason: 'adb:unreachable' }).where(eq(devices.id, 'd1')).run()
 
@@ -161,7 +163,8 @@ describe('DeviceHealth — the recovery prober (plan 23 §3.5, §4.4.4, §6.5, �
       db,
       client: () => (succeeds ? fakeAdbClient({ succeeds: true }) : client),
       states,
-      settings: fakeSettingsStore({ probeIntervalSec: 0.02 }), // 20ms — fast enough for a unit test
+      settings: fakeSettingsStore(),
+      probeIntervalSecOverride: 0.02, // 20ms — fast enough for a unit test
       log: createLogger('test'),
       record: (e) => events.push(e as unknown as DeviceEvent),
     })
@@ -189,7 +192,8 @@ describe('DeviceHealth — the recovery prober (plan 23 §3.5, §4.4.4, §6.5, �
       db,
       client: () => fakeAdbClient({ succeeds: true }), // reachable — would recover instantly if probed
       states,
-      settings: fakeSettingsStore({ probeIntervalSec: 0.02 }),
+      settings: fakeSettingsStore(),
+      probeIntervalSecOverride: 0.02,
       log: createLogger('test'),
       record: (e) => events.push(e as unknown as DeviceEvent),
     })
@@ -212,7 +216,8 @@ describe('DeviceHealth — the recovery prober (plan 23 §3.5, §4.4.4, §6.5, �
       db,
       client: () => fakeAdbClient({ succeeds: true }),
       states,
-      settings: fakeSettingsStore({ probeIntervalSec: 0.02 }),
+      settings: fakeSettingsStore(),
+      probeIntervalSecOverride: 0.02,
       log: createLogger('test'),
     })
     health.start()

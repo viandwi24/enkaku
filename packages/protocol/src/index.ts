@@ -358,7 +358,7 @@ export { TimingSettingsSchema, type TimingSettings } from './timing'
 // The job runner and workflow orchestrator (plan 211's own shape) read this
 // unchanged; `daemon.ts`'s `jobConstants()` helper reconstructs one from the
 // farm's current settings.
-export { JobSettingsSchema, type JobSettings } from './job-settings'
+export { JobSettingsSchema, defaultJobSettings, type JobSettings } from './job-settings'
 
 // Plan 212 §4.7 — farm-level agent settings, moved out of `FarmSettingsSchema`
 // onto their own route (`GET`/`PATCH /api/agents/settings`). Named

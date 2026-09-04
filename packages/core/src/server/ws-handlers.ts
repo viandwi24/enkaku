@@ -12,7 +12,6 @@ import {
   KEYCODES,
   type ActivityKind,
   type ArtifactInfo,
-  type ControlSettings,
   type DeviceActivity,
   type DeviceEvent,
   type DeviceEventStream,
@@ -29,7 +28,7 @@ import {
 import type { PairingService } from '../enroll/pairing'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
 import type { ActivityRegistry } from '../activity/registry'
-import { evaluate } from '../activity/policy'
+import { evaluate, type ControlPolicySettings } from '../activity/policy'
 import type { ReadinessManager } from '../device/readiness'
 import { DEFAULT_TIMING, resolveTextRoute, SessionError, buildSentence, type AlwaysOn, type DeviceSession, type InputLane, type InputSource, type SessionManager } from '@enkaku/session'
 import type { JobService } from '../services/job-service'
@@ -291,7 +290,7 @@ export interface WsHandlerDeps {
   /** The device activity registry (plan 205 §4.2) — the one door every gated case goes through via `admit()`. */
   activities: ActivityRegistry
   /** `control.overControl`/`control.idleSec`, read fresh on every admission check (plan 205 §4.5). */
-  controlSettings: () => ControlSettings
+  controlSettings: () => ControlPolicySettings
   jobs: JobService
   /** For the Monitor tab (plan 24 §4.4) — local devices only; a null accessor means "not ready yet". */
   adb: () => AdbClient | null

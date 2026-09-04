@@ -3,7 +3,6 @@ import type { AdbClient } from '@enkaku/adb'
 import { AdbTcpTransport, AdbUsbTransport } from '@enkaku/drivers'
 import {
   CapturedPowerStateSchema,
-  DeviceSettingsSchema,
   type AwakeApplyResult,
   type CapturedPowerState,
   type DeviceStatus,
@@ -24,6 +23,7 @@ import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
+import { DEVICE_SCREEN_OFF_TIMEOUT_MS } from '../config/constants'
 
 /**
  * The awake policy, host side (plan 125 §4.1, §5 step 125.1 — this plan's
@@ -188,10 +188,9 @@ export function createAwakePolicy(deps: AwakePolicyDeps): AwakePolicy {
       return row.transport === 'adb-tcp' ? new AdbTcpTransport(opts) : new AdbUsbTransport(opts)
     })
 
-  /** `prep.screenOffTimeoutMs`, read fresh off the row — the same "read settings live" discipline every settings-derived accessor in this codebase follows. */
-  function screenOffTimeoutFor(row: DeviceRow): number | null {
-    const parsed = DeviceSettingsSchema.safeParse(row.settings ?? {})
-    return parsed.success ? parsed.data.prep.screenOffTimeoutMs : DeviceSettingsSchema.parse({}).prep.screenOffTimeoutMs
+  /** `prep.screenOffTimeoutMs` is a constant now (plan 212 §4.1 D18, `DEVICE_SCREEN_OFF_TIMEOUT_MS`) — no per-device row to read. */
+  function screenOffTimeoutFor(_row: DeviceRow): number | null {
+    return DEVICE_SCREEN_OFF_TIMEOUT_MS
   }
 
   /**

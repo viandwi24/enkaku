@@ -9,6 +9,7 @@ import type { EventRecorder } from '../events/recorder'
 import type { Logger } from '../util/logger'
 import { mapWithConcurrency } from '../util/concurrency'
 import { METRICS_PROBE, parseDeviceMetrics, type CpuSample } from './metrics'
+import { BATTERY_POLL_INTERVAL_SEC, DEVICE_AUTO_QUARANTINE } from '../config/constants'
 
 /** Parse output `dumpsys battery` (spec §15.2). */
 export function parseDumpsysBattery(raw: string): BatteryState | null {
@@ -86,7 +87,7 @@ export function createBatteryMonitor(deps: {
 
   /** One device's poll body — unchanged from before plan 23, just no longer run in a sequential `for`. */
   async function pollDevice(client: AdbClient, row: DeviceRow, status: DeviceStatus): Promise<void> {
-    const cfg = deps.settings.get().battery
+    const cfg = { tempThresholdC: deps.settings.get().devices.tempThresholdC, autoQuarantine: DEVICE_AUTO_QUARANTINE }
     try {
       const { stdout: raw } = await client.exec(row.serial, 'dumpsys battery', { profile: 'battery' })
       const battery = parseDumpsysBattery(raw)
@@ -158,7 +159,7 @@ export function createBatteryMonitor(deps: {
   return {
     start() {
       if (timer) return
-      const intervalMs = deps.settings.get().battery.pollIntervalSec * 1000
+      const intervalMs = BATTERY_POLL_INTERVAL_SEC * 1000
       timer = setInterval(() => void pollOnce(), intervalMs)
       void pollOnce()
     },

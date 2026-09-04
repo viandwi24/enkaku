@@ -7,6 +7,7 @@ import type { FarmSettingsStore } from '../settings/farm-settings'
 import type { EventRecorder } from '../events/recorder'
 import type { Logger } from '../util/logger'
 import { mapWithConcurrency } from '../util/concurrency'
+import { DEVICE_AUTO_QUARANTINE, DEVICE_RECOVERY_PROBE_INTERVAL_SEC } from '../config/constants'
 
 export type AdbMetricOutcome = 'ok' | 'timeout' | 'busy' | 'error'
 
@@ -49,6 +50,10 @@ export function createDeviceHealth(deps: {
   log: Logger
   /** Main-stream device events: device.unhealthy / device.recovered (plan 18 §4.2, plan 23 §4.4). */
   record?: EventRecorder['record']
+  /** Test-only override for `DEVICE_RECOVERY_PROBE_INTERVAL_SEC` (plan 212 §4.1 turned this into a support constant; a unit test still needs a fast interval). */
+  probeIntervalSecOverride?: number
+  /** Test-only override for `DEVICE_AUTO_QUARANTINE` (plan 212 §4.1 F4/F38 — the same constant, kept injectable for the "never quarantines" test case). */
+  autoQuarantineOverride?: boolean
 }): DeviceHealth {
   const { db, log } = deps
   /** In memory only — a core restart re-probes everything anyway (plan 23 §3.6). */
@@ -120,8 +125,7 @@ export function createDeviceHealth(deps: {
       if (!countsAsFailure(outcome, code)) return
       const next = (counters.get(deviceId) ?? 0) + 1
       counters.set(deviceId, next)
-      const cfg = deps.settings.get().health
-      if (next >= cfg.consecutiveFailures && cfg.autoQuarantine) {
+      if (next >= deps.settings.get().advanced.failuresBeforeQuarantine && (deps.autoQuarantineOverride ?? DEVICE_AUTO_QUARANTINE)) {
         quarantineForUnreachable(deviceId)
       }
     },
@@ -132,7 +136,7 @@ export function createDeviceHealth(deps: {
 
     start() {
       if (timer) return
-      const intervalMs = deps.settings.get().health.probeIntervalSec * 1000
+      const intervalMs = (deps.probeIntervalSecOverride ?? DEVICE_RECOVERY_PROBE_INTERVAL_SEC) * 1000
       timer = setInterval(() => void probeOnce(), intervalMs)
     },
 

@@ -37,7 +37,7 @@ function fakeAdb(): AdbClient {
   } as unknown as AdbClient
 }
 
-async function enrollOnce(deviceDefaults?: () => DeviceSettings) {
+async function enrollOnce() {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
@@ -61,7 +61,6 @@ async function enrollOnce(deviceDefaults?: () => DeviceSettings) {
     hub: new WsHub(log),
     log,
     states: createDeviceStateMachine({ db, log, onChange: () => {} }),
-    ...(deviceDefaults ? { deviceDefaults } : {}),
   })
   await registry.start()
   for (const cb of listeners) cb({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
@@ -72,63 +71,24 @@ async function enrollOnce(deviceDefaults?: () => DeviceSettings) {
   // the farm defaults are applied at the moment an operator admits it — which
   // is the moment this helper is really about.
   expect(db.select().from(devices).where(eq(devices.stableId, 'HW-SERIAL-1')).get()).toBeUndefined()
-  const row = admitDevice(db, 'HW-SERIAL-1', { ...(deviceDefaults ? { deviceDefaults } : {}) })
+  const row = admitDevice(db, 'HW-SERIAL-1')
   await registry.stop()
   return row
 }
 
 describe('device enrollment', () => {
-  test('a new device inherits the farm defaults, in both the columns and the settings JSON', async () => {
-    const farmDefaults: DeviceSettings = {
-      ...defaultDeviceSettings(),
-      engines: {
-        transport: 'adb-tcp',
-        display: 'screencap-loop',
-        input: 'adb-input',
-        inspection: 'uiautomator-dump',
-      },
-      autoReconnect: false,
-    }
-
-    const row = await enrollOnce(() => farmDefaults)
-    expect(row).toBeTruthy()
-
-    // The columns the session builder reads.
-    expect(row!.transport).toBe('adb-tcp')
-    expect(row!.display).toBe('screencap-loop')
-    expect(row!.input).toBe('adb-input')
-    expect(row!.inspection).toBe('uiautomator-dump')
-
-    // The settings JSON the device screen edits — the same values, one source.
-    const settings = row!.settings as DeviceSettings
-    expect(settings.engines).toEqual(farmDefaults.engines)
-    expect(settings.autoReconnect).toBe(false)
-    expect(settings.prep).toEqual(farmDefaults.prep)
-  })
-
-  test('without a farm defaults provider it falls back to the schema defaults', async () => {
+  /**
+   * Plan 212 §4.1, §3.3 decision 3: `FarmSettingsSchema.defaults` is gone —
+   * there is no more farm-wide device-defaults accessor anywhere in this
+   * path. A new device always starts from `defaultDeviceSettings()`, with a
+   * fresh, empty identity (docs/settings-audit.md #1's original concern:
+   * identity must never be a farm-wide, centrally-set value).
+   */
+  test('a new device gets the schema defaults, in both the columns and the settings JSON, with a fresh empty identity', async () => {
     const row = await enrollOnce()
     const settings = row!.settings as DeviceSettings
     expect(settings).toEqual(defaultDeviceSettings())
     expect(row!.display).toBe(defaultDeviceSettings().engines.display)
-  })
-
-  /**
-   * docs/settings-audit.md #1 (highest-severity finding, docs/plans/
-   * 96-m61-hotfixes.md): a farm-wide default GPS/timezone/locale used to be
-   * spread onto every device enrolled through THIS live-tracker path too —
-   * `createDeviceRegistry`'s own inline `defaultsForNewDevice`, not just
-   * `admission.ts`'s `admitDevice` path `admission.test.ts` covers. A new
-   * device gets a valid, EMPTY identity, never `undefined` and never
-   * whatever a farm operator set centrally.
-   */
-  test('a new device enrolled through the live tracker gets a fresh, empty identity — never a farm-wide one, even if the accessor carries one', async () => {
-    const farmDefaultsWithIdentity: DeviceSettings = {
-      ...defaultDeviceSettings(),
-      identity: { timezone: 'Asia/Jakarta', locale: 'id-ID', gps: { lat: -6.2, lng: 106.8, accuracy: 50 } },
-    }
-    const row = await enrollOnce(() => farmDefaultsWithIdentity)
-    const settings = row!.settings as DeviceSettings
     expect(settings.identity).toEqual({})
     expect(settings.identity).not.toBeUndefined()
   })

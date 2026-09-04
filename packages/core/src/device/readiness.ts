@@ -15,6 +15,7 @@ import {
 import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import type { AwakePolicy } from './awake-policy'
+import { DEVICE_SCREEN_OFF_TIMEOUT_MS } from '../config/constants'
 import type { ActivityRegistry } from '../activity/registry'
 import { mapWithConcurrency } from '../util/concurrency'
 import { EnkakuError } from '../util/errors'
@@ -247,10 +248,9 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     return parsed.success ? parsed.data.prep.keepAwake : 'always'
   }
 
-  /** `prep.screenOffTimeoutMs` (plan 125 §4.2) — `null` means "leave the device's own value alone" and issues no write. */
-  function screenOffTimeoutFor(row: DeviceRow): number | null {
-    const parsed = DeviceSettingsSchema.safeParse(row.settings ?? {})
-    return parsed.success ? parsed.data.prep.screenOffTimeoutMs : null
+  /** `prep.screenOffTimeoutMs` is a constant now (plan 212 §4.1 D18, `DEVICE_SCREEN_OFF_TIMEOUT_MS`) — no per-device row to read. */
+  function screenOffTimeoutFor(_row: DeviceRow): number | null {
+    return DEVICE_SCREEN_OFF_TIMEOUT_MS
   }
 
   /** `actual`, ignoring `blocked` — the raw, live-derived level (§4.3's derivation order). */

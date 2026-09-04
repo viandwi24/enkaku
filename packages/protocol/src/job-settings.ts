@@ -315,3 +315,4 @@ export const JobSettingsSchema = z
     description: 'Session hygiene between jobs — what gets cleaned up on a device before each run.',
   })
 export type JobSettings = z.infer<typeof JobSettingsSchema>
+export const defaultJobSettings = (): JobSettings => JobSettingsSchema.parse({})

@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { DeviceIdentitySchema, defaultDeviceSettings, type DeviceSettings, type FarmDeviceDefaults, type Readiness } from '@enkaku/protocol'
+import { DeviceIdentitySchema, defaultDeviceSettings, type DeviceSettings, type Readiness } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { blockedDevices, devices, discoveredDevices, type DeviceRow } from '../db/schema'
 import { allocateDeviceNumber } from './device-number'
@@ -48,21 +48,19 @@ export function classify(db: Db, stableId: string): Admission {
  * unreachable and creation now happens exactly once, here, when an operator
  * admits the device (plan 56 §4.3).
  *
- * `deviceDefaults` is typed `FarmDeviceDefaults` (`DeviceSettings` minus
- * `identity`), not `DeviceSettings` — `FarmSettings.defaults` cannot carry an
- * `identity` block anymore (docs/settings-audit.md #1, `docs/plans/
- * 96-m61-hotfixes.md`): a farm-wide default GPS/timezone/locale used to be
- * spread onto every newly admitted device's row here, stamping every device
- * admitted while it was set with byte-identical coordinates. `identity` is
- * always filled from `DeviceIdentitySchema`'s own empty default below,
- * REGARDLESS of whether a `deviceDefaults` accessor was passed — so a new
- * device gets a valid, empty identity (every field absent, "leave the
- * device's own value alone"), never `undefined`, and never anything a farm
- * operator configured centrally. Per-device identity remains exactly what it
- * was (plan 58): set deliberately, per device, after admission.
+ * Plan 212 §4.1, §3.3 decision 3 — `FarmSettingsSchema.defaults` (the whole
+ * farm-wide copy of `DeviceSettings`) is gone: a per-device field either has
+ * no farm analogue at all, or is an `.optional()` override with no third
+ * "shadowed default" case (`docs/settings-audit.md` #1, #2). A new device
+ * therefore always starts from `defaultDeviceSettings()`, never a
+ * farm-configured base — there is no `deviceDefaults` accessor left to take
+ * one from. `identity` is always filled from `DeviceIdentitySchema`'s own
+ * empty default below regardless, so a new device gets a valid, empty
+ * identity (every field absent, "leave the device's own value alone"),
+ * never `undefined`. Per-device identity remains exactly what it was
+ * (plan 58): set deliberately, per device, after admission.
  */
 export function defaultsForNewDevice(opts: {
-  deviceDefaults?: () => FarmDeviceDefaults
   defaultDesiredReadiness?: () => Readiness
 }): {
   transport: DeviceSettings['engines']['transport']
@@ -72,8 +70,7 @@ export function defaultsForNewDevice(opts: {
   settings: DeviceSettings
   desiredReadiness: Readiness | null
 } {
-  const base = opts.deviceDefaults?.() ?? defaultDeviceSettings()
-  const s: DeviceSettings = { ...base, identity: DeviceIdentitySchema.parse({}) }
+  const s: DeviceSettings = { ...defaultDeviceSettings(), identity: DeviceIdentitySchema.parse({}) }
   return {
     transport: s.engines.transport,
     display: s.engines.display,
@@ -92,7 +89,6 @@ export function defaultsForNewDevice(opts: {
 export interface AdmitOptions {
   label?: string
   groupId?: string
-  deviceDefaults?: () => FarmDeviceDefaults
   defaultDesiredReadiness?: () => Readiness
 }
 

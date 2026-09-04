@@ -1,4 +1,4 @@
-import { resolveAgentConfig, type Agent, type AgentTreeNode, type FarmSettings, type ServerMessage } from '@enkaku/protocol'
+import { resolveAgentConfig, type Agent, type AgentTreeNode, type FarmAgentSettings, type ServerMessage } from '@enkaku/protocol'
 import type { AgentApproval, AgentContentBlock, AgentImageMediaType, AgentMessage, AgentRun, AgentRunStatus, AgentThread } from '@enkaku/protocol'
 import type { CapabilityRegistry } from '../capability/registry'
 import type { CapabilityContextDeps, AgentSpawnInput, AgentSpawnResult, AgentStatusResult, AgentCancelResult, AgentTreeOps } from '../capability/context'
@@ -99,7 +99,7 @@ export interface RunnerDeps {
   capContextDeps: CapabilityContextDeps
   activities: ActivityRegistry
   controlSettings: () => ControlPolicySettings
-  settings: () => FarmSettings
+  settings: () => FarmAgentSettings
   modelListCache: ModelListCache
   audit?: AuditLogger
   /** Resolves a userId to its ACL role — same accessor `daemon.ts` already threads through the WS router. */
@@ -270,7 +270,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
   }
 
   async function buildRunEnv(agent: Agent, thread: AgentThread, run: AgentRun) {
-    const config = resolveAgentConfig(settings(), agent)
+    const config = resolveAgentConfig({ agentDefaults: settings().defaults }, agent)
     if (!config.connectorId) {
       throw new EnkakuError('E_NO_CONNECTOR', 'this agent has no connector configured (and the farm has no default connector)')
     }
@@ -328,7 +328,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
       const rootRun = threads.getRun(run.rootRunId)
       const rootThread = rootRun ? threads.getThread(rootRun.threadId) : null
       const rootAgent = rootThread ? agents.get(rootThread.agentId) : null
-      return rootAgent ? resolveAgentConfig(settings(), rootAgent) : config
+      return rootAgent ? resolveAgentConfig({ agentDefaults: settings().defaults }, rootAgent) : config
     })()
     const treeBudget = {
       maxOutputTokens: rootConfig.maxOutputTokens,
@@ -474,7 +474,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
     forget(finishedRunId)
     const queue = queues.get(agent.id)
     if (!queue || queue.length === 0) return
-    const config = resolveAgentConfig(settings(), agent)
+    const config = resolveAgentConfig({ agentDefaults: settings().defaults }, agent)
     while (queue.length > 0 && activeCountFor(agent.id) < config.maxConcurrentRuns) {
       const nextRunId = queue.shift()
       if (!nextRunId) break
@@ -542,7 +542,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
     // every run it starts (this first one and every later message) is narrowed to it.
     const run = threads.createRun(threadId, thread.deviceScope ? { deviceGrantsOverride: thread.deviceScope } : undefined)
 
-    const config = resolveAgentConfig(settings(), agent)
+    const config = resolveAgentConfig({ agentDefaults: settings().defaults }, agent)
     if (activeCountFor(agent.id) >= config.maxConcurrentRuns) {
       enqueue(agent.id, run.id)
       return run
@@ -623,7 +623,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
     // Re-read: `run` can be stale if it was cancelled between pausing and this decision landing.
     const fresh = threads.getRun(run.id)
     if (!fresh || fresh.status !== 'paused') return
-    const config = resolveAgentConfig(settings(), agent)
+    const config = resolveAgentConfig({ agentDefaults: settings().defaults }, agent)
     if (activeCountFor(agent.id) >= config.maxConcurrentRuns) {
       enqueue(agent.id, run.id)
       return
@@ -704,7 +704,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
   function wakeIdleThread(agent: Agent, thread: AgentThread, oldRunId: string): void {
     const newRun = threads.createRun(thread.id, thread.deviceScope ? { deviceGrantsOverride: thread.deviceScope } : undefined)
     tree.retarget(oldRunId, newRun.id)
-    const config = resolveAgentConfig(settings(), agent)
+    const config = resolveAgentConfig({ agentDefaults: settings().defaults }, agent)
     if (activeCountFor(agent.id) >= config.maxConcurrentRuns) {
       enqueue(agent.id, newRun.id)
       return
@@ -795,7 +795,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
     })
     threads.appendMessage({ threadId: childThread.id, runId: null, role: 'user', content: [{ type: 'text', text: input.prompt }] })
 
-    const config = resolveAgentConfig(settings(), childAgent)
+    const config = resolveAgentConfig({ agentDefaults: settings().defaults }, childAgent)
     if (activeCountFor(childAgent.id) >= config.maxConcurrentRuns) {
       enqueue(childAgent.id, childRun.id)
     } else {
@@ -921,7 +921,7 @@ export function createAgentRunner(deps: RunnerDeps): AgentRunner {
       deviceGrantsOverride: input.deviceIds && input.deviceIds.length > 0 ? input.deviceIds : null,
     })
 
-    const config = resolveAgentConfig(settings(), agent)
+    const config = resolveAgentConfig({ agentDefaults: settings().defaults }, agent)
     if (activeCountFor(agent.id) >= config.maxConcurrentRuns) {
       enqueue(agent.id, run.id)
     } else {

@@ -102,17 +102,15 @@ const TouchProfileValuesSchema = z.object({
 })
 const TouchProfilesSchema = z.object({ precise: TouchProfileValuesSchema, natural: TouchProfileValuesSchema, slow: TouchProfileValuesSchema })
 export type TouchProfileValues = z.infer<typeof TouchProfileValuesSchema>
+export type TouchProfiles = z.infer<typeof TouchProfilesSchema>
 
 /** The tuples behind `jobRunner.touchProfile`. `natural` is the pre-212 `defaults.timing` default, unchanged. */
-export const TOUCH_PROFILES = json(
-  'ENKAKU_TOUCH_PROFILES',
-  {
-    precise: { tapHoldMs: [40, 60], betweenActionMs: [150, 300], coordJitterPx: 0, gestureCurvature: 0, gestureSampleIntervalMs: 8, perCharMs: [20, 50] },
-    natural: { tapHoldMs: [40, 120], betweenActionMs: [300, 900], coordJitterPx: 2, gestureCurvature: 0.08, gestureSampleIntervalMs: 8, perCharMs: [40, 140] },
-    slow: { tapHoldMs: [80, 200], betweenActionMs: [700, 1800], coordJitterPx: 3, gestureCurvature: 0.12, gestureSampleIntervalMs: 8, perCharMs: [90, 220] },
-  },
-  TouchProfilesSchema,
-)
+const TOUCH_PROFILES_DEFAULT: TouchProfiles = {
+  precise: { tapHoldMs: [40, 60], betweenActionMs: [150, 300], coordJitterPx: 0, gestureCurvature: 0, gestureSampleIntervalMs: 8, perCharMs: [20, 50] },
+  natural: { tapHoldMs: [40, 120], betweenActionMs: [300, 900], coordJitterPx: 2, gestureCurvature: 0.08, gestureSampleIntervalMs: 8, perCharMs: [40, 140] },
+  slow: { tapHoldMs: [80, 200], betweenActionMs: [700, 1800], coordJitterPx: 3, gestureCurvature: 0.12, gestureSampleIntervalMs: 8, perCharMs: [90, 220] },
+}
+export const TOUCH_PROFILES = json('ENKAKU_TOUCH_PROFILES', TOUCH_PROFILES_DEFAULT, TouchProfilesSchema)
 
 // ── Device housekeeping (replaces defaults.prep.screenOffTimeoutMs, discovery.*, health.*, adbControl.*, battery.*, labelling.*) ──
 export const DEVICE_SCREEN_OFF_TIMEOUT_MS = num('ENKAKU_DEVICE_SCREEN_OFF_TIMEOUT_MS', 1_800_000, z.number().int().min(0))

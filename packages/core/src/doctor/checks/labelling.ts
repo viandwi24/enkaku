@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
-import { DEFAULT_DEVICE_LABEL_STATE, DeviceLabelStateSchema, DeviceSettingsSchema } from '@enkaku/protocol'
+import { DEFAULT_DEVICE_LABEL_STATE, DeviceLabelStateSchema, DeviceSettingsSchema, FarmSettingsSchema, defaultFarmSettings } from '@enkaku/protocol'
+import { DEVICE_LABEL_SURFACE } from '../../config/constants'
 import { formatDeviceLabel } from '../../registry/device-number'
 import type { Check } from '../types'
 
@@ -33,6 +34,10 @@ function readLabelledDevices(dataDir: string): LabelledDeviceRow[] | null {
     return null
   }
   try {
+    const farmRow = sqlite.query('SELECT value FROM farm_settings WHERE id = 1').get() as { value: string } | null
+    const farmParsed = farmRow ? FarmSettingsSchema.safeParse(JSON.parse(farmRow.value)) : null
+    const farmDeviceLabel = farmParsed?.success ? farmParsed.data.general.deviceLabel : defaultFarmSettings().general.deviceLabel
+
     const rows = sqlite
       .query(
         'SELECT d.label AS label, d.stable_id AS stableId, d.settings AS settings, d.label_state AS labelState, n.number AS number FROM devices d LEFT JOIN device_numbers n ON n.stable_id = d.stable_id',
@@ -40,7 +45,8 @@ function readLabelledDevices(dataDir: string): LabelledDeviceRow[] | null {
       .all() as Array<{ label: string; stableId: string; settings: string | null; labelState: string | null; number: number | null }>
     return rows.map((r) => {
       const settingsParsed = DeviceSettingsSchema.safeParse(r.settings ? JSON.parse(r.settings) : {})
-      const mode = settingsParsed.success ? settingsParsed.data.labelling.mode : 'off'
+      const content = settingsParsed.success ? (settingsParsed.data.overrides.deviceLabel ?? farmDeviceLabel) : farmDeviceLabel
+      const mode: 'off' | 'lock-screen' | 'wallpaper' = content === 'off' ? 'off' : DEVICE_LABEL_SURFACE
       const stateParsed = DeviceLabelStateSchema.safeParse(r.labelState ? JSON.parse(r.labelState) : null)
       const state = stateParsed.success ? stateParsed.data : DEFAULT_DEVICE_LABEL_STATE
       return { display: formatDeviceLabel(r.number, r.label), mode, state: state.state, reason: state.reason }

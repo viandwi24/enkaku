@@ -254,9 +254,11 @@ export function createDeviceExecutor(deps: {
 
   /**
    * Curved-gesture dispatch shared by `swipe`, `scroll`, and `fling` (plan 40
-   * §4.4): `profile: 'instant'` (or an engine with no `gesture` method —
-   * `AdbInput`, already reported once at session creation, §3.6) skips
-   * straight to a plain linear swipe, byte-for-byte the pre-plan-40 call.
+   * §4.4, touch profile naming reduced by plan 212 §4.1): a profile with
+   * `gestureCurvature: 0` (the `precise` profile, the old `instant`'s
+   * replacement) or an engine with no `gesture` method — `AdbInput`,
+   * already reported once at session creation, §3.6 — skips straight to a
+   * plain linear swipe, byte-for-byte the pre-plan-40 call.
    */
   async function runSwipe(
     from: Point,
@@ -266,7 +268,7 @@ export function createDeviceExecutor(deps: {
     opts?: { curvature?: number; easing?: Easing },
   ): Promise<void> {
     const s = sink()
-    if (timing.profile !== 'instant' && s.gesture) {
+    if (timing.gestureCurvature > 0 && s.gesture) {
       const samples = buildGesturePath({
         from,
         to,
@@ -405,7 +407,7 @@ export function createDeviceExecutor(deps: {
       }
       case 'type': {
         await pause(timing)
-        const instant = call.args.instant ?? timing.profile === 'instant'
+        const instant = call.args.instant ?? timing.gestureCurvature === 0
         // `instant` — including the pre-plan-40 default of always-instant
         // when the caller supplies no timing settings at all — reproduces
         // the pre-plan-40 order exactly: setText when the inspector supports

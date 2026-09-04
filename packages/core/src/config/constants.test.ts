@@ -9,7 +9,7 @@ describe('packages/core/src/config/constants.ts (plan 212 §212.2)', () => {
   test('every override name appears in .env.example', () => {
     const source = readFileSync(CONSTANTS_SOURCE_PATH, 'utf8')
     const envExample = readFileSync(ENV_EXAMPLE_PATH, 'utf8')
-    const names = new Set([...source.matchAll(/'(ENKAKU_[A-Z0-9_]+)'/g)].map((m) => m[1]))
+    const names = new Set([...source.matchAll(/'(ENKAKU_[A-Z0-9_]+)'/g)].map((m) => m[1]).filter((n): n is string => n !== undefined))
     expect(names.size).toBeGreaterThan(0)
     const missing: string[] = []
     for (const name of names) {

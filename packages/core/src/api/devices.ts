@@ -23,7 +23,6 @@ import {
   normaliseTag,
   validateEngineSelection,
   type DeviceSettings,
-  type FarmDeviceDefaults,
   type Readiness,
   type ReconcileReport,
   type RegistryResponse,
@@ -286,9 +285,7 @@ export function createDeviceRoutes(deps: {
    * optionality pattern as `connection` above.
    */
   cutover?: () => CutoverManager | null
-  /** `FarmDeviceDefaults` (`DeviceSettings` minus `identity`) — see `admission.ts`'s `defaultsForNewDevice` (docs/settings-audit.md #1) for why a farm-wide default can no longer carry an `identity` block. */
-  deviceDefaults?: () => FarmDeviceDefaults
-  /** `readiness.defaultDesired` (plan 43 §4.4) — a separate accessor for the same reason it is one in the registry. */
+  /** `readiness.defaultDesired` (plan 43 §4.4). Plan 212 §4.1, §3.3 decision 3 removed the farm-wide `deviceDefaults` accessor: a new device always starts from `defaultDeviceSettings()` in `admission.ts`. */
   defaultDesiredReadiness?: () => Readiness
   lifecycle: DeviceLifecycle
   /** `device.removed` on Forget/Block (plan 47 §4.4) — the same broadcast the Studio fleet list already listens for, previously never sent by anything. */
@@ -399,7 +396,6 @@ export function createDeviceRoutes(deps: {
     const row = admitDevice(deps.db, stableId, {
       ...(body.label ? { label: body.label } : {}),
       ...(body.groupId ? { groupId: body.groupId } : {}),
-      ...(deps.deviceDefaults ? { deviceDefaults: deps.deviceDefaults } : {}),
       ...(deps.defaultDesiredReadiness ? { defaultDesiredReadiness: deps.defaultDesiredReadiness } : {}),
     })
     if (!row) {

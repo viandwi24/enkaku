@@ -11,7 +11,6 @@ import {
   type DeviceMetrics,
   type DeviceReadiness,
   type DeviceSettings,
-  type FarmDeviceDefaults,
   type LastControl,
   type Readiness,
 } from '@enkaku/protocol'
@@ -47,16 +46,7 @@ export interface DeviceRegistryDeps {
   onDeviceReady?: (deviceId: string) => void
   /** Main-stream device events: device.online / device.offline / device.unauthorized (Plan 18 §4.2). */
   record?: EventRecorder['record']
-  /**
-   * Farm defaults, applied to a device the first time it is enrolled.
-   * Without this the Settings page would be decorative: the defaults were
-   * never read, and new devices silently took the DB column defaults instead.
-   * Typed `FarmDeviceDefaults` (`DeviceSettings` minus `identity`) — see the
-   * comment on `defaultsForNewDevice` in `admission.ts` for why a farm-wide
-   * default can no longer carry an `identity` block (docs/settings-audit.md #1).
-   */
-  deviceDefaults?: () => FarmDeviceDefaults
-  /** `readiness.defaultDesired` (plan 43 §4.4) — see the comment on `defaultsForNewDevice` below for why this is a separate accessor from `deviceDefaults`. */
+  /** `readiness.defaultDesired` (plan 43 §4.4) — see the comment on `defaultsForNewDevice` below. Plan 212 §4.1, §3.3 decision 3 removed the farm-wide `deviceDefaults` accessor entirely: a new device always starts from `defaultDeviceSettings()`. */
   defaultDesiredReadiness?: () => Readiness
   /**
    * The address book (plan 88 §3.2, §4.3). `onOnline`'s success path calls
@@ -479,19 +469,17 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
   const { client, db, hub, log } = deps
   /** serial → stableId, so a remove event resolves without a query. */
   /**
-   * Farm defaults → the columns the session builder reads, plus the settings
-   * JSON. Both are written from ONE source so they cannot disagree.
-   *
-   * `identity` is always filled from `DeviceIdentitySchema`'s own empty
-   * default, never from `deps.deviceDefaults` (which cannot carry one — see
-   * `admission.ts`'s `defaultsForNewDevice` for the full reasoning,
-   * docs/settings-audit.md #1) — so a device enrolled through THIS path
-   * (the live adb tracker, distinct from the admission-tray `admitDevice`
-   * path `admission.ts` itself covers) gets a valid, empty identity too.
+   * `defaultDeviceSettings()` → the columns the session builder reads, plus
+   * the settings JSON. Both are written from ONE source so they cannot
+   * disagree. `identity` is always filled from `DeviceIdentitySchema`'s own
+   * empty default (plan 212 §4.1, §3.3 decision 3: there is no more
+   * farm-wide `deviceDefaults` to take a base from) — so a device enrolled
+   * through THIS path (the live adb tracker, distinct from the
+   * admission-tray `admitDevice` path `admission.ts` itself covers) gets a
+   * valid, empty identity too.
    */
   const defaultsForNewDevice = () => {
-    const base = deps.deviceDefaults?.() ?? defaultDeviceSettings()
-    const s: DeviceSettings = { ...base, identity: DeviceIdentitySchema.parse({}) }
+    const s: DeviceSettings = { ...defaultDeviceSettings(), identity: DeviceIdentitySchema.parse({}) }
     return {
       transport: s.engines.transport,
       display: s.engines.display,

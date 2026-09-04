@@ -469,13 +469,14 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   const { client, log } = deps
   const onPhase = deps.onPhase ?? (() => {})
   const quality: Quality = opts.quality ?? 'control'
-  // plan 92 §3.5, §4.2 — the resolved numbers this session's encoder starts
-  // with. When the caller supplies none (a test/fixture, or the node
-  // package's mini-core, which carries no farm settings store), fall back to
-  // the schema defaults for `quality` alone — `defaultFarmSettings().video`'s
-  // defaults ARE `CONTROL_PRESETS.sharp`/`WALL_PRESETS.balanced`, so this is
+  // plan 92 §3.5, §4.2 (preset-only since plan 212 §4.5) — the resolved
+  // numbers this session's encoder starts with. When the caller supplies
+  // none (a test/fixture, or the node package's mini-core, which carries no
+  // farm settings store), fall back to the schema defaults for `quality`
+  // alone — `defaultFarmSettings().capture`'s defaults ARE
+  // `CONTROL_PRESETS.sharp`/`WALL_PRESETS.balanced`, so this is
   // byte-identical to the pre-plan-92 `QUALITY_PROFILES` constants.
-  const videoProfile: VideoProfile = opts.videoProfile ?? resolveVideoProfile(defaultFarmSettings().video, null, quality)
+  const videoProfile: VideoProfile = opts.videoProfile ?? resolveVideoProfile(defaultFarmSettings().capture, null, quality)
 
   onPhase('connecting')
   const transportId = opts.transport ?? 'adb-usb'

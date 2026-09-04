@@ -6,6 +6,7 @@ import {
   DEFAULT_DEVICE_LABEL_STATE,
   DeviceLabelStateSchema,
   DeviceSettingsSchema,
+  type DeviceLabel,
   type DeviceLabelState,
   type DeviceSettings,
   type Transport,
@@ -23,6 +24,7 @@ import { lookupDeviceNumber } from '../registry/device-number'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import type { Actor } from './lifecycle'
+import { DEVICE_LABEL_SURFACE } from '../config/constants'
 
 /**
  * The labelling service, host side (plan 89 §4.6, §5 step 89.6).
@@ -59,8 +61,12 @@ export interface LabellingServiceDeps {
    * `daemon.ts` wires this to `guestAgent.withGuestAgentClient`.
    */
   withGuestAgentClient: <T>(deviceId: string, fn: (client: GuestAgentClient) => Promise<T>) => Promise<T>
-  /** `FarmSettings.labelling.maxConcurrent`, read fresh on every pass — the same "read settings live" discipline every settings-derived accessor in this codebase follows. */
+  /** `LABEL_WRITE_CONCURRENCY` (plan 212 §4.1 F2, a constant) — kept as an accessor so a test can still supply a different number. */
   maxConcurrent: () => number
+  /** `FarmSettings.general.deviceLabel` (plan 212 §4.1) — the CONTENT half. Combined with a device's own `overrides.deviceLabel` here; the SURFACE half is the constant `DEVICE_LABEL_SURFACE`. */
+  farmDeviceLabel: () => DeviceLabel
+  /** Test-only override for `DEVICE_LABEL_SURFACE` (plan 212 §4.1 turned this into a single farm-wide support constant; a unit test still needs to exercise both tiers). */
+  surfaceOverride?: 'lock-screen' | 'wallpaper'
   /** Main-stream device events: `device.label`, recorded only on an actual transition (mirrors `agent-provisioner.ts`'s `maybeRecordTransition`). */
   record?: EventRecorder['record']
   log: Logger
@@ -142,6 +148,16 @@ export function createLabellingService(deps: LabellingServiceDeps): LabellingSer
     return parsed.success ? parsed.data : DeviceSettingsSchema.parse({})
   }
 
+  /** The effective CONTENT (plan 212 §4.1 D43-D45) — the device's own override, falling back to the farm's `general.deviceLabel`. */
+  function effectiveLabel(row: DeviceRow): DeviceLabel {
+    return readDeviceSettings(row).overrides.deviceLabel ?? deps.farmDeviceLabel()
+  }
+
+  /** `'off'` when the content is off; otherwise the farm-wide SURFACE constant (or a test override). */
+  function surfaceFor(row: DeviceRow): 'off' | 'lock-screen' | 'wallpaper' {
+    return effectiveLabel(row) === 'off' ? 'off' : (deps.surfaceOverride ?? DEVICE_LABEL_SURFACE)
+  }
+
   /** Zod-validated (CLAUDE.md: never trust a JSON DB column raw) — a corrupt/pre-migration row reads as "never applied" rather than throwing. */
   function readCached(row: DeviceRow): DeviceLabelState {
     if (row.labelState === null || row.labelState === undefined) return DEFAULT_DEVICE_LABEL_STATE
@@ -183,12 +199,12 @@ export function createLabellingService(deps: LabellingServiceDeps): LabellingSer
 
   // --- tier 1: wallpaper --------------------------------------------------
 
-  async function runWallpaperPass(row: DeviceRow, settings: DeviceSettings, prior: DeviceLabelState, force: boolean, actor?: string | null): Promise<DeviceLabelState> {
+  async function runWallpaperPass(row: DeviceRow, prior: DeviceLabelState, force: boolean, actor?: string | null): Promise<DeviceLabelState> {
     const number = lookupDeviceNumber(db, row.stableId)
     if (number === null) {
       return finish(row, prior, { ...DEFAULT_DEVICE_LABEL_STATE, mode: 'wallpaper', state: 'unavailable', reason: 'this device has no number assigned' }, actor)
     }
-    const name = settings.labelling.showName ? sanitiseName(row.label) : null
+    const name = effectiveLabel(row) !== 'number' ? sanitiseName(row.label) : null
 
     let hello: { capabilities: string[] }
     let status: { fingerprint: string | null; matchesOurs: boolean; rendererVersion: number; originalCaptured: boolean } | null
@@ -267,12 +283,12 @@ export function createLabellingService(deps: LabellingServiceDeps): LabellingSer
 
   // --- tier 0: lock-screen -------------------------------------------------
 
-  async function runLockScreenPass(row: DeviceRow, settings: DeviceSettings, prior: DeviceLabelState, force: boolean, actor?: string | null): Promise<DeviceLabelState> {
+  async function runLockScreenPass(row: DeviceRow, prior: DeviceLabelState, force: boolean, actor?: string | null): Promise<DeviceLabelState> {
     const number = lookupDeviceNumber(db, row.stableId)
     if (number === null) {
       return finish(row, prior, { ...DEFAULT_DEVICE_LABEL_STATE, mode: 'lock-screen', state: 'unavailable', reason: 'this device has no number assigned' }, actor)
     }
-    const name = settings.labelling.showName ? sanitiseName(row.label) : null
+    const name = effectiveLabel(row) !== 'number' ? sanitiseName(row.label) : null
     const text = labelText(number, name)
     const desired = computeLockScreenFingerprint(text)
 
@@ -313,8 +329,7 @@ export function createLabellingService(deps: LabellingServiceDeps): LabellingSer
 
   async function runPass(deviceId: string, opts: { force: boolean; actor?: string | null }): Promise<DeviceLabelState> {
     const row = mustGet(deviceId)
-    const settings = readDeviceSettings(row)
-    const mode = settings.labelling.mode
+    const mode = surfaceFor(row)
     const prior = readCached(row)
 
     if (mode === 'off') {
@@ -333,7 +348,7 @@ export function createLabellingService(deps: LabellingServiceDeps): LabellingSer
     if (wanted !== sem.max) sem.resize(wanted)
     const release = await sem.acquire()
     try {
-      return mode === 'wallpaper' ? await runWallpaperPass(row, settings, prior, opts.force, opts.actor) : await runLockScreenPass(row, settings, prior, opts.force, opts.actor)
+      return mode === 'wallpaper' ? await runWallpaperPass(row, prior, opts.force, opts.actor) : await runLockScreenPass(row, prior, opts.force, opts.actor)
     } finally {
       release()
     }
@@ -364,7 +379,7 @@ export function createLabellingService(deps: LabellingServiceDeps): LabellingSer
 
     if (prior.mode === 'wallpaper') {
       await deps.withGuestAgentClient(row.id, (client) => client.labelClear(opts.restoreOriginal && prior.originalCaptured))
-      return finish(row, prior, { ...DEFAULT_DEVICE_LABEL_STATE, mode: readDeviceSettings(row).labelling.mode }, actor)
+      return finish(row, prior, { ...DEFAULT_DEVICE_LABEL_STATE, mode: surfaceFor(row) }, actor)
     }
 
     if (prior.mode === 'lock-screen') {
@@ -380,14 +395,14 @@ export function createLabellingService(deps: LabellingServiceDeps): LabellingSer
       } finally {
         await transport.disconnect()
       }
-      return finish(row, prior, { ...DEFAULT_DEVICE_LABEL_STATE, mode: readDeviceSettings(row).labelling.mode }, actor)
+      return finish(row, prior, { ...DEFAULT_DEVICE_LABEL_STATE, mode: surfaceFor(row) }, actor)
     }
 
     // Nothing was ever applied (`mode: 'off'`, or a state predating this
     // service) — nothing on the device to undo. Idempotent by construction:
     // every subsequent call finds the identical `prior.mode` and takes this
     // same branch, writing the identical default state.
-    return finish(row, prior, { ...DEFAULT_DEVICE_LABEL_STATE, mode: readDeviceSettings(row).labelling.mode }, actor)
+    return finish(row, prior, { ...DEFAULT_DEVICE_LABEL_STATE, mode: surfaceFor(row) }, actor)
   }
 
   async function statusImpl(deviceId: string): Promise<DeviceLabelState> {
@@ -395,13 +410,12 @@ export function createLabellingService(deps: LabellingServiceDeps): LabellingSer
     const cached = readCached(row)
     if ((row.status ?? 'offline') === 'offline') return cached // "the cached row when not [online]" — never mutated here
 
-    const settings = readDeviceSettings(row)
-    const mode = settings.labelling.mode
+    const mode = surfaceFor(row)
     if (mode === 'off') return cached
 
     const number = lookupDeviceNumber(db, row.stableId)
     if (number === null) return { ...cached, state: 'unavailable', reason: 'this device has no number assigned' }
-    const name = settings.labelling.showName ? sanitiseName(row.label) : null
+    const name = effectiveLabel(row) !== 'number' ? sanitiseName(row.label) : null
 
     if (mode === 'wallpaper') {
       try {
