@@ -5,7 +5,7 @@ import { AdbStatsResponseSchema } from './adb'
 function baseBody() {
   return {
     global: { maxConcurrent: 4, auto: true, inFlight: 0, waiting: 0 },
-    streams: { maxStreams: 4, maxStreamsPerDevice: 1, active: 0, perDevice: {} },
+    streams: { maxStreams: 4, maxStreamsPerDevice: 1, active: 0, pinned: 0, perDevice: {} },
     devices: [],
     transport: {
       connections: 0,
@@ -80,5 +80,47 @@ describe('AdbStatsResponseSchema.video (plan 92 §3.3, §4.5)', () => {
       },
     }
     expect(() => AdbStatsResponseSchema.parse(body)).toThrow()
+  })
+})
+
+/**
+ * Plan 223 §4.5, §5 step 223.4 — the forward ledger, per-USB-root install
+ * occupancy, and the cumulative dropped-frame counter. All three follow the
+ * SAME `.optional()` convention `input`/`video` above already established:
+ * a consumer built before this field lands must keep parsing.
+ */
+describe('AdbStatsResponseSchema — plan 223 additions', () => {
+  test('accepts a sample forwards array', () => {
+    const body = {
+      ...baseBody(),
+      forwards: [{ deviceId: 'dev-1', quality: 'wall' as const, port: 27500, scid: '7f00aabb', openedAt: 12345 }],
+    }
+    const parsed = AdbStatsResponseSchema.parse(body)
+    expect(parsed.forwards).toEqual(body.forwards)
+  })
+
+  test('accepts hostAdb.installsByRoot', () => {
+    const body = {
+      ...baseBody(),
+      hostAdb: { ...baseBody().hostAdb, installsByRoot: { 'usb-1': { running: 1, queued: 2 } } },
+    }
+    const parsed = AdbStatsResponseSchema.parse(body)
+    expect(parsed.hostAdb.installsByRoot).toEqual({ 'usb-1': { running: 1, queued: 2 } })
+  })
+
+  test('accepts transport.framesDroppedTotal', () => {
+    const body = {
+      ...baseBody(),
+      transport: { ...baseBody().transport, framesDroppedTotal: 7 },
+    }
+    const parsed = AdbStatsResponseSchema.parse(body)
+    expect(parsed.transport.framesDroppedTotal).toBe(7)
+  })
+
+  test('still parses a response with none of the three fields present', () => {
+    const parsed = AdbStatsResponseSchema.parse(baseBody())
+    expect(parsed.forwards).toBeUndefined()
+    expect(parsed.hostAdb.installsByRoot).toBeUndefined()
+    expect(parsed.transport.framesDroppedTotal).toBeUndefined()
   })
 })
