@@ -5,6 +5,7 @@ import {
   DeviceHistoryCountsResponseSchema,
   DeviceLabelStateSchema,
   DeviceNumberCompactResponseSchema,
+  type DeviceMetrics,
   type DeviceRef,
   DeviceRefsResponseSchema,
   DeviceReadinessResponseSchema,
@@ -122,6 +123,8 @@ export function createDeviceRoutes(deps: {
   db: Db
   registry: () => Promise<RegistryResponse>
   battery: () => BatteryMonitor | null
+  /** Live metrics for one device (plan 214 §4.3) — `undefined`/`null` (orchestrator mode, or the battery monitor never started) reads as no sample. */
+  metricsOf?: (deviceId: string) => DeviceMetrics | null
   audit: AuditLogger
   /** Where `saveForDevice` writes the Monitor tab's "save last N lines" artifact (plan 24 §4.6). */
   dataDir: string
@@ -660,6 +663,7 @@ export function createDeviceRoutes(deps: {
         farmNetworks(),
         declaredMedia(),
         lookupDeviceNumber(db, row.stableId),
+        deps.metricsOf?.(row.id) ?? null,
       ),
     }
   }
@@ -707,6 +711,7 @@ export function createDeviceRoutes(deps: {
         networks,
         media,
         numbers.get(r.stableId) ?? null,
+        deps.metricsOf?.(r.id) ?? null,
       ),
     }))
 
@@ -777,6 +782,7 @@ export function createDeviceRoutes(deps: {
         farmNetworks(),
         declaredMedia(),
         lookupDeviceNumber(db, row.stableId),
+        deps.metricsOf?.(row.id) ?? null,
       ),
       transport: row.transport,
       display: row.display,

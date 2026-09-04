@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { AgentStateSchema, AgentStatusSchema, DEFAULT_AGENT_STATUS, DeviceInfoSchema, type AgentState, type AgentStatus } from './device'
+import { AgentStateSchema, AgentStatusSchema, DEFAULT_AGENT_STATUS, DeviceInfoSchema, DeviceMetricsSchema, DeviceMetricsMessage, type AgentState, type AgentStatus } from './device'
 import { MAIN_EVENT_KINDS } from './messages/device-event'
 import type { DeviceActivity, LastControl } from './activity'
 
@@ -178,6 +178,51 @@ describe('DeviceInfoSchema.number (plan 89 §3.1, §3.2, §3.3, §4.3)', () => {
   test('explicit null parses — the released-reservation case (§3.2)', () => {
     const info = DeviceInfoSchema.parse({ ...BASE, number: null })
     expect(info.number).toBeNull()
+  })
+
+  test('model defaults to null when omitted (plan 214 §3.7)', () => {
+    const info = DeviceInfoSchema.parse(BASE)
+    expect(info.model).toBeNull()
+  })
+
+  test('model round-trips', () => {
+    const info = DeviceInfoSchema.parse({ ...BASE, model: 'Galaxy A15' })
+    expect(info.model).toBe('Galaxy A15')
+  })
+
+  test('metrics defaults to null when omitted (plan 214 §4.2)', () => {
+    const info = DeviceInfoSchema.parse(BASE)
+    expect(info.metrics).toBeNull()
+  })
+})
+
+describe('DeviceMetricsSchema (plan 214 §4.2)', () => {
+  const METRICS = { cpuPercent: 12.3, memPercent: 45.6, diskPercent: 78, uptimeSec: 3600, updatedAt: 1_700_000_000 }
+
+  test('every field parses when present', () => {
+    expect(DeviceMetricsSchema.parse(METRICS)).toEqual(METRICS)
+  })
+
+  test('every numeric field may independently be null', () => {
+    const allNull = { cpuPercent: null, memPercent: null, diskPercent: null, uptimeSec: null, updatedAt: 1_700_000_000 }
+    expect(DeviceMetricsSchema.parse(allNull)).toEqual(allNull)
+  })
+
+  test('cpuPercent rejects 101', () => {
+    expect(DeviceMetricsSchema.safeParse({ ...METRICS, cpuPercent: 101 }).success).toBe(false)
+  })
+
+  test('cpuPercent rejects -1', () => {
+    expect(DeviceMetricsSchema.safeParse({ ...METRICS, cpuPercent: -1 }).success).toBe(false)
+  })
+
+  test('updatedAt must be an integer', () => {
+    expect(DeviceMetricsSchema.safeParse({ ...METRICS, updatedAt: 1.5 }).success).toBe(false)
+  })
+
+  test('DeviceMetricsMessage round-trips', () => {
+    const msg = { type: 'device.metrics' as const, payload: { deviceId: 'dev-1', metrics: METRICS } }
+    expect(DeviceMetricsMessage.parse(msg)).toEqual(msg)
   })
 })
 

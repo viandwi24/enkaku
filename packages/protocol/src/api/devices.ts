@@ -920,3 +920,17 @@ export function classifyDevicePrepApply(result: DevicePrepApplyResult): DevicePr
   if (result.rotation?.state === 'busy') return 'deferred'
   return 'applied'
 }
+
+/** `GET /api/devices/discovered` (plan 56 §4.3), longest-waiting first. */
+export const DiscoveredDeviceSchema = z.object({
+  stableId: z.string(),
+  serial: z.string(),
+  /** `ro.product.model` when the probe could read it. */
+  label: z.string().nullable(),
+  androidVersion: z.string().nullable(),
+  /** Unix seconds. */
+  firstSeen: z.number().int().nullable(),
+  lastSeen: z.number().int().nullable(),
+})
+export type DiscoveredDeviceInfo = z.infer<typeof DiscoveredDeviceSchema>
+export const DiscoveredDevicesResponseSchema = z.object({ discovered: z.array(DiscoveredDeviceSchema) })

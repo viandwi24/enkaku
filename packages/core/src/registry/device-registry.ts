@@ -8,6 +8,7 @@ import {
   type DeviceActivity,
   type DeviceConnection,
   type DeviceInfo,
+  type DeviceMetrics,
   type DeviceReadiness,
   type DeviceSettings,
   type FarmDeviceDefaults,
@@ -359,12 +360,20 @@ export function rowToDeviceInfo(
    * as numberless rather than throwing.
    */
   number: number | null = null,
+  /**
+   * Live metrics (plan 214 §4.2), read from the sampler's in-memory map,
+   * never from a column, because there is no column: a metric is a fact
+   * about a phone that is plugged in now. Defaulted to `null` so every
+   * existing caller keeps parsing exactly as before.
+   */
+  metrics: DeviceMetrics | null = null,
 ): DeviceInfo {
   return DeviceInfoSchema.parse({
     id: row.id,
     stableId: row.stableId,
     serial: row.serial,
     label: row.label,
+    model: row.model ?? null,
     androidVersion: row.androidVersion,
     apiLevel: row.apiLevel,
     screenW: row.screenW,
@@ -383,6 +392,7 @@ export function rowToDeviceInfo(
     connection: deriveConnection(row.serial, networks, declaredMedia.get(`${row.stableId} ${row.serial}`)),
     agent: deriveAgentState(row),
     number,
+    metrics,
   })
 }
 
@@ -622,6 +632,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
           stableId: probe.stableId,
           serial,
           label: probe.model ?? probe.stableId,
+          model: probe.model ?? null,
           androidVersion: probe.androidVersion,
           apiLevel: probe.apiLevel,
           screenW: probe.screenW,
@@ -639,6 +650,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
           // the state machine (DEVICE_CONNECTED), which keeps `quarantined` sticky.
           set: {
             serial,
+            model: probe.model ?? null,
             androidVersion: probe.androidVersion,
             apiLevel: probe.apiLevel,
             screenW: probe.screenW,
