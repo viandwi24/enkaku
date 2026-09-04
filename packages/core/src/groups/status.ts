@@ -1,19 +1,22 @@
 import { eq } from 'drizzle-orm'
 import type { BatchCounts, BatchStatusEvent, BatchStatusValue } from '@enkaku/protocol'
 import type { Db } from '../db'
-import { batches, type JobRow } from '../db/schema'
+import { batches, type JobRunRow } from '../db/schema'
 import type { JobStore } from '../queue/job-store'
+import type { RunStore } from '../jobs/runs/store'
 import type { BatchPacer } from './pacer'
 
 /**
- * Tally a batch's jobs by status (plan 20 §3.5; plan 21 §3.3 adds `expired`;
- * plan 36 §4.4 splits `failed` into `failedScript` / `failedInfra` from
- * `jobs.failureClass` — a `load`-classified failure counts as infra here too,
- * since it is still a farm-caused failure from the batch's point of view).
+ * Tally a batch's jobs by their LATEST run's status (plan 20 §3.5; plan 21
+ * §3.3 adds `expired`; plan 36 §4.4 splits `failed` into `failedScript` /
+ * `failedInfra`; plan 211 §3.2 decision 3 re-keys the projection from jobs to
+ * each job's latest run). `null` (a job with no run at all — swept, or never
+ * given one) counts as `queued`, matching a job's own displayed status
+ * convention.
  */
-export function countJobs(rows: JobRow[]): BatchCounts {
+export function countJobs(latestRuns: (JobRunRow | null)[]): BatchCounts {
   const counts: BatchCounts = {
-    total: rows.length,
+    total: latestRuns.length,
     queued: 0,
     running: 0,
     success: 0,
@@ -23,11 +26,11 @@ export function countJobs(rows: JobRow[]): BatchCounts {
     failedScript: 0,
     failedInfra: 0,
   }
-  for (const r of rows) {
-    const status = (r.status ?? 'queued') as keyof Omit<BatchCounts, 'total' | 'failedScript' | 'failedInfra'>
+  for (const run of latestRuns) {
+    const status = (run?.status ?? 'queued') as keyof Omit<BatchCounts, 'total' | 'failedScript' | 'failedInfra'>
     if (status in counts) counts[status] += 1
     if (status === 'failed') {
-      if (r.failureClass === 'infra' || r.failureClass === 'load') counts.failedInfra += 1
+      if (run?.failureClass === 'infra' || run?.failureClass === 'load') counts.failedInfra += 1
       else counts.failedScript += 1
     }
   }
@@ -41,11 +44,6 @@ export function countJobs(rows: JobRow[]): BatchCounts {
  * - all jobs terminal, at least one failed or expired → failed
  * - all jobs cancelled → cancelled (a special case of "all terminal")
  * - otherwise (still queued, none started yet) → queued
- *
- * Plan 21 §3.3: `expired` is a distinct job-level outcome from `failed` — the
- * Runs/report views show the count separately — but there is no separate
- * batch-level status for it, so it rolls into `failed` at the batch's single
- * word (a job that never got a device is still "did not complete work").
  */
 export function computeBatchStatus(counts: BatchCounts): BatchStatusValue {
   if (counts.total === 0) return 'queued'
@@ -59,94 +57,45 @@ export function computeBatchStatus(counts: BatchCounts): BatchStatusValue {
   return 'queued'
 }
 
-/**
- * Exported so `api/batches.ts`'s `rowToBatchInfo` can apply the SAME
- * "stopping is held until every member is terminal" rule this file's own
- * `recomputeBatchStatus` uses (plan 94 §3.9, step 94.8) — one definition of
- * "terminal", never two that could drift.
- */
 export const TERMINAL_BATCH_STATUSES: BatchStatusValue[] = ['success', 'failed', 'cancelled']
 const TERMINAL = TERMINAL_BATCH_STATUSES
 
 /**
- * Recompute a batch's cached status from its jobs — the only writer of
- * `batches.status` (plan 20 §3.5). Called from the one place a job reaches a
- * terminal state (`executor-host.ts`) and from the job-cancel path (plan 20
- * §4.5), so `finishedAt` is set exactly once and `batch.status` is always
- * broadcast with the live counts (the progress bar's "7/10 · 1 failed").
+ * Recompute a batch's cached status from its jobs' LATEST runs — the only
+ * writer of `batches.status` (plan 20 §3.5, plan 211 §3.2 decision 3).
+ * Called from the one place a run reaches a terminal state
+ * (`executor-host.ts`) and from the job-cancel path (plan 20 §4.5).
  */
 export function recomputeBatchStatus(
   deps: {
     db: Db
     jobStore: JobStore
+    runs: RunStore
     broadcast: (msg: BatchStatusEvent) => void
-    /**
-     * Plan 94 §3.8, §4.8, step 94.7 — optional, same fallback shape every
-     * other accessor in this codebase has: unwired (every pre-94.7 caller),
-     * a settled member never plans a further repetition, which is correct —
-     * there IS no pacing without a pacer.
-     */
     pacer?: BatchPacer
   },
   batchId: string,
-  /**
-   * Plan 94 §3.8, §4.8, step 94.7 — the device whose job just reached a
-   * terminal state, if that is why this recompute is happening. This is
-   * the ONE hook into the pacer (F32): a bulk queued-cancel (`POST
-   * /:id/cancel`, a schedule's `cancel-previous`) recomputes status too but
-   * passes no device — nothing there is "a repetition settling", so no
-   * further repetition is planned from it.
-   */
   settledDeviceId?: string,
 ): BatchStatusEvent['payload'] | null {
-  const rows = deps.jobStore.listByBatch(batchId)
+  const memberJobs = deps.jobStore.listByBatch(batchId)
   const batch = deps.db.select().from(batches).where(eq(batches.id, batchId)).get()
   if (!batch) return null
 
-  if (rows.length === 0) {
-    // `groups/dispatch.ts`'s `createBatch` is the ONLY writer of a
-    // `batches` row, and it always inserts it together with >= 1 job row in
-    // the SAME transaction (`E_NO_TARGETS` refuses before anything is
-    // persisted when no device matches). So reaching this branch — an
-    // EXISTING row whose own jobs list comes back empty — can only mean
-    // every one of its job rows was deleted after the fact; the one path
-    // found is `device/lifecycle.ts`'s `forget({ deleteHistory: true })`,
-    // which deletes `jobs` rows by `deviceId` but never touches `batches`.
-    // It is never "not dispatched yet" — that shape cannot outlive
-    // `createBatch`'s own transaction.
-    //
-    // This is reachable in production, not just in theory: `stopBatch`
-    // (`api/batches.ts`) calls this function unconditionally as its own
-    // step 4 ("recompute the batch status once, at the end", plan 94 §3.9),
-    // including when the batch's only device was already forgotten before
-    // the operator hit Stop. Before this branch existed, the pre-existing
-    // early `return null` here made that call a silent no-op — the row
-    // stayed `stopping` forever, which is the owner's own stuck tray entry
-    // (this pass's bug report). A batch with no jobs left has none to wait
-    // on, so it resolves straight to `cancelled` — terminal — regardless of
-    // what it was heading toward (`stopping`, a stale `queued`/`running`
-    // nothing will ever settle again). Skipped once the row is ALREADY
-    // terminal, so a batch that finished normally long before its history
-    // was deleted is never re-broadcast or have its `finishedAt` disturbed.
+  const latestRunsByJob = deps.runs.latestRuns(memberJobs.map((j) => j.id))
+  const latestRuns = memberJobs.map((j) => latestRunsByJob.get(j.id) ?? null)
+
+  if (memberJobs.length === 0) {
     if (TERMINAL.includes(batch.status as BatchStatusValue)) return null
     const finishedAt = batch.finishedAt ?? new Date()
     deps.db.update(batches).set({ status: 'cancelled', finishedAt }).where(eq(batches.id, batchId)).run()
-    const payload = { batchId, status: 'cancelled' as BatchStatusValue, counts: countJobs(rows) }
+    const payload = { batchId, status: 'cancelled' as BatchStatusValue, counts: countJobs(latestRuns) }
     deps.broadcast({ type: 'batch.status', payload })
     return payload
   }
 
-  const counts = countJobs(rows)
+  const counts = countJobs(latestRuns)
   const status = computeBatchStatus(counts)
 
-  // `stopping` (plan 94 §3.9, step 94.8) is a state written directly by the
-  // stop endpoint, never derived from job counts — `computeBatchStatus`
-  // never produces it, so this recompute must never clobber it back to
-  // `running`/`queued` while members are still settling underneath it. Once
-  // every member IS terminal, the batch is allowed to move on to whatever
-  // `computeBatchStatus` derives (`success` | `failed` | `cancelled`), the
-  // same as any other batch — that is what actually ends the `stopping`
-  // state; nothing else writes `batches.status` away from it.
   const stillStopping = batch.status === 'stopping' && !TERMINAL.includes(status)
   const patch: { status?: BatchStatusValue; finishedAt?: Date } = {}
   if (!stillStopping && batch.status !== status) patch.status = status
