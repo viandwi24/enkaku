@@ -2,6 +2,7 @@ import type { JobDetail, JobInfo, JobSettings, JobStatus, RuntimeClamp, RuntimeE
 import { checkRuntimeMajor, JobSettingsSchema, resolveRuntime, RuntimeEnvelopeSchema, unknownRuntimeKeys } from '@enkaku/protocol'
 import { canUseDevice } from '../auth/acl'
 import type { Role } from '../auth/service'
+import type { JobRow, JobRunRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import type { ExecutorHost } from '../jobs/executor-host'
 import { rowToJobDetail, rowToJobInfo, type JobCursor, type JobStore } from '../queue/job-store'
@@ -69,6 +70,22 @@ export interface JobService {
     input: { deviceId: string; params: unknown; priority?: number; runtimeOverride?: unknown },
   ): { job: JobInfo; runId: string; sameJob: boolean }
   cancel(jobId: string, opts?: { cancelDescendants?: boolean }): { job: JobInfo; cancelledDescendants: number }
+  /** Cancels a specific RUN directly — used by the workflow orchestrator to cancel its own step's run on abort (plan 211 §4.5). */
+  cancelRun(runId: string): void
+  /**
+   * Enqueues one workflow step's script job and its first run
+   * (`trigger: 'workflow-step'`), then kicks the scheduler (plan 211 §4.5).
+   */
+  enqueueStep(input: {
+    parentWorkflowJobId: string
+    stepSeq: number
+    scriptId: string
+    deviceId: string
+    params: Record<string, unknown>
+    scriptName: string
+    scriptVersion: string
+    priority: number
+  }): { job: JobRow; run: JobRunRow }
   get(jobId: string): JobDetail | null
   list(filter: {
     deviceId?: string
@@ -178,6 +195,41 @@ export function createJobService(deps: {
         return { job: infoOf(deps.jobStore.get(jobId) ?? job), cancelledDescendants }
       }
       throw new EnkakuError('job_not_cancellable', `the run is ${run.status}`)
+    },
+
+    cancelRun(runId) {
+      const run = deps.runs.getRun(runId)
+      if (!run) return
+      if (run.status === 'queued') {
+        const cancelled = deps.runs.cancelQueuedRun(runId)
+        if (cancelled) {
+          const job = deps.jobStore.get(run.jobId)
+          if (job) deps.onJobStatus(infoOf(job))
+        }
+        return
+      }
+      if (run.status === 'running') {
+        if (!deps.host.abort(runId)) {
+          deps.host.finishExternally(runId, 'cancelled', 'cancelled (no executor was running)')
+        }
+      }
+    },
+
+    enqueueStep(input) {
+      const job = deps.runs.createJob({
+        kind: 'script',
+        scriptId: input.scriptId,
+        deviceId: input.deviceId,
+        params: input.params,
+        scriptName: input.scriptName,
+        scriptVersion: input.scriptVersion,
+        parentWorkflowJobId: input.parentWorkflowJobId,
+        stepSeq: input.stepSeq,
+      })
+      const run = deps.runs.addRun(job.id, { trigger: 'workflow-step', priority: input.priority })
+      deps.onJobStatus(infoOf(deps.jobStore.get(job.id) as NonNullable<ReturnType<JobStore['get']>>))
+      deps.scheduler.kick()
+      return { job, run }
     },
 
     get(jobId) {
