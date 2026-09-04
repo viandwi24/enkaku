@@ -893,15 +893,116 @@ Device tests: none. Nothing in this plan touches a device path; `ENKAKU_TEST_DEV
 
 ## 11. Handoff report
 
-- **Checklist**:
-- **Commits**:
-- **Typecheck**:
-- **Tests run**:
-- **Removed, proven**:
+**Branch**: this plan was executed in an isolated worktree (`worktree-agent-ade8a32a16bc0594c`) merged onto `mvp` at `ed87537` before work started, then committed there directly (the worktree branch, not a separate `mvp/210` branch — the harness assigned this executor to that worktree/branch pair). The commits below are all on that branch and should be merged into `mvp` in plan-number order at the next round gate.
+
+- **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ G5 ✅ G6 ✅ G7 ✅ G8 ✅ G9 ✅ G10 ✅ G11 ✅ G12 ✅ G13 ✅ G14 ✅* G15 ✅ G16 ✅ G17 ✅* (✅* = the command was run and read, and passes on its actual intent, but the literal grep also has a documented false-positive collision named below — see Discrepancies)
+
+- **Commits** (oldest to newest, all on this worktree's branch, tip `cc0aaca`):
+  - `97f0070` wip(mvp-210): workflows table, workflow store/routes, direct-publish removal, executor registry single fallback
+  - `6500b89` wip(mvp-210): rewrite scripts/workflows/recordings tests for the new model; core typechecks clean
+  - `f6368d0` wip(mvp-210): Studio scripts/plugins/device pages compile against the new list/detail shapes
+  - `a197835` wip(mvp-210): workflow editor/list/builder/model, workspace stage-plugin dialog; typecheck clean end to end
+  - `8ccaee7` test(mvp-210): fix param-set seeds and result-e2e fixture broken by the direct-publish removal
+  - `5913324` test(mvp-210): plugins runtime/api activation-consequence tests; delete the synthetic-owner describes
+  - `a249980` test(mvp-210): plugin.stage capability tests
+  - `cc379c9` test(mvp-210): drop the unreachable workflow-executor wiring assertion from daemon-wiring.test.ts
+  - `9b7a92d` test(mvp-210): boot migration tests for workflows-from-scripts and park-synthetic-recordings
+  - `ac5ffd7` test(mvp-210): fix recordings DELETE test broken by publish-is-parked (no compiled entry to also delete)
+  - `8b55f09` docs(mvp-210): README/spec/SDK-README rewrites; vocabulary sweep for G1/G13/G17/GREP_210
+  - `cc0aaca` docs(mvp-210): fix stale publish/kind mentions in comments; check off §0 goal checklist; status implemented
+
+- **Typecheck**: clean. `bun run typecheck` exits 0 across every package (protocol, ui, adb, toolchain, drivers, scrcpy, sdk, session, harness, core, node, studio, probe-server, networking, proxy-manager, and all four plugin packs).
+
+- **Tests run** (§7's list, one invocation at a time, none concurrent):
+  ```
+  bun run typecheck                                                          → clean
+  bun test packages/core/src/workflows/store.test.ts                        → 9 pass, 0 fail
+  bun test packages/protocol/src/workflow-check.test.ts                     → 31 pass, 0 fail
+  bun test packages/core/src/scripts/                                       → 75 pass, 0 fail (8 files)
+  bun test packages/core/src/api/workflows.test.ts                          → 17 pass, 0 fail
+  bun test packages/core/src/api/workflows-wiring.test.ts                   → 2 pass, 0 fail
+  bun test packages/core/src/plugins/runtime.test.ts                        → 52 pass, 0 fail
+  bun test packages/core/src/api/plugins.test.ts                            → 51 pass, 0 fail
+  bun test packages/core/src/capability/plugin.test.ts                      → 4 pass, 0 fail
+  bun test packages/core/src/capability/index.test.ts                       → 5 pass, 0 fail
+  bun test packages/core/src/api/openapi.test.ts                            → 4 pass, 0 fail
+  bun test packages/core/src/jobs/executor.test.ts                         → 3 pass, 0 fail
+  bun test packages/core/src/daemon-wiring.test.ts                          → 84 pass, 0 fail
+  bun test packages/core/src/db/migrations/workflows-from-scripts.test.ts   → 1 pass, 0 fail
+  bun test packages/core/src/db/migrations/park-synthetic-recordings.test.ts → 2 pass, 0 fail
+  bun test packages/core/src/api/recordings.test.ts                         → 19 pass, 0 fail
+  bun test packages/core/src/api/recordings-wiring.test.ts                  → 2 pass, 0 fail
+  ```
+  Collateral runs, for files this plan's own changes broke or touched but that are not named in §7 (plan 200 §2.1: "a test your change broke is yours to fix, whatever its path" — all fixed and green, listed for the round gate's own "run every test file that names a symbol the round deleted or renamed" step, MVP §8.7):
+  ```
+  bun test packages/core/src/jobs/jobs-runner-port.test.ts                              → 7 pass, 0 fail
+  bun test packages/core/src/groups/dispatch-batch-max-concurrent.integration.test.ts    → 4 pass, 0 fail
+  bun test packages/core/src/groups/dispatch.test.ts                                    → 14 pass, 0 fail
+  bun test packages/core/src/groups/pacer.test.ts                                       → 22 pass, 0 fail
+  bun test packages/core/src/services/job-service.test.ts                               → 51 pass, 0 fail
+  bun test packages/core/src/jobs/executor-host.test.ts                                 → 23 pass, 0 fail
+  bun test packages/core/src/jobs/executor-host-progress.test.ts                        → 3 pass, 0 fail
+  bun test packages/core/src/jobs/triggers.test.ts                                      → 23 pass, 0 fail
+  bun test packages/core/src/queue/job-store.test.ts                                    → 40 pass, 0 fail
+  bun test packages/core/src/capability/invoke.test.ts                                  → 18 pass, 0 fail
+  bun test packages/core/src/capability/fs.test.ts                                      → 20 pass, 0 fail
+  bun test packages/core/src/capability/skills.test.ts                                  → 5 pass, 0 fail
+  bun test packages/core/src/capability/file-tools.test.ts                              → 22 pass, 0 fail
+  bun test packages/core/src/agent/harness/run.test.ts                                  → 13 pass, 0 fail
+  ```
+  Never `bun test` bare, never two invocations concurrently. Device tests: none — `ENKAKU_TEST_DEVICE=1` was not needed (this plan touches no device path), matching the plan's own §7 note.
+
+- **Removed, proven** (§10 rows, each with the exact grep run and its output; `/opt/homebrew/bin/rg` used directly throughout this session because the shell's own `rg` resolves through a token-savings wrapper that silently falls back to BSD `grep` and mis-parses alternation — using the real binary was necessary to get an honest empty/non-empty result):
+  - `GREP_210` (`rg -n -i "direct.publish|synthetic owner|reserved plugin name|script version\b|scriptKind|kind: 'workflow'" packages plugins examples scripts apps --glob '!**/out/**' --glob '!**/*.tsbuildinfo' --glob '!packages/core/packs/**' --glob '!packages/core/drizzle/**'`) → empty except for 13 pre-existing, unrelated lines matching the over-broad `script version\b` clause (job/settle-path prose about "the script version [i.e. plugin version] that ran" in `session/runner/kv-client.ts`, `jobs/executor-host.ts`, `jobs/result-store.ts`, `protocol/api/batches.ts`, `protocol/schema/result.ts`, `studio/ParamSetPicker.tsx`, `protocol/messages/job.ts`, `core/api/schedules.ts`, `studio/ScheduleEditorDialog.tsx`, `core/queue/job-store.ts`) — none of these files describe the removed direct-publish/reserved-name/scriptKind mechanism; they describe an unrelated, still-valid concept (which plugin version a pinned job ran) that happens to share three English words. Not edited — rewording working, correct prose across ten unrelated files to dodge a coincidental substring match was judged out of scope and risked introducing real errors for zero behavioural gain. Documented here rather than silently claimed clean.
+  - `packages/core/src/plugins/owner.ts` — `test ! -e packages/core/src/plugins/owner.ts` → file absent. `rg -n "plugins/owner'" packages` → empty.
+  - `refuseSynthetic`/`isSyntheticPluginName` — `rg -n "refuseSynthetic|isSyntheticPluginName" packages` → empty.
+  - `POST /api/scripts` (publish) — `rg -n "app\.post\('/'\)" packages/core/src/scripts/routes.ts` → empty.
+  - `PATCH /api/scripts/:id`, `script.toggle` — `rg -n "app\.patch\('/:id'\)|script\.toggle" packages/core/src` → empty.
+  - `GET /api/scripts/:name/versions`, `GET /api/workflows/:name/versions` — `rg -n "/versions" packages/core/src/scripts/routes.ts packages/core/src/api/workflows.ts` → empty.
+  - `?group=name`, `?kind=` on the scripts list — `rg -n "group=name" packages/core/src/scripts packages/studio/src` → empty. `rg -n "kind=" packages/core/src/scripts packages/studio/src` → empty in `scripts/`; unrelated matches remain in `studio/src` for `?kind=upload` (artifacts) and `?kind=app.crashed` (device events) — different query params on different resources, not the scripts list's removed `?kind=`.
+  - `publishScript`, `PublishScriptInput`, `scriptNeedsPluginMessage`, `groupScriptsByName`, `listScriptGroups`, `ScriptGroupInfo` — `rg -n "publishScript\b|PublishScriptInput|scriptNeedsPluginMessage|groupScriptsByName|listScriptGroups|ScriptGroupInfo" packages/core packages/protocol packages/sdk` → one line left: `packages/core/src/recording/compile.ts:75`'s doc comment still names `publishScript`. **Deliberately not edited** — `recording/compile.ts` is named in this plan's own §10 "Parked, deliberately not deleted" list as untouched, and `git diff --stat main -- packages/core/src/recording/` (below) must stay empty of THIS plan's edits; a stale comment in an unedited file is the honest state, not a fixed one. Studio's `components/workflow/ScriptPicker.tsx`'s own `groupScriptsByName` is a different, still-needed function (groups a workflow node's own script picker options by name) that the plan's §5 step 210.4 does not touch — a naming collision with the deleted backend function, not a leftover of it.
+  - `scripts.kind`, `ScriptKind`, `ScriptKindSchema` (G1) → empty (see G1 above).
+  - `ScriptEntry.kind`, `ScriptGroup`, `ScriptGroupVersion`, `ScriptRegistry.groups()`, `pluginScopedLatest` — `rg -n "pluginScopedLatest|ScriptGroupVersion|\.groups\(" packages/core/src` → empty.
+  - `ExecutorRegistry.fallbackByKind`, `setFallback(executor, kind)`, `get(scriptId, kind)`, `ExecutorHostDeps.scriptKind` (G13) → empty (see G13 above).
+  - The workflow executor's construction and registration — `rg -n "createWorkflowExecutor" packages/core/src/daemon.ts` → empty.
+  - The eight named test files (`jobs/executor-kind-dispatch.test.ts`, `jobs/executors/workflow.test.ts`, `workflow-real-claim.integration.test.ts`, `workflow-settings-wiring.test.ts`, `api/jobs-workflow-resume.integration.test.ts`, `db/scripts-kind-migration.test.ts`, `scripts/kind-projection.test.ts`, `capability/script.test.ts`) — `test ! -e` on each → all eight absent.
+  - `POST /api/workflows` as a `scripts` publish; workflow rows in `scripts` — `rg -n "publishScript" packages/core/src/api/workflows.ts` → empty; migration test (G8) passes.
+  - `WorkflowDocSchema.version`, `WorkflowVersionSchema` (G12) → empty (see G12 above).
+  - `ResolvedNodeScript.kind`, `E_WORKFLOW_NESTED` — `rg -n "E_WORKFLOW_NESTED" packages` → empty.
+  - `VersionOptionSchema`, `ScriptVersionsResponseSchema`, `ScriptGroupRowSchema`, `ScriptGroupsPageResponseSchema`, `ScriptToggleResponseSchema`, `ScriptRowSchema.kind/enabled/workflow` — `rg -n "VersionOptionSchema|ScriptVersionsResponseSchema|ScriptGroupRowSchema|ScriptGroupsPageResponseSchema|ScriptToggleResponseSchema" packages` → empty.
+  - The `script.publish` capability, `PublishScriptCapabilityInput`, `ScriptCapabilityService.publish`, `buildScriptService().publish` (G4) → empty (see G4 above).
+  - Error codes `E_SCRIPT_NEEDS_PLUGIN`, `E_PLUGIN_VERIFIED_OWNER`, `E_PLUGIN_RESERVED_NAME`, `E_PLUGIN_SYNTHETIC` — `rg -n "E_SCRIPT_NEEDS_PLUGIN|E_PLUGIN_VERIFIED_OWNER|E_PLUGIN_RESERVED_NAME|E_PLUGIN_SYNTHETIC" packages plugins` → empty.
+  - The synthetic-owner tests — `rg -n "synthetic|reserved" packages/core/src/plugins/runtime.test.ts packages/core/src/scripts/routes.test.ts` → empty.
+  - The recording publish body (build, owner, `publishScript`) — `rg -n "publishScript|resolveRecordingsOwner|buildScriptFromWorkspace" packages/core/src/api/recordings.ts` → empty.
+  - Studio: the version picker and Enabled switch on the script detail, the Enabled toggle and Latest/Versions columns on the Scripts tab (G14) → empty on the second G14 grep; see G14's own note on the first grep's false positives.
+  - Studio: `publishWorkflow`, `fetchWorkflowVersions`, `WorkflowVersionOption`, `bumpPatchVersion`, `WorkflowDocDraft.version`, the "start from version" picker, the Workflow | Script filter and the workflow estimate in the run dialog (G12) → empty; `rg -n "kindFilter|durationEstimate|publishWorkflow" packages/studio/src` → empty.
+  - Studio: `publishScriptFromWorkspace`, `SCRIPT_MEMBER_NAME_SHAPE`, the member half of the Workspace publish dialog — `rg -n "publishScriptFromWorkspace|SCRIPT_MEMBER_NAME_SHAPE" packages/studio/src` → empty.
+  - README and spec paragraphs describing `scripts.kind`, the synthetic owner, direct publish, `ctx.scripts.publish` (G17) → empty except the one documented schedule-`target.kind` false positive (see G17 above and Discrepancies below).
+  - **Parked, deliberately not deleted**: `git diff --stat main -- packages/core/src/recording/` → shows `service.test.ts`, `service.ts`, `session.ts` changed, but `git log -- packages/core/src/recording/` confirms the last commit touching that directory is `80e7a46 feat(mvp-205)`, landed before this plan started (activity-model vocabulary rename, unrelated to plan 210). This plan itself made zero edits under `packages/core/src/recording/`. The comparison base the plan names (`main`) is far behind the `mvp` branch tip this plan actually started from, so it necessarily shows every prior round's changes too — not a defect in this plan's own work, but worth flagging since the command as written cannot distinguish "plan 210 touched this" from "some earlier round did."
+
 - **Discrepancies between plan and code**:
-- **Observed, not done**:
-- **Open questions hit**:
-- **Processes**:
+  1. **Migration tag number.** The plan's own header names `0065_<generated name>` as the expected tag; by the time this plan ran, `packages/core/drizzle/meta/_journal.json` was already at idx 67 (`0067_groups_rename`, from plans 206/207), so `db:generate` produced `0068_milky_tiger_shark`. `WORKFLOWS_TABLE_TAG` in `workflows-from-scripts.ts` is set to the real generated tag, not the plan's placeholder.
+  2. **`packages/core/src/plugins/owner.test.ts` did not exist** to delete (the plan's file-structure table doesn't list it either, but its own §5 step 210.6 prose implies "delete owner.ts and its test" — there was no separate test file; `owner.ts`'s behaviour was tested inline inside `runtime.test.ts`'s now-deleted synthetic-owner describe block, handled there instead).
+  3. **`plugin.stage`'s handler**, per the plan's own §4.8 pseudocode, calls `port.get(staged.id)` — but `PluginRuntime.get(name, version)` takes two arguments, not one id. Implemented against the real signature: `port.get(staged.name, staged.version)`. The plan's own §3.2 decision 10 already anticipates `get` by `(name, version)` elsewhere, so this reads as the plan's own pseudocode slip, not an intentional third form.
+  4. **The activate route's response.** The plan's §4.7 pseudocode calls `typedJson(c, PluginActivateResponseSchema, {...})` for `POST /:id/activate`. `typedJson` type-checks its `data` argument against `z.output<S>` at compile time (by design, per its own doc comment — no runtime re-validation). `PluginIdentity.status` (the type `activate()`'s return actually carries, per the pre-existing `plugins/runtime.ts`) is `string`, not the narrower `PluginStatusSchema` enum `PluginRowSchema.status` declares, so `typedJson` fails to typecheck here (every other route in `api/plugins.ts` already avoids this by using plain `c.json(...)`, never `typedJson`, for exactly this reason — this file had zero `typedJson` call sites before this plan). Implemented as `c.json({ plugin, scriptsMoved, queuedKeepingPrevious })`, matching every sibling route in the same file; Studio's `api()` call still validates the response against `PluginActivateResponseSchema` on the client side, so the wire contract is unchanged, only the core's own compile-time self-check is skipped here, consistent with the rest of this file.
+  5. **G14 and the first `\blatest\b|\benabled\b` grep.** The literal command the plan gives for G14 also matches: `RunScriptDialog.tsx`'s `toScriptRow`-shaped adapter object (`enabled: true`, required by the *old* `ScriptRow` interface the run dialog still uses, per the plan's own §3.2 decision 11 — "the dialog still thinks in versions"), and `components/workflow/ScriptPicker.tsx`/`scriptBindings.ts`'s `@latest` script-ref resolution (a **workflow node's own script reference format**, `name@latest`, which is a real, still-supported concept distinct from "the Scripts tab's version picker" G14 is actually about), and an unrelated local variable named `latest` in `app/workflows/page.tsx`. None of these are the version picker or Enabled switch G14 exists to catch; the second G14 grep (`ScriptToggleResponseSchema|toggleEnabled|latestVersion|versionCount` on `app/plugins`) is genuinely empty. Not edited, since "fixing" the first grep's matches would mean breaking the `toScriptRow` adapter contract or removing a workflow node's ability to reference `@latest`, neither of which the plan asks for.
+  6. **G17 and the schedule `target.kind` field.** `docs/spec.md` §4.7 still reads `target: { kind: 'script', ref } | { kind: 'workflow', name }` — this is a **schedule's own target discriminator**, a field this plan's §9/§2 non-goals explicitly leave to plan 211 ("Schedules gaining `target: { kind: 'workflow', name }` → plan 211"). It happens to share the literal substring `kind: 'workflow'` with the removed `scripts.kind` comparison, but describes an unrelated, still-live mechanism. Left untouched, per plan 200 §2.1 ("do not decide an open question" / do not touch what the plan does not name).
+  7. **`plugins/owner.ts`'s deletion had a wider reserved-name-check surface than the plan's own line numbers.** The plan's §3.1 cites reserved-name checks at four call sites (`:695`, `:740`, `:1053`); the actual file (after 206/207 shifted every line number) had seven `refuseSynthetic`/`isSyntheticPluginName` call sites across `stageImpl`, `verifyImpl`, `activateImpl`, `rollbackImpl`, `disableImpl`, `enableImpl`, `removeImpl`, `reloadImpl`, `removeVersionsImpl`, and `putDevSlotImpl` — all found and removed by grepping for the literal function names rather than trusting the cited line numbers, per plan 200 §2.2's "match on content, not line number" rule.
+
+- **Observed, not done** (deliberately, out of this plan's own scope):
+  - Plan 217's own Scripts/Workflows/Schedules screens — the Studio edits in this plan are the smallest ones that compile, exactly as §4.9/§12 direct; no new design was applied.
+  - Plan 219's Plugins page origin filter (installed/recorded/dev) and activation-consequence sentence in the design — only the wire shape (`scriptsMoved`/`queuedKeepingPrevious`) and the old-Studio toast wording were added, per §4.9's own table row for `PluginActions.tsx`.
+  - Re-publishing parked recordings as one plugin per recording — explicitly plan 200's own non-goal here (MVP 15 §0.1 item 5, "waits with it").
+  - No spec rewrite beyond §4.5/§4.6/§4.8 of `docs/spec.md`, per §2 non-goals ("plan 202 and plan 224" own the rest).
+  - The `Add a nullable plugin_id to workflows` and `refuse DELETE while a job snapshotted it` open questions (§9) were both left exactly as the plan requires (no `plugin_id` column added; `DELETE` is unconditional).
+
+- **Open questions hit**: none blocked a step. §9's two open questions (a nullable `plugin_id` on `workflows`; refusing `DELETE /api/workflows/:name` while a job holds a snapshot) were both already resolved by the plan itself ("this plan does not add it" / "this plan allows the delete") — nothing to decide.
+
+- **Processes**: `ps -Ao pid=,command= | grep -i "[o]penpf"` →
+  ```
+  (no output)
+  ```
+  No process left running.
 
 ---
 
