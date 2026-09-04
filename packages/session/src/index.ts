@@ -63,7 +63,15 @@ export {
   type UiTreeWatchHandle,
 } from './inspector-factory'
 export { PortAllocator, parsePortRange, isPortFree } from './port-allocator'
-export { createDeviceExecutor, DEFAULT_TIMING, INSPECTOR_METHODS, needsInspector, type TimingSettings } from './device-executor'
+export {
+  createDeviceExecutor,
+  DEFAULT_TIMING,
+  INSPECTOR_METHODS,
+  needsInspector,
+  WAITFOR_WATCH_RECHECK_MS,
+  type TimingSettings,
+} from './device-executor'
+export { createChangeSignal, type ChangeSignal } from './change-signal'
 export {
   createInputArbiter,
   type InputArbiter,

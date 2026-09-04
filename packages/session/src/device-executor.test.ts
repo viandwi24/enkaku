@@ -493,6 +493,206 @@ describe('createDeviceExecutor — waitFor carries the last outcome into its tim
   })
 })
 
+const foundNodeStub = {
+  resourceId: 'x',
+  text: '',
+  desc: '',
+  className: '',
+  packageName: '',
+  bounds: { left: 0, top: 0, right: 1, bottom: 1 },
+  clickable: false,
+  enabled: true,
+  focused: false,
+  index: 0,
+  children: [],
+}
+
+describe('createDeviceExecutor — waitFor is push, not poll (plan 222 §3.5, §4.4)', () => {
+  function sessionWithWatchInspector(inspector: Record<string, unknown>): DeviceSession {
+    return {
+      deviceId: 'dev-1',
+      inspector,
+      inspectorPollIntervalMs: 500,
+      transport: { exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }), execOut: async () => new Uint8Array() },
+    } as unknown as DeviceSession
+  }
+
+  test('waitFor evaluates once before subscribing and returns at once when the condition already holds', async () => {
+    let findDetailedCalls = 0
+    let watchCalls = 0
+    const session = sessionWithWatchInspector({
+      id: 'ui-tree',
+      find: async () => foundNodeStub,
+      findDetailed: async () => {
+        findDetailedCalls += 1
+        return { ok: true, node: foundNodeStub }
+      },
+      watch: async () => {
+        watchCalls += 1
+        return { close: async () => {} }
+      },
+      dump: async () => foundNodeStub,
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    const start = Date.now()
+    const result = await execute(call('waitFor', { sel: { id: 'x' }, timeout: 10_000, intervalMs: 1_000 }))
+    expect((result as { resourceId: string }).resourceId).toBe('x')
+    expect(findDetailedCalls).toBe(1)
+    expect(watchCalls).toBe(0)
+    expect(Date.now() - start).toBeLessThan(50)
+  })
+
+  test('waitFor resolves from the watch event with no intermediate find', async () => {
+    let findDetailedCalls = 0
+    let ready = false
+    let fireChange: (() => void) | null = null
+    let closed = 0
+    const session = sessionWithWatchInspector({
+      id: 'ui-tree',
+      find: async () => (ready ? foundNodeStub : null),
+      findDetailed: async () => {
+        findDetailedCalls += 1
+        return ready ? { ok: true, node: foundNodeStub } : { ok: false, reason: 'not-found', matches: 0 }
+      },
+      watch: async (onChange: () => void) => {
+        fireChange = onChange
+        return { close: async () => { closed += 1 } }
+      },
+      dump: async () => foundNodeStub,
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    setTimeout(() => {
+      ready = true
+      fireChange?.()
+    }, 300)
+    const start = Date.now()
+    const result = await execute(call('waitFor', { sel: { id: 'x' }, timeout: 10_000, intervalMs: 1_000 }))
+    const elapsed = Date.now() - start
+    expect((result as { resourceId: string }).resourceId).toBe('x')
+    expect(elapsed).toBeGreaterThanOrEqual(290)
+    expect(elapsed).toBeLessThan(400)
+    expect(findDetailedCalls).toBe(2) // the immediate evaluation, then the one after the event
+    expect(closed).toBe(1)
+  })
+
+  test('a watch that never fires still re-checks every WAITFOR_WATCH_RECHECK_MS', async () => {
+    // WAITFOR_WATCH_RECHECK_MS is a fixed 1_000 ms constant, so this test
+    // necessarily spans a little over that to observe it — a timeout of
+    // 1_050 ms crosses exactly one re-check boundary (~1_000 ms) before the
+    // deadline itself forces a second, final evaluation at ~1_050 ms.
+    let findDetailedCalls = 0
+    const session = sessionWithWatchInspector({
+      id: 'ui-tree',
+      find: async () => null,
+      findDetailed: async () => {
+        findDetailedCalls += 1
+        return { ok: false, reason: 'not-found', matches: 0 }
+      },
+      watch: async () => ({ close: async () => {} }),
+      dump: async () => foundNodeStub,
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    const start = Date.now()
+    let caught: unknown
+    try {
+      await execute(call('waitFor', { sel: { id: 'x' }, timeout: 1_050, intervalMs: 1_000 }))
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    // 1 immediate evaluation + 1 at the ~1_000 ms re-check + 1 at the deadline.
+    expect(findDetailedCalls).toBe(3)
+    expect(Date.now() - start).toBeGreaterThanOrEqual(1_000)
+  }, 5_000)
+
+  test('waitFor falls back to the clamped poll on an engine with no watch', async () => {
+    let findDetailedCalls = 0
+    const session = sessionWithWatchInspector({
+      id: 'uiautomator-dump',
+      find: async () => null,
+      findDetailed: async () => {
+        findDetailedCalls += 1
+        return findDetailedCalls >= 3 ? { ok: true, node: foundNodeStub } : { ok: false, reason: 'not-found', matches: 0 }
+      },
+      dump: async () => foundNodeStub,
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    const result = await execute(call('waitFor', { sel: { id: 'x' }, timeout: 2_000, intervalMs: 5 }))
+    expect((result as { resourceId: string }).resourceId).toBe('x')
+    expect(findDetailedCalls).toBe(3)
+  })
+
+  test('a watch that fails to open falls through to the poll', async () => {
+    let findDetailedCalls = 0
+    const session = sessionWithWatchInspector({
+      id: 'ui-tree',
+      find: async () => null,
+      findDetailed: async () => {
+        findDetailedCalls += 1
+        return findDetailedCalls >= 3 ? { ok: true, node: foundNodeStub } : { ok: false, reason: 'not-found', matches: 0 }
+      },
+      watch: async () => {
+        throw new Error('the ui-tree engine has no watch channel')
+      },
+      dump: async () => foundNodeStub,
+      screenshot: async () => new Uint8Array(),
+    })
+    const execute = createDeviceExecutor({ session })
+    const result = await execute(call('waitFor', { sel: { id: 'x' }, timeout: 2_000, intervalMs: 5 }))
+    expect((result as { resourceId: string }).resourceId).toBe('x')
+    expect(findDetailedCalls).toBe(3)
+  })
+
+  test('the subscription is closed on timeout and on success', async () => {
+    // findDetailed answers not-found once (the immediate evaluation) so the
+    // executor actually subscribes, then ok:true from the second call
+    // onward — reached via the watch firing right after subscribing, never
+    // via the poll fallback (intervalMs is set far above the test's budget).
+    let closed = 0
+    let evalCount = 0
+    let fireChange: (() => void) | null = null
+    const successSession = sessionWithWatchInspector({
+      id: 'ui-tree',
+      find: async () => null,
+      findDetailed: async () => {
+        evalCount += 1
+        return evalCount === 1 ? { ok: false, reason: 'not-found', matches: 0 } : { ok: true, node: foundNodeStub }
+      },
+      watch: async (onChange: () => void) => {
+        fireChange = onChange
+        queueMicrotask(() => fireChange?.())
+        return { close: async () => { closed += 1 } }
+      },
+      dump: async () => foundNodeStub,
+      screenshot: async () => new Uint8Array(),
+    })
+    await createDeviceExecutor({ session: successSession })(call('waitFor', { sel: { id: 'x' }, timeout: 10_000, intervalMs: 60_000 }))
+    expect(closed).toBe(1)
+
+    let closedOnTimeout = 0
+    const timeoutSession = sessionWithWatchInspector({
+      id: 'ui-tree',
+      find: async () => null,
+      findDetailed: async () => ({ ok: false, reason: 'not-found', matches: 0 }),
+      watch: async () => ({ close: async () => { closedOnTimeout += 1 } }),
+      dump: async () => foundNodeStub,
+      screenshot: async () => new Uint8Array(),
+    })
+    let caught: unknown
+    try {
+      await createDeviceExecutor({ session: timeoutSession })(call('waitFor', { sel: { id: 'x' }, timeout: 20, intervalMs: 1_000 }))
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect(closedOnTimeout).toBe(1)
+  })
+})
+
 /**
  * `push` (plan 90 §4.6, step 90.7) — a script's `ctx.device.push(...)` must
  * reach the same extended result the API response gets (`mediaScan`), not
