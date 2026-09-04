@@ -112,7 +112,10 @@ export function TraceEventDetail({
         <Row label="attempt" value={String(event.attempt)} />
         <Row label="duration" value={event.durationMs === null ? '—' : `${event.durationMs} ms`} />
         {event.errorCode && <Row label="error code" value={event.errorCode} />}
-        {event.nodeId && <Row label="workflow node" value={event.nodeId} />}
+        {/* Plan 211 §3.2 decision 9 — `job_events.nodeId` is gone (a
+            workflow step is now a real job with its own run, not a node
+            attribution stamped on the parent's trace); this row is dropped
+            rather than silently kept. */}
         <Row label="seq" value={String(event.seq)} />
       </dl>
 
