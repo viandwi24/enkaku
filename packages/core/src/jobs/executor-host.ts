@@ -193,6 +193,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       let resultOutcome: ResultOutcome | undefined
       const ctx = {
         runId: run.id,
+        run,
         signal: controller.signal,
         heartbeat: () => {
           void deps.jobStore.renewHeartbeat(run.id, deps.jobTtlSec)

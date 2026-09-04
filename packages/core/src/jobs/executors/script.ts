@@ -64,6 +64,7 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
     },
 
     async run(job: JobRow, ctx: ExecutorContext): Promise<unknown> {
+      if (!job.scriptId) throw new EnkakuError('unknown_script', 'no scriptId on this job')
       const entry = deps.registry.get(job.scriptId)
       if (!entry) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
       if (!entry.enabled) throw new EnkakuError('script_disabled', `the script ${entry.name} is disabled`)
@@ -79,17 +80,18 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
       }
 
       // A cancel from the core aborts the child (grace → SIGTERM → SIGKILL).
-      ctx.signal.addEventListener('abort', () => deps.runner.abort(job.id, 'cancelled'))
+      ctx.signal.addEventListener('abort', () => deps.runner.abort(ctx.runId, 'cancelled'))
       // A crash of a package the farm's crash policy cares about (plan 37
       // §3.5, §4.4) — a SEPARATE abort path from `signal` above, so it
       // settles as `APP_CRASHED` (script-class, never blames the device)
       // rather than as a plain cancel.
-      ctx.onCrash?.((e) => deps.runner.abort(job.id, 'crashed', `${e.package} crashed: ${e.exception}`))
+      ctx.onCrash?.((e) => deps.runner.abort(ctx.runId, 'crashed', `${e.package} crashed: ${e.exception}`))
 
       // The bundle is materialised in the core (which has DB access); the runner only gets a path.
       const bundlePath = await deps.registry.bundlePath(entry)
       const result = await deps.runner.execute({
         id: job.id,
+        runId: ctx.runId,
         deviceId: job.deviceId,
         bundlePath,
         params: job.params ?? {},
@@ -116,7 +118,7 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
         // shape `job.scriptId`/`job.runtime` both already have). `null` for
         // every job enqueued with no override, and for every job that
         // predates this column.
-        runtimeOverride: parseJobRuntimeOverride(job.runtimeOverride),
+        runtimeOverride: parseJobRuntimeOverride(ctx.run.runtimeOverride),
       })
       // Plan 98 §4.8, H1 — reported here, BEFORE the ok/fail branch below, so
       // a peak is recorded whether the job succeeded or failed (acceptance:

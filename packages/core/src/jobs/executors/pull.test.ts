@@ -11,8 +11,41 @@ const silentLog = (): Logger => {
   return l as unknown as Logger
 }
 
+const FAKE_RUN: import('../../db/schema').JobRunRow = {
+  id: 'run-1',
+  jobId: 'job-1',
+  seq: 1,
+  trigger: 'manual',
+  status: 'running',
+  deviceId: 'dev-1',
+  scriptName: null,
+  priority: 0,
+  createdAt: new Date(),
+  startedAt: null,
+  finishedAt: null,
+  heartbeatExpiresAt: null,
+  expiresAt: null,
+  notBefore: null,
+  batchRepeat: null,
+  pacedDelayMs: null,
+  result: null,
+  error: null,
+  failureClass: null,
+  errorPhase: null,
+  infraAttempts: 0,
+  peakRssBytes: null,
+  maxConcurrent: null,
+  runtimeOverride: null,
+  resultStatus: null,
+  resultBytes: null,
+  resultSummary: null,
+  resultIssues: null,
+  resumedFromRunId: null,
+  resumedFromStep: null,
+}
+
 function fakeCtx(signal: AbortSignal = new AbortController().signal): ExecutorContext {
-  return { signal, heartbeat: () => {}, log: silentLog() }
+  return { signal, runId: FAKE_RUN.id, run: FAKE_RUN, heartbeat: () => {}, log: silentLog() }
 }
 
 describe('createPullExecutor', () => {

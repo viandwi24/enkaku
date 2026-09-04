@@ -73,6 +73,7 @@ export function createRemoteJobBridge(deps: {
         // read — a node-owned device runs a published plugin member the
         // same way the local executor does (a dev entry too, though
         // scheduling one is out of scope per §2; an ad-hoc run is not).
+        if (!job.scriptId) throw new EnkakuError('unknown_script', 'no scriptId on this job')
         const entry = deps.registry.get(job.scriptId)
         if (!entry) throw new EnkakuError('unknown_script', `no such script: ${job.scriptId}`)
         if (!entry.enabled) throw new EnkakuError('script_disabled', `the script ${entry.name} is disabled`)
