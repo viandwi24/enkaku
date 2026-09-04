@@ -107,7 +107,15 @@ export interface AttemptOutcome {
  * The runner knows nothing about the database or the `scripts` table.
  */
 export interface JobSpec {
+  /** The JOB id. Author-facing: `ENKAKU_JOB_ID`, the KV namespace fallback, `ctx.jobs`'s `jobId`, `InputSource.id` (plan 211 §3.2 decision 10). */
   id: string
+  /**
+   * The RUN id (plan 211). Everything this execution STORES or that tracks
+   * its liveness keys on it: artifacts, trace events, trace frames and UI
+   * captures, the phase/heartbeat/progress/retry callbacks, and the
+   * runner's own `active` map (so `abort()` takes a run id).
+   */
+  runId: string
   deviceId: string
   /** Path to the ESM bundle file the child will import. */
   bundlePath: string
@@ -128,15 +136,6 @@ export interface JobSpec {
    * wipe. Undefined for every job outside a workflow.
    */
   reset?: 'farm' | 'none'
-  /**
-   * Plan 99 §3.2, §4.8. The workflow node this execution belongs to.
-   * Threaded into the child's `init` and into `ctx.jobs.trigger()`'s default
-   * idempotency key, because several nodes share one `jobId` and one
-   * `attempt` counter and would otherwise derive colliding keys (plan 99
-   * F20). Undefined for a standalone job, which keeps deriving the exact key
-   * shape it always has.
-   */
-  nodeId?: string
   /**
    * Plan 99 §3.5, §4.8 — overrides `ScriptDefinition.retries` for this
    * execution (a workflow's per-node override). Undefined defers entirely to
@@ -356,7 +355,7 @@ export interface JobRunnerDeps {
    * with attempt 1 on `uniqueIndex(jobId, seq)`. Order is the tee's contract;
    * numbering is the recorder's.
    */
-  onTraceEvent?: (jobId: string, event: TraceEventInput) => void
+  onTraceEvent?: (runId: string, event: TraceEventInput) => void
   /**
    * Where trace frames and UI-tree snapshots are stored (plan 128 §3.5, step
    * 128.5) — `<dataDir>/traces/<jobId>/<sha256>.png` and `.json.gz`, one
@@ -572,7 +571,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     let declaredPackages: string[] = []
     const launchedPackages = new Set<string>()
     const reportTargetPackages = (): void => {
-      deps.onTargetPackages?.(job.id, declaredPackages.length > 0 ? declaredPackages : [...launchedPackages])
+      deps.onTargetPackages?.(job.runId, declaredPackages.length > 0 ? declaredPackages : [...launchedPackages])
     }
     // Plan 91 §3.3, §4.1 — this attempt's identity for the input arbiter's
     // priority lane. `id: job.id` (not `attempt`): a retry belongs to the
@@ -777,10 +776,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         send({
           t: 'init',
           mode,
-          // `nodeId` (plan 99 §3.2, §4.8) is the workflow node this
-          // execution belongs to — undefined for every job outside a
-          // workflow, which keeps this shape exactly what it was before.
-          job: { id: job.id, attempt, deviceId: job.deviceId, ...(job.nodeId !== undefined ? { nodeId: job.nodeId } : {}) },
+          job: { id: job.id, attempt, deviceId: job.deviceId },
           params: job.params ?? {},
           ...(opts.priorError ? { priorError: opts.priorError } : {}),
           // Plan 98 §4.7 — `job.memory.sampleIntervalMs` once a ceiling is
@@ -841,7 +837,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         }
         logger.append('info', 'runner', `reset: policy=${plan.policy}`)
         tee.phase('reset')
-        deps.onPhase(job.id, attempt, 'reset')
+        deps.onPhase(job.runId, attempt, 'reset')
         // The child is idle while this runs — deliberately, it is waiting
         // for `init` — so the "no message in 30s = hung" watchdog is paused
         // for the duration rather than misreading a quiet reset as a dead
@@ -864,7 +860,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           `reset done: applied=${outcome.applied.length} warnings=${outcome.warnings.length} durationMs=${outcome.durationMs}`,
           { applied: outcome.applied, warnings: outcome.warnings },
         )
-        deps.onReset?.(job.id, job.deviceId, outcome, plan)
+        deps.onReset?.(job.runId, job.deviceId, outcome, plan)
         if (settled) return
         // The reset is over — resume watching for child activity.
         resetSilenceTimer()
@@ -889,7 +885,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         // above still resets) but NOT heartbeat-renewal activity: at a fast
         // sample cadence, treating every sample as a heartbeat would multiply
         // heartbeat-renewal writes for no benefit.
-        if (msg.t !== 'rss') deps.heartbeat(job.id)
+        if (msg.t !== 'rss') deps.heartbeat(job.runId)
 
         if (msg.t === 'rss') {
           if (peakRssBytes === null || msg.bytes > peakRssBytes) peakRssBytes = msg.bytes
@@ -963,7 +959,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           // mid-run and the session falls back, so a job really can change
           // capture policy while it is running.
           tee.phase(msg.phase)
-          deps.onPhase(job.id, attempt, msg.phase)
+          deps.onPhase(job.runId, attempt, msg.phase)
           if (msg.phase === 'finish') finishRan = true
         } else if (msg.t === 'log') {
           logger.append(msg.level, 'script', msg.msg, msg.fields)
@@ -972,7 +968,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           // child's own timer. No DB write, no size check, no rate limit
           // here — those live one hop further out (`executor-host.ts`).
           tee.progress(msg.value)
-          deps.onProgress?.(job.id, msg.value)
+          deps.onProgress?.(job.runId, msg.value)
         } else if (msg.t === 'heartbeat') {
           // already handled by resetSilenceTimer and the job heartbeat
         } else if (msg.t === 'device.call') {
@@ -1148,7 +1144,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               // artifact's OWN bytes. No second capture, for the same
               // recursion reason `method: 'screenshot'` gets.
               tee.artifact({ kind: msg.kind, label: msg.label, sizeBytes: saved.sizeBytes, ...(msg.kind === 'screenshot' ? { frameBytes: data } : {}) })
-              deps.onArtifact(job.id, { kind: msg.kind, label: msg.label, ...saved })
+              deps.onArtifact(job.runId, { kind: msg.kind, label: msg.label, ...saved })
               // Plan 115 §3.6 — the bridge: `saved.id` is what
               // `ctx.artifact.file()` hands back to the script, so it can
               // pass it straight to `ctx.device.push({ artifactId })`.
@@ -1264,21 +1260,21 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         let frameHash: string | null = null
         if (req.frame === 'reuse') {
           const bytes = toFrameBytes(req.frameValue)
-          if (bytes) frameHash = await store.putFrame(job.id, bytes)
+          if (bytes) frameHash = await store.putFrame(job.runId, bytes)
         } else if (req.frame === 'capture' && inspector) {
-          frameHash = await store.putFrame(job.id, await inspector.screenshot())
+          frameHash = await store.putFrame(job.runId, await inspector.screenshot())
         }
         let uiHash: string | null = null
         try {
           if (req.uiTree === 'reuse') {
             const tree = toTraceUiTree(req.method, req.treeValue)
-            if (tree !== null) uiHash = await store.putUiTree(job.id, tree)
+            if (tree !== null) uiHash = await store.putUiTree(job.runId, tree)
           } else if (req.uiTree === 'capture' && inspector) {
             // Plan 208 §3.7, §4.9 — reuse the dump the script just paid for
             // when it is still fresh, instead of a second round trip on the
             // RPC channel the script's own calls share.
             const reused = reusableTree(inspector.lastDump?.(), Date.now())
-            uiHash = await store.putUiTree(job.id, reused ?? (await inspector.dump()))
+            uiHash = await store.putUiTree(job.runId, reused ?? (await inspector.dump()))
           }
         } catch {
           uiHash = null
@@ -1288,14 +1284,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 
       const tee: TraceTee = deps.onTraceEvent
         ? createTraceTee({
-            jobId: job.id,
-            ...(job.nodeId !== undefined ? { nodeId: job.nodeId } : {}),
+            runId: job.runId,
             attempt: () => traceAttempt,
             // Read fresh, never captured: `inspectorEngineId` is `'starting'`
             // until an engine actually resolves, and changes again after a
             // watchdog fallback (§3.4).
             engineId: () => (session?.inspector ? session.inspectorEngineId : null),
-            emit: (event) => deps.onTraceEvent!(job.id, event),
+            emit: (event) => deps.onTraceEvent!(job.runId, event),
             // No store wired ⇒ no `capture` ⇒ the policy resolves to `'none'`
             // while the engine id is still reported honestly on every phase
             // event, so the timeline says "no frames", not "no inspector".
@@ -1318,9 +1313,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         },
         redact: deps.kv ? (text) => deps.kv!.redact({ deviceId: job.deviceId, namespace: meta.pluginId ?? meta.scriptId }, text) : undefined,
       })
-      const artifacts = deps.artifacts(job.id)
+      const artifacts = deps.artifacts(job.runId)
       const aborter: { current: ((reason: AbortReason, detail?: string) => void) | null } = { current: null }
-      active.set(job.id, {
+      active.set(job.runId, {
         abort: (reason, detail) => aborter.current?.(reason, detail),
       })
 
@@ -1536,7 +1531,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               'runner',
               `attempt ${attempt} failed (${classified.class}:${classified.code}) — retrying after ${delayMs}ms backoff`,
             )
-            deps.onRetry?.(job.id, { attempt, class: classified.class, code: classified.code, delayMs })
+            deps.onRetry?.(job.runId, { attempt, class: classified.class, code: classified.code, delayMs })
             if (delayMs > 0) await Bun.sleep(delayMs)
           } else {
             // Plan 99 §3.5, §4.8: `job.retries` (a workflow's per-node
@@ -1546,7 +1541,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             if (scriptAttempts >= (job.retries ?? meta.retries ?? 0)) break
             scriptAttempts += 1
             logger.append('warn', 'runner', `attempt ${attempt} failed (${classified.class}:${classified.code}) — retrying`)
-            deps.onRetry?.(job.id, { attempt, class: classified.class, code: classified.code, delayMs: 0 })
+            deps.onRetry?.(job.runId, { attempt, class: classified.class, code: classified.code, delayMs: 0 })
           }
         }
       } catch (err) {
@@ -1554,7 +1549,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         logger.append('error', 'runner', `runner failed: ${message}`)
         outcome = { ok: false, finishRan: false, error: { code: 'RUNNER_FAILED', message, phase: 'run' } }
       } finally {
-        active.delete(job.id)
+        active.delete(job.runId)
         if (session) deps.sessions.release(job.deviceId, noopFrame)
         const { bytes } = await logger.close()
         await artifacts

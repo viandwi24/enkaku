@@ -688,10 +688,9 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       kv: plugin.storage,
       // Bound to THIS attempt (plan 81 §3.3, §4.2) — see the module-level
       // comment above `jobsRequest` for why this cannot be built earlier.
-      // `nodeId` (plan 99 §3.2, §4.8) is undefined outside a workflow, which
-      // reproduces the exact key derivation this had before that field
-      // existed.
-      jobs: createJobsApiFor(jobsRequest, { id: init.job.id, attempt: init.job.attempt, nodeId: init.job.nodeId }),
+      // `nodeId` is deleted (plan 211): a workflow step is a job of its own,
+      // so it derives an idempotency key like any other job.
+      jobs: createJobsApiFor(jobsRequest, { id: init.job.id, attempt: init.job.attempt }),
       // Plan 97 §3.7, §4.2 — a live, unpersisted snapshot; coalesced here,
       // never validated, never stored, never `resultOf`-readable.
       progress: progressReporter.progress,

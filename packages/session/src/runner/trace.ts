@@ -192,9 +192,8 @@ export interface TraceTee {
 }
 
 export interface TraceTeeDeps {
-  jobId: string
-  /** Plan 99's workflow node axis, mirroring `artifacts.nodeId`. Undefined for every non-workflow job. */
-  nodeId?: string | null
+  /** The RUN this trace belongs to (renamed from `jobId`, plan 211). */
+  runId: string
   /** The LIVE attempt number — an accessor, because one tee spans every attempt of a job (see this module's doc). */
   attempt: () => number
   /**
@@ -381,11 +380,10 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
     uiHash?: string | null
   }): TraceEventInput {
     return {
-      jobId: deps.jobId,
+      runId: deps.runId,
       atMs: part.atMs,
       attempt: part.attempt,
       phase: part.phase,
-      nodeId: deps.nodeId ?? null,
       kind: part.kind,
       name: part.name,
       durationMs: part.durationMs ?? null,
