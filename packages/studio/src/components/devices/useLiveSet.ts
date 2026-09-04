@@ -322,6 +322,19 @@ export function useLiveSet({
       { rootMargin: '200px 0px' },
     )
     observerRef.current = observer
+    // Catch up on tiles that attached their ref BEFORE this effect ran.
+    //
+    // React attaches refs during commit and runs passive effects afterwards,
+    // so on any commit that already has tiles — a warm navigation back to
+    // Devices, or a device list that resolved before the grid first rendered
+    // — every `tileRef` callback fired while `observerRef.current` was still
+    // null. `observer?.observe(node)` is a silent no-op then, and nothing
+    // ever observed those nodes again: they never became visible, never
+    // became candidates, and every tile sat at "Not streaming" forever.
+    // Whether it happened at all depended on whether the fetch beat the first
+    // commit, which is why the owner saw it as intermittent (field report,
+    // 2026-09-04).
+    for (const node of nodeForIdRef.current.values()) observer.observe(node)
     return () => {
       observer.disconnect()
       for (const t of dwellTimersRef.current.values()) clearTimeout(t)
