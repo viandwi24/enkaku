@@ -246,6 +246,7 @@ describe('/api/scripts/:name/param-sets (plan 95 §4.7, §4.8, §5 step 95.8)', 
 
   test('POST creates a set (name, params, scriptName all round-trip), lists it back, and audits script.param_set.create', async () => {
     const db = setUp()
+    seedUnowned(db, 'checkout', '1.0.0')
     const { audit, calls } = fakeAudit()
     const app = withUser('operator', createScriptRoutes({ db, audit }))
     const res = await app.request('/checkout/param-sets', jsonReq('POST', { name: 'Aggressive', params: { videos: 500 } }))
@@ -262,6 +263,8 @@ describe('/api/scripts/:name/param-sets (plan 95 §4.7, §4.8, §5 step 95.8)', 
 
   test('POST with a duplicate name for the SAME script is refused 409; the SAME name under a different script is unaffected', async () => {
     const db = setUp()
+    seedUnowned(db, 'checkout', '1.0.0')
+    seedUnowned(db, 'login', '1.0.0')
     const app = withUser('operator', createScriptRoutes({ db }))
     const first = await app.request('/checkout/param-sets', jsonReq('POST', { name: 'Aggressive', params: {} }))
     expect(first.status).toBe(201)
@@ -281,6 +284,7 @@ describe('/api/scripts/:name/param-sets (plan 95 §4.7, §4.8, §5 step 95.8)', 
 
   test('POST/PATCH/DELETE all require job.run — refused with no authenticated user, and nothing is written', async () => {
     const db = setUp()
+    seedUnowned(db, 'checkout', '1.0.0')
     const app = withUser(null, createScriptRoutes({ db }))
     const post = await app.request('/checkout/param-sets', jsonReq('POST', { name: 'x', params: {} }))
     expect(post.status).toBe(403)
@@ -296,6 +300,7 @@ describe('/api/scripts/:name/param-sets (plan 95 §4.7, §4.8, §5 step 95.8)', 
 
   test('PATCH renames and/or replaces params, echoes the full row, and audits script.param_set.update', async () => {
     const db = setUp()
+    seedUnowned(db, 'checkout', '1.0.0')
     const { audit, calls } = fakeAudit()
     const app = withUser('operator', createScriptRoutes({ db, audit }))
     const create = await app.request('/checkout/param-sets', jsonReq('POST', { name: 'A', params: { videos: 1 } }))
@@ -315,6 +320,7 @@ describe('/api/scripts/:name/param-sets (plan 95 §4.7, §4.8, §5 step 95.8)', 
 
   test('PATCH renaming to an existing name for the same script 409s, and changes nothing', async () => {
     const db = setUp()
+    seedUnowned(db, 'checkout', '1.0.0')
     const app = withUser('operator', createScriptRoutes({ db }))
     const createA = await app.request('/checkout/param-sets', jsonReq('POST', { name: 'A', params: { videos: 1 } }))
     const { paramSet: a } = (await createA.json()) as { paramSet: { id: string } }
@@ -332,6 +338,8 @@ describe('/api/scripts/:name/param-sets (plan 95 §4.7, §4.8, §5 step 95.8)', 
 
   test('PATCH/DELETE on an unknown id, or an id that belongs to a DIFFERENT script name, both 404 — the route param and the row must agree', async () => {
     const db = setUp()
+    seedUnowned(db, 'checkout', '1.0.0')
+    seedUnowned(db, 'login', '1.0.0')
     const app = withUser('operator', createScriptRoutes({ db }))
     const create = await app.request('/checkout/param-sets', jsonReq('POST', { name: 'A', params: {} }))
     const { paramSet } = (await create.json()) as { paramSet: { id: string } }
@@ -355,6 +363,7 @@ describe('/api/scripts/:name/param-sets (plan 95 §4.7, §4.8, §5 step 95.8)', 
 
   test('DELETE removes the set and audits script.param_set.delete', async () => {
     const db = setUp()
+    seedUnowned(db, 'checkout', '1.0.0')
     const { audit, calls } = fakeAudit()
     const app = withUser('operator', createScriptRoutes({ db, audit }))
     const create = await app.request('/checkout/param-sets', jsonReq('POST', { name: 'A', params: {} }))

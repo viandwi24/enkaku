@@ -393,7 +393,10 @@ describe('ScriptRegistry — a row with no owning plugin is ignored', () => {
     const registry = createScriptRegistry({ db, dataDir, devSlots: createDevSlotStore(), log })
     expect(warns).toHaveLength(1)
     expect(warns[0]).toContain('5 script row(s) across 4 name(s)')
-    expect(warns[0]).toContain('chrome-open-url, debug-node, hello-no-device, network-test')
+    expect(warns[0]).toContain('chrome-open-url@1.0.0')
+    expect(warns[0]).toContain('debug-node@1.0.0')
+    expect(warns[0]).toContain('hello-no-device@1.0.0')
+    expect(warns[0]).toContain('network-test@1.0.0')
     expect(warns[0]).toContain('DELETE /api/scripts/<id>')
 
     // Not once per request either: every read below goes through the same

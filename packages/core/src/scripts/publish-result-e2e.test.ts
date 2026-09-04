@@ -1,21 +1,20 @@
-import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
-import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
-import { devices } from '../db/schema'
+import { devices, plugins, scripts } from '../db/schema'
 import { createJobStore, rowToJobDetail } from '../queue/job-store'
 import { recordResult } from '../jobs/result-store'
-import { createScriptRoutes } from './routes'
+import { getScriptDetail } from './service'
 
 /**
- * Plan 97 §4.4, §4.7 — closes the gap the plan's own `> Status:` line named:
- * "three correct steps that have not met" (97.2's `ScriptDefinition<S, R>`,
- * 97.5's read paths, 97.6's `ResultView`) because `scripts.result_schema`
- * did not exist as a column. This test is the proof they finally do:
+ * Plan 97 §4.4, §4.7, updated by plan 210 (direct publish removed: a member
+ * row is written only by `plugins/runtime.ts`'s `writeScriptRows`, so this
+ * test seeds the row directly rather than through the deleted `POST
+ * /api/scripts`) — proves the STORAGE half: a `resultSchema` a plugin member
+ * declares is the schema a job detail reads back tomorrow, pinned to the
+ * version that actually ran.
  *
- *   1. publish a script that DECLARES a `result` schema (`POST /api/scripts`,
- *      through the exact `checkDeclaredSchema` gate a params schema gets),
+ *   1. seed a plugin member row declaring a `result` schema,
  *   2. settle a job for it with a value that matches that schema (mirroring
  *      exactly what `child-entry.ts`'s `buildResultOutcome` computes — a real
  *      `safeParse` against the real Zod schema, then `result-store.ts`'s own
@@ -28,30 +27,18 @@ import { createScriptRoutes } from './routes'
  *
  * This does not spawn a real child process (that lives in
  * `packages/session/src/runner/**`, already end-to-end tested by
- * `child-entry.test.ts` for H2's own claims) — it proves the STORAGE half:
- * that a schema published today is the schema a job detail reads back
- * tomorrow, pinned to the version that actually ran.
+ * `child-entry.test.ts` for H2's own claims).
  */
-describe('plan 97 §4.4, §4.7 — a declared result schema survives publish → settle → GET /api/jobs/:id', () => {
+describe('plan 97 §4.4, §4.7 — a declared result schema survives seed → settle → GET /api/jobs/:id', () => {
   function setUp(): Db {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     return opened.db
   }
 
-  function withAdmin(inner: Hono<AuthEnv>): Hono<AuthEnv> {
-    const wrapper = new Hono<AuthEnv>()
-    wrapper.use('*', async (c, next) => {
-      c.set('user', { id: 'u1', email: 'u@test', role: 'admin' })
-      await next()
-    })
-    wrapper.route('/', inner)
-    return wrapper
-  }
-
-  test('publish declares a result; a matching job settles resultStatus: valid with a non-null resultSchema on the pinned row', async () => {
+  test('a plugin member declaring a result; a matching job settles resultStatus: valid with a non-null resultSchema on the pinned row', async () => {
     const db = setUp()
-    db.insert(devices).values({ id: 'dev-1', stableId: 'stable-1', serial: 'serial-1', label: 'device 1', status: 'idle' }).run()
+    db.insert(devices).values({ id: 'dev-1', stableId: 'stable-1', serial: 'serial-1', label: 'device 1', status: 'online' }).run()
 
     // The author's own Zod schema (never sent over the wire itself — only
     // its `io: 'output'` JSON Schema is, exactly as `sdk/src/cli/publish.ts`
@@ -62,28 +49,48 @@ describe('plan 97 §4.4, §4.7 — a declared result schema survives publish →
     })
     const resultJsonSchema = z.toJSONSchema(resultSchema, { io: 'output' })
 
-    const app = withAdmin(createScriptRoutes({ db }))
-    const publishRes = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+    db.insert(plugins)
+      .values({
+        id: 'p-fixture',
+        name: 'demo',
+        version: '1.0.0',
+        title: null,
+        description: null,
+        bundle: 'export {}',
+        source: null,
+        bundleHash: 'deadbeef',
+        status: 'active',
+        verifiedAt: new Date(),
+        verifyError: null,
+        verifyErrorCode: null,
+        manifest: { scripts: [{ id: 'auto-scroll-e2e' }] },
+        resetPackages: null,
+        createdBy: null,
+        createdAt: new Date(),
+      })
+      .run()
+
+    const scriptId = 'demo-auto-scroll-e2e-1.0.0'
+    db.insert(scripts)
+      .values({
+        id: scriptId,
         name: 'demo/auto-scroll-e2e',
         version: '1.0.0',
         bundle: 'export default { id: "auto-scroll-e2e" }',
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
         resultSchema: resultJsonSchema,
-      }),
-    })
-    expect(publishRes.status).toBe(201)
-    const published = (await publishRes.json()) as { script: { id: string } }
-    const scriptId = published.script.id
+        enabled: true,
+        createdAt: new Date(),
+        pluginId: 'p-fixture',
+        exportId: 'auto-scroll-e2e',
+      })
+      .run()
 
-    // `GET /:id` — the storage half, in isolation: the published schema
-    // reads back exactly as it was sent, non-null.
-    const getRes = await app.request(`/${scriptId}`)
-    const detail = (await getRes.json()) as { script: { resultSchema: unknown } }
-    expect(detail.script.resultSchema).not.toBeNull()
-    expect(detail.script.resultSchema).toEqual(resultJsonSchema)
+    // The storage half, in isolation: the seeded schema reads back exactly
+    // as it was written, non-null.
+    const detail = getScriptDetail(db, scriptId)
+    expect(detail?.resultSchema).not.toBeNull()
+    expect(detail?.resultSchema).toEqual(resultJsonSchema)
 
     // "Run it": a value that matches the declared schema, checked the same
     // way the child does (real Zod `safeParse`, never the JSON Schema —
@@ -135,32 +142,9 @@ describe('plan 97 §4.4, §4.7 — a declared result schema survives publish →
     expect(jobDetail.result).toEqual(value)
   })
 
-  test('publishing a result schema that violates the published limits is refused, naming E_RESULT_SCHEMA_INVALID, before it ever reaches storage', async () => {
-    const db = setUp()
-    const app = withAdmin(createScriptRoutes({ db }))
-    // A `__proto__` field name is one of K7's hostile fixtures, reused here
-    // for the result half of the same gate a params schema already has —
-    // built with `JSON.parse`, never an object literal: `{__proto__: x}` as
-    // a literal sets the object's OWN prototype rather than an enumerable
-    // key, which `checkDeclaredSchema`'s walk (and `JSON.stringify` itself)
-    // would then never see (`schema-form/resolve.test.ts` documents the
-    // identical hazard one layer up).
-    const hostileResultSchema = JSON.parse(
-      '{"type":"object","properties":{"__proto__":{"type":"string"}},"additionalProperties":false}',
-    )
-    const res = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        name: 'demo/hostile-result-e2e',
-        version: '1.0.0',
-        bundle: 'export default {}',
-        paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
-        resultSchema: hostileResultSchema,
-      }),
-    })
-    expect(res.status).toBe(400)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('E_RESULT_SCHEMA_INVALID')
-  })
+  // Plan 210: `POST /api/scripts` (the direct-publish route this test's own
+  // hostile-schema case exercised) is gone. `checkDeclaredSchema`'s hostile-
+  // schema refusal is still exercised where it still runs — the plugin
+  // verify child (`plugins/verify-child.ts`) and `POST /api/workflows`
+  // (`api/workflows.test.ts`).
 })
