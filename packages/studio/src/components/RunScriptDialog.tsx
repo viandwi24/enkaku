@@ -5,13 +5,11 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
   clampSchema,
-  ScriptResponseSchema,
   summarizeClamp,
   type BatchOrder,
   type GroupInfo,
   type DeviceInfo,
   type RuntimeEnvelope,
-  type WorkflowDoc,
 } from '@enkaku/protocol'
 import { ParamSetPicker } from '@/components/ParamSetPicker'
 import { RuntimeOverrideSection } from '@/components/schema-form/RuntimeOverrideSection'
@@ -37,15 +35,11 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-  Tabs,
-  TabsList,
-  TabsTrigger,
-  api,
   issuesFromError,
   relativeTime,
   useAction,
 } from '@enkaku/ui'
-import { estimateWorkflowDuration, fetchAllPages, type WorkflowDurationEstimate } from '@/lib/api'
+import { fetchAllPages, type WorkflowDurationEstimate } from '@/lib/api'
 
 export interface ScriptRow {
   id: string
@@ -76,23 +70,7 @@ export interface ScriptRow {
    */
   pluginName?: string | null
   isDev?: boolean
-  /**
-   * Plan 99 §3.1, §4.11, step 99.10 — `'script'` | `'workflow'`, straight off
-   * `scripts.kind`. Optional (not "always present") because several fixtures
-   * predate this field — a dev-slot row (`device/page.tsx`'s `devRows`),
-   * every existing test fixture in this file, and any other caller not yet
-   * updated to pass it through — and every one of those is an ordinary
-   * script, never a workflow, so `?? 'script'` is the correct default
-   * everywhere this field is read, not merely a safe one.
-   *
-   * This is one of only FOUR places in the repo allowed to compare
-   * `kind === 'workflow'` (plan 99 §3.1's containment claim, amended to name
-   * this file explicitly) — the run dialog's own Workflow | Script filter.
-   */
-  kind?: 'script' | 'workflow'
 }
-
-type Kind = 'script' | 'workflow'
 
 /** Every mode this dialog has ever offered — unchanged by plan 104's extraction (`RunScriptDialog` was §3.1's "first caller", not a narrower one). */
 const TARGET_ALLOW: Target[] = ['single', 'group', 'devices']
@@ -527,20 +505,9 @@ export function RunScriptDialog({
   /** Plan 103 §3.2, §5 step 103.1 — the device popup's non-modal path (its "Run script" row): when true, renders without its own overlay so it can sit inside the popup's own layer instead of fighting it for focus. */
   nonModal?: boolean
 }) {
-  // The Workflow | Script segmented filter (plan 99 §4.11, step 99.10) — the
-  // sanctioned `kind === 'workflow'` comparison this file is one of only
-  // four places allowed to make (§3.1's containment claim). Default
-  // `'script'`: unchanged behaviour for every caller until an operator
-  // deliberately switches, since that was the only kind this dialog could
-  // run before this plan.
-  const [kindFilter, setKindFilter] = useState<Kind>('script')
-  // When `scripts` is supplied the dialog owns the choice; otherwise `script`
-  // decides and these stay unused. Filtered by `kindFilter` BEFORE grouping,
-  // so a stale `pickedId` from the other kind can never resolve `chosen`
-  // below (a script published before `kind` existed reads `undefined`, which
-  // is a `'script'`, never a `'workflow'` — no back-published row is ever
-  // secretly a pipeline).
-  const filteredScripts = (scripts ?? []).filter((s) => (s.kind ?? 'script') === kindFilter)
+  // Plan 210 (MVP 03 §2): a script is never a workflow — the Workflow |
+  // Script filter this dialog used to carry is gone with it.
+  const filteredScripts = scripts ?? []
   const groups = groupByName(filteredScripts)
   const [pickedName, setPickedName] = useState<string>('')
   const [pickedId, setPickedId] = useState<string>('')
@@ -610,27 +577,6 @@ export function RunScriptDialog({
     setPickedId(first.versions[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scripts])
-
-  // Switching Workflow | Script always re-picks — unlike the mount-only
-  // effect above, this one is NOT guarded by `pickedId`: a script picked
-  // under the old filter is never a legal pick under the new one (a
-  // `<Select>` bound to a name the current `groups` no longer lists would
-  // otherwise show a blank placeholder while `chosen` quietly fell back to
-  // `groups[0]` below — a picker that looks empty while a run is actually
-  // armed on something else). Resets params too, the same reason a script or
-  // version change already does: a workflow's compiled params schema and a
-  // plain script's are never the same shape.
-  useEffect(() => {
-    if (!scripts) return
-    const first = groups[0]
-    setPickedName(first?.name ?? '')
-    setPickedId(first?.versions[0]?.id ?? '')
-    setParams(undefined)
-    setRuntimeOverride(undefined)
-    setServerIssues(undefined)
-    setFormCanSubmit(true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kindFilter])
 
   // The typed fleet-wide confirmation's own reset-on-change effect now
   // lives inside `useTargetSelection` itself (identical dependency array:
@@ -703,86 +649,19 @@ export function RunScriptDialog({
   // kind — a node's own script is always `kind: 'script'`, never a nested
   // workflow, which `E_WORKFLOW_NESTED` already refuses at publish) rather
   // than a second network round trip per node ref.
-  const [workflowDoc, setWorkflowDoc] = useState<WorkflowDoc | null>(null)
-  const [durationEstimate, setDurationEstimate] = useState<WorkflowDurationEstimate | null>(null)
-  useEffect(() => {
-    setWorkflowDoc(null)
-    setDurationEstimate(null)
-    if (!chosen || (chosen.kind ?? 'script') !== 'workflow') return
-    let cancelled = false
-    void api(`/api/scripts/${chosen.id}`, ScriptResponseSchema)
-      .then((b) => {
-        if (cancelled) return
-        const doc = b.script.workflow ?? null
-        setWorkflowDoc(doc)
-        if (!doc) return
-        const resolveScriptId = (ref: string): string | null => {
-          const at = ref.lastIndexOf('@')
-          if (at < 0) return null
-          const name = ref.slice(0, at)
-          const version = ref.slice(at + 1)
-          const candidates = (scripts ?? []).filter((s) => s.name === name)
-          if (version === 'latest') return [...candidates].sort(byVersionDesc)[0]?.id ?? null
-          return candidates.find((s) => s.version === version)?.id ?? null
-        }
-        void estimateWorkflowDuration(doc, resolveScriptId).then((est) => {
-          if (!cancelled) setDurationEstimate(est)
-        })
-      })
-      .catch(() => {
-        if (!cancelled) setWorkflowDoc(null)
-      })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chosen?.id, chosen?.kind])
-
   if (!chosen) {
-    // Not "no script yet" — nothing in the CURRENT filter, or nothing at all.
+    // Not "no script yet" — nothing published at all.
     if (!scripts) return null
-    const nothingPublished = scripts.length === 0
     return (
       <Dialog open onOpenChange={(v) => !v && onClose()} modal={!nonModal}>
         <DialogContent className="sm:max-w-lg" overlay={!nonModal}>
           <DialogHeader>
             <DialogTitle>Run a script</DialogTitle>
-            <DialogDescription>
-              {nothingPublished
-                ? 'Nothing is published to this farm yet.'
-                : kindFilter === 'workflow'
-                  ? 'No workflow is published to this farm yet.'
-                  : 'No script is published to this farm yet.'}
-            </DialogDescription>
+            <DialogDescription>Nothing is published to this farm yet.</DialogDescription>
           </DialogHeader>
-          {/* Shown even here so switching back to whichever kind DOES have
-              something published needs no reopen (plan 99 §4.11: "Choosing
-              Workflow with none published shows the empty state and a link
-              straight to the editor"). Hidden only when NOTHING at all is
-              published — there is nothing to filter between yet. */}
-          {!nothingPublished && (
-            <Tabs value={kindFilter} onValueChange={(v) => setKindFilter(v as Kind)}>
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="workflow">Workflow</TabsTrigger>
-                <TabsTrigger value="script">Script</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          )}
           <p className="text-[12.5px] leading-relaxed text-fg-muted">
-            {kindFilter === 'workflow' ? (
-              <>Build one in the workflow editor, then run it from here.</>
-            ) : (
-              <>
-                Publish one with <span className="readout">enkaku publish &lt;script.ts&gt;</span>, then run it from
-                here.
-              </>
-            )}
+            Publish one with <span className="readout">enkaku publish &lt;script.ts&gt;</span>, then run it from here.
           </p>
-          {kindFilter === 'workflow' && (
-            <Button asChild variant="outline" size="sm">
-              <Link href="/workflows/editor">Open the workflow editor</Link>
-            </Button>
-          )}
         </DialogContent>
       </Dialog>
     )
@@ -899,21 +778,6 @@ export function RunScriptDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Workflow | Script (plan 99 §4.11, step 99.10) — a segmented
-              filter over the ONE list this dialog already loaded, matching
-              F31's "the run dialog is a filter away from supporting
-              workflows if they are `scripts` rows" (§3.1). Only shown when
-              the dialog owns the choice (`scripts` supplied) — a single
-              known `script` (the Scripts pages) has nothing to filter. */}
-          {scripts && (
-            <Tabs value={kindFilter} onValueChange={(v) => setKindFilter(v as Kind)}>
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="workflow">Workflow</TabsTrigger>
-                <TabsTrigger value="script">Script</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          )}
-
           {scripts && (
             <div className="grid gap-2.5 sm:grid-cols-[1fr_auto]">
               <div className="space-y-1.5">
@@ -1000,24 +864,6 @@ export function RunScriptDialog({
             </div>
           )}
 
-          {/* The duration estimate (plan 99 §3.11, §4.11) — only for a
-              workflow, and honest about the three states: still resolving,
-              nothing declared, or a real "up to about" figure. Placed here
-              (right under the picker) so it applies to a SINGLE device too —
-              `ConsequenceNote` below only renders for the group/devices
-              target, and a single-device run deserves the same estimate. */}
-          {(chosen.kind ?? 'script') === 'workflow' && (
-            <div className="rounded-lg border bg-surface-2/40 px-3 py-2">
-              <p className="text-[11.5px] text-fg-muted">
-                {durationEstimate
-                  ? `${perDeviceEstimateText(durationEstimate)}.`
-                  : workflowDoc
-                    ? `${workflowDoc.nodes.length} node${workflowDoc.nodes.length === 1 ? '' : 's'} — estimating duration…`
-                    : 'Loading the pipeline…'}
-              </p>
-            </div>
-          )}
-
           {locked ? (
             <div className="rounded-lg border bg-surface-2 px-3 py-2">
               <p className="rack-label mb-0.5">running on</p>
@@ -1091,7 +937,7 @@ export function RunScriptDialog({
                   count={targetCount}
                   concurrency={concurrency}
                   order={order}
-                  workflowEstimate={(chosen.kind ?? 'script') === 'workflow' ? durationEstimate : null}
+                  workflowEstimate={null}
                   repeat={repeat}
                 />
               </div>
@@ -1161,9 +1007,7 @@ export function RunScriptDialog({
               />
             </>
           ) : (
-            <p className="text-[12px] text-fg-muted">
-              This {(chosen.kind ?? 'script') === 'workflow' ? 'workflow' : 'script'} takes no parameters.
-            </p>
+            <p className="text-[12px] text-fg-muted">This script takes no parameters.</p>
           )}
 
           {/* Plan 98 §3.9 item 2, §5 step 98.8 — the collapsed Runtime

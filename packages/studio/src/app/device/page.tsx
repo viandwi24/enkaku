@@ -44,6 +44,7 @@ import { EntityTabs } from '@/components/layout/EntityTabs'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { TagEditor } from '@/components/TagEditor'
 import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
+import { toScriptRow } from '@/lib/script-row'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { JobsList } from '@/components/JobsList'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
@@ -231,7 +232,7 @@ function DeviceDetail() {
     // reach the page through a bare `as` cast with nothing checking its
     // shape at all.
     void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
-      .then((scripts) => setScripts((scripts as ScriptRow[]).filter((x) => x.enabled)))
+      .then((items) => setScripts(items.map(toScriptRow)))
       .catch(() => setScripts([]))
     // Dev-slot scripts (plan 82 §3.5) are never rows in `/api/scripts` —
     // that is the whole point of a dev slot not surviving a restart — so

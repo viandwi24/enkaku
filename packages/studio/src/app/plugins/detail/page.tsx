@@ -4,8 +4,7 @@ import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, ExternalLink } from 'lucide-react'
-import { z } from 'zod'
-import { PluginResponseSchema, ScriptGroupsPageResponseSchema, type DevSlotView, type PluginRow } from '@enkaku/protocol'
+import { PluginResponseSchema, ScriptsListResponseSchema, type DevSlotView, type PluginRow } from '@enkaku/protocol'
 import {
   Badge,
   Button,
@@ -23,7 +22,7 @@ import {
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PluginActions } from '@/components/plugins/PluginActions'
 import { PluginStatusBadge } from '@/components/StatusBadge'
-import { PluginsListSchema, groupPlugins, type PluginListRow } from '../plugin-list'
+import { paramCount, PluginsListSchema, groupPlugins, type PluginListRow } from '../plugin-list'
 
 /**
  * The plugin detail page (plan 82 §4.6's own "Detail" bullet, which shipped
@@ -82,14 +81,6 @@ import { PluginsListSchema, groupPlugins, type PluginListRow } from '../plugin-l
  *    version's members are not registered) and not a broken link.
  */
 
-/** `paramsSchema` is `unknown` on the wire — read, never cast (CLAUDE.md). */
-const ParamsShapeSchema = z.object({ properties: z.record(z.string(), z.unknown()).optional() })
-
-function paramCount(schema: unknown): number | null {
-  const parsed = ParamsShapeSchema.safeParse(schema)
-  if (!parsed.success) return null
-  return Object.keys(parsed.data.properties ?? {}).length
-}
 
 function isoTime(v: string | null | undefined): string {
   if (!v) return '—'
@@ -181,7 +172,7 @@ function PluginDetail() {
   // here costs the links and nothing else, so it degrades silently rather than
   // taking the page down with it.
   useEffect(() => {
-    void api('/api/scripts?group=name', ScriptGroupsPageResponseSchema)
+    void api('/api/scripts', ScriptsListResponseSchema)
       .then((page) => {
         const map: Record<string, string> = {}
         for (const s of page.items) map[s.name] = s.id
