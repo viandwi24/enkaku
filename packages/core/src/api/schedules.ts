@@ -7,8 +7,8 @@ import {
   OnApprovalRequiredSchema,
   OnOverlapSchema,
   reconcileParams,
+  ScheduleJobsPageResponseSchema,
   ScheduleResponseSchema,
-  ScheduleRunsPageResponseSchema,
   ScheduleThreadModeSchema,
   ScheduleWorkTargetSchema,
   ScriptRefSchema,
@@ -21,7 +21,6 @@ import {
   type OnOverlap,
   type ScheduleFiredEvent,
   type ScheduleInfo,
-  type ScheduleRunInfo,
   type ScheduleThreadMode,
   type ScheduleWorkTarget,
   type ScriptRef,
@@ -32,10 +31,11 @@ import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import { rowToBatchInfo, type BatchRoutesDeps } from './batches'
 import type { Db } from '../db'
-import { batches, groups, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
+import { batches, groups, schedules, scheduleAgentTargets, type ScheduleAgentTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
+import type { RunStore } from '../jobs/runs/store'
 import { validateScriptForRun } from '../jobs/validate-script'
-import type { JobStore } from '../queue/job-store'
+import { rowToJobInfo, type JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { nextFires } from '../schedules/cron'
 import { fireOnce, type ScheduleAgentDispatch, type ScheduledAgentCeilings, type ScheduleRunner, type ScheduleRunnerDeps } from '../schedules/runner'
@@ -200,38 +200,10 @@ export function querySchedulesRows(
   return { rows, nextCursor, total }
 }
 
-/** Keyset over one schedule's `schedule_runs` (`dueAt DESC, id DESC`, plan 30 §4.2). */
-export function queryScheduleRunsRows(
-  db: Db,
-  scheduleId: string,
-  opts: { cursor: string | null; limit: number },
-): { rows: Array<typeof scheduleRuns.$inferSelect>; nextCursor: string | null; total: number } {
-  const cursor = decodeCursor(opts.cursor)
-  const keyset = keysetWhere(
-    cursor ? { value: new Date(cursor.sortValue * 1000), id: cursor.id } : null,
-    scheduleRuns.dueAt,
-    scheduleRuns.id,
-  )
-  const scopedWhere = keyset ? and(eq(scheduleRuns.scheduleId, scheduleId), keyset) : eq(scheduleRuns.scheduleId, scheduleId)
-  const page = db
-    .select()
-    .from(scheduleRuns)
-    .where(scopedWhere)
-    .orderBy(desc(scheduleRuns.dueAt), desc(scheduleRuns.id))
-    .limit(opts.limit + 1)
-    .all()
-  const hasMore = page.length > opts.limit
-  const rows = hasMore ? page.slice(0, opts.limit) : page
-  const last = rows[rows.length - 1]
-  const nextCursor =
-    hasMore && last ? encodeCursor(Math.floor((last.dueAt ?? new Date(0)).getTime() / 1000), last.id) : null
-  const total = db.select().from(scheduleRuns).where(eq(scheduleRuns.scheduleId, scheduleId)).all().length
-  return { rows, nextCursor, total }
-}
-
 export interface ScheduleRoutesDeps {
   db: Db
   jobStore: JobStore
+  runs: RunStore
   scheduler: Scheduler
   audit: AuditLogger
   log: Logger
@@ -311,27 +283,15 @@ function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarg
     threadId: agentTarget?.threadId ?? null,
     onApprovalRequired: (agentTarget?.onApprovalRequired as OnApprovalRequired | undefined) ?? 'deny',
     lastFiredAt: toSec(row.lastFiredAt),
-    lastBatchId: row.lastBatchId,
+    batchId: row.batchId,
+    lastFireOutcome: row.lastFireOutcome,
+    lastFireDetail: row.lastFireDetail,
     lastAgentRunId: agentTarget?.lastAgentRunId ?? null,
     createdBy: row.createdBy,
     createdAt: toSec(row.createdAt) ?? 0,
     nextFireAt: row.enabled ? (deps.runner.nextFires().get(row.id) ?? null) : null,
     paramsCompatible,
     paramsFindingCount,
-  }
-}
-
-function rowToScheduleRunInfo(row: typeof scheduleRuns.$inferSelect): ScheduleRunInfo {
-  return {
-    id: row.id,
-    scheduleId: row.scheduleId,
-    dueAt: toSec(row.dueAt) ?? 0,
-    firedAt: toSec(row.firedAt),
-    outcome: row.outcome as ScheduleRunInfo['outcome'],
-    batchId: row.batchId,
-    detail: row.detail,
-    missedCount: row.missedCount,
-    jitterMs: row.jitterMs,
   }
 }
 
@@ -356,6 +316,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
   const runnerDeps: ScheduleRunnerDeps = {
     db: deps.db,
     jobStore: deps.jobStore,
+    runs: deps.runs,
     scheduler: deps.scheduler,
     audit: deps.audit,
     log: deps.log,
@@ -378,6 +339,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
   const batchDeps: BatchRoutesDeps = {
     db: deps.db,
     jobStore: deps.jobStore,
+    runs: deps.runs,
     scheduler: deps.scheduler,
     audit: deps.audit,
     broadcastBatchStatus: deps.broadcastBatchStatus,
@@ -492,7 +454,9 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       intervalMaxMs: body.data.intervalMaxMs,
       deviceIntervalMs: body.data.deviceIntervalMs,
       lastFiredAt: null,
-      lastBatchId: null,
+      batchId: null,
+      lastFireOutcome: null,
+      lastFireDetail: null,
       createdBy: c.get('user')?.id ?? null,
       createdAt: new Date(),
     }
@@ -633,12 +597,19 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     return c.body(null, 204)
   })
 
-  app.get('/:id/runs', (c) => {
+  // The schedule's history is its member jobs' runs now (MVP 14 §4; the
+  // `schedule_runs` ledger is deleted, plan 211 §3.2 decision 5) — `?limit`
+  // is honoured as a page size over the member jobs, newest first.
+  app.get('/:id/jobs', (c) => {
     const row = mustGet(c.req.param('id'))
-    const { cursor, limit } = parsePageQuery(c)
-    const { rows, nextCursor, total } = queryScheduleRunsRows(db, row.id, { cursor, limit })
-    const items = rows.map(rowToScheduleRunInfo)
-    return typedJson(c, ScheduleRunsPageResponseSchema, { items, nextCursor, total })
+    const { limit } = parsePageQuery(c)
+    const { rows, nextCursor, total } = deps.jobStore.list({ scheduleId: row.id, limit })
+    const scriptIds = rows.map((r) => r.scriptId).filter((id): id is string => id !== null)
+    const names = deps.scriptNames(scriptIds)
+    const latestRuns = deps.runs.latestRuns(rows.map((r) => r.id))
+    const items = rows.map((r) => rowToJobInfo(r, latestRuns.get(r.id) ?? null, r.scriptId ? (names.get(r.scriptId) ?? null) : null))
+    const encodedCursor = nextCursor ? encodeCursor(nextCursor.sortValue, nextCursor.id) : null
+    return typedJson(c, ScheduleJobsPageResponseSchema, { items, nextCursor: encodedCursor, total })
   })
 
   // Ignores the cron — fires right now — but still honours onOverlap unless
@@ -654,27 +625,21 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     await fireOnce(runnerDeps, effective, new Date())
     deps.runner.reload()
 
-    const latest = db
-      .select()
-      .from(scheduleRuns)
-      .where(eq(scheduleRuns.scheduleId, row.id))
-      .orderBy(desc(scheduleRuns.dueAt))
-      .limit(1)
-      .get()
-    if (!latest || latest.outcome !== 'dispatched') {
-      throw new EnkakuError('E_NOT_DISPATCHED', latest?.detail ?? `run-now did not dispatch (${latest?.outcome ?? 'unknown'})`)
+    const refreshed = mustGet(row.id)
+    if (refreshed.lastFireOutcome !== 'dispatched') {
+      throw new EnkakuError('E_NOT_DISPATCHED', refreshed.lastFireDetail ?? `run-now did not dispatch (${refreshed.lastFireOutcome ?? 'unknown'})`)
     }
 
     if (agentTargetBefore) {
       // Plan 68 §4.2 — an agent-target firing produces a RUN, not a batch.
       const updatedTarget = getAgentTargetRow(db, row.id)
-      if (!updatedTarget?.lastAgentRunId) throw new EnkakuError('E_NOT_DISPATCHED', latest.detail ?? 'run-now did not dispatch')
+      if (!updatedTarget?.lastAgentRunId) throw new EnkakuError('E_NOT_DISPATCHED', refreshed.lastFireDetail ?? 'run-now did not dispatch')
       deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'schedule.run-now', target: row.id, meta: { runId: updatedTarget.lastAgentRunId } })
       return c.json({ run: { runId: updatedTarget.lastAgentRunId, threadId: updatedTarget.threadId } })
     }
 
-    if (!latest.batchId) throw new EnkakuError('E_NOT_DISPATCHED', latest.detail ?? 'run-now did not dispatch')
-    const batchRow = db.select().from(batches).where(eq(batches.id, latest.batchId)).get()
+    if (!refreshed.batchId) throw new EnkakuError('E_NOT_DISPATCHED', refreshed.lastFireDetail ?? 'run-now did not dispatch')
+    const batchRow = db.select().from(batches).where(eq(batches.id, refreshed.batchId)).get()
     if (!batchRow) throw new EnkakuError('E_DB', 'the dispatched batch did not persist')
 
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'schedule.run-now', target: row.id, meta: { batchId: batchRow.id } })
