@@ -40,8 +40,11 @@ import { installOnDevice, pushToDevice, pullFromDevice, type TransferDeps } from
 import { runShellCommand } from './impl/shell'
 import { applySettings } from './impl/settings'
 import { screenshotDevice } from './impl/screenshot'
-import { runScriptOnTargets } from './impl/run-script'
+import { runScriptOnExistingJob, runScriptOnTargets } from './impl/run-script'
 import { validateNetworkRoute, applyNetworkAction, type NetworkActionsDoor } from './impl/network'
+import { createWorkflowBatch, type CreateWorkflowBatchInput } from '../groups/dispatch'
+import type { JobService } from '../services/job-service'
+import type { WorkflowStore } from '../workflows/store'
 
 export interface ActionActor {
   id: string
@@ -73,6 +76,9 @@ export interface ActionsDeps {
    * `api/batches.ts`'s own routes call for their own per-request actor.
    */
   batchesFor: (actor: ActionActor) => BatchDispatchDeps
+  jobService: JobService
+  /** The `workflows` table reader (plan 210), for `run-workflow`'s document snapshot (plan 211 §4.8). */
+  workflows: WorkflowStore
   resolveScriptRef: (ref: string) => { id: string }
   transfer: TransferDeps
   shellPortFor: (deviceId: string) => ShellPort
@@ -170,14 +176,21 @@ async function dispatchBounded<T>(items: T[], concurrency: number, fn: (item: T)
 
 export async function runAction(deps: ActionsDeps, request: ActionRequest, actor: ActionActor): Promise<ActionResponse> {
   checkGate(deps, actor, request.verb)
-  if (request.verb === 'run-workflow') {
-    throw new EnkakuError('E_NOT_SUPPORTED', 'workflow jobs are plan 211; run-workflow is not available yet')
-  }
   // The whole-request route validation `set-network op: set` needs (plan
   // 207 §4.3 step 4): a malformed route or a credential is a bad request,
   // not one failure per device.
   if (request.verb === 'set-network' && request.op === 'set') {
     validateNetworkRoute(request.route)
+  }
+
+  // `run-script`/`run-workflow` with `jobId` (plan 211 §4.8) — a re-run of
+  // an EXISTING job: the target is ignored (a job names its own device),
+  // and this never goes through the batch-fan-out machinery below at all.
+  if ((request.verb === 'run-script' || request.verb === 'run-workflow') && request.jobId) {
+    const targetDeviceIds = 'deviceIds' in request.target ? request.target.deviceIds : []
+    const { result } = runScriptOnExistingJob(deps.jobService, request.jobId, { deviceIds: targetDeviceIds }, { params: request.params })
+    const op = deps.operations.create({ verb: request.verb, target: request.target, createdBy: actor.id, results: [result] })
+    return deps.operations.get(op.operationId)!
   }
 
   const resolved = resolveActionTarget(deps.db, request.target)
@@ -236,6 +249,26 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
         ...(r.jobId ? { jobId: r.jobId } : {}),
         ...(r.batchId ? { batchId: r.batchId } : {}),
       })
+    }
+    return deps.operations.get(op.operationId)!
+  }
+
+  if (request.verb === 'run-workflow' && candidates.length > 0) {
+    const workflowDoc = deps.workflows.snapshotForJob(request.workflowName)
+    const batchDeps = deps.batchesFor(actor)
+    const { batch, jobs: memberJobs } = createWorkflowBatch(batchDeps, {
+      workflowName: request.workflowName,
+      workflowDoc,
+      params: request.params,
+      target: { deviceIds: candidates },
+      concurrency: 0,
+      order: 'as-listed',
+      createdBy: actor.id,
+    } satisfies CreateWorkflowBatchInput)
+    const jobByDevice = new Map(memberJobs.map((j) => [j.deviceId, j]))
+    for (const deviceId of candidates) {
+      const job = jobByDevice.get(deviceId)
+      settle(deviceId, job ? { status: 'done', jobId: job.id, batchId: batch.id, runId: job.latestRunId ?? undefined } : { status: 'skipped', message: 'not dispatched', batchId: batch.id })
     }
     return deps.operations.get(op.operationId)!
   }

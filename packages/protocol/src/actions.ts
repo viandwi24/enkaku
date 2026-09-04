@@ -109,8 +109,16 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
     priority: z.number().int().optional(),
     runtimeOverride: z.unknown().optional(),
     pacing: PacingSchema.optional(),
-  }).refine((b) => Boolean(b.scriptId) !== Boolean(b.scriptRef), 'exactly one of scriptId or scriptRef'),
-  CommonSchema.extend({ verb: z.literal('run-workflow'), workflowName: z.string().min(1), params: z.unknown().optional() }),
+    /** Plan 211 §4.8 — re-run an existing job: adds a run rather than creating a batch. */
+    jobId: z.string().optional(),
+  }).refine((b) => Boolean(b.jobId) || Boolean(b.scriptId) !== Boolean(b.scriptRef), 'exactly one of scriptId or scriptRef'),
+  CommonSchema.extend({
+    verb: z.literal('run-workflow'),
+    workflowName: z.string().min(1),
+    params: z.unknown().optional(),
+    /** Plan 211 §4.8 — re-run an existing workflow job: adds a run rather than creating a batch. */
+    jobId: z.string().optional(),
+  }),
   CommonSchema.extend({
     verb: z.literal('install'),
     artifactId: z.string().min(1),
@@ -175,6 +183,8 @@ export const ActionResultSchema = z.object({
   activityId: z.string().optional(),
   jobId: z.string().optional(),
   batchId: z.string().optional(),
+  /** Plan 211 §4.8 — the run this action added or created, for `run-script`/`run-workflow`. */
+  runId: z.string().optional(),
   /** Verb-specific outcome for `done`: `ReconnectOutcome`, `CutoverState`, `DeviceLabelState`, `DeviceReadiness`, `{ artifactId, bytes }`, `{ exitCode, stdout, stderr, truncated, durationMs }`, ... Parsed by the caller with the verb's own schema. */
   detail: z.unknown().optional(),
 })

@@ -198,6 +198,101 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
   return { batch, jobs: finalJobRows }
 }
 
+export interface CreateWorkflowBatchInput {
+  workflowName: string
+  workflowDoc: unknown
+  params: unknown
+  target: { groupId: string } | { deviceIds: string[] }
+  concurrency: number
+  order: 'as-listed' | 'random'
+  priority?: number
+  createdBy?: string | null
+}
+
+/**
+ * `run-workflow` (plan 211 §4.8) — one `kind: 'workflow'` job per accepted
+ * device, inside the same batch-dispatch transaction `createBatch` uses for
+ * a script batch. No `scriptId`/`scriptNameOf`/runtime resolution: a
+ * workflow job carries its own snapshot document, not a pinned script row.
+ */
+export function createWorkflowBatch(
+  deps: Pick<BatchDispatchDeps, 'db' | 'runs' | 'scheduler' | 'audit' | 'onJobStatus' | 'assertDeviceAllowed'>,
+  input: CreateWorkflowBatchInput,
+): { batch: BatchRow; jobs: JobRow[] } {
+  const { db } = deps
+
+  let groupId: string | null = null
+  let resolved: ResolvedGroup
+  if ('groupId' in input.target) {
+    const group = db.select().from(groups).where(eq(groups.id, input.target.groupId)).get()
+    if (!group) throw new EnkakuError('group_not_found', `no such group: ${input.target.groupId}`)
+    groupId = group.id
+    resolved = resolveGroup(db, group)
+  } else {
+    resolved = resolveTarget(db, { tags: [], deviceIds: input.target.deviceIds })
+  }
+
+  if (resolved.usable.length === 0) {
+    throw new EnkakuError(
+      'E_NO_TARGETS',
+      resolved.skipped.length > 0
+        ? `no usable devices — every match was unavailable: ${resolved.skipped.map((s) => `${s.deviceId} (${s.reason})`).join(', ')}`
+        : 'no devices matched this target',
+    )
+  }
+
+  if (deps.assertDeviceAllowed) {
+    for (const t of resolved.usable) deps.assertDeviceAllowed(t.deviceId)
+  }
+
+  const batchId = crypto.randomUUID()
+  const now = new Date()
+  const priority = input.priority ?? 0
+
+  db.transaction(() => {
+    db.insert(batches)
+      .values({
+        id: batchId,
+        groupId,
+        scriptId: `workflow:${input.workflowName}`,
+        params: input.params ?? null,
+        concurrency: input.concurrency,
+        order: input.order,
+        status: 'queued',
+        createdBy: input.createdBy ?? null,
+        createdAt: now,
+        finishedAt: null,
+        skipped: resolved.skipped.length > 0 ? resolved.skipped : null,
+      })
+      .run()
+    resolved.usable.forEach((t, i) => {
+      const job = deps.runs.createJob({
+        kind: 'workflow',
+        workflowName: input.workflowName,
+        workflowDoc: input.workflowDoc,
+        deviceId: t.deviceId,
+        params: input.params,
+        scriptName: input.workflowName,
+        scriptVersion: null,
+        batchId,
+        batchSeq: i,
+        createdBy: input.createdBy ?? null,
+      })
+      deps.runs.addRun(job.id, { trigger: 'batch', priority })
+    })
+  })
+
+  const batch = db.select().from(batches).where(eq(batches.id, batchId)).get()
+  if (!batch) throw new EnkakuError('E_DB', 'batch insert did not persist')
+
+  const finalJobRows = db.select().from(jobs).where(eq(jobs.batchId, batchId)).orderBy(asc(jobs.batchSeq)).all()
+  const latestRuns = deps.runs.latestRuns(finalJobRows.map((r) => r.id))
+  for (const row of finalJobRows) deps.onJobStatus(rowToJobInfo(row, latestRuns.get(row.id) ?? null))
+  deps.scheduler.kick()
+
+  return { batch, jobs: finalJobRows }
+}
+
 /**
  * Adds a run to every named member job of a batch (a re-run or re-run-failed,
  * plan 211 §4.8/§4.9). Creates a member job for a device newly in the target
