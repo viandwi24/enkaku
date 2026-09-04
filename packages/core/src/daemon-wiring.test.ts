@@ -288,7 +288,7 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
   describe('workflow executor (plan 210 §4.8): the child-spawning executor is unregistered, but its node-aware plumbing stays for plan 211', () => {
     // Plan 210 §4.8 — `createWorkflowExecutor(...)`'s construction and
     // registration are deleted from daemon.ts (the fallback was unreachable
-    // in production: `daemon.ts` never passed `scriptKind`). `jobNodeTracker`
+    // in production: nothing wired it as any job's executor). `jobNodeTracker`
     // and its node-aware artifact plumbing stay, for plan 211's orchestrator.
 
     test('the artifacts factory feeding createJobRunner(...) is node-aware — without it, no artifact a workflow node saves is ever attributed to that node', () => {

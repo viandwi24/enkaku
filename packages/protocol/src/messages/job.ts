@@ -254,7 +254,7 @@ export const JobStatusEventMessage = z.object({
     phase: z.enum(['reset', 'prepare', 'run', 'finish']).nullable().optional(),
     /**
      * Plan 99 §4.9 — which workflow node is CURRENTLY executing, for a
-     * `kind: 'workflow'` job only. `total` is the document's node COUNT, not
+     * workflow job only. `total` is the document's node COUNT, not
      * `maxSteps` (a loop can run more executions than there are nodes — this
      * is "how many rows in the list", the number a `node 2/4` badge needs).
      * Absent for every non-workflow job — every `job.status` payload before

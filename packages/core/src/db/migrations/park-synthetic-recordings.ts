@@ -5,7 +5,7 @@ import { migrationMarkers, plugins, scripts } from '../schema'
 
 /**
  * Plan 210 (MVP 03 §2.2 rule 7) — the synthetic `recordings` plugin
- * (`plugins/owner.ts`'s old `resolveRecordingsOwner`: name `recordings`,
+ * (the now-deleted `plugins/owner.ts`'s farm-owned-plugin resolver: name `recordings`,
  * version `0.0.0`, `verifiedAt: null`, `manifest: null`) is deleted, and its
  * member rows become ordinary unowned rows: not listed, not resolvable,
  * refused with `script_not_found`, and named once per boot by the script

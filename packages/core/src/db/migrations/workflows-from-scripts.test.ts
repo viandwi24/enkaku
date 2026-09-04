@@ -15,11 +15,11 @@ import { migrateWorkflowsFromScripts, WORKFLOWS_TABLE_TAG } from './workflows-fr
  */
 function seedPreMigrationScript(
   db: ReturnType<typeof openDb>['db'],
-  opts: { id: string; name: string; version: string; kind: 'script' | 'workflow'; bundle: string; pluginId?: string; exportId?: string; createdBy?: string },
+  opts: { id: string; name: string; version: string; flavor: 'script' | 'workflow'; bundle: string; pluginId?: string; exportId?: string; createdBy?: string },
 ) {
   db.run(
     sql`INSERT INTO scripts (id, name, version, kind, bundle, enabled, created_at, plugin_id, export_id, created_by)
-        VALUES (${opts.id}, ${opts.name}, ${opts.version}, ${opts.kind}, ${opts.bundle}, 1, 1700000000, ${opts.pluginId ?? null}, ${opts.exportId ?? null}, ${opts.createdBy ?? null})`,
+        VALUES (${opts.id}, ${opts.name}, ${opts.version}, ${opts.flavor}, ${opts.bundle}, 1, 1700000000, ${opts.pluginId ?? null}, ${opts.exportId ?? null}, ${opts.createdBy ?? null})`,
   )
 }
 
@@ -49,10 +49,10 @@ describe('migrateWorkflowsFromScripts (plan 210 §4.6, §5 step 210.9)', () => {
     runMigrationsUpTo(opened.db, WORKFLOWS_TABLE_TAG)
     const db = opened.db
 
-    seedPreMigrationScript(db, { id: 'wf-checkout-100', name: 'checkout', version: '1.0.0', kind: 'workflow', bundle: workflowDocJson('checkout', '1.0.0') })
-    seedPreMigrationScript(db, { id: 'wf-checkout-110', name: 'checkout', version: '1.1.0', kind: 'workflow', bundle: workflowDocJson('checkout', '1.1.0') })
-    seedPreMigrationScript(db, { id: 's-tiktok-login', name: 'tiktok/login', version: '1.0.0', kind: 'script', bundle: 'export {}', pluginId: 'p1', exportId: 'login' })
-    seedPreMigrationScript(db, { id: 's-old-unowned', name: 'old', version: '1.0.0', kind: 'script', bundle: 'export {}' })
+    seedPreMigrationScript(db, { id: 'wf-checkout-100', name: 'checkout', version: '1.0.0', flavor: 'workflow', bundle: workflowDocJson('checkout', '1.0.0') })
+    seedPreMigrationScript(db, { id: 'wf-checkout-110', name: 'checkout', version: '1.1.0', flavor: 'workflow', bundle: workflowDocJson('checkout', '1.1.0') })
+    seedPreMigrationScript(db, { id: 's-tiktok-login', name: 'tiktok/login', version: '1.0.0', flavor: 'script', bundle: 'export {}', pluginId: 'p1', exportId: 'login' })
+    seedPreMigrationScript(db, { id: 's-old-unowned', name: 'old', version: '1.0.0', flavor: 'script', bundle: 'export {}' })
 
     // A job pinned to the OLDER (dropped) workflow row, and a schedule naming
     // `checkout@latest` — both named by the migration's own report/log.

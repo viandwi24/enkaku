@@ -87,9 +87,9 @@ export interface JobExecutor {
  * scriptId lain (row tabel `scripts`) jatuh ke fallback = script executor
  * built on child processes (M4).
  *
- * Plan 210 §4.8 — one fallback, not one per kind: `scripts.kind` is gone, and
- * `daemon.ts` never passed a `scriptKind` to `ExecutorHost` (the workflow
- * executor registered at its old fallback slot was unreachable in
+ * Plan 210 §4.8 — one fallback, not one per kind: the old kind-discriminator column is gone, and
+ * `daemon.ts` never passed a per-kind selector to `ExecutorHost` (the
+ * workflow executor registered at its old fallback slot was unreachable in
  * production), so the dispatch this class used to carry was dead weight.
  * Plan 211 rewrites the orchestrator against the `workflows` table; nothing
  * here decides that.

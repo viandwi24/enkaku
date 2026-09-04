@@ -148,9 +148,30 @@ A script is addressed as `name@version`, or `name@latest` (`ScriptRefSchema`/`pa
 
 - `jobs.scriptId` is unchanged — always a concrete `scripts.id`, resolved from a reference (if one was given) before the row is written. `POST /api/jobs` accepts either `scriptId` or `scriptRef`, exactly one.
 - `schedules.scriptRef` (renamed from `scriptId`) stores the **reference itself** — `checkout@latest` keeps picking up new versions on every future firing; `checkout@1.0.1` stays pinned forever. Resolved exactly **once per firing**, in `schedules/runner.ts`'s `fireOnce`, before the batch is built — so one firing across many devices never straddles two versions, and a reference that fails to resolve enqueues nothing and is audited as `schedule.failed`, naming the code.
-- `GET /api/scripts?group=name` — one row per script name (`{ id, name, latestVersion, versionCount, lastPublishedAt, enabled }`, `latestVersion` being exactly what `@latest` would resolve to); `GET /api/scripts/:name/versions` lists every version, newest semver first.
+- **Plan 210** replaced the grouped `GET /api/scripts?group=name` list and `GET /api/scripts/:name/versions` with one shape: `GET /api/scripts` answers one row per member of an ACTIVE plugin — `{ id, name, exportId, plugin: { name, version }, paramsSchema, hasResult, lastRun }` — no `version`, `kind`, or `enabled` field on the wire. A script has no version of its own; it carries its owning plugin's. Version history, activate, and rollback live only on the Plugins page now.
 - The `schedules.script_id → script_ref` migration (`db/migrations/backfill-schedule-refs.ts`) converts every pre-existing schedule to the exact `"<name>@<version>"` it was already pinned to — **never** to `@latest`, since that would silently change what a trusted schedule runs on its next firing. Guarded by a marker row (`migration_markers`), same pattern as the group migration above.
 - The semver comparison (`compareSemver`, `@enkaku/protocol`) is hand-written, not a dependency: numeric component comparison (so `1.0.10 > 1.0.9`, which a string sort gets backwards), a release outranking its own prerelease, and prerelease identifier ordering per semver.org §11 — with build metadata (`+build`) ignored entirely, as the spec requires.
+
+**Plan 210 (MVP 03 §2)** made "a script exists only inside a plugin" true by
+construction: the only `INSERT INTO scripts` left in the tree is
+`plugins/runtime.ts`'s `writeScriptRows`. `POST /api/scripts` (direct
+publish), the non-plugin branch of `enkaku publish`, and the `script.publish`
+capability are gone; publishing goes through `POST /api/plugins` or the new
+`plugin.stage` capability, which stages then verifies a plugin package from a
+bundle or a workspace path. `DELETE /api/scripts/:id` is now the one cleanup
+door for an unowned row (a script published before this rule, or a row a
+boot step parked) — an owned row is refused with `409 E_SCRIPT_OWNED` naming
+the plugin version to remove instead. Two marker-guarded boot steps run once,
+in order, before the script registry's own unowned-row warning:
+`park-synthetic-recordings.ts` deletes the old farm-owned `recordings`
+plugin and unowns its member rows (recordings are parked for the MVP, MVP
+06 §2), then `workflows-from-scripts.ts` copies every workflow row still
+sitting in `scripts` (see the Workflows section below) into the `workflows`
+table, newest version winning and older versions logged once by name.
+`POST /api/plugins/:id/activate` now answers `{ plugin, scriptsMoved,
+queuedKeepingPrevious }` — the manifest's member count, and how many queued
+or running jobs are pinned to the version this activation superseded (they
+keep running; nothing here cancels or rewrites them).
 
 ## VFS, skills, and the plugin system (plan 77)
 
@@ -510,32 +531,36 @@ documents the executor, `job_nodes`, resume, and the two new farm settings —
 what actually shipped, which in a few places is not what the plan first
 proposed.
 
-A workflow publishes as an **ordinary `scripts` row** (`kind: 'workflow'`,
-default `'script'` for every other row) whose `bundle` holds a validated
-`WorkflowDoc` instead of an ESM bundle. It runs through
-`jobs/executors/workflow.ts`'s `createWorkflowExecutor`, registered in
-`daemon.ts` as the `kind: 'workflow'` fallback beside the ordinary script
-executor — **one job, one device claim, one device, for the whole pipeline**, not
-one job per node. `sessions.acquire(deviceId)` is called exactly **once**,
-before the first node, and released in a `finally` after the last one; every
-node still runs as its own child process through the SAME `JobRunner.execute()`
-a standalone job uses, so each node keeps its own crash containment, timeout,
-retries, and `finish()` — only the outer session hold, the device claim, and the
-job id are shared. A gate spawns no child and makes no device call; it is
-evaluated in-process, in microseconds, from values the pipeline already has.
+**Plan 210 (MVP 03 §2) moved a workflow out of the `scripts` table
+entirely.** A workflow is now its own row in the `workflows` table
+(`name` unique, `doc`, `createdBy`, `createdAt`, `updatedAt`) — no version of
+its own, edited in place through `GET/POST/PUT/DELETE /api/workflows`
+(`workflows/store.ts`). A job created from a workflow will snapshot the
+validated document onto `jobs.workflow_doc` at enqueue (the column exists;
+plan 211's orchestrator is the first writer), so editing a workflow never
+changes a queued or running job. The paragraphs below describe the executor
+and `job_nodes` as designed by plan 99; plan 211 rewrites the executor
+against the `workflows` table and retargets these mechanisms at runs — until
+then `jobs/executors/workflow.ts` sits in the tree unregistered
+(`ExecutorRegistry` now has exactly one fallback, plan 210 §4.8 — the
+`daemon.ts` construction and registration this section used to describe were
+deleted because they were unreachable in production: `daemon.ts` never
+passed a per-kind selector to `ExecutorHost`).
 
-**`scripts.kind` is read in exactly four places** — `jobs/executor.ts`'s
-`ExecutorRegistry.get()` (executor selection), the workflow/script publish
-routes, Studio's list/run-dialog filter, and
-`packages/protocol/src/workflow-check.ts`'s `E_WORKFLOW_NESTED` check (a
-nested workflow is refused at publish, and detecting it needs the same
-`kind` fact `checkWorkflow` already carries in its `resolved` map — hoisting
-that comparison into a route would either duplicate the check or defeat the
-whole point of Validate and the publish gate running the identical
-function). This list is a **falsifiable claim, not a target**: a repo-wide
-search for the literal comparison `kind === 'workflow'` outside those four
-files is expected to return nothing, and if it ever does, the containment
-this design depends on has drifted.
+Once rewired, the design is **one job, one device claim, one device, for
+the whole pipeline**, not one job per node. `sessions.acquire(deviceId)` is
+called exactly **once**, before the first node, and released in a `finally`
+after the last one; every node still runs as its own child process through
+the SAME `JobRunner.execute()` a standalone job uses, so each node keeps its
+own crash containment, timeout, retries, and `finish()` — only the outer
+session hold, the device claim, and the job id are shared. A gate spawns no
+child and makes no device call; it is evaluated in-process, in
+microseconds, from values the pipeline already has.
+
+A workflow node's script reference always resolves to a plugin member now
+(plan 210): nesting a workflow inside another workflow cannot be expressed,
+so the `E_WORKFLOW_NESTED` check and its `ResolvedNodeScript.kind` field are
+gone from `packages/protocol/src/workflow-check.ts`.
 
 ### `job_nodes` — one row per node *execution*
 

@@ -4102,8 +4102,8 @@ let blobGc: BlobGc | null = null
         })
 
         // Plan 210 §4.8 — the workflow executor's construction and
-        // registration are deleted: `daemon.ts` never passed `scriptKind` to
-        // `createExecutorHost`, so this fallback was unreachable in
+        // registration are deleted: `daemon.ts` never passed a per-kind
+        // selector to `createExecutorHost`, so this fallback was unreachable in
         // production (MVP 13 B.1 "Built but not wired"). `jobs/executors/
         // workflow.ts` stays in the tree, unregistered, for plan 211 to
         // rewrite against the `workflows` table; `jobNodeTracker` (built

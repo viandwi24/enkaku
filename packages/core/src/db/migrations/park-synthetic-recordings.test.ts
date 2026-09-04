@@ -14,7 +14,7 @@ function collectLogs(): { log: Logger; infos: string[]; warns: string[] } {
   return { log, infos, warns }
 }
 
-/** The exact shape `plugins/owner.ts`'s old `resolveRecordingsOwner` wrote. */
+/** The exact shape the now-deleted `plugins/owner.ts`'s farm-owned-plugin resolver wrote. */
 function seedSyntheticOwner(db: ReturnType<typeof openDb>['db']) {
   db.insert(plugins)
     .values({
@@ -45,7 +45,7 @@ function seedMember(db: ReturnType<typeof openDb>['db'], opts: { id: string; nam
 }
 
 describe('parkSyntheticRecordingsOwner (plan 210 §4.6, §5 step 210.9)', () => {
-  test('deletes the synthetic owner, unowns its members, leaves an unrelated plugin untouched, and warns naming both recordings', () => {
+  test('deletes the farm-owned recordings plugin, unowns its members, leaves an unrelated plugin untouched, and warns naming both recordings', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db

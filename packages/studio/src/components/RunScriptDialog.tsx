@@ -198,9 +198,10 @@ function perDeviceEstimateText(est: WorkflowDurationEstimate): string {
  * "5 devices, one at a time, in random order — about 5× one run." (plan 20
  * §4.8) — or, for a workflow (plan 99 §4.11), the duration estimate takes
  * over the multiplier: *"4 nodes, up to about 42 min per device — 5 devices,
- * one at a time — up to about 3 h 30 m."* `workflowEstimate` is only ever
- * passed for a `kind: 'workflow'` `chosen` (§4.11's containment: this is the
- * same sanctioned filter file, not a second reader).
+ * one at a time — up to about 3 h 30 m."* `workflowEstimate` is always
+ * `null` since plan 210 (a script is never a workflow) — kept as a prop so
+ * the SAME sentence-building function still serves both callers; plan 217
+ * replaces the run dialog with one that has no workflow branch to carry.
  */
 /**
  * Plan 94 §4.10 — "extends the existing consequence sentence rather than
@@ -639,16 +640,6 @@ export function RunScriptDialog({
     [chosen?.paramsSchema],
   )
 
-  // The workflow duration estimate (plan 99 §3.11, §4.11) — fetched only for
-  // a `kind: 'workflow'` `chosen`, since a plain script has no pipeline to
-  // sum. `GET /api/scripts/:id` is the SAME route every other detail read in
-  // this codebase uses; its `workflow` field is the parsed `WorkflowDoc`
-  // (`packages/protocol/src/api/scripts.ts`'s own doc comment: "present only
-  // on GET /:id for a kind: 'workflow' row"). `resolveScriptId` reuses the
-  // scripts list this dialog ALREADY loaded (`scripts` prop, unfiltered by
-  // kind — a node's own script is always `kind: 'script'`, never a nested
-  // workflow, which `E_WORKFLOW_NESTED` already refuses at publish) rather
-  // than a second network round trip per node ref.
   if (!chosen) {
     // Not "no script yet" — nothing published at all.
     if (!scripts) return null

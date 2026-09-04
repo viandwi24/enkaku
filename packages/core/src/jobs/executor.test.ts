@@ -11,7 +11,7 @@ function fakeExecutor(): JobExecutor {
 
 /**
  * Plan 210 §4.8 — `ExecutorRegistry` has ONE fallback, not one per kind:
- * `scripts.kind` is gone, and `daemon.ts` never passed a `scriptKind` to
+ * the old kind-discriminator column is gone, and `daemon.ts` never passed a per-kind selector to
  * `ExecutorHost` in production, so the per-kind dispatch this class used to
  * carry was dead weight (the workflow fallback was unreachable).
  */

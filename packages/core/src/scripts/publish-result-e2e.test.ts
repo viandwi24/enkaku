@@ -7,10 +7,10 @@ import { recordResult } from '../jobs/result-store'
 import { getScriptDetail } from './service'
 
 /**
- * Plan 97 §4.4, §4.7, updated by plan 210 (direct publish removed: a member
- * row is written only by `plugins/runtime.ts`'s `writeScriptRows`, so this
- * test seeds the row directly rather than through the deleted `POST
- * /api/scripts`) — proves the STORAGE half: a `resultSchema` a plugin member
+ * Plan 97 §4.4, §4.7, updated by plan 210 (the per-script publish route is
+ * removed: a member row is written only by `plugins/runtime.ts`'s
+ * `writeScriptRows`, so this test seeds the row itself rather than through
+ * the deleted `POST /api/scripts`) — proves the STORAGE half: a `resultSchema` a plugin member
  * declares is the schema a job detail reads back tomorrow, pinned to the
  * version that actually ran.
  *
@@ -142,8 +142,8 @@ describe('plan 97 §4.4, §4.7 — a declared result schema survives seed → se
     expect(jobDetail.result).toEqual(value)
   })
 
-  // Plan 210: `POST /api/scripts` (the direct-publish route this test's own
-  // hostile-schema case exercised) is gone. `checkDeclaredSchema`'s hostile-
+  // Plan 210: `POST /api/scripts` (the per-script publish route this test's
+  // own hostile-schema case exercised) is gone. `checkDeclaredSchema`'s hostile-
   // schema refusal is still exercised where it still runs — the plugin
   // verify child (`plugins/verify-child.ts`) and `POST /api/workflows`
   // (`api/workflows.test.ts`).

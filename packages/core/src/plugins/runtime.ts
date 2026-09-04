@@ -1157,11 +1157,11 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     let failed = 0
     for (const p of db.select().from(plugins).where(eq(plugins.status, 'active')).all()) {
       // Plan 110 §3.4, §4.3 — a row that never passed verification is not
-      // re-verified here. That is the synthetic `recordings` owner (whose
-      // "bundle" is a comment) and any owner row created by a direct publish
-      // (`plugins/owner.ts`), neither of which has a verify child to run:
-      // handing either to one would record a `verifyError` about a bundle the
-      // farm itself wrote and never intended to import. A real plugin always
+      // re-verified here (plan 210 removed the two farm-written rows this
+      // guarded against — the `recordings` owner and an owner row a
+      // now-deleted publish path could create on the fly — but the guard
+      // itself stays: any future farm-written row with no bundle to import
+      // must not be handed to a verify child either). A real plugin always
       // has `verifiedAt` set — `activate` refuses without it — so nothing that
       // was re-verified before this rule stops being.
       if (p.verifiedAt === null) continue

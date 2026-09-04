@@ -6,12 +6,12 @@ import { jobs, migrationMarkers, schedules, scripts, workflows } from '../schema
 
 /**
  * The migration this step must run strictly after: the one that creates
- * `workflows`/`jobs.workflow_doc` and drops `scripts.kind` (plan 210 §4.1).
- * By the time this step runs, `scripts.kind` no longer exists, so a
- * workflow row is recognised STRUCTURALLY rather than by that column
- * (plan 210 §3.2 item 7): `plugin_id IS NULL` and `bundle` parses as a
- * `WorkflowDoc` once its `version` key is removed — an ESM bundle (an
- * ordinary unowned script row) never parses as JSON at all.
+ * `workflows`/`jobs.workflow_doc` and drops the `scripts` table's old
+ * kind-discriminator column (plan 210 §4.1). By the time this step runs,
+ * that column no longer exists, so a workflow row is recognised
+ * STRUCTURALLY instead (plan 210 §3.2 item 7): `plugin_id IS NULL` and
+ * `bundle` parses as a `WorkflowDoc` once its `version` key is removed — an
+ * ESM bundle (an ordinary unowned script row) never parses as JSON at all.
  */
 export const WORKFLOWS_TABLE_TAG = '0068_milky_tiger_shark'
 

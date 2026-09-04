@@ -160,7 +160,7 @@ const DEFAULT_COLUMNS: JobsListColumns = { script: true, device: true, time: 'cr
 /**
  * `job.status`'s live `node` block (plan 99 §4.9, §4.11, step 99.10) —
  * present only on a row a live WS `job.status` push has touched, and only
- * for a `kind: 'workflow'` job. `GET /api/jobs`'s own REST response (what
+ * for a workflow job. `GET /api/jobs`'s own REST response (what
  * every OTHER row here comes from) has no such field — `JobInfoSchema`
  * carries none — so this is read defensively off whatever `j` actually IS
  * at runtime rather than declared as a wider row TYPE for this whole file:

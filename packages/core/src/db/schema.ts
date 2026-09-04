@@ -897,8 +897,8 @@ export type WorkflowRow = typeof workflows.$inferSelect
  * instead of a schedule's firings.
  *
  * Written only by `jobs/executors/workflow.ts`, which `daemon.ts` never
- * wires (`scriptKind` is not passed to `createExecutorHost`, so the executor
- * is unreachable in production). Plan 211 replaces this table with workflow
+ * wires (nothing selects it as a job's executor, so it is unreachable in
+ * production, plan 210 §4.8). Plan 211 replaces this table with workflow
  * runs and steps.
  */
 export const jobNodes = sqliteTable(
@@ -1376,7 +1376,8 @@ export const workspaceFiles = sqliteTable(
     hash: text('hash').notNull(),
     /** Which driver holds this row's bytes — `inline` (the `content` column above) or `fs` (plan
      * 115 §3.1, §3.2). Every row written before plan 115 reads back `'inline'` with NO backfill,
-     * matching plan 99's `scripts.kind` precedent exactly: existing rows keep their bytes in the
+     * the same "default on the column, never a backfill pass" discipline this codebase already
+     * uses for a column added under an existing row set: existing rows keep their bytes in the
      * row and are read through the `inline` driver forever, deliberately (§3.2, no migration). */
     storage: text('storage').notNull().default('inline'),
     /** Meaningless to everyone except the driver named by `storage` — for `fs` it is the sha256
