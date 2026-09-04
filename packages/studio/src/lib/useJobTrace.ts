@@ -205,17 +205,22 @@ export interface JobTraceState {
  * A failing fetch surfaces as `error`; a job whose core has no trace routes
  * at all answers `[]` rather than 404ing, so an older core degrades to an
  * empty timeline instead of an error banner.
+ *
+ * Run-scoped since plan 218 §4.3.2: the path and the `job.trace` filter are
+ * keyed on `(jobId, runId)`, not `jobId` alone — a job with several runs has
+ * a trace per run, and reading the wrong one would show one run's replay
+ * under another's header.
  */
-export function useJobTrace(jobId: string | null): JobTraceState {
+export function useJobTrace(jobId: string | null, runId: string | null): JobTraceState {
   const [fetched, setFetched] = useState<JobTraceEvent[] | null>(null)
   const [live, setLive] = useState<JobTraceEvent[]>([])
   const [error, setError] = useState<string | null>(null)
   const [truncated, setTruncated] = useState(false)
 
   function load(): void {
-    if (!jobId) return
+    if (!jobId || !runId) return
     setError(null)
-    void fetchPagesDetailed(`/api/jobs/${jobId}/trace`, undefined, JobTraceEventSchema)
+    void fetchPagesDetailed(`/api/jobs/${jobId}/runs/${runId}/trace`, undefined, JobTraceEventSchema)
       .then((page) => {
         setFetched(page.items)
         setTruncated(page.truncated)
@@ -234,17 +239,17 @@ export function useJobTrace(jobId: string | null): JobTraceState {
     setTruncated(false)
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId])
+  }, [jobId, runId])
 
   useEffect(() => {
-    if (!jobId) return
+    if (!jobId || !runId) return
     const off = ws.on((m) => {
-      if (m.type === 'job.trace' && m.payload.jobId === jobId) {
+      if (m.type === 'job.trace' && m.payload.runId === runId) {
         setLive((p) => [...p, m.payload.event])
       }
     })
     return off
-  }, [jobId])
+  }, [jobId, runId])
 
   // The two sources are merged and de-duplicated by row id, not chosen
   // between: a live event can arrive before the fetch settles (the recorder

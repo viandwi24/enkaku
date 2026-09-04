@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useMemo } from 'react'
 import { JobCancelResponseSchema, JobsPageResponseSchema, type JobInfo } from '@enkaku/protocol'
+import { jobHref } from '@/components/jobs/job-view'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
 import { Button, DeviceName, TableCell, TableHead, Tooltip, TooltipContent, TooltipTrigger, api, useAction, duration, relativeTime } from '@enkaku/ui'
@@ -112,7 +113,7 @@ export interface JobsListProps {
    * Plan 103 §5 step 103.4 — `false` only from the device popup's own Jobs
    * read popup, whose own verifiable result is "a job row does not navigate
    * away from the Wall": the popup floats OVER the Wall (plan 103 §3.2's
-   * whole point), and `/jobs/detail` is a different route entirely — a
+   * whole point), and a job's detail is a different route entirely — a
    * `next/link` there would unmount the Wall (and this popup along with
    * it), which is exactly what a read popup must not do (§3.3: "you read
    * this, nothing needs touching on the phone meanwhile"). `true`
@@ -131,7 +132,7 @@ export interface JobsListProps {
    * **Widened 2026-08-28** — it now also drives the trailing `Job` cell (the
    * one a caller with neither `script` nor `actions` columns gets), so a
    * BATCH's members can open their result in place too. That cell used to be a
-   * hard `next/link` to `/jobs/detail`, which is a full-page navigation away
+   * hard `next/link` to the job detail route, which is a full-page navigation away
    * from the batch you were reading: checking forty members meant forty round
    * trips out and back. The panel it opens carries its own link to the full
    * page, so nothing is lost.
@@ -259,7 +260,7 @@ export function JobsList({
               <TableCell>
                 <span className="inline-flex items-center gap-1.5">
                   {linkToDetail ? (
-                    <Link href={`/jobs/detail?id=${j.jobId}`} className="font-medium hover:text-accent">
+                    <Link href={jobHref(j.jobId)} className="font-medium hover:text-accent">
                       {scriptLabel(j)}
                     </Link>
                   ) : onOpenDetail ? (
@@ -393,7 +394,7 @@ export function JobsList({
                   </Button>
                 ) : (
                   <Button asChild variant="ghost" size="sm" className="h-7 text-[12px]">
-                    <Link href={`/jobs/detail?id=${j.jobId}`}>Logs &amp; artifacts</Link>
+                    <Link href={jobHref(j.jobId)}>Logs &amp; artifacts</Link>
                   </Button>
                 )}
               </TableCell>

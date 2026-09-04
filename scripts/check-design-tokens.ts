@@ -286,7 +286,7 @@ const GROUP_2 = ['CaretRightIcon', 'CaretUpIcon', 'CaretUpDownIcon', 'CheckCircl
  * assumed, so adding a name here requires widening the total by the same
  * amount or this script fails on the addition it was meant to tolerate.
  */
-const GROUP_3 = ['RobotIcon', 'ClockIcon']
+const GROUP_3 = ['ArrowsLeftRightIcon', 'ClockIcon', 'CopyIcon', 'DeviceMobileIcon', 'ExportIcon', 'PauseIcon', 'RobotIcon']
 
 async function checkIcons(): Promise<void> {
   console.log('\n== icons.ts (G4) ==')

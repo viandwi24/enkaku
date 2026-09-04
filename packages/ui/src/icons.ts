@@ -88,5 +88,19 @@ export {
  * - `ClockIcon` for the Schedules tab (MVP 15 §0.1.1) — a correction added
  *   after the design was drawn, so no `ph-*` name for it exists in the
  *   handoff's own README. Plan 217 §4.12.
+ * - `ArrowsLeftRightIcon`, `CopyIcon`, `DeviceMobileIcon`, `ExportIcon`,
+ *   `PauseIcon` for the Jobs screen's transport pause, its three header
+ *   buttons and its Copy JSON / compare controls (plan 218 §4.13). The
+ *   prototype file draws them (`Enkaku Device List.dc.html:1400-1401`,
+ *   `:1541`); only the README's prose, which group 1 is derived from, does
+ *   not name them.
  */
-export { RobotIcon, ClockIcon } from '@phosphor-icons/react'
+export {
+  ArrowsLeftRightIcon,
+  ClockIcon,
+  CopyIcon,
+  DeviceMobileIcon,
+  ExportIcon,
+  PauseIcon,
+  RobotIcon,
+} from '@phosphor-icons/react'
