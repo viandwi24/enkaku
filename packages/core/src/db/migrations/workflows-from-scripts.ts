@@ -1,8 +1,9 @@
 import { eq, inArray, isNull, like } from 'drizzle-orm'
-import { compareSemver, WorkflowDocSchema, type WorkflowDoc } from '@enkaku/protocol'
+import { compareSemver, type WorkflowDoc } from '@enkaku/protocol'
 import type { Logger } from '../../util/logger'
 import type { Db } from '../index'
 import { jobs, migrationMarkers, schedules, scripts, workflows } from '../schema'
+import { upgradeWorkflowDoc } from '../../workflows/upgrade'
 
 /**
  * The migration this step must run strictly after: the one that creates
@@ -58,12 +59,18 @@ export function migrateWorkflowsFromScripts(db: Db, deps: { log: Logger }): Work
       }
       if (parsed === null || typeof parsed !== 'object') continue
       const { version: _version, ...withoutVersion } = parsed as Record<string, unknown>
-      const doc = WorkflowDocSchema.safeParse(withoutVersion)
-      if (!doc.success) {
+      // Plan 301 §4.5 — a row from before doc v2 landed still holds a v1
+      // document; `upgradeWorkflowDoc` accepts either version, so this
+      // structural "does it look like a workflow" check keeps working for
+      // both a v1 row (upgraded here, once) and a v2 row.
+      let doc: WorkflowDoc
+      try {
+        doc = upgradeWorkflowDoc(withoutVersion)
+      } catch {
         unreadable.push(`${row.name}@${row.version} (${row.id})`)
         continue
       }
-      candidates.push({ id: row.id, name: row.name, version: row.version, createdBy: row.createdBy, createdAt: row.createdAt, doc: doc.data })
+      candidates.push({ id: row.id, name: row.name, version: row.version, createdBy: row.createdBy, createdAt: row.createdAt, doc })
     }
 
     const byName = new Map<string, CandidateRow[]>()

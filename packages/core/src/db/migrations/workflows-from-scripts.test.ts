@@ -74,11 +74,14 @@ describe('migrateWorkflowsFromScripts (plan 210 §4.6, §5 step 210.9)', () => {
     expect(report?.jobsPinnedToDropped).toBe(1)
     expect(report?.schedulesNamingWorkflow).toEqual(['nightly-checkout'])
 
-    // Exactly one `workflows` row, holding the NEWEST document, with no `version` key.
+    // Exactly one `workflows` row, holding the NEWEST document, UPGRADED to
+    // v2 (plan 301 §4.5) and with no `version` key.
     const rows = db.select().from(workflows).where(eq(workflows.name, 'checkout')).all()
     expect(rows).toHaveLength(1)
-    const doc = rows[0]!.doc as { name: string; nodes: { script: string }[]; version?: string }
-    expect(doc.nodes[0]?.script).toBe('tiktok/login@1.0.0')
+    const doc = rows[0]!.doc as { schema: number; nodes: { kind: string; script?: string }[]; version?: string }
+    expect(doc.schema).toBe(2)
+    const scriptNode = doc.nodes.find((n) => n.kind === 'script')
+    expect(scriptNode?.script).toBe('tiktok/login@1.0.0')
     expect('version' in doc).toBe(false)
 
     // Zero `scripts` rows named `checkout` — both versions are gone.
