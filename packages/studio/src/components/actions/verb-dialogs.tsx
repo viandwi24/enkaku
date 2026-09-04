@@ -19,6 +19,9 @@ import {
 import { jobHref } from '@/components/jobs/job-view'
 import { ArtifactPicker, uploadArtifactSource, type ArtifactSource } from '@/components/ArtifactPicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
+import { narrowSchema } from '@/components/schema-form/narrowSchema'
+import { deviceSections } from '@/components/settings/deviceSections'
+import { SectionNav } from '@/components/settings/SectionNav'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { fetchAllPages, listWorkflows, type WorkflowInfo } from '@/lib/api'
 import { groupResults } from '@/lib/actions'
@@ -462,6 +465,50 @@ interface SettingsValue {
   seed: Record<string, unknown>
   draft: Record<string, unknown>
   formOk: boolean
+  /** Multi-target only: the device the on-screen reference values came from, for the sentence under the form. */
+  referenceLabel?: string
+  /** The open section of the left-hand nav. Undefined means the first one. */
+  section?: string
+}
+
+/**
+ * Annotate a device-settings schema with one device's CURRENT values, as
+ * per-field hints.
+ *
+ * Bulk settings sends a DIFF — only the fields you actually touched — so the
+ * form is seeded empty when more than one device is targeted, and that is
+ * what keeps "what I touched is what changed" true. But an empty form gives
+ * an operator no idea what they are changing FROM (CEO, 2026-09-04).
+ *
+ * Seeding the form from one device would answer that and introduce a worse
+ * problem: the form would present ONE phone's values as the selection's, and
+ * on a farm that is not uniform an operator would read `transport: adb-usb`
+ * and believe it of twenty devices. So the values ride in as hints instead —
+ * visible, attributed to the device they came from, and never mistaken for
+ * the field's value, because the field is still visibly empty.
+ *
+ * Reuses `x-enkaku.hint` (plan 212 §4.2, threaded to the controls by plan
+ * 219 §4.9) rather than adding a rendering path.
+ */
+function withValueHints(node: JsonSchemaNode, values: unknown): JsonSchemaNode {
+  if (!node || typeof node !== 'object') return node
+  const props = (node as { properties?: Record<string, JsonSchemaNode> }).properties
+  if (!props || typeof values !== 'object' || values === null) return node
+  const next: Record<string, JsonSchemaNode> = {}
+  for (const [key, child] of Object.entries(props)) {
+    const value = (values as Record<string, unknown>)[key]
+    if (value !== undefined && child && typeof child === 'object' && (child as { properties?: unknown }).properties) {
+      next[key] = withValueHints(child, value)
+      continue
+    }
+    if (value === undefined || typeof value === 'object') {
+      next[key] = child
+      continue
+    }
+    const meta = ((child as Record<string, unknown>)['x-enkaku'] ?? {}) as Record<string, unknown>
+    next[key] = { ...child, 'x-enkaku': { ...meta, hint: `currently ${String(value)}` } } as JsonSchemaNode
+  }
+  return { ...node, properties: next } as JsonSchemaNode
 }
 function diffPatch(seed: Record<string, unknown>, draft: Record<string, unknown>): DeviceSettingsPatch {
   const patch: Record<string, unknown> = {}
@@ -481,16 +528,31 @@ function SettingsFields({ value, onChange, target }: { value: SettingsValue; onC
   useEffect(() => {
     if (value.schema) return
     let cancelled = false
-    const oneId = target.resolvedIds.length === 1 ? target.resolvedIds[0] : null
+    // One device: this IS that device's settings screen — seed the form and
+    // edit in place. Many: read the FIRST resolved device anyway, not to seed
+    // but to show its values as hints (see `withValueHints`).
+    const single = target.resolvedIds.length === 1
+    const referenceId = target.resolvedIds[0] ?? null
     void Promise.all([
       api('/api/settings', SettingsResponseSchema),
-      oneId ? api(`/api/devices/${oneId}`, DeviceDetailResponseSchema) : Promise.resolve(null),
+      referenceId ? api(`/api/devices/${referenceId}`, DeviceDetailResponseSchema) : Promise.resolve(null),
     ])
       .then(([settingsRes, deviceRes]) => {
         if (cancelled) return
-        const schema = settingsRes.deviceSchema as JsonSchemaNode
-        const seed = (deviceRes ? structuredClone((deviceRes.device.settings ?? {}) as Record<string, unknown>) : {}) as Record<string, unknown>
-        onChange({ schema, seed, draft: structuredClone(seed), formOk: true })
+        const bare = settingsRes.deviceSchema as JsonSchemaNode
+        const current = (deviceRes?.device.settings ?? null) as Record<string, unknown> | null
+        if (single) {
+          const seed = (current ? structuredClone(current) : {}) as Record<string, unknown>
+          onChange({ schema: bare, seed, draft: structuredClone(seed), formOk: true })
+          return
+        }
+        onChange({
+          schema: current ? withValueHints(bare, current) : bare,
+          seed: {},
+          draft: {},
+          formOk: true,
+          ...(deviceRes ? { referenceLabel: deviceRes.device.label } : {}),
+        })
       })
       .catch(() => {
         if (!cancelled) onChange({ ...value, schema: {} })
@@ -506,16 +568,42 @@ function SettingsFields({ value, onChange, target }: { value: SettingsValue; onC
   const patch = diffPatch(value.seed, value.draft)
   const keyCount = Object.keys(patch).length
 
+  /*
+   * The same left-hand section nav the Settings page and the Agents Settings
+   * tab use (CEO, 2026-09-04). `deviceSections()` derives it from the device
+   * schema and was written for exactly this — and had no caller at all: it
+   * was built for the old device page's settings tab, which plan 215
+   * replaced with this dialog, and the dialog never picked it up. Same
+   * orphaning as `AgentAlertChip`.
+   *
+   * Only the active section's fields are rendered, through `narrowSchema`,
+   * so `draft` and the diff still span the WHOLE schema — switching sections
+   * never discards what you typed in another one.
+   */
+  const sections = deviceSections(value.schema)
+  const activeId = value.section ?? sections[0]?.id ?? ''
+  const active = sections.find((x) => x.id === activeId) ?? sections[0]
+  const scoped = active ? narrowSchema(value.schema, active.keys) : value.schema
+
   return (
     <div className="space-y-3">
-      <SchemaForm
-        schema={value.schema}
-        value={value.draft}
-        onChange={(draft) => onChange({ ...value, draft: draft as Record<string, unknown> })}
-        onCanSubmitChange={(ok) => onChange({ ...value, formOk: ok })}
-      />
+      <div className="grid gap-3 sm:grid-cols-[160px_1fr]">
+        <SectionNav
+          navOnly
+          sections={sections.map((x) => ({ id: x.id, title: x.title, render: () => null }))}
+          active={activeId}
+          onChange={(id) => onChange({ ...value, section: id })}
+        />
+        <SchemaForm
+          schema={scoped}
+          value={value.draft}
+          onChange={(draft) => onChange({ ...value, draft: draft as Record<string, unknown> })}
+          onCanSubmitChange={(ok) => onChange({ ...value, formOk: ok })}
+        />
+      </div>
       <p className="text-meta text-faint">
         {keyCount} setting{keyCount === 1 ? '' : 's'} will be written to {n(target.count)}. Nothing else changes.
+        {value.referenceLabel ? ` The "currently" values below each field are ${value.referenceLabel}'s, not the whole selection's.` : ''}
       </p>
     </div>
   )
