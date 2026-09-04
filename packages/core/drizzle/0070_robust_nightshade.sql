@@ -75,6 +75,14 @@ ALTER TABLE `schedules` ADD `last_fire_detail` text;--> statement-breakpoint
 -- columns that do not exist on the pre-migration table (plan 211 §11 records
 -- the discrepancy) — this file replaces that broken INSERT with one that maps
 -- old columns to new ones explicitly.
+DROP INDEX `idx_jobs_claim`;--> statement-breakpoint
+DROP INDEX `idx_jobs_device`;--> statement-breakpoint
+DROP INDEX `idx_jobs_batch`;--> statement-breakpoint
+DROP INDEX `idx_jobs_created`;--> statement-breakpoint
+DROP INDEX `idx_jobs_trigger_key`;--> statement-breakpoint
+DROP INDEX `idx_jobs_root`;--> statement-breakpoint
+DROP INDEX `idx_jobs_triggered_by`;--> statement-breakpoint
+DROP INDEX `idx_jobs_script_running`;--> statement-breakpoint
 ALTER TABLE `jobs` RENAME TO `jobs_pre_211`;--> statement-breakpoint
 CREATE TABLE `jobs` (
 	`id` text PRIMARY KEY NOT NULL,
