@@ -231,6 +231,7 @@ Owner sitting (one device, ~15 minutes):
 | Q2 | Should the input pane show the *predecessor's* output or this node's recorded input? | This node's recorded input. They are the same value in a single-cursor run, and the recorded one stays correct if plan 308 ever changes that. |
 | Q3 | Editing a pin by hand? | Yes, a JSON textarea validated against the node's `resultSchema` when it has one. Refusing invalid JSON, accepting anything else. |
 | Q4 | What if the last run predates the current document (the node no longer exists)? | The pane says "this node has not run in the most recent run" and the picker is empty. Never silently show another node's data. |
+| Q5 | How does the picker reference a key that is not an identifier — `resource-id`, `content-desc`, and every other Android UI-tree key? | With `get()`. Plan 302 as built refuses a string-literal bracket index outright (`$input["resource-id"]` → parse error naming `get()`), because a category-level refusal is a smaller attack surface than a blacklist of dangerous key names. Verified on the merged engine, 2026-09-05: `get($input, "resource-id")` and `get($input, "nested.a-b")` both resolve. **So `DataTree`'s click-to-insert emits `$input.foo` for an identifier key and `get($input, "foo-bar")` for anything else** — one rule, decided here so 306's executor does not rediscover it against a parse error. |
 
 ## 10. Removed
 
