@@ -2,12 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { DisconnectOutcomeSchema, type DeviceInfo } from '@enkaku/protocol'
-import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, api, formatDeviceName, type ApiError } from '@enkaku/ui'
-
-function isApiError(err: unknown): err is Error & ApiError {
-  return err instanceof Error && 'code' in err
-}
+import { DisconnectOutcomeSchema, E_DEVICE_CONFLICT, type DeviceInfo } from '@enkaku/protocol'
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, formatDeviceName } from '@enkaku/ui'
+import { ActionRefusedError, runOnDevice } from '@/lib/actions'
 
 /**
  * Disconnect a device from the network (plan 88 §3.7, §3.8, §4.6, §5 step
@@ -22,7 +19,7 @@ function isApiError(err: unknown): err is Error & ApiError {
  * This is not that — its record, tags, group, settings, job history and
  * artifacts are untouched.
  *
- * A running-job refusal (`job_running`, §4.6) shows the server's own
+ * A running-job refusal (`E_DEVICE_CONFLICT`, plan 207 §4.2/§4.4) shows the server's own
  * message — which already names the job(s) — and offers a `force` checkbox
  * to disconnect anyway, the same refusal-then-offer-the-override shape
  * `AdbRestartDialog` already uses for its own busy-farm guard.
@@ -71,10 +68,8 @@ export function DisconnectDeviceDialog({
     setBusy(true)
     setRefusal(null)
     try {
-      const outcome = await api(`/api/devices/${device.id}/connection/disconnect`, DisconnectOutcomeSchema, {
-        method: 'POST',
-        json: { force },
-      })
+      const r = await runOnDevice('disconnect', device.id, {}, { force })
+      const outcome = DisconnectOutcomeSchema.parse(r.detail)
       if (outcome.result === 'disconnected') {
         toast.success(`${name} disconnected from the network`)
       } else if (outcome.result === 'not-connected') {
@@ -85,7 +80,11 @@ export function DisconnectDeviceDialog({
       onOpenChange(false)
       onDone()
     } catch (err) {
-      if (isApiError(err)) {
+      if (err instanceof ActionRefusedError) {
+        // `disconnect`'s own job-running conflict answers `forbidden` with
+        // `E_DEVICE_CONFLICT` (`run.ts`'s `dispatchSyncVerb`), not the old
+        // route's `job_running` — this is the same warn-then-force shape,
+        // named differently.
         setRefusal({ code: err.code, message: err.message })
       } else {
         toast.error('Could not disconnect the device', { description: err instanceof Error ? err.message : String(err) })
@@ -123,7 +122,7 @@ export function DisconnectDeviceDialog({
         {refusal && (
           <div className="rounded-md border border-led-danger/40 bg-led-danger/5 p-3 text-[12.5px]">
             <p className="text-led-danger">{refusal.message}</p>
-            {refusal.code === 'job_running' && (
+            {refusal.code === E_DEVICE_CONFLICT && (
               <label className="mt-2.5 flex items-start gap-2 text-[12.5px] text-fg">
                 <input
                   type="checkbox"

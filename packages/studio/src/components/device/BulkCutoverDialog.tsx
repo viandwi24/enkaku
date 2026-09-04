@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { CutoverResponseSchema, type ConnectionMedium, type DeviceInfo } from '@enkaku/protocol'
+import { CutoverStateSchema, type ConnectionMedium, type DeviceInfo } from '@enkaku/protocol'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
 import { TargetPicker } from '@/components/target/TargetPicker'
@@ -21,9 +21,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  api,
-  describeApiError,
 } from '@enkaku/ui'
+import { runOnDevice } from '@/lib/actions'
 
 // No `group` mode — matching plan 104 §3.4's own table row for
 // Reconnect/Disconnect ("single · devices"), the closest existing analogue:
@@ -168,7 +167,7 @@ export function BulkCutoverDialog({
     )
 
     const parsedPort = Number(port)
-    const body: { medium: ConnectionMedium; port?: number } = { medium }
+    const body: { op: 'start'; medium: ConnectionMedium; port?: number } = { op: 'start', medium }
     if (port.trim() && Number.isFinite(parsedPort) && parsedPort > 0) body.port = Math.round(parsedPort)
 
     const failed: NamedOutcome[] = []
@@ -176,11 +175,12 @@ export function BulkCutoverDialog({
     await Promise.all(
       eligible.map(async (d) => {
         try {
-          const res = await api(`/api/devices/${d.id}/connection/cutover`, CutoverResponseSchema, { method: 'POST', json: body })
-          if (res.cutover.step === 'failed') failed.push({ deviceId: d.id, number: d.number, label: d.label, reason: res.cutover.detail })
+          const r = await runOnDevice('cutover', d.id, body)
+          const next = CutoverStateSchema.parse(r.detail)
+          if (next.step === 'failed') failed.push({ deviceId: d.id, number: d.number, label: d.label, reason: next.detail })
           else ok += 1
         } catch (err) {
-          failed.push({ deviceId: d.id, number: d.number, label: d.label, reason: describeApiError(err) })
+          failed.push({ deviceId: d.id, number: d.number, label: d.label, reason: err instanceof Error ? err.message : String(err) })
         }
       }),
     )

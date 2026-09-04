@@ -281,10 +281,18 @@ async function dispatchSyncVerb(deps: ActionsDeps, request: ActionRequest, devic
     case 'reconnect':
       return reconnectDevice(requireDep(deps.reconnector(), 'reconnect'), deviceId, { ...(request.allowSweep !== undefined ? { allowSweep: request.allowSweep } : {}) })
     case 'disconnect': {
+      // `request.force` has to reach `disconnectDevice`'s own internal
+      // job-running check here: `disconnect`'s `policyKind` is `null` (VERBS
+      // table), so the outer `evaluateDevice` warn/force layer never runs for
+      // it — this IS the only door `force: true` has, the same as the old
+      // `POST /:id/connection/disconnect { force }` route it replaces.
+      // Dropping it silently made "disconnect anyway" unreachable through
+      // this verb (discovered while wiring `DisconnectDeviceDialog.tsx`'s
+      // own force checkbox, plan 207 §4.9).
       const outcome = await disconnectDevice(
         { db: deps.db, activities: deps.activities, reconnector: requireDep(deps.reconnector(), 'disconnect'), sessions: deps.sessions() },
         deviceId,
-        {},
+        { force: request.force },
       )
       if (outcome.status === 'warned') throw new EnkakuError(E_DEVICE_CONFLICT, outcome.message)
       if (outcome.status === 'failed') throw new EnkakuError('E_TRANSPORT_NOT_DETACHABLE', outcome.message)

@@ -60,6 +60,7 @@ import { deviceSections } from '@/components/settings/deviceSections'
 import { DeviceVideoFields } from '@/components/video/DeviceVideoFields'
 import { fetchAllPages, fetchDeviceRefs, fetchGuestAgentStatus, type DeviceRef } from '@/lib/api'
 import { ws } from '@/lib/ws'
+import { runOnDevice } from '@/lib/actions'
 
 function DeviceDetail() {
   // A query param rather than a dynamic route, because a static export cannot
@@ -351,7 +352,8 @@ function DeviceDetail() {
    * card in List view; the device's OWN page had no way at all.
    */
   const releaseQuarantine = () =>
-    run('unquarantine', () => api(`/api/devices/${deviceId}/unquarantine`, DeviceResponseSchema, { method: 'POST' }), {
+    deviceId &&
+    run('unquarantine', () => runOnDevice('unquarantine', deviceId, {}), {
       success: 'Back in the queue',
       failure: 'Could not return the device to the queue',
       onSuccess: () => reloadDevice(),
@@ -359,9 +361,10 @@ function DeviceDetail() {
 
   /** Dials this device's last known address (plan 88 §3.3, §4.4, §4.6) — no confirmation, it is not destructive. */
   const reconnectDevice = () =>
+    deviceId &&
     run(
       'reconnect',
-      () => api(`/api/devices/${deviceId}/connection/reconnect`, ReconnectOutcomeSchema, { method: 'POST', json: {} }),
+      async () => ReconnectOutcomeSchema.parse((await runOnDevice('reconnect', deviceId, {})).detail),
       {
         failure: 'Could not reconnect the device',
         onSuccess: (outcome) => {

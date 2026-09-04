@@ -1,13 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
-import type {
-  BlockedDevice,
-  DeviceLabelState,
-  DevicePreparation,
-  ForgetResult,
-  HistoryCounts,
-  PreparationComponentStatus,
-} from '@enkaku/protocol'
+import type { DeviceLabelState, DevicePreparation, PreparationComponentStatus } from '@enkaku/protocol'
 import { DEFAULT_DEVICE_LABEL_STATE, DEFAULT_DEVICE_PREPARATION } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import { createAuditLogger } from '../auth/audit'
@@ -16,7 +9,7 @@ import { devices } from '../db/schema'
 import { createActivityRegistry } from '../activity/registry'
 import { createOperationRegistry } from '../actions/operations'
 import { runAction, type ActionActor, type ActionsDeps } from '../actions/run'
-import type { DeviceLifecycle } from '../device/lifecycle'
+import type { BlockedDevice, DeviceLifecycle, ForgetResult, HistoryCounts } from '../device/lifecycle'
 import type { LabellingService } from '../device/labelling'
 import type { PreparationRunner } from '../device/preparation/runner'
 import type { TransferService } from '../device/transfer'
@@ -227,7 +220,7 @@ function makeDeps(db: Db, overrides: Partial<ActionsDeps> = {}): { deps: Actions
     readiness: {
       set: async (deviceId, desired) => {
         calls.record('readiness.set', deviceId, desired)
-        return { desired, actual: desired, blocked: null }
+        return { desired, actual: desired, blocked: null, since: 0 }
       },
     },
     reconnector: () => fakeReconnector,

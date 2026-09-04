@@ -3155,31 +3155,20 @@ export function createRouteService(deps: RouteServiceDeps): RouteService {
   }
 
   // ---- endpoints ----
+  //
+  // Reads stay per device (plan 207 §1.4/§4.9's "reads stay per device" rule,
+  // same precedent as `api/device-preparation.ts`'s surviving GET) — only
+  // `GET /:id/network` remains here. `PUT/POST/DELETE /:id/network*` (plan
+  // 207 §10's removal register) are gone: `setRouteFromRequest`/
+  // `enableRoute`/`disableRoute`/`retryRoute`/`clearRouteFromRequest` are
+  // kept as plain functions — `service.actions` below still calls them — but
+  // the ONLY door to them now is the `set-network` verb
+  // (`POST /api/actions/set-network`, `actions/impl/network.ts`'s
+  // `applyNetworkAction`), not a per-device HTTP route.
 
   app.get('/:id/network', async (c) => {
     const row = mustGet(c.req.param('id'))
     return c.json(await currentNetworkStatus(row))
-  })
-
-  app.put('/:id/network', requirePermission('device.network'), async (c) => {
-    const raw: unknown = await c.req.json().catch(() => null)
-    return c.json(await setRouteFromRequest(c.req.param('id'), raw, c.get('user')?.id ?? null))
-  })
-
-  app.post('/:id/network/enable', requirePermission('device.network'), async (c) => {
-    return c.json(await enableRoute(c.req.param('id'), c.get('user')?.id ?? null))
-  })
-
-  app.post('/:id/network/disable', requirePermission('device.network'), async (c) => {
-    return c.json(await disableRoute(c.req.param('id'), c.get('user')?.id ?? null))
-  })
-
-  app.post('/:id/network/retry', requirePermission('device.network'), async (c) => {
-    return c.json(await retryRoute(c.req.param('id'), c.get('user')?.id ?? null))
-  })
-
-  app.delete('/:id/network', requirePermission('device.network'), async (c) => {
-    return c.json(await clearRouteFromRequest(c.req.param('id'), c.get('user')?.id ?? null))
   })
 
   /**

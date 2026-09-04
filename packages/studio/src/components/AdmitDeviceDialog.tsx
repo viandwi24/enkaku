@@ -7,7 +7,6 @@ import {
   normaliseTag,
   DeviceDetailResponseSchema,
   DeviceResponseSchema,
-  DeviceTagsResponseSchema,
   type GroupInfo,
   type DeviceLabelMode,
 } from '@enkaku/protocol'
@@ -33,6 +32,7 @@ import {
   relativeTime,
 } from '@enkaku/ui'
 import type { DiscoveredDevice } from '@/lib/api'
+import { runOnDevice } from '@/lib/actions'
 
 /**
  * The admission wizard (plan 56 §4.5): one screen, opened from a Discovered
@@ -112,17 +112,10 @@ export function AdmitDeviceDialog({
       )
       if (tags.length > 0) {
         // Best-effort: the phone is already in the farm either way, so a
-        // failure here is a warning, not a reason to say the whole action failed.
-        //
-        // The plan called this one z.void() (the caller does not read the
-        // response) — but PUT /:id/tags actually returns `{ tags }`
-        // (`packages/core/src/api/devices.ts`), a non-empty body. `z.void()`
-        // only parses `undefined`, so it would reject that real response and
-        // turn every successful save into a spurious "could not be saved"
-        // warning. `DeviceTagsResponseSchema` is the schema that matches what
-        // the route actually sends; the result is still discarded.
-        await api(`/api/devices/${res.device.id}/tags`, DeviceTagsResponseSchema, { method: 'PUT', json: { tags } }).catch(
-          () => toast.warning(`${res.device.label} was added, but its tags could not be saved`),
+        // failure here is a warning, not a reason to say the whole action
+        // failed. `set-tags` (plan 207 §4.2) — the result is discarded.
+        await runOnDevice('set-tags', res.device.id, { tags }).catch(() =>
+          toast.warning(`${res.device.label} was added, but its tags could not be saved`),
         )
       }
       // Physical labelling (plan 89 §3.8, §5 step 89.8): `admitDevice()`
