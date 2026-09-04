@@ -560,3 +560,90 @@ difference is that R6's sweep had already drained three rounds of debt.
 The `spawn-grants` HTTP routes are gone; the store and its `canSpawn`
 enforcement remain (`agent/runner.ts:111`). That was the decision in §8.6 and
 it survived the deletion intact.
+
+### 8.14 R8 reconciliation — 224, and the programme closes
+
+Merged clean, no conflicts. Migration `0072` taken after reading the journal,
+as the last three plans all did.
+
+What 224 measured, and what it means: the root suite is **140.66 s**, well over
+the 60 s target §8.12 named, and `packages/core` alone is 91 s of it. **The
+no-full-suite rule stays in force**, now with a number behind it instead of a
+2026-08-17 anecdote. CLAUDE.md records both.
+
+Of plan 211's five deleted critical-list tests, three are restored
+(`actions/run`, `server/ws-handlers-activity`, `db/migrations/
+schedule-target-backfill`). Two are not, with reasons in 224 §11 rather than
+hollow replacements — the right answer when a test's subject is gone.
+
+`lucide-react` is still a dependency: 44 importers remain outside the agent
+subsystem. Both 220 and 224 declined to check the goal off. That is the
+behaviour the §0 checklist exists to produce.
+
+Two things this gate had to repair, and both are the same defect wearing
+different clothes:
+
+1. `jobs/executors/script.test.ts` — 10 failures 224 correctly flagged as
+   pre-existing and out of its scope. Plan 211 moved `runtimeOverride` onto the
+   run row and made `ExecutorContext.run` required; every `ctx` fixture in that
+   file predates it and is cast `as never`, so the file threw on
+   `ctx.run.runtimeOverride`. **That is the fourth time in two rounds an
+   `as never` cast hid a broken fixture from typecheck** (R6's four agent
+   settings stores, R7's none, and this). The rule for whoever works here next:
+   a test fixture cast to `never` is a fixture with no contract, and it will
+   drift the moment the shape moves.
+2. `ws-handlers-activity.test.ts` — restored by 224 asserting a warning that
+   the CEO struck an hour earlier (see §8.15). Rewritten against the conflict
+   that still warns.
+
+### 8.15 The owner's first hardware session, and what it caught
+
+On 2026-09-04, with R7 merged, the owner ran the build against a real phone for
+the first time in the programme and reported three things. All three were real;
+**none of them could have been caught by anything in this repo.**
+
+1. **A wall tile said "Disconnected" for an online phone.** `!live` covered
+   three unrelated facts — offline, quarantined, and "the tile budget is not
+   streaming this one right now" — under one word. Under always-on sessions
+   (plan 206) the third is the common case, so the screen was telling the owner
+   his casting was broken while the device was online and under his own
+   control. A label, not a type.
+2. **Every action in Device Control's Actions tab was dead.** Plan 215 left a
+   stub that toasted `"Opens a dialog (plan 216)"`; plan 216 built the dialogs
+   and wired the entry points that existed on ITS branch. Both ran in R5. The
+   stub was a toast string, so no typecheck, no test, and no grep in §10 could
+   see it. **This is the third defect traced to 215 and 216 sharing a round**,
+   after 216's blocked deletions (§8.10) and the `ViewRenderer` claim (§8.13).
+   The dependency was in §4 and I scheduled them together anyway.
+3. **A queued job waited up to 60 s while someone had the device open.** This
+   one is mine: I wrote it into MVP 04 §3 as a proposal ("a queued job whose
+   device has a fresh `control` entry waits…"), carried from plan 71's quiet
+   gate. It was never a CEO decision, and it sat in the same document as the
+   decisions that were, which is exactly why it survived to hardware. The CEO
+   struck it on sight — correctly: it is the lease this programme exists to
+   remove, wearing another name.
+
+The model is now the state dot and nothing else: **green** free, **amber** a
+person is driving, **red** the system is. Amber blocks nothing. A person may
+take over a device a job is driving with no sentence to dismiss — that is help,
+not interference. Only job-over-job stays exclusive, and it lives in the SQL
+claim. MVP 04 §3 is struck in place, dated, with the reason; the wire's
+`job.waiting.reason` enum drops `'control'` rather than keeping a value nothing
+emits.
+
+**The lesson worth carrying past this programme:** a proposal and a decision
+must not look alike in the same document. Everything in `docs/mvp/` that reads
+as settled fact should carry who decided it and when, or be marked as proposed.
+Three rounds of agents built on §3 believing it was law.
+
+### 8.16 State at close
+
+Twenty-four working plans merged on `mvp`; `main` untouched at `8fb7b4b`.
+Typecheck clean across 20 packages, `build:studio` clean, all six
+`scripts/check-*` green, and every backend directory the programme changed
+swept.
+
+What remains is not code. `docs/guide/owner-smoke.md` is 61 checks in 7 device
+sessions, and **every `owner` row in every plan from 201 to 224 is still open**.
+Until that pass runs, this programme has proved that the software builds,
+typechecks, and agrees with itself. It has not proved that it works.
