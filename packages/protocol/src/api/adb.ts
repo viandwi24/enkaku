@@ -1,5 +1,16 @@
 import { z } from 'zod'
 import { WallTransportSchema } from '../settings'
+import { QualitySchema } from '../messages/stream'
+
+/** One live scrcpy forward this process currently owns (plan 223 §4.2, §4.3) — `SessionManager.forwards()` verbatim. */
+export const ForwardRecordSchema = z.object({
+  deviceId: z.string(),
+  quality: QualitySchema,
+  port: z.number().int(),
+  scid: z.string(),
+  openedAt: z.number().int(),
+})
+export type ForwardRecord = z.infer<typeof ForwardRecordSchema>
 
 /**
  * "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — five distinct
@@ -112,6 +123,8 @@ export const AdbStatsResponseSchema = z.object({
     controlReplyMsP50: z.number(),
     controlReplyMsP95: z.number(),
     watchdogReconnects: z.number(),
+    /** Cumulative since boot (plan 223 §4.7) — every time a viewer's `ws.send()` returned `0` (R8) or a drop-to-keyframe fired under congestion. Never resets except on core restart. `.optional()`, same reason as `hostAdb.installsByRoot`. */
+    framesDroppedTotal: z.number().int().optional(),
   }),
   /** `packages/core/src/device/host-adb.ts`'s `HostAdb.stats()`, verbatim (plan 85 §3.4, §4.6). */
   hostAdb: z.object({
@@ -119,6 +132,15 @@ export const AdbStatsResponseSchema = z.object({
     maxConcurrent: z.number(),
     installsRunning: z.number(),
     longLived: z.number(),
+    /**
+     * Per-USB-root install occupancy (plan 223 §4.3, §4.6/G13) — keyed by
+     * `usbRootOf`'s own root string (`@enkaku/session`, plan 206 §4.2;
+     * `'network'`/`'unknown'` for a TCP device or one adb has not yet listed
+     * with a `usb:` field). `.optional()` for the same reason `input`/`video`
+     * are on this schema: a consumer built before this field lands must keep
+     * parsing; the real running core always sends it.
+     */
+    installsByRoot: z.record(z.string(), z.object({ running: z.number().int(), queued: z.number().int() })).optional(),
   }),
   /** "Is adb stuck?" (plan 88 §3.9, §4.7) — see `AdbServerHealthSchema` above. */
   adbHealth: AdbServerHealthSchema,
@@ -194,6 +216,8 @@ export const AdbStatsResponseSchema = z.object({
       transport: WallTransportSchema,
     })
     .optional(),
+  /** Every live forward this process holds (plan 223 §4.2). `.optional()` for the same reason as `input`/`video` above. */
+  forwards: z.array(ForwardRecordSchema).optional(),
 })
 
 /**

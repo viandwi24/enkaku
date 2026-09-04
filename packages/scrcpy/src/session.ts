@@ -135,6 +135,10 @@ export interface ScrcpyControl {
 
 export interface ScrcpySession {
   readonly meta: VideoMeta | null
+  /** The host port this session's video/control forward is bound to (plan 223 §4.2) — the forward ledger's join key. Set once, at connect, never reused after `close()`. */
+  readonly port: number
+  /** This session's `scid`, always prefixed `SCID_MARKER_PREFIX` (plan 223 §4.2) — lets a forward ledger, and the boot-time cleanup below, recognise a forward this codebase created without knowing which process created it. */
+  readonly scid: string
   onPacket(cb: (p: ScrcpyPacket) => void): void
   onMetaChange(cb: (m: VideoMeta) => void): void
   onClose(cb: (reason: string) => void): void
@@ -184,6 +188,22 @@ export interface ScrcpySession {
  */
 const SCID_MARKER_BYTE = 0x7f
 const SCID_MARKER_PREFIX = SCID_MARKER_BYTE.toString(16).padStart(2, '0')
+
+/**
+ * Matches this codebase's OWN scrcpy forward remotes — `localabstract:scrcpy_<scid>`
+ * where `<scid>` carries `SCID_MARKER_PREFIX` (plan 223 §4.4) — the same
+ * property `sweepStrayScrcpyServers` already relies on for the DEVICE-side
+ * process list (`scid.startsWith(SCID_MARKER_PREFIX)`, above), applied here
+ * to the HOST-side forward table instead. `scid` is always exactly
+ * SCID_MARKER_PREFIX (2 hex chars) + 6 more hex chars (`crypto.getRandomValues`
+ * over 3 bytes, above), so the match is exact-length, not a loose prefix
+ * scan that could also match an unrelated `localabstract:` socket some other
+ * tool on the same adb server happens to have forwarded.
+ */
+const OWN_SCRCPY_FORWARD_RE = new RegExp(`^localabstract:scrcpy_${SCID_MARKER_PREFIX}[0-9a-f]{6}$`)
+export function isOwnScrcpyForwardRemote(remote: string): boolean {
+  return OWN_SCRCPY_FORWARD_RE.test(remote)
+}
 
 export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOptions): Promise<ScrcpySession> {
   const log = opts.onLog ?? (() => {})
@@ -381,6 +401,8 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     get meta() {
       return currentMeta
     },
+    port,
+    scid,
     onPacket: (cb) => void packetHandlers.add(cb),
     onMetaChange: (cb) => void metaHandlers.add(cb),
     onClose: (cb) => void closeHandlers.add(cb),

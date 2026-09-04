@@ -288,6 +288,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
         { deviceId: 'd2', wall: { engine: 'scrcpy' }, control: null },
         { deviceId: 'd3', wall: null, control: null },
       ],
+      forwards: () => [],
     } as unknown as import('@enkaku/session').SessionManager
     const inner = createAdbStatsRoutes({
       db: opened.db,
@@ -313,6 +314,44 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       maxTilesAuto: true,
       transport: 'loopback',
     })
+  })
+
+  test('GET / reports forwards and installsByRoot when the underlying accessors are wired, and omits/zero-fills them when absent (plan 223 §4.6)', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const forwardRow = { deviceId: 'd1', quality: 'wall' as const, port: 27500, scid: '7f00aabb', openedAt: 12345 }
+    const fakeSessions = {
+      encoders: () => [],
+      forwards: () => [forwardRow],
+    } as unknown as import('@enkaku/session').SessionManager
+    const inner = createAdbStatsRoutes({
+      db: opened.db,
+      client: () => null,
+      metrics: createAdbMetricsStore(),
+      health: () => null,
+      auto: () => true,
+      sessions: () => fakeSessions,
+      hostAdb: () => ({ running: 0, maxConcurrent: 2, installsRunning: 1, longLived: 0, installsByRoot: { 'usb-1': { running: 1, queued: 0 } } }),
+    })
+    const app = withUser('operator', inner)
+    const res = await app.request('/')
+    const body = (await res.json()) as { forwards: unknown; hostAdb: { installsByRoot: unknown } }
+    expect(body.forwards).toEqual([forwardRow])
+    expect(body.hostAdb.installsByRoot).toEqual({ 'usb-1': { running: 1, queued: 0 } })
+
+    const innerAbsent = createAdbStatsRoutes({
+      db: opened.db,
+      client: () => null,
+      metrics: createAdbMetricsStore(),
+      health: () => null,
+      auto: () => true,
+      sessions: () => null,
+    })
+    const appAbsent = withUser('operator', innerAbsent)
+    const resAbsent = await appAbsent.request('/')
+    const bodyAbsent = (await resAbsent.json()) as { forwards: unknown; hostAdb: { installsByRoot: unknown } }
+    expect(bodyAbsent.forwards).toBeUndefined()
+    expect(bodyAbsent.hostAdb.installsByRoot).toBeUndefined()
   })
 
   test('requires device.view — an unauthenticated request is rejected with 403', async () => {

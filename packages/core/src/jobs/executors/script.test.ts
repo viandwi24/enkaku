@@ -52,6 +52,7 @@ function fakeSessions() {
     closeDevice: async () => {},
     closeAll: async () => 0,
     encoders: () => [],
+    forwards: () => [],
   }
 }
 

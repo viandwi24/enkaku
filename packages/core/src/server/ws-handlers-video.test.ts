@@ -7,7 +7,7 @@ import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
-import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
+import { createWsMessageHandler, MAX_BUFFERED, type WsHandlerDeps } from './ws-handlers'
 
 /**
  * The one rule protecting video start-up: **RESET_VIDEO is never sent to an
@@ -64,6 +64,8 @@ function fakeSession(
     inputEngineId: 'adb-input',
     videoConfig: () => cached.config,
     videoKeyframe: () => cached.keyframe,
+    forwardPort: null,
+    scrcpyScid: null,
     requestKeyframe: () => {
       counter.n += 1
     },
@@ -116,6 +118,7 @@ function fakeSessionManager(session: DeviceSession, echoQuality: Quality = 'cont
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
 }
 
@@ -147,6 +150,7 @@ function fakeSessionManagerCapturing(session: DeviceSession): { manager: Session
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
   return {
     manager,
@@ -157,7 +161,7 @@ function fakeSessionManagerCapturing(session: DeviceSession): { manager: Session
   }
 }
 
-function fakeConn(opts?: { sendReturn?: () => number }): { ws: ServerWebSocket<unknown>; sent: ServerMessage[]; binary: number } {
+function fakeConn(opts?: { sendReturn?: () => number; bufferedAmount?: () => number }): { ws: ServerWebSocket<unknown>; sent: ServerMessage[]; binary: number } {
   const sent: ServerMessage[] = []
   const state = { binary: 0 }
   const ws = {
@@ -171,7 +175,7 @@ function fakeConn(opts?: { sendReturn?: () => number }): { ws: ServerWebSocket<u
       state.binary += 1
       return opts?.sendReturn ? opts.sendReturn() : raw.byteLength
     },
-    getBufferedAmount: () => 0,
+    getBufferedAmount: () => opts?.bufferedAmount?.() ?? 0,
   } as unknown as ServerWebSocket<unknown>
   return {
     ws,
@@ -300,6 +304,7 @@ describe('stream.start — the encoder split (plan 206 §3.4, §4.3, §4.8)', ()
         return 0
       },
       encoders: () => [],
+      forwards: () => [],
     }
   }
 
@@ -401,6 +406,7 @@ describe('stream.start — the encoder split (plan 206 §3.4, §4.3, §4.8)', ()
         return 0
       },
       encoders: () => [],
+      forwards: () => [],
     }
     const alwaysOn: Pick<AlwaysOn, 'stateOf'> = { stateOf: () => ({ state: 'preparing', step: 3, attempt: 0, usbRoot: '3' }) }
     const handler = setUpHandler(db, wall.session, manager, { alwaysOn })
@@ -439,6 +445,7 @@ describe('stream.start — the encoder split (plan 206 §3.4, §4.3, §4.8)', ()
         return 0
       },
       encoders: () => [],
+      forwards: () => [],
     }
     const handler = setUpHandler(db, wall.session, manager)
     const a = fakeConn()
@@ -513,5 +520,33 @@ describe('backpressure (plan 206 §3.8, §4.8, R8)', () => {
     handler.handleDrain(a.ws)
 
     expect(fake.keyframeRequests).toBe(requestsAfterDrop + 1)
+  })
+
+  test('backpressure: a dropped send increments framesDroppedTotal (plan 223 §4.7)', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1')
+    const fake = fakeSession('dev-1', { config: null, keyframe: null })
+    const { manager, emit } = fakeSessionManagerCapturing(fake.session)
+    const handler = setUpHandler(db, fake.session, manager)
+    const a = fakeConn({ sendReturn: () => 0 })
+
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'stream.start', id: 's1', payload: { deviceId: 'dev-1', quality: 'wall' } }))
+    const before = handler.transportStats().framesDroppedTotal
+    emit(new Uint8Array([1, 2, 3]), frameMeta())
+    expect(handler.transportStats().framesDroppedTotal).toBe(before + 1)
+  })
+
+  test('backpressure: a drop-to-keyframe under congestion increments framesDroppedTotal (plan 223 §4.7)', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1')
+    const fake = fakeSession('dev-1', { config: null, keyframe: null })
+    const { manager, emit } = fakeSessionManagerCapturing(fake.session)
+    const handler = setUpHandler(db, fake.session, manager)
+    const a = fakeConn({ bufferedAmount: () => MAX_BUFFERED + 1 })
+
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'stream.start', id: 's1', payload: { deviceId: 'dev-1', quality: 'wall' } }))
+    const before = handler.transportStats().framesDroppedTotal
+    emit(new Uint8Array([1, 2, 3]), frameMeta())
+    expect(handler.transportStats().framesDroppedTotal).toBe(before + 1)
   })
 })

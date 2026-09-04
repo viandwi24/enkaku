@@ -60,6 +60,7 @@ function fakeSessions(session: DeviceSession): SessionManager {
     closeDevice: async () => {},
     closeAll: async () => 0,
     encoders: () => [],
+    forwards: () => [],
   }
 }
 

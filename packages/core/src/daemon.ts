@@ -53,6 +53,7 @@ import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
 import { computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling'
 import { createAdbMetricsStore } from './device/adb-metrics'
 import { createHostAdb, type HostAdb } from './device/host-adb'
+import { createUsbRootCache } from './device/usb-root-cache'
 import { createDeviceHealth, type DeviceHealth } from './device/health'
 import { createAdbServerHealth, type AdbServerHealthMonitor } from './device/adb-health'
 import { createAgentProvisioner, createAgentProvisionerRoutes, type AgentProvisioner } from './device/agent-provisioner'
@@ -182,13 +183,14 @@ import { createEndpointStore, type EndpointStore } from './registry/endpoints'
 import { createDeviceReconnector, type DeviceReconnector } from './registry/reconnect'
 import { createSweeper, type Sweeper } from './registry/sweep'
 import { createCutoverManager, type CutoverManager } from './registry/cutover'
+import { shouldRemoveBootForward, parseForwardListLine } from './registry/boot-forward-cleanup'
 import { formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber } from './registry/device-number'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
 import { createWsMessageHandler, BACKPRESSURE_LIMIT_BYTES, type InputStatsBlock } from './server/ws-handlers'
 import type { TransportSnapshot } from './server/transport-metrics'
 import { createJobService } from './services/job-service'
-import { startScrcpySession, sweepStrayScrcpyServers } from '@enkaku/scrcpy'
+import { startScrcpySession, sweepStrayScrcpyServers, isOwnScrcpyForwardRemote } from '@enkaku/scrcpy'
 import { createDbArtifactSink, createDbDeviceSource } from './session/adapters'
 import { saveForDevice } from './runner/artifact-store'
 import { materializeBundle } from './scripts/bundle-cache'
@@ -813,6 +815,7 @@ let blobGc: BlobGc | null = null
           return adb.binaryPath
         },
         settings: () => settingsStore.get().adb,
+        usbRootOf: createUsbRootCache({ listDevices: () => (adb ? adb.listDevices() : Promise.resolve([])) }).rootOf,
         onLog: (level, msg) => log.child('host-adb')[level](msg),
       })
       hostAdb = hostAdbHandle
@@ -3679,44 +3682,47 @@ let blobGc: BlobGc | null = null
         const adbVersion = await adb.version()
         log.info(`adb server ok (version ${adbVersion}) via ${adbPath}`)
 
-        // Boot-time forward cleanup (plan 85 §4.8, §5 85.6, fixes F20) —
-        // `adb forward` entries live in the adb SERVER, not in this process,
-        // so they survive a crash and accumulate across restarts. Every
-        // entry whose LOCAL port falls inside the configured ui-server range
-        // and whose REMOTE is `tcp:9008` is ours by construction — nothing
-        // else binds that exact pair — so it is safe to remove
-        // unconditionally. scrcpy's own forwards are deliberately left
-        // alone: they use `tcp:0` (a random local port) and are therefore
-        // both harmless leftovers and indistinguishable from another tool's,
-        // so reaching into the shared adb server to remove one would be
-        // guessing, not cleanup.
+        // Boot-time forward cleanup (plan 85 §4.8, §5 85.6, fixes F20; widened
+        // by plan 223 §3.4/§4.4 to close the leaked scrcpy-forward field
+        // incident, MVP 09 §2). `adb forward` entries live in the adb
+        // SERVER, not in this process, so they survive a crash and
+        // accumulate across restarts. Two independent reasons make a listed
+        // entry ours by construction, either sufficient on its own
+        // (`shouldRemoveBootForward`): its LOCAL port falls inside the
+        // configured ui-server range and its REMOTE is `tcp:9008` — nothing
+        // else binds that exact pair; or its REMOTE matches this codebase's
+        // own scrcpy socket-name pattern (`isOwnScrcpyForwardRemote`,
+        // `@enkaku/scrcpy`), regardless of its LOCAL port. At the moment this
+        // loop runs, nothing in this process has opened a forward yet (this
+        // is before `sessions = createSessionManager(...)` and before
+        // `alwaysOn.start()`), so every scrcpy-shaped remote `adb forward
+        // --list` reports here is provably a leftover from before this boot
+        // — the same argument `sweepStrayScrcpyServers` above already makes
+        // for the device-side process list, applied here to the host-side
+        // forward table.
         try {
           const { rangeStart, rangeEnd } = parsePortRange(process.env.ENKAKU_UI_SERVER_PORT_RANGE)
           const list = await hostAdbHandle.run(['forward', '--list'])
           let removed = 0
           for (const rawLine of list.split('\n')) {
-            const fields = rawLine.trim().split(/\s+/)
-            const serial = fields[0]
-            const local = fields[1]
-            const remote = fields[2]
-            if (!serial || !local || !remote || remote !== `tcp:${UI_SERVER_DEVICE_PORT}`) continue
-            const portMatch = /^tcp:(\d+)$/.exec(local)
-            if (!portMatch) continue
-            const port = Number.parseInt(portMatch[1]!, 10)
-            if (port < rangeStart || port > rangeEnd) continue
+            const entry = parseForwardListLine(rawLine)
+            if (!entry) continue
+            if (!shouldRemoveBootForward(entry, { uiServerDevicePort: UI_SERVER_DEVICE_PORT, uiServerRangeStart: rangeStart, uiServerRangeEnd: rangeEnd }, isOwnScrcpyForwardRemote)) {
+              continue
+            }
             try {
               // `-s serial`, matching `launcher.ts`'s own `forward --remove`
               // call — the removal is scoped to the exact (serial, local)
               // pair the listing reported, never a bare port number.
-              await hostAdbHandle.run(['-s', serial, 'forward', '--remove', local])
+              await hostAdbHandle.run(['-s', entry.serial, 'forward', '--remove', entry.local])
               removed += 1
             } catch (err) {
-              log.warn(`boot-time forward cleanup: failed to remove ${local} (${serial}): ${String(err)}`)
+              log.warn(`boot-time forward cleanup: failed to remove ${entry.local} (${entry.serial}): ${String(err)}`)
             }
           }
           if (removed > 0) {
             log.info(
-              `boot-time cleanup: removed ${removed} leaked ui-server adb forward(s) (range ${rangeStart}-${rangeEnd}, remote tcp:${UI_SERVER_DEVICE_PORT})`,
+              `boot-time cleanup: removed ${removed} leaked adb forward(s) (ui-server range ${rangeStart}-${rangeEnd}, remote tcp:${UI_SERVER_DEVICE_PORT}; or a matching scrcpy socket)`,
             )
           }
         } catch (err) {

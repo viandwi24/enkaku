@@ -56,6 +56,7 @@ function fakeSessions(session: DeviceSession): SessionManager {
     closeDevice: async () => {},
     closeAll: async () => 0,
     encoders: () => [],
+    forwards: () => [],
   }
 }
 
@@ -779,6 +780,7 @@ function trackingSessions(session: DeviceSession, sequence: string[]): SessionMa
     closeDevice: async () => {},
     closeAll: async () => 0,
     encoders: () => [],
+    forwards: () => [],
   }
 }
 

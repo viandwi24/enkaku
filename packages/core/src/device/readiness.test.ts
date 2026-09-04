@@ -158,6 +158,9 @@ function fakeSessionManager() {
     encoders() {
       return []
     },
+    forwards() {
+      return []
+    },
   }
   return { sessions, acquireCalls, isLive: (deviceId: string) => subs.get(deviceId)?.size !== 0 && subs.has(deviceId) }
 }

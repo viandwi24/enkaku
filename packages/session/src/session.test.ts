@@ -27,6 +27,33 @@ function fakeInspector(): Inspector {
   }
 }
 
+/** A scrcpy session that never produces frames and never closes on its own — used to check that createSession threads its port/scid onto DeviceSession (plan 223 §4.3). */
+function fakeScrcpySession(opts: { port?: number; scid?: string } = {}): ScrcpySession {
+  return {
+    meta: null,
+    port: opts.port ?? 27183,
+    scid: opts.scid ?? '7f000001',
+    onPacket: () => {},
+    onMetaChange: () => {},
+    onClose: () => {},
+    onDeviceMessage: () => () => {},
+    control: {
+      injectTouch: () => {},
+      injectKeycode: () => {},
+      injectText: () => {},
+      uhidCreate: () => {},
+      uhidInput: () => {},
+      uhidDestroy: () => {},
+      setDisplayPower: () => {},
+      resetVideo: () => {},
+      getClipboard: async () => '',
+      setClipboard: async () => {},
+      injectScroll: () => {},
+    },
+    close: async () => {},
+  } as unknown as ScrcpySession
+}
+
 /**
  * Plan 208 §3.2, §4.8 — the inspector is session-scoped, not tab-scoped:
  * `prewarmInspector()` (the always-on builder's call) and
@@ -956,5 +983,25 @@ describe('createSession — requireScrcpy applies to every build, not only the f
     )
     expect(session.displayEngineId).toBe('screencap-loop')
     await session.close()
+  })
+})
+
+describe('createSession — forwardPort/scrcpyScid (plan 223 §4.3)', () => {
+  test('forwardPort and scrcpyScid are null on the screencap-loop engine, set from the scrcpy handle otherwise', async () => {
+    const screencapSession = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', display: 'screencap-loop', requireScrcpy: true },
+      { client: fakeClient(), log: silentLog(), makeScrcpy: async () => null },
+    )
+    expect(screencapSession.forwardPort).toBeNull()
+    expect(screencapSession.scrcpyScid).toBeNull()
+    await screencapSession.close()
+
+    const scrcpySession = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client: fakeClient(), log: silentLog(), makeScrcpy: async () => fakeScrcpySession({ port: 27700, scid: '7f00ee11' }) },
+    )
+    expect(scrcpySession.forwardPort).toBe(27700)
+    expect(scrcpySession.scrcpyScid).toBe('7f00ee11')
+    await scrcpySession.close()
   })
 })

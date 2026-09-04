@@ -27,6 +27,7 @@ export {
   type EncoderState,
   type EncoderReport,
   type FrameSink,
+  type ForwardRecord,
 } from './manager'
 export {
   createAlwaysOn,

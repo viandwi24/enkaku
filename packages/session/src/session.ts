@@ -108,6 +108,16 @@ export interface DeviceSession {
   /** The most recent IDR frame, so a joining viewer has something to decode. */
   videoKeyframe: (() => Uint8Array | null) | null
   /**
+   * The host port this session's active scrcpy forward is bound to (plan 223
+   * §4.2/§4.3) — null when the display engine is `screencap-loop` (no scrcpy
+   * forward exists) or the session predates a successful connect. Read by
+   * `SessionManager.forwards()`; nothing else in this package owns a second,
+   * independent forward-tracking store.
+   */
+  forwardPort: number | null
+  /** This session's scrcpy `scid`, or null under the same condition as `forwardPort` above. */
+  scrcpyScid: string | null
+  /**
    * Ask the encoder for a fresh keyframe (Plan 17 §3.6, §4.5) — sent when a
    * viewer subscribes, so the first thing they see is current rather than the
    * cached IDR from seconds earlier. Only present when scrcpy is the display
@@ -852,6 +862,8 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     videoProfile,
     videoConfig: scrcpyDisplay ? () => scrcpyDisplay.configPacket : null,
     videoKeyframe: scrcpyDisplay ? () => scrcpyDisplay.keyframePacket : null,
+    forwardPort: scrcpy ? scrcpy.port : null,
+    scrcpyScid: scrcpy ? scrcpy.scid : null,
     ...(scrcpy ? { requestKeyframe: () => scrcpy!.control.resetVideo() } : {}),
     inspector: null,
     inspectorEngineId: 'starting',
@@ -1091,6 +1103,8 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     session.videoConfig = () => newDisplay.configPacket
     session.videoKeyframe = () => newDisplay.keyframePacket
     session.requestKeyframe = () => attempted.control.resetVideo()
+    session.forwardPort = attempted.port
+    session.scrcpyScid = attempted.scid
     liveScrcpy = attempted
     fallbackRetryAttempt = 0
     await oldDisplay.stop().catch((err) => log.warn(`failed to stop the screencap-loop fallback after recovering scrcpy for ${opts.deviceId}: ${String(err)}`))
