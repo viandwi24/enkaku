@@ -72,6 +72,28 @@ export const engineDescriptors: Array<Omit<EngineDescriptor, 'requires' | 'avail
     configSchema: {},
   },
   {
+    id: 'ui-tree',
+    // No number in this name: the file header's rule (a display name is served
+    // verbatim by GET /api/registry and must never assert a number nobody has
+    // measured). The ui-tree find and dump costs are measured by plan 222's
+    // owner run and live in the SDK doc comments, not here.
+    displayName: 'UI tree (guest agent accessibility service, push-based waitFor)',
+    kind: 'inspector',
+    // No `set-text` / `long-click` / `double-click`: the agent has no element
+    // actions (plan 222 §3.7), and claiming one would make
+    // `supportsElementActions` lie. `watch` is what `device-executor.ts` reads
+    // as "this engine can push", through `Inspector.watch?`.
+    capabilities: ['dump', 'find', 'screenshot', 'watch'],
+    // Deliberately empty, and this is the row MVP 13 A.9 asks for. An
+    // AccessibilityService reads `AccessibilityNodeInfo` through a binding the
+    // system owns; it never connects `UiAutomation`, which is the resource the
+    // `instrumentation` lock names. The reverse hazard (a connected
+    // UiAutomation suppresses accessibility services) is handled by the
+    // ladder, which picks exactly one rung per session, not by a lock.
+    locks: [],
+    configSchema: {},
+  },
+  {
     id: 'ui-server',
     displayName: 'UI server (persistent on-device, target <200 ms per find)',
     kind: 'inspector',

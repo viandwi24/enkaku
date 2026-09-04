@@ -84,6 +84,11 @@ export function createNodeHosts(deps: {
           // The Plan 24 streaming lane, bound to this node's own adb client
           // (plan 34 §4.1) — same as the core's local wiring in `daemon.ts`.
           execStream: (serial, cmd, streamOpts) => deps.client.execStream(serial, cmd, streamOpts),
+          // No `uiTree` key (plan 222 §4.6, §9 Q1's cloud-node non-goal): this
+          // node has no guest-agent session of its own, so a node-owned
+          // device's session always starts at the ui-server rung, exactly as
+          // `createInspectorForSession`'s own doc comment for an absent
+          // `deps.uiTree` describes.
         },
         { deviceId, transport, requested },
       ),

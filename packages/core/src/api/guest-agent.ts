@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
 import type { AdbClient } from '@enkaku/adb'
-import type { AgentStatus, GuestAgentActivity, GuestAgentVideo, ShellResult, TransportExecOptions } from '@enkaku/protocol'
+import type { AgentStatus, GuestAgentActivity, GuestAgentVideo, ShellResult, TransportExecOptions, UiChangedEvent } from '@enkaku/protocol'
 import {
   GUEST_AGENT_PACKAGE,
   GuestAgentClientError,
   createGuestAgentClient,
   createGuestAgentLauncher,
+  createGuestAgentWatch,
   type GuestAgentClient,
   type GuestAgentClientOptions,
   type GuestAgentLauncher,
@@ -337,6 +338,24 @@ export interface GuestAgentRoutesHandle {
     deviceId: string,
     device: { stableId: string | null; label: string | null; number: string | null; group: string | null; tags: string[] },
   ) => Promise<void>
+  /**
+   * Plan 222 §4.6 — a LONG-LIVED `ui.watch` subscription for the `ui-tree`
+   * inspector. It takes the same reference on the device's shared guest-agent
+   * session that `withGuestAgentClient` takes for the length of one call, and
+   * holds it until `close()`, so the forwarded port and the pairing token stay
+   * valid for as long as the subscription does and no second token is ever
+   * minted (plan 44 §8b's "Bug 1").
+   */
+  watchGuestAgentUi: (
+    deviceId: string,
+    hooks: { onEvent: (event: UiChangedEvent) => void; onGap: (expected: number, received: number) => void; onClose: (reason: string) => void },
+  ) => Promise<GuestAgentUiWatch>
+}
+
+/** A live `ui.watch` subscription plus the reference it holds on the device's guest-agent session. */
+export interface GuestAgentUiWatch {
+  /** Closes the subscription and releases the session reference. Idempotent. */
+  close(): Promise<void>
 }
 
 export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRoutesHandle {
@@ -393,6 +412,11 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
   }): DeviceSession {
     let port: number | null = null
     let client: GuestAgentClient | null = null
+    // The token currently live on the device, mirrored here so `withEndpoint`
+    // (plan 222 §4.6) can hand it to a caller that needs the raw endpoint
+    // rather than a `GuestAgentClient` — `ui.watch`'s own connection. Set the
+    // moment `bootstrap()` succeeds, alongside `client`.
+    let activeToken: string | null = null
     // Coalesces concurrent first-use (or concurrent re-auth) calls onto ONE in-flight bootstrap —
     // without this, two callers racing `withClient()` before either has set `client` would each
     // start their OWN bootstrap and mint TWO tokens, reintroducing the exact race plan 44 §8b's
@@ -437,6 +461,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
           await newClient.hello()
           if (round > 1) deps.log.info(`guest-agent session[${opts.deviceId}]: re-pairing round ${round} was accepted`)
           client = newClient
+          activeToken = token
           return newClient
         } catch (err) {
           if (!(err instanceof GuestAgentClientError) || !REAUTH_CODES.has(err.code)) throw err
@@ -499,8 +524,16 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
           return await fn(fresh)
         }
       },
+      async withEndpoint(fn, callOpts) {
+        await ensureClient(callOpts)
+        // `port`/`activeToken` are set by the SAME bootstrap `ensureClient` just
+        // awaited (or an earlier one this call reused) — never read before it,
+        // so a caller can never see a null port.
+        return fn({ port: port!, token: activeToken! })
+      },
       async close() {
         client = null
+        activeToken = null
         const held = port
         port = null
         if (held === null) return
@@ -570,29 +603,129 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
    * egress probe in front of a status read, and would deadlock outright if a future caller ever
    * nested one guest-agent call inside another.
    */
-  async function withEphemeralSession<T>(
-    row: DeviceRow,
-    fn: (client: GuestAgentClient) => Promise<T>,
-    opts?: DeviceSessionCallOpts,
-  ): Promise<T> {
+  /**
+   * The shared half of `withEphemeralSession` and `watchGuestAgentUi` (plan 222
+   * §4.6, step 222.4): reuse the route's live session when there is one, else
+   * the ref-counted ephemeral one, `refs += 1` either way — and hand back a
+   * `release()` the caller runs exactly once, in its own `finally`. Factored
+   * out of `withEphemeralSession` so a long-lived `ui.watch` subscription can
+   * hold the SAME kind of reference a one-shot call holds, for as long as it
+   * runs, instead of a second, parallel bookkeeping scheme.
+   */
+  function acquireSessionHold(row: DeviceRow): { session: DeviceSession; release: () => Promise<void> } {
     const shared = routeService?.activeSessionOf(row.id) ?? null
-    if (shared) return shared.withClient(fn, opts)
+    if (shared) return { session: shared, release: async () => {} }
     let holder = ephemeralSessions.get(row.id)
     if (!holder) {
       holder = { session: makeSession(row), refs: 0 }
       ephemeralSessions.set(row.id, holder)
     }
-    holder.refs += 1
+    const mine = holder
+    mine.refs += 1
+    let released = false
+    return {
+      session: mine.session,
+      release: async () => {
+        if (released) return
+        released = true
+        mine.refs -= 1
+        if (mine.refs === 0 && ephemeralSessions.get(row.id) === mine) {
+          ephemeralSessions.delete(row.id)
+          await mine.session.close().catch((err: unknown) => {
+            deps.log.warn(`guest-agent ephemeral session[${row.id}] close() failed, tolerated: ${String(err)}`)
+          })
+        }
+      },
+    }
+  }
+
+  /**
+   * Runs `fn` against `row`'s shared device session — reusing the one already backing an applied
+   * network route (`routeService.activeSessionOf`) when there is one, exactly the fix for plan 44
+   * §8b's "Bug 1": a guest-agent status probe or a cold network read must never mint a SEPARATE
+   * token that rotates the live route's token out from under it. When no route is applied for this
+   * device, a fresh session is built, used, and closed again — never held across calls for a
+   * device with no applied route (the port-allocator contract).
+   *
+   * **Concurrent callers share that ephemeral session too**, reference-counted, which is the part
+   * that used to be missing. A device holds exactly ONE pairing token at a time; two callers that
+   * each built their own session each minted a token, and the second `am start` overwrote the
+   * first, leaving the first caller retrying `E_UNAUTHORISED` against a token the agent had already
+   * forgotten. That is plan 44 §8b's "Bug 1" again, in the branch where no VPN route happens to be
+   * applied — and it is reachable on any ordinary admission, because `daemon.ts`'s `onDeviceReady`
+   * fires `agentProvisioner.ensure`, `labelling.reconcile` and `preparationRunner.ensure` with no
+   * `await` between them, and the session manager's IME ladder and `device-identity`'s GPS apply
+   * can land in the same window. `DeviceSession.withClient` already coalesces concurrent
+   * bootstraps onto one in-flight token; sharing the session is what puts every caller behind that
+   * one coalescing point instead of beside it.
+   *
+   * The count is what preserves the old contract: the LAST caller out closes the session and
+   * releases the forwarded port, so a device with no applied route still holds nothing between
+   * calls. Reference counting rather than a queue on purpose — a queue would serialise a 30-second
+   * egress probe in front of a status read, and would deadlock outright if a future caller ever
+   * nested one guest-agent call inside another.
+   */
+  async function withEphemeralSession<T>(
+    row: DeviceRow,
+    fn: (client: GuestAgentClient) => Promise<T>,
+    opts?: DeviceSessionCallOpts,
+  ): Promise<T> {
+    const hold = acquireSessionHold(row)
     try {
-      return await holder.session.withClient(fn, opts)
+      return await hold.session.withClient(fn, opts)
     } finally {
-      holder.refs -= 1
-      if (holder.refs === 0 && ephemeralSessions.get(row.id) === holder) {
-        ephemeralSessions.delete(row.id)
-        await holder.session.close().catch((err: unknown) => {
-          deps.log.warn(`guest-agent ephemeral session[${row.id}] close() failed, tolerated: ${String(err)}`)
-        })
+      await hold.release()
+    }
+  }
+
+  /**
+   * Plan 222 §4.6, step 222.4 — a long-lived `ui.watch` subscription for the
+   * `ui-tree` inspector. It takes the same kind of hold `withEphemeralSession`
+   * takes for the length of one call, and keeps it until `close()`, so the
+   * forwarded port and the pairing token stay valid for as long as the
+   * subscription does and no second token is ever minted (plan 44 §8b's
+   * "Bug 1"). `hooks.onClose` is wrapped so a subscription the agent itself
+   * dropped also releases the hold exactly once — the two paths (an explicit
+   * `close()` and an agent-initiated drop) share one `closed` flag, because a
+   * hold released twice is a bug that leaks a forwarded port.
+   */
+  async function watchGuestAgentUi(
+    deviceId: string,
+    hooks: { onEvent: (event: UiChangedEvent) => void; onGap: (expected: number, received: number) => void; onClose: (reason: string) => void },
+  ): Promise<GuestAgentUiWatch> {
+    const row = mustGet(deviceId)
+    const hold = acquireSessionHold(row)
+    let closed = false
+    const releaseOnce = async (): Promise<void> => {
+      if (closed) return
+      closed = true
+      await hold.release()
+    }
+    try {
+      const watch = await hold.session.withEndpoint(({ port, token }) =>
+        Promise.resolve(
+          createGuestAgentWatch({
+            port,
+            token,
+            onEvent: hooks.onEvent,
+            onGap: hooks.onGap,
+            onClose: (reason) => {
+              hooks.onClose(reason)
+              void releaseOnce()
+            },
+          }),
+        ),
+      )
+      await watch.ready
+      return {
+        close: async () => {
+          await watch.close().catch(() => undefined)
+          await releaseOnce()
+        },
       }
+    } catch (err) {
+      await releaseOnce()
+      throw err
     }
   }
 
@@ -780,6 +913,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     reconcileNetworkRoutes: service.reconcileNetworkRoutes,
     isRouteEnabled: service.isRouteEnabled,
     withGuestAgentClient: (deviceId, fn) => withEphemeralSession(mustGet(deviceId), fn),
+    watchGuestAgentUi,
     deviceNetwork: service.device,
     routeActions: service.actions,
     async pushActivity(deviceId, activities, video) {

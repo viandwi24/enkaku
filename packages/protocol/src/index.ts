@@ -289,6 +289,7 @@ export type {
   DisplaySource,
   InputSink,
   Inspector,
+  InspectorWatch,
   Point,
   FrameMeta,
   GestureSample,

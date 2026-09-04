@@ -1,16 +1,31 @@
 import {
   UiautomatorDumpInspector,
   UiServerInspector,
+  UiTreeInspector,
   createUiServerLauncher,
+  type GuestAgentClient,
   type UiServerArtifactMismatch,
   type UiServerStatus,
 } from '@enkaku/drivers'
 import type { AdbStreamHandle, AdbStreamOptions } from '@enkaku/adb'
-import type { Inspector, Transport } from '@enkaku/protocol'
+import type { Inspector, Transport, UiChangedEvent } from '@enkaku/protocol'
 import type { ToolchainManager } from '@enkaku/toolchain'
 import type { Logger } from './logger'
 import type { PortAllocator } from './port-allocator'
 import { parseWmSize } from './probe'
+
+/**
+ * A live `ui.watch` subscription (plan 222 §4.2, §4.6) — the same shape
+ * `packages/core/src/api/guest-agent.ts`'s `GuestAgentUiWatch` returns.
+ */
+export interface UiTreeWatchHooks {
+  onEvent: (event: UiChangedEvent) => void
+  onGap: (expected: number, received: number) => void
+  onClose: (reason: string) => void
+}
+export interface UiTreeWatchHandle {
+  close(): Promise<void>
+}
 
 export interface InspectorHandle {
   inspector: Inspector
@@ -48,21 +63,90 @@ export interface InspectorFactoryDeps {
   onFallback?: (deviceId: string, from: string, to: string, reason: string) => void
   /** A repair attempt still left the on-device artifact mismatched (plan 41 §3.3) — the host records `device.artifact.mismatch`. */
   onArtifactMismatch?: (deviceId: string, info: UiServerArtifactMismatch) => void
+  /**
+   * The `ui-tree` rung (plan 222 §3.8). Absent means the rung is skipped
+   * entirely and the ladder starts at ui-server — which is exactly what the
+   * cloud node does (`packages/node/src/hosts.ts` has no guest-agent session
+   * of its own), and what any host without a provisioner does.
+   */
+  uiTree?: {
+    /** The provisioner's PERSISTED row: no adb call (`AgentProvisioner.status`'s own contract). */
+    agentStatus: (deviceId: string) => Promise<{ state: string; capabilities: readonly string[] }>
+    withClient: <T>(deviceId: string, fn: (client: GuestAgentClient) => Promise<T>) => Promise<T>
+    openWatch: (deviceId: string, hooks: UiTreeWatchHooks) => Promise<UiTreeWatchHandle>
+  }
 }
 
 const DUMP_POLL_MS = 500
+/** The `waitFor` interval used ONLY when the ui-tree engine could not open its watch channel (plan 222 §3.5). */
+const UI_TREE_POLL_MS = 200
+/**
+ * How long the ui-tree rung may spend proving itself before the ladder moves
+ * on. One persisted read plus one `ui.status()` round trip; a phone whose
+ * agent is wedged must not delay the session's inspector by more than this
+ * before ui-server is started instead.
+ */
+export const UI_TREE_PROBE_BUDGET_MS = 3_000
 
 /**
- * Picks the inspector engine for one session (plan 06 §3.5).
- * `ui-server` is the default; if it fails to start the session is STILL
- * created with `uiautomator-dump` (a per-session fallback that leaves the DB
- * column untouched).
+ * `null` when the ui-tree rung can be used on this device; otherwise the
+ * operator-facing reason it cannot, verbatim enough to act on. A RESULT, not
+ * an exception, for the same reason `GuestAgentVpnConsent` is one: "this phone
+ * has not had its accessibility service enabled" is a different event from
+ * "this device is broken", and collapsing them would cost the device an engine
+ * it could have had.
+ */
+export async function uiTreeUnavailableReason(deps: InspectorFactoryDeps, deviceId: string): Promise<string | null> {
+  if (!deps.uiTree) return 'this host has no guest-agent session (the cloud node path)'
+  const uiTree = deps.uiTree
+  try {
+    const probe = async (): Promise<string | null> => {
+      const agent = await uiTree.agentStatus(deviceId)
+      if (agent.state !== 'ready') return `the guest agent is ${agent.state} on this device`
+      if (!agent.capabilities.includes('ui-tree')) {
+        return 'the installed guest agent build does not advertise the ui-tree capability (it predates plan 221)'
+      }
+      const status = await uiTree.withClient(deviceId, (c) => c.uiStatus())
+      if (!status.enabled) {
+        return (
+          'the guest agent is installed and answering, but its accessibility service is not enabled on this phone. ' +
+          'Provisioning writes `enabled_accessibility_services` from adb; when a build refuses that write, open the ' +
+          'agent on the phone and press "Open accessibility settings" (plan 221 §4.10)'
+        )
+      }
+      if (!status.connected) return 'the accessibility service is enabled but not bound yet (it usually binds within seconds of a reboot)'
+      return null
+    }
+    return await withTimeout(probe(), UI_TREE_PROBE_BUDGET_MS, `the ui-tree probe did not answer within ${UI_TREE_PROBE_BUDGET_MS}ms`)
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  return Promise.race([
+    p,
+    new Promise<T>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms)
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
+/**
+ * Picks the inspector engine for one session (plan 222 §3.8): `ui-tree`, then
+ * `ui-server`, then `uiautomator-dump`, evaluated once per session, in that
+ * order, and never more than one rung at a time — the ladder itself is what
+ * keeps a live `UiAutomation` (a running ui-server, or a `uiautomator dump`)
+ * from ever suppressing a connected `UiTreeService`.
  */
 export async function createInspectorForSession(
   deps: InspectorFactoryDeps,
   opts: { deviceId: string; transport: Transport; requested: string | null },
 ): Promise<InspectorHandle> {
-  const requested = opts.requested ?? 'ui-server'
+  const requested = opts.requested ?? 'ui-tree'
   const dumpHandle = (): InspectorHandle => ({
     inspector: new UiautomatorDumpInspector(opts.transport, (level, msg) => deps.log[level](msg)),
     engineId: 'uiautomator-dump',
@@ -72,6 +156,38 @@ export async function createInspectorForSession(
 
   if (requested === 'uiautomator-dump') return dumpHandle()
 
+  // ---- rung 1: ui-tree (plan 222 §3.8) ----
+  if (requested === 'ui-tree') {
+    const skip = await uiTreeUnavailableReason(deps, opts.deviceId)
+    if (skip === null) {
+      const uiTree = deps.uiTree!
+      const inspector = new UiTreeInspector({
+        deviceId: opts.deviceId,
+        transport: opts.transport,
+        withClient: (fn) => uiTree.withClient(opts.deviceId, fn),
+        openWatch: (hooks) => uiTree.openWatch(opts.deviceId, hooks),
+        screenSize: async () => {
+          const { stdout } = await opts.transport.exec('wm size', { profile: 'probe' })
+          const size = parseWmSize(stdout)
+          return size ? { width: size.w, height: size.h } : null
+        },
+        onLog: (level, msg) => deps.log[level](msg),
+      })
+      return {
+        inspector,
+        engineId: 'ui-tree',
+        pollIntervalMs: UI_TREE_POLL_MS,
+        // Nothing to release: no process was started, no port was claimed, no
+        // lock was taken. The agent's own session and forwarded port are owned
+        // by the guest-agent subsystem and outlive this handle.
+        release: async () => {},
+      }
+    }
+    deps.log.warn(`the ui-tree inspector cannot be used on ${opts.deviceId} (${skip}) — falling back to ui-server`)
+    deps.onFallback?.(opts.deviceId, 'ui-tree', 'ui-server', skip)
+  }
+
+  // ---- rung 2: ui-server ----
   let port: number | null = null
   try {
     const apkPaths = async () => ({

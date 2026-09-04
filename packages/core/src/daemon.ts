@@ -4011,6 +4011,18 @@ let blobGc: BlobGc | null = null
                     kind: 'device.artifact.mismatch',
                     meta: { package: UI_SERVER_PACKAGE, reason: info.reason, ...(info.observed ? { observed: info.observed } : {}) },
                   }),
+                // Plan 222 §3.8, §4.6 — the ui-tree rung. Present only for a
+                // core that owns a real guest-agent session for this device
+                // (a node has none — `packages/node/src/hosts.ts` passes no
+                // `uiTree` at all, so a node-owned device starts at ui-server).
+                uiTree: {
+                  agentStatus: async (deviceId) => {
+                    const s = await agentProvisioner.status(deviceId)
+                    return { state: s.state, capabilities: s.capabilities }
+                  },
+                  withClient: (deviceId, fn) => guestAgent.withGuestAgentClient(deviceId, fn),
+                  openWatch: (deviceId, hooks) => guestAgent.watchGuestAgentUi(deviceId, hooks),
+                },
               },
               { deviceId, transport, requested },
             ),

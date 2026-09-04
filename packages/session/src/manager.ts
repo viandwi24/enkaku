@@ -434,7 +434,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     deps.onEvent?.(deviceId, 'session.opened', {
       display: session.displayEngineId,
       input: session.inputEngineId,
-      inspection: row.inspection ?? 'ui-server',
+      inspection: row.inspection ?? 'ui-tree',
       quality: session.quality,
     })
     const rotationOutcome = session.rotation?.outcome

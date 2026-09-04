@@ -171,7 +171,16 @@ export interface InputSink {
   prepareKeyboard?(): Promise<void>
 }
 
-/** Engine inspeksi UI (spec §7): `uiautomator-dump` (M4), `ui-server` (M4.5). */
+/**
+ * A live subscription to an engine's own change notifications (plan 222 §3.5).
+ * `close()` is idempotent and never throws: a caller unwinding a `finally`
+ * must not have to guard it.
+ */
+export interface InspectorWatch {
+  close(): Promise<void>
+}
+
+/** The UI inspection engines (spec §8): `ui-tree` (default), `ui-server`, `uiautomator-dump`. */
 export interface Inspector {
   id: string
   dump(): Promise<UiNode>
@@ -194,4 +203,18 @@ export interface Inspector {
    * the channel the script's own calls share. Optional, like `findDetailed`.
    */
   lastDump?(): { root: UiNode; at: number } | null
+  /**
+   * Subscribe to on-device UI change notifications, so `waitFor` can await a
+   * change instead of polling for one (MVP 02 §4 phase 2, "push, not poll").
+   * `onChange` is called with no argument and no payload: it means "something
+   * on screen changed, re-evaluate", nothing more, and a lost or coalesced
+   * batch of events collapses into one call rather than being reconstructed.
+   *
+   * Optional, exactly like `findDetailed`: an engine with no notification
+   * source (`ui-server`, `uiautomator-dump`) simply does not implement it and
+   * `device-executor.ts` polls at `session.inspectorPollIntervalMs` as before.
+   * Absence is the honest signal — never a stub that resolves and never fires,
+   * which would turn every `waitFor` on that engine into a full-timeout hang.
+   */
+  watch?(onChange: () => void): Promise<InspectorWatch>
 }

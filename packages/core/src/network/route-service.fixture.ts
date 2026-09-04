@@ -218,6 +218,11 @@ export function makeRouteHarness(opts: RouteHarnessOptions = {}): RouteHarness {
         active = true
         return fn(client)
       },
+      async withEndpoint(fn) {
+        assertReachable(row.serial)
+        active = true
+        return fn({ port: 0, token: 'fake-token' })
+      },
       get active() {
         return active
       },

@@ -398,6 +398,15 @@ export interface DeviceSessionCallOpts {
  */
 export interface DeviceSession {
   withClient<T>(fn: (client: GuestAgentClient) => Promise<T>, opts?: DeviceSessionCallOpts): Promise<T>
+  /**
+   * Runs `fn` against this session's bootstrapped ENDPOINT — the forwarded host
+   * port and the pairing token it already owns — bootstrapping exactly as
+   * `withClient` does and minting no second token. It exists for `ui.watch`,
+   * the one guest-agent call that is a subscription rather than a request
+   * (plan 222 §4.6): `createGuestAgentWatch` opens its own connection to the
+   * SAME forwarded port and must never allocate a forward of its own.
+   */
+  withEndpoint<T>(fn: (endpoint: { port: number; token: string }) => Promise<T>, opts?: DeviceSessionCallOpts): Promise<T>
   readonly active: boolean
   close(): Promise<void>
 }

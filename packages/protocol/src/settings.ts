@@ -373,8 +373,8 @@ export const DeviceSettingsSchema = z
           .describe('How taps, swipes, and typing reach the device')
           .meta(ui({ title: 'Input delivery', source: 'registry.inputs' })),
         inspection: z
-          .enum(['ui-server', 'uiautomator-dump', 'appium'])
-          .default('ui-server')
+          .enum(['ui-tree', 'ui-server', 'uiautomator-dump', 'appium'])
+          .default('ui-tree')
           .describe('How scripts find elements on screen')
           .meta(ui({ title: 'Screen inspection', source: 'registry.inspectors' })),
       })
@@ -382,7 +382,7 @@ export const DeviceSettingsSchema = z
         transport: 'adb-usb',
         display: 'scrcpy',
         input: 'scrcpy-uhid',
-        inspection: 'ui-server',
+        inspection: 'ui-tree',
       })
       .meta(
         ui({
