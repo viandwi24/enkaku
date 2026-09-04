@@ -61,3 +61,20 @@ describe('UiautomatorDumpInspector.findDetailed (plan 74 §3.4, §4.3)', () => {
     if (outcome.ok) expect(outcome.node.className).toBe('synthetic-point')
   })
 })
+
+describe('UiautomatorDumpInspector.lastDump (plan 208 §4.6, "the cheap cache")', () => {
+  test('null before the first dump', () => {
+    const inspector = new UiautomatorDumpInspector(fakeTransport(XML_NO_MATCH))
+    expect(inspector.lastDump()).toBeNull()
+  })
+
+  test('dump() records lastDump on success', async () => {
+    const inspector = new UiautomatorDumpInspector(fakeTransport(XML_ONE_MATCH))
+    const before = Date.now()
+    const root = await inspector.dump()
+    const last = inspector.lastDump()
+    expect(last).not.toBeNull()
+    expect(last!.root).toEqual(root)
+    expect(last!.at).toBeGreaterThanOrEqual(before)
+  })
+})

@@ -102,6 +102,12 @@ const INSPECT_DEADLINE_MS = 20_000
  * request specifically (`InspectorPanel.tsx`), so the core's own reason
  * always arrives before the client stops listening — a timeout that explains
  * itself beats one that does not.
+ *
+ * Plan 208 §4.11: this ceiling still covers a first-ever start on a fresh
+ * device (two APKs installed over USB before the instrumentation ever runs),
+ * but the engine is session-scoped now (§3.2) — a healthy, prewarmed attach
+ * answers in milliseconds, and this deadline is only ever paid once per
+ * session, not once per Inspect tab open.
  */
 const INSPECT_ATTACH_DEADLINE_MS = 45_000
 
@@ -515,28 +521,15 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
 
 
   /**
-   * Ref-counted per device across every attached Inspect tab (plan 56 §3.2,
-   * §4.2 step 4/7): `inspect.attach` starts (or joins) the engine,
-   * `inspect.detach` — from an explicit message, a WS close, or the device
-   * going away — releases this connection's share, and the engine itself is
-   * given back only once the count reaches zero. A `Map` (not a per-`state`
-   * count) because two different connections both attaching to the SAME
-   * device must share one count, the same reasoning `MonitorHub` already
-   * uses for one logcat stream serving several viewers.
+   * The engine is session-scoped now (plan 208 §3.2): `inspect.attach`
+   * attaches to whatever inspector the session already has (started by the
+   * session itself), and a viewer leaving — an explicit `inspect.detach`, a
+   * WS close, or the device going away — releases NOTHING but this
+   * connection's own bookkeeping. Idempotent — a connection that never
+   * attached (or already detached) is a harmless no-op.
    */
-  const inspectorRefCounts = new Map<string, number>()
-
-  /** One connection's share of a device's inspector attachment, released on `inspect.detach`, WS close, or the device going away (`resetInspectForDevice`). Idempotent — a connection that never attached (or already detached) is a harmless no-op. */
-  const detachInspector = async (deviceId: string, state: ConnState): Promise<void> => {
+  const noteInspectDetached = (deviceId: string, state: ConnState): void => {
     if (!state.inspectAttached.delete(deviceId)) return
-    const remaining = Math.max(0, (inspectorRefCounts.get(deviceId) ?? 1) - 1)
-    if (remaining > 0) {
-      inspectorRefCounts.set(deviceId, remaining)
-      return
-    }
-    inspectorRefCounts.delete(deviceId)
-    const session = deps.sessions?.get(deviceId) ?? null
-    await session?.releaseInspector().catch((err) => deps.log.warn(`releaseInspector failed for ${deviceId}: ${String(err)}`))
     deps.recorder.record({ deviceId, stream: 'main', kind: 'inspect.detached', actor: state.userId })
   }
 
@@ -1560,12 +1553,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // Anchors/screenshots come from WHATEVER inspector this session
             // already has attached (the same `session.inspector` the
             // `inspect.*` cases above read) — this deliberately does NOT
-            // start one of its own: doing so would mean either duplicating
-            // `inspectorRefCounts`'s ref-counted attach/release lifecycle
-            // here (a second copy of state this router already owns once)
-            // or leaking an inspector engine that nothing ever releases. A
-            // recording opened with no Inspect tab open simply gets no
-            // anchors and no screenshots — never a failed recording (§4.6).
+            // start one of its own: the engine is session-scoped (plan 208
+            // §3.2), started by the session itself (`prewarmInspector()` or
+            // the first `whenInspectorReady()`), never by this recording
+            // handler. A recording opened before the prewarm settles simply
+            // gets no anchors and no screenshots yet — never a failed
+            // recording (§4.6).
             const rec = deps.recording.start(deviceId, state.userId, {
               recordedOn: { stableId: row.stableId, model: row.label, width: session.frameSize.width, height: session.frameSize.height },
               captureAnchor: async () => {
@@ -1678,6 +1671,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 type: 'inspect.status',
                 payload: { deviceId, state: 'starting', engineId: session.inspectorEngineId, capabilities: [] },
               })
+              const attachStartedAt = Date.now()
               try {
                 await withDeadline(
                   session.whenInspectorReady(),
@@ -1715,17 +1709,21 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 })
                 return
               }
-              // Ref-counted, and idempotent per connection: a tab that calls
-              // attach twice (e.g. a reconnect) must not inflate the count.
+              // Plan 208 §3.2, §4.11: attach to whatever the session already
+              // has running — a tab is a viewer, never an owner. Idempotent
+              // per connection: a tab that calls attach twice (e.g. a
+              // reconnect) records nothing new. `tookMs` is near-zero for a
+              // prewarmed engine and the whole cold-start cost only the
+              // first-ever attach on a fresh device.
               if (!state.inspectAttached.has(deviceId)) {
                 state.inspectAttached.add(deviceId)
-                const count = (inspectorRefCounts.get(deviceId) ?? 0) + 1
-                inspectorRefCounts.set(deviceId, count)
-                // Recorded once per device going from zero viewers to one —
-                // never once per dump, which would drown the log (§3.7).
-                if (count === 1) {
-                  deps.recorder.record({ deviceId, stream: 'main', kind: 'inspect.attached', actor: state.userId, meta: { engineId } })
-                }
+                deps.recorder.record({
+                  deviceId,
+                  stream: 'main',
+                  kind: 'inspect.attached',
+                  actor: state.userId,
+                  meta: { engineId, tookMs: Date.now() - attachStartedAt },
+                })
               }
               send(ws, {
                 type: 'inspect.status',
@@ -1737,7 +1735,15 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
 
             const inspector = session.inspector
             if (!inspector) {
-              sendError(ws, 'E_INSPECT_UNAVAILABLE', 'attach to the inspector first (inspect.attach)', msgId)
+              // Plan 208 §3.8: a caller that reached this before the
+              // session's engine exists gets "starting, retry", never
+              // "unavailable" — the engine is on its way (the prewarm, or a
+              // job's own `whenInspectorReady()`), not genuinely broken.
+              if (session.inspectorEngineId === 'starting') {
+                sendError(ws, 'E_INSPECTOR_STARTING', 'the inspector is still starting; retry in a moment', msgId)
+              } else {
+                sendError(ws, 'E_INSPECT_UNAVAILABLE', `the ${session.inspectorEngineId} engine is not available on this session`, msgId)
+              }
               return
             }
 
@@ -1795,7 +1801,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           case 'inspect.detach': {
-            await detachInspector(msg.payload.deviceId, state)
+            noteInspectDetached(msg.payload.deviceId, state)
             return
           }
 
@@ -2041,13 +2047,11 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // the same session id `hello` sent) opened must not outlive it either
       // (plan 27 §4.2 — "a WS disconnect" is one of the three teardown triggers).
       deps.adbEndpoint.closeAllForClient(state.clientId)
-      // A dropped tab must not leave the inspector engine running forever
-      // (plan 56 §3.2, acceptance #8) — released for real once this was the
-      // last attached viewer. Fire-and-forget: `handleClose` itself stays
-      // synchronous, matching every other cleanup call above.
-      for (const deviceId of [...state.inspectAttached]) {
-        void detachInspector(deviceId, state).catch((err) => deps.log.warn(`inspect detach on close failed for ${deviceId}: ${String(err)}`))
-      }
+      // A dropped tab is one more way a viewer leaves (plan 208 §3.2) — the
+      // engine itself lives with the session, not with any Inspect tab, so
+      // this only records the departure and clears this connection's own
+      // bookkeeping.
+      for (const deviceId of [...state.inspectAttached]) noteInspectDetached(deviceId, state)
       // A WS disconnect does NOT revert any `vpn-helper` route a connection's
       // control marker was covering (plan 52 §0, §3.1, §4.1): the route
       // belongs to the device, not the connection.
@@ -2104,14 +2108,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     /**
      * The device went away entirely (plan 56 §4.2 step 7) — `DeviceSession.close()`
      * (called from `sessions.closeDevice()`) already released whatever
-     * inspector the session owned as part of tearing itself down, so this
-     * only clears OUR bookkeeping (the ref count and every connection's
-     * `inspectAttached` entry) rather than releasing a second time against a
-     * session that no longer exists. A later `inspect.attach` on this device
-     * then starts clean instead of inheriting a stale count.
+     * inspector the session owned as part of tearing itself down (plan 208
+     * §3.2), so this only clears every connection's stale `inspectAttached`
+     * bookkeeping. A later `inspect.attach` on this device then starts
+     * clean instead of thinking it is already attached to a dead session.
      */
     resetInspectForDevice(deviceId: string): void {
-      inspectorRefCounts.delete(deviceId)
       for (const s of conns.values()) s.inspectAttached.delete(deviceId)
     },
 

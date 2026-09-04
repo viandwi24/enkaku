@@ -32,6 +32,13 @@ export interface AdbStreamOptions {
   /** Hard cap on total bytes streamed. Default 5 MiB. */
   maxBytes?: number
   signal?: AbortSignal
+  /**
+   * A session-lifetime stream that takes NO lane slot (plan 208 §3.6): it is
+   * counted in `pinned` for the stats and gates nothing. Only for a stream
+   * whose lifetime is bounded by something else (a session) — a bursty user
+   * (logcat, transfer, install) never sets it.
+   */
+  pinned?: boolean
 }
 
 export interface AdbStreamHandle {
@@ -50,6 +57,12 @@ export interface AdbStreamHandle {
 export class StreamLane {
   private globalCount = 0
   private perDevice = new Map<string, number>()
+  /**
+   * A session-lifetime stream (plan 208 §3.6) — counted here, gates
+   * NOTHING: it never competes with a bursty user (a Monitor tab, a
+   * transfer, an install) for the per-device or farm-wide cap.
+   */
+  private pinnedCount = 0
 
   constructor(
     private maxPerDevice: number,
@@ -76,8 +89,17 @@ export class StreamLane {
       .join(', ')
   }
 
-  /** Reserves a slot or throws `E_ADB_STREAM_LIMIT`; never blocks. */
-  acquire(serial: string): () => void {
+  /** Reserves a slot or throws `E_ADB_STREAM_LIMIT`; never blocks. `pinned: true` (plan 208 §3.6) bypasses both caps entirely, counted separately. */
+  acquire(serial: string, opts?: { pinned?: boolean }): () => void {
+    if (opts?.pinned) {
+      this.pinnedCount++
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        this.pinnedCount--
+      }
+    }
     const current = this.perDevice.get(serial) ?? 0
     if (current >= this.maxPerDevice) {
       throw new AdbError(
@@ -104,11 +126,18 @@ export class StreamLane {
     }
   }
 
-  stats(): { maxStreams: number; maxStreamsPerDevice: number; streams: number; perDevice: Record<string, number> } {
+  stats(): {
+    maxStreams: number
+    maxStreamsPerDevice: number
+    streams: number
+    pinned: number
+    perDevice: Record<string, number>
+  } {
     return {
       maxStreams: this.maxGlobal,
       maxStreamsPerDevice: this.maxPerDevice,
       streams: this.globalCount,
+      pinned: this.pinnedCount,
       perDevice: Object.fromEntries(this.perDevice),
     }
   }
@@ -340,7 +369,13 @@ export class AdbClient {
   }
 
   /** The streaming lane's live state (plan 24 §3.2) — separate from `stats()` above on purpose. */
-  streamStats(): { maxStreams: number; maxStreamsPerDevice: number; streams: number; perDevice: Record<string, number> } {
+  streamStats(): {
+    maxStreams: number
+    maxStreamsPerDevice: number
+    streams: number
+    pinned: number
+    perDevice: Record<string, number>
+  } {
     return this.streamLane.stats()
   }
 
@@ -566,7 +601,7 @@ export class AdbClient {
     assertNonNegative('absoluteTimeoutMs', absoluteTimeoutMs)
     assertPositive('maxBytes', maxBytes)
 
-    const releaseLane = this.streamLane.acquire(serial)
+    const releaseLane = this.streamLane.acquire(serial, { pinned: opts.pinned === true })
 
     let ended = false
     let pid: number | null = null

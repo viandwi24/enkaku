@@ -30,7 +30,15 @@ export class SessionError extends Error {
        * 100) that this code superseded; this plan applies the same code to
        * every build, not only that one case.
        */
-      | 'E_SCRCPY_UNAVAILABLE',
+      | 'E_SCRCPY_UNAVAILABLE'
+      /**
+       * Plan 208 §3.8 — the caller reached the inspector before the
+       * session's engine existed; retry, the prewarm is in flight.
+       * Distinct from `UI_SERVER_UNREACHABLE` (a running engine that
+       * stopped answering): this is the one code raised on a NULL
+       * `session.inspector`, never on a live engine that failed a call.
+       */
+      | 'E_INSPECTOR_STARTING',
     message: string,
     /**
      * Plan 74 §4.3 — carries a `FindOutcome`'s last non-ok reason/matches for

@@ -1,10 +1,10 @@
 import { join } from 'node:path'
-import { UiautomatorDumpInspector } from '@enkaku/drivers'
 import {
   defaultFarmSettings,
   FindOutcomeSchema,
   resolveRuntime,
   RESULT_LIMITS,
+  type Inspector,
   type JobSettings,
   type ResultOutcome,
   type RuntimeEnvelope,
@@ -36,6 +36,7 @@ import { resolveIsolation, type IsolationProvider } from './isolation'
 import {
   createNoopTraceTee,
   createTraceTee,
+  reusableTree,
   type TraceCaptureRequest,
   type TraceCaptureResult,
   type TraceEventInput,
@@ -420,6 +421,21 @@ const childEntryPath = join(import.meta.dir, 'child-entry.ts')
 const defaultIsolation = resolveIsolation()
 /** Plan 97 §3.7, §4.9 — mirrors `job.progressIntervalMs`'s own zod default (`packages/protocol/src/settings.ts`). */
 const DEFAULT_PROGRESS_INTERVAL_MS = 1_000
+
+/**
+ * Plan 208 §3.5, §4.10: a `null` session inspector is `E_INSPECTOR_STARTING`,
+ * never an ad-hoc substitute engine — the substitute is exactly what seized
+ * the `instrumentation` lock from a healthy ui-server in another session
+ * (MVP 02 §2.5). The dump engine is built in one place only,
+ * `inspector-factory.ts`'s own fallback.
+ */
+function inspectorOrThrow(session: DeviceSession): Inspector {
+  if (session.inspector) return session.inspector
+  throw new SessionError(
+    'E_INSPECTOR_STARTING',
+    `the inspector on ${session.deviceId} is still starting (engine: ${session.inspectorEngineId}); retry in a moment`,
+  )
+}
 
 /** The `ScriptFailure.code` an abort reason settles as (plan 37 §4.4, plan 74 §4.2). */
 function abortErrorCode(reason: AbortReason): string {
@@ -1116,7 +1132,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               const data =
                 msg.kind === 'screenshot'
                   ? // The screenshot is taken IN THE CORE → its ordering follows the per-device queue.
-                    await (session.inspector ?? new UiautomatorDumpInspector(session.transport)).screenshot()
+                    // Plan 208 §3.5: a null inspector is E_INSPECTOR_STARTING, never an
+                    // ad-hoc substitute engine — the substitute is what seized the
+                    // instrumentation lock from a healthy ui-server in another session.
+                    await inspectorOrThrow(session).screenshot()
                   : Uint8Array.from(Buffer.from(msg.dataBase64 ?? '', 'base64'))
               const saved = await artifacts.save({
                 kind: msg.kind,
@@ -1255,7 +1274,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             const tree = toTraceUiTree(req.method, req.treeValue)
             if (tree !== null) uiHash = await store.putUiTree(job.id, tree)
           } else if (req.uiTree === 'capture' && inspector) {
-            uiHash = await store.putUiTree(job.id, await inspector.dump())
+            // Plan 208 §3.7, §4.9 — reuse the dump the script just paid for
+            // when it is still fresh, instead of a second round trip on the
+            // RPC channel the script's own calls share.
+            const reused = reusableTree(inspector.lastDump?.(), Date.now())
+            uiHash = await store.putUiTree(job.id, reused ?? (await inspector.dump()))
           }
         } catch {
           uiHash = null
@@ -1341,7 +1364,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             session = await deps.sessions.acquire(job.deviceId, noopFrame)
             // Manual control does not wait for the inspector, but a script
             // does: its very first waitFor should use the real engine rather
-            // than the slower ad-hoc dump fallback.
+            // than an engine that is still starting (plan 208 §3.2, §5 step
+            // 208.8 — there is no ad-hoc fallback to wait out any more).
             await session.whenInspectorReady()
           } catch (err) {
             session = null

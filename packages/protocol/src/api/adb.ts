@@ -65,6 +65,8 @@ export const AdbStatsResponseSchema = z.object({
     maxStreams: z.number(),
     maxStreamsPerDevice: z.number(),
     active: z.number(),
+    /** Session-lifetime streams (plan 208 §3.6, the ui-server instrumentation) — counted, never gated by either cap above. */
+    pinned: z.number(),
     perDevice: z.record(z.string(), z.number()),
   }),
   devices: z.array(

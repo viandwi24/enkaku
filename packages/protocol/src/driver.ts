@@ -169,4 +169,11 @@ export interface Inspector {
    * at every consumer, just less informative for that engine.
    */
   findDetailed?(sel: Selector): Promise<FindOutcome>
+  /**
+   * The last tree `dump()` returned and when (unix ms), or null. MVP 02 §4
+   * phase 1 "cheap cache": the failing-action trace capture reuses it while
+   * it is fresh (`TRACE_TREE_REUSE_MS`) instead of a second round trip on
+   * the channel the script's own calls share. Optional, like `findDetailed`.
+   */
+  lastDump?(): { root: UiNode; at: number } | null
 }

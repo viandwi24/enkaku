@@ -71,4 +71,15 @@ describe('UiServerInspector.dump — one retry, not a loop', () => {
     // A second attempt 300ms later would land in the same hole.
     expect(calls()).toBe(1)
   })
+
+  test('dump() records lastDump on success (plan 208 §4.6)', async () => {
+    const { inspector } = inspectorWith(async () => XML)
+    expect(inspector.lastDump()).toBeNull()
+    const before = Date.now()
+    const root = await inspector.dump()
+    const last = inspector.lastDump()
+    expect(last).not.toBeNull()
+    expect(last!.root).toEqual(root)
+    expect(last!.at).toBeGreaterThanOrEqual(before)
+  })
 })

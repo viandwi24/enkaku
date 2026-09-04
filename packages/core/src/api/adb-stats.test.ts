@@ -27,7 +27,7 @@ function fakeAdbClient(): AdbClient {
   return {
     stats: () => ({ maxConcurrent: 8, inFlight: 2, waiting: 1 }),
     pending: (serial: string) => (serial === 'SER1' ? 3 : 0),
-    streamStats: () => ({ maxStreams: 4, maxStreamsPerDevice: 1, streams: 1, perDevice: { SER1: 1 } }),
+    streamStats: () => ({ maxStreams: 4, maxStreamsPerDevice: 1, streams: 1, pinned: 2, perDevice: { SER1: 1 } }),
   } as unknown as AdbClient
 }
 
@@ -73,6 +73,29 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
     const d2 = body.devices.find((d) => d.deviceId === 'd2')
     expect(d2?.queueDepth).toBe(0)
     expect(d2?.consecutiveFailures).toBe(0)
+  })
+
+  test('the streams block carries pinned, separately from the counted active figure (plan 208 §3.6, §4.9)', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'd1', 'SER1')
+
+    const inner = createAdbStatsRoutes({
+      db,
+      client: () => fakeAdbClient(),
+      metrics: createAdbMetricsStore(),
+      health: () => null,
+      auto: () => true,
+      sessions: () => null,
+    })
+    const app = withUser('operator', inner)
+
+    const res = await app.request('/')
+    const body = (await res.json()) as {
+      streams: { maxStreams: number; maxStreamsPerDevice: number; active: number; pinned: number; perDevice: Record<string, number> }
+    }
+    expect(body.streams).toEqual({ maxStreams: 4, maxStreamsPerDevice: 1, active: 1, pinned: 2, perDevice: { SER1: 1 } })
   })
 
   /**

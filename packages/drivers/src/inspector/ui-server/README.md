@@ -11,12 +11,38 @@ Why it exists: `uiautomator dump` takes 0.5–2 seconds per query and fails whil
 | Client | `client.ts` | HTTP/JSONRPC to `127.0.0.1:<localPort>`; the **method subset is deliberately narrow** so moving to our own APK stays cheap |
 | Launcher | `launcher.ts` | verifies, installs (and repairs) the APKs (app + test), `am instrument`, `adb forward` |
 | Verifier | `verify.ts` | reads `dumpsys package` and compares versionCode/signature against the toolchain manifest (plan 41) |
-| Watchdog | `watchdog.ts` | `starting → healthy ⇄ restarting(n) → dead` |
+| Watchdog | `watchdog.ts` | `starting → healthy ⇄ restarting(n) → dead`; runtime recovery and the circuit breaker |
+| Lifecycle | `lifecycle.ts` | plan 208: the fail-fast line parser, the fatal-pattern table, the session-scoped start/close, the idle-wait configurator |
 | Selector | `selector.ts` | Enkaku selector → uiautomator UiSelector |
 | Find guard | `find-guard.ts` | rejects a viewport-sized container as an answer to a specific selector (plan 60) |
-| Inspector | `index.ts` | implements `Inspector` and `InspectorElementActions` |
+| Inspector | `index.ts` | implements `Inspector` and `InspectorElementActions`, on top of `lifecycle.ts` |
 
 The APK is pinned to a specific version and managed by the Toolchain Manager (`swappable: false`, checksum required) — the client↔server protocol is coupled, exactly as scrcpy-server is treated.
+
+## Start: fail fast, then configure (plan 208 §3.3, §3.4)
+
+`am instrument -r` prints its status as `INSTRUMENTATION_*` lines on the same stream the launcher already holds; `lifecycle.ts`'s parser reads them for a fail-fast verdict instead of discarding the bytes. A line matching one of `INSTRUMENTATION_FATAL_PATTERNS` — a stack trace, `Error=`, a crashed process, `am instrument` itself refusing to start the runner — ends the start within about 250 ms of the line arriving, not the 15 s silence ceiling (`INSTRUMENTATION_START_SILENCE_MS`), which now really is only the budget for a server that says nothing:
+
+| Signal | Meaning |
+|---|---|
+| `INSTRUMENTATION_STATUS: stack=` | the instrumentation reported a stack trace |
+| `ClassNotFoundException` | the stub class was not found (the measured ~1.3 s failure, `launcher.ts`) |
+| `INSTRUMENTATION_STATUS: Error=` | the instrumentation reported an error |
+| `INSTRUMENTATION_RESULT: shortMsg=` | the instrumentation finished before the server was up |
+| `Process crashed` | the instrumentation process crashed |
+| `INSTRUMENTATION_FAILED:` | `am instrument` could not start the runner |
+
+Once `healthy` (start and every restart), the openatx `Configurator` is set through `setConfigurator`/`getConfigurator` so a dump or a find never waits for the window to settle:
+
+| Field | Value |
+|---|---|
+| `waitForIdleTimeout` | 0 |
+| `waitForSelectorTimeout` | 0 |
+| `actionAcknowledgmentTimeout` | 0 |
+| `scrollAcknowledgmentTimeout` | 0 |
+| `keyInjectionDelay` | 0 |
+
+A configurator failure is logged and never fatal: a server with the default idle wait is slow, not broken.
 
 ## Why the watchdog is mandatory
 
@@ -46,7 +72,9 @@ So `find` checks the answer it was handed: a node whose bounds cover **≥ 95% o
 
 If startup fails or the watchdog gives up, the session is **still created** with `uiautomator-dump`, along with a `device.inspector.fallback` WS event. The `devices.inspection` column is left untouched (the fallback is per-session, not permanent), so the next session tries `ui-server` again.
 
+Since plan 208 the engine is **session-scoped**, not tab-scoped: `DeviceSession.prewarmInspector()`/`whenInspectorReady()` start it once, for the life of the session, and only `close()` releases it. The Inspect tab (`inspect.attach`) attaches to whatever the session already has running — it is a viewer, never an owner — so opening and closing the tab never starts or stops the engine.
+
 ## Limits worth knowing
 
 - **WebView and hybrid apps**: elements are only visible as far as the accessibility tree exposes them, and many surface as generic nodes. `setText` into a WebView input is far more reliable than injecting keystrokes — that is this engine's real advantage. Full WebView inspection (DOM, context switching) needs Appium (opt-in, M8).
-- **The JSONRPC method names** in `client.ts` follow the pinned APK; re-verify them against a physical device whenever the APK version moves.
+- **The JSONRPC method names** in `client.ts`, and the `ConfiguratorInfo` field names, were verified against the pinned APK's own source (plan 208 §5 step 208.4); re-verify them against a physical device whenever the APK version moves.

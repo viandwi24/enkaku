@@ -124,7 +124,7 @@ export function createAdbStatsRoutes(deps: {
     // The streaming lane's own occupancy (plan 24 §3.2, §8 risks — "shows
     // lane occupancy for verification") — deliberately reported separately
     // from `global` above, since it draws from a completely different budget.
-    const streamStats = client?.streamStats() ?? { maxStreams: 0, maxStreamsPerDevice: 0, streams: 0, perDevice: {} }
+    const streamStats = client?.streamStats() ?? { maxStreams: 0, maxStreamsPerDevice: 0, streams: 0, pinned: 0, perDevice: {} }
     const health = deps.health()
     const rows = deps.db.select().from(devices).all()
     // stableId → number for the whole fleet, in ONE statement (plan 124 §3.7,
@@ -164,6 +164,7 @@ export function createAdbStatsRoutes(deps: {
         maxStreams: streamStats.maxStreams,
         maxStreamsPerDevice: streamStats.maxStreamsPerDevice,
         active: streamStats.streams,
+        pinned: streamStats.pinned,
         perDevice: streamStats.perDevice,
       },
       devices: rows.map((row) => {

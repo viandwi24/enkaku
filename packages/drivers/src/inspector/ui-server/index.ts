@@ -1,10 +1,11 @@
 import { matchSelector, type FindOutcome, type Inspector, type Selector, type UiNode } from '@enkaku/protocol'
 import { parseUiDump } from '../xml-parser'
-import { UiServerClient, UiServerClientError } from './client'
+import { UiServerClient, UiServerClientError, type ConfiguratorInfo } from './client'
 import { isImplausibleMatch } from './find-guard'
+import { createUiServerLifecycle, type UiServerLifecycle, type UiServerLifecycleOptions } from './lifecycle'
 import type { UiServerLauncher } from './launcher'
 import { toUiSelector } from './selector'
-import { createWatchdog, type UiServerStatus, type Watchdog } from './watchdog'
+import type { UiServerStatus } from './watchdog'
 
 /** Direct element actions — an optional capability layered on Inspector (spec §7.4). */
 export interface InspectorElementActions {
@@ -33,6 +34,10 @@ export interface UiServerInspectorOptions {
   screenSize?: () => Promise<{ width: number; height: number } | null>
   onStatus?: (s: UiServerStatus) => void
   onLog?: (level: 'debug' | 'info' | 'warn', msg: string) => void
+  /** Sent after every `healthy` (start and restart). Default `DEFAULT_CONFIGURATOR` (plan 208 §3.4). */
+  configurator?: ConfiguratorInfo
+  /** Forwarded to `createUiServerLifecycle`'s watchdog (tests shrink the real delays). */
+  watchdog?: UiServerLifecycleOptions['watchdog']
 }
 
 /**
@@ -49,11 +54,13 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
   readonly recommendedPollIntervalMs = 80
 
   private client: UiServerClient
-  private watchdog: Watchdog
+  private lifecycle: UiServerLifecycle
   /** The find guard's viewport — resolved at most once (see `screenSize`). */
   private screen: Promise<{ width: number; height: number } | null> | null = null
   /** Selectors already reported as implausible, so a polling `waitFor` says it once and not twelve times a second. */
   private warned = new Set<string>()
+  /** The last tree `dump()` returned and when (plan 208 §4.6, "the cheap cache"). */
+  private last: { root: UiNode; at: number } | null = null
 
   constructor(private opts: UiServerInspectorOptions) {
     this.client = new UiServerClient({
@@ -67,26 +74,39 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
       // connection first.
       reassertForward: () => opts.launcher.reassertForward(opts.localPort),
     })
-    this.watchdog = createWatchdog({
+    this.lifecycle = createUiServerLifecycle({
+      serial: opts.serial,
       client: this.client,
       launcher: opts.launcher,
       localPort: opts.localPort,
+      ...(opts.configurator ? { configurator: opts.configurator } : {}),
       ...(opts.onStatus ? { onStatus: opts.onStatus } : {}),
       ...(opts.onLog ? { onLog: opts.onLog } : {}),
+      ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
     })
   }
 
   start(): Promise<void> {
-    return this.watchdog.start()
+    return this.lifecycle.start()
   }
 
   stop(): Promise<void> {
-    return this.watchdog.stop()
+    return this.lifecycle.close()
   }
 
   /** The watchdog gave up → the session manager moves to uiautomator-dump. */
   isDead(): boolean {
-    return this.watchdog.isDead()
+    return this.lifecycle.isDead()
+  }
+
+  /** Milliseconds from `start()` to `ready`, or null — the session logs the whole prewarm cost against it (plan 208 §4.6). */
+  startedInMs(): number | null {
+    return this.lifecycle.startedInMs()
+  }
+
+  /** The last tree `dump()` returned and when, or null (plan 208 §4.6). */
+  lastDump(): { root: UiNode; at: number } | null {
+    return this.last
   }
 
   private async call<T>(fn: () => Promise<T>): Promise<T> {
@@ -94,7 +114,7 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
       return await fn()
     } catch (err) {
       if (err instanceof UiServerClientError && err.code === 'UI_SERVER_UNREACHABLE') {
-        this.watchdog.reportFailure(err.message)
+        this.lifecycle.reportFailure(err.message)
       }
       throw err
     }
@@ -102,7 +122,9 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
 
   async dump(): Promise<UiNode> {
     try {
-      return parseUiDump(await this.call(() => this.client.dumpWindowHierarchy(false)))
+      const root = parseUiDump(await this.call(() => this.client.dumpWindowHierarchy(false)))
+      this.last = { root, at: Date.now() }
+      return root
     } catch (err) {
       // uiautomator's own `dumpWindowHierarchy` throws — in practice a
       // NullPointerException — when the window it is asked about is
@@ -117,7 +139,9 @@ export class UiServerInspector implements Inspector, InspectorElementActions {
       // 300 ms later would land in the same hole.
       if (err instanceof UiServerClientError && err.code === 'UI_SERVER_UNREACHABLE') throw err
       await new Promise((resolve) => setTimeout(resolve, 300))
-      return parseUiDump(await this.call(() => this.client.dumpWindowHierarchy(false)))
+      const root = parseUiDump(await this.call(() => this.client.dumpWindowHierarchy(false)))
+      this.last = { root, at: Date.now() }
+      return root
     }
   }
 
@@ -236,7 +260,13 @@ function infoToUiNode(info: unknown): UiNode {
   }
 }
 
-export { UiServerClient, UiServerClientError } from './client'
+export {
+  UiServerClient,
+  UiServerClientError,
+  ConfiguratorInfoSchema,
+  DEFAULT_CONFIGURATOR,
+  type ConfiguratorInfo,
+} from './client'
 export {
   createUiServerLauncher,
   UI_SERVER_PACKAGE,
@@ -247,8 +277,19 @@ export {
   type UiServerLauncherDeps,
   type UiServerExpectedArtifact,
   type UiServerArtifactMismatch,
+  type UiServerStartHooks,
 } from './launcher'
 export { isImplausibleMatch, IMPLAUSIBLE_AREA_RATIO } from './find-guard'
 export { toUiSelector, SelectorUnsupportedError, type UiSelector } from './selector'
 export { createWatchdog, type UiServerStatus, type Watchdog } from './watchdog'
 export { verifyDeviceArtifact, type DeviceArtifactExpectation, type VerifyResult } from './verify'
+export {
+  createUiServerLifecycle,
+  classifyInstrumentationLine,
+  createInstrumentationParser,
+  INSTRUMENTATION_FATAL_PATTERNS,
+  INSTRUMENTATION_START_SILENCE_MS,
+  type UiServerLifecycle,
+  type UiServerLifecycleOptions,
+  type UiServerLifecycleState,
+} from './lifecycle'

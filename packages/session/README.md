@@ -363,8 +363,25 @@ by an idle timer (MVP 11 §1.1). Two modules split the responsibility:
   `ENKAKU_SESSION_BUILD_CEILING`), retries a dead or failed build under a
   fixed backoff (`REBUILD_BACKOFF_MS`: 1s, 3s, 10s, 30s, then 30s
   repeated), and starts the inspector prewarm
-  (`INSPECTOR_PREWARM_DELAY_MS`, 2s after the first frame — plan 208 fills
-  in the body) once per successful build.
+  (`INSPECTOR_PREWARM_DELAY_MS`, 2s after the first frame) once per
+  successful build.
+
+### Inspector lifecycle (plan 208 §3.2, §3.3)
+
+The inspector is session-scoped, not tab-scoped: `prewarmInspector()` (the
+always-on builder's call above) and `whenInspectorReady()` (a job, or an
+Inspect tab's `inspect.attach`) are the same start-once, join, never-reject
+contract — whichever runs first starts the engine, and `close()` is the only
+release. A start that cannot succeed fails fast: the launcher's line parser
+(`@enkaku/drivers`'s `lifecycle.ts`) rejects within about 250ms of a
+definitive `INSTRUMENTATION_*` failure line, and the 15s ceiling
+(`INSTRUMENTATION_START_SILENCE_MS`) is paid only by a server that prints
+nothing at all. A caller that reaches the inspector before the session's
+engine exists gets `E_INSPECTOR_STARTING` ("still starting, retry"), never a
+substitute ad-hoc `uiautomator dump` engine — that substitute is exactly what
+used to seize the `instrumentation` lock from a healthy `ui-server` in
+another session (MVP 02 §2.5). The `inspector ready: <engineId> on <deviceId>
+in <N> ms` log line reports the whole prewarm cost, once per session.
 
 ### The five steps
 

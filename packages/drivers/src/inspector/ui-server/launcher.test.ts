@@ -58,7 +58,13 @@ function fakeDeps(
   hostAdbCalls: string[][]
   forwardCalls: Array<{ serial: string; local: string; remote: string }>
   killForwardCalls: Array<{ serial: string; local: string }>
-  streamCalls: Array<{ cmd: string; onEnd: (reason: AdbStreamEndReason, err?: unknown) => void }>
+  streamCalls: Array<{
+    cmd: string
+    onData: (chunk: Uint8Array) => void
+    onEnd: (reason: AdbStreamEndReason, err?: unknown) => void
+    /** Pushes a line (with `\n` appended) through `onData` as UTF-8 bytes. */
+    pushLine: (line: string) => void
+  }>
   logs: Array<{ level: string; msg: string }>
   mismatches: UiServerArtifactMismatch[]
 } {
@@ -66,7 +72,12 @@ function fakeDeps(
   const hostAdbCalls: string[][] = []
   const forwardCalls: Array<{ serial: string; local: string; remote: string }> = []
   const killForwardCalls: Array<{ serial: string; local: string }> = []
-  const streamCalls: Array<{ cmd: string; onEnd: (reason: AdbStreamEndReason, err?: unknown) => void }> = []
+  const streamCalls: Array<{
+    cmd: string
+    onData: (chunk: Uint8Array) => void
+    onEnd: (reason: AdbStreamEndReason, err?: unknown) => void
+    pushLine: (line: string) => void
+  }> = []
   const logs: Array<{ level: string; msg: string }> = []
   const mismatches: UiServerArtifactMismatch[] = []
   const serial = 'serial-1'
@@ -91,14 +102,15 @@ function fakeDeps(
       killForwardCalls.push({ serial: fwdSerial, local })
     },
     apkPaths: async () => ({ app: '/tools/ui-server.apk', test: '/tools/ui-server-test.apk' }),
-    execStream: async (cmd, opts) => {
-      streamCalls.push({ cmd, onEnd: opts.onEnd })
+    execStream: async (cmd, streamOpts) => {
+      const pushLine = (line: string) => streamOpts.onData(new TextEncoder().encode(`${line}\n`))
+      streamCalls.push({ cmd, onData: streamOpts.onData, onEnd: streamOpts.onEnd, pushLine })
       let stopped = false
       return {
         stop: async () => {
           if (stopped) return
           stopped = true
-          opts.onEnd('stopped')
+          streamOpts.onEnd('stopped')
         },
       }
     },
@@ -210,6 +222,75 @@ describe('createUiServerLauncher (plan 34 §3.1, §3.2, §4.1)', () => {
     const launcher = createUiServerLauncher(deps)
     await expect(launcher.start(9123)).rejects.toThrow(/refusing to inspect another device/)
     expect(stoppedCount).toBe(1)
+  })
+})
+
+/** `ensureInstalled()` awaits a few microtasks of its own before `execStream` is ever called; poll rather than assume timing. */
+async function waitForStream(streamCalls: unknown[]): Promise<void> {
+  for (let i = 0; i < 100 && streamCalls.length === 0; i++) await Bun.sleep(0)
+}
+
+describe('createUiServerLauncher — fail-fast hooks (plan 208 §4.3)', () => {
+  test('a fatal line delivered through onData calls hooks.onFatal once with the label and the line', async () => {
+    const { deps, streamCalls } = fakeDeps()
+    const launcher = createUiServerLauncher(deps)
+    const fatal: string[] = []
+    const startPromise = launcher.start(9123, { onFatal: (reason) => fatal.push(reason) })
+    await waitForStream(streamCalls)
+    streamCalls[0]?.pushLine('INSTRUMENTATION_STATUS: stack=java.lang.ClassNotFoundException: com.github.uiautomator.test.Stub')
+    await startPromise
+    expect(fatal).toHaveLength(1)
+    expect(fatal[0]).toContain('stack trace')
+    expect(fatal[0]).toContain('ClassNotFoundException')
+  })
+
+  test('the stream ending with reason closed before assertForward calls onFatal, not onExit', async () => {
+    const deps: UiServerLauncherDeps = {
+      serial: 'serial-3',
+      exec: async (cmd) => (cmd.startsWith('dumpsys package') ? dumpsysOutput() : pmListOutput()),
+      hostAdb: async () => '',
+      // `forward` never resolves during this test — the stream ends first.
+      forward: () => new Promise(() => {}),
+      listForward: async () => [],
+      killForward: async () => {},
+      apkPaths: async () => ({ app: '/tools/ui-server.apk', test: '/tools/ui-server-test.apk' }),
+      execStream: async (_cmd, streamOpts) => {
+        queueMicrotask(() => streamOpts.onEnd('closed'))
+        return { stop: async () => {} }
+      },
+    }
+    const launcher = createUiServerLauncher(deps)
+    const fatal: string[] = []
+    const exit: string[] = []
+    // `assertForward` never resolves (the `forward` dep hangs), so `start()`
+    // itself never settles — only the hooks are observable here.
+    void launcher.start(9123, { onFatal: (r) => fatal.push(r), onExit: (r) => exit.push(r) }).catch(() => undefined)
+    await Bun.sleep(10)
+    expect(fatal).toHaveLength(1)
+    expect(exit).toHaveLength(0)
+  })
+
+  test('the stream ending after start() resolved calls onExit', async () => {
+    const { deps, streamCalls } = fakeDeps()
+    const launcher = createUiServerLauncher(deps)
+    const fatal: string[] = []
+    const exit: string[] = []
+    await launcher.start(9123, { onFatal: (r) => fatal.push(r), onExit: (r) => exit.push(r) })
+    streamCalls[0]?.onEnd('closed')
+    expect(fatal).toHaveLength(0)
+    expect(exit).toHaveLength(1)
+  })
+
+  test('a second fatal line is not reported twice', async () => {
+    const { deps, streamCalls } = fakeDeps()
+    const launcher = createUiServerLauncher(deps)
+    const fatal: string[] = []
+    const startPromise = launcher.start(9123, { onFatal: (r) => fatal.push(r) })
+    await waitForStream(streamCalls)
+    streamCalls[0]?.pushLine('INSTRUMENTATION_STATUS: stack=java.lang.ClassNotFoundException: com.github.uiautomator.test.Stub')
+    streamCalls[0]?.pushLine('INSTRUMENTATION_STATUS: Error=another failure')
+    await startPromise
+    expect(fatal).toHaveLength(1)
   })
 })
 

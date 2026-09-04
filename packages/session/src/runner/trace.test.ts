@@ -8,6 +8,8 @@ import {
   MAX_ARG_BYTES,
   redactArgs,
   resolveFramePolicy,
+  reusableTree,
+  TRACE_TREE_REUSE_MS,
   type TraceCaptureRequest,
   type TraceCaptureResult,
   type TraceEventInput,
@@ -523,5 +525,33 @@ describe('createNoopTraceTee (plan 128 step 128.4)', () => {
       tee.artifact({ kind: 'screenshot', label: 'x', sizeBytes: 1, frameBytes: new Uint8Array([1]) })
       tee.progress(1)
     }).not.toThrow()
+  })
+})
+
+describe('reusableTree — the cheap cache (plan 208 §3.7, §4.9)', () => {
+  const NODE = {
+    resourceId: 'x',
+    text: '',
+    desc: '',
+    className: 'android.widget.Button',
+    packageName: 'com.example',
+    bounds: { left: 0, top: 0, right: 10, bottom: 10 },
+    clickable: true,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: [],
+  }
+
+  test('returns the cached root within 2 s and null after', () => {
+    const now = 10_000
+    expect(reusableTree({ root: NODE, at: now - 1999 }, now)).toBe(NODE)
+    expect(reusableTree({ root: NODE, at: now - TRACE_TREE_REUSE_MS }, now)).toBe(NODE) // exactly at the boundary counts as fresh
+    expect(reusableTree({ root: NODE, at: now - 2001 }, now)).toBeNull()
+  })
+
+  test('null and undefined both return null', () => {
+    expect(reusableTree(null, 10_000)).toBeNull()
+    expect(reusableTree(undefined, 10_000)).toBeNull()
   })
 })
