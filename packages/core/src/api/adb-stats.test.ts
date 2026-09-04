@@ -201,14 +201,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
         keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
         text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
       },
-      assistsActive: 0,
-      mirrorGroups: 0,
-      mirrorMembers: 0,
-      mirrorFanoutMsP50: 0,
-      mirrorFanoutMsP95: 0,
-      queueWaitMs: 5_000,
-      uncollectedGrants: 0,
-      orphanedMirrorGroups: 0,
     })
   })
 
@@ -221,14 +213,6 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
         keys: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
         text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
       },
-      assistsActive: 3,
-      mirrorGroups: 1,
-      mirrorMembers: 5,
-      mirrorFanoutMsP50: 40,
-      mirrorFanoutMsP95: 90,
-      queueWaitMs: 5_000,
-      uncollectedGrants: 0,
-      orphanedMirrorGroups: 0,
     }
     const inner = createAdbStatsRoutes({
       db: opened.db,
