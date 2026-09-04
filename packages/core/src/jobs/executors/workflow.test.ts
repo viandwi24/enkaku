@@ -17,6 +17,14 @@ function startNode(overrides: Record<string, unknown> = {}) {
   return { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, ...overrides }
 }
 
+function switchNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'switch', id: 'sw', title: '', ui: { x: 0, y: 0 }, cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, label: '' }], ...overrides }
+}
+
+function delayNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'delay', id: 'dl', title: '', ui: { x: 0, y: 0 }, ms: { const: 1 }, maxMs: 50, ...overrides }
+}
+
 function threeStepDoc(): WorkflowDoc {
   return WorkflowDocSchema.parse({
     schema: 2,
@@ -337,5 +345,136 @@ describe('createWorkflowOrchestrator (plan 211 §4.5, doc v2 by plan 301)', () =
     const s2Job = deps.db.select().from(jobs).where(eq(jobs.parentWorkflowJobId, job.id)).all().find((j) => j.stepSeq === 1)
     expect(s2Job).toBeDefined()
     expect(s2Job?.params).toEqual({ verdict: true, echoedNow: true })
+  })
+
+  describe('switch (plan 303 §3.3, G2)', () => {
+    test('the first matching case wins, even when a later one would also match', async () => {
+      const doc = WorkflowDocSchema.parse({
+        schema: 2,
+        name: 'switch-first-match',
+        title: '',
+        description: '',
+        params: [],
+        entry: 'start',
+        nodes: [
+          startNode({ next: 'sw' }),
+          switchNode({
+            cases: [
+              { when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, to: 'first', label: 'first' },
+              { when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, to: 'second', label: 'second' },
+            ],
+          }),
+          scriptNode({ id: 'first', script: 'demo/first@1.0.0' }),
+          scriptNode({ id: 'second', script: 'demo/second@1.0.0' }),
+        ],
+      })
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, doc)
+      await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+      const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all().sort((a, b) => a.seq - b.seq)
+      // `second` still gets a `skipped` row (H4: every node the cursor never
+      // reached is written down too) — the ORDER of the ones the cursor DID
+      // walk is what proves first-match-wins.
+      expect(stepRows.filter((s) => s.status !== 'skipped').map((s) => s.stepId)).toEqual(['sw', 'first'])
+      expect(stepRows.find((s) => s.stepId === 'second')?.status).toBe('skipped')
+      const swRow = stepRows.find((s) => s.stepId === 'sw')
+      expect(swRow?.output).toEqual({ case: 0, branch: 'first' })
+    })
+
+    test('`default` fires when no case matches', async () => {
+      const doc = WorkflowDocSchema.parse({
+        schema: 2,
+        name: 'switch-default',
+        title: '',
+        description: '',
+        params: [],
+        entry: 'start',
+        nodes: [
+          startNode({ next: 'sw' }),
+          switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 2 } }, to: 'nope', label: '' }], default: 'fallback' }),
+          scriptNode({ id: 'nope', script: 'demo/nope@1.0.0' }),
+          scriptNode({ id: 'fallback', script: 'demo/fallback@1.0.0' }),
+        ],
+      })
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, doc)
+      await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+      const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all().sort((a, b) => a.seq - b.seq)
+      expect(stepRows.filter((s) => s.status !== 'skipped').map((s) => s.stepId)).toEqual(['sw', 'fallback'])
+      expect(stepRows.find((s) => s.stepId === 'nope')?.status).toBe('skipped')
+      const swRow = stepRows.find((s) => s.stepId === 'sw')
+      expect(swRow?.output).toEqual({ case: null, branch: 'fallback' })
+    })
+
+    test('a dangling case with no matching branch and no default ends the run succeeded', async () => {
+      const doc = WorkflowDocSchema.parse({
+        schema: 2,
+        name: 'switch-dangling-default',
+        title: '',
+        description: '',
+        params: [],
+        entry: 'start',
+        nodes: [startNode({ next: 'sw' }), switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 2 } }, label: '' }] })],
+      })
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, doc)
+      const summary = await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+      expect(Array.isArray(summary)).toBe(true)
+    })
+  })
+
+  describe('delay (plan 303 §3.4, step 303.3)', () => {
+    test('a resolved ms over maxMs is clamped to maxMs, and the run reaches its successor', async () => {
+      const doc = WorkflowDocSchema.parse({
+        schema: 2,
+        name: 'delay-clamp',
+        title: '',
+        description: '',
+        params: [],
+        entry: 'start',
+        nodes: [startNode({ next: 'dl' }), delayNode({ ms: { const: 10_000 }, maxMs: 10, next: 'a' }), scriptNode({ id: 'a', script: 'demo/a@1.0.0' })],
+      })
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, doc)
+      const started = Date.now()
+      await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+      const elapsed = Date.now() - started
+
+      const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all().sort((a, b) => a.seq - b.seq)
+      expect(stepRows.map((s) => s.stepId)).toEqual(['dl', 'a'])
+      const dlRow = stepRows.find((s) => s.stepId === 'dl')
+      expect(dlRow?.output).toEqual({ ms: 10 })
+      // Proves the clamp, not merely the recorded output — the real wait was
+      // bounded by maxMs (10ms), never by the unclamped 10_000ms value.
+      expect(elapsed).toBeLessThan(5_000)
+    })
+
+    test('cancelling the run mid-delay ends it promptly, without waiting out maxMs', async () => {
+      const doc = WorkflowDocSchema.parse({
+        schema: 2,
+        name: 'delay-cancel',
+        title: '',
+        description: '',
+        params: [],
+        entry: 'start',
+        nodes: [startNode({ next: 'dl' }), delayNode({ ms: { const: 60_000 }, maxMs: 60_000 })],
+      })
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, doc)
+      const controller = new AbortController()
+      const started = Date.now()
+      const promise = orchestrator.run(job, { runId: run.id, run, signal: controller.signal, heartbeat: () => {}, log: deps.log })
+      setTimeout(() => controller.abort(), 20)
+      await expect(promise).rejects.toThrow()
+      const elapsed = Date.now() - started
+      expect(elapsed).toBeLessThan(5_000)
+    })
   })
 })

@@ -54,6 +54,30 @@ const NOT_A_PLUGIN = `
 export default { id: 'x', version: '1.0.0', params: {}, run: async () => {} }
 `
 
+const HEALTHY_WITH_NODE = `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  scripts: [
+    { id: 'scroll', params: z.object({}), run: async () => 'ok', node: { category: 'device', icon: 'wrench', summary: ['keyword'], keywords: ['scroll', 'feed'] } },
+    { id: 'plain', params: z.object({}), run: async () => 'ok' },
+  ],
+}
+`
+
+const HOSTILE_NODE = `
+import { z } from 'zod'
+export default {
+  id: 'p',
+  version: '1.0.0',
+  // A raw object literal (bypassing definePlugin() entirely), exactly like
+  // HOSTILE_RUNTIME above — this bundle never calls definePlugin, so its
+  // author-machine WorkflowNodeDescriptorSchema.safeParse never ran.
+  scripts: [{ id: 'hostile', params: z.object({}), run: async () => 'ok', node: { icon: 'not-a-real-icon' } }],
+}
+`
+
 const DUPLICATE_IDS = `
 import { z } from 'zod'
 export default {
@@ -349,6 +373,23 @@ describe('verifyPluginBundle', () => {
     const report = await verifyPluginBundle(path)
     expect(report.ok).toBe(false)
     expect(report.error).toContain('E_RUNTIME_ENVELOPE_INVALID')
+    expect(report.error).toContain('hostile')
+  }, 10_000)
+
+  test('a member\'s node descriptor is reported through the verify report, parsed with defaults applied (plan 303 §4.2, §5 step 303.5)', async () => {
+    const path = writeBundle(HEALTHY_WITH_NODE)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.scripts[0]?.node).toEqual({ category: 'device', icon: 'wrench', summary: ['keyword'], keywords: ['scroll', 'feed'] })
+    // A member declaring no `node` reports none at all — byte-identical.
+    expect(report.scripts[1]?.node).toBeUndefined()
+  }, 10_000)
+
+  test('a hostile node descriptor (bypassing definePlugin entirely) is refused with E_PLUGIN_NODE_INVALID, naming the member', async () => {
+    const path = writeBundle(HOSTILE_NODE)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_NODE_INVALID')
     expect(report.error).toContain('hostile')
   }, 10_000)
 })

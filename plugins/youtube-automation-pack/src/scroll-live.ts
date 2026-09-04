@@ -107,6 +107,7 @@ function liveRows(tree: UiNode): UiNode[] {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'scroll-live',
+  node: { category: 'device', icon: 'activity', summary: ['query', 'scrolls'], keywords: ['live', 'scroll'] },
   title: 'Scroll live streams',
   description: 'Searches for LIVE streams, scrolls the results with randomised flings and human dwell, and optionally opens one and watches.',
   params: paramsSchema,

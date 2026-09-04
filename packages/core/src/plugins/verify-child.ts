@@ -8,10 +8,12 @@ import {
   unknownPluginEventTypesMessage,
   unsupportedIsolationMessage,
   validatePluginSurface,
+  WorkflowNodeDescriptorSchema,
   type ActionSpec,
   type PluginServiceDeclaration,
   type PluginSurface,
   type RuntimeEnvelope,
+  type WorkflowNodeDescriptor,
 } from '@enkaku/protocol'
 import type { VerifyChildMessage } from './verify-child-entry'
 
@@ -51,6 +53,15 @@ export interface VerifiedScript {
    */
   title?: string
   description?: string
+  /**
+   * Plan 303 §4.2, §5 step 303.5 — the member's PARSED workflow node
+   * descriptor, present only when the bundle declared one and it passed the
+   * independent re-validation in `finalizeReport` below (the same
+   * discipline `surface`/`service` already follow on `VerifyReport`).
+   * `undefined` for an ordinary script — the byte-identical case every
+   * other optional field on this interface already guarantees.
+   */
+  node?: WorkflowNodeDescriptor
 }
 
 export interface VerifyReport {
@@ -199,6 +210,7 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
   if (!msg.ok) return failure(msg.error, msg.errorCode ?? 'E_PLUGIN_VERIFY_FAILED')
 
   const seen = new Set<string>()
+  const scripts: VerifiedScript[] = []
   for (const s of msg.scripts) {
     if (!ID_SHAPE.test(s.id)) {
       return failure(`script id "${s.id}" does not match ${ID_SHAPE}`, 'E_PLUGIN_BAD_SCRIPT_ID')
@@ -207,6 +219,24 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
       return failure(`duplicate script id "${s.id}" (criterion 22)`, 'E_PLUGIN_DUPLICATE_SCRIPT_ID')
     }
     seen.add(s.id)
+    // Plan 303 §4.2, §5 step 303.5 — re-validated HERE, not merely reported
+    // by the child, on the SAME reasoning `surface`/`service` already state
+    // below: `definePlugin`'s author-time check runs on the author's own
+    // machine, and a hand-crafted bundle need never have called it.
+    let node: WorkflowNodeDescriptor | undefined
+    if (s.node !== undefined) {
+      const checked = WorkflowNodeDescriptorSchema.safeParse(s.node)
+      if (!checked.success) {
+        return failure(
+          `script "${s.id}"'s node descriptor is invalid — ${checked.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
+          'E_PLUGIN_NODE_INVALID',
+        )
+      }
+      node = checked.data
+    }
+    const { node: rawNode, ...rest } = s
+    void rawNode
+    scripts.push({ ...rest, ...(node !== undefined ? { node } : {}) })
   }
   if (expectedVersion !== undefined && msg.version !== expectedVersion) {
     return failure(
@@ -315,7 +345,7 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
     version: msg.version,
     title: msg.title,
     description: msg.description,
-    scripts: msg.scripts,
+    scripts,
     ...(surface !== undefined ? { surface } : {}),
     ...(service !== undefined ? { service } : {}),
     resetPackages: msg.resetPackages,

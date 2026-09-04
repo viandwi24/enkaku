@@ -343,6 +343,7 @@ const searchFollowScript: PluginMemberScript<typeof paramsSchema, typeof resultS
   result: resultSchema,
   description:
     'Finds one specific account through search by its exact handle and follows it, with human-shaped browsing first. Does nothing when the account is already followed. Follows at most one account per run.',
+  node: { category: 'device', icon: 'search', summary: ['query', 'target'], keywords: ['search', 'follow', 'account'] },
   params: paramsSchema,
   // Search, a bounded scroll hunt, a profile visit with grid scrolls and an occasional post, then the
   // follow itself — more screens than `switch-account`, so more slack for dialog sweeps and human pauses.

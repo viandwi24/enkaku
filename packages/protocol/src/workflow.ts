@@ -27,6 +27,10 @@ export const WORKFLOW_LIMITS = {
   maxRunSummaryBytes: 512 * 1024,
   /** Keys named in an unresolved-binding message (plan 99 §3.6). */
   maxSawKeys: 20,
+  /** A `switch` with more than this many cases is a table, and a table is a script (plan 303 §4.1). */
+  maxSwitchCases: 10,
+  /** The largest a single `delay` node may declare (plan 303 §3.4, §4.1). Longer waits are a schedule, not a workflow. */
+  maxDelayMs: 5 * 60_000,
 } as const
 
 /**
@@ -223,8 +227,15 @@ const nodeBase = {
  * through the SAME `JobRunner` every standalone job uses (§3.4) — nothing
  * about a node's `timeout`/`retries`/`finish()` is reimplemented. `kind:
  * 'gate'` evaluates a predicate in-process, spawning no child and making no
- * device call (§3.7).
+ * device call (§3.7). `kind: 'switch'` and `kind: 'delay'` are new (plan 303
+ * §3.2, §4.1): `switch` is the owner's "conditions C -> 1 / 2 / 3" as one
+ * node — an ordered list of predicate-plus-target cases, first match wins,
+ * `default` otherwise — and `delay` is a bounded, cancellable wait, core-
+ * owned because its budget contribution (`maxMs`) must be known statically.
+ * Six kinds total, and the list is closed (plan 300 D8): a plugin may never
+ * define a seventh.
  */
+export const WORKFLOW_NODE_KINDS = ['start', 'script', 'gate', 'switch', 'delay', 'finish'] as const
 export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -260,6 +271,56 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
       when: PredicateSchema,
       then: WorkflowNodeIdSchema.optional(),
       else: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
+
+  /**
+   * `switch` (plan 303 §3.3, §4.1) — the owner's "conditions C -> 1 / 2 / 3"
+   * as ONE node, not a chain of gates. A case is a predicate PLUS a target,
+   * never an expression returning an output index (plan 300 R7's n8n
+   * comparison, refused deliberately): an index breaks silently when cases
+   * are reordered on the canvas and the fired branch is not visible on the
+   * edge. Cases are evaluated in array order, first match wins; `default`
+   * fires when none do. It reuses `PredicateSchema` unchanged, so the
+   * existing depth/leaf limits and predicate editor both already apply.
+   */
+  z
+    .object({
+      ...nodeBase,
+      kind: z.literal('switch'),
+      cases: z
+        .array(
+          z
+            .object({
+              when: PredicateSchema,
+              /** Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2), same as every other dangling edge. */
+              to: WorkflowNodeIdSchema.optional(),
+              label: z.string().max(40).default(''),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(WORKFLOW_LIMITS.maxSwitchCases),
+      default: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
+
+  /**
+   * `delay` (plan 303 §3.4, §4.1) — a wait, costing a step, touching no
+   * device. Core-owned rather than a script because its bound must be known
+   * STATICALLY for `checkWorkflow`'s budget walk (§4.7 item 7): `ms` may be
+   * ANY `ValueExpr` (including `{ expr }`, resolved at run time), but
+   * `maxMs` is the document's own declared ceiling, is what the checker
+   * sums into the budget, and is what the executor clamps the resolved
+   * value to — a budget that cannot be computed statically is not a budget.
+   */
+  z
+    .object({
+      ...nodeBase,
+      kind: z.literal('delay'),
+      ms: ValueExprSchema,
+      maxMs: z.number().int().min(0).max(WORKFLOW_LIMITS.maxDelayMs),
+      next: WorkflowNodeIdSchema.optional(),
     })
     .strict(),
 

@@ -72,6 +72,7 @@ function playerUp(tree: UiNode): boolean {
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'keyword-videos',
   title: 'Watch keyword videos',
+  node: { category: 'device', icon: 'search', summary: ['query', 'videos'], keywords: ['search', 'keyword', 'watch'] },
   description: 'Searches a keyword, opens videos from the results grid by measured cell geometry, and watches them with randomised dwell and verified swipes. Never likes, follows, or comments.',
   params: paramsSchema,
   result: resultSchema,

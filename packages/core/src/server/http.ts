@@ -99,6 +99,8 @@ export interface HttpDeps {
   workspaceFileRoutes?: Hono<AuthEnv>
   /** Stage/verify/activate/rollback/disable/remove/reload/restart, and the dev slot lifecycle (plan 82 §4.6, step 11). */
   pluginRoutes: Hono<AuthEnv>
+  /** `GET /` — the flow editor's node catalog: six core control kinds plus every activated plugin's node members (plan 303 §4.3). Mounted at `/api/node-types`. */
+  nodeTypeRoutes: Hono<AuthEnv>
   /** `POST /api/v1/cap/:id` and `GET /api/v1/cap` (plan 63 §3.6, §4.5). */
   capRoutes: Hono<AuthEnv>
   /** Generated once at boot from the same registry `capRoutes` reads
@@ -459,6 +461,8 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   if (deps.recordingRoutes) app.route('/api/recordings', deps.recordingRoutes)
 
   app.route('/api/plugins', deps.pluginRoutes)
+
+  app.route('/api/node-types', deps.nodeTypeRoutes)
 
   // AI agents and their farm-level connectors (plan 65 §4.5).
   app.route('/api/agents', deps.agentRoutes)

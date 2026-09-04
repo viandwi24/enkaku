@@ -77,6 +77,7 @@ const resultSchema = z.object({
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'search-play',
+  node: { category: 'device', icon: 'play', summary: ['query', 'watchMs'], keywords: ['search', 'play', 'watch'] },
   title: 'Search and play',
   description: 'Searches YouTube, picks a random or top video from the ranked first page, waits out any advert, plays it, with optional like and comment reading.',
   params: paramsSchema,

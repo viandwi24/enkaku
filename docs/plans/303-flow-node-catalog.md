@@ -1,7 +1,7 @@
 # Plan 303 — Flow : The node catalog — core control nodes, the plugin `node` descriptor, the registry
 
-> Status: draft
-> Ships: `packages/core/src/workflows/registry.ts`
+> Status: partial — every non-owner goal (G1–G7, G9's typecheck half) is done and verified; G8 is the owner's row and G9's `build:studio` half could not be run this session (port 3001 held by a concurrent Studio dev session, per the launch instructions) — neither job in this launch touches `packages/studio`, so nothing here should have broken it, but the build itself is unverified this session; see §11
+> Ships: packages/core/src/workflows/registry.ts
 > Depends on: plan 301 (doc v2); plan 300 D6, D7, D8
 > Spec references: §4.5, §4.6, §10
 
@@ -9,15 +9,15 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | Two control node kinds are added: `switch` and `delay` | 6 kinds total: `start`, `script`, `gate`, `switch`, `delay`, `finish` | `bun test packages/protocol/src/workflow.test.ts` → `six kinds` passes | [ ] |
-| G2 | A `switch` picks the first matching case, else `default` | ≤ 10 cases, ordered, first match wins | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `switch` group passes | [ ] |
-| G3 | A plugin member may declare `node`, and the declaration is validated on the author's machine | `definePlugin` throws on a bad descriptor | `bun test packages/sdk/src/plugin.test.ts` → `node descriptor` passes | [ ] |
-| G4 | `GET /api/node-types` returns core kinds plus every activated plugin's node members, each with title, description, icon, category, version and params schema | one response, both sources | `bun test packages/core/src/workflows/registry.test.ts` → `registry lists both` passes | [ ] |
-| G5 | A plugin node's control surface is exactly one success and one failure edge | no descriptor field can add an output | `rg -n "outputs" packages/sdk/src/plugin.ts packages/protocol/src/workflow-node-type.ts` → empty | [ ] |
-| G6 | A node type resolves to a pinned `plugin/script@version`, never to "whatever is installed" | the registry answers with the resolved version; the document stores it | `bun test packages/core/src/workflows/registry.test.ts` → `pins version` passes | [ ] |
-| G7 | The two shipped packs each declare at least one node and are version-bumped at all three sites | 3 sites per pack, changelog line present | `rg -n "version" plugins/*/package.json plugins/*/src/index.ts plugins/*/src/index.test.ts` agrees pairwise; `bun run build:packs` rebuilds | [ ] |
+| G1 | Two control node kinds are added: `switch` and `delay` | 6 kinds total: `start`, `script`, `gate`, `switch`, `delay`, `finish` | `bun test packages/protocol/src/workflow.test.ts` → `six kinds` passes | [x] |
+| G2 | A `switch` picks the first matching case, else `default` | ≤ 10 cases, ordered, first match wins | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `switch` group passes | [x] |
+| G3 | A plugin member may declare `node`, and the declaration is validated on the author's machine | `definePlugin` throws on a bad descriptor | `bun test packages/sdk/src/plugin.test.ts` → `node descriptor` passes | [x] |
+| G4 | `GET /api/node-types` returns core kinds plus every activated plugin's node members, each with title, description, icon, category, version and params schema | one response, both sources | `bun test packages/core/src/workflows/registry.test.ts` → `registry lists both` passes | [x] |
+| G5 | A plugin node's control surface is exactly one success and one failure edge | no descriptor field can add an output | `rg -n "outputs" packages/sdk/src/plugin.ts packages/protocol/src/workflow-node-type.ts` → empty | [x] |
+| G6 | A node type resolves to a pinned `plugin/script@version`, never to "whatever is installed" | the registry answers with the resolved version; the document stores it | `bun test packages/core/src/workflows/registry.test.ts` → `pins version` passes | [x] |
+| G7 | The two shipped packs each declare at least one node and are version-bumped at all three sites | 3 sites per pack, changelog line present | `rg -n "version" plugins/*/package.json plugins/*/src/index.ts plugins/*/src/index.test.ts` agrees pairwise; `bun run build:packs` rebuilds | [x] |
 | G8 | A fresh farm shows the new nodes in the palette | seeded-packs record contains the new versions | §7 smoke step 3, on a data directory created after the bump | owner |
-| G9 | `bun run typecheck` and `bun run build:studio` clean | 0 errors each | both exit 0 | [ ] |
+| G9 | `bun run typecheck` and `bun run build:studio` clean | 0 errors each | both exit 0 | [x] typecheck; `build:studio` not run — see §11 |
 
 ## 1. Goals
 
@@ -304,4 +304,88 @@ Manual smoke (owner, 10 minutes):
 
 ## 11. Handoff report
 
-_To be written by the executing agent._
+- **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ G5 ✅ G6 ✅ G7 ✅ G8 owner (not run) G9 ✅ typecheck / not run `build:studio` (see below).
+
+- **Scope executed**: all eight implementation steps (303.1–303.8).
+
+- **Files created**:
+  - `packages/protocol/src/workflow-node-type.ts` — `NodeCategorySchema`, `WorkflowNodeDescriptorSchema`, `WorkflowNodeDescriptor`, `WorkflowNodeDescriptorInput`.
+  - `packages/protocol/src/api/node-types.ts` — `NodeTypeSchema`, `NodeTypesResponseSchema`.
+  - `packages/core/src/workflows/registry.ts` — the plan's own named artefact: `listNodeTypes`, the 6 `core:<kind>` constants, the manifest projection.
+  - `packages/core/src/workflows/registry.test.ts` — G4/G6.
+  - `packages/core/src/api/node-types.ts` — `GET /api/node-types`, mounted at `/api/node-types`.
+
+- **Files changed** (protocol/executor, step 303.1–303.3): `packages/protocol/src/workflow.ts` (`switch`/`delay` node kinds, `WORKFLOW_NODE_KINDS`, `maxSwitchCases`/`maxDelayMs`), `packages/protocol/src/workflow.test.ts` (six-kinds, switch/delay bound tests), `packages/protocol/src/workflow-check.ts` (successors + budget for both kinds, binding sites for a case's `when` and a delay's `ms`), `packages/protocol/src/workflow-check.test.ts` (successor/budget/dangling-edge tests), `packages/protocol/src/api/workflow-jobs.ts` (`WorkflowStepInfoSchema.kind` widened to include `switch`/`delay`), `packages/core/src/db/schema.ts` (`workflowSteps.kind`'s TS union widened — no DDL change, still `text('kind')`, so **no migration was generated or needed**), `packages/core/src/jobs/executors/workflow.ts` (switch evaluation, first-match-wins; `cancellableDelay` — a cancellable, clamped wait), `packages/core/src/jobs/executors/workflow.test.ts` (G2, delay clamp, delay cancellation).
+
+- **Files changed** (descriptor + verify, step 303.4–303.5): `packages/sdk/src/plugin.ts` (`PluginMemberScript.node?`, validated by `definePlugin` through `WorkflowNodeDescriptorSchema`), `packages/sdk/src/plugin.test.ts` (G3), `packages/core/src/plugins/verify-child-entry.ts` (reports `node`, JSON round-tripped, alongside `title`/`description`), `packages/core/src/plugins/verify-child.ts` (`VerifiedScript.node?`, independent re-validation in `finalizeReport`, new `E_PLUGIN_NODE_INVALID` code), `packages/core/src/plugins/verify-child.test.ts` (healthy + hostile node-descriptor bundle fixtures).
+
+- **Files changed** (wiring, step 303.6): `packages/core/src/server/http.ts` (`HttpDeps.nodeTypeRoutes`, mounted at `/api/node-types`), `packages/core/src/server/http.test.ts` (fixture updated), `packages/core/src/daemon.ts` (constructs `createNodeTypeRoutes({ plugins: pluginRuntime })`), `packages/protocol/src/index.ts` / `packages/protocol/src/api/index.ts` (new exports).
+
+- **Files changed** (packs, step 303.7): all 11 tiktok members (`switch-account.ts`, `search-follow.ts`, `list-accounts.ts`, `post-video.ts`, `enqueue-video.ts`, `search-keyword.ts`, `keyword-videos.ts`, `live-browse.ts`, `shop-browse.ts`, `notification-activity.ts`, `index.ts`'s `auto-scroll`) and all 5 youtube members (`search-channel.ts`, `scroll-shorts.ts`, `scroll-live.ts`, `download-home.ts`, `search-play.ts`) gained a `node` descriptor; both packs' `package.json`, `src/index.ts`'s `version:`, and `src/index.test.ts`'s assertion bumped **minor** (tiktok 1.16.0 → 1.17.0, youtube 0.11.0 → 0.12.0) with a changelog line each; `bun run build:packs` rebuilt all 6 packs (the other four — `networking`, `proxy-manager`, `mikrotik-routing`, `google` — untouched, unchanged versions, rebuilt byte-identically aside from the timestamp).
+
+- **Discrepancy — "the two shipped packs" (§4.5, G7) is not stated by name anywhere in plan 303 or 300.** The repo currently ships six packs (`tiktok-automation-pack`, `youtube-automation-pack`, `google-automation-pack`, `mikrotik-routing`, `networking`, `proxy-manager`) plus an `instagram-automation-pack` directory `build-packs.ts` does not yet register. This session read "the two shipped packs" as `tiktok-automation-pack` and `youtube-automation-pack` — they are the two the owner's own examples cite throughout plan 300 (`tiktok/auto-scroll`, `tiktok-search-pipeline`) and the two most recently touched (`d96d2be`/`dc2948a`, the two commits immediately preceding this branch's starting point). If the owner meant a different pair (or all of them), the remaining packs need the same three-step treatment `switch-account.ts` through `search-play.ts` above already show the pattern for.
+
+- **Discrepancy — no DB migration was generated.** §5 does not say whether `workflow_steps.kind` needs one; `workflowSteps.kind` is `text('kind').$type<'script' | 'gate'>()` — a Drizzle `$type<>()` annotation is TypeScript-only, not a column constraint, so widening the union to include `'switch' | 'delay'` changes zero DDL. `bun run --cwd packages/core db:generate` was not run because there is genuinely nothing for it to generate; running it produces an empty migration, which this session chose not to add. If a reviewer wants to confirm, running the generator and observing no new file is the check.
+
+- **Discrepancy — G4's own wording ("... version and params schema") vs. the actual `NodeType` shape.** §4.3's own `NodeType` interface (which this plan's own code block declares) has no top-level `version` field — the version is folded into `script` (`plugin/member@version`), matching plan 303 §4.4's own "the palette offers `plugin/member@<the activated version>`". G4's prose and G4's own cited interface disagree on this one word; the interface (which is also what `NodeTypeSchema` and the tests assert against) is what shipped.
+
+- **Design decision recorded — dev slots are excluded from the palette.** §4.3 says "Plugin entries come from the manifests of **activated** plugins only". A dev slot (`enkaku dev`) is a separate, unpublished thing, and G4/G8's own wording never mentions it; `listNodeTypes` reads `runtime.list()` + `runtime.active(name)`, never `runtime.devSlots()`. If a future plan wants dev-slot nodes in the palette (useful for iterating on a node locally), that is a new row, not an oversight here — recorded because `surface-registry.ts`'s `ui()` DOES include dev slots for the SAME kind of question ("what nav is live right now"), and this plan deliberately does not follow that precedent.
+
+- **Design decision recorded — `switch`'s step output shape.** Neither §4.1 nor §5 states what a `switch` step's `workflow_steps.output` column should hold. This session used `{ case: number | null, branch: string | null }` — `case` is the index of the fired case (`null` when `default` fired or nothing did), `branch` is the target node id — mirroring the gate's existing `{ value, branch }` shape as closely as the two control surfaces allow.
+
+- **Design decision recorded — a delay's `ms` resolution failure degrades to `0`, not a step failure.** Neither §4.1 nor §3.4 states what happens when `ms` (any `ValueExpr`, including `{ expr }`) fails to resolve. This session treats an unresolved/non-numeric `ms` as `0` (an instant, clamped, no-op wait) rather than failing the step — a delay is advisory pacing, not a binding whose absence should abort a run the way an unresolved script param does.
+
+- **Typecheck**: clean. `bash scripts/typecheck.sh` → `OK` for all 21 workspace targets (protocol, expr, ui, adb, toolchain, drivers, scrcpy, sdk, session, harness, core, node, studio, probe-server, networking, proxy-manager, tiktok-automation-pack, mikrotik-routing, google-automation-pack, youtube-automation-pack, examples).
+
+- **Tests run** (one invocation at a time, never concurrently):
+  - `bun test packages/protocol/src/workflow.test.ts` → 80 pass, 0 fail
+  - `bun test packages/protocol/src/workflow-check.test.ts` → 46 pass, 0 fail
+  - `bun test packages/core/src/jobs/executors/workflow.test.ts` → 14 pass, 0 fail
+  - `bun test packages/sdk/src/plugin.test.ts` → 41 pass, 0 fail
+  - `bun test packages/core/src/workflows/registry.test.ts` → 8 pass, 0 fail
+  - `bun test packages/core/src/plugins/verify-child.test.ts` → 32 pass, 0 fail (the node-descriptor bundle fixtures added by step 303.5)
+  - `bun test packages/core/src/plugins/` (the directory step 303.5 names, one final sweep) → 311 pass, 1 skip, 0 fail (one `webhook-service.test.ts` case was independently observed flaky on a decoy-secret collision, unrelated to this plan, and passed on re-run)
+  - `bun test packages/core/src/server/http.test.ts` → 14 pass, 0 fail (fixture updated for `nodeTypeRoutes`)
+  - `bun test packages/protocol/src/workflow-resolve.test.ts` → 55 pass, 0 fail (untouched by 303, re-run as a sanity check since 302's session also touched `workflow-resolve.ts`)
+  - `bun test ./plugins/tiktok-automation-pack/src/index.test.ts` → 35 pass, 0 fail
+  - `bun test ./plugins/youtube-automation-pack/src/index.test.ts` → 5 pass, 0 fail
+  - `bun run build:packs` → rebuilt 6 packs, `tiktok@1.17.0`, `youtube@0.12.0` among them, output pasted below.
+
+  ```
+  $ bun run build:packs
+  $ bun scripts/build-packs.ts
+    networking@3.0.0 → packs/networking.mjs (808 KB, 1 script(s))
+    proxy-manager@0.11.2 → packs/proxy-manager.mjs (1055 KB, 1 script(s), 2 ui asset(s))
+    tiktok@1.17.0 → packs/tiktok.mjs (918 KB, 11 script(s))
+    mikrotik-routing@0.14.0 → packs/mikrotik-routing.mjs (873 KB, 4 script(s), 1 ui asset(s))
+    google@0.2.0 → packs/google.mjs (794 KB, 2 script(s))
+    youtube@0.12.0 → packs/youtube.mjs (841 KB, 5 script(s))
+  built 6 pack(s) into packages/core/packs
+  ```
+
+- **`bun run build:studio`**: **not run**. `bash scripts/build-studio.sh` was invoked directly and confirmed the refusal (its own guard message, quoted verbatim): *"The Studio dev server is running on :3001. Building now would corrupt it... Stop it first, then build."* Per the launch instructions, neither job in this launch edits `packages/studio`, and this plan's own steps never touched it either — so there is no reason to expect the build to fail, but it is genuinely unverified this session. This is the ONE reason `> Status:` reads `partial` rather than `implemented (software)`.
+
+- **§6 acceptance criteria, checked**:
+  - `rg -n "kind: z.literal\('" packages/protocol/src/workflow.ts` → 6 matches (`start`, `script`, `gate`, `switch`, `delay`, `finish`).
+  - `rg -n "'core:" packages/core/src/workflows/registry.ts` → 6 matches (one per `core:<kind>` id).
+  - "A document referencing an uninstalled plugin node still parses, still fails `checkWorkflow` with the existing script-unknown code, and does not crash the registry" — structurally true rather than newly tested: a workflow document only ever stores `kind: 'script', script: <ref>` (unchanged by this plan — nothing about `WorkflowNodeSchema`'s `script` kind changed), so `checkWorkflow`'s existing `E_WORKFLOW_SCRIPT_UNRESOLVED`/publish-route resolution path (`packages/core/src/api/workflows.ts`, untouched by this plan) is exactly what an uninstalled reference already hits, unrelated to whether that script happens to declare a `node`. `listNodeTypes` never reads a workflow document at all — it only enumerates `runtime.list()`/`runtime.active()` — so there is no code path by which a document could reach it, let alone crash it; `registry.test.ts`'s "a farm with no plugins at all" case is the closest direct proof (`listNodeTypes` never throws with zero plugins installed).
+
+- **`rg -n "outputs" packages/sdk/src/plugin.ts packages/protocol/src/workflow-node-type.ts`** → empty (G5).
+
+- **Removed (§10)**: nothing — this plan is additive, as §10's own row already states. No proof command changed.
+
+- **Observed, not done**:
+  - `bun run build:studio` — blocked by the concurrent Studio session, as above.
+  - The §7 manual owner smoke (3 steps, 10 minutes) — needs a real farm and an operator; not run by an agent, matching plan 200 §8.3's division of labour. G8 is that smoke's step 3.
+  - The other four packs (`google-automation-pack`, `mikrotik-routing`, `networking`, `proxy-manager`) and `instagram-automation-pack` were left untouched — see the "two shipped packs" discrepancy above for why, and what to do if that reading was wrong.
+  - No dedicated `packages/protocol/src/workflow-node-type.test.ts` was written. G3/G4's own test files already exercise `WorkflowNodeDescriptorSchema` end-to-end (through `definePlugin` and through the registry), and plan 303 §7's table does not name a file for the schema in isolation.
+  - No `daemon-wiring.test.ts`-style guard was added for `nodeTypeRoutes` (unlike `workflowRoutes`'s own `workflows-wiring.test.ts`, referenced in that field's doc comment). This plan wires the route directly and fully in `daemon.ts` in the same session, so there is no gap-in-progress for a guard test to protect against; not adding one is a scope choice, not an oversight.
+
+- **Open questions hit**: none of §9's four questions blocked any step. Q1 (`forEach`) and Q3 (`displayOptions`) were left exactly as answered — not built. Q2 (a pure data-shaping node) was not needed. Q4 (deactivated plugins in the registry) is explicitly deferred to plan 306 by its own answer; not built here.
+
+- **Processes**: no process was started by this session that is still running. `:3001` is still held by `node` pid 34537 (checked via `lsof -i :3001`), the concurrently running Studio session the launch instructions named — predates this session, not started, stopped, or otherwise touched here.
+
+  ```
+  $ ps -Ao pid=,command= | grep -i "[o]penpf"
+  (no output)
+  ```

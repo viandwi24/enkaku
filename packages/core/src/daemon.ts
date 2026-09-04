@@ -175,6 +175,7 @@ import { createFarmBroker, createFarmRunnerPort, type FarmBroker } from './plugi
 import { seedEmbeddedPacks } from './plugins/seed-embedded'
 import { embeddedAssets } from './embedded'
 import { createPluginRoutes, pluginRouteErrorStatus } from './api/plugins'
+import { createNodeTypeRoutes } from './api/node-types'
 import { buildCoreCapabilityRegistry, createCapabilityContext, type CapabilityContextDeps } from './capability'
 import { createCapRoutes } from './api/cap'
 import { buildOpenApiDocument } from './api/openapi'
@@ -3422,6 +3423,11 @@ let blobGc: BlobGc | null = null
           // bounds nothing.
           ...(pluginHost ? { service: { host: pluginHost, webhooks: { store: pluginWebhookStore, limiter: pluginWebhookLimiter } } } : {}),
         }),
+        // The flow editor's node catalog (plan 303 §4.3, §5 step 303.6) —
+        // `pluginRuntime` is the SAME instance `pluginRoutes` above already
+        // shares; the registry reads its manifests fresh on every request,
+        // never a second cache to keep in step with activate/rollback.
+        nodeTypeRoutes: createNodeTypeRoutes({ plugins: pluginRuntime }),
         // The capability registry's three generated surfaces (plan 63 §3.5,
         // §4.4, §4.5) — `capabilityRegistry`/`capContextDeps`/`openApiDocument`
         // are all built just above, before this call.

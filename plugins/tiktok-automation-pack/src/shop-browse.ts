@@ -58,6 +58,7 @@ function categoryChip(tree: UiNode, name: string): UiNode | null {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'shop-browse',
+  node: { category: 'device', icon: 'boxes', summary: ['scrolls'], keywords: ['shop', 'browse'] },
   title: 'Browse TikTok Shop',
   description: 'Opens the Shop tab (passing and REPORTING the first-run Tokopedia consent), browses the feed with verified randomised swipes, optionally opens one category chip — and never touches a product, price, or purchase control.',
   params: paramsSchema,

@@ -34,6 +34,14 @@ function finishNode(overrides: Record<string, unknown> = {}) {
   return { kind: 'finish', id: 'finish', title: '', ui: { x: 0, y: 0 }, ...overrides }
 }
 
+function switchNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'switch', id: 'sw', title: '', ui: { x: 0, y: 0 }, cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, label: '' }], ...overrides }
+}
+
+function delayNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'delay', id: 'dl', title: '', ui: { x: 0, y: 0 }, ms: { const: 1000 }, maxMs: 5000, ...overrides }
+}
+
 describe('WorkflowDocSchema — v2 shape', () => {
   // The owner's own example (plan 99 §0, adapted to doc v2, plan 301): start
   // → Scroll FYP (warm-up) → Search Keywords & Scroll Posts → [gate: enough
@@ -432,6 +440,8 @@ describe('WORKFLOW_LIMITS — pinned so a future change to these numbers is a de
       maxNodeOutputBytes: 256 * 1024,
       maxRunSummaryBytes: 512 * 1024,
       maxSawKeys: 20,
+      maxSwitchCases: 10,
+      maxDelayMs: 5 * 60_000,
     })
   })
 })
@@ -479,6 +489,72 @@ describe('export surface — packages/protocol/src/index.ts re-exports (permanen
 describe('WorkflowNodeSchema — a gate without `when` is refused', () => {
   test('missing `when`', () => {
     const result = WorkflowNodeSchema.safeParse({ kind: 'gate', id: 'g', ui: { x: 0, y: 0 } })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe('six kinds (plan 303 G1)', () => {
+  test('start, script, gate, switch, delay, finish all parse as WorkflowNodeSchema', () => {
+    const gateNode = { kind: 'gate', id: 'g', title: '', ui: { x: 0, y: 0 }, when: { left: { const: 1 }, op: 'eq', right: { const: 1 } } }
+    const kinds = [startNode(), scriptNode(), gateNode, switchNode(), delayNode(), finishNode()]
+    for (const node of kinds) {
+      const result = WorkflowNodeSchema.safeParse(node)
+      expect(result.success, `kind "${(node as { kind: string }).kind}" should parse`).toBe(true)
+    }
+    expect(kinds.map((n) => (n as { kind: string }).kind).sort()).toEqual(['delay', 'finish', 'gate', 'script', 'start', 'switch'])
+  })
+
+  test('a seventh kind is refused — the union is closed (plan 300 D8)', () => {
+    const result = WorkflowNodeSchema.safeParse({ kind: 'forEach', id: 'x', title: '', ui: { x: 0, y: 0 } })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe('switch (plan 303 §3.3, §4.1)', () => {
+  test('a single case with a default parses, first match wins by array order', () => {
+    const result = WorkflowNodeSchema.safeParse(
+      switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, to: 'a', label: 'one' }], default: 'b' }),
+    )
+    expect(result.success).toBe(true)
+  })
+
+  test('a case may omit `to` — dangling, ends the run succeeded (plan 301 §3.2)', () => {
+    const result = WorkflowNodeSchema.safeParse(switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, label: '' }] }))
+    expect(result.success).toBe(true)
+  })
+
+  test('an empty `cases` array is refused', () => {
+    const result = WorkflowNodeSchema.safeParse(switchNode({ cases: [] }))
+    expect(result.success).toBe(false)
+  })
+
+  test(`up to ${WORKFLOW_LIMITS.maxSwitchCases} cases parse; one more is refused`, () => {
+    const oneCase = { when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, label: '' }
+    const atCeiling = WorkflowNodeSchema.safeParse(switchNode({ cases: Array.from({ length: WORKFLOW_LIMITS.maxSwitchCases }, () => oneCase) }))
+    expect(atCeiling.success).toBe(true)
+    const overCeiling = WorkflowNodeSchema.safeParse(switchNode({ cases: Array.from({ length: WORKFLOW_LIMITS.maxSwitchCases + 1 }, () => oneCase) }))
+    expect(overCeiling.success).toBe(false)
+  })
+})
+
+describe('delay (plan 303 §3.4, §4.1)', () => {
+  test('a const-valued ms with maxMs at the ceiling parses', () => {
+    const result = WorkflowNodeSchema.safeParse(delayNode({ ms: { const: 1000 }, maxMs: WORKFLOW_LIMITS.maxDelayMs }))
+    expect(result.success).toBe(true)
+  })
+
+  test('ms may be any ValueExpr, including an expression', () => {
+    const result = WorkflowNodeSchema.safeParse(delayNode({ ms: { expr: '$nodes.a.waitMs' } }))
+    expect(result.success).toBe(true)
+  })
+
+  test('maxMs over the ceiling is refused', () => {
+    const result = WorkflowNodeSchema.safeParse(delayNode({ maxMs: WORKFLOW_LIMITS.maxDelayMs + 1 }))
+    expect(result.success).toBe(false)
+  })
+
+  test('a negative maxMs is refused', () => {
+    const result = WorkflowNodeSchema.safeParse(delayNode({ maxMs: -1 }))
     expect(result.success).toBe(false)
   })
 })

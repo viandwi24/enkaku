@@ -17,6 +17,15 @@ import liveBrowse from './live-browse'
 import shopBrowse from './shop-browse'
 import notificationActivity from './notification-activity'
 
+/** The three-site version bump `CLAUDE.md` requires: `package.json`, `src/index.ts`, and this assertion. */
+describe('tiktok-automation-pack manifest', () => {
+  test('version matches package.json', async () => {
+    const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
+    expect(plugin.version).toBe('1.17.0')
+    expect(plugin.version).toBe(pkg.version)
+  })
+})
+
 /**
  * Plan 97 §3.2, §5 step 97.8's own verifiable result — every member's
  * declared `result` schema accepts the real shape its `run()` returns.

@@ -69,6 +69,31 @@ const ON_FAIL_STEP_ID = '_on_fail'
 
 type ScriptNode = Extract<WorkflowNode, { kind: 'script' }>
 
+/**
+ * A `delay` node's own wait (plan 303 §3.4, §303.3) — cancellable, so a
+ * workflow abort during the wait ends the run promptly rather than after
+ * `waitMs` elapses. Rejects with the SIGNAL's own abort reason, never an
+ * `EnkakuError`, matching `ctx.signal.throwIfAborted()`'s convention
+ * elsewhere in this file — that is what lets the outer `catch`'s existing
+ * `cancelled = ctx.signal.aborted && !(err instanceof EnkakuError)` keep
+ * classifying an aborted delay as a cancellation, not a workflow failure,
+ * with no separate branch needed.
+ */
+function cancellableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('workflow aborted'))
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason ?? new Error('workflow aborted'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function capOutput(value: unknown): { output: unknown; truncated: string | null } {
   let json: string
   try {
@@ -324,6 +349,77 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // (plan 301 §3.2) — a gate has no `fail`-shaped outcome any more;
             // ending a run failed is a `finish` node's own job.
             cursor = chosen ?? null
+            continue
+          }
+
+          if (node.kind === 'switch') {
+            // Plan 303 §3.3, §3.3: cases evaluated in ARRAY order, first
+            // match wins; `default` fires when none do. Reuses
+            // `evaluatePredicate` unchanged — a case's `when` is the exact
+            // same `Predicate` a gate already evaluates.
+            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime() }
+            let chosen: string | undefined
+            let firedIndex: number | null = null
+            for (let ci = 0; ci < node.cases.length; ci++) {
+              const c = node.cases[ci]
+              if (!c) continue
+              const { value } = evaluatePredicate(c.when, scope)
+              if (value) {
+                chosen = c.to
+                firedIndex = ci
+                break
+              }
+            }
+            if (firedIndex === null) chosen = node.default
+            const finishedAt = new Date()
+            const output = { case: firedIndex, branch: chosen ?? null }
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output }).where(eq(workflowSteps.id, rowId)).run()
+            summary.push({
+              nodeId: node.id,
+              script: null,
+              status: 'success',
+              startedAt: toSec(rowStartedAt),
+              finishedAt: toSec(finishedAt),
+              durationMs: finishedAt.getTime() - rowStartedAt.getTime(),
+              output,
+            })
+
+            step += 1
+            // Every case target and `default` end the run SUCCEEDED when
+            // dangling (plan 301 §3.2), same as a gate's `then`/`else`.
+            cursor = chosen ?? null
+            continue
+          }
+
+          if (node.kind === 'delay') {
+            // Plan 303 §3.4: `ms` may be ANY ValueExpr (including `{ expr }`),
+            // resolved here; the executor clamps the resolved value to the
+            // document's own declared `maxMs` — a budget `checkWorkflow`
+            // could not have computed statically from an unbounded `ms` is
+            // not a budget. A non-numeric or unresolved `ms` degrades to `0`
+            // rather than failing the step: a delay is advisory timing, not
+            // a binding whose absence should fail a run.
+            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime() }
+            const msOutcome = resolveValue(node.ms, scope)
+            const rawMs = msOutcome.ok && typeof msOutcome.value === 'number' && Number.isFinite(msOutcome.value) ? msOutcome.value : 0
+            const waitMs = Math.max(0, Math.min(rawMs, node.maxMs))
+            await cancellableDelay(waitMs, ctx.signal)
+            const finishedAt = new Date()
+            const output = { ms: waitMs }
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output }).where(eq(workflowSteps.id, rowId)).run()
+            summary.push({
+              nodeId: node.id,
+              script: null,
+              status: 'success',
+              startedAt: toSec(rowStartedAt),
+              finishedAt: toSec(finishedAt),
+              durationMs: finishedAt.getTime() - rowStartedAt.getTime(),
+              output,
+            })
+
+            step += 1
+            // Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2).
+            cursor = node.next ?? null
             continue
           }
 

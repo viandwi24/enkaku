@@ -281,6 +281,45 @@ describe('definePlugin — the surface (plan 108 §4.1)', () => {
   })
 })
 
+describe('definePlugin — the node descriptor (plan 303 §4.2, G3)', () => {
+  test('a member declaring no `node` is unaffected — no key at all on the way out', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })
+    expect(Object.hasOwn(plugin.scripts[0] as object, 'node')).toBe(false)
+  })
+
+  test('a member declaring `node` gets the PARSED form, with every default applied', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { node: { category: 'device', icon: 'wrench', summary: ['keyword'] } })] })
+    expect((plugin.scripts[0] as { node?: unknown }).node).toEqual({ category: 'device', icon: 'wrench', summary: ['keyword'], keywords: [] })
+  })
+
+  test('an empty `node: {}` gets every default: category "other", icon "box", empty summary and keywords', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { node: {} })] })
+    expect((plugin.scripts[0] as { node?: unknown }).node).toEqual({ category: 'other', icon: 'box', summary: [], keywords: [] })
+  })
+
+  test('a bad icon is refused, naming the script', () => {
+    expect(() => definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { node: { icon: 'not-a-real-icon' } as never })] })).toThrow(/script "a".*node/s)
+  })
+
+  test('a bad category is refused', () => {
+    expect(() => definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { node: { category: 'not-a-real-category' } as never })] })).toThrow(/node/)
+  })
+
+  test('more than 3 summary fields is refused', () => {
+    expect(() => definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { node: { summary: ['a', 'b', 'c', 'd'] } })] })).toThrow(/node/)
+  })
+
+  test('an unknown key on `node` is refused — the descriptor is `.strict()`', () => {
+    expect(() => definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { node: { outputs: 2 } as never })] })).toThrow(/node/)
+  })
+
+  test('only the member that declares `node` carries one — a plugin with mixed members is unaffected on the rest', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { node: { category: 'data' } }), member('b')] })
+    expect((plugin.scripts[0] as { node?: unknown }).node).toBeDefined()
+    expect(Object.hasOwn(plugin.scripts[1] as object, 'node')).toBe(false)
+  })
+})
+
 describe('isPlugin', () => {
   test('true for a definePlugin() result', () => {
     const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })

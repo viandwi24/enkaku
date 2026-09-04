@@ -940,6 +940,7 @@ export {
  */
 export {
   WORKFLOW_LIMITS,
+  WORKFLOW_NODE_KINDS,
   WorkflowNodeIdSchema,
   WorkflowPathSchema,
   WorkflowNameSchema,
@@ -974,6 +975,13 @@ export {
   type ResolveOutcome,
   type PredicateTrace,
 } from './workflow-resolve'
+export {
+  NodeCategorySchema,
+  WorkflowNodeDescriptorSchema,
+  type NodeCategory,
+  type WorkflowNodeDescriptor,
+  type WorkflowNodeDescriptorInput,
+} from './workflow-node-type'
 
 /**
  * Generic server→client error (a failed reply, an invalid message).

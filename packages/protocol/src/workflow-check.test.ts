@@ -19,6 +19,14 @@ function scriptEntry(overrides: Partial<ResolvedNodeScript> = {}): ResolvedNodeS
   return { name: 'demo', version: '1.0.0', paramsSchema: null, outputSchema: null, timeoutMs: null, ...overrides }
 }
 
+function switchNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'switch', id: 'sw', title: '', ui: { x: 0, y: 0 }, cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, label: '' }], ...overrides }
+}
+
+function delayNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'delay', id: 'dl', title: '', ui: { x: 0, y: 0 }, ms: { const: 1000 }, maxMs: 5000, ...overrides }
+}
+
 function codesOf(findings: { code: WorkflowFindingCode }[]): WorkflowFindingCode[] {
   return findings.map((f) => f.code)
 }
@@ -645,6 +653,104 @@ describe('checkWorkflow — W_WORKFLOW_LATEST_REF', () => {
     const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
     const findings = checkWorkflow(doc, resolved)
     expect(codesOf(findings)).not.toContain('W_WORKFLOW_LATEST_REF')
+  })
+})
+
+describe('checkWorkflow — switch and delay (plan 303 §4.1, step 303.2)', () => {
+  test('every switch case target and default is a successor — an unknown one is E_WORKFLOW_UNKNOWN_NODE', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'switch-bad-case',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 'sw' }), switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, to: 'ghost', label: '' }] })],
+    })
+    const findings = checkWorkflow(doc, new Map())
+    expect(codesOf(findings)).toContain('E_WORKFLOW_UNKNOWN_NODE')
+  })
+
+  test('a dangling case (no `to`) and a dangling `default` are both W_WORKFLOW_EDGE_DANGLING, not errors', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'switch-dangling',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 'sw' }), switchNode()],
+    })
+    const findings = checkWorkflow(doc, new Map())
+    expect(findings.filter((f) => f.severity === 'error')).toHaveLength(0)
+    expect(codesOf(findings)).toContain('W_WORKFLOW_EDGE_DANGLING')
+  })
+
+  test('a switch feeding two different nodes makes both reachable', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'switch-branches',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sw' }),
+        switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, to: 'a', label: '' }], default: 'b' }),
+        scriptNode({ id: 'a' }),
+        scriptNode({ id: 'b' }),
+      ],
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
+    const findings = checkWorkflow(doc, resolved)
+    expect(codesOf(findings)).not.toContain('W_WORKFLOW_NODE_UNREACHABLE')
+  })
+
+  test('a switch’s budget contribution is the MAXIMUM over its branches, not the sum', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'switch-budget',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sw' }),
+        switchNode({ cases: [{ when: { left: { const: 1 }, op: 'eq', right: { const: 1 } }, to: 'slow', label: '' }], default: 'fast' }),
+        scriptNode({ id: 'slow', script: 'tiktok/slow@1.0.0' }),
+        scriptNode({ id: 'fast', script: 'tiktok/fast@1.0.0' }),
+      ],
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([
+      ['tiktok/slow@1.0.0', scriptEntry({ name: 'tiktok/slow', version: '1.0.0', timeoutMs: 100_000 })],
+      ['tiktok/fast@1.0.0', scriptEntry({ name: 'tiktok/fast', version: '1.0.0', timeoutMs: 1_000 })],
+    ])
+    // A budget just over the SLOWER branch's cost passes; just under it fails —
+    // proving the walk takes the max branch, not slow+fast summed (101_000ms).
+    const passing = checkWorkflow(doc, resolved, { maxTotalMs: 100_001 })
+    expect(codesOf(passing)).not.toContain('E_WORKFLOW_BUDGET_IMPOSSIBLE')
+    const failing = checkWorkflow(doc, resolved, { maxTotalMs: 99_999 })
+    expect(codesOf(failing)).toContain('E_WORKFLOW_BUDGET_IMPOSSIBLE')
+  })
+
+  test('delay contributes its own maxMs to every path through it — the checker never touches the device', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'delay-budget',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 'dl' }), delayNode({ maxMs: 60_000, next: 'a' }), scriptNode({ id: 'a', script: 'tiktok/a@1.0.0' })],
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([['tiktok/a@1.0.0', scriptEntry({ name: 'tiktok/a', version: '1.0.0', timeoutMs: 1_000 })]])
+    const passing = checkWorkflow(doc, resolved, { maxTotalMs: 61_001 })
+    expect(codesOf(passing)).not.toContain('E_WORKFLOW_BUDGET_IMPOSSIBLE')
+    const failing = checkWorkflow(doc, resolved, { maxTotalMs: 60_999 })
+    expect(codesOf(failing)).toContain('E_WORKFLOW_BUDGET_IMPOSSIBLE')
+  })
+
+  test('a dangling delay `next` is W_WORKFLOW_EDGE_DANGLING, not an error', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'delay-dangling',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 'dl' }), delayNode()],
+    })
+    const findings = checkWorkflow(doc, new Map())
+    expect(findings.filter((f) => f.severity === 'error')).toHaveLength(0)
+    expect(codesOf(findings)).toContain('W_WORKFLOW_EDGE_DANGLING')
   })
 })
 

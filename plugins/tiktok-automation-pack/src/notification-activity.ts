@@ -60,6 +60,7 @@ function isActivityLine(value: string): boolean {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'notification-activity',
+  node: { category: 'inspect', icon: 'bell', summary: ['scrolls', 'maxItems'], keywords: ['notification', 'inbox', 'activity'] },
   title: 'Show notification activity',
   description: 'Opens the Inbox, reports the unread badge and section list, opens the Aktivitas section and reads its entries — reporting them, tapping nothing beyond the section itself.',
   params: paramsSchema,

@@ -393,6 +393,7 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
   title: 'Auto-scroll the feed',
   description:
     'Opens TikTok and scrolls the feed with randomised watch times, gesture strength, occasional re-watches, back-scrolls and idle pauses. Never likes, follows, or comments.',
+  node: { category: 'device', icon: 'activity', summary: ['videos', 'keywords'], keywords: ['scroll', 'feed', 'watch'] },
   result: resultSchema,
   params: paramsSchema,
   // The wall-clock ceiling plus generous slack for launch, settling, and the long-idle bucket.
@@ -785,7 +786,12 @@ export default definePlugin({
   // shift the DWELL toward the long buckets when the opened player's caption /
   // author text matches (the pack still never likes/follows/comments — the
   // tilt lands on watch time, the one thing this pack is allowed to vary).
-  version: '1.16.0',
+  // 1.17.0 — every member is now a workflow flow-editor node (plan 303 §4.5):
+  // all 11 scripts gain a `node` descriptor (category, icon, up to 3 summary
+  // params, keywords) so the flow editor's palette can present them —
+  // presentation only, nothing about how any member EXECUTES changes (plan
+  // 300 D6, D7).
+  version: '1.17.0',
   title: 'TikTok automation pack',
   description: 'Watch, scroll, search, browse shop and live, and read notifications on the TikTok feed, with human-shaped timing.',
   scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript, searchKeyword, keywordVideos, liveBrowse, shopBrowse, notificationActivity],

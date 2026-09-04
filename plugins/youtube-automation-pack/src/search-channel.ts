@@ -591,6 +591,7 @@ export function titleFromRow(node: UiNode): string {
 
 const searchChannelScript: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'search-channel',
+  node: { category: 'device', icon: 'search', summary: ['query', 'holdMs'], keywords: ['search', 'channel'] },
   title: 'Search channel',
   description: 'Searches YouTube for a channel by name, opens its channel page, holds for a moment, then closes the app. Opens a page — it never subscribes, likes, or comments.',
   params: paramsSchema,

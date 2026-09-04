@@ -111,6 +111,7 @@ export function inShorts(tree: UiNode): boolean {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'scroll-shorts',
+  node: { category: 'device', icon: 'activity', summary: ['videos'], keywords: ['shorts', 'scroll', 'watch'] },
   title: 'Scroll Shorts',
   description: 'Browses the Shorts feed with randomised, verified swipes and human-shaped dwell, with optional likes and comment reading.',
   params: paramsSchema,

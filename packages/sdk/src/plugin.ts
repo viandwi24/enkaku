@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import { validatePluginSurface, type PluginSurface, type PluginSurfaceInput } from '@enkaku/protocol'
+import { validatePluginSurface, WorkflowNodeDescriptorSchema, type PluginSurface, type PluginSurfaceInput, type WorkflowNodeDescriptor, type WorkflowNodeDescriptorInput } from '@enkaku/protocol'
 import { foldRuntimeEnvelope } from './runtime-fold'
 import { isService, type PluginService } from './runtime'
 import type { ScriptDefinition } from './types'
@@ -46,6 +46,18 @@ export type PluginMemberScript<S extends z.ZodTypeAny = z.ZodTypeAny, R extends 
    */
   title?: string
   description?: string
+  /**
+   * Presents this member as a workflow node type (plan 300 D6, plan 303
+   * §4.2) — a descriptor, never a second execution path (plan 300 D7): the
+   * member still runs in the SAME child process, still resolves through the
+   * SAME `plugin/member@version` ref every script does. Omit it and the
+   * member is an ordinary script, exactly as before this field existed.
+   * Validated on the author's own machine by `definePlugin` below, through
+   * `WorkflowNodeDescriptorSchema` — the SAME schema the farm re-validates
+   * independently at verify (`verify-child.ts`'s `finalizeReport`), so a
+   * descriptor that passes here cannot fail there.
+   */
+  node?: WorkflowNodeDescriptorInput
 }
 
 export interface PluginDefinition {
@@ -203,6 +215,11 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
   // import time, for every other per-member defect) and applied in the
   // `.map()` below, keyed by id since ids are already known unique here.
   const runtimeById = new Map<string, ReturnType<typeof foldRuntimeEnvelope>>()
+  // Plan 303 §4.2, §5 step 303.4 — a member's `node` descriptor, validated
+  // on the author's own machine through the SAME `WorkflowNodeDescriptorSchema`
+  // the farm re-validates independently at verify (§3.9's discipline,
+  // applied to a fourth declaration now: `surface`, `service`, `node`).
+  const nodeById = new Map<string, WorkflowNodeDescriptor>()
   for (const s of def.scripts) {
     if (!s.id || s.id.trim().length === 0) {
       throw new Error('definePlugin: every script needs an `id`')
@@ -229,11 +246,21 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
       throw new Error(`definePlugin: script "${s.id}" — \`result\`, when present, must be a Zod schema`)
     }
     runtimeById.set(s.id, foldRuntimeEnvelope(s, `definePlugin: script "${s.id}" (plugin "${def.id}")`))
+    if (s.node !== undefined) {
+      const checked = WorkflowNodeDescriptorSchema.safeParse(s.node)
+      if (!checked.success) {
+        throw new Error(
+          `definePlugin: script "${s.id}" — \`node\` — ${checked.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
+        )
+      }
+      nodeById.set(s.id, checked.data)
+    }
   }
 
   const scripts: ScriptDefinition[] = def.scripts.map((s) => {
     const runtime = runtimeById.get(s.id)
-    return Object.freeze({ ...s, version: def.version, ...(runtime !== undefined ? { runtime } : {}) }) as ScriptDefinition
+    const node = nodeById.get(s.id)
+    return Object.freeze({ ...s, version: def.version, ...(runtime !== undefined ? { runtime } : {}), ...(node !== undefined ? { node } : {}) }) as ScriptDefinition
   })
 
   // The authored `surface` is dropped from the spread and re-added only

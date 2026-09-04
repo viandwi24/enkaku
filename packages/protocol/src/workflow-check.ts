@@ -182,6 +182,16 @@ function buildGraph(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, findings: Wo
     } else if (node.kind === 'gate') {
       addEdge(edges, node.id, resolveEdge(nodeIds, node.then, `nodes[${i}].then`, 'succeeded', findings))
       addEdge(edges, node.id, resolveEdge(nodeIds, node.else, `nodes[${i}].else`, 'succeeded', findings))
+    } else if (node.kind === 'switch') {
+      // Plan 303 §4.1 — every case target, plus `default`, is a successor;
+      // all of them, dangling or not, end the run SUCCEEDED at run time
+      // (plan 301 §3.2), exactly as a gate's `then`/`else` already do.
+      node.cases.forEach((c, ci) => {
+        addEdge(edges, node.id, resolveEdge(nodeIds, c.to, `nodes[${i}].cases[${ci}].to`, 'succeeded', findings))
+      })
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.default, `nodes[${i}].default`, 'succeeded', findings))
+    } else if (node.kind === 'delay') {
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
     }
     // `finish` is a sink — no outgoing edge to resolve.
   })
@@ -302,8 +312,15 @@ function findCycle(edges: ReadonlyMap<string, Set<string>>, start: string | unde
 
 /** A gate, a `start`, and a `finish` cost nothing — they run in-process (or not at all), no child, no clock (§3.7, plan 301 §4.2). A script node costs its resolved script's `timeoutMs`, or `null` for UNKNOWN (no declared timeout, or a ref missing from `resolved` entirely — both mean "cannot determine", never zero). */
 function nodeCostMs(resolved: ReadonlyMap<ScriptRef, ResolvedNodeScript>, node: WorkflowNode): number | null {
-  if (node.kind !== 'script') return 0
-  return resolved.get(node.script)?.timeoutMs ?? null
+  if (node.kind === 'script') return resolved.get(node.script)?.timeoutMs ?? null
+  // A `delay` node's cost is its own declared `maxMs` — known statically,
+  // by construction (plan 303 §3.4): the resolved `ms` may vary at run
+  // time, but the executor clamps it to `maxMs`, so `maxMs` is the true
+  // worst case the budget walk must sum. Every other kind (`start`, `gate`,
+  // `switch`, `finish`) runs in-process with no device call and costs
+  // nothing.
+  if (node.kind === 'delay') return node.maxMs
+  return 0
 }
 
 /**
@@ -480,6 +497,19 @@ function* collectBindingSites(doc: WorkflowDoc): Generator<BindingSite> {
       for (const expr of predicateExprs(node.when)) {
         yield { fromNodeId: node.id, path: `nodes[${i}].when`, expr }
       }
+    } else if (node.kind === 'switch') {
+      // A plain indexed `for`, not `.forEach` — same reason as this
+      // function's own opening comment: `yield` cannot cross into a nested
+      // (non-generator) callback.
+      for (let ci = 0; ci < node.cases.length; ci++) {
+        const c = node.cases[ci]
+        if (!c) continue
+        for (const expr of predicateExprs(c.when)) {
+          yield { fromNodeId: node.id, path: `nodes[${i}].cases[${ci}].when`, expr }
+        }
+      }
+    } else if (node.kind === 'delay') {
+      yield { fromNodeId: node.id, path: `nodes[${i}].ms`, expr: node.ms }
     }
     // `start`/`finish` carry no bindings.
   }

@@ -35,6 +35,7 @@ function buildDeps(overrides: Partial<HttpDeps> = {}): HttpDeps {
     jobRoutes: emptyAuthEnvApp(),
     scriptRoutes: emptyAuthEnvApp(),
     pluginRoutes: emptyAuthEnvApp(),
+    nodeTypeRoutes: emptyAuthEnvApp(),
     capRoutes: emptyAuthEnvApp(),
     openApiDocument: {},
     mcpRoutes: emptyAuthEnvApp(),

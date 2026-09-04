@@ -54,6 +54,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'search-keyword',
   title: 'Search keyword',
   description: 'Searches TikTok for a keyword, lands on a results tab, and reports what the page really exposes — it opens nothing and never taps a result.',
+  node: { category: 'inspect', icon: 'search', summary: ['query', 'tab'], keywords: ['search', 'keyword'] },
   params: paramsSchema,
   result: resultSchema,
   timeout: 5 * 60_000,

@@ -46,13 +46,19 @@ import searchPlay from './search-play'
  */
 export default definePlugin({
   id: 'youtube',
-  version: '0.11.0',
+  version: '0.12.0',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments and download in the YouTube app on a farm device.',
   scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay],
 
   /**
    * ## Changelog
+   *
+   * **0.12.0 — every member is now a workflow flow-editor node (plan 303
+   * §4.5).** Each of the five scripts gains a `node` descriptor (category,
+   * icon, up to 3 summary params, keywords) so the flow editor's palette can
+   * present it — presentation only; nothing about how any member EXECUTES
+   * changes (plan 300 D6, D7).
    *
    * **0.11.0 — a Shorts SHELF is not the Shorts TAB.** Job 24ca474e failed on a
    * home feed that happened to carry a Shorts row: the walk matched the shelf
