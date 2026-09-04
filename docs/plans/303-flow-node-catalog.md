@@ -383,9 +383,10 @@ Manual smoke (owner, 10 minutes):
 
 - **Open questions hit**: none of §9's four questions blocked any step. Q1 (`forEach`) and Q3 (`displayOptions`) were left exactly as answered — not built. Q2 (a pure data-shaping node) was not needed. Q4 (deactivated plugins in the registry) is explicitly deferred to plan 306 by its own answer; not built here.
 
-- **Processes**: no process was started by this session that is still running. `:3001` is still held by `node` pid 34537 (checked via `lsof -i :3001`), the concurrently running Studio session the launch instructions named — predates this session, not started, stopped, or otherwise touched here.
+- **Processes**: no process was started by this session that is still running. A final `ps` check (below) shows two processes matching `openpf`, both under the MAIN checkout path (`/Users/solpochi/Projects/oss/openpf/...`, not this worktree's `.claude/worktrees/agent-ae064af92de9ca9e9/...`) — a `scrcpy` server and a `next dev` on `:3001` — belonging to the concurrently running session the launch instructions named as working in the main worktree. Neither was started, stopped, or otherwise touched by this session; this worktree started no process of its own that outlived its test/build commands.
 
   ```
   $ ps -Ao pid=,command= | grep -i "[o]penpf"
-  (no output)
+  45634 /Users/solpochi/Projects/oss/openpf/.dev-data/tools/adb/36.0.0/platform-tools/adb -s ZP2222RMBS shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.1 scid=7f5c95c3 log_level=info video=true audio=false control=true tunnel_forward=true video_codec=h264 max_size=480 video_bit_rate=1100000 max_fps=18 cleanup=true raw_stream=false
+  18668 node /Users/solpochi/Projects/oss/openpf/packages/studio/node_modules/.bin/next dev -p 3001
   ```
