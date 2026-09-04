@@ -8,8 +8,11 @@ import {
   DeviceSettingsSchema,
   parsePluginSocketPath,
   type ArtifactInfo,
+  type DeviceActivity,
   type DeviceEvent,
   type DeviceStatus,
+  type GuestAgentActivity,
+  type GuestAgentVideo,
   type Quality,
   type ServerMessage,
   type ShellResult,
@@ -376,6 +379,15 @@ let blobGc: BlobGc | null = null
    */
   let agentProvisionerRef: AgentProvisioner | null = null
   /**
+   * Plan 221 §4.5, §5 step 221.14 — `guestAgent.pushActivity`, read through the same forward-ref
+   * shape `agentProvisionerRef` above uses: the activity registry (built well before `guestAgent`)
+   * needs somewhere to push a change to, and nothing exists to push to yet at that point in boot.
+   * `null` until `guestAgent` is constructed, which is correct rather than merely convenient — a
+   * push attempted in that vanishingly short window is simply skipped, same as every other
+   * forward-ref in this file.
+   */
+  let guestAgentActivityPushRef: ((deviceId: string, activities: GuestAgentActivity[], video: GuestAgentVideo | null) => Promise<void>) | null = null
+  /**
    * Plan 114 §4.3, step 114.3 — the reverse registry's `routeEnabled` veto,
    * bound to the persisted route's own `enabled` flag once
    * `createGuestAgentRoutes` exists. The registry is constructed beside
@@ -512,10 +524,34 @@ let blobGc: BlobGc | null = null
       // pattern `adbServerControl`'s own `getClient: () => adb` already uses
       // a few lines down, so declaring this before either exists is safe —
       // neither closure runs until well after both are assigned.
+      /**
+       * Plan 221 §4.5, §5 step 221.14 — at most one `activity.set` per device per second,
+       * trailing-edge, so a burst of registry changes on a busy device is one shell round trip,
+       * not one per change. Best-effort and never blocking the registry: `onChange` below only
+       * schedules and returns, the adb round trip happens on the timer.
+       */
+      const activityPushTimers = new Map<string, ReturnType<typeof setTimeout>>()
+      function scheduleActivityPush(deviceId: string): void {
+        if (activityPushTimers.has(deviceId)) return
+        const timer = setTimeout(() => {
+          activityPushTimers.delete(deviceId)
+          const list: GuestAgentActivity[] = activities.list(deviceId).map((a: DeviceActivity) => ({
+            id: a.id,
+            kind: a.kind,
+            label: a.label,
+            actorLabel: a.actor.label,
+            startedAt: a.startedAt,
+          }))
+          guestAgentActivityPushRef?.(deviceId, list, null)?.catch(() => undefined)
+        }, 1_000)
+        activityPushTimers.set(deviceId, timer)
+      }
+
       const activities: ActivityRegistry = createActivityRegistry({
         log: log.child('activity'),
         controlIdleSec: () => settingsStore.get().control.idleSec,
         onChange: (deviceId, change, activity, lastControl) => {
+          scheduleActivityPush(deviceId)
           hub.broadcast({ type: 'device.activity', payload: { deviceId, change, activity, lastControl } })
           // Only the two terminal transitions are worth a permanent row
           // (plan 18 §3.5) — a marker refresh (`change === 'updated'`, a job
@@ -2126,6 +2162,9 @@ let blobGc: BlobGc | null = null
         // no forward-ref is needed here.
         reverse: reverseRegistry,
       })
+      // Plan 221 §4.5, §5 step 221.14 — the activity registry's own forward-ref, resolved the
+      // instant `guestAgent` exists (same moment every other `*Ref` beside it resolves).
+      guestAgentActivityPushRef = guestAgent.pushActivity
       // The other half of the same wiring: the registry asks whether a route is
       // still enabled before re-establishing its reverse on reconnect.
       networkRouteEnabledRef = guestAgent.isRouteEnabled
@@ -3427,6 +3466,10 @@ let blobGc: BlobGc | null = null
       stopReaper = () => {
         activities.stopSweep()
         operations.stopSweep()
+        // Plan 221 §5 step 221.14 — a pending coalesced push must not fire after `stop()`, which
+        // is when the guest-agent session machinery it would reach through is torn down.
+        for (const timer of activityPushTimers.values()) clearTimeout(timer)
+        activityPushTimers.clear()
       }
       expiryReaper.start()
       stopExpiryReaper = () => expiryReaper.stop()
