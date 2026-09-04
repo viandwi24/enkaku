@@ -14,13 +14,17 @@ import type { ScriptOption } from '@/components/workflow/ScriptPicker'
 import { fetchAllPages, fetchWorkflow } from '@/lib/api'
 
 /**
- * The editor screen (plan 210 §4.9). `/workflows/editor` with no `?name=`
- * starts blank; `/workflows/editor?name=X` loads the workflow's document as
- * the starting draft — a workflow has no version any more, so there is no
- * "start from version" picker. Studio is a static export (`output: 'export'`,
- * CLAUDE.md), so this is a search-param page, not a dynamic route segment —
- * the same reason the device page is `/device?id=...` rather than
- * `/device/[id]`.
+ * The workflow editor screen (plan 210 §4.9, moved to `/scripts/editor` by
+ * plan 217 §4.8). `/scripts/editor` with no `?name=` starts blank;
+ * `/scripts/editor?name=X` loads the workflow's document as the starting
+ * draft — a workflow has no version any more, so there is no "start from
+ * version" picker. Studio is a static export (`output: 'export'`), so this
+ * is a search-param page, not a dynamic route segment.
+ *
+ * The editor's own internals (`WorkflowBuilder`, `NodeCard`,
+ * `WorkflowCanvas`, `ScriptPicker`) are reused whole, per MVP 15 §2
+ * ("the workflow editor is undesigned; the handoff only draws the card
+ * list") — this file only moves the route and repoints `/workflows` links.
  */
 function WorkflowEditorView() {
   const params = useSearchParams()
@@ -36,10 +40,6 @@ function WorkflowEditorView() {
     void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
       .then((rows) =>
         setScripts(
-          // `paramsSchema` is `@enkaku/protocol`'s plain-index-signature `JsonSchemaNode`;
-          // this cast to Studio's own (more specific) type is the same reconciliation
-          // `RunScriptDialog.tsx` documents for the identical two-parallel-type situation —
-          // not a bypass of validation, `ScriptListItemSchema.safeParse` already ran above.
           rows.map((r) => ({ id: r.id, name: r.name, version: r.plugin.version, paramsSchema: r.paramsSchema as JsonSchemaNode | null })),
         ),
       )
@@ -61,7 +61,7 @@ function WorkflowEditorView() {
 
   const backAction = (
     <Button asChild variant="ghost" size="sm">
-      <Link href="/workflows">
+      <Link href="/scripts?tab=workflows">
         <ArrowLeft className="size-4" aria-hidden />
         All workflows
       </Link>
@@ -94,7 +94,7 @@ function WorkflowEditorView() {
           initialDraft={initialDraft}
           scripts={scripts}
           mode={name ? 'update' : 'create'}
-          onSaved={() => router.push('/workflows')}
+          onSaved={() => router.push('/scripts?tab=workflows')}
         />
       )}
     </>

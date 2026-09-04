@@ -2,12 +2,11 @@
 
 import { Suspense, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { ArrowLeft, Play } from 'lucide-react'
 import type { z } from 'zod'
 import {
   JobsPageResponseSchema,
-  ScriptDeleteResponseSchema,
   ScriptResponseSchema,
   ScriptRowSchema,
   SettingsResponseSchema,
@@ -18,7 +17,6 @@ import {
 type ScriptDetailRow = z.infer<typeof ScriptRowSchema>
 import {
   Button,
-  ConfirmDialog,
   EmptyState,
   ErrorState,
   LoadingRows,
@@ -28,7 +26,6 @@ import {
   cn,
   duration,
   relativeTime,
-  useAction,
 } from '@enkaku/ui'
 import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { JobStatusBadge } from '@/components/StatusBadge'
@@ -48,12 +45,10 @@ function ScriptDetail() {
   const params = useSearchParams()
   const scriptId = params.get('id')
   const tab = params.get('tab') ?? 'overview'
-  const router = useRouter()
 
   const [script, setScript] = useState<ScriptDetailRow | null>(null)
   const [runsCount, setRunsCount] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const { run } = useAction()
   const { open: openActionDialog } = useActionDialogs()
   const runsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
   // The runs table's durations tick while a run is still going (Plan 17 §4.6).
@@ -162,17 +157,19 @@ function ScriptDetail() {
         title={script.name}
         description={`published ${relativeTime(script.createdAt)}`}
         meta={
-          <Link href={`/plugins/detail?name=${script.plugin.name}`} className="readout text-[12.5px] text-fg-muted hover:text-accent">
+          <Link
+            href={`/plugins/detail?name=${script.plugin.name}`}
+            className="rounded-[6px] bg-muted px-1.5 py-0.5 font-mono text-[11px] text-dim hover:text-accent"
+          >
             {script.plugin.name}@{script.plugin.version}
           </Link>
         }
         actions={
           <>
             <Button asChild variant="ghost" size="sm">
-              {/* The list this page belongs to moved into `/plugins` — one screen for
-                  everything the farm can run. Pointing straight at it rather than at
-                  `/scripts` (still a working redirect) keeps the back button one hop. */}
-              <Link href="/plugins">
+              {/* `/scripts` is the Scripts & Workflows screen (plan 217) — the
+                  screen this page belongs to. */}
+              <Link href="/scripts">
                 <ArrowLeft className="size-4" aria-hidden />
                 All scripts
               </Link>
@@ -288,24 +285,20 @@ function ScriptDetail() {
 
       {tab === 'settings' && (
         <div className="max-w-2xl space-y-4 px-5 py-4">
-          <div className="rounded-lg border border-led-danger/30 bg-led-danger/5 p-4">
-            <p className="text-[13px] font-medium text-led-danger">Delete this script</p>
+          {/* Every script reachable from the Scripts table or a job's script
+              link is a member of an active plugin — an OWNED row — so a
+              Delete button here would always fail with `409
+              E_SCRIPT_OWNED` (plan 210 §3.2 rule 4). Deleting an unowned
+              leftover row is an admin cleanup task with no UI in the MVP
+              (plan 217 §4.10). */}
+          <div className="rounded-lg border bg-surface p-4">
+            <p className="text-[13px] font-medium">Lifecycle</p>
             <p className="mt-0.5 mb-3 text-[12px] leading-relaxed text-fg-muted">
-              A script is a member of its plugin — removing it here is refused (`E_SCRIPT_OWNED`); remove the owning
-              plugin version instead, from the Plugins page.
+              Version history, activation, rollback and removal live on the Plugins page.
             </p>
-            <ConfirmDialog
-              trigger={<Button variant="outline" size="sm">Delete script</Button>}
-              title={`Delete ${script.name}?`}
-              description="This cannot be undone. Publish it again to bring it back."
-              onConfirm={() =>
-                run('delete', () => api(`/api/scripts/${script.id}`, ScriptDeleteResponseSchema, { method: 'DELETE' }), {
-                  success: `${script.name} deleted`,
-                  failure: 'Could not delete the script',
-                  onSuccess: () => router.push('/plugins'),
-                })
-              }
-            />
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/plugins/detail?name=${script.plugin.name}`}>Open plugin</Link>
+            </Button>
           </div>
         </div>
       )}

@@ -279,13 +279,14 @@ const GROUP_2 = ['CaretRightIcon', 'CaretUpIcon', 'CaretUpDownIcon', 'CheckCircl
 /**
  * Group 3 (plan 213 §3.4): names added after the handoff was drawn, for a
  * screen the handoff itself does not draw. `RobotIcon` is the Agents rail
- * entry. This script's own count check below is updated alongside it —
- * plan 213 found this check asserts an EXACT total (53 + 9), not merely
- * presence as its own §3.4 assumed, so adding a name here requires widening
- * the total by the same amount or this script fails on the addition it was
- * meant to tolerate.
+ * entry; `ClockIcon` is the Schedules tab (MVP 15 §0.1.1, plan 217 §4.12 —
+ * the §12 amendment there anticipates exactly this widening). This script's
+ * own count check below is updated alongside it — plan 213 found this check
+ * asserts an EXACT total (53 + 9), not merely presence as its own §3.4
+ * assumed, so adding a name here requires widening the total by the same
+ * amount or this script fails on the addition it was meant to tolerate.
  */
-const GROUP_3 = ['RobotIcon']
+const GROUP_3 = ['RobotIcon', 'ClockIcon']
 
 async function checkIcons(): Promise<void> {
   console.log('\n== icons.ts (G4) ==')
