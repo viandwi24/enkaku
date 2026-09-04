@@ -1,7 +1,7 @@
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { groupScriptsByName, type ScriptOption } from './ScriptPicker'
 
-/** Shared between `NodeCard.tsx` (a node's own `params`) and `WorkflowBuilder.tsx` (`onFail.params`) — both bind a `ScriptRef`'s declared parameters through the same `ValueExprEditor` list. */
+/** Shared by `FlowEditor.tsx`'s `NodeInspector` (a node's own `params`) — binds a `ScriptRef`'s declared parameters through the same `ValueExprEditor` list. */
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

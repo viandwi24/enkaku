@@ -1,10 +1,18 @@
 import { z } from 'zod'
-import { DeviceNetworkStatusResponseSchema, DiscoveredDevicesResponseSchema, GuestAgentStatusResponseSchema, type VideoLatencyResponse, VideoLatencyResponseSchema } from '@enkaku/protocol'
+import {
+  DeviceNetworkStatusResponseSchema,
+  DiscoveredDevicesResponseSchema,
+  GuestAgentStatusResponseSchema,
+  NodeTypesResponseSchema,
+  type VideoLatencyResponse,
+  VideoLatencyResponseSchema,
+} from '@enkaku/protocol'
 import type {
   DeviceInfo,
   DeviceNetworkConfig,
   DiscoveredDeviceInfo,
   NetworkEngineId,
+  NodeType,
   RouteCheckId,
   WorkflowDoc,
   WorkflowFinding,
@@ -684,6 +692,12 @@ export async function saveWorkflow(doc: WorkflowDoc | Record<string, unknown>, m
 export async function deleteWorkflow(name: string): Promise<void> {
   const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`DELETE /api/workflows/${name} → ${res.status}`)
+}
+
+/** `GET /api/node-types` (plan 303 §4.3) — the flow editor's palette (plan 305 §3.6): the six core control kinds plus every ACTIVATED plugin's node members. */
+export async function fetchNodeTypes(): Promise<NodeType[]> {
+  const body = await api('/api/node-types', NodeTypesResponseSchema)
+  return body.types
 }
 
 // ---- Workflow duration estimate (plan 99 §3.11, §4.11, step 99.10) ----

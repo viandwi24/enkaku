@@ -23,6 +23,16 @@ export type DocEdit =
   | { t: 'update-node'; id: string; patch: Partial<WorkflowNode> }
   | { t: 'paste'; nodes: WorkflowNode[]; edges: { from: string; kind: EdgeKind; to: string }[] }
   | { t: 'auto-arrange' }
+  /**
+   * NOT in plan 305 §4.2's own `DocEdit` block — added because the document
+   * needs a name/title/description/step-budget/params SOMEWHERE and nothing
+   * else in the union can express it (there is no node to `update-node`
+   * against). Recorded as a discrepancy in §11 rather than silently
+   * expanding the union without a trace. Still goes through this ONE
+   * reducer, so G4's "no `setDraft(` that builds a document by hand"
+   * criterion holds.
+   */
+  | { t: 'set-meta'; patch: Partial<Pick<WorkflowDoc, 'name' | 'title' | 'description' | 'maxSteps' | 'params'>> }
 
 /** The edge kinds a node actually owns — a `start`/`script`/`delay` node has `next` (script also `onFailure`), a `gate` has `then`/`else`, a `switch` has one `case:<i>` per declared case plus `default`, and `finish` is a sink with none. */
 export function edgeKindsOf(node: WorkflowNode): EdgeKind[] {
@@ -181,6 +191,9 @@ export function applyDocEdit(doc: WorkflowDoc, edit: DocEdit): WorkflowDoc {
       }
       return next
     }
+
+    case 'set-meta':
+      return { ...doc, ...edit.patch }
 
     case 'auto-arrange':
       // Applied by the caller (`layout.ts`'s `computeLayout` result folded
