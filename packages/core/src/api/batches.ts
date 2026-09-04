@@ -28,12 +28,13 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Role } from '../auth/service'
-import { createBatch, type BatchDispatchDeps } from '../groups/dispatch'
+import { addRunsToBatch, createBatch, type BatchDispatchDeps } from '../groups/dispatch'
 import type { BatchPacer } from '../groups/pacer'
 import { computeBatchStatus, countJobs, recomputeBatchStatus, TERMINAL_BATCH_STATUSES } from '../groups/status'
 import type { Db } from '../db'
-import { artifacts, batches, devices, scripts, type BatchRow, type JobRow } from '../db/schema'
+import { artifacts, batches, devices, scripts, type BatchRow, type JobRow, type JobRunRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
+import type { RunStore } from '../jobs/runs/store'
 import { validateScriptForRun } from '../jobs/validate-script'
 import { rowToJobInfo, type JobStore } from '../queue/job-store'
 import { formatDeviceLabel, loadDeviceNumbers } from '../registry/device-number'
@@ -121,6 +122,7 @@ export function queryBatchRows(
 export interface BatchRoutesDeps {
   db: Db
   jobStore: JobStore
+  runs: RunStore
   scheduler: Scheduler
   audit: AuditLogger
   broadcastBatchStatus: (msg: BatchStatusEvent) => void
@@ -226,7 +228,7 @@ export interface BatchRoutesDeps {
  */
 export type BatchDispatchHostDeps = Pick<
   BatchRoutesDeps,
-  'db' | 'scheduler' | 'audit' | 'registry' | 'findScript' | 'scriptRegistry' | 'farmJobSettings' | 'pacer' | 'shellMode' | 'transferEnabled'
+  'db' | 'runs' | 'scheduler' | 'audit' | 'registry' | 'findScript' | 'scriptRegistry' | 'farmJobSettings' | 'pacer' | 'shellMode' | 'transferEnabled'
 >
 
 /**
@@ -257,6 +259,7 @@ export function createBatchDispatchDeps(
 ): BatchDispatchDeps {
   return {
     db: deps.db,
+    runs: deps.runs,
     scheduler: deps.scheduler,
     audit: deps.audit,
     onJobStatus: () => {},
@@ -387,16 +390,18 @@ function statusOf(row: BatchRow, counts: BatchCounts): BatchStatusValue {
  */
 const RERUN_TARGET_STATUSES = new Set(['failed', 'expired'])
 
-function failedOrExpiredDeviceIds(jobRows: JobRow[]): string[] {
+/** Every member job whose LATEST run is failed/expired, deduplicated by device (plan 211 re-key). */
+function failedOrExpiredJobs(jobRows: JobRow[], latestRuns: Map<string, JobRunRow>): JobRow[] {
   const seen = new Set<string>()
-  const ids: string[] = []
+  const out: JobRow[] = []
   for (const j of jobRows) {
-    if (!RERUN_TARGET_STATUSES.has(j.status ?? '')) continue
+    const run = latestRuns.get(j.id)
+    if (!run || !RERUN_TARGET_STATUSES.has(run.status)) continue
     if (seen.has(j.deviceId)) continue
     seen.add(j.deviceId)
-    ids.push(j.deviceId)
+    out.push(j)
   }
-  return ids
+  return out
 }
 
 /**
@@ -448,11 +453,11 @@ function failedOrExpiredDeviceIds(jobRows: JobRow[]): string[] {
  */
 function carryForwardShape(
   row: BatchRow,
-  jobRows: JobRow[],
+  latestRuns: JobRunRow[],
   now: Date,
 ): { priority: number; expiresAt: number | null; pacing: { count: number; intervalMs: [number, number]; deviceIntervalMs: number } | null } {
-  const priority = jobRows[0]?.priority ?? 0
-  const originalExpiresAt = jobRows[0]?.expiresAt ?? null
+  const priority = latestRuns[0]?.priority ?? 0
+  const originalExpiresAt = latestRuns[0]?.expiresAt ?? null
   const nowSec = Math.floor(now.getTime() / 1000)
   let expiresAt: number | null = null
   if (originalExpiresAt != null) {
@@ -472,23 +477,26 @@ function carryForwardShape(
 
 export function rowToBatchInfo(deps: BatchRoutesDeps, row: BatchRow): BatchInfo {
   const jobs = deps.jobStore.listByBatch(row.id)
-  const counts = countJobs(jobs)
-  const script = deps.scriptNames([row.scriptId]).get(row.scriptId) ?? null
+  const latestRunsByJob = deps.runs.latestRuns(jobs.map((j) => j.id))
+  const counts = countJobs(jobs.map((j) => latestRunsByJob.get(j.id) ?? null))
+  const script = row.scriptId ? (deps.scriptNames([row.scriptId]).get(row.scriptId) ?? null) : null
   const pacing = pacingOf(row)
   // Plan 94 §3.8, §4.8, step 94.7 — "rowToBatchInfo reports planned/completed
   // repetitions per device." Rendering it is Studio's own surface, step
-  // 94.10 — this is the wire shape it will read, not built there.
+  // 94.10 — this is the wire shape it will read, not built there. Plan 211:
+  // "completed" is now the member job's own run COUNT, not a job row count
+  // (a paced repetition is a run, not a job).
   const repeats = pacing
     ? Array.from(new Set(jobs.map((j) => j.deviceId))).map((deviceId) => ({
         deviceId,
-        completed: jobs.filter((j) => j.deviceId === deviceId).length,
+        completed: jobs.filter((j) => j.deviceId === deviceId).reduce((sum, j) => sum + j.runCount, 0),
         planned: pacing.repeatCount,
       }))
     : []
   return {
     id: row.id,
     groupId: row.groupId,
-    scriptId: row.scriptId,
+    scriptId: row.scriptId ?? '',
     scriptName: script?.name ?? null,
     scriptVersion: script?.version ?? null,
     params: row.params,
@@ -531,6 +539,7 @@ export interface StopBatchResult {
 export interface StopBatchDeps {
   db: Db
   jobStore: JobStore
+  runs: RunStore
   broadcastBatchStatus: (msg: BatchStatusEvent) => void
   jobService?: Pick<JobService, 'cancel'>
 }
@@ -570,10 +579,12 @@ export function stopBatch(deps: StopBatchDeps, batchId: string, actor: { id: str
   deps.db.update(batches).set({ status: 'stopping' }).where(eq(batches.id, batchId)).run()
 
   const members = deps.jobStore.listByBatch(batchId)
+  const latestRunsByJob = deps.runs.latestRuns(members.map((j) => j.id))
   const result: StopBatchResult = { cancelled: 0, aborted: 0, refused: 0, refusedDeviceIds: [] }
 
   for (const member of members) {
-    if (member.status !== 'queued' && member.status !== 'running') continue
+    const run = latestRunsByJob.get(member.id)
+    if (!run || (run.status !== 'queued' && run.status !== 'running')) continue
 
     if (actor) {
       const deviceRow = deps.db.select({ ownerId: devices.ownerId }).from(devices).where(eq(devices.id, member.deviceId)).get()
@@ -590,20 +601,20 @@ export function stopBatch(deps: StopBatchDeps, batchId: string, actor: { id: str
       continue
     }
 
-    const wasQueued = member.status === 'queued'
+    const wasQueued = run.status === 'queued'
     try {
       deps.jobService.cancel(member.id)
       if (wasQueued) result.cancelled += 1
       else result.aborted += 1
     } catch {
-      // The job settled on its own between the listing above and this call
+      // The run settled on its own between the listing above and this call
       // (`job_not_cancellable`) — not this stop's doing, so it counts toward
       // none of the three buckets; the final recompute below still tallies
       // it correctly either way.
     }
   }
 
-  recomputeBatchStatus({ db: deps.db, jobStore: deps.jobStore, broadcast: deps.broadcastBatchStatus }, batchId)
+  recomputeBatchStatus({ db: deps.db, jobStore: deps.jobStore, runs: deps.runs, broadcast: deps.broadcastBatchStatus }, batchId)
   return result
 }
 
@@ -644,16 +655,18 @@ interface CollectedArtifact extends BatchArtifactInfo {
  * produced), denormalising the CURRENT device label/stableId at read time
  * rather than trusting anything cached on the artifact row itself.
  */
-function collectBatchArtifacts(db: Db, jobStore: JobStore, batchId: string): CollectedArtifact[] {
+function collectBatchArtifacts(db: Db, jobStore: JobStore, runs: RunStore, batchId: string): CollectedArtifact[] {
   const jobRows = jobStore.listByBatch(batchId)
   if (jobRows.length === 0) return []
-  const jobIds = jobRows.map((j) => j.id)
-  const deviceIdByJobId = new Map(jobRows.map((j) => [j.id, j.deviceId]))
+  const allRuns = jobRows.flatMap((j) => runs.runs(j.id))
+  if (allRuns.length === 0) return []
+  const runIds = allRuns.map((r) => r.id)
+  const deviceIdByRunId = new Map(allRuns.map((r) => [r.id, r.deviceId]))
 
-  const artifactRows = db.select().from(artifacts).where(inArray(artifacts.jobId, jobIds)).all()
+  const artifactRows = db.select().from(artifacts).where(inArray(artifacts.runId, runIds)).all()
   if (artifactRows.length === 0) return []
 
-  const deviceIds = Array.from(new Set(artifactRows.map((a) => a.deviceId ?? deviceIdByJobId.get(a.jobId ?? '')).filter((id): id is string => !!id)))
+  const deviceIds = Array.from(new Set(artifactRows.map((a) => a.deviceId ?? deviceIdByRunId.get(a.runId ?? '')).filter((id): id is string => !!id)))
   const deviceRows = deviceIds.length
     ? db.select({ id: devices.id, label: devices.label, stableId: devices.stableId }).from(devices).where(inArray(devices.id, deviceIds)).all()
     : []
@@ -666,10 +679,11 @@ function collectBatchArtifacts(db: Db, jobStore: JobStore, batchId: string): Col
   // `device_numbers` at all.
   const numbers = deviceIds.length ? loadDeviceNumbers(db) : new Map<string, number>()
 
+  const runToJob = new Map(allRuns.map((r) => [r.id, r.jobId]))
   const out: CollectedArtifact[] = []
   for (const row of artifactRows) {
-    const deviceId = row.deviceId ?? deviceIdByJobId.get(row.jobId ?? '') ?? null
-    if (!row.jobId || !deviceId) continue // not a device-scoped pull artifact — nothing this route reports on
+    const deviceId = row.deviceId ?? deviceIdByRunId.get(row.runId ?? '') ?? null
+    if (!row.runId || !deviceId) continue // not a device-scoped pull artifact — nothing this route reports on
     const device = deviceById.get(deviceId)
     // The device id is the last-resort name for a device row that is GONE —
     // a forgotten device's artifacts outlive it, and a blank cell would be
@@ -678,7 +692,8 @@ function collectBatchArtifacts(db: Db, jobStore: JobStore, batchId: string): Col
     const rawLabel = device?.label ?? deviceId
     out.push({
       artifactId: row.id,
-      jobId: row.jobId,
+      jobId: runToJob.get(row.runId) ?? row.runId,
+      runId: row.runId,
       deviceId,
       // Composed here, on the server, rather than shipped as a second
       // `deviceNumber` field for the UI to compose (plan 124 §3.7): this row
@@ -737,10 +752,12 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
   app.get('/:id', (c) => {
     const row = mustGet(c.req.param('id'))
     const jobRows = deps.jobStore.listByBatch(row.id)
-    const names = deps.scriptNames(jobRows.map((j) => j.scriptId))
+    const scriptIds = jobRows.map((j) => j.scriptId).filter((id): id is string => id !== null)
+    const names = deps.scriptNames(scriptIds)
+    const latestRuns = deps.runs.latestRuns(jobRows.map((j) => j.id))
     return typedJson(c, BatchWithJobsResponseSchema, {
       batch: rowToBatchInfo(deps, row),
-      jobs: jobRows.map((j) => rowToJobInfo(j, names.get(j.scriptId) ?? null)),
+      jobs: jobRows.map((j) => rowToJobInfo(j, latestRuns.get(j.id) ?? null, j.scriptId ? (names.get(j.scriptId) ?? null) : null)),
     })
   })
 
@@ -780,10 +797,12 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
   app.post('/:id/rerun-failed', requirePermission('job.run'), (c) => {
     const row = mustGet(c.req.param('id'))
     const jobRows = deps.jobStore.listByBatch(row.id)
-    const failedDeviceIds = failedOrExpiredDeviceIds(jobRows)
-    if (failedDeviceIds.length === 0) {
+    const latestRuns = deps.runs.latestRuns(jobRows.map((j) => j.id))
+    const failedJobs = failedOrExpiredJobs(jobRows, latestRuns)
+    if (failedJobs.length === 0) {
       throw new EnkakuError('E_NO_TARGETS', 'this batch has no failed or expired jobs to re-run')
     }
+    if (!row.scriptId) throw new EnkakuError('E_BAD_REQUEST', 'this batch has no scriptId to re-run')
 
     const paramsSchema = paramsSchemaFor(db, row.scriptId, deps.scriptRegistry)
     const reconciliation = reconcileParams(paramsSchema as JsonSchemaNode | null, row.params)
@@ -800,29 +819,19 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     // F30, acceptance criterion 19 — `carryForwardShape` is the ONE place
     // this (and `/:id/rerun` below) reads priority/queue-timeout/pacing
     // from; see its own doc comment for why `expiresAt` is a re-applied
-    // DURATION rather than the raw stored instant, and why pacing carries
-    // the original batch's FULL shape onto the failed devices rather than
-    // "however many repetitions each one still owed".
-    const shape = carryForwardShape(row, jobRows, new Date())
+    // DURATION rather than the raw stored instant.
+    const shape = carryForwardShape(row, Array.from(latestRuns.values()), new Date())
 
-    const { batch } = createBatch(
-      // Same gates as the plain create route above — a rerun-failed batch
-      // member is bound by the SAME role/ownership checks and the SAME
-      // farm-wide cap a freshly dispatched one would get.
-      dispatchDepsFor(c.get('user')),
-      {
-        scriptId: row.scriptId,
-        params: reconciliation.value,
-        target: { deviceIds: failedDeviceIds },
-        concurrency: row.concurrency,
-        order: row.order as BatchOrder,
-        priority: shape.priority,
-        expiresAt: shape.expiresAt,
-        pacing: shape.pacing,
-        createdBy: c.get('user')?.id ?? null,
-      },
-    )
-    return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, batch) }, 201)
+    // Plan 211 §3.2 decision 3, §4.9 — the batch is the SET of jobs; a
+    // re-run adds a run to each one the plan already has, never a second
+    // batch.
+    addRunsToBatch(dispatchDepsFor(c.get('user')), row.id, {
+      jobIds: failedJobs.map((j) => j.id),
+      trigger: 'rerun',
+      priority: shape.priority,
+      expiresAt: shape.expiresAt,
+    })
+    return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, mustGet(row.id)) }, 201)
   })
 
   /**
@@ -843,20 +852,10 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     if (only !== 'failed' && only !== 'skipped') {
       throw new EnkakuError('E_BAD_REQUEST', 'query param "only" must be "failed" or "skipped"')
     }
+    if (!row.scriptId) throw new EnkakuError('E_BAD_REQUEST', 'this batch has no scriptId to re-run')
 
     const jobRows = deps.jobStore.listByBatch(row.id)
-    // F30's fix applies here too (this step's own §5.11 "fix the class, not
-    // the reported instance" — `?only=failed` is the exact sibling call site
-    // named by trap (a)): the SAME `failedOrExpiredDeviceIds` helper
-    // `/rerun-failed` uses, so an expired member is never invisible to this
-    // route just because it arrived under a different name.
-    const targetDeviceIds = only === 'failed' ? failedOrExpiredDeviceIds(jobRows) : skippedOf(row).map((s) => s.deviceId)
-    if (targetDeviceIds.length === 0) {
-      throw new EnkakuError(
-        'E_NO_TARGETS',
-        only === 'failed' ? 'this batch has no failed or expired jobs to re-run' : 'this batch skipped no devices to re-run',
-      )
-    }
+    const latestRuns = deps.runs.latestRuns(jobRows.map((j) => j.id))
 
     const paramsSchema = paramsSchemaFor(db, row.scriptId, deps.scriptRegistry)
     const reconciliation = reconcileParams(paramsSchema as JsonSchemaNode | null, row.params)
@@ -871,28 +870,51 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     }
 
     // Same carry-forward this file's `/rerun-failed` route uses — see
-    // `carryForwardShape`'s own doc comment. Applied to BOTH `only=failed`
-    // and `only=skipped`: a skipped-device retarget is exactly as much "the
-    // same run, over a subset of devices" as a failed-device rerun is, and
-    // this is the one function either branch reads from, so they cannot
-    // drift from each other or from `/rerun-failed` later.
-    const shape = carryForwardShape(row, jobRows, new Date())
+    // `carryForwardShape`'s own doc comment.
+    const shape = carryForwardShape(row, Array.from(latestRuns.values()), new Date())
 
-    const { batch } = createBatch(
-      dispatchDepsFor(c.get('user')),
-      {
-        scriptId: row.scriptId,
-        params: reconciliation.value,
-        target: { deviceIds: targetDeviceIds },
-        concurrency: row.concurrency,
-        order: row.order as BatchOrder,
+    if (only === 'failed') {
+      // F30's fix applies here too — the SAME `failedOrExpiredJobs` helper
+      // `/rerun-failed` uses, so an expired member is never invisible to
+      // this route just because it arrived under a different name.
+      const failedJobs = failedOrExpiredJobs(jobRows, latestRuns)
+      if (failedJobs.length === 0) throw new EnkakuError('E_NO_TARGETS', 'this batch has no failed or expired jobs to re-run')
+      addRunsToBatch(dispatchDepsFor(c.get('user')), row.id, {
+        jobIds: failedJobs.map((j) => j.id),
+        trigger: 'rerun',
         priority: shape.priority,
         expiresAt: shape.expiresAt,
-        pacing: shape.pacing,
-        createdBy: c.get('user')?.id ?? null,
-      },
-    )
-    return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, batch) }, 201)
+      })
+    } else {
+      // `?only=skipped` retargets devices `batches.skipped` named — an
+      // offline phone that came back, say — which never had a member job at
+      // all (plan 211: a batch's members are jobs, and a skipped device was
+      // never given one). Each gets a NEW member job, then its first run.
+      const skippedDeviceIds = skippedOf(row).map((s) => s.deviceId)
+      if (skippedDeviceIds.length === 0) throw new EnkakuError('E_NO_TARGETS', 'this batch skipped no devices to re-run')
+      const named = deps.scriptRegistry?.get(row.scriptId) ?? null
+      const nextSeqBase = jobRows.length
+      const newJobIds = skippedDeviceIds.map((deviceId, i) =>
+        deps.runs.createJob({
+          kind: 'script',
+          scriptId: row.scriptId as string,
+          deviceId,
+          params: reconciliation.value,
+          scriptName: row.scriptId ? (named?.name ?? null) : null,
+          scriptVersion: named?.version ?? null,
+          batchId: row.id,
+          batchSeq: nextSeqBase + i,
+          createdBy: c.get('user')?.id ?? null,
+        }).id,
+      )
+      addRunsToBatch(dispatchDepsFor(c.get('user')), row.id, {
+        jobIds: newJobIds,
+        trigger: 'rerun',
+        priority: shape.priority,
+        expiresAt: shape.expiresAt,
+      })
+    }
+    return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, mustGet(row.id)) }, 201)
   })
 
   /**
@@ -940,13 +962,16 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     let spent = 0
     let omittedCount = 0
 
-    const names = deps.scriptNames(jobRows.map((j) => j.scriptId))
+    const scriptIds = jobRows.map((j) => j.scriptId).filter((id): id is string => id !== null)
+    const names = deps.scriptNames(scriptIds)
+    const latestRuns = deps.runs.latestRuns(jobRows.map((j) => j.id))
     const items: BatchMemberResult[] = jobRows.map((j) => {
+      const run = latestRuns.get(j.id) ?? null
       // Through `rowToJobInfo` rather than off the raw row: `status` and
       // `resultStatus` are untyped strings in SQLite and that function is the
       // single place this codebase narrows them. Hand-picking them here would
       // be a second, quieter narrowing that could drift from it.
-      const info = rowToJobInfo(j, names.get(j.scriptId) ?? null)
+      const info = rowToJobInfo(j, run, j.scriptId ? (names.get(j.scriptId) ?? null) : null)
       const base = {
         jobId: info.jobId,
         deviceId: info.deviceId,
@@ -956,14 +981,14 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
         resultSummary: info.resultSummary,
       }
       // Nothing to carry, and that is not an omission worth counting against
-      // the budget — the job simply has not produced a value yet.
-      if (j.result === null || j.result === undefined) {
+      // the budget — the run simply has not produced a value yet.
+      if (!run || run.result === null || run.result === undefined) {
         return info.status === 'success' || info.status === 'failed' ? base : { ...base, omitted: 'unfinished' as const }
       }
 
       // Measured on the STORED text, not on a re-serialised object: that is
       // the size that actually crosses the wire.
-      const size = typeof j.result === 'string' ? j.result.length : JSON.stringify(j.result).length
+      const size = typeof run.result === 'string' ? run.result.length : JSON.stringify(run.result).length
       if (size > BUDGET_BYTES) {
         omittedCount += 1
         return { ...base, omitted: 'too-large' as const }
@@ -973,7 +998,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
         return { ...base, omitted: 'budget' as const }
       }
       spent += size
-      return { ...base, result: j.result }
+      return { ...base, result: run.result }
     })
 
     /*
@@ -1001,7 +1026,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
    */
   app.get('/:id/artifacts', requirePermission('job.view'), (c) => {
     const row = mustGet(c.req.param('id'))
-    const collected = collectBatchArtifacts(db, deps.jobStore, row.id)
+    const collected = collectBatchArtifacts(db, deps.jobStore, deps.runs, row.id)
     // `path` and `rawDeviceLabel` are internal to `CollectedArtifact` (see its
     // own comment) — destructured off here so neither can reach the wire.
     const items: BatchArtifactInfo[] = collected.map(({ path: _path, rawDeviceLabel: _rawDeviceLabel, ...rest }) => rest)
@@ -1035,7 +1060,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
    */
   app.get('/:id/artifacts.zip', requirePermission('job.view'), (c) => {
     const row = mustGet(c.req.param('id'))
-    const collected = collectBatchArtifacts(db, deps.jobStore, row.id)
+    const collected = collectBatchArtifacts(db, deps.jobStore, deps.runs, row.id)
     const dataDir = deps.dataDir
     const maxTotalBytes = deps.archiveSettings?.().maxArchiveBytes ?? defaultFarmSettings().transfer.maxArchiveBytes
 

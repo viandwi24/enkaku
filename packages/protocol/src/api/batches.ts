@@ -52,6 +52,7 @@ export const BatchesPageResponseSchema = pageSchema(BatchInfoSchema)
 export const BatchArtifactSchema = z.object({
   artifactId: z.string(),
   jobId: z.string(),
+  runId: z.string(),
   deviceId: z.string(),
   /**
    * The device's HUMAN name, already composed with its number — `#7 Pixel 6`,
