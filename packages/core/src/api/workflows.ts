@@ -537,7 +537,7 @@ export function createWorkflowRoutes(deps: {
     // creates its own job), so this joins across all of them rather than
     // assuming one job owns every run.
     const latestRun = deps.db
-      .select({ runId: jobRuns.id, startedAt: jobRuns.startedAt, createdAt: jobRuns.createdAt, seed: jobRuns.seed, params: jobs.params })
+      .select({ jobId: jobRuns.jobId, runId: jobRuns.id, startedAt: jobRuns.startedAt, createdAt: jobRuns.createdAt, seed: jobRuns.seed, params: jobs.params })
       .from(jobRuns)
       .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
       .where(and(eq(jobs.workflowName, name), ne(jobRuns.trigger, 'node-test')))
@@ -576,6 +576,7 @@ export function createWorkflowRoutes(deps: {
 
     const at = latestRun.startedAt ?? latestRun.createdAt
     return typedJson(c, WorkflowLastRunResponseSchema, {
+      jobId: latestRun.jobId,
       runId: latestRun.runId,
       at: Math.floor(at.getTime() / 1000),
       params: latestRun.params ?? {},

@@ -15,8 +15,14 @@ export const WorkflowStepInfoSchema = z.object({
   status: z.enum(['running', 'success', 'failed', 'skipped', 'carried-over', 'cancelled']),
   startedAt: z.number().nullable(),
   finishedAt: z.number().nullable(),
+  /** `$input` this step received (plan 304 §3.1) — the previous step's own output, size-capped the same way `output` is. `null` for the first real step of a run. Added by plan 307 (§3.3: extending an existing message, not a new one) — the run view's node panel reads a SPECIFIC run's data through this field rather than always "the last run" (plan 306's `/last-run` route). */
+  input: z.unknown(),
   output: z.unknown(),
   outputTruncated: z.string().nullable(),
+  /** Which edge the step left by, or `null` when the run ended here (plan 304 §4.1). Added by plan 307 — the run overlay's edge highlight (P11) reads this. */
+  takenEdge: z.string().nullable(),
+  /** True when the step was satisfied from a pin instead of executed (plan 304 §3.3). Added by plan 307 — the run overlay draws a pinned node without a halo, since it did not run. */
+  pinned: z.boolean(),
   /** A gate's resolved `PredicateTrace` and the branch it chose. */
   verdict: z.unknown(),
   error: z.string().nullable(),

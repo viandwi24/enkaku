@@ -3,6 +3,7 @@ import { JsonSchemaNodeSchema } from '../api/json-schema'
 import { DeviceActivitySchema } from '../activity'
 import { RESULT_LIMITS, ResultStatusSchema } from '../schema/result'
 import { ParamIssueSchema } from '../schema/validate'
+import { WorkflowDocSchema } from '../workflow'
 
 /** Jobs (MVP 04, MVP 14). */
 
@@ -257,6 +258,15 @@ export const JobDetailSchema = JobInfoSchema.extend({
    * the pinned script declared no `result`.
    */
   resultSchema: JsonSchemaNodeSchema.nullable().default(null),
+  /**
+   * Plan 307 §3.2 — the document `jobs.workflow_doc` snapshotted at enqueue,
+   * already upgraded to v2 (`parseWorkflowDoc`, never re-validated here: the
+   * row was only ever written by a server that already validated it). `null`
+   * for a `kind: 'script'` job. The run view's replay renders THIS document,
+   * not the workflow's current one, so a run always draws on the layout and
+   * edges it actually took, even after the workflow has since been edited.
+   */
+  workflowDoc: WorkflowDocSchema.nullable().default(null),
 })
 export type JobDetail = z.infer<typeof JobDetailSchema>
 

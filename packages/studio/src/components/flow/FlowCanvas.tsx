@@ -24,6 +24,7 @@ import { nodeIndexOf } from './useValidation'
 import { edgeTargetOf, type EdgeKind } from './doc-edit'
 import { FLOW_NODE_TYPES, type FlowNodeData } from './FlowNode'
 import { FLOW_EDGE_TYPES, type FlowEdgeData } from './FlowEdge'
+import type { RunState } from './useRunState'
 
 /**
  * Plan 305 §3.1, §3.2, §4.1 — the canvas, now the editor of record. Built
@@ -59,6 +60,10 @@ export interface FlowCanvasProps {
   onInsertOnEdge(from: string, kind: EdgeKind): void
   /** A connection dragged from a handle and dropped on EMPTY canvas — one of P2's three ways to add a node (plan 305 §3.6). */
   onConnectToEmpty(from: string, kind: EdgeKind): void
+  /** Plan 307 §3.1, §4.2 — `RunOverlay`'s own projection, drawn on top when present. `undefined` outside a run view: every existing caller of `FlowCanvas` is unaffected. */
+  runState?: RunState
+  /** Plan 307 §4.1 — the replay canvas (job detail page) is not editable: no drag, no connect, no delete, no palette. `false` (the default) keeps every existing editor behaviour unchanged. */
+  readOnly?: boolean
 }
 
 function FlowCanvasInner({
@@ -74,6 +79,8 @@ function FlowCanvasInner({
   onNodesRemoved,
   onInsertOnEdge,
   onConnectToEmpty,
+  runState,
+  readOnly = false,
 }: FlowCanvasProps) {
   const graph = useMemo(() => deriveGraph(doc), [doc])
   const unreachableSet = useMemo(() => new Set(graph.unreachable), [graph])
@@ -116,11 +123,12 @@ function FlowCanvasInner({
             warningCount: nodeFindings.filter((f) => f.severity === 'warning').length,
             notInstalled,
             pinned: pinnedIds.has(n.id),
-            editable: true,
+            editable: !readOnly,
+            run: runState?.[n.id],
           },
         }
       }),
-    [doc.nodes, fallbackById, findingsByNode, notInstalledScriptRefs, pinnedIds, selectedIds, unreachableSet],
+    [doc.nodes, fallbackById, findingsByNode, notInstalledScriptRefs, pinnedIds, selectedIds, unreachableSet, readOnly, runState],
   )
 
   const flowEdges: Edge<FlowEdgeData>[] = useMemo(
@@ -132,10 +140,17 @@ function FlowCanvasInner({
         target: e.to,
         sourceHandle: e.kind,
         targetHandle: 'target',
-        deletable: true,
-        data: { kind: e.kind, label: labelFor(e.kind) ?? '', backward: e.backward, editable: true, onInsert: (from: string, kind: EdgeKind) => onInsertOnEdge(from, kind) },
+        deletable: !readOnly,
+        data: {
+          kind: e.kind,
+          label: labelFor(e.kind) ?? '',
+          backward: e.backward,
+          editable: !readOnly,
+          onInsert: readOnly ? undefined : (from: string, kind: EdgeKind) => onInsertOnEdge(from, kind),
+          taken: runState?.[e.from]?.takenEdge === e.kind,
+        },
       })),
-    [graph.edges, onInsertOnEdge],
+    [graph.edges, onInsertOnEdge, readOnly, runState],
   )
 
   const handleConnect = useCallback(
@@ -209,11 +224,11 @@ function FlowCanvasInner({
         onSelectionChange={handleSelectionChange}
         onConnectEnd={handleConnectEnd}
         fitView
-        nodesDraggable
-        nodesConnectable
-        elementsSelectable
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        elementsSelectable={!readOnly}
         multiSelectionKeyCode="Shift"
-        selectionOnDrag
+        selectionOnDrag={!readOnly}
         panOnDrag={[1, 2]}
         snapToGrid
         snapGrid={[8, 8]}

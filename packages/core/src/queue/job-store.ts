@@ -4,6 +4,7 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { changedRows, type Db } from '../db'
 import { devices, jobRuns, jobs, scripts, type JobRow, type JobRunRow } from '../db/schema'
 import { keysetWhere } from '../api/pagination'
+import { parseWorkflowDoc } from '../workflows/store'
 
 export interface JobCursor {
   sortValue: number
@@ -93,6 +94,11 @@ export function rowToJobDetail(
     resultIssues: (run?.resultIssues as ParamIssue[] | null) ?? null,
     resultSchema: (script?.resultSchema ?? null) as JobDetail['resultSchema'],
     runs: runs.map((r) => rowToJobRunInfo(r)),
+    // Plan 307 §3.2 — the document this job actually ran, for a faithful
+    // replay. `parseWorkflowDoc` upgrades a pre-existing v1 snapshot to v2 in
+    // memory; it never writes back (same rule `workflows/store.ts` states for
+    // the workflow row itself).
+    workflowDoc: row.kind === 'workflow' ? parseWorkflowDoc(row.workflowDoc) : null,
   }
 }
 

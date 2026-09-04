@@ -215,7 +215,7 @@ export function JobDetail({ jobId }: { jobId: string }) {
           <LogsTab logs={logs} truncated={logsTruncated} phase={logsPhase} />
         ) : view === 'timeline' ? (
           job.kind === 'workflow' ? (
-            <WorkflowSteps steps={steps} finalized={stepsFinalized} jobId={job.jobId} runId={run.runId} />
+            <WorkflowSteps steps={steps} finalized={stepsFinalized} jobId={job.jobId} runId={run.runId} doc={job.workflowDoc} />
           ) : (
             <Timeline jobId={job.jobId} runId={run.runId} runStatus={run.status} />
           )

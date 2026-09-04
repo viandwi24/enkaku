@@ -20,11 +20,14 @@ export interface FlowEdgeData extends Record<string, unknown> {
   backward: boolean
   editable: boolean
   onInsert?: (from: string, kind: EdgeKind, x: number, y: number) => void
+  /** Plan 307 §4.2, P11 — the run overlay's edge highlight: this is the edge the step actually left by (`workflow_steps.taken_edge`). Undefined outside a run view. */
+  taken?: boolean
 }
 
 export function FlowEdge({ id, source, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerEnd }: EdgeProps<Edge<FlowEdgeData>>) {
   const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
   const backward = data?.backward ?? false
+  const taken = data?.taken ?? false
 
   return (
     <>
@@ -32,7 +35,13 @@ export function FlowEdge({ id, source, sourceX, sourceY, targetX, targetY, sourc
         id={id}
         path={edgePath}
         markerEnd={markerEnd}
-        style={backward ? { stroke: 'var(--color-led-warn)', strokeDasharray: '5 4' } : { stroke: 'var(--color-line-strong)' }}
+        style={
+          taken
+            ? { stroke: 'var(--color-accent)', strokeWidth: 2 }
+            : backward
+              ? { stroke: 'var(--color-led-warn)', strokeDasharray: '5 4' }
+              : { stroke: 'var(--color-line-strong)' }
+        }
       />
       <EdgeLabelRenderer>
         <div

@@ -53,6 +53,8 @@ export type WorkflowLastRunNode = z.infer<typeof WorkflowLastRunNodeSchema>
  * (`workflow-resolve.ts`'s `buildExprScope`), locally, with no round trip.
  */
 export const WorkflowLastRunResponseSchema = z.object({
+  /** The workflow job that owns this run — added by plan 307 so a live-run overlay can subscribe to this exact job's `job.status`/child-job broadcasts without a second lookup. */
+  jobId: z.string(),
   runId: z.string(),
   /** Unix seconds — the run's own `startedAt`, falling back to `createdAt` for a run that never started. */
   at: z.number().int(),

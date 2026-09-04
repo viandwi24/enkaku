@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { NodeType, WorkflowDoc, WorkflowNode } from '@enkaku/protocol'
-import { listWorkflowPins, saveWorkflow, type WorkflowInfo } from '@/lib/api'
+import { fetchWorkflowLastRun, listWorkflowPins, saveWorkflow, type WorkflowInfo } from '@/lib/api'
 import { Sheet, SheetContent } from '@enkaku/ui'
 import {
   ArrowsClockwiseIcon,
@@ -16,7 +16,7 @@ import {
   Textarea,
   useAction,
 } from '@enkaku/ui'
-import { FlowCanvas } from './FlowCanvas'
+import { RunOverlay } from './RunOverlay'
 import { NodePalette } from './NodePalette'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
@@ -107,6 +107,31 @@ export function FlowEditor({
   useEffect(() => {
     refreshPinnedIds()
   }, [refreshPinnedIds])
+
+  // Plan 307 §4.1 — the run overlay draws over THIS canvas rather than a
+  // second one: it needs only the last real run's `jobId`/`runId`, the same
+  // read the node panel already makes (`fetchWorkflowLastRun`, plan 306
+  // §3.1). `null`/`null` is the correct, quiet "nothing to show" state for a
+  // workflow that has never run — `RunOverlay` renders no run chrome then.
+  const [lastRunRef, setLastRunRef] = useState<{ jobId: string; runId: string } | null>(null)
+  useEffect(() => {
+    const name = doc.name.trim()
+    if (!name) {
+      setLastRunRef(null)
+      return
+    }
+    let cancelled = false
+    void fetchWorkflowLastRun(name)
+      .then((r) => {
+        if (!cancelled) setLastRunRef(r ? { jobId: r.jobId, runId: r.runId } : null)
+      })
+      .catch(() => {
+        if (!cancelled) setLastRunRef(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [doc.name])
 
   // A browser-level warning on navigate-away, never autosave (plan 305 §3.5).
   useEffect(() => {
@@ -297,7 +322,9 @@ export function FlowEditor({
 
       <div className="flex min-h-0 flex-1 gap-3">
         <div className="min-w-0 flex-1">
-          <FlowCanvas
+          <RunOverlay
+            jobId={lastRunRef?.jobId ?? null}
+            runId={lastRunRef?.runId ?? null}
             doc={doc}
             findings={validation.findings}
             selectedIds={selectedIds}
