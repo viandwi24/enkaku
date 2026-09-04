@@ -16,8 +16,8 @@
  * Keeping this barrel's export list short IS the enforcement (plan §8 R2):
  * adding to it is meant to be a deliberate, visible edit to a file whose
  * whole purpose is to stay small — not a place a plugin author is invited to
- * reach into Studio at will. `DeviceWallWithPicker` (plan step 129.6) is
- * still the ONLY export.
+ * reach into Studio at will. `DevicePickerDialog` (plan 216 §4.10, replacing
+ * `DeviceWallWithPicker` from plan step 129.6) is still the ONLY export.
  *
  * A plugin author gets types for this module from `enkaku-host.d.ts`'s
  * `declare module '@enkaku/host'` block. That block cannot be checked
@@ -26,4 +26,4 @@
  * project to import types from — so it has to be kept in sync with this
  * barrel BY HAND. Update both together.
  */
-export { DeviceWallWithPicker } from './DeviceWallWithPicker'
+export { DevicePickerDialog, type DevicePickerDialogProps } from './DevicePickerDialog'

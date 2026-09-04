@@ -415,6 +415,36 @@ import verifyEgressScript from './verify-egress'
  * left at 0.8.0 the owner's farm would go on serving the list-picker bundle
  * and this row would never reach a browser — exactly what plan 124 §0.2 and
  * the 0.7.0/0.8.0 rows above already record happening twice.
+ *
+ * **0.13.2 → 0.14.0 — plan 216 §4.6/§4.10/§10, the live-tile picker retired.**
+ * MVP 07 §2.1 unifies every device-choosing surface in the product behind
+ * one `DevicePicker`/`useTarget` pair, and the Screens view (plan 214) is
+ * now where a device is chosen by looking at its live screen — so this
+ * editor's live-tile picker (0.9.0's own component, then named for the
+ * tiles it rendered) is replaced by `DevicePickerDialog`, the SAME unified
+ * picker every Studio action dialog renders, still reached through
+ * `@enkaku/host` (plan 129 §3.4/§4.4) with the
+ * identical prop shape (`open`, `onOpenChange`, `value`, `onConfirm`,
+ * `filter?`, `title?`) — `addEntry`'s own several-ids-in-one-call shape is
+ * therefore unchanged again.
+ *
+ * The owner's own words that opened the 0.9.0 row are moved here rather than
+ * deleted, because the design history they record does not stop being true:
+ * *"saya minta device selector nya pas add device ada popup untuk device
+ * list kaya walls gitu, jadi user bisa pilih mau add device sambil lihat
+ * screen castnya"* — the wall was the right answer for that farm at that
+ * time; a unified action-dialog picker across the whole product is the
+ * MVP's answer now, and both are recorded, not one erased in favour of the
+ * other.
+ *
+ * `service.permissions` is UNCHANGED. Minor, not patch, for the same
+ * mechanical reason every row above gives: an operator meets the change the
+ * moment they open the group editor, and `seedEmbeddedPacks` keys on
+ * `${pack.name}@${pack.version}` — left at 0.13.2 the owner's farm would go
+ * on serving the wall-picker bundle and this row would never reach a
+ * browser. The seeded version is STAGED, not activated: the operator still
+ * activates `mikrotik-routing@0.14.0` on the Plugins page before it takes
+ * effect (plan 216 §11).
  */
 
 const checkParams = z.object({})
@@ -439,7 +469,7 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.13.2',
+  version: '0.14.0',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',

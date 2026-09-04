@@ -1,6 +1,6 @@
 {
   "name": "@enkaku/plugin-mikrotik-routing",
-  "version": "0.13.2",
+  "version": "0.14.0",
   "private": true,
   "type": "module",
   "description": "MikroTik routing — assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Stage 4 (plan 122 §5, step 122.10): the three member scripts — verify-egress, discover-lan-ip, activate-group — on top of named groups (122.8) and the write path (122.6).",

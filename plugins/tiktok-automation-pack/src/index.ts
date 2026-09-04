@@ -781,7 +781,11 @@ export default definePlugin({
   // 1.15.2 — groups rename, MVP 15 §0.1 (plan 207): `queue.ts`'s own doc
   // comment cited `clusters/dispatch.ts`, the core-side module plan 207
   // renamed to `groups/dispatch.ts` — reworded to match. No behavior change.
-  version: '1.15.2',
+  // 1.16.0 — keyword tilt on `keyword-videos`: `keywords` + `keywordBoostFactor`
+  // shift the DWELL toward the long buckets when the opened player's caption /
+  // author text matches (the pack still never likes/follows/comments — the
+  // tilt lands on watch time, the one thing this pack is allowed to vary).
+  version: '1.16.0',
   title: 'TikTok automation pack',
   description: 'Watch, scroll, search, browse shop and live, and read notifications on the TikTok feed, with human-shaped timing.',
   scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript, searchKeyword, keywordVideos, liveBrowse, shopBrowse, notificationActivity],

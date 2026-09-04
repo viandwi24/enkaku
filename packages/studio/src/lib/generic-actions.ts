@@ -13,6 +13,7 @@ import {
   UploadSimpleIcon,
   type Icon,
 } from '@enkaku/ui'
+import type { ActionDialogVerb } from '@/components/actions/verb-dialogs'
 import type { ActionVerb } from '@enkaku/protocol'
 
 /**
@@ -31,34 +32,37 @@ import type { ActionVerb } from '@enkaku/protocol'
  * additions, kept because the bulk menu (`ActionMenu.tsx`) still reads them;
  * plan 216's dialogs replace `needsDialog` with a real action.
  */
+/**
+ * The id is narrowed to the verbs that actually have a dialog (plan 216's
+ * `VERB_DIALOGS`), not to every `ActionVerb` the actions API accepts: this
+ * list is what a menu renders, and a row whose dialog does not exist could
+ * only be dead. Reconciled at the R5 gate, where plan 215's `GenericAction`
+ * (id, submenu) met plan 216's `ActionSetItem` (verb, overflow).
+ */
 export interface GenericAction {
-  id: ActionVerb
+  id: ActionDialogVerb
   label: string
   icon: Icon
   /** Rendered in `text-danger`; the handoff paints only Forget this way. */
   danger?: boolean
-  /**
-   * The verb needs parameters this screen does not have, so it opens a dialog
-   * plan 216 owns. Until that plan lands the row is rendered disabled with a
-   * title naming it, which is visible rather than silent.
-   */
-  needsDialog?: boolean
   /** `set-group` only: this screen already knows every group, so it opens a submenu rather than a dialog. */
   submenu?: 'group'
+  /** Rendered under a `border-t` separator, after the twelve of the generic set (MVP 15 §1, plan 216). */
+  overflow?: boolean
 }
 
 export const GENERIC_ACTIONS: readonly GenericAction[] = [
   { id: 'reconnect', label: 'Reconnect', icon: ArrowsClockwiseIcon },
   { id: 'disconnect', label: 'Disconnect', icon: PlugsIcon },
-  { id: 'install', label: 'Install apk', icon: DownloadSimpleIcon, needsDialog: true },
-  { id: 'adb', label: 'Adb command', icon: TerminalIcon, needsDialog: true },
-  { id: 'run-script', label: 'Run script', icon: PlayIcon, needsDialog: true },
+  { id: 'install', label: 'Install apk', icon: DownloadSimpleIcon },
+  { id: 'adb', label: 'Adb command', icon: TerminalIcon },
+  { id: 'run-script', label: 'Run script', icon: PlayIcon },
   { id: 'screenshot', label: 'Screenshot', icon: CameraIcon },
   { id: 'sleep', label: 'Sleep', icon: MoonIcon },
   { id: 'set-group', label: 'Move group', icon: FolderSimpleIcon, submenu: 'group' },
-  { id: 'push', label: 'Upload file', icon: UploadSimpleIcon, needsDialog: true },
-  { id: 'clear-cache', label: 'Clear cache', icon: BroomIcon, needsDialog: true },
-  { id: 'settings', label: 'Settings', icon: GearIcon, needsDialog: true },
+  { id: 'push', label: 'Upload file', icon: UploadSimpleIcon },
+  { id: 'clear-cache', label: 'Clear cache', icon: BroomIcon },
+  { id: 'settings', label: 'Settings', icon: GearIcon },
   { id: 'forget', label: 'Forget', icon: TrashIcon, danger: true },
 ]
 export type GenericActionId = GenericAction['id']

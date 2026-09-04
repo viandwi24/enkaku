@@ -51,15 +51,12 @@ declare module '@enkaku/host' {
   import type { DeviceInfo } from '@enkaku/protocol'
 
   /**
-   * Pick devices from a wall of LIVE tiles — the same tiles the Devices page
-   * renders, in a dialog. Choose by looking at the screen rather than by
-   * reading a name off a list; the wall shows each device's number, name,
-   * stableId and its live picture.
-   *
-   * It fetches the device list itself, so pass none. `filter` narrows what is
-   * offered (for example, devices not already in the group you are editing).
+   * Pick devices by name, in a dialog — the same `DevicePicker` every action
+   * dialog in Studio renders (plan 216 §2.1, §4.10). It fetches the device
+   * list itself, so pass none. `filter` narrows what is offered (for
+   * example, devices not already in the group you are editing).
    */
-  export function DeviceWallWithPicker(props: {
+  export function DevicePickerDialog(props: {
     open: boolean
     onOpenChange: (open: boolean) => void
     /** Ids already chosen — shown selected, and returned unchanged unless deselected. */

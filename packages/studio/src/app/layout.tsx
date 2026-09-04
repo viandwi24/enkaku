@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { Toaster, TooltipProvider } from '@enkaku/ui'
+import { ActionDialogHost } from '@/components/actions/ActionDialogHost'
 import { AuthGate } from '@/components/layout/AuthGate'
 import { THEME_BOOT } from '@/components/shell/theme-boot'
 import '@fontsource-variable/geist/wght.css'
@@ -29,6 +30,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <AuthGate>{children}</AuthGate>
         </TooltipProvider>
         <Toaster position="bottom-right" richColors closeButton />
+        {/* Mounted once, beside the Toaster (plan 216 §4.9). `AppShell` is
+            unauthenticated-route-conditional (`AuthGate`); this is not, so it
+            lives here rather than there — a discrepancy from the plan's own
+            text, recorded in plan 216 §11. */}
+        <ActionDialogHost />
       </body>
     </html>
   )
