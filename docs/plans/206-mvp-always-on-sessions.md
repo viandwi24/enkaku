@@ -824,7 +824,7 @@ Forbidden words introduced by this area: `Waking`, `WAKE_OFFER`, `idleTtlSec`, `
 ## 11. Handoff report
 
 - **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ G5 ✅ G6 ✅ G7 ✅ G8 ✅ G9 ✅ G10 ✅ G11 ✅ G12 ⏳ owner (needs the 20-device farm) G13 ⏳ owner G14 ⏳ owner G15 ✅
-- **Commits**: branch `mvp-206` (cut from `mvp` at `f84e7ae`) — see `git log mvp..mvp-206` for the full list; this plan's implementation landed as one commit plus a small follow-up recording these hashes in this section (see below).
+- **Commits**: branch `mvp-206`, cut from `mvp` at `f84e7ae` — `5cb95f8 feat(mvp-206): always-on sessions and the encoder split` (the implementation, 67 files) plus this doc-only commit recording the hash.
 - **Typecheck**: clean — `bun run typecheck` (`bash scripts/typecheck.sh`) exits 0 across all 19 packages/plugins/examples checked (protocol, ui, adb, toolchain, drivers, scrcpy, sdk, session, harness, core, node, studio, probe-server, networking, proxy-manager, tiktok-automation-pack, mikrotik-routing, google-automation-pack, youtube-automation-pack, examples).
 - **Tests run** (one invocation at a time, per CLAUDE.md):
   - `bun test packages/protocol/src/messages/stream.test.ts` → 8 pass
