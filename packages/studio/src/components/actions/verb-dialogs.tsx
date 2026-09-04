@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { DeviceDetailResponseSchema, SettingsResponseSchema, isHighConsequence } from '@enkaku/protocol'
+import { DeviceDetailResponseSchema, SettingsResponseSchema, compileWorkflowParams, isHighConsequence } from '@enkaku/protocol'
 import type { ActionResponse, ActionVerb, DeviceSettingsPatch, ScriptListItem } from '@enkaku/protocol'
 import {
   Button,
@@ -18,7 +18,7 @@ import {
 import { ArtifactPicker, uploadArtifactSource, type ArtifactSource } from '@/components/ArtifactPicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { fetchAllPages } from '@/lib/api'
+import { fetchAllPages, listWorkflows, type WorkflowInfo } from '@/lib/api'
 import { groupResults } from '@/lib/actions'
 import type { TargetState } from '@/components/target/useTarget'
 
@@ -239,6 +239,70 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
   Fields: RunScriptFields,
   canSubmit: (v) => Boolean(v.scriptId) && v.formOk,
   toParams: async (v) => ({ scriptId: v.scriptId, params: v.params, concurrency: v.concurrency, order: v.order }),
+  onDone: (res) => {
+    if (res.results.length === 1 && res.results[0]?.jobId) {
+      window.location.assign(`/jobs/detail?id=${res.results[0].jobId}`)
+    }
+  },
+}
+
+// ---------------------------------------------------------------------------
+// 5b. Run workflow (plan 217 §3.5, §4.11 — additive to plan 216's registry:
+// the handoff's Workflows card requires a Run link and no other plan builds
+// one; `ActionDialog.tsx`, `useTarget` and `DevicePicker` are reused
+// unchanged, generic over `spec.verb`.)
+// ---------------------------------------------------------------------------
+interface RunWorkflowValue {
+  workflowName: string
+  params: unknown
+}
+function RunWorkflowFields({ value, onChange }: { value: RunWorkflowValue; onChange: (v: RunWorkflowValue) => void }) {
+  const [workflows, setWorkflows] = useState<WorkflowInfo[]>([])
+  useEffect(() => {
+    void listWorkflows().then(setWorkflows)
+  }, [])
+  const doc = workflows.find((w) => w.name === value.workflowName)?.doc ?? null
+  const schema = doc ? compileWorkflowParams(doc.params) : null
+  return (
+    <div className="space-y-3">
+      {/* Skipped when `value.workflowName` already came from `prefill` (the
+          Workflows card's Run link always supplies it), mirroring
+          `run-script`'s own "skip the Select when the caller locked it"
+          rule. Rendered only as a fallback for a future entry point that
+          opens this dialog with no workflow chosen. */}
+      {!value.workflowName && (
+        <div className="space-y-1.5">
+          <Label htmlFor="run-workflow-select">Workflow</Label>
+          <Select value={value.workflowName} onValueChange={(name) => onChange({ workflowName: name, params: undefined })}>
+            <SelectTrigger id="run-workflow-select" className="w-full">
+              <SelectValue placeholder="Choose a workflow" />
+            </SelectTrigger>
+            <SelectContent>
+              {workflows.map((w) => (
+                <SelectItem key={w.name} value={w.name}>
+                  {w.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      {schema ? (
+        <SchemaForm schema={schema as JsonSchemaNode} value={value.params} onChange={(params) => onChange({ ...value, params })} />
+      ) : (
+        <p className="text-body text-dim">This workflow takes no parameters.</p>
+      )}
+    </div>
+  )
+}
+const runWorkflow: VerbDialogSpec<RunWorkflowValue> = {
+  verb: 'run-workflow',
+  title: (c) => `Run a workflow on ${n(c)}`,
+  submitLabel: (c) => `Run on ${n(c)}`,
+  initial: { workflowName: '', params: undefined },
+  Fields: RunWorkflowFields,
+  canSubmit: (v) => Boolean(v.workflowName),
+  toParams: async (v) => ({ workflowName: v.workflowName, params: v.params }),
   onDone: (res) => {
     if (res.results.length === 1 && res.results[0]?.jobId) {
       window.location.assign(`/jobs/detail?id=${res.results[0].jobId}`)
@@ -574,6 +638,7 @@ export type ActionDialogVerb =
   | 'install'
   | 'adb'
   | 'run-script'
+  | 'run-workflow'
   | 'screenshot'
   | 'sleep'
   | 'set-group'
@@ -591,6 +656,7 @@ export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   install,
   adb,
   'run-script': runScript,
+  'run-workflow': runWorkflow,
   screenshot,
   sleep,
   'set-group': setGroup,
