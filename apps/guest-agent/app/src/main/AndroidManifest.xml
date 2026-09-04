@@ -124,6 +124,27 @@
                 android:resource="@xml/method" />
         </service>
 
+        <!--
+          Plan 221 §4.2 — the first-party inspector. `BIND_ACCESSIBILITY_SERVICE` is a
+          system-held permission ATTRIBUTE, exactly like RouteVpnService's BIND_VPN_SERVICE and
+          EnkakuIme's BIND_INPUT_METHOD above; this app declares no <uses-permission> of its own
+          for it and needs no `pm grant`. `exported="true"` is required for the system to bind it
+          at all, and is safe for the same reason: only a caller holding BIND_ACCESSIBILITY_SERVICE
+          (the system) can reach it.
+        -->
+        <service
+            android:name=".ui.UiTreeService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/ui_tree_service" />
+        </service>
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true"

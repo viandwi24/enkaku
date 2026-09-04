@@ -58,6 +58,12 @@ const BOOTSTRAP_ACTIVITY = `${GUEST_AGENT_PACKAGE}/.BootstrapActivity`
  */
 const ACTIVATE_VPN_OP = 'ACTIVATE_VPN'
 
+/** `AccessibilityServiceInfo.getId()`'s form, matching `UiTreeService.COMPONENT_ID` in the Kotlin. */
+export const GUEST_AGENT_UI_TREE_SERVICE = `${GUEST_AGENT_PACKAGE}/${GUEST_AGENT_PACKAGE}.ui.UiTreeService`
+
+/** R4 (plan 200 §5) — Android 13+ restricted settings block enabling an accessibility service for a sideloaded app. */
+const RESTRICTED_SETTINGS_OP = 'ACCESS_RESTRICTED_SETTINGS'
+
 /**
  * What `ensurePreGranted()` learned about this device's VPN consent.
  *
@@ -84,6 +90,19 @@ export interface GuestAgentVpnConsent {
   /** `granted` — the op reads `allow`, by whichever route it got there (adb, or a human accepting the dialog). */
   state: 'granted' | 'pending'
   /** Verbatim, operator-facing, and never summarised. `null` when granted. */
+  reason: string | null
+}
+
+/**
+ * What `ensureAccessibilityEnabled()` learned about this device's accessibility settings (plan
+ * 221 §4.10). A RESULT, not an exception, for the same reason `GuestAgentVpnConsent` is: "this
+ * phone will not enable an accessibility service from adb" is not the same event as "the agent
+ * could not be reached", and collapsing the two would cost a device every other facet it has.
+ */
+export interface GuestAgentAccessibility {
+  /** `enabled` — both settings read back correct, by whichever route they got there (adb, or a human on the phone). */
+  state: 'enabled' | 'pending'
+  /** Verbatim, operator-facing, never summarised. `null` when enabled. */
   reason: string | null
 }
 
@@ -187,6 +206,13 @@ export interface GuestAgentLauncher {
   ensurePreGranted(): Promise<GuestAgentVpnConsent>
   /** Read-only: the same readback `ensurePreGranted()` ends on, with no `appops set` attempt of its own. */
   vpnConsent(): Promise<GuestAgentVpnConsent>
+  /**
+   * Plan 221 §4.10 — the appops call always runs before the settings write, and a read-back always
+   * decides (R4: no source settles whether an `adb install` is exempt on every OEM). Reports
+   * `pending` rather than throwing when the write is refused; the status screen's "Open
+   * accessibility settings" button is the fallback this result exists to point at.
+   */
+  ensureAccessibilityEnabled(): Promise<GuestAgentAccessibility>
   bootstrap(token: string): Promise<void>
   forward(localPort: number): Promise<void>
   removeForward(localPort: number): Promise<void>
@@ -409,6 +435,45 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
 
     vpnConsent() {
       return readConsent(null)
+    },
+
+    async ensureAccessibilityEnabled() {
+      // R4 (plan 200 §5) is explicit that no source settles whether `adb install` is exempt from
+      // Android 13+ restricted settings on every OEM, so this call always runs first — the
+      // documented workaround, never assumed unnecessary. Captured, never thrown on: the same
+      // OEMs that refuse `appops set` for ACTIVATE_VPN (ColorOS, above) refuse it here too, and the
+      // read-back at the end is what decides, not this call's own exit code.
+      await deps
+        .exec(`cmd appops set ${shellQuote(GUEST_AGENT_PACKAGE)} ${RESTRICTED_SETTINGS_OP} allow`)
+        .catch(() => undefined)
+
+      const before = await deps.exec('settings get secure enabled_accessibility_services')
+      const beforeList = before.stdout.trim()
+      const current = beforeList === '' || beforeList === 'null' ? [] : beforeList.split(':').filter(Boolean)
+
+      // Never a blind overwrite — another accessibility service on the phone is an operator's, not
+      // ours to remove. Skipped entirely when our component is already present.
+      if (!current.includes(GUEST_AGENT_UI_TREE_SERVICE)) {
+        const nextList = [...current, GUEST_AGENT_UI_TREE_SERVICE].join(':')
+        await deps.exec(`settings put secure enabled_accessibility_services ${shellQuote(nextList)}`)
+      }
+      // Always run, even when the list write above was skipped: the list can be right while the
+      // master switch is off.
+      await deps.exec('settings put secure accessibility_enabled 1')
+
+      const afterList = await deps.exec('settings get secure enabled_accessibility_services')
+      const afterEnabled = await deps.exec('settings get secure accessibility_enabled')
+      const listOk = afterList.stdout.includes(GUEST_AGENT_UI_TREE_SERVICE)
+      const enabledOk = afterEnabled.stdout.trim() === '1'
+      if (listOk && enabledOk) return { state: 'enabled', reason: null }
+
+      const reason =
+        `the guest agent is installed and answering, but its accessibility service is not enabled on this phone and this build will not let adb enable it: ` +
+        `\`settings put secure enabled_accessibility_services ...\` reported no error but the readback still says ${JSON.stringify(afterList.stdout.trim())}. ` +
+        'Everything else the agent does works; only the `ui-tree` inspector is blocked, and the farm falls back to ui-server. ' +
+        'To clear it, open the agent on the phone and press "Open accessibility settings", then turn Enkaku Guest Agent on: Android records that the same way, so the next provisioning pass will see it and the device turns ready on its own.'
+      deps.onLog?.('warn', `${deps.serial}: ${reason}`)
+      return { state: 'pending', reason }
     },
 
     async bootstrap(token) {

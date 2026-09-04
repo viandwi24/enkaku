@@ -5,6 +5,9 @@
     <string name="switch_keyboard">Switch keyboard</string>
     <string name="keyboard_not_available">Enkaku keyboard is not enabled on this device yet.</string>
     <string name="ime_notice">Enkaku input — driven by the farm host</string>
+    <string name="open_accessibility_settings">Open accessibility settings</string>
+    <string name="accessibility_settings_missing">This device has no accessibility settings screen.</string>
+    <string name="ui_tree_service_description">Lets an Enkaku device farm read the on-screen layout for automation, the same way it can already send taps and keys.</string>
 
     <!-- Controls -->
     <string name="refresh">Refresh</string>
@@ -27,6 +30,66 @@
     <string name="banner_idle_body">This device is using its own network. Nothing is being tunnelled.</string>
     <string name="banner_unpaired_title">Not paired</string>
     <string name="banner_unpaired_body">No farm host has handed this agent a token since it started, so every request on the control channel is refused with E_NOT_PAIRED.</string>
+    <string name="banner_activity_title">Connected, running</string>
+    <string name="banner_activity_body">%1$s</string>
+    <string name="banner_controlled_title">Controlled by %1$s</string>
+    <string name="banner_controlled_body">A human or an agent is currently in control of this device through the farm.</string>
+
+    <!-- Now -->
+    <string name="section_now">Now</string>
+    <string name="value_now_stale">no contact from the farm for %1$s</string>
+    <string name="value_now_never">the farm has not sent an activity list since this app started</string>
+    <string name="value_now_activity">%1$s · %2$s · %3$s</string>
+    <string name="label_now_status">Status</string>
+
+    <!-- Device -->
+    <string name="section_device">Device</string>
+    <string name="label_farm_label">Farm label</string>
+    <string name="label_group">Group</string>
+    <string name="label_tags">Tags</string>
+    <string name="label_stable_id">Stable id</string>
+    <string name="label_model">Model</string>
+    <string name="label_battery">Battery</string>
+    <string name="value_battery_charging">%1$d %%, charging</string>
+    <string name="value_battery_on_battery">%1$d %%, on battery</string>
+    <string name="label_screen">Screen</string>
+    <string name="value_screen_on">on</string>
+    <string name="value_screen_off">off</string>
+
+    <!-- Video -->
+    <string name="section_video">Video</string>
+    <string name="label_video">Screen capture</string>
+    <string name="value_video_running">a scrcpy server is running at %1$dx%2$d at %3$d fps</string>
+    <string name="value_video_none">no scrcpy server running</string>
+    <string name="label_video_note">Note</string>
+    <string name="value_video_note">this says what the farm started, not that anyone is watching.</string>
+
+    <!-- Inspector -->
+    <string name="section_inspector">Inspector</string>
+    <string name="label_inspector_service">Service</string>
+    <string name="value_inspector_enabled_connected">enabled and connected</string>
+    <string name="value_inspector_enabled_not_connected">enabled, not connected</string>
+    <string name="value_inspector_not_enabled">not enabled</string>
+    <string name="label_inspector_watching">Watching</string>
+    <string name="value_inspector_watching_yes">yes</string>
+    <string name="value_inspector_watching_idle">idle</string>
+    <string name="label_inspector_last_dump">Last dump</string>
+    <string name="value_inspector_last_dump">%1$d nodes, %2$d ms, %3$s ago</string>
+    <string name="label_inspector_last_error">Last error</string>
+
+    <!-- Label -->
+    <string name="section_label">Label</string>
+    <string name="label_label_applied">Applied</string>
+    <string name="value_label_applied_yes">yes</string>
+    <string name="label_label_renderer">Renderer version</string>
+
+    <!-- Location -->
+    <string name="section_location">Location</string>
+    <string name="label_location_mock">Mock location</string>
+    <string name="value_location_active">active</string>
+    <string name="value_location_inactive">not active</string>
+    <string name="label_location_last_fix">Last fix</string>
+    <string name="value_location_last_fix">%1$s, %2$s · %3$s ago</string>
 
     <!-- Farm link -->
     <string name="section_link">Farm link</string>
@@ -101,9 +164,17 @@
     <string name="label_ime_connection">Input field</string>
     <string name="value_ime_connected">one is focused right now</string>
     <string name="value_ime_disconnected">none focused right now</string>
+    <string name="label_soft_keyboard">Soft keyboard</string>
+    <string name="value_soft_keyboard_showing">showing</string>
+    <string name="value_soft_keyboard_hidden">hidden</string>
+    <string name="label_soft_keyboard_with_hardware">With a hardware keyboard</string>
+    <string name="value_soft_keyboard_with_hardware_on">show it anyway</string>
+    <string name="value_soft_keyboard_with_hardware_off">let Android hide it</string>
 
     <!-- This build -->
     <string name="section_build">This build</string>
+    <string name="label_host_expects">Host expects</string>
+    <string name="value_host_expects">build %1$d</string>
     <string name="label_version">Agent version</string>
     <string name="value_version">%1$s (build %2$d)</string>
     <string name="label_protocol">Wire protocol</string>

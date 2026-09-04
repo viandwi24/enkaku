@@ -82,6 +82,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: git submodule update --init --recursive
+      # For `scripts/pin-guest-agent.ts` below, plan 221 §4.12 — this job otherwise never touches
+      # Bun (it is a Gradle/JDK/NDK toolchain). Pinned to the same version as build-nix/build-darwin.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -134,6 +139,7 @@ jobs:
       # Compose gone, R8 on) landed at ~1.1 MB. 4 MiB leaves real headroom for the label/IME facets
       # 90.2-90.5 still add, while still failing hard if a UI framework Compose's size ever returns.
       - name: Report size and sha256; enforce the size budget
+        id: artifact
         run: |
           set -euo pipefail
           APK=apps/guest-agent/app/build/outputs/apk/release/app-release.apk
@@ -147,11 +153,39 @@ jobs:
             exit 1
           fi
           cp "$APK" guest-agent.apk
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "version=${{ steps.version.outputs.name }}" >> "$GITHUB_OUTPUT"
+          echo "code=${{ steps.version.outputs.code }}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: guest-agent-apk
           path: guest-agent.apk
           if-no-files-found: error
+      # Plan 221 §4.12, §5 step 221.11 — closes plan 43 §5.11 and MVP 09 §4's first bullet: the
+      # workflow that just built, signed and sha256'd this APK also writes its own pin, on the
+      # tag's commit, in the same run. Gated on an actual `v*` tag (never a `workflow_dispatch`
+      # build-only run, which has no real release to pin against — `steps.version` falls back to
+      # `code=0` there, and `pin-guest-agent.ts` would reject that).
+      - name: Pin the guest agent in the toolchain manifest
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          ENKAKU_GUEST_AGENT_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/guest-agent.apk
+        run: |
+          set -euo pipefail
+          bun run scripts/pin-guest-agent.ts \
+            --version "${{ steps.artifact.outputs.version }}" \
+            --version-code "${{ steps.artifact.outputs.code }}" \
+            --sha256 "${{ steps.artifact.outputs.sha256 }}" \
+            --size "${{ steps.artifact.outputs.size }}" \
+            --url "$ENKAKU_GUEST_AGENT_URL"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packages/toolchain/manifest/enkaku-tools.json
+          git commit -m "chore(release): pin guest-agent ${{ steps.artifact.outputs.version }}"
+          # This job checked out the TAG, not the default branch — the pin belongs on the branch
+          # the manifest is actually read from, not on a detached tag commit nobody re-reads.
+          git push origin HEAD:${{ github.event.repository.default_branch }}
 
   smoke:
     needs: [build-nix, build-darwin]

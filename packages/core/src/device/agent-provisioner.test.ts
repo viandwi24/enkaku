@@ -69,6 +69,7 @@ function fakeMakeLauncher(behavior: LauncherBehavior): NonNullable<AgentProvisio
     ensureInstalled: (o) => behavior.ensureInstalled(o, opts.onMismatch),
     ensurePreGranted: async () => ({ state: 'granted', reason: null }),
     vpnConsent: async () => behavior.vpnConsent?.() ?? { state: 'granted', reason: null },
+    ensureAccessibilityEnabled: async () => ({ state: 'enabled', reason: null }),
     bootstrap: async () => undefined,
     forward: async () => undefined,
     removeForward: async () => undefined,
@@ -198,6 +199,7 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
           vpnConsent: async () => {
             throw new Error('device went away mid-read')
           },
+          ensureAccessibilityEnabled: async () => ({ state: 'enabled' as const, reason: null }),
           bootstrap: async () => undefined,
           forward: async () => undefined,
           removeForward: async () => undefined,
@@ -554,6 +556,7 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
               },
               ensurePreGranted: async () => ({ state: 'granted' as const, reason: null }),
               vpnConsent: async () => ({ state: 'granted' as const, reason: null }),
+              ensureAccessibilityEnabled: async () => ({ state: 'enabled' as const, reason: null }),
               bootstrap: async () => undefined,
               forward: async () => undefined,
               removeForward: async () => undefined,

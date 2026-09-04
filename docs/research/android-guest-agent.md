@@ -278,5 +278,5 @@ Keep the VPN service dormant unless asked. Declaring a `VpnService` does not sta
 2. `systemExempted` versus `specialUse` (§5) — resolve on a device; `specialUse` is the safe default.
 3. Does writing `always_on_vpn_app` via `settings put secure` actually take effect after reboot (§6), or is a device-owner DPC required?
 4. Where do SOCKS5 credentials live, and does the agent ever persist them or only hold them for the lifetime of a route?
-5. Does the agent replace the `ui-server` inspector eventually, or coexist with it? Two on-device apps with overlapping lifecycles is a maintenance question worth answering deliberately rather than by accident.
+5. **Answered (MVP 02 §4 phase 2, plan 221):** replace. The agent's `ui-tree` `AccessibilityService` becomes the default engine in plan 222; ui-server stays as the fallback for devices where the agent cannot be installed or its service cannot be enabled, and `uiautomator dump` is demoted to last resort.
 6. Which Android versions form the supported matrix, and what is the per-release smoke test that pins the three undocumented behaviours (§1.1, §1.2, §6)?

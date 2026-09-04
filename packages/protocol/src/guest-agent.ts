@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { RouteLifecycleStateSchema, Socks5RouteConfigSchema } from './network'
+import { UiNodeSchema } from './ui-node'
+import { ActivityKindSchema } from './activity'
 
 /**
  * The wire contract between the farm host and the Enkaku guest agent APK
@@ -53,6 +55,17 @@ export const GUEST_AGENT_PROTOCOL = 1
  * answers `E_UNKNOWN_METHOD` for both, which the text-routing resolver (`resolveTextRoute`, §4.5)
  * reads as "rung 1 (`agent-ime`) is unavailable" and falls down the ladder rather than failing
  * the call outright.
+ *
+ * `ui-tree` (plan 221 §4.2, MVP 02 §4 phase 2, MVP 10 §1.1) — gates `ui.dump` / `ui.find` /
+ * `ui.watch` / `ui.unwatch` / `ui.status`. Advertised by every build that CONTAINS the
+ * `AccessibilityService`, whether or not the service is currently enabled in Settings: the
+ * capability says what the build can do, `ui.status` says whether it can do it right now.
+ * Conflating the two would make an unenabled service look like an old APK, which is a different
+ * repair.
+ *
+ * `activity` (plan 221 §4.5, MVP 10 §1.3) — gates `activity.set` and `device.describe`. Read-only
+ * on the device: nothing acts on the list, it only lets the phone's own screen say what the farm
+ * is doing to it.
  */
 export const GuestAgentCapabilitySchema = z.enum([
   'socks5-route',
@@ -62,6 +75,8 @@ export const GuestAgentCapabilitySchema = z.enum([
   'mock-location',
   'screen-label',
   'text-input',
+  'ui-tree',
+  'activity',
 ])
 export type GuestAgentCapability = z.infer<typeof GuestAgentCapabilitySchema>
 
@@ -72,6 +87,8 @@ export const GuestAgentErrorCodeSchema = z.enum([
   'E_UNKNOWN_METHOD',
   'E_NOT_PAIRED',
   'E_NOT_PREPARED',
+  /** Plan 221 §4.2 — the build has the service, the device has not enabled it (or it is not connected yet). */
+  'E_UI_TREE_UNAVAILABLE',
 ])
 export type GuestAgentErrorCode = z.infer<typeof GuestAgentErrorCodeSchema>
 
@@ -91,6 +108,13 @@ const GuestAgentRequestBaseSchema = z.object({
 
 export const HelloRequestSchema = GuestAgentRequestBaseSchema.extend({
   method: z.literal('hello'),
+  /**
+   * Plan 221 §4.9, MVP 10 §2 — the `deviceArtifact.versionCode` this host has pinned. The agent
+   * stores it and its status screen says "host expects build N" when N is higher than its own, so
+   * an outdated agent says so itself instead of waiting for someone to compare two numbers by
+   * hand. Optional: an older host omits it and the row is simply absent.
+   */
+  expectVersionCode: z.number().int().positive().optional(),
 })
 export type HelloRequest = z.infer<typeof HelloRequestSchema>
 
@@ -223,6 +247,171 @@ export const TextStatusRequestSchema = GuestAgentRequestBaseSchema.extend({
 })
 export type TextStatusRequest = z.infer<typeof TextStatusRequestSchema>
 
+// ---- ui-tree (plan 221 §4.2) ----
+
+/** `maxDepth`/`maxNodes` bound the walk; both default on the device (50 / 5000). */
+export const UiDumpRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('ui.dump'),
+  maxDepth: z.number().int().positive().max(200).optional(),
+  maxNodes: z.number().int().positive().max(50_000).optional(),
+})
+export type UiDumpRequest = z.infer<typeof UiDumpRequestSchema>
+
+/**
+ * The tree, in the SAME shape `uiautomator dump` and ui-server already return
+ * (`packages/drivers/src/inspector/xml-parser.ts`'s `parseUiDump`): a synthetic
+ * `className: 'hierarchy'` root whose children are the window roots. `root` is `UiNodeSchema`
+ * itself, not a copy — that identity is what makes plan 222 an engine swap rather than a rewrite.
+ * `truncated` is honest, not decorative: a tree that hit the node or depth cap says so, and a
+ * caller must never render a truncated tree as complete.
+ */
+export const UiDumpResultSchema = z.object({
+  root: UiNodeSchema,
+  widthPx: z.number().int(),
+  heightPx: z.number().int(),
+  nodeCount: z.number().int(),
+  truncated: z.boolean(),
+  tookMs: z.number().int(),
+})
+export type UiDumpResult = z.infer<typeof UiDumpResultSchema>
+
+/**
+ * Plan 221 §4.2. `selector` is `SelectorSchema` minus its `{ point }` arm: a point selector is a
+ * host-side synthetic node (`selector-match.ts`'s `matchSelector`), so sending one to the device
+ * is a caller bug and the client refuses it before the wire.
+ */
+export const UiFindRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('ui.find'),
+  selector: z.union([
+    z.object({ id: z.string() }).strict(),
+    z.object({ desc: z.string() }).strict(),
+    z.object({ text: z.string() }).strict(),
+  ]),
+  maxDepth: z.number().int().positive().max(200).optional(),
+  maxNodes: z.number().int().positive().max(50_000).optional(),
+})
+export type UiFindRequest = z.infer<typeof UiFindRequestSchema>
+
+/** `matches` is the full count, so an ambiguous selector is reported as such (`findDetailed`'s contract). */
+export const UiFindResultSchema = z.object({
+  node: UiNodeSchema.nullable(),
+  matches: z.number().int(),
+  tookMs: z.number().int(),
+})
+export type UiFindResult = z.infer<typeof UiFindResultSchema>
+
+export const UiWatchRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('ui.watch'),
+})
+export type UiWatchRequest = z.infer<typeof UiWatchRequestSchema>
+
+export const UiUnwatchRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('ui.unwatch'),
+})
+export type UiUnwatchRequest = z.infer<typeof UiUnwatchRequestSchema>
+
+/** The one-line ack. Every later line on that connection is a `UiChangedEvent`, never a response. */
+export const UiWatchResultSchema = z.object({ watching: z.literal(true), debounceMs: z.number().int() })
+export type UiWatchResult = z.infer<typeof UiWatchResultSchema>
+export const UiUnwatchResultSchema = z.object({ watching: z.literal(false) })
+export type UiUnwatchResult = z.infer<typeof UiUnwatchResultSchema>
+
+/**
+ * Plan 221 §4.4 — an unsolicited frame, discriminated by `event` rather than by `ok`, so a reader
+ * can tell a push from a reply with one key and never has to guess. It carries no tree: the host
+ * calls `ui.dump` or `ui.find` on a different connection when it wants content.
+ */
+export const UiChangedEventSchema = z.object({
+  event: z.literal('ui.changed'),
+  seq: z.number().int(),
+  at: z.number().int(),
+  packageName: z.string(),
+  reason: z.enum(['content', 'window', 'windows']),
+})
+export type UiChangedEvent = z.infer<typeof UiChangedEventSchema>
+
+export const UiStatusRequestSchema = GuestAgentRequestBaseSchema.extend({ method: z.literal('ui.status') })
+export type UiStatusRequest = z.infer<typeof UiStatusRequestSchema>
+
+/**
+ * `enabled` is the Settings fact, `connected` is the runtime fact, and they are not the same:
+ * a service can be listed in `enabled_accessibility_services` and still not be bound. Reported
+ * separately because the repair differs (write the setting, versus wait or reboot).
+ */
+export const UiStatusResultSchema = z.object({
+  enabled: z.boolean(),
+  connected: z.boolean(),
+  watching: z.boolean(),
+  lastDumpAgoMs: z.number().int().nullable(),
+  lastDumpNodes: z.number().int().nullable(),
+  lastError: z.string().nullable(),
+})
+export type UiStatusResult = z.infer<typeof UiStatusResultSchema>
+
+// ---- activity mirror (plan 221 §4.5) ----
+
+export const GuestAgentActivitySchema = z.object({
+  id: z.string(),
+  kind: ActivityKindSchema,
+  label: z.string(),
+  /** Already resolved by the host (`DeviceActivity.actor.label`) — the agent never sees an id it would have to resolve. */
+  actorLabel: z.string(),
+  startedAt: z.number().int(),
+})
+export type GuestAgentActivity = z.infer<typeof GuestAgentActivitySchema>
+
+export const GuestAgentVideoSchema = z.object({
+  running: z.boolean(),
+  widthPx: z.number().int(),
+  heightPx: z.number().int(),
+  fps: z.number().int(),
+})
+export type GuestAgentVideo = z.infer<typeof GuestAgentVideoSchema>
+
+/**
+ * Plan 221 §4.5, MVP 10 §1.3. Read-only on the device: nothing acts on this list, it exists so
+ * the phone's own screen can say what the farm is doing to it. `video` is what the HOST started,
+ * never a claim that anyone is watching (MVP 10 §2's Video row); `null` means no scrcpy server.
+ */
+export const ActivitySetRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('activity.set'),
+  activities: z.array(GuestAgentActivitySchema).max(64),
+  video: GuestAgentVideoSchema.nullable(),
+})
+export type ActivitySetRequest = z.infer<typeof ActivitySetRequestSchema>
+
+export const ActivitySetResultSchema = z.object({ accepted: z.number().int() })
+export type ActivitySetResult = z.infer<typeof ActivitySetResultSchema>
+
+/**
+ * The farm's own facts about this device, for MVP 10 §2's Device section — the rows only the host
+ * knows. `group`, never "cluster" (plan 200 §2.4).
+ */
+export const DeviceDescribeRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('device.describe'),
+  stableId: z.string().nullable(),
+  label: z.string().nullable(),
+  number: z.string().nullable(),
+  group: z.string().nullable(),
+  tags: z.array(z.string()).max(32),
+})
+export type DeviceDescribeRequest = z.infer<typeof DeviceDescribeRequestSchema>
+
+export const DeviceDescribeResultSchema = z.object({ accepted: z.literal(true) })
+export type DeviceDescribeResult = z.infer<typeof DeviceDescribeResultSchema>
+
+// ---- keyboard preference (plan 221 §4.6) ----
+
+export const TextPrefsRequestSchema = GuestAgentRequestBaseSchema.extend({
+  method: z.literal('text.prefs'),
+  showSoftKeyboardWithHardware: z.boolean(),
+})
+export type TextPrefsRequest = z.infer<typeof TextPrefsRequestSchema>
+
+/** The read-back, never the value that was sent — same discipline as `route.status` after `route.start`. */
+export const TextPrefsResultSchema = z.object({ showSoftKeyboardWithHardware: z.boolean() })
+export type TextPrefsResult = z.infer<typeof TextPrefsResultSchema>
+
 /** The full request union, discriminated on `method` — mirrors `Protocol.METHOD_*`. */
 export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   HelloRequestSchema,
@@ -239,6 +428,14 @@ export const GuestAgentRequestSchema = z.discriminatedUnion('method', [
   LabelClearRequestSchema,
   TextCommitRequestSchema,
   TextStatusRequestSchema,
+  UiDumpRequestSchema,
+  UiFindRequestSchema,
+  UiWatchRequestSchema,
+  UiUnwatchRequestSchema,
+  UiStatusRequestSchema,
+  ActivitySetRequestSchema,
+  DeviceDescribeRequestSchema,
+  TextPrefsRequestSchema,
 ])
 export type GuestAgentRequest = z.infer<typeof GuestAgentRequestSchema>
 
@@ -351,6 +548,9 @@ export const TextStatusResultSchema = z.object({
   ime: z.enum(['current', 'enabled', 'disabled']),
   id: z.string(),
   connected: z.boolean(),
+  /** Plan 221 §4.6, MVP 08 §1.2. Absent on a build that predates the field; never assume `false`. */
+  softKeyboardShown: z.boolean().optional(),
+  showSoftKeyboardWithHardware: z.boolean().optional(),
 })
 export type TextStatusResult = z.infer<typeof TextStatusResultSchema>
 
@@ -449,6 +649,14 @@ export const GuestAgentOkResponseSchema = z.object({
     LabelClearResultSchema,
     TextCommitResultSchema,
     TextStatusResultSchema,
+    UiDumpResultSchema,
+    UiFindResultSchema,
+    UiWatchResultSchema,
+    UiUnwatchResultSchema,
+    UiStatusResultSchema,
+    ActivitySetResultSchema,
+    DeviceDescribeResultSchema,
+    TextPrefsResultSchema,
   ]),
 })
 export type GuestAgentOkResponse = z.infer<typeof GuestAgentOkResponseSchema>

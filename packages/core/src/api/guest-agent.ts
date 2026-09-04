@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type { AdbClient } from '@enkaku/adb'
-import type { AgentStatus, ShellResult, TransportExecOptions } from '@enkaku/protocol'
+import type { AgentStatus, GuestAgentActivity, GuestAgentVideo, ShellResult, TransportExecOptions } from '@enkaku/protocol'
 import {
   GUEST_AGENT_PACKAGE,
   GuestAgentClientError,
@@ -324,6 +324,19 @@ export interface GuestAgentRoutesHandle {
   deviceNetwork: DeviceNetworkPort
   /** The `set-network` actions API verb's one door (plan 207 §4.2, §5 step 207.4) — the SAME five functions the HTTP routes above call. */
   routeActions: RouteService['actions']
+  /**
+   * Plan 221 §4.5, §5 step 221.14 — pushes plan 205's own activity list (and the video block) to
+   * the device's `ActivityMirror`, read-only there. Routed through `withGuestAgentClient` (never a
+   * second `GuestAgentSession`), capability-gated on `hello().capabilities` including `activity`,
+   * and best-effort: an `E_UNKNOWN_METHOD` from an older build is logged at `debug` once per
+   * device and never thrown onward — this is a status-screen convenience, never load-bearing.
+   */
+  pushActivity: (deviceId: string, activities: GuestAgentActivity[], video: GuestAgentVideo | null) => Promise<void>
+  /** Plan 221 §4.5, §5 step 221.14 — the farm's own facts about a device, for the phone's own Device section. Same gate and same best-effort discipline as `pushActivity`. */
+  pushDescribe: (
+    deviceId: string,
+    device: { stableId: string | null; label: string | null; number: string | null; group: string | null; tags: string[] },
+  ) => Promise<void>
 }
 
 export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRoutesHandle {
@@ -756,6 +769,9 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     .reconcileNetworkRoutes()
     .catch((err) => deps.log.warn(`network boot reconciliation failed, tolerated: ${String(err)}`))
 
+  /** Plan 221 §5 step 221.14 — logged once per device, never repeated for a build known not to support it. */
+  const activityCapabilityWarned = new Set<string>()
+
   return {
     routes: app,
     revertNetwork: service.revertNetwork,
@@ -766,5 +782,35 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
     withGuestAgentClient: (deviceId, fn) => withEphemeralSession(mustGet(deviceId), fn),
     deviceNetwork: service.device,
     routeActions: service.actions,
+    async pushActivity(deviceId, activities, video) {
+      try {
+        await withEphemeralSession(mustGet(deviceId), async (client) => {
+          const hello = await client.hello()
+          if (!hello.capabilities.includes('activity')) return
+          await client.activitySet(activities, video)
+        })
+      } catch (err) {
+        if (err instanceof GuestAgentClientError && err.code === 'E_UNKNOWN_METHOD') {
+          if (!activityCapabilityWarned.has(deviceId)) {
+            activityCapabilityWarned.add(deviceId)
+            deps.log.debug(`guest-agent: device ${deviceId}'s agent does not support activity.set — the status screen will not show it`)
+          }
+          return
+        }
+        deps.log.debug(`guest-agent: pushActivity to device ${deviceId} failed, tolerated: ${String(err)}`)
+      }
+    },
+    async pushDescribe(deviceId, device) {
+      try {
+        await withEphemeralSession(mustGet(deviceId), async (client) => {
+          const hello = await client.hello()
+          if (!hello.capabilities.includes('activity')) return
+          await client.deviceDescribe(device)
+        })
+      } catch (err) {
+        if (err instanceof GuestAgentClientError && err.code === 'E_UNKNOWN_METHOD') return
+        deps.log.debug(`guest-agent: pushDescribe to device ${deviceId} failed, tolerated: ${String(err)}`)
+      }
+    },
   }
 }
