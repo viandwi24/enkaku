@@ -1,6 +1,6 @@
 import { join, normalize } from 'node:path'
 import { Hono } from 'hono'
-import { desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   BatchArtifactsResponseSchema,
@@ -32,7 +32,7 @@ import { addRunsToBatch, createBatch, type BatchDispatchDeps } from '../groups/d
 import type { BatchPacer } from '../groups/pacer'
 import { computeBatchStatus, countJobs, recomputeBatchStatus, TERMINAL_BATCH_STATUSES } from '../groups/status'
 import type { Db } from '../db'
-import { artifacts, batches, devices, scripts, type BatchRow, type JobRow, type JobRunRow } from '../db/schema'
+import { artifacts, batches, devices, jobs, scripts, type BatchRow, type JobRow, type JobRunRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import type { RunStore } from '../jobs/runs/store'
 import { validateScriptForRun } from '../jobs/validate-script'
@@ -103,10 +103,26 @@ export function queryBatchRows(
     batches.createdAt,
     batches.id,
   )
+  /**
+   * A batch of ONE is not listed here.
+   *
+   * `docs/spec.md` §4.8: "`run-script` and `run-workflow` always create a
+   * batch, even for one device; **a batch of one is displayed as its single
+   * job**." The core half shipped and the display half did not, so running a
+   * script on one phone produced a Batches row that was a copy of the Jobs
+   * row beside it, and the two tabs read as duplicates of each other (owner,
+   * 2026-09-04).
+   *
+   * Filtered HERE and not in Studio because the list is keyset-paginated:
+   * dropping rows client-side turns a page of twenty single-device batches
+   * into an empty screen with a "load more" button, and `total` would still
+   * be counting them.
+   */
+  const multiDevice = sql`(SELECT count(*) FROM ${jobs} WHERE ${jobs.batchId} = ${batches.id}) > 1`
   const page = db
     .select()
     .from(batches)
-    .where(keyset)
+    .where(keyset ? and(keyset, multiDevice) : multiDevice)
     .orderBy(desc(batches.createdAt), desc(batches.id))
     .limit(opts.limit + 1)
     .all()
@@ -115,7 +131,7 @@ export function queryBatchRows(
   const last = rows[rows.length - 1]
   const nextCursor =
     hasMore && last ? encodeCursor(Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), last.id) : null
-  const total = db.select().from(batches).all().length
+  const total = db.select().from(batches).where(multiDevice).all().length
   return { rows, nextCursor, total }
 }
 

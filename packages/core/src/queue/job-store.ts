@@ -194,6 +194,21 @@ export function createJobStore(db: Db): JobStore {
       if (filter.rootJobId) conds.push(eq(jobs.rootJobId, filter.rootJobId))
       if (filter.parentWorkflowJobId) conds.push(eq(jobs.parentWorkflowJobId, filter.parentWorkflowJobId))
       if (filter.scheduleId) conds.push(eq(jobs.scheduleId, filter.scheduleId))
+      /**
+       * `status` is the LATEST RUN's status (plan 211), and it belongs in SQL.
+       *
+       * It used to be applied in JavaScript to the page that had already been
+       * fetched, which broke two things at once. `total` was computed without
+       * it, so `GET /api/jobs?status=queued` answered `items: []` and
+       * `total: 123` on a farm with an empty queue — the status bar read
+       * "Jobs 0/123" (owner, 2026-09-04). And paging was worse than wrong: a
+       * `limit` of 20 fetched twenty jobs, then discarded the ones that did
+       * not match, so a caller looking for queued work had to walk the whole
+       * history a page at a time to find it.
+       */
+      if (filter.status) {
+        conds.push(sql`(SELECT ${jobRuns.status} FROM ${jobRuns} WHERE ${jobRuns.id} = ${jobs.latestRunId}) = ${filter.status}`)
+      }
       const countWhere = conds.length > 0 ? and(...conds) : undefined
       const total = db.select().from(jobs).where(countWhere).all().length
 
@@ -214,15 +229,7 @@ export function createJobStore(db: Db): JobStore {
         .limit(filter.limit + 1)
         .all()
       const hasMore = page.length > filter.limit
-      let rows = hasMore ? page.slice(0, filter.limit) : page
-      // `status` filters on the LATEST RUN's status (plan 211) — applied
-      // after the page is fetched, since it is not a column on `jobs`.
-      if (filter.status) {
-        const latestRunIds = rows.map((r) => r.latestRunId).filter((id): id is string => id !== null)
-        const runRows = latestRunIds.length > 0 ? db.select().from(jobRuns).where(inArray(jobRuns.id, latestRunIds)).all() : []
-        const byId = new Map(runRows.map((r) => [r.id, r]))
-        rows = rows.filter((r) => r.latestRunId && byId.get(r.latestRunId)?.status === filter.status)
-      }
+      const rows = hasMore ? page.slice(0, filter.limit) : page
       const last = rows[rows.length - 1]
       const nextCursor: JobCursor | null =
         hasMore && last ? { sortValue: Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), id: last.id } : null

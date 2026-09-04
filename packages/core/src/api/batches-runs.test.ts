@@ -2,10 +2,11 @@ import { Hono } from 'hono'
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { devices, jobRuns } from '../db/schema'
+import { batches, devices, jobRuns } from '../db/schema'
 import { ExecutorRegistry } from '../jobs/executor'
 import { createRunStore } from '../jobs/runs/store'
 import { createBatch, type BatchDispatchDeps } from '../groups/dispatch'
+import { queryBatchRows } from './batches'
 import { createJobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { createAuditLogger } from '../auth/audit'
@@ -128,5 +129,54 @@ describe('POST /:id/rerun-failed (plan 211 §3.2 decision 3, G9)', () => {
 
     const res = await app.request(`/${batchId}/rerun-failed`, { method: 'POST' })
     expect(res.status).toBe(409) // E_NO_TARGETS
+  })
+})
+
+/**
+ * `docs/spec.md` §4.8: "`run-script` and `run-workflow` always create a
+ * batch, even for one device; **a batch of one is displayed as its single
+ * job**."
+ *
+ * The core half of that sentence shipped and the display half did not, so on
+ * the owner's own farm all twelve batches were single-device and the Batches
+ * tab was a copy of the Jobs tab beside it (2026-09-04). A wrong answer here
+ * is silent: both lists render fine, they just say the same thing twice.
+ */
+describe('GET /api/batches lists only multi-device batches (spec §4.8)', () => {
+  function seedSingle(db: Db, deps: BatchRoutesDeps, deviceId: string) {
+    const batchDeps: BatchDispatchDeps = { db, runs: deps.runs, scheduler: deps.scheduler, audit: deps.audit, onJobStatus: () => {} }
+    return createBatch(batchDeps, {
+      scriptId: 'internal:sleep',
+      params: {},
+      target: { deviceIds: [deviceId] },
+      concurrency: 0,
+      order: 'as-listed',
+      createdBy: null,
+    }).batch.id
+  }
+
+  test('a single-device batch is absent from the list and from its total; the job it holds is untouched', () => {
+    const { db, deps } = setUp()
+    const soloId = seedSingle(db, deps, 'd1')
+
+    const { rows, total } = queryBatchRows(db, { cursor: null, limit: 50 })
+
+    expect(rows.map((r) => r.id)).not.toContain(soloId)
+    expect(total).toBe(0)
+    // The batch row itself still exists — it is hidden from the LIST, not
+    // deleted, so `GET /api/batches/:id` and the job's own `batchId` still
+    // resolve.
+    expect(db.select().from(batches).where(eq(batches.id, soloId)).all()).toHaveLength(1)
+  })
+
+  test('a multi-device batch is listed, and a single-device one beside it still is not', () => {
+    const { db, deps } = setUp()
+    seedSingle(db, deps, 'd1')
+    const { batchId } = seedBatch(db, deps)
+
+    const { rows, total } = queryBatchRows(db, { cursor: null, limit: 50 })
+
+    expect(rows.map((r) => r.id)).toEqual([batchId])
+    expect(total).toBe(1)
   })
 })

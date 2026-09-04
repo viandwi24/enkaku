@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { batches, devices } from '../db/schema'
+import { batches, devices, jobRuns } from '../db/schema'
 import { createRunStore } from '../jobs/runs/store'
 import { createJobStore } from './job-store'
 
@@ -224,5 +225,52 @@ describe('requeueForRebind', () => {
     expect(rebound?.deviceId).toBe('d2')
     expect(rebound?.infraAttempts).toBe(1)
     expect(store.get(run.jobId)?.deviceId).toBe('d2')
+  })
+})
+
+/**
+ * The `status` filter is a filter, not a suggestion — and `total` must obey it.
+ *
+ * It used to be applied in JavaScript AFTER the page was fetched, while
+ * `total` was counted without it. `GET /api/jobs?status=queued` therefore
+ * answered `items: []` with `total: 123` on a farm whose queue was empty, and
+ * the status bar read "Jobs 0/123" (owner, 2026-09-04). Paging was worse:
+ * `limit` counted rows BEFORE the filter, so a caller looking for queued work
+ * walked the whole history a page at a time.
+ */
+/** Sets a run's status directly — the fixture wants the column, not the lifecycle. */
+function finishRun(db: Db, runId: string, status: 'success' | 'failed'): void {
+  db.update(jobRuns).set({ status, finishedAt: new Date() }).where(eq(jobRuns.id, runId)).run()
+}
+
+describe('list({ status }) filters in SQL, and total agrees with items (owner report, 2026-09-04)', () => {
+  test('an empty queue reports total 0, not the whole history', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const { run } = seedJobAndRun(db, { deviceId: 'd1' })
+    // Straight to the column: `settle` refuses a run that was never claimed,
+    // and what this test needs is the STATUS, not the lifecycle around it.
+    finishRun(db, run.id, 'failed')
+
+    const store = createJobStore(db)
+    expect(store.list({ status: 'queued', limit: 20, cursor: null }).total).toBe(0)
+    expect(store.list({ status: 'failed', limit: 20, cursor: null }).total).toBe(1)
+    expect(store.list({ limit: 20, cursor: null }).total).toBe(1)
+  })
+
+  test('`limit` counts rows AFTER the filter — one queued job among many finished ones is found on the first page', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    for (let i = 0; i < 5; i++) {
+      const { run } = seedJobAndRun(db, { deviceId: 'd1' })
+      finishRun(db, run.id, 'success')
+    }
+    const { job: queuedJob } = seedJobAndRun(db, { deviceId: 'd1' })
+
+    const store = createJobStore(db)
+    const page = store.list({ status: 'queued', limit: 2, cursor: null })
+
+    expect(page.rows.map((r) => r.id)).toEqual([queuedJob.id])
+    expect(page.total).toBe(1)
   })
 })
