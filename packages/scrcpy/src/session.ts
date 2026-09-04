@@ -214,7 +214,7 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
   const cmd = `CLASSPATH=${DEVICE_JAR_PATH} app_process / com.genymobile.scrcpy.Server ${SCRCPY_VERSION} ${args.join(' ')}`
   // Launched through the adb CLI, deliberately NOT through `adb.exec`.
   //
-  // Per-device adb access is serialised through a queue, and this command runs
+  // Per-device adb access is serialised through a queue, and this process runs
   // for as long as the session lives — routing it through the queue parked a
   // slot forever, so every later shell command on that device queued behind a
   // process that never exits. Volume keys did nothing, the ui-server inspector

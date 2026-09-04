@@ -5,7 +5,7 @@ import type { Check } from '../types'
  * registry in `packages/core/src/device/host-adb.ts` kills every child it
  * spawned on `daemon.stop()`, but that only covers processes the *current*
  * core is still tracking. A core that was killed with `-9`, crashed, or (on
- * Windows) had its console window closed leaves its `adb.exe` children
+ * Windows) had its terminal window closed leaves its `adb.exe` children
  * running with nothing left to reap them — one plausible reason a dead
  * lock's port stays bound (F14's second half).
  *

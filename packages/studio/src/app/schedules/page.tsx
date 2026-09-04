@@ -49,7 +49,7 @@ function humanCron(cron: string, timezone: string): string {
  * `GET /api/schedules` replies with the usual keyset envelope over
  * `ScheduleInfo` — no dedicated `SchedulesPageResponseSchema` export exists
  * in protocol (plan 72 §3.4's report flags this as a gap, same as
- * `clusters/page.tsx`), so it is composed here from the exported
+ * `groups/page.tsx`), so it is composed here from the exported
  * `pageSchema` helper and `ScheduleInfoSchema`, both already in protocol.
  */
 const SchedulesPageResponseSchema = pageSchema(ScheduleInfoSchema)
@@ -219,7 +219,7 @@ export default function SchedulesPage() {
             icon: <CalendarClock className="size-4" aria-hidden />,
             title: 'No schedules yet',
             description:
-              'A schedule runs a script against a cluster or device list on a cron expression — the same batch you would run by hand, just recurring.',
+              'A schedule runs a script against a group or device list on a cron expression — the same batch you would run by hand, just recurring.',
             action: <Button onClick={() => setEditing('new')}>New schedule</Button>,
           }}
         />

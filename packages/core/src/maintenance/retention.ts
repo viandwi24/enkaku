@@ -159,7 +159,7 @@ export function createRetentionGc(deps: {
     let rows = 0
     // `inArray` binds one parameter per id and SQLite has a ceiling on those.
     // The first sweep after an upgrade can face every job the farm has ever
-    // run, so this is chunked where `sweepCommandRuns` above is not.
+    // run, so this is chunked where the deleted per-run sweep above is not.
     for (let i = 0; i < staleJobIds.length; i += 500) {
       rows += changedRows(
         deps.db.delete(jobEvents).where(inArray(jobEvents.jobId, staleJobIds.slice(i, i + 500))).run(),

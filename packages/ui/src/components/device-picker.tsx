@@ -26,7 +26,7 @@ import { matchesDeviceQuery } from '../lib/device-name'
  * text all reach in through render props. Studio passes its own (see
  * `studio/src/components/DevicePicker.tsx`, now a thin wrapper) and loses
  * nothing; a plugin passes none and gets the same search, the same tag chips,
- * the same cluster grouping and the same multi-select. One component, two
+ * the same group grouping and the same multi-select. One component, two
  * levels of richness — never two components drifting apart.
  */
 /**
@@ -58,11 +58,11 @@ function cannotTakeJob(status: DeviceStatus | undefined): boolean {
  * `DeviceInfo` satisfies it, so Studio passes its devices unchanged. A
  * caller that genuinely has less — the MikroTik plugin's `FleetDeviceRow`
  * knows a device's id, name and number but nothing about its status, tags or
- * cluster — passes what it has and the picker simply does not draw what it
+ * group — passes what it has and the picker simply does not draw what it
  * was not given.
  *
  * The alternative was to make such a caller synthesise `status: 'idle'`,
- * `tags: []`, `cluster: null` to satisfy `DeviceInfo`. That is not a type
+ * `tags: []`, `group: null` to satisfy `DeviceInfo`. That is not a type
  * workaround, it is a lie rendered on screen: every row would carry an
  * "idle" badge that nobody had checked. Optional fields say "unknown"
  * honestly; invented ones say something false confidently.
@@ -77,7 +77,7 @@ interface PickableDevice {
   status?: DeviceStatus
   /** Absent = none known; the tag chips row then does not render at all. */
   tags?: readonly string[]
-  cluster?: { id: string; name: string } | null
+  group?: { id: string; name: string } | null
 }
 
 /**
@@ -143,7 +143,7 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
       // Every other device list grew its own near-miss or none at all, which
       // is the gap plan 124 exists to close: the predicate now lives in
       // `@enkaku/ui` so the Mikrotik assignments table, the Proxy Manager
-      // table, the agent device-grant list and the cluster members dialog
+      // table, the agent device-grant list and the group members dialog
       // all behave identically to this picker instead of approximating it.
       // Behaviour here is unchanged but for one strict widening documented
       // in `matchesDeviceQuery` itself: a tag now matches case-insensitively.
@@ -151,29 +151,29 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
     })
   }, [devices, query, activeTag])
 
-  // Grouped by cluster (plan 22.0 §4.5) — but only once a cluster is actually
+  // Grouped by group (plan 22.0 §4.5) — but only once a group is actually
   // in play; a farm with none yet keeps the plain flat list rather than a
-  // single "Unclustered" header that says nothing. "Unclustered" sorts last,
+  // single "Ungrouped" header that says nothing. "Ungrouped" sorts last,
   // same as the untagged bucket on the devices list.
-  const hasAnyCluster = devices.some((d) => (d.cluster ?? null) !== null)
+  const hasAnyGroup = devices.some((d) => (d.group ?? null) !== null)
   const groups = useMemo(() => {
-    if (!hasAnyCluster) return null
-    const byCluster = new Map<string, { label: string; items: D[] }>()
-    const unclustered: D[] = []
+    if (!hasAnyGroup) return null
+    const byGroup = new Map<string, { label: string; items: D[] }>()
+    const ungrouped: D[] = []
     for (const d of filtered) {
-      if (!d.cluster) {
-        unclustered.push(d)
+      if (!d.group) {
+        ungrouped.push(d)
         continue
       }
-      const g = byCluster.get(d.cluster.id)
+      const g = byGroup.get(d.group.id)
       if (g) g.items.push(d)
-      else byCluster.set(d.cluster.id, { label: d.cluster.name, items: [d] })
+      else byGroup.set(d.group.id, { label: d.group.name, items: [d] })
     }
-    const sorted = [...byCluster.values()].sort((a, b) => a.label.localeCompare(b.label))
-    if (unclustered.length > 0) sorted.push({ label: 'Unclustered', items: unclustered })
+    const sorted = [...byGroup.values()].sort((a, b) => a.label.localeCompare(b.label))
+    if (ungrouped.length > 0) sorted.push({ label: 'Ungrouped', items: ungrouped })
     return sorted
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, hasAnyCluster])
+  }, [filtered, hasAnyGroup])
 
   const selectedIds = props.multiple ? props.value : props.value ? [props.value] : []
 

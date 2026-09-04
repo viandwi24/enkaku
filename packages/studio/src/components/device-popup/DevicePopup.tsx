@@ -448,7 +448,7 @@ export function DevicePopup({
           </div>
 
           {/* The identity meta row (plan 103 §5, closing step 103.11's audit
-              rows 20-22) — facts an operator LOOKS UP (viewers, cluster/
+              rows 20-22) — facts an operator LOOKS UP (viewers, group/
               stable-id/serial/engines) get a popover here rather than a row in
               `ActionsList`; battery/temperature are the one fact an operator
               WATCHES, so they render inline and unconditional, exactly as

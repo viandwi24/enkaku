@@ -19,7 +19,7 @@ export interface TransferRegistryRoutesDeps {
  * is the one seam that reaches every caller for free).
  *
  * No permission gate beyond `authMiddleware` (applied to all of `/api/*`) —
- * the same bar `GET /api/jobs`, `GET /api/batches`, and `GET /api/command-runs`
+ * the same bar `GET /api/jobs` and `GET /api/batches`
  * already hold: seeing THAT something is running is not the same authority
  * as `canUseFiles`, which gates STARTING a transfer.
  */

@@ -31,7 +31,7 @@ const ShellRunResultSchema = z.object({
  * device juga, jadi bisa running banyak devices"*, then, seeing it still a
  * side-panel tab: *"terminal kenapa masih ada tab nya? ... ketika di tekan
  * muncul popup modal tersendiri ... seperti install apk mendukung opsi
- * specific device, multiple device atau cluster ... tapi outputnya harus
+ * specific device, multiple device atau group ... tapi outputnya harus
  * bisa dilihat langsung juga?"* This is that modal — it replaces the
  * `SidePanel`'s old Terminal TAB entirely (`SidePanel.tsx`'s own doc
  * comment records the removal).
@@ -54,8 +54,8 @@ const ShellRunResultSchema = z.object({
  *   activity and per-device operation registry every other async verb
  *   uses, polled by `awaitOperation` (1s interval) and rendered through
  *   `ActionResults`, with each device's stdout/stderr shown under its own
- *   row. This replaced the fleet command console entirely (plan 207 §4.7):
- *   no history, no saved commands, no staging, no cancel/continue — an
+ *   row. This replaced the fleet command surface entirely (plan 207 §4.7):
+ *   no history, no named commands, no staging, no cancel/continue — an
  *   `adb` run is one bounded fan-out, start to finish.
  *
  * `TerminalPane`'s own `canType` only ever reflects whether the FOCUSED
@@ -231,7 +231,7 @@ export function AdbCommandDialog({
                   />
                   {/* A usability guard, never a security control (`high-consequence.ts`'s own
                       doc comment) — the server does not know this list exists. Stated inline
-                      rather than behind a second confirm dialog: with the fleet console gone,
+                      rather than behind a second confirm dialog: with the fleet command surface gone,
                       an operator who runs it anyway sees the same warning either way. */}
                   {hc.hit && (
                     <p className="text-[11.5px] text-led-warn">

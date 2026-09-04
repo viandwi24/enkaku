@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import Link from 'next/link'
 import { isHighConsequence, type ServerMessage } from '@enkaku/protocol'
 import { newId, ws } from '@/lib/ws'
 import {
@@ -117,8 +116,8 @@ export function TerminalPane({
     if (el) el.scrollTop = el.scrollHeight
   }, [entries])
 
-  // Plan 207 §4.7, §4.9 — the fleet command console (and its `GET
-  // /api/command-runs?mine=1` history seed) is gone entirely: ArrowUp
+  // Plan 207 §4.7, §4.9 — the fleet command surface (and its history-seed
+  // fetch) is gone entirely: ArrowUp
   // recall is now exactly what was typed THIS session, in this component's
   // own `useState` (the same limitation plan 93 §3.5's F3 originally
   // reported and then fixed by seeding from history — that history no
@@ -240,7 +239,7 @@ export function TerminalPane({
                 <code className="readout mt-1 block rounded-md bg-surface-2 px-2 py-1.5 text-[12px] break-all">{confirmCmd}</code>
                 <p className="mt-2">
                   This looks like it could affect the whole device (reboot, power, or adb settings). This is a
-                  Studio-side reminder, not a server-side restriction — the command runs exactly as typed either way.
+                  Studio-side reminder, not a server-side restriction — it runs exactly as typed either way.
                 </p>
               </div>
             </AlertDialogDescription>
@@ -313,14 +312,10 @@ function TranscriptRow({
                 Run as a stream
               </button>
             )}
-            {/* Plan 93 §3.16, step 93.7 — opens the fleet console with this
-                exact command prefilled and this device preselected. The
-                console is a SEPARATE surface (§3.17): this link does not run
-                anything itself, it only hands the same text to the one place
-                that starts a fan-out run. */}
-            <Link href={`/console?cmd=${encodeURIComponent(cmd)}&deviceId=${encodeURIComponent(deviceId)}`} className="text-accent underline">
-              Run on more devices…
-            </Link>
+            {/* Plan 207 §4.7 — the fleet command surface this used to link to
+                is gone entirely; running the same command on more devices is
+                now the device popup's own "Adb command" row (`AdbCommandDialog`,
+                a modal `TerminalPane` cannot reach into from here). */}
           </div>
         </>
       )}

@@ -25,7 +25,7 @@ export interface BatchReport {
 
 const EMPTY: BatchReport = { batch: null, jobs: [], done: false }
 
-/** Mirrors `clusters/status.ts`'s own `TERMINAL_BATCH_STATUSES` (a core-only export this package cannot import). */
+/** Mirrors `groups/status.ts`'s own `TERMINAL_BATCH_STATUSES` (a core-only export this package cannot import). */
 const TERMINAL: BatchStatusValue[] = ['success', 'failed', 'cancelled']
 function isTerminal(status: BatchStatusValue): boolean {
   return TERMINAL.includes(status)

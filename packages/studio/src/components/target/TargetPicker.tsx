@@ -36,7 +36,7 @@ const GRID_COLS: Record<number, string> = { 1: 'grid-cols-1', 2: 'grid-cols-2', 
  *
  * Three parts, always in this order: the mode switch (only when the action
  * allows more than one mode — plan §3.4's own per-action table), the
- * device/cluster editor for whichever mode is active, and the resolved
+ * device/group editor for whichever mode is active, and the resolved
  * count — ALWAYS visible for a multi-device mode, never revealed only at
  * submit (§3.2's own mitigation for the risk a context-filled default
  * creates: an operator acting on a set they never noticed). A single-device

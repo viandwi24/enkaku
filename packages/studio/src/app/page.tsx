@@ -24,6 +24,7 @@ import { DeviceCard } from '@/components/DeviceCard'
 import { DiscoveredTray } from '@/components/DiscoveredTray'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
 import { InstallBatchDialog } from '@/components/InstallBatchDialog'
+import { AdbCommandDialog } from '@/components/device-popup/AdbCommandDialog'
 import { ForgetDeviceDialog } from '@/components/ForgetDeviceDialog'
 import { DisconnectDeviceDialog } from '@/components/DisconnectDeviceDialog'
 import { BulkForgetDialog } from '@/components/BulkForgetDialog'
@@ -237,6 +238,12 @@ function DashboardView() {
   const gridContainerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deviceId: string } | null>(null)
   const [installBatchOpen, setInstallBatchOpen] = useState(false)
+  // "Run command…" (plan 93 §3.16, §4.8, F15, step 93.11; rewired by plan
+  // 207 §4.9 onto the actions API) — the same `AdbCommandDialog` the device
+  // popup uses, opened here with no single focused device: the pre-fill is
+  // exactly the current selection, and an operator who switches to `single`
+  // mode gets a read-only terminal (no live focus device on this page).
+  const [adbCommandOpen, setAdbCommandOpen] = useState(false)
   // Push/Pull file (plan 93 §3.11, §3.16, §4.8, F15, step 93.11) — one
   // dialog, two modes, beside the existing Install: `BulkTransferDialog`
   // posts a batch (`internal:push`/`internal:pull`) exactly like
@@ -1619,11 +1626,9 @@ function DashboardView() {
                   toolbar reads `selectedIds` regardless of which view
                   populated it, exactly as Wake/Sleep/Install/Forget
                   already do. */}
-              <Button size="sm" variant="outline" asChild>
-                <Link href={`/console?deviceIds=${selectedIds.map(encodeURIComponent).join(',')}`}>
-                  <Terminal className="size-3.5" aria-hidden />
-                  Run command…
-                </Link>
+              <Button size="sm" variant="outline" onClick={() => setAdbCommandOpen(true)}>
+                <Terminal className="size-3.5" aria-hidden />
+                Run command…
               </Button>
               <Button size="sm" variant="outline" onClick={() => setBulkTransferOpen('push')}>
                 <Upload className="size-3.5" aria-hidden />
@@ -1749,6 +1754,19 @@ function DashboardView() {
         devices={(devices ?? []).filter((d) => selectedIds.includes(d.id))}
         allDevices={devices ?? []}
         groups={deviceGroups}
+      />
+      {/* "Run command…" — no single focused device on this page (unlike the
+          device popup's own use of this dialog), so `deviceId` is just the
+          first selected device and `canUseLive` stays false: an operator who
+          switches to `single` mode gets a read-only terminal, honestly. */}
+      <AdbCommandDialog
+        deviceId={selectedIds[0] ?? ''}
+        devices={devices ?? []}
+        selectedIds={selectedIds}
+        groups={deviceGroups}
+        canUseLive={false}
+        open={adbCommandOpen}
+        onOpenChange={setAdbCommandOpen}
       />
       {/* Plan 114 §3.9, step 114.8 — same `devices`/`allDevices`/`groups`
           triple every other bulk dialog on this page takes: the selection is

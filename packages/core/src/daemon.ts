@@ -126,7 +126,7 @@ import { createScriptExecutor } from './jobs/executors/script'
 import { createWorkflowExecutor } from './jobs/executors/workflow'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, runMigrationsUpTo, type OpenedDb } from './db'
-import { materialiseMembership, DROP_CLUSTER_SELECTOR_COLUMNS_TAG } from './db/migrations/materialise-0014'
+import { materialiseMembership, DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG } from './db/migrations/materialise-0014'
 import { backfillScheduleScriptRefs } from './db/migrations/backfill-schedule-refs'
 import { backfillScheduleTargets } from './db/migrations/schedule-target-backfill'
 import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
@@ -448,12 +448,12 @@ let blobGc: BlobGc | null = null
       opened = openDb(join(cfg.dataDir, 'enkaku.db'))
       // The pre-0014 membership materialisation (plan 22.0 §3.4, §4.1) is a
       // one-shot TypeScript data step that has to run strictly between two
-      // generated migrations: after `devices.cluster_id` exists, before the
-      // pre-`0014` selector columns are dropped. `runMigrationsUpTo` opens
+      // generated migrations: after the pre-rename membership column exists,
+      // before the pre-`0014` selector columns are dropped. `runMigrationsUpTo` opens
       // that window; the trailing `runMigrations` applies the remainder,
-      // including plan 207's `0066_groups_rename` (idempotent either way —
+      // including plan 207's group-rename migration (idempotent either way —
       // see `materialise-0014.test.ts`).
-      runMigrationsUpTo(opened.db, DROP_CLUSTER_SELECTOR_COLUMNS_TAG)
+      runMigrationsUpTo(opened.db, DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG)
       materialiseMembership(opened.db, { dataDir: cfg.dataDir, log: log.child('materialise-0014') })
       // `opened.sqlite` is passed so the runner can realign a poisoned
       // `__drizzle_migrations.created_at` watermark before drizzle reads it
@@ -465,8 +465,8 @@ let blobGc: BlobGc | null = null
       // pre-existing row still holds a raw `scripts.id` where a reference
       // belongs. This one-shot step converts each to the EXACT version it
       // was already pinned to, never to `@latest` (acceptance #9). No
-      // "up to" window is needed here (unlike cluster materialisation):
-      // nothing later drops data this step needs to read.
+      // "up to" window is needed here (unlike the pre-0014 membership
+      // materialisation above): nothing later drops data this step needs to read.
       backfillScheduleScriptRefs(opened.db, { log: log.child('schedule-ref-backfill') })
       // Plan 68 §4.1 — the `target` migration: every schedule already reads
       // as `{kind: 'script'}` via the new column's own default, this pass is
@@ -1467,7 +1467,7 @@ let blobGc: BlobGc | null = null
       // already relies on (none of the four is assigned yet at the point
       // this closure is BUILT; only at the point it is CALLED, well after
       // `start()` finishes booting). Formerly `commandShellPortFor`, built
-      // for the deleted command console's runner (plan 93); kept, renamed,
+      // for the deleted fleet command surface's runner (plan 93); kept, renamed,
       // for the `adb` verb's own dispatch.
       const actionShellPortFor = (deviceId: string): ShellPort => {
         const remoteNode = remoteSessions?.nodeIdFor(deviceId) ?? null
@@ -2454,7 +2454,7 @@ let blobGc: BlobGc | null = null
 
       // The actions router (plan 207 §4.2, §4.8) — one endpoint per verb,
       // taking a target; replaces every per-device action route, every bulk
-      // twin, and the deleted command console entirely. Built from the SAME
+      // twin, and the deleted fleet command surface entirely. Built from the SAME
       // live accessors and forward-refs every other router in this function
       // already reads (`deviceRoutes` below gets the identical
       // `reconnector`/`sessions`/`cutover`/`labelling`/`lifecycle`/`battery`
@@ -3371,7 +3371,7 @@ let blobGc: BlobGc | null = null
       // `jobs` rows) — this is idempotent for every batch that lost nothing.
       // `jobStore`/`broadcast`/`log` wired (step 94.11) so the same sweep
       // also closes a paced batch left `queued`/`running` with zero live
-      // jobs after a crash — see `clusters/pacer.ts`'s own doc comment on
+      // jobs after a crash — see `groups/pacer.ts`'s own doc comment on
       // `replanAfterRestart` for why this is a real gap and not merely
       // belt-and-braces.
       replanAfterRestart({ db, pacer, jobStore, broadcast: (msg) => hub.broadcast(msg), log: log.child('pacer') })

@@ -359,10 +359,10 @@ import verifyEgressScript from './verify-egress'
  * plugin. So the component moved into `@enkaku/ui` (with Studio's status
  * badge, holder badges and unavailable-reason text injected through render
  * props, so Studio loses nothing), and this editor now uses the same picker
- * every other surface does: search, tag chips, cluster grouping, and
+ * every other surface does: search, tag chips, group grouping, and
  * multi-select — tick several phones, add them in one motion.
  *
- * `FleetDeviceRow` carries no status, tags or cluster. The picker's input is
+ * `FleetDeviceRow` carries no status, tags or group. The picker's input is
  * structural with those optional, so the parts it was not given simply do
  * not render — rather than this pack inventing `status: 'idle'` to satisfy a
  * type, which would have put a badge on screen that nobody had checked.

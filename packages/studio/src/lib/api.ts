@@ -183,7 +183,7 @@ export function deviceRefLabel(ref: DeviceRef | undefined, fallbackId: string): 
 /**
  * A phone adb has seen that nobody has admitted to the farm yet (plan 56
  * §3.3, §4.1). Deliberately not a `DeviceInfo` — it has no id, no status, no
- * cluster: there is no `devices` row behind it at all. Mirrors the WS
+ * group: there is no `devices` row behind it at all. Mirrors the WS
  * `device.discovered` payload plus the two timestamps only this REST
  * snapshot carries (`firstSeen` is what makes the tray a queue: longest
  * waiting first).

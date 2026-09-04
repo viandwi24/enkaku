@@ -64,7 +64,7 @@ const DEADLINE_ERROR_CODES = new Set(['E_ADB_TIMEOUT', 'E_NODE_TIMEOUT'])
  * only thing the old 4MB bought was a deeper queue of already-buffered H.264
  * sitting in front of every control reply on the SAME socket (F15).
  *
- * Exported (plan 93 §3.6, H2, step 93.4) so `shell.fanoutPreviewBytes`'s Zod
+ * Exported (plan 93 §3.6, H2, step 93.4) so the deleted fleet command surface's own preview-byte Zod
  * bound (`@enkaku/protocol`'s `settings.ts`) can be asserted against the
  * REAL number in a unit test, rather than a hand-copied duplicate that can
  * drift out of step with this one silently.
@@ -124,7 +124,7 @@ const KEYCODE_NAMES: Record<number, string> = Object.fromEntries(
 
 /**
  * `GET /api/adb/stats`'s `input` block (plan 91 §4.10, narrowed by plan 205
- * §4.8 to `lanes` only — the subordinate-grant and client-fanout
+ * §4.8 to `lanes` only — the subordinate-grant and per-client fan-out
  * observability fields this block used to carry had no producer once the
  * activity model replaced their source subsystems) — `daemon.ts` wires
  * `inputStats()` (below, on the returned object) into `createAdbStatsRoutes`

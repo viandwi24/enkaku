@@ -18,7 +18,7 @@ function isApiError(err: unknown): err is Error & ApiError {
 
 /**
  * Forget a device (plan 47 §3.2, §4.5): states plainly what is removed (the
- * row, its tags, its cluster membership) and what is kept (jobs, artifacts,
+ * row, its tags, its group membership) and what is kept (jobs, artifacts,
  * events — unless "also delete history" is ticked, which shows the exact
  * counts before its own confirm enables, per §3.4).
  *
@@ -125,7 +125,7 @@ export function ForgetDeviceDialog({
         <DialogHeader>
           <DialogTitle>Forget {name}?</DialogTitle>
           <DialogDescription>
-            Removes it from the fleet: the device row, its tags, and its cluster membership. Its jobs, artifacts, and
+            Removes it from the fleet: the device row, its tags, and its group membership. Its jobs, artifacts, and
             events are kept — they still show up wherever they already do, labelled as a deleted device.
           </DialogDescription>
         </DialogHeader>

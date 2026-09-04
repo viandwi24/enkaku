@@ -213,7 +213,7 @@ export function createNode(opts: NodeOptions): Node {
               // A device's live activities and its last-control tail (plan
               // 205 §4.10, replacing the old per-holder/secondary-operator
               // fields) are control-plane state, exactly like
-              // battery/quarantine/tags/cluster above — the node only
+              // battery/quarantine/tags/group above — the node only
               // reports device IDENTITY. The control plane's own device
               // registry (`tunnel/registry.ts`'s `syncDevices`) overwrites
               // the DB row's activity-independent columns from this

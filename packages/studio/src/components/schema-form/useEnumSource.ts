@@ -40,7 +40,7 @@ export async function fetchRegistry(): Promise<RegistryResponse | null> {
 }
 
 // A closed allowlist keyed in Studio (plan 95 §3.4): a `source` not listed
-// here — including the newer `devices`/`clusters`/`scripts` members of
+// here — including the newer `devices`/`groups`/`scripts` members of
 // `PARAM_SOURCES` (plan 95 §4.1), not yet wired to a registry endpoint — is
 // ignored, never fetched, and the plain enum is used instead.
 const KEY_MAP: Partial<Record<ParamSource, keyof RegistryResponse>> = {

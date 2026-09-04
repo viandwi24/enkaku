@@ -321,14 +321,14 @@ export type AuditAction =
   // response status and the body's size. Never the body, never the signature,
   // and never the secret.
   | 'plugin.webhook'
-  // The command console (plan 93 §3.4, §4.5, §5 step 93.3) — one row per fan-out
+  // The fleet command surface (plan 93 §3.4, §4.5, §5 step 93.3) — one row per fan-out
   // run, the same "create the run, audit it once" shape `createBatch`'s own
   // `job.run` row already has (`groups/dispatch.ts`). `meta` carries the
   // redacted command text, the resolved device count, and the skipped list —
   // never the raw command (the same log-hygiene pass §3.9's history already applies).
   | 'command.run'
-  // Saved commands (plan 93 §3.10, §4.4, step 93.6) — create/update/delete
-  // of a farm-scoped saved command. `meta` carries `{ name }` only — never
+  // Named commands (plan 93 §3.10, §4.4, step 93.6) — create/update/delete
+  // of a farm-scoped named command. `meta` carries `{ name }` only — never
   // the raw `cmd` text, the same log-hygiene reasoning `command.run` above
   // already applies.
   | 'command.saved.create'

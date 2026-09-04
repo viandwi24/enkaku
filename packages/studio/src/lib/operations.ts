@@ -28,8 +28,8 @@ import { ws } from './ws'
  * - **durable** — jobs, batches: already have a row and a list endpoint
  *   (`GET /api/jobs|batches`), reload-safe. This file adds no new state for
  *   them — only reads the endpoints that already exist, per 107.4's own
- *   instruction. (Command runs were a THIRD durable source here until plan
- *   207 deleted the console entirely — MVP 13 A.5/A.6a; the actions API's
+ *   instruction. (The fleet command surface's own runs were a THIRD durable source here until plan
+ *   207 deleted that surface entirely — MVP 13 A.5/A.6a; the actions API's
  *   own operations are ephemeral, like a transfer, and are not yet a fourth
  *   source in this store — plan 213 owns the reshape.)
  * - **ephemeral** — transfers (install/push/pull): `GET /api/transfers`
@@ -83,8 +83,8 @@ import { ws } from './ws'
  *
  * `job.status`/`batch.status` are already broadcast farm-wide (unscoped) —
  * `AppShell.tsx`'s own sidebar counts already rely on this — so this store
- * reacts to them directly with no extra subscription. (The command console's
- * own `command.*` events, scoped like transfers, are gone with the console
+ * reacts to them directly with no extra subscription. (The deleted fleet
+ * command surface's own `command.*` events, scoped like transfers, are gone with it
  * itself — plan 207.)
  */
 
@@ -129,7 +129,7 @@ export interface Operation {
   /**
    * True once this operation has reached a status it will never leave —
    * success/failed/cancelled/expired for a job or a batch, ok/failed/
-   * cancelled for a command run, `state: 'done'` for a transfer. Always
+   * cancelled for the deleted fleet command surface's own run shape, `state: 'done'` for a transfer. Always
    * `false` for `kind: 'preparation'`, which has no terminal state of its
    * own to reach (it simply stops appearing once `DeviceInfo.agent` is no
    * longer `'provisioning'`). Governs `withinGrace` below — the owner's own
@@ -465,8 +465,8 @@ export function visibleTransfers(raw: RawOperationsData): TransferRecord[] {
  * `lib/format.ts`'s `duration`/`relativeTime` already use, so every existing
  * call site keeps working unchanged while a test can inject a fixed clock.
  *
- * Jobs and command runs need no status filter at all beyond "is this row
- * even a candidate" (a standalone job / any command run): every status
+ * Jobs need no status filter at all beyond "is this row
+ * even a candidate" (a standalone job): every status
  * either kind's own protocol enum defines is EITHER progressing or terminal
  * — `withinGrace` below is what actually decides whether a terminal one is
  * still shown. Batches are the one kind with a THIRD bucket, `queued`,

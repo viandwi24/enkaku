@@ -80,13 +80,13 @@ const NAV: NavItem[] = [
   },
   { href: '/workspace', label: 'Workspace', icon: FolderTree, countKey: null },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, countKey: 'activeJobs' as const },
-  // The fleet command console (plan 93 §3.16, §4.8, step 93.7) is gone
+  // The fleet command surface (plan 93 §3.16, §4.8, step 93.7) is gone
   // entirely (plan 207 — MVP 13 A.5, A.6a): the `adb` verb through
   // `POST /api/actions/adb` replaces it, reached from a device's own Terminal
   // tab (`AdbCommandDialog`), which stays put. No nav item for it any more.
   { href: '/groups', label: 'Groups', icon: Layers, countKey: null },
   // No `/topology` entry — that page is gone too (plan 207 §4.7): it was a
-  // 22-line compatibility redirect to `/?view=wall&group=cluster`, and that
+  // 22-line compatibility redirect to `/?view=wall&group=group`, and that
   // view already has its own front door in the grid's `GroupBy` control.
   { href: '/batches', label: 'Batches', icon: Boxes, countKey: null },
   { href: '/schedules', label: 'Schedules', icon: CalendarClock, countKey: null },

@@ -29,7 +29,7 @@ export function OutcomeSummary({ counts, label }: { counts: OutcomeCounts; label
     <div className="space-y-1.5" data-testid="outcome-summary">
       {/*
        * `counts.total === 0` means there is nothing to show progress OF —
-       * every real caller of this component (a batch, a command run) has at
+       * every real caller of this component (a batch) has at
        * least one member when it is genuinely in flight, so reaching zero
        * here is either a not-yet-hydrated fixture or the exact core defect
        * `docs/plans/96-m61-hotfixes.md` §96.30 fixed (every member deleted

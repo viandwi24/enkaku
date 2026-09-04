@@ -145,7 +145,7 @@ export function Wall({
   /** Admin-only (`device.quarantine`); forwarded so the tile can disable rather than hide. */
   canReleaseQuarantine?: boolean
   /**
-   * Optional sectioning (plan 47 §3.6, §4.5) — None | Cluster | Status | Tag,
+   * Optional sectioning (plan 47 §3.6, §4.5) — None | Group | Status | Tag,
    * computed once by the parent and shared with the table view so the two
    * never disagree. The live-tile cap below is still computed over the
    * WHOLE flat `devices` list regardless of grouping — sectioning is a

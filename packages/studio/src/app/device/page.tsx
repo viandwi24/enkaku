@@ -746,8 +746,8 @@ function DeviceDetail() {
             <h3 className="text-[14px] font-semibold tracking-tight">Tags</h3>
             <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
               Used to filter and select this device elsewhere — the run dialog, the devices list, and ad-hoc batch
-              targeting. The cluster shown above is separate: a device belongs to at most one cluster, managed from
-              the Clusters page.
+              targeting. The group shown above is separate: a device belongs to at most one group, managed from
+              the Groups page.
             </p>
             <div className="mt-3">
               <TagEditor deviceId={device.id} tags={device.tags} />

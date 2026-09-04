@@ -404,7 +404,7 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   // One endpoint per verb, taking a target (plan 207 §4.2, §4.8) — replaces
   // every per-device action route and its bulk twin, plus the deleted
-  // command console's own REST surface.
+  // fleet command surface's own REST surface.
   app.route('/api/actions', deps.actionRoutes)
 
   app.route('/api/operations', deps.operationRoutes)

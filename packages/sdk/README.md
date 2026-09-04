@@ -637,7 +637,7 @@ Your scripts write what the screen reads: `ctx.kv.device.set(...)` from a job, r
 
 ### Bindings — the only way a value reaches an action
 
-An action names a value it needs with a closed, non-Turing binding: a literal (`{ $literal: 'x' }`), `{ $row: 'dot.path' }`, `{ $form: 'dot.path' }`, `{ $device: 'label' }` (one of `id`, `stableId`, `label`, `status`, `clusterId`), `{ $entry: 'updatedAt' }` (one of `key`, `version`, `updatedAt`), or an object or array whose leaves are bindings. No operators, no interpolation, no calls, no regular expressions. A bare `'username'` is **not** a binding — a plain string is a literal value, so "read from the row" and "written by the author" can never be confused.
+An action names a value it needs with a closed, non-Turing binding: a literal (`{ $literal: 'x' }`), `{ $row: 'dot.path' }`, `{ $form: 'dot.path' }`, `{ $device: 'label' }` (one of `id`, `stableId`, `label`, `status`, `groupId`), `{ $entry: 'updatedAt' }` (one of `key`, `version`, `updatedAt`), or an object or array whose leaves are bindings. No operators, no interpolation, no calls, no regular expressions. A bare `'username'` is **not** a binding — a plain string is a literal value, so "read from the row" and "written by the author" can never be confused.
 
 `confirm` is a plain sentence and never a template. Studio names the target itself, from the view's own `rowKey`.
 

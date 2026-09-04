@@ -6,24 +6,24 @@ import { join } from 'node:path'
 import { openDb, runMigrations, runMigrationsUpTo, type Db } from '../index'
 import { migrationMarkers } from '../schema'
 import { createLogger } from '../../util/logger'
-import { DROP_CLUSTER_SELECTOR_COLUMNS_TAG, materialiseMembership, type Materialise0014Report } from './materialise-0014'
+import { DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG, materialiseMembership, type Materialise0014Report } from './materialise-0014'
 
 /**
  * The exact window this step must run in (plan 22.0 §4.1): everything before
- * `DROP_CLUSTER_SELECTOR_COLUMNS_TAG` applied (so `devices.cluster_id`
+ * `DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG` applied (so `devices.cluster_id`
  * exists), that migration itself still pending (so the pre-`0014` selector
  * columns are still readable).
  */
 function setUp(): Db {
   const opened = openDb(':memory:')
-  runMigrationsUpTo(opened.db, DROP_CLUSTER_SELECTOR_COLUMNS_TAG)
+  runMigrationsUpTo(opened.db, DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG)
   return opened.db
 }
 
 /**
  * Raw SQL, not `db.insert(devices)`/`db.select(devices...)` (plan 43 §5,
  * carried forward by plan 207): the frozen table this test runs against
- * predates every migration after `DROP_CLUSTER_SELECTOR_COLUMNS_TAG` —
+ * predates every migration after `DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG` —
  * including the plan 207 `0066_groups_rename` that renames
  * `devices.cluster_id` to `devices.group_id` — while the live `devices`
  * Drizzle object (`../schema`) always reflects the FINAL, post-0066 column
@@ -146,7 +146,7 @@ describe('materialiseMembership (plan 22.0 §3.4, §7)', () => {
 describe('runMigrationsUpTo + runMigrations (plan 22.0 §4.1)', () => {
   test('applying the rest afterward is exactly the remainder — nothing re-applied, nothing skipped', () => {
     const opened = openDb(':memory:')
-    runMigrationsUpTo(opened.db, DROP_CLUSTER_SELECTOR_COLUMNS_TAG)
+    runMigrationsUpTo(opened.db, DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG)
     // The pre-0014 selector column still exists at this point.
     expect(() => opened.db.run(sql`SELECT tags FROM clusters LIMIT 1`)).not.toThrow()
 

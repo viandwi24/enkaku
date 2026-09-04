@@ -19,7 +19,7 @@ import { devices, migrationMarkers } from '../schema'
  * step in the boot sequence — see the raw-SQL note on `materialiseMembership`
  * below for why every identifier in this file keeps its pre-`0014` spelling.
  */
-export const DROP_CLUSTER_SELECTOR_COLUMNS_TAG = '0014_long_human_fly'
+export const DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG = '0014_long_human_fly'
 
 const MARKER_ID = 'cluster-materialise-22.0'
 
@@ -79,7 +79,7 @@ function resolveLegacyMembers(db: Db, tags: string[], deviceIds: string[]): stri
  * start) is a no-op (acceptance #8).
  *
  * Must run in the window opened by `runMigrationsUpTo(db,
- * DROP_CLUSTER_SELECTOR_COLUMNS_TAG)`: `devices.cluster_id` must already
+ * DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG)`: `devices.cluster_id` must already
  * exist, and `clusters.tags` / `clusters.device_ids` must not have been
  * dropped yet. Both are read AND WRITTEN with raw SQL, addressing the table
  * and column exactly as they were named at this point in the migration

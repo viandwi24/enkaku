@@ -25,7 +25,7 @@ import {
   describeApiError,
 } from '@enkaku/ui'
 
-// No `cluster` mode — matching plan 104 §3.4's own table row for
+// No `group` mode — matching plan 104 §3.4's own table row for
 // Reconnect/Disconnect ("single · devices"), the closest existing analogue:
 // a connection action targets phones, not a saved selector.
 const TARGET_ALLOW: Target[] = ['single', 'devices']
@@ -79,7 +79,7 @@ function isUsb(d: DeviceInfo): boolean {
  *    already happens per device, on that device's own tile/badge and its own
  *    popup, the moment this dialog closes. Duplicating a live N-way poll of
  *    `device.cutover` inside this dialog (or registering it with plan 107's
- *    operation tray, which is built for jobs/batches/command runs/transfers
+ *    operation tray, which is built for jobs/batches/transfers
  *    that already have a durable server-side record — an in-memory,
  *    non-persisted `CutoverManager` session is not that shape) would be a
  *    second, parallel progress surface disagreeing with the first the moment

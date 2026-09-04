@@ -163,12 +163,12 @@ export function createJobTrigger(deps: JobTriggerDeps): JobTrigger {
           )
         }
 
-        const ownFanOut = tx.select({ n: count() }).from(jobs).where(eq(jobs.triggeredByJobId, from.id)).get()?.n ?? 0
-        if (ownFanOut >= limits.maxPerJob) {
-          log?.warn('trigger refused: fan-out', { fromJobId: from.id, ownFanOut, maxPerJob: limits.maxPerJob })
+        const triggeredByThisJob = tx.select({ n: count() }).from(jobs).where(eq(jobs.triggeredByJobId, from.id)).get()?.n ?? 0
+        if (triggeredByThisJob >= limits.maxPerJob) {
+          log?.warn('trigger refused: fan-out', { fromJobId: from.id, triggeredByThisJob, maxPerJob: limits.maxPerJob })
           throw new EnkakuError(
             'E_TRIGGER_FAN_OUT',
-            `trigger refused: this job has already triggered ${ownFanOut} jobs, at the farm's jobs.trigger.maxPerJob (${limits.maxPerJob})`,
+            `trigger refused: this job has already triggered ${triggeredByThisJob} jobs, at the farm's jobs.trigger.maxPerJob (${limits.maxPerJob})`,
           )
         }
 

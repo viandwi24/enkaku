@@ -7,8 +7,9 @@ import type { GroupInfo } from '@enkaku/protocol'
  * Plan 104 (M69) §3.1, §4 — the target model `RunScriptDialog` already had,
  * pulled out so every action dialog can share it instead of re-inventing a
  * `deviceIds`/`groupId` pair per file (G1/G2). Three shapes, unchanged from
- * `RunScriptDialog`'s own `Target`: one device, a saved group (renamed from
- * `cluster` by plan 207 — MVP 15 §0.1 item 3), or an ad-hoc device list.
+ * `RunScriptDialog`'s own `Target`: one device, a saved group (this mode's
+ * own former name, renamed by plan 207 — MVP 15 §0.1 item 3), or an ad-hoc
+ * device list.
  */
 export type Target = 'single' | 'group' | 'devices'
 

@@ -19,7 +19,7 @@ function isApiError(err: unknown): err is Error & ApiError {
  * The copy states both halves plainly (§3.8's own confirm text, near-
  * verbatim) because "Disconnect" and "Remove" sound alike and mean very
  * different things: Remove is Forget/Block, which un-enrols the device.
- * This is not that — its record, tags, cluster, settings, job history and
+ * This is not that — its record, tags, group, settings, job history and
  * artifacts are untouched.
  *
  * A running-job refusal (`job_running`, §4.6) shows the server's own
@@ -104,7 +104,7 @@ export function DisconnectDeviceDialog({
             <div className="space-y-2 text-[13px] leading-relaxed text-fg-muted">
               <p>Enkaku drops its adb connection. The phone keeps running.</p>
               <p>
-                <strong className="text-fg">Unchanged:</strong> its record, tags, cluster, settings, job history and
+                <strong className="text-fg">Unchanged:</strong> its record, tags, group, settings, job history and
                 artifacts. This is not Remove.
               </p>
               <p>

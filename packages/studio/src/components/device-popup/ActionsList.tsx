@@ -184,8 +184,8 @@ function Row({
  * longer has a Terminal tab at all (see that file's own doc comment); this
  * row now opens `AdbCommandDialog` (`./AdbCommandDialog.tsx`), which carries
  * the SAME `TerminalPane` for a single device (the interactive session, not
- * dropped — just relocated) and the fleet console's own `RunReport` for a
- * cluster or a multi-device selection.
+ * dropped — just relocated) and the deleted fleet command surface's own `RunReport` for a
+ * group or a multi-device selection.
  *
  * **This list is now also what the right-click context menu renders (plan
  * 103 §5 step 103.10)**, not a copy of it — `components/wall/
@@ -264,7 +264,7 @@ export function ActionsList({
   device: DeviceDetailInfo
   /**
    * Plan 104 (M69) §3.2 — the Wall's full (unfiltered) device list. Every
-   * action dialog opened from this list that offers `devices`/`cluster`
+   * action dialog opened from this list that offers `devices`/`group`
    * modes needs the WHOLE pool to pick from, not just this one focused
    * device.
    */
@@ -338,8 +338,8 @@ export function ActionsList({
     }
   }, [])
 
-  // Plan 104 (M69) §3.4 — Install apk's own `TargetPicker` needs a cluster
-  // list to offer `cluster` mode at all, the same list `RunScriptDialog`
+  // Plan 104 (M69) §3.4 — Install apk's own `TargetPicker` needs a group
+  // list to offer `group` mode at all, the same list `RunScriptDialog`
   // already fetches for itself.
   useEffect(() => {
     let cancelled = false
@@ -701,7 +701,7 @@ export function ActionsList({
 
       {/* Plan 104 (M69) §3.2 — no longer `lockedDevice`: the popup's own
           focus device is still the default (`initialDevice`), but the
-          operator can switch to Cluster or Multiple devices, and a live
+          operator can switch to Group or Multiple devices, and a live
           Wall selection behind this popup arrives pre-filled
           (`initialSelectedIds`). `devices` is the Wall's WHOLE pool, not
           just this one device, so the picker has something to pick from

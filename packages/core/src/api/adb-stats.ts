@@ -44,7 +44,7 @@ const ZERO_ADB_HEALTH: AdbHealthStats = {
   symptoms: [],
   restartAdvised: false,
 }
-/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. Narrowed to `lanes` only by plan 205 (MVP 04) — the subordinate-grant and client-fanout fields this used to carry had no producer once the activity model replaced their source subsystems. */
+/** Same zero-fill contract (plan 91 §4.10, §5 step 91.10) — reported before the WS router (`input`, `ws-handlers.ts`'s `inputStats()`) exists. Narrowed to `lanes` only by plan 205 (MVP 04) — the subordinate-grant and per-client fan-out fields this used to carry had no producer once the activity model replaced their source subsystems. */
 const ZERO_INPUT: InputStats = {
   lanes: {
     pointer: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },

@@ -183,7 +183,7 @@ export function ViewersPopover({
 }
 
 /**
- * Cluster, stable id, serial (both copyable), api level, screen resolution,
+ * Group, stable id, serial (both copyable), api level, screen resolution,
  * density, guest agent version, and the active engines with the live
  * fallback warning — everything an operator looks up rather than watches
  * (§3.3 above). Extracted (plan 103 §5, closes step 103.11's audit row 21)
