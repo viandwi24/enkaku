@@ -179,7 +179,7 @@ From `docs/mvp/16` §3. A plan may start when every plan in its "Depends on" col
 | 213 | 3 | Studio shell and status bar | MVP 15 §0, §3 step 2 | 204, 205 |
 | 214 | 3 | Devices: table, Screens, groups, discovery, selection, bulk pill | MVP 15 §0, 04, 07, 11 | 213, 207, 206 |
 | 215 | 3 | Device Control: the window and the input model | MVP 08, 15 §0 | 214, 209, 208 |
-| 216 | 3 | Action dialogs and the DevicePicker | MVP 07 §2 | 214, 207 |
+| 216 | 3 | Action dialogs and the DevicePicker | MVP 07 §2 | 214, 207, **215** |
 | 217 | 3 | Scripts, Workflows, Schedules pages | MVP 03, 15 §1 | 213, 210, 211 |
 | 218 | 3 | Jobs: list, detail, timeline, artifacts, run picker | MVP 14, 15 §0 | 213, 211 |
 | 219 | 3 | Plugins and Settings pages | MVP 12, 15 §0 | 213, 212 |
