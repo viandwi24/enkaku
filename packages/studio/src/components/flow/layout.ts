@@ -1,4 +1,5 @@
-import type { DerivedGraph } from './derive-graph'
+import type { WorkflowDoc, WorkflowPoint } from '@enkaku/protocol'
+import { deriveGraph, type DerivedGraph } from './derive-graph'
 
 /**
  * Plan 102 (M67) §3.2, §4.1, step 102.1 — layout computed ON OPEN from
@@ -97,4 +98,19 @@ export function computeLayout(graph: DerivedGraph): Layout {
   }
 
   return { nodes: idOrder.map((id) => positions.get(id)!) }
+}
+
+/**
+ * Plan 305 §4.5 (P12) — Auto-arrange: the position source for the toolbar
+ * button, now that positions are STORED (plan 300 D2) rather than computed
+ * on every open. Runs the same rank-and-row algorithm above over the
+ * document's current edges and returns a full `{id → WorkflowPoint}` map,
+ * which the caller folds into ONE `move-nodes` `DocEdit` — so Auto-arrange
+ * is always a single undo step (G5), never one edit per node.
+ */
+export function autoArrangePositions(doc: WorkflowDoc): Record<string, WorkflowPoint> {
+  const layout = computeLayout(deriveGraph(doc))
+  const positions: Record<string, WorkflowPoint> = {}
+  for (const n of layout.nodes) positions[n.id] = { x: n.x, y: n.y }
+  return positions
 }
