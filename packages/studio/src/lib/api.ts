@@ -608,7 +608,7 @@ const WorkflowFindingSchema = z.object({
 })
 const WorkflowFindingsResponseSchema = z.array(WorkflowFindingSchema)
 
-/** Thrown by `publishWorkflow` on a 400/409 — `findings` is populated only for `E_WORKFLOW_INVALID`/the `checkWorkflow` gate, so a caller can render the SAME inline finding list `validateWorkflow` produces instead of a bare toast. */
+/** Thrown by `saveWorkflow` on a 400/409 — `findings` is populated only for `E_WORKFLOW_INVALID`/the `checkWorkflow` gate, so a caller can render the SAME inline finding list `validateWorkflow` produces instead of a bare toast. */
 export class WorkflowPublishError extends Error {
   readonly code: string
   readonly findings: WorkflowFinding[]
@@ -637,10 +637,37 @@ export async function validateWorkflow(doc: WorkflowDoc | Record<string, unknown
   return parsed.data as WorkflowFinding[]
 }
 
-/** `POST /api/workflows` (plan 99 §4.5) — publishes a new `(name, version)` `scripts` row with `kind: 'workflow'`. Throws `WorkflowPublishError` on `E_WORKFLOW_INVALID`/`E_PARAMS_SCHEMA_INVALID` (carrying `findings` when the server sent them) or the plain `script_version_exists` conflict. */
-export async function publishWorkflow(doc: WorkflowDoc | Record<string, unknown>): Promise<{ id: string; name: string; version: string }> {
-  const res = await fetch(`${coreBase()}/api/workflows`, {
-    method: 'POST',
+export interface WorkflowInfo {
+  id: string
+  name: string
+  doc: WorkflowDoc
+  createdBy: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** `GET /api/workflows` (plan 210 §4.3) — every workflow, sorted by name; small enough to carry the documents. */
+export async function listWorkflows(): Promise<WorkflowInfo[]> {
+  const res = await fetch(`${coreBase()}/api/workflows`)
+  if (!res.ok) throw new Error(`GET /api/workflows → ${res.status}`)
+  const body = (await res.json()) as { items: WorkflowInfo[] }
+  return body.items
+}
+
+/** `GET /api/workflows/:name` (plan 210 §4.3). */
+export async function fetchWorkflow(name: string): Promise<WorkflowInfo> {
+  const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}`)
+  if (!res.ok) throw new Error(`GET /api/workflows/${name} → ${res.status}`)
+  const body = (await res.json()) as { workflow: WorkflowInfo }
+  return body.workflow
+}
+
+/** `POST` (create) or `PUT` (update, plan 210 §4.3) `/api/workflows`. Throws `WorkflowPublishError` on `E_WORKFLOW_INVALID`/`E_PARAMS_SCHEMA_INVALID` (carrying `findings` when the server sent them) or the plain `workflow_name_exists` conflict. */
+export async function saveWorkflow(doc: WorkflowDoc | Record<string, unknown>, mode: 'create' | 'update'): Promise<WorkflowInfo> {
+  const name = (doc as { name?: unknown }).name
+  const url = mode === 'create' ? `${coreBase()}/api/workflows` : `${coreBase()}/api/workflows/${encodeURIComponent(String(name))}`
+  const res = await fetch(url, {
+    method: mode === 'create' ? 'POST' : 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ doc }),
   })
@@ -649,27 +676,18 @@ export async function publishWorkflow(doc: WorkflowDoc | Record<string, unknown>
     const err = (body as { error?: { code?: string; message?: string; findings?: unknown } } | null)?.error
     const findingsParsed = WorkflowFindingsResponseSchema.safeParse(err?.findings ?? [])
     throw new WorkflowPublishError(
-      err?.message ?? `POST /api/workflows → ${res.status}`,
+      err?.message ?? `${mode === 'create' ? 'POST' : 'PUT'} /api/workflows → ${res.status}`,
       err?.code ?? 'unknown',
       findingsParsed.success ? (findingsParsed.data as WorkflowFinding[]) : [],
     )
   }
-  return (body as { script: { id: string; name: string; version: string } }).script
+  return (body as { workflow: WorkflowInfo }).workflow
 }
 
-export interface WorkflowVersionOption {
-  id: string
-  version: string
-  enabled: boolean
-  createdAt: number | null
-}
-
-/** `GET /api/workflows/:name/versions` (plan 99 §4.9) — the editor's own "start from version" picker; a thin alias over the same query `GET /api/scripts/:name/versions` runs, kept as its own endpoint since a workflow name and a script name never legitimately collide. */
-export async function fetchWorkflowVersions(name: string): Promise<WorkflowVersionOption[]> {
-  const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}/versions`)
-  if (!res.ok) throw new Error(`GET /api/workflows/${name}/versions → ${res.status}`)
-  const body = (await res.json()) as { items: WorkflowVersionOption[] }
-  return body.items
+/** `DELETE /api/workflows/:name` (plan 210 §4.3). */
+export async function deleteWorkflow(name: string): Promise<void> {
+  const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`DELETE /api/workflows/${name} → ${res.status}`)
 }
 
 // ---- Workflow duration estimate (plan 99 §3.11, §4.11, step 99.10) ----
