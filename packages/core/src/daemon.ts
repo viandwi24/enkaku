@@ -50,6 +50,7 @@ import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
 import { computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling'
 import { createAdbMetricsStore } from './device/adb-metrics'
 import { createHostAdb, type HostAdb } from './device/host-adb'
+import { createUsbRootCache } from './device/usb-root-cache'
 import { createDeviceHealth, type DeviceHealth } from './device/health'
 import { createAdbServerHealth, type AdbServerHealthMonitor } from './device/adb-health'
 import { createAgentProvisioner, createAgentProvisionerRoutes, type AgentProvisioner } from './device/agent-provisioner'
@@ -768,6 +769,7 @@ let blobGc: BlobGc | null = null
           return adb.binaryPath
         },
         settings: () => settingsStore.get().adb,
+        usbRootOf: createUsbRootCache({ listDevices: () => (adb ? adb.listDevices() : Promise.resolve([])) }).rootOf,
         onLog: (level, msg) => log.child('host-adb')[level](msg),
       })
       hostAdb = hostAdbHandle
