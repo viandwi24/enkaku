@@ -106,12 +106,22 @@ function SettingsScreen() {
   return (
     <>
       <PageHeader title="Settings" />
-      <div className="grid grid-cols-[236px_1fr] gap-0 border-t border-line">
+      {/*
+        `PagePanel` is `overflow-hidden`, so a page that does not carry its own
+        scroller is simply cut off at the panel's edge — Settings sections
+        longer than the window had no way to reach their own Save button
+        (owner, 2026-09-04). The scroller lives here rather than in the panel
+        because screens like Devices and Jobs manage several independent
+        scroll regions of their own and must keep doing so.
+      */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="grid min-h-full grid-cols-[236px_1fr] gap-0 border-t border-line">
         <div className="border-r border-line px-2.5 py-3 pb-4">
           <SectionNav navOnly sections={settingsSections} active={tab} onChange={(id) => router.push(id === 'general' ? '/settings' : `/settings?tab=${id}`)} />
         </div>
-        <div className="max-w-[720px] px-[22px] pt-[18px] pb-7">
-          {settingsSections.find((s) => s.id === tab)?.render() ?? settingsSections[0]?.render()}
+          <div className="max-w-[720px] px-[22px] pt-[18px] pb-7">
+            {settingsSections.find((s) => s.id === tab)?.render() ?? settingsSections[0]?.render()}
+          </div>
         </div>
       </div>
     </>

@@ -110,6 +110,19 @@ export function useDeviceSelection(opts: {
   }
 
   function onDocMouseUp() {
+    /**
+     * A click on empty space clears the selection, the way it does on a
+     * desktop.
+     *
+     * The marquee only writes a selection once the pointer has moved past its
+     * threshold, so a bare click started a drag that never started and left
+     * everything selected — the only way out was Escape, which an operator
+     * mid-marquee does not think to reach for (owner, 2026-09-04). A modified
+     * click is left alone: shift/cmd on empty space is the start of an
+     * additive gesture, not a request to drop what is already held.
+     */
+    const drag = dragRef.current
+    if (drag && !drag.started && !drag.additive) setSelected(new Set())
     endDrag()
   }
 

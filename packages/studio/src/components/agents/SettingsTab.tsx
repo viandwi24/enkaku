@@ -104,7 +104,7 @@ export function SettingsTab() {
   ]
 
   return (
-    <div className="grid grid-cols-[236px_1fr] gap-0 border-t border-line">
+    <div className="grid min-h-full grid-cols-[236px_1fr] gap-0 border-t border-line">
       <div className="border-r border-line px-2.5 py-3 pb-4">
         <SectionNav navOnly sections={sections} active={tab} onChange={setTab} />
       </div>

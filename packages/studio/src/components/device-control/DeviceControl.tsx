@@ -139,7 +139,25 @@ export function DeviceControl({
     document.addEventListener('mouseup', onUp)
   }
 
-  const ratio = cast.stats.width > 0 ? cast.stats.width / cast.stats.height : DEFAULT_RATIO
+  /**
+   * The live stream's ratio once frames arrive; the device's own screen until
+   * they do.
+   *
+   * This used to fall straight back to `DEFAULT_RATIO` (9:19.5), so a window
+   * opened at the wrong width and visibly jumped a second later when the
+   * first frame landed — the owner saw the cast "start small then suddenly
+   * grow" (2026-09-04). Plan 215 §3.2 D3 is right that `screenW/screenH` must
+   * not drive the LIVE ratio, because it goes stale on rotation: the moment a
+   * frame exists it wins here, and rotation still resizes the window in the
+   * same render as the picture. But as the opening guess it is the device's
+   * actual screen rather than a guess about phones in general.
+   */
+  const ratio =
+    cast.stats.width > 0
+      ? cast.stats.width / cast.stats.height
+      : device?.screenW && device?.screenH
+        ? device.screenW / device.screenH
+        : DEFAULT_RATIO
   const width = windowWidthPx(ratio, height)
   const nodeOwned = device?.nodeId !== null && device?.nodeId !== undefined
 

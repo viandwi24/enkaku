@@ -79,7 +79,16 @@ export function Timeline({ jobId, runId, runStatus }: { jobId: string; runId: st
   }
 
   return (
-    <div className="flex flex-col gap-[10px] px-[14px] pt-3 pb-4">
+    /*
+       `min-w-[720px]` inside an `overflow-x-auto` wrapper: the lanes place
+       their bars by percentage of the container, so a narrow panel squeezed
+       a twenty-second run into a few hundred pixels and the transport row
+       simply ran off the right edge with no way to reach it (owner,
+       2026-09-04). Below the floor the whole timeline scrolls sideways, the
+       way a video editor's does; above it, nothing changes.
+    */
+    <div className="overflow-x-auto">
+      <div className="flex min-w-[720px] flex-col gap-[10px] px-[14px] pt-3 pb-4">
       {truncated && (
         <p className="rounded-inner border border-line-2 bg-warn-soft px-3 py-2 text-meta text-warn">
           This timeline is incomplete. Only the first {events.length.toLocaleString()} events were loaded; the run recorded more
@@ -124,6 +133,7 @@ export function Timeline({ jobId, runId, runStatus }: { jobId: string; runId: st
         frameEvent={frameEventAt(actions, selected)}
         previousFrameEvent={previousFrameEventAt(actions, selected)}
       />
+      </div>
     </div>
   )
 }
