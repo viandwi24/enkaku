@@ -97,6 +97,7 @@ function setUp() {
     screenshot: () => unused('screenshot'),
     dataDir: '/tmp/unused',
     networks: () => [],
+    listDevices: () => [],
     infoWithTags: () => ({ ownerId: null }),
   }
   return { db, deps, activities }
@@ -201,5 +202,44 @@ describe('the per-device gate is independent per device in one request', () => {
     const byId = new Map(response.results.map((r) => [r.deviceId, r]))
     expect(byId.get('d-online')?.status).toBe('warned')
     expect(byId.get('d-offline')?.status).toBe('skipped') // offline, and `adb`'s offline policy is 'skip'
+  })
+})
+
+/**
+ * `set-group` tells every connected client what moved.
+ *
+ * It used to write the database and broadcast nothing, so a browser kept the
+ * old group on the row and the old number on the group tab until a hard
+ * refresh — and so did every OTHER operator watching the same wall (owner,
+ * 2026-09-04). A wrong answer here is silent by construction: the action
+ * still reports `done`, and only a second pair of eyes on a second screen
+ * would ever notice.
+ */
+describe('set-group broadcasts device.updated (owner report, 2026-09-04)', () => {
+  test('one device.updated per moved device, carrying the full row, and only ONE listing for the whole move', async () => {
+    const { deps } = setUp()
+    const sent: Array<{ type: string; payload: { id: string } }> = []
+    let listings = 0
+    const spied: ActionsDeps = {
+      ...deps,
+      broadcast: (m: unknown) => sent.push(m as { type: string; payload: { id: string } }),
+      listDevices: () => {
+        listings += 1
+        return [
+          { id: 'd-online', group: { id: 'g1', name: 'ig' } },
+          { id: 'd-offline', group: { id: 'g1', name: 'ig' } },
+        ] as never
+      },
+    }
+
+    await runAction(spied, { verb: 'set-group', target: { deviceIds: ['d-online', 'd-offline'] }, groupId: null } as never, {
+      id: 'u1',
+      role: 'admin',
+    })
+
+    expect(sent.filter((m) => m.type === 'device.updated').map((m) => m.payload.id)).toEqual(['d-online', 'd-offline'])
+    // An N+1 here would be one full farm listing per device — the reason the
+    // snapshot is taken once, outside the loop.
+    expect(listings).toBe(1)
   })
 })

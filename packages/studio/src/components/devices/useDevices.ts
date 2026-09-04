@@ -51,6 +51,13 @@ export function useDevices(): DevicesState {
           setDevices((prev) => [...(prev ?? []).filter((d) => d.id !== msg.payload.id), msg.payload])
           setDiscovered((prev) => prev.filter((d) => d.stableId !== msg.payload.stableId))
           break
+        case 'device.updated':
+          // In place, by id — NOT the filter-and-append `device.added` uses,
+          // which would jump a moved device to the end of the wall. The whole
+          // row is replaced, so anything the server changed (group today,
+          // label or tags tomorrow) lands without a new message type.
+          setDevices((prev) => (prev ?? []).map((d) => (d.id === msg.payload.id ? msg.payload : d)))
+          break
         case 'device.removed':
           setDevices((prev) => (prev ?? []).filter((d) => d.id !== msg.payload.id))
           break

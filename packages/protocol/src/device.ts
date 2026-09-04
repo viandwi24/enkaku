@@ -323,6 +323,23 @@ export const DeviceAddedMessage = z.object({
 })
 export type DeviceAdded = z.infer<typeof DeviceAddedMessage>
 
+/**
+ * A device row changed in a way a client cannot derive from the narrower
+ * broadcasts (`device.status`, `device.battery`, `device.metrics`).
+ *
+ * Added for `set-group`, which wrote the database and told nobody: the tab
+ * counts and the row's own group stayed stale in every open browser until a
+ * hard refresh (owner, 2026-09-04). Carries the whole `DeviceInfo` rather
+ * than a `{ deviceId, groupId }` pair so the next field that moves needs no
+ * third message — a client replaces the row IN PLACE, which is what makes
+ * this different from `device.added` (that one appends).
+ */
+export const DeviceUpdatedMessage = z.object({
+  type: z.literal('device.updated'),
+  payload: DeviceInfoSchema,
+})
+export type DeviceUpdated = z.infer<typeof DeviceUpdatedMessage>
+
 export const DeviceRemovedMessage = z.object({
   type: z.literal('device.removed'),
   payload: z.object({ id: z.string(), stableId: z.string() }),

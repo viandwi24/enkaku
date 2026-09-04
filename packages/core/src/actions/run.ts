@@ -3,6 +3,7 @@ import type {
   ActionResponse,
   ActionResult,
   ActionVerb,
+  DeviceInfo,
   DeviceSettingsPatch,
   ShellMode,
 } from '@enkaku/protocol'
@@ -95,6 +96,15 @@ export interface ActionsDeps {
   dataDir: string
   networks: () => FarmNetwork[]
   infoWithTags: (deviceId: string) => { ownerId: string | null }
+  /**
+   * The whole farm as `DeviceInfo` rows, read ONCE per call.
+   *
+   * `set-group` needs to broadcast what changed, and a per-device read would
+   * be an N+1 over tags, groups, readiness and activities for a verb whose
+   * whole point is moving many devices at once. Wired in `daemon.ts` to the
+   * same `listDevicesWithTags` accessor every other list route uses.
+   */
+  listDevices: () => DeviceInfo[]
   now?: () => number
 }
 
@@ -276,6 +286,14 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
   if (request.verb === 'set-group' && candidates.length > 0) {
     const moves = setGroup(deps.db, candidates, request.groupId)
     deps.audit.record({ userId: actor.id, action: request.groupId === null ? 'group.unassign' : 'group.assign', meta: { groupId: request.groupId, deviceIds: candidates } })
+    // The write used to end here, and every open browser kept the old group
+    // on the row and the old number on the tab until someone hard-refreshed
+    // (owner, 2026-09-04). One listing for the whole move, then one
+    // `device.updated` per device that actually moved — clients replace the
+    // row in place, so the tab counts (derived from the device list) follow.
+    const moved = new Set(candidates)
+    const snapshot = deps.listDevices().filter((d) => moved.has(d.id))
+    for (const info of snapshot) deps.broadcast({ type: 'device.updated', payload: info })
     for (const deviceId of candidates) {
       settle(deviceId, { status: 'done', detail: { movedFrom: moves.get(deviceId)?.from ?? null } })
     }

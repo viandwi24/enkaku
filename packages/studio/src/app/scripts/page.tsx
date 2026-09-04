@@ -112,16 +112,29 @@ function ScriptsWorkflowsScreen() {
         )}
       </div>
 
-      <div className="mt-3 flex items-center gap-1 border-b border-line px-[14px]">
+      {/*
+        The tab pills sit clear of the strip's bottom border (`py-[10px]`,
+        `rounded-input`) instead of sitting ON it. The previous
+        `rounded-t-[9px]` with no vertical padding put the active tab's
+        filled background directly over the border line, so the line ran
+        across the tab's bottom edge and read as a rendering fault (owner,
+        2026-09-04). This is the same strip Jobs already uses
+        (`components/jobs/JobsTabStrip.tsx`), which is the reason to match it
+        rather than nudge this one over the line.
+      */}
+      <div className="mt-3 flex items-center gap-[3px] border-b border-line px-[14px] py-[10px]">
         {(['scripts', 'workflows', 'schedules'] as const).map((key) => (
           <Link
             key={key}
             href={hrefFor(key)}
             data-tab={key}
-            className={cn('rounded-t-[9px] px-[12px] py-[7px] text-row', tab === key ? 'bg-accent-soft text-accent' : 'text-dim hover:text-text')}
+            className={cn(
+              'flex flex-none items-center gap-[7px] rounded-input px-3 py-[7px] text-row transition-colors',
+              tab === key ? 'bg-accent-soft font-semibold text-accent' : 'font-medium text-faint hover:text-text',
+            )}
           >
             {TAB_LABEL[key]}
-            {counts[key] !== null && <span className="ml-1.5 text-label text-faint">{counts[key]}</span>}
+            {counts[key] !== null && <span className="text-label font-normal opacity-65">{counts[key]}</span>}
           </Link>
         ))}
       </div>

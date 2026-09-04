@@ -2832,6 +2832,9 @@ let blobGc: BlobGc | null = null
         dataDir: cfg.dataDir,
         networks: () => settingsStore.get().networkScan.networks,
         infoWithTags: (deviceId) => getDeviceOwner(deviceId) ?? { ownerId: null },
+        // The same accessor `listDevices` below is wired to — one read for a
+        // whole `set-group`, never one per device.
+        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)),
       }
       const actionRoutesHandle = createActionRoutes(actionsDeps)
 

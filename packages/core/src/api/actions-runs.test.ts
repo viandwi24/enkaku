@@ -109,6 +109,7 @@ function setUp(): { db: Db; deps: ActionsDeps } {
     screenshot: () => unused('screenshot'),
     dataDir: '/tmp/unused',
     networks: () => [],
+    listDevices: () => [],
     infoWithTags: () => ({ ownerId: null }),
   }
   return { db, deps }
