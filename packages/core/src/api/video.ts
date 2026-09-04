@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
-import { VideoLatencyResponseSchema, VideoReprofileResponseSchema, type Quality } from '@enkaku/protocol'
-import type { SessionManager } from '@enkaku/session'
+import { VideoLatencyResponseSchema, VideoReprofileResponseSchema, VideoSessionsResponseSchema, type Quality } from '@enkaku/protocol'
+import type { AlwaysOn, SessionManager } from '@enkaku/session'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import { EnkakuError } from '../util/errors'
@@ -23,14 +23,22 @@ export function createVideoRoutes(deps: {
    * later in boot than this router is built. `null`/absent under the
    * orchestrator or before the adb subsystem is up; `reprofile` itself is
    * optional on `SessionManager` for the same fixture-compatibility reason
-   * `videoStats`/`restartAt` already are (`packages/session/src/manager.ts`).
+   * `restartAt` already is (`packages/session/src/manager.ts`).
    */
-  sessions: () => Pick<SessionManager, 'reprofile' | 'videoLatency'> | null
+  sessions: () => Pick<SessionManager, 'reprofile' | 'videoLatency' | 'encoders'> | null
   /**
    * `ws-handlers.ts`'s `videoStreamStats` (plan 203 §4.6), forward-ref like
    * `adb-stats.ts`'s `transport`. Absent → zero counters.
    */
   streamStats?: (deviceId: string) => Array<{ quality: Quality; keyframeRequests: number; congestionDrops: number }> | null
+  /**
+   * The always-on builder (plan 206 §4.2, §4.6) — `GET /sessions`'s per-device
+   * build state and the builder's own farm-wide occupancy. `null` under the
+   * orchestrator or before the adb subsystem is up, same contract as `sessions`.
+   */
+  alwaysOn: () => Pick<AlwaysOn, 'stateOf' | 'stats'> | null
+  /** Every known device's id and number (plan 206 §4.6) — joined against `sessions().encoders()` and `alwaysOn().stateOf(id)`, no N+1. */
+  deviceIds: () => Array<{ deviceId: string; number: number | null }>
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -62,6 +70,45 @@ export function createVideoRoutes(deps: {
       return { ...s, keyframeRequests: c2?.keyframeRequests ?? 0, congestionDrops: c2?.congestionDrops ?? 0 }
     })
     return typedJson(c, VideoLatencyResponseSchema, { deviceId, at: Date.now(), streams })
+  })
+
+  /**
+   * `GET /api/video/sessions` (plan 206 §4.6) — every known device's
+   * always-on build state and encoder states, for the bench harness
+   * (`--warmup`) and for operator/owner debugging. `501 E_NOT_SUPPORTED`
+   * when either `sessions()` or `alwaysOn()` is null (orchestrator, or adb
+   * not up) — the two forward-refs answer together or not at all, since a
+   * partial answer would misreport devices as `none` that are merely
+   * unmeasured right now.
+   */
+  app.get('/sessions', requirePermission('device.view'), (c) => {
+    const sessions = deps.sessions()
+    const alwaysOn = deps.alwaysOn()
+    if (!sessions || !alwaysOn) {
+      throw new EnkakuError('E_NOT_SUPPORTED', 'video sessions are not available (orchestrator mode, or the adb subsystem is not ready yet)')
+    }
+    const encodersByDevice = new Map(sessions.encoders().map((e) => [e.deviceId, e]))
+    const devices = deps.deviceIds().map(({ deviceId, number }) => {
+      const state = alwaysOn.stateOf(deviceId)
+      const encoders = encodersByDevice.get(deviceId)
+      return {
+        deviceId,
+        number,
+        state: state.state,
+        step: state.step,
+        attempt: state.attempt,
+        usbRoot: state.usbRoot,
+        wall: encoders?.wall ?? null,
+        control: encoders?.control ?? null,
+      }
+    })
+    const stats = alwaysOn.stats()
+    return typedJson(c, VideoSessionsResponseSchema, {
+      devices,
+      builder: { running: stats.running, queued: stats.queued, perRoot: stats.perRoot, buildsPerUsbRoot: stats.buildsPerUsbRoot, farmCeiling: stats.farmCeiling },
+      // So a warm-up run can print the cost of N always-on sessions.
+      rssBytes: process.memoryUsage().rss,
+    })
   })
 
   app.onError((err, c) => {

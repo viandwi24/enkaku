@@ -120,17 +120,22 @@ function refcountingSessions(): { sessions: SessionManager; state: RefcountState
       state.acquireCalls += 1
       state.refcount += 1
       if (state.refcount === 1) state.builds += 1
-      return { deviceId, inspector: null, whenInspectorReady: async () => {} } as never
+      return { deviceId, inspector: null, whenInspectorReady: async () => {}, prewarmInspector: async () => {} } as never
     },
     release: () => {
       state.refcount = Math.max(0, state.refcount - 1)
       if (state.refcount === 0) state.closes += 1
     },
+    attachViewer: async () => ({ session: null, quality: 'wall' }) as never,
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => null as never,
+    state: () => 'ready',
     get: () => null as never,
+    getByQuality: () => null as never,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
   }
   return { sessions, state }
 }

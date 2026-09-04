@@ -23,7 +23,7 @@ export interface SchedulerDeps {
   jobTtlSec: number
   fallbackIntervalMs: number
   onJobStatus: (info: JobInfo) => void
-  /** The claim starts a `job:<id>` activity inside a SQL transaction; notify watchers (closeIfIdle, readiness reconcile — plan 205 §4.7 renames this from onDeviceBusy since devices.status is never flipped to "busy" any more). */
+  /** The claim starts a `job:<id>` activity inside a SQL transaction; notify watchers (readiness reconcile — plan 205 §4.7 renames this from onDeviceBusy since devices.status is never flipped to "busy" any more). */
   onJobClaimed: (deviceId: string) => void
   /** Main-stream device event: job.started (plan 18 §4.2). */
   onJobStarted?: (deviceId: string, jobId: string, scriptId: string) => void

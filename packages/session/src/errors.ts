@@ -13,20 +13,24 @@ export class SessionError extends Error {
       /** Plan 91 §3.3, §4.1 — the input arbiter's bounded queue refused an action; the message names the blocking action. */
       | 'E_INPUT_BUSY'
       /**
-       * Plan 100 §3.2, §3.7 item 2, §4.2, §4.4 — the fast-path `control`
-       * entry (a second, concurrent scrcpy session beside an already-open
-       * `wall` entry) could not be built: `makeScrcpy` rejected/returned
-       * null, or the device's own configured engine is not scrcpy at all.
-       * `SessionManager.acquire` throws this INSTEAD of silently falling
-       * back to screencap-loop under the Control label (§3.7's "two tiers,
-       * no silent fallback" rule) or handing back the wall entry disguised
-       * as control. `ws-handlers.ts`'s `stream.start` catches this specific
-       * code and decides whether to substitute the wall entry's own frames
-       * — saying so on the wire (`StreamStartedMessage.payload.degradedReason`,
+       * Plan 206 §3.6, §4.4 — `requireScrcpy` was set (every base build, and
+       * every control build) and scrcpy-server could not be started on this
+       * device: `makeScrcpy` rejected/returned null, or the device's own
+       * configured display engine is not scrcpy at all and the caller did not
+       * pass `skipDevicePrep` room to fall back. This is a FAILED build, not a
+       * degraded one — the always-on builder (`packages/session/src/always-on.ts`)
+       * schedules a rebuild under backoff and reports it honestly
+       * (`Recovering, attempt n`) rather than opening a screencap-loop session
+       * under a wall label. For a `control` attach specifically,
+       * `SessionManager.attachViewer` catches this and substitutes the wall
+       * entry instead, saying so on the wire
+       * (`StreamStartedMessage.payload.degradedReason`,
        * `packages/protocol/src/messages/stream.ts`) — never this function's
-       * job to decide.
+       * job to decide. Replaces the old control-fast-path-only code (plan
+       * 100) that this code superseded; this plan applies the same code to
+       * every build, not only that one case.
        */
-      | 'E_CONTROL_SESSION_UNAVAILABLE',
+      | 'E_SCRCPY_UNAVAILABLE',
     message: string,
     /**
      * Plan 74 §4.3 — carries a `FindOutcome`'s last non-ok reason/matches for

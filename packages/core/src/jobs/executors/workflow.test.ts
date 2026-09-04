@@ -131,16 +131,21 @@ function fakeSessions(): { sessions: SessionManager; acquireCalls: string[]; rel
   const sessions: SessionManager = {
     acquire: async (deviceId) => {
       acquireCalls.push(deviceId)
-      return { deviceId, inspector: null, whenInspectorReady: async () => {} } as never
+      return { deviceId, inspector: null, whenInspectorReady: async () => {}, prewarmInspector: async () => {} } as never
     },
     release: (deviceId) => {
       releaseCalls.push(deviceId)
     },
+    attachViewer: async () => ({ session: null, quality: 'wall' }) as never,
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => null as never,
+    state: () => 'ready',
     get: () => null as never,
+    getByQuality: () => null as never,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
   }
   return { sessions, acquireCalls, releaseCalls }
 }

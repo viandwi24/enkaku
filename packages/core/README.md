@@ -97,11 +97,32 @@ Whether a crash also **fails** the running job is `job.crashPolicy` (`ignore` | 
 
 `adb.maxStreamsPerDevice` defaults to 3 (not Plan 24's original 1): the crash watcher and the ui-server inspector (plan 34) each hold a stream slot on top of anything a human opens in the Monitor tab.
 
-## Idle session TTL and quality profiles (plan 42)
+## Always-on sessions and the encoder split (plan 206)
 
-`@enkaku/session`'s `SessionManager` no longer closes a device session the instant its last viewer leaves. It goes idle instead, and is closed only after `session.idleTtlSec` (farm setting, default 300s) with no new subscriber — a viewer returning inside that window re-attaches to the still-live session and sees a picture within one keyframe request, rather than paying the full wake-up sequence again. `session.maxIdleSessions` (default 8) bounds how many idle sessions the whole farm may hold open at once; past the cap the least-recently-idle one closes immediately. An idle session is also closed immediately — never waiting out the TTL — when the device goes offline, is quarantined, or a job claims it (`SessionManager.closeIfIdle`); a session with an **active** viewer is never touched by any of these, since video keeps streaming while a device is busy (spec §10.1). Setting `idleTtlSec: 0` restores the exact pre-plan-42 behaviour. Idle sessions are listed (oldest first) in `GET /api/adb/stats`'s `idleSessions` field.
+`@enkaku/session`'s `SessionManager` builds a device's BASE (`wall`-quality)
+session the instant it comes online (`@enkaku/session`'s `createAlwaysOn`,
+wired from `onDeviceReady`) and keeps it running for as long as the device
+is online — never lazily on a browser's `stream.start`, never torn down by
+an idle timer. `acquire()`/`release()` are for job/readiness callers, which
+only ever want that one base entry and never build one themselves;
+`attachViewer()`/`detachViewer()` are for WS viewers.
 
-Every session also has a **quality profile** (`control` | `wall`), which maps to `max_size`/`max_fps`/`video_bit_rate` on the scrcpy server. `control` is what the device page always asks for; `wall` is what the fleet Wall asks for, so many low-rate tiles can decode in one browser tab. The manager's rule: a device already at `control` quality is shared as-is with a `wall` request — **never** restarted or downgraded for a colleague's wall tile — while a `control` request against a `wall`-quality session restarts it at `control`, carrying existing viewers (e.g. a wall tile) over onto the new session rather than dropping them. `stream.start`'s `quality` payload field defaults to `control`; `stream.started` always reports back the quality actually granted.
+A device holds **at most two** encoders: the always-on BASE (`wall`) entry,
+and a CONTROL entry built on demand the instant a `control`-quality viewer
+attaches, closed 15s after its last control viewer detaches
+(`CONTROL_LINGER_MS`). A `control` attach never waits on a build: it is
+served by the already-running wall entry first (`stream.started.substitute:
+'wall'`) and switched onto the control entry the moment its first real
+keyframe arrives (`stream.meta` with `quality: 'control'`) — nothing is
+transcoded or upscaled server-side. Builds are staggered per USB root
+(`session.buildsPerUsbRoot`, default 4) and by a farm-wide ceiling
+(`SESSION_BUILD_FARM_CEILING`, 16, overridable by
+`ENKAKU_SESSION_BUILD_CEILING`); a dead or failed base build retries under a
+fixed backoff (1s, 3s, 10s, 30s, then 30s repeated). `GET
+/api/video/sessions` reports every device's build state and encoder states,
+including a control entry's `lingerEndsAt`.
+
+Every session also has a **quality profile** (`control` | `wall`), which maps to `max_size`/`max_fps`/`video_bit_rate` on the scrcpy server. `control` is what the device page always asks for; `wall` is what the fleet Wall asks for and what the always-on builder always builds, so many low-rate tiles can decode in one browser tab. `stream.start`'s `quality` payload field defaults to `control`; `stream.started` always reports back the quality actually being served RIGHT NOW, which is `wall` (with `substitute: 'wall'` set) for a `control` request still waiting on its own encoder.
 
 **Plan 92 §3.5, §4.1–§4.2** replaced the two fixed constants behind `control`/`wall` with farm settings: `FarmSettings.video` (eight flat fields — a preset per profile plus its three numbers, `controlPreset`/`controlMaxSize`/`controlMaxFps`/`controlBitRate` and the `wall...` equivalents) plus an all-optional `DeviceSettings.video` override. `packages/session/src/video-profile.ts`'s `resolveVideoProfile(farm, device, quality)` is the one place the two are combined — its preset tables (`CONTROL_PRESETS.sharp`, `WALL_PRESETS.balanced`) are the exact numbers the old constants held (1600px / 30fps / 4Mbps; 480px / 5fps / 800kbps), so a farm that changes no video setting sees byte-identical scrcpy arguments. `SessionManagerDeps.resolveProfile` resolves this fresh for every session build; `CreateSessionOpts.videoProfile` carries the result into `createSession`, which hands it straight to `makeScrcpy` — there is no `QUALITY_PROFILES` lookup table left anywhere in the codebase.
 

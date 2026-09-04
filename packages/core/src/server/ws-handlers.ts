@@ -27,8 +27,8 @@ import type { PairingService } from '../enroll/pairing'
 import type { AdbEndpointManager } from '../device/adb-endpoint'
 import type { ActivityRegistry } from '../activity/registry'
 import { evaluate } from '../activity/policy'
-import type { Hold, ReadinessManager } from '../device/readiness'
-import { DEFAULT_TIMING, resolveTextRoute, SessionError, type DeviceSession, type InputLane, type InputSource, type SessionManager } from '@enkaku/session'
+import type { ReadinessManager } from '../device/readiness'
+import { DEFAULT_TIMING, resolveTextRoute, SessionError, buildSentence, type AlwaysOn, type DeviceSession, type InputLane, type InputSource, type SessionManager } from '@enkaku/session'
 import type { JobService } from '../services/job-service'
 import type { AuditLogger } from '../auth/audit'
 import type { EventRecorder } from '../events/recorder'
@@ -72,6 +72,16 @@ const DEADLINE_ERROR_CODES = new Set(['E_ADB_TIMEOUT', 'E_NODE_TIMEOUT'])
  * `ws-handlers-command.test.ts`.
  */
 export const MAX_BUFFERED = 512 * 1024
+
+/**
+ * Plan 206 §3.8, §4.8 (R8) — Bun's own `websocket.backpressureLimit`, passed
+ * to `Bun.serve` in `daemon.ts`. Wider than `MAX_BUFFERED` (which decides
+ * per-frame drop-to-keyframe here) so Bun's own enqueue limit is never the
+ * first thing to trip; `closeOnBackpressureLimit: false` means a socket that
+ * hits it stays open and simply keeps dropping sends (the existing
+ * congestion path), never disconnected outright.
+ */
+export const BACKPRESSURE_LIMIT_BYTES = 4 * MAX_BUFFERED
 
 /** The Inspect tab's `dump`/`find` deadline (plan 56 §4.2 step 5, acceptance #9) — `ui-server` targets well under this; `uiautomator-dump` can legitimately take 1-2s, so this is generous, not tight. */
 const INSPECT_DEADLINE_MS = 20_000
@@ -188,8 +198,6 @@ interface StreamBinding {
   lastSize: { width: number; height: number }
   /** Unix seconds — when this binding was created (plan 31 §4.1 Viewer.since). */
   since: number
-  /** Readiness hold for this viewer (plan 43 §3.7 table, §5 step 43.7) — local devices only. */
-  readinessHold?: Hold
   /**
    * Set while an H.264 stream recovers from congestion: everything is dropped
    * until a keyframe arrives, because a delta that references frames the
@@ -338,12 +346,16 @@ export interface WsHandlerDeps {
   /** The adb endpoint, scoped to a controlling client (plan 27 §4.2) — torn down on WS disconnect (`handleClose`). */
   adbEndpoint: AdbEndpointManager
   /**
-   * Device readiness (plan 43 §5 step 43.7) — `stream.start` takes a hold
-   * before proceeding, local devices only. Optional so tests/hosts (and
-   * orchestrator mode, which has no local readiness manager at all) that do
-   * not wire it keep working unchanged.
+   * Device readiness — `stream.start` no longer takes a viewer hold (plan
+   * 206 §3.7: the wake happens inside the always-on build's own step 2).
+   * `hold` stays on this Pick because `holdFor` (the Monitor tab, below)
+   * still calls it; `set` backs `device.readiness.set`. Optional so
+   * tests/hosts (and orchestrator mode, which has no local readiness manager
+   * at all) that do not wire it keep working unchanged.
    */
   readiness?: Pick<ReadinessManager, 'hold' | 'set'>
+  /** The always-on builder (plan 206 §4.2) — `stream.start`'s `E_SESSION_PREPARING` reads its per-device build state for the activity sentence. Optional: a host or test that predates plan 206 gets the bare `'Preparing'` fallback. */
+  alwaysOn?: Pick<AlwaysOn, 'stateOf'>
   /** `transfer.cancel` (plan 39 §4.4, acceptance #9) — undefined only in tests that do not wire file transfer. */
   transfer?: { cancel(transferId: string): void }
   /**
@@ -844,7 +856,19 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 }
                 const encoded = encodeVideoFrame(streamId, meta, chunk)
                 transportMetrics.recordVideoBytes(encoded.byteLength)
-                ws.send(encoded)
+                // Plan 206 §3.8, §4.8 (R8): `ws.send()` returns `0` when Bun
+                // dropped the message under backpressure — treated exactly
+                // like the buffered-amount congestion check above (mark
+                // `awaitingKeyframe`, ask for a fresh IDR). `handleDrain`
+                // below is the other half: it re-asks the moment the socket
+                // is writable again, instead of waiting for the encoder's
+                // next scheduled IDR.
+                const sent = ws.send(encoded)
+                if (sent === 0 && meta.codec !== 'png' && !binding.awaitingKeyframe) {
+                  binding.awaitingKeyframe = true
+                  countersFor(binding).keyframeRequests++
+                  sessionForBinding(binding)?.requestKeyframe?.()
+                }
               },
             }
             // Video keeps running even while a device is `busy` (spec §10.1) —
@@ -856,16 +880,27 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             let codec: 'png' | 'h264'
             let frameSize: { width: number; height: number }
             let quality: Quality = 'control'
-            // Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.5 — set only when
-            // `sessions.acquire`'s fast path for `control` threw
-            // `E_CONTROL_SESSION_UNAVAILABLE` and this viewer was handed the
-            // device's already-open `wall` entry instead. Carried on
-            // `stream.started` itself (`degradedReason`/`degradedDetail`,
-            // `packages/protocol/src/messages/stream.ts`) rather than a new
-            // message type, per §3.7's "two tiers, no silent fallback" rule.
-            let degradedReason: 'control_session_unavailable' | undefined
+            // Plan 206 §3.4, §4.5 — set only when a `control` request is
+            // being served by the always-on WALL encoder while the control
+            // encoder's own build is still in flight (or has none to serve
+            // it from). Reported honestly on `stream.started` rather than a
+            // new message type, and the wire says so again on `stream.meta`
+            // once the switch actually happens.
+            let substitute: 'wall' | undefined
+            let degradedReason: 'control_encoder_unavailable' | undefined
             let degradedDetail: string | undefined
             let localSession: DeviceSession | null = null
+
+            /** SPS/PPS then the cached IDR — a joining viewer has nothing to decode without both (plan 17 §3.6). */
+            const primeSession = (session: DeviceSession, size: { width: number; height: number }): boolean => {
+              const primer: FrameMeta = { width: size.width, height: size.height, codec: 'h264', seq: 0, ptsUs: 0n, hostReceivedAt: Date.now(), keyframe: true }
+              const config = session.videoConfig?.()
+              if (config) ws.send(encodeVideoFrame(streamId, primer, config))
+              const keyframe = session.videoKeyframe?.()
+              if (keyframe) ws.send(encodeVideoFrame(streamId, primer, keyframe))
+              return keyframe !== null && keyframe !== undefined
+            }
+
             if (remoteNode) {
               // The tunnel protocol does not carry a quality profile yet
               // (Plan 42 §9 open question) — every remote-node device
@@ -877,39 +912,50 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               frameSize = remoteSession.frameSize
               binding.remote = true
             } else if (deps.sessions) {
-              // Readiness hold (plan 43 §3.6, §5 step 43.7) — local devices
-              // only (remote/node-owned devices are handled by the branch
-              // above and are out of scope for this plan, §9 open question
-              // #2). Ensures the device is at least `awake` before the
-              // session itself is acquired; `sessions.acquire` below is what
-              // actually brings it to `hot` and is what Plan 42's
-              // `session.idleTtlSec` governs once this connection releases.
-              binding.readinessHold = await deps.readiness?.hold(msg.payload.deviceId, 'viewer').catch((err) => {
-                deps.log.warn(`readiness hold failed for viewer on ${msg.payload.deviceId}, proceeding anyway: ${String(err)}`)
-                return undefined
-              })
-              let session: DeviceSession
+              // Plan 206 §3.7: the wake happens inside the always-on build's
+              // own step 2, not here — there is no viewer readiness hold any
+              // more (`ws-handlers.ts:1012`'s old `readiness.hold(...,
+              // 'viewer')` is deleted).
+              let attach
               try {
-                session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame, requestedQuality)
+                attach = await deps.sessions.attachViewer(msg.payload.deviceId, requestedQuality, binding.onFrame, {
+                  onSwitched: (control) => {
+                    binding.quality = 'control'
+                    binding.lastSize = { width: control.frameSize.width, height: control.frameSize.height }
+                    send(ws, {
+                      type: 'stream.meta',
+                      payload: { streamId, width: control.frameSize.width, height: control.frameSize.height, quality: 'control' },
+                    })
+                    // No `requestKeyframe` here (unlike the initial prime
+                    // below): the keyframe that triggered this very switch
+                    // IS the fresh IDR — asking for another would be the
+                    // same premature `RESET_VIDEO` §3.6 already avoids.
+                    primeSession(control, control.frameSize)
+                  },
+                  onControlFailed: (reason) => {
+                    send(ws, { type: 'stream.meta', payload: { streamId, width: binding.lastSize.width, height: binding.lastSize.height, quality: 'wall', detail: reason } })
+                  },
+                })
               } catch (err) {
-                // Plan 100 §4.4: never let the fast-path failure become a
-                // bare `stream.start` refusal for a device that IS streaming
-                // — just not at the quality asked for. Substitute the wall
-                // entry's own frames, honestly labelled, only for exactly
-                // the one coded failure this represents; anything else
-                // (device offline, not found, ...) still refuses ordinarily.
-                if (requestedQuality === 'control' && err instanceof SessionError && err.code === 'E_CONTROL_SESSION_UNAVAILABLE') {
-                  deps.log.warn(`control session unavailable for ${msg.payload.deviceId}, showing the wall feed instead: ${err.message}`)
-                  degradedReason = 'control_session_unavailable'
-                  degradedDetail = err.message
-                  session = await deps.sessions.acquire(msg.payload.deviceId, binding.onFrame, 'wall')
-                } else {
-                  throw err
+                if (err instanceof SessionError && err.code === 'device_not_ready') {
+                  const status = deps.states.current(msg.payload.deviceId)
+                  if (status === 'offline' || status === null) {
+                    sendError(ws, 'device_offline', 'the device is offline', msg.id)
+                  } else {
+                    const info = deps.alwaysOn?.stateOf(msg.payload.deviceId)
+                    sendError(ws, 'E_SESSION_PREPARING', buildSentence(info ?? null), msg.id)
+                  }
+                  return
                 }
+                throw err
               }
+              const session = attach.session
               codec = session.displayEngineId === 'scrcpy' ? 'h264' : 'png'
               frameSize = session.frameSize
-              quality = session.quality
+              quality = attach.quality
+              substitute = attach.substitute
+              degradedReason = attach.degradedReason
+              degradedDetail = attach.degradedDetail
               localSession = session
               binding.quality = quality
             } else {
@@ -922,7 +968,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               )
               return
             }
-            // Recorded AFTER acquire succeeds: if acquire throws, no binding is
+            // Recorded AFTER attach succeeds: if attach throws, no binding is
             // left behind with no session under it. Without this line,
             // stream.stop and the disconnect cleanup do nothing at all — the
             // capture loop keeps running on the device forever.
@@ -940,6 +986,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 width: frameSize.width,
                 height: frameSize.height,
                 quality,
+                ...(substitute ? { substitute } : {}),
                 ...(degradedReason ? { degradedReason } : {}),
                 ...(degradedDetail ? { degradedDetail } : {}),
               },
@@ -949,23 +996,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // leaves the canvas black until the encoder's next IDR — seconds
             // later — and the browser rejects the deltas that arrive meanwhile
             // ("a key frame is required after configure()"). `localSession`
-            // is the EXACT entry `acquire` returned above (plan 100 §4.2) —
-            // never re-fetched via `sessions.get(deviceId)`, which would
-            // resolve the wrong slot whenever the other quality is also open.
-            const primer: FrameMeta = {
-              width: frameSize.width,
-              height: frameSize.height,
-              codec: 'h264',
-              seq: 0,
-              ptsUs: 0n,
-              hostReceivedAt: Date.now(),
-              keyframe: true,
-            }
-            const config = localSession?.videoConfig?.()
-            if (config) ws.send(encodeVideoFrame(streamId, primer, config))
-            const keyframe = localSession?.videoKeyframe?.()
-            if (keyframe) {
-              ws.send(encodeVideoFrame(streamId, primer, keyframe))
+            // is the EXACT entry `attachViewer` returned above (plan 206
+            // §4.3) — never re-fetched via `sessions.get(deviceId)`, which
+            // would resolve the wrong slot whenever the other quality is
+            // also open.
+            const hadKeyframe = localSession ? primeSession(localSession, frameSize) : false
+            if (hadKeyframe) {
               // Only now ask the encoder for a fresh IDR (Plan 17 §3.6): the
               // cached keyframe can be seconds old, so the viewer's first real
               // picture ends up current rather than stale-then-jumping.
@@ -988,8 +1024,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             if (!binding) return
             state.streams.delete(binding.streamId)
             if (binding.remote) deps.remote?.release(binding.deviceId, binding.onFrame)
-            else deps.sessions?.release(binding.deviceId, binding.onFrame)
-            binding.readinessHold?.release()
+            else deps.sessions?.detachViewer(binding.onFrame)
             broadcastViewers(binding.deviceId)
             return
           }
@@ -2090,8 +2125,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       const watchedDeviceIds = new Set(Array.from(state.streams.values(), (b) => b.deviceId))
       for (const binding of state.streams.values()) {
         if (binding.remote) deps.remote?.release(binding.deviceId, binding.onFrame)
-        else deps.sessions?.release(binding.deviceId, binding.onFrame)
-        binding.readinessHold?.release()
+        else deps.sessions?.detachViewer(binding.onFrame)
       }
       state.streams.clear()
       state.logSubs.clear()
@@ -2141,6 +2175,24 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // Agent chat subscriptions are tracked independently of `ConnState` (plan 66 §4.4) — release
       // this connection's share regardless of what else it was doing.
       deps.agent?.handleClose(ws)
+    },
+
+    /**
+     * Bun's own `websocket.drain` handler (plan 206 §3.8, §4.8, R8): fires
+     * when a backpressured socket becomes writable again. Every binding on
+     * THIS connection that is `awaitingKeyframe` asks for a fresh IDR right
+     * now, instead of waiting for the encoder's next scheduled one — the
+     * congestion-recovery half `onFrame`'s own `sent === 0` check starts.
+     */
+    handleDrain(ws: ServerWebSocket<unknown>): void {
+      const state = conns.get(ws)
+      if (!state) return
+      for (const binding of state.streams.values()) {
+        if (binding.awaitingKeyframe) {
+          countersFor(binding).keyframeRequests++
+          sessionForBinding(binding)?.requestKeyframe?.()
+        }
+      }
     },
 
     /**

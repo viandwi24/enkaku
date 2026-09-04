@@ -84,13 +84,18 @@ function fakeRunner(outcomes: Record<string, () => Outcome>): { runner: JobRunne
 
 function fakeSessions(): SessionManager {
   return {
-    acquire: async (deviceId) => ({ deviceId, inspector: null, whenInspectorReady: async () => {} }) as never,
+    acquire: async (deviceId) => ({ deviceId, inspector: null, whenInspectorReady: async () => {}, prewarmInspector: async () => {} }) as never,
     release: () => {},
+    attachViewer: async () => ({ session: null, quality: 'wall' }) as never,
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => null as never,
+    state: () => 'ready',
     get: () => null as never,
+    getByQuality: () => null as never,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
   }
 }
 

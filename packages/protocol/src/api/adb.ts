@@ -67,7 +67,6 @@ export const AdbStatsResponseSchema = z.object({
     active: z.number(),
     perDevice: z.record(z.string(), z.number()),
   }),
-  idleSessions: z.array(z.unknown()),
   devices: z.array(
     z.object({
       deviceId: z.string(),
@@ -148,11 +147,12 @@ export const AdbStatsResponseSchema = z.object({
     })
     .optional(),
   /**
-   * The build lane's own occupancy plus live streams by quality (plan 92
-   * §3.3, §4.3, §4.5, §5 step 92.3, tests H1) —
-   * `packages/session/src/manager.ts`'s `SessionManager.videoStats()`, wired
-   * into this route through the same forward-ref pattern `transport`/
-   * `hostAdb`/`adbHealth`/`input` above already use. `maxTiles`/
+   * The always-on builder's own occupancy plus live streams by quality
+   * (plan 92 §3.3, §4.3, §4.5, §5 step 92.3, tests H1; reworked by plan 206
+   * §4.10) — `packages/session/src/manager.ts`'s `SessionManager.encoders()`
+   * joined with `@enkaku/session`'s `AlwaysOn.stats()`, wired into this
+   * route through the same forward-ref pattern `transport`/`hostAdb`/
+   * `adbHealth`/`input` above already use. `maxTiles`/
    * `maxTilesAuto` report `wall.maxTiles` AS IT IS ACTUALLY BEING APPLIED —
    * the derived number when the setting is `0` (auto, §3.7), never the raw
    * stored `0` itself — so the Wall's status strip and the settings
@@ -172,7 +172,9 @@ export const AdbStatsResponseSchema = z.object({
       wallStreams: z.number().int(),
       buildsRunning: z.number().int(),
       buildQueueDepth: z.number().int(),
-      maxConcurrentBuilds: z.number().int(),
+      /** The one remaining session build knob (plan 206 §4.5) and the farm-wide ceiling constant (`SESSION_BUILD_FARM_CEILING`, overridable by `ENKAKU_SESSION_BUILD_CEILING`). */
+      buildsPerUsbRoot: z.number().int(),
+      farmCeiling: z.number().int(),
       maxTiles: z.number().int(),
       maxTilesAuto: z.boolean(),
       /**

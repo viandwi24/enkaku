@@ -59,8 +59,6 @@ function fakeSessionManager(session: DeviceSession) {
       },
       get: () => session,
       closeDevice: async () => {},
-      closeIfIdle: async () => {},
-      idleSessions: () => [],
       closeAll: async () => {},
     } as unknown as import('@enkaku/session').SessionManager,
     calls,

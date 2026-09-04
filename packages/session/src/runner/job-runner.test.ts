@@ -46,11 +46,16 @@ function fakeSessions(session: DeviceSession): SessionManager {
   return {
     acquire: async () => session,
     release: () => {},
+    attachViewer: async () => ({ session, quality: 'wall' }),
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => session,
+    state: () => 'ready',
     get: () => session,
+    getByQuality: () => session,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
   }
 }
 
@@ -843,11 +848,16 @@ function trackingSessions(session: DeviceSession, sequence: string[]): SessionMa
       return session
     },
     release: () => sequence.push(`release:${n}`),
+    attachViewer: async () => ({ session, quality: 'wall' }),
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => session,
+    state: () => 'ready',
     get: () => session,
+    getByQuality: () => session,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
   }
 }
 

@@ -15,11 +15,11 @@ import { Button, EmptyState, api } from '@enkaku/ui'
  * `wall.rampConcurrency`'s schema default (plan 92 §5 step 92.1,
  * `packages/protocol/src/settings.ts`) — used until `/api/settings`
  * answers. Unlike `maxTiles`, this number is never allowed to gate the
- * skeleton: it is a client-side courtesy only (plan 92 §3.3 — the
- * authoritative bound is server-side, `session.maxConcurrentBuilds`), so
- * starting the live set with the schema default and correcting it a moment
- * later (the common case: nobody has changed it) costs nothing worth a
- * second loading state for.
+ * skeleton: it is a client-side courtesy only — sessions are always on now
+ * (plan 206 §4.3), so a tile's request attaches to an already-built entry
+ * rather than racing a build — so starting the live set with the schema
+ * default and correcting it a moment later (the common case: nobody has
+ * changed it) costs nothing worth a second loading state for.
  */
 const DEFAULT_RAMP_CONCURRENCY = 2
 

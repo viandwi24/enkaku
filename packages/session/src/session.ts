@@ -94,8 +94,8 @@ export interface DeviceSession {
    * it is typed optional only so the dozens of hand-built `DeviceSession`
    * fixtures across `packages/core`'s WS-handler tests (none of them about
    * video) do not all need to grow a stub in this commit — the same
-   * fixture-compatibility reason `SessionManager.videoStats`/`restartAt`
-   * are optional (`packages/session/src/manager.ts`).
+   * fixture-compatibility reason `SessionManager.restartAt`
+   * is optional (`packages/session/src/manager.ts`).
    * `SessionManager.reprofile()` reads the equivalent value it tracks on its
    * own `Entry` (never this field directly, so it never has to branch on the
    * optionality) to decide whether a session needs restarting — comparing
@@ -124,6 +124,16 @@ export interface DeviceSession {
    * video the rest of the time.
    */
   whenInspectorReady(): Promise<void>
+  /**
+   * Start the inspector in the background once the session has a picture
+   * (plan 206 §3.9, MVP 02 §2.1). This plan ships it as a no-op that
+   * resolves immediately and starts nothing; plan 208 implements the
+   * session-scoped, fail-fast body. Called by the always-on builder
+   * `INSPECTOR_PREWARM_DELAY_MS` after the first frame, once per build —
+   * never `whenInspectorReady()` itself, which is the eager start MVP 02
+   * §2.1 measured as starving the screencap loop.
+   */
+  prewarmInspector(): Promise<void>
   /**
    * Resolves once this session's text-input keyboard has been set up — and
    * STARTS that setup if nothing has yet (plan 125 §3.8, §4.5, §5 step 125.8).
@@ -299,7 +309,7 @@ export interface CreateSessionDeps {
   /**
    * Plan 100 §4.3, step 100.6 — `FarmSettings.display.fallbackRetryCount`,
    * read fresh on every retry decision (the same freshness discipline
-   * `arbiterQueueWaitMs`/`idleTtlSec` etc. already use). Undefined falls back
+   * `arbiterQueueWaitMs` etc. already use). Undefined falls back
    * to this file's own `DEFAULT_FALLBACK_RETRY_COUNT`.
    */
   fallbackRetryCount?: () => number
@@ -417,18 +427,19 @@ export interface CreateSessionOpts {
    */
   skipWake?: boolean
   /**
-   * Plan 100 §3.2, §3.7 item 2, §4.4, §5 step 100.4 — set only alongside
-   * `skipDevicePrep` above. A fast-path `control` build must produce a
-   * REAL scrcpy session or fail outright: silently falling back to
+   * Plan 206 §3.6, §4.4 — set by the always-on builder on EVERY base build
+   * (not only the fast path any more), and alongside `skipDevicePrep` for a
+   * fast-path `control` build. A build with this set must produce a REAL
+   * scrcpy session or fail outright: silently falling back to
    * screencap-loop + adb-input here would be exactly the silent downgrade
-   * §3.7 forbids (a third, even worse quality than the wall's own, shown
-   * under the Control label). `makeScrcpy` returning null/rejecting throws
-   * `SessionError('E_CONTROL_SESSION_UNAVAILABLE', ...)` instead of
-   * degrading — `packages/scrcpy/src/session.ts`'s own bounded
-   * `connectWithRetry` is what already turns a platform's rejection (a
-   * non-zero server exit, or a handshake that never completes) into that
-   * rejected promise, so this is H2's "detect the platform's own
-   * rejection" signal, not a new timeout invented here.
+   * this plan forbids (a session shown under a wall/control label that is
+   * really the PNG fallback). `makeScrcpy` returning null/rejecting throws
+   * `SessionError('E_SCRCPY_UNAVAILABLE', ...)` instead of degrading —
+   * `packages/scrcpy/src/session.ts`'s own bounded `connectWithRetry` is
+   * what already turns a platform's rejection (a non-zero server exit, or a
+   * handshake that never completes) into that rejected promise, so this is
+   * H2's "detect the platform's own rejection" signal, not a new timeout
+   * invented here.
    *
    * Ignored (never throws) when `opts.display === 'screencap-loop'` is the
    * device's OWN deliberate configuration — that device was never going to
@@ -688,7 +699,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     scrcpy = await deps.makeScrcpy(opts.deviceId, transport, videoProfile).catch((err) => {
       displayAttemptFailed = true
       scrcpyFailureReason = err instanceof Error ? err.message : String(err)
-      log.warn(`scrcpy cannot be used (${scrcpyFailureReason}) — falling back to screencap-loop + adb-input`)
+      log.info(`scrcpy cannot be used (${scrcpyFailureReason}); this build ${opts.requireScrcpy ? 'fails' : 'falls back to screencap-loop + adb-input'}`)
       return null
     })
   }
@@ -718,10 +729,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     await revertTextInput()
     await revertFarmTag()
     await transport.disconnect().catch(() => undefined)
-    throw new SessionError(
-      'E_CONTROL_SESSION_UNAVAILABLE',
-      scrcpyFailureReason ?? 'no scrcpy server is available for a second concurrent session on this device',
-    )
+    throw new SessionError('E_SCRCPY_UNAVAILABLE', scrcpyFailureReason ?? 'scrcpy-server could not be started on this device')
   }
 
   // Standby (Plan 17 §3.5): the panel goes dark, the encoder keeps producing
@@ -850,6 +858,8 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     inspectorEngineId: 'starting',
     inspectorPollIntervalMs: 500,
     whenInspectorReady: startInspector,
+    // Plan 206 §3.9: a no-op here; plan 208 replaces the body.
+    prewarmInspector: async () => {},
     whenTextInputReady: startTextInput,
     releaseInspector,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },

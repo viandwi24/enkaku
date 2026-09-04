@@ -101,13 +101,24 @@ function fakeSessionManager(session: DeviceSession | null): SessionManager {
       return session
     },
     release() {},
+    async attachViewer() {
+      if (!session) throw new Error('not used')
+      return { session, quality: 'wall' as const }
+    },
+    detachViewer() {},
+    async build() {},
+    async whenReady() {
+      if (!session) throw new Error('not used')
+      return session
+    },
+    state: () => 'ready' as const,
     get: () => session,
+    getByQuality: () => session,
     async closeDevice() {},
-    async closeIfIdle() {},
-    idleSessions: () => [],
     async closeAll() {
       return 0
     },
+    encoders: () => [],
   }
 }
 

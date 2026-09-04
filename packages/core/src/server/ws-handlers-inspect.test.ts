@@ -97,6 +97,7 @@ function fakeSession(deviceId: string, opts?: { engineId?: string; noDump?: bool
       if (opts?.startFails) throw new Error('watchdog gave up')
       if (!opts?.noDump) session.inspector = inspectorImpl
     },
+    prewarmInspector: async () => {},
     releaseInspector: async () => {
       calls.released++
       session.inspector = null
@@ -124,13 +125,22 @@ function fakeSessionManager(session: DeviceSession | null): SessionManager {
       throw new Error('not used')
     },
     release() {},
+    async attachViewer() {
+      throw new Error('not used')
+    },
+    detachViewer() {},
+    async build() {},
+    async whenReady() {
+      throw new Error('not used')
+    },
+    state: () => 'ready' as const,
     get: () => session,
+    getByQuality: () => session,
     async closeDevice() {},
-    async closeIfIdle() {},
-    idleSessions: () => [],
     async closeAll() {
       return 0
     },
+    encoders: () => [],
   }
 }
 

@@ -161,7 +161,7 @@ again (spec: farm defaults are a template, not a live fallback), so a
 farm-wide video setting expressed that way would reach devices enrolled
 after the change and nothing else. `FarmSettings.video` is read **live**,
 at session-build time and on every `reprofile` pass, from `settingsStore` —
-the same freshness discipline `idleTtlSec` already used before this existed.
+the same freshness discipline every other per-session accessor here uses.
 
 The function is pure (no clock, no I/O, no settings-store read inside it),
 so `reprofile`'s own comparison and every Studio readout can call it and
@@ -225,9 +225,9 @@ Five rules, in order:
    operator edits a form field by field) and from the per-device PATCH
    route when `changedKeys` includes `video`. The core wires a 500ms
    debounce around this — see `packages/core/README.md`.
-3. **Every restart goes through the build lane** (`session.
-   maxConcurrentBuilds`, below) — re-profiling 25 live sessions is a queue,
-   not a burst.
+3. **Every restart goes through `restartAt`**, coalesced per `(deviceId,
+   quality)` the same way a fresh build is — two reprofile passes racing
+   the same entry restart it exactly once.
 4. **Never mid-job.** A device whose `status` is `busy` is collected into
    `skippedBusy` and its session object is left completely untouched — not
    even a phase event. **This is a deliberate blast-radius bound, not an
@@ -236,12 +236,12 @@ Five rules, in order:
    busy device picks up the new profile the next time its session is
    built from scratch (its next `stream.start` after the job releases it),
    not before.
-5. **It explains itself.** Every restarted session's phase events carry
-   `detail: 'applying new video settings'` (the generic
-   `SessionProgressMessage.detail` field, rendered by Studio's `LiveView`
-   under the phase headline) — an operator watching a tile go soft and
-   come back sharper sees why, rather than guessing at a spontaneous
-   reconnect.
+5. **It is silent on the wire, and that is deliberate.** Plan 206 §2 retired
+   the phase-progress message this restart used to narrate through — after
+   that plan a reprofile is a brief dark tile that repaints, with the
+   `'video_reprofile'` reason still recorded to the device event log for an
+   operator who goes looking, but no longer announced live on the tile
+   itself. A later plan may add an activity for it.
 
 `restartAt(deviceId, quality, detail?)` is the mechanism underneath — the
 generalisation of what used to be a `wall → control` upgrade special case
@@ -343,3 +343,62 @@ does, but its `atMs` is stamped at `begin()` — so it lands on the axis at the
 instant the action really started. Log lines are never held behind a capture.
 That is why `seq` (arrival order at the recorder) is the right keyset cursor
 and the wrong display axis; see `packages/core/README.md`'s companion section.
+
+## Always-on sessions (`src/always-on.ts`, `src/manager.ts`, plan 206)
+
+A session is built the instant a device comes online and lives until it goes
+offline — never built lazily by a browser's `stream.start`, never torn down
+by an idle timer (MVP 11 §1.1). Two modules split the responsibility:
+
+- **`manager.ts`'s `SessionManager`** owns the entries themselves: `build()`
+  constructs the one BASE (`wall`) entry a device holds for as long as it is
+  online; `acquire()`/`release()` are for job/readiness callers that only
+  ever want that base entry and never build one; `attachViewer()`/
+  `detachViewer()` are for WS viewers (`ws-handlers.ts`), which may ask for
+  `control` quality.
+- **`always-on.ts`'s `createAlwaysOn`** is the builder: it queues a build the
+  moment `deviceOnline(id)` fires, staggers pending builds by USB root
+  (`buildsPerUsbRoot`, default 4) and a farm-wide ceiling
+  (`SESSION_BUILD_FARM_CEILING`, 16, overridable by
+  `ENKAKU_SESSION_BUILD_CEILING`), retries a dead or failed build under a
+  fixed backoff (`REBUILD_BACKOFF_MS`: 1s, 3s, 10s, 30s, then 30s
+  repeated), and starts the inspector prewarm
+  (`INSPECTOR_PREWARM_DELAY_MS`, 2s after the first frame — plan 208 fills
+  in the body) once per successful build.
+
+### The five steps
+
+The activity sentence a device shows while it has no picture yet
+("Preparing, step 3 of 5") names the session's own build phases, in the
+order `createSession` actually runs them — the order is load-bearing, not
+cosmetic (MVP 02 §2.1):
+
+| Step | Phase | What runs |
+|---|---|---|
+| 1 | `connecting` | adb transport connect |
+| 2 | `waking` | `wakeDevice`, skipped (but still reported) when the readiness manager already holds the screen |
+| 3 | `starting-video` | jar push, port forward, scrcpy-server launch, video and control sockets |
+| 4 | `waiting-frame` | sockets up, no picture yet |
+| 5 | `ready` | first frame received — the `prep` activity ends here, and the inspector prewarm timer starts |
+
+### The encoder split
+
+At most **two** encoders per device, ever: the BASE (`wall`) entry, built by
+the always-on builder and running for the whole time the device is online,
+and the CONTROL entry, built on demand the instant a `control`-quality
+viewer attaches and closed `CONTROL_LINGER_MS` (15s) after its last viewer
+detaches. A `control` attach never waits on a build: it is served by the
+already-running wall entry first (`ViewerAttach.substitute: 'wall'`) and
+switched onto the control entry the moment its first real keyframe arrives
+(`ViewerHooks.onSwitched`) — nothing is transcoded or upscaled server-side,
+the browser simply draws a sharper frame into the same canvas. A control
+build that cannot produce a real second scrcpy session calls
+`ViewerHooks.onControlFailed` instead; the viewer stays on the wall entry.
+
+### The activity port
+
+`always-on.ts` cannot import plan 205's real `ActivityRegistry` directly —
+`@enkaku/core` depends on `@enkaku/session`, never the other way around
+(`00-overview.md` §4.1). `ActivityPort` is the seam: a core wires a real
+adapter over the registry (`daemon.ts`); a test, or a core built without
+plan 205, gets `noopActivityPort`.

@@ -21,7 +21,6 @@ import {
 } from './messages/job'
 import {
   QualitySchema,
-  SessionProgressMessage,
   StreamEndedMessage,
   StreamKeyframeMessage,
   StreamMetaMessage,
@@ -381,10 +380,8 @@ export {
   StreamMetaMessage,
   StreamEndedMessage,
   SessionPhaseSchema,
-  SessionProgressMessage,
   QualitySchema,
   type SessionPhase,
-  type SessionProgress,
   type Quality,
 } from './messages/stream'
 export {
@@ -936,7 +933,6 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   StreamStartedMessage,
   StreamMetaMessage,
   StreamEndedMessage,
-  SessionProgressMessage,
   DevicePairingRequestResultMessage,
   DevicePairingCodeResultMessage,
   JobStatusEventMessage,

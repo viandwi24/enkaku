@@ -53,13 +53,14 @@ const ZERO_INPUT: InputStats = {
     text: { depth: 0, waitMsP50: 0, waitMsP95: 0, refusals: 0 },
   },
 }
-/** Same zero-fill contract (plan 92 §3.3, §4.5, §5 step 92.3) — reported before `sessions()` returns a manager (e.g. under the orchestrator, or the brief window before `daemon.ts` constructs one) or before `deps.video` is wired at all. */
+/** Same zero-fill contract (plan 206 §4.10) — reported before `sessions()` returns a manager (e.g. under the orchestrator, or the brief window before `daemon.ts` constructs one) or before `deps.video` is wired at all. */
 const ZERO_VIDEO: VideoStats = {
   controlStreams: 0,
   wallStreams: 0,
   buildsRunning: 0,
   buildQueueDepth: 0,
-  maxConcurrentBuilds: 0,
+  buildsPerUsbRoot: 0,
+  farmCeiling: 0,
   maxTiles: 0,
   maxTilesAuto: false,
   // Plan 100 §3.1, §4.1, step 100.3 — a harmless default for the same brief
@@ -88,8 +89,10 @@ export function createAdbStatsRoutes(deps: {
   health: () => DeviceHealth | null
   /** Whether the current global cap comes from the autoscaler (true) or a pinned `adb.maxConcurrent` (false). */
   auto: () => boolean
-  /** Idle session TTL (plan 42 §4.4) — exposed so the effect is measurable rather than assumed. Null under the orchestrator. */
+  /** Encoder states per device (plan 206 §4.3's `encoders()`) — null under the orchestrator. */
   sessions: () => SessionManager | null
+  /** The always-on builder's own occupancy (plan 206 §4.2's `stats()`) — same optional/zero-default contract as `transport`/`hostAdb` below. */
+  alwaysOn?: () => { running: number; queued: number } | null
   /**
    * The shared `/ws` transport's own health (plan 85 §3.6, §4.6) — from
    * `ws-handlers.ts`'s `transportStats()`, wired through `daemon.ts`'s usual
@@ -105,18 +108,18 @@ export function createAdbStatsRoutes(deps: {
   /** `packages/core/src/server/ws-handlers.ts`'s `inputStats()` (plan 91 §4.10, §5 step 91.10) — same optional/zero-default contract as `transport`/`hostAdb`/`adbHealth` above. */
   input?: () => InputStats | null
   /**
-   * The build lane's farm-wide settings (plan 92 §3.3, §3.7, §4.5, §5 step
-   * 92.3) — `session.maxConcurrentBuilds` plus `wall.maxTiles` AS ACTUALLY
-   * APPLIED (the derived number when the stored setting is `0`, never the
-   * raw `0` itself) and whether it is currently being derived. Read fresh
-   * from `settingsStore` at request time by `daemon.ts`'s wiring. The
-   * stream counts and build-lane occupancy come from `sessions()`'s own
-   * `videoStats()` instead — this accessor carries only the settings half,
-   * mirroring `auto` above (`adb.maxConcurrent`'s own settings/live split).
-   * Same optional/zero-default contract as `transport`/`hostAdb`/`adbHealth`
-   * above.
+   * The session build settings (plan 206 §4.5, §4.10) — `session.buildsPerUsbRoot`
+   * plus the farm ceiling constant, and `wall.maxTiles` AS ACTUALLY APPLIED
+   * (the derived number when the stored setting is `0`, never the raw `0`
+   * itself) and whether it is currently being derived. Read fresh from
+   * `settingsStore` at request time by `daemon.ts`'s wiring. The stream
+   * counts come from `sessions()`'s own `encoders()`, and the build-lane
+   * occupancy from `alwaysOn()`'s own `stats()` — this accessor carries only
+   * the settings half, mirroring `auto` above (`adb.maxConcurrent`'s own
+   * settings/live split). Same optional/zero-default contract as
+   * `transport`/`hostAdb`/`adbHealth` above.
    */
-  video?: () => { maxConcurrentBuilds: number; maxTiles: number; maxTilesAuto: boolean; transport: NonNullable<VideoStats>['transport'] } | null
+  video?: () => { buildsPerUsbRoot: number; farmCeiling: number; maxTiles: number; maxTilesAuto: boolean; transport: NonNullable<VideoStats>['transport'] } | null
   /**
    * The command console's own observability (plan 93 §3.5, §3.8, §7.3, §5
    * step 93.12) — `command-console/runner.ts`'s `CommandRunner.stats()`,
@@ -147,23 +150,20 @@ export function createAdbStatsRoutes(deps: {
     // a per-row `lookupDeviceNumber` here would be the textbook N+1 on the
     // one endpoint an operator watches while the farm is under load.
     const numbers = loadDeviceNumbers(deps.db)
-    // Idle session TTL (plan 42 §4.4) — every session currently held open
-    // with no subscriber, oldest first, so the setting's effect is
-    // measurable rather than assumed.
-    const idle = deps.sessions()?.idleSessions() ?? []
-    // The build lane's own occupancy (plan 92 §3.3, §4.3, §4.5, §5 step
-    // 92.3, tests H1) — `videoStats()` reads the SAME semaphore
-    // `createEntry` queues behind, so `buildsRunning`/`buildQueueDepth`
-    // reflect the lane's actual state, never an estimate.
-    const videoBuild = deps.sessions()?.videoStats?.()
+    // Plan 206 §4.3, §4.10 — encoder states per device replace the old,
+    // now-deleted per-quality stream counter; `alwaysOn().stats()` is the
+    // builder's own occupancy, the same counters `GET /api/video/sessions` reports.
+    const encoders = deps.sessions()?.encoders() ?? null
+    const alwaysOnStats = deps.alwaysOn?.()
     const videoSettings = deps.video?.()
-    const video: VideoStats = videoBuild
+    const video: VideoStats = encoders
       ? {
-          controlStreams: videoBuild.streams.control,
-          wallStreams: videoBuild.streams.wall,
-          buildsRunning: videoBuild.buildsRunning,
-          buildQueueDepth: videoBuild.buildQueueDepth,
-          maxConcurrentBuilds: videoSettings?.maxConcurrentBuilds ?? 0,
+          controlStreams: encoders.filter((e) => e.control !== null).length,
+          wallStreams: encoders.filter((e) => e.wall !== null).length,
+          buildsRunning: alwaysOnStats?.running ?? 0,
+          buildQueueDepth: alwaysOnStats?.queued ?? 0,
+          buildsPerUsbRoot: videoSettings?.buildsPerUsbRoot ?? 0,
+          farmCeiling: videoSettings?.farmCeiling ?? 0,
           maxTiles: videoSettings?.maxTiles ?? 0,
           maxTilesAuto: videoSettings?.maxTilesAuto ?? false,
           transport: videoSettings?.transport ?? 'loopback',
@@ -183,7 +183,6 @@ export function createAdbStatsRoutes(deps: {
         active: streamStats.streams,
         perDevice: streamStats.perDevice,
       },
-      idleSessions: idle,
       devices: rows.map((row) => {
         const m = deps.metrics.forSerial(row.serial)
         return {

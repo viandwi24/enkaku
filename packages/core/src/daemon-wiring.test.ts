@@ -837,13 +837,22 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
           return session
         },
         release() {},
+        async attachViewer() {
+          return { session, quality: 'wall' }
+        },
+        detachViewer() {},
+        async build() {},
+        async whenReady() {
+          return session
+        },
+        state: () => 'ready',
         get: () => session,
+        getByQuality: () => session,
         async closeDevice() {},
-        async closeIfIdle() {},
-        idleSessions: () => [],
         async closeAll() {
           return 0
         },
+        encoders: () => [],
       }
 
       const deps: WsHandlerDeps = {

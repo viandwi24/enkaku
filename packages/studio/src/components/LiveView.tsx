@@ -10,7 +10,6 @@ import {
   type InputAction,
   type LatencySummary,
   type Quality,
-  type SessionPhase,
 } from '@enkaku/protocol'
 import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/lib/h264-decoder'
 import { LatencyOverlay } from '@/components/video/LatencyOverlay'
@@ -18,7 +17,7 @@ import { ClipboardButton } from '@/components/device/ClipboardButton'
 import { Button, Tooltip, TooltipContent, TooltipTrigger, cn, duration } from '@enkaku/ui'
 import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 import { useNow } from '@/lib/useNow'
-import { newId, ws } from '@/lib/ws'
+import { newId, ws, WsRequestError } from '@/lib/ws'
 
 /**
  * Keycodes come from the protocol package — the same table scripts use, so a
@@ -42,12 +41,12 @@ const MANUAL_GESTURE_SAMPLE_MS = 8
 const MANUAL_GESTURE_MAX_SAMPLES = 300
 /** Below this, a gap is just a static screen; above it, something is wrong. */
 const STALE_AFTER_SEC = 5
-/** Past this, staying quiet is no longer helpful — offer to wake the device. */
-const WAKE_OFFER_AFTER_SEC = 30
+/** Past this, an opt-in auto-reconnect (§4.8) is worth trying — a session is always on now (plan 206), so this is a recovery nudge, never a "wake the device" offer. */
+const AUTO_RECOVER_STALE_SEC = 30
 /** Auto-recover fires at most once per this window (Plan 17 §4.8). */
 const AUTO_RECOVER_COOLDOWN_MS = 60_000
-/** A phase running longer than this looks slow, not merely in progress. */
-const SLOW_PHASE_AFTER_SEC = 10
+/** Plan 206 §4.9 — how often a `stream.start` refused with `E_SESSION_PREPARING`/`device_offline` retries on its own. */
+const PREPARING_RETRY_MS = 3_000
 /**
  * A floor on the `fitContainer` panel's computed width (plan 103 step
  * 103.9) — guards against a feedback loop, not a design choice about how
@@ -130,34 +129,6 @@ function takeClickIntentMark(deviceId: string): number | null {
 /** Milliseconds under a second, one decimal of a second above it — a cold cast is seconds, a warm one is not. */
 function formatClickToPaint(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`
-}
-
-/** The static step list shown while a session wakes up (Plan 17 §4.7). No fake percentage — just where we are. */
-const PHASE_STEPS: { key: SessionPhase; label: string }[] = [
-  { key: 'connecting', label: 'Connecting' },
-  { key: 'waking', label: 'Waking' },
-  { key: 'starting-video', label: 'Starting video' },
-  { key: 'waiting-frame', label: 'Waiting for the first frame' },
-]
-const PHASE_HEADLINE: Record<SessionPhase, string> = {
-  connecting: 'Connecting to the device',
-  waking: 'Waking the device',
-  'starting-video': 'Starting video',
-  'waiting-frame': 'Waiting for the first frame',
-  ready: 'Loading the picture',
-}
-/**
- * One word per phase, for the compact (Wall tile) panel (Plan 92 §4.7,
- * fixes F16): a 100 px column has room for a spinner and a word, not the
- * four-step breadcrumb the device page draws. Same phases, same order —
- * just named for a column instead of a page.
- */
-const PHASE_COMPACT_LABEL: Record<SessionPhase, string> = {
-  connecting: 'Connecting',
-  waking: 'Waking',
-  'starting-video': 'Video',
-  'waiting-frame': 'Frame',
-  ready: 'Loading',
 }
 
 /** adb speaks to developers; turn its output into something actionable. */
@@ -260,7 +231,7 @@ export function LiveView({
    * component on this device is currently installing" — the overlay below
    * renders nothing in that case. This is DELIBERATELY NON-BLOCKING (plan
    * 106 §2: preparation is a readiness signal, never a gate) — unlike
-   * `showWakePanel` below, it never covers the picture opaquely, never
+   * the no-frames panel below, it never covers the picture opaquely, never
    * disables the canvas, and is `pointer-events-none` throughout, so an
    * operator watching the phone for exactly this reason keeps watching it.
    */
@@ -332,22 +303,17 @@ export function LiveView({
    * shown inline like `degradedReason` rather than styled as a red error.
    */
   const [textInputNotice, setTextInputNotice] = useState<string | null>(null)
-  // The wake-up progress panel (Plan 17 §4.7): the phase the core last
-  // reported, and whether a real frame has actually been painted yet — the
-  // panel goes away on the picture, not on the 'ready' message.
-  const [phase, setPhase] = useState<SessionPhase | null>(null)
   /**
-   * `session.progress`'s optional `detail` (plan 92 §3.8 rule 5, §4.5, §5
-   * step 92.2 — fixes F17). Before this, `SessionProgressMessage` carried a
-   * human-readable reason for a restart and `LiveView` read only `phase`,
-   * so a session restarted by a video settings change looked identical to
-   * an ordinary reconnect — no way to tell "someone changed a setting" from
-   * "the phone glitched". Rendered under the phase headline below.
+   * Plan 206 §3.10, §4.9 — a device with no base entry yet (still preparing,
+   * or offline). Replaces the old phase-by-phase wake panel: the always-on
+   * builder's own activity sentence (`E_SESSION_PREPARING`'s message, e.g.
+   * "Preparing, step 3 of 5") or `device_offline`'s, shown as the tile's
+   * only text while it has no frames, cleared the moment `stream.started`
+   * arrives.
    */
-  const [phaseDetail, setPhaseDetail] = useState<string | null>(null)
+  const [noFrames, setNoFrames] = useState<string | null>(null)
   const [painted, setPainted] = useState(false)
   const paintedRef = useRef(false)
-  const phaseChangedAtRef = useRef(Date.now())
   const now = useNow(1000)
   /** `fitContainer` only (plan 103 step 103.9) — the panel's own computed
    * width, in pixels, or `null` before the first measurement. See the
@@ -387,14 +353,13 @@ export function LiveView({
   // stream.start on mount, plus automatic resubscribe after a reconnect.
   useEffect(() => {
     let disposed = false
+    let preparingRetryTimer: ReturnType<typeof setTimeout> | null = null
     const frameTimes: number[] = []
     // A fresh mount or a manual/auto retry is a new session from the viewer's
-    // side — start the wake-up panel over instead of carrying stale state.
+    // side — start the "no frames yet" state over instead of carrying stale state.
     paintedRef.current = false
     setPainted(false)
-    setPhase(null)
-    setPhaseDetail(null)
-    phaseChangedAtRef.current = Date.now()
+    setNoFrames(null)
     // A fresh attempt starts with a clean slate on the fast-path banner too
     // — carrying a stale one across a retry would say "still unavailable"
     // before the new `stream.start` has even answered.
@@ -433,12 +398,24 @@ export function LiveView({
         // wall entry's own frames instead, honestly labelled. `''` (not
         // `null`) when the server sent no `degradedDetail`, so the banner
         // below can tell "not degraded" from "degraded, no detail given".
-        setControlUnavailable(res.payload.degradedReason === 'control_session_unavailable' ? (res.payload.degradedDetail ?? '') : null)
+        setControlUnavailable(res.payload.degradedReason === 'control_encoder_unavailable' ? (res.payload.degradedDetail ?? '') : null)
+        setNoFrames(null)
         setError(null)
         setStopped(null)
         setStreaming(true)
       } catch (err) {
-        if (!disposed) setError(err instanceof Error ? err.message : String(err))
+        if (disposed) return
+        // Plan 206 §3.10, §4.9 — the device has no base entry yet (still
+        // preparing) or is offline: neither is an error to show in red, both
+        // retry on their own every `PREPARING_RETRY_MS` until the base entry
+        // exists (or the effect is torn down).
+        const code = err instanceof WsRequestError ? err.code : null
+        if (code === 'E_SESSION_PREPARING' || code === 'device_offline') {
+          setNoFrames(err instanceof Error ? err.message : String(err))
+          preparingRetryTimer = setTimeout(() => void startStream(), PREPARING_RETRY_MS)
+        } else {
+          setError(err instanceof Error ? err.message : String(err))
+        }
       }
     }
 
@@ -449,10 +426,6 @@ export function LiveView({
     const offMsg = ws.on((msg) => {
       if (msg.type === 'stream.meta' && msg.payload.streamId === streamIdRef.current) {
         setSize({ width: msg.payload.width, height: msg.payload.height })
-      } else if (msg.type === 'session.progress' && msg.payload.deviceId === deviceId) {
-        setPhase(msg.payload.phase)
-        setPhaseDetail(msg.payload.detail ?? null)
-        phaseChangedAtRef.current = Date.now()
       } else if (msg.type === 'stream.ended' && msg.payload.deviceId === deviceId) {
         // The session died server-side: stop the fps counter so a stale number
         // cannot masquerade as a live stream.
@@ -548,6 +521,7 @@ export function LiveView({
 
     return () => {
       disposed = true
+      if (preparingRetryTimer !== null) clearTimeout(preparingRetryTimer)
       offMsg()
       offBinary()
       offStatus()
@@ -786,9 +760,10 @@ export function LiveView({
       const last = lastFrameRef.current
       const sec = last === 0 ? 0 : Math.round((performance.now() - last) / 1000)
       setStaleSec(sec)
-      // Opt-in auto-recover (§4.8): left off, nothing wakes a phone someone
-      // deliberately put to sleep. On, one stop+start cycle at most per minute.
-      if (autoReconnect && sec >= WAKE_OFFER_AFTER_SEC) {
+      // Opt-in auto-recover (§4.8): left off, nothing disturbs a device
+      // whose screen is merely static (always-on sessions never sleep on
+      // their own, plan 206). On, one stop+start cycle at most per minute.
+      if (autoReconnect && sec >= AUTO_RECOVER_STALE_SEC) {
         const nowMs = Date.now()
         if (nowMs - lastAutoRecoverRef.current >= AUTO_RECOVER_COOLDOWN_MS) {
           lastAutoRecoverRef.current = nowMs
@@ -798,11 +773,6 @@ export function LiveView({
     }, 1000)
     return () => clearInterval(t)
   }, [autoReconnect])
-
-  const wakeDevice = () => {
-    sendInputAction({ verb: 'key', keycode: AKEYCODE.WAKEUP })
-    onActivity?.()
-  }
 
   /**
    * Pushes the OPERATOR's browser clipboard onto the device (plan 90 §3.3, §5 step 90.5) — the
@@ -915,11 +885,6 @@ export function LiveView({
     </Tooltip>
   )
 
-  // Shown while the session wakes up: any known phase before a real frame has
-  // been painted, not merely before the 'ready' message (§4.7).
-  const showWakePanel = phase !== null && !painted
-  const phaseElapsedSec = phase ? Math.max(0, Math.round((now - phaseChangedAtRef.current) / 1000)) : 0
-
   return (
     <div
       ref={rootRef}
@@ -976,29 +941,16 @@ export function LiveView({
         {streaming && (
           <>
             {staleSec >= STALE_AFTER_SEC ? (
-              <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="cursor-help border-b border-dotted border-led-warn text-led-warn">
-                      no new frames for {staleSec}s
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    The picture below is the last frame received. scrcpy sends nothing while the device screen is off, so
-                    this usually means the phone went to sleep.
-                  </TooltipContent>
-                </Tooltip>
-                {staleSec >= WAKE_OFFER_AFTER_SEC &&
-                  (inputEnabled ? (
-                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={wakeDevice}>
-                      The device screen looks off. Wake it
-                    </Button>
-                  ) : (
-                    <span className="text-[11px] text-fg-subtle">
-                      The device screen looks off — take control to wake it.
-                    </span>
-                  ))}
-              </>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-help border-b border-dotted border-led-warn text-led-warn">
+                    no new frames for {staleSec}s
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  The picture is the last frame received. scrcpy sends nothing while the screen is static or off.
+                </TooltipContent>
+              </Tooltip>
             ) : (
               <span className="readout">{fps} fps</span>
             )}
@@ -1039,11 +991,11 @@ export function LiveView({
           </>
         )}
         {/* Click → first paint (plan 125 §4.7, §5 step 125.11).
-            **Why it is here and not in the wake panel below**, which is what
-            §4.7 calls "the existing `session.progress` readout": that panel's
-            own visibility condition is `phase !== null && !painted`, so it is
-            gone at the exact instant this number comes into existence — a
-            reading rendered there could never be seen. This status line is the
+            **Why it is here and not in the no-frames panel above** (plan 206
+            §4.9): that panel's own visibility condition is `noFrames !==
+            null && !painted`, so it is gone at the exact instant this number
+            comes into existence — a reading rendered there could never be
+            seen. This status line is the
             same readout family (fps, resolution, codec: the numbers that
             describe the picture being watched), it is the one surface that
             outlives the first frame, and it is where an operator already looks
@@ -1207,64 +1159,31 @@ export function LiveView({
             </div>
           ))}
 
-        {/* Wake-up progress (Plan 17 §4.7): what the core is doing, instead of a
-            black rectangle, while a sleeping phone comes up. No fake percentage —
-            just the static step list with the current one highlighted.
-            Compact (Wall tile, Plan 92 §4.7, fixes F16): the same phase and
-            the same slow-phase timer — the two things that answer "is this
-            stuck" — as a spinner and one word, not the four-step breadcrumb,
-            which is a wall of text at a 100 px column width. */}
-        {showWakePanel &&
-          !stopped &&
-          (compact ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-bg/95 px-2 text-center">
-              <Loader2 className="size-3.5 animate-spin text-fg-muted" aria-hidden />
-              <p className="text-[11px] font-medium">
-                {PHASE_COMPACT_LABEL[phase ?? 'connecting']}
-                {phaseElapsedSec >= SLOW_PHASE_AFTER_SEC && (
-                  <span className="readout ml-1 text-[10px] font-normal text-fg-subtle">{phaseElapsedSec}s</span>
-                )}
-              </p>
-              {/* plan 92 §3.8 rule 5, fixes F17 — the reason THIS restart is
-                  happening, e.g. "applying new video settings". Line-clamped:
-                  a tile is narrow and this is explanatory, not load-bearing. */}
-              {phaseDetail && <p className="line-clamp-2 text-[9.5px] leading-snug text-fg-subtle">{phaseDetail}</p>}
-            </div>
-          ) : (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-bg/95 px-6 text-center">
-              <Loader2 className="size-5 animate-spin text-fg-muted" aria-hidden />
-              <p className="text-[13px] font-medium">
-                {PHASE_HEADLINE[phase ?? 'connecting']}…
-                {phaseElapsedSec >= SLOW_PHASE_AFTER_SEC && (
-                  <span className="readout ml-1.5 text-[11px] font-normal text-fg-subtle">{phaseElapsedSec}s</span>
-                )}
-              </p>
-              {/* plan 92 §3.8 rule 5, fixes F17 — `session.progress.detail`,
-                  finally rendered: before this it was parsed and dropped. */}
-              {phaseDetail && <p className="max-w-sm text-[11.5px] leading-relaxed text-fg-muted">{phaseDetail}</p>}
-              <div className="flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-[11px] text-fg-subtle">
-                {PHASE_STEPS.map((s, i) => (
-                  <span key={s.key} className="flex items-center gap-1.5">
-                    <span className={cn(s.key === phase && 'font-medium text-fg')}>{s.label}</span>
-                    {i < PHASE_STEPS.length - 1 && <span aria-hidden>→</span>}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
+        {/* Plan 206 §3.10, §4.9 — the tile's only text while it has no
+            frames: the always-on builder's activity sentence ("Preparing,
+            step 3 of 5", "Recovering, attempt 1") or "the device is
+            offline", retried automatically every `PREPARING_RETRY_MS`. The
+            handoff's Screens-card rule ("Center text only when not live")
+            is what sizes this at 11px even outside compact mode — this is
+            the pre-plan-214 stand-in for that centre text. */}
+        {noFrames !== null && !painted && !stopped && (
+          <div className="absolute inset-0 flex items-center justify-center bg-bg/95 px-2 text-center">
+            <p className={compact ? 'text-[11px] text-fg-muted' : 'text-[13px] text-fg-muted'}>{noFrames}</p>
+          </div>
+        )}
 
         {/* Plan 106 §5 step 106.7 — a component is installing on this
-            device right now. Deliberately NOT the wake panel's treatment
-            above: no `bg-bg/95` cover, no centring over the whole area,
-            `pointer-events-none` throughout — the picture stays fully
+            device right now. Deliberately NOT the no-frames panel's
+            treatment above: no `bg-bg/95` cover, no centring over the whole
+            area, `pointer-events-none` throughout — the picture stays fully
             visible and fully interactive, because the phone streams fine
             while this runs (plan 106 §2, "a readiness signal, never a
             gate") and an operator may be watching for exactly this
-            reason. Suppressed while `stopped` or `showWakePanel` already
-            own the area — a component installing on a device with no
-            picture yet is a fact for the Preparation section, not a
-            second overlay stacked on the wake panel's own. */}
-        {!compact && provisioning && !stopped && !showWakePanel && (
+            reason. Suppressed while `stopped` or the no-frames panel
+            already own the area — a component installing on a device with
+            no picture yet is a fact for the Preparation section, not a
+            second overlay stacked on that panel's own. */}
+        {!compact && provisioning && !stopped && !(noFrames !== null && !painted) && (
           <div
             className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-2"
             data-testid="live-view-provisioning-overlay"

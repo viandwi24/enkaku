@@ -50,3 +50,49 @@ export const VideoLatencyResponseSchema = z.object({
   streams: z.array(VideoLatencyStreamSchema),
 })
 export type VideoLatencyResponse = z.infer<typeof VideoLatencyResponseSchema>
+
+/**
+ * `GET /api/video/sessions` (plan 206 §4.6): every known device's always-on
+ * build state and encoder states, for the bench harness (`--warmup`) and for
+ * operator/owner debugging. `wall` is null only for a device with no base
+ * entry yet (state `none`/`queued`/`preparing`/`recovering`); `control` is
+ * null whenever no Device Control viewer is attached.
+ */
+export const EncoderStateSchema = z.object({
+  engine: z.enum(['scrcpy', 'screencap-loop']),
+  maxSize: z.number().int(),
+  maxFps: z.number().int(),
+  bitRate: z.number().int(),
+  viewers: z.number().int().min(0),
+  bytesPerSec: z.number().min(0),
+  framesPerSec: z.number().min(0),
+  sinceSec: z.number().int(),
+  /** Unix seconds when the control linger closes the entry; null while it has viewers, and always null for `wall`. */
+  lingerEndsAt: z.number().int().nullable(),
+})
+export type EncoderState = z.infer<typeof EncoderStateSchema>
+
+export const VideoSessionsResponseSchema = z.object({
+  devices: z.array(
+    z.object({
+      deviceId: z.string(),
+      number: z.number().int().nullable(),
+      state: z.enum(['none', 'queued', 'preparing', 'ready', 'recovering']),
+      step: z.number().int().min(1).max(5).nullable(),
+      attempt: z.number().int().min(0),
+      usbRoot: z.string().nullable(),
+      wall: EncoderStateSchema.nullable(),
+      control: EncoderStateSchema.nullable(),
+    }),
+  ),
+  builder: z.object({
+    running: z.number().int().min(0),
+    queued: z.number().int().min(0),
+    perRoot: z.record(z.string(), z.object({ running: z.number().int().min(0), queued: z.number().int().min(0) })),
+    buildsPerUsbRoot: z.number().int().min(1),
+    farmCeiling: z.number().int().min(1),
+  }),
+  /** `process.memoryUsage().rss` at answer time, so a warm-up run can print the cost of N always-on sessions. */
+  rssBytes: z.number().int().min(0),
+})
+export type VideoSessionsResponse = z.infer<typeof VideoSessionsResponseSchema>
