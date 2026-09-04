@@ -82,8 +82,21 @@ export function ActionDialog<P>({
           padding and a 16px gap between the title and the picker, and MVP 07
           §2.1 says "flush under the modal title, with nothing between the
           title and the picker". Every band below sets its own padding. */}
-      <DialogContent className="w-full gap-0 p-0 sm:max-w-[520px]" onEscapeKeyDown={(e) => e.preventDefault()}>
-        <DialogHeader className="px-[14px] pt-[14px] pb-[10px]">
+      {/*
+        `flex flex-col overflow-hidden` overrides `DialogContent`'s own
+        `grid ... overflow-y-auto`. The primitive scrolls its whole body,
+        and the form band below scrolled too, so a tall form produced TWO
+        nested scrollbars — one moving the picker and title out of view, one
+        moving the fields (owner, 2026-09-04). A modal has one scrolling
+        region: the header, the picker and the footer are fixed, and only the
+        form moves. Changed here rather than in the primitive, since other
+        dialogs are short and legitimately scroll as a whole.
+      */}
+      <DialogContent
+        className="flex w-full max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]"
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
+        <DialogHeader className="flex-none px-[14px] pt-[14px] pb-[10px]">
           <DialogTitle>{spec.title(target.count)}</DialogTitle>
         </DialogHeader>
 
@@ -94,12 +107,12 @@ export function ActionDialog<P>({
         {/* 2. The form. A separate container, below the picker's own
                `border-b border-line` divider, on `bg-panel`, with no border
                of its own: "The two never share a background or a border." */}
-        <div className="max-h-[46dvh] space-y-3 overflow-y-auto bg-panel px-[14px] py-3">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-panel px-[14px] py-3">
           {Fields ? <Fields value={value} onChange={setValue} target={target} /> : spec.note ? <p className="text-body text-dim">{spec.note}</p> : null}
           {results && <ActionOutcome results={results} devices={devices} />}
         </div>
 
-        <DialogFooter className="border-t border-line px-[14px] py-3">
+        <DialogFooter className="flex-none border-t border-line px-[14px] py-3">
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>

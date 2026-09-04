@@ -1,5 +1,7 @@
 'use client'
 
+import { useState } from 'react'
+
 import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
@@ -36,6 +38,10 @@ export function FrameAndEvent({
   previousFrameEvent: JobTraceEvent | null
 }) {
   const shown = frameEvent ?? previousFrameEvent
+  /** Reset per frame: a hash that 404s says nothing about the next one. */
+  const [failedHash, setFailedHash] = useState<string | null>(null)
+  const failed = shown?.frameHash != null && failedHash === shown.frameHash
+  const setFailed = () => setFailedHash(shown?.frameHash ?? null)
   const retry = (event?.attempt ?? 1) > 1
   return (
     <div className="flex items-stretch gap-[10px]">
@@ -45,15 +51,20 @@ export function FrameAndEvent({
           className="flex aspect-[9/19.5] w-full items-end justify-center overflow-hidden rounded-button border border-line-2 pb-2"
           style={shown?.frameHash ? undefined : STRIPE}
         >
-          {shown?.frameHash ? (
+          {shown?.frameHash && !failed ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={`${coreBase()}/api/jobs/${jobId}/runs/${runId}/trace/frames/${shown.frameHash}`}
               alt={`Screen at ${formatOffset(shown.atMs, originMs)}`}
               className="size-full object-contain"
+              /* Same reason as `FrameStrip`: a swept frame must not render as
+                 the browser's broken-image glyph. */
+              onError={setFailed}
             />
           ) : (
-            <span className="font-mono text-tip text-faint">no frame stored at or before this point</span>
+            <span className="font-mono text-tip text-faint">
+              {shown?.frameHash ? 'this frame is no longer stored — retention swept it' : 'no frame stored at or before this point'}
+            </span>
           )}
         </div>
       </div>

@@ -63,7 +63,7 @@ export function DevicePicker({
   const [query, setQuery] = useState('')
 
   return (
-    <div data-slot="device-picker" className={cn('w-full border-b border-line bg-panel-2 px-[14px] py-[10px]', className)}>
+    <div data-slot="device-picker" className={cn('w-full flex-none border-b border-line bg-panel-2 px-[14px] py-[10px]', className)}>
       <button
         type="button"
         onClick={() => !forceExpanded && setExpanded((v) => !v)}

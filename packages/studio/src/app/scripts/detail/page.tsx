@@ -186,7 +186,6 @@ function ScriptDetail() {
         active={tab}
         tabs={[
           { key: 'overview', label: 'Overview' },
-          { key: 'source', label: 'Source' },
           { key: 'runs', label: 'Runs', count: runsCount },
           { key: 'settings', label: 'Settings' },
         ]}
@@ -247,27 +246,6 @@ function ScriptDetail() {
               older runs stay reproducible.
             </p>
           </div>
-        </div>
-      )}
-
-      {tab === 'source' && (
-        <div className="px-5 py-4">
-          {script.source ? (
-            <>
-              <p className="mb-2 text-[12px] text-fg-muted">
-                The entry file as published. Imports are bundled at publish time, so what the farm runs is this plus its
-                dependencies inlined.
-              </p>
-              <pre className="readout max-h-[36rem] overflow-auto whitespace-pre rounded-lg border bg-surface p-3 text-[11.5px] leading-relaxed">
-                {script.source}
-              </pre>
-            </>
-          ) : (
-            <EmptyState
-              title="No source stored"
-              description="This version was published before the source was kept. Publish again to store it."
-            />
-          )}
         </div>
       )}
 

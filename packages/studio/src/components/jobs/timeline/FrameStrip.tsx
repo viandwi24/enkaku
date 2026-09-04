@@ -1,5 +1,7 @@
 'use client'
 
+import { useState } from 'react'
+
 import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
@@ -39,6 +41,9 @@ export function FrameStrip({
   originMs: number
   note: string
 }) {
+  /** Frame hashes whose image 404'd — swept by retention, or the file is gone. */
+  const [failed, setFailed] = useState<Set<string>>(new Set())
+
   return (
     <div className="rounded-inner border border-line-2 px-3 pt-[10px] pb-3">
       <div className="pb-2 text-label text-faint">
@@ -54,15 +59,29 @@ export function FrameStrip({
               )}
               style={e.frameHash ? undefined : STRIPE}
             >
-              {e.frameHash ? (
+              {e.frameHash && !failed.has(e.frameHash) ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={`${coreBase()}/api/jobs/${jobId}/runs/${runId}/trace/frames/${e.frameHash}`}
                   alt={`Screen at ${formatOffset(e.atMs, originMs)}`}
                   className="size-full object-cover"
+                  /*
+                   * A frame the run recorded but the farm no longer has —
+                   * retention swept it, or the file went missing — used to
+                   * render the browser's own broken-image glyph beside the
+                   * alt text (owner, 2026-09-04). That is never an acceptable
+                   * state: it reads as a bug in the timeline rather than as
+                   * an image that has aged out. Fall back to the same striped
+                   * card an uncaptured action gets, captioned differently.
+                   */
+                  onError={() => setFailed((prev) => new Set(prev).add(e.frameHash!))}
                 />
               ) : (
-                <span className="font-mono text-[9px] text-faint">{formatOffset(e.atMs, originMs)}</span>
+                <span className="text-center font-mono text-[9px] leading-tight text-faint">
+                  {formatOffset(e.atMs, originMs)}
+                  <br />
+                  {e.frameHash ? 'frame gone' : 'no frame'}
+                </span>
               )}
             </div>
             <div className={cn('mt-[5px] truncate text-center text-tip', i === selected ? 'text-accent' : 'text-faint')}>
