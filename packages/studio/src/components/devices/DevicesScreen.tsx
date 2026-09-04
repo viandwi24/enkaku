@@ -3,7 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import type { Target } from '@enkaku/protocol'
+import { toast } from 'sonner'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
+import { DeviceControl } from '@/components/device-control/DeviceControl'
+import { retargetSelection } from '@/components/device-control/retarget'
+import { runAction, groupResults } from '@/lib/actions'
+import type { GenericActionId } from '@/lib/generic-actions'
 import { readLocalPrefs, readSessionPrefs, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { ws } from '@/lib/ws'
 import { BulkPill } from './BulkPill'
@@ -72,6 +77,14 @@ export function DevicesScreen() {
     router.replace(`/?${next.toString()}`)
   }
 
+  const setFocus = (id: string | null) => {
+    setFocusId(id)
+    const next = new URLSearchParams(params.toString())
+    if (id) next.set('focus', id)
+    else next.delete('focus')
+    router.replace(`/?${next.toString()}`)
+  }
+
   const setCardWidthAndPersist = (w: CardWidth) => {
     setCardWidth(w)
     writeLocalPrefs({ cardWidth: w })
@@ -100,7 +113,16 @@ export function DevicesScreen() {
 
   const filteredIds = useMemo(() => filtered.map((d) => d.id), [filtered])
 
-  const selection = useDeviceSelection({ filteredIds, containerRef })
+  const [focusId, setFocusId] = useState<string | null>(params.get('focus'))
+
+  const selection = useDeviceSelection({
+    filteredIds,
+    containerRef,
+    onOpenControl: (id) => {
+      selection.set(retargetSelection(id, [...selection.selected]))
+      setFocus(id)
+    },
+  })
 
   const pendingCount = discovered.length
 
@@ -109,6 +131,32 @@ export function DevicesScreen() {
   const rescan = () => {
     setSpinning(true)
     setTimeout(() => setSpinning(false), 1400)
+  }
+
+  const NEEDS_DIALOG = new Set(['install', 'adb', 'run-script', 'push', 'clear-cache', 'settings'])
+
+  /**
+   * Device Control's Actions tab (plan 215 §4.10, §4.15): every row calls
+   * this with the focused (host) device only — REST verbs take their own
+   * target, never the mirror selection (MVP 07, plan 215 §3.2 D11). A
+   * `needsDialog` verb has no dialog yet (plan 216) and is announced rather
+   * than silently attempted.
+   */
+  async function runDeviceAction(id: GenericActionId, extraParams?: Record<string, unknown>) {
+    if (!focusId) return
+    if (NEEDS_DIALOG.has(id) && !extraParams) {
+      toast.message('Opens a dialog (plan 216)')
+      return
+    }
+    try {
+      const res = await runAction(id, { deviceIds: [focusId] }, (extraParams ?? {}) as never)
+      const grouped = groupResults(res.results)
+      const failed = grouped.failed.length + grouped.forbidden.length
+      if (failed > 0) toast.warning(`${grouped.done.length} done, ${failed} refused`)
+      else toast.success('Done')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
   }
 
   if (devices === null) {
@@ -175,6 +223,15 @@ export function DevicesScreen() {
 
       {selection.rect && (
         <div className="pointer-events-none fixed z-50 rounded-[6px] border border-accent bg-accent-a1" style={selection.rect} />
+      )}
+
+      {focusId && (
+        <DeviceControl
+          deviceId={focusId}
+          selectedIds={[...selection.selected]}
+          onClose={() => setFocus(null)}
+          onAction={(id, params) => void runDeviceAction(id, params)}
+        />
       )}
     </div>
   )

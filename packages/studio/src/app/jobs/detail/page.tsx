@@ -1004,7 +1004,7 @@ function JobDetail() {
                   link is dropped rather than pointing at a 404. */}
               {!deviceRef?.deleted && (
                 <Button asChild variant="ghost" size="sm" className="mt-2 h-7 w-full text-[12px]">
-                  <Link href={`/device?id=${encodeURIComponent(job.deviceId)}`}>Open device</Link>
+                  <Link href={`/?focus=${encodeURIComponent(job.deviceId)}`}>Open device</Link>
                 </Button>
               )}
 

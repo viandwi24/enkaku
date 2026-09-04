@@ -80,6 +80,7 @@ export const DeviceDetailSchema = DeviceInfoSchema.extend({
   settings: z.unknown(),
   nodeId: z.string().nullable(),
 })
+export type DeviceDetail = z.infer<typeof DeviceDetailSchema>
 export const DeviceDetailResponseSchema = z.object({ device: DeviceDetailSchema })
 
 /** `GET /api/devices/blocked`. */

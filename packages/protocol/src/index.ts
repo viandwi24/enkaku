@@ -613,6 +613,15 @@ export {
   type KeyMeta,
 } from './keys'
 export {
+  HOTKEY_IDS,
+  HotkeyIdSchema,
+  DEVICE_CONTROL_HOTKEYS,
+  chordLabel,
+  hotkeyFor,
+  type HotkeyId,
+  type Hotkey,
+} from './hotkeys'
+export {
   countMatches,
   proposeSelectors,
   type SelectorCandidate,

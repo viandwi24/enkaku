@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { MoonStar, Play, ScreenShare } from 'lucide-react'
 import type { DeviceInfo, JobInfo } from '@enkaku/protocol'
-import { LiveView, markLiveViewIntent } from '@/components/LiveView'
+import { LiveView } from '@/components/LiveView'
 import { explainQuarantine } from '@/lib/quarantine'
 import { ActivityBadge } from '@/components/ActivityBadge'
 import { setDeviceReadiness } from '@/lib/readiness'
@@ -394,16 +394,6 @@ export function WallTile({
       clearTimeout(clickTimer.current)
       clickTimer.current = null
     }
-    // Plan 125 §4.7, §5 step 125.11 — this is the click the cold-cast number
-    // is measured FROM, and this line is the only place in the product that
-    // knows when it happened. Everything after it (clearing `?focus=`,
-    // mounting `DevicePopup`, its own `<LiveView>` mount, `stream.start`,
-    // the session build on the phone, the first decoded frame) is what the
-    // number counts. Marked BEFORE `onFocus()` so the popup's own
-    // `onlyIfAbsent` mark cannot win the race and shave the popup-mount leg
-    // off a wall-originated reading. Costs one `Map.set` on a deliberate
-    // double-click — nothing per tile, per frame, or per render.
-    markLiveViewIntent(device.id)
     onFocus()
   }
 
@@ -490,7 +480,7 @@ export function WallTile({
           // (plan 125 §4.3). `rendersPicture` above is the single place both
           // of those decisions are made, and the reason there is exactly one
           // `<LiveView>` element here rather than two.
-          <LiveView deviceId={device.id} inputEnabled={false} quality="wall" compact />
+          <LiveView deviceId={device.id} />
         ) : asleep ? (
           // The screen-off placeholder (Plan 92 §3.2 rule 1, §4.7, fixes
           // F12): still checked BEFORE the live set's own `live` flag (that
