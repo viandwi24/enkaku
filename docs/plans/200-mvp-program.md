@@ -31,6 +31,7 @@ These are hard rules. A plan may add rules; it may not relax these.
 - **Delete everything the plan's §10 names**, and nothing it does not name. Deletion is part of the deliverable: a plan whose §10 still greps to a live reference is not done.
 - **Do not add compatibility shims, feature flags, `Legacy*` names, or "kept for one release" paths.** `00-overview.md` §4.3 applies: replace, never version. The only exception is a Drizzle migration for data already on disk.
 - **Do not touch a file the plan does not name** unless the plan's own step requires it to compile or to keep an existing test green; say so in the report.
+- **Commit a checkpoint every few files, never only at the end.** Two executors in this programme lost their connection mid-sweep, one with 176 files and 12 000 deletions uncommitted, and the work survived only because a checkpoint had just been taken. A `wip(mvp-NNN): <what>, mid step NNN.x` commit costs nothing and is the only thing standing between a dropped stream and hours of lost work. The round gate squashes nothing: checkpoints merge as they are.
 - **A test your change broke is yours to fix, whatever its path.** "Out of scope" applies to work you were not asked to do, never to damage you caused. Plan 205's executor left nine failing tests in a plugin because the file was not in its §7; the fix was one word (§8.7).
 - **Do not decide an open question.** §9 of each plan lists them. If execution reaches a point where an open question blocks a step, stop that step, finish every step that does not depend on it, and report.
 
