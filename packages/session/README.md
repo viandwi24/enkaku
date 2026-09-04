@@ -383,6 +383,20 @@ used to seize the `instrumentation` lock from a healthy `ui-server` in
 another session (MVP 02 §2.5). The `inspector ready: <engineId> on <deviceId>
 in <N> ms` log line reports the whole prewarm cost, once per session.
 
+**The ladder and the push `waitFor` (plan 222 §3.5, §3.8).** `createInspectorForSession`
+(`inspector-factory.ts`) tries three rungs in order, once per session, and
+never more than one at a time: `ui-tree` (the guest agent's own
+`AccessibilityService`, no lock, no process — the default), then `ui-server`
+(unchanged from above), then `uiautomator-dump`. Each hop that is taken is
+reported through `onFallback`, which the host turns into
+`device.inspector.fallback` and a `session.degraded` event. `waitFor`
+(`device-executor.ts`) evaluates its condition once immediately, and — on an
+engine whose `Inspector.watch?` is present — subscribes to the engine's own
+change notifications instead of polling, re-evaluating on the next event with
+a bounded `WAITFOR_WATCH_RECHECK_MS` (1 s) safety-net re-check alongside it.
+An engine with no `watch` (`ui-server`, `uiautomator-dump`) keeps the old
+clamped poll, `Math.min(intervalMs, session.inspectorPollIntervalMs)`.
+
 ### The five steps
 
 The activity sentence a device shows while it has no picture yet
