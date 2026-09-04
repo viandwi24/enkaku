@@ -156,7 +156,7 @@ describe('BindingSchema', () => {
    */
   test('accepts $device: "number", the sixth allowlisted field', () => {
     expect(BindingSchema.parse({ $device: 'number' })).toEqual({ $device: 'number' })
-    expect(BINDING_DEVICE_FIELDS).toEqual(['id', 'stableId', 'label', 'status', 'clusterId', 'number'])
+    expect(BINDING_DEVICE_FIELDS).toEqual(['id', 'stableId', 'label', 'status', 'groupId', 'number'])
   })
 
   test('refuses an undeclared device or entry field', () => {

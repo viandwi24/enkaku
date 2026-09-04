@@ -91,7 +91,7 @@ export function defaultsForNewDevice(opts: {
 /** What an operator may set while admitting a device (plan 56 §4.3). */
 export interface AdmitOptions {
   label?: string
-  clusterId?: string
+  groupId?: string
   deviceDefaults?: () => FarmDeviceDefaults
   defaultDesiredReadiness?: () => Readiness
 }
@@ -130,7 +130,7 @@ export function admitDevice(db: Db, stableId: string, opts: AdmitOptions = {}): 
         androidVersion: sighting.androidVersion,
         status: 'offline',
         lastSeen: sighting.lastSeen,
-        ...(opts.clusterId ? { clusterId: opts.clusterId } : {}),
+        ...(opts.groupId ? { groupId: opts.groupId } : {}),
         ...defaultsForNewDevice(opts),
       })
       .run()

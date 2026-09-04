@@ -6,7 +6,7 @@ import type { ExecutorRegistry } from './executor'
 
 /**
  * One validation path for every way a job can be created — a standalone job
- * (`job-service.ts`) or every job in a batch (`clusters/dispatch.ts`, plan 20
+ * (`job-service.ts`) or every job in a batch (`groups/dispatch.ts`, plan 20
  * §4.4). Kept in one place so a batch cannot silently create N jobs each
  * doomed to fail individually at claim time; an unknown or disabled script
  * fails once, loudly, at creation.

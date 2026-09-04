@@ -139,14 +139,14 @@ export function runMigrations(db: Db, sqlite?: Database): void {
  * (and everything after it) pending (plan 22.0 §4.1).
  *
  * This opens a window for a one-shot TypeScript data step — currently only
- * `db/migrations/cluster-materialise.ts` — that must run after the schema
+ * `db/migrations/materialise-0014.ts` — that must run after the schema
  * change it depends on (`devices.cluster_id` existing) but before a later
- * migration destroys the data it reads (`clusters.tags`/`device_ids` being
- * dropped). Drizzle's own migration bookkeeping tracks progress by
+ * migration destroys the data it reads (the pre-`0014` selector columns
+ * being dropped). Drizzle's own migration bookkeeping tracks progress by
  * timestamp, not by which folder was passed to `migrate()`, so a plain
  * `runMigrations(db)` call afterward applies exactly the remainder: nothing
  * is re-applied, nothing is skipped (verified by
- * `cluster-materialise.test.ts`).
+ * `materialise-0014.test.ts`).
  */
 export function runMigrationsUpTo(db: Db, tag: string): void {
   const { dir, cleanup } = materialiseMigrationsFolder()

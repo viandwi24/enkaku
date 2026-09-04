@@ -32,7 +32,7 @@ import { createWsMessageHandler, type WsHandlerDeps } from './server/ws-handlers
  * file guards against are not "the mechanism is wrong" — each one is already
  * proven correct, deeply, in its own module's tests
  * (`registry/device-registry.test.ts`'s "DeviceRegistry — networks" block,
- * `api/clusters.test.ts`'s "connection.medium" block, `api/guest-agent.test.ts`'s
+ * `api/groups.test.ts`'s "connection.medium" block, `api/guest-agent.test.ts`'s
  * `guestAgentSettings` seam, and `session/session.test.ts`'s "createSession —
  * text-input keyboard" block, which proves `createSession` reaches rung 1
  * whenever it IS handed a `withGuestAgentClient`) — they are "the one
@@ -93,8 +93,8 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     expect(call).toContain('settingsStore.get().discovery.networks')
   })
 
-  test('createClusterRoutes(...) passes `networks` AND `declaredMedia` — without them, a cluster device list can disagree with GET /api/devices on the same row', () => {
-    const call = extractCall(daemonSource, 'createClusterRoutes({')
+  test('createGroupRoutes(...) passes `networks` AND `declaredMedia` — without them, a group device list can disagree with GET /api/devices on the same row', () => {
+    const call = extractCall(daemonSource, 'createGroupRoutes({')
     expect(call).toContain('networks:')
     expect(call).toContain('declaredMedia:')
     expect(call).toContain('settingsStore.get().discovery.networks')
@@ -584,53 +584,40 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
     })
   })
 
-  describe('the command console runner (plan 93 §4.5, §5 step 93.3)', () => {
-    test('createCommandRunner(...) is actually constructed, wired to the SAME `activities` this file builds, a real shellPortFor, and the live shell settings — not just declared and left uncalled', () => {
-      const call = extractCall(daemonSource, 'createCommandRunner({')
-      expect(call).toContain('store: commandRunStore')
-      expect(call).toContain('activities,')
-      expect(call).toContain('shellPortFor: commandShellPortFor')
-      expect(call).toContain('resolve: (target) => resolveCommandTarget(db, target)')
-      expect(call).toContain('settings: () => settingsStore.get().shell')
-      expect(call).toContain('audit,')
-      expect(call).toContain('getDevice: getDeviceOwner')
+  describe('the actions router and its operation registry (plan 207 §4.2, §4.8) — replaces the deleted command console entirely', () => {
+    test('createOperationRegistry(...) is constructed beside `activities`, and swept on the same cadence (activities.startSweep/stopSweep)', () => {
+      expect(daemonSource).toContain('const operations = createOperationRegistry({})')
+      expect(daemonSource).toContain('activities.startSweep()')
+      expect(daemonSource).toContain('operations.startSweep()')
+      const stopReaperCall = extractCall(daemonSource, 'stopReaper = () => {')
+      expect(stopReaperCall).toContain('activities.stopSweep()')
+      expect(stopReaperCall).toContain('operations.stopSweep()')
     })
 
-    test('the runner is swept at boot — a command run left running/awaiting-continue by a crashed previous process must not sit there forever', () => {
-      expect(daemonSource).toContain('commandRunner = createCommandRunner({')
-      expect(daemonSource).toContain('commandRunner.sweepOrphans()')
+    test('createActionRoutes(...) is actually constructed and mounted at /api/actions and /api/operations — not just imported and left uncalled', () => {
+      expect(daemonSource).toContain('createActionRoutes(')
+      expect(daemonSource).toContain('actionRoutes:')
+      expect(daemonSource).toContain('operationRoutes:')
     })
 
-    test('commandRunner.stop() is called from daemon.stop(), before `recorder` is torn down — every pending fan-out member must be dead on stop (00-overview.md §7), and its own `record` dep must still be alive while it cancels', () => {
-      const stopStart = daemonSource.indexOf('async stop() {')
-      expect(stopStart).toBeGreaterThan(-1)
-      const stopBody = daemonSource.slice(stopStart, stopStart + 2500)
-      expect(stopBody).toContain('commandRunner?.stop()')
-      expect(stopBody).toContain('commandRunner = null')
-      expect(stopBody.indexOf('commandRunner?.stop()')).toBeLessThan(stopBody.indexOf('recorder?.stop()'))
-    })
-  })
-
-  describe('the command console REST/WS surface (plan 93 §3.17, §4.4, §4.5, §5 step 93.4)', () => {
-    test('createCommandRunRoutes(...) is actually constructed, wired to the SAME `commandRunStore`/`commandRunner` this file builds, and mounted at /api/command-runs — not just declared and left uncalled', () => {
-      const call = extractCall(daemonSource, 'commandRunRoutes: createCommandRunRoutes({')
-      expect(call).toContain('store: commandRunStore')
-      expect(call).toContain('runner: commandRunner!')
-      expect(call).toContain('settings: () => settingsStore.get().shell')
-      expect(call).toContain('roleOf:')
-      expect(call).toContain('getDeviceOwner')
-      expect(daemonSource).toContain('commandRunRoutes: createCommandRunRoutes({')
+    test('the actions router reuses the SAME local/remote shell-port decision the deleted command console runner used to have, now named actionShellPortFor', () => {
+      expect(daemonSource).toContain('const actionShellPortFor = (deviceId: string): ShellPort => {')
     })
 
-    test('the runner\'s `broadcast` dep is a forward-ref into the WS router, not `hub.broadcast` — a fleet command must stay subscriber-scoped, never farm-wide (F27)', () => {
-      const call = extractCall(daemonSource, 'commandRunner = createCommandRunner({')
-      expect(call).toContain('broadcastCommandEvent?.(runId, msg)')
-      expect(call).not.toContain('hub.broadcast(')
+    test('the deleted command console leaves no live construction behind — no `commandRunStore`/`commandRunner` is built, no `commandConsole` accessor is passed to adb-stats', () => {
+      expect(daemonSource).not.toContain('createCommandRunStore(')
+      expect(daemonSource).not.toContain('createCommandRunner(')
+      expect(daemonSource).not.toContain('commandConsole:')
+      expect(daemonSource).not.toContain('commandRunRoutes:')
+      expect(daemonSource).not.toContain('savedCommandRoutes:')
     })
 
-    test('a `broadcastCommandEvent` forward-ref is declared and assigned inside attachWsRouter, the same pattern transportStats/inputStats already use', () => {
-      expect(daemonSource).toContain('let broadcastCommandEvent: ((runId: string, msg: CommandRunnerEvent) => void) | null = null')
-      expect(daemonSource).toContain('broadcastCommandEvent = handler.broadcastCommand')
+    test('`batchesFor` is built per-actor via createBatchDispatchDeps — a fixed null actor would silently reopen F10 (internal:install needs device.files/transfer.enabled, not merely job.run) for run-script dispatched through the actions API, the one surviving door to it', () => {
+      const idx = daemonSource.indexOf('batchesFor:')
+      expect(idx).toBeGreaterThan(-1)
+      const nearby = daemonSource.slice(idx, idx + 400)
+      expect(nearby).toContain('createBatchDispatchDeps(')
+      expect(nearby).toContain('actor')
     })
   })
 
@@ -648,7 +635,7 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
       expect(call).not.toContain('hub.broadcast(')
     })
 
-    test('a `broadcastTransferEvent` forward-ref is declared and assigned inside attachWsRouter, the same pattern broadcastCommandEvent already uses', () => {
+    test('a `broadcastTransferEvent` forward-ref is declared and assigned inside attachWsRouter, the same pattern transportStats/inputStats already use', () => {
       expect(daemonSource).toContain('let broadcastTransferEvent: ((deviceId: string, msg: ServerMessage) => void) | null = null')
       const attachBody = extractCall(daemonSource, 'const attachWsRouter = (localSessions: SessionManager | null) => {')
       expect(attachBody).toContain('broadcastTransferEvent = handler.broadcastTransfer')
@@ -926,22 +913,6 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
       await Promise.resolve()
       const doc = recordingService.lastFinished('dev-1')
       expect(doc).not.toBeNull()
-    })
-  })
-
-  describe('saved commands (plan 93 §3.10, §4.4, step 93.6): the /api/saved-commands mount that was blocked on server/http.ts being held', () => {
-    test("daemon.ts's createApp({...}) call constructs and passes a real savedCommandRoutes — without it, HttpDeps.savedCommandRoutes is always absent and /api/saved-commands 404s through the catch-all forever", () => {
-      expect(daemonSource).toContain("import { createSavedCommandRoutes } from './api/saved-commands'")
-      const call = extractCall(daemonSource, 'const app = createApp({')
-      expect(call).toContain('savedCommandRoutes: createSavedCommandRoutes(')
-    })
-
-    test('createSavedCommandRoutes(...) passes the SAME role-resolution expression commandRunRoutes above uses — an operator\'s owner-or-admin edit/delete gate must agree with the fleet command console\'s own permission model', () => {
-      const call = extractCall(daemonSource, 'createSavedCommandRoutes({')
-      expect(call).toContain('db,')
-      expect(call).toContain('settings: () => settingsStore.get().shell')
-      expect(call).toContain("authMode === 'local'")
-      expect(call).toContain('audit,')
     })
   })
 

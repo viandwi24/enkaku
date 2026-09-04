@@ -689,7 +689,7 @@ export type PluginDataCountResponse = z.infer<typeof PluginDataCountResponseSche
  * not it holds the key (`entry: null` when it does not).
  *
  * The device fields are the FIXED allowlist of plan §3.6 — `deviceId`,
- * `stableId`, `label`, `status`, `clusterId`, `number` — and nothing else.
+ * `stableId`, `label`, `status`, `groupId`, `number` — and nothing else.
  * Anything richer is a handler, and handlers are plan 109.
  *
  * `number` is the device's short, human-facing number (`device_numbers`,
@@ -702,7 +702,7 @@ export const PluginDataScanRowSchema = z.object({
   stableId: z.string(),
   label: z.string(),
   status: z.string().nullable(),
-  clusterId: z.string().nullable(),
+  groupId: z.string().nullable(),
   number: z.number().int().nullable(),
   entry: KvEntrySchema.nullable(),
 })
@@ -736,7 +736,7 @@ export const PluginQueryDeviceSchema = z.object({
   stableId: z.string(),
   label: z.string().nullable().default(null),
   status: z.string().nullable().default(null),
-  clusterId: z.string().nullable().default(null),
+  groupId: z.string().nullable().default(null),
   number: z.number().int().nullable().default(null),
 })
 

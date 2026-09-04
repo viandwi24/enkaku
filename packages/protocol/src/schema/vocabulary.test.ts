@@ -71,7 +71,7 @@ describe('PARAM_KINDS / DURATION_UNITS / PARAM_SOURCES (plan 95 §4.1)', () => {
       'registry.inspectors',
       'registry.networks',
       'devices',
-      'clusters',
+      'groups',
       'scripts',
     ])
   })

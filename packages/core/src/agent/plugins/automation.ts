@@ -15,7 +15,7 @@ export const automationPlugin = defineAgentPlugin({
     '# Scripts and jobs',
     'script_list and script_get read the published script catalogue; script_publish ships one from',
     'a workspace path (or an inline bundle) — it is a write, and never executes anything itself.',
-    'job_run starts a script against a device or cluster; job_get and job_list read job state and',
+    'job_run starts a script against a device or group; job_get and job_list read job state and',
     'results; job_cancel stops a running one. Prefer publishing and running a script for anything',
     'repeatable over driving the device by hand turn after turn.',
     '',

@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
-import { ChevronsLeft, Menu, MonitorSmartphone, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle, LogOut, Terminal, Workflow, CircleDot, type LucideIcon } from 'lucide-react'
+import { ChevronsLeft, Menu, MonitorSmartphone, FolderTree, ListChecks, Layers, Boxes, CalendarClock, Wrench, SlidersHorizontal, Server, Bot, Puzzle, LogOut, Workflow, CircleDot, type LucideIcon } from 'lucide-react'
 import { z } from 'zod'
 import { HealthResponseSchema } from '@enkaku/protocol'
 import {
@@ -81,19 +81,14 @@ const NAV: NavItem[] = [
   },
   { href: '/workspace', label: 'Workspace', icon: FolderTree, countKey: null },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, countKey: 'activeJobs' as const },
-  // The fleet command console (plan 93 §3.16, §4.8, step 93.7) — one adb
-  // command to one device or the whole farm, with history and saved
-  // commands. Distinct from a device's own Terminal tab, which stays put.
-  { href: '/console', label: 'Console', icon: Terminal, countKey: null },
-  { href: '/clusters', label: 'Clusters', icon: Layers, countKey: null },
-  // No `/topology` entry, deliberately — see `AppShell.test.tsx`'s
-  // `NOT_IN_NAV_BY_DESIGN` for the full reasoning. It was added here by
-  // hotfix §96.29 on the belief that it was an orphaned page; it is not a
-  // page at all, but a 22-line compatibility redirect to
-  // `/?view=wall&group=cluster`, and that view already has its own front
-  // door in the grid's `GroupBy` control. A nav item landing on the screen
-  // you are already on, with a filter applied, is the "second front door"
-  // this codebase declined to build for the reference design's Dashboard.
+  // The fleet command console (plan 93 §3.16, §4.8, step 93.7) is gone
+  // entirely (plan 207 — MVP 13 A.5, A.6a): the `adb` verb through
+  // `POST /api/actions/adb` replaces it, reached from a device's own Terminal
+  // tab (`AdbCommandDialog`), which stays put. No nav item for it any more.
+  { href: '/groups', label: 'Groups', icon: Layers, countKey: null },
+  // No `/topology` entry — that page is gone too (plan 207 §4.7): it was a
+  // 22-line compatibility redirect to `/?view=wall&group=cluster`, and that
+  // view already has its own front door in the grid's `GroupBy` control.
   { href: '/batches', label: 'Batches', icon: Boxes, countKey: null },
   { href: '/schedules', label: 'Schedules', icon: CalendarClock, countKey: null },
   { href: '/tools', label: 'Tools', icon: Wrench, countKey: null },

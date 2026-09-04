@@ -58,7 +58,7 @@ export const ScheduleInfoSchema = z.object({
   /** `name@version` or `name@latest` (plan 62 §3.3) — populated only for a `target.kind === 'script'` schedule; null for an agent target. Kept for backward compatibility alongside `target` above. */
   scriptRef: ScriptRefSchema.nullable(),
   params: z.unknown().nullable(),
-  clusterId: z.string().nullable(),
+  groupId: z.string().nullable(),
   deviceIds: z.array(z.string()),
   concurrency: z.number().int(),
   order: BatchOrderSchema,

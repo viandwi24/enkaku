@@ -3,11 +3,9 @@
 import { useSyncExternalStore } from 'react'
 import {
   BatchesPageResponseSchema,
-  CommandRunsPageResponseSchema,
   JobsPageResponseSchema,
   TransfersResponseSchema,
   type BatchInfo,
-  type CommandRunSummary,
   type DeviceInfo,
   type JobInfo,
   type TransferKind,
@@ -27,10 +25,13 @@ import { ws } from './ws'
  *
  * §3.2's two classes, kept visibly distinct (`Operation.durable`):
  *
- * - **durable** — jobs, batches, command runs: already have a row and a list
- *   endpoint (`GET /api/jobs|batches|command-runs`), reload-safe. This file
- *   adds no new state for them — only reads the endpoints that already
- *   exist, per 107.4's own instruction.
+ * - **durable** — jobs, batches: already have a row and a list endpoint
+ *   (`GET /api/jobs|batches`), reload-safe. This file adds no new state for
+ *   them — only reads the endpoints that already exist, per 107.4's own
+ *   instruction. (Command runs were a THIRD durable source here until plan
+ *   207 deleted the console entirely — MVP 13 A.5/A.6a; the actions API's
+ *   own operations are ephemeral, like a transfer, and are not yet a fourth
+ *   source in this store — plan 213 owns the reshape.)
  * - **ephemeral** — transfers (install/push/pull): `GET /api/transfers`
  *   (step 107.2) answers "what is this core process aware of right now",
  *   and forgets everything on a restart (see that file's own doc comment).
@@ -82,17 +83,14 @@ import { ws } from './ws'
  *
  * `job.status`/`batch.status` are already broadcast farm-wide (unscoped) —
  * `AppShell.tsx`'s own sidebar counts already rely on this — so this store
- * reacts to them directly with no extra subscription. `command.*` events
- * are scoped like transfers (`commandTargets(runId)`, a stated exception in
- * `ws-handlers.ts`'s own comment), and this store does not subscribe to any
- * one run: command-run rows refresh on the same bounded poll as everything
- * else, so a running command's OWN counts can lag up to `POLL_MS` — an
- * accepted, bounded trade rather than a fifth kind of live subscription.
+ * reacts to them directly with no extra subscription. (The command console's
+ * own `command.*` events, scoped like transfers, are gone with the console
+ * itself — plan 207.)
  */
 
 // ---- Operation shape ----
 
-export type OperationKind = 'transfer' | 'job' | 'batch' | 'command-run' | 'preparation'
+export type OperationKind = 'transfer' | 'job' | 'batch' | 'preparation'
 
 export type OperationAction = 'install' | 'push' | 'pull'
 
@@ -149,18 +147,17 @@ export interface Operation {
    * read.
    */
   succeeded: boolean | null
-  /** Batch / command-run only — an `OutcomeSummary`-shaped rollup, rendered through that SAME component (plan 107's "reuse, do not reinvent"). */
+  /** Batch only — an `OutcomeSummary`-shaped rollup, rendered through that SAME component (plan 107's "reuse, do not reinvent"). */
   counts?: OperationCounts
   /** Transfer only — the point-in-time byte snapshot `GET /api/transfers` returns, refined live once this device is `log.subscribe`d. */
   transfer?: OperationTransfer
-  /** Where to open the full surface, or `null` when there is none (a transfer has no page of its own; a command-run links to the console, not a specific run — see that file's own note). */
+  /** Where to open the full surface, or `null` when there is none (a transfer has no page of its own). */
   href: string | null
   /**
    * `internal:install`/`internal:push`/`internal:pull` for a batch or an
    * ephemeral transfer that maps to one of those three actions — what
-   * `operationMatchesAction` compares against. `null` for a job/command-run/
-   * preparation entry, which can never match an install/push/pull re-attach
-   * check.
+   * `operationMatchesAction` compares against. `null` for a job/preparation
+   * entry, which can never match an install/push/pull re-attach check.
    */
   actionScriptId: string | null
 }
@@ -190,23 +187,23 @@ export function operationMatchesAction(op: Operation, action: OperationAction): 
 // ---- Target resolution (shared by the tray's reattach check and by whichever dialog asks) ----
 
 export interface TargetLike {
-  target: 'single' | 'cluster' | 'devices'
+  target: 'single' | 'group' | 'devices'
   deviceId: string
   deviceIds: readonly string[]
-  clusterId: string
+  groupId: string
 }
 
-/** Mirrors just enough of `DeviceInfo` to resolve a cluster target without importing the whole schema twice. */
-interface DeviceClusterRef {
+/** Mirrors just enough of `DeviceInfo` to resolve a group target without importing the whole schema twice. */
+interface DeviceGroupRef {
   id: string
-  cluster: { id: string } | null
+  group: { id: string } | null
 }
 
-/** A target picker's resolved selection, turned into a concrete device-id list — `'cluster'` reads the CURRENT membership from `pool`, never a cached count. */
-export function resolveTargetDeviceIds(sel: TargetLike, pool: readonly DeviceClusterRef[]): string[] {
+/** A target picker's resolved selection, turned into a concrete device-id list — `'group'` reads the CURRENT membership from `pool`, never a cached count. */
+export function resolveTargetDeviceIds(sel: TargetLike, pool: readonly DeviceGroupRef[]): string[] {
   if (sel.target === 'single') return sel.deviceId ? [sel.deviceId] : []
   if (sel.target === 'devices') return [...sel.deviceIds]
-  return pool.filter((d) => d.cluster?.id === sel.clusterId).map((d) => d.id)
+  return pool.filter((d) => d.group?.id === sel.groupId).map((d) => d.id)
 }
 
 // ---- Re-attach (plan 107 §3.6, step 107.5) ----
@@ -254,25 +251,23 @@ export interface RawOperationsData {
   transfers: TransferRecord[]
   jobs: JobInfo[]
   batches: BatchInfo[]
-  commandRuns: CommandRunSummary[]
 }
 
-export const EMPTY_RAW: RawOperationsData = { transfers: [], jobs: [], batches: [], commandRuns: [] }
+export const EMPTY_RAW: RawOperationsData = { transfers: [], jobs: [], batches: [] }
 
 /**
  * Which statuses of each kind are TERMINAL — mirrors each kind's own
- * protocol enum (`BatchStatusSchema`/`JobStatusSchema`/
- * `CommandRunStatusSchema`, `@enkaku/protocol`). Duplicated here rather than
- * imported from the core: the core's own single source of truth for "which
- * of these are terminal" (`clusters/status.ts`'s `TERMINAL_BATCH_STATUSES`)
- * is a server-internal export `packages/studio` cannot reach (00-overview
- * §4.1 — cross-package imports go through a package name, and
- * `packages/core` is not one Studio depends on). Drives `terminal`/
- * `succeeded` on the built `Operation` below, which `withinGrace` reads.
+ * protocol enum (`BatchStatusSchema`/`JobStatusSchema`, `@enkaku/protocol`).
+ * Duplicated here rather than imported from the core: the core's own single
+ * source of truth for "which of these are terminal"
+ * (`groups/status.ts`'s `TERMINAL_BATCH_STATUSES`) is a server-internal
+ * export `packages/studio` cannot reach (00-overview §4.1 — cross-package
+ * imports go through a package name, and `packages/core` is not one Studio
+ * depends on). Drives `terminal`/`succeeded` on the built `Operation` below,
+ * which `withinGrace` reads.
  */
 const TERMINAL_BATCH = new Set<BatchInfo['status']>(['success', 'failed', 'cancelled'])
 const TERMINAL_JOB = new Set<JobInfo['status']>(['success', 'failed', 'cancelled', 'expired'])
-const TERMINAL_COMMAND_RUN = new Set<CommandRunSummary['status']>(['ok', 'failed', 'cancelled'])
 
 /**
  * Plan 107 §1, this pass's own fix (`docs/plans/96-m61-hotfixes.md` §96.30;
@@ -385,29 +380,6 @@ function toJobOperation(j: JobInfo): Operation {
   }
 }
 
-function toCommandRunOperation(r: CommandRunSummary): Operation {
-  const deviceIds = 'deviceIds' in r.target ? r.target.deviceIds : []
-  const terminal = TERMINAL_COMMAND_RUN.has(r.status)
-  return {
-    key: `command-run:${r.id}`,
-    kind: 'command-run',
-    durable: true,
-    label: r.cmd,
-    deviceIds,
-    status: r.status,
-    startedAt: r.startedAt,
-    finishedAt: r.finishedAt,
-    terminal,
-    succeeded: terminal ? r.status === 'ok' : null,
-    counts: { ok: r.counts.ok, failed: r.counts.failed, skipped: r.counts.skipped, total: r.counts.total },
-    // `/console` has no per-run URL yet (that page's own scope, not this
-    // plan's file allowlist) — still a real, useful destination: the run is
-    // findable there from its own history.
-    href: '/console',
-    actionScriptId: null,
-  }
-}
-
 /**
  * Plan 106 §5 step 106.8 — `t.origin === 'preparation'` is a transfer the
  * device-preparation runner started (`ui-server-component.ts`'s install),
@@ -506,7 +478,7 @@ export function buildOperations(raw: RawOperationsData, devices: readonly Device
     .filter((b) => batchBelongsInTray(b.status))
     .map((b) => toBatchOperation(b, raw.jobs))
     // Belt-and-suspenders for §96.30's own core-side fix: a REAL batch
-    // always has >= 1 job row (`clusters/dispatch.ts`'s `createBatch`
+    // always has >= 1 job row (`groups/dispatch.ts`'s `createBatch`
     // inserts both atomically, in the same transaction) — `deviceIds: []`
     // here can only mean the exact defect this pass fixed on the core side
     // (every job row deleted out from under a still-open batch). Never
@@ -514,10 +486,9 @@ export function buildOperations(raw: RawOperationsData, devices: readonly Device
     // first.
     .filter((op) => op.deviceIds.length > 0)
   const jobOps = raw.jobs.filter((j) => j.batchId === null).map(toJobOperation)
-  const commandOps = raw.commandRuns.map(toCommandRunOperation)
   const transferOps = visibleTransfers(raw).map(toTransferOperation)
   const prepOps = devices.filter((d) => d.agent === 'provisioning').map(toPreparationOperation)
-  return [...batchOps, ...jobOps, ...commandOps, ...transferOps, ...prepOps]
+  return [...batchOps, ...jobOps, ...transferOps, ...prepOps]
     .filter((op) => withinGrace(op, nowMs))
     .sort((a, b) => b.startedAt - a.startedAt)
 }
@@ -614,14 +585,13 @@ export class OperationsStore {
   }
 
   private async refresh(): Promise<void> {
-    const [transfersRes, jobsRes, batchesRes, commandRunsRes, devices] = await Promise.all([
+    const [transfersRes, jobsRes, batchesRes, devices] = await Promise.all([
       api('/api/transfers', TransfersResponseSchema).catch(() => ({ transfers: this.raw.transfers })),
       api('/api/jobs?limit=200', JobsPageResponseSchema).catch(() => ({ items: this.raw.jobs })),
       api('/api/batches?limit=50', BatchesPageResponseSchema).catch(() => ({ items: this.raw.batches })),
-      api('/api/command-runs?limit=50', CommandRunsPageResponseSchema).catch(() => ({ items: this.raw.commandRuns })),
       fetchDevices().catch(() => this.state.devices),
     ])
-    this.raw = { transfers: transfersRes.transfers, jobs: jobsRes.items, batches: batchesRes.items, commandRuns: commandRunsRes.items }
+    this.raw = { transfers: transfersRes.transfers, jobs: jobsRes.items, batches: batchesRes.items }
     this.applyDeviceSubscriptions()
     this.state = { operations: buildOperations(this.raw, devices), devices, loading: false }
     this.notify()

@@ -21,7 +21,7 @@ export interface RowDevice {
   stableId: string
   label: string | null
   status: string | null
-  clusterId: string | null
+  groupId: string | null
   /** The short human-facing number (plan 89 §3.1); `null` when none is allocated, which renders as an empty cell. */
   number: number | null
 }

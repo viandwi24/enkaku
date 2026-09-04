@@ -4,11 +4,11 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices, jobs } from '../db/schema'
 import type { Scheduler } from '../queue/scheduler'
 import { EnkakuError } from '../util/errors'
-import { createBatch } from '../clusters/dispatch'
+import { createBatch } from '../groups/dispatch'
 
 /**
  * Plan 98 §3.3 S1, §4.5, step 98.6 — the version gate on the FOURTH write
- * path onto `jobs`. FIXED 2026-08-13 (audited by a separate worker; `clusters/**`
+ * path onto `jobs`. FIXED 2026-08-13 (audited by a separate worker; `groups/**`
  * and `api/batches.ts` were reassigned to that worker mid-audit once the
  * previous holder of those files finished, which is what made fixing this in
  * place — rather than only reporting it — possible).
@@ -16,7 +16,7 @@ import { createBatch } from '../clusters/dispatch'
  * `services/job-service.ts`'s `enqueue()`/`resume()` and `jobs/triggers.ts`'s
  * `trigger()` all call `checkRuntimeMajor` the instant they resolve a
  * script's `runtime` (see each file's own "the version gate" describe
- * block). `clusters/dispatch.ts`'s `createBatch` is the plan's own
+ * block). `groups/dispatch.ts`'s `createBatch` is the plan's own
  * documented FOURTH path — step 98.5's own status paragraph named it as a
  * pre-existing gap because the file had no `ScriptRegistry` in its
  * dependency graph at all, and step 98.6's own status paragraph repeated
@@ -26,7 +26,7 @@ import { createBatch } from '../clusters/dispatch'
  * `docs/plans/96-m61-hotfixes.md` §96.14 gave `BatchDispatchDeps` an optional
  * `scriptNameOf`, closing the ORIGINAL gap (`maxConcurrent` resolving to
  * 0/unlimited for every batch member, `scriptName` staying null). `createBatch`
- * resolved `named = deps.scriptNameOf?.(...)` (`clusters/dispatch.ts`) and
+ * resolved `named = deps.scriptNameOf?.(...)` (`groups/dispatch.ts`) and
  * read `named?.runtime` to resolve `maxConcurrent` — but, until this fix,
  * never called `checkRuntimeMajor` on `named?.runtime?.sdk`, unlike every
  * other write path holding the identical `named` local. A script declaring
@@ -35,7 +35,7 @@ import { createBatch } from '../clusters/dispatch'
  * the exact failure acceptance criterion 11 ("a bundle declaring an
  * unsupported runtime.sdk ... never claims a device") forbids.
  *
- * THE FIX (now landed, `packages/core/src/clusters/dispatch.ts`, immediately
+ * THE FIX (now landed, `packages/core/src/groups/dispatch.ts`, immediately
  * after `const named = deps.scriptNameOf?.(input.scriptId) ?? null`, before
  * `resolveBatchMemberMaxConcurrent`): the identical
  * `checkRuntimeMajor(named?.runtime?.sdk)` → `throw new EnkakuError(...)`

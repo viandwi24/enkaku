@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { Inbox, RefreshCw, X } from 'lucide-react'
 import { z } from 'zod'
-import { ReconcileReportSchema, type ClusterInfo, type DeviceLabelMode, type ReconcileReport } from '@enkaku/protocol'
+import { ReconcileReportSchema, type GroupInfo, type DeviceLabelMode, type ReconcileReport } from '@enkaku/protocol'
 import { AdmitDeviceDialog } from '@/components/AdmitDeviceDialog'
 import { EmptyState, Button, Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, api, useAction, relativeTime } from '@enkaku/ui'
 import type { DiscoveredDevice } from '@/lib/api'
@@ -43,14 +43,14 @@ function summariseReconcileReport(report: ReconcileReport): string {
  */
 export function DiscoveredTray({
   discovered,
-  clusters,
+  groups,
   farmLabellingMode,
   open,
   onOpenChange,
   onChanged,
 }: {
   discovered: DiscoveredDevice[]
-  clusters: ClusterInfo[]
+  groups: GroupInfo[]
   /** The farm's default `labelling.mode` (plan 89 §3.8, §5 step 89.8) — passed straight through to `AdmitDeviceDialog`'s own checkbox. */
   farmLabellingMode: DeviceLabelMode
   open: boolean
@@ -170,7 +170,7 @@ export function DiscoveredTray({
 
       <AdmitDeviceDialog
         entry={target}
-        clusters={clusters}
+        groups={groups}
         farmLabellingMode={farmLabellingMode}
         open={wizardOpen}
         onOpenChange={setWizardOpen}

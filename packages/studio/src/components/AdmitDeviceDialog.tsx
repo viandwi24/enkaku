@@ -8,7 +8,7 @@ import {
   DeviceDetailResponseSchema,
   DeviceResponseSchema,
   DeviceTagsResponseSchema,
-  type ClusterInfo,
+  type GroupInfo,
   type DeviceLabelMode,
 } from '@enkaku/protocol'
 import { z } from 'zod'
@@ -37,7 +37,7 @@ import type { DiscoveredDevice } from '@/lib/api'
 /**
  * The admission wizard (plan 56 §4.5): one screen, opened from a Discovered
  * tray row. Model and Android version are read-only facts probed off the
- * phone; label, cluster and tags are the only things an operator sets.
+ * phone; label, group and tags are the only things an operator sets.
  *
  * Two actions, both final: **Add to farm** creates the `devices` row (plan 56
  * §4.3), **Dismiss** clears the tray row (§3.5) — it is NOT a block, so the
@@ -46,14 +46,14 @@ import type { DiscoveredDevice } from '@/lib/api'
  */
 export function AdmitDeviceDialog({
   entry,
-  clusters,
+  groups,
   farmLabellingMode,
   open,
   onOpenChange,
   onDone,
 }: {
   entry: DiscoveredDevice | null
-  clusters: ClusterInfo[]
+  groups: GroupInfo[]
   /** The farm's default `labelling.mode` (plan 89 §3.8) — what the checkbox below reflects, and what a device gets if the box is left alone. */
   farmLabellingMode: DeviceLabelMode
   open: boolean
@@ -62,7 +62,7 @@ export function AdmitDeviceDialog({
   onDone: () => void
 }) {
   const [label, setLabel] = useState('')
-  const [clusterId, setClusterId] = useState('none')
+  const [groupId, setGroupId] = useState('none')
   const [tags, setTags] = useState<string[]>([])
   const [tagDraft, setTagDraft] = useState('')
   const [busy, setBusy] = useState<'admit' | 'dismiss' | null>(null)
@@ -72,7 +72,7 @@ export function AdmitDeviceDialog({
   // this one phone: unchecking it here, or checking it against an `off`
   // farm default, issues one follow-up `PATCH` after admission overrides
   // `labelling.mode` for this device alone — there is no admission-time
-  // body field for it (§4.3's own admit body is `{ label?, clusterId? }`),
+  // body field for it (§4.3's own admit body is `{ label?, groupId? }`),
   // so a two-step "admit, then override" is the only way Studio can honour
   // an operator's per-device choice without touching the admission route.
   const [wallpaper, setWallpaper] = useState(farmLabellingMode === 'wallpaper')
@@ -82,7 +82,7 @@ export function AdmitDeviceDialog({
   useEffect(() => {
     if (!open) return
     setLabel(entry?.label ?? '')
-    setClusterId('none')
+    setGroupId('none')
     setTags([])
     setTagDraft('')
     setWallpaper(farmLabellingMode === 'wallpaper')
@@ -102,9 +102,9 @@ export function AdmitDeviceDialog({
   const admit = async () => {
     setBusy('admit')
     try {
-      const body: { label?: string; clusterId?: string } = {}
+      const body: { label?: string; groupId?: string } = {}
       if (label.trim()) body.label = label.trim()
-      if (clusterId !== 'none') body.clusterId = clusterId
+      if (groupId !== 'none') body.groupId = groupId
       const res = await api(
         `/api/devices/discovered/${encodeURIComponent(entry.stableId)}/admit`,
         DeviceResponseSchema,
@@ -226,16 +226,16 @@ export function AdmitDeviceDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="admit-cluster" className="text-[13px] font-normal">
-              Cluster
+            <Label htmlFor="admit-group" className="text-[13px] font-normal">
+              Group
             </Label>
-            <Select value={clusterId} onValueChange={setClusterId}>
-              <SelectTrigger id="admit-cluster" className="h-8 w-full text-[12.5px]">
+            <Select value={groupId} onValueChange={setGroupId}>
+              <SelectTrigger id="admit-group" className="h-8 w-full text-[12.5px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">No cluster</SelectItem>
-                {clusters.map((c) => (
+                <SelectItem value="none">No group</SelectItem>
+                {groups.map((c) => (
                   <SelectItem key={c.id} value={c.id}>
                     {c.name}
                   </SelectItem>

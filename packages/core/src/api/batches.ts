@@ -28,9 +28,9 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Role } from '../auth/service'
-import { createBatch, type BatchDispatchDeps } from '../clusters/dispatch'
-import type { BatchPacer } from '../clusters/pacer'
-import { computeBatchStatus, countJobs, recomputeBatchStatus, TERMINAL_BATCH_STATUSES } from '../clusters/status'
+import { createBatch, type BatchDispatchDeps } from '../groups/dispatch'
+import type { BatchPacer } from '../groups/pacer'
+import { computeBatchStatus, countJobs, recomputeBatchStatus, TERMINAL_BATCH_STATUSES } from '../groups/status'
 import type { Db } from '../db'
 import { artifacts, batches, devices, scripts, type BatchRow, type JobRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
@@ -45,47 +45,9 @@ import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagin
 import { typedJson } from './typed-json'
 import { createZipStream, ZipTooLargeError, type ZipEntryInput } from './zip-stream'
 
-const CreateBatchBody = z.object({
-  scriptId: z.string().min(1),
-  params: z.unknown(),
-  target: z.union([z.object({ clusterId: z.string().min(1) }), z.object({ deviceIds: z.array(z.string()).min(1) })]),
-  concurrency: z.number().int().min(0).default(0),
-  order: z.enum(['as-listed', 'random']).default('as-listed'),
-  priority: z.number().int().optional(),
-  /**
-   * Plan 98 §3.8, step 98.7 — the operator's own per-batch runtime layer,
-   * shared by every member job (`clusters/dispatch.ts`'s `createBatch`
-   * resolves it once for the whole batch, same as `scriptId`/`params`
-   * above). `unknown` for the identical reason `api/jobs.ts`'s own
-   * `EnqueueBody.runtimeOverride` is: `createBatch()` is the one place that
-   * validates it against `RuntimeEnvelopeSchema`
-   * (`E_RUNTIME_ENVELOPE_INVALID`) and checks it against the farm's own
-   * ceiling (`E_RUNTIME_OVER_CEILING`, mapped to 400 below), so this body
-   * declares no second shape. This gap closed per
-   * docs/plans/96-m61-hotfixes.md, continuing that document's numbering.
-   */
-  runtimeOverride: z.unknown().optional(),
-  /**
-   * Plan 94 §3.7, §4.8, §4.9, step 94.7 — absent (or `count: 1` with every
-   * interval `0`) means today's behaviour exactly: one repetition, no
-   * delay, no stagger — so every existing caller (plan 93's bulk actions
-   * included) is unaffected. `intervalMs[0] <= intervalMs[1]` is enforced
-   * here, at the boundary, rather than left for `createBatch`/the pacer to
-   * discover.
-   */
-  pacing: z
-    .object({
-      count: z.number().int().min(1).max(1000).default(1),
-      intervalMs: z.tuple([z.number().int().min(0), z.number().int().min(0)]).default([0, 0]),
-      deviceIntervalMs: z.number().int().min(0).max(3_600_000).default(0),
-    })
-    .refine((p) => p.intervalMs[0] <= p.intervalMs[1], 'the interval range is inverted')
-    .optional(),
-})
-
 const ERROR_STATUS: Record<string, number> = {
   batch_not_found: 404,
-  cluster_not_found: 404,
+  group_not_found: 404,
   E_BAD_REQUEST: 400,
   E_NO_TARGETS: 409,
   unknown_script: 400,
@@ -99,7 +61,7 @@ const ERROR_STATUS: Record<string, number> = {
   params_incompatible: 409,
   E_DB: 500,
   'auth.forbidden': 403,
-  // Plan 98 §3.3 S1, §3.8, §4.5, steps 98.6/98.7 — `clusters/dispatch.ts`'s
+  // Plan 98 §3.3 S1, §3.8, §4.5, steps 98.6/98.7 — `groups/dispatch.ts`'s
   // `createBatch()` throws these three by name, the SAME codes
   // `api/jobs.ts`'s own `ERROR_STATUS` already maps for a standalone
   // enqueue (that file's own comment explains why each is genuinely a 400).
@@ -176,7 +138,7 @@ export interface BatchRoutesDeps {
   scriptRegistry?: ScriptRegistry
   /**
    * Plan 98 §3.7, §3.8, §4.1, §4.6, §4.7 — live `job` farm settings, threaded
-   * into `clusters/dispatch.ts`'s `createBatch()` (`BatchDispatchDeps.
+   * into `groups/dispatch.ts`'s `createBatch()` (`BatchDispatchDeps.
    * farmJobSettings`, already accepted there but never reachable through
    * this route until now). Optional and additive, the same graceful
    * degradation every other unwired accessor in this codebase has: omitted,
@@ -268,7 +230,7 @@ export type BatchDispatchHostDeps = Pick<
 >
 
 /**
- * The ONE construction of `clusters/dispatch.ts`'s `BatchDispatchDeps`. Every
+ * The ONE construction of `groups/dispatch.ts`'s `BatchDispatchDeps`. Every
  * dispatch route in this file calls it, and so does `daemon.ts`'s
  * `createPluginRoutes({ actions: { batch } })` wiring (plan 108 §4.5, step
  * 108.5) — so a batch dispatched from a plugin screen and one dispatched from
@@ -375,7 +337,7 @@ function pacingOf(row: BatchRow): BatchInfo['pacing'] {
  * Plan 94 §3.9, §4.8, step 94.8 — `row.status` is the single source of truth
  * for `'stopping'`: nothing derives it from job counts (`computeBatchStatus`
  * never produces it), and it is held exactly as long as
- * `clusters/status.ts`'s `recomputeBatchStatus` holds it — until every
+ * `groups/status.ts`'s `recomputeBatchStatus` holds it — until every
  * member has actually reached a terminal state. Once it has, `row.status`
  * itself has already moved on (that recompute is the only thing that ever
  * writes it away), so this simply mirrors the row rather than re-deriving
@@ -383,7 +345,7 @@ function pacingOf(row: BatchRow): BatchInfo['pacing'] {
  *
  * **`docs/plans/96-m61-hotfixes.md` §96.30 — `counts.total === 0` is handled
  * FIRST, before the `stopping` hold above ever gets a chance to apply.**
- * `clusters/dispatch.ts`'s `createBatch` is the only writer of a `batches`
+ * `groups/dispatch.ts`'s `createBatch` is the only writer of a `batches`
  * row and always inserts it together with >= 1 job row, in the same
  * transaction (`E_NO_TARGETS` refuses before anything is persisted
  * otherwise) — so an EXISTING row can only read `counts.total === 0` because
@@ -525,7 +487,7 @@ export function rowToBatchInfo(deps: BatchRoutesDeps, row: BatchRow): BatchInfo 
     : []
   return {
     id: row.id,
-    clusterId: row.clusterId,
+    groupId: row.groupId,
     scriptId: row.scriptId,
     scriptName: script?.name ?? null,
     scriptVersion: script?.version ?? null,
@@ -536,7 +498,7 @@ export function rowToBatchInfo(deps: BatchRoutesDeps, row: BatchRow): BatchInfo 
     // never stale even if a broadcast was missed (plan 20 §3.5). `row.status`
     // can now be `'stopping'` (plan 94 §3.9, §4.8, step 94.8's own value,
     // written directly by `POST /:id/stop`, never derived from job counts) —
-    // this mirrors `clusters/status.ts`'s `recomputeBatchStatus`'s OWN "held
+    // this mirrors `groups/status.ts`'s `recomputeBatchStatus`'s OWN "held
     // until every member is terminal" rule exactly (`TERMINAL_BATCH_STATUSES`,
     // imported from there rather than redefined here), so a page load mid-stop
     // reads `stopping` instead of misreporting `running`/`queued`.
@@ -738,7 +700,7 @@ function collectBatchArtifacts(db: Db, jobStore: JobStore, batchId: string): Col
 
 /**
  * Batch create, list, detail, stop, rerun-failed (plan 20 §4.6; plan 94 §3.9
- * replaces `cancel` with `stop`). Cluster membership is resolved once, at
+ * replaces `cancel` with `stop`). Group membership is resolved once, at
  * creation — the report is built from the batch's own jobs, never
  * re-resolved (plan 20 §3.1, §8 risk table).
  */
@@ -759,22 +721,11 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
   // schedule-fired path in `schedules/runner.ts` deliberately has none.
   const dispatchDepsFor = (user: { id: string; role: Role } | undefined): BatchDispatchDeps => createBatchDispatchDeps(deps, user)
 
-  // `job.run` (plan 34 §4.4, §4.5) — there is no `job.manage` in the ACL
-  // matrix; a batch (like a schedule in `api/schedules.ts`) is a way of
-  // causing jobs to run, so every route below takes the same permission an
-  // operator already has for running one job by hand.
-  app.post('/', requirePermission('job.run'), async (c) => {
-    const body = CreateBatchBody.safeParse(await c.req.json().catch(() => null))
-    if (!body.success) {
-      throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
-    }
-    const { batch } = createBatch(dispatchDepsFor(c.get('user')), {
-      ...body.data,
-      pacing: body.data.pacing ?? null,
-      createdBy: c.get('user')?.id ?? null,
-    })
-    return typedJson(c, BatchResponseSchema, { batch: rowToBatchInfo(deps, batch) }, 201)
-  })
+  // `POST /` (the public create-batch enqueue) is removed by plan 207 (MVP
+  // 07): `run-script` is an actions API verb now (`POST /api/actions/run-script`),
+  // which always creates a batch (even for one device) through the SAME
+  // `createBatch`/`createBatchDispatchDeps` this router's `rerun`/
+  // `rerun-failed` routes below still use.
 
   app.get('/', (c) => {
     const { cursor, limit } = parsePageQuery(c)

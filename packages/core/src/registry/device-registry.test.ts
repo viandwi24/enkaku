@@ -3,7 +3,7 @@ import type { AdbClient } from '@enkaku/adb'
 import { defaultDeviceSettings, type DeviceSettings } from '@enkaku/protocol'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations } from '../db'
-import { blockedDevices, clusters, deviceEvents, devices, discoveredDevices } from '../db/schema'
+import { blockedDevices, groups, deviceEvents, devices, discoveredDevices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { WsHub } from '../server/ws'
 import { createLogger } from '../util/logger'
@@ -184,12 +184,12 @@ describe('registry — blocked devices (plan 47 §3.3, §4.2)', () => {
   })
 })
 
-describe('listDevicesWithTags — cluster (plan 22.0 §4.4, acceptance #10)', () => {
-  test('DeviceInfo.cluster is populated, in one query total regardless of device count', () => {
+describe('listDevicesWithTags — group (plan 22.0 §4.4, acceptance #10)', () => {
+  test('DeviceInfo.group is populated, in one query total regardless of device count', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
-    db.insert(clusters).values({ id: 'cl-1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
+    db.insert(groups).values({ id: 'cl-1', name: 'Jakarta', description: null, createdAt: new Date() }).run()
     for (let i = 0; i < 30; i++) {
       db.insert(devices)
         .values({
@@ -198,27 +198,27 @@ describe('listDevicesWithTags — cluster (plan 22.0 §4.4, acceptance #10)', ()
           serial: `serial-${i}`,
           label: `Phone ${i}`,
           status: 'online',
-          clusterId: i < 10 ? 'cl-1' : null,
+          groupId: i < 10 ? 'cl-1' : null,
         })
         .run()
     }
 
     // Every drizzle bun-sqlite query goes through `client.prepare(sql)` — count
-    // how many touch the clusters table (acceptance #10: one query, not N+1).
-    let clusterQueries = 0
+    // how many touch the groups table (acceptance #10: one query, not N+1).
+    let groupQueries = 0
     const originalPrepare = opened.sqlite.prepare.bind(opened.sqlite) as (sql: string, params?: unknown) => unknown
     opened.sqlite.prepare = ((sql: string, params?: unknown) => {
-      if (sql.includes('"clusters"')) clusterQueries++
+      if (sql.includes('"groups"')) groupQueries++
       return originalPrepare(sql, params)
     }) as typeof opened.sqlite.prepare
 
     const infos = listDevicesWithTags(db)
     expect(infos).toHaveLength(30)
-    const clustered = infos.filter((d) => d.cluster !== null)
-    expect(clustered).toHaveLength(10)
-    for (const d of clustered) expect(d.cluster).toEqual({ id: 'cl-1', name: 'Jakarta' })
-    expect(infos.filter((d) => d.cluster === null)).toHaveLength(20)
-    expect(clusterQueries).toBe(1)
+    const grouped = infos.filter((d) => d.group !== null)
+    expect(grouped).toHaveLength(10)
+    for (const d of grouped) expect(d.group).toEqual({ id: 'cl-1', name: 'Jakarta' })
+    expect(infos.filter((d) => d.group === null)).toHaveLength(20)
+    expect(groupQueries).toBe(1)
   })
 })
 
@@ -538,7 +538,7 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
  * `rowToDeviceInfo` defaults `number` to `null` so every existing call site
  * that omits it keeps parsing exactly as before this plan; `listDevicesWithTags`
  * resolves it once for the whole fleet, the same N+1 discipline `networks`/
- * `tags`/`clusters` above already follow.
+ * `tags`/`groups` above already follow.
  */
 describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3)', () => {
   test('listDevicesWithTags populates every device\'s number from one query, never N+1', () => {

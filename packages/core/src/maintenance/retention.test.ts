@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb, runMigrations, type Db } from '../db'
-import { commandRunMembers, commandRuns, deviceEvents, jobEvents } from '../db/schema'
+import { deviceEvents, jobEvents } from '../db/schema'
 import { createFarmSettingsStore } from '../settings/farm-settings'
 import { createRetentionGc } from './retention'
 import { createLogger } from '../util/logger'
@@ -26,26 +26,6 @@ function seedEvent(db: Db, opts: { deviceId: string; stream: 'main' | 'input'; a
       at: new Date(Date.now() - opts.ageDays * 86_400_000),
     })
     .run()
-}
-
-function seedCommandRun(db: Db, opts: { createdBy?: string | null; ageDays: number; deviceIds: string[] }) {
-  const id = crypto.randomUUID()
-  const startedAt = new Date(Date.now() - opts.ageDays * 86_400_000)
-  db.insert(commandRuns)
-    .values({
-      id,
-      cmd: 'true',
-      target: { deviceIds: opts.deviceIds },
-      status: 'ok',
-      createdBy: opts.createdBy ?? 'user-1',
-      startedAt,
-      finishedAt: startedAt,
-    })
-    .run()
-  db.insert(commandRunMembers)
-    .values(opts.deviceIds.map((deviceId, i) => ({ runId: id, deviceId, seq: i, status: 'ok' as const })))
-    .run()
-  return id
 }
 
 /**
@@ -167,54 +147,6 @@ describe('device event retention (plan 18 §4.4)', () => {
   })
 })
 
-describe('command run retention (plan 93 §3.9, §4.1, §5 step 93.2) — beside sweepEvents, not device_events', () => {
-  test('a run older than commandRunDays is deleted, and its members cascade with it', () => {
-    const db = setUp()
-    const staleId = seedCommandRun(db, { ageDays: 20, deviceIds: ['a', 'b'] }) // past the 14-day default
-    const freshId = seedCommandRun(db, { ageDays: 1, deviceIds: ['a'] })
-
-    const gc = makeGc(db)
-    const result = gc.sweepOnce()
-
-    expect(result.commandRunsDeleted).toBe(1)
-    expect(db.select().from(commandRuns).all().map((r) => r.id)).toEqual([freshId])
-    // The cascade actually cascaded — no orphan member rows left pointing at the deleted run.
-    expect(db.select().from(commandRunMembers).all().every((m) => m.runId !== staleId)).toBe(true)
-    expect(db.select().from(commandRunMembers).all().filter((m) => m.runId === freshId)).toHaveLength(1)
-  })
-
-  test('NOT gated by retention.enabled — the default farm has it off, and the sweep still runs', () => {
-    const db = setUp()
-    // Default farm settings: retention.enabled === false (asserted by the existing event-retention test above).
-    seedCommandRun(db, { ageDays: 20, deviceIds: ['a'] })
-
-    const gc = makeGc(db)
-    const result = gc.sweepOnce()
-
-    expect(result.commandRunsDeleted).toBe(1)
-    expect(result.deleted).toBe(0) // the artifact GC itself stayed off
-  })
-
-  test('a run under the retention window is left untouched', () => {
-    const db = setUp()
-    const id = seedCommandRun(db, { ageDays: 1, deviceIds: ['a'] })
-    const gc = makeGc(db)
-    const result = gc.sweepOnce()
-    expect(result.commandRunsDeleted).toBe(0)
-    expect(db.select().from(commandRuns).all().map((r) => r.id)).toEqual([id])
-  })
-
-  test('the window is configurable via retention.commandRunDays', () => {
-    const db = setUp()
-    const settings = createFarmSettingsStore(db)
-    settings.update({ retention: { commandRunDays: 5 } })
-    seedCommandRun(db, { ageDays: 6, deviceIds: ['a'] }) // now past a 5-day window
-
-    const gc = createRetentionGc({ db, dataDir: '/tmp/enkaku-retention-test', settings, log: createLogger('test').child('retention'), intervalMinutes: 60 })
-    const result = gc.sweepOnce()
-    expect(result.commandRunsDeleted).toBe(1)
-  })
-})
 
 describe('job trace retention (plan 128 §3.7, §5 step 128.7)', () => {
   test('a trace past traceDays is swept — rows AND directory — and one inside it is untouched', () => {
@@ -233,10 +165,10 @@ describe('job trace retention (plan 128 §3.7, §5 step 128.7)', () => {
   })
 
   /**
-   * `job_events.at_ms` is MILLISECONDS while `deviceEvents.at` and
-   * `commandRuns.startedAt` are seconds-backed Drizzle timestamps, so the
-   * cutoff arithmetic in `sweepTraces` is the one place in this file where a
-   * factor of 1000 can hide. Both directions of that mistake are caught here:
+   * `job_events.at_ms` is MILLISECONDS while `deviceEvents.at` is a
+   * seconds-backed Drizzle timestamp, so the cutoff arithmetic in
+   * `sweepTraces` is the one place in this file where a factor of 1000 can
+   * hide. Both directions of that mistake are caught here:
    *
    * - a cutoff of `Date.now() - days * 86_400` (the ms/s multiplier confused)
    *   lands 43 MINUTES ago, so the 1-day-old trace below would be swept;

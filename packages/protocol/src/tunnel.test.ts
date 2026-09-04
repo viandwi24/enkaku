@@ -44,7 +44,7 @@ describe('NodeToControlSchema — node.hello/node.devices only, the pre-rename a
         battery: null,
         quarantineReason: null,
         tags: [],
-        cluster: null,
+        group: null,
         lastCrashAt: null,
         readiness: { desired: 'asleep' as const, actual: 'asleep' as const, blocked: null, since: 1_700_000_000 },
       },

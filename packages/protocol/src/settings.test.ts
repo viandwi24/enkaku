@@ -669,48 +669,18 @@ describe('FarmSettingsSchema.transfer — file transfer and APK install (plan 39
   })
 })
 
-describe('FarmSettingsSchema.shell — fleet fan-out and saved commands (plan 93 §3.8, §3.9, §3.10, §4.1)', () => {
-  test('a settings row that predates these fields (an empty object) still parses, with working defaults', () => {
+describe('FarmSettingsSchema.shell — the device terminal only, the fleet-wide screen is gone (plan 207, MVP 15 §0.1)', () => {
+  test('a settings row that predates the removed fields (an empty object) still parses, with exactly the terminal keys', () => {
     const parsed = FarmSettingsSchema.parse({})
-    expect(parsed.shell.fanoutEnabled).toBe(true)
-    expect(parsed.shell.fanoutMaxDevices).toBe(0)
-    expect(parsed.shell.fanoutConcurrency).toBe(0)
-    expect(parsed.shell.fanoutMaxOutputBytes).toBe(32_768)
-    expect(parsed.shell.fanoutPreviewBytes).toBe(2_048)
-    expect(parsed.shell.fanoutConfirmThreshold).toBe(5)
-    expect(parsed.shell.fanoutStageWaitSec).toBe(900)
-    expect(parsed.shell.commandRunsPerUser).toBe(500)
-    expect(parsed.shell.savedCommandLimit).toBe(200)
-  })
-
-  test('fanoutPreviewBytes stays well under MAX_BUFFERED (512 KB, ws-handlers.ts) at every bound — plan 93 §3.6, §4.4 sizing check', () => {
-    const MAX_BUFFERED = 512 * 1024
-    expect(FarmSettingsSchema.parse({}).shell.fanoutPreviewBytes).toBeLessThan(MAX_BUFFERED)
-    expect(() => FarmSettingsSchema.parse({ shell: { fanoutPreviewBytes: 16_384 } })).not.toThrow()
-    expect(FarmSettingsSchema.parse({ shell: { fanoutPreviewBytes: 16_384 } }).shell.fanoutPreviewBytes).toBeLessThan(MAX_BUFFERED)
-  })
-
-  test('fanoutMaxDevices / fanoutConcurrency / commandRunsPerUser / savedCommandLimit are bounded', () => {
-    expect(() => FarmSettingsSchema.parse({ shell: { fanoutMaxDevices: -1 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ shell: { fanoutConcurrency: 65 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ shell: { commandRunsPerUser: 49 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ shell: { savedCommandLimit: 9 } })).toThrow()
+    expect(Object.keys(parsed.shell).sort()).toEqual(
+      ['endpointBind', 'endpointEnabled', 'endpointIdleSec', 'execTimeoutMs', 'maxEndpointStreams', 'maxOutputBytes', 'mode'].sort(),
+    )
   })
 })
 
-describe('FarmSettingsSchema.retention.commandRunDays — command console history GC (plan 93 §3.9, §4.1)', () => {
-  test('a settings row that predates this field (an empty object) still parses, defaulting to 14 days', () => {
-    expect(FarmSettingsSchema.parse({}).retention.commandRunDays).toBe(14)
-  })
-
-  test('NOT gated by retention.enabled — an unbounded command history is a disk-filling bug, not an opt-in convenience, matching eventMainDays/eventInputDays', () => {
-    const parsed = FarmSettingsSchema.parse({ retention: { enabled: false } })
-    expect(parsed.retention.enabled).toBe(false)
-    expect(parsed.retention.commandRunDays).toBe(14)
-  })
-
-  test('bounded below at 1 day', () => {
-    expect(() => FarmSettingsSchema.parse({ retention: { commandRunDays: 0 } })).toThrow()
+describe('FarmSettingsSchema.retention — no per-action history retention field (plan 207, MVP 15 §0.1)', () => {
+  test('the removed history GC field is gone', () => {
+    expect(FarmSettingsSchema.parse({}).retention).not.toHaveProperty('commandRunDays')
   })
 })
 
@@ -1332,15 +1302,13 @@ describe('FarmSettingsSchema.retention.traceDays — job trace history GC (plan 
         eventInputDays: 2,
         eventMaxRowsPerDevice: 20_000,
         blobOrphanGraceHours: 48,
-        commandRunDays: 7,
       },
     }
     const parsed = FarmSettingsSchema.parse(legacy)
-    expect(parsed.retention.commandRunDays).toBe(7)
     expect(parsed.retention.traceDays).toBe(30)
   })
 
-  test('NOT gated by retention.enabled — an unbounded per-action trace table is a disk-filling bug, not an opt-in convenience, matching eventMainDays/commandRunDays', () => {
+  test('NOT gated by retention.enabled — an unbounded per-action trace table is a disk-filling bug, not an opt-in convenience, matching eventMainDays', () => {
     const parsed = FarmSettingsSchema.parse({ retention: { enabled: false } })
     expect(parsed.retention.enabled).toBe(false)
     expect(parsed.retention.traceDays).toBe(30)

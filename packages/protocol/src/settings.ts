@@ -1107,28 +1107,12 @@ export const FarmSettingsSchema = z.object({
         .describe('An agent screenshot blob no message references anywhere is deleted once it is this old. Protects an upload still mid-compose from being swept before its message is sent.')
         .meta(ui({ title: 'Unreferenced screenshot grace period (hours)', kind: 'duration', unit: 'h' })),
       /**
-       * The command console's own history budget (plan 93 §3.9, §4.1).
-       * Alongside `eventMainDays`/`eventInputDays`/`blobOrphanGraceHours`
-       * above, and NOT gated by `enabled` for the same stated reason: an
-       * unbounded command history is a disk-filling bug, not an opt-in
-       * convenience — `command_runs` is the same append-only, per-action
-       * shape `device_events` already is.
-       */
-      commandRunDays: z
-        .number()
-        .int()
-        .min(1)
-        .default(14)
-        .describe('Command runs older than this are deleted, with their per-device results.')
-        .meta({ title: 'Command history retention (days)' }),
-      /**
        * The job trace's own history budget (plan 128 §3.7, §4.1).
-       * Alongside `eventMainDays`/`eventInputDays`/`blobOrphanGraceHours`/
-       * `commandRunDays` above, and NOT gated by `enabled` for the same
-       * stated reason: `job_events` is the same append-only, per-action shape
-       * `device_events` and `command_runs` already are — one row per device
-       * call plus a screenshot per row — so leaving it unbounded is a
-       * disk-filling bug, not an opt-in convenience.
+       * Alongside `eventMainDays`/`eventInputDays`/`blobOrphanGraceHours`
+       * above, and NOT gated by `enabled` for the same stated reason: `job_events`
+       * is the same append-only, per-action shape `device_events` already is —
+       * one row per device call plus a screenshot per row — so leaving it
+       * unbounded is a disk-filling bug, not an opt-in convenience.
        *
        * A trace's LIFETIME rule is separate and stricter: a trace lives
        * exactly as long as its job's history, and deleting a job takes its
@@ -1145,7 +1129,7 @@ export const FarmSettingsSchema = z.object({
         .describe('Job traces older than this are deleted, with their captured frames and UI snapshots.')
         .meta({ title: 'Job trace retention (days)' }),
     })
-    .default({ enabled: false, maxAgeDays: 30, maxTotalGb: 20, eventMainDays: 30, eventInputDays: 3, eventMaxRowsPerDevice: 50_000, blobOrphanGraceHours: 24, commandRunDays: 14, traceDays: 30 })
+    .default({ enabled: false, maxAgeDays: 30, maxTotalGb: 20, eventMainDays: 30, eventInputDays: 3, eventMaxRowsPerDevice: 50_000, blobOrphanGraceHours: 24, traceDays: 30 })
     .meta({
       title: 'Artifact storage',
       description: 'Screenshots and job logs pile up over time. Turn this on to clear them automatically.',
@@ -1637,16 +1621,19 @@ export const FarmSettingsSchema = z.object({
       description: 'How closely the shared adb server is watched for signs it is stuck, not just busy, and the drain/cooldown rules the Restart adb server action follows.',
     }),
   /**
-   * The interactive device terminal (plan 26 §4.1), extended by plan 93 §4.1
-   * to also cover the fleet command console — extends this block rather than
-   * adding a new top-level one, because an operator looking for "can people
-   * run commands on the whole farm" looks under Device terminal, and the
-   * gates are the same gates. `mode` defaults to `'admin'` here — that
-   * default is correct for a loopback (single-user) install. A server-mode
-   * install (non-loopback bind) overrides it to `'off'` at config load
-   * instead, in `createFarmSettingsStore`: the auth mode is derived from the
-   * bind address, which this Zod schema cannot see. `fanoutEnabled` below
-   * gets the SAME server-mode override, forced to `false` alongside `mode`.
+   * The interactive device terminal (plan 26 §4.1). `mode` defaults to
+   * `'admin'` here — that default is correct for a loopback (single-user)
+   * install. A server-mode install (non-loopback bind) overrides it to
+   * `'off'` at config load instead, in `createFarmSettingsStore`: the auth
+   * mode is derived from the bind address, which this Zod schema cannot see.
+   *
+   * The fleet-wide screen this block once grew (plan 93) — its own opt-in
+   * flag, per-request device cap, concurrency and output-size knobs, staged
+   * confirmation wait, and per-person/per-farm history limits — is removed
+   * entirely (MVP 15 §0.1 item 4, plan 207): the `adb` verb is one operation
+   * with a bounded dispatch-width constant (`ACTION_FANOUT_CONCURRENCY` in
+   * `packages/core/src/actions/verbs.ts`), not a setting, and it keeps no
+   * history table of its own.
    */
   shell: z
     .object({
@@ -1710,87 +1697,6 @@ export const FarmSettingsSchema = z.object({
         .default(8)
         .describe('Concurrent adb streams allowed per endpoint.')
         .meta(ui({ title: 'Max endpoint streams', kind: 'count', group: 'adb endpoint' })),
-      /**
-       * Fan-out (plan 93 §3.8, §4.1) — a SEPARATE opt-in from `mode` above,
-       * on the exact precedent of `endpointEnabled` above: running one gated
-       * shell and running a hundred at once are different decisions. Unlike
-       * the endpoint this follows `mode`'s asymmetry rather than a flat
-       * `false` — `true` here, forced to `false` in server mode by
-       * `createFarmSettingsStore` (the auth mode is derived from the bind
-       * address, which this schema cannot see). A laptop farm gets the
-       * feature by default; an exposed farm gets a decision.
-       */
-      fanoutEnabled: z
-        .boolean()
-        .default(true)
-        .describe('Allow one command to be sent to many devices at once. Turned off automatically on a server-mode install.')
-        .meta(ui({ title: 'Allow fleet commands', group: 'Fleet commands' })),
-      fanoutMaxDevices: z
-        .number()
-        .int()
-        .min(0)
-        .max(1_000)
-        .default(0)
-        .describe('Largest number of devices one command may target. 0 means no limit.')
-        .meta(ui({ title: 'Max devices per fleet command', kind: 'count', group: 'Fleet commands' })),
-      /** 0 = as many as the adb exec semaphore already lets through (plan 93 §3.5) — no second concurrency mechanism. */
-      fanoutConcurrency: z
-        .number()
-        .int()
-        .min(0)
-        .max(64)
-        .default(0)
-        .describe('How many devices a fleet command runs on at once. 0 lets the adb scheduler decide.')
-        .meta(ui({ title: 'Fleet command concurrency', kind: 'count', group: 'Fleet commands' })),
-      fanoutMaxOutputBytes: z
-        .number()
-        .int()
-        .min(1_024)
-        .max(262_144)
-        .default(32_768)
-        .describe('Output kept per device for a fleet command. Smaller than a single terminal command on purpose — a fleet command is a survey, not a capture.')
-        .meta(ui({ title: 'Max output per device (bytes)', kind: 'bytes', group: 'Fleet commands' })),
-      /** Sized against `MAX_BUFFERED` (512 KB, `ws-handlers.ts`) — see plan 93 §3.6, §4.4. */
-      fanoutPreviewBytes: z
-        .number()
-        .int()
-        .min(256)
-        .max(16_384)
-        .default(2_048)
-        .describe('How much of each distinct result is pushed live to the browser. The rest is fetched on demand.')
-        .meta(ui({ title: 'Live result preview (bytes)', kind: 'bytes', group: 'Fleet commands' })),
-      fanoutConfirmThreshold: z
-        .number()
-        .int()
-        .min(0)
-        .max(1_000)
-        .default(5)
-        .describe('Above this many devices, the operator must type the device count to confirm. 0 always asks.')
-        .meta(ui({ title: 'Typed confirmation above', kind: 'count', group: 'Fleet commands' })),
-      fanoutStageWaitSec: z
-        .number()
-        .int()
-        .min(60)
-        .max(86_400)
-        .default(900)
-        .describe('How long a staged command waits for Continue before it is cancelled.')
-        .meta(ui({ title: 'Staged command wait (s)', kind: 'duration', unit: 's', group: 'Fleet commands' })),
-      commandRunsPerUser: z
-        .number()
-        .int()
-        .min(50)
-        .max(5_000)
-        .default(500)
-        .describe('How many past commands are kept per person. The oldest go first.')
-        .meta(ui({ title: 'Command history per person', kind: 'count', group: 'Fleet commands' })),
-      savedCommandLimit: z
-        .number()
-        .int()
-        .min(10)
-        .max(1_000)
-        .default(200)
-        .describe('How many saved commands this farm may hold.')
-        .meta(ui({ title: 'Max saved commands', kind: 'count', group: 'Fleet commands' })),
     })
     .default({
       mode: 'admin',
@@ -1800,20 +1706,11 @@ export const FarmSettingsSchema = z.object({
       endpointBind: '127.0.0.1',
       endpointIdleSec: 300,
       maxEndpointStreams: 8,
-      fanoutEnabled: true,
-      fanoutMaxDevices: 0,
-      fanoutConcurrency: 0,
-      fanoutMaxOutputBytes: 32_768,
-      fanoutPreviewBytes: 2_048,
-      fanoutConfirmThreshold: 5,
-      fanoutStageWaitSec: 900,
-      commandRunsPerUser: 500,
-      savedCommandLimit: 200,
     })
     .meta({
-      title: 'Device terminal and command console',
+      title: 'Device terminal',
       description:
-        'Free-form adb shell commands, gated by permission and audited in full (plan 26), plus an optional adb endpoint scoped to a controlling client (plan 27) and fleet-wide fan-out with saved commands and history (plan 93).',
+        'Free-form adb shell commands, gated by permission and audited in full (plan 26), plus an optional adb endpoint scoped to a controlling client (plan 27).',
     }),
   /** MVP 04 §1.3 rows 7 and 8, MVP 12 §1 "Control". */
   control: z

@@ -377,7 +377,7 @@ export default definePlugin({
         }
         return {
           rows: [
-            { id: 'a', value: { label: 'alpha' }, device: { id: 'd1', stableId: 's1', label: 'Pixel', status: 'online', clusterId: null, number: 7 } },
+            { id: 'a', value: { label: 'alpha' }, device: { id: 'd1', stableId: 's1', label: 'Pixel', status: 'online', groupId: null, number: 7 } },
             { value: { label: 'beta' } },
           ],
         }

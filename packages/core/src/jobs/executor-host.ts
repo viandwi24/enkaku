@@ -26,7 +26,7 @@ export interface ExecutorHostDeps {
    * Plan 94 §3.8, §4.8, step 94.7 — `deviceId` is passed ONLY from a real
    * terminal settle (below), never from `requeueForRebind` (that job is
    * going back to `queued`, not completing a repetition) — the one signal
-   * `clusters/status.ts`'s `recomputeBatchStatus` needs to call
+   * `groups/status.ts`'s `recomputeBatchStatus` needs to call
    * `BatchPacer.onMemberSettled` instead of just recomputing counts.
    */
   onBatchChanged?: (batchId: string, deviceId?: string) => void

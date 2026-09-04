@@ -35,7 +35,7 @@ function asSchemaNode(value: unknown): Record<string, unknown> | undefined {
  * constraint (types, bounds, enums, required, ordered ranges) now fails
  * BEFORE a device is claimed instead of after, because `validateScriptForRun`
  * (`jobs/validate-script.ts`) calls this before the job row is written and
- * `createBatch` (`clusters/dispatch.ts`) calls it before resolving targets.
+ * `createBatch` (`groups/dispatch.ts`) calls it before resolving targets.
  *
  * Plan 82 §3.3: reads the script through the `ScriptRegistry` rather than the
  * `scripts` table directly — `job.scriptId` can be a persisted row's id

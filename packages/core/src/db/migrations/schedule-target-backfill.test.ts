@@ -30,7 +30,7 @@ function seedSchedule(db: ReturnType<typeof setUp>, id: string) {
       timezone: 'UTC',
       scriptRef: 'checkout@1.0.0',
       params: {},
-      clusterId: null,
+      groupId: null,
       deviceIds: ['d1'],
       concurrency: 0,
       order: 'as-listed',

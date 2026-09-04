@@ -39,13 +39,13 @@ export const devices = sqliteTable(
     tenantId: text('tenant_id'),
     lastSeen: integer('last_seen', { mode: 'timestamp' }),
     /**
-     * The owning cluster (plan 22.0 §3.2), or null when unclustered. A device
-     * belongs to at most one cluster; this column IS that guarantee — there
-     * is no membership table to keep consistent and no code path that can
-     * leave a device in two clusters, because assigning one is an UPDATE
+     * The owning group (plan 22.0 §3.2, renamed per MVP 15 §0.1), or null. A
+     * device belongs to at most one group; this column IS that guarantee —
+     * there is no membership table to keep consistent and no code path that
+     * can leave a device in two groups, because assigning one is an UPDATE
      * that necessarily clears any previous value.
      */
-    clusterId: text('cluster_id'),
+    groupId: text('group_id'),
     /**
      * The operator's standing readiness intent (plan 43 §3.3, §4.2) — never
      * changed by a hold (§3.6): a job or viewer can wake a device without
@@ -162,7 +162,7 @@ export const devices = sqliteTable(
     // `/api/devices` sorts by label ASC, id ASC — the browse list, not a
     // feed (plan 30 §4.2).
     index('idx_devices_label').on(t.label, t.id),
-    index('idx_devices_cluster').on(t.clusterId),
+    index('idx_devices_group').on(t.groupId),
   ],
 )
 
@@ -185,7 +185,7 @@ export const deviceTags = sqliteTable(
   },
   (t) => [
     primaryKey({ columns: [t.deviceId, t.tag] }),
-    // Plan 20 resolves clusters with this one.
+    // Plan 20 resolves groups with this one.
     index('idx_device_tags_tag').on(t.tag),
   ],
 )
@@ -368,9 +368,9 @@ export type NetworkCredentialRow = typeof networkCredentials.$inferSelect
 
 /**
  * One-shot data migrations that cannot be expressed as plain SQL — currently
- * just the cluster materialisation (plan 22.0 §3.4, §4.1) — guarded so each
- * runs exactly once no matter how many times the core starts (acceptance
- * #8: a restart must not reassign or duplicate).
+ * just the pre-`0014` group membership materialisation (plan 22.0 §3.4,
+ * §4.1) — guarded so each runs exactly once no matter how many times the
+ * core starts (acceptance #8: a restart must not reassign or duplicate).
  */
 export const migrationMarkers = sqliteTable('migration_markers', {
   id: text('id').primaryKey(),
@@ -436,7 +436,7 @@ export const jobs = sqliteTable(
      * Plan 94 §3.7, §3.8, §4.8, step 94.6 — the delay (milliseconds)
      * actually drawn for this repetition, materialised so the wait is
      * legible without re-deriving it from `notBefore - createdAt`
-     * (following `clusters/dispatch.ts:54-59`'s own precedent for
+     * (following `groups/dispatch.ts:54-59`'s own precedent for
      * `batchSeq`'s random-order draw, F29 — "nothing depends on a random
      * number that no longer exists"). Null for a job the pacer never
      * touched, same as `batchRepeat` above.
@@ -636,24 +636,24 @@ export const jobs = sqliteTable(
 export type JobRow = typeof jobs.$inferSelect
 
 /**
- * A cluster is a container, not a selector (plan 22.0 §3.1–§3.3, superseding
- * plan 20 §3.1): devices are put into it and taken out of it, and
- * `devices.cluster_id` is the sole source of membership. This table carries
- * only the cluster's own identity — no tags, no device list, nothing that
- * could disagree with the owning field on `devices`.
+ * A group is a container, not a selector (plan 22.0 §3.1–§3.3, superseding
+ * plan 20 §3.1; renamed per MVP 15 §0.1): devices are put into it and taken
+ * out of it, and `devices.group_id` is the sole source of membership. This
+ * table carries only the group's own identity — no tags, no device list,
+ * nothing that could disagree with the owning field on `devices`.
  */
-export const clusters = sqliteTable(
-  'clusters',
+export const groups = sqliteTable(
+  'groups',
   {
     id: text('id').primaryKey(),
     name: text('name').notNull(),
     description: text('description'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   },
-  (t) => [index('idx_clusters_created').on(t.createdAt, t.id)],
+  (t) => [index('idx_groups_created').on(t.createdAt, t.id)],
 )
 
-export type ClusterRow = typeof clusters.$inferSelect
+export type GroupRow = typeof groups.$inferSelect
 
 /**
  * A batch is one script run across a resolved set of devices (plan 20 §3.2,
@@ -665,7 +665,7 @@ export const batches = sqliteTable(
   {
     id: text('id').primaryKey(),
     /** Null when the batch targeted an ad-hoc device list. */
-    clusterId: text('cluster_id'),
+    groupId: text('group_id'),
     scriptId: text('script_id').notNull(),
     params: text('params', { mode: 'json' }),
     /** 0 = unlimited, else the max jobs running at once (plan 20 §3.2). */
@@ -675,10 +675,10 @@ export const batches = sqliteTable(
      * 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'stopping'
      * (plan 94 §3.9, §4.8, step 94.7). Every value but the last is a cached
      * PROJECTION of the batch's jobs, recomputed by `recomputeBatchStatus`
-     * (`clusters/status.ts`) and never written any other way. `'stopping'`
+     * (`groups/status.ts`) and never written any other way. `'stopping'`
      * is the one exception — a STATE, not a flag, written directly by
      * `POST /api/batches/:id/stop` (step 94.8) and read nowhere else but
-     * `BatchPacer.onMemberSettled` (`clusters/pacer.ts`):
+     * `BatchPacer.onMemberSettled` (`groups/pacer.ts`):
      *   - MAY still happen while `stopping`: an already-`running` member
      *     keeps running until its own abort completes (`JobService.cancel`,
      *     step 94.8) and settles normally — `recomputeBatchStatus` still
@@ -702,7 +702,7 @@ export const batches = sqliteTable(
      * (repeatCount) with the three ms fields at `0` is today's behaviour
      * exactly — every batch dispatched before this plan, and every batch
      * dispatched after it with no `pacing` block on `POST /api/batches`
-     * (§4.9) — a single repetition, no delay, no stagger. `clusters/pacer.ts`
+     * (§4.9) — a single repetition, no delay, no stagger. `groups/pacer.ts`
      * is the only writer of anything DERIVED from these (a job's own
      * `notBefore`/`batchRepeat`/`pacedDelayMs`, plan 94 §4.8 step 94.6); this
      * row is never mutated after `createBatch` writes it.
@@ -712,7 +712,7 @@ export const batches = sqliteTable(
     intervalMaxMs: integer('interval_max_ms').notNull().default(0),
     /**
      * The phase offset applied ONCE, at a device's first repetition
-     * (`clusters/pacer.ts`'s `planFirst`) — never re-applied per repetition
+     * (`groups/pacer.ts`'s `planFirst`) — never re-applied per repetition
      * (plan 94 §3.8: after repetition 1, independent per-device interval
      * draws keep devices de-phased on their own).
      */
@@ -723,7 +723,7 @@ export const batches = sqliteTable(
     /**
      * Plan 93 §3.12, §4.2, closing F11 — every device that was in the
      * batch's resolved target but never got a job row, with why:
-     * `{ deviceId, reason }[]`. `createBatch` (`clusters/dispatch.ts`)
+     * `{ deviceId, reason }[]`. `createBatch` (`groups/dispatch.ts`)
      * already computes this at dispatch time and used to throw it away into
      * an audit `meta` field, so an operator could never see "17 of 20 — 3
      * were offline" anywhere but the audit log. Null for a batch dispatched
@@ -736,122 +736,11 @@ export const batches = sqliteTable(
 
 export type BatchRow = typeof batches.$inferSelect
 
-/**
- * One fleet command (plan 93 §3.3, §3.4, §4.2). A single-device terminal
- * command is a run with ONE member — there is one history, not "terminal
- * history" and "console history" — and re-running something from history
- * does not care where it originally came from.
- *
- * NOT a duplicate of `device_events` (plan 18). That table is the 3-day
- * `input`-stream AUDIT of everything that touched a device — retained by
- * `retention.eventInputDays` (default 3), redacted, no user dimension, and
- * queried per device. THIS table is the operator's own 14-day
- * (`retention.commandRunDays`), per-user, re-runnable record of commands
- * they issued, queried across devices. Different retention, different
- * reader, different question — do not merge them. A fan-out command writes
- * to BOTH: this table for history, `device_events` for the audit trail, and
- * the console writer records to `device_events` exactly as `shell.exec`
- * already does today.
- */
-export const commandRuns = sqliteTable(
-  'command_runs',
-  {
-    id: text('id').primaryKey(),
-    /** Redacted at write time by `redactShellCommand` — log hygiene, not a security control. */
-    cmd: text('cmd').notNull(),
-    /** `{ deviceIds } | { clusterId } | { tags }` — what the operator asked for, before resolution. */
-    target: text('target', { mode: 'json' }).notNull(),
-    /** Provenance only; a deleted saved command leaves this dangling by design (plan 93 §3.10). */
-    savedCommandId: text('saved_command_id'),
-    /** 0 = unstaged. Otherwise the size of stage 1 (plan 93 §3.7). */
-    stageFirstN: integer('stage_first_n').notNull().default(0),
-    stage: integer('stage').notNull().default(1),
-    concurrency: integer('concurrency').notNull().default(0),
-    /** 'running' | 'awaiting-continue' | 'ok' | 'failed' | 'cancelled' */
-    status: text('status').notNull().default('running'),
-    /** True when the shared high-consequence guard matched and the operator acknowledged it. An audit fact, not a control (plan 93 §3.14). */
-    acknowledged: integer('acknowledged', { mode: 'boolean' }).notNull().default(false),
-    createdBy: text('created_by'),
-    startedAt: integer('started_at', { mode: 'timestamp' }).notNull(),
-    finishedAt: integer('finished_at', { mode: 'timestamp' }),
-  },
-  (t) => [
-    // `GET /api/command-runs?mine=1`, keyset on (startedAt DESC, id DESC).
-    index('idx_command_runs_user').on(t.createdBy, t.startedAt),
-    // The retention sweep's own age scan, and the unfiltered admin list.
-    index('idx_command_runs_at').on(t.startedAt),
-  ],
-)
-
-export type CommandRunRow = typeof commandRuns.$inferSelect
-export type CommandRunInsert = typeof commandRuns.$inferInsert
-
-/**
- * One device's outcome within a fleet command (plan 93 §3.4, §4.2). No
- * surrogate id: `(runId, deviceId)` is already unique — a device appears at
- * most once per run — so the primary key IS the identity, matching
- * `device_tags`' own reasoning for the same shape.
- */
-export const commandRunMembers = sqliteTable(
-  'command_run_members',
-  {
-    runId: text('run_id').notNull(),
-    deviceId: text('device_id').notNull(),
-    /** Dispatch order within the run — what `idx_command_members_run` sorts a report by. */
-    seq: integer('seq').notNull(),
-    /** 'pending' | 'running' | 'ok' | 'failed' | 'skipped' | 'cancelled' */
-    status: text('status').notNull().default('pending'),
-    exitCode: integer('exit_code'),
-    durationMs: integer('duration_ms'),
-    /** Capped at `shell.fanoutMaxOutputBytes`. Never an artifact (plan 93 §3.6) — a fan-out is a survey, not a capture. */
-    stdout: text('stdout'),
-    stderr: text('stderr'),
-    truncated: integer('truncated', { mode: 'boolean' }).notNull().default(false),
-    /** `Bun.hash` (wyhash) over `exitCode + "\0" + stdout + "\0" + stderr`, as text — the grouping key for the report (plan 93 §3.6, §3.15). Null before the member finishes. */
-    outputHash: text('output_hash'),
-    /** `checkInputAllowed`'s own code, verbatim — never a paraphrase (plan 93 §3.8). Null unless `status = 'skipped'`. */
-    skipCode: text('skip_code'),
-    skipMessage: text('skip_message'),
-    /** A device-side failure (adb error, deadline) distinct from a non-zero exit — see `exitCode` being a number vs null (plan 93 §3.4). */
-    error: text('error'),
-    /** Which stage of a staged run (§3.7) this member belongs to; 1 for an unstaged run. */
-    stageIndex: integer('stage_index').notNull().default(1),
-  },
-  (t) => [
-    primaryKey({ columns: [t.runId, t.deviceId] }),
-    index('idx_command_members_run').on(t.runId, t.seq),
-  ],
-)
-
-export type CommandRunMemberRow = typeof commandRunMembers.$inferSelect
-export type CommandRunMemberInsert = typeof commandRunMembers.$inferInsert
-
-/**
- * A farm-scoped, owned saved command (plan 93 §3.10) — a team asset, not a
- * personal bookmark, on the same reasoning `clusters` and `scripts` already
- * follow: visible to everyone, editable and deletable by the owner or an
- * admin. `name` is unique per farm so "which `battery` do you mean" is never
- * a question anyone has to ask.
- */
-export const savedCommands = sqliteTable(
-  'saved_commands',
-  {
-    id: text('id').primaryKey(),
-    name: text('name').notNull(),
-    description: text('description'),
-    cmd: text('cmd').notNull(),
-    /** `{ clusterId } | { tags } | { deviceIds } | null` — prefilled on the run form, never enforced. */
-    defaultTarget: text('default_target', { mode: 'json' }),
-    createdBy: text('created_by'),
-    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
-    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
-    sortOrder: integer('sort_order').notNull().default(0),
-  },
-  (t) => [uniqueIndex('idx_saved_commands_name').on(t.name)],
-)
-
-export type SavedCommandRow = typeof savedCommands.$inferSelect
-export type SavedCommandInsert = typeof savedCommands.$inferInsert
+// The fleet-wide command screen's three tables — one for a fleet-wide run,
+// one for its per-device members, one for a farm's saved shell one-liners —
+// are removed entirely by plan 207 (MVP 15 §0.1 item 4): the `adb` verb is
+// one operation with an activity per device (plan 205), and no history
+// table replaces them.
 
 /** The domain of `scripts.kind` (plan 99 §3.1) — read only where §4.5 says. */
 export type ScriptKind = 'script' | 'workflow'
@@ -1319,8 +1208,8 @@ export const schedules = sqliteTable(
      */
     scriptRef: text('script_ref').notNull(),
     params: text('params', { mode: 'json' }),
-    /** Exactly one of clusterId / deviceIds is populated (plan 21 §9 open question #3 — no "all devices"). */
-    clusterId: text('cluster_id'),
+    /** Exactly one of groupId / deviceIds is populated (plan 21 §9 open question #3 — no "all devices"). */
+    groupId: text('group_id'),
     deviceIds: text('device_ids', { mode: 'json' }), // string[]
 
     // Batch shape, passed straight through to plan 20's dispatcher (script targets only).

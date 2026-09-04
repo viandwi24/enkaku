@@ -3,17 +3,17 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   DEVICE_PREP_KEYS,
-  DevicePrepApplyResponseSchema,
   KeepAwakeModeSchema,
   RotationModeSchema,
   TextInputModeSchema,
   classifyDevicePrepApply,
-  type ClusterInfo,
   type DeviceInfo,
   type DevicePrepApplyResult,
   type DevicePrepKey,
   type DevicePrepPatch,
+  type GroupInfo,
   type KeepAwakeMode,
+  type RotationApplyResult,
   type RotationMode,
   type TextInputMode,
 } from '@enkaku/protocol'
@@ -32,7 +32,6 @@ import {
   SelectTrigger,
   SelectValue,
   Switch,
-  api,
   cn,
   useAction,
 } from '@enkaku/ui'
@@ -40,6 +39,7 @@ import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSum
 import { SkippedGroups, deviceNameIn, type NamedOutcome } from '@/components/bulk/SkippedGroups'
 import { TargetPicker } from '@/components/target/TargetPicker'
 import { useTargetSelection, type Target } from '@/components/target/useTargetSelection'
+import { runAction, awaitOperation } from '@/lib/actions'
 import { resolveTargetDeviceIds } from '@/lib/operations'
 
 /**
@@ -77,7 +77,7 @@ import { resolveTargetDeviceIds } from '@/lib/operations'
  *    "Applied to 20 devices" over a mix of applied / no session / busy / the
  *    phone declined is precisely what this report refuses to say.
  */
-const TARGET_ALLOW: Target[] = ['single', 'cluster', 'devices']
+const TARGET_ALLOW: Target[] = ['single', 'group', 'devices']
 
 /** Whether a key's effect is live on a streaming device, or waits for the next session. */
 const LIVE_NOW: Record<DevicePrepKey, boolean> = {
@@ -110,20 +110,44 @@ const CODE_LABEL: Record<string, string> = {
   E_ROTATION_FAILED: 'The rotation lock could not be applied',
 }
 
+/**
+ * The `settings` verb's own `detail` shape on a `done` result
+ * (`packages/core/src/actions/impl/settings.ts`'s `SettingsResult`) —
+ * mirrored here rather than imported, since Studio does not depend on
+ * `packages/core`. `changed` entries are dotted (`prep.rotation`), the
+ * merge's own "which keys were sent" record across every settings block, not
+ * this dialog's bare `DevicePrepKey` — the `prep.` ones are picked back out
+ * below.
+ */
+interface SettingsActionDetail {
+  changed: string[]
+  rotation: RotationApplyResult | null
+}
+
+/** One `ActionResult` from the `settings` verb, reshaped into the row `classifyDevicePrepApply`/`SkippedGroups` already know how to render. */
+function toPrepResult(r: { deviceId: string; status: string; message?: string; code?: string; detail?: unknown }): DevicePrepApplyResult {
+  if (r.status !== 'done') {
+    return { deviceId: r.deviceId, saved: false, changed: [], rotation: null, error: { code: r.code ?? r.status, message: r.message ?? r.status } }
+  }
+  const detail = r.detail as SettingsActionDetail
+  const changed = detail.changed.filter((c) => c.startsWith('prep.')).map((c) => c.slice('prep.'.length)) as DevicePrepKey[]
+  return { deviceId: r.deviceId, saved: true, changed, rotation: detail.rotation, error: null }
+}
+
 export function BulkPrepDialog({
   open,
   onOpenChange,
   devices,
   allDevices,
-  clusters = [],
+  groups = [],
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The pre-filled default target — still fully editable through the picker below. */
   devices: DeviceInfo[]
-  /** The whole pool `TargetPicker`'s Cluster/Multiple devices modes choose from. Defaults to `devices` for a caller not yet updated to pass the whole fleet. */
+  /** The whole pool `TargetPicker`'s Group/Multiple devices modes choose from. Defaults to `devices` for a caller not yet updated to pass the whole fleet. */
   allDevices?: DeviceInfo[]
-  clusters?: ClusterInfo[]
+  groups?: GroupInfo[]
 }) {
   const pool = allDevices ?? devices
   const { run, isPending } = useAction()
@@ -144,8 +168,8 @@ export function BulkPrepDialog({
   const [standbyScreenOff, setStandbyScreenOff] = useState(false)
   const [results, setResults] = useState<DevicePrepApplyResult[] | null>(null)
 
-  const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, clusters })
-  const { target, deviceId, deviceIds, clusterId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
+  const targetSelection = useTargetSelection({ usableCount: allDevices ? allDevices.length : Number.POSITIVE_INFINITY, groups })
+  const { target, deviceId, deviceIds, groupId, resolvedCount, hasTarget, fleetConfirmed } = targetSelection
 
   // Plan 124 §4.4, step 124.3 — the report below is the only consumer, and it
   // needs the two-field form (number apart from label) that `NamedOutcome`
@@ -191,8 +215,8 @@ export function BulkPrepDialog({
   const chosenKeys = DEVICE_PREP_KEYS.filter((key) => included[key])
 
   const targetDeviceIds = useMemo(
-    () => resolveTargetDeviceIds({ target, deviceId, deviceIds, clusterId }, pool),
-    [target, deviceId, deviceIds, clusterId, pool],
+    () => resolveTargetDeviceIds({ target, deviceId, deviceIds, groupId }, pool),
+    [target, deviceId, deviceIds, groupId, pool],
   )
 
   const canSubmit = hasTarget && fleetConfirmed && chosenKeys.length > 0 && targetDeviceIds.length > 0
@@ -201,21 +225,30 @@ export function BulkPrepDialog({
    * One submit for both the first run and a retry. A retry sends ONLY the
    * devices it names, and its rows replace those devices' rows in the report —
    * the ones that already worked are neither re-sent nor forgotten.
+   *
+   * Plan 207 §4.2, §4.9 — `POST /api/devices/prep/apply` is gone; this is now
+   * the actions API's own `settings` verb (`runAction('settings', target,
+   * { settings: { prep: patch } })`), settled via `awaitOperation`. Each
+   * `ActionResult` is reshaped back into the same `DevicePrepApplyResult`
+   * row this dialog's report already knew how to render (`changed`/
+   * `rotation` on a `done` result's own `detail`, an `error` object
+   * otherwise) — `classifyDevicePrepApply` and `SkippedGroups` below are
+   * unchanged.
    */
   const submit = (ids: string[], actionKey: string) =>
     run(
       actionKey,
-      () =>
-        api('/api/devices/prep/apply', DevicePrepApplyResponseSchema, {
-          method: 'POST',
-          json: { deviceIds: ids, prep: prepBody() },
-        }),
+      async () => {
+        const response = await runAction('settings', { deviceIds: ids }, { settings: { prep: prepBody() } })
+        const operation = await awaitOperation(response.operationId)
+        return operation.results.map(toPrepResult)
+      },
       {
         failure: 'Could not apply the prep settings',
-        onSuccess: (res) =>
+        onSuccess: (rows) =>
           setResults((prev) => {
-            if (!prev) return res.results
-            const fresh = new Map(res.results.map((r) => [r.deviceId, r]))
+            if (!prev) return rows
+            const fresh = new Map(rows.map((r) => [r.deviceId, r]))
             return prev.map((r) => fresh.get(r.deviceId) ?? r)
           }),
       },
@@ -396,7 +429,7 @@ export function BulkPrepDialog({
               </p>
             )}
 
-            <TargetPicker selection={targetSelection} devices={pool} clusters={clusters} allow={TARGET_ALLOW} />
+            <TargetPicker selection={targetSelection} devices={pool} groups={groups} allow={TARGET_ALLOW} />
           </div>
         ) : (
           <div className="space-y-3">

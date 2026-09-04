@@ -15,8 +15,8 @@ import { createWsMessageHandler, type WsHandlerDeps } from './ws-handlers'
  * viewer of device A does NOT receive device B's transfer progress. Before
  * this step, `transfer.progress`/`transfer.done` went through
  * `hub.broadcast` and reached every connected tab regardless of what it was
- * looking at; this is the same subscriber-scoping `ws-handlers-command.test.ts`
- * already proves for `broadcastCommand`, applied to the transfer surface.
+ * looking at; this is the same subscriber-scoping `monitorTargets` already
+ * proves for monitor streams, applied to the transfer surface.
  */
 
 function setUpDb(): Db {

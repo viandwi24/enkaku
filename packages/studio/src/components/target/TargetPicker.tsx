@@ -1,6 +1,6 @@
 'use client'
 
-import type { ClusterInfo, DeviceInfo } from '@enkaku/protocol'
+import type { GroupInfo, DeviceInfo } from '@enkaku/protocol'
 import { DevicePicker } from '@/components/DevicePicker'
 import {
   Input,
@@ -18,7 +18,7 @@ import type { Target, TargetSelection } from './useTargetSelection'
 
 const TAB_LABEL: Record<Target, string> = {
   single: 'Single device',
-  cluster: 'Cluster',
+  group: 'Group',
   devices: 'Multiple devices',
 }
 
@@ -53,7 +53,7 @@ const GRID_COLS: Record<number, string> = { 1: 'grid-cols-1', 2: 'grid-cols-2', 
 export function TargetPicker({
   selection,
   devices,
-  clusters = [],
+  groups = [],
   allow,
   singleLabel = 'Device',
   devicesLabel = 'Devices',
@@ -61,7 +61,7 @@ export function TargetPicker({
   selection: TargetSelection
   /** The full pool a picker widget shows — unavailable devices still render, disabled, with a reason (plan 19 §3.2), never silently removed. */
   devices: DeviceInfo[]
-  clusters?: ClusterInfo[]
+  groups?: GroupInfo[]
   allow: Target[]
   singleLabel?: string
   devicesLabel?: string
@@ -73,8 +73,8 @@ export function TargetPicker({
     setDeviceId,
     deviceIds,
     setDeviceIds,
-    clusterId,
-    setClusterId,
+    groupId,
+    setGroupId,
     resolvedCount,
     fleetWide,
     fleetConfirm,
@@ -107,22 +107,22 @@ export function TargetPicker({
           </div>
         ))}
 
-      {target === 'cluster' &&
-        (clusters.length === 0 ? (
+      {target === 'group' &&
+        (groups.length === 0 ? (
           <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
-            No cluster is saved yet — create one from the Clusters page, or pick &quot;Multiple devices&quot; instead.
+            No group is saved yet — create one from the Groups page, or pick &quot;Multiple devices&quot; instead.
           </p>
         ) : (
           <div className="space-y-1.5">
-            <Label className="text-[13px] font-normal">Cluster</Label>
-            <Select value={clusterId} onValueChange={setClusterId}>
+            <Label className="text-[13px] font-normal">Group</Label>
+            <Select value={groupId} onValueChange={setGroupId}>
               <SelectTrigger className="h-8 w-full text-[12.5px]">
-                <SelectValue placeholder="Pick a cluster" />
+                <SelectValue placeholder="Pick a group" />
               </SelectTrigger>
               <SelectContent>
-                {clusters.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name} <span className="readout text-fg-subtle">· {c.usableCount} now</span>
+                {groups.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>
+                    {g.name} <span className="readout text-fg-subtle">· {g.usableCount} now</span>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -141,7 +141,7 @@ export function TargetPicker({
           (plan 104 §3.2, §4): the one place a multi-device target's size is
           shown, so no dialog can display a number that disagrees with what
           it will actually send. */}
-      {(target === 'cluster' || target === 'devices') && (
+      {(target === 'group' || target === 'devices') && (
         <p className="readout text-[11px] text-fg-muted">
           Targets {resolvedCount} device{resolvedCount === 1 ? '' : 's'}
         </p>

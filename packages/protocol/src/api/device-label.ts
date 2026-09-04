@@ -72,22 +72,9 @@ export const DEFAULT_DEVICE_LABEL_STATE: DeviceLabelState = {
 export const DeviceLabelClearBodySchema = z.object({ restoreOriginal: z.boolean().default(false) })
 
 /**
- * `POST /api/devices/labels/apply`'s body and response (plan 89 §4.3) — the
- * fleet-wide switch-on, the same per-device report shape
- * `AgentProvisionReportSchema` (`./devices.ts`) already established for a
- * fleet-wide action: one row per requested device, `state: null` only when
- * the call itself threw before producing a `DeviceLabelState` (e.g. the
- * device id does not exist) — a `state.state: 'unavailable'` is a normal,
- * reported outcome, not this kind of failure.
+ * The fleet-wide `POST /api/devices/labels/apply` body/response envelope
+ * that used to live here is removed by plan 207 (MVP 07): `set-label` is now
+ * one of the actions API verbs (`POST /api/actions/set-label`), and its
+ * per-device result is `ActionResultSchema` with `detail: DeviceLabelState`
+ * (`../actions.ts`), not a bespoke fleet envelope.
  */
-export const DeviceLabelsApplyBodySchema = z.object({ deviceIds: z.array(z.string()).min(1) })
-export const DeviceLabelsApplyResultSchema = z.object({
-  deviceId: z.string(),
-  state: DeviceLabelStateSchema.nullable(),
-  error: z.string().nullable(),
-})
-export const DeviceLabelsApplyResponseSchema = z.object({
-  total: z.number().int(),
-  results: z.array(DeviceLabelsApplyResultSchema),
-})
-export type DeviceLabelsApplyResult = z.infer<typeof DeviceLabelsApplyResultSchema>

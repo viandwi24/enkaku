@@ -40,7 +40,7 @@ export function DeviceWallWithPicker({ open, onOpenChange, value, onConfirm, fil
   const [selected, setSelected] = useState<string[]>(value)
 
   // The dialog's own state stays mounted while closed (the same convention
-  // `ScanNetworkDialog`/`ClusterEditorDialog` already follow), so both the
+  // `ScanNetworkDialog`/`GroupEditorDialog` already follow), so both the
   // device fetch and the starting selection are refreshed explicitly on
   // each open rather than relying on a fresh mount. Deliberately keyed on
   // `open` alone: re-syncing `selected` from `value` on every render while

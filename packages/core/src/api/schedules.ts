@@ -32,7 +32,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import { rowToBatchInfo, type BatchRoutesDeps } from './batches'
 import type { Db } from '../db'
-import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
+import { batches, groups, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import { validateScriptForRun } from '../jobs/validate-script'
 import type { JobStore } from '../queue/job-store'
@@ -47,7 +47,7 @@ import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagin
 import { typedJson } from './typed-json'
 
 const ScheduleTargetSchema = z.union([
-  z.object({ clusterId: z.string().min(1) }),
+  z.object({ groupId: z.string().min(1) }),
   // Plan 21 §9 open question #3 — "everything" is always something someone wrote down.
   z.object({ deviceIds: z.array(z.string()).min(1) }),
 ])
@@ -96,7 +96,7 @@ const ValidateBody = z.object({ cron: z.string().min(1), timezone: z.string().mi
 
 const ERROR_STATUS: Record<string, number> = {
   schedule_not_found: 404,
-  cluster_not_found: 404,
+  group_not_found: 404,
   E_BAD_REQUEST: 400,
   E_NOT_DISPATCHED: 409,
   E_NO_TARGETS: 409,
@@ -294,7 +294,7 @@ function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarg
     // Legacy fields (plan 62) — populated only for a script target; null for an agent one.
     scriptRef: agentTarget ? null : row.scriptRef,
     params: agentTarget ? null : row.params,
-    clusterId: row.clusterId,
+    groupId: row.groupId,
     deviceIds: (row.deviceIds as string[] | null) ?? [],
     concurrency: row.concurrency,
     order: row.order as BatchOrder,
@@ -397,10 +397,10 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
   const validateScriptFor = (user: { role: 'admin' | 'operator' } | undefined) => (scriptId: string, params: unknown) =>
     validateScriptForRun({ ...deps, actorRole: () => user?.role ?? null }, scriptId, params)
 
-  const assertClusterExists = (target: z.infer<typeof ScheduleTargetSchema>): void => {
-    if (!('clusterId' in target)) return
-    const row = db.select().from(clusters).where(eq(clusters.id, target.clusterId)).get()
-    if (!row) throw new EnkakuError('cluster_not_found', `no such cluster: ${target.clusterId}`)
+  const assertGroupExists = (target: z.infer<typeof ScheduleTargetSchema>): void => {
+    if (!('groupId' in target)) return
+    const row = db.select().from(groups).where(eq(groups.id, target.groupId)).get()
+    if (!row) throw new EnkakuError('group_not_found', `no such group: ${target.groupId}`)
   }
 
   const assertCronValid = (cron: string, timezone: string): void => {
@@ -453,7 +453,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
     }
     assertCronValid(body.data.cron, body.data.timezone)
-    assertClusterExists(body.data.target)
+    assertGroupExists(body.data.target)
     assertPacingValid(body.data.intervalMinMs, body.data.intervalMaxMs)
     const workTarget = resolveWorkTargetInput(body.data)
     assertAgentTargetValid(workTarget)
@@ -478,7 +478,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       // `@latest` reference is meant to float on every future firing.
       scriptRef: workTarget.kind === 'script' ? workTarget.ref : '',
       params: workTarget.kind === 'script' ? (validatedParams ?? null) : null,
-      clusterId: 'clusterId' in body.data.target ? body.data.target.clusterId : null,
+      groupId: 'groupId' in body.data.target ? body.data.target.groupId : null,
       deviceIds: 'deviceIds' in body.data.target ? body.data.target.deviceIds : null,
       concurrency: body.data.concurrency,
       order: body.data.order,
@@ -536,7 +536,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     const nextCron = body.data.cron ?? row.cron
     const nextTimezone = body.data.timezone ?? row.timezone
     if (body.data.cron !== undefined || body.data.timezone !== undefined) assertCronValid(nextCron, nextTimezone)
-    if (body.data.target !== undefined) assertClusterExists(body.data.target)
+    if (body.data.target !== undefined) assertGroupExists(body.data.target)
     if (body.data.intervalMinMs !== undefined || body.data.intervalMaxMs !== undefined) {
       assertPacingValid(body.data.intervalMinMs ?? row.intervalMinMs, body.data.intervalMaxMs ?? row.intervalMaxMs)
     }
@@ -547,7 +547,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (body.data.cron !== undefined) patch.cron = body.data.cron
     if (body.data.timezone !== undefined) patch.timezone = body.data.timezone
     if (body.data.target !== undefined) {
-      patch.clusterId = 'clusterId' in body.data.target ? body.data.target.clusterId : null
+      patch.groupId = 'groupId' in body.data.target ? body.data.target.groupId : null
       patch.deviceIds = 'deviceIds' in body.data.target ? body.data.target.deviceIds : null
     }
 

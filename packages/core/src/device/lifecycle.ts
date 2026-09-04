@@ -335,8 +335,8 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
         }
         tx.insert(deletedDevices).values({ id: row.id, stableId: row.stableId, label: row.label, deletedAt: new Date() }).run()
         tx.delete(deviceTags).where(eq(deviceTags.deviceId, row.id)).run()
-        // Cluster membership is a single column on `devices` (plan 22.0
-        // §3.2) — deleting the row itself is the whole of "clear cluster
+        // Group membership is a single column on `devices` (plan 22.0
+        // §3.2) — deleting the row itself is the whole of "clear group
         // membership"; there is no separate membership table to also clean.
         tx.delete(devices).where(eq(devices.id, row.id)).run()
         // A device forgotten while still plugged in has somewhere to go now

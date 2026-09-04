@@ -40,11 +40,10 @@ import { createDeviceRoutes } from './api/devices'
 import { createDeviceIdentityRoutes } from './api/device-identity'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-agent'
 import { createTagRoutes } from './api/tags'
-import { createClusterRoutes } from './api/clusters'
-import { createTopologyRoutes } from './api/topology'
+import { createGroupRoutes } from './api/groups'
 import { createBatchRoutes, createBatchDispatchDeps } from './api/batches'
 import { createScheduleRoutes } from './api/schedules'
-import { recomputeBatchStatus } from './clusters/status'
+import { recomputeBatchStatus } from './groups/status'
 import { createJobRoutes } from './api/jobs'
 import { createSettingsRoutes } from './api/settings'
 import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
@@ -80,7 +79,7 @@ import { createFarmBroker, createFarmRunnerPort, type FarmBroker } from './plugi
 import { seedEmbeddedPacks } from './plugins/seed-embedded'
 import { embeddedAssets } from './embedded'
 import { createPluginRoutes, pluginRouteErrorStatus } from './api/plugins'
-import { buildCoreCapabilityRegistry, type CapabilityContextDeps } from './capability'
+import { buildCoreCapabilityRegistry, createCapabilityContext, type CapabilityContextDeps } from './capability'
 import { createCapRoutes } from './api/cap'
 import { buildOpenApiDocument } from './api/openapi'
 import { createMcpServer } from './mcp/server'
@@ -127,7 +126,7 @@ import { createScriptExecutor } from './jobs/executors/script'
 import { createWorkflowExecutor } from './jobs/executors/workflow'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, runMigrationsUpTo, type OpenedDb } from './db'
-import { materialiseClusters, DROP_CLUSTER_SELECTOR_COLUMNS_TAG } from './db/migrations/cluster-materialise'
+import { materialiseMembership, DROP_CLUSTER_SELECTOR_COLUMNS_TAG } from './db/migrations/materialise-0014'
 import { backfillScheduleScriptRefs } from './db/migrations/backfill-schedule-refs'
 import { backfillScheduleTargets } from './db/migrations/schedule-target-backfill'
 import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
@@ -149,17 +148,16 @@ import { EnkakuError } from './util/errors'
 import { ExecutorRegistry } from './jobs/executor'
 import { createExecutorHost } from './jobs/executor-host'
 import { classifyFailure } from './jobs/failure-class'
-import { pickRebindDevice } from './clusters/dispatch'
-import { createBatchPacer, replanAfterRestart, type BatchPacer } from './clusters/pacer'
+import { pickRebindDevice } from './groups/dispatch'
+import { createBatchPacer, replanAfterRestart, type BatchPacer } from './groups/pacer'
 import { sleepExecutor } from './jobs/executors/sleep'
 import { createInstallExecutor } from './jobs/executors/install'
 import { createPushExecutor } from './jobs/executors/push'
 import { createPullExecutor } from './jobs/executors/pull'
 import { createActivityRegistry, type ActivityRegistry } from './activity/registry'
-import { createCommandRunStore } from './command-console/store'
-import { createCommandRunner, resolveCommandTarget, type CommandRunner, type CommandRunnerEvent } from './command-console/runner'
-import { createCommandRunRoutes } from './api/command-runs'
-import { createSavedCommandRoutes } from './api/saved-commands'
+import { createOperationRegistry } from './actions/operations'
+import type { ActionsDeps } from './actions/run'
+import { createActionRoutes } from './api/actions'
 import { createJobStore } from './queue/job-store'
 import { createExpiryReaper } from './queue/expiry'
 import { createScheduler } from './queue/scheduler'
@@ -398,8 +396,6 @@ let blobGc: BlobGc | null = null
   let labellingRef: LabellingService | null = null
   /** Device readiness (plan 43) — constructed once `activities` exists (below), used by every module below that reconciles or admits against it. */
   let readiness: ReadinessManager | null = null
-  /** The command console's runner (plan 93 §4.5, §5 step 93.3) — constructed right after `activities`, since admission policy needs it. `stop()` drains it before `recorder` (its own `record` dep) is torn down. */
-  let commandRunner: CommandRunner | null = null
   let stopScheduler: (() => void) | null = null
   /** The batch pacer's dynamic timer (plan 94 §3.8, §4.8, step 94.7) — cleared in `stop()` like every other periodic timer here (`00-overview.md` §7 item 7). */
   let stopPacer: (() => void) | null = null
@@ -450,14 +446,15 @@ let blobGc: BlobGc | null = null
 
       // 1. DB + migrasi
       opened = openDb(join(cfg.dataDir, 'enkaku.db'))
-      // The cluster materialisation (plan 22.0 §3.4, §4.1) is a one-shot
-      // TypeScript data step that has to run strictly between two generated
-      // migrations: after `devices.cluster_id` exists, before
-      // `clusters.tags`/`device_ids` are dropped. `runMigrationsUpTo` opens
-      // that window; the trailing `runMigrations` applies the remainder
-      // (idempotent either way — see `cluster-materialise.test.ts`).
+      // The pre-0014 membership materialisation (plan 22.0 §3.4, §4.1) is a
+      // one-shot TypeScript data step that has to run strictly between two
+      // generated migrations: after `devices.cluster_id` exists, before the
+      // pre-`0014` selector columns are dropped. `runMigrationsUpTo` opens
+      // that window; the trailing `runMigrations` applies the remainder,
+      // including plan 207's `0066_groups_rename` (idempotent either way —
+      // see `materialise-0014.test.ts`).
       runMigrationsUpTo(opened.db, DROP_CLUSTER_SELECTOR_COLUMNS_TAG)
-      materialiseClusters(opened.db, { dataDir: cfg.dataDir, log: log.child('cluster-materialise') })
+      materialiseMembership(opened.db, { dataDir: cfg.dataDir, log: log.child('materialise-0014') })
       // `opened.sqlite` is passed so the runner can realign a poisoned
       // `__drizzle_migrations.created_at` watermark before drizzle reads it
       // (see `runMigrations`'s own note — plans 61/62's hand-written
@@ -532,6 +529,14 @@ let blobGc: BlobGc | null = null
           }
         },
       })
+      // The actions router's operation registry (plan 207 §4.2, §4.8) — an
+      // in-memory, TTL+cap-evicted record of every async verb's dispatch
+      // result, `GET /api/operations/:id`'s only backing store. Built beside
+      // `activities` (no persistence, no circular dependency on anything
+      // constructed later), swept on the same cadence as the activity
+      // registry (`operations.startSweep()`/`stopSweep()`, alongside
+      // `activities.startSweep()`/`stopSweep()` below).
+      const operations = createOperationRegistry({})
 
       // Notifications and webhooks (plan 68 §3.4, §4.1, §4.4) — built early: farm-wide, minimal
       // deps (db, dataDir), and needed by both the capability registry (`notify.send`), the
@@ -933,20 +938,13 @@ let blobGc: BlobGc | null = null
       let videoStreamStats:
         | ((deviceId: string) => Array<{ quality: Quality; keyframeRequests: number; congestionDrops: number }>)
         | null = null
-      // Same forward-ref pattern: the command runner (plan 93 §3.17, §4.5,
-      // §5 step 93.4) is constructed right after `activities`, well before
-      // `attachWsRouter` runs — but its `broadcast` dep needs
-      // `commandTargets(runId)`'s subscriber bookkeeping, which lives on the
-      // WS router's own connection state. Resolved once `attachWsRouter`
-      // runs, same as `transportStats`/`inputStats` immediately above.
-      let broadcastCommandEvent: ((runId: string, msg: CommandRunnerEvent) => void) | null = null
       // Same forward-ref pattern (plan 93 §4.6, §5 step 93.9 — closes F27):
       // `transferBroadcast` (below, in step 3) is constructed well before
       // `attachWsRouter` runs, but scoping `transfer.progress`/`transfer.done`
       // to viewers of the device (matching `shell.result`) needs
       // `deviceTargets(deviceId)`'s connection bookkeeping, which lives on
       // the WS router. Resolved once `attachWsRouter` runs, same as
-      // `broadcastCommandEvent` immediately above.
+      // `transportStats`/`inputStats` above.
       let broadcastTransferEvent: ((deviceId: string, msg: ServerMessage) => void) | null = null
       // Same forward-ref pattern: the shared reaper (`expiryReaper`, built well before the agent
       // runner exists) sweeps overdue agent approvals on its own cadence (plan 66 §4.3) instead of
@@ -1224,7 +1222,7 @@ let blobGc: BlobGc | null = null
       // Subscriber-scoped (plan 93 §4.6, §5 step 93.9 — closes F27) — the
       // forward-ref into `ws-handlers.ts`'s `deviceTargets(deviceId)`/
       // `broadcastTransfer`, resolved once `attachWsRouter` runs (the SAME
-      // pattern `broadcastCommandEvent` above uses). Never `hub.broadcast`:
+      // pattern `transportStats`/`inputStats` above use). Never `hub.broadcast`:
       // a farm-wide broadcast put every open tab on every device's progress
       // ticks, both a wire-cost bug and a privacy one at 100 devices. Falls
       // back to a debug log before `attachWsRouter` has run.
@@ -1460,27 +1458,18 @@ let blobGc: BlobGc | null = null
         return script ? `${script.name}@${script.version}` : 'a job'
       }
 
-      // The command console's runner (plan 93 §3.5-§3.8, §4.5, §5 step 93.3)
-      // — built right here, at the same point manual-hold construction used
-      // to sit, because `admitMember`'s activity policy needs the registry
-      // and nothing else below this point does. `sweepOrphans()` is called
-      // right away, one line down: the same boot-recovery phase ("3. Queue /
-      // heartbeat / scheduler", above) `jobStore.failOrphanRunning()` already opened
-      // for jobs — a command run left `running`/`awaiting-continue` by a
-      // previous process's crash is exactly the same kind of orphan (plan
-      // 93 §3.7, mirroring F29).
-      const commandRunStore = createCommandRunStore(db)
-      // The SAME local-vs-remote decision `ws-handlers.ts`'s own (module-
-      // private, unexported) `shellPortFor` makes (plan 25 §3.4, §4.3),
-      // duplicated here rather than imported because that closure cannot be
-      // imported and `ws-handlers.ts` is held by a concurrent worker this
-      // step must not touch (plan 93 step 93.3's own brief). Reads
-      // `adb`/`remoteSessions`/`tunnelRpc`/`tunnelRouter` fresh on every
-      // call — the same forward-ref pattern `adbEndpointManager` above
+      // The actions router's shell port resolver (plan 207 §4.8) — the SAME
+      // local-vs-remote decision `ws-handlers.ts`'s own (module-private,
+      // unexported) `shellPortFor` makes (plan 25 §3.4, §4.3), duplicated
+      // here rather than imported because that closure cannot be imported.
+      // Reads `adb`/`remoteSessions`/`tunnelRpc`/`tunnelRouter` fresh on
+      // every call — the same forward-ref pattern `adbEndpointManager` above
       // already relies on (none of the four is assigned yet at the point
       // this closure is BUILT; only at the point it is CALLED, well after
-      // `start()` finishes booting).
-      const commandShellPortFor = (deviceId: string): ShellPort => {
+      // `start()` finishes booting). Formerly `commandShellPortFor`, built
+      // for the deleted command console's runner (plan 93); kept, renamed,
+      // for the `adb` verb's own dispatch.
+      const actionShellPortFor = (deviceId: string): ShellPort => {
         const remoteNode = remoteSessions?.nodeIdFor(deviceId) ?? null
         if (remoteNode) {
           if (!tunnelRpc || !tunnelRouter) {
@@ -1492,42 +1481,6 @@ let blobGc: BlobGc | null = null
         const row = db.select().from(devices).where(eq(devices.id, deviceId)).get()
         if (!row) throw new EnkakuError('device_not_found', 'no such device')
         return createLocalShellPort({ client: adb, serial: row.serial })
-      }
-      commandRunner = createCommandRunner({
-        db,
-        store: commandRunStore,
-        activities,
-        controlSettings: () => settingsStore.get().control,
-        states,
-        shellPortFor: commandShellPortFor,
-        resolve: (target) => resolveCommandTarget(db, target),
-        settings: () => settingsStore.get().shell,
-        recorder: (e) => recorder?.record(e),
-        audit,
-        // Subscriber-scoped (plan 93 §3.17, §4.3, F27, step 93.4) — the
-        // forward-ref into `ws-handlers.ts`'s `commandTargets(runId)`/
-        // `broadcastCommand`, resolved once `attachWsRouter` runs (same
-        // pattern `transportStats`/`inputStats` above use). Never
-        // `hub.broadcast`: a fleet command's output must not reach every
-        // open tab — `transfer.progress`/`transfer.done` (F27) got the same
-        // fix, below, in step 93.9. Falls back to a debug log before
-        // `attachWsRouter` has run (boot's own `sweepOrphans()` call below
-        // never broadcasts, so this only matters if something else calls
-        // `start()` implausibly early).
-        broadcast: (runId, msg) =>
-          broadcastCommandEvent?.(runId, msg) ?? log.child('command-console').debug(`command run event (WS router not attached yet): ${runId} ${msg.type}`),
-        // Same role-resolution expression the WS router below builds for its
-        // own `roleOf` dep (plan 26 §4.1, §4.3) — local mode's one implicit
-        // admin ignores the userId entirely.
-        roleOf: authMode === 'local' ? () => 'admin' : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
-        // `canUseDevice` (plan 34 §3.5, §4.4) — the SAME device-ownership
-        // lookup every other ownership gate in this file already shares.
-        getDevice: getDeviceOwner,
-        log: log.child('command-console'),
-      })
-      const orphanedCommandRuns = commandRunner.sweepOrphans()
-      if (orphanedCommandRuns > 0) {
-        log.warn(`recovery boot: ${orphanedCommandRuns} command run(s) orphaned by the previous process, marked cancelled`)
       }
 
       // The single accessor every device-listing route needs to fill
@@ -2384,10 +2337,10 @@ let blobGc: BlobGc | null = null
         // `capability/job.ts`) resolves a plugin member the same as a standalone script.
         registry: scriptRegistry,
         // Plan 88 §3.6, §4.1, §5 step 88.5 — the SAME two accessors
-        // `deviceRoutes`/`topologyRoutes` get below, so an agent script's
+        // `deviceRoutes` gets below, so an agent script's
         // `ctx.listDevices()`/`ctx.getDevice()` badges a device identically
-        // to `GET /api/devices` and the fleet map, never disagreeing about
-        // whether a phone reads OTG/WI-FI/TCP.
+        // to `GET /api/devices`, never disagreeing about whether a phone
+        // reads OTG/WI-FI/TCP.
         networks: () => settingsStore.get().discovery.networks,
         declaredMedia: () => loadDeclaredMedia(endpoints),
         // Plan 114 §3.3, step 114.9 — the network layer's one door. It is the
@@ -2499,6 +2452,88 @@ let blobGc: BlobGc | null = null
       // constructed long before `agentRunner` exists.
       sweepAgentApprovals = () => agentRunner.sweepExpiredApprovals()
 
+      // The actions router (plan 207 §4.2, §4.8) — one endpoint per verb,
+      // taking a target; replaces every per-device action route, every bulk
+      // twin, and the deleted command console entirely. Built from the SAME
+      // live accessors and forward-refs every other router in this function
+      // already reads (`deviceRoutes` below gets the identical
+      // `reconnector`/`sessions`/`cutover`/`labelling`/`lifecycle`/`battery`
+      // pattern). `batchesFor` is the one field that is a FUNCTION of the
+      // per-request actor rather than a static object: `run-script`'s own
+      // gate (`checkGate`, `VERBS['run-script'].gate` — only `job.run`) is
+      // coarser than `validate-script.ts`'s F10 fix (an `internal:install`
+      // script needs `device.files`/`transfer.enabled` too), and that fix is
+      // enforced by `BatchDispatchDeps.validateScript`'s `actorRole` closure
+      // — a fixed `null` actor here would silently reopen F10 for run-script
+      // on the one surviving path to it (`POST /api/batches` and
+      // `POST /api/jobs` are both gone). `createBatchDispatchDeps` is the
+      // SAME factory `api/batches.ts`'s own routes call for their own
+      // per-request actor, never a second copy of that literal.
+      const actionsDeps: ActionsDeps = {
+        db,
+        audit,
+        record: (e) => recorder?.record(e),
+        broadcast: (msg) => hub.broadcast(msg as ServerMessage),
+        activities,
+        controlSettings: () => settingsStore.get().control,
+        states,
+        operations,
+        userLabel: (userId) => resolveActorLabel('user', userId),
+        shellSettings: () => settingsStore.get().shell,
+        transferSettings: () => settingsStore.get().transfer,
+        batchesFor: (actor) =>
+          createBatchDispatchDeps(
+            {
+              db,
+              scheduler: scheduler!,
+              audit,
+              registry: executors,
+              findScript,
+              scriptRegistry,
+              farmJobSettings: () => settingsStore.get().job,
+              pacer,
+              shellMode: () => settingsStore.get().shell.mode,
+              transferEnabled: () => settingsStore.get().transfer.enabled,
+            },
+            actor,
+          ),
+        resolveScriptRef: (ref) => scriptRegistry.resolve(ref),
+        transfer: {
+          transfer: transferService,
+          broadcast: transferBroadcast,
+          holdFor: readinessHoldForTransfer,
+        },
+        shellPortFor: actionShellPortFor,
+        readiness,
+        reconnector: () => reconnector,
+        sessions: () => sessions,
+        cutover: () => cutoverManager,
+        lifecycle: deviceLifecycle,
+        battery: () => battery,
+        // The address book's own actions door (plan 52, plan 207 §4.2) —
+        // `guestAgent.routeActions` is the SAME `RouteService['actions']`
+        // object `createGuestAgentRoutes` builds once, unconditionally,
+        // well before this point.
+        routeService: () => guestAgent.routeActions,
+        labelling,
+        preparation: { runner: preparationRunner, agentProvisioner },
+        // Wraps the capability context's own `deviceCall` (plan 207 §4.8) —
+        // the SAME path `capability/device-inspect.ts`'s `device.screenshot`
+        // uses, which returns a base64 PNG string
+        // (`@enkaku/session`'s `device-executor.ts`'s `screenshot` case).
+        // No caller-specific auditing applies here (`actor: null`) — this
+        // router's own `audit.record` call on the settled result is the
+        // action's audit trail, not a second capability-shaped one.
+        screenshot: async (deviceId) => {
+          const value = await createCapabilityContext(capContextDeps, null).deviceCall(deviceId, { method: 'screenshot', args: {} }, 'wall')
+          return new Uint8Array(Buffer.from(String(value), 'base64'))
+        },
+        dataDir: cfg.dataDir,
+        networks: () => settingsStore.get().discovery.networks,
+        infoWithTags: (deviceId) => getDeviceOwner(deviceId) ?? { ownerId: null },
+      }
+      const actionRoutesHandle = createActionRoutes(actionsDeps)
+
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithTags` call in this function gets.
@@ -2602,11 +2637,8 @@ let blobGc: BlobGc | null = null
             jobsRunning: jobStore.list({ status: 'running', limit: 1000 }).rows.length,
           }),
         },
-        // `scriptRef` resolution (plan 62 §4.4) — resolved before the job row
-        // is written, so `jobs.scriptId` is always concrete.
         jobRoutes: createJobRoutes(jobService, {
           log: log.child('jobs'),
-          resolveScriptRef: (ref) => scriptRegistry.resolve(ref),
           logBuffer: jobLogBuffer,
           // `canCancelJob`'s ownership half (`auth/acl.ts`) — the same
           // `getDeviceOwner` closure `jobService`'s own `enqueue` check,
@@ -2715,20 +2747,6 @@ let blobGc: BlobGc | null = null
             states,
             shellSettings: () => settingsStore.get().shell,
           },
-          // File transfer and APK install (plan 39 §4.3, §4.4) —
-          // `transferService`/`transferBroadcast` are constructed
-          // unconditionally above too, the same reasoning as `adbEndpoint`.
-          transfer: {
-            transfer: transferService,
-            activities,
-            controlSettings: () => settingsStore.get().control,
-            states,
-            record: recorder!.record,
-            shellSettings: () => settingsStore.get().shell,
-            transferSettings: () => settingsStore.get().transfer,
-            broadcast: transferBroadcast,
-            holdFor: readinessHoldForTransfer,
-          },
           // Device lifecycle — Forget and Block (plan 47 §4.4) — `deviceLifecycle`
           // is constructed unconditionally above, beside `activities`.
           lifecycle: deviceLifecycle,
@@ -2759,31 +2777,19 @@ let blobGc: BlobGc | null = null
         // own doc comment for why it is bridged rather than registered).
         devicePreparationRoutes: createDevicePreparationRoutes({ db, runner: preparationRunner, agentProvisioner }).routes,
         tagRoutes: createTagRoutes({ db }),
-        clusterRoutes: createClusterRoutes({
+        // Group CRUD and read-only membership (plan 22.0 §4.4, renamed to
+        // `groups` by plan 207 — MVP 15 §0.1 item 3). `/api/topology`'s
+        // fleet map is gone entirely (plan 207 §4.7); nothing replaces it.
+        groupRoutes: createGroupRoutes({
           db,
           audit,
-          // Plan 88 §3.6, §4.1, residual gap closed by plan 90 (also recorded at
-          // docs/plans/96-m61-hotfixes.md §96.5): `createClusterRoutes` itself has carried
-          // `networks`/`declaredMedia` since that entry's fix — only THIS call site never
-          // threaded them through, so a device's connection badge on its own device page
-          // could read `OTG` while the identical row, viewed through its cluster's device
-          // list, read the honest-but-incomplete `TCP`. Same accessors `deviceRoutes`/
-          // `topologyRoutes` already get, a few lines away in this same function.
+          // Same accessors `deviceRoutes` above gets, so a device's
+          // connection badge never disagrees between the device list and
+          // its group's own device list.
           networks: () => settingsStore.get().discovery.networks,
           declaredMedia: () => loadDeclaredMedia(endpoints),
           // A device's live activities and its last control tail (plan 205 §4.10) —
           // `activities` is constructed synchronously above, well before this object literal.
-          activitiesOf,
-        }),
-        topologyRoutes: createTopologyRoutes({
-          db,
-          readinessOf: (deviceId, row) => readiness?.get(deviceId) ?? staticReadinessFallback(row),
-          // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors `deviceRoutes` above gets, so the
-          // fleet map's badges never disagree with the device list's.
-          networks: () => settingsStore.get().discovery.networks,
-          declaredMedia: () => loadDeclaredMedia(endpoints),
-          // A device's live activities and its last control tail (plan 205 §4.10) —
-          // same accessor `deviceRoutes` above already gets.
           activitiesOf,
         }),
         batchRoutes: createBatchRoutes({
@@ -2827,37 +2833,11 @@ let blobGc: BlobGc | null = null
           // needs.
           archiveSettings: () => settingsStore.get().transfer,
         }),
-        // The fleet command console's REST surface (plan 93 §4.4, step
-        // 93.4) — `commandRunStore`/`commandRunner` are both constructed
-        // unconditionally above, right after `activities`.
-        commandRunRoutes: createCommandRunRoutes({
-          db,
-          store: commandRunStore,
-          runner: commandRunner!,
-          settings: () => settingsStore.get().shell,
-          // The SAME role-resolution expression `commandRunner`'s own
-          // construction above uses — an operator's fleet-command
-          // permission must agree between the REST gate and the runner's
-          // defense-in-depth re-check of it.
-          roleOf:
-            authMode === 'local'
-              ? () => 'admin'
-              : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
-          getDeviceOwner,
-        }),
-        // Saved commands (plan 93 §3.10, §4.4, step 93.6) — the SAME
-        // role-resolution expression `commandRunRoutes` above uses, so a
-        // saved command's owner-or-admin edit/delete gate agrees with the
-        // fleet command console's own permission model.
-        savedCommandRoutes: createSavedCommandRoutes({
-          db,
-          settings: () => settingsStore.get().shell,
-          roleOf:
-            authMode === 'local'
-              ? () => 'admin'
-              : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
-          audit,
-        }),
+        // One endpoint per verb, taking a target (plan 207 §4.2, §4.8) —
+        // `actionsDeps`/`actionRoutesHandle` are both constructed
+        // unconditionally above, right after the agent runner.
+        actionRoutes: actionRoutesHandle.actions,
+        operationRoutes: actionRoutesHandle.operations,
         scheduleRoutes: createScheduleRoutes({
           db,
           jobStore,
@@ -2925,15 +2905,6 @@ let blobGc: BlobGc | null = null
           // `inputStats` is the forward-ref resolved once `attachWsRouter`
           // runs (plan 91 §4.10, §5 step 91.10), same pattern as `transport`.
           input: () => inputStats?.() ?? null,
-          // Plan 93 §5 step 93.12 — `commandRunner` is constructed
-          // unconditionally above (right after `activities`, same as
-          // `batchRoutes`'s own `commandRunRoutes` wiring reads), well
-          // before this call. Without this line `GET /api/adb/stats`
-          // reports the whole `commandConsole` block zero-filled forever,
-          // even while command runs are genuinely in flight
-          // (`adb-stats-command-console-wiring.test.ts`, the self-detecting
-          // gap step 93.12 could not close on its own file list).
-          commandConsole: () => commandRunner?.stats() ?? null,
           // plan 92 §3.3, §3.7, §4.5, §5 step 92.3 — the build lane's
           // farm-wide settings. `maxTiles` reports `wall.maxTiles` AS
           // ACTUALLY APPLIED: the derived count (`computeAutoTiles`) when
@@ -3384,7 +3355,11 @@ let blobGc: BlobGc | null = null
       blobGc.start()
 
       activities.startSweep()
-      stopReaper = () => activities.stopSweep()
+      operations.startSweep()
+      stopReaper = () => {
+        activities.stopSweep()
+        operations.stopSweep()
+      }
       expiryReaper.start()
       stopExpiryReaper = () => expiryReaper.stop()
       scheduler.start()
@@ -3453,13 +3428,6 @@ let blobGc: BlobGc | null = null
           // `canUseDevice` (plan 34 §3.5, §4.4) — control acquisition's ownership check.
           getDeviceOwner,
           shellSettings: () => settingsStore.get().shell,
-          // Plan 93 §3.3, §3.17, §5 step 93.5 — `shell.exec` records through
-          // the SAME store the fan-out runner writes to (`commandRunStore`,
-          // built right after `activities`, above), so `/console`'s History has
-          // one mechanism for both, not two. This is the store only; the
-          // runner itself (`commandRunner`) is unrelated to `shell.exec` and
-          // stays wired only into `commandRunRoutes` below.
-          commandRunStore,
           // The activity-gated adb endpoint (plan 27 §4.2) — WS-disconnect
           // teardown already lives in `ws-handlers.ts` (that is where the
           // WS-level control-marker and connection lifecycle already are);
@@ -3512,7 +3480,6 @@ let blobGc: BlobGc | null = null
         transportStats = handler.transportStats
         inputStats = handler.inputStats
         videoStreamStats = handler.videoStreamStats
-        broadcastCommandEvent = handler.broadcastCommand
         broadcastTransferEvent = handler.broadcastTransfer
       }
 
@@ -4146,7 +4113,7 @@ let blobGc: BlobGc | null = null
           // badged the honest-but-incomplete `TCP` on the very broadcast
           // every connected Studio tab renders immediately, then silently
           // flipped to `OTG`/`WI-FI` the next ordinary `GET /api/devices`.
-          // Same accessor `deviceRoutes`/`topologyRoutes`/`clusterRoutes`
+          // Same accessor `deviceRoutes`/`groupRoutes`
           // already get, a few lines away in this same function.
           networks: () => settingsStore.get().discovery.networks,
           onDeviceGone: (deviceId) => {
@@ -4403,12 +4370,6 @@ let blobGc: BlobGc | null = null
       stopReaper?.()
       stopExpiryReaper?.()
       stopScheduleRunner?.()
-      // Plan 93 §5 step 93.3, `00-overview.md` §7 — every active fan-out run's
-      // pending members are cancelled, in-flight execs aborted, and every
-      // timer cleared, BEFORE `recorder` (its own `record` dep) is torn down
-      // a few lines below.
-      commandRunner?.stop()
-      commandRunner = null
       battery?.stop()
       battery = null
       health?.stop()

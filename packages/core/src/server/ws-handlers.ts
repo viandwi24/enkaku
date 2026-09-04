@@ -33,7 +33,6 @@ import type { JobService } from '../services/job-service'
 import type { AuditLogger } from '../auth/audit'
 import type { EventRecorder } from '../events/recorder'
 import type { RecordingService } from '../recording/service'
-import type { CommandRunStore } from '../command-console/store'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
 import { canCancelJob, canUseDevice, canUseShell } from '../auth/acl'
@@ -68,8 +67,7 @@ const DEADLINE_ERROR_CODES = new Set(['E_ADB_TIMEOUT', 'E_NODE_TIMEOUT'])
  * Exported (plan 93 §3.6, H2, step 93.4) so `shell.fanoutPreviewBytes`'s Zod
  * bound (`@enkaku/protocol`'s `settings.ts`) can be asserted against the
  * REAL number in a unit test, rather than a hand-copied duplicate that can
- * drift out of step with this one silently — see
- * `ws-handlers-command.test.ts`.
+ * drift out of step with this one silently.
  */
 export const MAX_BUFFERED = 512 * 1024
 
@@ -220,15 +218,6 @@ interface ConnState {
   shellDevices: Set<string>
   /** Devices this connection currently holds an `inspect.attach` on (plan 56 §3.2) — used to release its share of the ref count on `inspect.detach`, WS close, or a second attach being a harmless no-op. */
   inspectAttached: Set<string>
-  /**
-   * Command-run ids this connection subscribed to (plan 93 §3.17, §4.3, step
-   * 93.4) — `command.subscribe`/`command.unsubscribe`. Subscriber-scoped,
-   * deliberately unlike `transfer.progress`/`transfer.done` (F27): a fleet
-   * command's output can contain anything a device prints, so
-   * `commandTargets(runId)` below fans out only to connections that asked
-   * for THIS run, never farm-wide.
-   */
-  commandSubs: Set<string>
   /** One `device.activity.warning` per device per minute for this connection (MVP 04 §3, plan 205 §4.8) — deviceId → the unix-ms timestamp of the last warning sent. */
   warnedAt: Map<string, number>
 }
@@ -322,19 +311,6 @@ export interface WsHandlerDeps {
   getDeviceOwner?: (deviceId: string) => { ownerId: string | null } | null
   /** The farm's `shell` settings block, read fresh on every `shell.exec` (plan 26 §4.1). */
   shellSettings: () => { mode: ShellMode; execTimeoutMs: number; maxOutputBytes: number }
-  /**
-   * Plan 93 §3.3, §3.17, step 93.5 — "a single-device terminal command is a
-   * run with ONE member — there is one history, not two". `shell.exec`
-   * writes through this the SAME way the runner (`command-console/runner.ts`)
-   * does, so `/console`'s History lists both without a merge step. Optional
-   * so every existing test harness that builds `WsHandlerDeps` by hand keeps
-   * compiling unchanged; omitting it means a command still runs and still
-   * broadcasts exactly as before, it just is not added to command history —
-   * never a refusal, and never a change to the transport, the transcript
-   * broadcast, the cwd emulation, or the `device_events` rows (unchanged
-   * per this step's brief).
-   */
-  commandRunStore?: CommandRunStore
   /** The adb endpoint, scoped to a controlling client (plan 27 §4.2) — torn down on WS disconnect (`handleClose`). */
   adbEndpoint: AdbEndpointManager
   /**
@@ -471,7 +447,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         monitorSubs: new Set(),
         shellDevices: new Set(),
         inspectAttached: new Set(),
-        commandSubs: new Set(),
         warnedAt: new Map(),
       }
       conns.set(ws, s)
@@ -487,18 +462,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
    */
   const monitorTargets = (streamId: string): ServerWebSocket<unknown>[] =>
     [...conns.entries()].filter(([ws, s]) => ws.readyState === 1 && s.monitorSubs.has(streamId)).map(([ws]) => ws)
-
-  /**
-   * Fan `command.*` out ONLY to connections subscribed to that `runId` (plan
-   * 93 §3.17, §4.3, step 93.4) — the SAME scoping shape `monitorTargets`
-   * above already gives monitor streams, deliberately UNLIKE
-   * `transfer.progress`/`transfer.done` (F27, closed here for this surface):
-   * a fleet command's output can contain anything a device prints, so a
-   * broadcast would make every open tab a reader of it, and at 100 devices
-   * it is also a wire-flooding bug.
-   */
-  const commandTargets = (runId: string): ServerWebSocket<unknown>[] =>
-    [...conns.entries()].filter(([ws, s]) => ws.readyState === 1 && s.commandSubs.has(runId)).map(([ws]) => ws)
 
   /**
    * Every viewer of a device (plan 26 §3.8) — the terminal transcript is
@@ -1086,24 +1049,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
-          // `command.subscribe`/`command.unsubscribe` (plan 93 §3.17, §4.3,
-          // step 93.4) — bookkeeping only, no admission check, no permission check:
-          // `POST /api/command-runs` is the only way to START a run, and a
-          // client must already `GET` it before subscribing (`/ws` has no
-          // snapshot replay, spec §13), so subscribing to a runId that does
-          // not exist (or belongs to someone else) is simply inert — it will
-          // never receive a `command.*` event, the same "harmless no-op"
-          // shape `monitor.stop` on an unknown `streamId` already has.
-          case 'command.subscribe': {
-            state.commandSubs.add(msg.payload.runId)
-            return
-          }
-
-          case 'command.unsubscribe': {
-            state.commandSubs.delete(msg.payload.runId)
-            return
-          }
-
           case 'monitor.oneshot': {
             const { text, truncated } = await runOneshotMonitor(
               { shellPort: shellPortFor },
@@ -1177,23 +1122,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               actor,
               meta: { cmd: redactShellCommand(cmd), cwd: cwdAtStart },
             })
-
-            // Plan 93 §3.3, §3.17, step 93.5 — the SAME admission check above is
-            // the one this reuses (no second admission decision, unlike a
-            // fan-out member which can still be skipped after this point).
-            // Written at the SAME point as the `device_events` row just
-            // above, for the same reason: a refused command never reaches
-            // this line, so it is never recorded as if it ran. Synchronous
-            // and local (SQLite, `better-sqlite3`), exactly like the
-            // `recorder.record` call it sits beside — it adds a row, not a
-            // round trip, so it does not change when `port.exec` below is
-            // awaited (this step's own "must not change timing" constraint).
-            // `cmd` is redacted the same way the audit row above is; the
-            // stored `stdout`/`stderr` are filled in once the result below
-            // is known — this call only creates the run and moves its one
-            // member to `running`, mirroring `runOneMember` in
-            // `command-console/runner.ts`.
-            const commandRun = deps.commandRunStore?.recordSingle({ cmd: redactShellCommand(cmd), deviceId, actor })
 
             // The emulated cwd (plan 26 §3.7): a bare `cd [target]` is
             // intercepted and probed; every other command is prefixed with
@@ -1269,33 +1197,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                   durationMs,
                 },
               })
-              // Plan 93 §3.5's "update it with the result" — AFTER the
-              // broadcast and the `device_events` row above, never before:
-              // this is bookkeeping for `/console`'s History, not part of
-              // what the operator is watching live. `exitCode` (not
-              // `reportedStdout`'s cd-consumed value in the count) mirrors
-              // `command-console/runner.ts`'s `settleExecuted`: a non-zero or
-              // absent exit code is `failed`, never silently folded into
-              // `ok`. `outputHash` is computed the same way the runner
-              // computes it (over the retained bytes) purely for row shape
-              // consistency — nothing reads it for a one-member run, since
-              // grouping (plan 93 §3.6, §3.15) only matters for fan-out.
-              if (commandRun) {
-                const historyStatus: 'ok' | 'failed' = exitCode === 0 ? 'ok' : 'failed'
-                const historyError =
-                  exitCode === null ? (result.truncated ? 'output was truncated before a matching exit code arrived' : 'no exit code reported') : null
-                deps.commandRunStore?.updateMember(commandRun.id, deviceId, {
-                  status: historyStatus,
-                  exitCode,
-                  durationMs,
-                  stdout: reportedStdout,
-                  stderr,
-                  truncated: result.truncated,
-                  outputHash: Bun.hash(`${exitCode}\0${reportedStdout}\0${stderr}`).toString(),
-                  error: historyError,
-                })
-                deps.commandRunStore?.finish(commandRun.id, { status: historyStatus })
-              }
             } catch (err) {
               const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'E_INTERNAL'
               const message = err instanceof Error ? err.message : String(err)
@@ -1343,22 +1244,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 actor,
                 meta: { exitCode: null, error: code, truncated, durationMs },
               })
-              // Plan 93 §3.5's property 1: a failed/aborted exec is recorded
-              // with its REAL outcome, not skipped. Same placement as the
-              // success branch above — after the broadcast, after the
-              // `device_events` row.
-              if (commandRun) {
-                deps.commandRunStore?.updateMember(commandRun.id, deviceId, {
-                  status: 'failed',
-                  exitCode: null,
-                  durationMs,
-                  stdout: '',
-                  stderr: message,
-                  truncated,
-                  error: message,
-                })
-                deps.commandRunStore?.finish(commandRun.id, { status: 'failed' })
-              }
             }
             } finally {
               deps.activities.end(deviceId, `command:${state.clientId}`)
@@ -2099,10 +1984,6 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // this is the call the plan's risk table calls out explicitly).
       monitors.releaseClient(state.clientId)
       state.monitorSubs.clear()
-      // A command-run subscription is pure bookkeeping on THIS connection —
-      // nothing external to release, unlike `monitors.releaseClient` above
-      // (plan 93 §3.17, step 93.4).
-      state.commandSubs.clear()
       for (const deviceId of state.shellDevices) shellSessions.release(deviceId)
       state.shellDevices.clear()
       // A control marker is deliberately NOT ended on close (MVP 04 §1.3: it
@@ -2144,28 +2025,16 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     },
 
     /**
-     * `CommandRunnerDeps.broadcast` (plan 93 §3.17, §4.3, §4.5, step 93.4) —
-     * `daemon.ts`'s forward-ref from the command runner (constructed well
-     * before this router, right after `activities`) into `commandTargets(runId)`
-     * above, the same "built later, wired back in through a forward
-     * reference" shape every other cross-module hook on this returned object
-     * already uses. Subscriber-scoped, never `hub.broadcast` — see
-     * `commandTargets`'s own doc comment for why (F27).
-     */
-    broadcastCommand(runId: string, msg: ServerMessage): void {
-      for (const ws of commandTargets(runId)) send(ws, msg)
-    },
-
-    /**
      * `TransferBroadcast` (plan 93 §4.6, §5 step 93.9, closing F27) —
      * `daemon.ts`'s forward-ref from `transferBroadcast` (constructed well
      * before this router, right after `states`) into `deviceTargets(deviceId)`
      * above, the same "built later, wired back in through a forward
-     * reference" shape `broadcastCommand` right above already uses.
-     * Subscriber-scoped, never `hub.broadcast`: at 100 devices pushing
-     * concurrently, a farm-wide broadcast put every open tab on every
-     * device's progress ticks. Unlike `shellTargets`, no sender is added —
-     * a transfer started by a job has no acting WS connection to add.
+     * reference" shape every other cross-module hook on this returned object
+     * already uses. Subscriber-scoped, never `hub.broadcast`: at 100 devices
+     * pushing concurrently, a farm-wide broadcast put every open tab on
+     * every device's progress ticks. Unlike `shellTargets`, no sender is
+     * added — a transfer started by a job has no acting WS connection to
+     * add.
      */
     broadcastTransfer(deviceId: string, msg: ServerMessage): void {
       for (const ws of deviceTargets(deviceId)) send(ws, msg)

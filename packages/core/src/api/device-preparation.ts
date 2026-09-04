@@ -84,49 +84,11 @@ export function createDevicePreparationRoutes(deps: DevicePreparationRoutesDeps)
     return c.json(overlayInFlight(deps, id, preparation))
   })
 
-  // On-demand, whole-device pass (§3.5's third hook — admission and
-  // reconnect are `daemon.ts`'s job; this is the operator's own "check now").
-  // Does NOT force by default — an operator opening the popup should see
-  // the real cached state, not restart every component's bound. Pass
-  // `?force=1` to run regardless of a standing bound (mirrors
-  // `POST /api/guest-agent/provision`'s own `force: true`).
-  app.post('/:id/preparation', requirePermission('device.settings'), async (c) => {
-    const id = c.req.param('id')
-    assertDeviceExists(id)
-    const opts = c.req.query('force') === '1' ? { force: true } : undefined
-    // `agentProvisioner`'s own pass writes straight into `devices.preparation`
-    // (`writeCached`, plan 106 §5 step 106.5) — run it alongside the generic
-    // registry's own components so a whole-device "check now" covers guest
-    // agent too, then re-read the merged record rather than trusting
-    // `runner.ensure()`'s return value, which predates that write.
-    const [, preparation] = await Promise.all([
-      deps.agentProvisioner?.ensure(id, opts) ?? Promise.resolve(undefined),
-      runner.ensure(id, opts),
-    ])
-    const merged = deps.agentProvisioner ? await runner.status(id) : preparation
-    return c.json(merged)
-  })
-
-  // The operator-facing retry (§3.3): clears exactly ONE component's
-  // exhausted bound, never the whole device's preparation record.
-  app.post('/:id/preparation/:componentId/retry', requirePermission('device.settings'), async (c) => {
-    const id = c.req.param('id')
-    const componentId = c.req.param('componentId')
-    assertDeviceExists(id)
-    // Guest agent's bound is cleared through its own engine (see
-    // `DevicePreparationRoutesDeps.agentProvisioner`'s doc comment) — it is
-    // not registered in `runner`'s component roster, so `ensureComponent`
-    // would 404 for it.
-    if (componentId === GUEST_AGENT_COMPONENT_ID && deps.agentProvisioner) {
-      await deps.agentProvisioner.ensure(id, { force: true })
-      const preparation = await runner.status(id)
-      const status = preparation[GUEST_AGENT_COMPONENT_ID]
-      if (!status) throw new EnkakuError('preparation_component_not_found', `no such preparation component: ${componentId}`)
-      return c.json(status)
-    }
-    const status = await runner.ensureComponent(id, componentId, { force: true })
-    return c.json(status)
-  })
+  // `POST /:id/preparation` and `POST /:id/preparation/:componentId/retry`
+  // are removed by plan 207 (MVP 07): `prepare` and `retry-prepare` are
+  // actions API verbs now (POST /api/actions/prepare,
+  // POST /api/actions/retry-prepare), calling the same
+  // `PreparationRunner.ensure`/`.ensureComponent` doors (`actions/impl/preparation.ts`).
 
   app.onError((err, c) => {
     if (err instanceof EnkakuError) {

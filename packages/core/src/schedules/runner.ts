@@ -15,10 +15,10 @@ import {
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import { stopBatch } from '../api/batches'
-import { createBatch, type BatchDispatchDeps } from '../clusters/dispatch'
-import { resolveCluster, resolveTarget } from '../clusters/resolve'
+import { createBatch, type BatchDispatchDeps } from '../groups/dispatch'
+import { resolveGroup, resolveTarget } from '../groups/resolve'
 import type { Db } from '../db'
-import { batches, clusters, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
+import { batches, groups, schedules, scheduleAgentTargets, scheduleRuns, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
 import type { JobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { resolveScriptRef } from '../scripts/resolve'
@@ -146,9 +146,9 @@ export function pickJitterMs(jitterSec: number, random: () => number = Math.rand
   return Math.floor(random() * (jitterSec * 1000 + 1))
 }
 
-/** Exactly one of clusterId / deviceIds is populated on a schedule row (plan 21 §9 open question #3). */
-export function scheduleTarget(schedule: ScheduleRow): { clusterId: string } | { deviceIds: string[] } {
-  if (schedule.clusterId) return { clusterId: schedule.clusterId }
+/** Exactly one of groupId / deviceIds is populated on a schedule row (plan 21 §9 open question #3). */
+export function scheduleTarget(schedule: ScheduleRow): { groupId: string } | { deviceIds: string[] } {
+  if (schedule.groupId) return { groupId: schedule.groupId }
   return { deviceIds: (schedule.deviceIds as string[] | null) ?? [] }
 }
 
@@ -335,11 +335,11 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
 }
 
 /**
- * Resolves a schedule's device target (cluster or explicit list) to a
+ * Resolves a schedule's device target (group or explicit list) to a
  * concrete, USABLE device id list (plan 68 §3.1: "a schedule with an agent
  * target and a device list passes those devices to the run as its device
  * narrowing"). Reuses the exact resolvers `createBatch` itself calls
- * (`clusters/resolve.ts`) — no second resolution logic. Throws
+ * (`groups/resolve.ts`) — no second resolution logic. Throws
  * `E_NO_TARGETS` on zero usable devices, the SAME coded error the script
  * branch's `createBatch` throws for the same condition, so both branches'
  * `catch` blocks map it to the `no-targets` outcome identically.
@@ -347,11 +347,11 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
 function resolveScheduleDeviceIds(db: Db, schedule: ScheduleRow): string[] {
   const target = scheduleTarget(schedule)
   const resolved =
-    'clusterId' in target
+    'groupId' in target
       ? (() => {
-          const cluster = db.select().from(clusters).where(eq(clusters.id, target.clusterId)).get()
-          if (!cluster) throw new EnkakuError('cluster_not_found', `no such cluster: ${target.clusterId}`)
-          return resolveCluster(db, cluster)
+          const group = db.select().from(groups).where(eq(groups.id, target.groupId)).get()
+          if (!group) throw new EnkakuError('group_not_found', `no such group: ${target.groupId}`)
+          return resolveGroup(db, group)
         })()
       : resolveTarget(db, { tags: [], deviceIds: target.deviceIds })
   if (resolved.usable.length === 0) {
