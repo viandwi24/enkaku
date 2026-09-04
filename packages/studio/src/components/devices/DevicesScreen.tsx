@@ -152,7 +152,7 @@ export function DevicesScreen() {
       )}
 
       {selection.selected.size > 0 && (
-        <BulkPill count={selection.selected.size} target={target} groups={groups} onClear={selection.clear} />
+        <BulkPill count={selection.selected.size} target={target} onClear={selection.clear} />
       )}
 
       <DiscoverySheet

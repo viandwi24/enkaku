@@ -31,7 +31,7 @@ import {
   formatDeviceName,
   useAction,
 } from '@enkaku/ui'
-import { DeviceWallWithPicker } from '@enkaku/host'
+import { DevicePickerDialog } from '@enkaku/host'
 import {
   activateGroupApi,
   deactivateGroupApi,
@@ -158,7 +158,7 @@ function duplicateDeviceIdsLocal(entries: readonly EntryDraft[]): string[] {
 // this screen writes. `assignments.tsx` writes a `StoredAssignment` keyed by
 // `stableId`; this dialog writes `EntryDraft[]` into the group form's own
 // local `entries` state, exactly the shape `addEntry` above already builds
-// for the wall picker — nothing here invents a second way to construct an
+// for the picker above — nothing here invents a second way to construct an
 // entry.
 // ---------------------------------------------------------------------------
 
@@ -179,7 +179,7 @@ const PAIRING_NOTE_TONE: Record<PairingNote, string> = {
  * One row of the bulk-add preview, after `buildPairings`'s own anomaly note
  * is joined with the one anomaly THIS call site knows about that the pure
  * function cannot: whether the paired device is already listed in this
- * group's own `entries` (added earlier by the wall picker, a previous bulk
+ * group's own `entries` (added earlier by the device picker, a previous bulk
  * commit in the same dialog session, or an overlapping range run twice).
  * `row.note === 'already-assigned'` is a different, farm-wide fact (the
  * Assignments tab's own note) and is deliberately NOT treated as a reason to
@@ -419,16 +419,17 @@ function EditGroupDialog({
    * Devices ticked in the picker but not yet added (field report,
    * 2026-08-26). An array, not a single id: this used to be a one-at-a-time
    * `<Combobox>` + Add, so putting twelve phones in a group meant twelve
-   * open-search-pick-Add cycles. `DeviceWallWithPicker`'s own dialog now
+   * open-search-pick-Add cycles. `DevicePickerDialog`'s own dialog now
    * carries the multi-select and its own confirm button, so this stays
    * empty between opens (`addEntry` clears it once devices land in
    * `entries`) — kept as `addEntry`'s parameter default rather than removed,
    * so the entry-building logic itself (default lanIp/pathId, one call per
-   * batch) is unchanged from the pre-wall picker (plan 129 §5 step 129.7).
+   * batch) is unchanged from the pre-`DevicePickerDialog` picker (plan 129
+   * §5 step 129.7, renamed to `DevicePickerDialog` by plan 216 §4.10).
    */
   const [pendingDeviceIds, setPendingDeviceIds] = useState<string[]>([])
-  const [wallOpen, setWallOpen] = useState(false)
-  /** The bulk-by-number builder (plan 131 §3.1, step 131.3) — a second, complementary way to add devices, beside the wall picker above. Neither replaces the other (§3.1's own instruction). */
+  const [pickerOpen, setPickerOpen] = useState(false)
+  /** The bulk-by-number builder (plan 131 §3.1, step 131.3) — a second, complementary way to add devices, beside the picker above. Neither replaces the other (§3.1's own instruction). */
   const [bulkOpen, setBulkOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { run, isPending } = useAction()
@@ -445,7 +446,7 @@ function EditGroupDialog({
     setOnDeactivate(group?.onDeactivate ?? 'remove-rules')
     setEntries(toDraft(group?.entries ?? []))
     setPendingDeviceIds([])
-    setWallOpen(false)
+    setPickerOpen(false)
     setBulkOpen(false)
     setError(null)
   }
@@ -455,12 +456,13 @@ function EditGroupDialog({
   const addableDevices = devices.filter((d) => !usedDeviceIds.has(d.deviceId))
 
   /**
-   * `ids` defaults to `pendingDeviceIds` so this keeps the exact shape it had
-   * before the wall picker: several ids in, one batch of entries out, each
-   * seeded with its device's resolved LAN address (or the empty placeholder)
-   * and the fleet's first path. `DeviceWallWithPicker`'s own dialog confirm
-   * now calls this directly with the ids it hands back, rather than staging
-   * them in `pendingDeviceIds` for a second, separate "Add" click.
+   * `ids` defaults to `pendingDeviceIds` so this keeps the exact shape it has
+   * had since the picker gained a multi-select: several ids in, one batch of
+   * entries out, each seeded with its device's resolved LAN address (or the
+   * empty placeholder) and the fleet's first path. `DevicePickerDialog`'s own
+   * dialog confirm now calls this directly with the ids it hands back, rather
+   * than staging them in `pendingDeviceIds` for a second, separate "Add"
+   * click.
    */
   function addEntry(ids: string[] = pendingDeviceIds): void {
     const picked = ids
@@ -576,19 +578,18 @@ function EditGroupDialog({
             <div className="flex items-center justify-between">
               <label className="text-[11px] font-medium text-fg-muted">Devices in this group</label>
               <div className="flex gap-1.5">
-                <Button size="sm" variant="outline" disabled={addableDevices.length === 0} onClick={() => setWallOpen(true)}>
+                <Button size="sm" variant="outline" disabled={addableDevices.length === 0} onClick={() => setPickerOpen(true)}>
                   Add devices…
                 </Button>
                 {/*
-                  A second, complementary way in (plan 131 §3.1) — the wall
-                  picker above is for choosing by looking at the screen; this
-                  is for "devices 1 through 20 onto paths starting at index
-                  3", the owner's own verbatim ask (§0.1). Neither replaces
-                  the other. Not gated on `addableDevices` the way the wall
-                  button is: a range that includes a device already in this
-                  group is a legitimate thing to type, and the preview names
-                  that row as "already in this group" rather than refusing to
-                  open.
+                  A second, complementary way in (plan 131 §3.1) — the picker
+                  above is for choosing by name; this is for "devices 1
+                  through 20 onto paths starting at index 3", the owner's own
+                  verbatim ask (§0.1). Neither replaces the other. Not gated
+                  on `addableDevices` the way the picker button is: a range
+                  that includes a device already in this group is a
+                  legitimate thing to type, and the preview names that row as
+                  "already in this group" rather than refusing to open.
                 */}
                 <Button size="sm" variant="outline" disabled={devices.length === 0} onClick={() => setBulkOpen(true)}>
                   Bulk add by number…
@@ -599,30 +600,32 @@ function EditGroupDialog({
             {/*
               Plan 124 §0.2 called this "the worst surface in the product" and
               went through a `Select` → `Combobox` → list-style `DevicePicker`
-              progression, each fixing the searching but not the shape the
-              owner actually asked for: *"device selector nya pas add device
-              ada popup untuk device list kaya walls gitu, jadi user bisa
-              pilih mau add device sambil lihat screen castnya"* — a wall of
-              LIVE tiles, chosen by looking at the screen (plan 129 §0.4).
+              → live-tile-wall progression (the owner's own verbatim ask for
+              the wall is now the `0.8.0 → 0.9.0` changelog entry in
+              `index.ts`, plan 216 §4.6/§10). Plan 216 replaces the live-tile
+              wall with Studio's unified `DevicePicker` — MVP 07 §2.1's "one
+              component, one hook, one place" — because the Screens view is
+              now where a device is chosen by looking at its screen; this
+              dialog is where one is chosen by name.
 
-              `DeviceWallWithPicker` reaches Studio's own `Wall`/`WallTile`
-              through `@enkaku/host` (plan 129 §3.4, §4.4) — a plugin cannot
-              own a WebSocket video stream itself, so this is Studio's live
-              instance of the component, handed through the same host-module
-              table `@enkaku/ui` already uses. `filter` keeps the wall to
-              devices not already in this group; `onConfirm` calls `addEntry`
-              directly with the ids it hands back, which is the same
-              several-at-once entry-building `addEntry` already did for the
-              list picker (plan 129 §5 step 129.7).
+              `DevicePickerDialog` reaches Studio's own `DevicePicker` through
+              `@enkaku/host` (plan 129 §3.4, §4.4; plan 216 §4.10) — a plugin
+              cannot own the picker's live activity data itself, so this is
+              Studio's own instance of the component, handed through the same
+              host-module table `@enkaku/ui` already uses. `filter` keeps the
+              picker to devices not already in this group; `onConfirm` calls
+              `addEntry` directly with the ids it hands back, which is the
+              same several-at-once entry-building `addEntry` already did for
+              the list picker (plan 129 §5 step 129.7).
             */}
             {addableDevices.length === 0 ? (
               <p className="rounded-lg border border-dashed px-3 py-4 text-center text-[12px] text-fg-muted">
                 Every enrolled device is already in this group.
               </p>
             ) : null}
-            <DeviceWallWithPicker
-              open={wallOpen}
-              onOpenChange={setWallOpen}
+            <DevicePickerDialog
+              open={pickerOpen}
+              onOpenChange={setPickerOpen}
               value={pendingDeviceIds}
               onConfirm={(ids) => addEntry(ids)}
               filter={(d) => !usedDeviceIds.has(d.id)}

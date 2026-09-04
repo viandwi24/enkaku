@@ -10,7 +10,6 @@ import {
   PluginOkResponseSchema,
   ScriptsListResponseSchema,
   type DevSlotView,
-  type DeviceInfo,
   type ScriptListItem,
 } from '@enkaku/protocol'
 import {
@@ -35,12 +34,10 @@ import {
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PaginatedTable, type PaginatedTableHandle } from '@/components/PaginatedTable'
+import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { InstallPluginDialog } from '@/components/plugins/InstallPluginDialog'
 import { PluginActions } from '@/components/plugins/PluginActions'
-import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
 import { PluginStatusBadge } from '@/components/StatusBadge'
-import { fetchDevices } from '@/lib/api'
-import { toScriptRow } from '@/lib/script-row'
 import { coreBase } from '@/lib/ws'
 import {
   PluginsListSchema,
@@ -573,7 +570,7 @@ function PluginRowView({ match, onChanged }: { match: PluginMatch; onChanged: ()
  * for either to distinguish: a script is a member of a plugin and nothing else
  * (plan 110 §3.2), so every name in this list is already `<plugin>/<script>`.
  * A DEV script is never in this list at all (dev slots are not `scripts` rows);
- * it is visible in the Plugins tab instead, and in `RunScriptDialog`.
+ * it is visible in the Plugins tab instead, and in the `run-script` action dialog.
  *
  * `?device=`/`?group=` still arrive here — a device card's Run button and a
  * group's Run link point at `/plugins?device=…`, and `/scripts` keeps its
@@ -585,69 +582,26 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
   const initialDevice = params.get('device')
   const initialGroup = params.get('group')
   const tableRef = useRef<PaginatedTableHandle<ScriptListItem>>(null)
-  const [devices, setDevices] = useState<DeviceInfo[]>([])
-  const [firstScript, setFirstScript] = useState<ScriptRow | null>(null)
-  const [runTarget, setRunTarget] = useState<ScriptRow | null>(null)
+  const [firstScript, setFirstScript] = useState<ScriptListItem | null>(null)
   const [autoOpened, setAutoOpened] = useState(false)
   const { isPending } = useAction()
+  const { open: openActionDialog } = useActionDialogs()
 
-  /**
-   * The farm's device list, fetched LAZILY — plan 126 §0.4, step 126.3.
-   *
-   * It exists for one consumer, `RunScriptDialog`'s target picker, and it is
-   * not cheap: `fetchDevices()` is `fetchAllPages('/api/devices')`, which
-   * walks pages SEQUENTIALLY at `limit=200`, up to 25 round trips
-   * (`lib/api.ts`). It used to run on mount — and because this section stays
-   * MOUNTED behind the tab strip (see the `hidden` comment above, which is
-   * load-bearing: unmounting it would make a failure in the inactive tab
-   * silent), every operator who opened the Plugins tab paid for it, including
-   * the ones who never opened the run dialog at all.
-   *
-   * `requested` is a ref, not state: this must fire exactly once per mount and
-   * a re-render is not wanted — the arriving devices already re-render through
-   * `setDevices`. `RunScriptDialog` re-resolves its default target when
-   * `devices.length` changes (its own `targetSelection.reset` effect), which is
-   * what makes a list that lands slightly after the dialog opened correct
-   * rather than a flash: the picker fills in and re-defaults, exactly as it
-   * already does for `/api/groups`, which the dialog has always fetched on
-   * open rather than on mount.
-   */
-  const devicesRequested = useRef(false)
-  const ensureDevices = () => {
-    if (devicesRequested.current) return
-    devicesRequested.current = true
-    void fetchDevices()
-      .then(setDevices)
-      .catch(() => undefined)
-  }
-
-  // The deep-link flow (`?device=`/`?group=`) opens the dialog by itself as
-  // soon as the script list resolves, so the fetch starts HERE rather than
-  // waiting for that: it runs in parallel with the script list instead of
-  // after it, which is what keeps the "Run on this device" arrival as fast as
-  // it was before this became lazy.
-  useEffect(() => {
-    if (initialDevice || initialGroup) ensureDevices()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialDevice, initialGroup])
+  const ctxFromQuery = () => (initialDevice ? { deviceIds: [initialDevice] } : initialGroup ? { groupId: initialGroup } : {})
 
   // Arriving from the "Run" button on a device card, or a group's "Run" link:
   // open the dialog as soon as the script list is ready, so the flow is not
   // interrupted.
   useEffect(() => {
-    if ((initialDevice || initialGroup) && firstScript && !runTarget && !autoOpened) {
-      setRunTarget(firstScript)
+    if ((initialDevice || initialGroup) && firstScript && !autoOpened) {
+      openActionDialog('run-script', ctxFromQuery(), { scriptId: firstScript.id })
       setAutoOpened(true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDevice, initialGroup, firstScript])
 
-  // Plan 210 (MVP 03 §2): a script's row already carries everything
-  // `RunScriptDialog` needs (`toScriptRow`), so opening the dialog is a
-  // synchronous pick, no second fetch.
   const openRun = (s: ScriptListItem) => {
-    ensureDevices()
-    setRunTarget(toScriptRow(s))
+    openActionDialog('run-script', {}, { scriptId: s.id })
   }
 
   return (
@@ -668,7 +622,7 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
           // always passes one.
           api(`/api/scripts${cursor ? `?cursor=${cursor}` : ''}`, ScriptsListResponseSchema)
             .then((page) => {
-              if (cursor === null && page.items[0]) setFirstScript(toScriptRow(page.items[0]))
+              if (cursor === null && page.items[0]) setFirstScript(page.items[0])
               onLoaded({ count: page.total ?? page.items.length, error: null })
               return page
             })
@@ -741,13 +695,6 @@ function ScriptsSection({ query, onLoaded }: { query: string; onLoaded: (s: { co
         }}
       />
 
-      <RunScriptDialog
-        script={runTarget}
-        devices={devices}
-        initialDevice={initialDevice}
-        initialGroup={initialGroup}
-        onClose={() => setRunTarget(null)}
-      />
     </>
   )
 }

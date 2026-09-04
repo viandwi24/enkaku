@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import type { ActionVerb, GroupInfo, Target } from '@enkaku/protocol'
+import type { Target } from '@enkaku/protocol'
 import { CaretDownIcon, XIcon, cn } from '@enkaku/ui'
 import { useOverlay } from '@/lib/overlays'
+import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
 import { ActionMenu } from './ActionMenu'
 
 /**
@@ -13,18 +14,16 @@ import { ActionMenu } from './ActionMenu'
 export function BulkPill({
   count,
   target,
-  groups,
   onClear,
 }: {
   count: number
   target: Target
-  groups: GroupInfo[]
   onClear: () => void
 }) {
   const [open, setOpen] = useState(false)
   useOverlay('menu', open, () => setOpen(false))
 
-  const handleDone = (verb: ActionVerb) => {
+  const handleDone = (verb: ActionDialogVerb) => {
     setOpen(false)
     if (verb === 'forget') onClear()
   }
@@ -39,7 +38,7 @@ export function BulkPill({
               Clear
             </button>
           </div>
-          <ActionMenu target={target} count={count} groups={groups} onDone={handleDone} />
+          <ActionMenu target={target} onDone={handleDone} />
         </div>
       )}
       <button

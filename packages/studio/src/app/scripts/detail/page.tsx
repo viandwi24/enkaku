@@ -11,7 +11,6 @@ import {
   ScriptResponseSchema,
   ScriptRowSchema,
   SettingsResponseSchema,
-  type DeviceInfo,
   type JobInfo,
   type JobSettings,
 } from '@enkaku/protocol'
@@ -31,13 +30,12 @@ import {
   relativeTime,
   useAction,
 } from '@enkaku/ui'
-import { RunScriptDialog, type ScriptRow } from '@/components/RunScriptDialog'
+import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { JobStatusBadge } from '@/components/StatusBadge'
 import { EntityTabs } from '@/components/layout/EntityTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { JobsList } from '@/components/JobsList'
 import { PaginatedTable, type Page, type PaginatedTableHandle } from '@/components/PaginatedTable'
-import { fetchDevices } from '@/lib/api'
 import { useNow } from '@/lib/useNow'
 import { computeRuntimeReadout } from '../runtime-readout'
 
@@ -54,10 +52,9 @@ function ScriptDetail() {
 
   const [script, setScript] = useState<ScriptDetailRow | null>(null)
   const [runsCount, setRunsCount] = useState<number | null>(null)
-  const [devices, setDevices] = useState<DeviceInfo[]>([])
-  const [runOpen, setRunOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { run } = useAction()
+  const { open: openActionDialog } = useActionDialogs()
   const runsRef = useRef<PaginatedTableHandle<JobInfo>>(null)
   // The runs table's durations tick while a run is still going (Plan 17 §4.6).
   const now = useNow()
@@ -75,9 +72,6 @@ function ScriptDetail() {
     void api(`/api/scripts/${scriptId}`, ScriptResponseSchema)
       .then((b) => setScript(b.script))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-    void fetchDevices()
-      .then(setDevices)
-      .catch(() => undefined)
   }
 
   useEffect(load, [scriptId])
@@ -158,7 +152,7 @@ function ScriptDetail() {
                 All scripts
               </Link>
             </Button>
-            <Button size="sm" onClick={() => setRunOpen(true)}>
+            <Button size="sm" onClick={() => script && openActionDialog('run-script', {}, { scriptId: script.id })}>
               <Play className="size-4" aria-hidden />
               Run
             </Button>
@@ -291,16 +285,6 @@ function ScriptDetail() {
         </div>
       )}
 
-      <RunScriptDialog
-        script={
-          runOpen
-            ? { id: script.id, name: script.name, version: script.plugin.version, paramsSchema: script.paramsSchema, enabled: true, createdAt: script.createdAt, pluginName: script.plugin.name }
-            : null
-        }
-        devices={devices}
-        onClose={() => setRunOpen(false)}
-        onLaunched={() => runsRef.current?.reload()}
-      />
     </>
   )
 }
