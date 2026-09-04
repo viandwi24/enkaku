@@ -543,10 +543,12 @@ export function createGuestAgentClient(opts: GuestAgentClientOptions): GuestAgen
       return call(connect, opts.port, timeoutMs, req, UiDumpResultSchema)
     },
 
-    uiFind(selector, findOpts) {
+    async uiFind(selector, findOpts) {
       // `{ point }` is a host-side synthetic node (`selector-match.ts`'s `matchSelector`) — there
       // is nothing on the device to look up, so this is refused here, before the wire, rather than
       // relying on the device's own `E_BAD_REQUEST` for a mistake the client can catch for free.
+      // `async` so this rejects rather than throws synchronously — the same shape every other
+      // failure on this interface arrives in, and what lets a caller `await` uniformly.
       if ('point' in selector) {
         throw new GuestAgentClientError('E_BAD_REQUEST', 'ui.find does not accept a point selector')
       }

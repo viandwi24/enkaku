@@ -344,6 +344,93 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
     })
   })
 
+  describe('ensureAccessibilityEnabled (plan 221 §4.10)', () => {
+    const UI_TREE = `${GUEST_AGENT_PACKAGE}/${GUEST_AGENT_PACKAGE}.ui.UiTreeService`
+
+    test('runs the appops call before the settings write', async () => {
+      const calls: string[] = []
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          calls.push(cmd)
+          if (cmd.startsWith('settings get secure enabled_accessibility_services')) return sh(UI_TREE)
+          if (cmd.startsWith('settings get secure accessibility_enabled')) return sh('1')
+          return sh()
+        },
+      })
+      await createGuestAgentLauncher(deps).ensureAccessibilityEnabled()
+      const appopsIndex = calls.findIndex((c) => c.startsWith('cmd appops set'))
+      const settingsWriteIndex = calls.findIndex((c) => c.startsWith('settings put secure accessibility_enabled'))
+      expect(appopsIndex).toBeGreaterThanOrEqual(0)
+      expect(appopsIndex).toBeLessThan(settingsWriteIndex)
+    })
+
+    test('it appends to an existing list and never overwrites another service', async () => {
+      const otherService = 'com.other.app/.SomeService'
+      const puts: string[] = []
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          if (cmd.startsWith('settings put secure enabled_accessibility_services')) puts.push(cmd)
+          if (cmd.startsWith('settings get secure enabled_accessibility_services')) {
+            return puts.length > 0 ? sh(`${otherService}:${UI_TREE}`) : sh(otherService)
+          }
+          if (cmd.startsWith('settings get secure accessibility_enabled')) return sh('1')
+          return sh()
+        },
+      })
+      const result = await createGuestAgentLauncher(deps).ensureAccessibilityEnabled()
+      expect(puts).toHaveLength(1)
+      expect(puts[0]).toContain(otherService)
+      expect(puts[0]).toContain(UI_TREE)
+      expect(result.state).toBe('enabled')
+    })
+
+    test('it skips the write when the component is already present but still sets accessibility_enabled', async () => {
+      const listPuts: string[] = []
+      const enabledPuts: string[] = []
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          if (cmd.startsWith('settings put secure enabled_accessibility_services')) listPuts.push(cmd)
+          if (cmd.startsWith('settings put secure accessibility_enabled')) enabledPuts.push(cmd)
+          if (cmd.startsWith('settings get secure enabled_accessibility_services')) return sh(UI_TREE)
+          if (cmd.startsWith('settings get secure accessibility_enabled')) return sh('1')
+          return sh()
+        },
+      })
+      const result = await createGuestAgentLauncher(deps).ensureAccessibilityEnabled()
+      expect(listPuts).toHaveLength(0)
+      expect(enabledPuts).toHaveLength(1)
+      expect(result.state).toBe('enabled')
+    })
+
+    test('a refused write produces state pending with the platform own line', async () => {
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          // Every read-back stays empty — the write never actually stuck, as R4's OEM caveat says can happen.
+          if (cmd.startsWith('settings get secure enabled_accessibility_services')) return sh('')
+          if (cmd.startsWith('settings get secure accessibility_enabled')) return sh('0')
+          return sh()
+        },
+      })
+      const result = await createGuestAgentLauncher(deps).ensureAccessibilityEnabled()
+      expect(result.state).toBe('pending')
+      expect(result.reason).toContain('Open accessibility settings')
+    })
+
+    test('a read-back of 1 plus the component produces state enabled', async () => {
+      const { deps } = fakeDeps({
+        exec: async (cmd) => {
+          if (cmd.startsWith('settings get secure enabled_accessibility_services')) return sh(UI_TREE)
+          if (cmd.startsWith('settings get secure accessibility_enabled')) return sh('1')
+          return sh()
+        },
+      })
+      await expect(createGuestAgentLauncher(deps).ensureAccessibilityEnabled()).resolves.toEqual({
+        state: 'enabled',
+        reason: null,
+      })
+    })
+  })
+
   describe('bootstrap', () => {
     test('starts the BootstrapActivity with the token, clearing the stopped state', async () => {
       const { deps, execCalls } = fakeDeps()
