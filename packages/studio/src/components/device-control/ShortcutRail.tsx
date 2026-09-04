@@ -67,7 +67,16 @@ export function ShortcutRail({
             <Icon className="size-4" aria-hidden />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{title ?? (chord ? `${label} · ${chord}` : label)}</TooltipContent>
+        {/*
+          The rail is a narrow vertical column pinned to the window's left
+          edge, so a tooltip above a button covers the button above it and
+          reads as if it belongs to the wrong control. `left` puts it beside
+          the rail, in free space, where it never overlaps another button
+          (owner, 2026-09-04). `sideOffset` keeps it clear of the icon.
+        */}
+        <TooltipContent side="left" sideOffset={6}>
+          {title ?? (chord ? `${label} · ${chord}` : label)}
+        </TooltipContent>
       </Tooltip>
     )
   }

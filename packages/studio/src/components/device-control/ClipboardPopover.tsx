@@ -79,7 +79,10 @@ export function ClipboardPopover({ deviceId }: { deviceId: string }) {
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent>Clipboard · Alt+C / Alt+V</TooltipContent>
+        {/* Beside the rail, not above it — same reason as `ShortcutRail`. */}
+        <TooltipContent side="left" sideOffset={6}>
+          Clipboard · Alt+C / Alt+V
+        </TooltipContent>
       </Tooltip>
       <PopoverContent data-menu-root="1" align="start" className="w-[260px]">
         {error && <p className="mb-2 text-[11px] text-danger">{error}</p>}
