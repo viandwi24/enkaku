@@ -1,6 +1,6 @@
 # Plan 302 — Flow : `@enkaku/expr` — a closed expression engine that cannot reach `Function`
 
-> Status: draft
+> Status: partial — package complete; steps 302.7 and 302.8 deferred to after plan 301 lands (instructed)
 > Ships: `packages/expr/src/index.ts`
 > Depends on: plan 300 D4 (**needs the owner's ratification before execution** — 300 §3.1)
 > Spec references: §4.6; this plan adds a package to §3 (repository layout), rewritten by plan 307.
@@ -9,16 +9,16 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | `parse` accepts the whole grammar of §4.2 and refuses everything else | every production has a passing case and a refusing case | `bun test packages/expr/src/parse.test.ts` → all pass | [ ] |
-| G2 | The evaluator never touches a prototype chain | scope objects are `Object.create(null)`; every lookup is an own-property check | `bun test packages/expr/src/eval.test.ts` → `prototype` group passes | [ ] |
-| G3 | Every published escape shape from plan 300 R3/R4 fails to parse | 6 cases, all `E_EXPR_PARSE` | `bun test packages/expr/src/security.test.ts` → `known escapes` passes | [ ] |
-| G4 | Fuel and depth limits are hard | an expression that would exceed either throws `E_EXPR_LIMIT` and never hangs | `bun test packages/expr/src/limits.test.ts`, wall time under 1 s | [ ] |
-| G5 | The engine is pure: same AST, same scope, same value, twice | 1000 randomised round-trips | `bun test packages/expr/src/eval.test.ts` → `determinism` passes | [ ] |
-| G6 | The package has **zero runtime dependencies** | `dependencies` is `{}` or absent | `cat packages/expr/package.json` → no `dependencies` key with entries | [ ] |
-| G7 | The interpreter is under 600 lines (plan 300 D4's falsification test) | `parse.ts` + `eval.ts` + `ast.ts` ≤ 600 lines | `wc -l packages/expr/src/parse.ts packages/expr/src/eval.ts packages/expr/src/ast.ts` → total ≤ 600 | [ ] |
-| G8 | A workflow parameter may be an expression, and the old four `ValueExpr` forms still work unchanged | 5 forms parse; the 4 old ones have no behaviour change | `bun test packages/protocol/src/workflow.test.ts` → `ValueExpr five forms` passes | [ ] |
-| G9 | `checkWorkflow` reports an unparsable or out-of-scope expression at publish, not at run | 2 codes | `bun test packages/protocol/src/workflow-check.test.ts` → `expression findings` passes | [ ] |
-| G10 | `bun run typecheck` clean | 0 errors | `bun run typecheck` exits 0 | [ ] |
+| G1 | `parse` accepts the whole grammar of §4.2 and refuses everything else | every production has a passing case and a refusing case | `bun test packages/expr/src/parse.test.ts` → all pass | [x] |
+| G2 | The evaluator never touches a prototype chain | scope objects are `Object.create(null)`; every lookup is an own-property check | `bun test packages/expr/src/eval.test.ts` → `prototype` group passes | [x] |
+| G3 | Every published escape shape from plan 300 R3/R4 fails to parse | 6 cases, all `E_EXPR_PARSE` | `bun test packages/expr/src/security.test.ts` → `known escapes` passes | [x] |
+| G4 | Fuel and depth limits are hard | an expression that would exceed either throws `E_EXPR_LIMIT` and never hangs | `bun test packages/expr/src/limits.test.ts`, wall time under 1 s | [x] (no separate `limits.test.ts` file exists — see §11 discrepancy; coverage is `parse.test.ts`'s `limits` group, `eval.test.ts`'s `fuel` group, and `security.test.ts`'s wall-time-bounded fuel-exhaustion case) |
+| G5 | The engine is pure: same AST, same scope, same value, twice | 1000 randomised round-trips | `bun test packages/expr/src/eval.test.ts` → `determinism` passes | [x] |
+| G6 | The package has **zero runtime dependencies** | `dependencies` is `{}` or absent | `cat packages/expr/package.json` → no `dependencies` key with entries | [x] |
+| G7 | The interpreter is under 600 lines (plan 300 D4's falsification test) | `parse.ts` + `eval.ts` + `ast.ts` ≤ 600 lines | `wc -l packages/expr/src/parse.ts packages/expr/src/eval.ts packages/expr/src/ast.ts` → total ≤ 600 | [x] (518) |
+| G8 | A workflow parameter may be an expression, and the old four `ValueExpr` forms still work unchanged | 5 forms parse; the 4 old ones have no behaviour change | `bun test packages/protocol/src/workflow.test.ts` → `ValueExpr five forms` passes | [ ] deferred — step 302.7 not executed by instruction (see §11) |
+| G9 | `checkWorkflow` reports an unparsable or out-of-scope expression at publish, not at run | 2 codes | `bun test packages/protocol/src/workflow-check.test.ts` → `expression findings` passes | [ ] deferred — step 302.8 not executed by instruction (see §11) |
+| G10 | `bun run typecheck` clean | 0 errors | `bun run typecheck` exits 0 | [x] |
 
 ## 1. Goals
 
@@ -325,4 +325,49 @@ a message naming the offset.
 
 ## 11. Handoff report
 
-_To be written by the executing agent._
+- **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ (see discrepancy below) G5 ✅ G6 ✅ G7 ✅ (518 lines) G8 ⏸ deferred (302.7 not executed, instructed) G9 ⏸ deferred (302.8 not executed, instructed) G10 ✅
+
+- **Scope actually executed**: steps 302.1–302.6 and 302.9, exactly as scoped. Steps 302.7 (the fifth `ValueExpr` form + two `checkWorkflow` codes in `packages/protocol/src/workflow.ts` / `workflow-check.ts`) and 302.8 (`packages/core/src/workflows/workflow-resolve.ts` wiring) were **not started** — those three files are being rewritten by a concurrently running plan-301 agent in another worktree, and touching them here would guarantee a merge conflict on exactly the files whose shape is changing, per the launch instructions.
+
+- **Commits**: to be created after this report — one `feat(flow-302): ...` commit containing the whole package, the `typecheck.sh`/`next.config.ts` wiring, and this report. (See the final message for the actual hash once committed.)
+
+- **Branch**: `flow-302-expr-engine`, cut from `mvp` at `d22785e` (`docs(flow): D4 ratified by the owner, 2026-09-04`), in worktree `/Users/solpochi/Projects/oss/openpf/.claude/worktrees/agent-ab1b440fcfa8029eb`.
+
+- **Typecheck**: clean. `bash scripts/typecheck.sh` → `OK` for all 21 workspace targets including the new `expr` row (added to the script's package list). `packages/expr` typechecks standalone too (`bunx tsc --noEmit -p packages/expr`).
+
+- **Tests run** (one invocation at a time, never concurrently, per CLAUDE.md):
+  - `bun test packages/expr/src/scope.test.ts` → 12 pass, 0 fail
+  - `bun test packages/expr/src/parse.test.ts` → 62 pass, 0 fail
+  - `bun test packages/expr/src/eval.test.ts` → 28 pass, 0 fail
+  - `bun test packages/expr/src/functions.test.ts` → 49 pass, 0 fail
+  - `bun test packages/expr/src/security.test.ts` → 11 pass, 0 fail
+  - `bun test packages/expr/src/` (the directory this plan touched, run once as a final sweep) → 162 pass, 0 fail, 1224 expect() calls, 34ms
+  - `packages/protocol/src/workflow.test.ts` and `packages/protocol/src/workflow-check.test.ts` (named by G8/G9) were **not run** — the fifth `ValueExpr` form and the `checkWorkflow` codes they'd cover were not built (deferred).
+
+- **`bun run build:studio`**: **not run**. A `next-server` (pid 18677, `next dev`) was already listening on `:3001` when this plan started, owned by the concurrent session the launch instructions named as working in the main worktree. `scripts/build-studio.sh` refuses to build while that port is held (by design — it corrupts the dev server), and killing someone else's process to force it through would violate "never touch the main worktree / other agents' processes." The one Studio-relevant change here (`next.config.ts`'s `transpilePackages` gaining `@enkaku/expr`) is a one-line, low-risk addition in the same shape as the two entries already there; it typechecks, but the export itself is unverified. Flagged rather than forced.
+
+- **Removed, proven**:
+  - `rg -n "new Function|eval\(|Function\(" packages/expr/src` → 0 matches (empty), as required.
+  - `rg -n "\bprototype\b" packages/expr/src` → **17 matches in 7 files**, not the "only in `scope.ts`'s comment and the captured `hasOwnProperty`" the plan's §6 predicted. All 17 are safe: doc comments in `eval.ts`/`functions.ts`/`scope.ts` explaining the null-prototype design, and test names/descriptions in all five `*.test.ts` files that talk *about* prototypes (`'a plain object becomes null-prototype'`, `'.__proto__ resolves to undefined'`, etc.). The one security-relevant capture, `const hasOwn = Object.prototype.hasOwnProperty`, lives in `eval.ts` (where member/index lookups actually happen), not in `scope.ts` (which only builds scopes) — the plan's predicted location doesn't match where the own-property check is naturally needed. Recorded as a discrepancy, not silently narrowed.
+  - `packages/protocol/src/workflow.ts`'s F27 module-doc rewrite (plan §10's only row) is **not done** — it belongs to deferred step 302.7 and touches a file plan-301's concurrent agent owns right now. `rg -n "refuses to build one" packages/protocol/src/workflow.ts` still finds the old line (1 match) — expected, given the deferral.
+
+- **Discrepancies between plan and code**:
+  - **G4 cites `packages/expr/src/limits.test.ts`**, a file no implementation step (§5) ever calls for. §5's own steps put size/depth-limit cases in `parse.test.ts`'s `limits` group (302.3), fuel cases in `eval.test.ts`'s `fuel` group (302.4), and the wall-time-bounded fuel-exhaustion case in `security.test.ts` (302.6). No `limits.test.ts` was created; G4's intent is covered by those three groups instead. The wall-time assertion (`< 1000ms`) lives in `security.test.ts`'s 10,000-iteration `sort`+`unique` case.
+  - **`toScopeValue` needed its own file (`scope.ts`/`scope.test.ts`)**, though §4.1's five-file table (`ast.ts`, `parse.ts`, `eval.ts`, `functions.ts`, `index.ts`) does not list one. §5 step 302.2 names `src/scope.test.ts` directly and calls `toScopeValue` "the single most important function in the package," so a dedicated file matched the step's intent better than folding it into `eval.ts` (which would have pushed `eval.ts` over budget for no reason, since `scope.ts` is not one of the three files G7 counts). Not counted toward G7's 600-line budget either way.
+  - **`ExprEvalError` and `Fuel` live in `ast.ts`, not `eval.ts`.** §4.4's code block shows `evaluate(...)` in what reads like `eval.ts`, but `functions.ts` (§4.5) needs to throw `ExprEvalError` and receive `Fuel` as a real value, and `eval.ts` needs to import the real `FUNCTIONS` table from `functions.ts` as a value — a two-way value import would be a circular module dependency. Moving the two shared runtime primitives into the dependency-free `ast.ts` breaks the cycle: `functions.ts` and `eval.ts` both value-import from `ast.ts` only, never from each other in a cycle. `index.ts` still re-exports both from a single place, so the public API is unaffected. This does inflate `ast.ts`'s line count against the three-file G7 budget (still 518/600 total), which is the honest tradeoff — narrowing further was not needed since the total was under budget either way.
+  - **`$nodes["constructor"]["prototype"]` structurally cannot parse**, by design, not by a string blacklist: any string-literal used as a `[ ]` index is refused at parse time (`a string literal index is not allowed; use "." or get()`), because plan 300 D4 §1 says "no property access by computed key" while plan 302 §4.4 rule 3's prose ("or a string on an object") suggested bracket-string indexing was meant to be legal at eval time. The two documents disagree; the security suite (G3) settles it by requiring that exact string to fail at *parse* time, which only a category-level exclusion (not a value-level one) can satisfy without violating the "never special-case one string" instruction. Numeric bracket indexing (`a[0]`, `a[i]`) is untouched; object access by name goes only through `.` (fixed key) or `get(obj, "a.b.c")` (the closed-table substitute, itself an own-property walk that can never reach `constructor`/`__proto__`/`prototype` either — see `functions.test.ts`'s `get()` case). This is the single most consequential design call in the package and is called out here in full rather than left implicit in a code comment.
+  - **`ExprEvalError.offset` is not a real source position for eval-time errors.** §4.3's `Expr` AST union (copied verbatim from the plan) carries no `offset` field on any node, so an eval-time error has nothing to point at; it defaults to `0`. Parse-time errors (`ExprParseError`) do carry the real character offset, since the tokeniser has one. §4.6's "every error carries `offset`" is therefore only fully true for parse errors; eval errors carry a placeholder. Not fixed here because adding position tracking to every AST node would grow `ast.ts`/`eval.ts` well past what G7's budget needs, for a feature (underlining the failing token for a *runtime* error) that plan 306 owns and that a workflow author only meets after a run has already happened via the recorded step data, not through this package's error object.
+
+- **Observed, not done**:
+  - `bun run build:studio` (§6/CLAUDE.md's Studio verification step) — blocked by a concurrent session's `next dev` on `:3001`, not run. See above.
+  - 302.7 and 302.8 in full — instructed deferral, not a discovery.
+  - The manual owner smoke in §7 ("publish a workflow whose gate reads `len($nodes.read.result.items) > 0`...") needs the protocol wiring from 302.7/302.8 to exist at all; not runnable yet.
+
+- **Open questions hit**: none of §9's four questions blocked any of steps 302.1–302.6/302.9. Q1 (browser needs the parser too) is why `transpilePackages` was edited in 302.1. Q4 (`describe`) is stubbed exactly as Q4 says to.
+
+- **Processes**: no process was started by this session that is still running. The `next-server` on `:3001` (pid 18677) predates this session and belongs to the concurrently running Studio session named in the launch instructions; it was not started, stopped, or otherwise touched here.
+
+  ```
+  $ ps -Ao pid=,command= | grep -i "[o]penpf"
+  (no output)
+  ```

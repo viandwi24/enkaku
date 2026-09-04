@@ -74,6 +74,10 @@
         "zod": "^4.0.0",
       },
     },
+    "packages/expr": {
+      "name": "@enkaku/expr",
+      "version": "0.0.1",
+    },
     "packages/harness": {
       "name": "@enkaku/harness",
       "version": "0.0.1",
@@ -285,7 +289,7 @@
     },
     "plugins/youtube-automation-pack": {
       "name": "@enkaku/plugin-youtube",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -325,6 +329,8 @@
     "@enkaku/drivers": ["@enkaku/drivers@workspace:packages/drivers"],
 
     "@enkaku/examples": ["@enkaku/examples@workspace:examples"],
+
+    "@enkaku/expr": ["@enkaku/expr@workspace:packages/expr"],
 
     "@enkaku/guest-agent": ["@enkaku/guest-agent@workspace:apps/guest-agent"],
 

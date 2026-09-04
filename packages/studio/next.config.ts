@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   // import the same components (plan 111 §3.3). It is a ROOT-TypeScript
   // package and crosses into Studio's TypeScript 5 exactly the way
   // `@enkaku/protocol` already does — see CLAUDE.md's "two TypeScripts" rule.
-  transpilePackages: ['@enkaku/protocol', '@enkaku/ui'],
+  transpilePackages: ['@enkaku/protocol', '@enkaku/ui', '@enkaku/expr'],
 }
 
 export default nextConfig
