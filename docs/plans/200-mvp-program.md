@@ -440,3 +440,77 @@ The first three rows unblock by deleting the dialogs 216 already named. **The fo
 **Owner: plan 219**, which already touches the plugin surface, or an explicit follow-up. The work is a migration, not a deletion: point `ActionRunner` at `components/target/DevicePicker.tsx` (216's new one, not the old `components/DevicePicker.tsx`), then the chain collapses and all four rows can go.
 
 **The lesson, which is the reason this section exists:** a deletion deferred at a gate needs a written owner in the same minute it is deferred. "I will finish it after the next merge" is not a record, and this one survived a whole round because nobody wrote it down.
+
+### 8.11 R6 reconciliation — 212, 217, 218, 222
+
+Merged in plan order onto `mvp`; four conflicts, all real, none resolved by
+picking a side:
+
+- `icons.ts` and `check-design-tokens.ts` — 217 and 218 each added icons to the
+  same list. Union. The exact-total assertion derives from `GROUP_3.length`, so
+  it widened itself.
+- `check-routes.ts` — each plan deleted its own `PENDING_REMOVAL` row; the
+  result keeps neither.
+- `app/jobs/detail/page.tsx` — modify/delete. 218 replaced the page with
+  `components/jobs/*`; 212 had patched the old file for the new settings shape.
+  The deletion is the right answer, but the patch was the tell that the NEW
+  Jobs code might read `settings.job` too. It does not — checked, not assumed.
+- `protocol/settings.ts` — 212 rewrote the file to 26 fields while 222 changed
+  four lines of the old one. Resolved by taking 212's file and re-applying
+  222's `ui-tree` enum and default onto it.
+
+**The collective test sweep the CEO asked for found 26 failures across four
+packages, and only one of them belonged to R6's own work.** The rest had been
+red for one to three rounds, invisible because no scoped run had touched those
+directories. What that says about the "run only what you touched" rule is in
+§8.12.
+
+Real defects, not stale tests:
+
+1. **`0067_groups_rename` carried a `when` 18 minutes EARLIER than
+   `0066_desired_awake`** — my own wave-3 renumbering. Drizzle picks pending
+   migrations by comparing `when` against the highest `created_at` already
+   recorded, read once. A fresh install is unaffected; any database already at
+   0066 would have skipped the `clusters` → `groups` rename **permanently, with
+   no error**, then failed with "no such table: groups". Timestamp repaired and
+   `db/journal-ordering.test.ts` now guards monotonicity, `idx` order, and that
+   every tag has its `.sql`.
+2. **A per-device video-quality change stopped restarting the open session.**
+   212 moved the knobs from a `video` block to `overrides.*`; the route still
+   watched `changedKeys.includes('video')`. The operator would get a success
+   toast and an unchanged picture — the exact class plan 92 was written for.
+3. **`GET /api/plugins/dev` lost its last caller** when 215 deleted
+   `app/device/`, so unpublished dev builds are invisible in Studio. Recorded
+   in a new `UNREACHABLE_PENDING` list with an owning plan, NOT in
+   `NOT_IN_STUDIO_BY_DESIGN` — a gap filed as a decision is a lie the next
+   reader believes. Owner: plan 219.
+
+Stale fixtures repaired: four agent settings stores still keyed `agentDefaults`
+(the store's key is `defaults` since 212) — every one an `as never` cast, which
+is exactly why typecheck saw nothing; `health.test.ts` seeding `status: 'idle'`,
+which stopped being a `DeviceStatus` at plan 205; `cutover.test.ts` pinning the
+"DHCP lease" wording 205 de-jargoned; labelling fixtures in two doctor files;
+`.text-fg-muted` in the SDK scaffold test, renamed by 204.
+
+Tests deleted, with replacements: `awake-policy`'s `screenOffTimeoutMs: null`
+case and `blob/gc`'s two grace-period cases drove settings 212 turned into
+constants. Each was replaced by a test of the contract that survived — the
+boundary, and the absence of the removed key — never merely removed.
+
+Plan 216's blocked deletions were completed here (twelve files; both
+`components/bulk/` and `components/operations/` are gone), verified with a full
+`build:studio`. `target/TargetPicker` and `useTargetSelection` stay for plan 219
+with `plugin-view/ActionRunner.tsx`.
+
+### 8.12 The scoped-test rule has a hole, and this is what it costs
+
+CLAUDE.md forbids a full suite for a real reason (the 2026-08-17 overheating
+incident), and that rule stands. But "run only what you touched" silently
+assumes every break lands in a directory somebody touches soon after. R6 proved
+it does not: 25 of 26 failures were inherited, the oldest from R2, and they
+surfaced only because a round gate happened to sweep wider than any single plan.
+
+The rule this adds, for the remaining rounds: **a round gate sweeps every
+backend directory the round changed, not only those with changed test files.**
+The `agent/` directory had no changed test file in R6 and held four failures.
+Plan 224 owns measuring the backend suite; until then the gate is the net.
