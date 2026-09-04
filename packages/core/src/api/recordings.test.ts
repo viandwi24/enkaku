@@ -251,16 +251,13 @@ describe('PATCH /api/recordings/:slug', () => {
 })
 
 describe('DELETE /api/recordings/:slug', () => {
-  test('deletes the document, the compiled entry, and the detached marker', async () => {
+  test('deletes the document (plan 210: publish no longer compiles an entry to also clean up)', async () => {
     const { db, workspace } = setUp()
     await writeRecording(workspace, sampleDoc())
     const app = withUser('operator', createRecordingRoutes({ db, workspace }))
-    await app.request('/checkout-flow/publish', { method: 'POST' })
-    expect(() => workspace.read('/recordings/checkout-flow.ts')).not.toThrow()
     const res = await app.request('/checkout-flow', { method: 'DELETE' })
     expect(res.status).toBe(200)
     expect(() => workspace.read('/recordings/checkout-flow.recording.json')).toThrow()
-    expect(() => workspace.read('/recordings/checkout-flow.ts')).toThrow()
   })
 
   test('404s on a missing slug', async () => {
