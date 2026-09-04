@@ -72,9 +72,17 @@ export function listActiveScripts(db: Db): ScriptListItem[] {
   const names = [...new Set(rows.map((r) => r.s.name))]
   const lastByName = new Map<string, ScriptLastRun>()
   if (names.length > 0) {
-    const last = db.all<{ id: string; script_name: string; status: string; created_at: number | null; finished_at: number | null }>(sql`
-      SELECT j.id, j.script_name, j.status, j.created_at, j.finished_at
+    // Plan 211 §3.2 decision 9 moved `status` and `finished_at` off `jobs` and
+    // onto `job_runs`, reached through `jobs.latest_run_id`. This query kept
+    // reading `j.status`, so `GET /api/scripts` threw `no such column:
+    // j.status` on any farm that had ever run a script — the Scripts page AND
+    // the Run script dialog's list, both blank with a 500 (field report,
+    // 2026-09-04). It survived plan 211 because it is a raw SQL string:
+    // typecheck cannot see inside one, and no test exercised this path.
+    const last = db.all<{ id: string; script_name: string; status: string | null; created_at: number | null; finished_at: number | null }>(sql`
+      SELECT j.id, j.script_name, r.status, j.created_at, r.finished_at
       FROM jobs j
+      LEFT JOIN job_runs r ON r.id = j.latest_run_id
       WHERE j.script_name IN (${sql.join(names.map((n) => sql`${n}`), sql`, `)})
         AND j.created_at = (SELECT max(j2.created_at) FROM jobs j2 WHERE j2.script_name = j.script_name)
       ORDER BY j.created_at DESC
