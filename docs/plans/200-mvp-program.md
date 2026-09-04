@@ -421,3 +421,22 @@ Merged 211, 215, 216, 221, 223. Eight gates green; `bun run typecheck` is green 
 | `packages/core/src/db/migrations/schedule-target-backfill.test.ts` | the same |
 
 **This is a debt, not a decision.** Plan 224 owns the test-strategy reset and must either restore these five against the new schema or state, per file, why the behaviour is covered elsewhere. Added to 224's acceptance below.
+
+### 8.10 Open item carried at the R6 gate: plan 216's blocked deletions
+
+**The programme owner said at the R5 gate that he would finish plan 216's blocked deletions once 215 merged, and then did not.** Plan 217's executor found them still on disk. Recorded here rather than promised again.
+
+It is not a forgotten `rm`. The chain, verified 2026-09-04:
+
+| File 216 wanted to delete | Still imported by |
+|---|---|
+| `components/target/TargetPicker.tsx` | `InstallBatchDialog.tsx`, `BulkForgetDialog.tsx`, `RunScriptDialog.tsx`, and **`components/plugin-view/ActionRunner.tsx`** |
+| `components/DevicePicker.tsx` | `TargetPicker.tsx` |
+| `components/RunScriptDialog.tsx` | `lib/script-row.ts` (a type import) |
+| `lib/operations.ts` | `InstallBatchDialog.tsx` and two files under `components/operations/` |
+
+The first three rows unblock by deleting the dialogs 216 already named. **The fourth does not**: `plugin-view/ActionRunner.tsx` is the plugin view host's own action runner, it legitimately needs a target picker, and no plan named it. Plan 216 replaced `DeviceWallWithPicker` with `DevicePickerDialog` but never migrated `ActionRunner`.
+
+**Owner: plan 219**, which already touches the plugin surface, or an explicit follow-up. The work is a migration, not a deletion: point `ActionRunner` at `components/target/DevicePicker.tsx` (216's new one, not the old `components/DevicePicker.tsx`), then the chain collapses and all four rows can go.
+
+**The lesson, which is the reason this section exists:** a deletion deferred at a gate needs a written owner in the same minute it is deferred. "I will finish it after the next merge" is not a record, and this one survived a whole round because nobody wrote it down.
