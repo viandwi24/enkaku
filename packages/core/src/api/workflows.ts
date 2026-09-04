@@ -14,18 +14,22 @@ import {
   WorkflowPinSetRequestSchema,
   WorkflowRunNodeRequestSchema,
   WorkflowRunNodeResponseSchema,
+  WorkflowLastRunResponseSchema,
+  WORKFLOW_STEP_STATUSES,
   type ResolvedNodeScript,
   type ScriptRef,
   type WorkflowBudget,
   type WorkflowDoc,
   type WorkflowFinding,
+  type WorkflowLastRunNode,
+  type WorkflowLastRunNodeData,
   type WorkflowNode,
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { jobRuns, jobs, workflowSteps } from '../db/schema'
+import { jobRuns, jobs, workflowSteps, type WorkflowStepRow } from '../db/schema'
 import { rowToJobInfo } from '../queue/job-store'
 import type { ScriptRegistry } from '../scripts/registry'
 import type { WorkflowStore } from '../workflows/store'
@@ -65,6 +69,7 @@ const ERROR_STATUS: Record<string, number> = {
   E_PIN_TOO_LARGE: 400,
   E_PIN_NOT_PINNABLE: 400,
   pin_not_found: 404,
+  workflow_never_run: 404,
 }
 
 function parseErrorFindings(issues: readonly { path: readonly PropertyKey[]; message: string }[]): WorkflowFinding[] {
@@ -268,6 +273,37 @@ function lastRecordedInput(db: Db, workflowName: string, nodeId: string): { ok: 
     .limit(1)
     .get()
   return row ? { ok: true, value: row.input } : { ok: false }
+}
+
+/**
+ * The OUTPUT pane's state for one node's last-run step (plan 306 §3.1, §9
+ * Q5's neighbour, the discrepancy recorded in the handoff report): `none`
+ * when the node has no recorded step at all, `dropped` when
+ * `output_truncated` is set (the value was over the cap and was NEVER
+ * recorded — dropped, not truncated), `empty` when the node ran and the
+ * recorded value is `null`/`undefined`, `value` otherwise.
+ */
+function outputData(step: WorkflowStepRow | undefined): WorkflowLastRunNodeData {
+  if (!step) return { state: 'none' }
+  if (step.outputTruncated) return { state: 'dropped' }
+  if (step.output === null || step.output === undefined) return { state: 'empty' }
+  return { state: 'value', value: step.output }
+}
+
+/**
+ * The INPUT pane's state for one node's last-run step. `workflow_steps.input`
+ * has NO truncation-marker column of its own (`jobs/executors/workflow.ts`'s
+ * `capInput`: "no marker column for input") — so a dropped input reads
+ * identically to a genuinely empty one by looking at the row alone. Since a
+ * single-cursor run's `$input` for a node is exactly its predecessor's own
+ * output (plan 306 §9 Q2), the predecessor's OWN `output_truncated` — which
+ * DOES exist — is what tells the two apart.
+ */
+function inputData(step: WorkflowStepRow | undefined, predecessorStep: WorkflowStepRow | undefined): WorkflowLastRunNodeData {
+  if (!step) return { state: 'none' }
+  if (predecessorStep?.outputTruncated) return { state: 'dropped' }
+  if (step.input === null || step.input === undefined) return { state: 'empty' }
+  return { state: 'value', value: step.input }
 }
 
 export function createWorkflowRoutes(deps: {
@@ -486,6 +522,59 @@ export function createWorkflowRoutes(deps: {
     const run = deps.runs.addRun(job.id, { trigger: 'node-test' })
     deps.scheduler.kick()
     return typedJson(c, WorkflowRunNodeResponseSchema, { job: rowToJobInfo(job, run), runId: run.id }, 202)
+  })
+
+  // ---- Last run (plan 300 P6, plan 306 §3.1, §4.5) ----
+
+  app.get('/:name/last-run', requirePermission('script.view'), (c) => {
+    const name = c.req.param('name')
+    const workflow = store.get(name)
+    if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+
+    // The latest REAL run (never `node-test` — running one node alone must
+    // never overwrite the data an author sees for every other node, plan 304
+    // §4.6). Multiple `jobs` rows can share this `workflowName` (each Run
+    // creates its own job), so this joins across all of them rather than
+    // assuming one job owns every run.
+    const latestRun = deps.db
+      .select({ runId: jobRuns.id, startedAt: jobRuns.startedAt, createdAt: jobRuns.createdAt })
+      .from(jobRuns)
+      .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+      .where(and(eq(jobs.workflowName, name), ne(jobRuns.trigger, 'node-test')))
+      .orderBy(desc(jobRuns.createdAt))
+      .limit(1)
+      .get()
+    if (!latestRun) throw new EnkakuError('workflow_never_run', `workflow "${name}" has never run`)
+
+    const steps = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, latestRun.runId)).all()
+    // A loop can revisit the same node id more than once in one run
+    // (`workflow_steps.seq`'s own doc comment) — the LATEST step for a node
+    // id is the one a data pane should show.
+    const byStepId = new Map<string, WorkflowStepRow>()
+    for (const s of steps) {
+      const existing = byStepId.get(s.stepId)
+      if (!existing || s.seq > existing.seq) byStepId.set(s.stepId, s)
+    }
+
+    const pinnedIds = new Set(deps.pins.list(name).map((p) => p.nodeId))
+
+    const nodes: Record<string, WorkflowLastRunNode> = {}
+    for (const node of workflow.doc.nodes) {
+      const step = byStepId.get(node.id)
+      const predecessorId = findPredecessorId(workflow.doc, node.id)
+      const predecessorStep = predecessorId ? byStepId.get(predecessorId) : undefined
+      nodes[node.id] = {
+        nodeId: node.id,
+        status: step && (WORKFLOW_STEP_STATUSES as readonly string[]).includes(step.status) ? (step.status as WorkflowLastRunNode['status']) : null,
+        pinned: pinnedIds.has(node.id),
+        takenEdge: step?.takenEdge ?? null,
+        input: inputData(step, predecessorStep),
+        output: outputData(step),
+      }
+    }
+
+    const at = latestRun.startedAt ?? latestRun.createdAt
+    return typedJson(c, WorkflowLastRunResponseSchema, { runId: latestRun.runId, at: Math.floor(at.getTime() / 1000), nodes })
   })
 
   app.onError((err, c) => {

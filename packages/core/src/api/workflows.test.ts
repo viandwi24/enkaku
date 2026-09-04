@@ -582,3 +582,86 @@ describe('Workflow pins CRUD over HTTP (plan 300 P10, plan 304 §3.3, §4.3)', (
     expect(pins.list('run-node-doc')).toHaveLength(0)
   })
 })
+
+describe('GET /api/workflows/:name/last-run (plan 300 P6, plan 306 §3.1, §4.5)', () => {
+  async function seed(): Promise<{ db: Db; registry: ScriptRegistry; store: WorkflowStore; runs: RunStore; pins: PinStore; scheduler: { kick: () => void }; app: Hono<AuthEnv> }> {
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    publishScriptRow(db, 'node-a', '1.0.0')
+    publishScriptRow(db, 'node-b', '1.0.0')
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
+    const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeV2Doc() }) })
+    expect(created.status).toBe(201)
+    return { db, registry, store, runs, pins, scheduler, app }
+  }
+
+  /** Inserts a real (non-`node-test`) job + run row for `run-node-doc`, and returns the run's id. */
+  function insertRealRun(db: Db, trigger: 'manual' | 'node-test' = 'manual'): string {
+    const jobId = crypto.randomUUID()
+    const runId = crypto.randomUUID()
+    db.insert(jobs).values({ id: jobId, kind: 'workflow', workflowName: 'run-node-doc', deviceId: 'dev-1', scriptName: 'run-node-doc', createdAt: new Date() }).run()
+    db.insert(jobRuns).values({ id: runId, jobId, seq: 1, trigger, status: 'success', deviceId: 'dev-1', createdAt: new Date(), startedAt: new Date(), seed: 0 }).run()
+    return runId
+  }
+
+  test('an unknown workflow name answers 404 workflow_not_found', async () => {
+    const { app } = await seed()
+    const res = await app.request('/no-such-workflow/last-run')
+    expect(res.status).toBe(404)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('workflow_not_found')
+  })
+
+  test('a workflow that has never run for real answers 404 workflow_never_run — a node-test run does not count', async () => {
+    const { app, db } = await seed()
+    insertRealRun(db, 'node-test')
+    const res = await app.request('/run-node-doc/last-run')
+    expect(res.status).toBe(404)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('workflow_never_run')
+  })
+
+  test('a node the last run never reached reads state "none"; one that ran and returned data reads "value"; a pin is reflected independently of the run', async () => {
+    const { app, db, pins } = await seed()
+    const runId = insertRealRun(db)
+    // Only "a" ran — its own predecessor is "start", which is never logged,
+    // so its own $input is genuinely absent (state "empty"). "b" never ran.
+    db.insert(workflowSteps).values({ id: crypto.randomUUID(), runId, seq: 1, stepId: 'a', kind: 'script', status: 'success', startedAt: new Date(), finishedAt: new Date(), input: null, output: { x: 5 }, takenEdge: 'next', pinned: false }).run()
+    pins.set('run-node-doc', 'b', { x: 1 }, 'u1')
+
+    const res = await app.request('/run-node-doc/last-run')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { runId: string; at: number; nodes: Record<string, { status: string | null; pinned: boolean; takenEdge: string | null; input: { state: string }; output: { state: string; value?: unknown } }> }
+    expect(body.runId).toBe(runId)
+    expect(typeof body.at).toBe('number')
+
+    expect(body.nodes.a?.status).toBe('success')
+    expect(body.nodes.a?.takenEdge).toBe('next')
+    expect(body.nodes.a?.pinned).toBe(false)
+    expect(body.nodes.a?.input).toEqual({ state: 'empty' })
+    expect(body.nodes.a?.output).toEqual({ state: 'value', value: { x: 5 } })
+
+    expect(body.nodes.b?.status).toBeNull()
+    expect(body.nodes.b?.pinned).toBe(true)
+    expect(body.nodes.b?.takenEdge).toBeNull()
+    expect(body.nodes.b?.input).toEqual({ state: 'none' })
+    expect(body.nodes.b?.output).toEqual({ state: 'none' })
+  })
+
+  test('an oversized value is dropped, not truncated — the pane says so, and a dropped predecessor output is reflected as a dropped $input downstream', async () => {
+    const { app, db } = await seed()
+    const runId = insertRealRun(db)
+    // "a"'s own output was over the cap — the executor records it as `null`
+    // with `output_truncated` set (plan 306 §3, discrepancy in the handoff).
+    db.insert(workflowSteps)
+      .values({ id: crypto.randomUUID(), runId, seq: 1, stepId: 'a', kind: 'script', status: 'success', startedAt: new Date(), finishedAt: new Date(), input: null, output: null, outputTruncated: 'output was 999999 bytes, over the cap — dropped', takenEdge: 'next', pinned: false })
+      .run()
+    // "b"'s own recorded $input is therefore also `null` — indistinguishable
+    // from a genuinely empty input by looking at this row alone.
+    db.insert(workflowSteps).values({ id: crypto.randomUUID(), runId, seq: 2, stepId: 'b', kind: 'script', status: 'success', startedAt: new Date(), finishedAt: new Date(), input: null, output: { ok: true }, takenEdge: null, pinned: false }).run()
+
+    const res = await app.request('/run-node-doc/last-run')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { nodes: Record<string, { input: { state: string; value?: unknown }; output: { state: string; value?: unknown } }> }
+    expect(body.nodes.a?.output).toEqual({ state: 'dropped' })
+    expect(body.nodes.b?.input).toEqual({ state: 'dropped' })
+    expect(body.nodes.b?.output).toEqual({ state: 'value', value: { ok: true } })
+  })
+})
