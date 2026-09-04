@@ -152,6 +152,8 @@ export interface HttpDeps {
   operationRoutes: Hono<AuthEnv>
   scheduleRoutes: Hono<AuthEnv>
   settingsRoutes: Hono<AuthEnv>
+  /** `GET /api/storage/usage` (plan 224) — a cache read maintained by the retention sweeper. */
+  storageRoutes: Hono<AuthEnv>
   artifactRoutes: Hono<AuthEnv>
   adbStatsRoutes: Hono<AuthEnv>
   /** `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2). */
@@ -412,6 +414,8 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   app.route('/api/schedules', deps.scheduleRoutes)
 
   app.route('/api/settings', deps.settingsRoutes)
+
+  app.route('/api/storage', deps.storageRoutes)
 
   app.route('/api/artifacts', deps.artifactRoutes)
 

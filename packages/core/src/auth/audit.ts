@@ -150,7 +150,8 @@ export type AuditAction =
   // which leaves the core process (and every job's queue state) untouched.
   | 'app.restart'
   | 'settings.update'
-  | 'retention.gc'
+  /** The nightly retention sweep (plan 224): runs, orphan jobs, trace directories, artifacts, device/job events and stale audit rows. */
+  | 'retention.sweep'
   // AI agent records (plan 65 §4.5, §5.5) — creating/editing/deleting the
   // record itself, distinct from `capability.invoke` (what the agent DOES
   // once it runs, which Plan 66 adds).
