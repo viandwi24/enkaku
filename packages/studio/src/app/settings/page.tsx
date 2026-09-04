@@ -34,14 +34,12 @@ import {
   relativeTime,
   useAction,
 } from '@enkaku/ui'
-import { KvPanel } from '@/components/kv/KvPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { narrowSchema } from '@/components/schema-form/narrowSchema'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { FarmNetworksEditor } from '@/components/settings/FarmNetworksEditor'
-import { FarmVideoFields } from '@/components/video/FarmVideoFields'
-import { FARM_SECTION_DEFS } from '@/components/settings/farmSections'
+import { farmSections } from '@/components/settings/farmSections'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 import { z } from 'zod'
 import {
@@ -102,100 +100,41 @@ const UserCreateResponseSchema = z.object({ user: UserSchema })
  */
 function SettingsView() {
   const router = useRouter()
-  const tab = useSearchParams().get('tab') ?? 'defaults'
+  const tab = useSearchParams().get('tab') ?? 'general'
 
-  const sections: SettingsSection[] = FARM_SECTION_DEFS.map(({ id, title, group, keys }) => ({
-    id,
-    title,
-    group,
-    render: () =>
-      id === 'blocked' ? (
-        <BlockedDevicesSection />
-      ) : id === 'kv' ? (
-        // Plan 96 item 96.4 — the browser sits above the quota `FarmForm`
-        // for the SAME `kv` schema block (`maxValueBytes`, `maxKeyLength`,
-        // ...), so one tab covers both browsing entries and the limits
-        // that bound them.
-        <>
-          <KvPanel scope={{ kind: 'global' }} />
-          <FarmForm keys={keys} />
-        </>
-      ) : id === 'connectors' ? (
-        <ConnectorsSection />
-      ) : id === 'webhooks' ? (
-        <WebhooksSection />
-      ) : id === 'users' ? (
-        <UsersSection />
-      ) : id === 'audit' ? (
-        <AuditSection />
-      ) : id === 'adb' ? (
-        <>
-          <FarmForm keys={keys} />
-          <AdbDiagnosticsPanel />
-        </>
-      ) : id === 'discovery' ? (
-        // Plan 88 §3.6, §5 step 88.6 — `networks` is excluded from the
-        // generic form here (see `FarmForm`'s `omit` prop) so it has exactly
-        // ONE editor: `FarmNetworksEditor`'s own live count/ceiling/copy,
-        // never the generic table underneath it disagreeing about the same
-        // array between saves.
-        <>
-          <FarmForm keys={keys} omit={['discovery.networks']} />
-          <FarmNetworksEditor />
-        </>
-      ) : id === 'network' ? (
-        // Plan 88 §5 step 88.5's "Farm networks" editor (CIDR ranges, the
-        // sweep's address space and policy) lives under Settings →
-        // "Discovery & monitoring" — a DIFFERENT top-level schema key
-        // (`discovery`) than this tab's own `network` (the geo-verification
-        // lookup a route's exit is checked against, plan 55 §3.2). An
-        // operator searching "Network" for IP-range scanning found nothing
-        // related here, confirmed in-browser this session
-        // (`docs/plans/96-m61-hotfixes.md`'s hotfix entry for the full
-        // account) — this banner is the smallest correct fix. A real MOVE
-        // was considered and rejected: `discovery`'s sweep-policy fields
-        // (port, scan mode, max addresses) sit in the same schema block as
-        // the CIDR list and are all rendered by one `FarmForm`; relocating
-        // only the CIDR table here would split one coherent settings group
-        // across two tabs for no schema reason, and relocating the whole
-        // `discovery` block would touch a widely-read settings path
-        // (`packages/core/src/registry/{sweep,reconnect,endpoints}.ts`,
-        // `cutover.ts`) for a UI-only fix. A cross-link costs none of that.
-        <>
-          <p className="rounded-lg border bg-surface-2/40 px-3 py-2 text-[12.5px] text-fg-muted">
-            Looking for IP-range scanning, or the list of farm networks (CIDR ranges) used to find and label devices on
-            the network? That lives under{' '}
-            <Link href="/settings?tab=discovery" className="font-medium text-accent-strong underline underline-offset-2">
-              Discovery &amp; monitoring
-            </Link>
-            . This tab is the separate geo-verification lookup a network route's exit is checked against.
-          </p>
-          <FarmForm keys={keys} />
-        </>
-      ) : id === 'video' ? (
-        // Plan 92 §3.6, §3.7, §3.9, §5 step 92.8 — still entirely
-        // `SchemaForm`-rendered (spec §19); `FarmVideoFields` only adds the
-        // Advanced disclosure, the effective-profile readout, the §3.7
-        // projection line, and the §3.9 measured block AROUND those fields.
-        <FarmForm keys={keys} render={(p) => <FarmVideoFields {...p} />} />
-      ) : id === 'spend' ? (
-        <>
-          <FarmForm keys={keys} />
-          <ObservedSpendPanel />
-        </>
-      ) : id === 'guest-agent' ? (
-        // Plan 90 §5 step 90.6 — the farm-wide "are all my phones on the
-        // current agent" answer this tab's own comment (`farmSections.ts`)
-        // already reserved a home for, alongside the `provision`/recovery
-        // settings the generic form renders.
-        <>
-          <FarmForm keys={keys} />
-          <GuestAgentSummarySection />
-        </>
-      ) : (
-        <FarmForm keys={keys} />
-      ),
-  }))
+  const [farmSchema, setFarmSchema] = useState<JsonSchemaNode | null>(null)
+  useEffect(() => {
+    api('/api/settings', SettingsResponseSchema)
+      .then((b) => setFarmSchema(b.schema))
+      .catch(() => undefined)
+  }, [])
+
+  const sections: SettingsSection[] = farmSchema
+    ? farmSections(farmSchema).map(({ id, title, group, keys }) => ({
+        id,
+        title,
+        group,
+        render: () =>
+          id === 'access' ? (
+            <>
+              <UsersSection />
+              <AuditSection />
+            </>
+          ) : id === 'networkScan' ? (
+            // Plan 212 §4.5 — `networks` is the only field left in this
+            // block, so the `omit` trick the old `discovery` tab needed is
+            // unnecessary; `FarmNetworksEditor` is the one editor for it.
+            <FarmNetworksEditor />
+          ) : id === 'advanced' ? (
+            <>
+              <FarmForm keys={keys} />
+              <AdbDiagnosticsPanel />
+            </>
+          ) : (
+            <FarmForm keys={keys} />
+          ),
+      }))
+    : []
 
   return (
     <>
@@ -204,7 +143,7 @@ function SettingsView() {
         <SectionNav
           sections={sections}
           active={tab}
-          onChange={(id) => router.push(id === 'defaults' ? '/settings' : `/settings?tab=${id}`)}
+          onChange={(id) => router.push(id === 'general' ? '/settings' : `/settings?tab=${id}`)}
         />
       </div>
     </>

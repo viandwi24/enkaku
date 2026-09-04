@@ -10,11 +10,11 @@ import type { DeviceInfo } from '@enkaku/protocol'
 import {
   AgentResponseSchema,
   ConnectorModelsResponseSchema,
+  FarmAgentSettingsResponseSchema,
   ListCapabilitiesResponseSchema,
   ListConnectorsResponseSchema,
   ListThreadsResponseSchema,
   RunResponseSchema,
-  SettingsResponseSchema,
   ThreadResponseSchema,
 } from '@enkaku/protocol'
 import {
@@ -194,8 +194,9 @@ function AgentDetail() {
   useEffect(loadThreads, [id])
 
   useEffect(() => {
-    api('/api/settings', SettingsResponseSchema)
-      .then((b) => setFarmDefaults(b.settings.agentDefaults))
+    // Plan 212 §4.7 — agent defaults moved off `/api/settings` onto their own route.
+    api('/api/agents/settings', FarmAgentSettingsResponseSchema)
+      .then((b) => setFarmDefaults(b.settings.defaults))
       .catch(() => undefined)
     api('/api/connectors', ListConnectorsResponseSchema)
       .then((b) => setConnectors(b.connectors))

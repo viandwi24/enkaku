@@ -10,8 +10,8 @@ import {
   AgentResponseSchema,
   ApprovalResponseSchema,
   ConnectorModelsResponseSchema,
+  FarmAgentSettingsResponseSchema,
   RunResponseSchema,
-  SettingsResponseSchema,
   ThreadMessagesResponseSchema,
   TreeResponseSchema,
   UploadBlobResponseSchema,
@@ -243,8 +243,9 @@ export function Chat({
   }, [threadId])
 
   useEffect(() => {
-    void api('/api/settings', SettingsResponseSchema)
-      .then((b) => setFarmDefaults(b.settings.agentDefaults))
+    // Plan 212 §4.7 — agent defaults moved off `/api/settings` onto their own route.
+    void api('/api/agents/settings', FarmAgentSettingsResponseSchema)
+      .then((b) => setFarmDefaults(b.settings.defaults))
       .catch((e) => setBackgroundError(`Farm defaults failed to load — ${e instanceof Error ? e.message : String(e)}`))
   }, [])
 
