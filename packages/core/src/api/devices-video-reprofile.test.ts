@@ -50,7 +50,7 @@ function engineRegistry(): RegistryResponse {
     transports: [engine('adb-usb', 'transport')],
     displays: [engine('scrcpy', 'display')],
     inputs: [engine('scrcpy-uhid', 'input')],
-    inspectors: [engine('ui-server', 'inspector')],
+    inspectors: [engine('ui-tree', 'inspector'), engine('ui-server', 'inspector')],
     networks: [engine('none', 'network')],
     tools: [],
   }
@@ -132,7 +132,7 @@ describe('PATCH /api/devices/:id restarts an OPEN session when changedKeys inclu
     const { db, app } = makeApp({ sessions })
     seedDevice(db, 'a')
 
-    const res = await app.request('/a', patchReq({ settings: { video: { wallMaxFps: 3 } } }))
+    const res = await app.request('/a', patchReq({ settings: { overrides: { wallQuality: 'light' } } }))
     expect(res.status).toBe(200)
 
     expect(sessions.restarted).toEqual([{ deviceId: 'a', quality: 'wall', detail: 'applying new video settings' }])
@@ -165,7 +165,7 @@ describe('PATCH /api/devices/:id restarts an OPEN session when changedKeys inclu
     const { db, app } = makeApp({ sessions })
     seedDevice(db, 'a')
 
-    const res = await app.request('/a', patchReq({ settings: { video: { wallMaxFps: 3 } } }))
+    const res = await app.request('/a', patchReq({ settings: { overrides: { wallQuality: 'light' } } }))
     expect(res.status).toBe(200)
 
     expect(sessions.restarted).toEqual([])
@@ -175,7 +175,7 @@ describe('PATCH /api/devices/:id restarts an OPEN session when changedKeys inclu
     const { db, app } = makeApp()
     seedDevice(db, 'a')
 
-    const res = await app.request('/a', patchReq({ settings: { video: { wallMaxFps: 3 } } }))
+    const res = await app.request('/a', patchReq({ settings: { overrides: { wallQuality: 'light' } } }))
     expect(res.status).toBe(200)
   })
 })

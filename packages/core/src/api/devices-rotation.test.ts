@@ -45,7 +45,7 @@ function engineRegistry(): RegistryResponse {
     transports: [engine('adb-usb', 'transport')],
     displays: [engine('scrcpy', 'display')],
     inputs: [engine('scrcpy-uhid', 'input')],
-    inspectors: [engine('ui-server', 'inspector')],
+    inspectors: [engine('ui-tree', 'inspector'), engine('ui-server', 'inspector')],
     networks: [engine('none', 'network')],
     tools: [],
   }

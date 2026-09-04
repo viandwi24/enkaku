@@ -46,13 +46,22 @@ import searchPlay from './search-play'
  */
 export default definePlugin({
   id: 'youtube',
-  version: '0.9.0',
+  version: '0.10.0',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments and download in the YouTube app on a farm device.',
   scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay],
 
   /**
    * ## Changelog
+   *
+   * **0.10.0 — keyword tilt.** `scroll-shorts`, `search-play` and `scroll-live`
+   * take `keywords` + `keywordBoostFactor`: when the content's own words
+   * (caption/channel/title read off the live tree) contain a keyword, the
+   * like/comment chance is multiplied — a non-match keeps the base chance
+   * untouched, because punishing content the operator never mentioned is a
+   * different product decision. `behavior.ts` exports `keywordBoost` and
+   * `readableStrings`; the result now reports `keywordMatches` so a run says
+   * how often the tilt actually fired.
    *
    * **0.9.0 — a thumb that lands on the same pixel every time is the tell.**
    * `tapNode` now aims at a uniform random point in the MIDDLE 70% of the node

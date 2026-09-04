@@ -83,7 +83,12 @@ describe('exported names are unique across the package', () => {
     expect(files.length).toBeGreaterThan(50)
     const jobs = files.find((f) => relative(SRC, f) === join('api', 'jobs.ts'))
     expect(jobs).toBeDefined()
-    expect(declaredExports(readFileSync(jobs as string, 'utf8'))).toContain('JobNodesResponseSchema')
+    // The canary names a real export of `api/jobs.ts`; if that export is ever
+    // renamed, pick another one from the same file rather than deleting the
+    // assertion — its whole job is to fail loudly when the walk stops reading.
+    // `JobNodesResponseSchema` was the original canary and went away with plan
+    // 211's node -> step rename (plan 200 §2.4).
+    expect(declaredExports(readFileSync(jobs as string, 'utf8'))).toContain('JobsPageResponseSchema')
   })
 
   test('a duplicate IS detected — the regression this guard exists for', () => {

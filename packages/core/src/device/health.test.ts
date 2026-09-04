@@ -22,7 +22,7 @@ function setUp(opts?: { failuresBeforeQuarantine?: number; autoQuarantineOverrid
   runMigrations(opened.db)
   const db = opened.db
   db.insert(devices)
-    .values({ id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'idle' })
+    .values({ id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'online' })
     .run()
 
   const events: DeviceEvent[] = []
@@ -94,7 +94,7 @@ describe('DeviceHealth — auto-quarantine on reaching the threshold (plan 23 §
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     let row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
-    expect(row?.status).toBe('idle') // not yet at the threshold
+    expect(row?.status).toBe('online') // not yet at the threshold
 
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
@@ -112,7 +112,7 @@ describe('DeviceHealth — auto-quarantine on reaching the threshold (plan 23 §
     health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
     expect(health.consecutiveFailures('d1')).toBe(3)
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
-    expect(row?.status).toBe('idle')
+    expect(row?.status).toBe('online')
   })
 
   test('a thermally quarantined device is never touched by the adb failure path (different reason prefix)', () => {
@@ -177,7 +177,7 @@ describe('DeviceHealth — the recovery prober (plan 23 §3.5, §4.4.4, §6.5, �
     succeeds = true
     await sleep(40)
     row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
-    expect(row?.status).toBe('idle')
+    expect(row?.status).toBe('online')
     expect(row?.quarantineReason).toBeNull()
     expect(events.some((e) => (e as unknown as { kind: string }).kind === 'device.recovered')).toBe(true)
     health.stop()

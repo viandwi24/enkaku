@@ -944,7 +944,12 @@ export function createDeviceRoutes(deps: {
     // `reprofile`'s rule 4 refuses one (plan 205 §4.9 replaces the old
     // `row.status !== 'busy'` read: `devices.status` never becomes `busy`
     // any more).
-    if (changedKeys.includes('video') && !deps.runningJobOf(row.id)) {
+    // Plan 212 §4.1 moved the per-device video knobs out of a `video` block
+    // and into `overrides.controlQuality`/`overrides.wallQuality`, so the key
+    // this used to watch no longer exists. Watching `overrides` restores the
+    // trigger; the restart is at the session's own current quality either way,
+    // so a non-video override merely re-reads the same profile.
+    if (changedKeys.includes('overrides') && !deps.runningJobOf(row.id)) {
       const sessionsApi = deps.connection?.sessions?.()
       const current = sessionsApi?.get(row.id)
       if (current) void sessionsApi?.restartAt?.(row.id, current.quality, 'applying new video settings')

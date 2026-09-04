@@ -4,7 +4,7 @@ import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { capture, firstMatch, sleep, tapNode, waitForTree, YOUTUBE_PACKAGE } from './youtube'
 import { SEARCH_ENTRY, SEARCH_FIELD, adEvidence, clickableFor, hasResultRows, playerEvidence, resultRowsOf, skipControlOf, titleFromRow } from './search-channel'
-import { between, browseComments, makeRng, pressLike } from './behavior'
+import { between, browseComments, keywordBoost, makeRng, pressLike, readableStrings } from './behavior'
 
 /**
  * `search-play` — search for a video and play one from the ranked results.
@@ -52,6 +52,14 @@ const paramsSchema = z.object({
     .default(0)
     .describe('Chance to open the comment section, scroll it, and close it. Reading only.')
     .meta(ui({ title: 'Comment chance' })),
+  keywordBoostFactor: z
+    .number()
+    .min(1)
+    .max(10)
+    .default(3)
+    .describe('Multiplier applied to like/comment chance when a keyword matches the video title or channel.')
+    .meta(ui({ title: 'Keyword boost' })),
+  keywords: z.array(z.string()).default([]).describe('Keywords to tilt behaviour toward; the title read off the result row is what gets matched.').meta(ui({ title: 'Keywords' })),
   seed: z.number().int().min(0).default(0).describe('RNG seed; 0 derives one per run.').meta(ui({ title: 'Seed (0 = random)' })),
 })
 
@@ -151,14 +159,18 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
 
     let like = 'not attempted'
     let comments = 'not attempted'
+    // The keyword tilt reads the title the row gave us plus whatever the player shows.
+    const tiltText = `${videoTitle} ${ctx.params.query} ${readableStrings(player).join(' ')}`
+    const likeP = keywordBoost(tiltText, ctx.params.keywords, ctx.params.likeProbability, ctx.params.keywordBoostFactor)
+    const comP = keywordBoost(tiltText, ctx.params.keywords, ctx.params.commentProbability, ctx.params.keywordBoostFactor)
     const until = Date.now() + ctx.params.watchMs
     while (Date.now() < until) {
       await sleep(between(rng, 2_500, 6_000))
-      if (like === 'not attempted' && ctx.params.likeProbability > 0 && rng() < ctx.params.likeProbability) {
+      if (like === 'not attempted' && rng() < likeP) {
         like = await pressLike(ctx, rng)
         steps.push(`like:${like}`)
       }
-      if (comments === 'not attempted' && ctx.params.commentProbability > 0 && rng() < ctx.params.commentProbability) {
+      if (comments === 'not attempted' && rng() < comP) {
         comments = await browseComments(ctx, rng, { scrollTimes: 4 })
         steps.push(`comments:${comments}`)
       }
