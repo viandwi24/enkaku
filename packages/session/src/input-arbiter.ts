@@ -230,6 +230,38 @@ export function createInputArbiter(sink: InputSink, opts: CreateInputArbiterOpts
       const typeTextFn = sink.typeText.bind(sink)
       facade.typeText = (text: string, textOpts) => submit('text', source, 'typeText', () => typeTextFn(text, textOpts))
     }
+    // Plan 209 §4.8: key events on the `keys` lane (they must not queue
+    // behind a pointer drag's landing sleep); scroll, pinch and touch on
+    // `pointer` (the same lane a tap/swipe/gesture already uses, so a touch
+    // stream and a scripted swipe never interleave on one contact).
+    if (sink.touch) {
+      const f = sink.touch.bind(sink)
+      facade.touch = (a, p, id) => submit('pointer', source, 'touch', () => f(a, p, id))
+    }
+    if (sink.scroll) {
+      const f = sink.scroll.bind(sink)
+      facade.scroll = (p, h, v) => submit('pointer', source, 'scroll', () => f(p, h, v))
+    }
+    if (sink.pinch) {
+      const f = sink.pinch.bind(sink)
+      facade.pinch = (o) => submit('pointer', source, 'pinch', () => f(o))
+    }
+    if (sink.keyDown) {
+      const f = sink.keyDown.bind(sink)
+      facade.keyDown = (k, m) => submit('keys', source, 'keyDown', () => f(k, m))
+    }
+    if (sink.keyUp) {
+      const f = sink.keyUp.bind(sink)
+      facade.keyUp = (k, m) => submit('keys', source, 'keyUp', () => f(k, m))
+    }
+    if (sink.releaseKeys) {
+      const f = sink.releaseKeys.bind(sink)
+      facade.releaseKeys = () => submit('keys', source, 'releaseKeys', () => f())
+    }
+    if (sink.prepareKeyboard) {
+      const f = sink.prepareKeyboard.bind(sink)
+      facade.prepareKeyboard = () => submit('keys', source, 'prepareKeyboard', () => f())
+    }
     return facade
   }
 

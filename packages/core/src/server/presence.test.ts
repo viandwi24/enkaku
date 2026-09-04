@@ -58,6 +58,7 @@ function fakeSession(deviceId: string): DeviceSession {
         throw new Error('no guest agent client wired in this fixture')
       },
     },
+    onClipboardChanged: () => () => {},
     close: async () => {},
   }
 }

@@ -4,9 +4,11 @@ import { engineDescriptors } from '@enkaku/drivers'
 import { eq } from 'drizzle-orm'
 import {
   ClientMessageSchema,
+  describeKey,
   E_DEVICE_CONFLICT,
   encodeSnapshot,
   encodeVideoFrame,
+  KEY_TABLE,
   KEYCODES,
   type ActivityKind,
   type ArtifactInfo,
@@ -16,6 +18,7 @@ import {
   type DeviceEventStream,
   type FrameMeta,
   type GestureSample,
+  type NormPoint,
   type PolicyDecision,
   type Point,
   type Quality,
@@ -228,6 +231,21 @@ interface ConnState {
   inspectAttached: Set<string>
   /** One `device.activity.warning` per device per minute for this connection (MVP 04 §3, plan 205 §4.8) — deviceId → the unix-ms timestamp of the last warning sent. */
   warnedAt: Map<string, number>
+  /** Plan 209 §3.2 D7/D8: one record per `${deviceId}:${pointerId}` while a finger is down. */
+  touches: Map<string, TouchStream>
+}
+
+/** Plan 209 §4.10: tracks one live pointer stream from `down` to `up`, so the core coalesces moves and recovers the recorded shape on `up`. */
+interface TouchStream {
+  deviceId: string
+  pointerId: number
+  startedAt: number
+  /** Normalised samples, `atMs` relative to `startedAt`. Only meaningful for pointer 0 (the recorded stream). */
+  samples: Array<{ x: number; y: number; atMs: number }>
+  /** A `touch()` submit currently running on the arbiter for this key. */
+  inFlight: boolean
+  /** The newest un-dispatched move while `inFlight` (D7: newest wins). */
+  latestMove: NormPoint | null
 }
 
 /**
@@ -393,6 +411,24 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   // deletes the entry explicitly so this cannot grow unbounded.
   const conns = new Map<ServerWebSocket<unknown>, ConnState>()
 
+  /** Plan 209 §3.2 D11: host-side `input.touch` dispatch times, deviceId → a 128-sample ring, most recent last. */
+  const INPUT_DISPATCH_RING_SIZE = 128
+  const inputDispatch = new Map<string, number[]>()
+  function recordDispatch(deviceId: string, ms: number): void {
+    let ring = inputDispatch.get(deviceId)
+    if (!ring) {
+      ring = []
+      inputDispatch.set(deviceId, ring)
+    }
+    ring.push(ms)
+    if (ring.length > INPUT_DISPATCH_RING_SIZE) ring.shift()
+  }
+  function dispatchPercentile(sortedAsc: number[], p: number): number {
+    if (sortedAsc.length === 0) return 0
+    const idx = Math.min(sortedAsc.length - 1, Math.floor(p * sortedAsc.length))
+    return sortedAsc[idx] ?? 0
+  }
+
   // The shared transport's own health (plan 85 §3.6, §4.6, §5 85.7a) —
   // exposed to `/api/adb/stats` through `transportStats()` on the returned
   // object below. `logSlowCommand` is the WS half of the slow-request/
@@ -460,6 +496,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         shellDevices: new Set(),
         inspectAttached: new Set(),
         warnedAt: new Map(),
+        touches: new Map(),
       }
       conns.set(ws, s)
     }
@@ -717,6 +754,78 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   /** The actor a live `input.*`/`command`/etc. message is attributed to (plan 205 §4.8). */
   function actorOf(state: ConnState): { kind: 'user'; id: string; label: string } {
     return { kind: 'user', id: state.userId ?? state.clientId, label: deps.userLabel?.(state.userId) ?? 'a signed-out client' }
+  }
+
+  /** Plan 209 §3.2 D8: travel under 1% of the frame's normalised space is a tap, not a gesture. */
+  const TAP_MAX_TRAVEL = 0.01
+
+  /** Appends a normalised sample to a `TouchStream`, capped at 299 + the release point (D8, the `input.gesture` schema ceiling of 300). */
+  function pushSample(stream: TouchStream, pos: NormPoint): void {
+    const atMs = Date.now() - stream.startedAt
+    if (stream.samples.length < 299) stream.samples.push({ x: pos.x, y: pos.y, atMs })
+    else stream.samples[stream.samples.length - 1] = { x: pos.x, y: pos.y, atMs }
+  }
+
+  /** Plan 209 §3.2 D8: a finished touch stream (pointer 0 only) is recorded as one tap or one gesture on `up`, never per sample. */
+  function observeStream(deviceId: string, stream: TouchStream, actor: string | null): void {
+    const first = stream.samples[0]
+    const last = stream.samples[stream.samples.length - 1]
+    if (!first || !last) return
+    let travel = 0
+    for (const s of stream.samples) travel = Math.max(travel, Math.hypot(s.x - first.x, s.y - first.y))
+    if (travel < TAP_MAX_TRAVEL) {
+      deps.recorder.record({
+        deviceId,
+        stream: 'input',
+        kind: 'input.tap',
+        actor,
+        meta: { x: last.x, y: last.y, w: 0, h: 0, holdMs: last.atMs },
+      })
+      deps.recording?.get(deviceId)?.observe({ kind: 'tap', pos: { x: last.x, y: last.y }, holdMs: last.atMs })
+    } else {
+      deps.recorder.record({
+        deviceId,
+        stream: 'input',
+        kind: 'input.gesture',
+        actor,
+        meta: { from: first, to: last, samples: stream.samples.length, durationMs: last.atMs - first.atMs },
+      })
+      deps.recording?.get(deviceId)?.observe({ kind: 'gesture', samples: stream.samples })
+    }
+  }
+
+  /**
+   * Plan 209 §4.10 "Release on stop": any `TouchStream` still open on this
+   * connection for the given device (or every device, on a full disconnect)
+   * gets an `up` sent through the sink at its last sample, and is observed
+   * as the tap or gesture it was — a browser that never sent its own `up`
+   * (a closed tab, a dropped stream) must never leave a finger down on the
+   * device (MVP 08 §1.1 last row).
+   */
+  function releaseTouchStreams(connState: ConnState, onlyDeviceId: string | null): void {
+    for (const [key, stream] of [...connState.touches]) {
+      if (onlyDeviceId && stream.deviceId !== onlyDeviceId) continue
+      connState.touches.delete(key)
+      const session = deps.sessions?.get(stream.deviceId) ?? null
+      if (!session) continue
+      const source: InputSource = { kind: 'user', id: connState.clientId, userId: connState.userId }
+      const sink = session.arbiter.for(source)
+      const last = stream.samples[stream.samples.length - 1]
+      if (last && sink.touch) {
+        const p = mapNormToDevice(last, session.frameSize)
+        void sink.touch('up', p, stream.pointerId).catch(() => undefined)
+      }
+      if (stream.pointerId === 0) observeStream(stream.deviceId, stream, connState.userId)
+    }
+  }
+
+  /** Plan 209 §4.10: every key up, called on stream stop and disconnect. */
+  function releaseKeysFor(connState: ConnState, deviceId: string): void {
+    const session = deps.sessions?.get(deviceId) ?? null
+    if (!session) return
+    const source: InputSource = { kind: 'user', id: connState.clientId, userId: connState.userId }
+    const sink = session.arbiter.for(source)
+    void sink.releaseKeys?.().catch(() => undefined)
   }
 
   return {
@@ -988,6 +1097,10 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             state.streams.delete(binding.streamId)
             if (binding.remote) deps.remote?.release(binding.deviceId, binding.onFrame)
             else deps.sessions?.detachViewer(binding.onFrame)
+            // Plan 209 §4.10: an open touch stream on this device must not
+            // leave a finger down when the viewer stops.
+            releaseTouchStreams(state, binding.deviceId)
+            releaseKeysFor(state, binding.deviceId)
             broadcastViewers(binding.deviceId)
             return
           }
@@ -1523,6 +1636,181 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
+          case 'input.touch':
+          case 'input.scroll':
+          case 'input.keyEvent':
+          case 'input.pinch': {
+            // Plan 209 §2 non-goals: the cloud path's `input.*` refuses these
+            // four new verbs with `E_NOT_SUPPORTED` — the remote branch never
+            // reaches the arbiter/sink code below.
+            if (deps.remote?.nodeIdFor(msg.payload.deviceId)) {
+              sendError(ws, 'E_NOT_SUPPORTED', 'live input is not available for a node-owned device in the MVP', msgId)
+              return
+            }
+            const gate = admit(msg.payload.deviceId, state, 'control')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
+              return
+            }
+            if (gate.warning) warnOnce(ws, state, msg.payload.deviceId, gate.warning)
+            const source: InputSource = { kind: 'user', id: state.clientId, userId: state.userId }
+            const session = deps.sessions?.get(msg.payload.deviceId) ?? null
+            if (!session) {
+              sendError(ws, 'E_DEVICE_NOT_READY', 'no active session for this device (start the stream first)', msgId)
+              return
+            }
+            const actor = state.userId
+            const sink = session.arbiter.for(source)
+            const deviceId = msg.payload.deviceId
+
+            if (msg.type === 'input.touch') {
+              const { action, pos, pointerId } = msg.payload
+              const key = `${deviceId}:${pointerId}`
+              const t0 = performance.now()
+              const p = mapNormToDevice(pos, session.frameSize)
+              const deliver = async (a: 'down' | 'move' | 'up', q: Point): Promise<void> => {
+                if (sink.touch) await sink.touch(a, q, pointerId)
+              }
+              const markSettled = (): void => {
+                const s = state.touches.get(key)
+                if (!s) return
+                s.inFlight = false
+                if (s.latestMove) {
+                  const next = s.latestMove
+                  s.latestMove = null
+                  s.inFlight = true
+                  void deliver('move', mapNormToDevice(next, session.frameSize)).finally(markSettled)
+                }
+              }
+
+              if (action === 'down') {
+                // A lost `up` (tab switch mid-drag): close the prior stream first (MVP 08 §1.1 last row).
+                const prior = state.touches.get(key)
+                if (prior) {
+                  const priorLast = prior.samples[prior.samples.length - 1] ?? pos
+                  if (sink.touch) await sink.touch('up', mapNormToDevice(priorLast, session.frameSize), pointerId)
+                  state.touches.delete(key)
+                  if (pointerId === 0) observeStream(deviceId, prior, actor)
+                }
+                state.touches.set(key, { deviceId, pointerId, startedAt: Date.now(), samples: [{ x: pos.x, y: pos.y, atMs: 0 }], inFlight: true, latestMove: null })
+                deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
+                try {
+                  await deliver('down', p)
+                } finally {
+                  markSettled()
+                }
+                recordDispatch(deviceId, performance.now() - t0)
+                return
+              }
+
+              const stream = state.touches.get(key)
+              if (!stream) return // a move/up with no down: dropped, never an error
+
+              if (action === 'move') {
+                pushSample(stream, pos)
+                if (stream.inFlight) {
+                  // D7: newest wins — this sample replaces whatever was pending.
+                  stream.latestMove = pos
+                  return
+                }
+                stream.inFlight = true
+                try {
+                  await deliver('move', p)
+                } finally {
+                  markSettled()
+                }
+                recordDispatch(deviceId, performance.now() - t0)
+                return
+              }
+
+              // action === 'up'
+              stream.latestMove = null
+              pushSample(stream, pos)
+              state.touches.delete(key)
+              deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
+              if (sink.touch) {
+                await sink.touch('up', p, pointerId)
+              } else if (pointerId === 0 && stream.samples.length >= 2) {
+                // No touch(): adb-input. The stream is replayed as one swipe on up.
+                const firstPoint = mapNormToDevice(stream.samples[0]!, session.frameSize)
+                await sink.swipe(firstPoint, p, Math.max(50, Date.now() - stream.startedAt))
+              }
+              recordDispatch(deviceId, performance.now() - t0)
+              if (pointerId === 0) observeStream(deviceId, stream, actor)
+              return
+            }
+
+            if (msg.type === 'input.scroll') {
+              const { pos, hDelta, vDelta } = msg.payload
+              const p = mapNormToDevice(pos, session.frameSize)
+              if (!sink.scroll) {
+                sendError(ws, 'E_INPUT_UNSUPPORTED', 'this input engine cannot scroll (adb-input)', msgId)
+                return
+              }
+              deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
+              deps.recorder.record({
+                deviceId,
+                stream: 'input',
+                kind: 'input.scroll',
+                actor,
+                meta: { x: p.x, y: p.y, hDelta, vDelta },
+              })
+              await sink.scroll(p, hDelta, vDelta)
+              return
+            }
+
+            if (msg.type === 'input.keyEvent') {
+              const { action, code, meta } = msg.payload
+              const key = describeKey(code)
+              if (action === 'down') {
+                deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
+                if (sink.keyDown) await sink.keyDown(key, meta)
+                return
+              }
+              // action === 'up': the D9 event-log row — a printable key is
+              // redacted like typed text when `logInputText` is off; a
+              // non-printable key always logs its `code`.
+              deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
+              const logText = deps.isLogInputTextEnabled(deviceId)
+              const isPrintable = KEY_TABLE[code].printable
+              deps.recorder.record({
+                deviceId,
+                stream: 'input',
+                kind: 'input.keyEvent',
+                actor,
+                meta:
+                  isPrintable && !logText
+                    ? { printable: true }
+                    : { code, androidKeycode: key.androidKeycode, shift: meta.shift, ctrl: meta.ctrl, alt: meta.alt, meta: meta.meta },
+              })
+              deps.recording?.get(deviceId)?.observe({ kind: 'key', keycode: key.androidKeycode })
+              if (sink.keyUp) await sink.keyUp(key, meta)
+              else await sink.key(key.androidKeycode)
+              return
+            }
+
+            // msg.type === 'input.pinch'
+            {
+              const { center, scaleFrom, scaleTo, durationMs } = msg.payload
+              if (!sink.pinch) {
+                sendError(ws, 'E_INPUT_UNSUPPORTED', 'this input engine cannot pinch (adb-input)', msgId)
+                return
+              }
+              const c = mapNormToDevice(center, session.frameSize)
+              const base = Math.min(session.frameSize.width, session.frameSize.height)
+              deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
+              deps.recorder.record({
+                deviceId,
+                stream: 'input',
+                kind: 'input.pinch',
+                actor,
+                meta: { center, scaleFrom, scaleTo, durationMs },
+              })
+              await sink.pinch({ center: c, radiusFromPx: scaleFrom * base, radiusToPx: scaleTo * base, durationMs })
+              return
+            }
+          }
+
           case 'recording.start': {
             // Plan 94 §4.6, §4.9, §5 step 94.3 — the SAME `admit()` gate
             // `input.*` uses above, never a parallel check ("if you find
@@ -2013,6 +2301,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         else deps.sessions?.detachViewer(binding.onFrame)
       }
       state.streams.clear()
+      // Plan 209 §4.10: a dropped tab must not leave a finger down or a key held.
+      for (const deviceId of watchedDeviceIds) releaseKeysFor(state, deviceId)
+      releaseTouchStreams(state, null)
       state.logSubs.clear()
       // A dropped WS must not leak a monitor stream (plan 24 §4.4, §4.5 —
       // this is the call the plan's risk table calls out explicitly).
@@ -2204,6 +2495,31 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       }
 
       return { lanes }
+    },
+
+    /** Plan 209 §3.2 D11: host-side `input.touch` dispatch times for `GET /api/video/latency`. */
+    inputDispatchStats(deviceId: string): { dispatchMsP50: number; dispatchMsP95: number; samples: number } | null {
+      const ring = inputDispatch.get(deviceId)
+      if (!ring || ring.length === 0) return null
+      const sorted = [...ring].sort((a, b) => a - b)
+      return { dispatchMsP50: dispatchPercentile(sorted, 0.5), dispatchMsP95: dispatchPercentile(sorted, 0.95), samples: ring.length }
+    },
+
+    /**
+     * A device-side clipboard change (plan 209 §3.2 D10, §4.9): unicast to
+     * every connection holding a `control`-quality stream binding on this
+     * device, and to nobody else — never broadcast (plan 38's clipboard rule).
+     */
+    handleClipboardChanged(deviceId: string, text: string): void {
+      for (const [connWs, connState] of conns) {
+        if (connWs.readyState !== 1) continue
+        const isControlViewer = [...connState.streams.values()].some(
+          (b) => b.deviceId === deviceId && (b.quality ?? 'control') === 'control' && !b.remote,
+        )
+        if (!isControlViewer) continue
+        send(connWs, { type: 'clipboard.changed', payload: { deviceId, text } })
+      }
+      deps.recorder.record({ deviceId, stream: 'input', kind: 'clipboard.changed', actor: null, meta: { length: text.length } })
     },
   }
 }

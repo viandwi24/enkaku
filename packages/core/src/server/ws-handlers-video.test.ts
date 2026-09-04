@@ -83,6 +83,7 @@ function fakeSession(
         throw new Error('no guest agent client wired in this fixture')
       },
     },
+    onClipboardChanged: () => () => {},
     close: async () => {},
   }
   return {

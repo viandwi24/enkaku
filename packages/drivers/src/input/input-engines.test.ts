@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import type { ScrcpySession } from '@enkaku/scrcpy'
 import type { Transport } from '@enkaku/protocol'
+import { androidMetaState } from '@enkaku/protocol'
 import { AdbInput } from './adb-input'
-import { DEFAULT_HOLD_MS, sampleHoldMs, ScrcpySdkInput, ScrcpyUhidInput } from './scrcpy-input'
+import { MIN_TAP_HOLD_MS, sampleHoldMs, ScrcpySdkInput, ScrcpyUhidInput } from './scrcpy-input'
+import { withAdbKeyFallback } from './adb-key-fallback'
 import { buildGesturePath } from './gesture'
 
 /**
@@ -23,6 +25,7 @@ function fakeControl() {
     uhidDestroy: (...args: unknown[]) => calls.push({ fn: 'uhidDestroy', args }),
     setDisplayPower: (...args: unknown[]) => calls.push({ fn: 'setDisplayPower', args }),
     resetVideo: (...args: unknown[]) => calls.push({ fn: 'resetVideo', args }),
+    injectScroll: (...args: unknown[]) => calls.push({ fn: 'injectScroll', args }),
   }
   return { control, calls }
 }
@@ -134,11 +137,15 @@ describe('sampleHoldMs — tapJitterMs sampling (spec §9.3, §17: test realism,
     expect(c).not.toEqual(d)
   })
 
-  test('with no opts at all, the default range is exactly [40, 120] — the bounds of the literal it replaced (`40 + Math.random() * 80`), so the default reproduces today\'s behaviour unchanged', () => {
-    expect(DEFAULT_HOLD_MS).toEqual([40, 120])
-    expect(sampleHoldMs({ rng: () => 0 })).toBe(40)
-    expect(sampleHoldMs({ rng: () => 1 })).toBe(120)
-    expect(sampleHoldMs({ rng: () => 0.5 })).toBe(80)
+  test('tap with no holdMs holds MIN_TAP_HOLD_MS (16), not a sampled 40..120 range', () => {
+    expect(MIN_TAP_HOLD_MS).toBe(16)
+    expect(sampleHoldMs({ rng: () => 0 })).toBe(16)
+    expect(sampleHoldMs({ rng: () => 1 })).toBe(16)
+    expect(sampleHoldMs()).toBe(16)
+  })
+
+  test('tap with holdMs [40,120] and rng 0.5 holds 80 ms — the existing sampling still works for scripts', () => {
+    expect(sampleHoldMs({ holdMs: [40, 120], rng: () => 0.5 })).toBe(80)
   })
 })
 
@@ -214,5 +221,132 @@ describe('AdbInput cannot curve a gesture — absence, not a lie (plan 40 §3.6,
     const input = new AdbInput(transport)
     await input.swipe({ x: 10, y: 20 }, { x: 30, y: 40 }, 300)
     expect(cmds).toEqual(['input swipe 10 20 30 40 300'])
+  })
+})
+
+const KEY_A = { code: 'KeyA' as const, hidUsage: 0x04, androidKeycode: 29 }
+const NO_META = { shift: false, ctrl: false, alt: false, meta: false }
+const SHIFT_META = { shift: true, ctrl: false, alt: false, meta: false }
+
+describe('the six new input verbs (plan 209 §4.7, §5 step 209.4)', () => {
+  test('SDK keyDown/keyUp send INJECT_KEYCODE with the Android keycode and the meta state', async () => {
+    // NOTE (plan 209 §11 discrepancy): the plan's own §5 step 209.4 prose gives the expected
+    // meta state for Shift+A as `0x1041`, but `androidMetaState` (§4.4) sets SHIFT_ON (0x1) and
+    // SHIFT_LEFT_ON (0x40) together for a shift-only chord, i.e. 0x41 — 0x1041 does not correspond
+    // to any single-modifier combination the formula can produce. The formula (the file) wins.
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpySdkInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    await engine.keyDown!(KEY_A, SHIFT_META)
+    await engine.keyUp!(KEY_A, SHIFT_META)
+    const keycodes = calls.filter((c) => c.fn === 'injectKeycode')
+    expect(keycodes[0]!.args).toEqual(['down', 29, androidMetaState(SHIFT_META)])
+    expect(keycodes[0]!.args[1]).toBe(29)
+    expect(keycodes[0]!.args[2]).toBe(0x41)
+    expect(keycodes[1]!.args).toEqual(['up', 29, androidMetaState(SHIFT_META)])
+  })
+
+  test('UHID keyDown creates the keyboard once, then sends an 8-byte report; keyUp sends the release report', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    await engine.keyDown!(KEY_A, NO_META)
+    await engine.keyDown!({ code: 'KeyB' as const, hidUsage: 0x05, androidKeycode: 30 }, NO_META)
+    const creates = calls.filter((c) => c.fn === 'uhidCreate')
+    expect(creates.length).toBe(1)
+    expect(creates[0]!.args[0]).toBe(2)
+    expect((creates[0]!.args[2] as Uint8Array).length).toBe(63)
+    const reports = calls.filter((c) => c.fn === 'uhidInput' && c.args[0] === 2)
+    expect(Array.from(reports[0]!.args[1] as Uint8Array)).toEqual([0, 0, 4, 0, 0, 0, 0, 0])
+    expect(Array.from(reports[1]!.args[1] as Uint8Array)).toEqual([0, 0, 4, 5, 0, 0, 0, 0])
+    await engine.keyUp!(KEY_A, NO_META)
+    const afterUp = calls.filter((c) => c.fn === 'uhidInput' && c.args[0] === 2)
+    expect(Array.from(afterUp[afterUp.length - 1]!.args[1] as Uint8Array)).toEqual([0, 0, 5, 0, 0, 0, 0, 0])
+  })
+
+  test('UHID repairModifiers releases a held Shift the browser no longer reports', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    await engine.keyDown!({ code: 'ShiftLeft' as const, hidUsage: 0xe1, androidKeycode: 59 }, SHIFT_META)
+    // The browser now reports shift up (a lost key-up), but the state still holds it.
+    await engine.keyDown!(KEY_A, NO_META)
+    const reports = calls.filter((c) => c.fn === 'uhidInput' && c.args[0] === 2).map((c) => Array.from(c.args[1] as Uint8Array))
+    // Somewhere in the sequence Shift's bit (0x02) must have been released before A is pressed.
+    const hasRepair = reports.some((r) => r[0] === 0)
+    expect(hasRepair).toBe(true)
+  })
+
+  test('UHID releaseKeys sends an all-zero report only when the keyboard exists', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    await engine.releaseKeys!()
+    expect(calls.filter((c) => c.fn === 'uhidInput' && c.args[0] === 2).length).toBe(0)
+    await engine.keyDown!(KEY_A, NO_META)
+    await engine.releaseKeys!()
+    const last = calls.filter((c) => c.fn === 'uhidInput' && c.args[0] === 2).pop()!
+    expect(Array.from(last.args[1] as Uint8Array)).toEqual([0, 0, 0, 0, 0, 0, 0, 0])
+  })
+
+  test('UHID touch on pointer 0 lands, sleeps 100 ms, then touches; move and up are single reports', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    await engine.touch!('down', { x: 100, y: 200 }, 0)
+    const downReports = calls.filter((c) => c.fn === 'uhidInput' && c.args[0] === 1)
+    expect(downReports.length).toBe(2) // land, then touch
+    await engine.touch!('move', { x: 150, y: 250 }, 0)
+    await engine.touch!('up', { x: 150, y: 250 }, 0)
+    const allReports = calls.filter((c) => c.fn === 'uhidInput' && c.args[0] === 1)
+    expect(allReports.length).toBe(4) // land, down, move, up
+  })
+
+  test('UHID touch on pointer 1 falls through to INJECT_TOUCH_EVENT with pointerId 1n', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    await engine.touch!('down', { x: 100, y: 200 }, 1)
+    const touches = calls.filter((c) => c.fn === 'injectTouch')
+    expect(touches.length).toBe(1)
+    expect(touches[0]!.args[5]).toBe(1n)
+  })
+
+  test('SDK pinch sends two downs, paired moves, two ups with ids 0n and 1n', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpySdkInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    await engine.pinch!({ center: { x: 500, y: 500 }, radiusFromPx: 50, radiusToPx: 200, durationMs: 32 })
+    const touches = calls.filter((c) => c.fn === 'injectTouch')
+    const downs = touches.filter((c) => c.args[0] === 'down')
+    const ups = touches.filter((c) => c.args[0] === 'up')
+    expect(downs.length).toBe(2)
+    expect(ups.length).toBe(2)
+    expect(downs.map((c) => c.args[5])).toEqual([0n, 1n])
+    expect(ups.map((c) => c.args[5])).toEqual([0n, 1n])
+  })
+
+  test('SDK scroll sends injectScroll with the deltas', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpySdkInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    await engine.scroll!({ x: 500, y: 500 }, 0.5, -1)
+    const scrolls = calls.filter((c) => c.fn === 'injectScroll')
+    expect(scrolls.length).toBe(1)
+    expect(scrolls[0]!.args).toEqual([500, 500, 1000, 2000, 0.5, -1])
+  })
+
+  test('withAdbKeyFallback passes touch/scroll/pinch/keyDown/keyUp/releaseKeys through only when the primary has them', () => {
+    const transport = { exec: async () => '', execOut: async () => new Uint8Array() } as unknown as Transport
+    const adbPrimary = new AdbInput(transport)
+    const facade = withAdbKeyFallback(adbPrimary, transport)
+    expect(facade.touch).toBeUndefined()
+    expect(facade.scroll).toBeUndefined()
+    expect(facade.pinch).toBeUndefined()
+    expect(facade.keyDown).toBeUndefined()
+    expect(facade.keyUp).toBeUndefined()
+    expect(facade.releaseKeys).toBeUndefined()
+
+    const { control } = fakeControl()
+    const uhidPrimary = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+    const facade2 = withAdbKeyFallback(uhidPrimary, transport)
+    expect(facade2.touch).toBeDefined()
+    expect(facade2.scroll).toBeDefined()
+    expect(facade2.pinch).toBeDefined()
+    expect(facade2.keyDown).toBeDefined()
+    expect(facade2.keyUp).toBeDefined()
+    expect(facade2.releaseKeys).toBeDefined()
   })
 })

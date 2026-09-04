@@ -48,6 +48,8 @@ export const VideoLatencyResponseSchema = z.object({
   /** Unix ms at which the snapshot was taken. */
   at: z.number().int(),
   streams: z.array(VideoLatencyStreamSchema),
+  /** Plan 209 §3.2 D11: host-side dispatch of `input.touch` (WS arrival → control-socket write resolved). Null before the first sample. The device leg is not measured: scrcpy sends no acknowledgement. */
+  input: z.object({ dispatchMsP50: z.number(), dispatchMsP95: z.number(), samples: z.number().int() }).nullable(),
 })
 export type VideoLatencyResponse = z.infer<typeof VideoLatencyResponseSchema>
 

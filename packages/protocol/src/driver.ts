@@ -3,6 +3,7 @@
  * Engine implementations live in packages/drivers (from Plan 03 onward).
  */
 import type { FindOutcome } from './find-outcome'
+import type { KeyDescriptor, KeyMeta } from './keys'
 import type { Selector, UiNode } from './ui-node'
 
 /**
@@ -151,6 +152,23 @@ export interface InputSink {
    * for the same reason as `gesture`.
    */
   typeText?(text: string, opts: { perCharMs: [number, number]; rng?: () => number }): Promise<void>
+  /**
+   * One sample of a live pointer stream (plan 209 §3.2 D6): `down` starts a contact, `move`
+   * updates it, `up` ends it. Device pixels. Absent on `adb-input`, whose `input swipe`
+   * cannot be driven sample by sample; the core then replays the stream as one `swipe` on `up`.
+   */
+  touch?(action: 'down' | 'move' | 'up', p: Point, pointerId: number): Promise<void>
+  /** A wheel tick at `p`; `hDelta`/`vDelta` in -1..1 notches. */
+  scroll?(p: Point, hDelta: number, vDelta: number): Promise<void>
+  /** Two fingers on the vertical axis through `center`, `radiusFromPx` → `radiusToPx` apart from it, over `durationMs`. */
+  pinch?(opts: { center: Point; radiusFromPx: number; radiusToPx: number; durationMs: number }): Promise<void>
+  /** A real key down / key up with the modifiers the browser reported (plan 209 §3.2 D4). */
+  keyDown?(key: KeyDescriptor, meta: KeyMeta): Promise<void>
+  keyUp?(key: KeyDescriptor, meta: KeyMeta): Promise<void>
+  /** Every key up. Called on stream stop, disconnect and canvas blur. */
+  releaseKeys?(): Promise<void>
+  /** UHID engines only: register the virtual keyboard now instead of on the first key (§9 Q1). */
+  prepareKeyboard?(): Promise<void>
 }
 
 /** Engine inspeksi UI (spec §7): `uiautomator-dump` (M4), `ui-server` (M4.5). */

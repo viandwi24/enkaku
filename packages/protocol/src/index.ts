@@ -10,7 +10,18 @@ import {
   DeviceInspectorFallbackMessage,
   DeviceBatteryMessage,
 } from './messages/enroll'
-import { InputGestureMessage, InputKeyMessage, InputSwipeMessage, InputTapMessage, InputTextMessage, InputTextResultMessage } from './messages/input'
+import {
+  InputGestureMessage,
+  InputKeyEventMessage,
+  InputKeyMessage,
+  InputPinchMessage,
+  InputScrollMessage,
+  InputSwipeMessage,
+  InputTapMessage,
+  InputTextMessage,
+  InputTextResultMessage,
+  InputTouchMessage,
+} from './messages/input'
 import {
   JobArtifactMessage,
   JobCancelMessage,
@@ -53,7 +64,7 @@ import {
   ShellEchoMessage,
   ShellResultMessage,
 } from './messages/shell'
-import { ClipboardGetMessage, ClipboardOkMessage, ClipboardSetMessage, ClipboardValueMessage } from './messages/clipboard'
+import { ClipboardChangedMessage, ClipboardGetMessage, ClipboardOkMessage, ClipboardSetMessage, ClipboardValueMessage } from './messages/clipboard'
 import { TransferCancelMessage, TransferDoneMessage, TransferProgressMessage } from './messages/transfer'
 import {
   InspectAttachMessage,
@@ -354,6 +365,10 @@ export {
   NormGestureSampleSchema,
   InputGestureMessage,
   InputActionSchema,
+  InputScrollMessage,
+  InputKeyEventMessage,
+  InputPinchMessage,
+  InputTouchMessage,
   type NormPoint,
   type NormGestureSample,
   type InputAction,
@@ -544,6 +559,7 @@ export {
   ClipboardSetMessage,
   ClipboardValueMessage,
   ClipboardOkMessage,
+  ClipboardChangedMessage,
 } from './messages/clipboard'
 export {
   TransferKindSchema,
@@ -578,6 +594,20 @@ export {
 } from './ui-node'
 export { matchSelector, centerOf } from './selector-match'
 export { FindOutcomeSchema, type FindOutcome } from './find-outcome'
+export {
+  DOM_CODES,
+  DomCodeSchema,
+  KEY_TABLE,
+  isDomCode,
+  describeKey,
+  KeyMetaSchema,
+  ANDROID_META,
+  androidMetaState,
+  type DomCode,
+  type KeyEntry,
+  type KeyDescriptor,
+  type KeyMeta,
+} from './keys'
 export {
   countMatches,
   proposeSelectors,
@@ -937,6 +967,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ShellResultMessage,
   ClipboardValueMessage,
   ClipboardOkMessage,
+  ClipboardChangedMessage,
   InputTextResultMessage,
   TransferProgressMessage,
   TransferDoneMessage,
@@ -1051,6 +1082,10 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   InputGestureMessage,
   InputKeyMessage,
   InputTextMessage,
+  InputScrollMessage,
+  InputKeyEventMessage,
+  InputPinchMessage,
+  InputTouchMessage,
   StreamStartMessage,
   StreamStopMessage,
   StreamKeyframeMessage,

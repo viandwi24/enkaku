@@ -3,6 +3,7 @@ import { createClipboardControl } from './control'
 import { createDeviceMessageReader, type DeviceMessage } from './control/device-messages'
 import {
   encodeInjectKeycode,
+  encodeInjectScroll,
   encodeInjectText,
   encodeInjectTouch,
   encodeResetVideo,
@@ -105,7 +106,7 @@ export interface ScrcpySessionOptions {
 }
 
 export interface ScrcpyControl {
-  injectTouch(action: 'down' | 'up' | 'move', x: number, y: number, w: number, h: number): void
+  injectTouch(action: 'down' | 'up' | 'move', x: number, y: number, w: number, h: number, pointerId?: bigint): void
   injectKeycode(action: 'down' | 'up', keycode: number, meta?: number): void
   injectText(text: string): void
   uhidCreate(id: number, name: string, reportDesc: Uint8Array): void
@@ -128,6 +129,8 @@ export interface ScrcpyControl {
    * `paste` defaults to false.
    */
   setClipboard(text: string, opts?: { paste?: boolean; timeoutMs?: number }): Promise<void>
+  /** `INJECT_SCROLL_EVENT`: a wheel tick at (x, y); `hscroll`/`vscroll` in -1..1 (one notch = 1). Plan 209 §4.3. */
+  injectScroll(x: number, y: number, w: number, h: number, hscroll: number, vscroll: number): void
 }
 
 export interface ScrcpySession {
@@ -139,9 +142,10 @@ export interface ScrcpySession {
    * Device→host messages on the control socket (plan 38 §3.2, §4.2) —
    * clipboard replies today, UHID output reports in future work. `control`'s
    * `getClipboard`/`setClipboard` are built on this same channel; most
-   * callers never need to subscribe directly.
+   * callers never need to subscribe directly. Returns an unsubscribe (plan
+   * 209 §4.3).
    */
-  onDeviceMessage(cb: (m: DeviceMessage) => void): void
+  onDeviceMessage(cb: (m: DeviceMessage) => void): () => void
   control: ScrcpyControl
   close(): Promise<void>
 }
@@ -300,6 +304,10 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     onPacket: (packet) => {
       for (const cb of packetHandlers) cb(packet)
     },
+    onError: (err) => {
+      log('warn', `video demuxer stopped: ${err.message}`)
+      for (const cb of closeHandlers) cb('demuxer error')
+    },
   })
 
   // Device→host messages (plan 38 §3.2): the control socket was write-only
@@ -348,6 +356,11 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
   const videoSocket = opened.video
   const controlSocket = opened.control
 
+  // Plan 209 §3.2 D2: 14..32-byte control writes at up to 125/s during a drag
+  // are exactly what Nagle delays. Bun's Socket.setNoDelay is only honoured
+  // on a connected socket, which this is (connectSockets resolved).
+  if (!controlSocket.setNoDelay(true)) log('debug', 'setNoDelay(true) was refused on the control socket')
+
   const write = (bytes: Uint8Array) => {
     try {
       controlSocket.write(bytes)
@@ -371,10 +384,13 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
     onPacket: (cb) => void packetHandlers.add(cb),
     onMetaChange: (cb) => void metaHandlers.add(cb),
     onClose: (cb) => void closeHandlers.add(cb),
-    onDeviceMessage: (cb) => void deviceMessageHandlers.add(cb),
+    onDeviceMessage: (cb) => {
+      deviceMessageHandlers.add(cb)
+      return () => deviceMessageHandlers.delete(cb)
+    },
     control: {
-      injectTouch: (action, x, y, w, h) =>
-        write(encodeInjectTouch({ action, x, y, screenWidth: w, screenHeight: h })),
+      injectTouch: (action, x, y, w, h, pointerId) =>
+        write(encodeInjectTouch({ action, x, y, screenWidth: w, screenHeight: h, pointerId })),
       injectKeycode: (action, keycode, meta = 0) => write(encodeInjectKeycode(action, keycode, meta)),
       injectText: (text) => write(encodeInjectText(text)),
       uhidCreate: (id, name, desc) => write(encodeUhidCreate(id, name, desc)),
@@ -384,6 +400,8 @@ export async function startScrcpySession(adb: AdbExecutor, opts: ScrcpySessionOp
       resetVideo: () => write(encodeResetVideo()),
       getClipboard: (opts) => clipboardControl.getClipboard(opts),
       setClipboard: (text, opts) => clipboardControl.setClipboard(text, opts),
+      injectScroll: (x, y, w, h, hscroll, vscroll) =>
+        write(encodeInjectScroll({ x, y, screenWidth: w, screenHeight: h, hscroll, vscroll })),
     },
     async close() {
       try {

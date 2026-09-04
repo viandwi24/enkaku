@@ -529,6 +529,54 @@ describe('screencap-loop fallback retry (plan 100 §4.3, step 100.6)', () => {
   })
 })
 
+describe('DeviceSession.onClipboardChanged (plan 209 §3.2 D10, §4.9, §5 step 209.5)', () => {
+  function fakeScrcpySessionWithClipboard(): { session: ScrcpySession; emitClipboard: (text: string) => void } {
+    const handlers = new Set<(m: { type: 'clipboard'; text: string }) => void>()
+    const session = {
+      meta: { deviceName: 'test phone', codec: 'h264', width: 1080, height: 2400 },
+      onPacket: () => {},
+      onMetaChange: () => {},
+      onClose: () => {},
+      onDeviceMessage: (cb: (m: { type: 'clipboard'; text: string }) => void) => {
+        handlers.add(cb)
+        return () => handlers.delete(cb)
+      },
+      control: {
+        injectTouch: () => {},
+        injectKeycode: () => {},
+        injectText: () => {},
+        uhidCreate: () => {},
+        uhidInput: () => {},
+        uhidDestroy: () => {},
+        setDisplayPower: () => {},
+        resetVideo: () => {},
+        getClipboard: async () => '',
+        setClipboard: async () => {},
+        injectScroll: () => {},
+      },
+      close: async () => {},
+    } as unknown as ScrcpySession
+    return { session, emitClipboard: (text) => { for (const cb of handlers) cb({ type: 'clipboard', text }) } }
+  }
+
+  test('onClipboardChanged forwards clipboard device messages and the unsubscribe stops them', async () => {
+    const { session: scrcpy, emitClipboard } = fakeScrcpySessionWithClipboard()
+    const client = fakeClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client, log: silentLog(), makeScrcpy: async () => scrcpy },
+    )
+    const received: string[] = []
+    const unsubscribe = session.onClipboardChanged((text) => received.push(text))
+    emitClipboard('hello')
+    expect(received).toEqual(['hello'])
+    unsubscribe()
+    emitClipboard('world')
+    expect(received).toEqual(['hello'])
+    await session.close()
+  })
+})
+
 /**
  * **Plan 125 §3.7, §4.5, §5 step 125.7 — acceptance criterion 11**: *"`wakeDevice`
  * runs at most once per session start, and zero times for a device already awake

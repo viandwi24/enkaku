@@ -1,3 +1,4 @@
+import { ByteRing, type ByteRingStats } from './byte-ring'
 import { CODEC_ID } from './version'
 
 /**
@@ -33,6 +34,9 @@ export const PTS_FLAG_CONFIG = 1n << 63n
 export const PTS_FLAG_KEYFRAME = 1n << 62n
 const PTS_MASK = (1n << 62n) - 1n
 
+/** A frame header declaring more than this is a corrupt stream (plan 209 §3.2 D1). */
+export const MAX_PACKET_BYTES = 16 * 1024 * 1024
+
 export interface VideoMeta {
   deviceName: string
   codec: 'h264' | 'h265' | 'av1'
@@ -57,7 +61,8 @@ const codecName = (id: number): VideoMeta['codec'] => {
  * TCP chunk boundaries.
  */
 export class VideoDemuxer {
-  private buf = new Uint8Array(0)
+  private ring = new ByteRing()
+  private stopped = false
   private stage: 'dummy' | 'name' | 'meta' | 'frames'
   private meta: VideoMeta | null = null
 
@@ -69,6 +74,8 @@ export class VideoDemuxer {
       onPacket: (packet: ScrcpyPacket) => void
       /** Clock for `receivedAt`; tests inject one. Defaults to `Date.now`. */
       now?: () => number
+      /** Plan 209 §3.2 D1: a corrupt stream (a header past `MAX_PACKET_BYTES`) stops the demuxer rather than desynchronising. */
+      onError?: (err: Error) => void
     },
   ) {
     this.stage = opts.expectDummyByte ? 'dummy' : 'name'
@@ -78,32 +85,34 @@ export class VideoDemuxer {
     return this.meta
   }
 
-  push(chunk: Uint8Array): void {
-    const receivedAt = (this.opts.now ?? Date.now)()
-    const merged = new Uint8Array(this.buf.length + chunk.length)
-    merged.set(this.buf, 0)
-    merged.set(chunk, this.buf.length)
-    this.buf = merged
-    this.drain(receivedAt)
+  /** Exposed for the test and `scripts/bench-device-nfrs.ts` (not wired there by plan 209). */
+  ringStats(): ByteRingStats {
+    return this.ring.stats()
   }
 
-  private take(n: number): Uint8Array | null {
-    if (this.buf.length < n) return null
-    const head = this.buf.subarray(0, n)
-    this.buf = this.buf.subarray(n)
-    return head
+  push(chunk: Uint8Array): void {
+    if (this.stopped) return
+    const receivedAt = (this.opts.now ?? Date.now)()
+    this.ring.push(chunk)
+    try {
+      this.drain(receivedAt)
+    } catch (err) {
+      this.stopped = true
+      this.opts.onError?.(err instanceof Error ? err : new Error(String(err)))
+    }
   }
 
   private drain(receivedAt: number): void {
     for (;;) {
       if (this.stage === 'dummy') {
-        if (!this.take(1)) return
+        if (this.ring.length < 1) return
+        this.ring.skip(1)
         this.stage = 'name'
         continue
       }
       if (this.stage === 'name') {
-        const raw = this.take(64)
-        if (!raw) return
+        if (this.ring.length < 64) return
+        const raw = this.ring.read(64)
         const end = raw.indexOf(0)
         const deviceName = new TextDecoder().decode(end >= 0 ? raw.subarray(0, end) : raw)
         this.meta = { deviceName, codec: 'h264', width: 0, height: 0 }
@@ -111,38 +120,37 @@ export class VideoDemuxer {
         continue
       }
       if (this.stage === 'meta') {
-        const raw = this.take(12)
-        if (!raw) return
-        const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength)
+        if (this.ring.length < 12) return
+        const dv = this.ring.view()
         this.meta = {
           deviceName: this.meta?.deviceName ?? '',
           codec: codecName(dv.getUint32(0, false)),
           width: dv.getUint32(4, false),
           height: dv.getUint32(8, false),
         }
+        this.ring.skip(12)
         this.opts.onMeta(this.meta)
         this.stage = 'frames'
         continue
       }
       // stage 'frames'
-      if (this.buf.length < 12) return
-      const header = new DataView(this.buf.buffer, this.buf.byteOffset, 12)
+      if (this.ring.length < 12) return
+      const header = this.ring.view()
       const ptsAndFlags = header.getBigUint64(0, false)
       const size = header.getUint32(8, false)
-      if (this.buf.length < 12 + size) return
-      this.buf = this.buf.subarray(12)
-      const data = this.take(size)
-      if (!data) return
-      const copy = new Uint8Array(data) // detach from the shared buffer
+      if (size > MAX_PACKET_BYTES) throw new Error(`frame of ${size} bytes exceeds MAX_PACKET_BYTES; the stream is corrupt`)
+      if (this.ring.length < 12 + size) return
+      this.ring.skip(12)
+      const data = this.ring.read(size)
       if ((ptsAndFlags & PTS_FLAG_CONFIG) !== 0n) {
-        this.opts.onPacket({ kind: 'config', receivedAt, data: copy })
+        this.opts.onPacket({ kind: 'config', receivedAt, data })
       } else {
         const ptsUs = ptsAndFlags & PTS_MASK
         this.opts.onPacket({
           kind: (ptsAndFlags & PTS_FLAG_KEYFRAME) !== 0n ? 'keyframe' : 'frame',
           ptsUs,
           receivedAt,
-          data: copy,
+          data,
         })
       }
     }

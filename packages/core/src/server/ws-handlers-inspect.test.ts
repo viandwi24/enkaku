@@ -114,6 +114,7 @@ function fakeSession(deviceId: string, opts?: { engineId?: string; noDump?: bool
         throw new Error('no guest agent client wired in this fixture')
       },
     },
+    onClipboardChanged: () => () => {},
     close: async () => {},
   }
   return { session, calls }

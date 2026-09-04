@@ -45,3 +45,13 @@ export const ClipboardOkMessage = z.object({
   id: z.string(),
   payload: z.object({ deviceId: z.string() }),
 })
+
+/**
+ * The device copied something (plan 209 §3.2 D10; MVP 08 §1.3): scrcpy's `CLIPBOARD` device
+ * message, forwarded to every connection holding a `control`-quality stream binding on this
+ * device and to nobody else. Unicast for the same reason `clipboard.value` is (§4.5 of plan 38).
+ */
+export const ClipboardChangedMessage = z.object({
+  type: z.literal('clipboard.changed'),
+  payload: z.object({ deviceId: z.string(), text: z.string() }),
+})

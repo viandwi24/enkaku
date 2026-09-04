@@ -91,6 +91,7 @@ function fakeSession(opts: {
         return { committed: [...text].length, imeCurrent: true }
       },
     },
+    onClipboardChanged: () => () => {},
     close: async () => {},
   }
   return { session, textCalls, commitCalls }

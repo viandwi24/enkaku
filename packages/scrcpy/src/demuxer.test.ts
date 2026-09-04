@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { CODEC_ID } from './version'
-import { VideoDemuxer, PTS_FLAG_CONFIG, PTS_FLAG_KEYFRAME, type ScrcpyPacket, type VideoMeta } from './demuxer'
+import { VideoDemuxer, PTS_FLAG_CONFIG, PTS_FLAG_KEYFRAME, MAX_PACKET_BYTES, type ScrcpyPacket, type VideoMeta } from './demuxer'
 
 /** One dummy byte (tunnel_forward), a 64-byte NUL-padded device name. */
 function header(deviceName = 'fake-device'): Uint8Array {
@@ -30,7 +30,7 @@ function frame(ptsAndFlags: bigint, data: Uint8Array): Uint8Array {
   return out
 }
 
-function createHarness(clock: { now: number }) {
+function createHarness(clock: { now: number }, opts: { onError?: (err: Error) => void } = {}) {
   const metas: VideoMeta[] = []
   const packets: ScrcpyPacket[] = []
   const demuxer = new VideoDemuxer({
@@ -38,6 +38,7 @@ function createHarness(clock: { now: number }) {
     onMeta: (m) => metas.push(m),
     onPacket: (p) => packets.push(p),
     now: () => clock.now,
+    onError: opts.onError,
   })
   return { demuxer, metas, packets }
 }
@@ -112,5 +113,64 @@ describe('VideoDemuxer (plan 203 §4.3, §5 step 203.3)', () => {
 
     expect(packets).toHaveLength(1)
     expect(packets[0]?.data).toEqual(payload)
+  })
+
+  test('push copies exactly chunk.length bytes per chunk and never reallocates for frames under the initial capacity', () => {
+    const clock = { now: 1 }
+    const { demuxer, packets } = createHarness(clock)
+    demuxer.push(header())
+    demuxer.push(meta(CODEC_ID.H264, 1080, 2400))
+
+    const CHUNK = 4096
+    const FRAME_PAYLOAD = 40 * 1024
+    let pushedChunks = 0
+    for (let f = 0; f < 20; f++) {
+      const payload = new Uint8Array(FRAME_PAYLOAD).fill(f % 256)
+      const bytes = frame(BigInt(f), payload)
+      for (let off = 0; off < bytes.length; off += CHUNK) {
+        demuxer.push(bytes.subarray(off, Math.min(off + CHUNK, bytes.length)))
+        pushedChunks++
+      }
+    }
+    expect(packets).toHaveLength(20)
+    const stats = demuxer.ringStats()
+    expect(stats.pushCopiedBytes).toBe(stats.pushedBytes)
+    expect(stats.grows).toBe(0)
+    expect(stats.compactionCopiedBytes).toBeLessThan(stats.pushCopiedBytes / 4)
+  })
+
+  test('a frame larger than the capacity grows the ring once, then no more', () => {
+    const clock = { now: 1 }
+    const { demuxer, packets } = createHarness(clock)
+    demuxer.push(header())
+    demuxer.push(meta(CODEC_ID.H264, 1080, 2400))
+
+    const CHUNK = 4096
+    const payload = new Uint8Array(300 * 1024).fill(7)
+    const bytes = frame(1n, payload)
+    for (let off = 0; off < bytes.length; off += CHUNK) {
+      demuxer.push(bytes.subarray(off, Math.min(off + CHUNK, bytes.length)))
+    }
+    expect(packets).toHaveLength(1)
+    expect(demuxer.ringStats().grows).toBe(1)
+  })
+
+  test('a header declaring more than MAX_PACKET_BYTES stops the demuxer and reports onError once', () => {
+    const clock = { now: 1 }
+    const errors: Error[] = []
+    const { demuxer, packets } = createHarness(clock, { onError: (e) => errors.push(e) })
+    demuxer.push(header())
+    demuxer.push(meta(CODEC_ID.H264, 1080, 2400))
+
+    const badHeader = new Uint8Array(12)
+    const dv = new DataView(badHeader.buffer)
+    dv.setBigUint64(0, 1n, false)
+    dv.setUint32(8, MAX_PACKET_BYTES + 1, false)
+    demuxer.push(badHeader)
+    expect(errors).toHaveLength(1)
+    // further pushes are ignored once stopped
+    demuxer.push(new Uint8Array([1, 2, 3]))
+    expect(errors).toHaveLength(1)
+    expect(packets).toHaveLength(0)
   })
 })

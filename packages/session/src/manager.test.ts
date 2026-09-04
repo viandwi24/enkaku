@@ -107,6 +107,36 @@ function fakeScrcpyWithPackets(): {
   }
 }
 
+/** A scrcpy session whose `onDeviceMessage` a test can fire clipboard messages through. */
+function fakeScrcpyWithClipboard(): { session: ScrcpySession; emitClipboard: (text: string) => void } {
+  const handlers = new Set<(m: { type: 'clipboard'; text: string }) => void>()
+  const session = {
+    meta: { deviceName: 'test phone', codec: 'h264', width: 704, height: 1600 },
+    onPacket: () => {},
+    onMetaChange: () => {},
+    onClose: () => {},
+    onDeviceMessage: (cb: (m: { type: 'clipboard'; text: string }) => void) => {
+      handlers.add(cb)
+      return () => handlers.delete(cb)
+    },
+    control: {
+      injectTouch: () => {},
+      injectKeycode: () => {},
+      injectText: () => {},
+      uhidCreate: () => {},
+      uhidInput: () => {},
+      uhidDestroy: () => {},
+      setDisplayPower: () => {},
+      resetVideo: () => {},
+      getClipboard: async () => '',
+      setClipboard: async () => {},
+      injectScroll: () => {},
+    },
+    close: async () => {},
+  } as unknown as ScrcpySession
+  return { session, emitClipboard: (text) => { for (const cb of handlers) cb({ type: 'clipboard', text }) } }
+}
+
 /** A fake, controllable clock/timer pair for the control-linger tests. */
 function fakeTimers() {
   let now = 0
@@ -796,6 +826,34 @@ describe('SessionManager — one wake per session start (plan 125 §3.7 — unaf
     })
     await manager.build(DEVICE_ID, { requireScrcpy: true })
     expect(calls.some((c) => c.startsWith('svc power stayon'))).toBe(false)
+    await manager.closeAll()
+  })
+})
+
+describe('SessionManager — clipboard subscription (plan 209 §3.2 D10, §4.9, §5 step 209.5)', () => {
+  test('a clipboard change on the base entry calls onClipboardChanged once even when a control entry exists', async () => {
+    const { session: baseScrcpy, emitClipboard: emitBase } = fakeScrcpyWithClipboard()
+    const { session: controlScrcpy, emitClipboard: emitControl } = fakeScrcpyWithClipboard()
+    let call = 0
+    const changes: Array<{ deviceId: string; text: string }> = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => (call++ === 0 ? baseScrcpy : controlScrcpy),
+      onClipboardChanged: (deviceId, text) => changes.push({ deviceId, text }),
+    })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    await manager.attachViewer(DEVICE_ID, 'control', () => {})
+
+    emitBase('from base')
+    expect(changes).toEqual([{ deviceId: DEVICE_ID, text: 'from base' }])
+
+    // The control entry's own scrcpy session is NOT subscribed — a clipboard
+    // event on it must never reach `onClipboardChanged`.
+    emitControl('from control')
+    expect(changes).toEqual([{ deviceId: DEVICE_ID, text: 'from base' }])
+
     await manager.closeAll()
   })
 })

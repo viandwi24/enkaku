@@ -81,6 +81,7 @@ function fakeSession(deviceId: string, sink: InputSink): DeviceSession {
         throw new Error('not used')
       },
     },
+    onClipboardChanged: () => () => {},
     close: async () => {},
   } as unknown as DeviceSession
 }
