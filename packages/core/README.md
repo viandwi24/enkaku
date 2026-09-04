@@ -696,13 +696,16 @@ observes exactly what an operator's own control session already sends.
   a one-time code in the clear, on disk — and it is a real, unsettled
   product question, not a solved one; see `docs/guide/record-and-replay.md`.
 
-`recording/compile.ts` turns a reviewed document into the published artefact:
-`emitRecordingEntry(doc)` writes a short, generated entry (one `import` and
-one `defineRecording({...})` call with the document inlined) that publishes
-through the exact same `buildScriptFromWorkspace` + `publishScript` pair every
-hand-written script uses — no new bundling, no new marker on the `scripts`
-row. `emitDetachedScript(doc)` is the one-way "Detach" emitter: a plain
-`defineScript` with every step expanded as a literal, ordered `await`.
+`recording/compile.ts` stays the pure compiler it always was — `emitRecordingEntry(doc)`
+writes a short, generated entry (one `import` and one `defineRecording({...})`
+call with the document inlined), read back by `GET /api/recordings/:slug` as
+a preview. **Publishing it is parked for the MVP** (plan 210, MVP 06 §2):
+`POST /api/recordings/:slug/publish` answers `410 E_RECORDINGS_PARKED` and
+writes nothing, rather than bundling and staging a plugin from that entry.
+`emitDetachedScript(doc)` is the one-way "Detach" emitter and is unaffected:
+a plain `definePlugin({...})` with every step expanded as a literal, ordered
+`await`, written straight to the workspace for an operator to publish by
+hand.
 `packages/core/src/api/recordings.ts` mounts the REST surface at
 `/api/recordings` (list, get, create from a device's just-finished recording,
 patch under compare-and-swap, delete, publish, detach).

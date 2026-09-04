@@ -76,10 +76,10 @@ export type AuditAction =
   // "what happened to THIS phone" belongs.
   | 'device.prep.apply'
   | 'script.delete'
-  // Plan 210 (MVP 03 §2.2 rule 4) — `script.toggle` and `script.publish`
-  // (the per-script publish route) are gone: a script is a member of a
-  // plugin (`plugin.activate`/`.disable`/`.enable` above cover it), and a
-  // workflow is edited in place through its own table.
+  // Plan 210 (MVP 03 §2.2 rule 4) — the old per-script enable-flip action and
+  // the per-script publish route are gone: a script is a member of a plugin
+  // (`plugin.activate`/`.disable`/`.enable` above cover it), and a workflow
+  // is edited in place through its own table.
   | 'workflow.create'
   | 'workflow.update'
   | 'workflow.delete'

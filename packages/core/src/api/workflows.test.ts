@@ -12,7 +12,8 @@ import { createWorkflowRoutes } from './workflows'
 /**
  * `GET/POST/PUT/DELETE /api/workflows`, `POST /api/workflows/validate` (plan
  * 210 §4.3, §4.4). A workflow is its own table now, no version, edited in
- * place — the writer under test is `WorkflowStore`, not `publishScript`.
+ * place — the writer under test is `WorkflowStore`, not the old per-script
+ * publish path.
  */
 
 function fakeAudit(): { audit: AuditLogger; calls: Parameters<AuditLogger['record']>[0][] } {

@@ -75,7 +75,8 @@ import { paramCount, PluginsListSchema, groupPlugins, type PluginListRow } from 
  *    the "degraded state worded as the full one" `docs/design.md` forbids.
  *  - **A member script's own row id.** `manifest.scripts` carries export ids,
  *    not `scripts` row ids, and there is no `GET /api/plugins/:name/scripts`.
- *    The map comes from `GET /api/scripts?group=name` instead, joined on the
+ *    The map comes from `GET /api/scripts` instead (plan 210: one row per
+ *    member of an active plugin, no grouping query param any more), joined on the
  *    `<plugin>/<script>` name; a member with no row is rendered WITHOUT a link
  *    and with the reason, because that is a real state (a superseded or failed
  *    version's members are not registered) and not a broken link.

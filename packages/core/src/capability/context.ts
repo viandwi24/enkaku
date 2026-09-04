@@ -431,9 +431,8 @@ export interface CapabilityContextDeps {
 
 /**
  * Exported (plan 110 §5 step 110.3) so a test builds the SAME service the real
- * context does. A hand-rolled `{ publish: (input) => publishScript(db, input) }`
- * in a fixture would be a second answer to "what does publishing mean", and it
- * is exactly the answer that would miss the owning-plugin rule.
+ * context does — `script.list`/`.get` read straight through `listActiveScripts`/
+ * `getScriptDetail` (plan 210 §4.5); there is no publish path here any more.
  */
 export function buildScriptService(db: Db): ScriptCapabilityService {
   return {
