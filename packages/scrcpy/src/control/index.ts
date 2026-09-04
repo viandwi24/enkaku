@@ -85,7 +85,24 @@ export function createClipboardControl(deps: ClipboardControlDeps): ClipboardCon
             const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS
             const timer = setTimeout(() => {
               unsubscribe()
-              reject(codedError('E_CLIPBOARD_TIMEOUT', `no clipboard reply from the device within ${timeoutMs}ms`))
+              /*
+               * Not necessarily a fault, and the old wording ("no clipboard
+               * reply from the device") said it was. The device answers a
+               * GET_CLIPBOARD with a CLIPBOARD message only when it has
+               * something to say: an empty clipboard, or one whose text is
+               * unchanged since the device last announced it, produces no
+               * message at all and lands here. An operator saw this on a
+               * device whose clipboard was working perfectly (2026-09-04),
+               * which is exactly the case this sentence has to cover — so it
+               * names the benign reading first and leaves the real fault as
+               * the second possibility, rather than the other way round.
+               */
+              reject(
+                codedError(
+                  'E_CLIPBOARD_TIMEOUT',
+                  `the device sent no clipboard within ${timeoutMs}ms — usually its clipboard is empty, or unchanged since it last announced one; less often the control channel is wedged`,
+                ),
+              )
             }, timeoutMs)
             const unsubscribe = deps.onDeviceMessage((m) => {
               if (m.type !== 'clipboard') return

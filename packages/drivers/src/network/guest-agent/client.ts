@@ -400,9 +400,14 @@ async function call<TResult>(
      * printing this.
      */
     const sent = JSON.stringify({ ...(request as Record<string, unknown>), token: '<redacted>' })
+    // The agent echoes the method it PARSED (guest agent build 2026-09-05).
+    // An older build sends none, which reads as `(no echo)` — itself the
+    // answer to "is the phone running the build I just installed?".
+    const echoed = (json as { method?: unknown } | null)?.method
+    const dispatched = typeof echoed === 'string' ? echoed : '(no echo)'
     throw new GuestAgentClientError(
       'E_UNEXPECTED_RESPONSE',
-      `guest agent ${request.method} result did not match its schema: ${result.error.message} — we sent ${sent}, the agent sent ${shown}`,
+      `guest agent ${request.method} result did not match its schema: ${result.error.message} — we sent ${sent}, the agent dispatched on '${dispatched}' and sent ${shown}`,
     )
   }
   return result.data

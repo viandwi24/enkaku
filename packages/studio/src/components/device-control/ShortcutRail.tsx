@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { KEYCODES, chordLabel, DEVICE_CONTROL_HOTKEYS } from '@enkaku/protocol'
 import {
   Button,
@@ -28,7 +28,7 @@ import type { ClipboardEntry } from './use-cast'
  * 8-10 act on the host device only (plan 215 §4.7). Every tooltip reads its
  * chord from `DEVICE_CONTROL_HOTKEYS` — never a hand-written string (G7).
  */
-export function ShortcutRail({
+function ShortcutRailImpl({
   deviceId,
   sendKey,
   onRotate,
@@ -42,7 +42,8 @@ export function ShortcutRail({
   /** Everything the device has copied while this window has been open (`use-cast.ts`). */
   clipboardHistory: ClipboardEntry[]
   onClearClipboardHistory: () => void
-  onReadClipboard: () => Promise<void>
+  /** Resolves `false` when the device simply had nothing to send — see `use-cast.ts`'s `readDeviceClipboard`. */
+  onReadClipboard: () => Promise<boolean>
 }) {
   const [brightnessLabel, setBrightnessLabel] = useState<string | null>(null)
 
@@ -109,3 +110,13 @@ export function ShortcutRail({
     </>
   )
 }
+
+/**
+ * Memoised, and it actually hits: `DeviceControl` latches every callback it
+ * passes here behind a ref, so the only props that ever change identity are
+ * `deviceId` and `clipboardHistory` — and those change when they mean
+ * something. Without this the rail rebuilt eleven Radix tooltip triggers and
+ * a popover twice a second, for the lifetime of the window, because the cast
+ * header beside it shows a live fps. See `DeviceControl.tsx`'s `railRef`.
+ */
+export const ShortcutRail = memo(ShortcutRailImpl)

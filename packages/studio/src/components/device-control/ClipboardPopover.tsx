@@ -1,8 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Button,
+  CaretLeftIcon,
+  CaretRightIcon,
   ClipboardIcon,
   CheckIcon,
   Popover,
@@ -16,6 +18,15 @@ import {
 } from '@enkaku/ui'
 import { newId, ws } from '@/lib/ws'
 import type { ClipboardEntry } from './use-cast'
+
+/**
+ * Rows per page. Ten, because a 300px popover that scrolls past ten rows is
+ * a list nobody reads to the bottom of — the owner asked for exactly this
+ * cap (2026-09-05). The store behind it holds more (`CLIPBOARD_HISTORY_MAX`,
+ * `use-cast.ts`), so paging back reaches what scrolled off rather than
+ * discarding it, and Clear still drops the lot in one click.
+ */
+const CLIPBOARD_PAGE_SIZE = 10
 
 /**
  * The rail's Clipboard button (design handoff rail item 10; plan 215 §4.7).
@@ -55,24 +66,46 @@ export function ClipboardPopover({
   history: ClipboardEntry[]
   onClearHistory: () => void
   /** `use-cast`'s own `clipboard.get`, so its answer lands in the same history the pushes feed. */
-  onRead: () => Promise<void>
+  onRead: () => Promise<boolean>
 }) {
   const [open, setOpen] = useState(false)
   const [reading, setReading] = useState(false)
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** A plain statement of fact, not a fault — see `read()`. Rendered in the muted colour, never the danger one. */
+  const [note, setNote] = useState<string | null>(null)
   /** Which row was just copied, so the button can confirm it landed. Cleared on a timer. */
   const [copied, setCopied] = useState<string | null>(null)
+  /** Zero-based page into `history`. Reset whenever a new copy arrives, so page 1 is always what just happened. */
+  const [page, setPage] = useState(0)
+
+  const pageCount = Math.max(1, Math.ceil(history.length / CLIPBOARD_PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const start = safePage * CLIPBOARD_PAGE_SIZE
+  const shown = history.slice(start, start + CLIPBOARD_PAGE_SIZE)
+
+  // A new copy lands at the top of page 1. Staying on page 3 while the thing
+  // the operator just copied scrolls in above them is the wrong default.
+  useEffect(() => {
+    setPage(0)
+  }, [history[0]?.at])
 
   async function read(): Promise<void> {
     setError(null)
+    setNote(null)
     setReading(true)
     try {
       // Deliberately the hook's call, not a local one: its answer runs
       // through the same `recordClipboard` the pushes do, so this adds a row
       // instead of opening a second, competing readout.
-      await onRead()
+      //
+      // `false` means the device sent nothing back — an empty clipboard, or
+      // one unchanged since it last announced one. That is not a failure and
+      // must not be painted as one; it only deserves a line at all when the
+      // list is otherwise empty, where silence would look like a hang.
+      const answered = await onRead()
+      if (!answered && history.length === 0) setNote('The phone sent nothing back — its clipboard is empty, or it has not copied anything yet.')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -138,9 +171,12 @@ export function ClipboardPopover({
       </Tooltip>
       <PopoverContent data-menu-root="1" align="start" className="w-[300px]">
         {error && <p className="mb-2 text-[11px] text-danger">{error}</p>}
+        {note && !error && <p className="mb-2 text-[11px] leading-relaxed text-faint">{note}</p>}
 
         <div className="flex items-center justify-between">
-          <p className="text-label text-faint">Copied on the device</p>
+          <p className="text-label text-faint">
+            Copied on the device{history.length > 0 && ` (${history.length})`}
+          </p>
           <div className="flex items-center gap-1">
             <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" disabled={reading} onClick={() => void read()}>
               {reading ? 'Reading…' : 'Read now'}
@@ -158,8 +194,8 @@ export function ClipboardPopover({
             Nothing yet. Copy something on the phone and it appears here — no need to press anything.
           </p>
         ) : (
-          <ul className="mt-2 max-h-[220px] space-y-1 overflow-y-auto">
-            {history.map((entry) => (
+          <ul className="mt-2 space-y-1">
+            {shown.map((entry) => (
               <li key={`${entry.at}-${entry.text}`}>
                 <button
                   type="button"
@@ -180,6 +216,36 @@ export function ClipboardPopover({
               </li>
             ))}
           </ul>
+        )}
+
+        {pageCount > 1 && (
+          <div className="mt-2 flex items-center justify-between">
+            <span className="font-mono text-[10px] text-faint">
+              {start + 1}–{start + shown.length} of {history.length}
+            </span>
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-1"
+                aria-label="Newer"
+                disabled={safePage === 0}
+                onClick={() => setPage(safePage - 1)}
+              >
+                <CaretLeftIcon className="size-3.5" aria-hidden />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-1"
+                aria-label="Older"
+                disabled={safePage >= pageCount - 1}
+                onClick={() => setPage(safePage + 1)}
+              >
+                <CaretRightIcon className="size-3.5" aria-hidden />
+              </Button>
+            </div>
+          </div>
         )}
 
         <div className="mt-3 border-t border-line pt-3">

@@ -218,6 +218,21 @@ class ControlService : Service() {
     // this, and the dead-man's switch's own `lastContact` is private to it by design.
     ControlChannelState.recordRequest(method)
 
+    /**
+     * Every response echoes the method this service PARSED and dispatched on.
+     *
+     * The host sent `ui.status` — proven from the bytes it wrote — and this
+     * service answered with the `ui.unwatch` body under the host's own
+     * request id. Both sides' source is correct, the compiled arm is in the
+     * installed APK, and force-stopping the process changed nothing
+     * (2026-09-04). One assumption is left untested: that the string this
+     * `when` switches on is the string the host sent. This echo tests it, and
+     * costs one field.
+     */
+    return dispatch(method, id, request, writer).also { it.put("method", method) }
+  }
+
+  private fun dispatch(method: String, id: String?, request: JSONObject, writer: BufferedWriter): JSONObject {
     return when (method) {
       Protocol.METHOD_HELLO -> {
         // Plan 221 §4.8, §4.9 — stored before answering so a status-screen read immediately after

@@ -106,8 +106,12 @@ export interface UseCast {
   deviceClipboardHistory: ClipboardEntry[]
   /** Drops the remembered history. The device's own clipboard is untouched — this only forgets what Studio saw. */
   clearDeviceClipboardHistory: () => void
-  /** One `clipboard.get`, folded into the same history the pushes feed. Throws so the caller can show the failure. */
-  readDeviceClipboard: () => Promise<void>
+  /**
+   * One `clipboard.get`, folded into the same history the pushes feed.
+   * Resolves `false` when the device simply had nothing to send (see the
+   * implementation); throws only on a real fault.
+   */
+  readDeviceClipboard: () => Promise<boolean>
   copyDeviceClipboard: () => Promise<void>
   releaseFocus: () => void
   requestFullscreen: () => void
@@ -125,13 +129,18 @@ export interface ClipboardEntry {
 }
 
 /**
- * How many copies are remembered per device-control window. Clipboard content
- * is very often a password or a one-time token — plan 38 §4.5 is explicit
- * about that, which is why `clipboard.value` is unicast in the first place —
- * so this is deliberately a short, in-memory, per-window list: it dies with
- * the window, never reaches the DB, and never reaches another viewer.
+ * How many copies are remembered per device-control window. Bounded rather
+ * than unbounded on purpose: clipboard content is very often a password or a
+ * one-time token — plan 38 §4.5 is explicit about that, which is why
+ * `clipboard.value` is unicast in the first place — and a list that keeps
+ * every secret a phone has touched all session is the wrong default even
+ * though it never leaves the tab. In-memory, per-window: it dies with the
+ * window, never reaches the DB, never reaches another viewer.
+ *
+ * The popover pages this ten at a time (`CLIPBOARD_PAGE_SIZE`) — 50 rows in
+ * a 300px popover is a scroll nobody reads to the bottom of.
  */
-const CLIPBOARD_HISTORY_MAX = 20
+const CLIPBOARD_HISTORY_MAX = 50
 
 function metaOf(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }) {
   return { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey }
@@ -585,12 +594,28 @@ export function useCast(opts: UseCastOptions): UseCast {
    * the device's clipboard BEFORE this window opened. Its answer joins the
    * same list the pushes feed, so the popover has one place to look rather
    * than a live list beside a separate one-shot readout.
+   *
+   * Returns whether the device actually said anything. `E_CLIPBOARD_TIMEOUT`
+   * is NOT rethrown, because on this path it is usually not a failure: scrcpy
+   * answers a GET_CLIPBOARD only when it has something to send, so an empty
+   * clipboard — or one unchanged since the device last announced it — times
+   * out while everything works. Surfacing that as a red error is what made
+   * the button look broken on a device that was fine (owner, 2026-09-04).
+   * Every other error still throws: a wedged control channel or a session
+   * that cannot reach the clipboard at all is a real fault and must say so.
    */
-  async function readDeviceClipboard(): Promise<void> {
-    const res = await ws.request({ type: 'clipboard.get', id: newId(), payload: { deviceId } })
-    if (res.type === 'clipboard.value') {
-      setDeviceClipboard(res.payload.text)
-      recordClipboard(res.payload.text)
+  async function readDeviceClipboard(): Promise<boolean> {
+    try {
+      const res = await ws.request({ type: 'clipboard.get', id: newId(), payload: { deviceId } })
+      if (res.type === 'clipboard.value') {
+        setDeviceClipboard(res.payload.text)
+        recordClipboard(res.payload.text)
+        return true
+      }
+      return false
+    } catch (err) {
+      if (err instanceof WsRequestError && err.code === 'E_CLIPBOARD_TIMEOUT') return false
+      throw err
     }
   }
 

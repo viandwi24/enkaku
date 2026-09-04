@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DeviceDetail } from '@enkaku/protocol'
 import { api, BroadcastIcon, Button, StatusDot, Tabs, TabsContent, TabsList, TabsTrigger, XIcon } from '@enkaku/ui'
 import { DeviceDetailResponseSchema } from '@enkaku/protocol'
@@ -80,6 +80,38 @@ export function DeviceControl({
     latencyOverlay: readLocalPrefs().latencyOverlay,
     onRotate: () => void cycleRotation(),
   })
+
+  /**
+   * Stable handlers for the shortcut rail.
+   *
+   * This window re-renders roughly twice a second by design and always has:
+   * the cast header shows a live fps and a live "no frames for Ns", both of
+   * which are state that ticks (`use-cast.ts`'s `FPS_PUBLISH_MS`). Every
+   * child re-rendered with it, and the rail is eleven Radix tooltip triggers
+   * plus a popover — the most expensive thing in the window to rebuild, for
+   * a row of buttons whose contents change only when the operator clicks
+   * one. The clipboard history added to it made each rebuild bigger, which
+   * is what made this visible (owner, 2026-09-05), but the re-render itself
+   * predates it and has nothing to do with the clipboard.
+   *
+   * `React.memo` alone could not fix it: every callback here is redefined on
+   * each render, so the memo would never hit. A `useCallback` chain through
+   * `use-cast`'s own closures would reach a long way for it, so the rail's
+   * handlers are latched in a ref instead — the wrappers below are created
+   * once and always call the CURRENT function, so there is no stale-closure
+   * risk of the kind a `useCallback` with a wrong dependency list creates.
+   */
+  const railRef = useRef({ sendKey: cast.sendKey, cycleRotation: () => {}, clear: cast.clearDeviceClipboardHistory, read: cast.readDeviceClipboard })
+  railRef.current = {
+    sendKey: cast.sendKey,
+    cycleRotation: () => void cycleRotation(),
+    clear: cast.clearDeviceClipboardHistory,
+    read: cast.readDeviceClipboard,
+  }
+  const railSendKey = useCallback((keycode: number) => railRef.current.sendKey(keycode), [])
+  const railRotate = useCallback(() => railRef.current.cycleRotation(), [])
+  const railClearClipboard = useCallback(() => railRef.current.clear(), [])
+  const railReadClipboard = useCallback(() => railRef.current.read(), [])
 
   async function cycleRotation() {
     if (!device) return
@@ -175,11 +207,11 @@ export function DeviceControl({
       <div className="flex w-[52px] shrink-0 flex-col items-center gap-1 bg-panel-2 py-2">
         <ShortcutRail
           deviceId={deviceId}
-          sendKey={cast.sendKey}
-          onRotate={() => void cycleRotation()}
+          sendKey={railSendKey}
+          onRotate={railRotate}
           clipboardHistory={cast.deviceClipboardHistory}
-          onClearClipboardHistory={cast.clearDeviceClipboardHistory}
-          onReadClipboard={cast.readDeviceClipboard}
+          onClearClipboardHistory={railClearClipboard}
+          onReadClipboard={railReadClipboard}
         />
       </div>
 
