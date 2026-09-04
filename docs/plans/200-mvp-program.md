@@ -398,3 +398,26 @@ Merged 208, 209, 210, 214 into `mvp`; all nine gates green; the cross-round test
 | Plan 209's §4 example for the scroll encoder used the **wrong fixed-point scale**; the real device protocol divides by 16 | plan 209 | Fixed against the verified v3.3.1 source, not against the plan. A plan's worked example is not evidence. |
 | Plan 214 could not delete `use-bulk-selection.ts`: plan 220's Agents page still imports it | plan 214 | 214 marked itself `partial` with the row unchecked rather than claiming done. **Plan 216 owns the bulk removal and must finish it**; carried into 216's launch brief. |
 | Three executors each found an error in their own plan document rather than only following it | 208, 209, 214 | No action, but it is the signal worth watching: an executor that never contradicts its plan is probably not reading the code. |
+
+### 8.9 Round R5 reconciliation, 2026-09-04
+
+Merged 211, 215, 216, 221, 223. Eight gates green; `bun run typecheck` is green for all nineteen workspace packages and fails only on `youtube-automation-pack`, which is the owner's own uncommitted work in progress (`readableStrings` is imported before it is exported) and is not this round's to fix.
+
+| Finding | From | Reconciled |
+|---|---|---|
+| **Three plans put their work on a differently named branch than their worktree's.** `git merge <worktree-branch>` answered "Already up to date" and would have merged nothing while looking successful. | 215, 216, 221 | Caught by checking `git merge-base --is-ancestor` per branch before trusting any of them. **Always verify the branch actually carries the commits; the worktree's own branch name is not evidence.** |
+| **Plan 216 could not finish because plan 215 had not merged.** Its §10 deletions target dialogs that `device-popup/` and `app/device/` still imported, and 215 deletes those directories. | 216 | 216 shipped what it could and marked itself `partial` rather than breaking the build. §4's dependency column now records 216 → 215. The blocked deletions completed at this gate once 215 landed. |
+| **`action-set.ts` versus `lib/generic-actions.ts`.** 215 renamed the module; 216 edited the old path. Two interfaces for one concept. | the merge | Unified: 215's `id` and `submenu`, 216's `overflow`, and `needsDialog` dropped — that flag existed only to disable rows until 216 built their dialogs, which is exactly what 216 did. The id is now narrowed to `ActionDialogVerb`, so a row whose dialog does not exist cannot be rendered. |
+| **A real coverage regression on the critical list.** Plan 211 deleted 53 test files broken by the job/run split. Net backend tests went 395 → 353. | plan 211 | Taking the modified versions was impossible — they reference the old schema and do not compile. The deletions stand, and the five that were on §8.3's critical list are named below rather than absorbed. |
+
+**Critical-list tests deleted in R5, and what each covered:**
+
+| File | What it protected |
+|---|---|
+| `packages/core/src/api/actions.test.ts` | plan 207's 29 tests over all 25 action verbs, HTTP 202/404, and the policy warn-then-force path |
+| `packages/core/src/server/ws-handlers-activity.test.ts` | the `device.activity.warning` throttle — written by plan 205 precisely because that behaviour had no coverage anywhere |
+| `packages/core/src/plugins/runtime.test.ts` | the plugin stage → verify → activate pipeline, the only way code reaches a farm |
+| `packages/core/src/db/migrations/artifacts-device-scope.test.ts` | a migration over rows already on disk |
+| `packages/core/src/db/migrations/schedule-target-backfill.test.ts` | the same |
+
+**This is a debt, not a decision.** Plan 224 owns the test-strategy reset and must either restore these five against the new schema or state, per file, why the behaviour is covered elsewhere. Added to 224's acceptance below.

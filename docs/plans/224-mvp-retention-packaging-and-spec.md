@@ -946,6 +946,10 @@ It must print nothing.
 
 Nothing from `docs/mvp/13-removal-register.md` Part A or Part B is owned by this plan; the register's rows are all claimed by earlier waves (§0 of that document: "each row names the source document"). This plan's own §10 rows above are new to this plan, not inherited from the register.
 
+## 10.1 Added at the R5 gate, 2026-09-04 — restore or account for five critical-list tests
+
+Plan 211 deleted 53 test files broken by the job/run split, taking net backend coverage from 395 to 353. Five were on plan 200 §8.3's critical list (enumerated in §8.9). Before this plan measures the suite and retires the full-run prohibition, it must, for each of those five, either **restore it against the current schema** or **state in writing why the behaviour is covered elsewhere**. "It was broken by a schema change" is why they were deleted; it is not a reason for the behaviour to stay uncovered.
+
 ## 11. Handoff report
 
 - **Checklist**: G1 ⬜ G2 ⬜ G3 ⬜ G4 ⬜ G5 ⬜ G6 ⬜ G7 ⬜ G8 ⬜ G9 ⬜ G10 ⏳ owner G11 ⬜ G12 ⬜ G13 ⬜ G14 ⬜ G15 ⬜
