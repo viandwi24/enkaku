@@ -3,9 +3,11 @@ import type { JobRow } from '../db/schema'
 import type { Logger } from '../util/logger'
 
 export interface ExecutorContext {
+  /** The RUN this execution is (plan 211) — everything an executor stores or reports keys on this, not on the job. */
+  runId: string
   /** Aborted on cancel or force-release. */
   signal: AbortSignal
-  /** Extend the job heartbeat (called by the host on every tick). */
+  /** Extend the run's heartbeat (called by the host on every tick). */
   heartbeat(): void
   log: Logger
   /**
