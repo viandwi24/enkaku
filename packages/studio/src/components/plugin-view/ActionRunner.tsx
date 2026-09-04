@@ -319,7 +319,7 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
           <SchemaForm
             // The reconciliation between `@enkaku/protocol`'s bare-index-signature
             // `JsonSchemaNode` and this package's narrower one, the same cast
-            // `RunScriptDialog` and `JobResultSection` already document.
+            // `RunScriptDialog` and the Jobs screen's `JsonSnapshot` already document.
             schema={formSchema as JsonSchemaNode}
             value={formValue}
             onChange={setFormValue}
