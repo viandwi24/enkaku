@@ -16,8 +16,8 @@ import { ws } from '@/lib/ws'
  * and the two restart dialogs, spliced beside Advanced under the Farm group
  * (`docs/mvp/12-settings.md` §1's own order). `AdbRestartDialog` and
  * `AppRestartDialog` are imported UNCHANGED (plan 216 §3.3) — only the
- * surrounding card is new. `AdbServerCard.tsx`/`AppRestartCard.tsx` are
- * deleted; their content folds in here.
+ * surrounding card is new. The old per-tool restart cards are deleted
+ * (§10); their content folds in here.
  *
  * `Lock`/`Stethoscope` (lucide, on the old page) have no `LockIcon`/
  * `StethoscopeIcon` in plan 204's barrel (`packages/ui/src/icons.ts`) — this
@@ -186,10 +186,10 @@ export function ToolchainSection() {
         </Button>
       </div>
 
-      {/* Restart cards — folded from `AdbServerCard.tsx` and
-          `AppRestartCard.tsx` (deleted, §10). `AdbRestartDialog` and
-          `AppRestartDialog` are imported UNCHANGED (plan 216 §3.3); only the
-          surrounding card is new. */}
+      {/* Restart cards — folded from the old per-tool restart cards
+          (deleted, §10). `AdbRestartDialog` and `AppRestartDialog` are
+          imported UNCHANGED (plan 216 §3.3); only the surrounding card is
+          new. */}
       <div className="rounded-card border border-line-2 bg-panel-2 p-4">
         <h3 className="text-row font-semibold text-text">adb server</h3>
         <p className="mt-1 text-meta text-faint">Shared with every other program on this machine using adb. Restarting it disconnects them all for a few seconds.</p>
