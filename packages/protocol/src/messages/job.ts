@@ -15,6 +15,14 @@ import { ParamIssueSchema } from '../schema/validate'
 export const JobStatusSchema = z.enum(['queued', 'running', 'success', 'failed', 'cancelled', 'expired'])
 export type JobStatus = z.infer<typeof JobStatusSchema>
 
+/** Why an execution exists (MVP 14 §1, plan 211). Shown in the Jobs detail meta line. */
+export const RunTriggerSchema = z.enum(['manual', 'rerun', 'schedule', 'batch', 'resume', 'workflow-step'])
+export type RunTrigger = z.infer<typeof RunTriggerSchema>
+
+/** 'script' or 'workflow' (MVP 05 §1.2), visible per row in the one Jobs list (MVP 15 §1). */
+export const JobKindSchema = z.enum(['script', 'workflow'])
+export type JobKind = z.infer<typeof JobKindSchema>
+
 /** Params for the `internal:sleep` dummy executor (M3 — queue validation without automation). */
 export const SleepJobParamsSchema = z.object({
   durationMs: z.number().int().min(0).max(3_600_000),
@@ -46,10 +54,63 @@ export const JobCancelMessage = z.object({
 
 // ---- server → client ----
 
+/**
+ * One execution of a job (MVP 14 §1). The list projection deliberately omits
+ * `result` and `params`, exactly as `JobInfo` always has (F18): a result can
+ * be large and a run list is not the place for it.
+ */
+export const JobRunInfoSchema = z.object({
+  runId: z.string(),
+  jobId: z.string(),
+  seq: z.number().int().min(1),
+  trigger: RunTriggerSchema,
+  status: JobStatusSchema,
+  deviceId: z.string(),
+  priority: z.number().int(),
+  /** Unix seconds. */
+  createdAt: z.number().int(),
+  startedAt: z.number().nullable(),
+  finishedAt: z.number().nullable(),
+  expiresAt: z.number().nullable().default(null),
+  notBefore: z.number().int().nullable().default(null),
+  batchRepeat: z.number().int().nullable().default(null),
+  pacedDelayMs: z.number().int().nullable().default(null),
+  error: z.string().nullable(),
+  failureClass: z.string().nullable().default(null),
+  errorPhase: z.string().nullable().default(null),
+  infraAttempts: z.number().int().min(0).default(0),
+  peakRssBytes: z.number().int().nullable().default(null),
+  resultStatus: ResultStatusSchema.nullable().default(null),
+  resultSummary: z.string().max(RESULT_LIMITS.maxSummaryChars).nullable().default(null),
+  resumedFromRunId: z.string().nullable().default(null),
+  resumedFromStep: z.number().int().nullable().default(null),
+})
+export type JobRunInfo = z.infer<typeof JobRunInfoSchema>
+
+/** One run in full (the detail read): the run plus what it produced. */
+export const JobRunDetailSchema = JobRunInfoSchema.extend({
+  result: z.unknown(),
+  resultBytes: z.number().int().nullable().default(null),
+  resultIssues: z.array(ParamIssueSchema).nullable().default(null),
+  resultSchema: JsonSchemaNodeSchema.nullable().default(null),
+})
+export type JobRunDetail = z.infer<typeof JobRunDetailSchema>
+
 export const JobInfoSchema = z.object({
   jobId: z.string(),
   deviceId: z.string(),
   scriptId: z.string(),
+  /** 'script' | 'workflow' (MVP 05 §1.5: one Jobs list, kind visible per row). */
+  kind: JobKindSchema.default('script'),
+  /** The latest run's id, and how many runs this job has. Null/0 only for a job whose runs were all swept (MVP 14 §5). */
+  runId: z.string().nullable().default(null),
+  runSeq: z.number().int().nullable().default(null),
+  runCount: z.number().int().min(0).default(0),
+  /** The latest run's trigger; null when there is no run. */
+  trigger: RunTriggerSchema.nullable().default(null),
+  /** MVP 05 §1.5, "step 3 of workflow job #91". Null for every ordinary job. */
+  parentWorkflowJobId: z.string().nullable().default(null),
+  stepSeq: z.number().int().nullable().default(null),
   /** Script name and version, so the UI never has to show a raw UUID. */
   scriptName: z.string().nullable().default(null),
   scriptVersion: z.string().nullable().default(null),
@@ -150,6 +211,8 @@ export type JobInfo = z.infer<typeof JobInfoSchema>
  * not what a list is for.
  */
 export const JobDetailSchema = JobInfoSchema.extend({
+  /** Every run this job has, newest first (plan 211 §3.2 decision 12). */
+  runs: z.array(JobRunInfoSchema).default([]),
   /** Whatever `run()` returned. `unknown` on purpose — a script may return anything JSON can carry. */
   result: z.unknown(),
   /**
@@ -235,15 +298,6 @@ export const JobSummarySchema = z.object({
 })
 export type JobSummary = z.infer<typeof JobSummarySchema>
 
-/**
- * The status of one workflow NODE EXECUTION (plan 99 §4.6, `job_nodes.status`)
- * — the same domain the DB column's own comment names, mirrored here so
- * `job.status`'s `node` block below and `GET /api/jobs/:id/nodes` (step 99.8)
- * can both validate against one Zod schema instead of a bare string.
- */
-export const JobNodeStatusSchema = z.enum(['running', 'success', 'failed', 'skipped', 'skipped-on-resume', 'cancelled'])
-export type JobNodeStatus = z.infer<typeof JobNodeStatusSchema>
-
 export const JobStatusEventMessage = z.object({
   type: z.literal('job.status'),
   payload: JobInfoSchema.extend({
@@ -252,34 +306,15 @@ export const JobStatusEventMessage = z.object({
      * runs before `prepare`, and only for a 'full' attempt. */
     attempt: z.number().int().optional(),
     phase: z.enum(['reset', 'prepare', 'run', 'finish']).nullable().optional(),
-    /**
-     * Plan 99 §4.9 — which workflow node is CURRENTLY executing, for a
-     * workflow job only. `total` is the document's node COUNT, not
-     * `maxSteps` (a loop can run more executions than there are nodes — this
-     * is "how many rows in the list", the number a `node 2/4` badge needs).
-     * Absent for every non-workflow job — every `job.status` payload before
-     * this plan keeps parsing unchanged.
-     */
-    node: z
-      .object({
-        id: z.string(),
-        seq: z.number().int(),
-        total: z.number().int(),
-        kind: z.enum(['script', 'gate']),
-        /** `'tiktok/auto-scroll@1.4.0'` for a script node; null for a gate (no script) or before resolution. */
-        script: z.string().nullable(),
-        status: JobNodeStatusSchema,
-      })
-      .nullable()
-      .optional(),
   }),
 })
 
-/** Realtime per-job log (M4). */
+/** Realtime per-job log (M4). Carries `runId` (plan 211): a client subscribes per job and renders per run. */
 export const JobLogMessage = z.object({
   type: z.literal('job.log'),
   payload: z.object({
     jobId: z.string(),
+    runId: z.string(),
     ts: z.number(),
     level: z.enum(['debug', 'info', 'warn', 'error']),
     source: z.enum(['script', 'stdout', 'stderr', 'runner']),
@@ -289,47 +324,26 @@ export const JobLogMessage = z.object({
 })
 
 /**
- * Exactly one of `jobId` / `deviceId` is set (plan 24 §4.6): a job artifact
- * (the pre-existing case) carries `jobId` and a null `deviceId`; a
- * device-scoped artifact ("save last N lines" from the Monitor tab) is the
- * reverse. Both fields are nullable rather than a discriminated union so
- * every existing `job.artifact` payload — which always has `jobId` set —
- * keeps parsing unchanged.
+ * Exactly one of `runId` / `deviceId` is set (plan 24 §4.6, renamed from
+ * `jobId` by plan 211): a run artifact (the pre-existing case) carries
+ * `runId` and a null `deviceId`; a device-scoped artifact ("save last N
+ * lines" from the Monitor tab) is the reverse.
  */
 export const ArtifactInfoSchema = z.object({
   id: z.string(),
-  jobId: z.string().nullable().default(null),
+  runId: z.string().nullable().default(null),
   deviceId: z.string().nullable().default(null),
   kind: z.enum(['screenshot', 'log', 'file', 'video']),
   label: z.string().nullable(),
   path: z.string(),
   sizeBytes: z.number().nullable(),
   createdAt: z.number(),
-  /**
-   * Plan 99 §3.2, §4.6 — the workflow node that produced this artifact; null
-   * for every artifact of a non-workflow job (every row before this plan) and
-   * for a device-scoped artifact (which has no job, let alone a node).
-   * Stamped by `runner/artifact-store.ts`'s node-scoped wrapper, not by the
-   * child boundary — a node script never learns this field exists.
-   *
-   * `.optional()` (unlike `jobId`/`deviceId` above) is deliberate, not an
-   * oversight: dozens of PRE-EXISTING test files across `packages/core/src`
-   * (several under concurrent edit by other workers this same day — the
-   * ws-handlers/presence/crash-watcher suites) build an `ArtifactInfo`
-   * literal by hand with no `nodeId` field at all. Making the FIELD required
-   * would force every one of those to add `nodeId: null`, which is exactly
-   * the wide, unrelated blast radius a workflow-scoped column must not have
-   * (plan 99 §3.1's containment doctrine, applied to a wire shape rather than
-   * a `kind` comparison). `z.parse()` still defaults an absent value to
-   * `null`; only the TS-inferred type is relaxed.
-   */
-  nodeId: z.string().nullable().default(null).optional(),
 })
 export type ArtifactInfo = z.infer<typeof ArtifactInfoSchema>
 
 export const JobArtifactMessage = z.object({
   type: z.literal('job.artifact'),
-  payload: z.object({ jobId: z.string(), artifact: ArtifactInfoSchema }),
+  payload: z.object({ jobId: z.string(), runId: z.string(), artifact: ArtifactInfoSchema }),
 })
 
 /**
@@ -355,6 +369,7 @@ export const JobWaitingMessage = z.object({
   type: z.literal('job.waiting'),
   payload: z.object({
     jobId: z.string(),
+    runId: z.string(),
     deviceId: z.string(),
     waiting: z.boolean(),
     /** 'control' (plan 205 §3.2 item 6 — waiting for a live control marker to go quiet) | 'paced' (plan 94 §3.8, §4.8, step 94.6 — waiting on the job's own `notBefore`). */
@@ -365,37 +380,6 @@ export const JobWaitingMessage = z.object({
     remainingSec: z.number().int().min(0),
   }),
 })
-
-// ---- Plan 99 §3.5, §4.9, step 99.8: resume ----
-//
-// The node timeline's own schemas (`JobNodeInfoSchema`, `JobNodesResponseSchema`)
-// live in `../api/jobs` with the rest of the REST envelopes — only the
-// `job.status` node block's `JobNodeStatusSchema` (above) belongs here.
-
-/**
- * `POST /api/jobs/:id/resume` request body (plan 99 §3.5, §4.9).
- *
- * `fromNode` omitted means "the first node that did not succeed" — the common
- * case, and the one the job page's own button sends.
- */
-export const JobResumeRequestSchema = z.object({
-  fromNode: z.string().optional(),
-})
-export type JobResumeRequest = z.infer<typeof JobResumeRequestSchema>
-
-/**
- * `POST /api/jobs/:id/resume` response (plan 99 §3.5, §4.9) — resume creates a
- * NEW job rather than restarting the old one, so the original stays readable.
- * `resumedFromNode` is echoed resolved: a request that omitted `fromNode` gets
- * back the node the server actually chose.
- */
-export const JobResumeResponseSchema = z.object({
-  newJobId: z.string(),
-  resumedFromJobId: z.string(),
-  resumedFromNode: z.string(),
-  status: z.enum(['created', 'queued', 'running']),
-})
-export type JobResumeResponse = z.infer<typeof JobResumeResponseSchema>
 
 /**
  * Plan 97 §3.7, §4.6, §5 step 97.7 — `ctx.progress()`'s live push, one hop
@@ -411,7 +395,7 @@ export type JobResumeResponse = z.infer<typeof JobResumeResponseSchema>
  */
 export const JobProgressEventMessage = z.object({
   type: z.literal('job.progress'),
-  payload: z.object({ jobId: z.string(), deviceId: z.string(), value: z.unknown() }),
+  payload: z.object({ jobId: z.string(), runId: z.string(), deviceId: z.string(), value: z.unknown() }),
 })
 
 // ---- Plan 128 (M93 — the job trace timeline), step 128.1, §3.3, §4.2 ----
@@ -445,8 +429,9 @@ export const JobProgressEventMessage = z.object({
  */
 export const JobTraceEventSchema = z.object({
   id: z.string(),
-  jobId: z.string(),
-  /** Per-job monotonic, assigned by the recorder. The sort key and the keyset cursor — never the clock. */
+  /** The RUN this event belongs to (renamed from `jobId`, plan 211). */
+  runId: z.string(),
+  /** Per-run monotonic, assigned by the recorder. The sort key and the keyset cursor — never the clock. */
   seq: z.number().int(),
   /** Unix MILLISECONDS. See this schema's own doc — deliberately not seconds. */
   atMs: z.number().int(),
@@ -454,8 +439,6 @@ export const JobTraceEventSchema = z.object({
   attempt: z.number().int(),
   /** Null for an event outside any script phase (the pre-script `acquire` window, for instance). */
   phase: z.enum(['reset', 'prepare', 'run', 'finish']).nullable(),
-  /** Plan 99's workflow node axis, mirroring `ArtifactInfo.nodeId`. Null for every non-workflow job. */
-  nodeId: z.string().nullable(),
   kind: z.enum(['phase', 'action', 'log', 'artifact', 'progress', 'error']),
   /** For `action`: the `DeviceCall` method. For `log`: the level. For `phase`: 'start' | 'end'. */
   name: z.string(),
@@ -486,5 +469,5 @@ export type JobTraceEvent = z.infer<typeof JobTraceEventSchema>
  */
 export const JobTraceMessage = z.object({
   type: z.literal('job.trace'),
-  payload: z.object({ jobId: z.string(), event: JobTraceEventSchema }),
+  payload: z.object({ jobId: z.string(), runId: z.string(), event: JobTraceEventSchema }),
 })

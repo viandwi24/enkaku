@@ -86,7 +86,11 @@ export const ScheduleInfoSchema = z.object({
   /** Plan 68 §3.5 — only meaningful for an agent target. */
   onApprovalRequired: OnApprovalRequiredSchema,
   lastFiredAt: z.number().nullable(),
-  lastBatchId: z.string().nullable(),
+  /** The batch this schedule OWNS (plan 211 §3.2 decision 4); its member jobs are one per target device. */
+  batchId: z.string().nullable(),
+  /** The last fire's decision (plan 211 §3.2 decision 5), replacing the deleted `schedule_runs` ledger. */
+  lastFireOutcome: z.string().nullable().default(null),
+  lastFireDetail: z.string().nullable().default(null),
   /** Plan 68 §4.2 — the most recent agent run this schedule started, for overlap tracking. */
   lastAgentRunId: z.string().nullable(),
   createdBy: z.string().nullable(),
@@ -107,27 +111,6 @@ export const ScheduleInfoSchema = z.object({
 })
 export type ScheduleInfo = z.infer<typeof ScheduleInfoSchema>
 
-export const ScheduleRunInfoSchema = z.object({
-  id: z.string(),
-  scheduleId: z.string(),
-  /** When it was due, not when it ran — jitter separates the two (plan 21 §3.6). */
-  dueAt: z.number(),
-  firedAt: z.number().nullable(),
-  outcome: ScheduleRunOutcomeSchema,
-  batchId: z.string().nullable(),
-  detail: z.string().nullable(),
-  missedCount: z.number().int(),
-  /**
-   * The value `pickJitterMs` actually drew for this fire, in milliseconds
-   * (plan 94 §3.7, F28) — `0` for a schedule with no jitter configured AND
-   * for every run recorded before this field existed, both meaning
-   * "nothing to attribute a delay to." Defaulted so every pre-94.9 caller's
-   * fixture literal keeps compiling unedited.
-   */
-  jitterMs: z.number().int().default(0),
-})
-export type ScheduleRunInfo = z.infer<typeof ScheduleRunInfoSchema>
-
 /** Broadcast on every fire decision, so the schedules screen updates without polling (plan 21 §4.5). */
 export const ScheduleFiredMessage = z.object({
   type: z.literal('schedule.fired'),
@@ -136,6 +119,8 @@ export const ScheduleFiredMessage = z.object({
     outcome: ScheduleRunOutcomeSchema,
     batchId: z.string().nullable().default(null),
     dueAt: z.number(),
+    /** The `job_runs.id`s this fire added, one per member job (plan 211). */
+    runIds: z.array(z.string()).default([]),
   }),
 })
 export type ScheduleFiredEvent = z.infer<typeof ScheduleFiredMessage>
