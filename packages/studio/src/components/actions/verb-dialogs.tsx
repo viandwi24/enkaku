@@ -352,6 +352,27 @@ const sleep: VerbDialogSpec<Record<string, never>> = {
 }
 
 // ---------------------------------------------------------------------------
+// 7b. Wake
+// ---------------------------------------------------------------------------
+/**
+ * Sleep's twin, and it had none: `wake` has been an action verb since plan
+ * 207 with a working implementation behind it, and no menu row or dialog in
+ * Studio — so a device an operator put to sleep could only be woken by
+ * touching it (owner, 2026-09-05). On a farm phone in a sealed box that is
+ * not a workaround, it is a dead end.
+ */
+const wake: VerbDialogSpec<Record<string, never>> = {
+  verb: 'wake',
+  title: (c) => `Wake ${n(c)}`,
+  submitLabel: (c) => `Wake ${n(c)}`,
+  initial: {},
+  Fields: null,
+  note: 'Lights the screen and holds it on. Refused for a device that is offline or quarantined — there is nothing to wake.',
+  canSubmit: () => true,
+  toParams: async () => ({}),
+}
+
+// ---------------------------------------------------------------------------
 // 8. Move group
 // ---------------------------------------------------------------------------
 interface SetGroupValue {
@@ -431,6 +452,40 @@ const push: VerbDialogSpec<PushValue> = {
     const artifactId = await uploadArtifactSource(v.source)
     return { artifactId, remotePath: v.remotePath.trim(), mediaScan: v.mediaScan }
   },
+}
+
+// ---------------------------------------------------------------------------
+// 9b. Download file
+// ---------------------------------------------------------------------------
+interface PullValue {
+  remotePath: string
+}
+function PullFields({ value, onChange }: { value: PullValue; onChange: (v: PullValue) => void }) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor="pull-remote-path">Path on the device</Label>
+      <Input
+        id="pull-remote-path"
+        mono
+        value={value.remotePath}
+        onChange={(e) => onChange({ remotePath: e.target.value })}
+        placeholder="/sdcard/Download/report.csv"
+      />
+      <p className="text-meta text-faint">
+        Lands in this device&apos;s artifacts, one file per device — not in your browser&apos;s downloads. Run it across
+        twenty phones and you get twenty artifacts, each named for the phone it came off.
+      </p>
+    </div>
+  )
+}
+const pull: VerbDialogSpec<PullValue> = {
+  verb: 'pull',
+  title: (c) => `Download a file from ${n(c)}`,
+  submitLabel: (c) => `Download from ${n(c)}`,
+  initial: { remotePath: '/sdcard/Download/' },
+  Fields: PullFields,
+  canSubmit: (v) => v.remotePath.trim().length > 0,
+  toParams: async (v) => ({ remotePath: v.remotePath.trim() }),
 }
 
 // ---------------------------------------------------------------------------
@@ -798,8 +853,10 @@ export type ActionDialogVerb =
   | 'run-workflow'
   | 'screenshot'
   | 'sleep'
+  | 'wake'
   | 'set-group'
   | 'push'
+  | 'pull'
   | 'clear-cache'
   | 'settings'
   | 'forget'
@@ -818,8 +875,10 @@ export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   'run-workflow': runWorkflow,
   screenshot,
   sleep,
+  wake,
   'set-group': setGroup,
   push,
+  pull,
   'clear-cache': clearCache,
   settings,
   forget,

@@ -2420,7 +2420,26 @@ let blobGc: BlobGc | null = null
         expectedArtifact: () => toolchain.deviceArtifactExpectation('guest-agent'),
         hello: (deviceId) => guestAgent.withGuestAgentClient(deviceId, (client) => client.hello()),
         provision: () => GUEST_AGENT_PROVISION,
-        record: recorder!.record,
+        /**
+         * Record the transition AND refresh the device row.
+         *
+         * The card's agent badge reads `DeviceInfo.agent`, which only changes
+         * when a device row is broadcast; the detail panel refetches on the
+         * `device.agent` EVENT. So after a successful retry the panel said
+         * `ready` while the badge beside it still said `Agent failed` — the
+         * panel even apologised for the badge, which is a UI explaining a bug
+         * rather than a state (owner, 2026-09-05). One broadcast keeps them
+         * from disagreeing.
+         */
+        record: (event) => {
+          recorder!.record(event)
+          if (event.kind === 'device.agent') {
+            const row = listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)).find(
+              (d) => d.id === event.deviceId,
+            )
+            if (row) hub.broadcast({ type: 'device.updated', payload: row })
+          }
+        },
         log: log.child('agent-provisioner'),
       })
       agentProvisionerRef = agentProvisioner

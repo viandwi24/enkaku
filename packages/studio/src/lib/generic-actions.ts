@@ -3,12 +3,18 @@ import {
   BroomIcon,
   CameraIcon,
   DownloadSimpleIcon,
+  ExportIcon,
+  FlowArrowIcon,
   FolderSimpleIcon,
   GearIcon,
+  LightningIcon,
   MoonIcon,
+  PencilSimpleIcon,
   PlayIcon,
   PlugsIcon,
+  PlugsIcon as NetworkIcon,
   RobotIcon,
+  SunIcon,
   TerminalIcon,
   TrashIcon,
   UploadSimpleIcon,
@@ -48,30 +54,66 @@ export interface GenericAction {
   danger?: boolean
   /** `set-group` only: this screen already knows every group, so it opens a submenu rather than a dialog. */
   submenu?: 'group'
-  /** Rendered under a `border-t` separator, after the twelve of the generic set (MVP 15 §1, plan 216). */
-  overflow?: boolean
+  /**
+   * Which run of rows this belongs to. Rendered in this order, each run
+   * separated by a rule — a flat list of eighteen rows is a list nobody
+   * reads, and the owner asked for exactly this shape (2026-09-05).
+   *
+   * The runs are by WHEN you reach for them, not by what subsystem they
+   * touch: connection first (the thing you do before anything else works),
+   * then what you do TO the phone, then what you run ON it, then files and
+   * the agent, then the rare and the destructive.
+   */
+  group: ActionGroup
+  /**
+   * Rendered under the last separator, after every group: rarely reached,
+   * reached deliberately. `overflow` is now a group like any other and this
+   * flag is gone — see `ActionGroup`.
+   */
 }
 
+/**
+ * The runs, in render order. `danger` is last and holds only Forget.
+ */
+export const ACTION_GROUPS = ['connection', 'device', 'run', 'files', 'config', 'rare', 'danger'] as const
+export type ActionGroup = (typeof ACTION_GROUPS)[number]
+
 export const GENERIC_ACTIONS: readonly GenericAction[] = [
-  { id: 'reconnect', label: 'Reconnect', icon: ArrowsClockwiseIcon },
-  { id: 'disconnect', label: 'Disconnect', icon: PlugsIcon },
-  { id: 'install', label: 'Install apk', icon: DownloadSimpleIcon },
-  { id: 'adb', label: 'Adb command', icon: TerminalIcon },
-  { id: 'run-script', label: 'Run script', icon: PlayIcon },
-  { id: 'screenshot', label: 'Screenshot', icon: CameraIcon },
-  { id: 'sleep', label: 'Sleep', icon: MoonIcon },
-  { id: 'set-group', label: 'Move group', icon: FolderSimpleIcon, submenu: 'group' },
-  { id: 'push', label: 'Upload file', icon: UploadSimpleIcon },
-  { id: 'clear-cache', label: 'Clear cache', icon: BroomIcon },
-  { id: 'settings', label: 'Settings', icon: GearIcon },
-  // The guest agent, by hand (CEO, 2026-09-04). An outdated agent is already
-  // reinstalled automatically; these are for when production disagrees with
-  // the happy path — an install that reported success and did not stick, a
-  // local build the version check cannot see — and for turning the agent off
-  // on one phone. Overflow, because an operator reaches for them rarely and
-  // deliberately, never in the course of ordinary work.
-  { id: 'install-agent', label: 'Install guest agent', icon: RobotIcon, overflow: true },
-  { id: 'uninstall-agent', label: 'Uninstall guest agent', icon: RobotIcon, overflow: true, danger: true },
-  { id: 'forget', label: 'Forget', icon: TrashIcon, danger: true },
+  // Connection — nothing else on this menu works until these do.
+  { id: 'reconnect', label: 'Reconnect', icon: ArrowsClockwiseIcon, group: 'connection' },
+  { id: 'disconnect', label: 'Disconnect', icon: PlugsIcon, group: 'connection' },
+  { id: 'set-network', label: 'Network', icon: NetworkIcon, group: 'connection' },
+
+  // Things you do TO the phone.
+  { id: 'install', label: 'Install apk', icon: DownloadSimpleIcon, group: 'device' },
+  { id: 'adb', label: 'Adb command', icon: TerminalIcon, group: 'device' },
+  { id: 'wake', label: 'Wake', icon: SunIcon, group: 'device' },
+  { id: 'sleep', label: 'Sleep', icon: MoonIcon, group: 'device' },
+
+  // Things you run ON it.
+  { id: 'run-script', label: 'Run script', icon: PlayIcon, group: 'run' },
+  { id: 'run-workflow', label: 'Run workflow', icon: FlowArrowIcon, group: 'run' },
+
+  // Files, both directions, and the agent that is itself a file.
+  { id: 'push', label: 'Upload file', icon: UploadSimpleIcon, group: 'files' },
+  { id: 'pull', label: 'Download file', icon: ExportIcon, group: 'files' },
+  { id: 'install-agent', label: 'Install guest agent', icon: RobotIcon, group: 'files' },
+  { id: 'uninstall-agent', label: 'Uninstall guest agent', icon: RobotIcon, group: 'files', danger: true },
+
+  // How the phone is set up and named.
+  { id: 'settings', label: 'Settings', icon: GearIcon, group: 'config' },
+  { id: 'set-group', label: 'Move group', icon: FolderSimpleIcon, submenu: 'group', group: 'config' },
+  { id: 'set-label', label: 'Label', icon: PencilSimpleIcon, group: 'config' },
+
+  // Reached deliberately, not in the course of ordinary work. Screenshot
+  // moved here from the main set (owner, 2026-09-05): it is not the browser
+  // screenshot its name suggests — it writes a PNG into this device's
+  // artifacts — so it belongs beside the other things you go looking for
+  // rather than in the first run of every menu.
+  { id: 'screenshot', label: 'Screenshot', icon: CameraIcon, group: 'rare' },
+  { id: 'prepare', label: 'Prepare', icon: LightningIcon, group: 'rare' },
+  { id: 'clear-cache', label: 'Clear cache', icon: BroomIcon, group: 'rare' },
+
+  { id: 'forget', label: 'Forget', icon: TrashIcon, danger: true, group: 'danger' },
 ]
 export type GenericActionId = GenericAction['id']

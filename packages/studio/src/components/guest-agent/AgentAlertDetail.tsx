@@ -151,7 +151,11 @@ function stateNote(state: string): string | null {
     case 'unsupported':
       return 'This device is below the guest agent’s Android version floor. Retrying cannot change that — nothing here is broken, this phone is simply not eligible.'
     case 'ready':
-      return 'The agent is ready. The badge was showing an older reading; this panel is the current one.'
+      // The badge no longer lags: the provisioner broadcasts the device row
+      // on every `device.agent` transition, so the card updates with this
+      // panel. The old sentence apologised for a bug instead of describing a
+      // state, which taught operators to distrust the badge.
+      return 'The agent is ready on this device.'
     case 'provisioning':
       return 'A pass is running on this device right now. It will settle on its own.'
     case 'consent-required':
