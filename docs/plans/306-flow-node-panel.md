@@ -1,7 +1,7 @@
 # Plan 306 — Flow : The node panel — data in, parameters, data out, and a live expression preview
 
-> Status: draft
-> Ships: `packages/studio/src/components/flow/NodePanel.tsx`
+> Status: implemented (software) — G1-G8 need an owner sitting on real hardware; G9, G10 verified
+> Ships: packages/studio/src/components/flow/NodePanel.tsx
 > Depends on: plans 302, 303, 304, 305
 > Spec references: §13; `docs/design.md`
 
@@ -17,8 +17,8 @@
 | G6 | Pin, unpin, and edit a pin from the output pane; a pinned node is marked on the canvas | 3 controls, 1 canvas badge | owner smoke step 5 — **P10** | owner |
 | G7 | The `start` node's panel edits the workflow's `params[]` | the document's inputs live in the start node | owner smoke step 6 | owner |
 | G8 | Screenshots and UI trees render as themselves, not as JSON | an image in the output pane; a collapsible tree | owner smoke step 7 | owner |
-| G9 | No expression is evaluated on the server for the preview | the browser imports `@enkaku/expr` | `rg -n "@enkaku/expr" packages/studio/src` finds the import; `rg -n "/api/.*(expr\|preview)" packages/studio/src` → empty | [ ] |
-| G10 | `bun run typecheck` and `bun run build:studio` clean; no Studio test file added | 0 errors; 0 `*.test.tsx` | both exit 0; `rg --files packages/studio -g '*.test.tsx'` empty | [ ] |
+| G9 | No expression is evaluated on the server for the preview | the browser imports `@enkaku/expr` | `rg -n "@enkaku/expr" packages/studio/src` finds the import; `rg -n "workflows.*(expr\|preview)" packages/studio/src` → empty (see §11 — the plan's own `/api/.*(expr\|preview)` grep also matches three unrelated pre-existing routes) | [x] |
+| G10 | `bun run typecheck` and `bun run build:studio` clean; no Studio test file added | 0 errors; 0 `*.test.tsx` | both exit 0; `rg --files packages/studio -g '*.test.tsx'` empty | [x] |
 
 ## 1. Goals
 
@@ -241,4 +241,40 @@ Owner sitting (one device, ~15 minutes):
 
 ## 11. Handoff report
 
-_To be written by the executing agent._
+- **Base**: this worktree's `HEAD` was stale at `d96d2be` when execution started (predating plans 301–305 on `mvp`). Merged `mvp` in first (`/usr/bin/git merge mvp --no-edit`, clean, no conflicts), landing on `388f8c5 fix(flow-304): refuse to pin a node whose successor is a decision` before touching any code, as the task instructions required.
+- **Checklist**: G1 ⏳ owner (P6) · G2 ⏳ owner (P7) · G3 ⏳ owner (P8 — **the plan 302 D4 gate**) · G4 ⏳ owner · G5 ⏳ owner (P9) · G6 ⏳ owner (P10) · G7 ⏳ owner · G8 ⏳ owner · G9 ✅ · G10 ✅
+- **Commits** (this worktree, branch `worktree-agent-aa2dce91529e04dab`, merge commit first):
+  - `0b1ffdb` feat(flow-306): GET /api/workflows/:name/last-run — the node panel's data-pane route (step 306.1)
+  - `aac81f5` feat(flow-306): last-run route also carries the run's params/seed/seq
+  - `5d2c022` wip(flow-306): the node panel's pieces — data trees, expression editor, pins, start panel (steps 306.2, 306.5, 306.7, 306.8)
+  - `6e89cae` feat(flow-306): NodePanel replaces the interim node editor — P6, P7, P9, P10, G7 (steps 306.3, 306.4, 306.6, 306.9, 306.10 §10)
+  - `eaf4ad0` fix(flow-306): DataTree's empty check reads value, not a rows heuristic that could never be false
+- **Typecheck**: `bash scripts/typecheck.sh` clean across all 20 packages, run repeatedly through the session, last run immediately before this report.
+- **Studio build**: `bun run --cwd packages/studio build` (the form the task specified, since another session holds `dev:studio` on port 3001) — compiled, typechecked, and statically exported all 20 routes including `/scripts/editor`. Artefacts (`packages/studio/out`, `packages/studio/.next`, `tsconfig.tsbuildinfo`) deleted afterward; `git status` confirms nothing untracked survives.
+- **Design tokens / routes / dead code**: `bun run scripts/check-design-tokens.ts` → `design tokens ok`. `bun run scripts/check-routes.ts` → `routes ok: 6 in nav, 4 exempt`. `bash scripts/check-dead-code.sh` → `no dead code found`.
+- **Tests run**: `bun test packages/core/src/api/workflows.test.ts` → 32 pass, 0 fail, 115 `expect()` calls (10 pre-existing describe blocks plus the 4 new `GET last-run` tests this plan adds: unknown workflow → `workflow_not_found`; a workflow with only a `node-test` run → `workflow_never_run`; the `none`/`value`/pinned mix on a real run; the dropped-output/dropped-input propagation case). This is the plan's own only test (§7). No Studio test file was added (plan 200 §8.3, G10).
+- **Removed, proven**: `rg -n "interim panel" packages/studio/src/components/flow` → empty (the phrase never existed in code to begin with — plan 306 §10 names it as the CONCEPT to remove; the actual removal is `FlowEditor.tsx`'s old `NodeInspector` function and its `<aside>` wrapper, replaced by a `Sheet`-hosted `NodePanel`, confirmed by reading the file: `grep -n "function NodeInspector" packages/studio/src/components/flow/FlowEditor.tsx` → empty).
+- **Discrepancies between plan and code**:
+  - **§4.2's claim that `SchemaForm` renders the params form "unchanged"** does not match what `FlowEditor.tsx` actually did before this plan: the params pane was, and remains, `paramProperties()` (a JSON-Schema-properties walk, `scriptBindings.ts`) driving one control per field — never the real `SchemaForm` component (`components/schema-form/SchemaForm.tsx`), which is a literal-value form with no `ValueExpr` awareness at all. Adapting `SchemaForm` itself to a `ValueExpr`-per-field model was out of this plan's size; `NodePanel.tsx` keeps the existing `paramProperties` renderer and only replaces each field's control (`ValueExprEditor` → `ExprField`), which still satisfies the underlying rule ("no second form renderer") since no second schema-to-form compiler was written.
+  - **§3.4's "renders by declared type from the member's `resultSchema`"**: `NodeType.resultSchema` (`packages/protocol/src/api/json-schema.ts`) is a generic, permissive JSON Schema record with no established convention in this codebase for "this field is an image" or "this field is a UI tree" — no script currently declares one. `DataView.tsx` instead dispatches on the VALUE'S OWN SHAPE (a `data:image/...` string or a known image-ish key; an object carrying `class`/`bounds`/`children`), documented as a heuristic in its own top comment, not a schema-driven read.
+  - **The plan's own G9 grep, `rg -n "/api/.*(expr\|preview)" packages/studio/src`, is not empty on this codebase independent of this plan's work** — it matches three pre-existing, unrelated routes (`/api/tools/adb/restart-preview`, `/api/tools/app/restart-preview`, `/api/v1/threads/:id/delete-preview`). The intent — no workflow expression preview route reaches the server — is what was verified instead: `rg -n "workflows/.*(preview|expr)" packages/studio/src` → empty.
+  - **The 1280px three-column / tabbed-single-column layout (§4.1's diagram)** is simplified to a CSS grid (`grid-cols-1 lg:grid-cols-3`, breaking at 1024px, Tailwind's own `lg`) rather than a real `Tabs` below the breakpoint — the three panes still all exist and work below that width, stacked vertically, just without tab chrome. Recorded here rather than silently narrowed.
+  - **Plan 305's own doc comment on `FlowNode.tsx`** claimed the pinned badge was "wired but never fires until 304's schema lands" — reading the file showed no `pinned` field on `FlowNodeData` at all; it did not exist, wired or not. Added here (`pinned: boolean` on `FlowNodeData`, fed by a new `pinnedIds` fetch in `FlowEditor.tsx`, `GET /api/workflows/:name/pins`).
+  - **No pin-shaped icon exists in `@enkaku/ui`'s exported icon set** (`packages/ui/src/icons.ts`), and this plan may not edit that package (explicit instruction). The canvas pin badge substitutes a filled `CircleIcon` dot instead of a push-pin glyph.
+  - **`packages/studio/package.json` was missing the `@enkaku/expr` workspace dependency** even though `next.config.ts`'s `transpilePackages` already listed it (plan 302 step 302.1) — the package resolved for Next's bundler but not for the standalone TypeScript 5 compiler this workspace uses (`bash scripts/typecheck.sh` failed with `TS2307` until it was added). Added, matching the `@enkaku/protocol`/`@enkaku/ui` entries beside it.
+- **Observed, not done**:
+  - Autocomplete inside the expression editor (§9 Q1) — `@enkaku/expr`'s own `describe()` is still the stub it was left as by plan 302 (`return {}`); wiring it up is explicitly optional per Q1's own "current answer" and is not a G-row.
+  - The output pane's UI-tree renderer (`DataView.tsx`'s `UiTreeRow`) shows `class`/`text`/`bounds` per node as the plan's §3.4 names, but has not been exercised against a real guest-agent `ui-tree` dump — the shape is inferred from the accessibility-node vocabulary used elsewhere in this codebase (`class`, `text`, `bounds`, `children`), not verified against a captured sample. Flagged for the owner sitting (G8).
+- **Open questions hit**: none blocked a step. §9 Q5 (the `get()` rule) was already decided by the task's own override and is implemented in `DataTree.tsx`'s `refFor()`. Q2 (input pane shows the node's own recorded input, not a live predecessor browse) is implemented as decided. Q3 (hand-edited pin, JSON textarea) is implemented in `PinControls.tsx`. Q4 (a node absent from the last run reads "has not run in the most recent run") is implemented via the `'none'` state. Q1 (autocomplete) was left unbuilt, as its own current answer permits.
+- **Does P8 work?** By construction, yes, and this is the load-bearing claim for plan 302's own condition (plan 300 §3 D4: "if plan 306 cannot deliver the live preview, plan 302 does not ship either"). `usePreview.ts` imports `parse`/`evaluate`/`toScopeValue`/`deriveRandom` from `@enkaku/expr` directly into the browser bundle (confirmed above, G9), builds the exact `ExprScope` shape `workflow-resolve.ts`'s `buildExprScope` builds server-side (same six roots, same `toScopeValue` normalisation, same `deriveRandom(seed, seq)`), and evaluates synchronously in the tab after a 120 ms debounce — no `fetch` call anywhere in the preview path. `bash scripts/typecheck.sh` and `bun run --cwd packages/studio build` both confirm this compiles and statically exports. **What is NOT verified here, and cannot be from this worktree**: the owner's own stopwatch reading of "≤ 150 ms from keystroke to preview" (G3) and the DevTools Network-tab-empty observation the plan's own "Verified by" column names — both require a human at a keyboard against a running core with a real last run to open, which is exactly why G1–G8 are marked `owner` rather than claimed. The code path that would make P8 false — a network call in `usePreview.ts` or `ExprField.tsx` — does not exist; that is what this report can state with certainty.
+- **Processes**: `ps -Ao pid=,command= | grep -i "[o]penpf"` → empty (checked twice: once immediately after the last `build:studio` run, once at report time). No `dev:studio`, `dev:cloud`, or core process was ever started by this session.
+
+### Owner smoke checklist (plan §7, to be performed by the owner — none of it was performed here)
+
+1. Open a node that ran yesterday — both data panes populate with no re-run. (**P6**, G1)
+2. Click a nested leaf in the input pane with a text parameter focused — the reference appears at the caret and the preview resolves it. (**P7**, G2)
+3. Type `len($input.items) > 0`, watch the value resolve as you type; break it (`len($input.items`) and confirm the underline lands on the right character. (**P8**, G3, G4)
+4. Press "Run this node" — a `node-test` run appears in Jobs and the output pane fills. (**P9**, G5)
+5. Pin that output; the canvas badges the node; re-run the workflow and confirm the node did not touch the device; unpin. (**P10**, G6)
+6. Open the start node and add a workflow parameter; it appears in the Run dialog. (G7)
+7. Open a node whose result is a screenshot — it renders as an image; open one returning a UI tree — it renders as a tree. (G8)
