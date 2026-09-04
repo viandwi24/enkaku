@@ -49,3 +49,9 @@ refs/
 # absolute now, but a stale checkout or an older branch can still produce this at the repo root.
 .enkaku-workspace-content/
 dev.log
+
+# Agent worktrees (created by Claude Code, never committed)
+.claude/worktrees/
+
+# Codex local state
+.codex/
