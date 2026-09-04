@@ -4,8 +4,14 @@ import {
   DiscoveredDevicesResponseSchema,
   GuestAgentStatusResponseSchema,
   NodeTypesResponseSchema,
+  WorkflowLastRunResponseSchema,
+  WorkflowPinsListResponseSchema,
+  WorkflowRunNodeResponseSchema,
   type VideoLatencyResponse,
   VideoLatencyResponseSchema,
+  type WorkflowLastRunResponse,
+  type WorkflowPinListItem,
+  type WorkflowRunNodeRequest,
 } from '@enkaku/protocol'
 import type {
   DeviceInfo,
@@ -781,3 +787,37 @@ export async function estimateWorkflowDuration(
 }
 
 export type { WorkflowStepInfo }
+
+// ---- The node panel (plan 306) ----
+
+/** `GET /api/workflows/:name/last-run` (plan 306 §3.1, §4.5) — `null` when the workflow has never run for real (`workflow_never_run`), never thrown as an error the panel has to explain. */
+export async function fetchWorkflowLastRun(name: string): Promise<WorkflowLastRunResponse | null> {
+  try {
+    return await api(`/api/workflows/${encodeURIComponent(name)}/last-run`, WorkflowLastRunResponseSchema)
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && (err as { code?: string }).code === 'workflow_never_run') return null
+    throw err
+  }
+}
+
+/** `POST /api/workflows/:name/run-node` (plan 300 P9, plan 306 §4.2 step 306.6). */
+export async function runWorkflowNode(name: string, body: WorkflowRunNodeRequest): Promise<{ jobId: string; runId: string }> {
+  const res = await api(`/api/workflows/${encodeURIComponent(name)}/run-node`, WorkflowRunNodeResponseSchema, { json: body })
+  return { jobId: res.job.jobId, runId: res.runId }
+}
+
+/** `GET /api/workflows/:name/pins` (plan 300 P10, plan 304 §4.3). */
+export async function listWorkflowPins(name: string): Promise<WorkflowPinListItem[]> {
+  const res = await api(`/api/workflows/${encodeURIComponent(name)}/pins`, WorkflowPinsListResponseSchema)
+  return res.pins
+}
+
+/** `PUT /api/workflows/:name/pins/:nodeId` — `{ data }` pins the given value, `{ from: 'last-run' }` pins the node's own last recorded output. `204 No Content`. */
+export async function setWorkflowPin(name: string, nodeId: string, body: { data: unknown } | { from: 'last-run' }): Promise<void> {
+  await api(`/api/workflows/${encodeURIComponent(name)}/pins/${encodeURIComponent(nodeId)}`, z.void(), { method: 'PUT', json: body })
+}
+
+/** `DELETE /api/workflows/:name/pins/:nodeId`. `204 No Content`. */
+export async function deleteWorkflowPin(name: string, nodeId: string): Promise<void> {
+  await api(`/api/workflows/${encodeURIComponent(name)}/pins/${encodeURIComponent(nodeId)}`, z.void(), { method: 'DELETE' })
+}
