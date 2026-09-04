@@ -122,8 +122,15 @@ describe('DeviceSession — the session-scoped inspector (plan 208 §3.2, §4.8)
     expect(released).toBe(1)
   })
 
-  test('a failed makeInspector leaves inspector null and inspectorEngineId starting, and resolves', async () => {
+  test('a failed makeInspector says `failed`, not `starting`, and the NEXT call genuinely retries', async () => {
+    // This used to assert `'starting'` and a resolved promise, which is what
+    // the code did — and it was the bug: every later caller was told "the
+    // inspector is still starting; retry in a moment" forever, while the
+    // `??=` memo guaranteed no start would be attempted again. Nothing to
+    // wait for, and waiting the only thing offered (owner, 2026-09-04).
+    let attempts = 0
     const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => {
+      attempts += 1
       throw new Error('ui-server cannot be used on this device')
     }
 
@@ -132,9 +139,15 @@ describe('DeviceSession — the session-scoped inspector (plan 208 §3.2, §4.8)
       { client: fakeClient(), log: silentLog(), makeInspector },
     )
 
+    // Still resolves rather than rejecting: a session whose inspector cannot
+    // start is degraded, never dead — video and input are unaffected.
     await expect(session.whenInspectorReady()).resolves.toBeUndefined()
     expect(session.inspector).toBeNull()
-    expect(session.inspectorEngineId).toBe('starting')
+    expect(session.inspectorEngineId).toBe('failed')
+    expect(attempts).toBe(1)
+
+    await expect(session.whenInspectorReady()).resolves.toBeUndefined()
+    expect(attempts).toBe(2)
 
     await session.close()
   })

@@ -523,7 +523,24 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
         session.inspectorPollIntervalMs = h.pollIntervalMs
         log.info(`inspector ready: ${h.engineId} on ${opts.deviceId} in ${Date.now() - t0} ms`)
       } catch (err) {
-        log.warn(`inspector could not start: ${String(err)}`)
+        /**
+         * A failed start used to leave `inspectorEngineId` at `'starting'`
+         * and `inspectorPromise` set. Both were wrong, and together they
+         * produced the worst possible answer: every caller was told "the
+         * inspector is still starting; retry in a moment" forever, while
+         * `??=` guaranteed no start would ever be attempted again — there
+         * was nothing to wait for, and waiting was the only thing offered
+         * (owner, 2026-09-04, on the first farm where the ui-tree engine was
+         * actually reachable).
+         *
+         * So: say `'failed'`, which the API surfaces as `liveInspection`, and
+         * drop the memo so the NEXT caller genuinely retries. A retry is
+         * cheap (the engine ladder re-probes) and the alternative is a
+         * session that can never inspect again without being torn down.
+         */
+        session.inspectorEngineId = 'failed'
+        inspectorPromise = null
+        log.warn(`inspector could not start on ${opts.deviceId} after ${Date.now() - t0} ms: ${String(err)}`)
       }
     })()
     return inspectorPromise

@@ -2047,6 +2047,14 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               // job's own `whenInspectorReady()`), not genuinely broken.
               if (session.inspectorEngineId === 'starting') {
                 sendError(ws, 'E_INSPECTOR_STARTING', 'the inspector is still starting; retry in a moment', msgId)
+              } else if (session.inspectorEngineId === 'failed') {
+                // A previous start threw. `startInspector` now drops its memo
+                // on failure (plan 208's `??=` used to make the first failure
+                // permanent), so kicking it here is a real retry rather than
+                // a no-op — and the sentence says which of the two happened
+                // instead of promising a start that was never coming.
+                void session.whenInspectorReady()
+                sendError(ws, 'E_INSPECTOR_STARTING', 'the inspector failed to start and is being retried; retry in a moment', msgId)
               } else {
                 sendError(ws, 'E_INSPECT_UNAVAILABLE', `the ${session.inspectorEngineId} engine is not available on this session`, msgId)
               }
