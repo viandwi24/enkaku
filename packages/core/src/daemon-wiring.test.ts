@@ -822,6 +822,7 @@ describe('daemon.ts wiring (plan 90 §5 Task B, docs/plans/96-m61-hotfixes.md §
           return 0
         },
         encoders: () => [],
+        forwards: () => [],
       }
 
       const deps: WsHandlerDeps = {

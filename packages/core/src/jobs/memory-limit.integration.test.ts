@@ -141,6 +141,7 @@ async function runOneMemoryHogJob(opts: {
       closeDevice: async () => {},
       closeAll: async () => 0,
       encoders: () => [],
+      forwards: () => [],
     },
     artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
     log: silentLog() as never,

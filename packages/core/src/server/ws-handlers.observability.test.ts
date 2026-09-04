@@ -86,6 +86,8 @@ function fakeSession(deviceId: string, sink: InputSink, opts: { queueWaitMs?: nu
     inputEngineId: 'scrcpy-uhid',
     videoConfig: () => null,
     videoKeyframe: () => null,
+    forwardPort: null,
+    scrcpyScid: null,
     inspector: null,
     whenInspectorReady: async () => {},
     prewarmInspector: async () => {},
@@ -135,6 +137,7 @@ function fakeSessionManager(sessionsByDevice: Map<string, DeviceSession>): Sessi
     },
     activeDeviceIds: () => [...sessionsByDevice.keys()],
     encoders: () => [],
+    forwards: () => [],
   }
 }
 

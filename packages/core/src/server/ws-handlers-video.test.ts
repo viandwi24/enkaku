@@ -64,6 +64,8 @@ function fakeSession(
     inputEngineId: 'adb-input',
     videoConfig: () => cached.config,
     videoKeyframe: () => cached.keyframe,
+    forwardPort: null,
+    scrcpyScid: null,
     requestKeyframe: () => {
       counter.n += 1
     },
@@ -116,6 +118,7 @@ function fakeSessionManager(session: DeviceSession, echoQuality: Quality = 'cont
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
 }
 
@@ -147,6 +150,7 @@ function fakeSessionManagerCapturing(session: DeviceSession): { manager: Session
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
   return {
     manager,
@@ -300,6 +304,7 @@ describe('stream.start — the encoder split (plan 206 §3.4, §4.3, §4.8)', ()
         return 0
       },
       encoders: () => [],
+      forwards: () => [],
     }
   }
 
@@ -401,6 +406,7 @@ describe('stream.start — the encoder split (plan 206 §3.4, §4.3, §4.8)', ()
         return 0
       },
       encoders: () => [],
+      forwards: () => [],
     }
     const alwaysOn: Pick<AlwaysOn, 'stateOf'> = { stateOf: () => ({ state: 'preparing', step: 3, attempt: 0, usbRoot: '3' }) }
     const handler = setUpHandler(db, wall.session, manager, { alwaysOn })
@@ -439,6 +445,7 @@ describe('stream.start — the encoder split (plan 206 §3.4, §4.3, §4.8)', ()
         return 0
       },
       encoders: () => [],
+      forwards: () => [],
     }
     const handler = setUpHandler(db, wall.session, manager)
     const a = fakeConn()

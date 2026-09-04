@@ -94,6 +94,8 @@ function fakeSession(
     inputEngineId: 'adb-input',
     videoConfig: () => null,
     videoKeyframe: () => null,
+    forwardPort: null,
+    scrcpyScid: null,
     inspector: null,
     whenInspectorReady: async () => {
       if (opts?.startFails) throw new Error('watchdog gave up')
@@ -144,6 +146,7 @@ function fakeSessionManager(session: DeviceSession | null): SessionManager {
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
 }
 

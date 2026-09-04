@@ -44,10 +44,12 @@ const silentLog = (): Logger => {
 const fakeClient = () => ({ exec: async () => '', execOut: async () => new Uint8Array() }) as unknown as AdbClient
 
 /** A scrcpy session that never produces frames and never closes on its own. */
-function fakeScrcpy(): ScrcpySession {
+function fakeScrcpy(opts: { port?: number; scid?: string } = {}): ScrcpySession {
   const closeHandlers = new Set<(reason: string) => void>()
   return {
     meta: { deviceName: 'test phone', codec: 'h264', width: 704, height: 1600 },
+    port: opts.port ?? 27183,
+    scid: opts.scid ?? '7f000001',
     onPacket: () => {},
     onMetaChange: () => {},
     onClose: (cb: (reason: string) => void) => void closeHandlers.add(cb),
@@ -534,6 +536,45 @@ describe('SessionManager — encoder split (plan 206 §3.4, §4.3)', () => {
 
     expect(ended).toEqual([{ deviceId: DEVICE_ID, reason: 'the scrcpy session ended: device unplugged' }])
     expect(manager.encoders()).toEqual([])
+  })
+})
+
+describe('SessionManager.forwards() (plan 223 §4.3)', () => {
+  test('forwards(): reports one row per live entry with its port, scid, and openedAt', async () => {
+    const timers = fakeTimers()
+    timers.advance(5_000)
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy({ port: 27500, scid: '7f00aabb' }),
+      timers: timers.timers,
+    })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    expect(manager.forwards()).toEqual([{ deviceId: DEVICE_ID, quality: 'wall', port: 27500, scid: '7f00aabb', openedAt: 5 }])
+    await manager.closeAll()
+  })
+
+  test('forwards(): a screencap-loop entry is absent, not reported with a null port', async () => {
+    const screencapSnapshot = { ...snapshot, display: 'screencap-loop' }
+    const screencapDevices: DeviceSnapshotSource = { get: (id) => (id === DEVICE_ID ? screencapSnapshot : null) }
+    const manager = createSessionManager({ client: fakeClient(), devices: screencapDevices, log: silentLog() })
+    await manager.build(DEVICE_ID, { requireScrcpy: false })
+    expect(manager.forwards()).toEqual([])
+    await manager.closeAll()
+  })
+
+  test('forwards(): a closed entry disappears from the next call', async () => {
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => fakeScrcpy({ port: 27600, scid: '7f00ccdd' }),
+    })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    expect(manager.forwards()).toHaveLength(1)
+    await manager.closeAll()
+    expect(manager.forwards()).toEqual([])
   })
 })
 

@@ -68,6 +68,8 @@ function fakeSession(deviceId: string, clipboard: DeviceSession['clipboard']): D
     inputEngineId: 'scrcpy-uhid',
     videoConfig: () => null,
     videoKeyframe: () => null,
+    forwardPort: null,
+    scrcpyScid: null,
     inspector: null,
     whenInspectorReady: async () => {},
     prewarmInspector: async () => {},
@@ -113,6 +115,7 @@ function fakeSessionManager(session: DeviceSession | null): SessionManager {
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
 }
 
@@ -410,6 +413,7 @@ function fakeMultiDeviceSessionManager(sessionsByDevice: Map<string, DeviceSessi
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
 }
 

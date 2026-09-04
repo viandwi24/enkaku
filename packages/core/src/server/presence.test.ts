@@ -42,6 +42,8 @@ function fakeSession(deviceId: string): DeviceSession {
     inputEngineId: 'adb-input',
     videoConfig: () => null,
     videoKeyframe: () => null,
+    forwardPort: null,
+    scrcpyScid: null,
     inspector: null,
     whenInspectorReady: async () => {},
     prewarmInspector: async () => {},
@@ -104,6 +106,7 @@ function fakeSessionManager(): SessionManager {
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
 }
 

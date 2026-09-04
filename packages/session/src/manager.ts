@@ -127,6 +127,17 @@ interface Entry {
   lingerEndsAt: number | null
   /** Plan 209 §4.9: the base (wall) entry's clipboard subscription unsubscribe, null on a control entry (only the base subscribes). */
   clipboardUnsubscribe: (() => void) | null
+  /** Unix seconds this entry's forward was opened (plan 223 §4.3). Set once, when `createEntry` receives a `ready` session. */
+  openedAt: number
+}
+
+export interface ForwardRecord {
+  deviceId: string
+  quality: Quality
+  port: number
+  scid: string
+  /** Unix seconds this entry's forward was opened. */
+  openedAt: number
 }
 
 export interface SessionManager {
@@ -159,6 +170,8 @@ export interface SessionManager {
   encoders(): EncoderReport[]
   /** Plan 203 §4.5: per-entry PTS statistics for `GET /api/video/latency`. */
   videoLatency?(deviceId: string): Array<{ quality: Quality; viewers: number } & VideoLatencySnapshot>
+  /** Every live scrcpy forward this process currently holds, owner-tagged (plan 223 §4.2/§4.3) — the source for `GET /api/adb/stats`'s `forwards` block and for the soak's forward count. Entries with no scrcpy forward (screencap-loop) are simply absent, not reported with a null port. */
+  forwards(): ForwardRecord[]
 }
 
 export interface SessionManagerDeps {
@@ -413,6 +426,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // Plan 209 §3.2 D10, §4.9: only the base (wall) entry's scrcpy session is
       // subscribed, so a device with both encoders running pushes once.
       clipboardUnsubscribe: quality === 'wall' && deps.onClipboardChanged ? session.onClipboardChanged((text) => deps.onClipboardChanged!(deviceId, text)) : null,
+      openedAt: Math.floor(timers.now() / 1000),
     }
     entries.set(key, entry)
     await session.display.start()
@@ -716,6 +730,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       for (const entry of entries.values()) {
         if (entry.deviceId !== deviceId) continue
         rows.push({ quality: entry.quality, viewers: entry.viewers.size, ...entry.latency.snapshot() })
+      }
+      return rows
+    },
+
+    forwards() {
+      const rows: ForwardRecord[] = []
+      for (const entry of entries.values()) {
+        if (entry.session.forwardPort === null) continue
+        rows.push({
+          deviceId: entry.deviceId,
+          quality: entry.quality,
+          port: entry.session.forwardPort,
+          scid: entry.session.scrcpyScid ?? '',
+          openedAt: entry.openedAt,
+        })
       }
       return rows
     },

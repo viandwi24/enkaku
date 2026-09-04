@@ -167,6 +167,7 @@ function fakeSessionManager(session: DeviceSession | null): SessionManager {
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
 }
 

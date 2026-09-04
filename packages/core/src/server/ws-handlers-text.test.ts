@@ -71,6 +71,8 @@ function fakeSession(opts: {
     inputEngineId: opts.inputEngineId,
     videoConfig: () => null,
     videoKeyframe: () => null,
+    forwardPort: null,
+    scrcpyScid: null,
     inspector: null,
     whenInspectorReady: async () => {},
     prewarmInspector: async () => {},
@@ -121,6 +123,7 @@ function fakeSessionManager(session: DeviceSession | null): SessionManager {
       return 0
     },
     encoders: () => [],
+    forwards: () => [],
   }
 }
 
