@@ -348,9 +348,25 @@ async function call<TResult>(
 
   const result = resultSchema.safeParse(envelope.data.result)
   if (!result.success) {
+    /**
+     * The payload the phone actually sent, beside the fields the host wanted.
+     *
+     * Without it this error says only which keys are missing, which is the
+     * same sentence whether the agent sent the wrong shape, an empty object,
+     * or a correct object one level deeper — three different bugs, one
+     * message. Chasing `ui.status` on a real phone (2026-09-04) it cost an
+     * hour of reading both sides of a protocol that looked right in the
+     * source on both sides.
+     *
+     * Bounded to 400 characters: a `ui.dump` result is an entire view tree,
+     * and a log line is not the place for it. The agent's responses carry no
+     * secret — the token travels in the REQUEST — so this leaks nothing.
+     */
+    const raw = JSON.stringify(envelope.data.result)
+    const shown = raw.length > 400 ? `${raw.slice(0, 400)}… (${raw.length} bytes)` : raw
     throw new GuestAgentClientError(
       'E_UNEXPECTED_RESPONSE',
-      `guest agent ${request.method} result did not match its schema: ${result.error.message}`,
+      `guest agent ${request.method} result did not match its schema: ${result.error.message} — the agent sent ${shown}`,
     )
   }
   return result.data
