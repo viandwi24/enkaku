@@ -806,14 +806,22 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     for (const [key, stream] of [...connState.touches]) {
       if (onlyDeviceId && stream.deviceId !== onlyDeviceId) continue
       connState.touches.delete(key)
-      const session = deps.sessions?.get(stream.deviceId) ?? null
-      if (!session) continue
-      const source: InputSource = { kind: 'user', id: connState.clientId, userId: connState.userId }
-      const sink = session.arbiter.for(source)
-      const last = stream.samples[stream.samples.length - 1]
-      if (last && sink.touch) {
-        const p = mapNormToDevice(last, session.frameSize)
-        void sink.touch('up', p, stream.pointerId).catch(() => undefined)
+      try {
+        const session = deps.sessions?.get(stream.deviceId) ?? null
+        if (session) {
+          const source: InputSource = { kind: 'user', id: connState.clientId, userId: connState.userId }
+          const sink = session.arbiter.for(source)
+          const last = stream.samples[stream.samples.length - 1]
+          if (last && sink.touch) {
+            const p = mapNormToDevice(last, session.frameSize)
+            void sink.touch('up', p, stream.pointerId).catch(() => undefined)
+          }
+        }
+      } catch {
+        // Best-effort, matching every other cleanup call in `handleClose`/
+        // `stream.stop` — a fixture with no real arbiter (most tests) or a
+        // session that has already gone away must not stop the rest of
+        // teardown from running.
       }
       if (stream.pointerId === 0) observeStream(stream.deviceId, stream, connState.userId)
     }
@@ -821,11 +829,15 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
 
   /** Plan 209 §4.10: every key up, called on stream stop and disconnect. */
   function releaseKeysFor(connState: ConnState, deviceId: string): void {
-    const session = deps.sessions?.get(deviceId) ?? null
-    if (!session) return
-    const source: InputSource = { kind: 'user', id: connState.clientId, userId: connState.userId }
-    const sink = session.arbiter.for(source)
-    void sink.releaseKeys?.().catch(() => undefined)
+    try {
+      const session = deps.sessions?.get(deviceId) ?? null
+      if (!session) return
+      const source: InputSource = { kind: 'user', id: connState.clientId, userId: connState.userId }
+      const sink = session.arbiter.for(source)
+      void sink.releaseKeys?.().catch(() => undefined)
+    } catch {
+      // Best-effort — see `releaseTouchStreams` above.
+    }
   }
 
   return {
