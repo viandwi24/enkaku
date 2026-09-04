@@ -42,7 +42,7 @@ import {
 } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { JobsList } from '@/components/JobsList'
-import { JobDetailPanel } from '@/components/device-popup/JobDetailPanel'
+import { JobDetailPanel } from '@/components/jobs/JobDetailPanel'
 import { BatchResults } from '@/components/bulk/BatchResults'
 import { OutcomeSummary } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups } from '@/components/bulk/SkippedGroups'

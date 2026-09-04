@@ -5,7 +5,7 @@ import type { ActionVerb, GroupInfo, Target } from '@enkaku/protocol'
 import { ConfirmDialog, cn } from '@enkaku/ui'
 import { toast } from 'sonner'
 import { groupResults, runAction } from '@/lib/actions'
-import { GENERIC_ACTION_SET } from './action-set'
+import { GENERIC_ACTIONS } from '@/lib/generic-actions'
 
 const ROW = 'flex w-full items-center gap-2.5 rounded-button px-[10px] py-[9px] text-row transition-colors'
 const ROW_IDLE = 'text-text hover:bg-muted'
@@ -13,7 +13,7 @@ const ROW_DANGER = 'text-danger hover:bg-muted'
 const ROW_OFF = 'cursor-not-allowed text-faint-2'
 
 /**
- * The generic action set, rendered from `action-set.ts` (design handoff,
+ * The generic action set, rendered from `@/lib/generic-actions.ts` (design handoff,
  * "Generic action set"; plan 214 §4.12). A `needsDialog` row is disabled
  * with the stated title until plan 216 builds it; `set-group` opens a
  * nested submenu of every known group instead of a dialog, because this
@@ -33,7 +33,7 @@ export function ActionMenu({
 }) {
   const [groupMenuOpen, setGroupMenuOpen] = useState(false)
 
-  const run = async (verb: (typeof GENERIC_ACTION_SET)[number]['verb'], params: Record<string, unknown> = {}) => {
+  const run = async (verb: (typeof GENERIC_ACTIONS)[number]['id'], params: Record<string, unknown> = {}) => {
     try {
       const res = await runAction(verb, target, params as never)
       const grouped = groupResults(res.results)
@@ -50,11 +50,11 @@ export function ActionMenu({
 
   return (
     <div className="p-1">
-      {GENERIC_ACTION_SET.map((item) => {
+      {GENERIC_ACTIONS.map((item) => {
         const Icon = item.icon
         if (item.submenu === 'group') {
           return (
-            <div key={item.verb} className="relative">
+            <div key={item.id} className="relative">
               <button type="button" className={cn(ROW, ROW_IDLE)} onClick={() => setGroupMenuOpen((v) => !v)}>
                 <Icon className="size-4" aria-hidden />
                 {item.label}
@@ -94,16 +94,16 @@ export function ActionMenu({
         }
         if (item.needsDialog) {
           return (
-            <button key={item.verb} type="button" aria-disabled className={cn(ROW, ROW_OFF)} title="Opens a dialog (plan 216)">
+            <button key={item.id} type="button" aria-disabled className={cn(ROW, ROW_OFF)} title="Opens a dialog (plan 216)">
               <Icon className="size-4" aria-hidden />
               {item.label}
             </button>
           )
         }
-        if (item.verb === 'forget') {
+        if (item.id === 'forget') {
           return (
             <ConfirmDialog
-              key={item.verb}
+              key={item.id}
               title={`Forget ${count} device${count === 1 ? '' : 's'}?`}
               description="Their history stays. A phone that reconnects appears in Discovered again."
               confirmLabel="Forget"
@@ -118,7 +118,7 @@ export function ActionMenu({
           )
         }
         return (
-          <button key={item.verb} type="button" className={cn(ROW, ROW_IDLE)} onClick={() => void run(item.verb)}>
+          <button key={item.id} type="button" className={cn(ROW, ROW_IDLE)} onClick={() => void run(item.id)}>
             <Icon className="size-4" aria-hidden />
             {item.label}
           </button>

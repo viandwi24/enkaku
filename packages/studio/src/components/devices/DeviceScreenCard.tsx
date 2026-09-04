@@ -37,7 +37,7 @@ export function DeviceScreenCard({
     >
       <div className="relative aspect-[9/19.5] overflow-hidden rounded-inner bg-muted-2">
         {live ? (
-          <LiveView deviceId={device.id} inputEnabled={false} quality="wall" compact />
+          <LiveView deviceId={device.id} />
         ) : (
           <div className="absolute inset-0 opacity-70" style={STRIPE} />
         )}

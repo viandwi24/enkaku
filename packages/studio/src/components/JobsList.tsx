@@ -287,7 +287,7 @@ export function JobsList({
               return (
                 <TableCell className="text-[12.5px]">
                   <Link
-                    href={`/device?id=${encodeURIComponent(j.deviceId)}`}
+                    href={`/?focus=${encodeURIComponent(j.deviceId)}`}
                     className="group inline-flex flex-col leading-tight hover:text-accent"
                   >
                     {/* `<DeviceName>` rather than a joined string (plan 124
