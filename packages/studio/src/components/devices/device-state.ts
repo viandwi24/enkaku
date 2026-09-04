@@ -31,7 +31,7 @@ export function dotStateOf(device: DeviceInfo): StatusDotState {
  * `deviceState()` themselves — `GREP_214_DEVICE_STATE` (plan 214 §10.3)
  * proves there is exactly one file in this screen that names it.
  */
-export function isDeviceState(device: Pick<DeviceInfo, 'status' | 'activities'>, state: 'free' | 'job'): boolean {
+export function isDeviceState(device: Pick<DeviceInfo, 'status' | 'activities'>, state: 'free' | 'controlled' | 'job'): boolean {
   return deviceState(device) === state
 }
 

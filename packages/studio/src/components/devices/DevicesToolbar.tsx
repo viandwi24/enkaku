@@ -20,7 +20,7 @@ import { useOverlay } from '@/lib/overlays'
 import { GroupTabs } from './GroupTabs'
 import { dotStateOf, isDeviceState } from './device-state'
 
-export type DevicesFilter = 'all' | 'free' | 'job' | 'quarantined' | 'offline'
+export type DevicesFilter = 'all' | 'free' | 'controlled' | 'job' | 'quarantined' | 'offline'
 export type DevicesView = 'table' | 'screens'
 
 export const CARD_WIDTH_PX = { s: 112, m: 146, l: 190, xl: 240 } as const
@@ -108,7 +108,12 @@ export function DevicesToolbar({
   const filterRows: Array<{ id: DevicesFilter; label: string; dot: ReturnType<typeof dotStateOf> | null; count: number }> = [
     { id: 'all', label: 'All', dot: null, count: devices.length },
     { id: 'free', label: 'Free', dot: 'free', count: devices.filter((d) => isDeviceState(d, 'free')).length },
-    { id: 'job', label: 'Running job', dot: 'job', count: devices.filter((d) => isDeviceState(d, 'job')).length },
+    // The amber state had a dot and a tooltip but no way to filter by it, so
+    // "who is someone driving right now?" was a question you answered by
+    // scanning a wall of tiles (owner, 2026-09-04). `deviceState()` already
+    // computed it; only the row was missing.
+    { id: 'controlled', label: 'Controlled by a user', dot: 'controlled', count: devices.filter((d) => isDeviceState(d, 'controlled')).length },
+    { id: 'job', label: 'Running a job', dot: 'job', count: devices.filter((d) => isDeviceState(d, 'job')).length },
     { id: 'quarantined', label: 'Quarantined', dot: 'unauthorized', count: devices.filter((d) => d.status === 'quarantined').length },
     { id: 'offline', label: 'Disconnected', dot: 'offline', count: devices.filter((d) => d.status === 'offline').length },
   ]
