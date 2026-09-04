@@ -247,7 +247,7 @@ workflow from a schedule and confirm the pin was ignored and node 2 executed.
 
 - **Branch**: `flow-304-workflow-executor-v2`, cut from `mvp` (worktree `/Users/solpochi/Projects/oss/openpf/.claude/worktrees/agent-a66bb04354ac7e06e`).
 
-- **Commits**: see `git log flow-304-workflow-executor-v2 --not mvp` in this worktree; committed as a small series of `feat(flow-304): …` commits alongside this report, plus one `chore(flow-304): …` for the generated migration.
+- **Commits**: `35e5509` — `feat(flow-304): executor v2 — per-step input/edge recording, pinned outputs, run-node, deterministic $random` (one commit; branch `flow-304-workflow-executor-v2`, cut from `mvp` at `94f71e0`). This report itself is committed in a second, immediately following commit (`docs(flow-304): …`).
 
 - **Typecheck**: clean (`bash scripts/typecheck.sh` — every package `OK`, including `core`, `protocol`, `expr`, `studio`).
 
