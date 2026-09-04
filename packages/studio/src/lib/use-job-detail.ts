@@ -6,7 +6,6 @@ import {
   RuntimeEnvelopeSchema,
   WorkflowDocSchema,
   type ArtifactInfo,
-  type JobNodeStatus,
   type ParamIssue,
   type JsonSchemaNode as ProtocolJsonSchemaNode,
   type ResultStatus,
@@ -51,16 +50,6 @@ export interface LogLine {
   msg: string
 }
 
-/** `job.status`'s live `node` block (plan 99 §4.9) — carried on `JobWithNode` below so a live update can attach it, even though this hook itself never reads it (the node timeline stays page-only). */
-export interface JobNodeLive {
-  id: string
-  seq: number
-  total: number
-  kind: 'script' | 'gate'
-  script: string | null
-  status: JobNodeStatus
-}
-
 /**
  * Plan 97 §4.6, step 97.5's own note, carried over verbatim: `JobDetail`
  * does not yet carry these on the wire type, so they are declared locally,
@@ -73,7 +62,15 @@ export interface JobWithResultInfo {
   resultIssues?: ParamIssue[] | null
   resultSchema?: ProtocolJsonSchemaNode | null
 }
-export type JobWithNode = JobWithPhase & JobWithResultInfo & { node?: JobNodeLive | null }
+/**
+ * Plan 211 §3.2 decision 9 — `job.status` no longer carries a live `node`
+ * block (`job_nodes`/the per-node counter are gone; a workflow step is now
+ * a real job with its own row, read through `/api/workflow-jobs/:id/runs/
+ * :runId/steps`). The type keeps its name (`JobWithNode`) rather than
+ * churning every caller across the codebase for a rename with no behavior
+ * change; it carries no `node` field any more.
+ */
+export type JobWithNode = JobWithPhase & JobWithResultInfo
 
 /**
  * `GET /api/scripts/:id` returns a full `ScriptRowSchema`, but this hook
