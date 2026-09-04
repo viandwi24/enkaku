@@ -4,11 +4,11 @@ import { useEffect, useRef, useState } from 'react'
 import type { DeviceDetail } from '@enkaku/protocol'
 import { api, BroadcastIcon, Button, StatusDot, Tabs, TabsContent, TabsList, TabsTrigger, XIcon } from '@enkaku/ui'
 import { DeviceDetailResponseSchema } from '@enkaku/protocol'
-import { readLocalPrefs } from '@/lib/prefs'
+import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 import { useOverlay } from '@/lib/overlays'
 import { dotStateOf } from '@/components/devices/device-state'
 import type { GenericActionId } from '@/lib/generic-actions'
-import { DEFAULT_RATIO, windowWidthPx } from './geometry'
+import { DEFAULT_RATIO, DEFAULT_WINDOW_HEIGHT_PX, clampWindowHeight, windowWidthPx } from './geometry'
 import { useCast } from './use-cast'
 import { Cast } from './Cast'
 import { ShortcutRail } from './ShortcutRail'
@@ -45,6 +45,17 @@ export function DeviceControl({
   const [device, setDevice] = useState<DeviceDetail | null>(null)
   const [drag, setDrag] = useState({ x: 0, y: 0 })
   const dragStart = useRef({ mx: 0, my: 0 })
+  /**
+   * The dragged HEIGHT, and the only size the operator sets.
+   *
+   * The width follows from it and the live aspect ratio, so the cast column
+   * always fits: a free-form two-axis resize on a window whose middle column
+   * is a phone screen can only produce a cropped picture or a band of dead
+   * space beside it. Restored on 2026-09-04 after the handoff's fixed 640px
+   * proved too small on a large display; persisted per browser, not per farm.
+   */
+  const [height, setHeight] = useState(DEFAULT_WINDOW_HEIGHT_PX)
+  const resizeStart = useRef({ my: 0, h: 0 })
   const [tab, setTab] = useState<'actions' | 'inspector' | 'device'>('actions')
 
   useEffect(() => {
@@ -86,6 +97,35 @@ export function DeviceControl({
   }
   useOverlay('window', true, close)
 
+  // Read once on mount, and clamped to THIS viewport: a height dragged on a
+  // 27-inch display must not open off-screen on a laptop.
+  useEffect(() => {
+    setHeight(clampWindowHeight(readLocalPrefs().deviceControlHeight, window.innerHeight))
+  }, [])
+
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    resizeStart.current = { my: e.clientY, h: height }
+    function onMove(ev: MouseEvent) {
+      // Doubled: the window is centred, so its top edge rises by half of
+      // whatever the bottom edge is dragged down — without this the handle
+      // moves at half the speed of the cursor and feels broken.
+      const next = resizeStart.current.h + (ev.clientY - resizeStart.current.my) * 2
+      setHeight(clampWindowHeight(next, window.innerHeight))
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setHeight((h) => {
+        writeLocalPrefs({ deviceControlHeight: Math.round(h) })
+        return h
+      })
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
   function startDrag(e: React.MouseEvent) {
     dragStart.current = { mx: e.clientX - drag.x, my: e.clientY - drag.y }
     function onMove(ev: MouseEvent) {
@@ -100,13 +140,19 @@ export function DeviceControl({
   }
 
   const ratio = cast.stats.width > 0 ? cast.stats.width / cast.stats.height : DEFAULT_RATIO
-  const width = windowWidthPx(ratio)
+  const width = windowWidthPx(ratio, height)
   const nodeOwned = device?.nodeId !== null && device?.nodeId !== undefined
 
   return (
     <div
-      className="fixed left-1/2 top-1/2 z-50 flex h-[calc(100vh-48px)] max-h-[640px] overflow-hidden rounded-window border border-border-2 bg-panel shadow-window"
-      style={{ width, maxWidth: 'calc(100vw - 24px)', transform: `translate(calc(-50% + ${drag.x}px), calc(-50% + ${drag.y}px))` }}
+      className="fixed left-1/2 top-1/2 z-50 flex overflow-hidden rounded-window border border-border-2 bg-panel shadow-window"
+      style={{
+        width,
+        height,
+        maxWidth: 'calc(100vw - 24px)',
+        maxHeight: 'calc(100vh - 48px)',
+        transform: `translate(calc(-50% + ${drag.x}px), calc(-50% + ${drag.y}px))`,
+      }}
     >
       <div className="flex w-[52px] shrink-0 flex-col items-center gap-1 bg-panel-2 py-2">
         <ShortcutRail deviceId={deviceId} sendKey={cast.sendKey} onRotate={() => void cycleRotation()} />
@@ -165,6 +211,24 @@ export function DeviceControl({
           </TabsContent>
         </Tabs>
       </div>
+
+      {/*
+        The resize grip. Bottom-right, inside the window, above the info
+        column's scroll area — `nwse-resize` because the window grows in both
+        axes even though only the height is dragged (the width follows the
+        ratio). `aria-hidden`: there is nothing here a keyboard user can do
+        that the default size does not already give them, and announcing a
+        control that only responds to a drag would be a false promise.
+      */}
+      <div
+        onMouseDown={startResize}
+        aria-hidden
+        className="absolute right-0 bottom-0 z-10 h-4 w-4 cursor-nwse-resize"
+        style={{
+          background:
+            'linear-gradient(135deg, transparent 0 45%, var(--line) 45% 55%, transparent 55% 70%, var(--line) 70% 80%, transparent 80%)',
+        }}
+      />
     </div>
   )
 }

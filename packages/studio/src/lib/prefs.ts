@@ -80,6 +80,13 @@ const LocalPrefsSchema = z.object({
    * `workflowEditorView`/`latencyOverlay` above.
    */
   cardWidth: z.enum(['s', 'm', 'l', 'xl']).default('m'),
+  /**
+   * Device Control's dragged height, in px. The width is derived from it and
+   * the live aspect ratio (`device-control/geometry.ts`), so one number is the
+   * whole size. A property of the screen someone is sitting in front of, like
+   * every other key in here — never a farm setting.
+   */
+  deviceControlHeight: z.number().int().min(320).max(1600).default(640),
 })
 export type LocalPrefs = z.infer<typeof LocalPrefsSchema>
 

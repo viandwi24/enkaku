@@ -4,10 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import type { Target } from '@enkaku/protocol'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
-import { DeviceControl } from '@/components/device-control/DeviceControl'
+import { useDeviceControl, useFocusedDeviceId } from '@/components/device-control/DeviceControlHost'
 import { retargetSelection } from '@/components/device-control/retarget'
-import { useActionDialogs } from '@/components/actions/ActionDialogHost'
-import type { GenericActionId } from '@/lib/generic-actions'
 import { readLocalPrefs, readSessionPrefs, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { ws } from '@/lib/ws'
 import { BulkPill } from './BulkPill'
@@ -76,12 +74,18 @@ export function DevicesScreen() {
     router.replace(`/?${next.toString()}`)
   }
 
-  const setFocus = (id: string | null) => {
-    setFocusId(id)
-    const next = new URLSearchParams(params.toString())
-    if (id) next.set('focus', id)
-    else next.delete('focus')
-    router.replace(`/?${next.toString()}`)
+  /**
+   * `?focus=` is gone with the local state.
+   *
+   * A window that outlives the page cannot have its identity in that page's
+   * query string: leaving `/` would drop the parameter while the window
+   * stayed open, and the address would be lying about what is on screen. The
+   * store is the single source of truth; `?device=` below is still honoured
+   * as a one-shot deep link, which is all it ever was.
+   */
+  const setFocus = (id: string | null, mirror?: readonly string[]) => {
+    if (id) deviceControl.open(id, mirror ?? [id])
+    else deviceControl.close()
   }
 
   const setCardWidthAndPersist = (w: CardWidth) => {
@@ -112,14 +116,19 @@ export function DevicesScreen() {
 
   const filteredIds = useMemo(() => filtered.map((d) => d.id), [filtered])
 
-  const [focusId, setFocusId] = useState<string | null>(params.get('focus'))
+  // Device Control is mounted once by the root layout now (plan 215's window
+  // used to live here, which is why navigating away killed the cast). This
+  // screen opens it and reads which device it holds; it never renders it.
+  const deviceControl = useDeviceControl()
+  const focusId = useFocusedDeviceId()
 
   const selection = useDeviceSelection({
     filteredIds,
     containerRef,
     onOpenControl: (id) => {
-      selection.set(retargetSelection(id, [...selection.selected]))
-      setFocus(id)
+      const mirror = retargetSelection(id, [...selection.selected])
+      selection.set(mirror)
+      setFocus(id, mirror)
     },
   })
 
@@ -131,15 +140,12 @@ export function DevicesScreen() {
   useEffect(() => {
     const id = params.get('device')
     if (!id) return
-    setFocusId(id)
+    deviceControl.open(id)
     const next = new URLSearchParams(params.toString())
-    next.set('focus', id)
     next.delete('device')
-    router.replace(`/?${next.toString()}`)
+    router.replace(next.toString() ? `/?${next.toString()}` : '/')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  const { open: openActionDialog } = useActionDialogs()
 
   const pendingCount = discovered.length
 
@@ -148,27 +154,6 @@ export function DevicesScreen() {
   const rescan = () => {
     setSpinning(true)
     setTimeout(() => setSpinning(false), 1400)
-  }
-
-  /**
-   * Device Control's Actions tab (plan 215 §4.10, §4.15).
-   *
-   * Every row opens the verb's own dialog with the focused device pre-filled,
-   * exactly like the bulk menu (`ActionMenu`) and the Scripts and Plugins
-   * entry points. Plan 215 shipped a stub here that fired six verbs straight
-   * at REST and announced the other six as "Opens a dialog (plan 216)";
-   * plan 216 built the dialogs but wired the entry points that existed on ITS
-   * branch, and this one was on 215's — both plans ran in R5. The owner found
-   * the dead buttons on real hardware (field report, 2026-09-04). Nothing
-   * typed could have caught it: the stub was a toast string.
-   *
-   * Routing every verb through the dialog is also what MVP 07 §2.1 asks for —
-   * the DevicePicker sits at the top of every action modal, pre-filled to the
-   * single device when there is only one, and still changeable.
-   */
-  const openDeviceAction = (id: GenericActionId, prefill?: Record<string, unknown>) => {
-    if (!focusId) return
-    openActionDialog(id, { deviceIds: [focusId] }, prefill)
   }
 
   if (devices === null) {
@@ -237,14 +222,6 @@ export function DevicesScreen() {
         <div className="pointer-events-none fixed z-50 rounded-[6px] border border-accent bg-accent-a1" style={selection.rect} />
       )}
 
-      {focusId && (
-        <DeviceControl
-          deviceId={focusId}
-          selectedIds={[...selection.selected]}
-          onClose={() => setFocus(null)}
-          onAction={(id, params) => openDeviceAction(id, params)}
-        />
-      )}
     </div>
   )
 }
