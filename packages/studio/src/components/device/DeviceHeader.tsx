@@ -215,8 +215,8 @@ export function DeviceDetailsPopover({
       <PopoverContent className="w-80">
         <h2 className="rack-label mb-2.5">this device</h2>
         <dl className="space-y-1.5">
-          {/* Always shown, even unclustered — a field, not an omission (plan 22.0 §4.5). */}
-          <Row label="cluster" value={device.cluster ? device.cluster.name : 'Unclustered'} />
+          {/* Always shown, even ungrouped — a field, not an omission (plan 22.0 §4.5). */}
+          <Row label="group" value={device.group ? device.group.name : 'Ungrouped'} />
           <Row label="stable id" value={device.stableId} copyable />
           <Row label="serial" value={device.serial} copyable />
           <Row label="api level" value={device.apiLevel ? String(device.apiLevel) : '—'} />

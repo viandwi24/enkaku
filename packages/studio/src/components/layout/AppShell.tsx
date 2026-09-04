@@ -19,7 +19,6 @@ import {
   cn,
 } from '@enkaku/ui'
 import { NotificationBell } from '@/components/NotificationBell'
-import { OperationTray } from '@/components/operations/OperationTray'
 import { ProvisioningBanner } from '@/components/ProvisioningBanner'
 import { AdbServerBanner } from '@/components/layout/AdbServerBanner'
 import { useAuth, type AuthUser } from '@/lib/auth'
@@ -519,14 +518,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</main>
       </div>
 
-      {/* Plan 107 (M72) §1, §3.1, §4, step 107.3 — one floating, farm-wide
-          tray for every long operation, mounted ONCE here rather than per
-          screen (§9 Q3, recorded as a proposal, not a settled ruling — see
-          that component's own doc comment). Sibling to both the sidebar and
-          the content pane, not nested inside either, so its own `fixed`
-          positioning is never affected by an ancestor gaining a
-          containing-block-creating `filter`/`transform` later. */}
-      <OperationTray />
+      {/* `OperationTray` (plan 107) is deleted by plan 213 — no floating
+          operations tray is mounted here any more. */}
     </div>
     </TooltipProvider>
   )

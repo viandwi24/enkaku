@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import {
-  DeviceLabelsApplyResponseSchema,
   ReconnectOutcomeSchema,
   ScriptListItemSchema,
   type DeviceLabelState,
@@ -27,7 +26,7 @@ import {
   Unplug,
   type LucideIcon,
 } from 'lucide-react'
-import type { ClusterInfo, DeviceInfo } from '@enkaku/protocol'
+import type { GroupInfo, DeviceInfo } from '@enkaku/protocol'
 import { BulkForgetDialog } from '@/components/BulkForgetDialog'
 import { OutcomeSummary, type OutcomeCounts } from '@/components/bulk/OutcomeSummary'
 import { SkippedGroups, type NamedOutcome } from '@/components/bulk/SkippedGroups'
@@ -55,6 +54,7 @@ import {
 } from '@enkaku/ui'
 import { setDeviceReadiness } from '@/lib/readiness'
 import { setNumberAsWallpaper, setWallpaperLabelMode, summariseLabelApply } from '@/lib/labelling'
+import { runAction, runOnDevice } from '@/lib/actions'
 import { fetchAllPages } from '@/lib/api'
 import { AdbCommandDialog } from './AdbCommandDialog'
 import { FilesPopup, JobsPopup } from './ReadPopups'
@@ -291,7 +291,7 @@ export function ActionsList({
   const readinessAction = deriveReadinessAction(device.readiness)
   const readinessUnreachable = device.status === 'offline' || device.status === 'quarantined'
   const [scripts, setScripts] = useState<ScriptRow[]>([])
-  const [clusters, setClusters] = useState<ClusterInfo[]>([])
+  const [groups, setGroups] = useState<GroupInfo[]>([])
   const [runOpen, setRunOpen] = useState(false)
   const [installOpen, setInstallOpen] = useState(false)
   const [disconnectOpen, setDisconnectOpen] = useState(false)
@@ -343,7 +343,7 @@ export function ActionsList({
   // already fetches for itself.
   useEffect(() => {
     let cancelled = false
-    void fetchAllPages<ClusterInfo>('/api/clusters')
+    void fetchAllPages<GroupInfo>('/api/groups')
       .then((rows) => {
         if (!cancelled) setClusters(rows)
       })
@@ -494,11 +494,7 @@ export function ActionsList({
     const report =
       applicable.length === 0
         ? { counts: { ok: 0, failed: 0, skipped: 0, total: 0 }, failed: [], skipped: [] }
-        : summariseLabelApply(
-            (await api('/api/devices/labels/apply', DeviceLabelsApplyResponseSchema, { method: 'POST', json: { deviceIds: applicable } })).results,
-            applicable.length,
-            outcomeNameOf,
-          )
+        : summariseLabelApply((await runAction('set-label', { deviceIds: applicable }, {})).results, applicable.length, outcomeNameOf)
     setWallpaperReport({
       counts: { ...report.counts, failed: report.counts.failed + patchFailed.length, total: ids.length },
       failed: [...report.failed, ...patchFailed],
@@ -510,7 +506,7 @@ export function ActionsList({
   const reconnect = () =>
     run(
       'popup-reconnect',
-      () => api(`/api/devices/${deviceId}/connection/reconnect`, ReconnectOutcomeSchema, { method: 'POST', json: {} }),
+      async () => ReconnectOutcomeSchema.parse((await runOnDevice('reconnect', deviceId, {})).detail),
       {
         failure: 'Could not reconnect the device',
         onSuccess: (outcome) => {
@@ -725,7 +721,7 @@ export function ActionsList({
         onOpenChange={setInstallOpen}
         devices={defaultInstallDevices}
         allDevices={devices}
-        clusters={clusters}
+        groups={groups}
         nonModal
       />
       <DisconnectDeviceDialog device={device} open={disconnectOpen} onOpenChange={setDisconnectOpen} onDone={onDeviceReloaded} nonModal />
@@ -743,7 +739,7 @@ export function ActionsList({
         deviceId={deviceId}
         devices={devices}
         selectedIds={selectedIds}
-        clusters={clusters}
+        groups={groups}
         canUseLive={canUseLive}
         open={adbOpen}
         onOpenChange={setAdbOpen}

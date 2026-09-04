@@ -14,7 +14,7 @@ import {
   ScheduleRunsPageResponseSchema,
   ValidateResponseSchema,
   type BatchInfo,
-  type ClusterPreview,
+  type TargetPreview,
   type DeviceInfo,
   type ScheduleInfo,
   type ScheduleRunInfo,
@@ -82,7 +82,7 @@ function ScheduleDetail() {
   const [resolvesTo, setResolvesTo] = useState<{ scriptId: string; name: string; version: string } | null>(null)
   const [runsTotal, setRunsTotal] = useState<number | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
-  const [preview, setPreview] = useState<ClusterPreview | null>(null)
+  const [preview, setPreview] = useState<TargetPreview | null>(null)
   const [nextFires, setNextFires] = useState<number[]>([])
   const [editing, setEditing] = useState<ScheduleRow | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -135,19 +135,19 @@ function ScheduleDetail() {
 
   useEffect(() => {
     if (!schedule) return
-    if (schedule.clusterId) {
-      // A saved cluster's members, resolved for display the same way the
-      // device picker decides usability (plan 22.0 §3.5) — the cluster
+    if (schedule.groupId) {
+      // A saved group's members, resolved for display the same way the
+      // device picker decides usability (plan 22.0 §3.5) — the group
       // preview endpoint itself now only previews an ad-hoc tag/id target,
-      // since a saved cluster's membership is read directly from
-      // `GET /api/clusters/:id/devices`.
-      void fetchAllPages<DeviceInfo>(`/api/clusters/${schedule.clusterId}/devices`)
+      // since a saved group's membership is read directly from
+      // `GET /api/groups/:id/devices`.
+      void fetchAllPages<DeviceInfo>(`/api/groups/${schedule.groupId}/devices`)
         .then((members) => {
           const usable = members.filter((d) => d.status !== 'offline' && d.status !== 'quarantined')
           const skipped = members
             .filter((d) => d.status === 'offline' || d.status === 'quarantined')
             .map((d) => ({ deviceId: d.id, reason: d.status }))
-          setPreview({ usable: usable.map((d) => ({ deviceId: d.id, via: 'cluster' })), skipped })
+          setPreview({ usable: usable.map((d) => ({ deviceId: d.id, via: 'group' as const })), skipped })
         })
         .catch(() => setPreview(null))
     } else {
@@ -179,9 +179,9 @@ function ScheduleDetail() {
   if (error) return <div className="px-5 py-4"><ErrorState message={error} onRetry={load} /></div>
   if (!schedule) return <div className="px-5 py-4"><LoadingRows rows={3} /></div>
 
-  const clusterName = (id: string | null) => (id ? id.slice(0, 8) : null)
-  const targetSummary = schedule.clusterId
-    ? `cluster ${clusterName(schedule.clusterId)}`
+  const groupName = (id: string | null) => (id ? id.slice(0, 8) : null)
+  const targetSummary = schedule.groupId
+    ? `group ${groupName(schedule.groupId)}`
     : `${schedule.deviceIds.length} explicit device${schedule.deviceIds.length === 1 ? '' : 's'}`
 
   const runNow = () =>
@@ -292,7 +292,7 @@ function ScheduleDetail() {
                 )}
               </p>
             )}
-            {!schedule.clusterId && (
+            {!schedule.groupId && (
               // Plan 124 §4.4 Group D, step 124.4 — the explicit device list a
               // schedule targets, joined into one sentence and therefore the
               // `string` form of the rule (§3.2). A schedule can outlive the

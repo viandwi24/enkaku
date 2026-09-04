@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import Link from 'next/link'
-import { CommandRunsPageResponseSchema, isHighConsequence, type ServerMessage } from '@enkaku/protocol'
+import { isHighConsequence, type ServerMessage } from '@enkaku/protocol'
 import { newId, ws } from '@/lib/ws'
 import {
   AlertDialog,
@@ -16,7 +16,6 @@ import {
   Button,
   EmptyState,
   Input,
-  api,
   cn,
 } from '@enkaku/ui'
 
@@ -118,39 +117,12 @@ export function TerminalPane({
     if (el) el.scrollTop = el.scrollHeight
   }, [entries])
 
-  // Plan 93 §3.5, §3.9 — arrow-up recall used to live only in this
-  // component's own `useState` (F3), so a remount (a page reload, or
-  // navigating away and back) wiped it. `shell.exec` now records through
-  // the same store the fan-out console uses (`ws-handlers.ts`), so the last
-  // 50 entries of the operator's OWN history — across every device, not
-  // just this one, per §3.9 — are fetched once on mount and seeded ahead of
-  // anything typed locally this session. History is a convenience, never
-  // load-bearing: a failed fetch (offline, `device.view` missing, an old
-  // core without this route) leaves arrow-up exactly as empty as it was
-  // before this step, never an error the operator has to dismiss.
-  useEffect(() => {
-    let cancelled = false
-    api('/api/command-runs?mine=1&limit=50', CommandRunsPageResponseSchema)
-      .then((page) => {
-        if (cancelled) return
-        // The API returns newest-first (`startedAt DESC`); `history` is
-        // oldest-to-newest, the same order `submit()` already appends in
-        // below, so ArrowUp keeps landing on the most recent command first.
-        const seeded = page.items.map((r) => r.cmd).reverse()
-        setHistory((h) => [...seeded, ...h])
-      })
-      .catch(() => {
-        // See the comment above the effect — silently leave history as-is.
-      })
-    return () => {
-      cancelled = true
-    }
-    // Seeded once per mount, not per device: plan 93 §3.9 is explicit that
-    // this is "the last 50 entries of your OWN history", not this device's,
-    // so switching `deviceId` on an already-mounted pane neither refetches
-    // nor clears it — matching how `history` already behaves today.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // Plan 207 §4.7, §4.9 — the fleet command console (and its `GET
+  // /api/command-runs?mine=1` history seed) is gone entirely: ArrowUp
+  // recall is now exactly what was typed THIS session, in this component's
+  // own `useState` (the same limitation plan 93 §3.5's F3 originally
+  // reported and then fixed by seeding from history — that history no
+  // longer exists to seed from).
 
   function submit(cmd: string): void {
     const trimmed = cmd.trim()

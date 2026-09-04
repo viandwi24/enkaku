@@ -362,7 +362,7 @@ function BatchDetail() {
               than inventing a fifth. `SkippedGroups` is what makes F11's
               own fix ("a batch silently forgets the devices it did not
               target") actually VISIBLE here — every skipped device, named,
-              grouped by the exact reason `clusters/dispatch.ts` recorded at
+              grouped by the exact reason `groups/dispatch.ts` recorded at
               dispatch time. */}
           <div className="rounded-lg border bg-surface p-4">
             <h2 className="rack-label mb-2.5">outcome</h2>
@@ -418,7 +418,7 @@ function BatchDetail() {
             <dl className="space-y-1.5">
               {[
                 ['batch id', batch.id],
-                ['cluster', batch.clusterId ?? '(ad-hoc list)'],
+                ['group', batch.groupId ?? '(ad-hoc list)'],
                 ['concurrency', batch.concurrency === 0 ? 'unlimited' : String(batch.concurrency)],
                 ['order', batch.order],
                 ['created', relativeTime(batch.createdAt)],
