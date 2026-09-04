@@ -113,6 +113,7 @@ import type { ScheduleAgentDispatch } from './schedules/runner'
 import {
   createJobRunner,
   createSessionManager,
+  createAlwaysOn,
   createInspectorForSession,
   PortAllocator,
   parsePortRange,
@@ -120,6 +121,9 @@ import {
   computeAutoTiles,
   resolveWallTransport,
   resolveWallBandwidthBps,
+  SESSION_BUILD_FARM_CEILING,
+  type AlwaysOn,
+  type ActivityPort,
   type SessionManager,
   type TransferPort,
 } from '@enkaku/session'
@@ -174,7 +178,7 @@ import { createCutoverManager, type CutoverManager } from './registry/cutover'
 import { formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber } from './registry/device-number'
 import { createApp } from './server/http'
 import { WsHub } from './server/ws'
-import { createWsMessageHandler, type InputStatsBlock } from './server/ws-handlers'
+import { createWsMessageHandler, BACKPRESSURE_LIMIT_BYTES, type InputStatsBlock } from './server/ws-handlers'
 import type { TransportSnapshot } from './server/transport-metrics'
 import { createJobService } from './services/job-service'
 import { startScrcpySession, sweepStrayScrcpyServers } from '@enkaku/scrcpy'
@@ -335,6 +339,8 @@ export function createDaemon(cfg: CoreConfig): Daemon {
   /** The USB → network cutover wizard (plan 88 §3.4, §4.6, §5 step 88.5) — null until `reconnector` exists (it reuses that SAME ladder to watch), mirrors `reconnector` above, cleared in `stop()`. */
   let cutoverManager: CutoverManager | null = null
   let sessions: SessionManager | null = null
+/** The always-on builder (plan 206 §4.2) — constructed right after `sessions`, once adb is ready. */
+let alwaysOn: AlwaysOn | null = null
   let battery: BatteryMonitor | null = null
   let health: DeviceHealth | null = null
   /** "Is adb stuck?" (plan 88 §3.9, §4.7, fixes F21/F23) — null until the adb subsystem comes up (mirrors `health` above), stopped/cleared in `stop()`. Read-only: it never touches the adb server itself. */
@@ -840,10 +846,9 @@ let blobGc: BlobGc | null = null
        * farm's video on every one of those would be worse than not honouring
        * the setting at all (§3.8's own words) — so this waits 500ms after the
        * LAST change before running one pass, the same order of magnitude as
-       * every other "settle, then act" debounce in this codebase (plan 42's
-       * `enforceIdleCap` is deliberately immediate instead, because closing an
-       * idle session has no user-visible interruption risk; a video restart
-       * does, which is exactly why THIS one debounces and that one does not).
+       * every other "settle, then act" debounce in this codebase. A video
+       * restart is user-visible (the picture goes dark for one rebuild),
+       * which is exactly why this one debounces.
        * `reprofile` itself is a no-op for a device that turns out not to need
        * restarting (rule 1) or is `busy` (rule 4), so debouncing only changes
        * how OFTEN the farm re-checks, never what it does once it checks.
@@ -1191,10 +1196,12 @@ let blobGc: BlobGc | null = null
           // (plan 23 §4.3) — DEVICE_CONNECTED/DISCONNECTED most obviously,
           // but recomputing on all of them is cheap and simplest to reason about.
           recomputeAdbConcurrency()
-          // An idle session must not survive a quarantine (Plan 42 §3.4,
-          // §4.4) — a no-op when someone is actively watching (video keeps
-          // streaming while a device is busy/quarantined, spec §10.1).
-          if (status === 'quarantined') void sessions?.closeIfIdle(deviceId)
+          // Plan 206 §9 Q5 (left open, not decided here): a session now lives
+          // until offline or forgotten, so a quarantined device keeps its
+          // session running — the idle-eviction call this used to make is
+          // gone with the idle model it belonged to. Whether quarantine
+          // should shed heat by stopping the encoder is for a later plan to
+          // decide.
           // Every status transition can move readiness too (Plan 43 §5 step
           // 43.6): connect/disconnect and quarantine/unquarantine most
           // obviously, but also a job's claim/finish and a control marker
@@ -1834,11 +1841,10 @@ let blobGc: BlobGc | null = null
         // is never flipped to `busy` any more — "busy" is now derived purely
         // from the `job:<id>` activity the claim itself starts.
         onJobClaimed: (deviceId) => {
-          // A job claiming a device closes its idle session immediately
-          // (Plan 42 §3.4, §4.4, acceptance #8) — an idle TTL must never hold
-          // a device away from the scheduler, and the job starts a fresh
-          // `control`-quality session rather than inheriting a stale one.
-          void sessions?.closeIfIdle(deviceId)
+          // Plan 206 §4.3: sessions are always on now — a job's `acquire()`
+          // attaches to the one already-open base entry directly, so there
+          // is no idle session left for a claim to close (the idle-eviction
+          // call this used to make is gone with the idle model it belonged to).
           // Job claim (plan 43 §5 step 43.6, acceptance #11) — never blocked
           // by readiness; this just keeps the broadcast readiness in step
           // with the device's derived busy state.
@@ -2963,7 +2969,13 @@ let blobGc: BlobGc | null = null
             const wallSettings = settingsStore.get().wall
             const transport = resolveWallTransport(process.env.ENKAKU_MODE === 'orchestrator', wallSettings.transportOverride)
             return {
-              maxConcurrentBuilds: settingsStore.get().session.maxConcurrentBuilds,
+              // Plan 206 §4.5, §4.10 — the one remaining session build knob
+              // plus the farm-wide ceiling constant (overridable by
+              // `ENKAKU_SESSION_BUILD_CEILING`); the old three-field session
+              // block (a per-viewer idle TTL, a farm-wide idle cap, and a
+              // build-lane cap) is gone with the idle model it governed.
+              buildsPerUsbRoot: settingsStore.get().session.buildsPerUsbRoot,
+              farmCeiling: Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
               maxTiles: maxTilesAuto
                 ? computeAutoTiles(resolveVideoProfile(settingsStore.get().video, null, 'wall').bitRate, {
                     decodeTileCeiling: wallSettings.decodeTileCeiling,
@@ -2974,12 +2986,31 @@ let blobGc: BlobGc | null = null
               transport,
             }
           },
+          // Plan 206 §4.2, §4.10 — the always-on builder's own occupancy.
+          alwaysOn: () => (alwaysOn ? { running: alwaysOn.stats().running, queued: alwaysOn.stats().queued } : null),
         }),
         // `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2) —
         // the manual "apply now" the settings section's own button (and
         // anyone with `settings.manage` from curl) calls; the automatic
         // debounced path above calls the exact same `sessions.reprofile()`.
-        videoRoutes: createVideoRoutes({ sessions: () => sessions, streamStats: (id) => videoStreamStats?.(id) ?? null }),
+        // `GET /api/video/sessions` (plan 206 §4.6) — the bench harness's
+        // `--warmup` mode and operator/owner debugging.
+        videoRoutes: createVideoRoutes({
+          sessions: () => sessions,
+          streamStats: (id) => videoStreamStats?.(id) ?? null,
+          alwaysOn: () => alwaysOn,
+          // One statement for the whole fleet's numbers (plan 124 §3.7, plan
+          // 19 §4.3's no-N+1 rule) — the same `loadDeviceNumbers` pattern
+          // `adb-stats.ts`'s own per-device table already uses.
+          deviceIds: () => {
+            const numbers = loadDeviceNumbers(db)
+            return db
+              .select({ id: devices.id, stableId: devices.stableId })
+              .from(devices)
+              .all()
+              .map((row) => ({ deviceId: row.id, number: numbers.get(row.stableId) ?? null }))
+          },
+        }),
         doctorRoutes: createDoctorRoutes({
           dataDir: cfg.dataDir,
           coreProbe: async () => ({
@@ -3260,6 +3291,15 @@ let blobGc: BlobGc | null = null
             // actually reads (a browser cannot observe the protocol-level one).
             idleTimeout: 120,
             sendPings: true,
+            // Plan 206 §3.8, §4.10 (R8) — Bun's own backpressure ceiling and
+            // the drain handler that reacts to it. Set explicitly for the
+            // same reason `idleTimeout`/`sendPings` above are: a value
+            // nobody wrote down is not a value anyone can review.
+            backpressureLimit: BACKPRESSURE_LIMIT_BYTES,
+            closeOnBackpressureLimit: false,
+            drain: (ws) => {
+              hub.handlers.drain?.(ws)
+            },
             open: (ws) => {
               const data = ws.data as WsConnectionData
               if (data?.nodeId) {
@@ -3472,6 +3512,10 @@ let blobGc: BlobGc | null = null
           // constructed unconditionally above, before this point is reached
           // (the same `activities` ordering this router already depends on).
           readiness: readiness ?? undefined,
+          // Plan 206 §4.8 — `stream.start`'s `E_SESSION_PREPARING` sentence.
+          // `alwaysOn` is a plain module-level `let`, read fresh through this
+          // closure the same way `sessions`/`readiness` are.
+          alwaysOn: alwaysOn ?? undefined,
           // `transfer.cancel` (plan 39 §4.4, acceptance #9) — `transferService`
           // is constructed unconditionally above, the same as `adbEndpoint`.
           transfer: transferService,
@@ -3713,13 +3757,13 @@ let blobGc: BlobGc | null = null
           // (`handshakeRetries`) is dropped because the public seam does not accept it either (only
           // `guest-agent.ts`'s own internal `probeReachability` gets that knob).
           withGuestAgentClient: (deviceId) => (fn) => guestAgent.withGuestAgentClient(deviceId, fn),
-          onSessionEnded: (deviceId, reason) =>
-            hub.broadcast({ type: 'stream.ended', payload: { deviceId, reason } }),
-          // The wake-up progress panel (Plan 17 §3.3, §4.7): one broadcast per
-          // start-up phase turns the dead time before the first frame into
-          // something Studio can show instead of a black rectangle.
-          onPhase: (deviceId, phase, detail) =>
-            hub.broadcast({ type: 'session.progress', payload: { deviceId, phase, ...(detail ? { detail } : {}) } }),
+          // Plan 206 §3.6, §4.10 — the always-on builder reacts to a dead
+          // BASE session with its own backoff-and-rebuild; `stream.ended`
+          // still tells every viewer their picture just went dark.
+          onSessionEnded: (deviceId, reason) => {
+            hub.broadcast({ type: 'stream.ended', payload: { deviceId, reason } })
+            alwaysOn?.sessionEnded(deviceId, reason)
+          },
           // Main-stream device events: session.opened / session.closed / session.degraded (plan 18 §4.2).
           onEvent: (deviceId, kind, meta) => {
             recorder?.record({ deviceId, stream: 'main', kind, meta })
@@ -3731,22 +3775,13 @@ let blobGc: BlobGc | null = null
             else if (kind === 'session.closed') unwatchCrashesForDevice?.(deviceId)
             // Session open/close is one of the events readiness reconciles
             // on (plan 43 §5 step 43.6) — a session appearing (someone
-            // else's hold, a viewer) or disappearing (Plan 42's idle TTL
-            // finally firing) both change `actual`.
+            // else's hold, a viewer) or disappearing (the base entry closing
+            // on `onDeviceGone`, plan 206 §4.3) both change `actual`.
             if (kind === 'session.opened' || kind === 'session.closed') void readiness?.reconcile(deviceId)
           },
-          // Idle session TTL (Plan 42 §4.4) — read fresh on every release, the
-          // same pattern `resetPolicy`/`adb.maxConcurrent` already use.
-          idleTtlSec: () => settingsStore.get().session.idleTtlSec,
-          maxIdleSessions: () => settingsStore.get().session.maxIdleSessions,
           // plan 92 §3.5, §4.2, §4.3 — farm video settings plus this
-          // device's own override, read fresh on every session build (the
-          // same freshness discipline as the two accessors right above).
+          // device's own override, read fresh on every session build.
           resolveProfile: (deviceId, quality) => resolveVideoProfile(settingsStore.get().video, deviceSource.get(deviceId)?.video ?? null, quality),
-          // plan 92 §3.3, §4.3, §5 step 92.3 (fixes F9, tests H1) — the
-          // farm-wide build lane's cap, read fresh on every acquire like
-          // every other accessor above.
-          maxConcurrentBuilds: () => settingsStore.get().session.maxConcurrentBuilds,
           // Plan 125 §3.7, step 125.7 — the readiness manager is the ONE authority on whether
           // this phone's screen is already being held awake, so `createSession` stops calling
           // `wakeDevice` blindly.
@@ -3884,6 +3919,39 @@ let blobGc: BlobGc | null = null
               },
               { deviceId, transport, requested },
             ),
+        })
+
+        // Plan 206 §4.10 — the always-on builder: queues a build the
+        // instant a device comes online (`onDeviceReady` below), staggers by
+        // USB root and the farm ceiling, and retries a dead session under
+        // backoff. `activities` plan 205's real registry, adapted to the
+        // port `@enkaku/session` defines (it cannot import `ActivityRegistry`
+        // directly — core depends on session, never the reverse).
+        const activityPortAdapter: ActivityPort = {
+          start: (deviceId, input) => {
+            const id = `prep:${deviceId}`
+            activities.start(deviceId, { id, kind: input.kind, label: input.label, actor: input.actor, ...(input.meta ? { meta: input.meta } : {}) })
+            return id
+          },
+          update: (deviceId, id, patch) => {
+            activities.update(deviceId, id, patch)
+          },
+          end: (deviceId, id) => {
+            activities.end(deviceId, id)
+          },
+        }
+        alwaysOn = createAlwaysOn({
+          sessions,
+          devices: deviceSource,
+          listDevices: () => adbClient.listDevices(),
+          deviceNumber: (deviceId) => {
+            const row = deviceSource.get(deviceId)
+            return row ? lookupDeviceNumber(db, row.stableId) : null
+          },
+          activities: activityPortAdapter,
+          buildsPerUsbRoot: () => settingsStore.get().session.buildsPerUsbRoot,
+          farmCeiling: () => Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
+          log: log.child('always-on'),
         })
 
         // Plan 99 §3.2, §4.6, §4.7 — which workflow node is CURRENTLY
@@ -4150,6 +4218,10 @@ let blobGc: BlobGc | null = null
           // already get, a few lines away in this same function.
           networks: () => settingsStore.get().discovery.networks,
           onDeviceGone: (deviceId) => {
+            // Plan 206 §4.10 — cancels the pending build/retry timer and
+            // activity FIRST; `sessions.closeDevice` right after is what
+            // actually tears the entries down.
+            alwaysOn?.deviceOffline(deviceId)
             void sessions?.closeDevice(deviceId)
             // Any job running on that device → failed (spec §10.1).
             const running = jobStore.runningByDevice(deviceId)
@@ -4188,6 +4260,12 @@ let blobGc: BlobGc | null = null
             reverseRegistry.handleDeviceOffline(deviceId)
           },
           onDeviceReady: (deviceId) => {
+            // Plan 206 §4.10 — a session is built when a device comes
+            // online, not when a browser asks (G1). First line, so a core
+            // restart's own re-probe of every attached serial
+            // (`registry.start()` below) enqueues one build per device with
+            // no browser ever involved.
+            alwaysOn?.deviceOnline(deviceId)
             scheduler?.kick()
             recomputeAdbConcurrency()
             // The device just came online — restore any persisted `vpn-helper`
@@ -4239,6 +4317,12 @@ let blobGc: BlobGc | null = null
           },
         })
         await registry.start()
+        // Plan 206 §4.10 — enable the pump AFTER the boot re-probe above:
+        // `registry.start()` already called `onDeviceReady` (thus
+        // `alwaysOn.deviceOnline`) once per online device, queuing every one
+        // of them; starting the pump only now means the very first pass
+        // already sees the whole farm, not a device or two that raced ahead.
+        alwaysOn?.start()
 
         // The bounded subnet sweep (plan 88 §3.5, §4.5, §5 step 88.3) — built
         // right before the reconnect ladder below, since the ladder's own
@@ -4432,12 +4516,18 @@ let blobGc: BlobGc | null = null
       await pluginHost?.unloadAll('the core is shutting down')
       pluginHost?.dispose()
       pluginHost = null
+      // Plan 206 §4.10 — the always-on builder stops FIRST: cancels every
+      // pending build/retry timer and awaits any build still running, so a
+      // shutdown never races a fresh build against the `closeAll` right
+      // after it.
+      await alwaysOn?.stop()
       // Sessions close first: closing one emits `session.closed`, which the
       // recorder must still be alive to receive. Stopping it first made a
       // clean Ctrl-C crash with `null is not an object (recorder.record)`
       // and exit 1, after the work was already done.
       await sessions?.closeAll()
       sessions = null
+      alwaysOn = null
       await recorder?.stop()
       recorder = null
       // Same placement and the same reason as `recorder` just above: the job

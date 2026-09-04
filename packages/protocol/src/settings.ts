@@ -1885,56 +1885,25 @@ export const FarmSettingsSchema = z.object({
       description: 'How long a workflow job may hold a device in total, across every node in the pipeline (plan 99 §3.11).',
     }),
   /**
-   * Idle session TTL (plan 42 §3.4, §4.4): when the last viewer of a device
-   * leaves, the session is not closed right away — it is kept alive for
-   * `idleTtlSec` in case the same or another viewer returns shortly, which is
-   * what makes returning to a device instant instead of a fresh wake-up.
-   * Bounded farm-wide by `maxIdleSessions` so a big fleet cannot hold every
-   * device's session open at once; `idleTtlSec: 0` restores the pre-plan-42
-   * behaviour of closing the instant the last viewer leaves.
+   * Session builds (MVP 11 §1.4). A session is built when a device comes online and lives
+   * as long as the device is online; the only knob is how many builds may run at once per
+   * USB root hub. The farm-wide ceiling is a constant (`SESSION_BUILD_FARM_CEILING`, 16).
    */
   session: z
     .object({
-      idleTtlSec: z
-        .number()
-        .int()
-        .min(0)
-        .max(3600)
-        .default(300)
-        .describe('How long a device session stays alive after the last viewer leaves, so returning is instant. 0 closes it immediately.')
-        .meta(ui({ title: 'Idle session TTL (s)', kind: 'duration', unit: 's' })),
-      maxIdleSessions: z
-        .number()
-        .int()
-        .min(0)
-        .max(64)
-        .default(8)
-        .describe('How many idle sessions may be held open across the farm before the oldest is closed.')
-        .meta(ui({ title: 'Max idle sessions', kind: 'count' })),
-      /**
-       * The build lane's own budget (plan 92 §3.3, §4.3) — a farm-wide
-       * counting semaphore around `createEntry` (session construction: push
-       * a jar, spawn scrcpy-server, connect two sockets). It QUEUES, it does
-       * not refuse: a wall tile that waits 900ms for its turn is correct; a
-       * wall tile that errors because another tab was also loading is not.
-       * Two is not a guess — plan 85 §3.4 used the same reasoning for
-       * `adb.maxInstallConcurrent`: a session build shares one USB
-       * controller, and the observed failure at five devices was
-       * concurrency, not count.
-       */
-      maxConcurrentBuilds: z
+      buildsPerUsbRoot: z
         .number()
         .int()
         .min(1)
         .max(16)
-        .default(2)
-        .describe('How many device sessions may be started at the same time across the farm. Extra requests wait their turn rather than failing.')
-        .meta(ui({ title: 'Max concurrent session starts', kind: 'count' })),
+        .default(4)
+        .describe('How many device sessions may be starting at the same time on one USB root hub. Raise if a cold start of many devices is too slow; lower if it saturates USB.')
+        .meta(ui({ title: 'Session builds per USB root', kind: 'count' })),
     })
-    .default({ idleTtlSec: 300, maxIdleSessions: 8, maxConcurrentBuilds: 2 })
+    .default({ buildsPerUsbRoot: 4 })
     .meta({
       title: 'Device sessions',
-      description: 'How long a device session lingers after the last viewer leaves, how many may linger at once, and how many may be starting up at the same time.',
+      description: 'How many device sessions may be starting at once on one USB root hub. Sessions themselves are always on.',
     }),
   /**
    * Plan 100 §4.3, step 100.6 (closes 96.22/G10/G11) — a session that opened
@@ -2102,9 +2071,8 @@ export const FarmSettingsSchema = z.object({
    *
    * `rampConcurrency` bounds how many tiles may ask for a stream at the same
    * time while the wall fills in (plan 92 §3.3) — a CLIENT-side courtesy
-   * only; the authoritative bound is `session.maxConcurrentBuilds` above,
-   * because the client cannot be trusted to enforce it alone (two tabs, or a
-   * tab and a script, both loading the wall at once).
+   * only; sessions are always on now (plan 206), so a tile's request
+   * attaches to an already-built entry rather than racing a build.
    *
    * There is deliberately NO `defaultView` field here. §9 Q1 (decided
    * 2026-08-12, plan 92 §3.10): the Wall is the unconditional landing view;

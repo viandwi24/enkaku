@@ -190,14 +190,13 @@ rule never overrides an earlier one:
    already decoding being displaced by a same-tier newcomer (`liveIds`
    feeds back into every call precisely so that stability holds).
 
-The server-side half of the safety story lives in `@enkaku/session`
-(`session.maxConcurrentBuilds`, the build lane): the client's ramp
+Sessions are always on now (plan 206): a wall tile's `stream.start` attaches
+to an already-built entry rather than racing a build, so there is no
+server-side stampede left to guard against. The client's ramp
 (`wall.rampConcurrency`, at most N tiles asking for a stream at once while
-the wall fills in) is a courtesy that makes the fill-in orderly, never the
-thing that actually prevents a stampede — two browser tabs (or a tab and a
-script) defeat any client-side ramp, so the authoritative bound is always
-server-side. Do not read `useLiveSet`'s ramp as a safety mechanism when
-reasoning about a new caller of it.
+the wall fills in) is still a courtesy that makes the fill-in orderly, not a
+safety mechanism — do not read `useLiveSet`'s ramp as one when reasoning
+about a new caller of it.
 
 ## The tile grammar (plan 92 §4.8) — a rule for the next field, not a precedent to copy
 

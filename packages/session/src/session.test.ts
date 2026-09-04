@@ -812,3 +812,62 @@ describe('createSession — the guest-agent bootstrap is off the critical line (
     await session.close()
   })
 })
+
+/**
+ * Plan 206 §3.9, §4.4 — `prewarmInspector` and `requireScrcpy` on every
+ * build, not only the fast path.
+ */
+describe('DeviceSession.prewarmInspector (plan 206 §3.9)', () => {
+  test('resolves and starts nothing — plan 208 implements the body', async () => {
+    let makeInspectorCalls = 0
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async () => {
+      makeInspectorCalls++
+      return { inspector: fakeInspector(), engineId: 'ui-server', pollIntervalMs: 80, release: async () => {} }
+    }
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
+    await expect(session.prewarmInspector()).resolves.toBeUndefined()
+    expect(makeInspectorCalls).toBe(0)
+    expect(session.inspector).toBeNull()
+    await session.close()
+  })
+})
+
+describe('createSession — requireScrcpy applies to every build, not only the fast path (plan 206 §3.6, §4.4)', () => {
+  function recordingClient(): { client: AdbClient; calls: string[] } {
+    const calls: string[] = []
+    const client = {
+      exec: async (_serial: string, cmd: string) => {
+        calls.push(cmd)
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+      execOut: async () => new Uint8Array(),
+    } as unknown as AdbClient
+    return { client, calls }
+  }
+
+  test('requireScrcpy without skipDevicePrep throws E_SCRCPY_UNAVAILABLE and reverts stayon/rotation/tag', async () => {
+    const { client, calls } = recordingClient()
+    await expect(
+      createSession(
+        { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always', requireScrcpy: true },
+        { client, log: silentLog(), makeScrcpy: async () => null },
+      ),
+    ).rejects.toMatchObject({ name: 'SessionError', code: 'E_SCRCPY_UNAVAILABLE' })
+    // Nothing this (failed) build claimed is left applied on the device.
+    expect(calls).toContain('svc power stayon false')
+    expect(calls).toContain(`setprop ${FARM_TAG_PROPERTY} ''`)
+  })
+
+  test('display: "screencap-loop" (the operator\'s own configuration) with requireScrcpy still opens the screencap loop — never a false E_SCRCPY_UNAVAILABLE', async () => {
+    const { client } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', display: 'screencap-loop', requireScrcpy: true },
+      { client, log: silentLog(), makeScrcpy: async () => null },
+    )
+    expect(session.displayEngineId).toBe('screencap-loop')
+    await session.close()
+  })
+})

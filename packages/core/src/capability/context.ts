@@ -516,13 +516,18 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
       hold.release()
     },
 
-    async deviceCall(deviceId, call, quality = 'control') {
+    // Plan 206 §4.3, §5 step 206.5: `SessionManager.acquire` always serves the
+    // one base (`wall`) entry now — there is no per-call quality to acquire
+    // against. `quality` stays on the public `deviceCall` signature (every
+    // caller in `device-inspect.ts`/`device-clipboard.ts`/`device-files.ts`
+    // still passes `'wall'` explicitly) but is no longer read here.
+    async deviceCall(deviceId, call) {
       const sessions = deps.sessions()
       if (!sessions) {
         throw new EnkakuError('E_DEVICE_OFFLINE', 'no local session manager is available for this device (orchestrator mode, or adb is not ready)')
       }
       const onFrame = () => {}
-      const session = await sessions.acquire(deviceId, onFrame, quality)
+      const session = await sessions.acquire(deviceId, onFrame)
       try {
         const execute = createDeviceExecutor({
           session,

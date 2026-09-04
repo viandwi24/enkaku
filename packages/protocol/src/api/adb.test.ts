@@ -6,7 +6,6 @@ function baseBody() {
   return {
     global: { maxConcurrent: 4, auto: true, inFlight: 0, waiting: 0 },
     streams: { maxStreams: 4, maxStreamsPerDevice: 1, active: 0, perDevice: {} },
-    idleSessions: [],
     devices: [],
     transport: {
       connections: 0,
@@ -49,7 +48,8 @@ describe('AdbStatsResponseSchema.video (plan 92 §3.3, §4.5)', () => {
         wallStreams: 12,
         buildsRunning: 2,
         buildQueueDepth: 5,
-        maxConcurrentBuilds: 2,
+        buildsPerUsbRoot: 4,
+        farmCeiling: 16,
         maxTiles: 25,
         maxTilesAuto: true,
         transport: 'loopback' as const,
@@ -73,7 +73,8 @@ describe('AdbStatsResponseSchema.video (plan 92 §3.3, §4.5)', () => {
         wallStreams: 0,
         buildsRunning: 0,
         buildQueueDepth: 0,
-        maxConcurrentBuilds: 2,
+        buildsPerUsbRoot: 4,
+        farmCeiling: 16,
         maxTiles: 8,
         maxTilesAuto: false,
       },

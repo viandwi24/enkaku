@@ -88,6 +88,7 @@ function fakeSession(deviceId: string, sink: InputSink, opts: { queueWaitMs?: nu
     videoKeyframe: () => null,
     inspector: null,
     whenInspectorReady: async () => {},
+    prewarmInspector: async () => {},
     releaseInspector: async () => {},
     inspectorEngineId: 'ui-server',
     inspectorPollIntervalMs: 200,
@@ -113,14 +114,27 @@ function fakeSessionManager(sessionsByDevice: Map<string, DeviceSession>): Sessi
       return s
     },
     release() {},
+    async attachViewer(deviceId: string) {
+      const s = sessionsByDevice.get(deviceId)
+      if (!s) throw new Error(`no fake session for ${deviceId}`)
+      return { session: s, quality: 'wall' as const }
+    },
+    detachViewer() {},
+    async build() {},
+    async whenReady(deviceId: string) {
+      const s = sessionsByDevice.get(deviceId)
+      if (!s) throw new Error(`no fake session for ${deviceId}`)
+      return s
+    },
+    state: () => 'ready' as const,
     get: (deviceId: string) => sessionsByDevice.get(deviceId) ?? null,
+    getByQuality: (deviceId: string) => sessionsByDevice.get(deviceId) ?? null,
     async closeDevice() {},
-    async closeIfIdle() {},
-    idleSessions: () => [],
     async closeAll() {
       return 0
     },
     activeDeviceIds: () => [...sessionsByDevice.keys()],
+    encoders: () => [],
   }
 }
 

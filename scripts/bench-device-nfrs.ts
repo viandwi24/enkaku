@@ -70,6 +70,12 @@
  *   --find-iterations <N>         per-find RPC samples (default 30)
  *   --fps-window-sec <N>          scrcpy capture window, seconds (default 5)
  *   --skip-inspector / --skip-video   run only the other stage group
+ *
+ * Plan 206 §4.12 adds a separate mode, `--warmup`: boots a real core against
+ * `--data-dir` and measures cold-start warm-up (spec §3, MVP 16 §3's "20
+ * devices warm within 60s of a core restart") via `GET /api/video/sessions`
+ * — no `--serial`, the whole attached farm at once. See `--help` for its
+ * own flags (`--expect`, `--timeout-sec`, `--core-port`).
  */
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -98,7 +104,11 @@ function usage(): string {
   --skip-inspector       skip the ui-server attach/find/dump stages
   --skip-video           skip the scrcpy FPS/time-to-first-frame stages
   --latency              server-side latency leg: time to first packet, first keyframe, PTS interval, arrival jitter (needs --serial)
-  --warmup               reserved for plan 206 (always-on sessions); prints a placeholder and exits 2
+  --warmup               plan 206 (always-on sessions) mode: boots a real core against --data-dir and measures
+                         cold-start warm-up via GET /api/video/sessions — no --serial needed, the whole attached farm.
+  --expect <N>           --warmup only: devices expected to reach state 'ready' (default: 'adb devices' rows in state 'device')
+  --timeout-sec <N>      --warmup only: give up after this many seconds (default 120)
+  --core-port <N>        --warmup only: port the spawned core binds (default 7710)
   --help                 print this and exit, without touching adb or any device
 
 Env:
@@ -139,22 +149,138 @@ function firstNamedNode(node: UiNode): { sel: { id: string } | { text: string } 
   return undefined
 }
 
+/**
+ * Plan 206 §4.12 — the cold-start warm-up harness: boots a REAL core (a
+ * child process, not an in-process import — the whole point is measuring
+ * what an operator's own restart looks like) against `--data-dir` and polls
+ * `GET /api/video/sessions` until every attached device reaches `state:
+ * 'ready'` or the timeout elapses. No `--serial`: this drives the whole
+ * attached farm, not one device.
+ */
+async function runWarmup(args: string[]): Promise<void> {
+  const dataDir = flag(args, 'data-dir') ?? process.env.ENKAKU_DATA_DIR ?? join(ROOT, '.dev-data')
+  const corePort = Number(flag(args, 'core-port') ?? 7710)
+  const timeoutSec = Number(flag(args, 'timeout-sec') ?? 120)
+
+  if (!existsSync(dataDir)) {
+    console.error(`✗ data dir ${dataDir} does not exist — run \`bun run dev\` at least once first (see this script's own header comment)`)
+    process.exit(1)
+  }
+
+  const expectFlag = flag(args, 'expect')
+  let expect: number
+  if (expectFlag !== undefined) {
+    expect = Number(expectFlag)
+  } else {
+    // Default: however many devices `adb devices` currently lists as state 'device' —
+    // resolved through the SAME toolchain-pinned adb every other stage in this script uses.
+    const toolchain = new ToolchainManager({ dataDir, coreVersion: '0.0.0-bench', store: noopStore() })
+    await toolchain.init()
+    const adbPath = await toolchain.resolveToolPath('adb')
+    const proc = Bun.spawn([adbPath, 'devices'], { stdout: 'pipe', stderr: 'pipe' })
+    const out = await new Response(proc.stdout).text()
+    await proc.exited
+    expect = out
+      .split('\n')
+      .slice(1)
+      .map((l) => l.trim().split(/\s+/))
+      .filter(([, state]) => state === 'device').length
+  }
+
+  console.log(`Booting a core against ${dataDir} on port ${corePort}, expecting ${expect} device(s) to warm (timeout ${timeoutSec}s)…`)
+  const t0 = performance.now()
+  const proc = Bun.spawn(['bun', 'run', join(ROOT, 'packages/core/src/index.ts')], {
+    env: { ...process.env, ENKAKU_DATA_DIR: dataDir, ENKAKU_PORT: String(corePort), ENKAKU_NO_OPEN: '1' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+
+  interface SessionsRow {
+    deviceId: string
+    number: number | null
+    state: string
+    step: number | null
+    attempt: number
+  }
+  interface SessionsBody {
+    devices: SessionsRow[]
+    rssBytes: number
+  }
+
+  const deadline = t0 + timeoutSec * 1000
+  let lastBody: SessionsBody | null = null
+  let timedOut = false
+
+  try {
+    // Step 1: wait for the core to answer at all.
+    for (;;) {
+      let up = false
+      try {
+        up = (await fetch(`http://127.0.0.1:${corePort}/api/health`)).status === 200
+      } catch {
+        up = false
+      }
+      if (up) break
+      if (performance.now() > deadline) {
+        timedOut = true
+        break
+      }
+      await Bun.sleep(250)
+    }
+
+    // Step 2: poll the always-on builder's own report until every device is ready.
+    if (!timedOut) {
+      for (;;) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${corePort}/api/video/sessions`)
+          if (res.ok) {
+            lastBody = (await res.json()) as SessionsBody
+            const ready = lastBody.devices.filter((d) => d.state === 'ready').length
+            if (ready >= expect) break
+          }
+        } catch {
+          // the core may still be finishing its own boot sequence — keep polling
+        }
+        if (performance.now() > deadline) {
+          timedOut = true
+          break
+        }
+        await Bun.sleep(500)
+      }
+    }
+  } finally {
+    proc.kill()
+    await proc.exited
+  }
+
+  const elapsedSec = (performance.now() - t0) / 1000
+  const ready = lastBody?.devices.filter((d) => d.state === 'ready').length ?? 0
+  console.log(`warm: ${ready}/${expect} in ${elapsedSec.toFixed(1)} s${timedOut ? ' (timeout)' : ''}`)
+  if (lastBody) {
+    console.log(`rss: ${(lastBody.rssBytes / 1_048_576).toFixed(0)} MB for ${ready} sessions`)
+    for (const d of lastBody.devices) {
+      console.log(`  #${d.number ?? '?'} ${d.state}${d.step ? ` step ${d.step}` : ''}${d.attempt ? ` attempt ${d.attempt}` : ''}`)
+    }
+  }
+
+  process.exit(ready === expect ? 0 : 1)
+}
+
 async function main() {
   const args = process.argv.slice(2)
   if (args.includes('--help') || args.includes('-h')) {
     console.log(usage())
     return
   }
-  // Plan 203 §4.13, §5 step 203.12 — checked before the `ENKAKU_TEST_DEVICE`
-  // gate: `--warmup` is a placeholder plan 206 (always-on sessions) fills,
-  // and saying so needs no device.
-  if (args.includes('--warmup')) {
-    console.log('warmup: not implemented in plan 203 - plan 206 (always-on sessions) fills this mode')
-    process.exit(2)
-  }
   if (process.env.ENKAKU_TEST_DEVICE !== '1') {
     console.error('✗ set ENKAKU_TEST_DEVICE=1 to run this against real hardware (repo convention, 00-overview.md §4.4)')
     process.exit(1)
+  }
+  // Plan 206 §4.12 — `--warmup` is its own mode, gated the same as every
+  // other stage in this script (real hardware) but needing no `--serial`.
+  if (args.includes('--warmup')) {
+    await runWarmup(args)
+    return
   }
   const serial = flag(args, 'serial')
   if (!serial) {

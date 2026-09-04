@@ -229,7 +229,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
     expect(body.input).toEqual(live)
   })
 
-  test('video is zero-filled when sessions() is null (plan 92 §3.3, §4.5, §5 step 92.3)', async () => {
+  test('video is zero-filled when sessions() is null (plan 206 §4.10)', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const inner = createAdbStatsRoutes({
@@ -248,24 +248,23 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       wallStreams: 0,
       buildsRunning: 0,
       buildQueueDepth: 0,
-      maxConcurrentBuilds: 0,
+      buildsPerUsbRoot: 0,
+      farmCeiling: 0,
       maxTiles: 0,
       maxTilesAuto: false,
       transport: 'loopback',
     })
   })
 
-  test('video reports the live SessionManager.videoStats() combined with the video settings dep (plan 92 §3.3, §4.5, §5 step 92.3)', async () => {
+  test('video reports the live SessionManager.encoders() combined with the always-on builder stats and the video settings dep (plan 206 §4.10)', async () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const fakeSessions = {
-      idleSessions: () => [],
-      videoStats: () => ({
-        streams: { control: 2, wall: 9 },
-        buildsRunning: 1,
-        buildQueueDepth: 3,
-        profiles: [],
-      }),
+      encoders: () => [
+        { deviceId: 'd1', wall: { engine: 'scrcpy' }, control: { engine: 'scrcpy' } },
+        { deviceId: 'd2', wall: { engine: 'scrcpy' }, control: null },
+        { deviceId: 'd3', wall: null, control: null },
+      ],
     } as unknown as import('@enkaku/session').SessionManager
     const inner = createAdbStatsRoutes({
       db: opened.db,
@@ -274,17 +273,19 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       health: () => null,
       auto: () => true,
       sessions: () => fakeSessions,
-      video: () => ({ maxConcurrentBuilds: 2, maxTiles: 25, maxTilesAuto: true, transport: 'loopback' }),
+      alwaysOn: () => ({ running: 1, queued: 3 }),
+      video: () => ({ buildsPerUsbRoot: 4, farmCeiling: 16, maxTiles: 25, maxTilesAuto: true, transport: 'loopback' }),
     })
     const app = withUser('operator', inner)
     const res = await app.request('/')
     const body = (await res.json()) as { video: unknown }
     expect(body.video).toEqual({
-      controlStreams: 2,
-      wallStreams: 9,
+      controlStreams: 1,
+      wallStreams: 2,
       buildsRunning: 1,
       buildQueueDepth: 3,
-      maxConcurrentBuilds: 2,
+      buildsPerUsbRoot: 4,
+      farmCeiling: 16,
       maxTiles: 25,
       maxTilesAuto: true,
       transport: 'loopback',

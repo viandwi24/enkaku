@@ -44,13 +44,13 @@ export const DWELL_MS = 400
 /**
  * How long a newly-promoted batch is assumed to occupy its ramp slot before
  * the next batch gets a turn (§3.3: "a wall tile that waits ~900ms for its
- * turn is correct"). This is a CLIENT-side courtesy only, never the safety
- * bound — `session.maxConcurrentBuilds`, enforced server-side by the build
- * lane (plan 92 §5 step 92.3), is what actually stops a stampede when two
- * tabs (or a tab and a script) both load the wall at once (§3.3). Nothing
- * here can gate on a real "connected" signal instead: `LiveView` reports no
- * such callback, and this step's file-ownership boundary excludes
- * `LiveView.tsx` (a concurrent worker's file for plan 94 step 94.2).
+ * turn is correct"). This is a CLIENT-side courtesy only — sessions are
+ * always on now (plan 206 §4.3), so a wall tile's `stream.start` attaches to
+ * an already-built entry rather than racing a build; nothing server-side
+ * needs pacing to protect any more. Nothing here can gate on a real
+ * "connected" signal instead: `LiveView` reports no such callback, and this
+ * step's file-ownership boundary excludes `LiveView.tsx` (a concurrent
+ * worker's file for plan 94 step 94.2).
  */
 export const RAMP_STEP_MS = 800
 

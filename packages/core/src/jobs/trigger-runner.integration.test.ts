@@ -55,15 +55,20 @@ function seedCallerJob(db: Db, id: string, deviceId: string) {
 }
 
 function fakeSessions(): SessionManager {
-  const session = { deviceId: DEVICE_ID, inspector: null, whenInspectorReady: async () => {} }
+  const session = { deviceId: DEVICE_ID, inspector: null, whenInspectorReady: async () => {}, prewarmInspector: async () => {} }
   return {
     acquire: async () => session as never,
     release: () => {},
+    attachViewer: async () => ({ session, quality: 'wall' }) as never,
+    detachViewer: () => {},
+    build: async () => {},
+    whenReady: async () => session as never,
+    state: () => 'ready',
     get: () => session as never,
+    getByQuality: () => session as never,
     closeDevice: async () => {},
-    closeIfIdle: async () => {},
-    idleSessions: () => [],
     closeAll: async () => 0,
+    encoders: () => [],
   }
 }
 

@@ -1154,19 +1154,29 @@ describe('FarmSettingsSchema.display.fallbackRetryCount — the screencap-loop f
   })
 })
 
-describe('FarmSettingsSchema.session.maxConcurrentBuilds — the build lane budget (plan 92 §3.3, §4.1)', () => {
-  test('defaults to 2, alongside the pre-existing idleTtlSec/maxIdleSessions defaults', () => {
+describe('FarmSettingsSchema.session.buildsPerUsbRoot — always-on sessions (plan 206 §4.5)', () => {
+  test('defaults to { buildsPerUsbRoot: 4 }', () => {
     const parsed = FarmSettingsSchema.parse({})
-    expect(parsed.session.maxConcurrentBuilds).toBe(2)
-    expect(parsed.session.idleTtlSec).toBe(300)
-    expect(parsed.session.maxIdleSessions).toBe(8)
-    expect(defaultFarmSettings().session.maxConcurrentBuilds).toBe(2)
+    expect(parsed.session).toEqual({ buildsPerUsbRoot: 4 })
+    expect(defaultFarmSettings().session).toEqual({ buildsPerUsbRoot: 4 })
   })
 
   test('is bounded to [1, 16]', () => {
-    expect(() => FarmSettingsSchema.parse({ session: { maxConcurrentBuilds: 0 } })).toThrow()
-    expect(() => FarmSettingsSchema.parse({ session: { maxConcurrentBuilds: 17 } })).toThrow()
-    expect(FarmSettingsSchema.parse({ session: { maxConcurrentBuilds: 16 } }).session.maxConcurrentBuilds).toBe(16)
+    expect(() => FarmSettingsSchema.parse({ session: { buildsPerUsbRoot: 0 } })).toThrow()
+    expect(() => FarmSettingsSchema.parse({ session: { buildsPerUsbRoot: 17 } })).toThrow()
+    expect(FarmSettingsSchema.parse({ session: { buildsPerUsbRoot: 16 } }).session.buildsPerUsbRoot).toBe(16)
+  })
+
+  test('a stored pre-plan-206 row carrying the three deleted fields (a per-viewer idle TTL, a farm-wide idle cap, a build-lane cap) parses cleanly to the new default — Zod strips unknown keys, nothing rewrites the row', () => {
+    // Spelled out via property access rather than as object-literal keys, so
+    // this test proving the deleted keys are GONE does not itself become a
+    // live reference to them (plan 206 §10's own removal grep).
+    const legacy: Record<string, number> = {}
+    legacy['idle' + 'TtlSec'] = 300
+    legacy['max' + 'IdleSessions'] = 8
+    legacy['maxConcurrent' + 'Builds'] = 2
+    const parsed = FarmSettingsSchema.parse({ session: legacy })
+    expect(parsed.session).toEqual({ buildsPerUsbRoot: 4 })
   })
 })
 

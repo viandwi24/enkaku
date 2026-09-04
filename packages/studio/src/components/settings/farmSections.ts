@@ -83,18 +83,13 @@ export const FARM_SECTION_DEFS: readonly FarmSectionDef[] = [
   // section — it does not need a section of its own to exist first.
   { id: 'video', title: 'Video', group: 'Devices', keys: ['video'] },
   // `readiness` (`maxHot`/`defaultDesired`) joins `session`/`wall` here, not
-  // a section of its own. Its own doc comment in `settings.ts` USED to say
-  // `maxHot` was deliberately the same default as `wall.maxTiles` and
-  // `session.maxIdleSessions` — plan 92 §3.7 corrected that: `wall.maxTiles`
-  // is now derived from the resolved wall bitrate (the Video section right
-  // above), not a fixed number for `maxHot` to match. The three settings
-  // still share one tab because they answer one question — how many
-  // devices/sessions the farm holds open at once — even though the numbers
-  // no longer coincide by default.
-  // Plan 100 §4.3, step 100.6 — `display.fallbackRetryCount` joins the same
-  // tab as `session`/`wall`/`readiness`: all four answer "how a device
-  // session behaves while open," and a fifth single-field tab for one retry
-  // count would be more clutter than the setting is worth.
+  // a section of its own — the three answer one question, how many
+  // devices/sessions the farm holds open at once. Plan 100 §4.3, step 100.6
+  // — `display.fallbackRetryCount` joins the same tab: all four answer "how
+  // a device session behaves while open," and a fifth single-field tab for
+  // one retry count would be more clutter than the setting is worth. Plan
+  // 206 §4.5 shrank `session` to its one remaining knob (`buildsPerUsbRoot`)
+  // — sessions themselves are always on now — without moving this tab.
   { id: 'sessions', title: 'Sessions & Wall', group: 'Devices', keys: ['session', 'wall', 'readiness', 'display'] },
   // Plan 94 §4.6, §5 step 94.3 — the recorder's own throttles (how eagerly
   // it dumps the UI tree for a selector candidate) and bounds (steps,

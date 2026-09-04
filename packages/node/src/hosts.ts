@@ -219,6 +219,11 @@ export function createNodeHosts(deps: {
   async function startSession(deviceId: string): Promise<void> {
     const noop = () => {}
     try {
+      // Plan 206 §4.3, §5 step 206.5 — `acquire` never builds any more; the
+      // node has no always-on builder of its own yet (cloud parity is
+      // post-MVP, MVP 16 §1), so it builds the base entry directly here,
+      // once, before acquiring it.
+      await sessions.build(deviceId, { requireScrcpy: false })
       const session = await sessions.acquire(deviceId, noop)
       send({
         type: 'session.started',
