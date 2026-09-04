@@ -109,8 +109,17 @@ CREATE TABLE `jobs` (
 	`run_count` integer DEFAULT 0 NOT NULL
 );
 --> statement-breakpoint
+-- `COALESCE("created_at", unixepoch())` guards a real gap in the PRE-211
+-- physical schema: `jobs.created_at` was declared `.notNull()` at the
+-- Drizzle level but the column itself was never rebuilt NOT NULL at the SQL
+-- level (`0002_complex_anthem.sql` created it nullable, and no migration
+-- since ever tightened it) — an old row inserted without the app's own
+-- insert-time default (any raw SQL, including a hand-seeded test fixture)
+-- can carry a genuine NULL here. The new `jobs.created_at` IS NOT NULL at
+-- the SQL level (finally matching the schema), so this is the one place
+-- that gap must be closed, not carried forward as a migration crash.
 INSERT INTO `jobs` ("id", "kind", "script_id", "workflow_name", "workflow_doc", "device_id", "params", "batch_id", "batch_seq", "schedule_id", "parent_workflow_job_id", "step_seq", "script_name", "script_version", "triggered_by_job_id", "root_job_id", "depth", "trigger_key", "created_by", "created_at", "latest_run_id", "run_count")
-SELECT "id", 'script', "script_id", NULL, "workflow_doc", "device_id", "params", "batch_id", "batch_seq", NULL, NULL, NULL, "script_name", "script_version", "triggered_by_job_id", "root_job_id", "depth", "trigger_key", NULL, "created_at", NULL, 0
+SELECT "id", 'script', "script_id", NULL, "workflow_doc", "device_id", "params", "batch_id", "batch_seq", NULL, NULL, NULL, "script_name", "script_version", "triggered_by_job_id", "root_job_id", "depth", "trigger_key", NULL, COALESCE("created_at", unixepoch()), NULL, 0
 FROM `jobs_pre_211`;--> statement-breakpoint
 CREATE INDEX `idx_jobs_device` ON `jobs` (`device_id`,`created_at`);--> statement-breakpoint
 CREATE INDEX `idx_jobs_batch` ON `jobs` (`batch_id`,`batch_seq`);--> statement-breakpoint
