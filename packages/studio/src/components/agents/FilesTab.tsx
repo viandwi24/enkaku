@@ -1,10 +1,9 @@
 'use client'
 
-import { Suspense, useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Check, Download, FileCode2, Folder, FolderOpen, Loader2, Pencil, Plus, Rocket, Save, Trash2, Upload, X } from 'lucide-react'
+import { CheckIcon, DownloadSimpleIcon, FileCodeIcon, FolderSimpleIcon, CircleNotchIcon, PencilSimpleIcon, PlusIcon, RocketIcon, FloppyDiskIcon, TrashIcon, UploadSimpleIcon, XIcon } from '@enkaku/ui'
 import { toast } from 'sonner'
-import { PageHeader } from '@/components/layout/PageHeader'
 import {
   Button,
   Dialog,
@@ -40,11 +39,13 @@ import {
 } from '@/lib/workspace'
 
 /**
- * `/workspace` (plan 64 §3.6, §4.5) — a tree in the left column, an editor
- * on the right, both talking to the SAME `fs.*` capabilities an agent uses.
- * A person editing a file an agent wrote is the normal case here, not an
- * edge case (§3.6), so every save is compare-and-swap and a conflict is
- * shown, never silently overwritten or silently discarded.
+ * The Agents page's Files tab (plan 220 §4.11) — the renamed Workspace
+ * (MVP 15 §0.1.2), moved wholesale with no functional change: a tree in the
+ * left column, an editor on the right, both talking to the SAME `fs.*`
+ * capabilities an agent uses (plan 64 §3.6, §4.5). A person editing a file
+ * an agent wrote is the normal case here, not an edge case, so every save is
+ * compare-and-swap and a conflict is shown, never silently overwritten or
+ * silently discarded.
  */
 
 /** "user:u1" / "agent:checkout-bot" -> "user u1" / "agent checkout-bot" — attribution is the point (plan 64 §4.5). */
@@ -80,7 +81,7 @@ function breadcrumbs(prefix: string): { label: string; prefix: string }[] {
   return crumbs
 }
 
-function WorkspaceView() {
+export function FilesTab() {
   const params = useSearchParams()
   const router = useRouter()
 
@@ -161,7 +162,7 @@ function WorkspaceView() {
     void loadDir(prefix)
   }, [prefix, loadDir])
 
-  // Deep link: /workspace?path=/scripts/hello.ts opens straight to a file.
+  // Deep link: /agents?tab=files&path=/scripts/hello.ts opens straight to a file.
   useEffect(() => {
     const initial = params.get('path')
     if (initial) {
@@ -176,7 +177,7 @@ function WorkspaceView() {
   const openFile = (path: string) => {
     setSelectedPath(path)
     void loadFile(path)
-    router.push(`/workspace?path=${encodeURIComponent(path)}`)
+    router.push(`/agents?tab=files&path=${encodeURIComponent(path)}`)
   }
 
   const dirty = selectedPath !== null && draft !== original
@@ -272,7 +273,7 @@ function WorkspaceView() {
       if (selectedPath === entry.path) {
         setSelectedPath(to)
         setMeta(updated)
-        router.push(`/workspace?path=${encodeURIComponent(to)}`)
+        router.push(`/agents?tab=files&path=${encodeURIComponent(to)}`)
       }
       void loadDir(prefix)
     } catch (err) {
@@ -291,7 +292,7 @@ function WorkspaceView() {
       setMeta(null)
       setDraft('')
       setOriginal('')
-      router.push('/workspace')
+      router.push('/agents?tab=files')
       void loadDir(prefix)
     } catch (err) {
       setFileError(err instanceof Error ? err.message : String(err))
@@ -357,13 +358,8 @@ function WorkspaceView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader
-        title="Workspace"
-        description="A shared filesystem — agents write to it, people browse and edit it here."
-      />
-
       {/* `min-h-full` instead of a hard-coded viewport-height guess at the header's own height
-          (plan 73 §3.1) — this row is a flex sibling below `PageHeader` in a `h-full` column, so
+          (plan 73 §3.1) — this row is a flex sibling below the tab strip in a `h-full` column, so
           "fill what's left" falls out of the box model instead of arithmetic. */}
       <div className="grid min-h-full grid-cols-1 gap-0 md:grid-cols-[280px_1fr]">
         {/* Tree / directory browser */}
@@ -393,7 +389,7 @@ function WorkspaceView() {
               }}
             />
             <Button size="sm" variant="secondary" className="h-7 shrink-0 px-2" disabled={creating || !newFileName.trim()} onClick={() => void createFile()}>
-              <Plus className="size-3.5" aria-hidden />
+              <PlusIcon className="size-3.5" aria-hidden />
             </Button>
             <Button
               size="sm"
@@ -403,7 +399,7 @@ function WorkspaceView() {
               title="Upload a file"
               onClick={() => uploadInputRef.current?.click()}
             >
-              {uploading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Upload className="size-3.5" aria-hidden />}
+              {uploading ? <CircleNotchIcon className="size-3.5 animate-enkaku-spin" aria-hidden /> : <UploadSimpleIcon className="size-3.5" aria-hidden />}
             </Button>
             <input ref={uploadInputRef} type="file" className="hidden" onChange={(e) => void handleUploadChange(e)} />
           </div>
@@ -425,7 +421,7 @@ function WorkspaceView() {
                       onClick={() => setPrefix(e.path)}
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2"
                     >
-                      <Folder className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                      <FolderSimpleIcon className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
                       <span className="truncate">{fileName(e.path)}</span>
                     </button>
                   ) : renamingPath === e.path ? (
@@ -448,10 +444,10 @@ function WorkspaceView() {
                           disabled={renameBusy || !renameValue.trim()}
                           onClick={() => void confirmRename(e)}
                         >
-                          {renameBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
+                          {renameBusy ? <CircleNotchIcon className="size-3.5 animate-enkaku-spin" aria-hidden /> : <CheckIcon className="size-3.5" aria-hidden />}
                         </Button>
                         <Button size="sm" variant="ghost" className="h-7 shrink-0 px-2" disabled={renameBusy} onClick={cancelRename}>
-                          <X className="size-3.5" aria-hidden />
+                          <XIcon className="size-3.5" aria-hidden />
                         </Button>
                       </div>
                       {renameError && <p className="mt-1 text-[11.5px] text-led-danger">{renameError}</p>}
@@ -470,7 +466,7 @@ function WorkspaceView() {
                           selectedPath === e.path && 'font-medium',
                         )}
                       >
-                        <FileCode2 className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                        <FileCodeIcon className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
                         <span className="truncate">{fileName(e.path)}</span>
                       </button>
                       <span className="shrink-0 text-[11px] text-fg-muted">{fileSize(e.size)}</span>
@@ -484,7 +480,7 @@ function WorkspaceView() {
                           startRename(e)
                         }}
                       >
-                        <Pencil className="size-3" aria-hidden />
+                        <PencilSimpleIcon className="size-3" aria-hidden />
                       </button>
                     </div>
                   )}
@@ -499,7 +495,7 @@ function WorkspaceView() {
           {!selectedPath && (
             <div className="px-6 py-12">
               <EmptyState
-                icon={<FolderOpen className="size-4" aria-hidden />}
+                icon={<FolderSimpleIcon className="size-4" aria-hidden />}
                 title="No file open"
                 description="Pick a file on the left, or create a new one."
               />
@@ -513,17 +509,17 @@ function WorkspaceView() {
                 <div className="flex items-center gap-2">
                   {canPublish && (
                     <Button size="sm" variant="secondary" className="h-7 text-[12px]" onClick={openPublish} disabled={loadingFile}>
-                      <Rocket className="size-3.5" aria-hidden />
+                      <RocketIcon className="size-3.5" aria-hidden />
                       Publish as script
                     </Button>
                   )}
                   <Button size="sm" variant="ghost" className="h-7 text-[12px] text-led-danger hover:text-led-danger" onClick={() => void removeSelected()} disabled={loadingFile || !meta}>
-                    <Trash2 className="size-3.5" aria-hidden />
+                    <TrashIcon className="size-3.5" aria-hidden />
                     Delete
                   </Button>
                   {canEdit && (
                     <Button size="sm" className="h-7 text-[12px]" onClick={() => void save()} disabled={saving || loadingFile || !dirty}>
-                      {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Save className="size-3.5" aria-hidden />}
+                      {saving ? <CircleNotchIcon className="size-3.5 animate-enkaku-spin" aria-hidden /> : <FloppyDiskIcon className="size-3.5" aria-hidden />}
                       Save
                     </Button>
                   )}
@@ -574,7 +570,7 @@ function WorkspaceView() {
                       <p className="text-[12px] text-fg-muted">{meta.contentType}</p>
                       <Button asChild size="sm" variant="secondary">
                         <a href={workspaceFileUrl(meta.path)} target="_blank" rel="noreferrer">
-                          <Download className="size-3.5" aria-hidden />
+                          <DownloadSimpleIcon className="size-3.5" aria-hidden />
                           Download
                         </a>
                       </Button>
@@ -641,20 +637,12 @@ function WorkspaceView() {
               Cancel
             </Button>
             <Button onClick={() => void doPublish()} disabled={publishing || publishBlocked}>
-              {publishing ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Rocket className="size-3.5" aria-hidden />}
+              {publishing ? <CircleNotchIcon className="size-3.5 animate-enkaku-spin" aria-hidden /> : <RocketIcon className="size-3.5" aria-hidden />}
               Stage
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
-  )
-}
-
-export default function WorkspacePage() {
-  return (
-    <Suspense fallback={<div className="px-5 py-4"><LoadingRows rows={4} /></div>}>
-      <WorkspaceView />
-    </Suspense>
   )
 }
