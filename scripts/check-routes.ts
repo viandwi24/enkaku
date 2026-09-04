@@ -53,13 +53,11 @@ const NOT_IN_NAV_BY_DESIGN: Record<string, string> = {
  * deleting the row fails check 2.
  */
 const PENDING_REMOVAL: Record<string, string> = {
+  '/groups': 'plan 214: the groups page plan 207 renamed from /clusters goes away once groups are managed from the Devices tab strip (MVP 15 §0.1.3)',
   '/device': 'plan 215: Device Control is the device surface; the device page and its route go (MVP 15 §1)',
   // See the DISCREPANCY note above: plan 207 (not yet merged) renames this to
   // /groups (MVP 13 A.6a); plan 214 then removes the dedicated route
   // entirely once groups live in the Devices tab strip.
-  '/clusters': 'plan 207 renames this to /groups (MVP 13 A.6a); plan 214 then removes the route once groups live in the Devices tab strip',
-  '/console': 'plan 207: the fleet command page is removed entirely (MVP 15 §0.1.4, 13 A.6a)',
-  '/topology': 'plan 207: a 22-line compatibility redirect to the grouped devices view, deleted with the clusters rename (13 A.6a)',
   '/nodes': 'plan 214: Nodes becomes a Devices tab, shown only in orchestrator mode (MVP 03 §1.1)',
   '/workflows': 'plan 217: second tab of Scripts & workflows (MVP 03 §1)',
   '/schedules': 'plan 217: third tab of Scripts & workflows (MVP 15 §0.1.1)',
