@@ -159,12 +159,16 @@ describe('run-script with jobId (plan 211 §4.8, G7)', () => {
 
 function workflowDoc() {
   return WorkflowDocSchema.parse({
-    schema: 1,
+    schema: 2,
     name: 'wf-1',
     title: 'wf',
     description: '',
     params: [],
-    nodes: [{ kind: 'script', id: 's1', title: 'Step 1', script: 'demo/step@1.0.0', params: {}, onFailure: { go: 'fail' } }],
+    entry: 'start',
+    nodes: [
+      { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, next: 's1' },
+      { kind: 'script', id: 's1', title: 'Step 1', ui: { x: 240, y: 0 }, script: 'demo/step@1.0.0', params: {} },
+    ],
   })
 }
 

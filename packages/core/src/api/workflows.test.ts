@@ -278,14 +278,45 @@ describe('POST /api/workflows — checkWorkflow findings map to 400', () => {
     expect(body.error.findings.some((f) => f.code === 'E_WORKFLOW_SCRIPT_UNRESOLVED')).toBe(true)
   })
 
-  test('a malformed document (fails WorkflowDocSchema itself) is refused with E_WORKFLOW_INVALID findings, not a crash', async () => {
+  test('a malformed v2 document (fails WorkflowDocSchema itself) is refused with E_WORKFLOW_INVALID findings, not a crash', async () => {
     const { db, registry, store } = setUp()
     const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
-    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 1, name: 'x', nodes: [] } }) })
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 2, name: 'x', entry: 'a', nodes: [] } }) })
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { findings: Array<{ code: string }> } }
     expect(body.error.findings.length).toBeGreaterThan(0)
     expect(body.error.findings.every((f) => f.code === 'E_WORKFLOW_INVALID')).toBe(true)
+  })
+
+  test('a malformed v1 document (does not satisfy the frozen v1 shape) is refused with E_WORKFLOW_UPGRADE_FAILED, not a crash (plan 301 §4.6)', async () => {
+    const { db, registry, store } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 1, name: 'x', nodes: [] } }) })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string; findings: Array<{ code: string }> } }
+    expect(body.error.code).toBe('E_WORKFLOW_UPGRADE_FAILED')
+  })
+
+  test('a document declaring an unknown schema is refused with E_WORKFLOW_SCHEMA_UNKNOWN (plan 301 §4.6)', async () => {
+    const { db, registry, store } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: { schema: 3, name: 'x', nodes: [] } }) })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('E_WORKFLOW_SCHEMA_UNKNOWN')
+  })
+})
+
+describe('POST /api/workflows — accepts a v1 body and stores v2 (plan 301 §4.5)', () => {
+  test('a v1 document is upgraded before checkWorkflow ever sees it, and stored as schema 2', async () => {
+    const { db, registry, store } = setUp()
+    seedOwnerExampleDeps(db)
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store }))
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: ownerExampleDocInput() }) })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { workflow: { doc: { schema: number; entry: string } } }
+    expect(body.workflow.doc.schema).toBe(2)
+    expect(body.workflow.doc.entry).toBeDefined()
   })
 })
 

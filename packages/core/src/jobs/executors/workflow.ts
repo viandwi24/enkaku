@@ -4,7 +4,6 @@ import {
   resolveValue,
   validateAgainstSchema,
   WORKFLOW_LIMITS,
-  type GateOutcome,
   type ResolveScope,
   type RunSummaryEntry,
   type WorkflowDoc,
@@ -115,9 +114,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
       let seqOffset = 0
       const carriedOverIds = new Set<string>()
 
-      const firstNode = doc.nodes[0]
-      if (!firstNode) throw new EnkakuError('E_WORKFLOW_INVALID', `workflow ${job.id} has no nodes`)
-      let cursor: string | null = firstNode.id
+      let cursor: string | null = doc.entry
 
       // ---- resume (plan 211 §4.5 item 2) ----
       if (ctx.run.trigger === 'resume' && ctx.run.resumedFromRunId) {
@@ -152,27 +149,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           seqOffset += 1
         }
         const resumeStepRow = priorSteps.find((s) => s.seq === resumedFromStep)
-        cursor = resumeStepRow?.stepId ?? firstNode.id
-      }
-
-      const nextInArray = (id: string): string | null => {
-        const idx = doc.nodes.findIndex((n) => n.id === id)
-        return idx >= 0 && idx + 1 < doc.nodes.length ? (doc.nodes[idx + 1] as WorkflowNode).id : null
-      }
-
-      function followOutcome(outcome: GateOutcome, fromNodeId: string): { done: false; nodeId: string } | { done: true; ok: boolean } {
-        if (outcome.go === 'goto') return { done: false, nodeId: outcome.node }
-        if (outcome.go === 'continue') {
-          const next = nextInArray(fromNodeId)
-          return next ? { done: false, nodeId: next } : { done: true, ok: true }
-        }
-        if (outcome.go === 'stop') return { done: true, ok: true }
-        return { done: true, ok: false } // 'fail'
-      }
-
-      function followSuccess(node: ScriptNode): { done: false; nodeId: string } | { done: true; ok: true } {
-        const next = node.next ?? nextInArray(node.id)
-        return next ? { done: false, nodeId: next } : { done: true, ok: true }
+        cursor = resumeStepRow?.stepId ?? doc.entry
       }
 
       /** Enqueue one step job, await its run, and translate the settled run into an outcome. Never throws. */
@@ -272,6 +249,28 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             break
           }
 
+          // `start` runs nothing and costs no step (plan 301 §3.4) — pass
+          // straight through to its successor, or end the run SUCCEEDED at a
+          // dangling edge (an empty document, in practice), never logged as
+          // a workflow_steps row.
+          if (node.kind === 'start') {
+            cursor = node.next ?? null
+            continue
+          }
+
+          // `finish` is a sink and costs no step either (plan 301 §3.2,
+          // §4.2) — it carries the terminal status/message directly, with
+          // no child process and nothing to log as a workflow_steps row.
+          if (node.kind === 'finish') {
+            cursor = null
+            if (node.status === 'fail') {
+              finalStatus = 'failed'
+              finalErrorCode = 'E_WORKFLOW_FINISH_FAILED'
+              finalErrorMessage = node.message || `workflow ended at finish node "${node.id}" — failed`
+            }
+            continue
+          }
+
           const seq = step + seqOffset
           runCounts.set(node.id, (runCounts.get(node.id) ?? 0) + 1)
           const rowId = crypto.randomUUID()
@@ -302,7 +301,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             const { value, trace } = evaluatePredicate(node.when, scope)
             const chosen = value ? node.then : node.else
             const finishedAt = new Date()
-            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, verdict: trace, output: { value, branch: chosen.go } }).where(eq(workflowSteps.id, rowId)).run()
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, verdict: trace, output: { value, branch: chosen ?? null } }).where(eq(workflowSteps.id, rowId)).run()
             summary.push({
               nodeId: node.id,
               script: null,
@@ -310,21 +309,14 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
               startedAt: toSec(rowStartedAt),
               finishedAt: toSec(finishedAt),
               durationMs: finishedAt.getTime() - rowStartedAt.getTime(),
-              output: { value, branch: chosen.go },
+              output: { value, branch: chosen ?? null },
             })
 
-            const next = followOutcome(chosen, node.id)
             step += 1
-            if (next.done) {
-              cursor = null
-              if (!next.ok) {
-                finalStatus = 'failed'
-                finalErrorCode = 'E_WORKFLOW_GATE_FAILED'
-                finalErrorMessage = node.message || `gate "${node.id}" chose to end the workflow failed`
-              }
-            } else {
-              cursor = next.nodeId
-            }
+            // Both `then` and `else` end the run SUCCEEDED when dangling
+            // (plan 301 §3.2) — a gate has no `fail`-shaped outcome any more;
+            // ending a run failed is a `finish` node's own job.
+            cursor = chosen ?? null
             continue
           }
 
@@ -353,10 +345,9 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             })
             currentChildRunId = null
 
-            const next = followSuccess(node)
             step += 1
-            if (next.done) cursor = null
-            else cursor = next.nodeId
+            // Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2).
+            cursor = node.next ?? null
             continue
           }
 
@@ -394,16 +385,14 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             continue
           }
 
-          const next = followOutcome(node.onFailure, node.id)
-          if (next.done) {
+          // Absent = dangling; reaching it ends the run FAILED (plan 301 §3.2).
+          if (node.onFailure === undefined) {
             cursor = null
-            if (!next.ok) {
-              finalStatus = 'failed'
-              finalErrorCode = outcome.code
-              finalErrorMessage = `step "${node.id}" failed: ${outcome.message}`
-            }
+            finalStatus = 'failed'
+            finalErrorCode = outcome.code
+            finalErrorMessage = `step "${node.id}" failed: ${outcome.message}`
           } else {
-            cursor = next.nodeId
+            cursor = node.onFailure
           }
         }
       } catch (err) {
@@ -415,8 +404,11 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         ctx.signal.removeEventListener('abort', onAbort)
 
         // Every step the cursor never reached is written down too (H4).
+        // `start`/`finish` are never logged at all (plan 301 §3.2, §3.4) —
+        // they cost no step whether the cursor reaches them or not.
         let skipSeq = step + seqOffset
         for (const n of doc.nodes) {
+          if (n.kind === 'start' || n.kind === 'finish') continue
           if (runCounts.has(n.id) || carriedOverIds.has(n.id)) continue
           deps.db
             .insert(workflowSteps)

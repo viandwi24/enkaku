@@ -20,6 +20,7 @@ import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
 import type { ScriptRegistry } from '../scripts/registry'
 import type { WorkflowStore } from '../workflows/store'
+import { upgradeWorkflowDoc } from '../workflows/upgrade'
 import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
 import { WORKFLOW_MAX_TOTAL_MS } from '../config/constants'
@@ -46,6 +47,8 @@ const ERROR_STATUS: Record<string, number> = {
   E_BAD_REQUEST: 400,
   E_WORKFLOW_INVALID: 400,
   E_PARAMS_SCHEMA_INVALID: 400,
+  E_WORKFLOW_SCHEMA_UNKNOWN: 400,
+  E_WORKFLOW_UPGRADE_FAILED: 400,
 }
 
 function parseErrorFindings(issues: readonly { path: readonly PropertyKey[]; message: string }[]): WorkflowFinding[] {
@@ -111,22 +114,57 @@ function budgetFor(deps: { settings?: () => WorkflowBudget }): WorkflowBudget {
 }
 
 /**
+ * Accepts a v1 OR v2 document body (plan 301 §4.5) and returns an
+ * already-upgraded v2 `WorkflowDoc`, or the findings to answer with. Every
+ * caller in this file that reads a raw request body goes through this — a
+ * `POST`/`PUT` may still arrive holding a v1 document (an API client that
+ * predates plan 301); it is upgraded here, once, before `checkWorkflow` ever
+ * sees it. This tolerance exists for API clients; plan 307 §10 removes it
+ * once no v1 remains on the owner's farm.
+ *
+ * A `schema: 2` body is parsed DIRECTLY against `WorkflowDocSchema` (never
+ * routed through `upgradeWorkflowDoc`, which would collapse every per-field
+ * Zod issue into one `E_WORKFLOW_UPGRADE_FAILED` message) so a malformed v2
+ * document still gets the same per-field `E_WORKFLOW_INVALID` findings it
+ * always has. A `schema: 1` body goes through `upgradeWorkflowDoc`, whose own
+ * failure IS reported as one `E_WORKFLOW_UPGRADE_FAILED` finding — a v1
+ * document is legacy input, not something an author is actively editing
+ * field-by-field. Anything else is `E_WORKFLOW_SCHEMA_UNKNOWN`.
+ */
+function parseOrUpgradeDoc(rawDoc: unknown): { ok: true; doc: WorkflowDoc } | { ok: false; findings: WorkflowFinding[] } {
+  const schema = rawDoc !== null && typeof rawDoc === 'object' && !Array.isArray(rawDoc) ? (rawDoc as Record<string, unknown>).schema : undefined
+  if (schema === 2) {
+    const parsed = WorkflowDocSchema.safeParse(rawDoc)
+    if (!parsed.success) return { ok: false, findings: parseErrorFindings(parsed.error.issues) }
+    return { ok: true, doc: parsed.data }
+  }
+  try {
+    return { ok: true, doc: upgradeWorkflowDoc(rawDoc) }
+  } catch (err) {
+    if (err instanceof EnkakuError && (err.code === 'E_WORKFLOW_SCHEMA_UNKNOWN' || err.code === 'E_WORKFLOW_UPGRADE_FAILED')) {
+      return { ok: false, findings: [{ path: '', code: err.code, message: err.message, severity: 'error' }] }
+    }
+    throw err
+  }
+}
+
+/**
  * Validates a document through the same pipeline `POST`/`PUT` use, up to
- * (but not including) the write: schema parse, ref resolution, `checkWorkflow`,
- * and the declared-params-schema gate. Returns either the ready-to-write doc
- * plus its compiled paramsSchema, or the JSON error body to answer with.
+ * (but not including) the write: version upgrade, ref resolution,
+ * `checkWorkflow`, and the declared-params-schema gate. Returns either the
+ * ready-to-write doc plus its compiled paramsSchema, or the JSON error body
+ * to answer with.
  */
 function validateForWrite(
   registry: ScriptRegistry,
   settingsDeps: { settings?: () => WorkflowBudget },
   rawDoc: unknown,
 ): { ok: true; doc: WorkflowDoc; paramsSchema: unknown } | { ok: false; status: 400; body: unknown } {
-  const parsedDoc = WorkflowDocSchema.safeParse(rawDoc)
-  if (!parsedDoc.success) {
-    const findings = parseErrorFindings(parsedDoc.error.issues)
-    return { ok: false, status: 400, body: { error: { code: 'E_WORKFLOW_INVALID', message: errorFindingsMessage(findings), findings } } }
+  const parsedDoc = parseOrUpgradeDoc(rawDoc)
+  if (!parsedDoc.ok) {
+    return { ok: false, status: 400, body: { error: { code: parsedDoc.findings[0]?.code ?? 'E_WORKFLOW_INVALID', message: errorFindingsMessage(parsedDoc.findings), findings: parsedDoc.findings } } }
   }
-  const doc = parsedDoc.data
+  const doc = parsedDoc.doc
   const { resolved, findings: refFindings } = resolveDocRefs(registry, doc)
   const checkFindings = checkWorkflow(doc, resolved, budgetFor(settingsDeps))
   const allFindings = [...refFindings, ...checkFindings]
@@ -161,11 +199,11 @@ export function createWorkflowRoutes(deps: { db: Db; registry: ScriptRegistry; s
     const body = DocBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
 
-    const parsedDoc = WorkflowDocSchema.safeParse(body.data.doc)
-    if (!parsedDoc.success) {
-      return c.json(parseErrorFindings(parsedDoc.error.issues))
+    const parsedDoc = parseOrUpgradeDoc(body.data.doc)
+    if (!parsedDoc.ok) {
+      return c.json(parsedDoc.findings)
     }
-    const doc = parsedDoc.data
+    const doc = parsedDoc.doc
     const { resolved, findings: refFindings } = resolveDocRefs(registry, doc)
     const findings: WorkflowFinding[] = [...refFindings, ...checkWorkflow(doc, resolved, budgetFor(deps))]
     return c.json(findings)
