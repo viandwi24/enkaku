@@ -105,7 +105,7 @@ function JobDetail({ jobId, onBack, onChanged }: { jobId: string; onBack: () => 
       if (job.kind === 'workflow') {
         await runAction('run-workflow', { deviceIds: [job.deviceId] }, { workflowName: job.scriptName ?? '', jobId: job.jobId })
       } else {
-        await runAction('run-script', { deviceIds: [job.deviceId] }, { jobId: job.jobId })
+        await runAction('run-script', { deviceIds: [job.deviceId] }, { jobId: job.jobId, concurrency: 0, order: 'as-listed' })
       }
       onChanged()
     } finally {

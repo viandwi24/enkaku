@@ -4,7 +4,7 @@ import { useRef } from 'react'
 import type { JobTraceEvent } from '@enkaku/protocol'
 import { PauseIcon, PlayIcon, cn } from '@enkaku/ui'
 import { nearestEventIndex } from '@/lib/useJobTrace'
-import { formatOffset } from './lanes'
+import { formatOffset } from './lane-math'
 import type { PlaybackSpeed } from './useTracePlayback'
 
 /**

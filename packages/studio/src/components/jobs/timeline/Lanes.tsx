@@ -3,7 +3,7 @@
 import { useMemo, type ReactNode } from 'react'
 import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
-import { PHASE_FILL, formatOffset, phaseBands } from './lanes'
+import { PHASE_FILL, formatOffset, phaseBands } from './lane-math'
 
 /**
  * Card 2 (design handoff): "*Lanes*: "+0ms" / "+12.922s" bounds, then three

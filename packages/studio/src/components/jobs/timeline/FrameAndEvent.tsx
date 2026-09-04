@@ -4,7 +4,7 @@ import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
 import { STRIPE } from '../job-view'
-import { formatOffset } from './lanes'
+import { formatOffset } from './lane-math'
 
 /**
  * Card 4 (design handoff): "*Frame + Event*: a 168px column showing the

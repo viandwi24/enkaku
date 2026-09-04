@@ -90,7 +90,13 @@ export function JobDetail({ jobId }: { jobId: string }) {
       if (job.kind === 'workflow') {
         await runOnDevice('run-workflow', job.deviceId, { workflowName: job.scriptName ?? '', params: job.params, jobId: job.jobId })
       } else {
-        await runOnDevice('run-script', job.deviceId, { scriptId: job.scriptId, params: job.params, jobId: job.jobId })
+        await runOnDevice('run-script', job.deviceId, {
+          scriptId: job.scriptId,
+          params: job.params,
+          jobId: job.jobId,
+          concurrency: 0,
+          order: 'as-listed',
+        })
       }
       toast.success('Run added', {
         description: `${job.scriptName ?? 'This job'} is queued as run ${runs.length + 1}. The job list does not gain a row.`,
@@ -103,6 +109,7 @@ export function JobDetail({ jobId }: { jobId: string }) {
   }
 
   function exportJson(): void {
+    if (!job) return
     const doc = { job, run, runs, logs, artifacts }
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
