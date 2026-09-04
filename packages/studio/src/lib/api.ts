@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DeviceNetworkStatusResponseSchema, GuestAgentStatusResponseSchema } from '@enkaku/protocol'
+import { DeviceNetworkStatusResponseSchema, GuestAgentStatusResponseSchema, VideoLatencyResponseSchema, type VideoLatencyResponse } from '@enkaku/protocol'
 import type {
   DeviceInfo,
   DeviceNetworkConfig,
@@ -264,6 +264,13 @@ export async function fetchGuestAgentStatus(deviceId: string): Promise<GuestAgen
   const res = await fetch(`${coreBase()}/api/devices/${encodeURIComponent(deviceId)}/guest-agent`)
   if (!res.ok) throw new Error(`GET /api/devices/${deviceId}/guest-agent → ${res.status}`)
   return (await res.json()) as GuestAgentStatus
+}
+
+/** `GET /api/video/latency?deviceId=<id>` (plan 203 §4.7, the `input` block added by plan 209 §4.14). */
+export async function fetchVideoLatency(deviceId: string): Promise<VideoLatencyResponse> {
+  const res = await fetch(`${coreBase()}/api/video/latency?deviceId=${encodeURIComponent(deviceId)}`)
+  if (!res.ok) throw new Error(`GET /api/video/latency?deviceId=${deviceId} → ${res.status}`)
+  return VideoLatencyResponseSchema.parse(await res.json())
 }
 
 // ---- Network route (plan 44 §4.6, §5.8) ----

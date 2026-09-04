@@ -53,7 +53,7 @@ export type LatencyEvent =
       /** The `requestAnimationFrame` timestamp of the first animation frame after `drawImage`. */
       paintedAt: number
     }
-  | { kind: 'dropped'; reason: 'awaiting-keyframe' | 'no-decoder' }
+  | { kind: 'dropped'; reason: 'awaiting-keyframe' | 'no-decoder' | 'superseded' | 'queue-full' }
 
 export interface LatencyEstimator {
   push(event: LatencyEvent): void

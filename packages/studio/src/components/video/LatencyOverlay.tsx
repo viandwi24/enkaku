@@ -23,7 +23,19 @@ function formatAbsoluteLeg(leg: LegSummary, unit = ' ms'): string {
   return `${Math.round(leg.median)} / ${Math.round(leg.p95)}${unit}`
 }
 
-export function LatencyOverlay({ summary }: { summary: LatencySummary }) {
+/** Plan 209 §4.14: the ninth row — the core's own `input.touch` dispatch time. */
+export interface InputHostLatency {
+  dispatchMsP50: number
+  dispatchMsP95: number
+  samples: number
+}
+
+function formatInputHost(inputHost: InputHostLatency | null): string {
+  if (!inputHost || inputHost.samples === 0) return 'no samples'
+  return `${Math.round(inputHost.dispatchMsP50)} / ${Math.round(inputHost.dispatchMsP95)} ms`
+}
+
+export function LatencyOverlay({ summary, inputHost }: { summary: LatencySummary; inputHost: InputHostLatency | null }) {
   return (
     <dl
       data-testid="latency-overlay"
@@ -61,9 +73,14 @@ export function LatencyOverlay({ summary }: { summary: LatencySummary }) {
         <dt className="rack-label">keyframe requests</dt>
         <dd className="readout">{summary.keyframeRequests}</dd>
       </div>
+      <div className="flex justify-between gap-3">
+        <dt className="rack-label">input (host)</dt>
+        <dd className="readout">{formatInputHost(inputHost)}</dd>
+      </div>
       <div className="mt-1 text-[10px] text-fg-subtle">
         device→host and host→browser are relative to the fastest frame seen, not absolute. Glass-to-glass needs a
-        camera.
+        camera. input (host) is the core&apos;s own dispatch time from the WebSocket message to the control-socket
+        write; scrcpy sends no acknowledgement, so the device leg is not measured.
       </div>
     </dl>
   )

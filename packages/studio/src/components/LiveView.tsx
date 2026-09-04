@@ -5,14 +5,16 @@ import { ChevronLeft, Circle, Loader2, MoonStar, Power, Square, Sun, Volume2, Vo
 import {
   createLatencyEstimator,
   decodeVideoFrame,
+  isDomCode,
   KEYCODES,
   VIDEO_CODEC,
-  type InputAction,
+  type DomCode,
   type LatencySummary,
   type Quality,
 } from '@enkaku/protocol'
 import { createH264Renderer, isWebCodecsSupported, type H264Renderer } from '@/lib/h264-decoder'
-import { LatencyOverlay } from '@/components/video/LatencyOverlay'
+import { fetchVideoLatency } from '@/lib/api'
+import { LatencyOverlay, type InputHostLatency } from '@/components/video/LatencyOverlay'
 import { ClipboardButton } from '@/components/device/ClipboardButton'
 import { Button, Tooltip, TooltipContent, TooltipTrigger, cn, duration } from '@enkaku/ui'
 import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
@@ -25,20 +27,17 @@ import { newId, ws, WsRequestError } from '@/lib/ws'
  */
 const AKEYCODE = KEYCODES
 
-const DRAG_THRESHOLD_PX = 10
-const TEXT_DEBOUNCE_MS = 500
-/**
- * Manual control sends the operator's REAL pointer trace, not a synthesised
- * curve (Plan 40 §4.6) — a human dragging in the browser already produces a
- * natural path. `onPointerMove` fires far faster than is useful to send, so
- * the trace is batched client-side to roughly this interval (the same
- * cadence the gesture engine itself samples at by default) before being sent
- * as one `input.gesture` message on pointer-up.
- */
-const MANUAL_GESTURE_SAMPLE_MS = 8
-/** Matches `InputGestureMessage`'s schema ceiling — a very long drag simply
- * stops adding new samples past this, rather than growing the payload unbounded. */
-const MANUAL_GESTURE_MAX_SAMPLES = 300
+/** A live pointer sample is streamed at most this often (plan 209 §3.2 D6, D7; MVP 08 §1.1 row 3). */
+const TOUCH_SAMPLE_MS = 8
+/** A wheel tick is coalesced to at most this often. */
+const WHEEL_SAMPLE_MS = 16
+/** Chrome reports about 100 px per wheel notch in pixel mode and 3 lines in line mode. */
+const WHEEL_PIXELS_PER_NOTCH = 100
+const WHEEL_LINES_PER_NOTCH = 3
+/** Up to this many printable ASCII characters paste through `SET_CLIPBOARD`; longer or non-Latin text takes the IME ladder (MVP 08 §1.3). */
+const PASTE_VIA_CLIPBOARD_MAX = 256
+const PRINTABLE_ASCII = /^[\x20-\x7e\n\r\t]*$/
+const INPUT_TEXT_CHUNK = 1000
 /** Below this, a gap is just a static screen; above it, something is wrong. */
 const STALE_AFTER_SEC = 5
 /** Past this, an opt-in auto-reconnect (§4.8) is worth trying — a session is always on now (plan 206), so this is a recovery nudge, never a "wake the device" offer. */
@@ -246,12 +245,16 @@ export function LiveView({
   const videoAreaRef = useRef<HTMLDivElement>(null)
   const streamIdRef = useRef<number | null>(null)
   const lastSeqRef = useRef(-1)
-  const pointerDownRef = useRef<{ x: number; y: number; t: number } | null>(null)
-  /** The real trace of the current drag (Plan 40 §4.6), normalised 0..1, batched to MANUAL_GESTURE_SAMPLE_MS. */
-  const gestureSamplesRef = useRef<{ x: number; y: number; atMs: number }[]>([])
-  const lastGestureSampleAtRef = useRef(0)
-  const textBufferRef = useRef('')
-  const textTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * Live pointer streaming (plan 209 §4.13, §3.2 D6/D7): every active
+   * `PointerEvent.pointerId` maps to a small slot (the UHID pointer has one
+   * contact; ids above 0 fall through to `INJECT_TOUCH_EVENT`), sampled at
+   * `TOUCH_SAMPLE_MS`. `slotsRef` tracks which slots are currently taken.
+   */
+  const pointersRef = useRef(new Map<number, { slot: number; lastSentAt: number; last: { x: number; y: number } }>())
+  const slotsRef = useRef(new Set<number>())
+  /** Physical keys currently held (plan 209 §4.13) — used to send `up` for every held key on blur. */
+  const downKeysRef = useRef(new Set<DomCode>())
 
   const rendererRef = useRef<H264Renderer | null>(null)
   /**
@@ -265,6 +268,8 @@ export function LiveView({
   const [latencyOverlay, setLatencyOverlay] = useState(() => readLocalPrefs().latencyOverlay)
   const estimatorRef = useRef(createLatencyEstimator())
   const [latencySummary, setLatencySummary] = useState<LatencySummary | null>(null)
+  /** Plan 209 §4.14: the overlay's ninth row — polled separately from the video-only estimator above. */
+  const [inputHost, setInputHost] = useState<InputHostLatency | null>(null)
   const lastPtsSeqRef = useRef<number | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [stopped, setStopped] = useState<string | null>(null)
@@ -350,6 +355,19 @@ export function LiveView({
     console.info(`[enkaku] click→first paint ${ms} ms — ${deviceId} (${quality}); browser half only, not glass-to-glass`)
   }
 
+  /**
+   * Ask the server for a fresh IDR without restarting the stream (Plan 17
+   * §3.6, §4.5) — the visibility effect below calls this on a hidden→visible
+   * transition, and the decoder's own `onNeedKeyframe` hook (plan 209 §4.12)
+   * calls it when the decode queue overflows or the hardware-decode probe
+   * falls back.
+   */
+  function requestKeyframe() {
+    if (streamIdRef.current === null) return
+    ws.send({ type: 'stream.keyframe', payload: { streamId: streamIdRef.current } })
+    estimatorRef.current.noteKeyframeRequest()
+  }
+
   // stream.start on mount, plus automatic resubscribe after a reconnect.
   useEffect(() => {
     let disposed = false
@@ -386,7 +404,7 @@ export function LiveView({
             return
           }
           const canvas = canvasRef.current
-          if (canvas) rendererRef.current = createH264Renderer(canvas, (m) => setError(m), (e) => estimatorRef.current.push(e))
+          if (canvas) rendererRef.current = createH264Renderer(canvas, (m) => setError(m), { onEvent: (e) => estimatorRef.current.push(e), onNeedKeyframe: requestKeyframe })
         }
         if (res.payload.width > 0) setSize({ width: res.payload.width, height: res.payload.height })
         // Plan 203 §4.11 — a fresh stream means a fresh device/browser clock
@@ -464,7 +482,7 @@ export function LiveView({
           // nothing ever re-created it.
           const canvas = canvasRef.current
           if (!canvas) return
-          renderer = createH264Renderer(canvas, (m) => setError(m), (e) => estimatorRef.current.push(e))
+          renderer = createH264Renderer(canvas, (m) => setError(m), { onEvent: (e) => estimatorRef.current.push(e), onNeedKeyframe: requestKeyframe })
           if (!renderer) return
           rendererRef.current = renderer
           setCodec('h264')
@@ -553,10 +571,7 @@ export function LiveView({
   // the initial mount, which already gets a keyframe from stream.start itself.
   const wasActiveRef = useRef(active)
   useEffect(() => {
-    if (active && !wasActiveRef.current && streamIdRef.current !== null) {
-      estimatorRef.current.noteKeyframeRequest()
-      ws.send({ type: 'stream.keyframe', payload: { streamId: streamIdRef.current } })
-    }
+    if (active && !wasActiveRef.current && streamIdRef.current !== null) requestKeyframe()
     wasActiveRef.current = active
   }, [active])
 
@@ -569,6 +584,34 @@ export function LiveView({
     const id = setInterval(() => setLatencySummary(estimatorRef.current.summary(performance.now())), 500)
     return () => clearInterval(id)
   }, [latencyOverlay, streaming, compact])
+
+  /**
+   * Plan 209 §4.14 — the overlay's ninth row (`input (host)`), on a 2000ms
+   * tick of its own: `GET /api/video/latency`'s `input` block is the ONE
+   * reader this route has in the browser (plan 203 step 203.11's "do not
+   * poll the route from LiveView" was scoped to that plan, before this row
+   * existed). Same start/stop discipline as the 500ms tick above.
+   */
+  useEffect(() => {
+    if (!latencyOverlay || !streaming || compact) return
+    let disposed = false
+    const poll = () => {
+      void fetchVideoLatency(deviceId)
+        .then((res) => {
+          if (!disposed) setInputHost(res.input)
+        })
+        .catch(() => {
+          // Best-effort: a failed poll leaves the last known reading in place.
+        })
+    }
+    poll()
+    const id = setInterval(poll, 2000)
+    return () => {
+      disposed = true
+      clearInterval(id)
+      setInputHost(null)
+    }
+  }, [latencyOverlay, streaming, compact, deviceId])
 
   /**
    * Plan 103 step 103.9 — the `fitContainer` panel takes the PICTURE's own
@@ -639,7 +682,7 @@ export function LiveView({
   }, [fitContainer, compact, size.width, size.height])
 
   /** Normalised against the element's DISPLAYED size — CSS scaling never leaks to the server. */
-  function normalize(e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } {
+  function normalize(e: { clientX: number; clientY: number; currentTarget: HTMLCanvasElement }): { x: number; y: number } {
     const rect = e.currentTarget.getBoundingClientRect()
     return {
       x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
@@ -647,110 +690,71 @@ export function LiveView({
     }
   }
 
-  /**
-   * The one place a tap/swipe/gesture/key leaves this component (plan 91
-   * §3.8, §5 step 91.9; plan 205 §4.11 — fan-out mode was deleted along with
-   * the rest of MVP 04's replaced subsystem, so this now only ever sends the
-   * single-device path) — `text` is excluded (it stays request/reply via
-   * `flushText`'s own `input.text` branch below, since only the single-device
-   * path has a ladder result worth showing).
-   */
-  function sendInputAction(action: Exclude<InputAction, { verb: 'text' }>) {
-    switch (action.verb) {
-      case 'tap':
-        // `holdMs` (plan 94 §4.4, closes F4/F5) — the operator's real
-        // pointer down→up duration, measured in `onPointerUp` below. A press
-        // held past the recorder's own `longPressMs` setting is STILL sent
-        // as `input.tap`: there is no separate long-press message, the
-        // duration alone is what makes it one (plan 94 §3.4, §4.6).
-        ws.send({ type: 'input.tap', payload: { deviceId, pos: action.pos, ...(action.holdMs !== undefined ? { holdMs: action.holdMs } : {}) } })
-        return
-      case 'swipe':
-        ws.send({ type: 'input.swipe', payload: { deviceId, from: action.from, to: action.to, durationMs: action.durationMs } })
-        return
-      case 'gesture':
-        ws.send({ type: 'input.gesture', payload: { deviceId, samples: action.samples } })
-        return
-      case 'key':
-        ws.send({ type: 'input.key', payload: { deviceId, keycode: action.keycode } })
-        return
+  /** The lowest free slot 0..9 for a new `PointerEvent.pointerId` (plan 209 §4.13). */
+  function slotFor(pointerId: number): number {
+    const existing = pointersRef.current.get(pointerId)
+    if (existing) return existing.slot
+    for (let slot = 0; slot <= 9; slot++) {
+      if (!slotsRef.current.has(slot)) {
+        slotsRef.current.add(slot)
+        return slot
+      }
     }
+    return 0
+  }
+
+  /** One `input.touch` sample (plan 209 §3.2 D6, D7; MVP 08 §1.1 row 3) — sent live, never buffered to pointer-up. */
+  function sendTouch(action: 'down' | 'move' | 'up', pos: { x: number; y: number }, slot: number) {
+    ws.send({ type: 'input.touch', payload: { deviceId, action, pos, pointerId: slot } })
+  }
+
+  const sendKey = (keycode: number) => {
+    if (!inputEnabled) return
+    ws.send({ type: 'input.key', payload: { deviceId, keycode } })
+    onActivity?.()
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
     if (!inputEnabled) return
+    e.currentTarget.setPointerCapture(e.pointerId)
     const p = normalize(e)
-    pointerDownRef.current = { ...p, t: Date.now() }
-    gestureSamplesRef.current = [{ x: p.x, y: p.y, atMs: 0 }]
-    lastGestureSampleAtRef.current = 0
+    const slot = slotFor(e.pointerId)
+    pointersRef.current.set(e.pointerId, { slot, lastSentAt: performance.now(), last: p })
+    sendTouch('down', p, slot)
     e.currentTarget.focus()
   }
 
-  /** Batches the real trace while dragging (Plan 40 §4.6) — see MANUAL_GESTURE_SAMPLE_MS. */
+  /** Streamed live at `TOUCH_SAMPLE_MS`, never buffered to pointer-up (plan 209 §3.2 D6). */
   function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
     if (!inputEnabled) return
-    const start = pointerDownRef.current
-    if (!start) return
-    const elapsed = Date.now() - start.t
-    if (elapsed - lastGestureSampleAtRef.current < MANUAL_GESTURE_SAMPLE_MS) return
-    if (gestureSamplesRef.current.length >= MANUAL_GESTURE_MAX_SAMPLES - 1) return
+    const rec = pointersRef.current.get(e.pointerId)
+    if (!rec) return
+    const now = performance.now()
+    if (now - rec.lastSentAt < TOUCH_SAMPLE_MS) return
     const p = normalize(e)
-    gestureSamplesRef.current.push({ x: p.x, y: p.y, atMs: elapsed })
-    lastGestureSampleAtRef.current = elapsed
+    rec.lastSentAt = now
+    rec.last = p
+    sendTouch('move', p, rec.slot)
+  }
+
+  function endPointer(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!inputEnabled) return
+    const rec = pointersRef.current.get(e.pointerId)
+    if (!rec) return
+    pointersRef.current.delete(e.pointerId)
+    slotsRef.current.delete(rec.slot)
+    const p = normalize(e)
+    sendTouch('up', p, rec.slot)
+    e.currentTarget.releasePointerCapture(e.pointerId)
+    onActivity?.()
   }
 
   function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!inputEnabled) return
-    const start = pointerDownRef.current
-    pointerDownRef.current = null
-    if (!start) return
-    const end = normalize(e)
-    const elapsed = Date.now() - start.t
-    const rect = e.currentTarget.getBoundingClientRect()
-    const distPx = Math.hypot((end.x - start.x) * rect.width, (end.y - start.y) * rect.height)
-    if (distPx < DRAG_THRESHOLD_PX) {
-      // Pointer down→up, measured here (plan 94 §4.4, closes F4) — the core
-      // uses it verbatim rather than sampling its own tapJitterMs range, the
-      // same way a script's `tap({ holdMs })` override already can.
-      sendInputAction({ verb: 'tap', pos: end, holdMs: elapsed })
-    } else {
-      // The operator's REAL pointer trace, not a synthesised curve (Plan 40
-      // §4.6) — whatever `onPointerMove` batched, plus the exact release
-      // point so the trace always ends precisely where the drag did.
-      const samples = gestureSamplesRef.current
-      const lastSample = samples[samples.length - 1]
-      if (!lastSample || lastSample.atMs !== elapsed) samples.push({ x: end.x, y: end.y, atMs: elapsed })
-      if (samples.length >= 2) {
-        sendInputAction({ verb: 'gesture', samples })
-      } else {
-        // No intermediate move events were captured (a very fast drag) —
-        // fall back to the two-point swipe exactly as before Plan 40.
-        const durationMs = Math.min(10_000, Math.max(50, elapsed))
-        sendInputAction({ verb: 'swipe', from: { x: start.x, y: start.y }, to: end, durationMs })
-      }
-    }
-    gestureSamplesRef.current = []
-    onActivity?.()
+    endPointer(e)
   }
 
-  async function flushText() {
-    const text = textBufferRef.current
-    textBufferRef.current = ''
-    if (text.length === 0) return
-    onActivity?.()
-    try {
-      // `input.text` is now request/reply (plan 90 §3.3, §4.5, §5 step 90.5) — `via` names the
-      // rung the core actually used (`agent-ime` / `scrcpy-text` / `adb-ascii`), so a resolved
-      // rung of `adb-ascii` never means "silently dropped" any more: a refusal comes back as a
-      // rejected request instead (caught below), never a keystroke that just vanished.
-      await ws.request({ type: 'input.text', id: newId(), payload: { deviceId, text } })
-      setTextInputNotice(null)
-    } catch (err) {
-      // A precondition (plan 59), not necessarily a failure: the resolved rung could not carry
-      // this text (e.g. only `adb-input` is available and the string is non-ASCII). Shown inline
-      // instead of dropped silently (F23).
-      setTextInputNotice(err instanceof Error ? err.message : String(err))
-    }
+  function onPointerCancel(e: React.PointerEvent<HTMLCanvasElement>) {
+    endPointer(e)
   }
 
   // Poll rather than time each frame: at 0 fps there is no frame to hang a
@@ -775,12 +779,56 @@ export function LiveView({
   }, [autoReconnect])
 
   /**
-   * Pushes the OPERATOR's browser clipboard onto the device (plan 90 §3.3, §5 step 90.5) — the
-   * paste chord (Cmd/Ctrl+V), let through instead of being caught by `onKeyDown`'s
-   * modifier-early-return below (F23: "Cmd/Ctrl+V never reaches anything either"). Uses the SAME
-   * `clipboard.set(..., { paste: true })` mechanism `ClipboardButton`'s manual popover already
-   * calls, not the text ladder — an explicit paste is a deliberate operator choice, not a rung the
-   * resolver should pick for them.
+   * Wheel scroll (plan 209 §4.13, §3.2 the `input.scroll` message) — a native
+   * listener, not React's `onWheel`: React's synthetic wheel handler is
+   * passive and `preventDefault()` is silently ignored on it, which would
+   * leave the BROWSER page scrolling underneath the canvas on every tick.
+   */
+  useEffect(() => {
+    if (!inputEnabled || compact) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+    let accX = 0
+    let accY = 0
+    let lastSentAt = 0
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      const scale = e.deltaMode === 1 ? 1 / WHEEL_LINES_PER_NOTCH : e.deltaMode === 2 ? 1 : 1 / WHEEL_PIXELS_PER_NOTCH
+      let dx = e.deltaX * scale
+      let dy = e.deltaY * scale
+      if (e.shiftKey && dx === 0) {
+        dx = dy
+        dy = 0
+      }
+      accX += dx
+      accY += dy
+      const now = performance.now()
+      if (now - lastSentAt < WHEEL_SAMPLE_MS) return
+      lastSentAt = now
+      const rect = canvas.getBoundingClientRect()
+      const pos = {
+        x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
+        y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+      }
+      // Browser `deltaY > 0` is scroll down; Android `AXIS_VSCROLL > 0` is scroll up — sign flipped.
+      const clamp = (v: number) => Math.min(1, Math.max(-1, -v))
+      ws.send({ type: 'input.scroll', payload: { deviceId, pos, hDelta: clamp(accX), vDelta: clamp(accY) } })
+      accX = 0
+      accY = 0
+      onActivity?.()
+    }
+    canvas.addEventListener('wheel', handler, { passive: false })
+    return () => canvas.removeEventListener('wheel', handler)
+  }, [inputEnabled, compact, deviceId, onActivity])
+
+  const metaOf = (e: React.KeyboardEvent) => ({ shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey })
+
+  /**
+   * Pushes the OPERATOR's browser clipboard onto the device (plan 90 §3.3, §5 step 90.5; plan 209
+   * §4.13 splits it by length/script). Short, printable-ASCII text pastes through `SET_CLIPBOARD`
+   * (the SAME `clipboard.set(..., { paste: true })` mechanism `ClipboardButton`'s manual popover
+   * already calls); longer or non-Latin text takes the `input.text` ladder in chunks, in order —
+   * an explicit paste is a deliberate operator choice, not a rung the resolver should pick for them.
    */
   async function pasteFromClipboard(): Promise<void> {
     let text: string
@@ -792,7 +840,15 @@ export function LiveView({
     }
     if (text.length === 0) return
     try {
-      await ws.request({ type: 'clipboard.set', id: newId(), payload: { deviceId, text, paste: true } })
+      if (text.length <= PASTE_VIA_CLIPBOARD_MAX && PRINTABLE_ASCII.test(text)) {
+        await ws.request({ type: 'clipboard.set', id: newId(), payload: { deviceId, text, paste: true } })
+      } else {
+        const codePoints = [...text]
+        for (let i = 0; i < codePoints.length; i += INPUT_TEXT_CHUNK) {
+          const chunk = codePoints.slice(i, i + INPUT_TEXT_CHUNK).join('')
+          await ws.request({ type: 'input.text', id: newId(), payload: { deviceId, text: chunk } })
+        }
+      }
       setTextInputNotice(null)
       onActivity?.()
     } catch (err) {
@@ -806,38 +862,43 @@ export function LiveView({
     // selection of its own — it pastes the operator's clipboard onto the device (F23's "modifier
     // chords return early" bug, fixed for this one chord only; every other Cmd/Ctrl/Alt combo
     // still has nothing to do here).
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
+    if ((e.metaKey || e.ctrlKey) && e.code === 'KeyV') {
       e.preventDefault()
       void pasteFromClipboard()
       return
     }
-    if (e.metaKey || e.ctrlKey || e.altKey) return
     e.preventDefault()
-    const key = e.key
-    // Any single PRINTABLE CODE POINT — not just ASCII (F23: a CJK character or an emoji matched
-    // neither branch here and was dropped with no message, no error, no log). `[...key]` iterates
-    // by code point, so an astral character (an emoji outside the Basic Multilingual Plane is a
-    // UTF-16 SURROGATE PAIR) still counts as one element — `key.length` alone would wrongly
-    // reject it, exactly as it wrongly rejected every non-ASCII `key` before this change.
-    if ([...key].length === 1) {
-      textBufferRef.current += key
-      if (textTimerRef.current) clearTimeout(textTimerRef.current)
-      textTimerRef.current = setTimeout(flushText, TEXT_DEBOUNCE_MS)
+    if (e.repeat) return // the device auto-repeats a held key itself
+    if (e.code === 'Escape') {
+      // MVP 08 §1.2: Esc is Back, always.
+      sendKey(AKEYCODE.BACK)
       return
     }
-    flushText()
-    const keycode =
-      key === 'Enter' ? AKEYCODE.ENTER : key === 'Backspace' ? AKEYCODE.DEL : key === 'Escape' ? AKEYCODE.BACK : null
-    if (keycode !== null) {
-      sendInputAction({ verb: 'key', keycode })
-      onActivity?.()
-    }
+    if (!isDomCode(e.code)) return
+    downKeysRef.current.add(e.code)
+    ws.send({ type: 'input.keyEvent', payload: { deviceId, action: 'down', code: e.code, meta: metaOf(e) } })
+    onActivity?.()
   }
 
-  const sendKey = (keycode: number) => {
+  function onKeyUp(e: React.KeyboardEvent<HTMLCanvasElement>) {
     if (!inputEnabled) return
-    sendInputAction({ verb: 'key', keycode })
-    onActivity?.()
+    e.preventDefault()
+    if (e.code === 'Escape' || !isDomCode(e.code)) return
+    if (!downKeysRef.current.delete(e.code)) return
+    ws.send({ type: 'input.keyEvent', payload: { deviceId, action: 'up', code: e.code, meta: metaOf(e) } })
+  }
+
+  /** A closed tab or a focus change must not leave a finger down or a key held (MVP 08 §1.1 last row). */
+  function onBlur() {
+    for (const code of downKeysRef.current) {
+      ws.send({ type: 'input.keyEvent', payload: { deviceId, action: 'up', code, meta: { shift: false, ctrl: false, alt: false, meta: false } } })
+    }
+    downKeysRef.current.clear()
+    for (const [pointerId, rec] of pointersRef.current) {
+      sendTouch('up', rec.last, rec.slot)
+      slotsRef.current.delete(rec.slot)
+      pointersRef.current.delete(pointerId)
+    }
   }
 
   const nav = [
@@ -1085,7 +1146,10 @@ export function LiveView({
           onPointerDown={compact ? undefined : onPointerDown}
           onPointerMove={compact ? undefined : onPointerMove}
           onPointerUp={compact ? undefined : onPointerUp}
+          onPointerCancel={compact ? undefined : onPointerCancel}
           onKeyDown={compact ? undefined : onKeyDown}
+          onKeyUp={compact ? undefined : onKeyUp}
+          onBlur={compact ? undefined : onBlur}
           aria-label="Device screen"
           className={cn(
             compact || fitContainer
@@ -1115,7 +1179,7 @@ export function LiveView({
         {/* Plan 203 §4.11 — the latency instrument itself. Never in `compact`
             (a Wall tile is read-only and never shows it, regardless of the
             stored preference), and only once the first summary exists. */}
-        {!compact && latencyOverlay && latencySummary && <LatencyOverlay summary={latencySummary} />}
+        {!compact && latencyOverlay && latencySummary && <LatencyOverlay summary={latencySummary} inputHost={inputHost} />}
 
         {/* Plan 100 §3.7 item 1, step 100.6 — compact mode (a Wall tile) has no
             toolbar for the badge above, so this is its own small, honest
