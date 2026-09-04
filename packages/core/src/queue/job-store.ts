@@ -378,14 +378,23 @@ export function createJobStore(db: Db): JobStore {
       // A single UPDATE...RETURNING is its own implicit transaction in SQLite,
       // so this cannot race claimNext's transaction: whichever commits first
       // wins the `status = 'queued'` guard for the other (plan 21 §4.3).
-      return db.all<JobRunRow>(
-        sql`
-          UPDATE job_runs
-          SET status = 'expired', finished_at = strftime('%s','now')
-          WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at <= strftime('%s','now')
-          RETURNING *
-        `,
-      )
+      // `RETURNING *` comes back with the DRIVER's own (snake_case) column
+      // names, not Drizzle's camelCase mapping — the same gotcha
+      // `claimNext` above works around — so only `id` (spelled the same
+      // either way) is trusted off the raw result; every other field is a
+      // proper re-select through the query builder.
+      const ids = db
+        .all<{ id: string }>(
+          sql`
+            UPDATE job_runs
+            SET status = 'expired', finished_at = strftime('%s','now')
+            WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at <= strftime('%s','now')
+            RETURNING id
+          `,
+        )
+        .map((r) => r.id)
+      if (ids.length === 0) return []
+      return db.select().from(jobRuns).where(inArray(jobRuns.id, ids)).all()
     },
 
     failOrphanRunning() {
