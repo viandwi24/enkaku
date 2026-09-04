@@ -117,3 +117,16 @@ describe('resolveDeviceSetting — the ONE place a device override is combined w
     expect(resolveDeviceSetting(farm, null, 'controlQuality')).toBe(farm.capture.controlQuality)
   })
 })
+
+describe('DeviceSettingsSchema.engines.inspection — ui-tree becomes the default engine (plan 222 §4.7)', () => {
+  test('the inspection engine enum carries ui-tree and defaults to it', () => {
+    const parsed = DeviceSettingsSchema.parse({})
+    expect(parsed.engines.inspection).toBe('ui-tree')
+    expect(DeviceSettingsSchema.shape.engines.parse({}).inspection).toBe('ui-tree')
+    for (const value of ['ui-tree', 'ui-server', 'uiautomator-dump', 'appium'] as const) {
+      expect(DeviceSettingsSchema.shape.engines.parse({ inspection: value }).inspection).toBe(value)
+    }
+    expect(() => DeviceSettingsSchema.shape.engines.parse({ inspection: 'appium-x' })).toThrow()
+    expect(defaultDeviceSettings().engines.inspection).toBe('ui-tree')
+  })
+})

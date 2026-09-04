@@ -181,10 +181,10 @@ A driver is five separate abstractions so each can be swapped alone. A factory a
 | 1 Transport | `connect() disconnect() exec() serial stableId` | `adb-usb` | `adb-tcp` (wireless adb, remembered addresses, bounded subnet scan) |
 | 2 Display | `start() onFrame(chunk, meta) stop()` | `scrcpy` (H.264, PTS carried in `FrameMeta`) | `screencap-loop` only when scrcpy is unavailable |
 | 3 Input | `tap swipe key text gesture scroll keyDown keyUp pinch setClipboard getClipboard` | `scrcpy-uhid` (API 29 and up) | `scrcpy-sdk`, `adb-input` |
-| 4 Inspector | `dump() find(sel) waitFor(sel) screenshot()` | `ui-server` in phase 1, `ui-tree` after plan 222 | the other of the two, then `uiautomator dump` |
+| 4 Inspector | `dump() find(sel) findDetailed(sel)? screenshot() watch(onChange)?` | `ui-tree` (the guest agent's accessibility service) | `ui-server`, then `uiautomator dump` (§8) |
 | 5 Network | `capabilities apply(cfg) observe() revert() probe()?` | `none` | `adb-proxy`, `adb-reverse-proxy`, `vpn-helper` (§9) |
 
-Engines declare the capability locks they take (for example `instrumentation`), so two engines cannot collide on one device.
+Engines declare the capability locks they take (for example `instrumentation`), so two engines cannot collide on one device. The default inspector takes none: `ui-tree` needs no `UiAutomation` connection, which is what removed the collision the prototype's inspector had with `uiautomator dump`.
 
 ### 5.2 Toolchain
 
@@ -247,11 +247,17 @@ New protocol messages: `input.scroll`, `input.keyEvent`, `input.pinch`, `clipboa
 
 ## 8. Inspector
 
-The inspector reads the UI tree for scripts, agents, and the Inspector tab.
+The inspector reads the UI tree for scripts, agents, and the Inspector tab. There are three engines and one ladder: `ui-tree`, then `ui-server`, then `uiautomator dump`. A session picks one rung at build time and reports which; it never runs two at once on one device.
 
-**Phase 1 (plan 208, source: MVP 02 §4).** The engine is openatx ui-server, session-scoped: started in the background after the first video frame, kept until session close; the Inspect tab attach is a no-op when it is up. Start fails fast by reading the instrumentation's own stdout (`INSTRUMENTATION_STATUS`, `ClassNotFoundException` within 1 to 2 s); the 15 s ceiling is for the silent case only. `waitForIdleTimeout` and `waitForSelectorTimeout` are configured through the JSON-RPC configurator. The capability path (`deviceCall()`) awaits the session's inspector and never instantiates the dump engine while a ui-server is alive. The last dump is reused for a failing action's trace capture. A start that did not succeed is reported as a failure, never as `ready`.
+**`ui-tree`, the default.** An `AccessibilityService` inside the guest agent, reached over the agent's existing control channel. It reads `AccessibilityNodeInfo`, the same source UiAutomator reads, and emits the same node shape every other engine emits, so selectors, the node schema and every consumer are unchanged. It runs no `am instrument`, holds no `instrumentation` lock, starts no per-session process, and does not conflict with `uiautomator dump`; it is a bound service that lives as long as the agent. It is enabled unattended from adb during provisioning (`cmd appops set <package> ACCESS_RESTRICTED_SETTINGS allow`, then `settings put secure enabled_accessibility_services` and `accessibility_enabled`, then a read-back that decides; 200 §5 R4), and the agent's own status screen has an "Open accessibility settings" button for the builds that refuse the write. It has no element actions: a scoped `setText` goes through the agent's IME instead.
 
-**Phase 2 (plans 221 and 152, source: MVP 02 §4 phase 2, MVP 10 §1.1).** The default engine becomes `ui-tree`: an `AccessibilityService` in the guest agent exposing `ui.dump`, `ui.find`, `ui.watch` over the agent's control channel; `waitFor` subscribes to `TYPE_WINDOW_CONTENT_CHANGED` instead of polling. Enabled from adb (`cmd appops set <package> ACCESS_RESTRICTED_SETTINGS allow`, then `settings put secure`; 200 §5 R4). The degradation ladder becomes `ui-tree` → `ui-server` → `uiautomator dump`. Funding phase 2 is MVP 16 §4.4, recommended by the CTO, decided by the CEO.
+**`waitFor` is push, not poll.** `ui.watch` subscribes to `TYPE_WINDOW_CONTENT_CHANGED`, and the executor evaluates the condition once immediately, then waits for the next change event with the caller's timeout as the ceiling. A condition that is already true returns with one round trip; a condition that becomes true resolves when the screen changes rather than at the next tick. A bounded one-second re-check runs alongside the subscription, because a `SurfaceView`, a `TextureView` or a WebView repaint can change the screen with no accessibility event at all, and an event can be lost. This is the structural answer to "the script waits for our system to see the UI".
+
+**`ui-server`, the fallback.** The openatx instrumentation, session-scoped: started in the background after the first video frame and kept until session close, with a fail-fast start that reads the instrumentation's own stdout and a 15 s ceiling reserved for a server that says nothing, and the JSON-RPC configurator setting the idle waits to zero. It is chosen for a device where the guest agent is not installed, is an older build, or could not have its accessibility service enabled.
+
+**`uiautomator dump`, the last resort.** One dump per query, no element actions, and it seizes UiAutomation. Chosen only when an operator pins it or when the ui-server rung failed to start.
+
+**Degradation is visible, never silent.** Every hop broadcasts `device.inspector.fallback` and records `session.degraded` with the reason; the Inspector tab names the engine it actually got; and `GET /api/devices/:id` carries `liveInspection`, the engine running, beside `inspection`, the engine configured. The two are allowed to disagree, and on a mixed farm they will.
 
 Targets are in §17.
 

@@ -795,6 +795,10 @@ export function createDeviceRoutes(deps: {
       // burning 87% CPU on PNG screencaps. `null` when no session is open
       // (nothing live to report), never coerced to the configured value.
       liveDisplay: deps.connection?.sessions?.()?.get(row.id)?.displayEngineId ?? null,
+      // Plan 222 §3.10 — the same pattern as `liveDisplay` above, for the
+      // inspector: the engine the ladder actually picked for the open
+      // session, never coerced to the configured `inspection` value.
+      liveInspection: deps.connection?.sessions?.()?.get(row.id)?.inspectorEngineId ?? null,
       battery: row.battery,
       settings: parsedSettings.success ? parsedSettings.data : row.settings,
       quarantineReason: row.quarantineReason,

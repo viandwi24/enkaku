@@ -7,6 +7,7 @@ export { buildGesturePath, type GesturePathOpts } from './input/gesture'
 export { escapeInputText, InputTextError } from './input/escape'
 export { engineDescriptors } from './descriptors'
 export { UiautomatorDumpInspector, InspectorError } from './inspector/uiautomator-dump'
+export { UiTreeInspector, type UiTreeInspectorDeps, type UiTreeWatchHandle } from './inspector/ui-tree/index'
 export { parseUiDump, parseBounds } from './inspector/xml-parser'
 export {
   UiServerInspector,

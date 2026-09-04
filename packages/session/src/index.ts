@@ -52,9 +52,25 @@ export {
   type AlwaysOnDeps,
   type DeviceBuildState,
 } from './always-on'
-export { createInspectorForSession, type InspectorHandle, type InspectorFactoryDeps } from './inspector-factory'
+export {
+  createInspectorForSession,
+  uiTreeUnavailableReason,
+  UI_TREE_PROBE_BUDGET_MS,
+  type InspectorHandle,
+  type InspectorFactoryDeps,
+  type UiTreeWatchHooks,
+  type UiTreeWatchHandle,
+} from './inspector-factory'
 export { PortAllocator, parsePortRange, isPortFree } from './port-allocator'
-export { createDeviceExecutor, DEFAULT_TIMING, INSPECTOR_METHODS, needsInspector, type TimingSettings } from './device-executor'
+export {
+  createDeviceExecutor,
+  DEFAULT_TIMING,
+  INSPECTOR_METHODS,
+  needsInspector,
+  WAITFOR_WATCH_RECHECK_MS,
+  type TimingSettings,
+} from './device-executor'
+export { createChangeSignal, type ChangeSignal } from './change-signal'
 export {
   createInputArbiter,
   type InputArbiter,

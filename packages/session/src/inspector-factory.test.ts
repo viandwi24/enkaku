@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { AdbStreamHandle, AdbStreamOptions } from '@enkaku/adb'
 import type { DeviceArtifact, ToolchainManager } from '@enkaku/toolchain'
 import type { Transport } from '@enkaku/protocol'
-import { createInspectorForSession, type InspectorFactoryDeps } from './inspector-factory'
+import { createInspectorForSession, UI_TREE_PROBE_BUDGET_MS, uiTreeUnavailableReason, type InspectorFactoryDeps } from './inspector-factory'
 import { PortAllocator } from './port-allocator'
 import type { Logger } from './logger'
 
@@ -126,4 +126,189 @@ describe('createInspectorForSession — plan 41 artifact verification wiring (§
   // between the toolchain manifest and the launcher's `expectedArtifact`/
   // `onMismatch`, which the mismatch case above does without touching the
   // network.
+})
+
+describe('createInspectorForSession — the engine ladder: ui-tree, then ui-server, then uiautomator-dump (plan 222 §3.8, §4.5)', () => {
+  /**
+   * A transport whose ui-server rung ALWAYS fails fast and deterministically:
+   * `dumpsys package` answers the expected version (so `ensureInstalled()`
+   * succeeds) and the instrumentation stream is failed synchronously with a
+   * fatal line, exactly the trick `createInspectorForSession` §4.1's own
+   * second test uses. This lets a ladder test assert the ui-tree rung's
+   * behaviour without needing a real reachable ui-server for the rung below it.
+   */
+  function failingUiServerDeps(overrides: Partial<InspectorFactoryDeps> = {}): { deps: InspectorFactoryDeps; transport: Transport; fallbacks: Array<{ deviceId: string; from: string; to: string; reason: string }> } {
+    const transport = fakeTransport(async (cmd) => (cmd.startsWith('dumpsys package') ? dumpsysOutput(2003003) : ''))
+    const fallbacks: Array<{ deviceId: string; from: string; to: string; reason: string }> = []
+    const deps: InspectorFactoryDeps = {
+      toolchain: fakeToolchain({ packageName: PKG, versionCode: 2003003 }),
+      ports: new PortAllocator({ rangeStart: 27200, rangeEnd: 27210 }),
+      log: nullLogger,
+      hostAdb: async () => '',
+      forward: async () => {},
+      listForward: async () => [{ serial: transport.serial, local: 'tcp:27200', remote: 'tcp:9008' }],
+      killForward: async () => {},
+      execStream: async (_serial, _cmd, opts) => {
+        queueMicrotask(() =>
+          opts.onData(new TextEncoder().encode('INSTRUMENTATION_STATUS: stack=java.lang.ClassNotFoundException: x\n')),
+        )
+        return { pid: null, stop: async () => {} }
+      },
+      onFallback: (deviceId, from, to, reason) => fallbacks.push({ deviceId, from, to, reason }),
+      ...overrides,
+    }
+    return { deps, transport, fallbacks }
+  }
+
+  test('the ladder picks ui-tree when the agent is ready and the service is enabled and connected', async () => {
+    const { deps, transport, fallbacks } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: async () => ({ state: 'ready', capabilities: ['ui-tree'] }),
+        withClient: async (_deviceId, fn) => fn({ uiStatus: async () => ({ enabled: true, connected: true, watching: false, lastDumpAgoMs: null, lastDumpNodes: null, lastError: null }) } as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(handle.engineId).toBe('ui-tree')
+    expect(handle.pollIntervalMs).toBe(200)
+    expect(fallbacks).toHaveLength(0)
+    await handle.release()
+  })
+
+  test('the ladder falls back to ui-server when the agent is not ready', async () => {
+    const { deps, transport, fallbacks } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: async () => ({ state: 'provisioning', capabilities: [] }),
+        withClient: async (_deviceId, fn) => fn({} as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(fallbacks.map((f) => [f.from, f.to])).toEqual([
+      ['ui-tree', 'ui-server'],
+      ['ui-server', 'uiautomator-dump'],
+    ])
+    expect(fallbacks[0]!.reason).toContain('provisioning')
+  })
+
+  test('the ladder falls back to ui-server when the ui-tree capability is absent', async () => {
+    const { deps, transport, fallbacks } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: async () => ({ state: 'ready', capabilities: [] }),
+        withClient: async (_deviceId, fn) => fn({} as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(fallbacks[0]!).toMatchObject({ from: 'ui-tree', to: 'ui-server' })
+    expect(fallbacks[0]!.reason).toContain('does not advertise the ui-tree capability')
+  })
+
+  test('the ladder falls back to ui-server when the service is not enabled', async () => {
+    const { deps, transport, fallbacks } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: async () => ({ state: 'ready', capabilities: ['ui-tree'] }),
+        withClient: async (_deviceId, fn) => fn({ uiStatus: async () => ({ enabled: false, connected: false, watching: false, lastDumpAgoMs: null, lastDumpNodes: null, lastError: null }) } as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(fallbacks[0]!.reason).toContain('accessibility service is not enabled')
+  })
+
+  test('the ladder falls back to ui-server when the service is enabled but not connected', async () => {
+    const { deps, transport, fallbacks } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: async () => ({ state: 'ready', capabilities: ['ui-tree'] }),
+        withClient: async (_deviceId, fn) => fn({ uiStatus: async () => ({ enabled: true, connected: false, watching: false, lastDumpAgoMs: null, lastDumpNodes: null, lastError: null }) } as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(fallbacks[0]!.reason).toContain('not bound yet')
+  })
+
+  test('the rung is skipped entirely when deps.uiTree is absent', async () => {
+    const { deps, transport, fallbacks } = failingUiServerDeps()
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(fallbacks[0]!).toMatchObject({ from: 'ui-tree', to: 'ui-server' })
+    expect(fallbacks[0]!.reason).toContain('no guest-agent session')
+  })
+
+  test('requested uiautomator-dump still short-circuits both rungs', async () => {
+    let agentStatusCalls = 0
+    const { deps, transport } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: async () => {
+          agentStatusCalls++
+          return { state: 'ready', capabilities: ['ui-tree'] }
+        },
+        withClient: async (_deviceId, fn) => fn({} as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'uiautomator-dump' })
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(agentStatusCalls).toBe(0)
+  })
+
+  test('requested ui-server skips the ui-tree rung and does not probe the agent', async () => {
+    let agentStatusCalls = 0
+    const { deps, transport } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: async () => {
+          agentStatusCalls++
+          return { state: 'ready', capabilities: ['ui-tree'] }
+        },
+        withClient: async (_deviceId, fn) => fn({} as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-server' })
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(agentStatusCalls).toBe(0)
+  })
+
+  test('both rungs failing reaches uiautomator-dump and reports both hops', async () => {
+    const { deps, transport, fallbacks } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: async () => ({ state: 'absent', capabilities: [] }),
+        withClient: async (_deviceId, fn) => fn({} as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(fallbacks).toHaveLength(2)
+    expect(fallbacks[0]).toMatchObject({ from: 'ui-tree', to: 'ui-server' })
+    expect(fallbacks[1]).toMatchObject({ from: 'ui-server', to: 'uiautomator-dump' })
+  })
+
+  test('a ui-tree probe that hangs falls back within UI_TREE_PROBE_BUDGET_MS', async () => {
+    const { deps, transport, fallbacks } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: () => new Promise(() => {}), // never resolves
+        withClient: async (_deviceId, fn) => fn({} as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    const start = Date.now()
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    const elapsed = Date.now() - start
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(elapsed).toBeLessThan(UI_TREE_PROBE_BUDGET_MS + 2_000)
+    expect(fallbacks[0]!.reason).toContain('did not answer within')
+  }, 10_000)
+})
+
+describe('uiTreeUnavailableReason (plan 222 §4.5)', () => {
+  test('null deps.uiTree reports the cloud-node reason', async () => {
+    const deps = { uiTree: undefined } as unknown as InspectorFactoryDeps
+    expect(await uiTreeUnavailableReason(deps, 'd1')).toContain('no guest-agent session')
+  })
 })

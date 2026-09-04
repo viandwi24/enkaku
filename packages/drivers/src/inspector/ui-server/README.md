@@ -1,5 +1,7 @@
 # The `ui-server` inspector engine
 
+**This is rung 2 of the engine ladder (plan 222 §3.8).** The default inspector since plan 222 is `ui-tree` (`../ui-tree/`), the guest agent's own `AccessibilityService`, reached over the agent's control channel with no `instrumentation` lock and no per-session process. This engine is chosen when the guest agent is not installed, is an older build that predates `ui-tree`, or could not have its accessibility service enabled on this device (R4's OEM caveat) — nothing about it changes.
+
 A persistent instrumentation server on the device (the [openatx/uiautomator2](https://github.com/openatx/android-uiautomator-server) pattern): it starts once per session, and selector queries execute **on the device** over a local JSONRPC endpoint reached through `adb forward`.
 
 Why it exists: `uiautomator dump` takes 0.5–2 seconds per query and fails while the UI keeps changing ("could not get idle state"). Since `waitFor` is inspector polling, the inspector's speed sets the speed of the entire scripting framework.

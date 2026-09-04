@@ -77,6 +77,17 @@ export const DeviceDetailSchema = DeviceInfoSchema.extend({
   liveDisplay: z.string().nullable(),
   input: z.string(),
   inspection: z.string(),
+  /**
+   * Plan 222 §3.10 — the inspector engine ACTUALLY running, sourced live from
+   * the open session, distinct from `inspection` above (the stored, CONFIGURED
+   * column). The two are allowed to disagree, and on a farm where some phones
+   * cannot enable the accessibility service they routinely will: the device
+   * reports `inspection: 'ui-tree'` (nothing rewrote the configured value)
+   * while `liveInspection: 'ui-server'` says which engine the session fell back
+   * to. `'starting'` is reported verbatim while the session's prewarm is still
+   * in flight (plan 208), never guessed at; `null` when no session is open.
+   */
+  liveInspection: z.string().nullable(),
   settings: z.unknown(),
   nodeId: z.string().nullable(),
 })

@@ -504,12 +504,12 @@ export const DeviceSettingsSchema = z.object({
         .describe('How taps, swipes, and typing reach the device')
         .meta({ title: 'Input delivery' }),
       inspection: z
-        .enum(['ui-server', 'uiautomator-dump', 'appium'])
-        .default('ui-server')
+        .enum(['ui-tree', 'ui-server', 'uiautomator-dump', 'appium'])
+        .default('ui-tree')
         .describe('How scripts find elements on screen')
         .meta({ title: 'Screen inspection' }),
     })
-    .default({ transport: 'adb-usb', display: 'scrcpy', input: 'scrcpy-uhid', inspection: 'ui-server' })
+    .default({ transport: 'adb-usb', display: 'scrcpy', input: 'scrcpy-uhid', inspection: 'ui-tree' })
     .meta({ title: 'Engines', description: 'The core rejects combinations that cannot work together.', 'x-enkaku': { group: 'Engines' } }),
 
   identity: DeviceIdentitySchema.default(() => DeviceIdentitySchema.parse({})).meta({ title: 'Identity', 'x-enkaku': { group: 'Identity' } }),

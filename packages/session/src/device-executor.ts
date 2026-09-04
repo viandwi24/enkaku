@@ -9,6 +9,7 @@ import {
   type GestureSample,
   type Inspector,
   type InputSink,
+  type InspectorWatch,
   type KeyCode,
   type NormGestureSample,
   type NormPoint,
@@ -17,6 +18,7 @@ import {
   type TimingSettings,
   type UiNode,
 } from '@enkaku/protocol'
+import { createChangeSignal } from './change-signal'
 import { SessionError } from './errors'
 import type { InputSource } from './input-arbiter'
 import type { DeviceCall } from './runner/ipc'
@@ -45,6 +47,23 @@ export const INSPECTOR_METHODS: ReadonlySet<string> = new Set(['find', 'dump', '
 export function needsInspector(call: { method: string }): boolean {
   return INSPECTOR_METHODS.has(call.method)
 }
+
+/**
+ * The safety-net re-check for a watch-backed `waitFor` (plan 222 §3.5). Not a
+ * poll: the event is the mechanism and this is the bound on how wrong the
+ * event stream can be. It exists because `TYPE_WINDOW_CONTENT_CHANGED` is not
+ * emitted for every visible change — a SurfaceView, a TextureView, a game
+ * canvas or a WebView repaint can change the screen with no accessibility
+ * event at all — and because a frame can simply be lost.
+ *
+ * 1000 ms is the SDK's own default interval (`runner/child-entry.ts`'s
+ * `intervalMs: opts?.intervalMs ?? 1_000`), so a watch-backed wait is never
+ * slower than what the SDK already promised, and is normally bounded by the
+ * event instead. Deliberately NOT the caller's `intervalMs`: a script that
+ * asked for 50 ms polling gets pushes plus a one-second net, which is the
+ * point of the change.
+ */
+export const WAITFOR_WATCH_RECHECK_MS = 1_000
 
 export type { TimingSettings }
 
@@ -510,27 +529,72 @@ export function createDeviceExecutor(deps: {
         // into a plain `not-found` and reported as a timeout instead of the
         // real reason (plan 208 §3.5, §4.10).
         inspectorOrThrow()
-        // The polling loop lives in the parent — one call, one meaning, pacing in
-        // one place. The interval follows the active engine: ui-server is cheap
-        // (~80ms), a dump is expensive.
-        const interval = Math.min(call.args.intervalMs, deps.session.inspectorPollIntervalMs)
         const deadline = Date.now() + call.args.timeout
         // Plan 74 §3.5, §4.3 — carries the LAST outcome into the timeout
         // error, so "every match was refused as rejected-oversized" reports
-        // as that, not a bare timeout (criterion 9).
-        let last: FindOutcome = { ok: false, reason: 'not-found', matches: 0 }
+        // as that, not a bare timeout (criterion 9). Unchanged. Typed to the
+        // ok:false branch only — every assignment site below is already
+        // narrowed there (an `outcome.ok` return happens first), and reading
+        // `last.reason`/`last.matches` from inside a closure declared before
+        // those assignments needs that narrower type: TypeScript cannot carry
+        // a control-flow narrowing of a `let` through a nested function.
+        let last: Extract<FindOutcome, { ok: false }> = { ok: false, reason: 'not-found', matches: 0 }
+        const evaluate = (): Promise<FindOutcome> =>
+          findOutcome(call.args.sel).catch((): FindOutcome => ({ ok: false, reason: 'not-found', matches: 0 }))
+        const timedOut = (): SessionError =>
+          new SessionError(
+            'waitfor_timeout',
+            `waiting for ${JSON.stringify(call.args.sel)} exceeded ${call.args.timeout}ms (last: ${last.reason}, ${last.matches} matches)`,
+            { reason: last.reason, matches: last.matches },
+          )
+
+        // One evaluation before anything is subscribed or slept on: a
+        // condition that is ALREADY true resolves with a single round trip on
+        // every engine (plan 222 §3.5 phase 1).
+        const first = await evaluate()
+        if (first.ok) return first.node
+        last = first
+
+        const inspector = inspectorOrThrow()
+        if (inspector.watch) {
+          const signal = createChangeSignal()
+          let subscription: InspectorWatch | null = null
+          try {
+            subscription = await inspector.watch(() => signal.fire())
+          } catch {
+            // A subscription that cannot be opened is a degraded engine, not a
+            // failed wait: fall through to the poll below. `DeviceSession`
+            // carries no logger this executor can reach (plan 222 §4.4's own
+            // instruction: drop the line rather than adding one) — the
+            // fallback is already visible through `session.inspectorEngineId`.
+          }
+          if (subscription) {
+            try {
+              for (;;) {
+                const budget = deadline - Date.now()
+                if (budget <= 0) throw timedOut()
+                await signal.wait(Math.min(budget, WAITFOR_WATCH_RECHECK_MS))
+                const outcome = await evaluate()
+                if (outcome.ok) return outcome.node
+                last = outcome
+              }
+            } finally {
+              await subscription.close().catch(() => undefined)
+            }
+          }
+        }
+
+        // No watch on this engine (`ui-server`, `uiautomator-dump`), or the
+        // subscription could not be opened. The interval follows the active
+        // engine, exactly as before: ui-server is cheap (~80 ms), a dump is
+        // expensive.
+        const interval = Math.min(call.args.intervalMs, deps.session.inspectorPollIntervalMs)
         for (;;) {
-          const outcome = await findOutcome(call.args.sel).catch((): FindOutcome => ({ ok: false, reason: 'not-found', matches: 0 }))
+          if (Date.now() >= deadline) throw timedOut()
+          await Bun.sleep(interval)
+          const outcome = await evaluate()
           if (outcome.ok) return outcome.node
           last = outcome
-          if (Date.now() >= deadline) {
-            throw new SessionError(
-              'waitfor_timeout',
-              `waiting for ${JSON.stringify(call.args.sel)} exceeded ${call.args.timeout}ms (last: ${last.reason}, ${last.matches} matches)`,
-              { reason: last.reason, matches: last.matches },
-            )
-          }
-          await Bun.sleep(interval)
         }
       }
       case 'screenshot': {

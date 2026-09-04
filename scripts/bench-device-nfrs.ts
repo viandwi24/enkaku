@@ -92,6 +92,8 @@ import {
   UI_SERVER_PACKAGE,
   UI_SERVER_TEST_PACKAGE,
 } from '../packages/drivers/src/inspector/ui-server/index'
+import { createGuestAgentLauncher, createGuestAgentClient, createGuestAgentWatch, UiTreeInspector } from '../packages/drivers/src/index'
+import { resolveGuestAgentApkPath } from '../packages/core/src/api/guest-agent'
 import type { UiNode } from '../packages/protocol/src/ui-node'
 import { startScrcpySession, type AdbExecutor } from '../packages/scrcpy/src/session'
 import type { ScrcpyPacket } from '../packages/scrcpy/src/demuxer'
@@ -112,6 +114,11 @@ function usage(): string {
                          genuinely cold starts, not a warm re-attach
   --skip-video           skip the scrcpy FPS/time-to-first-frame stages
   --latency              server-side latency leg: time to first packet, first keyframe, PTS interval, arrival jitter (needs --serial)
+  --engine <ui-tree|ui-server>   which inspector engine the inspector stages drive (default ui-server —
+                         an unattended re-run of the old command keeps measuring the old thing; plan 222 §4.11)
+  --waitfor-cycles <N>   plan 222 §4.11 (G17) — with N > 0, subscribes to the guest agent's ui.watch and
+                         drives N screen changes (input keyevent APP_SWITCH / BACK pairs), measuring event-to-
+                         resolve latency for each. Needs --engine ui-tree. Default 0 (skipped).
   --warmup               plan 206 (always-on sessions) mode: boots a real core against --data-dir and measures
                          cold-start warm-up via GET /api/video/sessions — no --serial needed, the whole attached farm.
   --expect <N>           --warmup only: devices expected to reach state 'ready' (default: 'adb devices' rows in state 'device')
@@ -304,6 +311,10 @@ async function main() {
   const skipInspector = args.includes('--skip-inspector')
   const skipVideo = args.includes('--skip-video')
   const latency = args.includes('--latency')
+  // Default 'ui-server' (plan 222 §4.11): an unattended re-run of the old
+  // command must keep measuring the old thing.
+  const engine = flag(args, 'engine') ?? 'ui-server'
+  const waitforCycles = Number(flag(args, 'waitfor-cycles') ?? 0)
 
   if (!existsSync(dataDir)) {
     console.error(`✗ data dir ${dataDir} does not exist — run \`bun run dev\` at least once first (see this script's own header comment)`)
@@ -355,9 +366,135 @@ async function main() {
   const rows: Row[] = []
   let failed = false
 
+  // ---- ui-tree inspector stages (plan 222 §4.11 — G15, G16, G17) ----
+
+  if (!skipInspector && engine === 'ui-tree') {
+    console.log(`\n== Inspector stages (ui-tree) — ${findIterations} find() samples ==`)
+    const apkPath = await resolveGuestAgentApkPath({ toolchain, onLog: (level, msg) => console.log(`  [apk:${level}] ${msg}`) })
+    const guestAgentLauncher = createGuestAgentLauncher({
+      serial,
+      exec: (cmd) => client.exec(serial, cmd),
+      hostAdb: (cliArgs) => hostAdb(cliArgs),
+      adb: client,
+      apkPath: async () => apkPath,
+      onLog: (level, msg) => console.log(`  [guest-agent:${level}] ${msg}`),
+    })
+
+    let guestAgentClient: Awaited<ReturnType<typeof createGuestAgentClient>> | null = null
+    try {
+      await guestAgentLauncher.ensureInstalled()
+      await guestAgentLauncher.ensurePreGranted().catch(() => undefined) // best-effort; ui-tree needs no VPN consent
+      await guestAgentLauncher.ensureAccessibilityEnabled()
+      const token = crypto.randomUUID()
+      await guestAgentLauncher.bootstrap(token)
+      await guestAgentLauncher.forward(localPort)
+      guestAgentClient = createGuestAgentClient({ port: localPort, token, onLog: (level, msg) => console.log(`  [client:${level}] ${msg}`) })
+
+      const probeT0 = performance.now()
+      const status = await guestAgentClient.uiStatus()
+      const probeMs = performance.now() - probeT0
+      rows.push({ metric: 'ui-tree probe', value: `${probeMs.toFixed(0)} ms`, note: `enabled=${status.enabled} connected=${status.connected}` })
+      console.log(`  ui.status in ${probeMs.toFixed(0)}ms — enabled=${status.enabled} connected=${status.connected}`)
+      if (!status.enabled || !status.connected) {
+        console.log('  ⚠ the accessibility service is not enabled/connected — see plan 221 §4.10\'s "Open accessibility settings"')
+      }
+
+      const inspector = new UiTreeInspector({
+        deviceId: serial,
+        transport: { execOut: (cmd: string) => client.execOut(serial, cmd) } as never,
+        withClient: (fn) => fn(guestAgentClient!),
+      })
+
+      const dumpT0 = performance.now()
+      const tree = await inspector.dump()
+      const dumpMs = performance.now() - dumpT0
+      rows.push({ metric: 'dump() latency', value: `${dumpMs.toFixed(0)} ms`, note: 'ui-tree — plan 222 G16' })
+      console.log(`  dump() in ${dumpMs.toFixed(0)}ms`)
+
+      const target = firstNamedNode(tree)
+      if (!target) {
+        console.log('  ⚠ no id/text/desc-bearing node found on the current screen — skipping find() timing')
+      } else {
+        console.log(`  using selector ${target.label} for ${findIterations} find() samples`)
+        const samples: number[] = []
+        for (let i = 0; i < findIterations; i++) {
+          const t = performance.now()
+          await inspector.find(target.sel)
+          samples.push(performance.now() - t)
+        }
+        samples.sort((a, b) => a - b)
+        const p50 = percentile(samples, 50)
+        const p95 = percentile(samples, 95)
+        const max = samples[samples.length - 1] ?? 0
+        rows.push({ metric: 'find() p50', value: `${p50.toFixed(0)} ms`, note: 'ui-tree — plan 222 G15' })
+        rows.push({ metric: 'find() p95', value: `${p95.toFixed(0)} ms`, note: 'plan 222 G15 claims <200ms' })
+        rows.push({ metric: 'find() max', value: `${max.toFixed(0)} ms`, note: '' })
+        console.log(`  p50=${p50.toFixed(0)}ms p95=${p95.toFixed(0)}ms max=${max.toFixed(0)}ms`)
+        if (p95 > 200) {
+          console.log(`  ✗ find() p95 (${p95.toFixed(0)}ms) exceeds the 200ms target (G15)`)
+          failed = true
+        } else {
+          console.log('  ✓ find() p95 within the 200ms target (G15)')
+        }
+      }
+
+      // ---- waitFor push latency (G17) ----
+      if (waitforCycles > 0) {
+        console.log(`\n== waitFor push latency (ui-tree) — ${waitforCycles} cycle(s) ==`)
+        const pushSamples: number[] = []
+        let seq = 0
+        const watch = createGuestAgentWatch({
+          port: localPort,
+          token,
+          onEvent: () => {
+            seq += 1
+          },
+          onGap: () => {
+            seq += 1
+          },
+        })
+        await watch.ready
+        try {
+          for (let i = 0; i < waitforCycles; i++) {
+            const before = seq
+            const t0 = performance.now()
+            // Alternates two keys so consecutive cycles both produce a real
+            // visible change rather than toggling the same screen back and
+            // forth into a no-op.
+            await hostAdb(['-s', serial, 'shell', 'input', 'keyevent', i % 2 === 0 ? 'KEYCODE_APP_SWITCH' : 'KEYCODE_BACK'])
+            // Poll the local seq counter rather than a second watch — this
+            // measures wall-clock from the adb call returning to the FIRST
+            // ui.changed event this cycle, i.e. the same event a waitFor
+            // would have woken on.
+            const deadline = performance.now() + 5_000
+            while (seq === before && performance.now() < deadline) await Bun.sleep(5)
+            pushSamples.push(performance.now() - t0)
+          }
+        } finally {
+          await watch.close().catch(() => undefined)
+        }
+        pushSamples.sort((a, b) => a - b)
+        const p50 = percentile(pushSamples, 50)
+        const p95 = percentile(pushSamples, 95)
+        rows.push({ metric: 'waitFor push p50', value: `${p50.toFixed(0)} ms`, note: 'plan 222 G17' })
+        rows.push({ metric: 'waitFor push p95', value: `${p95.toFixed(0)} ms`, note: 'plan 222 G17 claims <100ms' })
+        console.log(`waitFor push p50: ${p50.toFixed(0)} ms`)
+        console.log(`waitFor push p95: ${p95.toFixed(0)} ms`)
+        if (p95 > 100) {
+          console.log(`  ✗ waitFor push p95 (${p95.toFixed(0)}ms) exceeds the 100ms target (G17)`)
+          failed = true
+        } else {
+          console.log('  ✓ waitFor push p95 within the 100ms target (G17)')
+        }
+      }
+    } finally {
+      await guestAgentLauncher.removeForward(localPort).catch(() => undefined)
+    }
+  }
+
   // ---- inspector stages (spec §16 "<200ms per find", §11.2's dump figure) --
 
-  if (!skipInspector) {
+  if (!skipInspector && engine === 'ui-server') {
     console.log(`\n== Inspector stages (ui-server) — ${findIterations} find() samples ==`)
     const launcher = createUiServerLauncher({
       serial,
