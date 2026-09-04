@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
+import { DEVICE_LABEL_SURFACE } from '../../config/constants'
 import { defaultDeviceSettings } from '@enkaku/protocol'
 import { openDb, runMigrations } from '../../db'
 import { deviceNumbers, devices } from '../../db/schema'
@@ -24,7 +25,7 @@ describe('labelling doctor check (plan 89 §4.7, §5 step 89.4/89.9)', () => {
       const { db, sqlite } = openDb(join(dataDir, 'enkaku.db'))
       runMigrations(db, sqlite)
       db.insert(devices)
-        .values({ id: 'd1', stableId: 's1', serial: 'ser1', label: 'Pixel 5', status: 'idle', settings: defaultDeviceSettings() })
+        .values({ id: 'd1', stableId: 's1', serial: 'ser1', label: 'Pixel 5', status: 'online', settings: defaultDeviceSettings() })
         .run()
       sqlite.close()
 
@@ -41,16 +42,16 @@ describe('labelling doctor check (plan 89 §4.7, §5 step 89.4/89.9)', () => {
     try {
       const { db, sqlite } = openDb(join(dataDir, 'enkaku.db'))
       runMigrations(db, sqlite)
-      const settings = { ...defaultDeviceSettings(), labelling: { mode: 'wallpaper' as const, showName: true } }
+      const settings = { ...defaultDeviceSettings(), overrides: { ...defaultDeviceSettings().overrides, deviceLabel: 'number-and-name' as const } }
       db.insert(devices)
         .values({
           id: 'd1',
           stableId: 's1',
           serial: 'ser1',
           label: 'Pixel 5',
-          status: 'idle',
+          status: 'online',
           settings,
-          labelState: { mode: 'wallpaper', state: 'applied', reason: null, fingerprint: 'fp', appliedAt: 1, originalCaptured: true, capturedLockScreen: null },
+          labelState: { mode: DEVICE_LABEL_SURFACE, state: 'applied', reason: null, fingerprint: 'fp', appliedAt: 1, originalCaptured: true, capturedLockScreen: null },
         })
         .run()
       db.insert(deviceNumbers).values({ stableId: 's1', number: 7, assignedAt: new Date(), assignedBy: null }).run()
@@ -70,14 +71,14 @@ describe('labelling doctor check (plan 89 §4.7, §5 step 89.4/89.9)', () => {
     try {
       const { db, sqlite } = openDb(join(dataDir, 'enkaku.db'))
       runMigrations(db, sqlite)
-      const settings = { ...defaultDeviceSettings(), labelling: { mode: 'wallpaper' as const, showName: true } }
+      const settings = { ...defaultDeviceSettings(), overrides: { ...defaultDeviceSettings().overrides, deviceLabel: 'number-and-name' as const } }
       db.insert(devices)
         .values({
           id: 'd1',
           stableId: 's1',
           serial: 'ser1',
           label: 'Pixel 5',
-          status: 'idle',
+          status: 'online',
           settings,
           labelState: {
             mode: 'wallpaper',
@@ -110,17 +111,17 @@ describe('labelling doctor check (plan 89 §4.7, §5 step 89.4/89.9)', () => {
     try {
       const { db, sqlite } = openDb(join(dataDir, 'enkaku.db'))
       runMigrations(db, sqlite)
-      const settings = { ...defaultDeviceSettings(), labelling: { mode: 'lock-screen' as const, showName: true } }
+      const settings = { ...defaultDeviceSettings(), overrides: { ...defaultDeviceSettings().overrides, deviceLabel: 'number-and-name' as const } }
       db.insert(devices)
         .values({
           id: 'd1',
           stableId: 's1',
           serial: 'ser1',
           label: 'Pixel 5',
-          status: 'idle',
+          status: 'online',
           settings,
           labelState: {
-            mode: 'lock-screen',
+            mode: DEVICE_LABEL_SURFACE,
             state: 'unavailable',
             reason: 'read-back mismatch',
             fingerprint: null,

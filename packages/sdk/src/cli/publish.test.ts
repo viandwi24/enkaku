@@ -670,7 +670,9 @@ describe('enkaku init — scaffolds a plugin project that publishes with no edit
       // NOT Tailwind's global reset — `build-ui.test.ts` is where that
       // contract is pinned down in detail.
       const css = textOf(archive, 'ui/index.css')
-      expect(css).toContain('.text-fg-muted')
+      // Plan 204 renamed the muted-text token class to `text-faint`; the
+    // scaffold's own markup moved with it, and this pins the compiled result.
+    expect(css).toContain('.text-faint')
       expect(css).not.toContain('-webkit-text-size-adjust')
     } finally {
       server.stop(true)

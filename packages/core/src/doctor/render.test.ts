@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
+import { DEVICE_LABEL_SURFACE } from '../config/constants'
 import { defaultDeviceSettings } from '@enkaku/protocol'
 import { openDb, runMigrations } from '../db'
 import { devices } from '../db/schema'
@@ -36,9 +37,11 @@ function unhappyDataDir(): string {
       serial: 'serial-unhappy-label',
       label: 'Stuck Phone',
       status: 'offline',
-      settings: { ...defaultDeviceSettings(), labelling: { mode: 'wallpaper', showName: true } },
+      // Plan 212 §4.1: the per-device labelling block is `overrides.deviceLabel`
+      // (content) plus the constant `DEVICE_LABEL_SURFACE` (surface).
+      settings: { ...defaultDeviceSettings(), overrides: { ...defaultDeviceSettings().overrides, deviceLabel: 'number-and-name' as const } },
       labelState: {
-        mode: 'wallpaper',
+        mode: DEVICE_LABEL_SURFACE,
         state: 'unavailable',
         reason: 'no guest agent',
         fingerprint: null,
