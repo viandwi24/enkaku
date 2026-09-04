@@ -62,17 +62,27 @@ export function DeviceScreenCard({
           <div className="absolute inset-0 opacity-70" style={STRIPE} />
         )}
         {/*
-          Three lines, serial first and number last (owner, 2026-09-04).
-          The old two-line block put `#1 NAME` together on top with the serial
-          under it, which buried the number inside the name's line and made
-          two devices of the same model hard to tell apart at tile size. Read
-          top-down it now goes from the identity the phone was born with, to
-          the one an operator gave it, to the one they actually say out loud.
+          Three lines, and the NUMBER is the big one (owner, 2026-09-04).
+
+          The old block put `#1 NAME` together on top with the serial beneath,
+          which buried the number inside the name's line — at tile size, on a
+          wall of the same phone model, the number is the only thing an
+          operator actually reads. So it carries the weight, and the two
+          identities above it (the one the phone was born with, then the one
+          someone gave it) stay quiet.
+
+          No `#`: with the number set this large the sigil is noise, and the
+          monospace figures are already unmistakably a number. `formatDeviceName`
+          still writes `#N` everywhere a number appears INSIDE running text,
+          where it is doing real work — this is the one place the number
+          stands alone.
         */}
         <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col items-center gap-0.5 bg-gradient-to-b from-panel-a to-transparent px-1 pt-1.5 pb-3">
           <span className="max-w-full truncate font-mono text-tip text-faint">{device.serial}</span>
-          <span className="max-w-full truncate text-[12px] font-medium text-text">{device.label}</span>
-          {device.number != null && <span className="max-w-full truncate font-mono text-tip text-dim">#{device.number}</span>}
+          <span className="max-w-full truncate text-[11px] text-dim">{device.label}</span>
+          {device.number != null && (
+            <span className="max-w-full truncate font-mono text-[19px] font-semibold leading-none text-text">{device.number}</span>
+          )}
         </div>
         {!live && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
