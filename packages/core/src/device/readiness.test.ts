@@ -287,6 +287,29 @@ describe('ReadinessManager.set — the §3.4 permission matrix', () => {
   // defect. These four cases pin the corrected rule; the previous
   // viewer-based tests they replace are gone, not merely deleted.
 
+  test('Sleep actually darkens the panel — a live session no longer skips it (spec.md:199, owner 2026-09-05)', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    expect(execCalls).toContain('svc power stayon true')
+
+    // A control stream is open — the exact condition that used to skip the
+    // whole asleep branch, which is why Sleep did nothing from Device Control.
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
+    expect(execCalls).toContain('svc power stayon false')
+    expect(execCalls).toContain('input keyevent 223')
+  })
+
+  test('Sleep leaves a device alone while something holds it awake', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    const hold = await readiness.hold(D1, 'job')
+    const before = execCalls.length
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
+    expect(execCalls.slice(before)).not.toContain('input keyevent 223')
+    hold.release()
+  })
+
   test('Sleep succeeds with watchers present, including from a Wall tile the actor is looking at (plan 49 §3.1)', async () => {
     const { db, readiness } = setUp()
     seedDevice(db, { status: 'online', desiredReadiness: 'hot' })

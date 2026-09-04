@@ -925,6 +925,17 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       session.inspector = null
       session.inspectorEngineId = 'failed'
       void dying?.release?.().catch(() => undefined)
+      /**
+       * Rebuild NOW, not on the next call.
+       *
+       * Waiting for a caller means the press that demoted the engine is
+       * followed by one more failure ("still starting, retry") before the
+       * replacement exists — and the whole point of the fallback is that the
+       * feature is there when someone reaches for it. `uiautomator-dump`
+       * costs a shell round-trip to construct, not a server start, so this is
+       * cheap enough to do eagerly.
+       */
+      void startInspector()
     },
     whenTextInputReady: startTextInput,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },

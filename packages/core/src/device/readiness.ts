@@ -391,17 +391,42 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     broadcast(deviceId)
   }
 
-  /** Reverse of `ensureAwake` (§4.3 "→ asleep") — only when no live session is keeping the device warm regardless. */
+  /**
+   * Reverse of `ensureAwake` (§4.3 "→ asleep").
+   *
+   * Two steps, and it used to be one. Dropping `stayon` only stops FORCING
+   * the panel on — the screen then goes dark whenever Android's own display
+   * timeout happens to elapse, which on a farm phone with a long timeout is
+   * minutes away and on one with `stayon` never applied is never. So an
+   * operator pressing Sleep watched nothing happen and reported the button
+   * as broken (owner, 2026-09-05). They were right: `docs/spec.md` line 199
+   * says a device put to sleep "stays asleep with its session up; its tile
+   * shows a dark screen", and a dark screen was exactly what it did not do.
+   *
+   * `KEYCODE_SLEEP` (223) rather than `POWER` (26) because sleep is
+   * idempotent and power is a toggle: reconcile can run more than once for
+   * one transition (a status change, a session close), and a toggle would
+   * turn the screen back ON the second time.
+   *
+   * A device something is actively holding awake (`hold()`, used by the
+   * operations that need a lit panel) is left alone — sleeping underneath a
+   * hold would break the caller that took it, and `set()` already refuses
+   * sleep for a running job.
+   */
   async function releaseAwake(deviceId: string): Promise<void> {
-    if (!keepAwakeApplied.has(deviceId)) return
-    keepAwakeApplied.delete(deviceId)
+    if ((holdCounts.get(deviceId) ?? 0) > 0) return
+    const hadKeepAwake = keepAwakeApplied.delete(deviceId)
     const row = getRow(deviceId)
     if (!row) return
     const transport = transportFor(row)
     if (!transport) return
     await transport.connect()
-    await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
-    await transport.disconnect()
+    try {
+      if (hadKeepAwake) await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
+      await transport.exec('input keyevent 223', { profile: 'probe' }).catch(() => undefined)
+    } finally {
+      await transport.disconnect()
+    }
   }
 
   function releaseDesiredHot(deviceId: string): void {
@@ -486,10 +511,20 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // asleep
       releaseDesiredHot(deviceId)
       blockedReason.set(deviceId, null)
-      // A live session may still be up (someone's hold, or Plan 42's own
-      // idle grace period) — leave it alone; `session.closed` re-triggers
-      // `reconcile` and this branch finishes the job then.
-      if (!deps.sessions()?.get(deviceId)) await releaseAwake(deviceId)
+      // This used to be gated on "no live session" — leave the device alone
+      // and let `session.closed` finish the job later. That gate is why
+      // Sleep did nothing at all from Device Control, the one screen it is
+      // pressed from most: the control stream IS a live session, so the
+      // branch was skipped every single time.
+      //
+      // `docs/spec.md` line 199 settles which behaviour is right: a device
+      // put to sleep "stays asleep WITH ITS SESSION UP; its tile shows a
+      // dark screen, not a loading panel". The session staying up is the
+      // point, not an obstacle — scrcpy keeps encoding a dark panel, which
+      // is precisely the dark tile the spec describes. `releaseAwake` still
+      // declines under a `hold()`, which is the one case that genuinely
+      // must not be slept out from under.
+      await releaseAwake(deviceId)
     }
     // One of §3.6's two probe points ("on reconcile and on demand — never on a
     // timer"), placed AFTER the wake so what it observes is the state this
