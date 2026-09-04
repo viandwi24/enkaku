@@ -179,6 +179,7 @@ jobs:
             android:
               - 'apps/guest-agent/**'
               - 'scripts/build-guest-agent.sh'
+              - 'packages/toolchain/manifest/enkaku-tools.json'
 
   # Builds the guest agent APK only — it does not sign, publish, or run it against a device.
   # Path-conditional because provisioning the Android SDK and NDK costs several hundred megabytes
