@@ -289,6 +289,10 @@ const GROUP_2 = ['CaretRightIcon', 'CaretUpIcon', 'CaretUpDownIcon', 'CheckCircl
 const GROUP_3 = [
   'ArrowsLeftRightIcon',
   'ClockIcon',
+  // The Devices toolbar's overflow button. The handoff's own glyph is the
+  // horizontal `DotsThreeIcon` (group 1); every other overflow control in the
+  // product is the vertical kebab, so the toolbar matches them.
+  'DotsThreeVerticalIcon',
   'CopyIcon',
   'DeviceMobileIcon',
   'ExportIcon',

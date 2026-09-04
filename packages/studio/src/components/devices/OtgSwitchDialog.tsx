@@ -67,6 +67,7 @@ export function OtgSwitchDialog({
   /** Called each time a phone answers on the network: its badge, address and mediumSource all just changed. */
   onDone: () => void
 }) {
+  const [group, setGroup] = useState('all')
   const [medium, setMedium] = useState<ConnectionMedium>('wired')
   const [port, setPort] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -81,6 +82,43 @@ export function OtgSwitchDialog({
   const eligible = useMemo(() => devices.filter((d) => d.connection.kind === 'usb' && d.status !== 'offline'), [devices])
   const already = useMemo(() => devices.filter((d) => d.connection.kind !== 'usb'), [devices])
 
+  /**
+   * Groups are derived from the phones this dialog can actually act on, not
+   * from the farm's whole group list: a group whose every phone is already
+   * on the network would otherwise sit in the menu and select nothing.
+   * Ungrouped phones get their own entry for the same reason — they are a
+   * real thing an operator filters to, and "All" hiding them behind a
+   * scroll is what made this dialog awkward on a rack with two chassis.
+   */
+  const groupOptions = useMemo(() => {
+    const byId = new Map<string, { id: string; name: string; count: number }>()
+    let ungrouped = 0
+    for (const d of eligible) {
+      if (!d.group) {
+        ungrouped += 1
+        continue
+      }
+      const seen = byId.get(d.group.id)
+      if (seen) seen.count += 1
+      else byId.set(d.group.id, { id: d.group.id, name: d.group.name, count: 1 })
+    }
+    const rows = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
+    return ungrouped > 0 ? [...rows, { id: 'none', name: 'Ungrouped', count: ungrouped }] : rows
+  }, [eligible])
+
+  const visible = useMemo(
+    () => (group === 'all' ? eligible : eligible.filter((d) => (group === 'none' ? d.group === null : d.group?.id === group))),
+    [eligible, group],
+  )
+
+  /**
+   * Only what is on screen is ever enabled. A selection made before the
+   * filter changed stays remembered — switch back and the ticks are still
+   * there — but "Enable OTG (3)" must never mean "and one more you cannot
+   * see": this is a physical action on a specific chassis.
+   */
+  const chosen = useMemo(() => visible.filter((d) => selected.has(d.id)), [visible, selected])
+
   useEffect(() => {
     if (!open) {
       setSelected(new Set())
@@ -88,6 +126,7 @@ export function OtgSwitchDialog({
       setBusy(false)
       setPort('')
       setMedium('wired')
+      setGroup('all')
     }
   }, [open])
 
@@ -111,7 +150,7 @@ export function OtgSwitchDialog({
       return next
     })
 
-  const allSelected = eligible.length > 0 && eligible.every((d) => selected.has(d.id))
+  const allSelected = visible.length > 0 && visible.every((d) => selected.has(d.id))
 
   const parsedPort = (): number | undefined => {
     const n = Number(port.trim())
@@ -129,7 +168,6 @@ export function OtgSwitchDialog({
    */
   const enable = async () => {
     setBusy(true)
-    const chosen = eligible.filter((d) => selected.has(d.id))
     const p = parsedPort()
     for (const device of chosen) {
       try {
@@ -172,8 +210,24 @@ export function OtgSwitchDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-2 gap-2.5">
-          <div className="space-y-1.5">
+        <div className="grid grid-cols-3 gap-2.5">
+          <div className="min-w-0 space-y-1.5">
+            <Label className="text-meta font-normal">Group</Label>
+            <Select value={group} onValueChange={setGroup}>
+              <SelectTrigger className="h-8" aria-label="Group">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All groups ({eligible.length})</SelectItem>
+                {groupOptions.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>
+                    {g.name} ({g.count})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="min-w-0 space-y-1.5">
             <Label htmlFor="otg-port" className="text-meta font-normal">
               Port
             </Label>
@@ -186,7 +240,7 @@ export function OtgSwitchDialog({
               inputMode="numeric"
             />
           </div>
-          <div className="space-y-1.5">
+          <div className="min-w-0 space-y-1.5">
             <Label className="text-meta font-normal">Medium</Label>
             <Select value={medium} onValueChange={(v) => setMedium(v as ConnectionMedium)}>
               <SelectTrigger className="h-8" aria-label="Medium">
@@ -200,14 +254,16 @@ export function OtgSwitchDialog({
           </div>
         </div>
 
-        <div>
-          {eligible.length === 0 ? (
+        <div className="min-w-0">
+          {visible.length === 0 ? (
             <EmptyState
-              title="No phone is on a cable"
+              title={eligible.length === 0 ? 'No phone is on a cable' : 'No phone on a cable in this group'}
               description={
-                already.length > 0
-                  ? `Every phone here is already on the network. Flip a chassis port back to USB and it reappears by itself — there is nothing to switch.`
-                  : 'This wizard moves a phone from its USB cable to the network. Connect one over USB first.'
+                eligible.length > 0
+                  ? 'Every phone on a cable is in another group. Pick All groups to see them.'
+                  : already.length > 0
+                    ? 'Every phone here is already on the network. Flip a chassis port back to USB and it reappears by itself — there is nothing to switch.'
+                    : 'This wizard moves a phone from its USB cable to the network. Connect one over USB first.'
               }
             />
           ) : (
@@ -218,8 +274,8 @@ export function OtgSwitchDialog({
                     <TableHead className="w-10">
                       <Checkbox
                         checked={allSelected}
-                        aria-label="Select every phone on a cable"
-                        onCheckedChange={(v) => setSelected(v === true ? new Set(eligible.map((d) => d.id)) : new Set())}
+                        aria-label="Select every phone listed"
+                        onCheckedChange={(v) => setSelected(v === true ? new Set(visible.map((d) => d.id)) : new Set())}
                       />
                     </TableHead>
                     <TableHead>Device</TableHead>
@@ -228,7 +284,7 @@ export function OtgSwitchDialog({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {eligible.map((d) => (
+                  {visible.map((d) => (
                     <TableRow key={d.id}>
                       <TableCell>
                         <Checkbox
@@ -269,8 +325,8 @@ export function OtgSwitchDialog({
               Stop watching
             </Button>
           )}
-          <Button onClick={() => void enable()} disabled={busy || selected.size === 0}>
-            {busy ? 'Enabling…' : `Enable OTG (${selected.size})`}
+          <Button onClick={() => void enable()} disabled={busy || chosen.length === 0}>
+            {busy ? 'Enabling…' : `Enable OTG (${chosen.length})`}
           </Button>
         </DialogFooter>
       </DialogContent>

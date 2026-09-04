@@ -67,7 +67,7 @@ export function ScanNetworkDialog({ open, onOpenChange, onScanned }: { open: boo
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-4xl">
+      <DialogContent className="sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>Scan networks</DialogTitle>
           <DialogDescription>
@@ -81,7 +81,16 @@ export function ScanNetworkDialog({ open, onOpenChange, onScanned }: { open: boo
         ) : rows === null ? (
           <LoadingRows rows={3} />
         ) : (
-          <div>
+          /*
+           * `min-w-0` is load-bearing, not decoration. `DialogContent` is a
+           * grid, and a grid item's default `min-width: auto` means this
+           * column grows to fit the widest thing inside it — so the range
+           * table pushed the whole dialog past its own `max-w`, spilling the
+           * header text and the footer buttons off the right edge (owner,
+           * 2026-09-04) while the table's own `overflow-x-auto` never
+           * scrolled, because nothing was ever constraining it.
+           */
+          <div className="min-w-0">
             <p className="mb-3 rounded-inner border border-line-2 bg-panel-2 px-3 py-2 text-meta leading-relaxed text-faint">
               <strong className="font-semibold text-text">Wired or Wi-Fi is a claim you are making, not something Enkaku measured.</strong> adb cannot
               tell a switch port from a radio — only you can. What you pick here is what turns a device found on this
@@ -118,7 +127,7 @@ export function ScanNetworkDialog({ open, onOpenChange, onScanned }: { open: boo
         )}
 
         <DialogFooter className="items-center">
-          <p className={cn('mr-auto text-meta', dirty ? 'text-led-warn' : 'text-faint')}>
+          <p className={cn('mr-auto min-w-0 text-meta', dirty ? 'text-led-warn' : 'text-faint')}>
             {dirty ? 'Unsaved changes — a sweep probes what is saved, not what is on screen.' : 'Saved.'}
           </p>
           <Button variant="outline" onClick={() => onOpenChange(false)}>

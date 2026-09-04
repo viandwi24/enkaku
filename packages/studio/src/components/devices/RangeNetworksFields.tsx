@@ -113,7 +113,7 @@ export function RangeNetworksFields({
               <TableHead>Label</TableHead>
               <TableHead>Medium</TableHead>
               <TableHead>Sweep</TableHead>
-              <TableHead className="text-right">Addresses</TableHead>
+              <TableHead className="text-right whitespace-nowrap">Addr.</TableHead>
               {onScanRow && <TableHead />}
               <TableHead />
             </TableRow>
@@ -132,7 +132,7 @@ export function RangeNetworksFields({
                       placeholder="10.20.0.0"
                       aria-label={`Range ${i + 1} start IP`}
                       aria-invalid={!!err}
-                      className={cn('h-8 w-32 font-mono text-[12px]', err && 'border-led-danger text-led-danger')}
+                      className={cn('h-8 w-28 font-mono text-[12px]', err && 'border-led-danger text-led-danger')}
                     />
                   </TableCell>
                   <TableCell>
@@ -142,7 +142,7 @@ export function RangeNetworksFields({
                       placeholder="10.20.0.255"
                       aria-label={`Range ${i + 1} end IP`}
                       aria-invalid={!!err}
-                      className={cn('h-8 w-32 font-mono text-[12px]', err && 'border-led-danger text-led-danger')}
+                      className={cn('h-8 w-28 font-mono text-[12px]', err && 'border-led-danger text-led-danger')}
                     />
                     {err && <p className="mt-1 text-[10.5px] text-led-danger">{err}</p>}
                   </TableCell>
@@ -157,7 +157,7 @@ export function RangeNetworksFields({
                       inputMode="numeric"
                       aria-label={`Range ${i + 1} port (optional override)`}
                       aria-invalid={!!portErr}
-                      className={cn('readout h-8 w-20 text-[12px]', portErr && 'border-led-danger text-led-danger')}
+                      className={cn('readout h-8 w-[68px] text-[12px]', portErr && 'border-led-danger text-led-danger')}
                     />
                     {portErr && <p className="mt-1 text-[10.5px] text-led-danger">{portErr}</p>}
                   </TableCell>
@@ -168,12 +168,12 @@ export function RangeNetworksFields({
                       placeholder="Chassis A"
                       maxLength={40}
                       aria-label={`Range ${i + 1} label`}
-                      className="h-8 w-32 text-[12.5px]"
+                      className="h-8 w-28 text-[12.5px]"
                     />
                   </TableCell>
                   <TableCell>
                     <Select value={row.medium} onValueChange={(v) => setRow(i, { medium: v as NetworkMedium })}>
-                      <SelectTrigger className="h-8 w-28 text-[12.5px]" aria-label={`Range ${i + 1} medium`}>
+                      <SelectTrigger className="h-8 w-24 text-[12.5px]" aria-label={`Range ${i + 1} medium`}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
