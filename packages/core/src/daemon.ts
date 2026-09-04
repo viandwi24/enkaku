@@ -2693,6 +2693,7 @@ let blobGc: BlobGc | null = null
           db,
           registry: () => buildRegistryResponse(toolchain),
           battery: () => battery,
+          metricsOf: (id) => battery?.metricsOf(id) ?? null,
           audit,
           dataDir: cfg.dataDir,
           record: recorder!.record,
@@ -4138,6 +4139,7 @@ let blobGc: BlobGc | null = null
           log: log.child('battery'),
           onBattery: (deviceId, state) =>
             hub.broadcast({ type: 'device.battery', payload: { deviceId, battery: state } }),
+          onMetrics: (deviceId, metrics) => hub.broadcast({ type: 'device.metrics', payload: { deviceId, metrics } }),
           record: recorder!.record,
         })
         battery.start()

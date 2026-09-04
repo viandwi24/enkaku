@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DeviceAddedMessage, DeviceDiscoveredMessage, DeviceReadinessMessage, DeviceReadinessSetMessage, DeviceRemovedMessage, DeviceStatusMessage } from './device'
+import { DeviceAddedMessage, DeviceDiscoveredMessage, DeviceMetricsMessage, DeviceReadinessMessage, DeviceReadinessSetMessage, DeviceRemovedMessage, DeviceStatusMessage } from './device'
 import {
   DevicePairingCodeMessage,
   DevicePairingCodeResultMessage,
@@ -250,6 +250,10 @@ export {
   type AgentState,
   type AgentStatus,
   type GuestAgentIdentity,
+  DeviceMetricsSchema,
+  DeviceMetricsMessage,
+  type DeviceMetrics,
+  type DeviceMetricsEvent,
 } from './device'
 export {
   PreparationStateSchema,
@@ -939,6 +943,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   DeviceInspectorStatusMessage,
   DeviceInspectorFallbackMessage,
   DeviceBatteryMessage,
+  DeviceMetricsMessage,
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
   ToolChangedMessage,

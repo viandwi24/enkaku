@@ -51,6 +51,17 @@ export function useOverlay(tier: OverlayTier, open: boolean, close: () => void):
   }, [tier, open, close])
 }
 
+/**
+ * Whether any overlay of this tier is registered. Read by the Devices screen
+ * so Ctrl/Cmd+A can be "ignored while Device Control is open" (design
+ * handoff, Selection) without this screen knowing that Device Control exists:
+ * plan 215's window registers at tier `window` and the suspension starts
+ * working with no edit here or there.
+ */
+export function hasOverlay(tier: OverlayTier): boolean {
+  return registry[tier].length > 0
+}
+
 function isEditable(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   const tag = target.tagName

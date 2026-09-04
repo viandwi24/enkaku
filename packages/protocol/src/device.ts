@@ -176,6 +176,40 @@ export const DEFAULT_GUEST_AGENT_IDENTITY: GuestAgentIdentity = {
   capabilities: [],
 }
 
+/**
+ * Live host-side metrics for one device (plan 214 §3.7). NOT persisted: these
+ * are facts about a phone that is plugged in right now, sampled by the poller
+ * that already reads `dumpsys battery` (`packages/core/src/device/battery.ts`)
+ * and projected into `DeviceInfo` the way plan 205 projects activities. A
+ * device with no sample yet, or one that is offline, carries `null` here and
+ * every metric column renders an em dash, which is the handoff's own rule for
+ * a disconnected row.
+ *
+ * Every field is independently nullable because they are independently
+ * knowable: `/proc/stat` needs two samples before a percentage exists, and an
+ * OEM that refuses `df /data` still answers `/proc/uptime`.
+ */
+export const DeviceMetricsSchema = z.object({
+  /** Whole-device CPU over the interval between the last two samples. `null` on the first sample. */
+  cpuPercent: z.number().min(0).max(100).nullable(),
+  /** `(MemTotal - MemAvailable) / MemTotal`, from `/proc/meminfo`. */
+  memPercent: z.number().min(0).max(100).nullable(),
+  /** `df /data`'s use percentage. */
+  diskPercent: z.number().min(0).max(100).nullable(),
+  /** `/proc/uptime`'s first field, truncated to seconds. */
+  uptimeSec: z.number().int().min(0).nullable(),
+  /** Unix epoch seconds. */
+  updatedAt: z.number().int(),
+})
+export type DeviceMetrics = z.infer<typeof DeviceMetricsSchema>
+
+/** One device's metrics sample (plan 214 §4.3). Broadcast, no subscribe message. */
+export const DeviceMetricsMessage = z.object({
+  type: z.literal('device.metrics'),
+  payload: z.object({ deviceId: z.string(), metrics: DeviceMetricsSchema }),
+})
+export type DeviceMetricsEvent = z.infer<typeof DeviceMetricsMessage>
+
 export const DeviceInfoSchema = z.object({
   id: z.string(),
   stableId: z.string(),
@@ -270,6 +304,16 @@ export const DeviceInfoSchema = z.object({
    * concatenated into it (§3.3).
    */
   number: z.number().int().positive().nullable().default(null),
+  /**
+   * `ro.product.model` as the registry probe read it (plan 214 §3.7).
+   * The handoff's Device cell is a name over a model, and `label` is the
+   * operator's name for the phone, which on a renamed device is not the
+   * model at all. Null for a row admitted before this column existed and
+   * never probed since.
+   */
+  model: z.string().nullable().default(null),
+  /** Live metrics, or null when nothing has been sampled (plan 214 §4.2). */
+  metrics: DeviceMetricsSchema.nullable().default(null),
 })
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>
 

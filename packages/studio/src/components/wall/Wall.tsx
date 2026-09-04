@@ -6,7 +6,7 @@ import { AdbStatsResponseSchema, SettingsResponseSchema, type DeviceInfo, type J
 import { WallTile } from './WallTile'
 import { TileGrid } from './TileGrid'
 import { TileSkeleton } from './TileSkeleton'
-import { useLiveSet } from './useLiveSet'
+import { useLiveSet } from '@/components/devices/useLiveSet'
 import { ws } from '@/lib/ws'
 import { READINESS_BLOCKED_REASON } from '@/lib/readiness'
 import { Button, EmptyState, api } from '@enkaku/ui'

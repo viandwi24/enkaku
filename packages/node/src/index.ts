@@ -238,6 +238,11 @@ export function createNode(opts: NodeOptions): Node {
               // reservation is ever created for it. That gap predates this
               // plan and is not this step's file allowlist to close.
               number: null,
+              model: probe.model ?? null,
+              // Live metrics (plan 214 §4.2) are sampled by the control
+              // plane's own battery poller, exactly like battery/quarantine
+              // above — a node-owned device reports no sample of its own.
+              metrics: null,
             })
           }
           hosts?.updateDevices([...snapshots.values()])

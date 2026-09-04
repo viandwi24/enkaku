@@ -15,6 +15,8 @@ export const devices = sqliteTable(
     /** The current adb transport address — it can change (USB ↔ ip:port). */
     serial: text('serial').notNull(),
     label: text('label').notNull(),
+    /** Best-effort `ro.product.model` from the registry probe (plan 214 §3.7) — the handoff's Device cell shows it under the name. Null until a probe has seen this device. */
+    model: text('model'),
     ownerId: text('owner_id'),
 
     androidVersion: text('android_version'),
