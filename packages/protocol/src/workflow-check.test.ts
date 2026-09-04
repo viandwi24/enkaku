@@ -660,3 +660,107 @@ describe('checkWorkflow — a missing entry in `resolved` degrades gracefully, n
     expect(() => checkWorkflow(doc, new Map())).not.toThrow()
   })
 })
+
+describe('expression findings (plan 302 §4.7, G9)', () => {
+  test('a { expr } binding that parses cleanly and references only earlier nodes produces no expr finding', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'expr-ok',
+      params: [{ name: 'threshold', type: 'number', required: true, title: 'Threshold' }],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'a' }),
+        scriptNode({ id: 'a', next: 'b' }),
+        scriptNode({ id: 'b', params: { x: { expr: '$nodes.a.count > $params.threshold' } } }),
+      ],
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
+    const findings = checkWorkflow(doc, resolved)
+    expect(codesOf(findings)).not.toContain('E_WORKFLOW_EXPR_PARSE')
+    expect(codesOf(findings)).not.toContain('E_WORKFLOW_EXPR_UNKNOWN_NODE')
+  })
+
+  test('E_WORKFLOW_EXPR_PARSE — an unparsable expression is reported at publish time, with the offset', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'expr-bad-syntax',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 'a' }), scriptNode({ id: 'a', params: { x: { expr: '$nodes.a.constructor("x")' } } })],
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
+    const findings = checkWorkflow(doc, resolved)
+    const finding = findings.find((f) => f.code === 'E_WORKFLOW_EXPR_PARSE')
+    expect(finding).toBeDefined()
+    expect(finding?.message).toContain('offset')
+  })
+
+  test('E_WORKFLOW_EXPR_UNKNOWN_NODE — a $nodes reference naming a node that does not exist', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'expr-unknown-node',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 'a' }), scriptNode({ id: 'a', params: { x: { expr: '$nodes.ghost.count' } } })],
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
+    const findings = checkWorkflow(doc, resolved)
+    const finding = findings.find((f) => f.code === 'E_WORKFLOW_EXPR_UNKNOWN_NODE')
+    expect(finding).toBeDefined()
+    expect(finding?.message).toContain('ghost')
+  })
+
+  test('E_WORKFLOW_EXPR_UNKNOWN_NODE — a $nodes reference naming a node that can only run LATER (same forward-ref rule as { from })', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'expr-forward-ref',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'first' }),
+        scriptNode({ id: 'first', params: { x: { expr: '$nodes.second.count' } }, next: 'second' }),
+        scriptNode({ id: 'second' }),
+      ],
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
+    const findings = checkWorkflow(doc, resolved)
+    const finding = findings.find((f) => f.code === 'E_WORKFLOW_EXPR_UNKNOWN_NODE')
+    expect(finding).toBeDefined()
+    expect(finding?.message).toContain('"first"')
+    expect(finding?.message).toContain('"second"')
+  })
+
+  test('a $nodes reference inside a gate predicate operand is checked the same way', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'expr-in-gate',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'a' }),
+        scriptNode({ id: 'a', next: 'g1' }),
+        { kind: 'gate', id: 'g1', ui: { x: 0, y: 0 }, when: { left: { expr: '$nodes.ghost.count' }, op: 'exists' } },
+      ],
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
+    const findings = checkWorkflow(doc, resolved)
+    expect(codesOf(findings)).toContain('E_WORKFLOW_EXPR_UNKNOWN_NODE')
+  })
+
+  test('an { expr } bound to onFail skips the forward-ref half of the check, same as { from } does', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'expr-on-fail',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 'a' }), scriptNode({ id: 'a' })],
+      onFail: { script: 'tiktok/switch-account@1.0.0', params: { x: { expr: '$nodes.a.count' } } },
+    })
+    const resolved = new Map<string, ResolvedNodeScript>([
+      ['tiktok/auto-scroll@1.4.0', scriptEntry()],
+      ['tiktok/switch-account@1.0.0', scriptEntry({ name: 'tiktok/switch-account', version: '1.0.0' })],
+    ])
+    const findings = checkWorkflow(doc, resolved)
+    expect(codesOf(findings)).not.toContain('E_WORKFLOW_EXPR_UNKNOWN_NODE')
+  })
+})

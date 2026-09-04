@@ -110,6 +110,7 @@
       "name": "@enkaku/protocol",
       "version": "0.0.1",
       "dependencies": {
+        "@enkaku/expr": "workspace:*",
         "zod": "^4.0.0",
       },
     },

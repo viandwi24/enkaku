@@ -306,4 +306,36 @@ describe('createWorkflowOrchestrator (plan 211 §4.5, doc v2 by plan 301)', () =
     expect(rawAfter).toEqual(rawBefore)
     expect((rawAfter as { schema: number }).schema).toBe(1)
   })
+
+  test('a parameter bound through an { expr } is resolved and passed to the step (plan 302 §4.7/§4.8)', async () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'expr-doc',
+      title: '',
+      description: '',
+      params: [{ name: 'threshold', type: 'number', required: true, title: 'Threshold' }],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 's1' }),
+        scriptNode({ id: 's1', title: 'Step 1', script: 'demo/s1@1.0.0', next: 's2' }),
+        scriptNode({
+          id: 's2',
+          title: 'Step 2',
+          script: 'demo/s2@1.0.0',
+          params: { verdict: { expr: '$nodes.s1.count > $params.threshold' }, echoedNow: { expr: '$now > 0' } },
+        }),
+      ],
+    })
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: { count: 12 } }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const job = runs.createJob({ kind: 'workflow', workflowName: doc.name, workflowDoc: doc, deviceId: 'dev-1', params: { threshold: 3 }, scriptName: doc.name, scriptVersion: null })
+    const run = runs.addRun(job.id, { trigger: 'manual' })
+
+    const summary = await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+    expect(Array.isArray(summary)).toBe(true)
+
+    const s2Job = deps.db.select().from(jobs).where(eq(jobs.parentWorkflowJobId, job.id)).all().find((j) => j.stepSeq === 1)
+    expect(s2Job).toBeDefined()
+    expect(s2Job?.params).toEqual({ verdict: true, echoedNow: true })
+  })
 })

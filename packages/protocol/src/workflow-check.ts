@@ -1,3 +1,4 @@
+import { type Expr, ExprParseError, parse } from '@enkaku/expr'
 import type { JsonSchemaNode } from './api/json-schema'
 import type { ScriptRef } from './script-ref'
 import { compileWorkflowParams } from './workflow-params'
@@ -78,6 +79,10 @@ export type WorkflowFindingCode =
   | 'E_WORKFLOW_SCHEMA_UNKNOWN'
   /** A `schema: 1` document does not satisfy the frozen v1 shape and cannot be upgraded (plan 301 §4.6) — produced only by `packages/core/src/workflows/upgrade.ts`. */
   | 'E_WORKFLOW_UPGRADE_FAILED'
+  /** A `{ expr }` binding's source text does not parse (plan 302 §4.7) — reported at publish time, with the parser's own message and offset, instead of only ever failing at run time. */
+  | 'E_WORKFLOW_EXPR_PARSE'
+  /** A `{ expr }` binding's `$nodes.<id>` reference either names no node in this document, or names one that cannot have run before the binding site in every execution this document allows — the SAME reachability rule `{ from }` already enforces (item 2), applied to every `$nodes` root an expression names (plan 302 §4.7). */
+  | 'E_WORKFLOW_EXPR_UNKNOWN_NODE'
 
 /** What the publish route already looked up for one node's script reference (plan 99 §4.3's own signature). `outputSchema` is always `null` until plan 97 ships a producer (§0.2 A1) — every check below degrades honestly when it is. */
 export interface ResolvedNodeScript {
@@ -200,6 +205,53 @@ function buildGraph(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, findings: Wo
 }
 
 /** Is there a path of ONE OR MORE edges from `from` to `to`? Used for the forward-ref check (§4.3 item 2): "can X have run before N" — a self-path (`from === to`) is answered correctly too, since the walk starts from `from`'s OWN out-edges, never a zero-length stay, which is exactly "is `from` on a cycle back to itself". */
+/**
+ * Every `$nodes.<id>` reference in a parsed expression (plan 302 §4.7): a
+ * `member` access whose `on` is the `$nodes` root names the node directly;
+ * anything past that (`$nodes.a.b.c`) is a PATH into that node's output, not
+ * a second reference, so the walk does not descend into `on` once it has
+ * matched the root — it descends into every OTHER child instead, so a
+ * reference nested inside a call, a binary op, a ternary, or an index
+ * expression is still found. `$nodes["a"]` cannot occur (a string-literal
+ * bracket index is a parse error, plan 300 §9 Q5), and `$nodes[i]` (a
+ * computed index) names no fixed node id, so it is not collected here —
+ * exactly as unchecked as `{ from }` would be for a dynamic reference, which
+ * this repo's binding grammar has never been able to express either.
+ */
+function collectExprNodeRefs(ast: Expr, out = new Set<string>()): Set<string> {
+  switch (ast.t) {
+    case 'lit':
+    case 'root':
+      return out
+    case 'member':
+      if (ast.on.t === 'root' && ast.on.name === '$nodes') {
+        out.add(ast.key)
+        return out
+      }
+      collectExprNodeRefs(ast.on, out)
+      return out
+    case 'index':
+      collectExprNodeRefs(ast.on, out)
+      collectExprNodeRefs(ast.idx, out)
+      return out
+    case 'unary':
+      collectExprNodeRefs(ast.on, out)
+      return out
+    case 'bin':
+      collectExprNodeRefs(ast.l, out)
+      collectExprNodeRefs(ast.r, out)
+      return out
+    case 'cond':
+      collectExprNodeRefs(ast.c, out)
+      collectExprNodeRefs(ast.a, out)
+      collectExprNodeRefs(ast.b, out)
+      return out
+    case 'call':
+      for (const arg of ast.args) collectExprNodeRefs(arg, out)
+      return out
+  }
+}
+
 function pathExists(edges: ReadonlyMap<string, Set<string>>, from: string, to: string): boolean {
   const visited = new Set<string>()
   const stack = [...(edges.get(from) ?? [])]
@@ -655,6 +707,34 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
           }
         } else {
           push(findings, site.path, 'W_WORKFLOW_UNCHECKED_BINDING', `"${target.node.script}" does not declare an output — this binding cannot be checked until it runs`, 'warning')
+        }
+      }
+      continue
+    }
+
+    if ('expr' in expr) {
+      let ast: Expr
+      try {
+        ast = parse(expr.expr)
+      } catch (err) {
+        const message = err instanceof ExprParseError ? `${err.message} (at offset ${err.offset})` : err instanceof Error ? err.message : String(err)
+        push(findings, site.path, 'E_WORKFLOW_EXPR_PARSE', message, 'error')
+        continue
+      }
+      for (const referencedNodeId of collectExprNodeRefs(ast)) {
+        if (!nodeIds.has(referencedNodeId)) {
+          push(findings, site.path, 'E_WORKFLOW_EXPR_UNKNOWN_NODE', `"$nodes.${referencedNodeId}" — "${referencedNodeId}" is not a node in this document`, 'error')
+          continue
+        }
+        // Same forward-ref rule as `{ from }` (item 2), skipped for `onFail` for the same reason.
+        if (site.fromNodeId !== null && !pathExists(graph.edges, referencedNodeId, site.fromNodeId)) {
+          push(
+            findings,
+            site.path,
+            'E_WORKFLOW_EXPR_UNKNOWN_NODE',
+            `"$nodes.${referencedNodeId}" — "${site.fromNodeId}" binds to node "${referencedNodeId}"'s output, but "${referencedNodeId}" can only run AFTER "${site.fromNodeId}" (or never) in every execution this document allows`,
+            'error',
+          )
         }
       }
       continue

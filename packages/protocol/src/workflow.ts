@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { EXPR_LIMITS } from '@enkaku/expr'
 import { ScriptRefSchema } from './script-ref'
 import { WorkflowParamNameSchema, WorkflowParamSchema, type WorkflowParam } from './workflow-params'
 
@@ -84,8 +85,8 @@ export const WorkflowNameSchema = z
   )
 
 /**
- * A value a node parameter or a gate operand can take (plan 99 §3.6). Four
- * forms, closed:
+ * A value a node parameter or a gate operand can take (plan 99 §3.6, plan 300
+ * D4). Five forms, closed:
  *
  * - `{ const }` — a literal.
  * - `{ param }` — a WORKFLOW parameter (`workflow-params.ts`).
@@ -94,17 +95,20 @@ export const WorkflowNameSchema = z
  *   failing the node when the path does not resolve (plan 99 §3.6's
  *   "unchecked" branch, resolved at run time by `workflow-resolve.ts`).
  * - `{ run: 'summary' }` — the run summary: one entry per completed node.
- *
- * Never a fifth form that COMPUTES — see `workflow.ts`'s module doc and plan
- * 99 §3.6: the moment a binding can compute, it is an expression language,
- * and this plan refuses to build one (F27, the same refusal plan 95 §3.8 R2
- * already made for an author-supplied regular expression).
+ * - `{ expr }` — a pure, bounded expression parsed and evaluated by
+ *   `@enkaku/expr` (plan 300 D4, plan 302). Plan 99 §3.6's F27 stance — a
+ *   binding must never compute — is reversed by plan 300 D4, on the grounds
+ *   that `@enkaku/expr` is a closed, pure, prototype-free AST interpreter,
+ *   never `eval`/`new Function`/a library that emits JavaScript — see plan
+ *   300 §3 D4 for the evidence and the boundary. The other four forms are
+ *   unchanged.
  */
 export type ValueExpr =
   | { const: unknown }
   | { param: string }
   | { from: string; path?: string; optional: boolean; default?: unknown }
   | { run: 'summary' }
+  | { expr: string }
 
 export const ValueExprSchema: z.ZodType<ValueExpr> = z.union([
   z.object({ const: z.unknown() }).strict(),
@@ -118,6 +122,7 @@ export const ValueExprSchema: z.ZodType<ValueExpr> = z.union([
     })
     .strict(),
   z.object({ run: z.literal('summary') }).strict(),
+  z.object({ expr: z.string().min(1).max(EXPR_LIMITS.maxSourceBytes) }).strict(),
 ])
 
 /**

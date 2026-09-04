@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { EXPR_LIMITS } from '@enkaku/expr'
 import {
   GATE_OPS,
   PredicateSchema,
@@ -305,10 +306,35 @@ describe('ValueExprSchema — the four closed forms', () => {
     expect(ValueExprSchema.safeParse({ run: 'anything-else' }).success).toBe(false)
   })
 
-  test('a fifth shape, or two forms mixed together, is refused (the union is closed and every arm is `.strict()`)', () => {
+  test('a sixth shape, or two forms mixed together, is refused (the union is closed and every arm is `.strict()`)', () => {
     expect(ValueExprSchema.safeParse({ eval: '1+1' }).success).toBe(false)
     expect(ValueExprSchema.safeParse({ const: 1, param: 'x' }).success).toBe(false)
     expect(ValueExprSchema.safeParse({}).success).toBe(false)
+  })
+})
+
+describe('ValueExpr five forms', () => {
+  test('the four old forms still work unchanged (plan 302 G8)', () => {
+    expect(ValueExprSchema.safeParse({ const: 42 }).success).toBe(true)
+    expect(ValueExprSchema.safeParse({ param: 'keyword' }).success).toBe(true)
+    expect(ValueExprSchema.safeParse({ from: 'scroll1', path: 'videos' }).success).toBe(true)
+    expect(ValueExprSchema.safeParse({ run: 'summary' }).success).toBe(true)
+  })
+
+  test('the fifth form: `{ expr }`, a bounded source string', () => {
+    const result = ValueExprSchema.safeParse({ expr: '$nodes.scroll1.videos > 3' })
+    expect(result.success).toBe(true)
+  })
+
+  test('`expr` must be a non-empty string, no other keys', () => {
+    expect(ValueExprSchema.safeParse({ expr: '' }).success).toBe(false)
+    expect(ValueExprSchema.safeParse({ expr: 1 }).success).toBe(false)
+    expect(ValueExprSchema.safeParse({ expr: '$now', const: 1 }).success).toBe(false)
+  })
+
+  test('`expr` is bounded by `EXPR_LIMITS.maxSourceBytes`', () => {
+    const tooLong = '1'.repeat(EXPR_LIMITS.maxSourceBytes + 1)
+    expect(ValueExprSchema.safeParse({ expr: tooLong }).success).toBe(false)
   })
 })
 

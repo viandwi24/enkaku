@@ -156,6 +156,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
       async function runScriptStep(
         node: ScriptNode,
         stepSeq: number,
+        stepStartedAt: Date,
       ): Promise<{ ok: true; run: JobRunRow; scriptRef: { id: string; name: string; version: string } } | { ok: false; code: string; message: string; run?: JobRunRow; scriptRef?: { id: string; name: string; version: string } }> {
         let entry: ScriptEntry
         try {
@@ -169,7 +170,13 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         }
         const scriptRef = { id: entry.id, name: entry.name, version: entry.version }
 
-        const scope: ResolveScope = { params, outputs, summary }
+        // `now` is the STEP's own start time (plan 302 §3.3) — built once
+        // here and reused by every `{ expr }` binding this step resolves
+        // (`resolveValue`'s own scope cache, keyed on THIS object's
+        // identity). `randomSeed` is left absent: no run-level seed column
+        // exists yet (plan 304 §4.1), so `resolveValue` falls back to a
+        // fixed `0` (plan 302 §11's recorded deferral).
+        const scope: ResolveScope = { params, outputs, summary, now: stepStartedAt.getTime() }
         const resolvedParams: Record<string, unknown> = {}
         for (const [key, expr] of Object.entries(node.params)) {
           const outcome = resolveValue(expr, scope)
@@ -297,7 +304,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             .run()
 
           if (node.kind === 'gate') {
-            const scope: ResolveScope = { params, outputs, summary }
+            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime() }
             const { value, trace } = evaluatePredicate(node.when, scope)
             const chosen = value ? node.then : node.else
             const finishedAt = new Date()
@@ -321,7 +328,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           }
 
           // A script step.
-          const outcome = await runScriptStep(node, step)
+          const outcome = await runScriptStep(node, step, rowStartedAt)
           if (outcome.run) currentChildRunId = outcome.run.id
           const finishedAt = new Date()
 
@@ -437,7 +444,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         // genuine failure (never on a cancel).
         if (finalStatus === 'failed' && !cancelled && doc.onFail) {
           try {
-            const cleanupScope: ResolveScope = { params, outputs, summary }
+            const cleanupScope: ResolveScope = { params, outputs, summary, now: Date.now() }
             const cleanupEntry = deps.registry.resolve(doc.onFail.script)
             const resolvedParams: Record<string, unknown> = {}
             let bindingOk = true

@@ -1,7 +1,7 @@
 # Plan 302 — Flow : `@enkaku/expr` — a closed expression engine that cannot reach `Function`
 
-> Status: partial — package complete; steps 302.7 and 302.8 deferred to after plan 301 lands (instructed)
-> Ships: `packages/expr/src/index.ts`
+> Status: implemented
+> Ships: packages/expr/src/index.ts
 > Depends on: plan 300 D4 (**needs the owner's ratification before execution** — 300 §3.1)
 > Spec references: §4.6; this plan adds a package to §3 (repository layout), rewritten by plan 307.
 
@@ -16,8 +16,8 @@
 | G5 | The engine is pure: same AST, same scope, same value, twice | 1000 randomised round-trips | `bun test packages/expr/src/eval.test.ts` → `determinism` passes | [x] |
 | G6 | The package has **zero runtime dependencies** | `dependencies` is `{}` or absent | `cat packages/expr/package.json` → no `dependencies` key with entries | [x] |
 | G7 | The interpreter is under 600 lines (plan 300 D4's falsification test) | `parse.ts` + `eval.ts` + `ast.ts` ≤ 600 lines | `wc -l packages/expr/src/parse.ts packages/expr/src/eval.ts packages/expr/src/ast.ts` → total ≤ 600 | [x] (518) |
-| G8 | A workflow parameter may be an expression, and the old four `ValueExpr` forms still work unchanged | 5 forms parse; the 4 old ones have no behaviour change | `bun test packages/protocol/src/workflow.test.ts` → `ValueExpr five forms` passes | [ ] deferred — step 302.7 not executed by instruction (see §11) |
-| G9 | `checkWorkflow` reports an unparsable or out-of-scope expression at publish, not at run | 2 codes | `bun test packages/protocol/src/workflow-check.test.ts` → `expression findings` passes | [ ] deferred — step 302.8 not executed by instruction (see §11) |
+| G8 | A workflow parameter may be an expression, and the old four `ValueExpr` forms still work unchanged | 5 forms parse; the 4 old ones have no behaviour change | `bun test packages/protocol/src/workflow.test.ts` → `ValueExpr five forms` passes | [x] |
+| G9 | `checkWorkflow` reports an unparsable or out-of-scope expression at publish, not at run | 2 codes | `bun test packages/protocol/src/workflow-check.test.ts` → `expression findings` passes | [x] |
 | G10 | `bun run typecheck` clean | 0 errors | `bun run typecheck` exits 0 | [x] |
 
 ## 1. Goals
@@ -321,9 +321,74 @@ a message naming the offset.
 
 | What | Where it was | Proof |
 |---|---|---|
-| The claim that this repo has no expression language | `packages/protocol/src/workflow.ts` module doc (plan 99 §3.7 F27 wording) | `rg -n "refuses to build one" packages/protocol/src/workflow.ts` → empty; the comment is rewritten to cite plan 300 D4 and name the boundary |
+| The claim that this repo has no expression language | `packages/protocol/src/workflow.ts` module doc (plan 99 §3.7 F27 wording) | `rg -n "refuses to build one" packages/protocol/src/workflow.ts` → empty; the comment is rewritten to cite plan 300 D4 and name the boundary (done in this second pass — see below) |
 
 ## 11. Handoff report
+
+This plan was executed in two passes, by two different agent sessions. The
+first pass (steps 302.1–302.6, 302.9) is preserved below unedited except for
+this note; the second pass (steps 302.7–302.8, this section's addendum)
+finished the plan and flips `> Status:` to `implemented`.
+
+### Second pass — 302.7 and 302.8 (this session)
+
+- **Checklist**: G1–G7 and G10 unchanged from the first pass (see below). G8 ✅ G9 ✅ — both now built and green.
+
+- **Scope executed**: 302.7 (the fifth `ValueExpr` form in `packages/protocol/src/workflow.ts`, the two `checkWorkflow` codes in `workflow-check.ts`) and 302.8 (the `resolveValue` wiring). §10's F27 rewrite is done in this pass, not the first.
+
+- **Files touched**:
+  - `packages/protocol/package.json` — added `@enkaku/expr: workspace:*`.
+  - `packages/protocol/src/workflow.ts` — `ValueExpr`'s fifth form `{ expr: string }` (bounded by `EXPR_LIMITS.maxSourceBytes`), the module doc rewritten to name plan 300 D4 instead of "refuses to build one".
+  - `packages/protocol/src/workflow.test.ts` — new `describe('ValueExpr five forms', ...)` group (G8's named group), the old "fifth shape ... refused" test retitled "sixth shape" since a fifth is now legal.
+  - `packages/protocol/src/workflow-check.ts` — `E_WORKFLOW_EXPR_PARSE` and `E_WORKFLOW_EXPR_UNKNOWN_NODE` finding codes, a `collectExprNodeRefs` AST walker, and the `'expr' in expr` branch in the binding-sites loop.
+  - `packages/protocol/src/workflow-check.test.ts` — new `describe('expression findings (plan 302 §4.7, G9)', ...)` group, 6 cases.
+  - `packages/protocol/src/workflow-resolve.ts` — `ResolveScope` gains optional `now`/`randomSeed`; a `WeakMap`-memoised `buildExprScope` (keyed on the `ResolveScope` object's own identity, so a step with N `{ expr }` bindings builds `$params`/`$nodes`/`$run` through `toScopeValue` exactly once — see the discrepancy below on how "once per step" was actually satisfied); `resolveValue` gains the `'expr' in expr` branch (parse + evaluate, caught and turned into `{ ok: false, code: 'unresolved' }` on any failure).
+  - `packages/protocol/src/workflow-resolve.test.ts` — unchanged; the existing "four forms" suite still passes unmodified (G8's byte-for-byte requirement).
+  - `packages/core/src/jobs/executors/workflow.ts` — `runScriptStep` takes a `stepStartedAt: Date` parameter and passes `now: stepStartedAt.getTime()`; the gate's own scope passes `now: rowStartedAt.getTime()`; the `onFail` cleanup scope passes `now: Date.now()` (no step row of its own to draw a start time from).
+  - `packages/core/src/jobs/executors/workflow.test.ts` — new case: an `{ expr }` binding reading `$nodes`, `$params`, and `$now`, asserted against the child job's own `params` row.
+
+- **Discrepancy — the file plan 302.8 names does not exist.** §4.7/§5 step 302.8 both say `packages/core/src/workflows/workflow-resolve.ts`. No such file exists on `mvp`; `resolveValue`/`evaluatePredicate`/`ResolveScope` have lived in `packages/protocol/src/workflow-resolve.ts` since plan 99, and plan 301 kept them there. The wiring was built in the real file. `@enkaku/expr` is now a dependency of `@enkaku/protocol` (not `@enkaku/core`) as a consequence — the opposite direction from what §4.1/§4.7's prose implies, but the only one that matches where the function this plan is wiring actually lives.
+
+- **Discrepancy — the two `WorkflowFindingCode` names.** §4.7 names them `expr-parse` and `expr-unknown-node` (lowercase, hyphenated). Every one of the ~20 existing codes in `WorkflowFindingCode` is `E_WORKFLOW_*`/`W_WORKFLOW_*` (upper snake case, no exceptions — see the type's own definition). Adding two lowercase-hyphenated outliers into a closed union that is otherwise 100% consistent would be a worse fit than the plan's literal wording, so this pass used `E_WORKFLOW_EXPR_PARSE` and `E_WORKFLOW_EXPR_UNKNOWN_NODE` instead — same meaning, matching the file's own established convention. Both are `error` severity, as §4.7 specifies.
+
+- **Discrepancy — `E_WORKFLOW_EXPR_UNKNOWN_NODE` covers two cases `{ from }` splits across two codes.** `{ from }`'s unknown-node case is `E_WORKFLOW_UNKNOWN_NODE`, and its forward-ref case is the separate `E_WORKFLOW_FORWARD_REF`. §4.7's own prose for the expression version folds both into ONE code ("`expr-unknown-node` (error — `$nodes.foo` where `foo` is not a node that can have run before this one...)"), so this pass followed the plan's prose literally rather than the `{ from }` precedent's two-code split. If a later reviewer wants the `{ from }` symmetry instead, splitting `E_WORKFLOW_EXPR_UNKNOWN_NODE` into two codes is a small, isolated change confined to the `if ('expr' in expr)` branch.
+
+- **Design decision recorded (not in the plan, needed to implement it) — `$input`.** §4.7's own code block for `workflow-resolve.ts` does not mention `$input` at all, but `@enkaku/expr`'s `ExprScope` requires it, and plan 302 §9 Q2 already answers what it should be: "the output of the node the cursor actually came from at run time... always exactly one node under plan 300 D5's single cursor." Rather than thread a new "previous node id" variable through the executor, `$input` is derived as the LAST entry of `scope.summary` — under the single-cursor model that is provably the same node, and `summary` is already appended in step-completion order by every one of the executor's three call sites. `undefined` for the very first script/gate node, whose predecessor is `start` (which produces nothing). Not a discrepancy so much as an unstated design gap in §4.7 that this pass had to close to compile at all.
+
+- **Design decision recorded — `$random`, per the launch instruction.** No `runs`/`jobRuns` column carries a per-run seed (`packages/core/src/db/schema.ts`'s `jobRuns` table has no `seed`/`randomSeed` field, checked directly). Per the explicit instruction accompanying this job, that column is plan 304 §4.1's to add — not added here. `ResolveScope.randomSeed` is optional and every call site in `workflow.ts` omits it, so `resolveValue`'s `buildExprScope` falls back to the documented fixed `0`. `$random` is therefore constant across every run until plan 304 lands; this is recorded, not hidden, in `ResolveScope.randomSeed`'s own doc comment and here.
+
+- **`$now`'s unit.** §3.3/§4.7 do not state a unit. This pass used **milliseconds** (`Date.getTime()`), matching JavaScript's own `Date.now()` convention that `$now` most naturally mirrors for an author writing `$now - $nodes.a.startedAt` — NOT the repo's usual unix-seconds DB convention (`packages/core/src/db/schema.ts`'s timestamp columns), because `$now` here is a pure evaluation input handed to `@enkaku/expr`, not a stored column. Recorded because it is the kind of unit mismatch that is easy to get wrong later.
+
+- **Typecheck**: clean. `bash scripts/typecheck.sh` → `OK` for all 21 workspace targets (protocol, expr, ui, adb, toolchain, drivers, scrcpy, sdk, session, harness, core, node, studio, probe-server, networking, proxy-manager, tiktok-automation-pack, mikrotik-routing, google-automation-pack, youtube-automation-pack, examples).
+
+- **Tests run** (one invocation at a time, never concurrently):
+  - `bun test packages/protocol/src/workflow.test.ts` → 70 pass, 0 fail
+  - `bun test packages/protocol/src/workflow-check.test.ts` → 40 pass, 0 fail
+  - `bun test packages/protocol/src/workflow-resolve.test.ts` → 55 pass, 0 fail (unmodified — proves G8's "no behaviour change" for the four old forms)
+  - `bun test packages/core/src/jobs/executors/workflow.test.ts` → 9 pass, 0 fail
+  - `bun test packages/expr/src/` (unmodified this pass; run once as a final sweep since `workflow.ts`/`workflow-check.ts`/`workflow-resolve.ts` now import from it) → 162 pass, 0 fail, 1224 expect() calls
+
+- **`bun run build:studio`**: **not run**, same reason as the first pass — a `next dev` server (now `node` pid on `:3001`, from the same concurrently running Studio session the launch instructions named) still holds the port; `bash scripts/build-studio.sh` was invoked and confirmed the refusal (its own guard message, quoted verbatim): *"The Studio dev server is running on :3001. Building now would corrupt it... Stop it first, then build."* Neither job in this launch touches `packages/studio`, so this is expected, not a gap this pass could close without violating the instruction not to touch the other session's dev server.
+
+- **`packages/studio`**: NOT edited, per the launch instruction. Checked for fallout: `packages/studio/src/components/workflow/ValueExprEditor.tsx`'s `kindOfValueExpr` is an if-chain (`'const' in value` / `'param' in value` / `'from' in value`, falling through to `'run'`) — not an exhaustive `switch`, so the new `expr` variant compiles fine and simply misclassifies an `{ expr }` value as `'run'` at the UI layer (it would render as a run-summary picker, not an expression editor). This is a known, expected gap: plan 306 owns building the actual expression editor UI; nothing in plans 302/303 asked Studio to render the fifth form correctly, and `bun run typecheck`'s `studio OK` confirms nothing broke.
+
+- **Removed, proven** (§10, completed in this pass):
+  - `rg -n "refuses to build one" packages/protocol/src/workflow.ts` → empty (0 matches). The module doc for `ValueExpr` now reads: "Plan 99 §3.6's F27 stance — a binding must never compute — is reversed by plan 300 D4...".
+
+- **Observed, not done**:
+  - `bun run build:studio` — blocked by the concurrent session's dev server, as above.
+  - The §7 manual owner smoke ("publish a workflow whose gate reads `len($nodes.read.result.items) > 0`, run it against a device...") — needs a real device and an operator; not run by an agent, consistent with plan 200 §8.3's division of labour. The protocol/executor wiring it depends on now exists and is unit-tested.
+
+- **Open questions hit**: none of plan 302 §9's four questions blocked 302.7/302.8. Q2 ($input's definition) is answered exactly as §9 already answers it — see the design-decision note above for how that answer was actually wired given §4.7's code block omits `$input` entirely.
+
+- **Processes**: no process was started by this session that is still running.
+
+  ```
+  $ ps -Ao pid=,command= | grep -i "[o]penpf"
+  (no output)
+  ```
+
+### First pass — 302.1–302.6, 302.9 (prior session, preserved verbatim)
 
 - **Checklist**: G1 ✅ G2 ✅ G3 ✅ G4 ✅ (see discrepancy below) G5 ✅ G6 ✅ G7 ✅ (518 lines) G8 ⏸ deferred (302.7 not executed, instructed) G9 ⏸ deferred (302.8 not executed, instructed) G10 ✅
 
