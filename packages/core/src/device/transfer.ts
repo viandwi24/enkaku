@@ -49,14 +49,16 @@ export interface TransferOpts {
   transferId: string
   onProgress?(sent: number, total: number | null): void
   /**
-   * The job that started this transfer, if any (plan 93 §3.13, §4.6, step
-   * 93.9 — closes F12). Only `pull` uses it, forwarding it into
-   * `registerDeviceArtifact` so a bulk pull's artifacts are traceable back
-   * to the batch/job that produced them. Optional and undefined for the
-   * REST route and the script IPC bridge, exactly like before this field
-   * existed — only the `internal:pull` executor threads its own `job.id`.
+   * The run that started this transfer, if any (plan 93 §3.13, §4.6, step
+   * 93.9 — closes F12; re-keyed from `jobId` to `runId` by plan 211 §3.2
+   * decision 9, matching `artifacts.run_id`). Only `pull` uses it,
+   * forwarding it into `registerDeviceArtifact` so a bulk pull's artifacts
+   * are traceable back to the batch/run that produced them. Optional and
+   * undefined for the REST route and the script IPC bridge, exactly like
+   * before this field existed — only the `internal:pull` executor threads
+   * its own `ctx.runId`.
    */
-  jobId?: string | null
+  runId?: string | null
 }
 
 /** `push`'s extra opt (plan 90 §4.6) — `'auto'` (the default) scans only
@@ -439,7 +441,7 @@ export function createTransferService(deps: TransferServiceDeps): TransferServic
             signal: controller.signal,
           })
           stream.close()
-          const info = registerDeviceArtifact({ db: deps.db }, { deviceId, label, relPath: dest.rel, sizeBytes: bytes, jobId: opts.jobId ?? null })
+          const info = registerDeviceArtifact({ db: deps.db }, { deviceId, label, relPath: dest.rel, sizeBytes: bytes, runId: opts.runId ?? null })
           return { artifactId: info.id, bytes }
         } catch (err) {
           stream.close(true)

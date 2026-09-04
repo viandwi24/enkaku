@@ -43,7 +43,7 @@ export interface ExecutorHostDeps {
   readinessHold?: (deviceId: string, reason: 'job') => Promise<{ release(): void }>
   maxResultBytes?: () => number
   resultSummaryFields?: (scriptId: string) => SummaryField[]
-  onProgress?: (jobId: string, deviceId: string, value: unknown) => void
+  onProgress?: (jobId: string, runId: string, deviceId: string, value: unknown) => void
 }
 
 export interface ExecutorHost {
@@ -298,7 +298,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
         }
         return
       }
-      deps.onProgress?.(entry.job.id, entry.job.deviceId, value)
+      deps.onProgress?.(entry.job.id, entry.run.id, entry.job.deviceId, value)
     },
 
     stopAll() {

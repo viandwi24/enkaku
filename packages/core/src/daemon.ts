@@ -1750,6 +1750,7 @@ let blobGc: BlobGc | null = null
       const jobsRunnerPort = createJobsRunnerPort({
         db,
         jobStore,
+        runs,
         registry: scriptRegistry,
         triggerBudgets: () => settingsStore.get().job.trigger,
         onTriggered: (from, targetDeviceId, result) =>
