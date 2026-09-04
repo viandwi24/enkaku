@@ -915,6 +915,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                   if (congested && !binding.awaitingKeyframe) {
                     binding.awaitingKeyframe = true
                     countersFor(binding).keyframeRequests++
+                    transportMetrics.recordFrameDropped()
                     sessionForBinding(binding)?.requestKeyframe?.()
                   }
                   if (binding.awaitingKeyframe) {
@@ -944,6 +945,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 if (sent === 0 && meta.codec !== 'png' && !binding.awaitingKeyframe) {
                   binding.awaitingKeyframe = true
                   countersFor(binding).keyframeRequests++
+                  transportMetrics.recordFrameDropped()
                   sessionForBinding(binding)?.requestKeyframe?.()
                 }
               },

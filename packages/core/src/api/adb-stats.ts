@@ -136,7 +136,8 @@ export function createAdbStatsRoutes(deps: {
     // Plan 206 §4.3, §4.10 — encoder states per device replace the old,
     // now-deleted per-quality stream counter; `alwaysOn().stats()` is the
     // builder's own occupancy, the same counters `GET /api/video/sessions` reports.
-    const encoders = deps.sessions()?.encoders() ?? null
+    const sessionManager = deps.sessions()
+    const encoders = sessionManager?.encoders() ?? null
     const alwaysOnStats = deps.alwaysOn?.()
     const videoSettings = deps.video?.()
     const video: VideoStats = encoders
@@ -192,6 +193,11 @@ export function createAdbStatsRoutes(deps: {
       adbHealth: deps.adbHealth?.() ?? ZERO_ADB_HEALTH,
       input: deps.input?.() ?? ZERO_INPUT,
       video,
+      // Plan 223 §4.2, §4.3 — every live scrcpy forward this process holds,
+      // owner-tagged. Absent (never `[]`-defaulted through a ZERO_ constant)
+      // when `sessions()` returns null, matching the `.optional()` contract
+      // `input`/`video` above already established.
+      forwards: sessionManager?.forwards(),
     })
   })
 
