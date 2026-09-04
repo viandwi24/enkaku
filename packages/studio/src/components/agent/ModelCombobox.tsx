@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { Check, ChevronsUpDown } from 'lucide-react'
 import {
   Button,
+  CaretUpDownIcon,
+  CheckIcon,
   Command,
   CommandEmpty,
   CommandGroup,
@@ -64,7 +65,7 @@ export function ModelCombobox({
           className="h-8 justify-between gap-1 rounded-md border-none bg-transparent px-2 font-medium text-fg-muted shadow-none hover:bg-surface-2 hover:text-fg aria-expanded:bg-surface-2 aria-expanded:text-fg"
         >
           <span className="readout max-w-40 truncate">{value || 'Select a model'}</span>
-          <ChevronsUpDown className="size-3.5 shrink-0 opacity-60" aria-hidden />
+          <CaretUpDownIcon className="size-3.5 shrink-0 opacity-60" aria-hidden />
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72 p-0">
@@ -89,7 +90,7 @@ export function ModelCombobox({
                         setOpen(false)
                       }}
                     >
-                      <Check className={cn('size-3.5', id === value ? 'opacity-100' : 'opacity-0')} aria-hidden />
+                      <CheckIcon className={cn('size-3.5', id === value ? 'opacity-100' : 'opacity-0')} aria-hidden />
                       <span className="readout truncate">{id}</span>
                     </CommandItem>
                   ))}

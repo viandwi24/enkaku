@@ -1,5 +1,4 @@
-import { Bot } from 'lucide-react'
-import { cn } from '@enkaku/ui'
+import { RobotIcon, cn } from '@enkaku/ui'
 
 /**
  * An agent's identity, rendered small and consistently everywhere one
@@ -16,7 +15,7 @@ export function AgentAvatar({ name, colour, size = 'md' }: { name: string; colou
       style={{ backgroundColor: colour ?? 'var(--color-fg-subtle)' }}
       aria-hidden
     >
-      {initial || <Bot className="size-3" />}
+      {initial || <RobotIcon className="size-3" />}
     </span>
   )
 }

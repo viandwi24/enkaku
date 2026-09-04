@@ -1,8 +1,7 @@
 import Link from 'next/link'
-import { ChevronRight, SquareArrowOutUpRight } from 'lucide-react'
 import type { AgentTreeNode } from '@enkaku/protocol'
 import { AgentAvatar } from './AgentAvatar'
-import { Badge } from '@enkaku/ui'
+import { ArrowSquareOutIcon, Badge, CaretRightIcon } from '@enkaku/ui'
 
 function elapsedLabel(node: AgentTreeNode): string {
   if (!node.startedAt) return '—'
@@ -35,7 +34,7 @@ export function ChildRunCard({ node, agentColour, expanded, onToggle }: { node: 
     <div className="flex items-center gap-1 rounded-md border bg-surface pr-2 text-[12px]">
       <button type="button" onClick={onToggle} className="flex min-w-0 flex-1 items-center justify-between gap-2 px-2.5 py-1.5 text-left" aria-expanded={expanded}>
         <span className="flex min-w-0 items-center gap-1.5">
-          <ChevronRight className={`size-3 shrink-0 text-fg-subtle transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden />
+          <CaretRightIcon className={`size-3 shrink-0 text-fg-subtle transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden />
           <AgentAvatar name={node.agentName} colour={agentColour} size="sm" />
           <span className="truncate font-medium text-fg">{node.agentName}</span>
         </span>
@@ -52,7 +51,7 @@ export function ChildRunCard({ node, agentColour, expanded, onToggle }: { node: 
         aria-label={`Open ${node.agentName}'s full workbench`}
         title="Open in its own workbench tab"
       >
-        <SquareArrowOutUpRight className="size-3" aria-hidden />
+        <ArrowSquareOutIcon className="size-3" aria-hidden />
       </Link>
     </div>
   )

@@ -1,7 +1,6 @@
 "use client";
 
-import { Button, cn } from "@enkaku/ui";
-import { ArrowDownIcon } from "lucide-react";
+import { ArrowDownIcon, Button, cn } from "@enkaku/ui";
 import type { ComponentProps } from "react";
 import { useCallback } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";

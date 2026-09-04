@@ -104,3 +104,24 @@ export {
   PauseIcon,
   RobotIcon,
 } from '@phosphor-icons/react'
+
+/**
+ * Plan 220 (Agents page) — a further set the handoff draws no screen for
+ * (MVP 15 §2 lists Agents as undesigned). `RobotIcon`/`CopyIcon` above
+ * already cover the rail entry and the roster's Duplicate action; these
+ * cover the rest of the agent subsystem's lucide-react replacements
+ * (Roster, the Workbench, Files, the ai-elements composer/reasoning/
+ * conversation controls).
+ */
+export {
+  ArrowCounterClockwiseIcon,
+  ArrowDownIcon,
+  ArrowSquareOutIcon,
+  BrainIcon,
+  EyeSlashIcon,
+  FloppyDiskIcon,
+  ImageBrokenIcon,
+  PaperPlaneRightIcon,
+  PaperclipIcon,
+  RocketIcon,
+} from '@phosphor-icons/react'

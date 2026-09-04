@@ -10,23 +10,21 @@ import {
   InputGroupAddon,
   InputGroupButton,
   InputGroupTextarea,
+  PaperPlaneRightIcon,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
   Spinner,
+  SquareIcon,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
+  XIcon,
   cn,
 } from "@enkaku/ui";
 import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
-import {
-  CornerDownLeftIcon,
-  SquareIcon,
-  XIcon,
-} from "lucide-react";
 import { nanoid } from "nanoid";
 import type {
   ChangeEvent,
@@ -1005,7 +1003,7 @@ export const PromptInputSubmit = ({
 }: PromptInputSubmitProps) => {
   const isGenerating = status === "submitted" || status === "streaming";
 
-  let Icon = <CornerDownLeftIcon className="size-4" />;
+  let Icon = <PaperPlaneRightIcon className="size-4" />;
 
   if (status === "submitted") {
     Icon = <Spinner />;
