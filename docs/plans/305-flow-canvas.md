@@ -1,7 +1,7 @@
 # Plan 305 — Flow : The canvas becomes the editor of record
 
-> Status: draft
-> Ships: `packages/studio/src/components/flow/FlowEditor.tsx`
+> Status: implemented (software)
+> Ships: packages/studio/src/components/flow/FlowEditor.tsx
 > Depends on: plans 301, 303
 > Spec references: §13 (Studio); design system `docs/design.md`
 
@@ -14,11 +14,11 @@
 | G3 | Delete, duplicate, copy, paste, box-select and multi-drag all work | 6 gestures | owner smoke step 3 — **P4** | owner |
 | G4 | Undo and redo cover every structural edit, 50 deep | `cmd+z` / `cmd+shift+z`; the 51st edit drops the oldest | owner smoke step 4 — **P5** | owner |
 | G5 | Auto-arrange restores a readable layout and is one undo step | 1 button, 1 history entry | owner smoke step 5 — **P12** | owner |
-| G6 | The list editor is gone — one editor, not two | files deleted, no view toggle, no `workflowEditorView` pref | §10's greps all empty | [ ] |
-| G7 | Findings appear on the node they belong to, live, without a save | debounced `POST /api/workflows/validate`, ≤ 1 request per 400 ms | `rg -n "400" packages/studio/src/components/flow/useValidation.ts` finds the debounce constant; owner smoke step 6 | [ ] |
+| G6 | The list editor is gone — one editor, not two | files deleted, no view toggle, no `workflowEditorView` pref | §10's greps all empty | [x] |
+| G7 | Findings appear on the node they belong to, live, without a save | debounced `POST /api/workflows/validate`, ≤ 1 request per 400 ms | `rg -n "400" packages/studio/src/components/flow/useValidation.ts` finds the debounce constant; owner smoke step 6 | [x] mechanical half; owner smoke step 6 open |
 | G8 | Unreachable nodes and dangling edges are visibly marked, not hidden | dimmed node, dashed edge stub | owner smoke step 6 | owner |
-| G9 | `bun run typecheck` and `bun run build:studio` clean | 0 errors each | both exit 0 | [ ] |
-| G10 | No test file was added for Studio | 0 new `*.test.tsx` | `rg --files packages/studio -g '*.test.tsx'` → empty (plan 200 §8.3) | [ ] |
+| G9 | `bun run typecheck` and `bun run build:studio` clean | 0 errors each | both exit 0 | [x] |
+| G10 | No test file was added for Studio | 0 new `*.test.tsx` | `rg --files packages/studio -g '*.test.tsx'` → empty (plan 200 §8.3) | [x] |
 
 ## 1. Goals
 
@@ -279,4 +279,220 @@ the owner sitting:
 
 ## 11. Handoff report
 
-_To be written by the executing agent._
+- **Worktree branch**: `worktree-agent-abd9e6e13e6cad0d7`, cut (long before this
+  session) at `d96d2be` — 313 commits behind `mvp`'s tip, missing plans
+  301–303 entirely (v1 workflow doc, no `switch`/`delay`, no node registry).
+  This was discovered only after the first pass of implementation was
+  written against a stale `model.ts`; see "Discrepancies" below for the full
+  story and the merge that fixed it.
+
+- **Checklist**: G1 owner, G2 owner, G3 owner, G4 owner, G5 owner, G6 ✅
+  (mechanical, greps below), G7 ✅ mechanical half (the 400 ms debounce
+  constant and the `findingsByNodeIndex` wiring exist and typecheck; the
+  live-on-canvas half is owner smoke step 6), G8 owner, G9 ✅, G10 ✅.
+  **Six of the twelve parity rows this plan owns (P1, P2, P4, P5, P12, and
+  half of P6/G8's "visibly marked") can only be checked by a human at a
+  keyboard clicking, dragging and pressing keys in a real browser against a
+  running core — nothing in this session drove a browser, so every `owner`
+  row above is an honest gap, not a formality.**
+
+- **Commits** (branch `worktree-agent-abd9e6e13e6cad0d7`, in order):
+  - `91ff4e2` — `wip(flow-305)`: the initial `git mv` and a first `doc-edit.ts`,
+    written against the stale pre-301 base (later corrected).
+  - `c3dda44` — `merge(flow-305)`: merged `mvp`'s tip (313 commits, through
+    `feat(flow-303)`) into this branch and resolved the resulting
+    modify/delete conflicts on `NodeCard.tsx`/`WorkflowBuilder.tsx`/
+    `model.ts`/`derive-graph.ts`/`edges.ts`/`canvas-edit.ts`/
+    `GateOutcomeEditor.tsx` by deleting them, per plan intent.
+  - `63a48b2` — `feat(flow-305)`: `FlowEditor.tsx`, `FlowCanvas.tsx`,
+    `FlowNode.tsx`, `FlowEdge.tsx`, `NodePalette.tsx`, `doc-edit.ts`,
+    `useHistory.ts`, `useClipboard.ts`, `useValidation.ts`, `layout.ts`,
+    the updated `derive-graph.ts`/`edges.ts`/`canvas-edit.ts`, the
+    rewritten `/scripts/editor` page, `fetchNodeTypes` in `lib/api.ts`,
+    `prefs.ts`'s `workflowEditorView` removed. Typecheck clean end to end.
+  - `9e8bbb7` — `chore(flow-305)`: dropped a dead re-export left over from
+    an earlier draft of `useClipboard.ts`.
+  - This report and the `> Status:`/`Ships:` line corrections are the final
+    commit, made together with this file.
+
+- **Why the merge happened, in full** (the discrepancy that matters most):
+  the assigned worktree had been branched from `mvp` at `d96d2be`, well
+  before plans 301–303 landed. Every file this session read through the
+  `Read`/`Bash cat` tools against the **non-worktree** path
+  (`/Users/solpochi/Projects/oss/openpf/...`, without the
+  `.claude/worktrees/...` prefix) was silently served from the **main
+  checkout**, which was already at plan 303's tip — so the plan's own
+  citations (`workflow.ts`'s six kinds, `registry.ts`, `GET /api/node-types`)
+  all checked out correctly, but the actual worktree this session could
+  edit and commit in was 313 commits behind and had none of it. The first
+  implementation pass (the `91ff4e2` commit) was written and moved files
+  against that stale reality. Caught only when `git status`/`git log`
+  finally ran against the worktree's own git store (via `/usr/bin/git`,
+  which bypasses whatever wrapper was redirecting plain `git` commands) and
+  showed `schema: z.literal(1)` and no `registry.ts` in the files this
+  session had just edited. Fixed by committing the stale work as a `wip`
+  checkpoint, merging `mvp`'s tip in, and resolving the resulting
+  modify/delete conflicts by taking the deletions (all seven conflicted
+  files are ones this plan deletes anyway). Recorded at length because it
+  is exactly the class of failure plan 200 §8.5's round-gate process exists
+  to catch, and no round gate ran here — a single-plan worktree assigned
+  behind the tip is a gap that process does not cover.
+
+- **Discrepancies between plan and code**:
+  - **§4.1's file layout says `derive-graph.ts`, `edges.ts`, `canvas-edit.ts`
+    "stay" unchanged, "re-imported from the new directory."** In fact all
+    three imported `WorkflowDocDraft`/`WorkflowNodeDraft` from the deleted
+    `model.ts`, and none of them understood `switch`/`delay` (added by plan
+    303, after these files were last touched, and never backported to
+    Studio — 303 §2's own non-goals say the canvas is plan 305's job). All
+    three were rewritten to operate directly on `@enkaku/protocol`'s
+    `WorkflowDoc`/`WorkflowNode` and to cover all six node kinds
+    (`switch`'s `case:<i>`/`default` edges, `delay`'s `next`). Kept their
+    original names, their original doc-comment voice, and — for `edges.ts`
+    — every exported function's shape, so plan 306 can still reuse them
+    exactly as promised.
+  - **`GateOutcomeEditor.tsx` was not named in §4.1's "stays" list, and was
+    not named in §5/§10 as removed either.** It was `NodeCard.tsx`'s
+    only consumer; with `NodeCard.tsx` gone (§5 step 305.9) it had no
+    caller left, and its whole job (a `Select` translating "not wired
+    yet"/"jump to X") is now inline in `FlowEdge.tsx`'s label and
+    `edges.ts`'s `describeOutcome`. Deleted, on the same reasoning §10
+    applies to `NodeCard.tsx`/`BranchRail.tsx`.
+  - **`model.ts` was not named in §4.1's "stays" list either, but was also
+    not named in §10.** It is superseded by design: §3.3 makes the canvas a
+    projection of the real `WorkflowDoc`, not a looser "draft" type, so
+    `doc-edit.ts`'s `DocEdit` union operates on `@enkaku/protocol`'s own
+    types directly. `model.ts`'s few genuinely reusable pieces
+    (`freshNodeId`, `placeholderPredicate`, the slugify helper) moved into
+    `doc-edit.ts`, where the plan's own §4.2 already expected a reducer to
+    live. Deleted the rest (`WorkflowDocDraft`, `docToDraft`,
+    `toWorkflowDoc`, `emptyDraft`) as dead once nothing built a draft any
+    more.
+  - **§4.2's `DocEdit` union has no way to change the document's own
+    `name`/`title`/`description`/`maxSteps`/`params`.** Every other field is
+    reachable through `update-node` (a node) or the six other cases, but
+    none of them touch the document root. A `set-meta` variant was added —
+    documented in `doc-edit.ts`'s own comment as *not* part of the plan's
+    literal §4.2 block — because a workflow needs a name to be saved at all
+    and G4's "no `setDraft(` that builds a document by hand" criterion is
+    still met (it is the one extra case in the same, one, `applyDocEdit`
+    switch).
+  - **Icon names.** `FlowEditor.tsx`'s toolbar wanted a redo glyph and an
+    "arrange" glyph; `@enkaku/ui`'s icon allowlist (which this session was
+    told not to touch) has neither `ArrowClockwiseIcon` nor `MagicWandIcon`.
+    Substituted `ArrowsClockwiseIcon` (redo) and `SquaresFourIcon`
+    (Auto-arrange) — both already exported, both legible stand-ins, neither
+    a new dependency.
+  - **Pinned-node rendering (§4.4's "pinned (a pin glyph, plan 304 §3.3)")
+    is wired but structurally inert.** `FlowNode.tsx`'s data shape has no
+    `pinned` field because `WorkflowNode` (this worktree's merged-in
+    protocol, through plan 303) has no pin data at all — plan 304 owns that
+    field and, per the launch instructions, this session could not touch
+    `packages/protocol`. Nothing renders a pin badge; nothing claims to.
+
+- **Observed, not done**:
+  - The doc-level metadata form (`WorkflowMetaForm`) is a compact
+    Name/Title/Step-budget row plus a collapsible Description/Params
+    section — functional, but not designed against the handoff the way
+    plan 306's node panel will be. It exists only because §4.2's `DocEdit`
+    union needed a caller and the workflow needs a name.
+  - `NodeInspector` (the node panel's minimal content for this plan — plan
+    306 owns the real 3-pane data-flow panel) shows title, findings, and
+    kind-specific fields, reusing `ScriptPicker`/`ValueExprEditor`/
+    `PredicateEditor` exactly as §4.1 said those files would be for. It has
+    no input/output data panes (P6/P7/P8 are explicitly plan 306, §2's own
+    non-goal table).
+  - `switch`'s per-case `to`/`default` targets are editable only through the
+    canvas (drag a connection from a `case:<i>`/`default` handle) — the
+    panel edits a case's predicate and label but not its target directly,
+    since that is properly an edge, not a node field.
+  - The three-`Combobox`/`Command`-based palette caps results only by the
+    `CommandList`'s own `max-h-60` scroll container, not a hard slice to 5
+    — P3's "first 5 results" is satisfied by ranking (prefix matches sort
+    first) rather than by refusing to render a 6th; scrolling past 5 still
+    works, matching the design handoff's general "never hide, let it
+    scroll" instinct more than a literal 5-item cutoff. Flagged rather than
+    silently claimed as the letter of P3.
+
+- **Open questions hit**: none of §9's four questions blocked a step. Q1
+  (8 px grid snap) is implemented (`FlowCanvas.tsx`'s `snapToGrid`/
+  `snapGrid={[8, 8]}`). Q2 (sticky notes) — not built, as answered. Q3
+  (duplicate titles) — never refused; nothing in `doc-edit.ts` checks title
+  uniqueness. Q4 (minimap) — on by default, bottom-right (React Flow's own
+  default position), via `<MiniMap pannable zoomable ... />` in
+  `FlowCanvas.tsx`; a dedicated collapse control was not added (React Flow's
+  `MiniMap` has no such affordance out of the box, and building one was
+  judged out of this plan's scope).
+
+- **Typecheck**: clean. `bash scripts/typecheck.sh` → `OK` for all 21
+  workspace targets (protocol, expr, ui, adb, toolchain, drivers, scrcpy,
+  sdk, session, harness, core, node, studio, probe-server, networking,
+  proxy-manager, tiktok-automation-pack, mikrotik-routing,
+  google-automation-pack, youtube-automation-pack, examples).
+
+- **`bun run build:studio`**: refused — port 3001 was held by the
+  concurrently running Studio dev session named in the launch instructions
+  (confirmed with `lsof -nP -iTCP:3001 -sTCP:LISTEN`, PID belonging to that
+  session, never touched). Ran the underlying build directly instead, per
+  the launch instructions' own fallback: `bun run --cwd packages/studio
+  build`. It compiled successfully (22.8 s), typechecked, generated 20
+  static pages including `/scripts/editor`, and exported cleanly — no
+  errors, no warnings beyond Next's own informational "multiple lockfiles"
+  notice (pre-existing, unrelated to this plan). `packages/studio/out` and
+  `packages/studio/.next` were deleted immediately afterward; `git status`
+  confirms neither is tracked or left behind.
+
+- **Tests run**: none — plan 200 §8.3 and this plan's own G10 forbid a new
+  Studio test file, and no existing test survived under
+  `packages/studio/src/components/workflow/` to break (they were part of
+  §10's own deletion list, pre-existing on `mvp` from before this plan and
+  removed by the merge conflict resolution above, same as `NodeCard.tsx`
+  etc.). No backend package was touched, so no backend test was run.
+
+- **Removed, proven** (§10's four rows, run from the repo root):
+  ```
+  $ test ! -e packages/studio/src/components/workflow/NodeCard.tsx && test ! -e packages/studio/src/components/workflow/BranchRail.tsx && echo PASS
+  PASS
+
+  $ rg -n "'list' \| 'canvas'" packages/studio/src
+  (no output — empty)
+
+  $ rg -n "workflowEditorView" packages/studio/src
+  (no output — empty)
+
+  $ test ! -d packages/studio/src/components/workflow && echo PASS
+  PASS
+  ```
+
+- **§6 acceptance criteria, checked**:
+  ```
+  $ rg -n "nodesDraggable=\{false\}|draggable: false" packages/studio/src
+  (no output — empty)
+
+  $ rg -n "applyDocEdit" packages/studio/src/components/flow
+  packages/studio/src/components/flow/doc-edit.ts:5:... document goes through. `applyDocEdit(doc, edit)` is pure...
+  packages/studio/src/components/flow/doc-edit.ts:129:export function applyDocEdit(doc: WorkflowDoc, edit: DocEdit): WorkflowDoc {
+  packages/studio/src/components/flow/useHistory.ts:5:import { applyDocEdit, type DocEdit } from './doc-edit'
+  packages/studio/src/components/flow/useHistory.ts:44:        const next = applyDocEdit(current, edit)
+  packages/studio/src/components/flow/canvas-edit.ts:7:... EDIT is now `applyDocEdit(doc, { t: 'set-edge', ... })` ...
+  ```
+  `useHistory.ts`'s `dispatch` is the only call site that invokes
+  `applyDocEdit` outside `doc-edit.ts` itself; every mutation in
+  `FlowEditor.tsx`/`FlowCanvas.tsx`/`useClipboard.ts` goes through
+  `history.dispatch(...)`, never a hand-built document.
+
+- **`bash scripts/check-plan-status.sh`**: found the plan's own `Ships:`
+  line backtick-wrapped (`` `packages/studio/.../FlowEditor.tsx` ``), which
+  the script cannot resolve as a path — the exact defect plan 220's own
+  fix note (200 §8.5) describes. Un-backticked it; the script now reports
+  "every plan that declares an artefact agrees with the code" and exits 0.
+
+- **Processes**: nothing left running that this session started.
+  ```
+  $ ps -Ao pid=,command= | grep -i "[o]penpf"
+  (no output)
+  ```
+  (The concurrently running session's `scrcpy`/`next dev -p 3001` processes
+  observed earlier in this session had already exited on their own by the
+  time this final check ran; neither was started, stopped, or otherwise
+  touched here.)
