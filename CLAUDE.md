@@ -51,7 +51,7 @@ Tests run with `bun test`; `*.test.ts` files are colocated in `src/`, and anythi
 
 ### NEVER run a full test suite. Run only the tests for the files you changed.
 
-**This is a hard rule until plan 224 measures the backend suite under 60 s and retires it.** The owner runs the full suite manually at wave gates; an agent never does.
+**Measured by plan 224 at 140.66 s (root `bun test`, 5274 pass, 1 skip, 10 fail across 364 files) — still over the 60 s target, so this rule stays in force.** `packages/core` alone accounts for 91.19 s of it (234 of the 364 files); the other nine backend packages together cost about 50 s. The owner runs the full suite manually at wave gates; an agent never does.
 
 ```bash
 bun test packages/core/src/plugins/binding.test.ts          # yes — one file

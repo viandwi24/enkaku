@@ -122,7 +122,9 @@ import { createAuthRoutes } from './auth/routes'
 import { createAuthService } from './auth/service'
 import { createApiTokenService } from './auth/api-tokens'
 import { createTokenRoutes } from './api/tokens'
-import { createRetentionGc, type RetentionGc } from './maintenance/retention'
+import { createRetentionSweeper, type RetentionSweeper } from './retention/sweeper'
+import { createStorageRoutes } from './api/storage'
+import { createRunRetentionSweeper } from './jobs/runs/sweeper'
 import { createBlobGc, type BlobGc } from './agent/blob/gc'
 import { assertTlsPolicy, resolveAuthMode } from './config'
 import { createArtifactRoutes, MAX_REQUEST_BODY_BYTES } from './api/artifacts'
@@ -535,7 +537,7 @@ let alwaysOn: AlwaysOn | null = null
   let adbHealthMonitor: AdbServerHealthMonitor | null = null
   let remoteSessions: RemoteSessionManager | null = null
   let tunnelRpc: TunnelRpc | null = null
-  let retention: RetentionGc | null = null
+  let retention: RetentionSweeper | null = null
 let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
   /**
@@ -3176,6 +3178,7 @@ let blobGc: BlobGc | null = null
           transferEnabled: () => TRANSFER_ENABLED,
         }),
         settingsRoutes: createSettingsRoutes(settingsStore),
+        storageRoutes: createStorageRoutes(db),
         artifactRoutes: createArtifactRoutes({
           db,
           dataDir: cfg.dataDir,
@@ -3671,14 +3674,18 @@ let blobGc: BlobGc | null = null
         })
       }
 
-      // Artifact retention (spec §18) — the policy comes from farm settings.
-      retention = createRetentionGc({
+      // Retention sweep (MVP 09 §6, MVP 14 §5; plan 211's run/job interface plus
+      // events, traces, artifacts and audit) and the storage-usage cache it
+      // maintains for GET /api/storage/usage.
+      retention = createRetentionSweeper({
         db,
         dataDir: cfg.dataDir,
         settings: settingsStore,
+        runs,
+        createRunRetentionSweeper,
         log: log.child('retention'),
         intervalMinutes: cfg.retention.sweepIntervalMinutes,
-        onSwept: (r) => audit.record({ userId: null, action: 'retention.gc', meta: r }),
+        onSwept: (r) => audit.record({ userId: null, action: 'retention.sweep', meta: r }),
       })
       retention.start()
 

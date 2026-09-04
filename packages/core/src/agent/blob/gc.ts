@@ -8,7 +8,7 @@ import { BLOB_ORPHAN_GRACE_HOURS } from '../../config/constants'
 
 /**
  * Retention for `agent_blobs` (spec §18's "artifact retention and GC", the
- * shape `maintenance/retention.ts` already applies to `artifacts` and
+ * shape `retention/sweeper.ts` already applies to `artifacts` and
  * `device_events`) — the one case that policy could not just be reused for,
  * because a blob is content-addressed and shared across threads
  * (`agent/blob/store.ts`'s dedupe, `agent/thread/store.ts`'s `deleteThread`

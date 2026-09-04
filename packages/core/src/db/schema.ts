@@ -969,6 +969,23 @@ export const auditLog = sqliteTable(
 export type AuditRow = typeof auditLog.$inferSelect
 
 /**
+ * The Storage usage cache (plan 224, MVP 09 §6): one row per kind, recomputed
+ * once at boot and once every 24h by `retention/storage-usage.ts`, never on
+ * the API request path. `GET /api/storage/usage` reads this table and
+ * nothing else — a trace-directory byte count is the one figure here that
+ * needs a filesystem walk to produce, and that walk happens on the sweeper's
+ * own clock, not a client's.
+ */
+export const storageUsage = sqliteTable('storage_usage', {
+  kind: text('kind').primaryKey(), // 'jobsAndLogs' | 'traceFrames' | 'artifacts' | 'audit'
+  bytes: integer('bytes').notNull().default(0),
+  rows: integer('rows').notNull().default(0),
+  computedAt: integer('computed_at', { mode: 'timestamp' }).notNull(),
+})
+
+export type StorageUsageRow = typeof storageUsage.$inferSelect
+
+/**
  * One row per device event, `main` (lifecycle) or `input` (every injected
  * action) — plan 18 §3.1, §4.1. One table because the two streams share a
  * shape; only their retention budget differs (plan 18 §3.3).

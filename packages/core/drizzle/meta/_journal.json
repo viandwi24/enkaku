@@ -505,6 +505,13 @@
       "when": 1788511237386,
       "tag": "0071_thick_thunderbolt_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "6",
+      "when": 1788517892694,
+      "tag": "0072_dapper_kulan_gath",
+      "breakpoints": true
     }
   ]
 }
