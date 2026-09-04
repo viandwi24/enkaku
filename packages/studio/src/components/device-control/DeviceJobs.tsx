@@ -5,6 +5,7 @@ import Link from 'next/link'
 import type { JobInfo } from '@enkaku/protocol'
 import { api, Badge, Button, CaretLeftIcon, Progress, StatusDot, type StatusDotState } from '@enkaku/ui'
 import { JobResponseSchema, JobsPageResponseSchema, JobCancelResponseSchema, JobLogsResponseSchema } from '@enkaku/protocol'
+import { jobHref } from '@/components/jobs/job-view'
 import { runAction } from '@/lib/actions'
 import { ws } from '@/lib/ws'
 
@@ -12,14 +13,12 @@ import { ws } from '@/lib/ws'
  * The Device tab's Jobs section (design handoff README.md:281-283; plan 215
  * §4.12). Unfiltered — "that belongs on the Jobs page".
  *
- * **Discrepancy from the plan**: the plan assumed plan 211's job/run split
- * (a job with many runs, "Re-run adds a run") had already landed. It has
- * not — plan 211 is a sibling of this plan in round R5 and had not merged
- * at the time this plan executed. Against the CURRENT one-job-one-run
- * model, Stop/Cancel is `POST /api/jobs/:id/cancel` (unchanged) and Re-run
- * creates a NEW job with the same script and params (the closest existing
- * equivalent to "add a run"); when plan 211 lands, this file's Re-run
- * handler is the one call site to revisit.
+ * **Discrepancy from the plan, now closed**: plan 215's own note said its
+ * Re-run handler would need revisiting once plan 211's job/run split landed
+ * ("Re-run creates a NEW job ... when plan 211 lands, this file's Re-run
+ * handler is the one call site to revisit"). It has landed — Re-run now
+ * posts `jobId`, which adds a run to THIS job rather than creating a new one
+ * (plan 211 §4.8, plan 218's prompt). Stop/Cancel is unchanged.
  */
 
 function dotFor(status: JobInfo['status']): StatusDotState {
@@ -103,8 +102,10 @@ function JobDetail({ jobId, onBack, onChanged }: { jobId: string; onBack: () => 
     if (!job) return
     setBusy(true)
     try {
-      if (job.scriptId) {
-        await runAction('run-script', { deviceIds: [job.deviceId] }, { scriptId: job.scriptId, concurrency: 0, order: 'as-listed' })
+      if (job.kind === 'workflow') {
+        await runAction('run-workflow', { deviceIds: [job.deviceId] }, { workflowName: job.scriptName ?? '', jobId: job.jobId })
+      } else {
+        await runAction('run-script', { deviceIds: [job.deviceId] }, { jobId: job.jobId })
       }
       onChanged()
     } finally {
@@ -158,7 +159,7 @@ function JobDetail({ jobId, onBack, onChanged }: { jobId: string; onBack: () => 
           Logs
         </Button>
         <Button size="sm" variant="ghost" asChild>
-          <Link href={`/jobs/detail?id=${job.jobId}`}>Open full detail</Link>
+          <Link href={jobHref(job.jobId)}>Open full detail</Link>
         </Button>
       </div>
       {logs && (

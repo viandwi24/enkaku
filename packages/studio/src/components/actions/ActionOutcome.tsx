@@ -2,6 +2,7 @@ import Link from 'next/link'
 import type { ActionResult, DeviceInfo } from '@enkaku/protocol'
 import { Badge, DeviceName, StatusDot, coreBase } from '@enkaku/ui'
 import { dotStateOf } from '@/components/devices/device-state'
+import { jobHref } from '@/components/jobs/job-view'
 import { groupResults } from '@/lib/actions'
 
 const MAX_ROWS = 50
@@ -52,7 +53,7 @@ export function ActionOutcome({ results, devices, className }: { results: readon
                   {device ? <DeviceName number={device.number} label={device.label} /> : <span>{result.deviceId}</span>}
                   <Badge variant={STATUS_VARIANT[result.status]}>{result.status}</Badge>
                   {result.jobId && (
-                    <Link href={`/jobs/detail?id=${result.jobId}`} className="text-tip text-accent hover:underline">
+                    <Link href={jobHref(result.jobId)} className="text-tip text-accent hover:underline">
                       job
                     </Link>
                   )}

@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
 import { DeviceEventsResponseSchema, type DeviceEvent } from '@enkaku/protocol'
 import { api, relativeTime, EmptyState, ErrorState, LoadingRows, cn } from '@enkaku/ui'
+import { jobHref } from '@/components/jobs/job-view'
 import { ws, coreBase } from '@/lib/ws'
 import { useNow } from '@/lib/useNow'
 
@@ -63,12 +65,9 @@ function CrashRow({ ev, now }: { ev: DeviceEvent; now: number }) {
           <span className="readout shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-subtle">system</span>
         )}
         {meta.jobId && (
-          <a
-            href={`/jobs/detail?id=${encodeURIComponent(meta.jobId)}`}
-            className="readout shrink-0 text-[11px] text-accent hover:underline"
-          >
+          <Link href={jobHref(meta.jobId)} className="readout shrink-0 text-[11px] text-accent hover:underline">
             job {meta.jobId.slice(0, 8)}
-          </a>
+          </Link>
         )}
         <button
           type="button"

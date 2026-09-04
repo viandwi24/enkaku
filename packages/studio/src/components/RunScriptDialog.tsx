@@ -12,6 +12,7 @@ import {
   type RuntimeEnvelope,
 } from '@enkaku/protocol'
 import { ParamSetPicker } from '@/components/ParamSetPicker'
+import { batchHref, jobHref } from '@/components/jobs/job-view'
 import { RuntimeOverrideSection } from '@/components/schema-form/RuntimeOverrideSection'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
@@ -740,8 +741,8 @@ export function RunScriptDialog({
             return
           }
           // A batch of one navigates straight to the job, as before (plan 207 §4.9).
-          if (result.jobId) router.push(`/jobs/detail?id=${result.jobId}`)
-          else if (result.batchId) router.push(`/batches/detail?id=${result.batchId}`)
+          if (result.jobId) router.push(jobHref(result.jobId))
+          else if (result.batchId) router.push(batchHref(result.batchId))
         },
       },
     )

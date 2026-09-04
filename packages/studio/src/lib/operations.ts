@@ -12,6 +12,7 @@ import {
   type TransferRecord,
 } from '@enkaku/protocol'
 import { api, formatDeviceName } from '@enkaku/ui'
+import { batchHref, jobHref } from '@/components/jobs/job-view'
 import { fetchDevices } from './api'
 import { ws } from './ws'
 
@@ -359,7 +360,7 @@ function toBatchOperation(b: BatchInfo, jobs: readonly JobInfo[]): Operation {
     terminal,
     succeeded: terminal ? b.status === 'success' : null,
     counts: { ok: b.counts.success, failed: b.counts.failed, skipped: b.skipped.length, total: b.counts.total + b.skipped.length },
-    href: `/batches/detail?id=${b.id}`,
+    href: batchHref(b.id),
     actionScriptId: b.scriptId,
   }
 }
@@ -377,7 +378,7 @@ function toJobOperation(j: JobInfo): Operation {
     finishedAt: j.finishedAt,
     terminal,
     succeeded: terminal ? j.status === 'success' : null,
-    href: `/jobs/detail?id=${j.jobId}`,
+    href: jobHref(j.jobId),
     actionScriptId: null,
   }
 }

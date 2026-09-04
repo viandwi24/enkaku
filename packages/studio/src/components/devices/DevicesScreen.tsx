@@ -124,6 +124,22 @@ export function DevicesScreen() {
     },
   })
 
+  // Plan 218 §4.14 — the Jobs screen's "Open device" button links here with
+  // `?device=<id>`. Consumed once and stripped, so a reload or a Back does
+  // not reopen a window the operator has closed, and the address never
+  // becomes a second, competing source of truth for which device is
+  // focused.
+  useEffect(() => {
+    const id = params.get('device')
+    if (!id) return
+    setFocusId(id)
+    const next = new URLSearchParams(params.toString())
+    next.set('focus', id)
+    next.delete('device')
+    router.replace(`/?${next.toString()}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const pendingCount = discovered.length
 
   const target: Target = { deviceIds: [...selection.selected] }

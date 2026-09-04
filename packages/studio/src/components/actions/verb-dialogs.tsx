@@ -15,6 +15,7 @@ import {
   SelectValue,
   api,
 } from '@enkaku/ui'
+import { jobHref } from '@/components/jobs/job-view'
 import { ArtifactPicker, uploadArtifactSource, type ArtifactSource } from '@/components/ArtifactPicker'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
@@ -241,7 +242,7 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
   toParams: async (v) => ({ scriptId: v.scriptId, params: v.params, concurrency: v.concurrency, order: v.order }),
   onDone: (res) => {
     if (res.results.length === 1 && res.results[0]?.jobId) {
-      window.location.assign(`/jobs/detail?id=${res.results[0].jobId}`)
+      window.location.assign(jobHref(res.results[0].jobId))
     }
   },
 }
