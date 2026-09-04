@@ -98,6 +98,28 @@ function makeHarness(opts: {
     labelClear: async () => ({ restored: 'system-default', fingerprint: null }),
     textCommit: async () => ({ committed: 0, ime: 'not-current' }),
     textStatus: async () => ({ ime: 'disabled', id: 'dev.enkaku.guestagent/.input.EnkakuIme', connected: false }),
+    // Not exercised by this file's tests — stubs to satisfy the widened `GuestAgentClient`
+    // interface (plan 221 §4.11's `ui-tree`/`activity` capabilities).
+    uiDump: async () => ({
+      root: { resourceId: '', text: '', desc: '', className: 'hierarchy', packageName: '', bounds: { left: 0, top: 0, right: 0, bottom: 0 }, clickable: false, enabled: true, focused: false, index: 0, children: [] },
+      widthPx: 0,
+      heightPx: 0,
+      nodeCount: 0,
+      truncated: false,
+      tookMs: 0,
+    }),
+    uiFind: async () => ({ node: null, matches: 0, tookMs: 0 }),
+    activitySet: async () => ({ accepted: 0 }),
+    deviceDescribe: async () => ({ accepted: true as const }),
+    textPrefs: async () => ({ showSoftKeyboardWithHardware: false }),
+    uiStatus: async () => ({
+      enabled: false,
+      connected: false,
+      watching: false,
+      lastDumpAgoMs: null,
+      lastDumpNodes: null,
+      lastError: null,
+    }),
   }
 
   const log = createLogger('test')

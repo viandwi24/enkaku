@@ -189,6 +189,7 @@ export function makeRouteHarness(opts: RouteHarnessOptions = {}): RouteHarness {
     ensureInstalled: async () => ({ versionCode: null }),
     ensurePreGranted: async () => ({ state: 'granted', reason: null }),
     vpnConsent: async () => ({ state: 'granted', reason: null }),
+    ensureAccessibilityEnabled: async () => ({ state: 'enabled', reason: null }),
     bootstrap: async () => {},
     forward: async () => {},
     removeForward: async () => {},
