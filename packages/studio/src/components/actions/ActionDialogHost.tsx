@@ -9,6 +9,8 @@ import type { TargetContext } from '@/components/target/useTarget'
 import { ActionDialog } from './ActionDialog'
 import { VERB_DIALOGS, type ActionDialogVerb } from './verb-dialogs'
 
+export type { ActionDialogVerb } from './verb-dialogs'
+
 interface OpenRequest {
   verb: ActionDialogVerb
   ctx: TargetContext

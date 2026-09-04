@@ -555,7 +555,37 @@ const setNetwork: VerbDialogSpec<SetNetworkValue> = {
   toParams: async (v) => ({ op: v.op }),
 }
 
-export const VERB_DIALOGS = {
+/**
+ * The fifteen verb keys, named explicitly rather than derived with
+ * `keyof typeof VERB_DIALOGS`: the registry below is typed
+ * `Record<ActionDialogVerb, VerbDialogSpec<any>>` (not `<never>`) because
+ * each entry's `initial` field is real data (covariant) while
+ * `canSubmit`/`toParams`/`Fields` take `P` as a parameter (contravariant) —
+ * no single non-`any` type satisfies both directions at once for a
+ * heterogeneous map like this one, and `any` is what already lets
+ * `runAction`'s own `params as never` cast (in `ActionDialog.tsx`) stay the
+ * ONLY cast this file needs. Deriving the key union from `typeof` on an
+ * object whose values are all widened to `any` would just as sily produce
+ * `string`, which is why the union is written out instead.
+ */
+export type ActionDialogVerb =
+  | 'reconnect'
+  | 'disconnect'
+  | 'install'
+  | 'adb'
+  | 'run-script'
+  | 'screenshot'
+  | 'sleep'
+  | 'set-group'
+  | 'push'
+  | 'clear-cache'
+  | 'settings'
+  | 'forget'
+  | 'prepare'
+  | 'set-label'
+  | 'set-network'
+
+export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   reconnect,
   disconnect,
   install,
@@ -571,12 +601,4 @@ export const VERB_DIALOGS = {
   prepare,
   'set-label': setLabel,
   'set-network': setNetwork,
-  // `VerbDialogSpec<any>`, not `<never>`: each entry's `initial` field is
-  // real data (covariant), while `canSubmit`/`toParams`/`Fields` take `P`
-  // as a parameter (contravariant) — no single non-`any` type satisfies
-  // both directions at once for a heterogeneous map like this one, and `any`
-  // is what already lets `runAction`'s own `params as never` cast (in
-  // `ActionDialog.tsx`) stay the ONLY cast this file needs.
-} satisfies Record<string, VerbDialogSpec<any>>
-
-export type ActionDialogVerb = keyof typeof VERB_DIALOGS
+}

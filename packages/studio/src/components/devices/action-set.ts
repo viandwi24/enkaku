@@ -16,10 +16,10 @@ import {
   UploadSimpleIcon,
   type Icon,
 } from '@enkaku/ui'
-import type { ActionVerb } from '@enkaku/protocol'
+import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
 
 export interface ActionSetItem {
-  verb: ActionVerb
+  verb: ActionDialogVerb
   label: string
   icon: Icon
   /** `Forget` only: rendered in `var(--danger)` (design handoff). */

@@ -297,7 +297,7 @@ function ScriptDetail() {
  * does every bit of resolving and labelling; this component only walks its
  * `rows` output.
  */
-function RuntimeCard({ farm, scriptRuntime }: { farm: JobSettings; scriptRuntime: ScriptRow['runtime'] }) {
+function RuntimeCard({ farm, scriptRuntime }: { farm: JobSettings; scriptRuntime: ScriptDetailRow['runtime'] }) {
   const { rows } = computeRuntimeReadout(farm, scriptRuntime ?? null)
   return (
     <div className="rounded-lg border bg-surface p-4">
