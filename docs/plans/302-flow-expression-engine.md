@@ -381,12 +381,7 @@ finished the plan and flips `> Status:` to `implemented`.
 
 - **Open questions hit**: none of plan 302 §9's four questions blocked 302.7/302.8. Q2 ($input's definition) is answered exactly as §9 already answers it — see the design-decision note above for how that answer was actually wired given §4.7's code block omits `$input` entirely.
 
-- **Processes**: no process was started by this session that is still running.
-
-  ```
-  $ ps -Ao pid=,command= | grep -i "[o]penpf"
-  (no output)
-  ```
+- **Processes**: no process was started by this session that is still running. A `ps` check taken at the very end of the LAUNCH (after plan 303 was also finished, in the same worktree/session) shows two `openpf`-matching processes, both under the MAIN checkout path (`/Users/solpochi/Projects/oss/openpf/...`), not this worktree — a `scrcpy` server and a `next dev` on `:3001` — belonging to the concurrently running session the launch instructions named. Neither was started, stopped, or otherwise touched here; see plan 303 §11 for the literal output.
 
 ### First pass — 302.1–302.6, 302.9 (prior session, preserved verbatim)
 
