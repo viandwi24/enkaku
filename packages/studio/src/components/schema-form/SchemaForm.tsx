@@ -308,6 +308,7 @@ function Field({
     path,
     label: field.label,
     help: field.help,
+    hint: field.hint,
     error: errors[path],
     value,
     required: field.required,

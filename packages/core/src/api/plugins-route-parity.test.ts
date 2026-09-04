@@ -78,10 +78,7 @@ const PLUGIN_HTTP_REASON =
  * would believe it. An entry here is an admission with an owner attached, and
  * the test below refuses one that names no plan.
  */
-const UNREACHABLE_PENDING: Record<string, string> = {
-  'GET /dev':
-    'The dev-slot list lost its last caller when plan 215 deleted `app/device/`, and the Scripts screen plan 217 rebuilt does not merge dev slots back in. Unpublished dev builds of a plugin are therefore invisible in Studio today. Owner: plan 219 (Plugins page), which is where a dev slot belongs — `DELETE /dev/:name` is already driven from there.',
-}
+const UNREACHABLE_PENDING: Record<string, string> = {}
 
 const NOT_IN_STUDIO_BY_DESIGN: Record<string, string> = {
   ...Object.fromEntries(PLUGIN_HTTP_METHODS.map((method) => [`${method} /:name/http/:path{.+}`, PLUGIN_HTTP_REASON])),

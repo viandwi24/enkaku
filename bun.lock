@@ -224,9 +224,18 @@
         "zod": "^4.0.0",
       },
     },
+    "plugins/instagram-automation-pack": {
+      "name": "@enkaku/plugin-instagram",
+      "version": "0.1.1",
+      "dependencies": {
+        "@enkaku/protocol": "workspace:*",
+        "@enkaku/sdk": "workspace:*",
+        "zod": "^4.0.0",
+      },
+    },
     "plugins/mikrotik-routing": {
       "name": "@enkaku/plugin-mikrotik-routing",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -249,7 +258,7 @@
     },
     "plugins/proxy-manager": {
       "name": "@enkaku/plugin-proxy-manager",
-      "version": "0.11.1",
+      "version": "0.11.2",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -267,7 +276,7 @@
     },
     "plugins/tiktok-automation-pack": {
       "name": "@enkaku/plugin-tiktok",
-      "version": "1.15.0",
+      "version": "1.16.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -276,7 +285,7 @@
     },
     "plugins/youtube-automation-pack": {
       "name": "@enkaku/plugin-youtube",
-      "version": "0.9.0",
+      "version": "0.10.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -324,6 +333,8 @@
     "@enkaku/node": ["@enkaku/node@workspace:packages/node"],
 
     "@enkaku/plugin-google": ["@enkaku/plugin-google@workspace:plugins/google-automation-pack"],
+
+    "@enkaku/plugin-instagram": ["@enkaku/plugin-instagram@workspace:plugins/instagram-automation-pack"],
 
     "@enkaku/plugin-mikrotik-routing": ["@enkaku/plugin-mikrotik-routing@workspace:plugins/mikrotik-routing"],
 

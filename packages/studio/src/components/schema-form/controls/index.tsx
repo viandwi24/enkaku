@@ -32,6 +32,23 @@ import type { BaseControlProps } from './types'
  * never a blank cell.
  */
 export function renderControl(plan: FieldPlan, props: BaseControlProps) {
+  const control = renderControlInner(plan, props)
+  // plan 219 §4.9 — the ONE seam every leaf control's output passes through,
+  // so a `hint` (plan 212 §4.2's vocabulary key) is rendered once here rather
+  // than in each of nine control files. A bare-mode control (a list/table
+  // item row) never carries a `hint` in the first place — `plan.ts` only sets
+  // it from a leaf's own `x-enkaku.hint`, never inherited into a row's plan —
+  // so no extra bare-mode exclusion is needed here.
+  if (!props.hint) return control
+  return (
+    <div className="space-y-1">
+      {control}
+      <p className="text-[11.5px] text-fg-muted">{props.hint}</p>
+    </div>
+  )
+}
+
+function renderControlInner(plan: FieldPlan, props: BaseControlProps) {
   switch (plan.control) {
     case 'toggle':
       return <ToggleControl {...props} />

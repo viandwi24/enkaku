@@ -12,6 +12,8 @@ export interface BaseControlProps {
   path: string
   label: string
   help?: string
+  /** plan 212 §4.2's `hint` vocabulary key — an advanced field's "raise or lower if" sentence, distinct from `help` (its description). Rendered BELOW the control, 11.5px faint (handoff, "Text field... an 11.5px `var(--faint)` hint below"). */
+  hint?: string
   error?: string
   value: unknown
   /**
