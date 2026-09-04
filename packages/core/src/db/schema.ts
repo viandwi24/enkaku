@@ -1158,7 +1158,7 @@ export const scheduleAgentTargets = sqliteTable(
     threadId: text('thread_id'),
     /** Plan 68 §3.5 — 'deny' (default) or 'pause'. */
     onApprovalRequired: text('on_approval_required').notNull().default('deny'),
-    /** The most recent agent run this schedule started, for overlap tracking (parallels `schedules.lastBatchId` for the script branch). */
+    /** The most recent agent run this schedule started, for overlap tracking (parallels `schedules.batchId` for the script branch). */
     lastAgentRunId: text('last_agent_run_id'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   },

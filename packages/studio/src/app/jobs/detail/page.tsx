@@ -66,13 +66,14 @@ import { coreBase, ws } from '@/lib/ws'
 const PHASES = ['reset', 'prepare', 'run', 'finish'] as const
 
 /**
- * `job_nodes.verdict` (plan 99 §3.7, §4.4, §4.9) — a gate's `PredicateTrace`,
- * typed `unknown` on the wire (`JobNodeInfoSchema.output.verdict`) because
- * `@enkaku/protocol` never declares a Zod schema for it (`workflow-resolve.ts`
- * exports the TYPE only, produced by `evaluatePredicate`, never parsed from
- * external input on that side). Parsed HERE, defensively, rather than
- * `as`-cast — the repo rule for anything crossing the wire (`CLAUDE.md`).
- * Recursive to match `all`/`any`/`not` nesting; a leaf has no `children`.
+ * `workflow_steps.verdict` (plan 99 §3.7, §4.4, §4.9; re-keyed from
+ * `job_nodes` by plan 211) — a gate's `PredicateTrace`, typed `unknown` on
+ * the wire (`WorkflowStepInfoSchema.verdict`) because `@enkaku/protocol`
+ * never declares a Zod schema for it (`workflow-resolve.ts` exports the
+ * TYPE only, produced by `evaluatePredicate`, never parsed from external
+ * input on that side). Parsed HERE, defensively, rather than `as`-cast —
+ * the repo rule for anything crossing the wire (`CLAUDE.md`). Recursive to
+ * match `all`/`any`/`not` nesting; a leaf has no `children`.
  */
 const PredicateTraceSchema: z.ZodType<{
   op: string
