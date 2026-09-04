@@ -136,6 +136,7 @@ import { backfillScheduleTargets } from './db/migrations/schedule-target-backfil
 import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
 import { parkSyntheticRecordingsOwner } from './db/migrations/park-synthetic-recordings'
 import { migrateWorkflowsFromScripts } from './db/migrations/workflows-from-scripts'
+import { migrateJobsToRuns } from './db/migrations/jobs-to-runs'
 import { devices, plugins } from './db/schema'
 import { createReverseRegistry, parseDevicePortRange, parseReverseList, removeReverse } from './network/reverse-registry'
 import { createDeviceStateMachine } from './device/state-machine'
@@ -165,6 +166,9 @@ import { createOperationRegistry } from './actions/operations'
 import type { ActionsDeps } from './actions/run'
 import { createActionRoutes } from './api/actions'
 import { createJobStore } from './queue/job-store'
+import { createRunStore } from './jobs/runs/store'
+import { createRunWatcher } from './jobs/runs/watcher'
+import { createWorkflowOrchestrator } from './jobs/executors/workflow'
 import { createExpiryReaper } from './queue/expiry'
 import { createScheduler } from './queue/scheduler'
 import { createScheduleRunner } from './schedules/runner'
@@ -183,7 +187,7 @@ import type { TransportSnapshot } from './server/transport-metrics'
 import { createJobService } from './services/job-service'
 import { startScrcpySession, sweepStrayScrcpyServers } from '@enkaku/scrcpy'
 import { createDbArtifactSink, createDbDeviceSource } from './session/adapters'
-import { saveForDevice, createJobNodeTracker } from './runner/artifact-store'
+import { saveForDevice } from './runner/artifact-store'
 import { materializeBundle } from './scripts/bundle-cache'
 import { createAdbSwapCoordinator } from './tools/adb-swap'
 import { createAdbServerControl, type AdbServerControl } from './tools/adb-server-control'
@@ -495,8 +499,14 @@ let blobGc: BlobGc | null = null
       // unowned-row warning already sees the result.
       parkSyntheticRecordingsOwner(opened.db, { log: log.child('park-synthetic-recordings') })
       migrateWorkflowsFromScripts(opened.db, { log: log.child('workflows-from-scripts') })
+      migrateJobsToRuns(opened.db, { log: log.child('jobs-to-runs'), dataDir: cfg.dataDir })
       log.info('db ready (migrations applied)')
       const db = opened.db
+      // A job is an intent; a run is an execution (MVP 14 §1, plan 211).
+      // Constructed early — several closures below (crash trace saving) need
+      // it before the queue/scheduler section that used to be its only home.
+      const runs = createRunStore(db)
+      const runWatcher = createRunWatcher({ getRun: (runId) => runs.getRun(runId) })
 
       // 2. WS hub + Toolchain Manager (emit → broadcast)
       const hub = new WsHub(log.child('ws'))
@@ -1013,7 +1023,10 @@ let blobGc: BlobGc | null = null
       // handed.
       traceRecorder = createTraceRecorder({
         db,
-        publish: (jobId, event) => hub.broadcast({ type: 'job.trace', payload: { jobId, event } }),
+        publish: (runId, event) => {
+          const jobId = runs.getRun(runId)?.jobId ?? runId
+          hub.broadcast({ type: 'job.trace', payload: { jobId, runId, event } })
+        },
       })
       // `<dataDir>/traces/<jobId>/` — one directory per job, one lifetime
       // (§3.5). Passed BOTH into the local runner (as `traceStore`, the only
@@ -1088,13 +1101,16 @@ let blobGc: BlobGc | null = null
       // `saveForDevice` (plan 24 §4.6) otherwise.
       const saveCrashTrace = async (opts: { deviceId: string; jobId: string | null; label: string; text: string }): Promise<ArtifactInfo> => {
         const data = new TextEncoder().encode(opts.text)
-        if (opts.jobId) {
+        // A crash trace is job-scoped only while that job has a RUNNING run
+        // (plan 211): the run is what the artifact is actually keyed by now.
+        const runId = opts.jobId ? runs.latestRun(opts.jobId)?.id ?? null : null
+        if (opts.jobId && runId) {
           const jobId = opts.jobId
           let saved: ArtifactInfo | undefined
           const sink = createDbArtifactSink({
             db,
             dataDir: cfg.dataDir,
-            jobId,
+            runId,
             // Plan 115 §3.6 — this path only ever saves `kind: 'log'` (the
             // crash trace, above), so the cap never actually fires here; kept
             // in step with every other `createDbArtifactSink` call for the
@@ -1102,7 +1118,7 @@ let blobGc: BlobGc | null = null
             maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
             onSaved: (info) => {
               saved = info
-              hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } })
+              hub.broadcast({ type: 'job.artifact', payload: { jobId, runId, artifact: info } })
             },
           })
           await sink.save({ kind: 'log', label: opts.label, data, ext: 'txt' })
@@ -1386,10 +1402,23 @@ let blobGc: BlobGc | null = null
       // the ONE hook into the pacer (F32) — see `onBatchChanged`'s own
       // `ExecutorHostDeps` comment for exactly which callers pass it.
       const onBatchChanged = (batchId: string, deviceId?: string) =>
-        recomputeBatchStatus({ db, jobStore, broadcast: (msg) => hub.broadcast(msg), pacer: pacerRef ?? undefined }, batchId, deviceId)
+        recomputeBatchStatus({ db, jobStore, runs, broadcast: (msg) => hub.broadcast(msg), pacer: pacerRef ?? undefined }, batchId, deviceId)
       const host = createExecutorHost({
         registry: executors,
+        workflowExecutor: () =>
+          createWorkflowOrchestrator({
+            db,
+            runs,
+            watcher: runWatcher,
+            registry: scriptRegistry,
+            enqueueStep: (input) => jobService.enqueueStep(input),
+            cancelRun: (runId) => jobService.cancelRun(runId),
+            settings: () => settingsStore.get().workflow,
+            log: log.child('workflow'),
+          }),
         jobStore,
+        runs,
+        watcher: runWatcher,
         activities: () => activities,
         log: log.child('executor'),
         jobTtlSec: cfg.heartbeat.jobTtlSec,
@@ -1458,7 +1487,7 @@ let blobGc: BlobGc | null = null
         // the one-warn-per-job rule before ever calling this. No DB write
         // anywhere on this path (§3.7 — progress is live state, not
         // history).
-        onProgress: (jobId, deviceId, value) => hub.broadcast({ type: 'job.progress', payload: { jobId, deviceId, value } }),
+        onProgress: (jobId, runId, deviceId, value) => hub.broadcast({ type: 'job.progress', payload: { jobId, runId, deviceId, value } }),
       })
 
       // Resolves an actor id to a display label (plan 71 §3.3, kept and
@@ -1483,6 +1512,7 @@ let blobGc: BlobGc | null = null
         }
         const job = jobStore.get(id)
         if (!job) return 'a deleted job'
+        if (!job.scriptId) return job.workflowName ? `${job.workflowName} (workflow)` : 'a job'
         const script = jobStore.scriptNames([job.scriptId]).get(job.scriptId)
         return script ? `${script.name}@${script.version}` : 'a job'
       }
@@ -1807,6 +1837,7 @@ let blobGc: BlobGc | null = null
 
       scheduler = createScheduler({
         jobStore,
+        runs,
         host,
         log: log.child('scheduler'),
         jobTtlSec: cfg.heartbeat.jobTtlSec,
@@ -1839,11 +1870,12 @@ let blobGc: BlobGc | null = null
       // Plan 94 §3.8, §4.8, step 94.7 — needs `scheduler.kick`, so built
       // right after it, same as `host` above needs it. Populates the
       // forward-ref `pacerRef` `onBatchChanged` (above) already closes over.
-      const pacer = createBatchPacer({ db, scheduler, log: log.child('pacer') })
+      const pacer = createBatchPacer({ db, runs, scheduler, log: log.child('pacer') })
       pacerRef = pacer
 
       const jobService = createJobService({
         jobStore,
+        runs,
         registry: executors,
         scheduler,
         host,
@@ -1909,6 +1941,7 @@ let blobGc: BlobGc | null = null
       scheduleRunner = createScheduleRunner({
         db,
         jobStore,
+        runs,
         scheduler,
         audit,
         log: log.child('schedule'),
@@ -1950,6 +1983,10 @@ let blobGc: BlobGc | null = null
         router: tunnelRouter,
         log: log.child('remote-job'),
         hooks: {
+          // A node-owned job's execution has no local `job_runs` row of its
+          // own on THIS core (the node holds it) — `jobId` stands in for the
+          // run id on this bridge's wire messages, the same simplification
+          // this bridge has always made for a remote execution's identity.
           onLog: (jobId, entry) => {
             // A node-owned job takes the same path: retained for a mid-run
             // fetch, then broadcast. See the local runner's own note below.
@@ -1960,17 +1997,18 @@ let blobGc: BlobGc | null = null
               type: 'job.log',
               payload: {
                 jobId,
+                runId: jobId,
                 ts: entry.ts,
                 level,
                 source,
                 msg: entry.msg,
               },
             })
-            traceRecorder?.record({ jobId, kind: 'log', name: level, meta: { source, msg: entry.msg } })
+            traceRecorder?.record({ runId: jobId, kind: 'log', name: level, meta: { source, msg: entry.msg } })
           },
           onArtifact: (jobId, artifact) => {
-            hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact } })
-            traceRecorder?.record({ jobId, kind: 'artifact', name: artifact.kind, meta: { label: artifact.label, sizeBytes: artifact.sizeBytes } })
+            hub.broadcast({ type: 'job.artifact', payload: { jobId, runId: jobId, artifact } })
+            traceRecorder?.record({ runId: jobId, kind: 'artifact', name: artifact.kind, meta: { label: artifact.label, sizeBytes: artifact.sizeBytes } })
           },
           onPhase: (jobId, attempt, phase) => {
             const info = jobService.get(jobId)
@@ -1983,7 +2021,7 @@ let blobGc: BlobGc | null = null
             // not. Discovered by step 128.5b's worker: §2 CLAIMED this
             // already happened through the existing hooks, and it did not —
             // `hooks` only ever broadcast, and nothing here wrote a row.
-            traceRecorder?.record({ jobId, kind: 'phase', name: phase ? 'start' : 'end', phase: phase ?? null, ...(attempt ? { attempt } : {}), meta: { remote: true } })
+            traceRecorder?.record({ runId: jobId, kind: 'phase', name: phase ? 'start' : 'end', phase: phase ?? null, ...(attempt ? { attempt } : {}), meta: { remote: true } })
           },
           heartbeat: (jobId) => jobStore.renewHeartbeat(jobId, cfg.heartbeat.jobTtlSec),
         },
@@ -1991,7 +2029,7 @@ let blobGc: BlobGc | null = null
           const sink = createDbArtifactSink({
             db,
             dataDir: cfg.dataDir,
-            jobId,
+            runId: jobId,
             // Plan 115 §3.6 — a node-owned device's `ctx.artifact.file()`
             // relays here to actually mint the row, so this is where its
             // cap has to be real too, not just the local-runner path below.
@@ -2006,7 +2044,7 @@ let blobGc: BlobGc | null = null
           })
           return {
             id: crypto.randomUUID(),
-            jobId,
+            runId: jobId,
             deviceId: null,
             kind: a.kind as 'screenshot' | 'log' | 'file' | 'video',
             label: a.label,
@@ -2507,6 +2545,8 @@ let blobGc: BlobGc | null = null
         record: (e) => recorder?.record(e),
         broadcast: (msg) => hub.broadcast(msg as ServerMessage),
         activities,
+        jobService,
+        workflows: workflowStore,
         controlSettings: () => settingsStore.get().control,
         states,
         operations,
@@ -2517,6 +2557,7 @@ let blobGc: BlobGc | null = null
           createBatchDispatchDeps(
             {
               db,
+              runs,
               scheduler: scheduler!,
               audit,
               registry: executors,
@@ -2670,6 +2711,7 @@ let blobGc: BlobGc | null = null
           }),
         },
         jobRoutes: createJobRoutes(jobService, {
+          runs,
           log: log.child('jobs'),
           logBuffer: jobLogBuffer,
           // `canCancelJob`'s ownership half (`auth/acl.ts`) — the same
@@ -2828,6 +2870,7 @@ let blobGc: BlobGc | null = null
         batchRoutes: createBatchRoutes({
           db,
           jobStore,
+          runs,
           scheduler: scheduler!,
           audit,
           broadcastBatchStatus: (msg) => hub.broadcast(msg),
@@ -2874,6 +2917,7 @@ let blobGc: BlobGc | null = null
         scheduleRoutes: createScheduleRoutes({
           db,
           jobStore,
+          runs,
           scheduler: scheduler!,
           audit,
           log: log.child('schedule-api'),
@@ -3099,6 +3143,7 @@ let blobGc: BlobGc | null = null
               createBatchDispatchDeps(
                 {
                   db,
+                  runs,
                   scheduler: scheduler!,
                   audit,
                   registry: executors,
@@ -3442,7 +3487,7 @@ let blobGc: BlobGc | null = null
       // jobs after a crash — see `groups/pacer.ts`'s own doc comment on
       // `replanAfterRestart` for why this is a real gap and not merely
       // belt-and-braces.
-      replanAfterRestart({ db, pacer, jobStore, broadcast: (msg) => hub.broadcast(msg), log: log.child('pacer') })
+      replanAfterRestart({ db, runs, pacer, jobStore, broadcast: (msg) => hub.broadcast(msg), log: log.child('pacer') })
       stopPacer = () => pacer.stop()
       scheduleRunner.start()
       const runner = scheduleRunner
@@ -3954,31 +3999,24 @@ let blobGc: BlobGc | null = null
           log: log.child('always-on'),
         })
 
-        // Plan 99 §3.2, §4.6, §4.7 — which workflow node is CURRENTLY
-        // executing, per jobId. Read by the `artifacts` factory below (so a
-        // node script's `ctx.artifact.save()` — untouched at the child
-        // boundary — lands with `artifacts.node_id` stamped) and by the
-        // `onPhase` hook just below it (so `job_nodes.attempts` has an
-        // honest number). The workflow executor (`jobs/executors/workflow.ts`,
-        // constructed further down once `runner`/`sessions` both exist)
-        // calls `begin`/`end` around each node's `runner.execute()` call —
-        // see `runner/artifact-store.ts`'s own doc comment for the full
-        // mechanism. A standalone (non-workflow) job never touches this
-        // tracker, so its artifacts and attempts read back exactly as they
-        // did before this plan.
-        const jobNodeTracker = createJobNodeTracker()
-
         // The script executor (M4) needs SessionManager → registered once adb is ready.
         const runner = createJobRunner({
           logDir: cfg.dataDir,
           sessions,
-          artifacts: (jobId) =>
+          // Plan 211 §3.2 decision 9 — `deps.artifacts` is called with the RUN
+          // id (`job.runId`), despite the interface's parameter still being
+          // named `jobId`; a workflow step's own `runner.execute()` call now
+          // enqueues a real job, so there is no per-node tracker left to
+          // consult (`createJobNodeTracker`/`job_nodes` are gone — plan 211 §10).
+          artifacts: (runId) =>
             createDbArtifactSink({
               db,
               dataDir: cfg.dataDir,
-              jobId,
-              onSaved: (info) => hub.broadcast({ type: 'job.artifact', payload: { jobId, artifact: info } }),
-              nodeId: () => jobNodeTracker.current(jobId),
+              runId,
+              onSaved: (info) => {
+                const jobId = runs.getRun(runId)?.jobId ?? runId
+                hub.broadcast({ type: 'job.artifact', payload: { jobId, runId, artifact: info } })
+              },
               // Plan 115 §3.6, W5/W6 — a script's `ctx.artifact.file()`
               // lands here; the cap follows the same push limit that would
               // gate the artifact once it reaches `ctx.device.push()`.
@@ -3991,10 +4029,16 @@ let blobGc: BlobGc | null = null
             // happened, and the `job.log` artifact does not exist until the
             // job ends. `GET /api/jobs/:id/logs` serves this.
             jobLogBuffer.append(entry)
+            // Plan 211 §3.2 decision 9 — `JobLogEntry.jobId` is genuinely the
+            // JOB id here (`createJobLogger` is keyed on `job.id`, not
+            // `job.runId`), but the wire message carries both; the run id is
+            // the job's current one.
+            const runId = runs.latestRun(entry.jobId)?.id ?? entry.jobId
             hub.broadcast({
               type: 'job.log',
               payload: {
                 jobId: entry.jobId,
+                runId,
                 ts: entry.ts,
                 level: entry.level,
                 source: entry.source,
@@ -4026,33 +4070,33 @@ let blobGc: BlobGc | null = null
             traceRecorder?.record(event)
           },
           traceStore: traceFrameStore,
-          onPhase: (jobId, attempt, phase) => {
-            // Plan 99 §4.6, §4.7 — `job_nodes.attempts`'s only source: this
-            // fires on every attempt of every execution, and `attempt` resets
-            // to 1 at the top of every `runner.execute()` call, so the
-            // highest value seen between a workflow node's own `begin`/`end`
-            // pair is exactly how many attempts THAT node execution spent.
-            // A no-op for every non-workflow job (no `begin` was ever called
-            // for its jobId).
-            jobNodeTracker.noteAttempt(jobId, attempt)
+          // Plan 211 §3.2 decision 9 — `onPhase` fires with the RUN id
+          // (`job.runId`), despite the interface's parameter still being
+          // named `jobId`; `job_nodes.attempts` is gone with the node
+          // tracker (plan 211 §10) — a workflow step is now a real job with
+          // its own row, so nothing here needs a per-node attempt count.
+          onPhase: (runId, attempt, phase) => {
+            const jobId = runs.getRun(runId)?.jobId ?? runId
             const info = jobService.get(jobId)
             if (info) hub.broadcast({ type: 'job.status', payload: { ...info, attempt, phase } })
           },
-          heartbeat: (jobId) => jobStore.renewHeartbeat(jobId, cfg.heartbeat.jobTtlSec),
+          heartbeat: (runId) => jobStore.renewHeartbeat(runId, cfg.heartbeat.jobTtlSec),
           // Read fresh per attempt, not captured here at daemon start (plan
           // 35 §4.4) — the same pattern `adb.maxConcurrent` uses (plan 23) —
           // so a Settings change applies to the very next job.
           resetPolicy: () => settingsStore.get().job,
           // One `job.reset` main-stream device event per pre-job reset (plan
           // 35 §3.5, §4.4).
-          onReset: (jobId, deviceId, outcome, plan) =>
+          onReset: (runId, deviceId, outcome, plan) => {
+            const jobId = runs.getRun(runId)?.jobId ?? runId
             recorder?.record({
               deviceId,
               stream: 'main',
               kind: 'job.reset',
               actor: `job:${jobId}`,
               meta: { policy: plan.policy, packages: plan.packages ?? [], applied: outcome.applied, warnings: outcome.warnings, durationMs: outcome.durationMs },
-            }),
+            })
+          },
           // Retry classification (plan 36 §4.1, §4.3) — the same canonical
           // table `executor-host.ts` uses for the final settle, so a job's
           // per-attempt log lines and its eventual `jobs.failureClass` always
