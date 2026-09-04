@@ -205,7 +205,9 @@ async function runWarmup(args: string[]): Promise<void> {
   console.log(`Booting a core against ${dataDir} on port ${corePort}, expecting ${expect} device(s) to warm (timeout ${timeoutSec}s)…`)
   const t0 = performance.now()
   const proc = Bun.spawn(['bun', 'run', join(ROOT, 'packages/core/src/index.ts')], {
-    env: { ...process.env, ENKAKU_DATA_DIR: dataDir, ENKAKU_PORT: String(corePort), ENKAKU_NO_OPEN: '1' },
+    // A spawned browser is off by default now (`ENKAKU_OPEN` opts in), and this
+    // process has no TTY anyway — nothing to suppress.
+    env: { ...process.env, ENKAKU_DATA_DIR: dataDir, ENKAKU_PORT: String(corePort) },
     stdout: 'pipe',
     stderr: 'pipe',
   })

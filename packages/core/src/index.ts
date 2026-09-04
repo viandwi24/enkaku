@@ -81,7 +81,7 @@ async function startDaemon(): Promise<void> {
     mode: process.env.ENKAKU_MODE,
     host: cfg.host,
     isTTY: process.stdout.isTTY === true,
-    noOpen: process.env.ENKAKU_NO_OPEN,
+    open: process.env.ENKAKU_OPEN,
     log,
   })
 }
