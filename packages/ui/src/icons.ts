@@ -85,5 +85,8 @@ export {
  *
  * - `RobotIcon` for the Agents rail entry (MVP 03 §1; the handoff draws no
  *   Agents item because MVP 15 §4.1 left it open). Plan 213 §3.4.
+ * - `ClockIcon` for the Schedules tab (MVP 15 §0.1.1) — a correction added
+ *   after the design was drawn, so no `ph-*` name for it exists in the
+ *   handoff's own README. Plan 217 §4.12.
  */
-export { RobotIcon } from '@phosphor-icons/react'
+export { RobotIcon, ClockIcon } from '@phosphor-icons/react'
