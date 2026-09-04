@@ -2,7 +2,7 @@
 
 import { useCallback, useRef } from 'react'
 import type { WorkflowDoc, WorkflowNode } from '@enkaku/protocol'
-import { applyDocEdit, edgeKindsOf, edgeTargetOf, freshNodeId, nodeIdsOf, setEdgeField, type EdgeKind } from './doc-edit'
+import { edgeKindsOf, edgeTargetOf, freshNodeId, nodeIdsOf, setEdgeField, type EdgeKind } from './doc-edit'
 import type { UseHistoryResult } from './useHistory'
 
 /**
@@ -122,7 +122,3 @@ export function useClipboard(history: UseHistoryResult): UseClipboardResult {
 
   return { copy, cut, paste, hasClipboard }
 }
-
-// Re-exported so `FlowEditor.tsx` can build a `move-nodes`-shaped duplicate
-// (cmd+d) from the same reducer without a second code path.
-export { applyDocEdit }
