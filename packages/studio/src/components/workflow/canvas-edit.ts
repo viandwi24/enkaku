@@ -1,4 +1,3 @@
-import type { GateOutcome } from '@enkaku/protocol'
 import type { EdgeKind } from './derive-graph'
 import { updateNode, type WorkflowDocDraft, type WorkflowNodeDraft } from './model'
 
@@ -19,21 +18,24 @@ import { updateNode, type WorkflowDocDraft, type WorkflowNodeDraft } from './mod
  * maths").
  */
 
-/** True when `kind` is a field `node` actually carries — a script node has no `then`/`else`, a gate has no `next`/`onFailure` (`packages/protocol/src/workflow.ts`'s discriminated union). */
+/** True when `kind` is a field `node` actually carries — a `start` node has only `next`, a script node has `next`/`onFailure`, a gate has `then`/`else`, a `finish` node owns no edge field at all (`packages/protocol/src/workflow.ts`'s discriminated union). */
 function ownsEdgeKind(node: WorkflowNodeDraft, kind: EdgeKind): boolean {
-  return node.kind === 'script' ? kind === 'next' || kind === 'onFailure' : kind === 'then' || kind === 'else'
+  if (node.kind === 'start') return kind === 'next'
+  if (node.kind === 'script') return kind === 'next' || kind === 'onFailure'
+  if (node.kind === 'gate') return kind === 'then' || kind === 'else'
+  return false // 'finish' is a sink
 }
 
 /**
  * Retargets one edge to `targetId` — dragging a connection from a node's
  * `next`/`onFailure`/`then`/`else` handle onto another node (§3.3, §4.2).
- * `next` is a bare node id; the other three kinds hold a `GateOutcome`, so
- * retargeting one always produces `{ go: 'goto', node: targetId }` — the
- * identical shape `GateOutcomeEditor`'s own "Jump to a node…" option
- * writes, so the canvas and the list can never disagree about what a
- * retarget MEANS, only about how it was drawn.
+ * Every edge field is a bare node id now (plan 300 D1, plan 301 §4.1), so
+ * retargeting is always a direct write of `targetId` into that field — the
+ * identical value `GateOutcomeEditor`'s own "jump to…" option writes, so the
+ * canvas and the list can never disagree about what a retarget MEANS, only
+ * about how it was drawn.
  *
- * `targetId` may name an EARLIER node — a backward `goto` (plan 102 G5).
+ * `targetId` may name an EARLIER node — a backward edge (plan 102 G5).
  * Nothing here restricts direction, matching `WorkflowNodeIdSchema` itself,
  * which does not either; a cycle is a valid document, just one `Validate`
  * may warn about.
@@ -54,19 +56,18 @@ export function retargetEdge(draft: WorkflowDocDraft, nodeId: string, kind: Edge
   if (!draft.nodes.some((n) => n.id === targetId)) return draft
 
   if (kind === 'next') return updateNode(draft, index, { next: targetId })
-  const outcome: GateOutcome = { go: 'goto', node: targetId }
-  if (kind === 'onFailure') return updateNode(draft, index, { onFailure: outcome })
-  if (kind === 'then') return updateNode(draft, index, { then: outcome })
-  return updateNode(draft, index, { else: outcome }) // kind === 'else'
+  if (kind === 'onFailure') return updateNode(draft, index, { onFailure: targetId })
+  if (kind === 'then') return updateNode(draft, index, { then: targetId })
+  return updateNode(draft, index, { else: targetId }) // kind === 'else'
 }
 
 /**
  * Removes one edge — deleting it on the canvas (selecting it, then
- * Backspace/Delete). Each kind reverts to the SAME default
- * `model.ts`'s `newScriptNode`/`newGateNode` already give a freshly-added
- * node, so "delete the edge" and "never drew one" are byte-identical —
- * exactly the round-trip property plan 102 H3 asks for, extended to
- * deletion rather than only retargeting.
+ * Backspace/Delete). Every kind reverts to `undefined` — DANGLING (plan 301
+ * §3.2), the SAME default `model.ts`'s `newScriptNode`/`newGateNode` already
+ * give a freshly-added node, so "delete the edge" and "never drew one" are
+ * byte-identical — exactly the round-trip property plan 102 H3 asks for,
+ * extended to deletion rather than only retargeting.
  */
 export function clearEdge(draft: WorkflowDocDraft, nodeId: string, kind: EdgeKind): WorkflowDocDraft {
   const index = draft.nodes.findIndex((n) => n.id === nodeId)
@@ -75,9 +76,9 @@ export function clearEdge(draft: WorkflowDocDraft, nodeId: string, kind: EdgeKin
   if (!ownsEdgeKind(node, kind)) return draft
 
   if (kind === 'next') return updateNode(draft, index, { next: undefined })
-  if (kind === 'onFailure') return updateNode(draft, index, { onFailure: { go: 'fail' } })
-  if (kind === 'then') return updateNode(draft, index, { then: { go: 'continue' } })
-  return updateNode(draft, index, { else: { go: 'stop' } }) // kind === 'else'
+  if (kind === 'onFailure') return updateNode(draft, index, { onFailure: undefined })
+  if (kind === 'then') return updateNode(draft, index, { then: undefined })
+  return updateNode(draft, index, { else: undefined }) // kind === 'else'
 }
 
 /** The bare shape of `@xyflow/react`'s `Connection` this module needs — spelled out structurally rather than imported as a value, so this file stays free of a React Flow runtime dependency (only `WorkflowCanvas.tsx` imports the library itself). */

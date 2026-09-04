@@ -1,60 +1,90 @@
 import type { z } from 'zod'
-import type { GateOutcome, Predicate, ValueExpr, WorkflowDoc, WorkflowFinding, WorkflowParam } from '@enkaku/protocol'
+import type { Predicate, ValueExpr, WorkflowDoc, WorkflowFinding, WorkflowParam, WorkflowPoint } from '@enkaku/protocol'
 import { WorkflowDocSchema } from '@enkaku/protocol'
 
 /**
  * The editor's own working shape for one node (plan 99 §3.1, §4.1, §5 step
- * 99.9). `WorkflowNodeSchema` (`@enkaku/protocol`) already IS this shape once
- * a document is valid — a draft is looser only in `script` (a `ScriptRef`
- * string once picked, `''` before the operator has chosen one), which is why
- * `toWorkflowDoc` below exists: it is the one place a draft is asked to prove
- * it is actually a `WorkflowDoc`, through the real Zod schema, never a
- * hand-rolled duplicate of its rules.
+ * 99.9; rewritten to doc v2's explicit edges by plan 301 §4.1, §5 step
+ * 301.6). `WorkflowNodeSchema` (`@enkaku/protocol`) already IS this shape
+ * once a document is valid — a draft is looser only in `script` (a
+ * `ScriptRef` string once picked, `''` before the operator has chosen one),
+ * which is why `toWorkflowDoc` below exists: it is the one place a draft is
+ * asked to prove it is actually a `WorkflowDoc`, through the real Zod schema,
+ * never a hand-rolled duplicate of its rules.
+ *
+ * Every edge is a node id now (plan 300 D1) — `onFailure`/`next`/`then`/`else`
+ * hold `string | undefined`, never a `GateOutcome` union. `start` and
+ * `finish` are new node kinds (plan 301 §3.2, §3.4): every draft carries
+ * exactly one `start`, undeletable by `removeNode` below, and `entry` always
+ * points at it.
  */
+export interface WorkflowStartNodeDraft {
+  kind: 'start'
+  id: string
+  title: string
+  ui: WorkflowPoint
+  next?: string
+}
+
 export interface WorkflowScriptNodeDraft {
   kind: 'script'
   id: string
   title: string
+  ui: WorkflowPoint
   script: string
   params: Record<string, ValueExpr>
   reset?: 'farm' | 'none'
   retries?: number
-  onFailure: GateOutcome
   next?: string
+  onFailure?: string
 }
 
 export interface WorkflowGateNodeDraft {
   kind: 'gate'
   id: string
   title: string
+  ui: WorkflowPoint
   when: Predicate
-  then: GateOutcome
-  else: GateOutcome
+  then?: string
+  else?: string
+}
+
+export interface WorkflowFinishNodeDraft {
+  kind: 'finish'
+  id: string
+  title: string
+  ui: WorkflowPoint
+  status: 'succeed' | 'fail'
   message: string
 }
 
-export type WorkflowNodeDraft = WorkflowScriptNodeDraft | WorkflowGateNodeDraft
+export type WorkflowNodeDraft = WorkflowStartNodeDraft | WorkflowScriptNodeDraft | WorkflowGateNodeDraft | WorkflowFinishNodeDraft
 
 export interface WorkflowDocDraft {
-  schema: 1
+  schema: 2
   name: string
   title: string
   description: string
   params: WorkflowParam[]
+  /** The one `start` node's id — never `nodes[0]` (plan 301 §3.4). */
+  entry: string
   nodes: WorkflowNodeDraft[]
   maxSteps: number
   onFail?: { script: string; params: Record<string, ValueExpr> }
 }
 
-/** A brand-new, empty document — the `/workflows/editor` (no `?name=`) starting point. */
+const START_NODE_ID = 'start'
+
+/** A brand-new, empty document — the `/workflows/editor` (no `?name=`) starting point. Carries its one undeletable `start` node from the first render (plan 301 §3.4). */
 export function emptyDraft(): WorkflowDocDraft {
   return {
-    schema: 1,
+    schema: 2,
     name: '',
     title: '',
     description: '',
     params: [],
-    nodes: [],
+    entry: START_NODE_ID,
+    nodes: [{ kind: 'start', id: START_NODE_ID, title: '', ui: { x: 0, y: 0 } }],
     maxSteps: 50,
   }
 }
@@ -106,7 +136,7 @@ export function nodeIdsOf(draft: WorkflowDocDraft): Set<string> {
   return new Set(draft.nodes.map((n) => n.id))
 }
 
-/** Plan 99 §3.3 — the position-based default; a node may override either way. */
+/** Plan 99 §3.3 — the position-based default; a node may override either way. Position here means "is this the entry's own first script" — approximated for the list editor as array index 0 among non-start/finish nodes, since `reset` is a per-node override anyway. */
 export function defaultReset(index: number): 'farm' | 'none' {
   return index === 0 ? 'farm' : 'none'
 }
@@ -116,25 +146,34 @@ export function startsFromLabel(reset: 'farm' | 'none'): string {
   return reset === 'farm' ? 'a clean device' : 'where the previous node finished'
 }
 
-function newScriptNode(id: string): WorkflowScriptNodeDraft {
-  return { kind: 'script', id, title: '', script: '', params: {}, onFailure: { go: 'fail' } }
+/** A simple, deterministic placement for a freshly-added node — `{x: 0, y: 0}` for the very first non-start/finish node, one column right of the rightmost existing node otherwise (plan 301 §5 step 301.6: "rank-and-row for a new node, `{x:0,y:0}` for the first"). Real auto-arrange is `computeLayout`'s successor (plan 300 P12) — plan 305's job, not this one. */
+function nextPosition(draft: WorkflowDocDraft): WorkflowPoint {
+  if (draft.nodes.length === 0) return { x: 0, y: 0 }
+  const maxX = Math.max(...draft.nodes.map((n) => n.ui.x))
+  return { x: maxX + 240, y: 0 }
 }
 
-function newGateNode(id: string): WorkflowGateNodeDraft {
-  return { kind: 'gate', id, title: '', when: placeholderPredicate(), then: { go: 'continue' }, else: { go: 'stop' }, message: '' }
+function newScriptNode(id: string, ui: WorkflowPoint): WorkflowScriptNodeDraft {
+  return { kind: 'script', id, title: '', ui, script: '', params: {} }
+}
+
+function newGateNode(id: string, ui: WorkflowPoint): WorkflowGateNodeDraft {
+  return { kind: 'gate', id, title: '', ui, when: placeholderPredicate() }
 }
 
 export function addScriptNode(draft: WorkflowDocDraft, seed = 'step'): WorkflowDocDraft {
   const id = freshNodeId(seed, nodeIdsOf(draft))
-  return { ...draft, nodes: [...draft.nodes, newScriptNode(id)] }
+  return { ...draft, nodes: [...draft.nodes, newScriptNode(id, nextPosition(draft))] }
 }
 
 export function addGateNode(draft: WorkflowDocDraft): WorkflowDocDraft {
   const id = freshNodeId('gate', nodeIdsOf(draft))
-  return { ...draft, nodes: [...draft.nodes, newGateNode(id)] }
+  return { ...draft, nodes: [...draft.nodes, newGateNode(id, nextPosition(draft))] }
 }
 
+/** `start` is undeletable (plan 301 §3.4) — a no-op when `index` names it. */
 export function removeNode(draft: WorkflowDocDraft, index: number): WorkflowDocDraft {
+  if (draft.nodes[index]?.kind === 'start') return draft
   return { ...draft, nodes: draft.nodes.filter((_, i) => i !== index) }
 }
 
@@ -192,11 +231,12 @@ export function zodIssuesToFindings(error: z.ZodError): WorkflowFinding[] {
  */
 export function docToDraft(doc: WorkflowDoc): WorkflowDocDraft {
   return {
-    schema: 1,
+    schema: 2,
     name: doc.name,
     title: doc.title,
     description: doc.description,
     params: doc.params.map((p) => ({ ...p })),
+    entry: doc.entry,
     nodes: doc.nodes.map((n) => ({ ...n })) as WorkflowNodeDraft[],
     maxSteps: doc.maxSteps,
     onFail: doc.onFail ? { script: doc.onFail.script, params: { ...doc.onFail.params } } : undefined,

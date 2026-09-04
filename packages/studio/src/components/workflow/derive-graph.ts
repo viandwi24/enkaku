@@ -1,27 +1,21 @@
-import type { GateOutcome } from '@enkaku/protocol'
 import type { WorkflowDocDraft, WorkflowNodeDraft } from './model'
 
 /**
  * Plan 102 (M67) §3.2, §3.3, §4.1, step 102.1 — the canvas's data half, a
  * PURE function with no React and no rendering, testable without a
  * component (the same shape `packages/studio/src/components/wall/
- * tile-identity.ts` already uses).
- *
- * `packages/protocol/src/workflow.ts` stores no coordinates and no `edges`
- * array (verified directly against that file, not assumed — plan 102 G3):
- * a `script` node's forward edge is `next` (explicit, or the array's next
- * node when absent) plus its `onFailure` outcome; a `gate` node's two edges
- * are `then`/`else`. This function derives the full edge set — including
- * the "boring default" ones `edges.ts`'s `edgeLabelsFor` deliberately
- * omits from the list editor's branch rail, because the CANVAS needs the
- * whole shape, not just the deviations from it.
+ * tile-identity.ts` already uses). Rewritten for doc v2's explicit edges by
+ * plan 301 §4.1, §5 step 301.6: every edge is a node id field on the node
+ * itself (`next`/`onFailure`/`then`/`else`) — array order carries no control
+ * meaning any more (plan 300 D1), so this function reads edges straight off
+ * each node, never off array adjacency.
  *
  * An edge is NEVER written back from here — it is a projection of `next`/
  * `onFailure`/`then`/`else`, never independent state (plan 102 §3.3). A
- * dangling target (a `next`/`goto` naming an id absent from the document)
- * is silently not drawn rather than thrown on — `checkWorkflow`
+ * dangling target (an edge field absent, or naming an id absent from the
+ * document) is silently not drawn rather than thrown on — `checkWorkflow`
  * (`workflow-check.ts`) is the place that already flags that as a
- * validation error; this function's job is only to describe the graph the
+ * validation finding; this function's job is only to describe the graph the
  * EXECUTOR would actually walk, which stops at that same dangling edge.
  */
 
@@ -43,11 +37,11 @@ export interface GraphEdge {
   kind: EdgeKind
   /**
    * True when `to` sorts at or before `from` in document (array) order —
-   * only possible via an explicit `{ go: 'goto' }` (plan 102 G5: `goto` may
-   * jump backward, so the graph is not a DAG). This is the single most
-   * valuable thing the canvas shows that the list cannot (plan 102 §4.2),
-   * so it is a field on the edge, not something a renderer has to
-   * re-derive from node positions.
+   * only possible via an edge that names an earlier-or-equal node id (plan
+   * 102 G5: an edge may point backward, so the graph is not a DAG). This is
+   * the single most valuable thing the canvas shows that the list cannot
+   * (plan 102 §4.2), so it is a field on the edge, not something a renderer
+   * has to re-derive from node positions.
    */
   backward: boolean
 }
@@ -56,8 +50,8 @@ export interface DerivedGraph {
   nodes: GraphNode[]
   edges: GraphEdge[]
   /**
-   * Node ids no edge (from any other node) targets, excluding the entry
-   * node (array index 0, which needs nothing pointing at it to be
+   * Node ids no edge (from any other node) targets, excluding `doc.entry`
+   * (the one `start` node, which needs nothing pointing at it to be
    * reachable). A real authoring bug the list editor cannot surface (plan
    * 102 §4.3) — `Validate` reads this SAME field rather than
    * reimplementing reachability, so the canvas's markers and the list
@@ -69,11 +63,6 @@ export interface DerivedGraph {
 
 function labelOf(node: WorkflowNodeDraft): string {
   return node.title.trim() || node.id
-}
-
-/** The node immediately after `index` in array order, or `undefined` past the end of the document — the same "array order is the spine" rule `edges.ts`'s `arrayNextId` already encodes. */
-function arrayNextId(nodes: readonly WorkflowNodeDraft[], index: number): string | undefined {
-  return nodes[index + 1]?.id
 }
 
 export function deriveGraph(draft: WorkflowDocDraft): DerivedGraph {
@@ -89,25 +78,21 @@ export function deriveGraph(draft: WorkflowDocDraft): DerivedGraph {
     edges.push({ from: fromId, to, kind, backward: toIndex <= fromIndex })
   }
 
-  /** Resolves one `GateOutcome` to the node it points at, or `undefined` for a terminal (`stop`/`fail`) outcome — those render as end markers, never edges to a node (plan 102 §4.2). */
-  function outcomeTarget(outcome: GateOutcome, fromIndex: number): string | undefined {
-    if (outcome.go === 'continue') return arrayNextId(nodes, fromIndex)
-    if (outcome.go === 'goto') return outcome.node
-    return undefined // 'stop' | 'fail'
-  }
-
   nodes.forEach((node, index) => {
-    if (node.kind === 'script') {
-      addEdge(node.id, index, node.next ?? arrayNextId(nodes, index), 'next')
-      addEdge(node.id, index, outcomeTarget(node.onFailure, index), 'onFailure')
-    } else {
-      addEdge(node.id, index, outcomeTarget(node.then, index), 'then')
-      addEdge(node.id, index, outcomeTarget(node.else, index), 'else')
+    if (node.kind === 'start') {
+      addEdge(node.id, index, node.next, 'next')
+    } else if (node.kind === 'script') {
+      addEdge(node.id, index, node.next, 'next')
+      addEdge(node.id, index, node.onFailure, 'onFailure')
+    } else if (node.kind === 'gate') {
+      addEdge(node.id, index, node.then, 'then')
+      addEdge(node.id, index, node.else, 'else')
     }
+    // `finish` is a sink — no outgoing edge.
   })
 
   const targeted = new Set(edges.map((e) => e.to))
-  const unreachable = nodes.filter((n, i) => i !== 0 && !targeted.has(n.id)).map((n) => n.id)
+  const unreachable = nodes.filter((n) => n.id !== draft.entry && !targeted.has(n.id)).map((n) => n.id)
 
   return { nodes: graphNodes, edges, unreachable }
 }

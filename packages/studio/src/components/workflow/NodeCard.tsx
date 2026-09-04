@@ -64,10 +64,43 @@ export function NodeCard({
   dropTarget?: boolean
 }) {
   const own = findingsFor(findings, index)
-  const edges = edgeLabelsFor(node.kind === 'gate' ? [node] : [node], 0)
+  const edges = edgeLabelsFor(node.kind === 'gate' || node.kind === 'script' ? [node] : [], 0)
   const scriptForBindings = node.kind === 'script' ? resolveScriptOption(node.script, scripts) : undefined
   const bindingFields = node.kind === 'script' ? paramProperties(scriptForBindings?.paramsSchema) : []
   const reset = node.kind === 'script' ? (node.reset ?? defaultReset(index)) : undefined
+
+  // `start` and `finish` are non-editable cards (plan 301 §5 step 301.7) —
+  // they exist so an upgraded v2 document is not silently unrenderable
+  // between this plan and plan 305's real canvas cards. Minimal: title,
+  // status, message.
+  if (node.kind === 'start' || node.kind === 'finish') {
+    return (
+      <div data-testid={`node-card-${index}`} className="flex items-stretch gap-1.5">
+        <BranchRail index={index} total={total} edges={[]} />
+        <div className="min-w-0 flex-1 space-y-2 rounded-lg border bg-surface-2 p-3.5">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="shrink-0 text-[10px]">
+              {node.kind === 'start' ? 'Start' : 'Finish'}
+            </Badge>
+            <Input
+              className="h-8 min-w-0 flex-1 text-[13px] font-medium"
+              placeholder={node.kind === 'start' ? 'Start' : 'Untitled finish'}
+              value={node.title}
+              onChange={(e) => onChange({ title: e.target.value })}
+              aria-label="Node title"
+            />
+            <span className="readout shrink-0 text-[10.5px] text-fg-subtle">{node.id}</span>
+          </div>
+          {node.kind === 'finish' && (
+            <div className="space-y-2">
+              <p className="text-[11.5px] text-fg-muted">Ends the run: {node.status === 'succeed' ? 'succeeded' : 'failed'}</p>
+              {node.message && <p className="text-[11.5px] text-fg-subtle">{node.message}</p>}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -249,10 +282,6 @@ export function NodeCard({
             <PredicateEditor value={node.when} onChange={(when) => onChange({ when })} workflowParams={workflowParams} nodeOptions={precedingOptions} />
             <GateOutcomeEditor value={node.then} onChange={(then) => onChange({ then })} nodeOptions={allOptions} label="then" />
             <GateOutcomeEditor value={node.else} onChange={(v) => onChange({ else: v })} nodeOptions={allOptions} label="else" />
-            <div className="space-y-1">
-              <Label className="text-[11.5px] font-normal text-fg-muted">Message shown on the job when this gate ends the workflow (optional)</Label>
-              <Input className="h-8 text-[12.5px]" value={node.message} onChange={(e) => onChange({ message: e.target.value })} aria-label="Gate message" />
-            </div>
           </div>
         )}
       </div>
