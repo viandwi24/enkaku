@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { DeviceInfo } from '@enkaku/protocol'
-import { StatusDot, cn, formatDeviceName } from '@enkaku/ui'
+import { StatusDot, cn } from '@enkaku/ui'
 import { LiveView } from '@/components/LiveView'
 import { dotStateOf, dotTooltipOf } from './device-state'
 
@@ -61,9 +61,18 @@ export function DeviceScreenCard({
         ) : (
           <div className="absolute inset-0 opacity-70" style={STRIPE} />
         )}
+        {/*
+          Three lines, serial first and number last (owner, 2026-09-04).
+          The old two-line block put `#1 NAME` together on top with the serial
+          under it, which buried the number inside the name's line and made
+          two devices of the same model hard to tell apart at tile size. Read
+          top-down it now goes from the identity the phone was born with, to
+          the one an operator gave it, to the one they actually say out loud.
+        */}
         <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col items-center gap-0.5 bg-gradient-to-b from-panel-a to-transparent px-1 pt-1.5 pb-3">
-          <span className="max-w-full truncate text-[12px] font-medium text-text">{formatDeviceName(device.number, device.label)}</span>
           <span className="max-w-full truncate font-mono text-tip text-faint">{device.serial}</span>
+          <span className="max-w-full truncate text-[12px] font-medium text-text">{device.label}</span>
+          {device.number != null && <span className="max-w-full truncate font-mono text-tip text-dim">#{device.number}</span>}
         </div>
         {!live && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
