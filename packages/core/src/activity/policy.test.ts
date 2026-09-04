@@ -99,13 +99,21 @@ describe('evaluate — selfIds, exclusiveWith, worst-wins, allow message', () =>
 })
 
 describe('SENTENCES wording', () => {
-  test('warn on control/agent mentions interference; warn otherwise mentions starting anyway', () => {
-    const control = activity('job')
-    expect(evaluate('control', [control], ALLOW, {}).decision).toBe('warn')
-    const msg = evaluate('control', [control], ALLOW).message
-    expect(msg).toContain('your taps will interfere')
-    const msg2 = evaluate('command', [control], ALLOW).message
-    expect(msg2).toContain('starting command anyway')
+  test('warn on agent mentions interference; warn otherwise mentions starting anyway', () => {
+    const job = activity('job')
+    // `control` over a job used to raise this sentence too. The CEO made a
+    // person taking over a running job `allow` with nothing to dismiss on
+    // 2026-09-04 (see the POLICY table's own note), so `agent` — a long,
+    // unattended run — is what still carries the interference wording.
+    expect(evaluate('agent', [job], ALLOW, {}).decision).toBe('warn')
+    expect(evaluate('agent', [job], ALLOW).message).toContain('your taps will interfere')
+    expect(evaluate('command', [job], ALLOW).message).toContain('starting command anyway')
+  })
+
+  test('a person taking control of a device a job is driving is allowed, with no sentence at all', () => {
+    const result = evaluate('control', [activity('job')], ALLOW, {})
+    expect(result.decision).toBe('allow')
+    expect(result.message).toBe('')
   })
 
   test('forbid names the conflicting activity and says it must end first', () => {

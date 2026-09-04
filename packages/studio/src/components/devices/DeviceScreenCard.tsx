@@ -9,6 +9,26 @@ const STRIPE: CSSProperties = {
   backgroundImage: 'repeating-linear-gradient(135deg, var(--muted-2) 0 3px, var(--panel-2) 3px 6px)',
 }
 
+/**
+ * What a tile says when it is not streaming.
+ *
+ * `!live` covers three different facts and they must not share one word. A
+ * device that is genuinely `offline` is Disconnected; a `quarantined` one is
+ * Quarantined; but an ONLINE device is simply not being streamed right now —
+ * the wall's tile budget (`useLiveSet`, plan 214 §3.9) keeps only so many
+ * encoders alive, and a tile outside the viewport or still ramping is one of
+ * them. Calling that "Disconnected" is false, and the owner read it as a
+ * casting failure on a phone that was online and under control at the time
+ * (field report, 2026-09-04). Under always-on sessions (plan 206) the session
+ * is up whatever the tile shows, so the honest word is about the PICTURE, not
+ * the connection.
+ */
+function idleLabelOf(device: DeviceInfo): string {
+  if (device.status === 'offline') return 'Disconnected'
+  if (device.status === 'quarantined') return 'Quarantined'
+  return 'Not streaming'
+}
+
 export function DeviceScreenCard({
   device,
   selected,
@@ -47,9 +67,7 @@ export function DeviceScreenCard({
         </div>
         {!live && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <span className={cn('text-label', device.status === 'quarantined' ? 'text-warn' : 'text-faint-2')}>
-              {device.status === 'quarantined' ? 'Quarantined' : 'Disconnected'}
-            </span>
+            <span className={cn('text-label', device.status === 'quarantined' ? 'text-warn' : 'text-faint-2')}>{idleLabelOf(device)}</span>
           </div>
         )}
         <StatusDot ring state={dotStateOf(device)} title={dotTooltipOf(device)} className="absolute bottom-1.5 left-1.5" />

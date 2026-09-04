@@ -86,9 +86,19 @@ const LAUNCH_SETTLE_MS = 5_000
 type LikeOutcome = 'liked' | 'already-liked' | 'not-signed-in' | 'no-button' | 'not-confirmed'
 type CommentOutcome = 'browsed' | 'no-button' | 'not-signed-in' | 'no-close'
 
-/** The bottom-nav entry into Shorts. Ids are absent on the pivot items (measured), so the desc ladder is the anchor. */
+/**
+ * The bottom-nav entry into Shorts. Ids are absent on the pivot items
+ * (measured), so the desc ladder is the anchor — BUT the ladder is bounded to
+ * the nav band: a home feed that happens to carry a Shorts SHELF has a
+ * clickable "Shorts" header node earlier in the DFS walk than the tab itself,
+ * and tapping that shelf header was measured (2026-09-04, job 24ca474e) to do
+ * nothing at all. The nav band is the bottom 15% of the screen (measured
+ * [1433,1556] on a 1640-tall display).
+ */
 function shortsTabOf(tree: UiNode): UiNode | null {
-  const items = flatten(tree).filter((n) => n.clickable && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE))
+  let height = 0
+  for (const n of flatten(tree)) if (n.bounds.bottom > height) height = n.bounds.bottom
+  const items = flatten(tree).filter((n) => n.clickable && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE) && (height === 0 || n.bounds.top > height * 0.85))
   const byName = items.find((n) => /^(shorts)\b/i.test(n.desc.trim()) || n.text.trim().toLowerCase() === 'shorts')
   if (byName) return byName
   return items.find((n) => n.desc.trim().toLowerCase() === 'videokortingen' || n.desc.trim().toLowerCase() === 'video pendek') ?? null

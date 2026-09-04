@@ -15,7 +15,13 @@ export const POLICY: Record<StartingKind, Partial<Record<ExistingKind, Decision>
   job: { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'warn', prep: 'warn' },
   'workflow-job': { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'warn', prep: 'warn' },
   install: { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'warn', prep: 'warn' },
-  control: { job: 'warn', 'workflow-job': 'warn', install: 'warn', command: 'allow', prep: 'allow' },
+  // A person taking control of a device a job is driving is ALLOWED, with no
+  // sentence to dismiss (CEO, 2026-09-04, revising MVP 04 §2's table). The
+  // warn this replaces read "your taps will interfere", which states the
+  // opposite of the intent: an operator reaching into a running job is
+  // usually helping it past something, and that is the whole point of being
+  // able to watch a farm work. Only job-over-job stays exclusive.
+  control: { job: 'allow', 'workflow-job': 'allow', install: 'allow', command: 'allow', prep: 'allow' },
   command: { job: 'warn', 'workflow-job': 'warn', install: 'warn', control: 'allow', command: 'allow', prep: 'allow' },
   transfer: { job: 'allow', 'workflow-job': 'allow', install: 'forbid', control: 'allow', command: 'allow', prep: 'allow' },
   wake: { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'allow', prep: 'allow' },

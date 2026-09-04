@@ -46,13 +46,20 @@ import searchPlay from './search-play'
  */
 export default definePlugin({
   id: 'youtube',
-  version: '0.10.0',
+  version: '0.11.0',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments and download in the YouTube app on a farm device.',
   scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay],
 
   /**
    * ## Changelog
+   *
+   * **0.11.0 — a Shorts SHELF is not the Shorts TAB.** Job 24ca474e failed on a
+   * home feed that happened to carry a Shorts row: the walk matched the shelf
+   * header (DFS reaches feed content before the bottom nav) and tapping it did
+   * nothing. `shortsTabOf` is now bounded to the nav band — the bottom 15% of
+   * the screen, measured — which is the same lesson 0.1.4 recorded for the
+   * results page, learned again from the other direction.
    *
    * **0.10.0 — keyword tilt.** `scroll-shorts`, `search-play` and `scroll-live`
    * take `keywords` + `keywordBoostFactor`: when the content's own words

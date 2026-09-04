@@ -15,7 +15,6 @@ export interface Scheduler {
 const nowSec = (): number => Math.floor(Date.now() / 1000)
 
 /** The job-over-fresh-control wait's own cap (plan 205 §3.2 item 6, MVP 12 §3): a constant, not a setting. */
-export const MAX_CONTROL_WAIT_SEC = 60
 
 export interface SchedulerDeps {
   jobStore: JobStore
@@ -48,7 +47,7 @@ export interface SchedulerDeps {
     runId: string
     deviceId: string
     waiting: boolean
-    reason: 'control' | 'paced'
+    reason: 'paced'
     conflicting: DeviceActivity | null
     remainingSec: number
   }) => void
@@ -66,36 +65,30 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let dirty = false
   let timer: ReturnType<typeof setInterval> | null = null
 
-  const waitStartedAt = new Map<string, number>()
-  let previouslyWaiting = new Map<string, 'control' | 'paced'>()
+  let previouslyWaiting = new Map<string, 'paced'>()
 
-  function computeControlBlocked(): { waiting: Map<string, number>; exclude: Map<string, number> } {
-    const waiting = new Map<string, number>()
-    const now = nowSec()
-    const queuedDeviceIds = deps.jobStore.queuedDeviceIds()
-    for (const deviceId of queuedDeviceIds) {
-      const live = deps.activities.liveControls(deviceId)
-      if (live.length === 0) {
-        waitStartedAt.delete(deviceId)
-        continue
-      }
-      let startedAt = waitStartedAt.get(deviceId)
-      if (startedAt === undefined) {
-        startedAt = now
-        waitStartedAt.set(deviceId, startedAt)
-      }
-      const waitedSoFar = now - startedAt
-      if (waitedSoFar >= MAX_CONTROL_WAIT_SEC) {
-        waitStartedAt.delete(deviceId)
-        continue
-      }
-      waiting.set(deviceId, Math.max(0, MAX_CONTROL_WAIT_SEC - waitedSoFar))
-    }
-    const exclude = new Map(waiting)
-    for (const deviceId of deps.activities.devicesWith('install')) {
-      if (!exclude.has(deviceId)) exclude.set(deviceId, 0)
-    }
-    return { waiting, exclude }
+  /**
+   * Devices a queued run must not be claimed on.
+   *
+   * This used to hold a queued run back while a `control` marker was live —
+   * the "quiet gate", carried over from plan 71 and written into MVP 04 §3 as
+   * a proposal. The CEO struck it on 2026-09-04 after meeting it on hardware:
+   * a job sat queued purely because a person had the device open in Device
+   * Control, which reads as the lease the whole programme removed. The model
+   * is now the state dot and nothing else — green free, amber a person is
+   * driving, red the system is. **A person driving never holds a job back;
+   * only a running job holds another job back**, and that exclusion lives in
+   * the SQL claim (`d.status='online'` plus the NOT EXISTS running-run guard),
+   * not here.
+   *
+   * `install` stays: an APK write and a job's first `am start` on the same
+   * device really do collide, and the policy table already calls that
+   * combination `forbid` (`activity/policy.ts`, the `job` row).
+   */
+  function computeInstallBlocked(): Map<string, number> {
+    const exclude = new Map<string, number>()
+    for (const deviceId of deps.activities.devicesWith('install')) exclude.set(deviceId, 0)
+    return exclude
   }
 
   /**
@@ -119,30 +112,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     return blocked
   }
 
-  function broadcastWaiting(
-    controlBlocked: Map<string, number>,
-    pacedBlocked: Map<string, { jobId: string; runId: string; remainingSec: number }>,
-  ): void {
+  function broadcastWaiting(pacedBlocked: Map<string, { jobId: string; runId: string; remainingSec: number }>): void {
     if (!deps.onJobWaiting) return
-    const stillWaiting = new Map<string, 'control' | 'paced'>()
-    for (const [deviceId, remainingSec] of controlBlocked) {
-      const runId = deps.jobStore.nextQueuedRunId(deviceId)
-      if (!runId) continue
-      const run = deps.runs.getRun(runId)
-      if (!run) continue
-      stillWaiting.set(deviceId, 'control')
-      deps.onJobWaiting({
-        jobId: run.jobId,
-        runId: run.id,
-        deviceId,
-        waiting: true,
-        reason: 'control',
-        conflicting: deps.activities.liveControls(deviceId)[0] ?? null,
-        remainingSec,
-      })
-    }
+    const stillWaiting = new Map<string, 'paced'>()
     for (const [deviceId, paced] of pacedBlocked) {
-      if (stillWaiting.has(deviceId)) continue
       stillWaiting.set(deviceId, 'paced')
       deps.onJobWaiting({ jobId: paced.jobId, runId: paced.runId, deviceId, waiting: true, reason: 'paced', conflicting: null, remainingSec: paced.remainingSec })
     }
@@ -164,19 +137,18 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     try {
       do {
         dirty = false
-        const { waiting: controlWaiting, exclude: controlExclude } = computeControlBlocked()
+        const installExclude = computeInstallBlocked()
         const pacedBlocked = computePacedBlocked()
-        broadcastWaiting(controlWaiting, pacedBlocked)
+        broadcastWaiting(pacedBlocked)
         for (;;) {
           let claimed
           try {
-            claimed = deps.jobStore.claimNext(deps.jobTtlSec, [...controlExclude.keys()])
+            claimed = deps.jobStore.claimNext(deps.jobTtlSec, [...installExclude.keys()])
           } catch (err) {
             deps.log.warn(`job claim failed: ${String(err)}`)
             break
           }
           if (!claimed) break
-          waitStartedAt.delete(claimed.deviceId)
           deps.log.info(`run claimed: ${claimed.run.id} (job ${claimed.job.id}) → device ${claimed.deviceId}`)
           const names = claimed.job.scriptId ? deps.jobStore.scriptNames([claimed.job.scriptId]) : new Map()
           const scriptName = claimed.job.scriptName ?? (claimed.job.scriptId ? names.get(claimed.job.scriptId)?.name : null) ?? claimed.job.workflowName ?? claimed.job.id

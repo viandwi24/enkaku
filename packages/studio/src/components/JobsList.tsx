@@ -153,7 +153,7 @@ export interface JobsListProps {
    * never wires the live push still gets an honest, if less immediate,
    * answer to "why is this not running yet".
    */
-  waiting?: Record<string, { reason: 'control' | 'paced'; remainingSec: number }>
+  waiting?: Record<string, { reason: 'paced'; remainingSec: number }>
 }
 
 const DEFAULT_COLUMNS: JobsListColumns = { script: true, device: true, time: 'created', actions: true }

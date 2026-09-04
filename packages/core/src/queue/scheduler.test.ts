@@ -2,7 +2,7 @@ import { describe, expect, spyOn, test } from 'bun:test'
 import type { JobRow, JobRunRow } from '../db/schema'
 import type { RunStore } from '../jobs/runs/store'
 import { createLogger } from '../util/logger'
-import { createScheduler, MAX_CONTROL_WAIT_SEC, type SchedulerDeps } from './scheduler'
+import { createScheduler, type SchedulerDeps } from './scheduler'
 import type { ClaimedJob, JobStore } from './job-store'
 import type { ExecutorHost } from '../jobs/executor-host'
 import type { ActivityKind, DeviceActivity } from '@enkaku/protocol'
@@ -10,7 +10,7 @@ import type { ActivityKind, DeviceActivity } from '@enkaku/protocol'
 /**
  * Plan 205 §3.2 item 6, §4.7 — "job over fresh control": a live control
  * marker delays a job; ended 15s ago (no live marker at all) does not; the
- * `MAX_CONTROL_WAIT_SEC` cap expires and the job proceeds; the waiting state
+ * a person driving never delays a job at all; the waiting state
  * is observable throughout, naming the conflicting activity. A live
  * `install` activity excludes a device from claiming silently (the policy
  * row "job over install = forbid"), without ever being reported as waiting.
@@ -164,88 +164,52 @@ function baseDeps(jobStore: JobStore, runs: RunStore, overrides: Partial<Schedul
   }
 }
 
-describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () => {
-  test('a live control marker blocks the job — not claimed, and the wait is broadcast visibly naming the conflicting activity', () => {
-    const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
-    const waitingEvents: Array<{ jobId: string; runId: string; deviceId: string; waiting: boolean; reason: 'control' | 'paced'; conflicting: DeviceActivity | null; remainingSec: number }> = []
-    const marker = controlActivity('client-1')
-    const scheduler = createScheduler(
-      baseDeps(store, runs, {
-        activities: fakeActivities({ liveControls: () => [marker] }),
-        onJobWaiting: (info) => waitingEvents.push(info),
-      }),
-    )
-
-    scheduler.kick()
-
-    // The device was excluded from the claim — the job was never actually claimed.
-    expect(claimedCalls.some((ex) => ex.includes('d1'))).toBe(true)
-    expect(waitingEvents).toHaveLength(1)
-    expect(waitingEvents[0]).toMatchObject({ jobId: 'job-1', runId: 'run-1', deviceId: 'd1', waiting: true, reason: 'control', conflicting: marker })
-    expect(waitingEvents[0]!.remainingSec).toBeGreaterThan(0)
-    expect(waitingEvents[0]!.remainingSec).toBeLessThanOrEqual(MAX_CONTROL_WAIT_SEC)
-  })
-
-  test('no live control marker at all does NOT block — the job is claimed immediately', () => {
+describe('createScheduler — a person driving never holds a job back (CEO, 2026-09-04)', () => {
+  /**
+   * The rule these replace: a queued run waited while a `control` marker was
+   * live, capped at 60 s. It was written into MVP 04 §3 as a proposal and
+   * struck after the owner hit it on hardware — a job sat queued only because
+   * someone had the device open in Device Control, which is indistinguishable
+   * from the lease the whole programme set out to remove. The state dot is
+   * now the entire model: amber (a person is driving) never blocks; only red
+   * (a job) blocks another job, through the SQL claim.
+   */
+  test('a live control marker does NOT block the job — claimed immediately, and nothing is reported as waiting', () => {
     const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
     const waitingEvents: unknown[] = []
     const scheduler = createScheduler(
       baseDeps(store, runs, {
-        activities: fakeActivities({ liveControls: () => [] }),
+        activities: fakeActivities({ liveControls: () => [controlActivity('client-1')] }),
         onJobWaiting: (info) => waitingEvents.push(info),
       }),
     )
 
     scheduler.kick()
 
+    expect(claimedCalls.some((ex) => ex.includes('d1'))).toBe(false)
     expect(waitingEvents).toHaveLength(0)
-    // claimNext was called with an EMPTY exclude list (nothing blocked) and actually claimed the job.
-    expect(claimedCalls.some((ex) => ex.length === 0)).toBe(true)
   })
 
-  test('the MAX_CONTROL_WAIT_SEC cap forces the job to proceed even though a control marker is still live (never waits past the cap)', () => {
-    const realNow = Date.now()
-    const nowSpy = spyOn(Date, 'now').mockReturnValue(realNow)
-    try {
-      const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
-      const scheduler = createScheduler(
-        baseDeps(store, runs, {
-          activities: fakeActivities({ liveControls: () => [controlActivity('client-1')] }),
-          onJobWaiting: () => {},
-        }),
-      )
-
-      // First tick: observed blocked, the wait clock starts here.
-      scheduler.kick()
-      expect(claimedCalls.at(-1)).toEqual(['d1'])
-
-      // Advance the clock past the cap and tick again — the job proceeds
-      // even though the control marker is still live.
-      nowSpy.mockReturnValue(realNow + (MAX_CONTROL_WAIT_SEC + 1) * 1000)
-      scheduler.kick()
-      expect(claimedCalls.at(-1)).toEqual([])
-    } finally {
-      nowSpy.mockRestore()
-    }
-  })
-
-  test('a job is never silently dropped by the control gate — it keeps its place and is claimed the moment the marker ends', () => {
-    let live: DeviceActivity[] = [controlActivity('client-1')]
+  test('two people driving the same device still do not block it — the marker count is irrelevant, not merely small', () => {
     const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
     const scheduler = createScheduler(
       baseDeps(store, runs, {
-        activities: fakeActivities({ liveControls: () => live }),
-        onJobWaiting: () => {},
+        activities: fakeActivities({ liveControls: () => [controlActivity('client-1'), controlActivity('client-2')] }),
       }),
     )
 
-    scheduler.kick() // blocked — not claimed
-    expect(claimedCalls.at(-1)).toEqual(['d1'])
-
-    // The marker ends.
-    live = []
     scheduler.kick()
-    expect(claimedCalls.at(-1)).toEqual([])
+
+    expect(claimedCalls.some((ex) => ex.includes('d1'))).toBe(false)
+  })
+
+  test('no live control marker at all is claimed the same way — the two cases are now indistinguishable', () => {
+    const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'] })
+    const scheduler = createScheduler(baseDeps(store, runs, { activities: fakeActivities({ liveControls: () => [] }) }))
+
+    scheduler.kick()
+
+    expect(claimedCalls.some((ex) => ex.includes('d1'))).toBe(false)
   })
 
   test('without wiring `onJobWaiting` at all, behaviour is unchanged — nothing is ever reported (a host that predates this plan)', () => {
@@ -286,7 +250,7 @@ describe('createScheduler — control wait (plan 205 §3.2 item 6, §4.7)', () =
 
 /**
  * Plan 94 §3.8, §4.8, step 94.6 — the scheduler's own half of the pacer's
- * visibility: `job.waiting` gains `reason: 'control' | 'paced'` (renamed
+ * visibility: `job.waiting` gains `reason: 'paced'` (renamed
  * from `'quiet'` by plan 205 §4.7), and a paced job reports its remaining
  * seconds. This only proves the reason and remaining seconds reach
  * `onJobWaiting` (the wire, via `daemon.ts`'s passthrough broadcast) —
@@ -297,7 +261,7 @@ describe('createScheduler — paced wait (plan 94 §3.8, §4.8, step 94.6)', () 
   test('a job whose notBefore is in the future is reported waiting with reason: "paced" and a positive remainingSec — and is NOT excluded from claimNext (pacing is per-row, never device-wide)', () => {
     const now = Math.floor(Date.now() / 1000)
     const { store, runs, claimedCalls } = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now + 5 })
-    const waitingEvents: Array<{ jobId: string; runId: string; deviceId: string; waiting: boolean; reason: 'control' | 'paced'; conflicting: DeviceActivity | null; remainingSec: number }> = []
+    const waitingEvents: Array<{ jobId: string; runId: string; deviceId: string; waiting: boolean; reason: 'paced'; conflicting: DeviceActivity | null; remainingSec: number }> = []
     const scheduler = createScheduler(baseDeps(store, runs, { onJobWaiting: (info) => waitingEvents.push(info) }))
 
     scheduler.kick()
@@ -333,10 +297,10 @@ describe('createScheduler — paced wait (plan 94 §3.8, §4.8, step 94.6)', () 
     expect(waitingEvents).toHaveLength(0)
   })
 
-  test('a device that is both control-blocked AND paced reports "control" — the control gate is what is actually excluding it from claimNext right now', () => {
+  test('a paced device with someone driving it reports "paced" and nothing else — the control marker contributes no wait at all', () => {
     const now = Math.floor(Date.now() / 1000)
     const { store, runs } = fakeJobStore({ queuedDeviceIds: ['d1'], notBefore: now + 5 })
-    const waitingEvents: Array<{ reason: 'control' | 'paced' }> = []
+    const waitingEvents: Array<{ reason: 'paced' }> = []
     const scheduler = createScheduler(
       baseDeps(store, runs, {
         activities: fakeActivities({ liveControls: () => [controlActivity('client-1')] }),
@@ -347,6 +311,6 @@ describe('createScheduler — paced wait (plan 94 §3.8, §4.8, step 94.6)', () 
     scheduler.kick()
 
     expect(waitingEvents).toHaveLength(1)
-    expect(waitingEvents[0]!.reason).toBe('control')
+    expect(waitingEvents[0]!.reason).toBe('paced')
   })
 })

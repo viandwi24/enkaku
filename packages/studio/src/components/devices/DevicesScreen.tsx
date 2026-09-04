@@ -3,11 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import type { Target } from '@enkaku/protocol'
-import { toast } from 'sonner'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
 import { DeviceControl } from '@/components/device-control/DeviceControl'
 import { retargetSelection } from '@/components/device-control/retarget'
-import { runAction, groupResults } from '@/lib/actions'
+import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import type { GenericActionId } from '@/lib/generic-actions'
 import { readLocalPrefs, readSessionPrefs, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { ws } from '@/lib/ws'
@@ -140,6 +139,8 @@ export function DevicesScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const { open: openActionDialog } = useActionDialogs()
+
   const pendingCount = discovered.length
 
   const target: Target = { deviceIds: [...selection.selected] }
@@ -149,30 +150,25 @@ export function DevicesScreen() {
     setTimeout(() => setSpinning(false), 1400)
   }
 
-  const NEEDS_DIALOG = new Set(['install', 'adb', 'run-script', 'push', 'clear-cache', 'settings'])
-
   /**
-   * Device Control's Actions tab (plan 215 §4.10, §4.15): every row calls
-   * this with the focused (host) device only — REST verbs take their own
-   * target, never the mirror selection (MVP 07, plan 215 §3.2 D11). A
-   * `needsDialog` verb has no dialog yet (plan 216) and is announced rather
-   * than silently attempted.
+   * Device Control's Actions tab (plan 215 §4.10, §4.15).
+   *
+   * Every row opens the verb's own dialog with the focused device pre-filled,
+   * exactly like the bulk menu (`ActionMenu`) and the Scripts and Plugins
+   * entry points. Plan 215 shipped a stub here that fired six verbs straight
+   * at REST and announced the other six as "Opens a dialog (plan 216)";
+   * plan 216 built the dialogs but wired the entry points that existed on ITS
+   * branch, and this one was on 215's — both plans ran in R5. The owner found
+   * the dead buttons on real hardware (field report, 2026-09-04). Nothing
+   * typed could have caught it: the stub was a toast string.
+   *
+   * Routing every verb through the dialog is also what MVP 07 §2.1 asks for —
+   * the DevicePicker sits at the top of every action modal, pre-filled to the
+   * single device when there is only one, and still changeable.
    */
-  async function runDeviceAction(id: GenericActionId, extraParams?: Record<string, unknown>) {
+  const openDeviceAction = (id: GenericActionId, prefill?: Record<string, unknown>) => {
     if (!focusId) return
-    if (NEEDS_DIALOG.has(id) && !extraParams) {
-      toast.message('Opens a dialog (plan 216)')
-      return
-    }
-    try {
-      const res = await runAction(id, { deviceIds: [focusId] }, (extraParams ?? {}) as never)
-      const grouped = groupResults(res.results)
-      const failed = grouped.failed.length + grouped.forbidden.length
-      if (failed > 0) toast.warning(`${grouped.done.length} done, ${failed} refused`)
-      else toast.success('Done')
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
+    openActionDialog(id, { deviceIds: [focusId] }, prefill)
   }
 
   if (devices === null) {
@@ -246,7 +242,7 @@ export function DevicesScreen() {
           deviceId={focusId}
           selectedIds={[...selection.selected]}
           onClose={() => setFocus(null)}
-          onAction={(id, params) => void runDeviceAction(id, params)}
+          onAction={(id, params) => openDeviceAction(id, params)}
         />
       )}
     </div>

@@ -349,21 +349,20 @@ export const JobArtifactMessage = z.object({
 /**
  * A queued job is waiting before it can claim its target device — broadcast
  * while the wait is in progress so it is legible rather than looking stuck,
- * and once more with `waiting: false` the moment the job actually claims
- * the device (or, for `reason: 'control'`, the wait's own `MAX_CONTROL_WAIT_SEC`
- * cap expires and the job proceeds anyway).
+ * and once more with `waiting: false` the moment the job claims the device.
  *
- * Two distinct reasons share this one message (plan 205 §3.2 item 6 renamed
- * the original `'quiet'` reason to `'control'`; `'paced'` — plan 94 §3.8,
- * §4.8, step 94.6 — is unchanged): both are the same shape of fact from a
- * Studio job list's point of view: "this queued job cannot claim its device
- * yet, and here is how long that is expected to last." `conflicting` is only
- * ever non-null for `'control'` — a paced wait has no conflicting activity to
- * name, it is simply not due yet (`jobs.not_before`, unix seconds).
+ * **One reason, not two.** `'control'` (plan 205 §3.2 item 6, itself a rename
+ * of plan 71's `'quiet'`) was struck on 2026-09-04: a person driving a device
+ * never holds a job back, so no such wait is ever broadcast. Leaving the value
+ * in the enum would leave a wire fact nothing produces — the "declared,
+ * rendered, never read" class this codebase keeps paying for — so it is gone
+ * from the type as well as from the scheduler. `'paced'` (plan 94 §3.8, §4.8,
+ * step 94.6) is unchanged: the job is simply not due yet
+ * (`job_runs.not_before`, unix seconds).
  *
- * Rendering this (e.g. Studio's "waiting — next repetition in 4s" line) is
- * a LATER step's own surface (94.10) — this message only proves the reason
- * and remaining seconds reach the wire.
+ * `conflicting` stays on the payload and is always null now. It is kept
+ * because the shape is what a job list renders against, and a future wait
+ * with a real conflicting activity would fill it.
  */
 export const JobWaitingMessage = z.object({
   type: z.literal('job.waiting'),
@@ -372,11 +371,11 @@ export const JobWaitingMessage = z.object({
     runId: z.string(),
     deviceId: z.string(),
     waiting: z.boolean(),
-    /** 'control' (plan 205 §3.2 item 6 — waiting for a live control marker to go quiet) | 'paced' (plan 94 §3.8, §4.8, step 94.6 — waiting on the job's own `notBefore`). */
-    reason: z.enum(['control', 'paced']),
+    /** 'paced' (plan 94 §3.8, §4.8, step 94.6 — waiting on the job's own `notBefore`) is the only reason a job waits. */
+    reason: z.enum(['paced']),
     /** The live activity the device is waiting to go quiet from — null once free, and always null for `reason: 'paced'`. */
     conflicting: DeviceActivitySchema.nullable(),
-    /** Seconds remaining before the wait is satisfied: the control wait (or its `MAX_CONTROL_WAIT_SEC` cap) for `'control'`, `notBefore - now` for `'paced'`. */
+    /** Seconds remaining before the wait is satisfied: `notBefore - now`. */
     remainingSec: z.number().int().min(0),
   }),
 })
