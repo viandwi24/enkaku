@@ -135,39 +135,39 @@ export function createRetentionGc(deps: {
     // above: same arithmetic, but that one is wrapped in a `Date` because its
     // column is seconds-backed, and this one must not be.
     const cutoffMs = Date.now() - policy.traceDays * 86_400_000
-    const staleJobIds = deps.db
-      .select({ jobId: jobEvents.jobId, lastAtMs: sql<number>`max(${jobEvents.atMs})`.as('last_at_ms') })
+    const staleRunIds = deps.db
+      .select({ runId: jobEvents.runId, lastAtMs: sql<number>`max(${jobEvents.atMs})`.as('last_at_ms') })
       .from(jobEvents)
-      .groupBy(jobEvents.jobId)
+      .groupBy(jobEvents.runId)
       .all()
       .filter((r) => r.lastAtMs < cutoffMs)
-      .map((r) => r.jobId)
-    if (staleJobIds.length === 0) return 0
+      .map((r) => r.runId)
+    if (staleRunIds.length === 0) return 0
 
-    for (const jobId of staleJobIds) {
+    for (const runId of staleRunIds) {
       try {
-        rmSync(traceStore.jobDir(jobId), { recursive: true, force: true })
+        rmSync(traceStore.runDir(runId), { recursive: true, force: true })
       } catch (err) {
         // Exactly `removeRows`' rule one function up: a file that will not go
         // away costs its own warning and nothing else. The rows still go, so a
         // sweep that cannot unlink degrades to leaked bytes on disk — never to
-        // an aborted sweep that also leaves every LATER job's rows behind.
-        deps.log.warn(`failed to delete trace directory for job ${jobId}: ${String(err)}`)
+        // an aborted sweep that also leaves every LATER run's rows behind.
+        deps.log.warn(`failed to delete trace directory for run ${runId}: ${String(err)}`)
       }
     }
 
     let rows = 0
     // `inArray` binds one parameter per id and SQLite has a ceiling on those.
-    // The first sweep after an upgrade can face every job the farm has ever
-    // run, so this is chunked where the deleted per-run sweep above is not.
-    for (let i = 0; i < staleJobIds.length; i += 500) {
+    // The first sweep after an upgrade can face every run the farm has ever
+    // done, so this is chunked where the deleted per-run sweep above is not.
+    for (let i = 0; i < staleRunIds.length; i += 500) {
       rows += changedRows(
-        deps.db.delete(jobEvents).where(inArray(jobEvents.jobId, staleJobIds.slice(i, i + 500))).run(),
+        deps.db.delete(jobEvents).where(inArray(jobEvents.runId, staleRunIds.slice(i, i + 500))).run(),
       )
     }
 
-    deps.log.info(`trace retention: deleted ${staleJobIds.length} job trace(s) (${rows} event row(s))`)
-    return staleJobIds.length
+    deps.log.info(`trace retention: deleted ${staleRunIds.length} run trace(s) (${rows} event row(s))`)
+    return staleRunIds.length
   }
 
   function sweepOnce(): {

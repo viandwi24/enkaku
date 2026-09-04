@@ -1,24 +1,21 @@
 import type { JobStatus, JobSummary, ResultStatus } from '@enkaku/protocol'
-import { and, asc, desc, eq, isNotNull, lt, ne } from 'drizzle-orm'
+import { and, asc, desc, eq } from 'drizzle-orm'
 import type { Db } from '../db'
-import { jobs, type JobRow } from '../db/schema'
+import { jobRuns, jobs, type JobRow, type JobRunRow } from '../db/schema'
 import { decodeCursor, encodeCursor } from '../api/pagination'
 import type { JobStore } from '../queue/job-store'
+import type { RunStore } from './runs/store'
 
 /**
- * A running script's own view of the queue (plan 80). Every method takes the
- * CALLER's own `JobRow` as its first argument rather than a `deviceId` — the
- * scope is derived, never passed, so there is no argument that can widen it
- * to another device (§3.2, criterion 2).
- *
- * `list` is the existing `JobStore.list` (plan 30's keyset paging) with
- * `deviceId` pinned to `job.deviceId` — no second query engine (§3.1).
- * `previous`/`queuedAfter` are narrow, single-purpose reads directly against
- * the `jobs` table for the one question each answers; neither is a second
- * generic list.
+ * A running script's own view of the queue (plan 80, re-keyed to runs by
+ * plan 211). Every method takes the CALLER's own `JobRow` as its first
+ * argument rather than a `deviceId` — the scope is derived, never passed, so
+ * there is no argument that can widen it to another device (§3.2,
+ * criterion 2).
  */
 export interface ScriptJobsDeps {
   jobStore: JobStore
+  runs: RunStore
   db: Db
 }
 
@@ -45,43 +42,33 @@ const toSec = (d: Date | null): number | null => (d ? Math.floor(d.getTime() / 1
 
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'cancelled', 'expired'])
 
-function toSummary(row: JobRow, names: Map<string, { name: string; version: string }>): JobSummary {
-  const script = names.get(row.scriptId)
-  const startedAt = row.startedAt
-  const finishedAt = row.finishedAt
+function toSummary(row: JobRow, run: JobRunRow | null, names: Map<string, { name: string; version: string }>): JobSummary {
+  const script = row.scriptId ? names.get(row.scriptId) : undefined
+  const startedAt = run?.startedAt ?? null
+  const finishedAt = run?.finishedAt ?? null
   return {
     jobId: row.id,
-    // Plan 82 §3.4 denormalised `scriptName`/`scriptVersion` onto the row
-    // itself; a row written before that column existed falls back to the
-    // `scriptNames()` lookup, exactly as JobSummary's own doc comment says.
     scriptName: row.scriptName ?? script?.name ?? null,
     scriptVersion: row.scriptVersion ?? script?.version ?? null,
-    // Plan 82 §3.4 has not landed a column to read these from yet — always
-    // null until it does (see JobSummarySchema's own comment).
     origin: null,
     pluginName: null,
-    status: (row.status ?? 'queued') as JobStatus,
+    status: (run?.status ?? 'queued') as JobStatus,
     createdAt: toSec(row.createdAt) ?? 0,
     startedAt: toSec(startedAt),
     finishedAt: toSec(finishedAt),
     durationMs: startedAt && finishedAt ? finishedAt.getTime() - startedAt.getTime() : null,
-    failureClass: row.failureClass ?? null,
-    errorPhase: row.errorPhase ?? null,
-    error: row.error ?? null,
-    // Plan 81 §4.1 lineage — null for a job nothing triggered (a
-    // pre-plan-81 row, or one a human/schedule/batch created directly).
+    failureClass: run?.failureClass ?? null,
+    errorPhase: run?.errorPhase ?? null,
+    error: run?.error ?? null,
     triggeredByJobId: row.triggeredByJobId ?? null,
     rootJobId: row.rootJobId ?? null,
     depth: row.depth ?? null,
-    // Plan 97 §4.6 — the verdict ONLY (never the value, never the summary
-    // text): plan 80 §3.3's rule that a neighbouring script reads a result
-    // through `resultOf()` and nowhere else stands.
-    resultStatus: (row.resultStatus ?? null) as ResultStatus | null,
+    resultStatus: (run?.resultStatus ?? null) as ResultStatus | null,
   }
 }
 
 export function createScriptJobsReader(deps: ScriptJobsDeps): ScriptJobsReader {
-  const { jobStore, db } = deps
+  const { jobStore, runs, db } = deps
 
   return {
     list(job, q) {
@@ -93,70 +80,60 @@ export function createScriptJobsReader(deps: ScriptJobsDeps): ScriptJobsReader {
         limit,
         cursor,
       })
-      const names = jobStore.scriptNames(page.rows.map((r) => r.scriptId))
-      const items = page.rows.map((r) => toSummary(r, names))
+      const scriptIds = page.rows.map((r) => r.scriptId).filter((id): id is string => id !== null)
+      const names = jobStore.scriptNames(scriptIds)
+      const latestRuns = runs.latestRuns(page.rows.map((r) => r.id))
+      const items = page.rows.map((r) => toSummary(r, latestRuns.get(r.id) ?? null, names))
       const nextCursor = page.nextCursor ? encodeCursor(page.nextCursor.sortValue, page.nextCursor.id) : null
       return { items, nextCursor, total: page.total }
     },
 
     previous(job) {
-      if (!job.startedAt) return null
+      const ownRun = runs.latestRun(job.id)
+      if (!ownRun?.startedAt) return null
       const row = db
-        .select()
-        .from(jobs)
-        .where(
-          and(
-            eq(jobs.deviceId, job.deviceId),
-            isNotNull(jobs.finishedAt),
-            lt(jobs.finishedAt, job.startedAt),
-            ne(jobs.id, job.id),
-          ),
-        )
-        .orderBy(desc(jobs.finishedAt), desc(jobs.id))
-        .limit(1)
-        .get()
+        .select({ job: jobs, run: jobRuns })
+        .from(jobRuns)
+        .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+        .where(and(eq(jobRuns.deviceId, job.deviceId), eq(jobRuns.status, 'success')))
+        .orderBy(desc(jobRuns.finishedAt), desc(jobRuns.id))
+        .all()
+        .find((r) => r.run.finishedAt && ownRun.startedAt && r.run.finishedAt < ownRun.startedAt && r.job.id !== job.id)
       if (!row) return null
-      const names = jobStore.scriptNames([row.scriptId])
-      return toSummary(row, names)
+      const names = row.job.scriptId ? jobStore.scriptNames([row.job.scriptId]) : new Map()
+      return toSummary(row.job, row.run, names)
     },
 
     queuedAfter(job, limit) {
       const lim = Math.min(Math.max(1, limit), MAX_LIMIT)
-      // Same ordering `JobStore.claimNext` uses (plan 20 §3.3, §4.2):
-      // `priority DESC, createdAt ASC, batchSeq ASC` — "claim order" means
-      // exactly this, not `createdAt` alone.
       const rows = db
-        .select()
-        .from(jobs)
-        .where(and(eq(jobs.deviceId, job.deviceId), eq(jobs.status, 'queued')))
-        .orderBy(desc(jobs.priority), asc(jobs.createdAt), asc(jobs.batchSeq))
+        .select({ job: jobs, run: jobRuns })
+        .from(jobRuns)
+        .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+        .where(and(eq(jobRuns.deviceId, job.deviceId), eq(jobRuns.status, 'queued')))
+        .orderBy(desc(jobRuns.priority), asc(jobRuns.createdAt))
         .limit(lim)
         .all()
-      const names = jobStore.scriptNames(rows.map((r) => r.scriptId))
-      return rows.map((r) => toSummary(r, names))
+      const scriptIds = rows.map((r) => r.job.scriptId).filter((id): id is string => id !== null)
+      const names = jobStore.scriptNames(scriptIds)
+      return rows.map((r) => toSummary(r.job, r.run, names))
     },
 
     resultOf(job, targetJobId) {
       const target = jobStore.get(targetJobId)
       if (!target) return { ok: false, reason: 'not-found' }
-      if (!target.finishedAt || !TERMINAL_STATUSES.has(target.status ?? '')) {
+      const targetRun = runs.latestRun(targetJobId)
+      if (!targetRun?.finishedAt || !TERMINAL_STATUSES.has(targetRun.status)) {
         return { ok: false, reason: 'not-finished' }
       }
-      // "Same namespace" (§3.3): the same script, by name — the closest
-      // available analogue to plan 79's kv namespace until plan 81/82 give
-      // jobs a real plugin/dev-slot identity. Prefer the row's own
-      // denormalised `scriptName` (plan 82 §3.4) and fall back to the
-      // `scriptNames()` join for a row written before that column existed —
-      // the same fallback `toSummary` uses. A caller whose own script cannot
-      // be named at all (an internal/dummy job with no `scripts` row) can
-      // never match anything, which is the safe default.
-      const names = jobStore.scriptNames([job.scriptId, target.scriptId])
-      const callerName = job.scriptName ?? names.get(job.scriptId)?.name
-      const targetName = target.scriptName ?? names.get(target.scriptId)?.name
+      const scriptIds = [job.scriptId, target.scriptId].filter((id): id is string => id !== null)
+      const names = jobStore.scriptNames(scriptIds)
+      const callerName = job.scriptName ?? (job.scriptId ? names.get(job.scriptId)?.name : undefined)
+      const targetName = target.scriptName ?? (target.scriptId ? names.get(target.scriptId)?.name : undefined)
       if (!callerName || !targetName || callerName !== targetName) {
         return { ok: false, reason: 'foreign-namespace' }
       }
-      return { ok: true, result: target.result ?? null }
+      return { ok: true, result: targetRun.result ?? null }
     },
   }
 }
