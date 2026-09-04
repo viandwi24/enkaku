@@ -69,10 +69,26 @@ export function SectionNav({
   sections,
   active,
   onChange,
+  navOnly = false,
 }: {
   sections: SettingsSection[]
   active: string
   onChange(id: string): void
+  /**
+   * Render ONLY the tab strip, for a caller that lays out its own panel.
+   *
+   * This component has always been the whole two-column screen — strip plus
+   * panel — and two callers (`app/settings`, `agents/SettingsTab`) wrapped it
+   * in their own grid and rendered `render()` a SECOND time in their own right
+   * column, per plan 219 §4.5's outline. The result was every settings card
+   * drawn twice, one squeezed behind the other, with two "Save changes" bars
+   * (owner, 2026-09-04). Nothing typed could see it: both renders are valid
+   * React.
+   *
+   * `agents/detail` uses the built-in panel and is untouched, which is why
+   * this is a flag rather than a split of the component.
+   */
+  navOnly?: boolean
 }): ReactNode {
   const visible = sections.filter((s) => s.visible !== false)
   const resolved = resolveActiveSection(sections, active)
@@ -145,23 +161,29 @@ export function SectionNav({
     )
   }
 
+  const strip = (
+    <div
+      role="tablist"
+      aria-orientation="vertical"
+      aria-label="Settings sections"
+      className="flex gap-1 overflow-x-auto pb-1 sm:flex-col sm:overflow-visible sm:pb-0"
+    >
+      {hasGroups
+        ? runs.map((r, i) => (
+            <div key={r.group ?? `ungrouped-${i}`} className="contents sm:block">
+              {r.group && <p className="rack-label px-3 pb-1 pt-3 text-fg-subtle first:pt-0">{r.group}</p>}
+              {r.items.map(tab)}
+            </div>
+          ))
+        : visible.map(tab)}
+    </div>
+  )
+
+  if (navOnly) return strip
+
   return (
     <div className="grid gap-4 sm:grid-cols-[200px_1fr]">
-      <div
-        role="tablist"
-        aria-orientation="vertical"
-        aria-label="Settings sections"
-        className="flex gap-1 overflow-x-auto pb-1 sm:flex-col sm:overflow-visible sm:pb-0"
-      >
-        {hasGroups
-          ? runs.map((r, i) => (
-              <div key={r.group ?? `ungrouped-${i}`} className="contents sm:block">
-                {r.group && <p className="rack-label px-3 pb-1 pt-3 text-fg-subtle first:pt-0">{r.group}</p>}
-                {r.items.map(tab)}
-              </div>
-            ))
-          : visible.map(tab)}
-      </div>
+      {strip}
       <div
         role="tabpanel"
         id={resolved ? `section-panel-${resolved.id}` : undefined}

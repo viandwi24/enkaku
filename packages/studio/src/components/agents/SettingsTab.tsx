@@ -106,7 +106,7 @@ export function SettingsTab() {
   return (
     <div className="grid grid-cols-[236px_1fr] gap-0 border-t border-line">
       <div className="border-r border-line px-2.5 py-3 pb-4">
-        <SectionNav sections={sections} active={tab} onChange={setTab} />
+        <SectionNav navOnly sections={sections} active={tab} onChange={setTab} />
       </div>
       <div className="max-w-[720px] px-[22px] pt-[18px] pb-7">{sections.find((s) => s.id === tab)?.render() ?? sections[0]?.render()}</div>
     </div>

@@ -108,7 +108,7 @@ function SettingsScreen() {
       <PageHeader title="Settings" />
       <div className="grid grid-cols-[236px_1fr] gap-0 border-t border-line">
         <div className="border-r border-line px-2.5 py-3 pb-4">
-          <SectionNav sections={settingsSections} active={tab} onChange={(id) => router.push(id === 'general' ? '/settings' : `/settings?tab=${id}`)} />
+          <SectionNav navOnly sections={settingsSections} active={tab} onChange={(id) => router.push(id === 'general' ? '/settings' : `/settings?tab=${id}`)} />
         </div>
         <div className="max-w-[720px] px-[22px] pt-[18px] pb-7">
           {settingsSections.find((s) => s.id === tab)?.render() ?? settingsSections[0]?.render()}
