@@ -8,14 +8,28 @@ import 'reflect-metadata'
  * The default path — everything the entrypoint did before plan 41.
  */
 async function startDaemon(): Promise<void> {
-  const { loadConfig } = await import('./config')
-  const { createDaemon } = await import('./daemon')
   const { EnkakuError } = await import('./util/errors')
   const { createLogger } = await import('./util/logger')
   const { maybeOpenBrowser, buildStudioUrl } = await import('./util/open-browser')
 
   const log = createLogger('main')
-  const cfg = loadConfig()
+
+  // `./config` imports `./config/constants` as its first import (plan 212
+  // §4.4), and both a support override read at module load and `loadConfig()`
+  // itself can throw `E_BAD_CONFIG`. Either failure prints the code and
+  // message and exits 1 rather than an unhandled-rejection stack.
+  let cfg: import('./config').CoreConfig
+  let createDaemon: typeof import('./daemon').createDaemon
+  try {
+    const configModule = await import('./config')
+    cfg = configModule.loadConfig()
+    createDaemon = (await import('./daemon')).createDaemon
+  } catch (err) {
+    if (err instanceof EnkakuError) log.error(`failed to start [${err.code}]: ${err.message}`)
+    else log.error(`failed to start: ${String(err)}`)
+    process.exit(1)
+  }
+
   const daemon = createDaemon(cfg)
 
   let shuttingDown = false

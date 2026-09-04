@@ -1,3 +1,4 @@
+import './config/constants'
 import { z } from 'zod'
 import { resolveDataDir } from './util/paths'
 import { EnkakuError } from './util/errors'
