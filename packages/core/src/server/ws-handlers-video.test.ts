@@ -72,6 +72,7 @@ function fakeSession(
     inspector: null,
     whenInspectorReady: async () => {},
     prewarmInspector: async () => {},
+    demoteInspector: () => {},
     inspectorEngineId: 'ui-server',
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },

@@ -173,7 +173,14 @@ export function DeviceControl({
       }}
     >
       <div className="flex w-[52px] shrink-0 flex-col items-center gap-1 bg-panel-2 py-2">
-        <ShortcutRail deviceId={deviceId} sendKey={cast.sendKey} onRotate={() => void cycleRotation()} />
+        <ShortcutRail
+          deviceId={deviceId}
+          sendKey={cast.sendKey}
+          onRotate={() => void cycleRotation()}
+          clipboardHistory={cast.deviceClipboardHistory}
+          onClearClipboardHistory={cast.clearDeviceClipboardHistory}
+          onReadClipboard={cast.readDeviceClipboard}
+        />
       </div>
 
       <Cast cast={cast} ratio={ratio} latencyOverlay={readLocalPrefs().latencyOverlay ?? false} onStartDrag={startDrag} />

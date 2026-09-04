@@ -102,11 +102,36 @@ export interface UseCast {
   pasteFromClipboard: () => Promise<void>
   /** The last `clipboard.changed` this device pushed, for Alt+C. */
   deviceClipboard: string | null
+  /** Everything this device has copied while the window has been open, newest first (plan 209 §3.2 D10's push, kept instead of discarded). */
+  deviceClipboardHistory: ClipboardEntry[]
+  /** Drops the remembered history. The device's own clipboard is untouched — this only forgets what Studio saw. */
+  clearDeviceClipboardHistory: () => void
+  /** One `clipboard.get`, folded into the same history the pushes feed. Throws so the caller can show the failure. */
+  readDeviceClipboard: () => Promise<void>
   copyDeviceClipboard: () => Promise<void>
   releaseFocus: () => void
   requestFullscreen: () => void
   retry: () => void
 }
+
+/**
+ * One thing the device copied. `at` is the browser's clock, not the device's:
+ * the wire message (`clipboard.changed`) carries no timestamp, and inventing
+ * a device-side one out of arrival time would be a measurement nobody made.
+ */
+export interface ClipboardEntry {
+  text: string
+  at: number
+}
+
+/**
+ * How many copies are remembered per device-control window. Clipboard content
+ * is very often a password or a one-time token — plan 38 §4.5 is explicit
+ * about that, which is why `clipboard.value` is unicast in the first place —
+ * so this is deliberately a short, in-memory, per-window list: it dies with
+ * the window, never reaches the DB, and never reaches another viewer.
+ */
+const CLIPBOARD_HISTORY_MAX = 20
 
 function metaOf(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }) {
   return { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey }
@@ -145,6 +170,7 @@ export function useCast(opts: UseCastOptions): UseCast {
   const [inputHost, setInputHost] = useState<InputHostLatency | null>(null)
   const [focused, setFocused] = useState(false)
   const [deviceClipboard, setDeviceClipboard] = useState<string | null>(null)
+  const [deviceClipboardHistory, setDeviceClipboardHistory] = useState<ClipboardEntry[]>([])
 
   function requestKeyframe() {
     if (streamIdRef.current === null) return
@@ -237,6 +263,7 @@ export function useCast(opts: UseCastOptions): UseCast {
         setStopped(msg.payload.reason)
       } else if (msg.type === 'clipboard.changed' && msg.payload.deviceId === deviceId) {
         setDeviceClipboard(msg.payload.text)
+        recordClipboard(msg.payload.text)
       } else if (msg.type === 'error') {
         setError(msg.payload.message)
       }
@@ -533,6 +560,40 @@ export function useCast(opts: UseCastOptions): UseCast {
     }
   }
 
+  /**
+   * Empty copies are ignored, and a repeat of what is already at the top is
+   * not a second entry: some devices re-announce the same clipboard on every
+   * focus change, and a history that fills with twenty copies of one string
+   * is not a history. A repeat further down the list DOES move back to the
+   * top — copying something again is a real event, and its position is the
+   * only thing that says which one is current.
+   */
+  function recordClipboard(text: string): void {
+    if (text.length === 0) return
+    setDeviceClipboardHistory((prev) => {
+      if (prev[0]?.text === text) return prev
+      return [{ text, at: Date.now() }, ...prev.filter((e) => e.text !== text)].slice(0, CLIPBOARD_HISTORY_MAX)
+    })
+  }
+
+  function clearDeviceClipboardHistory(): void {
+    setDeviceClipboardHistory([])
+  }
+
+  /**
+   * The one thing `clipboard.changed` cannot do: read what was already on
+   * the device's clipboard BEFORE this window opened. Its answer joins the
+   * same list the pushes feed, so the popover has one place to look rather
+   * than a live list beside a separate one-shot readout.
+   */
+  async function readDeviceClipboard(): Promise<void> {
+    const res = await ws.request({ type: 'clipboard.get', id: newId(), payload: { deviceId } })
+    if (res.type === 'clipboard.value') {
+      setDeviceClipboard(res.payload.text)
+      recordClipboard(res.payload.text)
+    }
+  }
+
   async function copyDeviceClipboard(): Promise<void> {
     let text = deviceClipboard
     if (text === null) {
@@ -544,6 +605,7 @@ export function useCast(opts: UseCastOptions): UseCast {
       }
     }
     if (text === null) return
+    recordClipboard(text)
     try {
       await navigator.clipboard.writeText(text)
     } catch {
@@ -709,6 +771,9 @@ export function useCast(opts: UseCastOptions): UseCast {
     sendKey,
     pasteFromClipboard,
     deviceClipboard,
+    deviceClipboardHistory,
+    clearDeviceClipboardHistory,
+    readDeviceClipboard,
     copyDeviceClipboard,
     releaseFocus,
     requestFullscreen,

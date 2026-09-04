@@ -143,6 +143,15 @@ export interface DeviceSession {
    */
   prewarmInspector(): Promise<void>
   /**
+   * Give up on the current inspector engine and drop to `uiautomator-dump`,
+   * which shells `uiautomator dump` and has no on-device server to lose.
+   *
+   * Called when a call fails at the transport level — a closed port, a
+   * refused connection — which means the engine is gone rather than busy.
+   * Idempotent: already on the bottom rung is a no-op.
+   */
+  demoteInspector(reason: string): void
+  /**
    * Resolves once this session's text-input keyboard has been set up — and
    * STARTS that setup if nothing has yet (plan 125 §3.8, §4.5, §5 step 125.8).
    *
@@ -511,12 +520,26 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    */
   let inspectorHandle: Awaited<ReturnType<NonNullable<CreateSessionDeps['makeInspector']>>> | null = null
   let inspectorPromise: Promise<void> | null = null
+  /**
+   * The engine to ask for on the NEXT start, once the configured one has
+   * proved it cannot stay up on this device.
+   *
+   * `ui-server` runs a JSON-RPC server inside an `am instrument` process on
+   * the phone, and on some builds that process crashes seconds after
+   * reporting ready — the owner's Android 15 phone does it every session.
+   * Its watchdog already gives up after three cycles, and its own doc comment
+   * says "the session manager runs the fallback"; nothing ever did, so the
+   * session kept a dead engine and every later call hit a closed port
+   * (2026-09-04). `uiautomator-dump` is the rung below: slower, and with no
+   * server to crash.
+   */
+  let inspectorFallback: string | null = null
   const startInspector = (): Promise<void> => {
     if (!deps.makeInspector) return Promise.resolve()
     inspectorPromise ??= (async () => {
       const t0 = Date.now()
       try {
-        const h = await deps.makeInspector!(opts.deviceId, transport, opts.inspection ?? null)
+        const h = await deps.makeInspector!(opts.deviceId, transport, inspectorFallback ?? opts.inspection ?? null)
         inspectorHandle = h
         session.inspector = h.inspector
         session.inspectorEngineId = h.engineId
@@ -892,6 +915,17 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // after the first frame (plan 206 §3.9); a job or `inspect.attach` that
     // reaches `whenInspectorReady()` first just joins the same start.
     prewarmInspector: startInspector,
+    demoteInspector: (reason: string) => {
+      if (inspectorFallback === 'uiautomator-dump') return
+      log.warn(`inspector ${session.inspectorEngineId} is not answering on ${opts.deviceId} (${reason}) — falling back to uiautomator-dump, which has no server to lose`)
+      inspectorFallback = 'uiautomator-dump'
+      const dying = inspectorHandle
+      inspectorHandle = null
+      inspectorPromise = null
+      session.inspector = null
+      session.inspectorEngineId = 'failed'
+      void dying?.release?.().catch(() => undefined)
+    },
     whenTextInputReady: startTextInput,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
     clipboard,

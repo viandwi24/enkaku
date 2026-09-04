@@ -38,11 +38,20 @@ import { ws } from '@/lib/ws'
  * farm's USB→network move on one screen, instead of one phone at a time.
  *
  * The mechanism is not new: this is `CutoverManager` (plan 88 §3.4), the
- * same arm/flip/watch state machine `CutoverDialog` drives for a single
- * device, fanned out over a selection. What was new is that nothing in
- * Studio mounted `CutoverDialog` at all after the MVP rewrite — the wizard
- * existed and was unreachable, which is why an operator looking for
- * "switch to OTG" could not find it.
+ * arm/flip/watch state machine, fanned out over a selection. What was new is
+ * that nothing in Studio mounted its old single-device dialog at all after
+ * the MVP rewrite — the wizard existed and was unreachable, which is why an
+ * operator looking for "switch to OTG" could not find it.
+ *
+ * That dialog (`components/device/CutoverDialog.tsx`) is now deleted rather
+ * than revived, and this is the only door. One phone is this screen with one
+ * row ticked, which is why the group filter and the single-phone address
+ * field below exist at all: the alternative was two surfaces for one action,
+ * drifting apart, which is the split this codebase argues against every time
+ * it comes up. The one thing the old dialog could do that a fleet screen
+ * cannot is a per-phone address, so that field came across with it — shown
+ * only when exactly one phone is ticked, because an address names one
+ * chassis port and nothing sensible can be done with one across twenty.
  *
  * Two things it will not pretend to do. The USB↔OTG role switch is a
  * physical button on the chassis (§2 non-goals): Enkaku enables adb-over-TCP
@@ -70,6 +79,7 @@ export function OtgSwitchDialog({
   const [group, setGroup] = useState('all')
   const [medium, setMedium] = useState<ConnectionMedium>('wired')
   const [port, setPort] = useState('')
+  const [address, setAddress] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   /** The server's own state per device, keyed by `stableId` — never a local guess about progress. */
   const [states, setStates] = useState<Record<string, CutoverState>>({})
@@ -125,6 +135,7 @@ export function OtgSwitchDialog({
       setStates({})
       setBusy(false)
       setPort('')
+      setAddress('')
       setMedium('wired')
       setGroup('all')
     }
@@ -171,8 +182,10 @@ export function OtgSwitchDialog({
     const p = parsedPort()
     for (const device of chosen) {
       try {
-        const body: { op: 'start'; medium: ConnectionMedium; port?: number } = { op: 'start', medium }
+        const body: { op: 'start'; medium: ConnectionMedium; port?: number; address?: string } = { op: 'start', medium }
         if (p !== undefined) body.port = p
+        // Only ever sent for a single phone — see the field's own note below.
+        if (chosen.length === 1 && address.trim()) body.address = address.trim()
         const r = await runOnDevice('cutover', device.id, body)
         const next = CutoverStateSchema.parse(r.detail)
         setStates((prev) => ({ ...prev, [device.stableId]: next }))
@@ -253,6 +266,27 @@ export function OtgSwitchDialog({
             </Select>
           </div>
         </div>
+
+        {chosen.length === 1 && (
+          <div className="min-w-0 space-y-1.5">
+            <Label htmlFor="otg-address" className="text-meta font-normal">
+              Address (optional — only needed if no network range is configured)
+            </Label>
+            <Input
+              id="otg-address"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="10.20.0.37:5555"
+              className="readout h-8"
+            />
+            <p className="text-meta text-faint">
+              Where this phone will answer once you flip its port. Without it Enkaku looks in the addresses it
+              remembers and in the ranges under Scan networks — which is enough for a farm that has either, and
+              nothing at all for a farm that has neither. One phone only: an address names one chassis port, so this
+              disappears the moment a second phone is ticked.
+            </p>
+          </div>
+        )}
 
         <div className="min-w-0">
           {visible.length === 0 ? (

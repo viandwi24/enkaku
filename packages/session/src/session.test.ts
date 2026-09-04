@@ -1018,3 +1018,64 @@ describe('createSession — forwardPort/scrcpyScid (plan 223 §4.3)', () => {
     await scrcpySession.close()
   })
 })
+
+/**
+ * The inspector must be there when someone reaches for it.
+ *
+ * `ui-server` runs a JSON-RPC server inside an `am instrument` process on the
+ * phone, and on some builds — the owner's Android 15 phone every session —
+ * that process dies seconds after reporting ready. The session then held a
+ * dead engine and every later call hit a closed port, so the Inspector tab's
+ * first press failed every time (2026-09-04). `uiautomator-dump` shells a
+ * command instead: slower, and with nothing to lose.
+ */
+describe('demoteInspector — the engine can go down, the feature cannot', () => {
+  test('after a demote the next start asks for uiautomator-dump, whatever the device was configured for', async () => {
+    const requested: Array<string | null> = []
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async (_id, _t, req) => {
+      requested.push(req)
+      return { inspector: {} as never, engineId: req ?? 'ui-server', pollIntervalMs: 500, release: async () => {} }
+    }
+
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', inspection: 'ui-server' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
+
+    await session.whenInspectorReady()
+    expect(requested).toEqual(['ui-server'])
+    expect(session.inspectorEngineId).toBe('ui-server')
+
+    session.demoteInspector('Unable to connect')
+    expect(session.inspector).toBeNull()
+    expect(session.inspectorEngineId).toBe('failed')
+
+    await session.whenInspectorReady()
+    expect(requested).toEqual(['ui-server', 'uiautomator-dump'])
+    expect(session.inspectorEngineId).toBe('uiautomator-dump')
+
+    await session.close()
+  })
+
+  test('demoting twice does not thrash — the bottom rung has nowhere to fall', async () => {
+    const requested: Array<string | null> = []
+    const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async (_id, _t, req) => {
+      requested.push(req)
+      return { inspector: {} as never, engineId: req ?? 'ui-server', pollIntervalMs: 500, release: async () => {} }
+    }
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', inspection: 'ui-server' },
+      { client: fakeClient(), log: silentLog(), makeInspector },
+    )
+
+    await session.whenInspectorReady()
+    session.demoteInspector('Unable to connect')
+    await session.whenInspectorReady()
+    session.demoteInspector('Unable to connect again')
+
+    // The second demote is a no-op: the engine it would fall to is the one
+    // already running.
+    expect(session.inspectorEngineId).toBe('uiautomator-dump')
+    await session.close()
+  })
+})

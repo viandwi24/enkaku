@@ -20,6 +20,7 @@ import {
 } from '@enkaku/ui'
 import { runOnDevice } from '@/lib/actions'
 import { ClipboardPopover } from './ClipboardPopover'
+import type { ClipboardEntry } from './use-cast'
 
 /**
  * The handoff's shortcut rail (README.md:250-253): 52px, ten 34x34 buttons,
@@ -31,10 +32,17 @@ export function ShortcutRail({
   deviceId,
   sendKey,
   onRotate,
+  clipboardHistory,
+  onClearClipboardHistory,
+  onReadClipboard,
 }: {
   deviceId: string
   sendKey: (keycode: number) => void
   onRotate: () => void
+  /** Everything the device has copied while this window has been open (`use-cast.ts`). */
+  clipboardHistory: ClipboardEntry[]
+  onClearClipboardHistory: () => void
+  onReadClipboard: () => Promise<void>
 }) {
   const [brightnessLabel, setBrightnessLabel] = useState<string | null>(null)
 
@@ -92,7 +100,12 @@ export function ShortcutRail({
       <RailButton icon={SquareIcon} label="Recents" hotkeyId="recents" onClick={() => sendKey(KEYCODES.APP_SWITCH)} />
       <RailButton icon={ClockCounterClockwiseIcon} label="Rotate" hotkeyId="rotate" onClick={onRotate} />
       <RailButton icon={SunIcon} label="Brightness" title={brightnessLabel ?? 'Brightness'} onClick={() => void cycleBrightness()} />
-      <ClipboardPopover deviceId={deviceId} />
+      <ClipboardPopover
+        deviceId={deviceId}
+        history={clipboardHistory}
+        onClearHistory={onClearClipboardHistory}
+        onRead={onReadClipboard}
+      />
     </>
   )
 }

@@ -62,8 +62,8 @@ function DialogContent({
    * `DialogPrimitive.Root` unchanged, but this component still had the only
    * place that could suppress the `bg-black/50` overlay itself.
    *
-   * A device popup (plan 103) opens dialogs — Run script, Cutover,
-   * Disconnect, Forget, Install apk — OVER a live phone the operator is
+   * A device popup (plan 103) opens dialogs — Run script, Disconnect,
+   * Forget, Install apk — OVER a live phone the operator is
    * actively watching. The ordinary modal path dims that phone to 50% black
    * and traps focus on it, which is backwards for a screen the operator most
    * wants to keep watching while the dialog is open.

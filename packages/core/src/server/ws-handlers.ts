@@ -415,6 +415,22 @@ export interface WsHandlerDeps {
   log: Logger
 }
 
+/**
+ * Is this the engine being gone, rather than the engine saying no?
+ *
+ * Matched on the message because these come from `fetch` and Bun's socket
+ * layer, which carry no code of their own. Deliberately narrow: a timeout or
+ * an application-level refusal must NOT demote a healthy engine.
+ */
+function isTransportFailure(message: string): boolean {
+  return (
+    message.includes('Unable to connect') ||
+    message.includes('socket connection was closed') ||
+    message.includes('ECONNREFUSED') ||
+    message.includes('the instrumentation ended')
+  )
+}
+
 export function createWsMessageHandler(deps: WsHandlerDeps) {
   // A plain Map, not a WeakMap: publishing a device event needs to iterate
   // every connection's subscriptions, which a WeakMap cannot do. `handleClose`
@@ -2294,6 +2310,24 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         const message = err instanceof Error ? err.message : String(err)
         const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'E_INTERNAL'
         deps.log.warn(`handler ${msg.type} failed: ${message}`)
+        /**
+         * An inspector call that failed at the TRANSPORT level means the
+         * engine is gone, not busy: a refused connection or a closed socket
+         * on its own forwarded port. `ui-server` runs a server inside an
+         * `am instrument` process, and on some phones that process dies
+         * seconds after reporting ready — the session then held a corpse and
+         * every later call hit the same closed port, so the Inspector tab's
+         * first press failed forever (owner, 2026-09-04).
+         *
+         * Demoting drops to `uiautomator-dump`, which shells a command and
+         * has no server to lose: slower, and it cannot go down. The engine in
+         * use stays visible as `liveInspection`, so the farm degrades in the
+         * open rather than quietly.
+         */
+        if (msg.type.startsWith('inspect.') && isTransportFailure(message)) {
+          const failing = 'deviceId' in msg.payload ? deps.sessions?.get(String(msg.payload.deviceId)) : null
+          failing?.demoteInspector(message)
+        }
         // Plan 91 §5 step 91.10 — a SEPARATE, rate-limited warn naming the
         // lane and the blocking source, beside the generic (unconditional,
         // per-message) warn right above: an operator holding a finger on a
