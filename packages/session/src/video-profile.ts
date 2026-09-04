@@ -24,9 +24,9 @@ export const WALL_PRESETS: Record<WallQuality, VideoNumbers> = {
 
 /**
  * Where one resolved number came from, for the Studio readout (plan 92
- * §3.9; reduced by plan 212 §4.5 — there is no more numeric farm override
- * to produce a `'farm'` (customized) source, only a named preset or a
- * per-device override).
+ * §3.9; reduced by plan 212 §4.5 — there is no more numeric override to
+ * produce a "customized" source, only a named preset or a per-device
+ * override).
  */
 export type VideoSource = 'preset' | 'device'
 

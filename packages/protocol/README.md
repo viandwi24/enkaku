@@ -111,3 +111,24 @@ It checks, among other things: every node id is unique and every `goto`/`next` t
 ### Workflow parameters — `workflow-params.ts`
 
 `compileWorkflowParams(params)` turns a workflow's own parameter declarations (plan 95's `ParamHints` vocabulary, reused verbatim) into the exact JSON Schema `z.toJSONSchema(<the equivalent Zod object>, { io: 'input' })` would produce — asserted by a test that builds both and deep-compares. This is the one place a workflow "compiles": to a schema, never to code, so the run dialog, the schedule editor, and the parameter form all work with no code written for workflows at all.
+
+## Settings (plan 212)
+
+`settings.ts` exports `FarmSettingsSchema` (nine top-level keys, 26 titled
+leaves total — 15 visible, 11 advanced under `advanced`) and
+`DeviceSettingsSchema` (`engines`, `identity`, `prep`, `autoReconnect`,
+`logInputText`, `instrumentation`, `overrides`), plus `resolveDeviceSetting`,
+the one function that combines a device's own override with the farm
+default. Everything that used to be a setting but does not differ between
+farms moved to `packages/core/src/config/constants.ts` as a named constant
+with an `ENKAKU_*` override — this package never reads an env var itself.
+
+Two runtime shapes that are no longer settings forms live in their own
+files with no `ui()` at all: `timing.ts` (`TimingSettingsSchema`, the tuples
+behind a named touch profile) and `job-settings.ts` (`JobSettingsSchema`,
+the shape the job runner and workflow orchestrator still consume,
+reconstructed from the farm's current settings by `daemon.ts`'s
+`jobConstants()` helper so neither has to change shape). `agent-settings.ts`
+holds `FarmAgentSettingsSchema` — named `FarmAgentSettings*`, not
+`AgentSettings*`, because `agent.ts` already owns that name for one agent's
+own per-agent settings block.

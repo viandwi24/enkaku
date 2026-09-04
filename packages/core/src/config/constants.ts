@@ -182,7 +182,7 @@ export const ADB_ENDPOINT_BIND = str('ENKAKU_ADB_ENDPOINT_BIND', '127.0.0.1')
 export const ADB_ENDPOINT_IDLE_SEC = num('ENKAKU_ADB_ENDPOINT_IDLE_SEC', 300, z.number().int().min(30).max(3_600))
 export const ADB_ENDPOINT_MAX_STREAMS = num('ENKAKU_ADB_ENDPOINT_MAX_STREAMS', 8, z.number().int().min(1).max(32))
 
-// ── Input arbitration and display fallback (replaces coControl.queueWaitMs/maxQueueDepth, display.fallbackRetryCount) ──
+// ── Input arbitration and display fallback (replaces the plan-205-deleted assist block's queue-wait/depth pair, display.fallbackRetryCount) ──
 export const INPUT_WAIT_BUDGET_MS = num('ENKAKU_INPUT_WAIT_BUDGET_MS', 5_000, z.number().int().min(500).max(30_000))
 export const INPUT_MAX_QUEUE_DEPTH = num('ENKAKU_INPUT_MAX_QUEUE_DEPTH', 32, z.number().int().min(1).max(256))
 export const DISPLAY_FALLBACK_RETRIES = num('ENKAKU_DISPLAY_FALLBACK_RETRIES', 6, z.number().int().min(0).max(20))

@@ -1,6 +1,6 @@
 # Plan 212 - MVP wave 2 : Settings reduced to fifteen visible fields and eleven advanced
 
-> Status: draft — not started; written 2026-09-03 by the plan author for the MVP series
+> Status: implemented (software) — executed 2026-09-04; every §0 goal closed except G12 (owner's farm smoke). See §11 for the handoff report.
 > Depends on: plan 205 (adds the `control` block and deletes `coControl`, `mirror`, `job.quietPeriodSec`, `job.maxWaitSec`), plan 211 (jobs and runs; `job.*` readers move to the run model), plan 200 (rules and format). Plans 206 and 207 land before this one in the wave order and have already rewritten the `session` block and deleted the `shell.fanout*` fields; this plan must not re-add either.
 > Spec references: `docs/mvp/12-settings.md` (entire: §0 the rule, §1 the fifteen visible, §2 the eleven advanced, §3 the constants, §4 the removed, §5 the moved, §6 the result table, §7 the open points), `docs/mvp/13-removal-register.md` A.7 (copied into §10), `docs/mvp/15-ui-migration.md` §1 row "Settings content" and §0 (the two-column layout and the group names), `docs/mvp/design_handoff_enkaku_openpf/README.md` "Screen: Settings" (quoted verbatim in §4.9), `docs/mvp/09-additional-scope.md` §6 (retention defaults) and §7 (the wall budget becomes measured), `docs/mvp/16-consolidated-plan.md` §2 row "Settings" and §3 wave 2, `docs/settings-audit.md` (the dead and shadowed findings).
 > Ships: packages/core/src/config/constants.ts
@@ -13,17 +13,17 @@ Every command runs from the repo root. `GREP_212` is the one gate grep, defined 
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | `FarmSettingsSchema` carries exactly 26 titled settings | 15 visible + 11 advanced | `rg -c 'ui\(\{ title:' packages/protocol/src/settings.ts` prints `26` | [ ] |
-| G2 | The settings schema file is small | under 600 lines | `wc -l < packages/protocol/src/settings.ts` prints a number ≤ 600 | [ ] |
-| G3 | `FarmSettingsSchema` has exactly nine top-level keys, in the §4.3 order | `general, hostDaemon, networkScan, jobRunner, capture, storage, devices, privacy, advanced` | `bun test packages/protocol/src/settings.test.ts` → the test named `top-level keys are the nine sections, in order` passes | [ ] |
-| G4 | Every removed or renamed field name is gone from live code | 0 matches | `GREP_212` (§10) prints nothing | [ ] |
-| G5 | `packages/core/src/config/constants.ts` exists and every constant it exports has an `ENKAKU_*` row in `.env.example` | 0 unmatched names | `bun test packages/core/src/config/constants.test.ts` → the test named `every override name appears in .env.example` passes | [ ] |
-| G6 | An out-of-range support override fails the boot with `E_BAD_CONFIG` | `ENKAKU_ADB_TCP_PORT=70000` | `bun test packages/core/src/config/constants.test.ts` → the test named `an out-of-range override throws E_BAD_CONFIG` passes | [ ] |
-| G7 | A settings blob stored by the current (pre-212) schema migrates without loss of the fields that survive | the six §4.8 cases | `bun test packages/core/src/settings/migrate-settings.test.ts` passes (6 cases) | [ ] |
-| G8 | `DeviceSettingsSchema` carries only the §4.6 keys, and every override field is optional | `engines, identity, prep, autoReconnect, logInputText, instrumentation, overrides` | `bun test packages/protocol/src/settings.test.ts` → the test named `device settings are engines, identity, prep and optional overrides` passes | [ ] |
-| G9 | `GET /api/agents/settings` answers the agent block and `GET /api/settings` no longer carries it | `agentDefaults`/`scheduledAgents` absent from the farm payload | `bun test packages/core/src/api/agent-settings.test.ts` passes | [ ] |
-| G10 | Studio's farm section list is derived from the schema and yields ten sections | 10 sections, 4 group headings | `bun run typecheck` exits 0 and `rg -n "FARM_SECTION_DEFS" packages/studio/src` prints nothing (the constant is replaced by `farmSections(schema)`) | [ ] |
-| G11 | The workspace typechecks | 0 errors | `bun run typecheck` exits 0 | [ ] |
+| G1 | `FarmSettingsSchema` carries exactly 26 titled settings | 15 visible + 11 advanced | `rg -c 'ui\(\{ title:' packages/protocol/src/settings.ts` prints `26` | [x] |
+| G2 | The settings schema file is small | under 600 lines | `wc -l < packages/protocol/src/settings.ts` prints a number ≤ 600 | [x] |
+| G3 | `FarmSettingsSchema` has exactly nine top-level keys, in the §4.3 order | `general, hostDaemon, networkScan, jobRunner, capture, storage, devices, privacy, advanced` | `bun test packages/protocol/src/settings.test.ts` → the test named `top-level keys are the nine sections, in order` passes | [x] |
+| G4 | Every removed or renamed field name is gone from live code | 0 matches | `GREP_212` (§10) prints nothing | [x] |
+| G5 | `packages/core/src/config/constants.ts` exists and every constant it exports has an `ENKAKU_*` row in `.env.example` | 0 unmatched names | `bun test packages/core/src/config/constants.test.ts` → the test named `every override name appears in .env.example` passes | [x] |
+| G6 | An out-of-range support override fails the boot with `E_BAD_CONFIG` | `ENKAKU_ADB_TCP_PORT=70000` | `bun test packages/core/src/config/constants.test.ts` → the test named `an out-of-range override throws E_BAD_CONFIG` passes | [x] |
+| G7 | A settings blob stored by the current (pre-212) schema migrates without loss of the fields that survive | the six §4.8 cases | `bun test packages/core/src/settings/migrate-settings.test.ts` passes (6 cases) | [x] |
+| G8 | `DeviceSettingsSchema` carries only the §4.6 keys, and every override field is optional | `engines, identity, prep, autoReconnect, logInputText, instrumentation, overrides` | `bun test packages/protocol/src/settings.test.ts` → the test named `device settings are engines, identity, prep and optional overrides` passes | [x] |
+| G9 | `GET /api/agents/settings` answers the agent block and `GET /api/settings` no longer carries it | `agentDefaults`/`scheduledAgents` absent from the farm payload | `bun test packages/core/src/api/agent-settings.test.ts` passes | [x] |
+| G10 | Studio's farm section list is derived from the schema and yields ten sections | 10 sections, 4 group headings | `bun run typecheck` exits 0 and `rg -n "FARM_SECTION_DEFS" packages/studio/src` prints nothing (the constant is replaced by `farmSections(schema)`) | [x] |
+| G11 | The workspace typechecks | 0 errors | `bun run typecheck` exits 0 | [x] |
 | G12 | On the owner's farm, the Settings page shows ten sections and every field saves | ten left-nav entries; a PATCH of each section returns `200` | §7.4 manual smoke | owner |
 
 ## 1. Goals

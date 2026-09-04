@@ -56,10 +56,10 @@ export function createRetentionGc(deps: {
 
   /**
    * Device event log GC (plan 18 §4.4): two age budgets (one per stream) then
-   * a hard row ceiling per (device, stream), oldest rows first. Unlike the
-   * artifact policy above, this is NOT gated by `policy.enabled` — an
-   * unbounded input stream is a disk-filling bug, not an opt-in convenience
-   * (plan 18 §3.3).
+   * a hard row ceiling per (device, stream), oldest rows first. Retention is
+   * always on now (plan 212 §4.10 — MVP 09 §6, a nightly sweeper, not an
+   * opt-in) — an unbounded input stream was always a disk-filling bug, never
+   * meant to be an opt-in convenience (plan 18 §3.3).
    */
   function sweepEvents(): number {
     const historyDays = deps.settings.get().storage.historyDays

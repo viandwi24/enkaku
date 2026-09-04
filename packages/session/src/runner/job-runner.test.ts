@@ -1155,8 +1155,8 @@ describe('createJobRunner — Timing settings reach the executor (plan 34 §3.3,
         heartbeat: () => {},
         resetPolicy: () => HOME_SETTINGS,
         // Read fresh every call — the SAME closure over `current`, exactly
-        // like `daemon.ts` reading `settingsStore.get().defaults.timing`
-        // fresh per attempt rather than once at startup.
+        // like `daemon.ts` reading `TOUCH_PROFILES[touchProfile]` fresh per
+        // attempt rather than once at startup.
         timing: () => current,
       })
 

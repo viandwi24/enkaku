@@ -3218,19 +3218,19 @@ let blobGc: BlobGc | null = null
           // budget, not a per-device one), via `resolveVideoProfile` with
           // no device override.
           //
-          // Plan 100 §3.1/§4.1/§4.1, step 100.3 — `computeAutoTiles` combines
-          // a decode bound (`wall.decodeTileCeiling`) with a bandwidth bound
-          // that is now transport-aware: `resolveWallTransport` classifies
-          // the deployment the same way auth mode already is (CLAUDE.md:
-          // "auth mode derives from the bind address") — orchestrator/cloud
-          // reads as `wan`, everything else as `loopback`, unless
-          // `wall.transportOverride` names one explicitly — and
-          // `resolveWallBandwidthBps` hard-pins the WAN branch to
-          // `WALL_VIDEO_BUDGET_BPS` (byte-identical to pre-plan-100 cloud
-          // behaviour, §3.6) while loopback/LAN use the farm's own generous
-          // `wall.bandwidthBps` instead, so the decode bound is what actually
-          // governs a local wall rather than a WAN-shaped constant it never
-          // needed.
+          // Plan 100 §3.1/§4.1, step 100.3, reworked by plan 212 §212.5 —
+          // `computeAutoTiles` combines a decode bound (`WALL_DECODE_TILE_
+          // CEILING`) with a bandwidth bound that is transport-aware:
+          // `resolveWallTransport` classifies the deployment the same way
+          // auth mode already is (CLAUDE.md: "auth mode derives from the
+          // bind address") — orchestrator/cloud reads as `wan`, everything
+          // else as `loopback`, unless `WALL_TRANSPORT_OVERRIDE` names one
+          // explicitly — and `resolveWallBandwidthBps` takes the WAN branch
+          // from `advanced.wallWanBandwidthBps` (the farm's own advanced
+          // field, default 20 Mbit/s, byte-identical to pre-plan-100 cloud
+          // behaviour) while loopback/LAN use `WALL_LAN_BANDWIDTH_BPS`
+          // instead, so the decode bound is what actually governs a local
+          // wall rather than a WAN-shaped constant it never needed.
           video: () => {
             const wallMaxTiles = WALL_MAX_TILES
             const maxTilesAuto = wallMaxTiles === 0

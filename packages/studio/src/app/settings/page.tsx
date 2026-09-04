@@ -173,13 +173,9 @@ function omitProperty(schema: JsonSchemaNode, path: string): JsonSchemaNode {
 
 /**
  * One schema, rendered a section at a time by trimming its properties to
- * `keys` — the top-level `FarmSettingsSchema` keys `FARM_SECTION_DEFS`
- * assigns the calling section (plan 96 item 96.4: the old `keysForSection`
- * switch was a second hand-maintained id → keys mapping living apart from
- * `FARM_SECTION_DEFS`'s own id → title/group; folding `keys` into that same
- * array removes the seam a key could go missing from one list but not the
- * other, and is what `farmSections.test.ts` checks directly against the
- * schema).
+ * `keys` — the top-level `FarmSettingsSchema` keys `farmSections()` derives
+ * directly from the schema itself (plan 212 §4.5), so there is no second
+ * hand-maintained id → keys mapping to drift out of sync with it.
  *
  * `omit` (plan 88 §5 step 88.6) — dotted paths, applied after `narrowSchema`,
  * for the rare field a BESPOKE panel owns outright rather than the generic

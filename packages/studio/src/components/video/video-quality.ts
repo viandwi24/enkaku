@@ -18,8 +18,8 @@ export interface VideoNumbers {
 /**
  * Where one resolved number came from — mirrors `packages/session/src/
  * video-profile.ts`'s `VideoSource`. Plan 212 §4.5: there is no more numeric
- * farm override to produce a `'farm'` (customized) source, only a named
- * preset or a per-device override.
+ * override to produce a "customized" source, only a named preset or a
+ * per-device override.
  */
 export type VideoSource = 'preset' | 'device'
 

@@ -618,6 +618,12 @@ to, by label, never just a count.
 | `ENKAKU_TOOLS_MANIFEST_URL` | An alternative tool manifest (internal mirror or air-gapped) |
 | `ENKAKU_STUDIO_DIST` | Studio build location for single-origin mode |
 
+`.env.example`'s own "Support overrides" section (plan 212) lists about
+seventy more — values that used to be Settings fields and are now constants
+because they do not differ between farms. None of them appears in Studio;
+set one only when support asks you to. An invalid value fails the boot with
+`E_BAD_CONFIG` naming the variable, never a silent fallback.
+
 ## Troubleshooting
 
 **A device shows up as `unauthorized`.** Check the phone's screen: there is an "Allow USB debugging" dialog. Tick "Always allow" and tap Allow. If the dialog never appears, unplug and replug the cable; if it still does not, go to Developer options → Revoke USB debugging authorizations, then plug in again.

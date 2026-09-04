@@ -124,7 +124,7 @@ including a control entry's `lingerEndsAt`.
 
 Every session also has a **quality profile** (`control` | `wall`), which maps to `max_size`/`max_fps`/`video_bit_rate` on the scrcpy server. `control` is what the device page always asks for; `wall` is what the fleet Wall asks for and what the always-on builder always builds, so many low-rate tiles can decode in one browser tab. `stream.start`'s `quality` payload field defaults to `control`; `stream.started` always reports back the quality actually being served RIGHT NOW, which is `wall` (with `substitute: 'wall'` set) for a `control` request still waiting on its own encoder.
 
-**Plan 92 §3.5, §4.1–§4.2** replaced the two fixed constants behind `control`/`wall` with farm settings: `FarmSettings.video` (eight flat fields — a preset per profile plus its three numbers, `controlPreset`/`controlMaxSize`/`controlMaxFps`/`controlBitRate` and the `wall...` equivalents) plus an all-optional `DeviceSettings.video` override. `packages/session/src/video-profile.ts`'s `resolveVideoProfile(farm, device, quality)` is the one place the two are combined — its preset tables (`CONTROL_PRESETS.sharp`, `WALL_PRESETS.balanced`) are the exact numbers the old constants held (1600px / 30fps / 4Mbps; 480px / 5fps / 800kbps), so a farm that changes no video setting sees byte-identical scrcpy arguments. `SessionManagerDeps.resolveProfile` resolves this fresh for every session build; `CreateSessionOpts.videoProfile` carries the result into `createSession`, which hands it straight to `makeScrcpy` — there is no `QUALITY_PROFILES` lookup table left anywhere in the codebase.
+**Plan 92 §3.5, §4.1–§4.2** replaced the two fixed constants behind `control`/`wall` with farm settings; **plan 212 §4.5** reduced them to a preset-only model: `FarmSettings.capture.controlQuality`/`wallQuality` (a named quality per profile — `sharp`/`balanced`/`light` for control, `minimal`/`light`/`balanced`/`detailed` for wall) plus an all-optional `DeviceSettings.overrides.controlQuality`/`wallQuality` override. `packages/session/src/video-profile.ts`'s `resolveVideoProfile(farm, device, quality)` is the one place the two are combined — its preset tables (`CONTROL_PRESETS.sharp`, `WALL_PRESETS.balanced`) are the exact numbers the old constants held (1600px / 30fps / 4Mbps; 480px / 5fps / 800kbps), so a farm that changes no video setting sees byte-identical scrcpy arguments. `SessionManagerDeps.resolveProfile` resolves this fresh for every session build; `CreateSessionOpts.videoProfile` carries the result into `createSession`, which hands it straight to `makeScrcpy` — there is no `QUALITY_PROFILES` lookup table left anywhere in the codebase.
 
 ## Group membership migration (plan 22.0, renamed by plan 207)
 
@@ -290,12 +290,11 @@ device — a 20-device farm attaching inspectors at once must not fire 40
 concurrent `pm install` sessions over one USB controller, but it also must
 never let the same device race two installs against each other.
 
-**Stream-lane autoscaling.** `adb.maxStreams` gains the same `0 = auto`
-semantics `adb.maxConcurrent` already had — see `packages/adb/README.md` for
-`computeAutoStreams` and why its formula differs from the exec semaphore's. A
-stored `4` (the old fixed default) is rewritten to `0` by a Zod `preprocess`
-(`normaliseLegacyAdb`, `packages/protocol/src/settings.ts`) on first boot
-after upgrading — tracked for removal, see `docs/plans/00-overview.md` §9.
+**Stream-lane autoscaling.** `ADB_MAX_STREAMS_FARM` (plan 212 §4.1 — a
+support constant now, `packages/core/src/config/constants.ts`) gains the
+same `0 = auto` semantics `advanced.adbMaxConcurrent` already had — see
+`packages/adb/README.md` for `computeAutoStreams` and why its formula
+differs from the exec semaphore's.
 Since plan 208, the ui-server instrumentation is a **pinned** stream (holds
 no slot on either cap, reported separately in `GET /api/adb/stats`'s
 `streams.pinned`), because it now lives for the whole session rather than
@@ -949,8 +948,9 @@ behind. It returns counts (`jobs`/`events`/`artifacts`/`nodes`/`traceDirs`)
 rather than `ok: true`, so an operator can notice when one of the five quietly
 stops happening.
 
-`retention.traceDays` (default 30, **not** gated by `retention.enabled`)
-sweeps in `maintenance/retention.ts`'s `sweepTraces()`, grouped by `job_id`
+`storage.traceDays` (plan 212 §4.1, default 7 — MVP 09 §6; retention is
+always on now, there is no more `retention.enabled` opt-in) sweeps in
+`maintenance/retention.ts`'s `sweepTraces()`, grouped by `job_id`
 and aged on that job's `MAX(at_ms)` — rows and directory go together or
 neither, because deleting rows by row age would strand a straddling job's
 surviving rows in front of a directory the same sweep just removed.
@@ -964,3 +964,35 @@ both — and records `phase`/`log`/`artifact` events at the remote job bridge's
 hooks, which previously only broadcast and wrote no rows. A remote job's
 **action** lane is still empty (the tee lives in the local runner) and the
 Timeline says so.
+
+## Farm settings: 26 fields, and a constants file (plan 212)
+
+`FarmSettingsSchema` (`@enkaku/protocol`) has exactly nine top-level keys —
+`general`, `hostDaemon`, `networkScan`, `jobRunner`, `capture`, `storage`,
+`devices`, `privacy`, `advanced` — one per Settings section. Fifteen leaves
+across the first eight are visible to every operator; the eleven leaves
+under `advanced` are for an engineer who knows to look, each carrying a
+`hint` ("raise this if…"). Everything else that used to be a setting but
+does not differ between farms is a named constant in
+`packages/core/src/config/constants.ts`, with an `ENKAKU_*` support override
+documented in `.env.example`'s "Support overrides" section — never a
+Studio-visible field, and read once at module load, failing the boot with
+`E_BAD_CONFIG` on an invalid value.
+
+`DeviceSettingsSchema` is `engines`, `identity`, `prep`, `autoReconnect`,
+`logInputText`, `instrumentation`, `overrides` — the farm-wide `defaults`
+mirror of the whole per-device schema is gone (it was the mechanism behind
+`docs/settings-audit.md`'s shadowing bugs); `overrides` is the same visible
+set as the farm's, each field `.optional()` with absent meaning "use the
+farm default". `resolveDeviceSetting(farm, device, key)` is the one place
+that fallback is expressed.
+
+A settings row written by an earlier schema is migrated on read
+(`packages/core/src/settings/migrate-settings.ts`): renamed keys mapped,
+unknown keys dropped, out-of-range values clamped with one `log.warn` line
+each, and the migrated value written back once so the transform does not
+re-run on every boot. Five AI blocks (`agentDefaults`, `scheduledAgents`,
+plus the workspace quotas that became constants) moved off `/api/settings`
+onto `GET`/`PATCH /api/agents/settings`, served by `createAgentSettingsStore`
+against row 2 of `farm_settings` (row 1 is the farm's own settings — no new
+table).
