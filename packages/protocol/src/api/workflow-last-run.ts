@@ -38,16 +38,28 @@ export const WorkflowLastRunNodeSchema = z.object({
   pinned: z.boolean(),
   /** The edge the step left by (`'next' | 'onFailure' | 'then' | 'else' | 'case:<i>' | 'default'`), or `null`. */
   takenEdge: z.string().nullable(),
+  /** `workflow_steps.seq` — `@enkaku/expr`'s `deriveRandom(seed, seq)` needs it for a local `$random` preview that matches what the server produced (plan 306 §4.4). `null` when the node has no recorded step. */
+  seq: z.number().int().nullable(),
   input: WorkflowLastRunNodeDataSchema,
   output: WorkflowLastRunNodeDataSchema,
 })
 export type WorkflowLastRunNode = z.infer<typeof WorkflowLastRunNodeSchema>
 
-/** `GET /api/workflows/:name/last-run` — 404 (`workflow_never_run`) when the workflow has never run for real (a `node-test` run alone does not count). */
+/**
+ * `GET /api/workflows/:name/last-run` — 404 (`workflow_never_run`) when the
+ * workflow has never run for real (a `node-test` run alone does not count).
+ * `params`/`seed` are the run's own — everything `usePreview.ts` (plan 306
+ * §4.4) needs to build the SAME `ExprScope` shape the server built
+ * (`workflow-resolve.ts`'s `buildExprScope`), locally, with no round trip.
+ */
 export const WorkflowLastRunResponseSchema = z.object({
   runId: z.string(),
   /** Unix seconds — the run's own `startedAt`, falling back to `createdAt` for a run that never started. */
   at: z.number().int(),
+  /** The workflow parameters this run was started with — `$params` in the preview scope. */
+  params: z.unknown(),
+  /** The run's own `$random` seed (`deriveRandom`'s first argument). */
+  seed: z.number().int(),
   nodes: z.record(z.string(), WorkflowLastRunNodeSchema),
 })
 export type WorkflowLastRunResponse = z.infer<typeof WorkflowLastRunResponseSchema>
