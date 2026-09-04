@@ -1,5 +1,5 @@
 import type { ResultOutcome } from '@enkaku/protocol'
-import type { JobRow, ScriptKind } from '../db/schema'
+import type { JobRow } from '../db/schema'
 import type { Logger } from '../util/logger'
 
 export interface ExecutorContext {
@@ -87,32 +87,28 @@ export interface JobExecutor {
  * scriptId lain (row tabel `scripts`) jatuh ke fallback = script executor
  * built on child processes (M4).
  *
- * Plan 99 §3.1, §4.5 — the fallback is now keyed by `ScriptKind`, not
- * singular: a workflow row (`kind: 'workflow'`) must fall through to a
- * DIFFERENT executor than a script row does, once one is registered for it
- * (99.7). `kind` defaults to `'script'` on both `get` and `setFallback`, so
- * every pre-plan-99 call site — `get(scriptId)` and `setFallback(executor)`,
- * both single-argument, both still called that way throughout the tree —
- * keeps exactly its old behaviour: `get(id, 'script')` returns exactly what
- * `get(id)` returned before this step. No caller needs to change here; the
- * concurrent `ExecutorHost` work is what will start passing a real `kind`
- * read from the row (99.7's job, not this one).
+ * Plan 210 §4.8 — one fallback, not one per kind: `scripts.kind` is gone, and
+ * `daemon.ts` never passed a `scriptKind` to `ExecutorHost` (the workflow
+ * executor registered at its old fallback slot was unreachable in
+ * production), so the dispatch this class used to carry was dead weight.
+ * Plan 211 rewrites the orchestrator against the `workflows` table; nothing
+ * here decides that.
  */
 export class ExecutorRegistry {
   private map = new Map<string, JobExecutor>()
-  private fallbackByKind = new Map<ScriptKind, JobExecutor>()
+  private fallback: JobExecutor | null = null
 
   register(scriptId: string, executor: JobExecutor): void {
     this.map.set(scriptId, executor)
   }
 
-  /** The executor for every scriptId of this KIND that is not built in. */
-  setFallback(executor: JobExecutor, kind: ScriptKind = 'script'): void {
-    this.fallbackByKind.set(kind, executor)
+  /** The executor for every scriptId that is not built in. */
+  setFallback(executor: JobExecutor): void {
+    this.fallback = executor
   }
 
-  get(scriptId: string, kind: ScriptKind = 'script'): JobExecutor | null {
-    return this.map.get(scriptId) ?? this.fallbackByKind.get(kind) ?? null
+  get(scriptId: string): JobExecutor | null {
+    return this.map.get(scriptId) ?? this.fallback
   }
 
   isBuiltIn(scriptId: string): boolean {

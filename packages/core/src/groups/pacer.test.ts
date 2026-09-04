@@ -191,6 +191,7 @@ describe('BatchPacer.onMemberSettled — the repeating clock (plan 94 §3.7, §3
       resultBytes: null,
       resultSummary: null,
       resultIssues: null,
+      workflowDoc: null,
     }
     db.insert(jobs).values(row).run()
     return row
@@ -356,6 +357,7 @@ describe('replanAfterRestart — restart safety (plan 94 §4.8)', () => {
         resultBytes: null,
         resultSummary: null,
         resultIssues: null,
+      workflowDoc: null,
       })
       .run()
     const { scheduler } = fakeScheduler()
@@ -426,6 +428,7 @@ describe('replanAfterRestart — restart safety (plan 94 §4.8)', () => {
         resultBytes: null,
         resultSummary: null,
         resultIssues: null,
+      workflowDoc: null,
       })
       .run()
     const { scheduler } = fakeScheduler()
@@ -511,6 +514,7 @@ describe('replanAfterRestart — closing an orphaned paced batch (plan 94 §5 st
       resultBytes: null,
       resultSummary: null,
       resultIssues: null,
+      workflowDoc: null,
     }
     db.insert(jobs).values(row).run()
     return row

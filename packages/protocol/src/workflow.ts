@@ -83,11 +83,6 @@ export const WorkflowNameSchema = z
     'lowercase letters, digits, and . _ - (one optional /-separated segment) — the same grammar a script name uses',
   )
 
-/** Duplicates the VERSION half of the same grammar, for the same reason `WorkflowNameSchema` does. */
-export const WorkflowVersionSchema = z
-  .string()
-  .regex(/^\d+\.\d+\.\d+(?:[-+].+)?$/, 'must be semver: X.Y.Z, optionally with a -prerelease and/or +build suffix')
-
 /**
  * A value a node parameter or a gate operand can take (plan 99 §3.6). Four
  * forms, closed:
@@ -244,7 +239,6 @@ const WorkflowDocShapeSchema = z
   .object({
     schema: z.literal(1),
     name: WorkflowNameSchema,
-    version: WorkflowVersionSchema,
     title: z.string().max(80).default(''),
     description: z.string().max(300).default(''),
     params: z.array(WorkflowParamSchema).max(WORKFLOW_LIMITS.maxParams).default([]),
@@ -260,14 +254,17 @@ const WorkflowDocShapeSchema = z
   .strict()
 
 /**
- * The validated workflow document (plan 99 §3.1, §4.1) — this, not an ESM
- * bundle, is what `scripts.bundle` holds for a `kind: 'workflow'` row
- * (§4.5). Only what a per-node regex cannot express is checked here: node id
- * uniqueness. Everything requiring a lookup against OTHER scripts (a
- * dangling `goto`, a binding that reads a node that cannot have run yet, a
- * `{ param }` naming an undeclared workflow parameter) is `checkWorkflow`'s
- * job (`workflow-check.ts`, plan 99 §4.3, step 99.6) — a separate, pure
- * function that needs resolved script metadata this schema does not have.
+ * The validated workflow document (plan 99 §3.1, §4.1; no version as of plan
+ * 210, MVP 03 §2.2 rule 4) — this is what `workflows.doc` and `jobs.workflow_doc`
+ * hold: a farm-owned pipeline, edited in place, with no version of its own. A
+ * job snapshots this document at enqueue time so editing a workflow never
+ * changes a queued or running job. Only what a per-node regex cannot express
+ * is checked here: node id uniqueness. Everything requiring a lookup against
+ * OTHER scripts (a dangling `goto`, a binding that reads a node that cannot
+ * have run yet, a `{ param }` naming an undeclared workflow parameter) is
+ * `checkWorkflow`'s job (`workflow-check.ts`, plan 99 §4.3, step 99.6) — a
+ * separate, pure function that needs resolved script metadata this schema
+ * does not have.
  */
 export const WorkflowDocSchema = WorkflowDocShapeSchema.superRefine((doc, ctx) => {
   const firstSeenAt = new Map<string, number>()

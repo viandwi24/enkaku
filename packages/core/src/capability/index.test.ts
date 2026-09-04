@@ -39,7 +39,7 @@ describe('the real capability registry (plan 63 §4.3, acceptance #1-3)', () => 
       'device.sleep',
       'script.list',
       'script.get',
-      'script.publish',
+      'plugin.stage',
       'job.run',
       'job.get',
       'job.list',
@@ -66,6 +66,6 @@ describe('the real capability registry (plan 63 §4.3, acceptance #1-3)', () => 
     const byId = new Map(allCapabilitySources().map((s) => [s.cap.id, s.cap]))
     expect(byId.get('device.install')?.effect).toBe('destructive')
     expect(byId.get('device.pull')?.effect).toBe('read')
-    expect(byId.get('script.publish')?.effect).toBe('write')
+    expect(byId.get('plugin.stage')?.effect).toBe('write')
   })
 })

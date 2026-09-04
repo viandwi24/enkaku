@@ -45,6 +45,7 @@ function fakeCtx(db: Db, scope: { read: string[]; write: string[] } = { read: ['
     getDevice: () => null,
     jobService: {} as CapabilityContext['jobService'],
     scripts: {} as CapabilityContext['scripts'],
+    plugins: () => null,
     resolveScriptRef: () => ({ id: 'script-1' }),
     workspace: createWorkspaceStore(db, () => QUOTAS),
     workspaceScope: () => scope,

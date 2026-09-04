@@ -9,14 +9,11 @@ import { createJobsRunnerPort, type JobsRunnerPortDeps } from './jobs-runner-por
 
 const DEFAULT_BUDGETS = { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 }
 
-/** A minimal `ScriptRegistry` stand-in — `list`/`groups`/`get`/`bundlePath`/`invalidate` throw
+/** A minimal `ScriptRegistry` stand-in — `list`/`get`/`bundlePath`/`invalidate` throw
  * (unused by these tests); `resolve` answers from a fixed table of `name@version` → entry. */
 function fakeRegistry(entries: Record<string, { id: string; name: string; version: string }> = {}): ScriptRegistry {
   return {
     list: () => {
-      throw new Error('not used')
-    },
-    groups: () => {
       throw new Error('not used')
     },
     get: () => {
@@ -25,7 +22,7 @@ function fakeRegistry(entries: Record<string, { id: string; name: string; versio
     resolve: (ref) => {
       const entry = entries[ref]
       if (!entry) throw new Error(`fakeRegistry: no entry for "${ref}"`)
-      return { ...entry, kind: 'script', origin: 'plugin', pluginName: entry.name.includes('/') ? (entry.name.split('/')[0] ?? null) : null, exportId: null, enabled: true, paramsSchema: null, runtime: null, bundle: { kind: 'db', scriptId: entry.id }, ephemeral: false }
+      return { ...entry, origin: 'plugin', pluginName: entry.name.includes('/') ? (entry.name.split('/')[0] ?? null) : null, exportId: null, enabled: true, paramsSchema: null, runtime: null, bundle: { kind: 'db', scriptId: entry.id }, ephemeral: false }
     },
     bundlePath: () => {
       throw new Error('not used')

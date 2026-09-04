@@ -55,7 +55,6 @@ function publishCappedScript(db: Db, id: string, name: string, maxConcurrent: nu
       id,
       name,
       version: '1.0.0',
-      kind: 'script',
       bundle: 'export default { run: async () => null }',
       enabled: true,
       paramsSchema: null,

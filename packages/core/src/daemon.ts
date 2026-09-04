@@ -66,6 +66,7 @@ import { createScriptRoutes } from './scripts/routes'
 import { createWorkflowRoutes } from './api/workflows'
 import { createRecordingRoutes } from './api/recordings'
 import { createScriptRegistry } from './scripts/registry'
+import { createWorkflowStore } from './workflows/store'
 import { createDevSlotStore } from './plugins/dev-slots'
 import { createPluginRuntime } from './plugins/runtime'
 import { createRuntimeHost, type RuntimeHost } from './plugins/runtime-host'
@@ -127,13 +128,14 @@ import {
   type TransferPort,
 } from '@enkaku/session'
 import { createScriptExecutor } from './jobs/executors/script'
-import { createWorkflowExecutor } from './jobs/executors/workflow'
 import type { CoreConfig } from './config'
 import { openDb, runMigrations, runMigrationsUpTo, type OpenedDb } from './db'
 import { materialiseMembership, DROP_MEMBERSHIP_SELECTOR_COLUMNS_TAG } from './db/migrations/materialise-0014'
 import { backfillScheduleScriptRefs } from './db/migrations/backfill-schedule-refs'
 import { backfillScheduleTargets } from './db/migrations/schedule-target-backfill'
 import { migrateToolResultContentBlocks } from './db/migrations/tool-result-content-blocks'
+import { parkSyntheticRecordingsOwner } from './db/migrations/park-synthetic-recordings'
+import { migrateWorkflowsFromScripts } from './db/migrations/workflows-from-scripts'
 import { devices, plugins } from './db/schema'
 import { createReverseRegistry, parseDevicePortRange, parseReverseList, removeReverse } from './network/reverse-registry'
 import { createDeviceStateMachine } from './device/state-machine'
@@ -485,6 +487,14 @@ let blobGc: BlobGc | null = null
       // now requires `content` to be an array) — the very next line already does (`agentThreadStore`
       // etc., built below), so this stays right here in migration order.
       migrateToolResultContentBlocks(opened.db, { log: log.child('tool-result-content-blocks') })
+      // Plan 210 §4.6 — two more one-shot boot steps, marker-guarded exactly
+      // like the three above, and run in THIS order: parking the synthetic
+      // `recordings` owner first, so its member rows are already ordinary
+      // unowned rows by the time the workflow migration classifies what is
+      // left. Both run before `createScriptRegistry` (below), so its
+      // unowned-row warning already sees the result.
+      parkSyntheticRecordingsOwner(opened.db, { log: log.child('park-synthetic-recordings') })
+      migrateWorkflowsFromScripts(opened.db, { log: log.child('workflows-from-scripts') })
       log.info('db ready (migrations applied)')
       const db = opened.db
 
@@ -1338,6 +1348,8 @@ let blobGc: BlobGc | null = null
       // `resolveScriptRef` call site further down this function reads through it.
       const pluginDevSlots = createDevSlotStore()
       const scriptRegistry = createScriptRegistry({ db, dataDir: cfg.dataDir, devSlots: pluginDevSlots })
+      // Plan 210 §4.4 — one instance per boot, beside `scriptRegistry`.
+      const workflowStore = createWorkflowStore(db)
 
       // Check the `scripts` table for a non-built-in scriptId (M4) — shared by
       // the job service, batch dispatch and schedule dispatch (plans 04, 20, 21)
@@ -2357,6 +2369,10 @@ let blobGc: BlobGc | null = null
         // operator's own click does, and the route it writes is stamped with the
         // plugin's principal rather than a person's.
         network: guestAgent.deviceNetwork,
+        // `plugin.stage`'s one door (plan 210 §4.8) — a thunk, matching
+        // `sessions`/`readiness` above, even though `pluginRuntime` is
+        // already constructed by this point in this host.
+        plugins: () => pluginRuntime,
       }
       const openApiDocument = buildOpenApiDocument(capabilityRegistry, CORE_VERSION)
 
@@ -3028,7 +3044,7 @@ let blobGc: BlobGc | null = null
         // executor's runtime clock already enforced (the `createWorkflowExecutor`
         // call below, wired since plan 99 §5 items 1-2). Guarded by
         // `daemon-wiring.test.ts`'s workflow-routes describe block.
-        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, audit, settings: () => settingsStore.get().workflow }),
+        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, store: workflowStore, audit, settings: () => settingsStore.get().workflow }),
         // Plan 94 §4.9, §5 step 94.5 — `workspaceStore` and `recordingService` are the
         // SAME instances every other route/service in this file already shares (one
         // workspace, one recorder — F16/F11's own "never a second store/bundler").
@@ -4085,49 +4101,14 @@ let blobGc: BlobGc | null = null
           },
         })
 
-        // The workflow executor (plan 99 §3.1, §4.7, step 99.7) — registered
-        // as the `kind: 'workflow'` fallback, beside the script executor's
-        // `kind: 'script'` fallback immediately above. It reuses the SAME
-        // `runner`/`sessions`/`scriptRegistry` every standalone job already
-        // shares — a node is a script child, not a job (§3.4) — and drives
-        // `jobNodeTracker` (built above, alongside `runner`) so a node's
-        // artifacts and attempts are attributed correctly with zero changes
-        // to `@enkaku/session` or the child boundary.
-        //
-        // KNOWN GAP, reported rather than silently unbuilt: unlike the
-        // script fallback immediately above, this does NOT branch on
-        // `remoteSessions?.nodeIdFor(job.deviceId)` — a workflow job on a
-        // node-owned (cloud) device would try to run through the LOCAL
-        // `runner` regardless and fail. Nothing in plan 99 §3–§5 asks for
-        // cloud-device workflow support in this step, and building the
-        // remote-bridge equivalent of this executor is its own undertaking
-        // (`jobs/executors/remote.ts` is a comparably sized subsystem) — left
-        // for a follow-up rather than half-built here silently.
-        //
-        // `settings: () => settingsStore.get().workflow` reads the live farm
-        // setting (`packages/protocol/src/settings.ts`'s `workflow` group),
-        // read fresh on every check — never captured — matching every other
-        // farm-wide knob in this file. `WorkflowSettings` is structurally
-        // `{ maxTotalMs: number }`, exactly what `settingsStore.get().workflow`
-        // already is once `settings.ts` carries the field. `checkWorkflow`'s
-        // publish-time arithmetic reads the same setting through
-        // `api/workflows.ts`'s own `deps.settings`; this is the runtime
-        // clock's matching wire (`jobs/executors/workflow.ts`'s own module
-        // doc has the history).
-        const workflowExecutor = createWorkflowExecutor({
-          db,
-          registry: scriptRegistry,
-          runner,
-          sessions,
-          nodeTracker: jobNodeTracker,
-          settings: () => settingsStore.get().workflow,
-          log: log.child('workflow'),
-          onNode: (jobId, node) => {
-            const info = jobService.get(jobId)
-            if (info) hub.broadcast({ type: 'job.status', payload: { ...info, node } })
-          },
-        })
-        executors.setFallback(workflowExecutor, 'workflow')
+        // Plan 210 §4.8 — the workflow executor's construction and
+        // registration are deleted: `daemon.ts` never passed `scriptKind` to
+        // `createExecutorHost`, so this fallback was unreachable in
+        // production (MVP 13 B.1 "Built but not wired"). `jobs/executors/
+        // workflow.ts` stays in the tree, unregistered, for plan 211 to
+        // rewrite against the `workflows` table; `jobNodeTracker` (built
+        // above, alongside `runner`) still feeds the runner's artifact
+        // factory.
 
         pairingService = createPairingService({ client: adb, log: log.child('pairing') })
         attachWsRouter(sessions)

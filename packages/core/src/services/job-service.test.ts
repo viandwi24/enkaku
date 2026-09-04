@@ -62,6 +62,7 @@ function fakeRow(overrides: Partial<JobRow> = {}): JobRow {
     resultBytes: null,
     resultSummary: null,
     resultIssues: null,
+      workflowDoc: null,
     ...overrides,
   }
 }
