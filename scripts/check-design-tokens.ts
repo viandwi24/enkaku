@@ -279,13 +279,16 @@ const GROUP_2 = ['CaretRightIcon', 'CaretUpIcon', 'CaretUpDownIcon', 'CheckCircl
 /**
  * Group 3 (plan 213 §3.4): names added after the handoff was drawn, for a
  * screen the handoff itself does not draw. `RobotIcon` is the Agents rail
- * entry. This script's own count check below is updated alongside it —
- * plan 213 found this check asserts an EXACT total (53 + 9), not merely
- * presence as its own §3.4 assumed, so adding a name here requires widening
- * the total by the same amount or this script fails on the addition it was
- * meant to tolerate.
+ * entry; `ArrowsLeftRightIcon`/`CopyIcon`/`DeviceMobileIcon`/`ExportIcon`/
+ * `PauseIcon` are the Jobs screen's own additions (plan 218 §4.13: the
+ * transport pause, the header's Open device/Export buttons, and the run
+ * picker's compare control). This script's own count check below is updated
+ * alongside it — plan 213 found this check asserts an EXACT total (53 + 9),
+ * not merely presence as its own §3.4 assumed, so adding a name here
+ * requires widening the total by the same amount or this script fails on
+ * the addition it was meant to tolerate.
  */
-const GROUP_3 = ['RobotIcon']
+const GROUP_3 = ['ArrowsLeftRightIcon', 'CopyIcon', 'DeviceMobileIcon', 'ExportIcon', 'PauseIcon', 'RobotIcon']
 
 async function checkIcons(): Promise<void> {
   console.log('\n== icons.ts (G4) ==')
