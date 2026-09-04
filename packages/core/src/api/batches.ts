@@ -1062,7 +1062,7 @@ export function createBatchRoutes(deps: BatchRoutesDeps): Hono<AuthEnv> {
     const row = mustGet(c.req.param('id'))
     const collected = collectBatchArtifacts(db, deps.jobStore, deps.runs, row.id)
     const dataDir = deps.dataDir
-    const maxTotalBytes = deps.archiveSettings?.().maxArchiveBytes ?? defaultFarmSettings().transfer.maxArchiveBytes
+    const maxTotalBytes = deps.archiveSettings?.().maxArchiveBytes ?? defaultFarmSettings().advanced.transferCaps.maxArchiveBytes
 
     const entries: ZipEntryInput[] = collected.map((item) => {
       // Defence in depth against a stored path escaping app-data, mirroring

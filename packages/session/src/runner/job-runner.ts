@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import {
-  defaultFarmSettings,
+  defaultJobSettings,
   FindOutcomeSchema,
   resolveRuntime,
   RESULT_LIMITS,
@@ -490,7 +490,7 @@ function runtimeEnvelopesDiffer(a: RuntimeEnvelope | null | undefined, b: Runtim
 
 export function createJobRunner(deps: JobRunnerDeps): JobRunner {
   const active = new Map<string, RunningJob>()
-  const getResetSettings = deps.resetPolicy ?? (() => defaultFarmSettings().job)
+  const getResetSettings = deps.resetPolicy ?? (() => defaultJobSettings())
 
   async function runAttempt(opts: {
     job: JobSpec

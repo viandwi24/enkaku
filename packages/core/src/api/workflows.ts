@@ -4,7 +4,6 @@ import {
   checkDeclaredSchema,
   checkWorkflow,
   compileWorkflowParams,
-  defaultFarmSettings,
   WorkflowDocSchema,
   WorkflowResponseSchema,
   WorkflowsListResponseSchema,
@@ -23,6 +22,7 @@ import type { ScriptRegistry } from '../scripts/registry'
 import type { WorkflowStore } from '../workflows/store'
 import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
+import { WORKFLOW_MAX_TOTAL_MS } from '../config/constants'
 
 /**
  * `GET/POST/PUT/DELETE /api/workflows`, `POST /validate` (plan 210 §4.3,
@@ -107,7 +107,7 @@ function errorFindingsMessage(findings: readonly WorkflowFinding[]): string {
  * outright.
  */
 function budgetFor(deps: { settings?: () => WorkflowBudget }): WorkflowBudget {
-  return deps.settings ? deps.settings() : { maxTotalMs: defaultFarmSettings().workflow.maxTotalMs }
+  return deps.settings ? deps.settings() : { maxTotalMs: WORKFLOW_MAX_TOTAL_MS }
 }
 
 /**

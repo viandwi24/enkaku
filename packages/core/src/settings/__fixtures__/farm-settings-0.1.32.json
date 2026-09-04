@@ -1,0 +1,129 @@
+{
+  "defaults": {
+    "engines": { "transport": "adb-usb", "display": "scrcpy", "input": "scrcpy-uhid", "inspection": "ui-server" },
+    "input": { "preferredMode": "uhid" },
+    "timing": {
+      "tapJitterMs": [40, 120],
+      "betweenActionMs": [300, 900],
+      "coordJitterPx": 2,
+      "profile": "natural",
+      "gestureCurvature": 0.08,
+      "gestureSampleIntervalMs": 8,
+      "perCharMs": [40, 140]
+    },
+    "prep": {
+      "disableAnimations": true,
+      "keepAwake": "always",
+      "screenOffTimeoutMs": 1800000,
+      "standbyScreenOff": false,
+      "rotation": "device",
+      "textInput": "auto"
+    },
+    "autoReconnect": true,
+    "logInputText": false,
+    "instrumentation": { "tagTraffic": true },
+    "video": {},
+    "labelling": { "mode": "off", "showName": true }
+  },
+  "labelling": { "maxConcurrent": 2 },
+  "battery": { "pollIntervalSec": 60, "autoQuarantine": true, "tempThresholdC": 45 },
+  "retention": {
+    "enabled": false,
+    "maxAgeDays": 30,
+    "maxTotalGb": 20,
+    "eventMainDays": 30,
+    "eventInputDays": 3,
+    "eventMaxRowsPerDevice": 50000,
+    "blobOrphanGraceHours": 24,
+    "traceDays": 30
+  },
+  "adb": { "maxConcurrent": 0, "maxStreamsPerDevice": 4, "maxStreams": 0, "maxHostConcurrent": 4, "maxInstallConcurrent": 2 },
+  "discovery": {
+    "scanIntervalSec": 10,
+    "offlineGraceSec": 20,
+    "recoveryCooldownSec": 120,
+    "tcpPort": 5555,
+    "endpointsPerDevice": 4,
+    "endpointRetireAfter": 10,
+    "connectSettleMs": 3000,
+    "networks": [],
+    "scan": { "mode": "on-demand", "maxAddresses": 1024, "concurrency": 32, "probeTimeoutMs": 300 },
+    "cutover": { "armWindowSec": 180, "armPollSec": 5 }
+  },
+  "guestAgent": { "provision": "auto", "maxRecoveryCyclesPerHour": 4, "recoveryRearmSec": 120 },
+  "monitor": { "crashWatch": "always" },
+  "health": { "consecutiveFailures": 3, "autoQuarantine": true, "probeIntervalSec": 60 },
+  "adbControl": { "healthIntervalSec": 15, "stuckTimeoutRate": 0.5, "restartCooldownSec": 60, "drainTimeoutMs": 30000 },
+  "shell": {
+    "mode": "admin",
+    "execTimeoutMs": 15000,
+    "maxOutputBytes": 262144,
+    "endpointEnabled": false,
+    "endpointBind": "127.0.0.1",
+    "endpointIdleSec": 300,
+    "maxEndpointStreams": 8
+  },
+  "control": { "overControl": "allow", "idleSec": 30 },
+  "job": {
+    "resetPolicy": "home",
+    "resetTimeoutMs": 15000,
+    "resetStrict": false,
+    "retry": { "maxInfraAttempts": 2, "backoffBaseMs": 2000, "backoffMaxMs": 30000, "timeoutIsInfra": false, "rebindOnInfra": true },
+    "crashPolicy": "declared",
+    "defaultTimeoutMs": 3600000,
+    "startupTimeoutMs": 60000,
+    "maxTimeoutMs": null,
+    "memory": { "defaultMaxRssBytes": null, "maxRssBytes": null, "enforce": "kill", "sampleIntervalMs": 2000 },
+    "trigger": { "maxDepth": 5, "maxPerChain": 200, "maxPerJob": 10 },
+    "maxResultBytes": 65536,
+    "progressIntervalMs": 1000
+  },
+  "workflow": { "maxTotalMs": 21600000 },
+  "session": { "buildsPerUsbRoot": 4 },
+  "display": { "fallbackRetryCount": 6 },
+  "video": {
+    "controlPreset": "sharp",
+    "controlMaxSize": 1600,
+    "controlMaxFps": 30,
+    "controlBitRate": 4000000,
+    "wallPreset": "balanced",
+    "wallMaxSize": 480,
+    "wallMaxFps": 18,
+    "wallBitRate": 1100000
+  },
+  "wall": {
+    "maxTiles": 0,
+    "rampConcurrency": 2,
+    "decodeTileCeiling": 24,
+    "bandwidthBps": 200000000,
+    "transportOverride": "auto"
+  },
+  "readiness": { "maxHot": 8, "defaultDesired": "awake" },
+  "transfer": { "enabled": true, "maxPushBytes": 536870912, "maxPullBytes": 536870912, "installTimeoutMs": 300000, "maxArchiveBytes": 2147483648 },
+  "network": { "geoIntervalSec": 300 },
+  "workspace": { "maxFileBytes": 268435456, "maxFilesPerScope": 1000, "maxTotalBytesPerScope": 8589934592, "inlineMaxBytes": 65536 },
+  "kv": { "maxValueBytes": 65536, "maxKeyLength": 256, "maxEntriesPerNamespace": 1000, "maxEntriesPerDevice": 5000 },
+  "agentDefaults": {
+    "connectorId": null,
+    "model": "claude-sonnet-4-5",
+    "systemPrompt": "",
+    "effort": "medium",
+    "thinking": false,
+    "maxOutputTokens": 8192,
+    "maxSteps": 40,
+    "maxRunSeconds": 1800,
+    "compactAtRatio": 0.8,
+    "maxConcurrentRuns": 3,
+    "maxImagesPerRequest": 4,
+    "maxImageBytes": 5242880
+  },
+  "scheduledAgents": { "spendCapOutputTokensPer24h": null, "maxConcurrentScheduledRuns": 3 },
+  "recording": {
+    "anchorQuietMs": 400,
+    "anchorMinIntervalMs": 1500,
+    "longPressMs": 400,
+    "maxSteps": 500,
+    "maxDurationSec": 900,
+    "captureScreenshots": true
+  }
+}

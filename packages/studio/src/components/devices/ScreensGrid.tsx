@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { AdbStatsResponseSchema, SettingsResponseSchema, type DeviceInfo } from '@enkaku/protocol'
+import { AdbStatsResponseSchema, type DeviceInfo } from '@enkaku/protocol'
 import { api } from '@enkaku/ui'
 import { CARD_WIDTH_PX, type CardWidth } from './DevicesToolbar'
 import { DeviceScreenCard } from './DeviceScreenCard'
@@ -35,12 +35,8 @@ export function ScreensGrid({
       .catch(() => setMaxTiles(DEFAULT_MAX_TILES))
   }, [])
 
-  useEffect(() => {
-    void api('/api/settings', SettingsResponseSchema)
-      .then((b) => setRampConcurrency(b.settings.wall.rampConcurrency))
-      .catch(() => undefined)
-  }, [])
-
+  // Plan 212 §4.1 — `wall.rampConcurrency` is the constant `WALL_RAMP_CONCURRENCY`
+  // now (default 2, matching `DEFAULT_RAMP_CONCURRENCY` above); no live fetch.
   const liveSet = useLiveSet({ devices, maxTiles: maxTiles ?? 0, rampConcurrency })
 
   return (

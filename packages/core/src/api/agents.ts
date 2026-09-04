@@ -1,11 +1,20 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { AgentResponseSchema, AgentUpdateInputSchema, AgentWriteInputSchema, ListAgentsResponseSchema } from '@enkaku/protocol'
+import {
+  AgentResponseSchema,
+  AgentUpdateInputSchema,
+  AgentWriteInputSchema,
+  FarmAgentSettingsResponseSchema,
+  FarmAgentSettingsSchema,
+  ListAgentsResponseSchema,
+  UpdateFarmAgentSettingsResponseSchema,
+} from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { AgentStore } from '../agent/agent-store'
 import type { TreeStore } from '../agent/tree/store'
+import type { AgentSettingsStore } from '../settings/agent-settings'
 import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
 
@@ -21,14 +30,25 @@ import { typedJson } from './typed-json'
  * every other agent-record edit (`agent.manage`), since granting a spawn
  * target is exactly as consequential as widening `tools`/`deviceGrants`.
  */
-export function createAgentRoutes(deps: { store: AgentStore; tree?: TreeStore; audit: AuditLogger }): Hono<AuthEnv> {
+export function createAgentRoutes(deps: { store: AgentStore; tree?: TreeStore; audit: AuditLogger; settings: AgentSettingsStore }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
-  const { store, tree, audit } = deps
+  const { store, tree, audit, settings } = deps
 
   function mustGetTree(): TreeStore {
     if (!tree) throw new EnkakuError('E_INTERNAL', 'spawn grants are unavailable on this host')
     return tree
   }
+
+  // Plan 212 §4.7 — registered BEFORE `/:id` below, or `GET /api/agents/settings`
+  // resolves as an agent lookup for id `"settings"` and answers `agent_not_found`.
+  app.get('/settings', requirePermission('agent.view'), (c) =>
+    typedJson(c, FarmAgentSettingsResponseSchema, { settings: settings.get(), schema: z.toJSONSchema(FarmAgentSettingsSchema) }),
+  )
+  app.patch('/settings', requirePermission('agent.manage'), async (c) => {
+    const body = await c.req.json().catch(() => null)
+    const updated = settings.update(body)
+    return typedJson(c, UpdateFarmAgentSettingsResponseSchema, { settings: updated })
+  })
 
   app.get('/', requirePermission('agent.view'), (c) => typedJson(c, ListAgentsResponseSchema, { agents: store.list() }))
 

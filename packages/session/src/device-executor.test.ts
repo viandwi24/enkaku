@@ -162,7 +162,7 @@ function fakeGestureSession(opts: {
 // real 300–900ms pause() before every call — every other field (including
 // perCharMs, asserted below) stays at the schema's real default.
 const NATURAL_TIMING: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0] }
-const INSTANT_TIMING: TimingSettings = { ...DEFAULT_TIMING, profile: 'instant', betweenActionMs: [0, 0] }
+const INSTANT_TIMING: TimingSettings = { ...DEFAULT_TIMING, gestureCurvature: 0, betweenActionMs: [0, 0] }
 
 /**
  * The regression test for the original defect: `DeviceSettings.timing.tapJitterMs`

@@ -8,6 +8,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices, users } from '../db/schema'
 import { createAgentRoutes } from './agents'
+import { createAgentSettingsStore } from '../settings/agent-settings'
 
 const registry = buildCoreCapabilityRegistry()
 
@@ -29,7 +30,8 @@ function setUp(role: 'admin' | 'operator' | null = 'operator', userId = 'u1') {
   const store = createAgentStore({ db, registry })
   const tree = createTreeStore(db)
   const audit = createAuditLogger(db)
-  const app = withUser(role, userId, createAgentRoutes({ store, tree, audit }))
+  const settings = createAgentSettingsStore(db)
+  const app = withUser(role, userId, createAgentRoutes({ store, tree, audit, settings }))
   return { db, store, tree, app }
 }
 

@@ -7,6 +7,7 @@ import { artifacts, deviceEvents, jobEvents } from '../db/schema'
 import { createTraceFrameStore } from '../jobs/trace/frame-store'
 import type { FarmSettingsStore } from '../settings/farm-settings'
 import type { Logger } from '../util/logger'
+import { EVENT_MAX_ROWS_PER_DEVICE, INPUT_EVENT_RETENTION_DAYS } from '../config/constants'
 
 export interface RetentionGc {
   start(): void
@@ -55,17 +56,17 @@ export function createRetentionGc(deps: {
 
   /**
    * Device event log GC (plan 18 §4.4): two age budgets (one per stream) then
-   * a hard row ceiling per (device, stream), oldest rows first. Unlike the
-   * artifact policy above, this is NOT gated by `policy.enabled` — an
-   * unbounded input stream is a disk-filling bug, not an opt-in convenience
-   * (plan 18 §3.3).
+   * a hard row ceiling per (device, stream), oldest rows first. Retention is
+   * always on now (plan 212 §4.10 — MVP 09 §6, a nightly sweeper, not an
+   * opt-in) — an unbounded input stream was always a disk-filling bug, never
+   * meant to be an opt-in convenience (plan 18 §3.3).
    */
   function sweepEvents(): number {
-    const policy = deps.settings.get().retention
+    const historyDays = deps.settings.get().storage.historyDays
     let deleted = 0
 
-    const mainCutoff = new Date(Date.now() - policy.eventMainDays * 86_400_000)
-    const inputCutoff = new Date(Date.now() - policy.eventInputDays * 86_400_000)
+    const mainCutoff = new Date(Date.now() - historyDays * 86_400_000)
+    const inputCutoff = new Date(Date.now() - INPUT_EVENT_RETENTION_DAYS * 86_400_000)
     deleted += changedRows(
       deps.db.delete(deviceEvents).where(and(eq(deviceEvents.stream, 'main'), lt(deviceEvents.at, mainCutoff))).run(),
     )
@@ -85,7 +86,7 @@ export function createRetentionGc(deps: {
       .groupBy(deviceEvents.deviceId, deviceEvents.stream)
       .all()
     for (const row of counts) {
-      const excess = row.cnt - policy.eventMaxRowsPerDevice
+      const excess = row.cnt - EVENT_MAX_ROWS_PER_DEVICE
       if (excess <= 0) continue
       const oldestIds = deps.db
         .select({ id: deviceEvents.id })
@@ -130,11 +131,11 @@ export function createRetentionGc(deps: {
    * `Date.now()`-based number and not a `Date`.
    */
   function sweepTraces(): number {
-    const policy = deps.settings.get().retention
+    const traceDays = deps.settings.get().storage.traceDays
     // Milliseconds on both sides. Compare against `deviceEvents`' cutoff
     // above: same arithmetic, but that one is wrapped in a `Date` because its
     // column is seconds-backed, and this one must not be.
-    const cutoffMs = Date.now() - policy.traceDays * 86_400_000
+    const cutoffMs = Date.now() - traceDays * 86_400_000
     const staleRunIds = deps.db
       .select({ runId: jobEvents.runId, lastAtMs: sql<number>`max(${jobEvents.atMs})`.as('last_at_ms') })
       .from(jobEvents)
@@ -178,18 +179,19 @@ export function createRetentionGc(deps: {
   } {
     const eventsDeleted = sweepEvents()
     const tracesDeleted = sweepTraces()
-    const policy = deps.settings.get().retention
-    if (!policy.enabled) return { deleted: 0, freedBytes: 0, eventsDeleted, tracesDeleted }
+    // Plan 212 §4.10 — retention is always on now (MVP 09 §6: a nightly
+    // sweeper, not an opt-in); the old `retention.enabled` guard is gone.
+    const artifactPolicy = deps.settings.get().storage.artifacts
 
     const rows = deps.db.select().from(artifacts).orderBy(asc(artifacts.createdAt)).all()
-    const cutoff = Date.now() - policy.maxAgeDays * 86_400_000
+    const cutoff = Date.now() - artifactPolicy.maxAgeDays * 86_400_000
     const expired = rows.filter((r) => (r.createdAt?.getTime() ?? 0) < cutoff).map((r) => r.id)
     let freed = removeRows(expired)
     let deleted = expired.length
 
     // Then: if the total is still over quota, drop the oldest first.
     const remaining = rows.filter((r) => !expired.includes(r.id))
-    const quotaBytes = policy.maxTotalGb * 1024 ** 3
+    const quotaBytes = artifactPolicy.maxTotalGb * 1024 ** 3
     let total = remaining.reduce((sum, r) => sum + (r.sizeBytes ?? 0), 0)
     const overflow: string[] = []
     for (const row of remaining) {

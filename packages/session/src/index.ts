@@ -2,7 +2,6 @@ export { createSession, type DeviceSession, type CreateSessionOpts, type CreateS
 export {
   CONTROL_PRESETS,
   WALL_PRESETS,
-  WALL_VIDEO_BUDGET_BPS,
   resolveVideoProfile,
   sameVideoNumbers,
   computeAutoTiles,

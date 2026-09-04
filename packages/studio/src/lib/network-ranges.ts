@@ -57,10 +57,13 @@ export function useNetworkRanges(opts: { includePort?: boolean } = {}) {
     setRows(null)
     api('/api/settings', SettingsResponseSchema)
       .then((b) => {
-        const nextRows = networksToRanges(b.settings.discovery.networks)
+        // Plan 212 §4.1 — `discovery.scan.maxAddresses` and `discovery.tcpPort`
+        // are constants now (`SCAN_MAX_ADDRESSES`, `ADB_TCP_PORT`,
+        // `packages/core/src/config/constants.ts`), not part of the settings
+        // response; this hook keeps its own literal defaults for them
+        // (1024, 5555) rather than reading a field the API no longer serves.
+        const nextRows = networksToRanges(b.settings.networkScan.networks)
         setRows(nextRows)
-        setMaxAddresses(b.settings.discovery.scan.maxAddresses)
-        setTcpPort(b.settings.discovery.tcpPort)
         savedRowsSnapshot.current = JSON.stringify(nextRows)
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
@@ -91,22 +94,26 @@ export function useNetworkRanges(opts: { includePort?: boolean } = {}) {
     if (!rows || hasInvalidRow || overLimit) return Promise.resolve(null)
     const networks = rangeRowsToNetworks(rows)
     if (!networks) return Promise.resolve(null)
-    const effectivePort = overridePort ?? tcpPort
+    // Plan 212 §4.1 — `discovery.tcpPort` is the constant `ADB_TCP_PORT` now;
+    // `includePort`/`overridePort` no longer have a settings field to reach,
+    // so the port argument is accepted for call-site compatibility but is
+    // not sent. `plugins 219 owns rebuilding this editor against the new
+    // schema.
+    void overridePort
+    void includePort
     return run(
       'save-networks',
       () =>
         api('/api/settings', UpdateSettingsResponseSchema, {
           method: 'PATCH',
-          json: includePort ? { discovery: { networks, tcpPort: effectivePort } } : { discovery: { networks } },
+          json: { networkScan: { networks } },
         }),
       {
         success: 'Farm networks saved',
         failure: 'Could not save these networks',
         onSuccess: (b) => {
-          const nextRows = networksToRanges(b.settings.discovery.networks)
+          const nextRows = networksToRanges(b.settings.networkScan.networks)
           setRows(nextRows)
-          setMaxAddresses(b.settings.discovery.scan.maxAddresses)
-          setTcpPort(b.settings.discovery.tcpPort)
           savedRowsSnapshot.current = JSON.stringify(nextRows)
         },
       },

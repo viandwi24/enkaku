@@ -773,7 +773,7 @@ export type DeviceNumberReleased = z.infer<typeof DeviceNumberReleasedSchema>
  * /api/devices/:id`, which is twenty requests for one setting on a farm that is
  * about to be twenty phones.
  */
-export const DEVICE_PREP_KEYS = ['disableAnimations', 'keepAwake', 'standbyScreenOff', 'rotation', 'textInput'] as const
+export const DEVICE_PREP_KEYS = ['keepAwake', 'standbyScreenOff', 'rotation', 'textInput'] as const
 export type DevicePrepKey = (typeof DEVICE_PREP_KEYS)[number]
 
 /**
@@ -797,7 +797,6 @@ export type DevicePrepKey = (typeof DEVICE_PREP_KEYS)[number]
  * not a fleet-wide reset to defaults).
  */
 export const DevicePrepPatchSchema = z.object({
-  disableAnimations: z.boolean().optional(),
   keepAwake: KeepAwakeModeSchema.optional(),
   standbyScreenOff: z.boolean().optional(),
   rotation: RotationModeSchema.optional(),
@@ -819,25 +818,11 @@ export type DevicePrepPatch = z.infer<typeof DevicePrepPatchSchema>
  */
 const _prepPatchIsASubsetOfPrep: (patch: DevicePrepPatch) => Partial<DeviceSettings['prep']> = (patch) => patch
 /**
- * **`screenOffTimeoutMs` is deliberately not bulk-settable (yet)** — the guard
- * below offers exactly this choice, and this is the documented half of it.
- *
- * It is a genuinely good candidate for a bulk apply: plan 125's whole subject
- * is a twelve-plus device farm sealed in a box, where doing anything one
- * device at a time is the problem. It is excluded here only because the bulk
- * surface is not just a schema — `BulkPrepDialog` renders one control per key
- * and its `Record<DevicePrepKey, …>` maps make a new key a compile error
- * there, and a numeric/nullable duration is the first key in this list that is
- * not a checkbox or a small enum. Adding it is a Studio change with a real
- * design question in it (what does "leave it alone" look like next to a
- * number field?), not a line in this file, so plan 125 step 125.1/125.2 left
- * it out rather than shipping half of it.
- *
- * Nothing is blocked by the omission: `PATCH /api/devices/:id` sets it per
- * device today, and the farm-wide default (`DeviceSettingsSchema.prep`) is
- * what every newly admitted device picks up.
+ * Plan 212 §4.1 D18 removed `prep.screenOffTimeoutMs` from `DeviceSettingsSchema`
+ * entirely (it is the constant `DEVICE_SCREEN_OFF_TIMEOUT_MS` now), so this
+ * guard covers every remaining `prep` key with no exception.
  */
-type _EveryPrepKeyIsCovered = Exclude<keyof DeviceSettings['prep'], DevicePrepKey | 'screenOffTimeoutMs'> extends never
+type _EveryPrepKeyIsCovered = Exclude<keyof DeviceSettings['prep'], DevicePrepKey> extends never
   ? true
   : 'a prep setting is missing from DEVICE_PREP_KEYS — add it, or document why it is not bulk-settable'
 const _everyPrepKeyIsCovered: _EveryPrepKeyIsCovered = true

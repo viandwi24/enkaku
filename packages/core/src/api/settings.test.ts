@@ -34,13 +34,13 @@ describe('PATCH /api/settings requires settings.manage (plan 34 §4.4, §4.5, ac
     const res = await app.request('/', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ battery: { pollIntervalSec: 30 } }),
+      body: JSON.stringify({ devices: { tempThresholdC: 30 } }),
     })
     expect(res.status).toBe(403)
     const body = (await res.json()) as { error: { code: string } }
     expect(body.error.code).toBe('auth.forbidden')
     // A refused request changes nothing.
-    expect(store.get().battery.pollIntervalSec).not.toBe(30)
+    expect(store.get().devices.tempThresholdC).not.toBe(30)
   })
 
   test('an unauthenticated request is refused', async () => {
@@ -49,7 +49,7 @@ describe('PATCH /api/settings requires settings.manage (plan 34 §4.4, §4.5, ac
     const res = await app.request('/', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ battery: { pollIntervalSec: 30 } }),
+      body: JSON.stringify({ devices: { tempThresholdC: 30 } }),
     })
     expect(res.status).toBe(403)
   })
@@ -60,10 +60,10 @@ describe('PATCH /api/settings requires settings.manage (plan 34 §4.4, §4.5, ac
     const res = await app.request('/', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ battery: { pollIntervalSec: 30 } }),
+      body: JSON.stringify({ devices: { tempThresholdC: 30 } }),
     })
     expect(res.status).toBe(200)
-    expect(store.get().battery.pollIntervalSec).toBe(30)
+    expect(store.get().devices.tempThresholdC).toBe(30)
   })
 
   test('GET / needs no permission at all — read routes stay open', async () => {

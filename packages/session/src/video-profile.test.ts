@@ -1,9 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { defaultFarmSettings, type DeviceSettings } from '@enkaku/protocol'
 import {
   CONTROL_PRESETS,
   WALL_PRESETS,
-  WALL_VIDEO_BUDGET_BPS,
   computeAutoTiles,
   resolveVideoProfile,
   resolveWallBandwidthBps,
@@ -17,20 +15,12 @@ import {
  * brief: "Pin the current values from the real `QUALITY_PROFILES` before
  * you delete them, and let the test compare against those pinned numbers."
  * `control` is still pinned to the literal, hand-copied pre-plan-92 numbers.
- * `wall` is now pinned to plan 100 §3.4's revised numbers instead — see
- * `PRE_PLAN_100_WALL_BALANCED` below for the constant this test compared
- * against before this step.
+ * `wall` is now pinned to plan 100 §3.4's revised numbers instead.
  */
 const PRE_PLAN_92_QUALITY_PROFILES = {
   control: { maxSize: 1600, maxFps: 30, bitRate: 4_000_000 },
 }
 
-/**
- * Plan 100 §3.4 — the slideshow default this step replaces. Kept here,
- * deliberately NOT deleted, so a future reader can see exactly what
- * `WALL_PRESETS.balanced` used to be and confirm the new number is a
- * genuine change, not a typo of the old one.
- */
 const PRE_PLAN_100_WALL_BALANCED = { maxSize: 480, maxFps: 5, bitRate: 800_000 }
 
 describe('CONTROL_PRESETS / WALL_PRESETS — pinned literal numbers (plan 92 §4.2; wall table revised by plan 100 §3.4)', () => {
@@ -73,84 +63,63 @@ describe('CONTROL_PRESETS / WALL_PRESETS — pinned literal numbers (plan 92 §4
   })
 })
 
-describe('resolveVideoProfile — byte-identical scrcpy arguments for control; wall now resolves the plan 100 defaults', () => {
-  test('control, farm defaults, no device override: max_size 1600 · max_fps 30 · video_bit_rate 4000000', () => {
-    const profile = resolveVideoProfile(defaultFarmSettings().video, null, 'control')
+describe('resolveVideoProfile — preset-only model (plan 212 §4.5): a device override or the farm quality name, never a numeric farm override', () => {
+  test('control, farm "sharp", no device override: max_size 1600 · max_fps 30 · video_bit_rate 4000000', () => {
+    const profile = resolveVideoProfile({ controlQuality: 'sharp', wallQuality: 'balanced' }, null, 'control')
     expect(profile.maxSize).toBe(1600)
     expect(profile.maxFps).toBe(30)
     expect(profile.bitRate).toBe(4_000_000)
     expect(profile.quality).toBe('control')
+    expect(profile.source).toEqual({ maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' })
   })
 
-  test('wall, farm defaults, no device override: max_size 480 · max_fps 18 · video_bit_rate 1100000 (plan 100 step 100.8)', () => {
-    const profile = resolveVideoProfile(defaultFarmSettings().video, null, 'wall')
+  test('wall, farm "balanced", no device override: max_size 480 · max_fps 18 · video_bit_rate 1100000 (plan 100 step 100.8)', () => {
+    const profile = resolveVideoProfile({ controlQuality: 'sharp', wallQuality: 'balanced' }, null, 'wall')
     expect(profile.maxSize).toBe(480)
     expect(profile.maxFps).toBe(18)
     expect(profile.bitRate).toBe(1_100_000)
     expect(profile.quality).toBe('wall')
+    expect(profile.source).toEqual({ maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' })
   })
 
-  test('every number is reported as "preset" sourced when the farm has changed nothing', () => {
-    const control = resolveVideoProfile(defaultFarmSettings().video, null, 'control')
-    expect(control.source).toEqual({ maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' })
-    const wall = resolveVideoProfile(defaultFarmSettings().video, null, 'wall')
-    expect(wall.source).toEqual({ maxSize: 'preset', maxFps: 'preset', bitRate: 'preset' })
-  })
-})
-
-describe('resolveVideoProfile — precedence: device field beats farm field beats preset table (plan 92 §3.5, §4.2)', () => {
-  test('a farm number that differs from the selected preset resolves to the farm value, sourced "farm"', () => {
-    const farm = { ...defaultFarmSettings().video, wallBitRate: 1_000_000 }
-    const profile = resolveVideoProfile(farm, null, 'wall')
-    expect(profile.bitRate).toBe(1_000_000)
-    expect(profile.source.bitRate).toBe('farm')
-    // The untouched numbers on the same profile still read "preset".
-    expect(profile.source.maxSize).toBe('preset')
-    expect(profile.source.maxFps).toBe('preset')
+  test('every preset name resolves to its exact table row', () => {
+    for (const name of Object.keys(CONTROL_PRESETS) as Array<keyof typeof CONTROL_PRESETS>) {
+      const profile = resolveVideoProfile({ controlQuality: name, wallQuality: 'balanced' }, null, 'control')
+      expect({ maxSize: profile.maxSize, maxFps: profile.maxFps, bitRate: profile.bitRate }).toEqual(CONTROL_PRESETS[name])
+    }
+    for (const name of Object.keys(WALL_PRESETS) as Array<keyof typeof WALL_PRESETS>) {
+      const profile = resolveVideoProfile({ controlQuality: 'sharp', wallQuality: name }, null, 'wall')
+      expect({ maxSize: profile.maxSize, maxFps: profile.maxFps, bitRate: profile.bitRate }).toEqual(WALL_PRESETS[name])
+    }
   })
 
-  test('a device override wins over the farm value even when the farm value is itself non-default', () => {
-    const farm = { ...defaultFarmSettings().video, wallBitRate: 1_000_000 }
-    const device: DeviceSettings['video'] = { wallBitRate: 250_000 }
-    const profile = resolveVideoProfile(farm, device, 'wall')
-    expect(profile.bitRate).toBe(250_000)
-    expect(profile.source.bitRate).toBe('device')
+  test('a device override wins over the farm quality, and reports "device"', () => {
+    const profile = resolveVideoProfile({ controlQuality: 'sharp', wallQuality: 'balanced' }, { wallQuality: 'minimal' }, 'wall')
+    expect({ maxSize: profile.maxSize, maxFps: profile.maxFps, bitRate: profile.bitRate }).toEqual(WALL_PRESETS.minimal)
+    expect(profile.source).toEqual({ maxSize: 'device', maxFps: 'device', bitRate: 'device' })
   })
 
   test('a null device (no row, or no override at all) behaves exactly like an empty object', () => {
-    const farm = defaultFarmSettings().video
+    const farm = { controlQuality: 'sharp' as const, wallQuality: 'balanced' as const }
     expect(resolveVideoProfile(farm, null, 'control')).toEqual(resolveVideoProfile(farm, {}, 'control'))
   })
 
   test('control and wall device overrides are independent — a wall override never leaks into a control resolution', () => {
-    const device: DeviceSettings['video'] = { wallMaxFps: 2 }
-    const profile = resolveVideoProfile(defaultFarmSettings().video, device, 'control')
+    const profile = resolveVideoProfile({ controlQuality: 'sharp', wallQuality: 'balanced' }, { wallQuality: 'minimal' }, 'control')
     expect(profile.maxFps).toBe(30) // untouched — the override was for `wall`, not `control`
     expect(profile.source.maxFps).toBe('preset')
-  })
-
-  test('every field can be independently sourced from a different layer on the same profile', () => {
-    const farm = { ...defaultFarmSettings().video, controlMaxFps: 24 } // farm-overridden
-    const device: DeviceSettings['video'] = { controlBitRate: 6_000_000 } // device-overridden
-    const profile = resolveVideoProfile(farm, device, 'control')
-    expect(profile.maxSize).toBe(1600) // preset
-    expect(profile.source.maxSize).toBe('preset')
-    expect(profile.maxFps).toBe(24) // farm
-    expect(profile.source.maxFps).toBe('farm')
-    expect(profile.bitRate).toBe(6_000_000) // device
-    expect(profile.source.bitRate).toBe('device')
   })
 })
 
 describe('sameVideoNumbers — ignores source and quality (plan 92 §4.2)', () => {
   test('two profiles with identical numbers but different quality/source are still "same"', () => {
-    const a = resolveVideoProfile(defaultFarmSettings().video, null, 'control')
+    const a = resolveVideoProfile({ controlQuality: 'sharp', wallQuality: 'balanced' }, null, 'control')
     const b = { maxSize: a.maxSize, maxFps: a.maxFps, bitRate: a.bitRate }
     expect(sameVideoNumbers(a, b)).toBe(true)
   })
 
   test('a single differing number makes them different', () => {
-    const a = resolveVideoProfile(defaultFarmSettings().video, null, 'wall')
+    const a = resolveVideoProfile({ controlQuality: 'sharp', wallQuality: 'balanced' }, null, 'wall')
     expect(sameVideoNumbers(a, { ...a, bitRate: a.bitRate + 1 })).toBe(false)
     expect(sameVideoNumbers(a, { ...a, maxFps: a.maxFps + 1 })).toBe(false)
     expect(sameVideoNumbers(a, { ...a, maxSize: a.maxSize + 1 })).toBe(false)
@@ -158,25 +127,15 @@ describe('sameVideoNumbers — ignores source and quality (plan 92 §4.2)', () =
 })
 
 /**
- * Plan 100 §3.1, §4.1 — `computeAutoTiles` now takes a `WallBudget` (a
- * decode bound + a bandwidth bound) and returns their `min`, clamped to
- * [4, 32]. The three describe blocks below cover: (1) a WAN/cloud
- * regression fixture proving the formula is byte-identical to plan 92's
- * single-bound version when the decode bound is set loose enough not to
- * bind and the bandwidth bound is pinned to the old 20 Mbit/s constant
- * (plan 100 §3.6's "cloud mode is untouched" claim, checked at the formula
- * level); (2) a loopback fixture proving the decode bound is what actually
- * governs at the new shipped defaults; (3) the clamp's own edges.
+ * Plan 100 §3.1, §4.1 — `computeAutoTiles` takes a `WallBudget` (a decode
+ * bound + a bandwidth bound) and returns their `min`, clamped to [4, 32].
  */
 describe('computeAutoTiles — decode bound × bandwidth bound (plan 100 §3.1, §4.1)', () => {
   const NEVER_BINDS = 1_000_000 // a decode ceiling far above the [4,32] clamp — isolates the bandwidth term
+  const WAN_BUDGET_BPS = 20_000_000 // plan 212 §212.5 — the pre-plan-100 constant, now a caller-supplied number (advanced.wallWanBandwidthBps)
 
   describe('WAN/cloud regression: byte-identical to the pre-plan-100 bandwidth-only formula (plan 100 §3.6)', () => {
-    const wanBudget: WallBudget = { decodeTileCeiling: NEVER_BINDS, bandwidthBps: WALL_VIDEO_BUDGET_BPS }
-
-    test('WALL_VIDEO_BUDGET_BPS is still the named 20 Mbit/s constant', () => {
-      expect(WALL_VIDEO_BUDGET_BPS).toBe(20_000_000)
-    })
+    const wanBudget: WallBudget = { decodeTileCeiling: NEVER_BINDS, bandwidthBps: WAN_BUDGET_BPS }
 
     test('the pre-plan-100 slideshow bitrate (800 kbit/s) -> 25, exactly as plan 92 §3.7 computed', () => {
       expect(computeAutoTiles(800_000, wanBudget)).toBe(25)
@@ -200,12 +159,10 @@ describe('computeAutoTiles — decode bound × bandwidth bound (plan 100 §3.1, 
   })
 
   describe('loopback/LAN: the decode bound wins at the new shipped defaults (plan 100 §3.1, §3.3)', () => {
-    // The shipped placeholder default (settings.ts `wall.decodeTileCeiling`)
-    // and the shipped generous loopback bandwidth default
-    // (`wall.bandwidthBps`) — duplicated here as literals rather than
-    // imported from `@enkaku/protocol`, matching this file's existing
-    // precedent of asserting numbers, not re-deriving them from the schema
-    // it is meant to be checked against.
+    // The shipped placeholder default (`WALL_DECODE_TILE_CEILING`, constants.ts)
+    // and the shipped generous loopback bandwidth default (`WALL_LAN_BANDWIDTH_BPS`)
+    // — duplicated here as literals, matching this file's existing precedent
+    // of asserting numbers, not re-deriving them from the constants module.
     const loopbackBudget: WallBudget = { decodeTileCeiling: 24, bandwidthBps: 200_000_000 }
 
     test('at the new balanced default (900 kbit/s), the bandwidth bound is nowhere near binding: decode wins at 24', () => {
@@ -238,22 +195,17 @@ describe('computeAutoTiles — decode bound × bandwidth bound (plan 100 §3.1, 
   })
 
   test('matches the resolved wall preset default end to end on the WAN path: balanced (1.1 Mbit/s, step 100.8) -> 18', () => {
-    const profile = resolveVideoProfile(defaultFarmSettings().video, null, 'wall')
+    const profile = resolveVideoProfile({ controlQuality: 'sharp', wallQuality: 'balanced' }, null, 'wall')
     // 20_000_000 / 1_100_000 = 18.18 -> floor 18, below the 24 decode ceiling,
     // so bandwidth (not decode) is still the binding term on this specific
     // path — proving the two bounds really are independent, not a fixed
     // ordering.
-    expect(computeAutoTiles(profile.bitRate, { decodeTileCeiling: 24, bandwidthBps: WALL_VIDEO_BUDGET_BPS })).toBe(18)
+    expect(computeAutoTiles(profile.bitRate, { decodeTileCeiling: 24, bandwidthBps: WAN_BUDGET_BPS })).toBe(18)
   })
 })
 
 /**
  * Plan 100 §3.1, §4.1, step 100.3 — the transport classification itself.
- * `packages/core/src/daemon-wiring.test.ts` proves `daemon.ts`'s real
- * `video:` accessor actually calls these two functions (reading `ENKAKU_MODE`
- * env-var classification is only meaningfully testable against the real
- * source text, not a fixture); this proves the pure functions are correct
- * in isolation.
  */
 describe('resolveWallTransport — orchestrator/cloud reads as WAN, everything else as loopback, override always wins (plan 100 §3.1, §4.1)', () => {
   test('non-orchestrator, no override: loopback', () => {
@@ -277,14 +229,14 @@ describe('resolveWallTransport — orchestrator/cloud reads as WAN, everything e
   })
 })
 
-describe('resolveWallBandwidthBps — WAN is hard-pinned to WALL_VIDEO_BUDGET_BPS, loopback/LAN use the farm setting (plan 100 §3.1, §3.6, §4.1)', () => {
-  test('wan ignores the farm setting entirely — provably byte-identical to pre-plan-100 cloud behaviour', () => {
-    expect(resolveWallBandwidthBps('wan', 999_000_000)).toBe(WALL_VIDEO_BUDGET_BPS)
-    expect(resolveWallBandwidthBps('wan', 1_000_000)).toBe(WALL_VIDEO_BUDGET_BPS)
+describe('resolveWallBandwidthBps — WAN takes the caller-supplied WAN budget, loopback/LAN take the caller-supplied LAN budget (plan 212 §212.5)', () => {
+  test('wan uses the wan budget regardless of the lan budget passed alongside it', () => {
+    expect(resolveWallBandwidthBps('wan', 20_000_000, 999_000_000)).toBe(20_000_000)
+    expect(resolveWallBandwidthBps('wan', 1_000_000, 999_000_000)).toBe(1_000_000)
   })
 
-  test('loopback and lan both pass the farm setting straight through', () => {
-    expect(resolveWallBandwidthBps('loopback', 200_000_000)).toBe(200_000_000)
-    expect(resolveWallBandwidthBps('lan', 50_000_000)).toBe(50_000_000)
+  test('loopback and lan both pass the lan budget straight through, ignoring the wan budget', () => {
+    expect(resolveWallBandwidthBps('loopback', 20_000_000, 200_000_000)).toBe(200_000_000)
+    expect(resolveWallBandwidthBps('lan', 20_000_000, 50_000_000)).toBe(50_000_000)
   })
 })

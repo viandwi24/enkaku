@@ -77,8 +77,33 @@ function ScriptDetail() {
   useEffect(load, [scriptId])
 
   useEffect(() => {
+    // Plan 212 §4.1 — `job.defaultTimeoutMs`/`job.memory.defaultMaxRssBytes`
+    // are `jobRunner.defaultTimeoutMs`/`advanced.jobMemoryLimitBytes` now;
+    // the two ceiling fields (`maxTimeoutMs`, `memory.maxRssBytes`) are
+    // support-only constants with no Studio-visible field and default to
+    // `null` (no ceiling) — used here as their own default.
     void api('/api/settings', SettingsResponseSchema)
-      .then((b) => setFarmJobSettings(b.settings.job))
+      .then((b) =>
+        setFarmJobSettings({
+          resetPolicy: 'home',
+          resetTimeoutMs: 15_000,
+          resetStrict: false,
+          retry: { maxInfraAttempts: 3, backoffBaseMs: 1_000, backoffMaxMs: 30_000, timeoutIsInfra: false, rebindOnInfra: true },
+          crashPolicy: 'declared',
+          defaultTimeoutMs: b.settings.jobRunner.defaultTimeoutMs,
+          startupTimeoutMs: 60_000,
+          maxTimeoutMs: null,
+          memory: {
+            defaultMaxRssBytes: b.settings.advanced.jobMemoryLimitBytes,
+            maxRssBytes: null,
+            enforce: 'kill',
+            sampleIntervalMs: 2_000,
+          },
+          trigger: { maxDepth: 5, maxPerChain: 200, maxPerJob: 10 },
+          maxResultBytes: 65_536,
+          progressIntervalMs: 1_000,
+        }),
+      )
       .catch(() => undefined)
   }, [])
 

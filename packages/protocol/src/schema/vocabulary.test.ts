@@ -255,6 +255,18 @@ describe('summary — the one key plan 97 §3.6 adds, and only that key', () => 
   test('a non-boolean summary makes the whole hints object malformed, returning {} (same discipline as every other hint)', () => {
     expect(readHints({ [ENKAKU_META_KEY]: { summary: 'yes' } })).toEqual({})
   })
+})
+
+describe('hint — the "raise or lower if" sentence (plan 212 §4.2)', () => {
+  test('a string hint reads through intact', () => {
+    expect(readHints({ [ENKAKU_META_KEY]: { hint: 'Raise this if the adb server saturates.' } })).toEqual({
+      hint: 'Raise this if the adb server saturates.',
+    })
+  })
+
+  test('a non-string hint makes the whole hints object malformed, returning {} (same discipline as every other hint)', () => {
+    expect(readHints({ [ENKAKU_META_KEY]: { hint: 42 } })).toEqual({})
+  })
 
   test('summary rides through ui() alongside kind, exactly like every other hint', () => {
     expect(ui({ title: 'Videos watched', kind: 'count', summary: true })).toEqual({

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { JobSettings } from './settings'
+import type { JobSettings } from './job-settings'
 
 /**
  * The current SDK contract major a bundle is built against (plan 98 §3.3

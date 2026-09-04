@@ -11,8 +11,10 @@ import {
   type DeviceActivity,
   type DeviceEvent,
   type DeviceStatus,
+  type FarmSettings,
   type GuestAgentActivity,
   type GuestAgentVideo,
+  type JobSettings,
   type Quality,
   type ServerMessage,
   type ShellResult,
@@ -20,6 +22,92 @@ import {
   type Viewer,
 } from '@enkaku/protocol'
 import type { Server } from 'bun'
+import {
+  ADB_DRAIN_TIMEOUT_MS,
+  TOUCH_PROFILES,
+  ADB_ENDPOINT_BIND,
+  ADB_ENDPOINT_ENABLED,
+  ADB_ENDPOINT_IDLE_SEC,
+  ADB_ENDPOINT_MAX_STREAMS,
+  ADB_MAX_HOST_PROCESSES,
+  ADB_MAX_STREAMS_FARM,
+  ADB_MAX_STREAMS_PER_DEVICE,
+  ADB_RESTART_COOLDOWN_SEC,
+  ADB_TCP_PORT,
+  ADB_TIMEOUT_STORM_RATE,
+  AUDIT_RETENTION_DAYS,
+  BATTERY_POLL_INTERVAL_SEC,
+  BLOB_ORPHAN_GRACE_HOURS,
+  CONTROL_IDLE_SEC,
+  CRASH_WATCH,
+  CUTOVER_POLL_SEC,
+  CUTOVER_WINDOW_SEC,
+  DEVICE_AUTO_QUARANTINE,
+  DEVICE_CONNECT_SETTLE_MS,
+  DEVICE_ENDPOINTS_REMEMBERED,
+  DEVICE_ENDPOINT_RETIRE_AFTER,
+  DEVICE_LABEL_SURFACE,
+  DEVICE_OFFLINE_GRACE_SEC,
+  DEVICE_RECOVERY_COOLDOWN_SEC,
+  DEVICE_RECOVERY_PROBE_INTERVAL_SEC,
+  DEVICE_RESCAN_INTERVAL_SEC,
+  DEVICE_SCREEN_OFF_TIMEOUT_MS,
+  DISPLAY_FALLBACK_RETRIES,
+  EVENT_MAX_ROWS_PER_DEVICE,
+  GEO_PROVIDER_URL,
+  GEO_RECHECK_INTERVAL_SEC,
+  GUEST_AGENT_PROVISION,
+  GUEST_AGENT_RECOVERY_REARM_SEC,
+  INPUT_EVENT_RETENTION_DAYS,
+  INPUT_MAX_QUEUE_DEPTH,
+  INPUT_WAIT_BUDGET_MS,
+  JOB_CRASH_POLICY,
+  JOB_MAX_RESULT_BYTES,
+  JOB_MAX_TIMEOUT_MS,
+  JOB_MEMORY_ENFORCE,
+  JOB_MEMORY_MAX_BYTES,
+  JOB_MEMORY_SAMPLE_INTERVAL_MS,
+  JOB_PROGRESS_INTERVAL_MS,
+  JOB_REBIND_ON_INFRA,
+  JOB_RESET_STRICT,
+  JOB_RESET_TIMEOUT_MS,
+  JOB_RETRY_BACKOFF_MAX_MS,
+  JOB_STARTUP_TIMEOUT_MS,
+  JOB_TIMEOUT_IS_INFRA,
+  JOB_TRIGGER_MAX_DEPTH,
+  JOB_TRIGGER_MAX_PER_CHAIN,
+  JOB_TRIGGER_MAX_PER_JOB,
+  KV_MAX_ENTRIES_PER_DEVICE,
+  KV_MAX_ENTRIES_PER_NAMESPACE,
+  KV_MAX_KEY_LENGTH,
+  KV_MAX_VALUE_BYTES,
+  LABEL_WRITE_CONCURRENCY,
+  READINESS_DEFAULT_DESIRED,
+  READINESS_MAX_HOT,
+  RECORDING_ANCHOR_MIN_INTERVAL_MS,
+  RECORDING_ANCHOR_QUIET_MS,
+  RECORDING_CAPTURE_SCREENSHOTS,
+  RECORDING_LONG_PRESS_MS,
+  RECORDING_MAX_DURATION_SEC,
+  RECORDING_MAX_STEPS,
+  SCAN_CONCURRENCY,
+  SCAN_MAX_ADDRESSES,
+  SCAN_MODE,
+  SCAN_PROBE_TIMEOUT_MS,
+  SHELL_EXEC_TIMEOUT_MS,
+  SHELL_MAX_OUTPUT_BYTES,
+  TRANSFER_ENABLED,
+  WALL_DECODE_TILE_CEILING,
+  WALL_LAN_BANDWIDTH_BPS,
+  WALL_MAX_TILES,
+  WALL_RAMP_CONCURRENCY,
+  WALL_TRANSPORT_OVERRIDE,
+  WORKFLOW_MAX_TOTAL_MS,
+  WORKSPACE_INLINE_MAX_BYTES,
+  WORKSPACE_MAX_BYTES_PER_SCOPE,
+  WORKSPACE_MAX_FILES_PER_SCOPE,
+  WORKSPACE_MAX_FILE_BYTES,
+} from './config/constants'
 
 import { createNodeRoutes } from './api/nodes'
 import { createNodeAuth } from './tunnel/node-auth'
@@ -65,6 +153,7 @@ import { createAdbStatsRoutes } from './api/adb-stats'
 import { createVideoRoutes } from './api/video'
 import { createDoctorRoutes } from './api/doctor'
 import { createFarmSettingsStore } from './settings/farm-settings'
+import { createAgentSettingsStore } from './settings/agent-settings'
 import { buildRegistryResponse } from './registry/engines'
 import { createScriptRoutes } from './scripts/routes'
 import { createWorkflowRoutes } from './api/workflows'
@@ -292,6 +381,96 @@ export interface Daemon {
    * has no further safe fallback for.
    */
   reopenHttpPort(): Promise<void>
+}
+
+/**
+ * Plan 212 §5 step 212.4 — every one of these helpers rebuilds the shape a
+ * consumer already expects (discovery, adb, shell, transfer, job) from the
+ * post-212 farm settings plus the constants that replaced most of that
+ * shape's fields, so the consumer itself never has to change. Free
+ * functions, not closures: each takes the current `FarmSettings` snapshot
+ * as its only argument.
+ */
+function discoveryConstants(s: FarmSettings) {
+  return {
+    scanIntervalSec: DEVICE_RESCAN_INTERVAL_SEC,
+    offlineGraceSec: DEVICE_OFFLINE_GRACE_SEC,
+    recoveryCooldownSec: DEVICE_RECOVERY_COOLDOWN_SEC,
+    tcpPort: ADB_TCP_PORT,
+    endpointsPerDevice: DEVICE_ENDPOINTS_REMEMBERED,
+    endpointRetireAfter: DEVICE_ENDPOINT_RETIRE_AFTER,
+    connectSettleMs: DEVICE_CONNECT_SETTLE_MS,
+    networks: s.networkScan.networks,
+    scan: { mode: SCAN_MODE, maxAddresses: SCAN_MAX_ADDRESSES, concurrency: SCAN_CONCURRENCY, probeTimeoutMs: SCAN_PROBE_TIMEOUT_MS },
+    cutover: { armWindowSec: CUTOVER_WINDOW_SEC, armPollSec: CUTOVER_POLL_SEC },
+  }
+}
+
+function adbConstants(s: FarmSettings) {
+  return {
+    maxConcurrent: s.advanced.adbMaxConcurrent,
+    maxStreamsPerDevice: ADB_MAX_STREAMS_PER_DEVICE,
+    maxStreams: ADB_MAX_STREAMS_FARM,
+    maxHostConcurrent: ADB_MAX_HOST_PROCESSES,
+    maxInstallConcurrent: s.advanced.installsPerUsbRoot,
+  }
+}
+
+function shellConstants(s: FarmSettings) {
+  return {
+    mode: (s.privacy.adbCommand ? 'operator' : 'off') as 'operator' | 'off',
+    execTimeoutMs: SHELL_EXEC_TIMEOUT_MS,
+    maxOutputBytes: SHELL_MAX_OUTPUT_BYTES,
+    endpointEnabled: ADB_ENDPOINT_ENABLED,
+    endpointBind: ADB_ENDPOINT_BIND,
+    endpointIdleSec: ADB_ENDPOINT_IDLE_SEC,
+    maxEndpointStreams: ADB_ENDPOINT_MAX_STREAMS,
+  }
+}
+
+function transferConstants(s: FarmSettings) {
+  return {
+    enabled: TRANSFER_ENABLED,
+    maxPushBytes: s.advanced.transferCaps.maxPushBytes,
+    maxPullBytes: s.advanced.transferCaps.maxPullBytes,
+    installTimeoutMs: s.advanced.installTimeoutMs,
+    maxArchiveBytes: s.advanced.transferCaps.maxArchiveBytes,
+  }
+}
+
+/**
+ * The pre-212 `JobSettings` shape, rebuilt from the farm's current settings
+ * so the job runner and workflow orchestrator (plan 211's own shape) never
+ * see a change (plan 212 §5 step 212.4). `resetPolicy` maps the new
+ * three-value enum back onto the old four-value one it replaced.
+ */
+function jobConstants(s: FarmSettings): JobSettings {
+  const resetPolicy = s.jobRunner.resetPolicy === 'never' ? 'none' : s.jobRunner.resetPolicy === 'on-failure' ? 'declared' : 'home'
+  return {
+    resetPolicy,
+    resetTimeoutMs: JOB_RESET_TIMEOUT_MS,
+    resetStrict: JOB_RESET_STRICT,
+    retry: {
+      maxInfraAttempts: s.advanced.infraRetry.attempts,
+      backoffBaseMs: s.advanced.infraRetry.backoffBaseMs,
+      backoffMaxMs: JOB_RETRY_BACKOFF_MAX_MS,
+      timeoutIsInfra: JOB_TIMEOUT_IS_INFRA,
+      rebindOnInfra: JOB_REBIND_ON_INFRA,
+    },
+    crashPolicy: JOB_CRASH_POLICY,
+    defaultTimeoutMs: s.jobRunner.defaultTimeoutMs,
+    startupTimeoutMs: JOB_STARTUP_TIMEOUT_MS,
+    maxTimeoutMs: JOB_MAX_TIMEOUT_MS,
+    memory: {
+      defaultMaxRssBytes: s.advanced.jobMemoryLimitBytes,
+      maxRssBytes: JOB_MEMORY_MAX_BYTES,
+      enforce: JOB_MEMORY_ENFORCE,
+      sampleIntervalMs: JOB_MEMORY_SAMPLE_INTERVAL_MS,
+    },
+    trigger: { maxDepth: JOB_TRIGGER_MAX_DEPTH, maxPerChain: JOB_TRIGGER_MAX_PER_CHAIN, maxPerJob: JOB_TRIGGER_MAX_PER_JOB },
+    maxResultBytes: JOB_MAX_RESULT_BYTES,
+    progressIntervalMs: JOB_PROGRESS_INTERVAL_MS,
+  }
 }
 
 export function createDaemon(cfg: CoreConfig): Daemon {
@@ -561,7 +740,7 @@ let blobGc: BlobGc | null = null
 
       const activities: ActivityRegistry = createActivityRegistry({
         log: log.child('activity'),
-        controlIdleSec: () => settingsStore.get().control.idleSec,
+        controlIdleSec: () => CONTROL_IDLE_SEC,
         onChange: (deviceId, change, activity, lastControl) => {
           scheduleActivityPush(deviceId)
           hub.broadcast({ type: 'device.activity', payload: { deviceId, change, activity, lastControl } })
@@ -721,7 +900,7 @@ let blobGc: BlobGc | null = null
         // finished building it. Same pattern as `registry`/`sessions`/etc.
         // elsewhere in this function, just against a `const` rather than a
         // nullable `let` — read fresh on every call, never captured.
-        drainTimeoutMs: () => settingsStore.get().adbControl.drainTimeoutMs,
+        drainTimeoutMs: () => ADB_DRAIN_TIMEOUT_MS,
       })
 
       // "Restart Enkaku" (plan 120) — the whole core process, a materially
@@ -779,7 +958,10 @@ let blobGc: BlobGc | null = null
       // else that used to read `authMode` below still does; this does not
       // move that logic, just the one function call it was already making.
       const authMode = resolveAuthMode(cfg)
-      const settingsStore = createFarmSettingsStore(db, { authMode })
+      const settingsStore = createFarmSettingsStore(db, { authMode, log })
+      // Plan 212 §4.7 — row 2 of `farm_settings`; the five AI blocks that
+      // moved out of `FarmSettingsSchema`.
+      const agentSettingsStore = createAgentSettingsStore(db)
 
       // The address book (plan 88 §3.2, §4.3, fixes F10) — read-only about
       // adb itself, so it can be built here, well before the adb subsystem
@@ -789,7 +971,7 @@ let blobGc: BlobGc | null = null
       // `adbServerControl`'s `reattachEndpoints` above (via forward ref).
       const endpoints: EndpointStore = createEndpointStore({
         db,
-        settings: () => settingsStore.get().discovery,
+        settings: () => discoveryConstants(settingsStore.get()),
       })
 
       // The ONE bounded adb CLI helper (plan 85 §3.4, §4.5, fixes F11/F12) —
@@ -814,7 +996,7 @@ let blobGc: BlobGc | null = null
           if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'adb is not ready yet')
           return adb.binaryPath
         },
-        settings: () => settingsStore.get().adb,
+        settings: () => adbConstants(settingsStore.get()),
         usbRootOf: createUsbRootCache({ listDevices: () => (adb ? adb.listDevices() : Promise.resolve([])) }).rootOf,
         onLog: (level, msg) => log.child('host-adb')[level](msg),
       })
@@ -860,7 +1042,7 @@ let blobGc: BlobGc | null = null
       // poll would make later performance reports unreadable (plan 23 §4.3).
       const recomputeAdbConcurrency = () => {
         if (!adb) return
-        const cfg = settingsStore.get().adb
+        const cfg = adbConstants(settingsStore.get())
         const nonOfflineCount = db
           .select({ status: devices.status })
           .from(devices)
@@ -1088,7 +1270,7 @@ let blobGc: BlobGc | null = null
         remoteNodeIdFor: (deviceId) => remoteSessions?.nodeIdFor(deviceId) ?? null,
         rpc: () => tunnelRpc,
         router: () => tunnelRouter,
-        shellSettings: () => settingsStore.get().shell,
+        shellSettings: () => shellConstants(settingsStore.get()),
         listen: bunAdbEndpointListen,
         createShim: createAdbdShim,
         // Readiness hold (plan 43 §5 step 43.7) — same forward-ref pattern as
@@ -1154,7 +1336,7 @@ let blobGc: BlobGc | null = null
             // crash trace, above), so the cap never actually fires here; kept
             // in step with every other `createDbArtifactSink` call for the
             // same reason nothing imports the settings singleton directly.
-            maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
+            maxFileBytes: () => settingsStore.get().advanced.transferCaps.maxPushBytes,
             onSaved: (info) => {
               saved = info
               hub.broadcast({ type: 'job.artifact', payload: { jobId, runId, artifact: info } })
@@ -1349,7 +1531,7 @@ let blobGc: BlobGc | null = null
         // than being silently attempted over a transport that does not
         // exist for it.
         isRemote: (deviceId) => (remoteSessions?.nodeIdFor(deviceId) ?? null) !== null,
-        settings: () => settingsStore.get().transfer,
+        settings: () => transferConstants(settingsStore.get()),
       })
       // The script API's `ctx.device.install`/`push`/`pull` (plan 39 §4.6) —
       // every call also broadcasts `transfer.progress`/`transfer.done`, the
@@ -1452,7 +1634,7 @@ let blobGc: BlobGc | null = null
             registry: scriptRegistry,
             enqueueStep: (input) => jobService.enqueueStep(input),
             cancelRun: (runId) => jobService.cancelRun(runId),
-            settings: () => settingsStore.get().workflow,
+            settings: () => ({ maxTotalMs: WORKFLOW_MAX_TOTAL_MS }),
             log: log.child('workflow'),
           }),
         jobStore,
@@ -1493,8 +1675,8 @@ let blobGc: BlobGc | null = null
         readinessHold: (deviceId, reason) => readiness?.hold(deviceId, reason) ?? Promise.resolve({ id: 'noop', release() {} }),
         // Retry classification (plan 36 §3.2, §4.1, §4.3) — read fresh per
         // settle, the same pattern `adb.maxConcurrent` uses.
-        timeoutIsInfra: () => settingsStore.get().job.retry.timeoutIsInfra,
-        rebindOnInfra: () => settingsStore.get().job.retry.rebindOnInfra,
+        timeoutIsInfra: () => JOB_TIMEOUT_IS_INFRA,
+        rebindOnInfra: () => JOB_REBIND_ON_INFRA,
         // Lazy, like `activities` above — `health` is created later, once adb is ready.
         health: () => health,
         deviceSerial: (deviceId) => db.select({ serial: devices.serial }).from(devices).where(eq(devices.id, deviceId)).get()?.serial ?? null,
@@ -1512,7 +1694,7 @@ let blobGc: BlobGc | null = null
         // `rebindOnInfra` just above already use. Without this the default
         // (65_536, `RESULT_LIMITS.defaultMaxResultBytes`) is still correct
         // out of the box (97.3's own note) but not live-tunable from Studio.
-        maxResultBytes: () => settingsStore.get().job.maxResultBytes,
+        maxResultBytes: () => JOB_MAX_RESULT_BYTES,
         // `scripts.result_schema` has no producer yet — publish-time storage
         // and serving are plan 97 step 97.2's own remaining items, out of
         // this file's `packages/core/src/scripts/**` reach — so this always
@@ -1610,7 +1792,7 @@ let blobGc: BlobGc | null = null
       // well before the workspace/agent stores further down: it depends only
       // on `db` and `cfg.dataDir`, both available from the very top of this
       // function, in every mode.
-      const kvStore = createKvStore(db, cfg.dataDir, () => settingsStore.get().kv)
+      const kvStore = createKvStore(db, cfg.dataDir, () => ({ maxValueBytes: KV_MAX_VALUE_BYTES, maxKeyLength: KV_MAX_KEY_LENGTH, maxEntriesPerNamespace: KV_MAX_ENTRIES_PER_NAMESPACE, maxEntriesPerDevice: KV_MAX_ENTRIES_PER_DEVICE }))
       // The plugin runtime (plan 82 §4.3) — stage/verify/activate/rollback/disable/remove/
       // reload/restart, plus the dev slot lifecycle. Built right here: it needs `kvStore`
       // (a plugin's KV namespace, §3.10) and `scriptRegistry` (built earlier, alongside
@@ -1791,7 +1973,7 @@ let blobGc: BlobGc | null = null
         jobStore,
         runs,
         registry: scriptRegistry,
-        triggerBudgets: () => settingsStore.get().job.trigger,
+        triggerBudgets: () => ({ maxDepth: JOB_TRIGGER_MAX_DEPTH, maxPerChain: JOB_TRIGGER_MAX_PER_CHAIN, maxPerJob: JOB_TRIGGER_MAX_PER_JOB }),
         onTriggered: (from, targetDeviceId, result) =>
           recorder?.record({
             deviceId: targetDeviceId,
@@ -1805,7 +1987,7 @@ let blobGc: BlobGc | null = null
       const deviceLifecycle = createDeviceLifecycle({
         db,
         activities,
-        controlSettings: () => settingsStore.get().control,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
         record: recorder!.record,
         log: log.child('device-lifecycle'),
         // Plan 128 §4.5, §10 item 8 — `forget(deleteHistory)` cascades through
@@ -1863,7 +2045,7 @@ let blobGc: BlobGc | null = null
         client: () => adb,
         sessions: () => sessions,
         activities,
-        maxHot: () => settingsStore.get().readiness.maxHot,
+        maxHot: () => READINESS_MAX_HOT,
         awakePolicy: () => awakePolicy,
         // Cloud/node-owned devices are out of scope for this plan (§2, §9
         // open question #2) — never attempt a local wake/session acquire
@@ -1932,14 +2114,14 @@ let blobGc: BlobGc | null = null
         // so a single job's `runtimeOverride` ceiling check binds against
         // the farm's REAL `job` settings, not the built-in "no ceiling"
         // default `resolveJobRuntime` falls back to when this is absent.
-        farmJobSettings: () => settingsStore.get().job,
+        farmJobSettings: () => jobConstants(settingsStore.get()),
         // Plan 93 §3.12, §4.6, step 93.8 — closes F10's "POST /api/jobs
         // checks no permission at all": `internal:install`'s declared
         // `requires` gate is now evaluated against the farm's REAL
         // `shell.mode`/`transfer.enabled`, the same live accessors
         // `api/transfer.ts`'s own REST install/push/pull already read.
-        shellMode: () => settingsStore.get().shell.mode,
-        transferEnabled: () => settingsStore.get().transfer.enabled,
+        shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+        transferEnabled: () => TRANSFER_ENABLED,
       })
 
       // The expiry reaper (plan 21 §4.3): a `queued` job past its
@@ -1998,12 +2180,12 @@ let blobGc: BlobGc | null = null
         // (or what clock) triggered the dispatch.
         validateScript: (scriptId, params) =>
           validateScriptForRun(
-            { registry: executors, findScript, shellMode: () => settingsStore.get().shell.mode, transferEnabled: () => settingsStore.get().transfer.enabled },
+            { registry: executors, findScript, shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'), transferEnabled: () => TRANSFER_ENABLED },
             scriptId,
             params,
           ),
         agentDispatch: scheduleAgentDispatch,
-        scheduledAgentCeilings: () => settingsStore.get().scheduledAgents,
+        scheduledAgentCeilings: () => agentSettingsStore.get().scheduled,
         notifySystem: (input) => {
           notifyAndBroadcast({ level: input.level, title: input.title, body: input.body ?? null, context: input.context ?? null, source: 'system' })
         },
@@ -2073,7 +2255,7 @@ let blobGc: BlobGc | null = null
             // Plan 115 §3.6 — a node-owned device's `ctx.artifact.file()`
             // relays here to actually mint the row, so this is where its
             // cap has to be real too, not just the local-runner path below.
-            maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
+            maxFileBytes: () => settingsStore.get().advanced.transferCaps.maxPushBytes,
             onSaved: () => {},
           })
           const saved = await sink.save({
@@ -2173,19 +2355,19 @@ let blobGc: BlobGc | null = null
           }),
         ports,
         activities,
-        controlSettings: () => settingsStore.get().control,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
         states,
         dataDir: cfg.dataDir,
         record: recorder!.record,
         log: log.child('guest-agent'),
         // Plan 55 §3.2, §5.1 — read fresh on every call, same as every other `settingsStore.get()`
         // getter dep in this file.
-        networkSettings: () => settingsStore.get().network,
+        networkSettings: () => ({ geoProvider: GEO_PROVIDER_URL ?? undefined, geoIntervalSec: GEO_RECHECK_INTERVAL_SEC }),
         // Plan 90 §3.7, §4.4 — the residual gap 90.4's own status note flagged: `maxRecoveryCyclesPerHour`/
         // `recoveryRearmSec` are fully wired inside `guest-agent.ts` (proven by that step's own tests),
         // but until THIS line existed an operator changing them in Studio had no effect on a running
         // core — the getter fell back to the schema's own defaults regardless of what was saved.
-        guestAgentSettings: () => settingsStore.get().guestAgent,
+        guestAgentSettings: () => ({ provision: GUEST_AGENT_PROVISION, maxRecoveryCyclesPerHour: settingsStore.get().advanced.recoveryResetsPerHour, recoveryRearmSec: GUEST_AGENT_RECOVERY_REARM_SEC }),
         // Plan 90 §3.8, §4.7 — the "on demand, single device" provisioning hook: forward-ref, same
         // pattern as `onAdmitted`/`rescan` elsewhere in this function, because `agentProvisioner`
         // (built just below, since IT needs `guestAgent.withGuestAgentClient`) does not exist yet at
@@ -2235,7 +2417,7 @@ let blobGc: BlobGc | null = null
           }),
         expectedArtifact: () => toolchain.deviceArtifactExpectation('guest-agent'),
         hello: (deviceId) => guestAgent.withGuestAgentClient(deviceId, (client) => client.hello()),
-        provision: () => settingsStore.get().guestAgent.provision,
+        provision: () => GUEST_AGENT_PROVISION,
         record: recorder!.record,
         log: log.child('agent-provisioner'),
       })
@@ -2303,9 +2485,9 @@ let blobGc: BlobGc | null = null
       // no comparable cap on this lane before this step and still does not;
       // widening that is a separate, pre-existing condition this step does
       // not take on (plan 106 §9 Q5's own status note names it explicitly).
-      const preparationInstallSem = new Semaphore(Math.max(1, settingsStore.get().adb.maxInstallConcurrent))
+      const preparationInstallSem = new Semaphore(Math.max(1, settingsStore.get().advanced.installsPerUsbRoot))
       const preparationInstallApk = (deviceId: string, localPath: string, label: 'app' | 'test', packageName: string): Promise<void> => {
-        const wanted = Math.max(1, settingsStore.get().adb.maxInstallConcurrent)
+        const wanted = Math.max(1, settingsStore.get().advanced.installsPerUsbRoot)
         if (wanted !== preparationInstallSem.max) preparationInstallSem.resize(wanted)
         return preparationInstallSem.acquire().then((release) =>
           runTransfer({
@@ -2356,7 +2538,7 @@ let blobGc: BlobGc | null = null
         db,
         exec: guestAgentExec,
         activities,
-        controlSettings: () => settingsStore.get().control,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
         states,
         record: recorder!.record,
         log: log.child('identity'),
@@ -2374,7 +2556,8 @@ let blobGc: BlobGc | null = null
         db,
         client: () => adb,
         withGuestAgentClient: guestAgent.withGuestAgentClient,
-        maxConcurrent: () => settingsStore.get().labelling.maxConcurrent,
+        maxConcurrent: () => LABEL_WRITE_CONCURRENCY,
+        farmDeviceLabel: () => settingsStore.get().general.deviceLabel,
         record: recorder!.record,
         log: log.child('labelling'),
       })
@@ -2391,7 +2574,7 @@ let blobGc: BlobGc | null = null
       // boot, quotas read fresh from settings on every call, the same
       // pattern every other settings-derived accessor in this function uses.
       const workspaceStore = withAutoRebuild(
-        createWorkspaceStore(db, () => settingsStore.get().workspace, {
+        createWorkspaceStore(db, () => ({ maxFileBytes: WORKSPACE_MAX_FILE_BYTES, maxFilesPerScope: WORKSPACE_MAX_FILES_PER_SCOPE, maxTotalBytesPerScope: WORKSPACE_MAX_BYTES_PER_SCOPE, inlineMaxBytes: WORKSPACE_INLINE_MAX_BYTES }), {
           // plan 115 §3.3, §9 Q1 — the `fs` driver's root. A plain wiring parameter today; making
           // it a farm setting later is a wiring change here, not a redesign.
           fsContentRoot: join(cfg.dataDir, 'workspace-content'),
@@ -2415,7 +2598,7 @@ let blobGc: BlobGc | null = null
       const capContextDeps: CapabilityContextDeps = {
         db,
         activities,
-        controlSettings: () => settingsStore.get().control,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
         states,
         sessions: () => sessions,
         readiness: () => readiness,
@@ -2450,7 +2633,7 @@ let blobGc: BlobGc | null = null
         // `ctx.listDevices()`/`ctx.getDevice()` badges a device identically
         // to `GET /api/devices`, never disagreeing about whether a phone
         // reads OTG/WI-FI/TCP.
-        networks: () => settingsStore.get().discovery.networks,
+        networks: () => settingsStore.get().networkScan.networks,
         declaredMedia: () => loadDeclaredMedia(endpoints),
         // Plan 114 §3.3, step 114.9 — the network layer's one door. It is the
         // SAME three functions `PUT`/`DELETE /api/devices/:id/network` call, not
@@ -2511,7 +2694,7 @@ let blobGc: BlobGc | null = null
       // start/anchor/bound check, the same freshness discipline every other farm-settings
       // accessor in this function already uses.
       const recordingService = createRecordingService({
-        settings: () => settingsStore.get().recording,
+        settings: () => ({ anchorQuietMs: RECORDING_ANCHOR_QUIET_MS, anchorMinIntervalMs: RECORDING_ANCHOR_MIN_INTERVAL_MS, longPressMs: RECORDING_LONG_PRESS_MS, maxSteps: RECORDING_MAX_STEPS, maxDurationSec: RECORDING_MAX_DURATION_SEC, captureScreenshots: RECORDING_CAPTURE_SCREENSHOTS }),
         blobs: agentBlobStore,
         log: log.child('recording'),
       })
@@ -2524,8 +2707,8 @@ let blobGc: BlobGc | null = null
         registry: capabilityRegistry,
         capContextDeps,
         activities,
-        controlSettings: () => settingsStore.get().control,
-        settings: () => settingsStore.get(),
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
+        settings: () => agentSettingsStore.get(),
         modelListCache,
         tree: agentTreeStore,
         // Plan 70 §4.1, §4.4 — threaded straight through to every `executeRun` call.
@@ -2590,12 +2773,12 @@ let blobGc: BlobGc | null = null
         activities,
         jobService,
         workflows: workflowStore,
-        controlSettings: () => settingsStore.get().control,
+        controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
         states,
         operations,
         userLabel: (userId) => resolveActorLabel('user', userId),
-        shellSettings: () => settingsStore.get().shell,
-        transferSettings: () => settingsStore.get().transfer,
+        shellSettings: () => shellConstants(settingsStore.get()),
+        transferSettings: () => transferConstants(settingsStore.get()),
         batchesFor: (actor) =>
           createBatchDispatchDeps(
             {
@@ -2606,10 +2789,10 @@ let blobGc: BlobGc | null = null
               registry: executors,
               findScript,
               scriptRegistry,
-              farmJobSettings: () => settingsStore.get().job,
+              farmJobSettings: () => jobConstants(settingsStore.get()),
               pacer,
-              shellMode: () => settingsStore.get().shell.mode,
-              transferEnabled: () => settingsStore.get().transfer.enabled,
+              shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+              transferEnabled: () => TRANSFER_ENABLED,
             },
             actor,
           ),
@@ -2645,7 +2828,7 @@ let blobGc: BlobGc | null = null
           return new Uint8Array(Buffer.from(String(value), 'base64'))
         },
         dataDir: cfg.dataDir,
-        networks: () => settingsStore.get().discovery.networks,
+        networks: () => settingsStore.get().networkScan.networks,
         infoWithTags: (deviceId) => getDeviceOwner(deviceId) ?? { ownerId: null },
       }
       const actionRoutesHandle = createActionRoutes(actionsDeps)
@@ -2653,7 +2836,7 @@ let blobGc: BlobGc | null = null
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithTags` call in this function gets.
-        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().discovery.networks, loadDeclaredMedia(endpoints)),
+        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)),
         deviceCount: () => db.select().from(devices).all().length,
         // Plan 126 §3.5, step 126.5 — the sidebar's farm-health badge, read
         // off the health poll Studio already makes instead of the whole
@@ -2733,7 +2916,7 @@ let blobGc: BlobGc | null = null
           // `adbControl.restartCooldownSec` (plan 88 §4.2, promoted to a real
           // setting in step 88.9) — read fresh on every call, same as every
           // other "settings, read live" dep in this codebase.
-          restartCooldownSec: () => settingsStore.get().adbControl.restartCooldownSec,
+          restartCooldownSec: () => ADB_RESTART_COOLDOWN_SEC,
         },
         // "Restart Enkaku" (plan 120 §4) — the whole core process's route
         // deps, mirroring `adbControl` immediately above. `preview()`
@@ -2785,8 +2968,8 @@ let blobGc: BlobGc | null = null
           // Farm defaults now land at admission rather than at first sight
           // (plan 56 §4.3) — same accessors the registry is given below, so
           // the two cannot disagree about what a new device inherits.
-          deviceDefaults: () => settingsStore.get().defaults,
-          defaultDesiredReadiness: () => settingsStore.get().readiness.defaultDesired,
+          // plan 212 §5 step 212.4: `deviceDefaults` dep removed; `defaultsForNewDevice` uses `defaultDeviceSettings()` directly.
+          defaultDesiredReadiness: () => READINESS_DEFAULT_DESIRED,
           // `registry` is assigned later in boot, so this reads it at call
           // time rather than capturing a null — admitting a device cannot
           // happen before the registry exists anyway.
@@ -2854,16 +3037,16 @@ let blobGc: BlobGc | null = null
           // `deriveConnection` never sees a network to match a `tcp`
           // device's address against, and `mediumSource` could only ever
           // read `'declared'` or `'unknown'`.
-          networks: () => settingsStore.get().discovery.networks,
+          networks: () => settingsStore.get().networkScan.networks,
           // The activity-gated adb endpoint (plan 27 §4.3, plan 205 §4.9) —
           // `manager` is constructed unconditionally above, before this
           // point is reached.
           adbEndpoint: {
             manager: adbEndpointManager!,
             activities,
-            controlSettings: () => settingsStore.get().control,
+            controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
             states,
-            shellSettings: () => settingsStore.get().shell,
+            shellSettings: () => shellConstants(settingsStore.get()),
           },
           // Device lifecycle — Forget and Block (plan 47 §4.4) — `deviceLifecycle`
           // is constructed unconditionally above, beside `activities`.
@@ -2904,7 +3087,7 @@ let blobGc: BlobGc | null = null
           // Same accessors `deviceRoutes` above gets, so a device's
           // connection badge never disagrees between the device list and
           // its group's own device list.
-          networks: () => settingsStore.get().discovery.networks,
+          networks: () => settingsStore.get().networkScan.networks,
           declaredMedia: () => loadDeclaredMedia(endpoints),
           // A device's live activities and its last control tail (plan 205 §4.10) —
           // `activities` is constructed synchronously above, well before this object literal.
@@ -2927,7 +3110,7 @@ let blobGc: BlobGc | null = null
           // `resetPolicy` below reads from, so a batch's `runtimeOverride`
           // ceiling check binds against the farm's REAL `job` settings
           // instead of always resolving to "no ceiling".
-          farmJobSettings: () => settingsStore.get().job,
+          farmJobSettings: () => jobConstants(settingsStore.get()),
           // Plan 94 §3.7, §3.8, §4.8, §4.9, step 94.7 — a batch created
           // through this route can now carry a `pacing` block.
           pacer,
@@ -2941,8 +3124,8 @@ let blobGc: BlobGc | null = null
           // no `device.files`, no `transfer.enabled`. The SAME live
           // accessors `createJobService` above and `scheduleRoutes` below
           // both read.
-          shellMode: () => settingsStore.get().shell.mode,
-          transferEnabled: () => settingsStore.get().transfer.enabled,
+          shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+          transferEnabled: () => TRANSFER_ENABLED,
           // Plan 93 §3.13, §4.4, §4.7, step 93.10 — `GET /:id/artifacts.zip`
           // resolves each collected file's stored relative path against
           // app-data, the same root `artifactRoutes` below is given.
@@ -2950,7 +3133,7 @@ let blobGc: BlobGc | null = null
           // Same live `transfer` settings `transferEnabled` above reads,
           // just the one extra field the archive route's pre-flight cap
           // needs.
-          archiveSettings: () => settingsStore.get().transfer,
+          archiveSettings: () => transferConstants(settingsStore.get()),
         }),
         // One endpoint per verb, taking a target (plan 207 §4.2, §4.8) —
         // `actionsDeps`/`actionRoutesHandle` are both constructed
@@ -2979,7 +3162,7 @@ let blobGc: BlobGc | null = null
             const agent = agentStore.get(agentId)
             return !!agent && agent.enabled
           },
-          scheduledAgentCeilings: () => settingsStore.get().scheduledAgents,
+          scheduledAgentCeilings: () => agentSettingsStore.get().scheduled,
           notifySystem: (input) => {
             notifyAndBroadcast({ level: input.level, title: input.title, body: input.body ?? null, context: input.context ?? null, source: 'system' })
           },
@@ -2989,8 +3172,8 @@ let blobGc: BlobGc | null = null
           // above and `scheduleRunner`'s own construction get, so a
           // schedule's `internal:install` is gated identically whether it
           // fires at create/edit time, `run-now`, or on its own cron.
-          shellMode: () => settingsStore.get().shell.mode,
-          transferEnabled: () => settingsStore.get().transfer.enabled,
+          shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+          transferEnabled: () => TRANSFER_ENABLED,
         }),
         settingsRoutes: createSettingsRoutes(settingsStore),
         artifactRoutes: createArtifactRoutes({
@@ -2999,7 +3182,7 @@ let blobGc: BlobGc | null = null
           // The one way a file enters the artifact store from outside a job
           // (plan 39 §4.4) — gated by the same `device.files`/`shell.mode`
           // switch install/push/pull use, and audited.
-          upload: { audit, shellSettings: () => settingsStore.get().shell },
+          upload: { audit, shellSettings: () => shellConstants(settingsStore.get()) },
         }),
         // The one way a file enters the WORKSPACE from outside `fs.write`
         // (plan 115 §4.3, §5 step 115.3) — the same `workspaceStore`
@@ -3007,14 +3190,14 @@ let blobGc: BlobGc | null = null
         // gated and audited exactly like `artifactRoutes` above.
         workspaceFileRoutes: createWorkspaceFileRoutes({
           workspace: workspaceStore,
-          upload: { audit, shellSettings: () => settingsStore.get().shell },
+          upload: { audit, shellSettings: () => shellConstants(settingsStore.get()) },
         }),
         adbStatsRoutes: createAdbStatsRoutes({
           db,
           client: () => adb,
           metrics: adbMetrics,
           health: () => health,
-          auto: () => settingsStore.get().adb.maxConcurrent === 0,
+          auto: () => settingsStore.get().advanced.adbMaxConcurrent === 0,
           sessions: () => sessions,
           // `hostAdbHandle` is unconditional and non-null from construction
           // (see its own comment above); `transportStats` is the forward-ref
@@ -3035,36 +3218,36 @@ let blobGc: BlobGc | null = null
           // budget, not a per-device one), via `resolveVideoProfile` with
           // no device override.
           //
-          // Plan 100 §3.1/§4.1/§4.1, step 100.3 — `computeAutoTiles` combines
-          // a decode bound (`wall.decodeTileCeiling`) with a bandwidth bound
-          // that is now transport-aware: `resolveWallTransport` classifies
-          // the deployment the same way auth mode already is (CLAUDE.md:
-          // "auth mode derives from the bind address") — orchestrator/cloud
-          // reads as `wan`, everything else as `loopback`, unless
-          // `wall.transportOverride` names one explicitly — and
-          // `resolveWallBandwidthBps` hard-pins the WAN branch to
-          // `WALL_VIDEO_BUDGET_BPS` (byte-identical to pre-plan-100 cloud
-          // behaviour, §3.6) while loopback/LAN use the farm's own generous
-          // `wall.bandwidthBps` instead, so the decode bound is what actually
-          // governs a local wall rather than a WAN-shaped constant it never
-          // needed.
+          // Plan 100 §3.1/§4.1, step 100.3, reworked by plan 212 §212.5 —
+          // `computeAutoTiles` combines a decode bound (`WALL_DECODE_TILE_
+          // CEILING`) with a bandwidth bound that is transport-aware:
+          // `resolveWallTransport` classifies the deployment the same way
+          // auth mode already is (CLAUDE.md: "auth mode derives from the
+          // bind address") — orchestrator/cloud reads as `wan`, everything
+          // else as `loopback`, unless `WALL_TRANSPORT_OVERRIDE` names one
+          // explicitly — and `resolveWallBandwidthBps` takes the WAN branch
+          // from `advanced.wallWanBandwidthBps` (the farm's own advanced
+          // field, default 20 Mbit/s, byte-identical to pre-plan-100 cloud
+          // behaviour) while loopback/LAN use `WALL_LAN_BANDWIDTH_BPS`
+          // instead, so the decode bound is what actually governs a local
+          // wall rather than a WAN-shaped constant it never needed.
           video: () => {
-            const wallMaxTiles = settingsStore.get().wall.maxTiles
+            const wallMaxTiles = WALL_MAX_TILES
             const maxTilesAuto = wallMaxTiles === 0
-            const wallSettings = settingsStore.get().wall
-            const transport = resolveWallTransport(process.env.ENKAKU_MODE === 'orchestrator', wallSettings.transportOverride)
+            const s = settingsStore.get()
+            const transport = resolveWallTransport(process.env.ENKAKU_MODE === 'orchestrator', WALL_TRANSPORT_OVERRIDE)
             return {
               // Plan 206 §4.5, §4.10 — the one remaining session build knob
               // plus the farm-wide ceiling constant (overridable by
               // `ENKAKU_SESSION_BUILD_CEILING`); the old three-field session
               // block (a per-viewer idle TTL, a farm-wide idle cap, and a
               // build-lane cap) is gone with the idle model it governed.
-              buildsPerUsbRoot: settingsStore.get().session.buildsPerUsbRoot,
+              buildsPerUsbRoot: s.advanced.sessionBuildsPerUsbRoot,
               farmCeiling: Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
               maxTiles: maxTilesAuto
-                ? computeAutoTiles(resolveVideoProfile(settingsStore.get().video, null, 'wall').bitRate, {
-                    decodeTileCeiling: wallSettings.decodeTileCeiling,
-                    bandwidthBps: resolveWallBandwidthBps(transport, wallSettings.bandwidthBps),
+                ? computeAutoTiles(resolveVideoProfile(s.capture, null, 'wall').bitRate, {
+                    decodeTileCeiling: WALL_DECODE_TILE_CEILING,
+                    bandwidthBps: resolveWallBandwidthBps(transport, s.advanced.wallWanBandwidthBps, WALL_LAN_BANDWIDTH_BPS),
                   })
                 : wallMaxTiles,
               maxTilesAuto,
@@ -3143,7 +3326,7 @@ let blobGc: BlobGc | null = null
         // executor's runtime clock already enforced (the `createWorkflowExecutor`
         // call below, wired since plan 99 §5 items 1-2). Guarded by
         // `daemon-wiring.test.ts`'s workflow-routes describe block.
-        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, store: workflowStore, audit, settings: () => settingsStore.get().workflow }),
+        workflowRoutes: createWorkflowRoutes({ db, registry: scriptRegistry, store: workflowStore, audit, settings: () => ({ maxTotalMs: WORKFLOW_MAX_TOTAL_MS }) }),
         // Plan 94 §4.9, §5 step 94.5 — `workspaceStore` and `recordingService` are the
         // SAME instances every other route/service in this file already shares (one
         // workspace, one recorder — F16/F11's own "never a second store/bundler").
@@ -3192,10 +3375,10 @@ let blobGc: BlobGc | null = null
                   registry: executors,
                   findScript,
                   scriptRegistry,
-                  farmJobSettings: () => settingsStore.get().job,
+                  farmJobSettings: () => jobConstants(settingsStore.get()),
                   pacer,
-                  shellMode: () => settingsStore.get().shell.mode,
-                  transferEnabled: () => settingsStore.get().transfer.enabled,
+                  shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
+                  transferEnabled: () => TRANSFER_ENABLED,
                 },
                 actor,
               ),
@@ -3222,7 +3405,7 @@ let blobGc: BlobGc | null = null
         mcpRoutes: createMcpServer({ registry: capabilityRegistry, contextDeps: capContextDeps, audit, serverVersion: CORE_VERSION }),
         // AI agents and connectors (plan 65 §4.5) — `agentStore`/`connectorStore`/`modelListCache` are built just above.
         // `tree: agentTreeStore` (plan 67 §4.1) backs `/:id/spawn-grants`.
-        agentRoutes: createAgentRoutes({ store: agentStore, tree: agentTreeStore, audit }),
+        agentRoutes: createAgentRoutes({ store: agentStore, tree: agentTreeStore, audit, settings: agentSettingsStore }),
         // The durable kv store's admin surface (plan 79 §4.3, step 4) — `kvStore` is built early,
         // alongside `deviceLifecycle`, since the job runner also needs it.
         kvRoutes: createKvRoutes({ store: kvStore, audit }),
@@ -3232,7 +3415,7 @@ let blobGc: BlobGc | null = null
         // Content-addressed image blobs (plan 70 §4.6) — `agentBlobStore` is built just above,
         // alongside the other agent-loop stores; the cap matches the farm's own per-image budget
         // (`agentDefaults.maxImageBytes`) so an upload and a stored screenshot are held to the same limit.
-        blobRoutes: createBlobRoutes({ blobs: agentBlobStore, audit, maxUploadBytes: () => settingsStore.get().agentDefaults.maxImageBytes }),
+        blobRoutes: createBlobRoutes({ blobs: agentBlobStore, audit, maxUploadBytes: () => agentSettingsStore.get().defaults.maxImageBytes }),
         // Notifications and webhooks (plan 68 §4.5) — `notificationStore`/`webhookStore` are built early, alongside `hub`.
         notificationRoutes: createNotificationRoutes({ store: notificationStore }),
         webhookRoutes: createWebhookRoutes({ store: webhookStore, audit }),
@@ -3554,7 +3737,7 @@ let blobGc: BlobGc | null = null
           // discipline every other farm settings accessor here already
           // follows.
           activities,
-          controlSettings: () => settingsStore.get().control,
+          controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
           jobs: jobService,
           // `states` is the SAME `DeviceStateMachine` `activities`/`host`
           // above already read.
@@ -3587,7 +3770,7 @@ let blobGc: BlobGc | null = null
               : (userId) => (userId ? (auth.listUsers().find((u) => u.id === userId)?.role ?? 'operator') : 'operator'),
           // `canUseDevice` (plan 34 §3.5, §4.4) — control acquisition's ownership check.
           getDeviceOwner,
-          shellSettings: () => settingsStore.get().shell,
+          shellSettings: () => shellConstants(settingsStore.get()),
           // The activity-gated adb endpoint (plan 27 §4.2) — WS-disconnect
           // teardown already lives in `ws-handlers.ts` (that is where the
           // WS-level control-marker and connection lifecycle already are);
@@ -3612,11 +3795,11 @@ let blobGc: BlobGc | null = null
           // already uses; `onJobCrash` reaches the SAME `host` the scheduler
           // and the settle path use, so a crash-driven abort classifies and
           // records exactly like any other job failure.
-          crashPolicy: () => settingsStore.get().job.crashPolicy,
+          crashPolicy: () => JOB_CRASH_POLICY,
           // `monitor.crashWatch` (plan 85 §3.2) — read fresh for the same
           // reason `crashPolicy` is, so an operator who turns crash detection
           // off on a large farm does not have to restart the core.
-          crashWatch: () => settingsStore.get().monitor.crashWatch,
+          crashWatch: () => CRASH_WATCH,
           targetPackagesForJob: (jobId) => targetPackagesByJob.get(jobId) ?? [],
           saveCrashTrace,
           onJobCrash: (jobId, e) => host.notifyCrash(jobId, e),
@@ -3876,7 +4059,7 @@ let blobGc: BlobGc | null = null
           onClipboardChanged: (deviceId, text) => handleClipboardChanged?.(deviceId, text),
           // plan 92 §3.5, §4.2, §4.3 — farm video settings plus this
           // device's own override, read fresh on every session build.
-          resolveProfile: (deviceId, quality) => resolveVideoProfile(settingsStore.get().video, deviceSource.get(deviceId)?.video ?? null, quality),
+          resolveProfile: (deviceId, quality) => resolveVideoProfile(settingsStore.get().capture, deviceSource.get(deviceId)?.overrides ?? null, quality),
           // Plan 125 §3.7, step 125.7 — the readiness manager is the ONE authority on whether
           // this phone's screen is already being held awake, so `createSession` stops calling
           // `wakeDevice` blindly.
@@ -3900,7 +4083,7 @@ let blobGc: BlobGc | null = null
           // `DEFAULT_ARBITER_QUEUE_WAIT_MS`/`DEFAULT_ARBITER_MAX_QUEUE_DEPTH`.
           // Plan 100 §4.3, step 100.6 — the screencap-loop fallback's background
           // retry budget, read fresh like every other settings accessor above.
-          fallbackRetryCount: () => settingsStore.get().display.fallbackRetryCount,
+          fallbackRetryCount: () => DISPLAY_FALLBACK_RETRIES,
           makeScrcpy: async (deviceId, transport, profile) => {
             // Jar di-manage Toolchain & versi dikunci ke core (spec §7.6).
             const jarPath = await toolchain.resolveToolPath('scrcpy-server').catch(() => null)
@@ -4044,7 +4227,7 @@ let blobGc: BlobGc | null = null
             return row ? lookupDeviceNumber(db, row.stableId) : null
           },
           activities: activityPortAdapter,
-          buildsPerUsbRoot: () => settingsStore.get().session.buildsPerUsbRoot,
+          buildsPerUsbRoot: () => settingsStore.get().advanced.sessionBuildsPerUsbRoot,
           farmCeiling: () => Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
           log: log.child('always-on'),
         })
@@ -4070,7 +4253,7 @@ let blobGc: BlobGc | null = null
               // Plan 115 §3.6, W5/W6 — a script's `ctx.artifact.file()`
               // lands here; the cap follows the same push limit that would
               // gate the artifact once it reaches `ctx.device.push()`.
-              maxFileBytes: () => settingsStore.get().transfer.maxPushBytes,
+              maxFileBytes: () => settingsStore.get().advanced.transferCaps.maxPushBytes,
             }),
           log: log.child('runner'),
           onLog: (entry) => {
@@ -4134,7 +4317,7 @@ let blobGc: BlobGc | null = null
           // Read fresh per attempt, not captured here at daemon start (plan
           // 35 §4.4) — the same pattern `adb.maxConcurrent` uses (plan 23) —
           // so a Settings change applies to the very next job.
-          resetPolicy: () => settingsStore.get().job,
+          resetPolicy: () => jobConstants(settingsStore.get()),
           // One `job.reset` main-stream device event per pre-job reset (plan
           // 35 §3.5, §4.4).
           onReset: (runId, deviceId, outcome, plan) => {
@@ -4151,7 +4334,7 @@ let blobGc: BlobGc | null = null
           // table `executor-host.ts` uses for the final settle, so a job's
           // per-attempt log lines and its eventual `jobs.failureClass` always
           // agree on why it failed.
-          classify: (err) => classifyFailure(err, { timeoutIsInfra: settingsStore.get().job.retry.timeoutIsInfra }),
+          classify: (err) => classifyFailure(err, { timeoutIsInfra: JOB_TIMEOUT_IS_INFRA }),
           // One `job.retry` main-stream device event per in-place retry
           // (plan 36 §4.4) — `rebound` is always false here; the host emits
           // its own `job.retry` event, with `rebound: true`, only when a
@@ -4180,7 +4363,21 @@ let blobGc: BlobGc | null = null
           // `defaults` because `timing` is defined once, on `DeviceSettingsSchema`,
           // and reused verbatim by `FarmSettingsSchema.defaults` (settings.ts) —
           // there is no separate top-level `timing` field.
-          timing: () => settingsStore.get().defaults.timing,
+          // `TOUCH_PROFILES` names its tap-hold field `tapHoldMs` (plan 212
+          // §4.4); `TimingSettings` (the runtime shape session consumes)
+          // still calls it `tapJitterMs` — mapped here, at the one seam
+          // between the constant and the consumer.
+          timing: () => {
+            const p = TOUCH_PROFILES[settingsStore.get().jobRunner.touchProfile]
+            return {
+              tapJitterMs: p.tapHoldMs,
+              betweenActionMs: p.betweenActionMs,
+              coordJitterPx: p.coordJitterPx,
+              gestureCurvature: p.gestureCurvature,
+              gestureSampleIntervalMs: p.gestureSampleIntervalMs,
+              perCharMs: p.perCharMs,
+            }
+          },
           // `ctx.kv` (plan 79 §4.4, §4.7) — the same store `deviceLifecycle` and
           // `kvRoutes` share; `call`/`redact` are the two things a job actually needs.
           kv: kvRunnerPort,
@@ -4262,8 +4459,8 @@ let blobGc: BlobGc | null = null
           // automatic, on a path that already ran.
           endpoints,
           // A newly enrolled device inherits the farm defaults (spec §12).
-          deviceDefaults: () => settingsStore.get().defaults,
-          defaultDesiredReadiness: () => settingsStore.get().readiness.defaultDesired,
+          // plan 212 §5 step 212.4: `deviceDefaults` dep removed; `defaultsForNewDevice` uses `defaultDeviceSettings()` directly.
+          defaultDesiredReadiness: () => READINESS_DEFAULT_DESIRED,
           record: recorder!.record,
           // Plan 88 §3.6, §4.1, residual gap closed by plan 90 (also
           // recorded at docs/plans/96-m61-hotfixes.md §96.5): without this,
@@ -4276,7 +4473,7 @@ let blobGc: BlobGc | null = null
           // flipped to `OTG`/`WI-FI` the next ordinary `GET /api/devices`.
           // Same accessor `deviceRoutes`/`groupRoutes`
           // already get, a few lines away in this same function.
-          networks: () => settingsStore.get().discovery.networks,
+          networks: () => settingsStore.get().networkScan.networks,
           onDeviceGone: (deviceId) => {
             // Plan 206 §4.10 — cancels the pending build/retry timer and
             // activity FIRST; `sessions.closeDevice` right after is what
@@ -4400,7 +4597,7 @@ let blobGc: BlobGc | null = null
           db,
           endpoints,
           registry,
-          settings: () => settingsStore.get().discovery,
+          settings: () => discoveryConstants(settingsStore.get()),
           log: log.child('sweep'),
         })
         sweeperRef = sweeper
@@ -4420,8 +4617,8 @@ let blobGc: BlobGc | null = null
           endpoints,
           registry,
           settings: () => ({
-            connectSettleMs: settingsStore.get().discovery.connectSettleMs,
-            probeTimeoutMs: settingsStore.get().discovery.scan.probeTimeoutMs,
+            connectSettleMs: DEVICE_CONNECT_SETTLE_MS,
+            probeTimeoutMs: SCAN_PROBE_TIMEOUT_MS,
           }),
           log: log.child('reconnect'),
           sweeper,
@@ -4440,9 +4637,9 @@ let blobGc: BlobGc | null = null
           endpoints,
           reconnector,
           settings: () => ({
-            tcpPort: settingsStore.get().discovery.tcpPort,
-            armWindowSec: settingsStore.get().discovery.cutover.armWindowSec,
-            armPollSec: settingsStore.get().discovery.cutover.armPollSec,
+            tcpPort: ADB_TCP_PORT,
+            armWindowSec: CUTOVER_WINDOW_SEC,
+            armPollSec: CUTOVER_POLL_SEC,
           }),
           broadcast: (msg) => hub.broadcast(msg),
           log: log.child('cutover'),
@@ -4460,7 +4657,7 @@ let blobGc: BlobGc | null = null
         reconciler = createDeviceReconciler({
           client: adb,
           registry,
-          settings: () => settingsStore.get().discovery,
+          settings: () => discoveryConstants(settingsStore.get()),
           log: log.child('discovery'),
           broadcast: (msg) => hub.broadcast(msg),
         })
@@ -4489,7 +4686,7 @@ let blobGc: BlobGc | null = null
           metrics: adbMetrics,
           nudgeCounts: () => reconcilerRef.nudgeCounts(),
           offlineSerials: () => reconcilerRef.offlineSerials(),
-          settings: () => settingsStore.get().adbControl,
+          settings: () => ({ healthIntervalSec: settingsStore.get().advanced.adbHealthIntervalSec, stuckTimeoutRate: ADB_TIMEOUT_STORM_RATE, restartCooldownSec: ADB_RESTART_COOLDOWN_SEC, drainTimeoutMs: ADB_DRAIN_TIMEOUT_MS }),
           onTransition: (h) => hub.broadcast({ type: 'adb.health', payload: h }),
           log: log.child('adb-health'),
         })

@@ -4,6 +4,7 @@ import type { Db } from '../../db'
 import { agentBlobs } from '../../db/schema'
 import type { FarmSettingsStore } from '../../settings/farm-settings'
 import type { Logger } from '../../util/logger'
+import { BLOB_ORPHAN_GRACE_HOURS } from '../../config/constants'
 
 /**
  * Retention for `agent_blobs` (spec §18's "artifact retention and GC", the
@@ -74,7 +75,7 @@ export function createBlobGc(deps: {
   let timer: ReturnType<typeof setInterval> | null = null
 
   function sweepOnce(): { deleted: number; freedBytes: number } {
-    const graceHours = deps.settings.get().retention.blobOrphanGraceHours
+    const graceHours = BLOB_ORPHAN_GRACE_HOURS
     const cutoff = new Date(Date.now() - graceHours * 60 * 60 * 1000)
 
     // Old enough to be a candidate at all — the common case (a screenshot from minutes ago,
