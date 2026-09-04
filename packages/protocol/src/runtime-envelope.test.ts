@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { JobSettingsSchema, type JobSettings } from './settings'
+import { JobSettingsSchema, type JobSettings } from './job-settings'
 import {
   RuntimeEnvelopeSchema,
   SCRIPT_RUNTIME_MAJOR,

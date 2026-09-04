@@ -305,7 +305,6 @@ export {
 } from './registry'
 export {
   BatteryStateSchema,
-  TimingSettingsSchema,
   KeepAwakeModeSchema,
   ShellModeSchema,
   RotationModeSchema,
@@ -313,11 +312,19 @@ export {
   DeviceGpsSchema,
   DeviceIdentitySchema,
   DeviceInstrumentationSchema,
-  DeviceSettingsSchema,
-  FarmSettingsSchema,
-  JobSettingsSchema,
+  VideoNumbersSchema,
+  ControlQualitySchema,
+  WallQualitySchema,
+  DeviceLabelSchema,
+  TouchProfileSchema,
+  ResetPolicySchema,
+  OverControlSchema,
   CidrSchema,
   addressCount,
+  SCAN_MAX_ADDRESSES,
+  DeviceSettingsSchema,
+  FarmSettingsSchema,
+  resolveDeviceSetting,
   defaultFarmSettings,
   defaultDeviceSettings,
   type BatteryState,
@@ -325,21 +332,45 @@ export {
   type ShellMode,
   type RotationMode,
   type TextInputMode,
-  type TimingSettings,
   type DeviceGps,
   type DeviceIdentity,
   type DeviceInstrumentation,
+  type VideoNumbers,
+  type ControlQuality,
+  type WallQuality,
+  type DeviceLabel,
+  type TouchProfile,
+  type ResetPolicy,
+  type OverControl,
   type DeviceSettings,
   type FarmSettings,
-  type FarmDeviceDefaults,
-  type JobSettings,
-  type SessionSettings,
-  type WallSettings,
-  type ReadinessSettings,
-  type WorkspaceSettings,
-  type ControlSettings,
-  type WorkflowJobSettings,
 } from './settings'
+
+// Plan 212 §4.1 — the runtime touch-profile shape, moved out of
+// `./settings.ts` (it carries no `ui()`; a touch profile is chosen by name,
+// never edited field by field). The tuples themselves are
+// `packages/core/src/config/constants.ts`'s `TOUCH_PROFILES`.
+export { TimingSettingsSchema, type TimingSettings } from './timing'
+
+// Plan 212 §4.1, §5 step 212.4 — the runtime job-hygiene shape, moved out of
+// `FarmSettingsSchema` (its visible/advanced fields now live at
+// `FarmSettings.jobRunner`/`FarmSettings.advanced`; the rest are constants).
+// The job runner and workflow orchestrator (plan 211's own shape) read this
+// unchanged; `daemon.ts`'s `jobConstants()` helper reconstructs one from the
+// farm's current settings.
+export { JobSettingsSchema, type JobSettings } from './job-settings'
+
+// Plan 212 §4.7 — farm-level agent settings, moved out of `FarmSettingsSchema`
+// onto their own route (`GET`/`PATCH /api/agents/settings`). Named
+// `FarmAgentSettings*`, not `AgentSettings*`: `./agent.ts` already owns that
+// name for one agent's own settings block.
+export {
+  FarmAgentSettingsSchema,
+  FarmAgentSettingsResponseSchema,
+  UpdateFarmAgentSettingsResponseSchema,
+  defaultFarmAgentSettings,
+  type FarmAgentSettings,
+} from './agent-settings'
 export {
   ToolInstallProgressMessage,
   ToolProvisionProgressMessage,
@@ -1199,25 +1230,7 @@ export {
   type WorkflowBudget,
 } from './workflow-check'
 
-// Plan 92 (M57 — wall-first and video quality), step 92.1. `FarmSettingsSchema`/
-// `DeviceSettingsSchema` already export their own `video` blocks through the
-// existing `export {...} from './settings'` block above; these three names
-// were added to `settings.ts` alongside those blocks and are appended here,
-// as their own statement, rather than folded into that block — this file is
-// contested (a concurrent worker is also appending today) and the rule is
-// append-only, never reorder an existing block.
-export {
-  VideoNumbersSchema,
-  ControlPresetSchema,
-  WallPresetSchema,
-  type VideoNumbers,
-  type ControlPreset,
-  type WallPreset,
-  type VideoSettings,
-} from './settings'
-
-// Plan 100 §3.1, §4.1, step 100.3 — appended separately from the contested
-// block above per its own "append-only, never reorder" rule.
+// Plan 100 §3.1, §4.1, step 100.3.
 export { WallTransportSchema, type WallTransport } from './settings'
 
 // Plan 93 (M58 — bulk operations), step 93.1. Moved out
@@ -1275,13 +1288,9 @@ export {
   RecordingStepMessage,
   type RecordingStoppedReason,
 } from './messages/recording'
-// `FarmSettingsSchema.recording` (`./settings.ts`) — its own separate
-// statement, matching the precedent plan 92's `VideoNumbers`/`ControlPreset`/
-// `WallPreset` block above already set for adding a settings-derived type
-// after `FarmSettingsSchema` was already exported wholesale, without
-// reopening the existing `from './settings'` block further up this
-// contested file.
-export type { RecordingSettings } from './settings'
+// Plan 212 §4.1 — moved out of `FarmSettingsSchema.recording` into its own
+// unrendered runtime shape; every one of its fields is a constant now.
+export { RecordingSettingsSchema, type RecordingSettings } from './recording-settings'
 
 // Plan 97 (M62 — the script output contract), step 97.2, §3.3, §3.6, §4.1.
 // `RESULT_STATUSES`/`ResultStatusSchema` — the five states a job's result
@@ -1346,13 +1355,11 @@ export { PushJobParamsSchema, PullJobParamsSchema, type PushJobParams, type Pull
 // Plan 109 step 109.8: the shapes `GET /api/plugins/:name/runtime/logs` serves.
 export { PluginLogLineSchema, PluginLogPageSchema, type PluginLogLine, type PluginLogPage } from './messages/plugin'
 
-// Plan 89 (M54 — device identity and physical labelling), step 89.6. The
-// labelling settings block (`DeviceLabelModeSchema`/`DeviceLabellingSchema`,
-// §4.3) — added to `./settings.ts` alongside `DeviceInstrumentationSchema`,
-// the closest existing precedent (F26), and appended here rather than
-// reopening the main `from './settings'` block further up this contested
-// file, matching the `RecordingSettings`/`VideoNumbers` precedent above.
-export { DeviceLabelModeSchema, DeviceLabellingSchema, type DeviceLabelMode, type DeviceLabelling } from './settings'
+// Plan 89 (M54 — device identity and physical labelling), step 89.6, reduced
+// by plan 212 §4.1: `DeviceLabelModeSchema` now names only the applied
+// STATE's surface (`DeviceLabelStateSchema.mode`); the settings-facing pair
+// (`DeviceLabellingSchema`) is gone, replaced by the visible `DeviceLabelSchema`.
+export { DeviceLabelModeSchema, type DeviceLabelMode } from './settings'
 // `DeviceLabelStateSchema` (§4.3, §4.6) lives in its own new file,
 // `./api/device-label.ts`, rather than in the already-contested
 // `./api/devices.ts` (owned by a concurrent worker for step 89.2's

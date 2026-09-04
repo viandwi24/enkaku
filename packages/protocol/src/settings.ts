@@ -21,6 +21,10 @@ export type BatteryState = z.infer<typeof BatteryStateSchema>
 export const KeepAwakeModeSchema = z.enum(['off', 'while-charging', 'always'])
 export type KeepAwakeMode = z.infer<typeof KeepAwakeModeSchema>
 
+/** Who may run shell commands (plan 26 §4.1). Plan 212 turns the FARM SETTING into a boolean (`privacy.adbCommand`); this survives as the shape `acl.ts`'s `canUseShell` et al. check — `'admin'` is no longer reachable from a setting. */
+export const ShellModeSchema = z.enum(['off', 'admin', 'operator'])
+export type ShellMode = z.infer<typeof ShellModeSchema>
+
 /**
  * A device row written before Plan 17 still holds `prep.stayAwake` as a plain
  * boolean; this rewrites it into the new shape before validation ever sees
@@ -87,26 +91,16 @@ export const DeviceIdentitySchema = z
       .meta({ title: 'Locale' }),
     gps: DeviceGpsSchema.optional().describe('A mock GPS fix the guest agent reports as the device location.').meta({ title: 'GPS location' }),
   })
-  .meta({
-    title: 'Identity',
-    description: 'What the device presents to apps besides its network path — timezone, locale, GPS. Align these with the route exit so the signals agree.',
-  })
+  .meta({ title: 'Identity', description: 'What the device presents to apps besides its network path — timezone, locale, GPS.' })
 export type DeviceIdentity = z.infer<typeof DeviceIdentitySchema>
 
-/**
- * Device-under-automation marker (spec §9.4) — a device-scoped system
- * property, applied at session start and cleared at close
- * (`packages/session/src/farm-tag.ts`). Deliberately not network-level
- * tagging: it never touches a packet, a header, or a proxy hop.
- */
+/** Device-under-automation marker (spec §9.4) — set at session start, cleared at close (`packages/session/src/farm-tag.ts`). Not network-level tagging: it never touches a packet. */
 export const DeviceInstrumentationSchema = z
   .object({
     tagTraffic: z
       .boolean()
       .default(true)
-      .describe(
-        'Mark this device as under active Enkaku automation with a device-scoped system property (spec §9.4), set for the life of each session and cleared on close. Readable by any app on the device that checks for it. This is not network-level tagging — it never touches a packet. Turning it off removes a disclosure, not a capability: the marker can never be used to disguise an automated session even when it is on.',
-      )
+      .describe('Mark this device as under active Enkaku automation with a device-scoped system property, set for the life of each session and cleared on close. Readable by any app on the device that checks for it.')
       .meta({ title: 'Mark device as under automation' }),
   })
   .meta({
@@ -133,6 +127,10 @@ export type WallQuality = z.infer<typeof WallQualitySchema>
 export const DeviceLabelSchema = z.enum(['off', 'number', 'number-and-name'])
 export type DeviceLabel = z.infer<typeof DeviceLabelSchema>
 
+/** The SURFACE a label is written to (plan 89) — the applied STATE's own field (`DeviceLabelStateSchema.mode`, `./api/device-label.ts`), not a settings field; the settings-facing surface choice is the constant `DEVICE_LABEL_SURFACE`. */
+export const DeviceLabelModeSchema = z.enum(['off', 'lock-screen', 'wallpaper'])
+export type DeviceLabelMode = z.infer<typeof DeviceLabelModeSchema>
+
 /** MVP 12 §1 — the one timing knob a non-engineer understands. The tuples behind each name are `TOUCH_PROFILES` (`packages/core/src/config/constants.ts`). */
 export const TouchProfileSchema = z.enum(['precise', 'natural', 'slow'])
 export type TouchProfile = z.infer<typeof TouchProfileSchema>
@@ -144,6 +142,10 @@ export type ResetPolicy = z.infer<typeof ResetPolicySchema>
 /** MVP 04 §1.3 rows 7 and 8, folded from plan 205's `control.overControl` into `privacy.overControl` (plan 212 §4.3). */
 export const OverControlSchema = z.enum(['allow', 'warn', 'forbid'])
 export type OverControl = z.infer<typeof OverControlSchema>
+
+/** Where a wall tab's browser sits relative to the core (plan 100 §3.1). `WALL_TRANSPORT_OVERRIDE` (constants.ts) adds `'auto'` for the farm-facing override. */
+export const WallTransportSchema = z.enum(['loopback', 'lan', 'wan'])
+export type WallTransport = z.infer<typeof WallTransportSchema>
 
 /** `networkScan.networks[].cidr` (plan 88 §3.5-§3.6, §4.2) — the bounded sweep's address space. IPv4 only. */
 const IPV4_OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d|0)'
@@ -170,9 +172,7 @@ export const SCAN_MAX_ADDRESSES = 1024
 const FarmNetworkSchema = z.object({
   cidr: CidrSchema,
   label: z.string().max(40).default('').meta({ title: 'Label' }),
-  // NOT a shared enum import from `./device`: importing it here would close
-  // an import cycle (device.ts already imports `BatteryStateSchema` from
-  // this file). Two string literals repeated is cheaper than that.
+  // Not a shared import from `./device` — that would close an import cycle.
   medium: z.enum(['wired', 'wireless']).default('wired').meta({ title: 'Medium' }),
   scan: z.boolean().default(true).meta({ title: 'Include in a sweep' }),
   port: z
