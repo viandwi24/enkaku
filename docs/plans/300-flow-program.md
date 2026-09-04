@@ -284,8 +284,11 @@ the whole of its control surface.
 
 D1, D2, D3, D6, D7, D8 are engineering calls and are **made**. Two are not:
 
-- **D4** reverses a written decision and adds a package. It needs the owner's
-  yes on the record before plan 302 is executed.
+- **D4** reverses a written decision and adds a package. It needed the owner's
+  yes on the record before plan 302 could be executed. **Ratified by the owner
+  on 2026-09-04**; plan 302 is cleared to run, and the condition D4 attaches to
+  it stands — if plan 306 cannot deliver the live preview (P8), plan 302 does
+  not ship either.
 - **D5** touches the spec. It needs the owner's yes on *deferring*, which is
   the cheap direction; plan 308 exists so the expensive direction stays
   visible.
