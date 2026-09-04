@@ -76,6 +76,19 @@ async function startDaemon(): Promise<void> {
   // every mode, including orchestrator's early return, which still happens
   // after `listen`). Suppressed by default for anything that is not an
   // interactive desktop session — see `shouldOpenBrowser`'s own doc comment.
+  // Which guest agent APK this core would install, said ONCE at boot.
+  //
+  // Nothing used to say it, and the silence cost an afternoon: a phone
+  // running an August build with no `ui-tree` capability sent every script
+  // back to `ui-server`'s ~32 s attach while two landed plans sat dormant
+  // (2026-09-04). One line here answers "is the build I am working on the one
+  // that reaches the phone?" before anyone has to ask it. `doctor` says the
+  // same thing with a remedy; the status bar renders that.
+  void import('./api/guest-agent')
+    .then(({ describeGuestAgentApk }) => describeGuestAgentApk())
+    .then(({ detail }) => log.info(`guest agent APK: ${detail}`))
+    .catch(() => undefined)
+
   maybeOpenBrowser({
     url: buildStudioUrl(cfg),
     mode: process.env.ENKAKU_MODE,

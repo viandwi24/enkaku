@@ -126,6 +126,27 @@ const LOCAL_BUILD_PATHS = [
   'apps/guest-agent/app/build/outputs/apk/debug/app-debug.apk',
 ]
 
+/**
+ * Which tier `resolveGuestAgentApkPath` WOULD take, without taking it.
+ *
+ * Provisions nothing and downloads nothing, so it is safe to call at boot.
+ * The daemon logs it once at startup because "is the build I am working on
+ * actually the one installed on the phone?" had no answer anywhere: the
+ * owner spent an afternoon on an inspector that was falling back to
+ * `ui-server` because the phone held an August APK with no `ui-tree`
+ * capability, and every layer involved was behaving correctly and saying
+ * nothing (2026-09-04). `doctor/checks/guest-agent.ts` reports the same fact
+ * with a remedy, and the status bar renders it.
+ */
+export async function describeGuestAgentApk(): Promise<{ source: 'override' | 'local-build' | 'pinned'; detail: string }> {
+  const override = process.env.ENKAKU_GUEST_AGENT_PATH
+  if (override) return { source: 'override', detail: `ENKAKU_GUEST_AGENT_PATH → ${override}` }
+  for (const candidate of LOCAL_BUILD_PATHS) {
+    if (await Bun.file(candidate).exists()) return { source: 'local-build', detail: `local Gradle build → ${candidate}` }
+  }
+  return { source: 'pinned', detail: 'the pinned release, downloaded and sha256-verified on first install' }
+}
+
 export async function resolveGuestAgentApkPath(
   opts: {
     toolchain?: { resolveToolPath(id: string): Promise<string>; ensureRequiredTools(ids: string[]): Promise<void> }
