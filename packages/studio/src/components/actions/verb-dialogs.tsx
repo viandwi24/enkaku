@@ -525,8 +525,25 @@ function diffPatch(seed: Record<string, unknown>, draft: Record<string, unknown>
   return patch as DeviceSettingsPatch
 }
 function SettingsFields({ value, onChange, target }: { value: SettingsValue; onChange: (v: SettingsValue) => void; target: TargetState }) {
+  /**
+   * Seed only once the picker has actually resolved its target.
+   *
+   * `target.resolvedIds` filters the chosen ids against the device list the
+   * picker fetches, so it is EMPTY for the first render or two. This effect
+   * used to run once on mount and decide "one device or many" from that empty
+   * list — so a single-device dialog took the multi path, showed schema
+   * defaults instead of the phone's own values, and reported "1 setting will
+   * be written" before anyone had touched a field (owner, 2026-09-05). The
+   * device's stored `input: scrcpy-sdk` rendered as the default
+   * `scrcpy-uhid`, which is the kind of wrong that gets APPLIED.
+   *
+   * `value.schema` still makes it one-shot; the guard just delays the shot
+   * until there is something to aim at.
+   */
+  const resolvedKey = target.resolvedIds.join(',')
   useEffect(() => {
     if (value.schema) return
+    if (target.devices.length === 0) return
     let cancelled = false
     // One device: this IS that device's settings screen — seed the form and
     // edit in place. Many: read the FIRST resolved device anyway, not to seed
@@ -561,7 +578,7 @@ function SettingsFields({ value, onChange, target }: { value: SettingsValue; onC
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [resolvedKey, target.devices.length])
 
   if (!value.schema) return <p className="text-body text-faint">Loading…</p>
 
