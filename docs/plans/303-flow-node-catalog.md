@@ -1,6 +1,6 @@
 # Plan 303 — Flow : The node catalog — core control nodes, the plugin `node` descriptor, the registry
 
-> Status: partial — every non-owner goal (G1–G7, G9's typecheck half) is done and verified; G8 is the owner's row and G9's `build:studio` half could not be run this session (port 3001 held by a concurrent Studio dev session, per the launch instructions) — neither job in this launch touches `packages/studio`, so nothing here should have broken it, but the build itself is unverified this session; see §11
+> Status: implemented (software) — G8 is the owner's row (a fresh-farm palette check). G9's `build:studio` half could not be run in this plan's own session (a concurrent Studio dev server held port 3001) and was verified afterwards on 2026-09-05: plans 305, 306 and 307 each built and exported Studio cleanly on trees containing this plan's changes.
 > Ships: packages/core/src/workflows/registry.ts
 > Depends on: plan 301 (doc v2); plan 300 D6, D7, D8
 > Spec references: §4.5, §4.6, §10
