@@ -113,7 +113,7 @@ export function DataTree({
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const rows = dataTreeRows(value, collapsed)
 
-  if (rows.length === 0 || (rows.length === 1 && rows[0]?.type === 'null' && value === undefined)) {
+  if (value === undefined) {
     return <p className="px-2 py-3 text-[11.5px] text-fg-subtle">{emptyLabel}</p>
   }
 
