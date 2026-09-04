@@ -188,26 +188,52 @@ export const PredicateSchema: z.ZodType<Predicate> = PredicateShapeSchema.superR
   }
 })
 
-/** Where the cursor goes next (plan 99 §3.7). `stop` ends the workflow SUCCESSFULLY, here. `fail` ends it FAILED. `goto` may jump forward or backward. */
-export const GateOutcomeSchema = z.union([
-  z.object({ go: z.enum(['continue', 'stop', 'fail']) }).strict(),
-  z.object({ go: z.literal('goto'), node: WorkflowNodeIdSchema }).strict(),
-])
-export type GateOutcome = z.infer<typeof GateOutcomeSchema>
+/**
+ * Canvas position (plan 300 D2, plan 301 §4.1) — integers, bounded, so a
+ * document cannot carry a 1e308 that breaks the viewport maths.
+ */
+export const WorkflowPointSchema = z
+  .object({
+    x: z.number().int().min(-100_000).max(100_000),
+    y: z.number().int().min(-100_000).max(100_000),
+  })
+  .strict()
+export type WorkflowPoint = z.infer<typeof WorkflowPointSchema>
+
+/** Fields every node has, whatever its kind (plan 301 §4.1). */
+const nodeBase = {
+  id: WorkflowNodeIdSchema,
+  title: z.string().max(80).default(''),
+  ui: WorkflowPointSchema,
+}
 
 /**
- * One node in a workflow document (plan 99 §4.1). `kind: 'script'` runs an
- * ordinary published script as a child, through the SAME `JobRunner` every
- * standalone job uses (§3.4) — nothing about a node's `timeout`/`retries`/
- * `finish()` is reimplemented. `kind: 'gate'` evaluates a predicate
- * in-process, spawning no child and making no device call (§3.7).
+ * One node in a workflow document (plan 99 §4.1, rewritten by plan 301 §4.1
+ * for doc v2). Every edge is written down as a node id (plan 300 D1) — array
+ * order (`nodes[]`) carries no control meaning any more. `kind: 'start'` and
+ * `kind: 'finish'` are new (plan 301 §3.2, §3.4): a run begins at the ONE
+ * `start` node named by `doc.entry` and ends at a `finish` node (or a
+ * dangling edge, which behaves as one — see `WorkflowDocSchema`'s own doc
+ * comment). `kind: 'script'` runs an ordinary published script as a child,
+ * through the SAME `JobRunner` every standalone job uses (§3.4) — nothing
+ * about a node's `timeout`/`retries`/`finish()` is reimplemented. `kind:
+ * 'gate'` evaluates a predicate in-process, spawning no child and making no
+ * device call (§3.7).
  */
 export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
   z
     .object({
+      ...nodeBase,
+      kind: z.literal('start'),
+      /** Absent = dangling; reaching it ends the run succeeded (plan 301 §3.2). */
+      next: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
+
+  z
+    .object({
+      ...nodeBase,
       kind: z.literal('script'),
-      id: WorkflowNodeIdSchema,
-      title: z.string().max(80).default(''),
       /** `name@version` or `name@latest` — the EXISTING reference grammar (F17), no second resolution path. */
       script: ScriptRefSchema,
       params: z.record(WorkflowParamNameSchema, ValueExprSchema).default({}),
@@ -215,20 +241,29 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
       reset: z.enum(['farm', 'none']).optional(),
       /** Overrides the node script's own `ScriptDefinition.retries`. */
       retries: z.number().int().min(0).max(10).optional(),
-      onFailure: GateOutcomeSchema.default({ go: 'fail' }),
-      /** Explicit successor; absent = the next node in the array (plan 99 §3.9). */
+      /** Absent = dangling; reaching it ends the run succeeded (plan 301 §3.2). */
       next: WorkflowNodeIdSchema.optional(),
+      /** Absent = dangling; reaching it ends the run failed (plan 301 §3.2). */
+      onFailure: WorkflowNodeIdSchema.optional(),
     })
     .strict(),
+
   z
     .object({
+      ...nodeBase,
       kind: z.literal('gate'),
-      id: WorkflowNodeIdSchema,
-      title: z.string().max(80).default(''),
       when: PredicateSchema,
-      then: GateOutcomeSchema.default({ go: 'continue' }),
-      else: GateOutcomeSchema.default({ go: 'stop' }),
-      /** Shown on the job row when this gate ends the workflow. */
+      then: WorkflowNodeIdSchema.optional(),
+      else: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
+
+  z
+    .object({
+      ...nodeBase,
+      kind: z.literal('finish'),
+      status: z.enum(['succeed', 'fail']).default('succeed'),
+      /** Shown on the job row when this node ends the run — the message `gate.message` used to carry (plan 301 §3.2). */
       message: z.string().max(200).default(''),
     })
     .strict(),
@@ -237,11 +272,13 @@ export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>
 
 const WorkflowDocShapeSchema = z
   .object({
-    schema: z.literal(1),
+    schema: z.literal(2),
     name: WorkflowNameSchema,
     title: z.string().max(80).default(''),
     description: z.string().max(300).default(''),
     params: z.array(WorkflowParamSchema).max(WORKFLOW_LIMITS.maxParams).default([]),
+    /** The one `start` node. Never `nodes[0]` (plan 301 §3.4) — reordering the array never moves the start. */
+    entry: WorkflowNodeIdSchema,
     nodes: z.array(WorkflowNodeSchema).min(1).max(WORKFLOW_LIMITS.maxNodes),
     /** Node EXECUTIONS, not nodes (plan 99 §3.9) — a loop can make the step count exceed the node count. */
     maxSteps: z.number().int().min(1).max(500).default(50),
@@ -254,17 +291,27 @@ const WorkflowDocShapeSchema = z
   .strict()
 
 /**
- * The validated workflow document (plan 99 §3.1, §4.1; no version as of plan
- * 210, MVP 03 §2.2 rule 4) — this is what `workflows.doc` and `jobs.workflow_doc`
- * hold: a farm-owned pipeline, edited in place, with no version of its own. A
- * job snapshots this document at enqueue time so editing a workflow never
- * changes a queued or running job. Only what a per-node regex cannot express
- * is checked here: node id uniqueness. Everything requiring a lookup against
- * OTHER scripts (a dangling `goto`, a binding that reads a node that cannot
- * have run yet, a `{ param }` naming an undeclared workflow parameter) is
- * `checkWorkflow`'s job (`workflow-check.ts`, plan 99 §4.3, step 99.6) — a
- * separate, pure function that needs resolved script metadata this schema
- * does not have.
+ * The validated workflow document — doc v2 (plan 99 §3.1, §4.1; no version
+ * field of its own as of plan 210, MVP 03 §2.2 rule 4; rewritten to an
+ * explicit-edge graph by plan 301 §4.1, D1/D2). This is what `workflows.doc`
+ * and `jobs.workflow_doc` hold: a farm-owned pipeline, edited in place, with
+ * no version of its own. A job snapshots this document at enqueue time so
+ * editing a workflow never changes a queued or running job.
+ *
+ * Every edge is a node id (`next`/`onFailure`/`then`/`else`), never an array
+ * position: `nodes[]` is storage order and nothing more. A run begins at
+ * `doc.entry` (the one `start` node) and ends at a `finish` node, or at a
+ * dangling edge — an edge field left absent — which behaves as one (plan 301
+ * §3.2): reaching the end of a `next` ends the run succeeded, reaching the
+ * end of an `onFailure` ends it failed.
+ *
+ * Only what a per-node regex or a local invariant cannot express is checked
+ * here: node id uniqueness, and that `entry` names a real `start` node.
+ * Everything requiring a lookup against OTHER nodes or scripts (a dangling
+ * edge, reachability, a binding that reads a node that cannot have run yet, a
+ * `{ param }` naming an undeclared workflow parameter) is `checkWorkflow`'s
+ * job (`workflow-check.ts`, plan 99 §4.3 / plan 301 §4.2) — a separate, pure
+ * function that needs resolved script metadata this schema does not have.
  */
 export const WorkflowDocSchema = WorkflowDocShapeSchema.superRefine((doc, ctx) => {
   const firstSeenAt = new Map<string, number>()
@@ -280,5 +327,17 @@ export const WorkflowDocSchema = WorkflowDocShapeSchema.superRefine((doc, ctx) =
       path: ['nodes', index, 'id'],
     })
   })
+
+  const entryIndex = doc.nodes.findIndex((n) => n.id === doc.entry)
+  if (entryIndex === -1) {
+    ctx.addIssue({ code: 'custom', message: `entry "${doc.entry}" is not a node in this document`, path: ['entry'] })
+  } else if (doc.nodes[entryIndex]?.kind !== 'start') {
+    ctx.addIssue({ code: 'custom', message: `entry "${doc.entry}" must name a "start" node`, path: ['entry'] })
+  }
+
+  const startNodes = doc.nodes.filter((n) => n.kind === 'start')
+  if (startNodes.length !== 1) {
+    ctx.addIssue({ code: 'custom', message: `a document must have exactly one "start" node (found ${startNodes.length})`, path: ['nodes'] })
+  }
 })
 export type WorkflowDoc = z.infer<typeof WorkflowDocSchema>

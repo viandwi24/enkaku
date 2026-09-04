@@ -35,9 +35,9 @@ terminal already: a command allowlist/denylist is not a real security
 control (`sh -c`, a backtick, or an alias defeats any parser), so this
 package never pretends otherwise.
 
-## Workflows — the document, the grammar, and the rule that matters most (plan 99, M64)
+## Workflows — the document, the grammar, and the rule that matters most (plan 99, M64; graph model v2 by plan 301)
 
-A **workflow** is a pipeline: an ordered list of **nodes**, each an ordinary published script reference, plus optional **gates** that branch on values the pipeline already has. It runs as one job, on one device, under one control marker — see `packages/core/README.md`'s own Workflows section for the executor and the runtime side. This package owns the document shape, the two closed grammars a node can use, and the checks that make a document publishable.
+A **workflow** is a graph: a `start` node, a set of **nodes** (an ordinary published script reference, a **gate** that branches on values the pipeline already has, or a `finish`), and an explicit **edge** on every node that has a successor (`next`/`onFailure`/`then`/`else`, each a node id). It runs as one job, on one device, under one control marker — see `packages/core/README.md`'s own Workflows section for the executor and the runtime side. This package owns the document shape, the two closed grammars a node can use, and the checks that make a document publishable.
 
 ### The document — `workflow.ts`
 
@@ -45,22 +45,26 @@ A **workflow** is a pipeline: an ordered list of **nodes**, each an ordinary pub
 import { WorkflowDocSchema } from '@enkaku/protocol'
 
 const doc = WorkflowDocSchema.parse({
-  schema: 1,
+  schema: 2,
   name: 'tiktok-warmup-and-search',
-  version: '1.0.0',
   params: [{ name: 'keyword', type: 'string', required: true, title: 'Search keyword' }],
   maxSteps: 50,
+  entry: 'start',
   nodes: [
-    { kind: 'script', id: 'scroll1', script: 'tiktok/auto-scroll@1.4.0', params: { videos: { const: 15 } } },
-    { kind: 'script', id: 'search1', script: 'tiktok/searched-follow@1.4.0', params: { keyword: { param: 'keyword' } } },
-    { kind: 'gate', id: 'enough', when: { left: { from: 'scroll1', path: 'videos' }, op: 'gte', right: { const: 10 } },
-      then: { go: 'continue' }, else: { go: 'stop' } },
-    { kind: 'script', id: 'report1', script: 'tiktok/report@1.0.0', params: { summary: { run: 'summary' } } },
+    { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, next: 'scroll1' },
+    { kind: 'script', id: 'scroll1', title: '', ui: { x: 240, y: 0 }, script: 'tiktok/auto-scroll@1.4.0', params: { videos: { const: 15 } }, next: 'search1' },
+    { kind: 'script', id: 'search1', title: '', ui: { x: 480, y: 0 }, script: 'tiktok/searched-follow@1.4.0', params: { keyword: { param: 'keyword' } }, next: 'enough' },
+    { kind: 'gate', id: 'enough', title: '', ui: { x: 720, y: 0 },
+      when: { left: { from: 'scroll1', path: 'videos' }, op: 'gte', right: { const: 10 } },
+      then: 'report1' },
+    { kind: 'script', id: 'report1', title: '', ui: { x: 960, y: 0 }, script: 'tiktok/report@1.0.0', params: { summary: { run: 'summary' } } },
   ],
 })
 ```
 
-A node's `id` must be unique in the document; array order is the pipeline's default spine, and a node's own `next` (or a gate's `then`/`else`) is the only way to name a different successor — reordering the array can therefore never silently rewire an explicit branch, because a branch names a node id, not a position. `maxSteps` (default 50, max 500) bounds node *executions*, not node count — a backward `goto` loop is legal and is what this budget is for.
+A node's `id` must be unique in the document; `nodes[]` is storage order only — array position carries no control meaning (plan 300 D1). Every node carries its own canvas position (`ui: { x, y }`, plan 300 D2). `entry` names the one `start` node; a run begins there. Every edge (`next`, `onFailure`, a gate's `then`/`else`) is a node id or absent — absent is DANGLING, not an error: reaching the end of a `next`-shaped edge ends the run succeeded, reaching the end of an `onFailure`-shaped edge ends it failed (plan 301 §3.2). A run ends explicitly at a `finish` node, which carries the terminal `status` (`succeed`/`fail`) and an optional `message`. `maxSteps` (default 50, max 500) bounds node *executions*, not node count — a backward edge (a loop) is legal and is what this budget is for.
+
+A `schema: 1` document (the pre-plan-301 shape, with array-order fallthrough and a `GateOutcome` union instead of edges) still exists on disk; `packages/core/src/workflows/upgrade.ts`'s `upgradeWorkflowDoc` is the one place it becomes a v2 document, in memory, never written back by a read.
 
 Everything here is `.strict()` Zod: an unrecognised field on a node, a gate, or the document itself is a parse error, not a value silently dropped.
 
@@ -95,9 +99,10 @@ A gate's `when` is a closed predicate, built from the same four value expression
 **If you find yourself wanting to write an expression in a gate — `videos / minutes > 2`, a string transform, a date computation — stop.** It will not parse, and it is not a bug that it does not. The answer is not a bigger grammar; it is a **script node that returns a verdict**, read by an ordinary gate:
 
 ```ts
-{ kind: 'script', id: 'check-quality', script: 'tiktok/quality-check@1.0.0' },
-{ kind: 'gate', id: 'enough', when: { left: { from: 'check-quality', path: 'ok' }, op: 'eq', right: { const: true } },
-  then: { go: 'continue' }, else: { go: 'stop' } },
+{ kind: 'script', id: 'check-quality', title: '', ui: { x: 0, y: 0 }, script: 'tiktok/quality-check@1.0.0', params: {}, next: 'enough' },
+{ kind: 'gate', id: 'enough', title: '', ui: { x: 240, y: 0 },
+  when: { left: { from: 'check-quality', path: 'ok' }, op: 'eq', right: { const: true } },
+  then: 'continue-here' },
 ```
 
 That script gets crash containment, versioning, its own parameters and generated form, its own timeout and retries, its own artifacts — for free, because it is an ordinary script (`@enkaku/sdk`'s `defineScript`) rather than a new thing to trust. The predicate grammar's job is to stay small; the escape hatch is the language that already exists.
@@ -106,7 +111,7 @@ That script gets crash containment, versioning, its own parameters and generated
 
 `checkWorkflow(doc, resolved, budget?)` is pure and database-free — it never queries anything; the caller resolves every node's script reference first and hands in what it found. It returns **every** finding, never just the first (`WorkflowFinding[]`, each `{ path, code, message, severity }`), so an author fixing a workflow gets one list, not one error per round trip. This is the same function Studio's Validate button and the core's publish route both call, so they can never disagree about whether a document is valid.
 
-It checks, among other things: every node id is unique and every `goto`/`next` target exists; a binding can only read a node that runs *earlier*, computed over the transition graph (so a binding is refused even when a backward `goto` makes the reachability non-positional); a `{ param }` names a declared, type-compatible workflow parameter; a `{ from, path }` against a script that declares an output schema is checked against that schema, degrading to a warning when the producing script declares none (most scripts, today); no node's script is itself a workflow (nested workflows are refused); every node is reachable; and, when a `budget` is supplied, the worst-case timeout sum over an acyclic document against `workflow.maxTotalMs` — an undeclared node timeout makes that sum *unknown*, not zero, reported as a warning naming the responsible nodes rather than silently passing or silently refusing on a number nobody declared.
+It checks, among other things: every node id is unique and `entry` names the one `start` node; every `next`/`onFailure`/`then`/`else` target that IS wired names a real node, and one left unwired is a warning, not an error (an author mid-edit has orphans; plan 301 §4.3); a binding can only read a node that runs *earlier*, computed over the transition graph (so a binding is refused even when a backward edge makes the reachability non-positional); a `{ param }` names a declared, type-compatible workflow parameter; a `{ from, path }` against a script that declares an output schema is checked against that schema, degrading to a warning when the producing script declares none (most scripts, today); no node's script is itself a workflow (nested workflows are refused); every node is reachable from `entry` (a warning when it is not); and, when a `budget` is supplied, the worst-case timeout sum over an acyclic document against `workflow.maxTotalMs` — an undeclared node timeout makes that sum *unknown*, not zero, reported as a warning naming the responsible nodes rather than silently passing or silently refusing on a number nobody declared.
 
 ### Workflow parameters — `workflow-params.ts`
 

@@ -1,7 +1,7 @@
 import type { JsonSchemaNode } from './api/json-schema'
 import type { ScriptRef } from './script-ref'
 import { compileWorkflowParams } from './workflow-params'
-import type { GateOutcome, Predicate, ValueExpr, WorkflowDoc, WorkflowNode } from './workflow'
+import type { Predicate, ValueExpr, WorkflowDoc, WorkflowNode } from './workflow'
 
 /**
  * Static, publish-time checking of a workflow document (plan 99 §4.3, step
@@ -29,11 +29,16 @@ export type WorkflowFindingCode =
   | 'E_WORKFLOW_UNKNOWN_PARAM'
   | 'E_WORKFLOW_BINDING_TYPE'
   | 'E_WORKFLOW_BINDING_UNRESOLVABLE'
-  | 'E_WORKFLOW_UNREACHABLE'
   | 'E_WORKFLOW_BUDGET_IMPOSSIBLE'
   | 'W_WORKFLOW_UNCHECKED_BINDING'
   | 'W_WORKFLOW_LOOP'
   | 'W_WORKFLOW_LATEST_REF'
+  /** `doc.entry` is missing, names an unknown node, or names a node that is not `kind: 'start'` (plan 301 §4.2). */
+  | 'E_WORKFLOW_ENTRY_UNKNOWN'
+  /** A node no edge (from anywhere reachable from `entry`) targets — a warning, not a refusal: an author mid-edit has orphans (plan 301 §4.3). */
+  | 'W_WORKFLOW_NODE_UNREACHABLE'
+  /** An edge field (`next`/`onFailure`/`then`/`else`) that is absent — not wired yet. Not an error: reaching the end of it at run time ends the run succeeded (`next`) or failed (`onFailure`) (plan 301 §3.2). */
+  | 'W_WORKFLOW_EDGE_DANGLING'
   /**
    * Plan 99 §4.3 check 7, unblocked by plan 98 §4.4 step 98.4
    * (`scripts.runtime`, so `ResolvedNodeScript.timeoutMs` is now readable at
@@ -69,6 +74,10 @@ export type WorkflowFindingCode =
    * has to branch on "which kind of error is this".
    */
   | 'E_WORKFLOW_INVALID'
+  /** A workflow document's `schema` is neither 1 nor 2 (plan 301 §4.6) — produced only by `packages/core/src/workflows/upgrade.ts`, surfaced through the same finding shape. */
+  | 'E_WORKFLOW_SCHEMA_UNKNOWN'
+  /** A `schema: 1` document does not satisfy the frozen v1 shape and cannot be upgraded (plan 301 §4.6) — produced only by `packages/core/src/workflows/upgrade.ts`. */
+  | 'E_WORKFLOW_UPGRADE_FAILED'
 
 /** What the publish route already looked up for one node's script reference (plan 99 §4.3's own signature). `outputSchema` is always `null` until plan 97 ships a producer (§0.2 A1) — every check below degrades honestly when it is. */
 export interface ResolvedNodeScript {
@@ -118,40 +127,21 @@ function push(findings: WorkflowFinding[], path: string, code: WorkflowFindingCo
 }
 
 // ---------------------------------------------------------------------------
-// The transition graph (plan 99 §3.9, §4.3 item 2). Edges point from a node
-// to whichever node the cursor could land on next — one edge per possible
-// outcome, not one node per array slot. A gate spawns two (then/else); a
-// script node spawns up to two (success, failure) since §4.7's own
-// pseudocode routes them through DIFFERENT targets:
-// `cursor = result.ok ? follow(node.next ?? nextInArray) : follow(node.onFailure)`.
-// 'stop'/'fail' outcomes are terminal — no edge.
+// The transition graph (plan 99 §3.9, §4.3 item 2; rewritten by plan 301 §4.2
+// for doc v2's explicit edges). Edges point from a node to whichever node the
+// cursor could land on next — one edge per possible outcome, not one node per
+// array slot. A gate spawns up to two (then/else); a script node spawns up to
+// two (success, failure). Every edge is a node id read straight off the node
+// (`next`/`onFailure`/`then`/`else`) — array order carries no control meaning
+// (plan 300 D1). An absent edge field is DANGLING (`W_WORKFLOW_EDGE_DANGLING`)
+// — not an error, and not an edge in this graph either: the walk simply stops
+// there, exactly as the executor's run-time walk would.
 // ---------------------------------------------------------------------------
-
-function arrayNextId(doc: WorkflowDoc, index: number): string | undefined {
-  return doc.nodes[index + 1]?.id
-}
-
-/** Interprets one `GateOutcome` relative to `index` — used for a gate's `then`/`else` AND a script node's `onFailure`, exactly as §4.7's pseudocode treats them (`follow(...)`). Unknown `goto` targets are reported once, here, and treated as terminal for graph purposes so the walk never corrupts itself over a bad reference. */
-function followOutcome(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, outcome: GateOutcome, index: number, ownerPath: string, findings: WorkflowFinding[]): string | undefined {
-  switch (outcome.go) {
-    case 'continue':
-      return arrayNextId(doc, index)
-    case 'stop':
-    case 'fail':
-      return undefined
-    case 'goto':
-      if (!nodeIds.has(outcome.node)) {
-        push(findings, `${ownerPath}.node`, 'E_WORKFLOW_UNKNOWN_NODE', `"${outcome.node}" is not a node in this document`, 'error')
-        return undefined
-      }
-      return outcome.node
-  }
-}
 
 interface Graph {
   /** nodeId -> the set of nodeIds the cursor could land on immediately after it. */
   edges: Map<string, Set<string>>
-  /** Every node reachable from `doc.nodes[0]`, including itself. */
+  /** Every node reachable from `doc.entry`, including itself. */
   reachable: Set<string>
 }
 
@@ -162,34 +152,39 @@ function addEdge(edges: Map<string, Set<string>>, from: string, to: string | und
   else edges.set(from, new Set([to]))
 }
 
+/** Resolves one edge field, reporting `E_WORKFLOW_UNKNOWN_NODE` for an id that names no node, and `W_WORKFLOW_EDGE_DANGLING` for one left unwired. Returns the target id, or `undefined` when the edge is not usable for graph-walking purposes (unknown OR dangling). */
+function resolveEdge(nodeIds: ReadonlySet<string>, target: string | undefined, ownerPath: string, endsAs: 'succeeded' | 'failed', findings: WorkflowFinding[]): string | undefined {
+  if (target === undefined) {
+    push(findings, ownerPath, 'W_WORKFLOW_EDGE_DANGLING', `this edge is not wired to a node yet — reaching it at run time ends the run ${endsAs}`, 'warning')
+    return undefined
+  }
+  if (!nodeIds.has(target)) {
+    push(findings, ownerPath, 'E_WORKFLOW_UNKNOWN_NODE', `"${target}" is not a node in this document`, 'error')
+    return undefined
+  }
+  return target
+}
+
 function buildGraph(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, findings: WorkflowFinding[]): Graph {
   const edges = new Map<string, Set<string>>()
 
   doc.nodes.forEach((node, i) => {
-    if (node.kind === 'script') {
-      let successTarget: string | undefined
-      if (node.next !== undefined) {
-        if (!nodeIds.has(node.next)) {
-          push(findings, `nodes[${i}].next`, 'E_WORKFLOW_UNKNOWN_NODE', `"${node.next}" is not a node in this document`, 'error')
-        } else {
-          successTarget = node.next
-        }
-      } else {
-        successTarget = arrayNextId(doc, i)
-      }
-      addEdge(edges, node.id, successTarget)
-      addEdge(edges, node.id, followOutcome(doc, nodeIds, node.onFailure, i, `nodes[${i}].onFailure`, findings))
-    } else {
-      addEdge(edges, node.id, followOutcome(doc, nodeIds, node.then, i, `nodes[${i}].then`, findings))
-      addEdge(edges, node.id, followOutcome(doc, nodeIds, node.else, i, `nodes[${i}].else`, findings))
+    if (node.kind === 'start') {
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
+    } else if (node.kind === 'script') {
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.onFailure, `nodes[${i}].onFailure`, 'failed', findings))
+    } else if (node.kind === 'gate') {
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.then, `nodes[${i}].then`, 'succeeded', findings))
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.else, `nodes[${i}].else`, 'succeeded', findings))
     }
+    // `finish` is a sink — no outgoing edge to resolve.
   })
 
   const reachable = new Set<string>()
-  const start = doc.nodes[0]?.id
-  if (start !== undefined) {
-    const queue = [start]
-    reachable.add(start)
+  if (doc.entry !== undefined && nodeIds.has(doc.entry)) {
+    const queue = [doc.entry]
+    reachable.add(doc.entry)
     while (queue.length > 0) {
       const cur = queue.shift() as string
       for (const next of edges.get(cur) ?? []) {
@@ -253,9 +248,9 @@ function findCycle(edges: ReadonlyMap<string, Set<string>>, start: string | unde
 // `findCycle` found nothing.
 // ---------------------------------------------------------------------------
 
-/** A gate costs nothing — it is evaluated in-process, no child, no clock (§3.7). A script node costs its resolved script's `timeoutMs`, or `null` for UNKNOWN (no declared timeout, or a ref missing from `resolved` entirely — both mean "cannot determine", never zero). */
+/** A gate, a `start`, and a `finish` cost nothing — they run in-process (or not at all), no child, no clock (§3.7, plan 301 §4.2). A script node costs its resolved script's `timeoutMs`, or `null` for UNKNOWN (no declared timeout, or a ref missing from `resolved` entirely — both mean "cannot determine", never zero). */
 function nodeCostMs(resolved: ReadonlyMap<ScriptRef, ResolvedNodeScript>, node: WorkflowNode): number | null {
-  if (node.kind === 'gate') return 0
+  if (node.kind !== 'script') return 0
   return resolved.get(node.script)?.timeoutMs ?? null
 }
 
@@ -429,11 +424,12 @@ function* collectBindingSites(doc: WorkflowDoc): Generator<BindingSite> {
       for (const [key, expr] of Object.entries(node.params)) {
         yield { fromNodeId: node.id, path: `nodes[${i}].params.${key}`, expr, target: { scriptRef: node.script, paramName: key } }
       }
-    } else {
+    } else if (node.kind === 'gate') {
       for (const expr of predicateExprs(node.when)) {
         yield { fromNodeId: node.id, path: `nodes[${i}].when`, expr }
       }
     }
+    // `start`/`finish` carry no bindings.
   }
   if (doc.onFail) {
     for (const [key, expr] of Object.entries(doc.onFail.params)) {
@@ -509,17 +505,31 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
     nodeById.set(node.id, { node, index: i })
   })
 
-  const graph = buildGraph(doc, nodeIds, findings) // also emits E_WORKFLOW_UNKNOWN_NODE for a dangling next/goto
+  // --- entry: names a node in the document, and it is a `start` node
+  // (plan 301 §4.2 — `WorkflowDocSchema`'s own superRefine already checks
+  // this against a doc that arrived through `.parse()`; checked again here
+  // since `checkWorkflow` is meant to be usable standalone, same discipline
+  // as the duplicate-id check above).
+  const entryNode = nodeById.get(doc.entry)
+  if (!entryNode) {
+    push(findings, 'entry', 'E_WORKFLOW_ENTRY_UNKNOWN', `entry "${doc.entry}" is not a node in this document`, 'error')
+  } else if (entryNode.node.kind !== 'start') {
+    push(findings, 'entry', 'E_WORKFLOW_ENTRY_UNKNOWN', `entry "${doc.entry}" must name a "start" node`, 'error')
+  }
 
-  // --- 6. Every node reachable from node 0 ---------------------------------
+  const graph = buildGraph(doc, nodeIds, findings) // also emits E_WORKFLOW_UNKNOWN_NODE and W_WORKFLOW_EDGE_DANGLING
+
+  // --- Every node reachable from `entry` — a WARNING (plan 301 §4.3): an
+  // author mid-edit has orphans, and refusing to save that makes the canvas
+  // hostile. Only a missing/unknown/non-start entry above is an error.
   doc.nodes.forEach((node, i) => {
     if (!graph.reachable.has(node.id)) {
-      push(findings, `nodes[${i}].id`, 'E_WORKFLOW_UNREACHABLE', `node "${node.id}" is never reached from the first node ("${doc.nodes[0]?.id}")`, 'error')
+      push(findings, `nodes[${i}].id`, 'W_WORKFLOW_NODE_UNREACHABLE', `node "${node.id}" is never reached from the entry ("${doc.entry}")`, 'warning')
     }
   })
 
   // --- W_WORKFLOW_LOOP -----------------------------------------------------
-  const cycleNode = findCycle(graph.edges, doc.nodes[0]?.id)
+  const cycleNode = entryNode ? findCycle(graph.edges, doc.entry) : null
   if (cycleNode !== null) {
     push(
       findings,
@@ -533,9 +543,9 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
   // --- 7. The timeout arithmetic of §3.11 — ONLY for an acyclic document,
   // and only when the caller handed in a budget (see `WorkflowBudget`'s own
   // doc comment for why an absent budget is skipped rather than defaulted).
-  if (cycleNode === null && budget) {
-    const start = doc.nodes[0]?.id
-    if (start !== undefined) {
+  if (cycleNode === null && budget && entryNode) {
+    const start = doc.entry
+    {
       const costOf = new Map<string, number | null>()
       for (const node of doc.nodes) costOf.set(node.id, nodeCostMs(resolved, node))
 
