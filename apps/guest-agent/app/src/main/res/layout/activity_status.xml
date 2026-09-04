@@ -114,6 +114,7 @@
             android:textColor="@color/status_fg_muted"
             android:text="@string/status_no_secrets" />
 
+        <!-- Two rows of two so four buttons fit on a narrow screen (plan 221 §4.9's fourth button). -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -136,11 +137,27 @@
 
         </LinearLayout>
 
-        <Button
-            android:id="@+id/switch_keyboard_button"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/switch_keyboard" />
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/switch_keyboard_button"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/switch_keyboard" />
+
+            <Button
+                android:id="@+id/accessibility_button"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/open_accessibility_settings" />
+
+        </LinearLayout>
 
     </LinearLayout>
 
