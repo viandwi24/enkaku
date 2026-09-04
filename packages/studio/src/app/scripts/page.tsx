@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { ClockIcon, FilePlusIcon, FlowArrowIcon, MagnifyingGlassIcon, XIcon, Button, api, cn } from '@enkaku/ui'
+import { ClockIcon, FlowArrowIcon, PuzzlePieceIcon, MagnifyingGlassIcon, XIcon, Button, api, cn } from '@enkaku/ui'
 import { ScriptsListResponseSchema, type ScriptListItem, type ScheduleInfo } from '@enkaku/protocol'
 import { InstallPluginDialog } from '@/components/plugins/InstallPluginDialog'
 import { ScriptsTable } from '@/components/scripts/ScriptsTable'
@@ -17,7 +17,7 @@ type TabKey = 'scripts' | 'workflows' | 'schedules'
 
 const TAB_LABEL: Record<TabKey, string> = { scripts: 'Scripts', workflows: 'Workflows', schedules: 'Schedules' }
 const TAB_SUBTITLE: Record<TabKey, string> = {
-  scripts: 'The scripts your active plugins register.',
+  scripts: 'Registered by your active plugins. Install a plugin to add scripts; there is no other way in.',
   workflows: 'Pipelines of scripts on one device.',
   schedules: 'Recurring runs of a script or an agent, on a cron expression.',
 }
@@ -89,9 +89,21 @@ function ScriptsWorkflowsScreen() {
           <InstallPluginDialog
             onInstalled={loadScripts}
             trigger={
+              /*
+               * "Install plugin", not "New script".
+               *
+               * A script cannot be created or uploaded — the only way one
+               * reaches a farm is inside a plugin (MVP 03 §2, plan 210). This
+               * button already opened `InstallPluginDialog`; only its label
+               * and icon still described the model that decision removed, and
+               * the owner read them as a leftover upload path that should not
+               * exist (2026-09-04). The mechanism was right and the words were
+               * wrong, which is the worse way round: the UI was teaching a
+               * rule the product does not have.
+               */
               <Button className="rounded-button bg-accent text-on-accent hover:bg-accent-2">
-                <FilePlusIcon className="size-4" aria-hidden />
-                New script
+                <PuzzlePieceIcon className="size-4" aria-hidden />
+                Install plugin
               </Button>
             }
           />
