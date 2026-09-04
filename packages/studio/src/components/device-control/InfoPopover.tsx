@@ -57,7 +57,27 @@ export function InfoPopover({ device, onChange }: { device: DeviceDetail; onChan
           <Row label="api level" value={device.apiLevel !== null ? String(device.apiLevel) : '–'} />
           <Row label="screen" value={device.screenW && device.screenH ? `${device.screenW}x${device.screenH}` : '–'} />
           <Row label="density" value={device.density !== null ? String(device.density) : '–'} />
+          {/*
+            The agent's own version and what it can do, not just its state.
+            "How do I check the guest agent version on this phone?" had no
+            answer in Studio (owner, 2026-09-04) — and it is the question that
+            decides whether the ui-tree inspector is live here or whether this
+            device is silently falling back to ui-server's ~32 s attach.
+            `capabilities` is the honest form of that: `liveInspection` on the
+            device says which engine WON, this says which were possible.
+          */}
           <Row label="guest agent" value={guestAgent ? guestAgent.state : 'Not installed'} />
+          {guestAgent && (
+            <Row
+              label="agent version"
+              value={`${guestAgent.appVersion ?? '–'}${guestAgent.versionCode !== null ? ` (code ${guestAgent.versionCode})` : ''}`}
+              mono
+            />
+          )}
+          {guestAgent && (
+            <Row label="agent can" value={guestAgent.capabilities && guestAgent.capabilities.length > 0 ? guestAgent.capabilities.join(', ') : 'nothing declared'} />
+          )}
+          <Row label="live inspection" value={device.liveInspection ?? '–'} />
         </dl>
         <h3 className="mb-1.5 text-label text-faint">Active engines</h3>
         <dl className="mb-3 space-y-1 text-meta">

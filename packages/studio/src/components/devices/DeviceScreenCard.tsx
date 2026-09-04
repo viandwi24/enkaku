@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react'
 import type { DeviceInfo } from '@enkaku/protocol'
 import { StatusDot, cn } from '@enkaku/ui'
 import { LiveView } from '@/components/LiveView'
+import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
 import { dotStateOf, dotTooltipOf } from './device-state'
 
 /** The handoff's "135° 6px stripe pattern at `opacity: 0.7`" for a screen that is not live. */
@@ -90,6 +91,24 @@ export function DeviceScreenCard({
           </div>
         )}
         <StatusDot ring state={dotStateOf(device)} title={dotTooltipOf(device)} className="absolute bottom-1.5 left-1.5" />
+        {/*
+          The guest agent alert, back on a tile.
+          
+          `AgentAlertChip` renders nothing unless the agent is `failed`,
+          `outdated` or `consent-required`, and it carries the only Update
+          button in Studio. It used to live on `WallTile.tsx`, which plan 214
+          replaced with this card — and it was never re-mounted, so from that
+          plan until now a phone running an obsolete agent said so nowhere and
+          offered nothing (found 2026-09-04, chasing why a farm was still on
+          the pre-`ui-tree` build).
+        */}
+        <AgentAlertChip
+          agent={device.agent}
+          deviceId={device.id}
+          deviceLabel={device.label}
+          deviceNumber={device.number}
+          className="absolute right-1.5 bottom-1.5"
+        />
       </div>
     </div>
   )

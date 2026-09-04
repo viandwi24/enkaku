@@ -52,7 +52,17 @@ export const guestAgentCheck: Check = {
 
     for (const candidate of LOCAL_BUILD_PATHS) {
       if (await ctx.fs.exists(candidate)) {
-        return { status: 'ok', observed: `local build: ${candidate} (a checkout only — a packaged core never sees this)` }
+        // `ok`, not `warn`: a local build is the NORMAL state in a checkout,
+        // and a doctor that is permanently yellow on every dev machine
+        // teaches people to ignore it. The caveat rides in `observed`, where
+        // it is read when someone is already looking, instead of shouting on
+        // every run.
+        return {
+          status: 'ok',
+          observed:
+            `local build: ${candidate} (a checkout only). It carries no manifest pin, so the installer verifies PRESENCE, ` +
+            'not version — a phone that already has an older agent keeps it. Use Update on the device card to force a reinstall',
+        }
       }
     }
 
