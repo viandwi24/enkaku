@@ -250,6 +250,7 @@ Widening past five means re-cutting those two plans (for example splitting 205 i
 
 ### 8.1 Worktrees and merging
 
+- **Put worktrees OUTSIDE the repository.** `git worktree add ../openpf-<plan>`, never `.claude/worktrees/` inside it. A worktree nested in the repo is walked by every editor and indexer that has the project open: on 2026-09-04 Zed's git integration re-ran `git diff --numstat HEAD` across the nested copies on every file an agent wrote, spawning storms of 17-plus git processes. `.zed/settings.json` now excludes them for Zed specifically, but the durable fix is not to nest them.
 - **Remove a worktree the moment its branch is merged.** Each worktree is a full checkout with its own `node_modules`; eight of them reached 9.5 GB and drove the maintainer's machine to a load average of 116 with `kernel_task` at 38 % on 2026-09-04, because every file watcher and indexer on the machine was walking eight copies of the monorepo. `git worktree remove --force <path>` after the merge, and check `git worktree list` at every round gate.
 - Each executor works in its own git worktree on branch `mvp/<plan>` cut from `mvp` at the moment its stage starts (`git worktree add ../openpf-<plan> -b mvp/<plan> mvp`). Never two executors in one checkout.
 - A plan merges into `mvp` when its §11 handoff report is complete. Merge order within a stage follows the plan number. The later plan resolves conflicts; it re-runs its own scoped tests after the merge.
