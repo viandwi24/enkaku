@@ -345,10 +345,10 @@ export function ActionsList({
     let cancelled = false
     void fetchAllPages<GroupInfo>('/api/groups')
       .then((rows) => {
-        if (!cancelled) setClusters(rows)
+        if (!cancelled) setGroups(rows)
       })
       .catch(() => {
-        if (!cancelled) setClusters([])
+        if (!cancelled) setGroups([])
       })
     return () => {
       cancelled = true
