@@ -183,9 +183,14 @@ describe('createCapabilityContext (plan 63 §3.2, §4.3)', () => {
       { db, activities, controlSettings: fakeControlSettings, states: fakeStates('online'), sessions: () => null, readiness: () => null, transfer: null, jobService: noopJobService, workspace: noopWorkspace },
       { id: 'u1', role: 'operator' },
     )
+    // A person taking control of a device a job is driving is `allow` with no
+    // sentence since 2026-09-04 (CEO; see the POLICY table's own note): an
+    // operator reaching into a running job is helping it, and the warn this
+    // replaces read "your taps will interfere". `agent` still warns, which is
+    // what `activity/policy.test.ts` pins.
     const decision = ctx.evaluateActivity('d1', 'control')
-    expect(decision.decision).toBe('warn')
-    expect(decision.message).toContain('job #482')
+    expect(decision.decision).toBe('allow')
+    expect(decision.message).toBe('')
   })
 
   test("touchActivity: refreshes this actor's own control marker under a control:user:<id> id", () => {

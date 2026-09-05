@@ -109,13 +109,20 @@ describe('createAgentCapabilityContext — no tree (plan 66 §4.2)', () => {
     expect(ctx.agentTree).toBeNull()
   })
 
-  test('evaluateActivity reports a warn decision naming the job already running on the device', () => {
+  test('evaluateActivity allows control over a running job, and still warns for an agent run', () => {
     const { deps, activities } = setUp()
     activities.start('d1', { id: 'job:j1', kind: 'job', label: 'Running x', actor: { kind: 'system', id: 'core', label: 'Scheduler' } })
     const ctx = createAgentCapabilityContext(deps, fakeAgent(), 'operator')
-    const decision = ctx.evaluateActivity('d1', 'control')
-    expect(decision.decision).toBe('warn')
-    expect(decision.message).toContain('Running x')
+
+    // Control over a job became `allow` with no sentence on 2026-09-04 (CEO):
+    // an operator reaching into a running job is helping it.
+    expect(ctx.evaluateActivity('d1', 'control')).toMatchObject({ decision: 'allow', message: '' })
+
+    // `agent` is the long, unattended run that still carries the warning —
+    // the same split `activity/policy.test.ts` pins.
+    const asAgent = ctx.evaluateActivity('d1', 'agent')
+    expect(asAgent.decision).toBe('warn')
+    expect(asAgent.message).toContain('Running x')
   })
 
   test('touchActivity is a no-op — a plain agent context never creates its own control marker', () => {
