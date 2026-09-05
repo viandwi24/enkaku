@@ -320,6 +320,8 @@ export {
   DeviceLabelSchema,
   TouchProfileSchema,
   ResetPolicySchema,
+  TimelineFramePolicySchema,
+  type TimelineFramePolicy,
   OverControlSchema,
   CidrSchema,
   addressCount,

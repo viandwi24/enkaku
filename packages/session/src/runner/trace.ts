@@ -1,4 +1,4 @@
-import type { DeviceCallMethod, JobTraceEvent, UiNode } from '@enkaku/protocol'
+import type { DeviceCallMethod, JobTraceEvent, TimelineFramePolicy, UiNode } from '@enkaku/protocol'
 import type { DeviceCall } from './ipc'
 
 /**
@@ -215,6 +215,13 @@ export interface TraceTeeDeps {
    * say "ui-server, frames off" rather than pretending there was no engine.
    */
   capture?: (req: TraceCaptureRequest) => Promise<TraceCaptureResult>
+  /**
+   * The farm's `capture.timelineFrames` setting, read fresh on every phase
+   * boundary for the same reason `engineId` is: an operator can change it
+   * while a long job runs, and the phase event that records the policy has to
+   * report what was actually in force.
+   */
+  framePolicy?: () => TimelineFramePolicy
   now?: Now
 }
 
@@ -229,9 +236,23 @@ export interface TraceTeeDeps {
  * assumption for the script, and §0.3's whole point), but a job that has
  * already failed has nothing left to slow down, so its failing action still
  * gets its picture. `null` — no inspector at all — can capture nothing.
+ *
+ * `setting` is the farm's own answer, and it wins over the table above for
+ * everything except `null`, because the table's caution is a default and not
+ * a law. `ui-tree` is the engine an agent-equipped farm actually runs; its
+ * timeline therefore held no pictures at all on a run that never failed, and
+ * the owner asked why (2026-09-05) having already accepted that trade once —
+ * *"satu action satu screenshot … itu udah resiko"*. A farm that wants the
+ * pictures more than the speed can now say so; one that says nothing keeps
+ * the cautious answer.
  */
-export function resolveFramePolicy(engineId: string | null): FramePolicy {
+export function resolveFramePolicy(engineId: string | null, setting: TimelineFramePolicy = 'auto'): FramePolicy {
+  // No inspector, nothing to photograph — a farm's preference cannot conjure
+  // a camera, so this stays ahead of every override.
   if (engineId === null) return 'none'
+  if (setting === 'off') return 'none'
+  if (setting === 'per-action') return 'per-action'
+  if (setting === 'on-failure') return 'on-failure'
   if (engineId === 'ui-server') return 'per-action'
   return 'on-failure'
 }
@@ -354,7 +375,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
   let currentPhase: TracePhase | null = null
   let phaseStartedAtMs = 0
 
-  const policy = (): FramePolicy => (deps.capture ? resolveFramePolicy(deps.engineId()) : 'none')
+  const policy = (): FramePolicy => (deps.capture ? resolveFramePolicy(deps.engineId(), deps.framePolicy?.() ?? 'auto') : 'none')
 
   /** The host's callback is never allowed to break the thing it is observing. */
   function safeEmit(event: TraceEventInput): void {

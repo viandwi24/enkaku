@@ -8,6 +8,7 @@ import {
   type JobSettings,
   type ResultOutcome,
   type RuntimeEnvelope,
+  type TimelineFramePolicy,
 } from '@enkaku/protocol'
 import type { Subprocess } from 'bun'
 import { backoffDelayMs } from './backoff'
@@ -369,6 +370,12 @@ export interface JobRunnerDeps {
    * frames" rather than "no inspector".
    */
   traceStore?: TraceStoreDeps
+  /**
+   * The farm's `capture.timelineFrames` setting, as a getter so a change
+   * reaches a job already running. Absent means `'auto'` — the engine decides,
+   * which is what every host did before the setting existed.
+   */
+  timelineFrames?: () => TimelineFramePolicy
 }
 
 /**
@@ -1295,6 +1302,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
             // while the engine id is still reported honestly on every phase
             // event, so the timeline says "no frames", not "no inspector".
             ...(deps.traceStore ? { capture: captureForTrace } : {}),
+            ...(deps.timelineFrames ? { framePolicy: deps.timelineFrames } : {}),
           })
         : createNoopTraceTee()
 

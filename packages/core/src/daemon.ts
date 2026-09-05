@@ -4378,6 +4378,10 @@ let blobGc: BlobGc | null = null
             traceRecorder?.record(event)
           },
           traceStore: traceFrameStore,
+          // Read fresh on every phase boundary, not captured: an operator who
+          // turns the timeline's screenshots on because a job is going wrong
+          // wants the rest of THAT job photographed, not the next one.
+          timelineFrames: () => settingsStore.get().capture.timelineFrames,
           // Plan 211 §3.2 decision 9 — `onPhase` fires with the RUN id
           // (`job.runId`), despite the interface's parameter still being
           // named `jobId`; `job_nodes.attempts` is gone with the node

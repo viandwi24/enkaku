@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { DEVICE_CALL_ARGS } from '@enkaku/protocol'
+import { DEVICE_CALL_ARGS, type TimelineFramePolicy } from '@enkaku/protocol'
 import type { DeviceCall } from './ipc'
 import {
   ARG_REDACTION,
@@ -35,6 +35,8 @@ function harness(opts: {
   engineId?: string | null
   /** Undefined installs no `capture` at all, which forces the policy to `'none'`. */
   capture?: (req: TraceCaptureRequest) => Promise<TraceCaptureResult>
+  /** The farm's `capture.timelineFrames`. Undefined is `'auto'` — the engine decides. */
+  framePolicy?: () => TimelineFramePolicy
   attempt?: number
 } = {}): Harness {
   const events: TraceEventInput[] = []
@@ -54,6 +56,7 @@ function harness(opts: {
           },
         }
       : {}),
+    ...(opts.framePolicy ? { framePolicy: opts.framePolicy } : {}),
     now: () => clock,
   })
   return {
@@ -268,6 +271,29 @@ describe('createTraceTee — the capture policy (plan 128 §3.4)', () => {
 
     expect(h.captures[0]).toMatchObject({ method: 'dump', frame: 'capture', uiTree: 'reuse', treeValue: tree })
     expect(h.events[0]?.uiHash).toBe('dd')
+  })
+
+  test('the farm setting overrides the engine table, but never conjures a camera', () => {
+    // The owner's question (2026-09-05): a `ui-tree` run that never failed
+    // showed no pictures at all, and the engine table is why. It is a
+    // default, not a law.
+    expect(resolveFramePolicy('ui-tree')).toBe('on-failure')
+    expect(resolveFramePolicy('ui-tree', 'per-action')).toBe('per-action')
+    expect(resolveFramePolicy('ui-server', 'on-failure')).toBe('on-failure')
+    expect(resolveFramePolicy('ui-server', 'off')).toBe('none')
+    // No inspector means nothing to photograph — a preference cannot change
+    // that, so `null` stays ahead of every override.
+    expect(resolveFramePolicy(null, 'per-action')).toBe('none')
+    expect(resolveFramePolicy('ui-tree', 'auto')).toBe('on-failure')
+  })
+
+  test('a `per-action` farm setting photographs a successful action on ui-tree', async () => {
+    const h = harness({ engineId: 'ui-tree', framePolicy: () => 'per-action', capture: async () => ({ frameHash: 'ff', uiHash: null }) })
+    h.tee.end(h.tee.begin({ method: 'tap', args: {} } as unknown as DeviceCall), { ok: true, value: null })
+    await drain()
+
+    expect(h.captures[0]).toMatchObject({ method: 'tap', frame: 'capture' })
+    expect(h.events[0]?.frameHash).toBe('ff')
   })
 
   test('a successful `dump` on ui-tree still stores its tree — free bytes are not a policy question', async () => {

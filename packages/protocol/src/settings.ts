@@ -137,6 +137,26 @@ export type TouchProfile = z.infer<typeof TouchProfileSchema>
 
 /** MVP 12 §1 - "Reset the app before each job". A script may declare its own; this is the farm default. */
 export const ResetPolicySchema = z.enum(['never', 'always', 'on-failure'])
+
+/**
+ * How much of a job's timeline is drawn from the device (plan 128 §3.4).
+ *
+ * `auto` is the engine's own answer and the default: `ui-server` takes its
+ * screenshot over its own forwarded socket and can afford one beside every
+ * action, while every other engine goes through `screencap` on the shared
+ * adb queue and only photographs an action that failed.
+ *
+ * `per-action` overrides that for a farm that would rather have the pictures
+ * than the speed — the owner's own trade ("satu action satu screenshot …
+ * itu udah resiko"). It costs the running script: the screenshots share the
+ * device with it, and a frame is dropped rather than queued when the trace is
+ * already busy, so a fast script still will not get all of them.
+ *
+ * UI trees are not on this dial. A `dump` already returned its tree, storing
+ * it takes nothing from the device, and it is kept whatever this says.
+ */
+export const TimelineFramePolicySchema = z.enum(['auto', 'per-action', 'on-failure', 'off'])
+export type TimelineFramePolicy = z.infer<typeof TimelineFramePolicySchema>
 export type ResetPolicy = z.infer<typeof ResetPolicySchema>
 
 /** MVP 04 §1.3 rows 7 and 8, folded from plan 205's `control.overControl` into `privacy.overControl` (plan 212 §4.3). */
@@ -266,8 +286,18 @@ export const FarmSettingsSchema = z.object({
       wallQuality: WallQualitySchema.default('balanced')
         .describe('Picture quality for a tile in the Screens view. Lower quality means more tiles live at once.')
         .meta(ui({ title: 'Wall quality', labels: { minimal: 'Minimal', light: 'Light', balanced: 'Balanced', detailed: 'Detailed' } })),
+      timelineFrames: TimelineFramePolicySchema.default('auto')
+        .describe(
+          'How many screenshots a job timeline takes. Automatic photographs every action on the ui-server inspector and only failures on the others, because their screenshots share the device with the running script. Every action costs the script some speed; UI trees are kept either way.',
+        )
+        .meta(
+          ui({
+            title: 'Timeline screenshots',
+            labels: { auto: 'Automatic', 'per-action': 'Every action', 'on-failure': 'Failures only', off: 'Off' },
+          }),
+        ),
     })
-    .default({ controlQuality: 'sharp', wallQuality: 'balanced' })
+    .default({ controlQuality: 'sharp', wallQuality: 'balanced', timelineFrames: 'auto' })
     .meta({ title: 'Capture & replay', 'x-enkaku': { group: 'Automation' } }),
 
   storage: z
