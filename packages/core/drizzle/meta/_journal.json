@@ -554,6 +554,13 @@
       "when": 1788633854325,
       "tag": "0078_cooing_zzzax",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "6",
+      "when": 1788636251914,
+      "tag": "0079_regular_sentinel",
+      "breakpoints": true
     }
   ]
 }

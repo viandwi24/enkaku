@@ -250,6 +250,7 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
       ...(request.priority !== undefined ? { priority: request.priority } : {}),
       ...(request.runtimeOverride !== undefined ? { runtimeOverride: request.runtimeOverride } : {}),
       ...(request.pacing ? { pacing: request.pacing } : {}),
+      ...(request.explicit ? { explicit: true } : {}),
       createdBy: actor.id,
     })
     for (const r of rsResults) {

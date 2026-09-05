@@ -118,11 +118,27 @@ export function queryBatchRows(
    * into an empty screen with a "load more" button, and `total` would still
    * be counting them.
    */
-  const multiDevice = sql`(SELECT count(*) FROM ${jobs} WHERE ${jobs.batchId} = ${batches.id}) > 1`
+  /**
+   * Three ways to earn a row, not one.
+   *
+   * More than one member is the original test and still the common case. The
+   * other two were silent omissions the count alone could never catch:
+   *
+   *  - `explicit` — the operator pressed **Run batch** and chose one device.
+   *    The batch was created, the job ran, and the tab the button lives on
+   *    stayed empty (owner, 2026-09-06). A button that leaves no trace where
+   *    it was pressed is worse than no button.
+   *  - `repeat_count > 1` — a batch that repeats is a batch whatever its
+   *    member count. `BatchPacer` plans a repetition as a new RUN on the same
+   *    job (`groups/pacer.ts`'s `addRun`), never a new job, so a single phone
+   *    running a script twenty times over an hour has exactly one member and
+   *    was hidden completely.
+   */
+  const listable = sql`((SELECT count(*) FROM ${jobs} WHERE ${jobs.batchId} = ${batches.id}) > 1 OR ${batches.explicit} = 1 OR ${batches.repeatCount} > 1)`
   const page = db
     .select()
     .from(batches)
-    .where(keyset ? and(keyset, multiDevice) : multiDevice)
+    .where(keyset ? and(keyset, listable) : listable)
     .orderBy(desc(batches.createdAt), desc(batches.id))
     .limit(opts.limit + 1)
     .all()
@@ -131,7 +147,7 @@ export function queryBatchRows(
   const last = rows[rows.length - 1]
   const nextCursor =
     hasMore && last ? encodeCursor(Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), last.id) : null
-  const total = db.select().from(batches).where(multiDevice).all().length
+  const total = db.select().from(batches).where(listable).all().length
   return { rows, nextCursor, total }
 }
 

@@ -56,6 +56,8 @@ export interface CreateBatchInput {
   scheduleId?: string | null
   /** The first run's own trigger (MVP 14 §1). Defaults to `'batch'` — the schedule dispatcher is the one caller that overrides it to `'schedule'`, so its first fire's run reads the same as every later one. */
   trigger?: RunTrigger
+  /** The caller asked for a batch by name, so a batch of one stays listed as a batch (`batches.explicit`). */
+  explicit?: boolean
 }
 
 export interface BatchDispatchDeps {
@@ -162,6 +164,7 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
         deviceIntervalMs: pacing?.deviceIntervalMs ?? 0,
         deviceDelayMinMs: pacing?.deviceDelayMs?.[0] ?? 0,
         deviceDelayMaxMs: pacing?.deviceDelayMs?.[1] ?? 0,
+        explicit: input.explicit ?? false,
         createdBy: input.createdBy ?? null,
         createdAt: now,
         finishedAt: null,

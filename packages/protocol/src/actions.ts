@@ -130,6 +130,12 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
     priority: z.number().int().optional(),
     runtimeOverride: z.unknown().optional(),
     pacing: PacingSchema.optional(),
+    /**
+     * The caller asked for a batch by name (the Batches tab's own Run
+     * button), so the batch stays visible as a batch even with one member.
+     * Default `false` keeps every existing caller exactly as it was.
+     */
+    explicit: z.boolean().optional(),
     /** Plan 211 §4.8 — re-run an existing job: adds a run rather than creating a batch. */
     jobId: z.string().optional(),
   }).refine((b) => Boolean(b.jobId) || Boolean(b.scriptId) !== Boolean(b.scriptRef), 'exactly one of scriptId or scriptRef'),

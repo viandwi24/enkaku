@@ -37,7 +37,12 @@ export function JobsScreen() {
           where it gets chosen, which is the only sensible answer on a screen
           that lists runs rather than devices.
         */
-        onRun={(t) => open(t === 'workflows' ? 'run-workflow' : 'run-script', { deviceIds: [] })}
+        onRun={(t) =>
+          // `explicit` on the Batches tab: the operator asked for a batch by
+          // name, so a one-device run still lands on this tab rather than
+          // vanishing into Jobs (`batches.explicit`).
+          open(t === 'workflows' ? 'run-workflow' : 'run-script', { deviceIds: [] }, t === 'batches' ? { explicit: true } : undefined)
+        }
       />
       <div className="flex min-h-0 flex-1">
         <JobsSidebar tab={tab} selectedId={jobId} counts={counts} />

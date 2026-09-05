@@ -707,6 +707,27 @@ export const batches = sqliteTable(
      */
     deviceDelayMinMs: integer('device_delay_min_ms').notNull().default(0),
     deviceDelayMaxMs: integer('device_delay_max_ms').notNull().default(0),
+    /**
+     * The operator asked for a BATCH, in those words, rather than a batch
+     * being the shape `run-script` happens to use.
+     *
+     * `docs/spec.md` §4.8 says every run creates a batch, "even for one
+     * device; a batch of one is displayed as its single job", and the list
+     * query hides one-member batches for exactly that reason — otherwise
+     * running a script on one phone writes a Batches row that duplicates the
+     * Jobs row beside it.
+     *
+     * That rule has a hole, and the owner found it (2026-09-06): pressing
+     * **Run batch** on the Batches tab and picking one device produced
+     * nothing on the tab the button lives on. The run was real, the batch
+     * row existed, and the screen the operator was looking at stayed empty.
+     *
+     * So intent is recorded rather than inferred from a count. `false` is
+     * every implicit batch — the Scripts page, a device row, a re-run — and
+     * those still collapse to their job. `true` says a human asked for a
+     * batch, and a batch is what they get to see, one member or twenty.
+     */
+    explicit: integer('explicit', { mode: 'boolean' }).notNull().default(false),
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     finishedAt: integer('finished_at', { mode: 'timestamp' }),

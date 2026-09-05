@@ -95,7 +95,7 @@ export function ActionDialog<P>({
         setResults(final)
       }
       const grouped = groupResults(final)
-      spec.onDone?.(res, grouped)
+      spec.onDone?.(res, grouped, value)
       if (grouped.failed.length === 0 && grouped.forbidden.length === 0 && grouped.warned.length === 0) onClose()
     } catch (err) {
       toast.error(describeApiError(err))

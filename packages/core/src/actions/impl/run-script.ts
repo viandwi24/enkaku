@@ -12,6 +12,8 @@ export interface RunScriptInput {
   priority?: number
   runtimeOverride?: unknown
   pacing?: CreateBatchInput['pacing']
+  /** The caller pressed "Run batch", so a batch of one is still shown as a batch. */
+  explicit?: boolean
   createdBy: string | null
 }
 
@@ -37,6 +39,7 @@ export function runScriptOnTargets(
     createdBy: input.createdBy,
     ...(input.runtimeOverride !== undefined ? { runtimeOverride: input.runtimeOverride } : {}),
     ...(input.pacing ? { pacing: input.pacing } : {}),
+    ...(input.explicit ? { explicit: true } : {}),
   })
   const jobByDevice = new Map(jobs.map((j) => [j.deviceId, j]))
   const skipped = (batch.skipped as { deviceId: string; reason: string }[] | null) ?? []

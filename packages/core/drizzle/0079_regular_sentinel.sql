@@ -1,0 +1,1 @@
+ALTER TABLE `batches` ADD `explicit` integer DEFAULT false NOT NULL;

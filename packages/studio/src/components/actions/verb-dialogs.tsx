@@ -73,7 +73,8 @@ export interface VerbDialogSpec<P> {
   canSubmit: (value: P) => boolean
   /** The plan-207 request params. May upload an artifact first, which is why it is async. */
   toParams: (value: P) => Promise<Record<string, unknown>>
-  onDone?: (res: ActionResponse, grouped: ReturnType<typeof groupResults>) => void
+  /** `value` is the dialog's own state at submit time — `run-script` reads the entry point it was opened from out of it. */
+  onDone?: (res: ActionResponse, grouped: ReturnType<typeof groupResults>, value: P) => void
 }
 
 const n = (count: number) => `${count} device${count === 1 ? '' : 's'}`
@@ -188,6 +189,13 @@ interface RunScriptValue {
   delayMin: string
   delayMax: string
   formOk: boolean
+  /**
+   * Opened from the Batches tab's own Run button, so the result belongs on
+   * that tab whether the operator picked one device or twenty. Set by
+   * prefill, never by a field — this is where the dialog was opened from,
+   * not something the operator chooses inside it.
+   */
+  explicit: boolean
 }
 
 /** A typed field to whole seconds. Anything unparseable is no delay, which is the safe direction. */
@@ -334,7 +342,7 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
   verb: 'run-script',
   title: (c) => `Run a script on ${n(c)}`,
   submitLabel: (c) => `Run on ${n(c)}`,
-  initial: { scriptId: null, params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0', formOk: true },
+  initial: { scriptId: null, params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0', formOk: true, explicit: false },
   Fields: RunScriptFields,
   // An inverted range is refused here rather than at the server boundary, so
   // the operator sees it beside the field they typed it in.
@@ -349,8 +357,17 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
     ...(secondsOf(v.delayMax) > 0
       ? { pacing: { count: 1, intervalMs: [0, 0] as [number, number], deviceIntervalMs: 0, deviceDelayMs: [secondsOf(v.delayMin) * 1000, secondsOf(v.delayMax) * 1000] as [number, number] } }
       : {}),
+    ...(v.explicit ? { explicit: true } : {}),
   }),
-  onDone: (res) => {
+  onDone: (res, _grouped, v) => {
+    // A batch the operator asked for by name lands on the batch, even with
+    // one member — going to the job instead is how the Run batch button
+    // came to look like it had done nothing.
+    const batchId = res.results.find((r) => r.batchId)?.batchId
+    if (v.explicit && batchId) {
+      window.location.assign(`/jobs/batch?id=${batchId}`)
+      return
+    }
     if (res.results.length === 1 && res.results[0]?.jobId) {
       window.location.assign(jobHref(res.results[0].jobId))
     }
