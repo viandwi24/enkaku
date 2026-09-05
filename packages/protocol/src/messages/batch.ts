@@ -92,6 +92,8 @@ export const BatchPacingSchema = z
     intervalMinMs: z.number().int(),
     intervalMaxMs: z.number().int(),
     deviceIntervalMs: z.number().int(),
+    /** The per-device random start delay `[min, max]` in ms — see `actions.ts`'s `PacingSchema` for why it is separate from the ladder above. */
+    deviceDelayMs: z.tuple([z.number().int(), z.number().int()]).default([0, 0]),
   })
   .nullable()
 export type BatchPacing = z.infer<typeof BatchPacingSchema>

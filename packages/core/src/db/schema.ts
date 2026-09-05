@@ -688,6 +688,25 @@ export const batches = sqliteTable(
      * draws keep devices de-phased on their own).
      */
     deviceIntervalMs: integer('device_interval_ms').notNull().default(0),
+    /**
+     * A per-device random start delay, drawn INDEPENDENTLY for each member at
+     * dispatch — the second half of "start them together but not at the same
+     * instant".
+     *
+     * Distinct from `deviceIntervalMs`, which is a fixed ladder: with a 30 s
+     * interval, device 0 waits 0, device 1 waits 30, device 20 waits ten
+     * minutes. That spaces a fleet out but also FIXES the order in wall-clock
+     * time, so the phone at the end of the list is always last and the first
+     * is always first. A draw in `[min, max]` gives every device a different
+     * wait without ranking them, which is what an operator asking for
+     * "10-30 seconds each" means (owner, 2026-09-06).
+     *
+     * The two compose: the ladder positions a device, the draw jitters it.
+     * Both `0` (the default) is today's behaviour exactly — everything starts
+     * at once.
+     */
+    deviceDelayMinMs: integer('device_delay_min_ms').notNull().default(0),
+    deviceDelayMaxMs: integer('device_delay_max_ms').notNull().default(0),
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     finishedAt: integer('finished_at', { mode: 'timestamp' }),

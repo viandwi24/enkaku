@@ -343,12 +343,13 @@ function skippedOf(row: BatchRow): BatchInfo['skipped'] {
 }
 
 function pacingOf(row: BatchRow): BatchInfo['pacing'] {
-  if (row.repeatCount <= 1 && row.deviceIntervalMs <= 0 && row.intervalMinMs <= 0 && row.intervalMaxMs <= 0) return null
+  if (row.repeatCount <= 1 && row.deviceIntervalMs <= 0 && row.intervalMinMs <= 0 && row.intervalMaxMs <= 0 && row.deviceDelayMaxMs <= 0) return null
   return {
     repeatCount: row.repeatCount,
     intervalMinMs: row.intervalMinMs,
     intervalMaxMs: row.intervalMaxMs,
     deviceIntervalMs: row.deviceIntervalMs,
+    deviceDelayMs: [row.deviceDelayMinMs, row.deviceDelayMaxMs],
   }
 }
 
@@ -471,7 +472,7 @@ function carryForwardShape(
   row: BatchRow,
   latestRuns: JobRunRow[],
   now: Date,
-): { priority: number; expiresAt: number | null; pacing: { count: number; intervalMs: [number, number]; deviceIntervalMs: number } | null } {
+): { priority: number; expiresAt: number | null; pacing: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs: [number, number] } | null } {
   const priority = latestRuns[0]?.priority ?? 0
   const originalExpiresAt = latestRuns[0]?.expiresAt ?? null
   const nowSec = Math.floor(now.getTime() / 1000)
@@ -486,7 +487,12 @@ function carryForwardShape(
     priority,
     expiresAt,
     pacing: pacing
-      ? { count: pacing.repeatCount, intervalMs: [pacing.intervalMinMs, pacing.intervalMaxMs], deviceIntervalMs: pacing.deviceIntervalMs }
+      ? {
+          count: pacing.repeatCount,
+          intervalMs: [pacing.intervalMinMs, pacing.intervalMaxMs] as [number, number],
+          deviceIntervalMs: pacing.deviceIntervalMs,
+          deviceDelayMs: pacing.deviceDelayMs,
+        }
       : null,
   }
 }

@@ -65,8 +65,19 @@ const PacingSchema = z
     count: z.number().int().min(1).max(1000).default(1),
     intervalMs: z.tuple([z.number().int().min(0), z.number().int().min(0)]).default([0, 0]),
     deviceIntervalMs: z.number().int().min(0).max(3_600_000).default(0),
+    /**
+     * A per-device random start delay, drawn independently for each member —
+     * "start them together but not at the same instant".
+     *
+     * `deviceIntervalMs` above is a fixed ladder and fixes the wall-clock
+     * ORDER as a side effect: the phone at the end of the list is always
+     * last. This gives every device a different wait without ranking them,
+     * which is what "10-30 seconds each" means. The two compose.
+     */
+    deviceDelayMs: z.tuple([z.number().int().min(0), z.number().int().min(0)]).default([0, 0]),
   })
   .refine((p) => p.intervalMs[0] <= p.intervalMs[1], 'the interval range is inverted')
+  .refine((p) => p.deviceDelayMs[0] <= p.deviceDelayMs[1], 'the per-device delay range is inverted')
 
 /**
  * A two-level partial of `DeviceSettingsSchema`: every top-level block optional,

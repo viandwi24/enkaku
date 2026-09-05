@@ -51,7 +51,7 @@ export interface CreateBatchInput {
   createdBy?: string | null
   runtimeOverride?: unknown
   expiresAt?: number | null
-  pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number } | null
+  pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs?: [number, number] } | null
   /** A schedule's own batch (plan 211 §3.2 decision 4) — stamped onto every member job so `GET /api/schedules/:id/jobs` finds them from their very first fire, not only from a later one. Null/omitted for an ordinary (non-schedule) batch. */
   scheduleId?: string | null
   /** The first run's own trigger (MVP 14 §1). Defaults to `'batch'` — the schedule dispatcher is the one caller that overrides it to `'schedule'`, so its first fire's run reads the same as every later one. */
@@ -160,6 +160,8 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
         intervalMinMs: pacing?.intervalMs[0] ?? 0,
         intervalMaxMs: pacing?.intervalMs[1] ?? 0,
         deviceIntervalMs: pacing?.deviceIntervalMs ?? 0,
+        deviceDelayMinMs: pacing?.deviceDelayMs?.[0] ?? 0,
+        deviceDelayMaxMs: pacing?.deviceDelayMs?.[1] ?? 0,
         createdBy: input.createdBy ?? null,
         createdAt: now,
         finishedAt: null,

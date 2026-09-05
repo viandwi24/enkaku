@@ -184,9 +184,19 @@ interface RunScriptValue {
   params: unknown
   concurrency: number
   order: 'as-listed' | 'random'
+  /** Seconds, as typed. Kept as strings so a half-typed "1" is not read as a delay of one second the instant it is entered. */
+  delayMin: string
+  delayMax: string
   formOk: boolean
 }
-function RunScriptFields({ value, onChange }: { value: RunScriptValue; onChange: (v: RunScriptValue) => void }) {
+
+/** A typed field to whole seconds. Anything unparseable is no delay, which is the safe direction. */
+function secondsOf(raw: string): number {
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+}
+
+function RunScriptFields({ value, onChange, target }: { value: RunScriptValue; onChange: (v: RunScriptValue) => void; target: { count: number } }) {
   const [scripts, setScripts] = useState<ScriptListItem[] | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -268,6 +278,55 @@ function RunScriptFields({ value, onChange }: { value: RunScriptValue; onChange:
           </Select>
         </div>
       </div>
+      {/*
+        Both settings above only mean something for more than one device, and
+        neither said so — an operator running on one phone was choosing
+        between two answers that could not differ. The line says which is
+        which and stops asking when the target is one.
+      */}
+      <p className="text-meta text-faint">
+        {target.count > 1
+          ? `How many of the ${target.count} run at once, and in what order the queue reaches them. Random is drawn once, at dispatch, and is what each device's own position is recorded as.`
+          : 'Both only apply to more than one device.'}
+      </p>
+
+      {target.count > 1 && (
+        <div className="space-y-1.5">
+          <Label htmlFor="run-script-delay-min">Start delay per device</Label>
+          {/*
+            A draw per device, not a ladder. `deviceIntervalMs` (the batch
+            row's other field) spaces devices out by multiplying an interval
+            by position, which also FIXES the wall-clock order: the phone at
+            the end of the list is always last. An operator asking for
+            "10-30 seconds each" wants every device to wait a different amount
+            without being ranked (owner, 2026-09-06).
+          */}
+          <div className="flex items-center gap-2">
+            <Input
+              id="run-script-delay-min"
+              className="w-[92px]"
+              inputMode="numeric"
+              value={value.delayMin}
+              onChange={(e) => onChange({ ...value, delayMin: e.target.value })}
+              placeholder="0"
+              aria-label="Minimum start delay in seconds"
+            />
+            <span className="text-body text-faint">to</span>
+            <Input
+              className="w-[92px]"
+              inputMode="numeric"
+              value={value.delayMax}
+              onChange={(e) => onChange({ ...value, delayMax: e.target.value })}
+              placeholder="0"
+              aria-label="Maximum start delay in seconds"
+            />
+            <span className="text-body text-faint">seconds</span>
+          </div>
+          <p className="text-meta text-faint">
+            Each device waits its own random amount inside this range before it starts. Leave both at 0 to start everything at once.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -275,10 +334,22 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
   verb: 'run-script',
   title: (c) => `Run a script on ${n(c)}`,
   submitLabel: (c) => `Run on ${n(c)}`,
-  initial: { scriptId: null, params: undefined, concurrency: 0, order: 'as-listed', formOk: true },
+  initial: { scriptId: null, params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0', formOk: true },
   Fields: RunScriptFields,
-  canSubmit: (v) => Boolean(v.scriptId) && v.formOk,
-  toParams: async (v) => ({ scriptId: v.scriptId, params: v.params, concurrency: v.concurrency, order: v.order }),
+  // An inverted range is refused here rather than at the server boundary, so
+  // the operator sees it beside the field they typed it in.
+  canSubmit: (v) => Boolean(v.scriptId) && v.formOk && secondsOf(v.delayMin) <= secondsOf(v.delayMax),
+  toParams: async (v) => ({
+    scriptId: v.scriptId,
+    params: v.params,
+    concurrency: v.concurrency,
+    order: v.order,
+    // Omitted entirely when both are zero: an unpaced batch must keep taking
+    // exactly the shape it took before this field existed.
+    ...(secondsOf(v.delayMax) > 0
+      ? { pacing: { count: 1, intervalMs: [0, 0] as [number, number], deviceIntervalMs: 0, deviceDelayMs: [secondsOf(v.delayMin) * 1000, secondsOf(v.delayMax) * 1000] as [number, number] } }
+      : {}),
+  }),
   onDone: (res) => {
     if (res.results.length === 1 && res.results[0]?.jobId) {
       window.location.assign(jobHref(res.results[0].jobId))

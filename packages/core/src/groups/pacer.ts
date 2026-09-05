@@ -70,7 +70,7 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
   }
 
   function isPaced(batch: BatchRow): boolean {
-    return batch.repeatCount > 1 || batch.deviceIntervalMs > 0
+    return batch.repeatCount > 1 || batch.deviceIntervalMs > 0 || batch.deviceDelayMaxMs > 0
   }
 
   function planFirst(batchId: string): void {
@@ -83,7 +83,11 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
       if (!member?.latestRunId) continue
       const run = deps.db.select().from(jobRuns).where(eq(jobRuns.id, member.latestRunId)).get()
       if (!run) continue
-      const staggerMs = i * batch.deviceIntervalMs
+      // The ladder positions a device; the draw jitters it. Both are baked
+      // into ONE `notBefore` here rather than applied in two passes, so a
+      // member's own recorded `pacedDelayMs` is the whole truth about when it
+      // was allowed to start — not half of it.
+      const staggerMs = i * batch.deviceIntervalMs + drawIntervalMs(batch.deviceDelayMinMs, batch.deviceDelayMaxMs, random)
       deps.db
         .update(jobRuns)
         .set({
@@ -94,7 +98,10 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
         .where(eq(jobRuns.id, run.id))
         .run()
     }
-    deps.log.info(`batch ${batchId}: planned repetition 0 for ${members.length} device(s), stagger ${batch.deviceIntervalMs}ms`)
+    deps.log.info(
+      `batch ${batchId}: planned repetition 0 for ${members.length} device(s), stagger ${batch.deviceIntervalMs}ms` +
+        (batch.deviceDelayMaxMs > 0 ? `, per-device delay ${batch.deviceDelayMinMs}-${batch.deviceDelayMaxMs}ms` : ''),
+    )
     rearm()
   }
 
@@ -179,7 +186,7 @@ export function replanAfterRestart(deps: {
     .all()
     .concat(deps.db.select().from(batches).where(eq(batches.status, 'running')).all())
   for (const batch of nonTerminal) {
-    if (batch.repeatCount <= 1 && batch.deviceIntervalMs <= 0) continue
+    if (batch.repeatCount <= 1 && batch.deviceIntervalMs <= 0 && batch.deviceDelayMaxMs <= 0) continue
     const members = deps.db.select().from(jobs).where(eq(jobs.batchId, batch.id)).all()
 
     if (members.length === 0) {
