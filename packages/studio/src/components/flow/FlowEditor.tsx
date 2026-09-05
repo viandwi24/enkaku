@@ -20,6 +20,7 @@ import {
   useAction,
 } from '@enkaku/ui'
 import { RunOverlay } from './RunOverlay'
+import { CanvasContextMenu, type CanvasMenuRequest } from './CanvasContextMenu'
 import { NodePalette } from './NodePalette'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
@@ -91,6 +92,7 @@ export function FlowEditor({
   const validation = useValidation(doc)
   const clipboard = useClipboard(history)
   const importInput = useRef<HTMLInputElement>(null)
+  const [canvasMenu, setCanvasMenu] = useState<CanvasMenuRequest | null>(null)
   const { run, isPending } = useAction()
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -449,6 +451,32 @@ export function FlowEditor({
         </Button>
       </div>
 
+      {canvasMenu && (
+        <CanvasContextMenu
+          request={canvasMenu}
+          onClose={() => setCanvasMenu(null)}
+          onCopy={() => clipboard.copy(selectedIds)}
+          onCut={() => {
+            clipboard.cut(selectedIds)
+            setSelectedIds(new Set())
+          }}
+          onPaste={() =>
+            void clipboard.paste().then((ok) => {
+              if (!ok) toast.message('Nothing to paste — copy some nodes, or put a workflow’s JSON on the clipboard.')
+            })
+          }
+          onDuplicate={() => {
+            clipboard.copy(selectedIds)
+            void clipboard.paste()
+          }}
+          onDelete={() => {
+            if (selectedIds.size === 0) return
+            dispatch({ t: 'remove-nodes', ids: [...selectedIds] })
+            setSelectedIds(new Set())
+          }}
+        />
+      )}
+
       {rootFindings.length > 0 && (
         <div className="space-y-1">
           {rootFindings.map((f, i) => (
@@ -477,6 +505,15 @@ export function FlowEditor({
             doc={doc}
             findings={validation.findings}
             selectedIds={selectedIds}
+            onContextMenu={(at) => {
+              // Right-clicking a node OUTSIDE the current selection makes it
+              // the selection, the way every file manager does; inside it,
+              // the whole selection stands. Empty space keeps whatever was
+              // selected, because Paste is the row that belongs there.
+              const ids: ReadonlySet<string> = at.nodeId === null || selectedIds.has(at.nodeId) ? selectedIds : new Set([at.nodeId])
+              if (ids !== selectedIds) setSelectedIds(new Set(ids))
+              setCanvasMenu({ ...at, count: ids.size })
+            }}
             notInstalledScriptRefs={notInstalledScriptRefs}
             pinnedIds={pinnedIds}
             onSelectionChange={setSelectionIfChanged}

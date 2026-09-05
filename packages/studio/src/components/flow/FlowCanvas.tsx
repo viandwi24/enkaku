@@ -49,6 +49,8 @@ export interface FlowCanvasProps {
   doc: WorkflowDoc
   findings: readonly WorkflowFinding[]
   selectedIds: ReadonlySet<string>
+  /** Right-click anywhere on the canvas — `nodeId` is the node under the cursor, `null` on empty space. */
+  onContextMenu?(at: { x: number; y: number; nodeId: string | null }): void
   /** A script ref whose plugin is not (or no longer) installed — rendered dashed, with its raw ref. */
   notInstalledScriptRefs: ReadonlySet<string>
   /** Node ids with an authoring-state pin (plan 300 P10) — the canvas badge (plan 306 §4.2 step 306.7). */
@@ -74,6 +76,7 @@ function FlowCanvasInner({
   doc,
   findings,
   selectedIds,
+  onContextMenu,
   notInstalledScriptRefs,
   pinnedIds,
   onSelectionChange,
@@ -236,6 +239,27 @@ function FlowCanvasInner({
 
   const handleNodeDoubleClick = useCallback((_event: unknown, node: { id: string }) => onNodeOpen?.(node.id), [onNodeOpen])
 
+  /*
+   * One handler for both, because the menu is the same menu: the node under
+   * the cursor decides which rows apply, and empty space is a real target too
+   * (Paste has to be reachable when nothing is selected — it is the whole
+   * point of pasting a graph someone sent you).
+   */
+  const handleNodeContextMenu = useCallback(
+    (event: React.MouseEvent, node: { id: string }) => {
+      event.preventDefault()
+      onContextMenu?.({ x: event.clientX, y: event.clientY, nodeId: node.id })
+    },
+    [onContextMenu],
+  )
+  const handlePaneContextMenu = useCallback(
+    (event: React.MouseEvent | MouseEvent) => {
+      event.preventDefault()
+      onContextMenu?.({ x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY, nodeId: null })
+    },
+    [onContextMenu],
+  )
+
   const handleConnectEnd = useCallback<OnConnectEnd>(
     (_event, connectionState) => {
       if (connectionState.toNode || !connectionState.fromNode || !connectionState.fromHandle?.id) return
@@ -258,6 +282,8 @@ function FlowCanvasInner({
         onNodeDragStop={handleNodeDragStop}
         onSelectionChange={handleSelectionChange}
         onNodeDoubleClick={handleNodeDoubleClick}
+        onNodeContextMenu={handleNodeContextMenu}
+        onPaneContextMenu={handlePaneContextMenu}
         onConnectEnd={handleConnectEnd}
         fitView
         /* Without a maxZoom, fitView on a one- or two-node document zooms to
