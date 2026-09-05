@@ -23,17 +23,6 @@ import { fetchAllPages, fetchWorkflow } from '@/lib/api'
  * is a search-param page, not a dynamic route segment.
  */
 
-const EMPTY_DOC: WorkflowDoc = {
-  schema: 2,
-  name: '',
-  title: '',
-  description: '',
-  params: [],
-  entry: 'start',
-  nodes: [{ kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 } }],
-  maxSteps: 50,
-}
-
 function WorkflowEditorView() {
   const params = useSearchParams()
   const name = params.get('name')
@@ -62,8 +51,11 @@ function WorkflowEditorView() {
 
   useEffect(() => {
     if (!name) {
-      setInitialDoc(EMPTY_DOC)
-      setDocError(null)
+      // Creation happens in `NewWorkflowDialog` now (owner decision,
+      // 2026-09-05): a workflow is named, created, and only then edited. This
+      // route with no `?name=` has no way left to set an identity, so it is
+      // not a page — it is a stale bookmark, and it goes back to the list.
+      router.replace('/scripts?tab=workflows')
       return
     }
     setInitialDoc(null)
@@ -71,7 +63,7 @@ function WorkflowEditorView() {
     void fetchWorkflow(name)
       .then((w) => setInitialDoc(w.doc))
       .catch((e) => setDocError(describeApiError(e)))
-  }, [name])
+  }, [name, router])
 
   const backAction = (
     <Button asChild variant="ghost" size="sm">

@@ -542,11 +542,19 @@ class ControlService : Service() {
       // `enabled` is the Settings fact, `connected` is the runtime fact — see `UiStatusResultSchema`'s
       // doc comment for why they are reported separately (the repair differs).
       Protocol.METHOD_UI_STATUS -> {
+        // Proof this arm ran, and how far. The host has watched `ui.status`
+        // answer with the `ui.unwatch` body under its own request id, from a
+        // build that contains this arm, on a freshly restarted process
+        // (2026-09-05). Every explanation but "this arm did not run" is ruled
+        // out; this says so directly instead of by inference.
+        Log.i(TAG, "ui.status: entering the status arm")
         val enabledList = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
         val enabled = enabledList?.contains(UiTreeService.COMPONENT_ID) == true
         val connected = UiTreeService.instance() != null
         val lastDumpAt = UiTreeState.lastDumpAt()
+        Log.i(TAG, "ui.status: enabled=$enabled connected=$connected")
         ok(id) {
+          put("statusArm", true)
           put("enabled", enabled)
           put("connected", connected)
           put("watching", UiTreeWatch.isWatching())

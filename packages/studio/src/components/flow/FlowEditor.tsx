@@ -432,24 +432,29 @@ function WorkflowMetaForm({ doc, dispatch }: { doc: WorkflowDoc; dispatch: UseHi
   return (
     <section className="space-y-2 rounded-lg border bg-surface p-3">
       <div className="flex flex-wrap items-center gap-3">
+        {/*
+          One editable name, not two (owner, 2026-09-05: "kenapa ada nama dan
+          judul kenapa ga jadi satu aja"). `title` is the one an author reads
+          and changes; `name` is the identity the URL, the API path and every
+          schedule pointing at this workflow use (spec §4.7), so it is set
+          once by `NewWorkflowDialog` and shown here as a fact, not a field.
+          Renaming it would break a schedule silently, which is exactly the
+          kind of edit a text input invites.
+        */}
         <div className="min-w-40 flex-1 space-y-1">
           <Label className="text-[11.5px] font-normal text-fg-muted">Name</Label>
-          <Input
-            className="readout h-8 text-[12.5px]"
-            placeholder="tiktok-search-pipeline"
-            value={doc.name}
-            onChange={(e) => dispatch({ t: 'set-meta', patch: { name: e.target.value } }, 'meta-name')}
-            aria-label="Workflow name"
-          />
-        </div>
-        <div className="min-w-40 flex-1 space-y-1">
-          <Label className="text-[11.5px] font-normal text-fg-muted">Title</Label>
           <Input
             className="h-8 text-[12.5px]"
             value={doc.title}
             onChange={(e) => dispatch({ t: 'set-meta', patch: { title: e.target.value } }, 'meta-title')}
             aria-label="Title"
           />
+        </div>
+        <div className="min-w-40 flex-1 space-y-1">
+          <Label className="text-[11.5px] font-normal text-fg-muted">Identifier</Label>
+          <p className="readout flex h-8 items-center truncate rounded-md border bg-panel px-2.5 text-[12.5px] text-fg-muted" title={`${doc.name} — used by URLs, the API and schedules`}>
+            {doc.name}
+          </p>
         </div>
         <div className="w-28 space-y-1">
           <Label className="text-[11.5px] font-normal text-fg-muted">Step budget</Label>

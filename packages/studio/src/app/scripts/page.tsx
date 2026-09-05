@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { ClockIcon, FlowArrowIcon, PuzzlePieceIcon, MagnifyingGlassIcon, XIcon, Button, api, cn } from '@enkaku/ui'
 import { ScriptsListResponseSchema, type ScriptListItem, type ScheduleInfo } from '@enkaku/protocol'
 import { InstallPluginDialog } from '@/components/plugins/InstallPluginDialog'
+import { NewWorkflowDialog } from '@/components/scripts/NewWorkflowDialog'
 import { ScriptsTable } from '@/components/scripts/ScriptsTable'
 import { WorkflowsGrid } from '@/components/scripts/WorkflowsGrid'
 import { SchedulesList } from '@/components/schedules/SchedulesList'
@@ -109,12 +110,17 @@ function ScriptsWorkflowsScreen() {
           />
         )}
         {tab === 'workflows' && (
-          <Button asChild className="rounded-button bg-accent text-on-accent hover:bg-accent-2">
-            <Link href="/scripts/editor">
-              <FlowArrowIcon className="size-4" aria-hidden />
-              New workflow
-            </Link>
-          </Button>
+          /* Named first, created, then edited (owner decision, 2026-09-05).
+             This used to be a plain link into a blank editor, which opened on
+             an empty `name` field and a red bar quoting the name grammar. */
+          <NewWorkflowDialog
+            trigger={
+              <Button className="rounded-button bg-accent text-on-accent hover:bg-accent-2">
+                <FlowArrowIcon className="size-4" aria-hidden />
+                New workflow
+              </Button>
+            }
+          />
         )}
         {tab === 'schedules' && (
           <Button className="rounded-button bg-accent text-on-accent hover:bg-accent-2" onClick={() => setCreatingSchedule(true)}>
