@@ -1,7 +1,7 @@
 # Plan 312 — Workflow data: the `set` node, the assignment editor, array functions, and the weighted switch
 
 > Status: implemented (software)
-> Ships: `packages/studio/src/components/flow/AssignmentEditor.tsx`
+> Ships: packages/studio/src/components/flow/AssignmentEditor.tsx
 > Depends on: plans 301–307 (implemented); plan 300 D3, D4, D8. Plan 309 (simulate) is NOT a precondition — this plan lands first and 309 follows it; no §0 verification row here needs simulate.
 > Spec references: §4.6
 

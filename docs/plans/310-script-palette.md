@@ -1,7 +1,7 @@
 # Plan 310 — Choosing a script: the plugin → script palette, icons, and the end of the version picker
 
-> Status: draft
-> Ships: `packages/studio/src/components/scripts/ScriptPalette.tsx`
+> Status: implemented (software)
+> Ships: packages/studio/src/components/scripts/ScriptPalette.tsx
 > Depends on: plans 216 (action dialogs), 217 (scripts page), 303 (node descriptors), 305–307 (the flow editor)
 > Spec references: §4.5, §10, §11, §13
 

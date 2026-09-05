@@ -1,7 +1,7 @@
 # Plan 311 — Presets: saved parameter sets, wherever parameters are entered
 
-> Status: draft
-> Ships: `packages/studio/src/components/presets/PresetRow.tsx`
+> Status: implemented (software)
+> Ships: packages/studio/src/components/presets/PresetRow.tsx
 > Depends on: plan 310 (the palette and the dialog layout it lands in); plans 301–307 for workflow params
 > Spec references: §4.5, §4.6, §4.7, §11, §13
 

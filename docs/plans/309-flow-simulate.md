@@ -1,7 +1,7 @@
 # Plan 309 — Flow : Simulate — running a workflow without a device
 
-> Status: draft
-> Ships: `packages/core/src/workflows/simulate.ts`
+> Status: implemented (software)
+> Ships: packages/core/src/workflows/simulate.ts
 > Depends on: plans 301–307 (all implemented); plan 300 D3, D4, R6
 > Spec references: §4.6, §4.8, §12, §16 — §4.6 gains a simulate paragraph, written by this plan.
 
