@@ -47,7 +47,7 @@ function setUp(): { db: Db; registry: ScriptRegistry; store: WorkflowStore; runs
 }
 
 /** Publishes a plugin member row directly, bypassing HTTP — a node's script reference must resolve to something real before a workflow document naming it can be checked at all. */
-function publishScriptRow(db: Db, name: string, version: string, opts: { enabled?: boolean; timeoutMs?: number; resultSchema?: unknown } = {}) {
+function publishScriptRow(db: Db, name: string, version: string, opts: { enabled?: boolean; timeoutMs?: number } = {}) {
   const id = `${name.replace(/\//g, '-')}-${version}`
   db.insert(scripts)
     .values({
@@ -60,7 +60,6 @@ function publishScriptRow(db: Db, name: string, version: string, opts: { enabled
       enabled: opts.enabled ?? true,
       createdAt: new Date(),
       ...(opts.timeoutMs !== undefined ? { runtime: { timeoutMs: opts.timeoutMs } } : {}),
-      ...(opts.resultSchema !== undefined ? { resultSchema: opts.resultSchema } : {}),
     })
     .run()
   return id
@@ -657,7 +656,7 @@ describe('GET /api/workflows/:name/last-run (plan 300 P6, plan 306 §3.1, §4.5)
   }
 
   /** Inserts a real (non-`node-test`) job + run row for `run-node-doc`, and returns the run's id. */
-  function insertRealRun(db: Db, trigger: 'manual' | 'node-test' | 'simulate' = 'manual'): string {
+  function insertRealRun(db: Db, trigger: 'manual' | 'node-test' = 'manual'): string {
     const jobId = crypto.randomUUID()
     const runId = crypto.randomUUID()
     db.insert(jobs).values({ id: jobId, kind: 'workflow', workflowName: 'run-node-doc', deviceId: 'dev-1', scriptName: 'run-node-doc', createdAt: new Date() }).run()
@@ -675,14 +674,6 @@ describe('GET /api/workflows/:name/last-run (plan 300 P6, plan 306 §3.1, §4.5)
   test('a workflow that has never run for real answers 404 workflow_never_run — a node-test run does not count', async () => {
     const { app, db } = await seed()
     insertRealRun(db, 'node-test')
-    const res = await app.request('/run-node-doc/last-run')
-    expect(res.status).toBe(404)
-    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('workflow_never_run')
-  })
-
-  test('a simulate run never counts as the "last run" either (plan 309 G4) — an author looking at real data must never be shown sample data instead', async () => {
-    const { app, db } = await seed()
-    insertRealRun(db, 'simulate')
     const res = await app.request('/run-node-doc/last-run')
     expect(res.status).toBe(404)
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('workflow_never_run')
@@ -733,104 +724,5 @@ describe('GET /api/workflows/:name/last-run (plan 300 P6, plan 306 §3.1, §4.5)
     expect(body.nodes.a?.output).toEqual({ state: 'dropped' })
     expect(body.nodes.b?.input).toEqual({ state: 'dropped' })
     expect(body.nodes.b?.output).toEqual({ state: 'value', value: { ok: true } })
-  })
-})
-
-describe('POST /api/workflows/simulate (plan 309 §4.3)', () => {
-  /** Both nodes declare a `resultSchema` — the simulation completes end to end. */
-  async function seedComplete() {
-    const { db, registry, store, runs, pins, scheduler, kicked } = setUp()
-    publishScriptRow(db, 'node-a', '1.0.0', { resultSchema: { type: 'object', properties: { x: { type: 'number' } } } })
-    publishScriptRow(db, 'node-b', '1.0.0', { resultSchema: { type: 'object', properties: { done: { type: 'boolean' } } } })
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
-    return { db, registry, store, runs, pins, scheduler, kicked, app }
-  }
-
-  /** `node-b` declares NO `resultSchema` — a simulation stops there unless pinned or mocked. */
-  async function seedIncomplete() {
-    const { db, registry, store, runs, pins, scheduler, kicked } = setUp()
-    publishScriptRow(db, 'node-a', '1.0.0', { resultSchema: { type: 'object', properties: { x: { type: 'number' } } } })
-    publishScriptRow(db, 'node-b', '1.0.0')
-    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
-    return { db, registry, store, runs, pins, scheduler, kicked, app }
-  }
-
-  test('runs the whole document with no device contact, stores it as trigger=simulate, and answers 202 { runId }', async () => {
-    const { app, db } = await seedComplete()
-    const res = await app.request('/simulate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ doc: twoNodeV2Doc(), params: {} }),
-    })
-    expect(res.status).toBe(202)
-    const body = (await res.json()) as { runId: string }
-    expect(typeof body.runId).toBe('string')
-
-    const run = db.select().from(jobRuns).where(eq(jobRuns.id, body.runId)).get()
-    expect(run?.trigger).toBe('simulate')
-    expect(run?.deviceId).toBe('')
-    expect(run?.status).toBe('success')
-
-    const steps = db.select().from(workflowSteps).where(eq(workflowSteps.runId, body.runId)).all()
-    const stepA = steps.find((s) => s.stepId === 'a')
-    // node-a declares a resultSchema — its value is a SAMPLE, `{ x: 0 }`.
-    expect(stepA?.output).toEqual({ x: 0 })
-    const stepB = steps.find((s) => s.stepId === 'b')
-    // node-b never runs for real either (no device contact, G1) — its
-    // resultSchema-derived sample is `{ done: false }`.
-    expect(stepB?.output).toEqual({ done: false })
-  })
-
-  test('a node with no pin, no mock, and no declared resultSchema stops the simulation, naming the node — still stored, still 202', async () => {
-    const { app, db } = await seedIncomplete()
-    const res = await app.request('/simulate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ doc: twoNodeV2Doc(), params: {} }),
-    })
-    expect(res.status).toBe(202)
-    const body = (await res.json()) as { runId: string }
-    const run = db.select().from(jobRuns).where(eq(jobRuns.id, body.runId)).get()
-    expect(run?.status).toBe('failed')
-    expect(run?.error).toContain('b')
-    expect(run?.error).toContain('result shape')
-  })
-
-  test('a mock for the node with no resultSchema lets the simulation complete', async () => {
-    const { app, db } = await seedIncomplete()
-    const res = await app.request('/simulate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ doc: twoNodeV2Doc(), params: {}, mocks: { b: { done: true } } }),
-    })
-    expect(res.status).toBe(202)
-    const body = (await res.json()) as { runId: string }
-    const run = db.select().from(jobRuns).where(eq(jobRuns.id, body.runId)).get()
-    expect(run?.status).toBe('success')
-    const steps = db.select().from(workflowSteps).where(eq(workflowSteps.runId, body.runId)).all()
-    const stepB = steps.find((s) => s.stepId === 'b')
-    expect(stepB?.output).toEqual({ done: true })
-  })
-
-  test('a document with a structural error is refused with the same findings /validate would give — never stored', async () => {
-    const { app, db } = await seedComplete()
-    const res = await app.request('/simulate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ doc: { schema: 2, name: 'x', entry: 'nope', nodes: [] } }),
-    })
-    expect(res.status).toBe(400)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('E_WORKFLOW_INVALID')
-    expect(db.select().from(jobRuns).all().length).toBe(0)
-  })
-
-  test('is guarded — no user at all is refused, same as every other route here', async () => {
-    const { db, registry, store, runs, pins, scheduler } = setUp()
-    publishScriptRow(db, 'node-a', '1.0.0', { resultSchema: { type: 'object' } })
-    publishScriptRow(db, 'node-b', '1.0.0', { resultSchema: { type: 'object' } })
-    const app = withUser(null, createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
-    const res = await app.request('/simulate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeV2Doc(), params: {} }) })
-    expect(res.status).toBe(403)
   })
 })
