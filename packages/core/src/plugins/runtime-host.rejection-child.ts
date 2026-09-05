@@ -146,7 +146,26 @@ async function main(): Promise<void> {
       throw new Error(`unknown case: ${which}`)
   }
 
-  await Bun.sleep(150)
+  /**
+   * Wait for the counter to MOVE, not for a fixed 150 ms.
+   *
+   * The handler that attributes a floating rejection runs on its own turn of
+   * the loop, and a fixed sleep only asks "has enough wall clock passed on
+   * the machine I was written on". On a CI runner working through 5 599 tests
+   * it had not: the counter read zero and the test failed there while passing
+   * on every developer's machine (2026-09-05).
+   *
+   * The ceiling is what the `non-error` case needs — it asserts the counter
+   * NEVER moves, so there is nothing to poll for and it pays the full wait
+   * once. Twenty times the old sleep, and still a fifth of the test's own
+   * 30-second budget.
+   */
+  const deadline = Date.now() + 3_000
+  while (Date.now() < deadline) {
+    const seen = host.list().some((v) => v.counters.unhandledRejections > 0 || v.counters.failures > 0)
+    if (seen) break
+    await Bun.sleep(10)
+  }
   // Reached only when the process survived — which is itself the finding for
   // every case except `unattributed-rethrow`.
   const views = host.list().map((v) => ({
