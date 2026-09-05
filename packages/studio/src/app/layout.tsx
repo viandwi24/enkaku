@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Toaster, TooltipProvider } from '@enkaku/ui'
 import { ActionDialogHost } from '@/components/actions/ActionDialogHost'
+import { OperationTray } from '@/components/actions/OperationTray'
 import { DeviceControlHost } from '@/components/device-control/DeviceControlHost'
 import { AuthGate } from '@/components/layout/AuthGate'
 import { THEME_BOOT } from '@/components/shell/theme-boot'
@@ -41,6 +42,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             lives here rather than there — a discrepancy from the plan's own
             text, recorded in plan 216 §11. */}
         <ActionDialogHost />
+        {/* The corner indicator for work that outlived its modal — mounted
+            beside the dialog host for the same reason it is: it belongs to no
+            route, and an install must not stop being visible because the
+            operator navigated to Jobs. */}
+        <OperationTray />
       </body>
     </html>
   )
