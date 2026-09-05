@@ -4,7 +4,7 @@
 # Ships beside the binary, not inside it: a core that cannot start is exactly
 # when you need this, so it must not depend on the core running, on Bun, or on
 # a checkout of this repo. POSIX sh, and `curl` and `tar` are the only hard
-# requirements — `jq` is used when present and not needed when it is not.
+# requirements -- `jq` is used when present and not needed when it is not.
 #
 #   ./enkaku-update.sh              # update to the latest release, if newer
 #   ./enkaku-update.sh --check      # say what would happen, change nothing
@@ -86,7 +86,7 @@ json_field() {
 if [ -n "$WANT_VERSION" ]; then
   VERSION="$WANT_VERSION"
 else
-  echo "Checking $REPO for the latest release…"
+  echo "Checking $REPO for the latest release..."
   LATEST_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/latest")" || {
     echo "Error: could not reach the GitHub API. Check the network, or pass --version <tag> to skip the lookup." >&2
     exit 1
@@ -96,7 +96,7 @@ fi
 [ -n "$VERSION" ] || { echo "Error: could not determine the latest version." >&2; exit 1; }
 
 # `enkaku --version` prints the package version (0.1.32); tags carry a leading
-# v. Compared as strings on purpose — "is this the exact release I would
+# v. Compared as strings on purpose -- "is this the exact release I would
 # install" is the question, not "is it newer", so a pinned downgrade with
 # --version still reports honestly.
 INSTALLED=""
@@ -129,7 +129,7 @@ BASE="https://github.com/$REPO/releases/download/$VERSION"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/enkaku-update.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
-echo "Downloading $ASSET…"
+echo "Downloading $ASSET..."
 curl -fL --progress-bar -o "$WORK/$ASSET" "$BASE/$ASSET" || {
   echo "Error: could not download $BASE/$ASSET" >&2
   echo "       Check that $VERSION published a build for $TARGET." >&2
@@ -138,12 +138,12 @@ curl -fL --progress-bar -o "$WORK/$ASSET" "$BASE/$ASSET" || {
 
 # The release publishes SHA256SUMS.txt over the whole artifact set. Verified
 # when both the file and a hashing tool are available, and SKIPPED LOUDLY
-# rather than silently when either is missing — an unverified install that
+# rather than silently when either is missing -- an unverified install that
 # looks identical to a verified one is how a bad mirror goes unnoticed.
 if curl -fsSL -o "$WORK/SHA256SUMS.txt" "$BASE/SHA256SUMS.txt" 2>/dev/null; then
   EXPECTED="$(grep " [ *]\{0,1\}$ASSET\$" "$WORK/SHA256SUMS.txt" | awk '{print $1}' | head -n 1)"
   if [ -z "$EXPECTED" ]; then
-    echo "Warning: $ASSET is not listed in SHA256SUMS.txt — continuing without verification."
+    echo "Warning: $ASSET is not listed in SHA256SUMS.txt -- continuing without verification."
   else
     if command -v sha256sum >/dev/null 2>&1; then
       ACTUAL="$(sha256sum "$WORK/$ASSET" | awk '{print $1}')"
@@ -151,7 +151,7 @@ if curl -fsSL -o "$WORK/SHA256SUMS.txt" "$BASE/SHA256SUMS.txt" 2>/dev/null; then
       ACTUAL="$(shasum -a 256 "$WORK/$ASSET" | awk '{print $1}')"
     else
       ACTUAL=""
-      echo "Warning: neither sha256sum nor shasum is available — continuing without verification."
+      echo "Warning: neither sha256sum nor shasum is available -- continuing without verification."
     fi
     if [ -n "$ACTUAL" ]; then
       [ "$ACTUAL" = "$EXPECTED" ] || {
@@ -165,10 +165,10 @@ if curl -fsSL -o "$WORK/SHA256SUMS.txt" "$BASE/SHA256SUMS.txt" 2>/dev/null; then
     fi
   fi
 else
-  echo "Warning: SHA256SUMS.txt is not published for $VERSION — continuing without verification."
+  echo "Warning: SHA256SUMS.txt is not published for $VERSION -- continuing without verification."
 fi
 
-echo "Extracting…"
+echo "Extracting..."
 if [ "$EXT" = "zip" ]; then
   command -v unzip >/dev/null 2>&1 || { echo "Error: unzip is required for the Windows archive." >&2; exit 1; }
   unzip -q -o "$WORK/$ASSET" -d "$WORK/x"
@@ -188,7 +188,7 @@ fi
 
 # `mv`, never `cp`: replacing a RUNNING executable with cp fails outright on
 # Linux with ETXTBSY ("Text file busy"), which is precisely the case an
-# updater meets — the farm is up and you are updating it. A rename swaps the
+# updater meets -- the farm is up and you are updating it. A rename swaps the
 # directory entry instead; the running process keeps its own open inode and
 # carries on, unharmed, on the old code until it is restarted.
 #
@@ -206,7 +206,7 @@ echo "Updated $BINARY to $VERSION"
 # difference between "updated" and "updated and live".
 if command -v pgrep >/dev/null 2>&1 && pgrep -f "$BINARY" >/dev/null 2>&1; then
   echo
-  echo "A core is still running the PREVIOUS binary — the update takes effect on restart."
+  echo "A core is still running the PREVIOUS binary -- the update takes effect on restart."
   echo "  systemd:  sudo systemctl restart enkaku"
   echo "  manual:   stop it, then start $BINARY again"
 fi

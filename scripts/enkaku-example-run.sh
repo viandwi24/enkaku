@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start Enkaku on the LAN over HTTPS, with a certificate it manages itself.
 #
-# Copy this next to the `enkaku` binary and edit it — it is an example to
+# Copy this next to the `enkaku` binary and edit it -- it is an example to
 # start from, not a wrapper to keep. Everything here is an environment
 # variable the binary reads directly, so `env FOO=bar ./enkaku` is always the
 # equivalent, and `.env.example` at the repo root is the full list.
@@ -20,8 +20,8 @@ export ENKAKU_BIND="${ENKAKU_BIND:-0.0.0.0}"
 
 # `self` with no ENKAKU_TLS_CERT/ENKAKU_TLS_KEY means Enkaku owns the
 # certificate: it generates one into <dataDir>/tls/ on the first start and
-# loads that same pair on every start after. Browsers still warn — self-signed
-# encrypts the connection and proves no identity — which is fine on a trusted
+# loads that same pair on every start after. Browsers still warn -- self-signed
+# encrypts the connection and proves no identity -- which is fine on a trusted
 # LAN and wrong for anything reachable from the internet. For that, put a real
 # proxy in front and use ENKAKU_TLS_MODE=external instead.
 #
@@ -32,8 +32,8 @@ export ENKAKU_BIND="${ENKAKU_BIND:-0.0.0.0}"
 export ENKAKU_TLS_MODE="${ENKAKU_TLS_MODE:-self}"
 
 # ENKAKU_ALLOW_INSECURE=1 is deliberately NOT set here. It only does anything
-# when TLS is `off` in server mode — it is the "yes, I really mean plain HTTP
-# with passwords in the clear" override — and with `self` above there is no
+# when TLS is `off` in server mode -- it is the "yes, I really mean plain HTTP
+# with passwords in the clear" override -- and with `self` above there is no
 # insecurity to allow. Setting it anyway is harmless and teaches the wrong
 # habit, so it is left out.
 
@@ -46,6 +46,6 @@ export ENKAKU_TLS_MODE="${ENKAKU_TLS_MODE:-self}"
 # export ENKAKU_LOG_LEVEL=info
 
 # `exec` so Ctrl-C, SIGTERM and systemd's stop signal reach the core itself
-# rather than this shell — without it the core is a child that never hears
+# rather than this shell -- without it the core is a child that never hears
 # them and shuts down uncleanly.
 exec "$BINARY" "$@"
