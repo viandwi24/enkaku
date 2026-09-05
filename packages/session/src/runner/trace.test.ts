@@ -270,6 +270,31 @@ describe('createTraceTee — the capture policy (plan 128 §3.4)', () => {
     expect(h.events[0]?.uiHash).toBe('dd')
   })
 
+  test('a successful `dump` on ui-tree still stores its tree — free bytes are not a policy question', async () => {
+    // The engine an agent-equipped farm actually runs. Its frame policy is
+    // `on-failure`, because its screenshot goes through `screencap` on the
+    // shared adb queue and would contend — but its TREE arrived with the
+    // `dump` the script already paid for. Storing it costs the device
+    // nothing, and not storing it left the Timeline saying `ui nodes: not
+    // captured` for every action of a run that never failed.
+    const h = harness({ engineId: 'ui-tree', capture: async () => ({ frameHash: null, uiHash: 'cc' }) })
+    const tree = { id: 'root', children: [] }
+    h.tee.end(h.tee.begin({ method: 'dump', args: {} } as unknown as DeviceCall), { ok: true, value: tree })
+    await drain()
+
+    expect(h.captures[0]).toMatchObject({ method: 'dump', frame: 'none', uiTree: 'reuse', treeValue: tree })
+    expect(h.events[0]?.uiHash).toBe('cc')
+  })
+
+  test('a successful non-tree action on ui-tree still stores nothing — the policy holds where it costs something', async () => {
+    const h = harness({ engineId: 'ui-tree', capture: async () => ({ frameHash: 'aa', uiHash: 'bb' }) })
+    h.tee.end(h.tee.begin({ method: 'tap', args: {} } as unknown as DeviceCall), { ok: true, value: null })
+    await drain()
+
+    expect(h.captures.length).toBe(0)
+    expect(h.events[0]?.frameStatus).toBe('skipped-policy')
+  })
+
   test('a `screenshot` reuses the script\'s own bytes rather than taking a second picture (§3.2)', async () => {
     const h = harness({ engineId: 'ui-server', capture: async () => ({ frameHash: 'ee' }) })
     h.tee.end(h.tee.begin({ method: 'screenshot', args: {} } as unknown as DeviceCall), { ok: true, value: 'iVBORw0=' })

@@ -507,9 +507,22 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
         const reuseFrame = SELF_FRAMING_METHODS.has(token.method) && outcome.ok
         const wantsFrame = reuseFrame || resolved === 'per-action' || (resolved === 'on-failure' && failing)
         // §3.4 — free for `dump`/`find`/`waitFor`, because the call already
-        // produced the tree; only the per-action engine stores it, matching
-        // the frame rule beside it.
-        const reusesTree = resolved === 'per-action' && outcome.ok && TREE_METHODS.has(token.method)
+        // produced the tree.
+        //
+        // It used to require `per-action`, which meant it required
+        // `ui-server`. Under `ui-tree` — the preferred engine since plan 221,
+        // and the one every guest-agent farm runs — a successful `dump`
+        // therefore stored NOTHING, and the Timeline read `ui nodes: not
+        // captured` for a run with twenty of them and no failures at all
+        // (owner, 2026-09-05). The policy exists to stop the trace taking
+        // EXTRA work from the device (§0.3); a tree the action already
+        // returned is not extra work, it is bytes in hand, and the comment
+        // twenty lines below already says throwing it away "is the one thing
+        // this design should never do". The gate above it disagreed.
+        //
+        // `none` still stores nothing: that is either no inspector or no
+        // trace store, and there is nowhere to put it.
+        const reusesTree = resolved !== 'none' && outcome.ok && TREE_METHODS.has(token.method)
         // §3.4 — the failing action gets a tree on EVERY engine, even one
         // that stores none for a successful action: the job has already
         // failed, and that tree is the picture a debugger came for.

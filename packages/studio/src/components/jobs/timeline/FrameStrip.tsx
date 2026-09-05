@@ -80,7 +80,16 @@ export function FrameStrip({
                 <span className="text-center font-mono text-[9px] leading-tight text-faint">
                   {formatOffset(e.atMs, originMs)}
                   <br />
-                  {e.frameHash ? 'frame gone' : 'no frame'}
+                  {/*
+                    An action with a UI tree and no picture is not an empty
+                    card — it is most of what a debugger wants, and saying
+                    "no frame" over twenty of them reads as a broken
+                    timeline (owner, 2026-09-05). Every engine but
+                    `ui-server` takes its screenshot through `screencap` on
+                    the shared adb queue, so a successful action gets the
+                    tree it already produced and no photograph, by design.
+                  */}
+                  {e.frameHash ? 'frame gone' : e.uiHash ? 'ui tree' : 'no frame'}
                 </span>
               )}
             </div>
