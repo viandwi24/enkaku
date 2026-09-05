@@ -37,6 +37,7 @@ export function DeviceScreenCard({
   tileRef,
   onMouseDown,
   onDoubleClick,
+  onContextMenu,
 }: {
   device: DeviceInfo
   selected: boolean
@@ -44,6 +45,7 @@ export function DeviceScreenCard({
   tileRef: (node: Element | null) => void
   onMouseDown: (e: React.MouseEvent) => void
   onDoubleClick: () => void
+  onContextMenu: (e: React.MouseEvent) => void
 }) {
   // A device the farm is actively rebuilding a session for reads as
   // "Reconnecting", not as an ordinary dead tile — see `reconnectingAttempt`.
@@ -55,6 +57,7 @@ export function DeviceScreenCard({
       ref={tileRef}
       onMouseDown={onMouseDown}
       onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
       className={cn(
         'rounded-panel border p-[6px] transition-colors',
         selected ? 'border-accent bg-accent-soft' : 'border-line-2',

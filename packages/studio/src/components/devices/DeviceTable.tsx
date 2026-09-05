@@ -34,6 +34,7 @@ export function DeviceTable({
   selected,
   onItemMouseDown,
   onItemDoubleClick,
+  onItemContextMenu,
   onToggle,
   onSelectAll,
   queuedFor,
@@ -42,6 +43,8 @@ export function DeviceTable({
   selected: ReadonlySet<string>
   onItemMouseDown: (id: string, e: React.MouseEvent) => void
   onItemDoubleClick: (id: string) => void
+  /** Right-click on a row: opens the device context menu at the cursor. */
+  onItemContextMenu: (id: string, e: React.MouseEvent) => void
   /** The checkbox's own direct toggle — immediate, not the deferred row click. */
   onToggle: (id: string) => void
   onSelectAll: (checked: boolean) => void
@@ -81,6 +84,7 @@ export function DeviceTable({
               data-state={isSelected ? 'selected' : undefined}
               onMouseDown={(e) => onItemMouseDown(device.id, e)}
               onDoubleClick={() => onItemDoubleClick(device.id)}
+              onContextMenu={(e) => onItemContextMenu(device.id, e)}
               className={cn(
                 COLS,
                 'h-[54px] border-b border-muted-2 transition-colors hover:bg-hover select-none',
@@ -88,7 +92,19 @@ export function DeviceTable({
                 offline && 'opacity-60',
               )}
             >
-              <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+              {/*
+                `onMouseDown` as well as `onClick`, and the mousedown is the one
+                that matters. The row's own `onMouseDown` starts the deferred
+                200ms click (`useDeviceSelection`), and stopping only `click`
+                let that timer through: the checkbox toggled the device IN, then
+                the row's deferred handler replaced the whole selection with
+                that one device — or, when it was already the only one selected,
+                cleared it. So a checkbox could not build a multi-selection at
+                all, and ticking a single box selected then instantly
+                deselected it. Found while wiring the right-click menu, which
+                is meant to act on exactly the selection a checkbox builds.
+              */}
+              <div className="flex items-center justify-center" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
                 <Checkbox checked={isSelected} onCheckedChange={() => onToggle(device.id)} />
               </div>
               <span className="px-2 font-mono text-[11.5px] text-faint">{String(index + 1).padStart(2, '0')}</span>

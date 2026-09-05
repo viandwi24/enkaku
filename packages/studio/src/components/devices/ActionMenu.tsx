@@ -32,10 +32,21 @@ const ROW_DANGER = 'text-danger hover:bg-muted'
 export function ActionMenu({
   target,
   onDone,
+  submenuSide = 'left',
+  submenuAlign = 'bottom',
 }: {
   target: Target
   /** Closes the bulk menu. */
   onDone: (id: ActionDialogVerb) => void
+  /**
+   * Which way a group's panel opens. `left` is the bulk pill's case and stays
+   * the default; the context menu computes it from where the cursor actually
+   * is, because a menu opened near the left edge of the window has nowhere to
+   * go on that side (owner, 2026-09-05).
+   */
+  submenuSide?: 'left' | 'right'
+  /** `bottom` grows a submenu upward (the bulk pill, which itself opens upward); `top` grows it downward. */
+  submenuAlign?: 'top' | 'bottom'
 }) {
   const { open } = useActionDialogs()
   const [openGroup, setOpenGroup] = useState<ActionGroup | null>(null)
@@ -109,13 +120,20 @@ export function ActionMenu({
             </button>
             {isOpen && (
               /*
-               * Right-aligned to this menu's LEFT edge: the bulk pill sits in
-               * the bottom-right corner of the panel, so a submenu opening to
-               * the right would open off the edge of the window every time.
-               * `bottom-0` rather than `top-0` for the same reason the parent
-               * opens upward — there is more room above than below.
+               * Side and vertical anchor both come from the caller. The bulk
+               * pill sits in the bottom-right corner of the panel and opens
+               * upward, so its submenu goes left and grows up; a context menu
+               * lands wherever the cursor is and decides for itself. Getting
+               * this wrong is not cosmetic — a submenu on the wrong side of a
+               * menu near the window edge is simply not reachable.
                */
-              <div className="absolute right-full bottom-0 mr-1 w-[212px] rounded-card border border-border bg-panel p-1 shadow-popover">
+              <div
+                className={cn(
+                  'absolute w-[212px] rounded-card border border-border bg-panel p-1 shadow-popover',
+                  submenuSide === 'left' ? 'right-full mr-1' : 'left-full ml-1',
+                  submenuAlign === 'bottom' ? 'bottom-0' : 'top-0',
+                )}
+              >
                 {rows.map(row)}
               </div>
             )}

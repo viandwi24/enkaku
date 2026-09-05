@@ -21,10 +21,13 @@ export function ScreensGrid({
   devices,
   cardWidth,
   selection,
+  onItemContextMenu,
 }: {
   devices: DeviceInfo[]
   cardWidth: CardWidth
   selection: DeviceSelection
+  /** Right-click on a card: the same device context menu the table rows open. */
+  onItemContextMenu: (id: string, e: React.MouseEvent) => void
 }) {
   const [maxTiles, setMaxTiles] = useState<number | null>(null)
   const [rampConcurrency, setRampConcurrency] = useState(DEFAULT_RAMP_CONCURRENCY)
@@ -54,6 +57,7 @@ export function ScreensGrid({
             tileRef={liveSet.tileRef(device.id)}
             onMouseDown={(e) => selection.onItemMouseDown(device.id, e)}
             onDoubleClick={() => selection.onItemDoubleClick(device.id)}
+            onContextMenu={(e) => onItemContextMenu(device.id, e)}
           />
         ))}
       </div>

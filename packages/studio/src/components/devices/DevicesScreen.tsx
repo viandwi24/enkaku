@@ -9,6 +9,7 @@ import { retargetSelection } from '@/components/device-control/retarget'
 import { readLocalPrefs, readSessionPrefs, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { ws } from '@/lib/ws'
 import { BulkPill } from './BulkPill'
+import { DeviceContextMenu, type DeviceContextMenuRequest } from './DeviceContextMenu'
 import { DeviceTable } from './DeviceTable'
 import { DiscoverySheet } from './DiscoverySheet'
 import { OtgSwitchDialog } from './OtgSwitchDialog'
@@ -49,6 +50,17 @@ export function DevicesScreen() {
   const [otgOpen, setOtgOpen] = useState(false)
   const [scanOpen, setScanOpen] = useState(false)
   const [spinning, setSpinning] = useState(false)
+  const [contextMenu, setContextMenu] = useState<DeviceContextMenuRequest | null>(null)
+  /**
+   * What the context menu's action rows act on, frozen at right-click time.
+   *
+   * Not read live off `selection` while the menu is open: `useOverlay`'s
+   * click-outside handler and the selection state settle in an order this
+   * component does not control, and a menu whose target changed under it
+   * between opening and clicking a row would act on the wrong devices — the
+   * one failure mode in this feature that is silent and destructive.
+   */
+  const [contextTarget, setContextTarget] = useState<readonly string[]>([])
 
   // Enrolment (§9 Q5, kept undrawn by the handoff): the only surface that
   // tells an operator a phone is waiting for its adb authorisation prompt.
@@ -164,6 +176,24 @@ export function DevicesScreen() {
 
   const target: Target = { deviceIds: [...selection.selected] }
 
+  /**
+   * Right-click resolves the selection the way every file manager does:
+   * inside the current selection it keeps all of it, outside it replaces the
+   * selection with the one device under the cursor. Anything else surprises
+   * someone — acting on twenty phones because a right-click silently kept a
+   * selection made two minutes ago, or throwing away a careful multi-select
+   * because the operator wanted its menu.
+   */
+  const openContextMenu = (deviceId: string, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const inSelection = selection.selected.has(deviceId)
+    const ids = inSelection ? [...selection.selected] : [deviceId]
+    if (!inSelection) selection.set(ids)
+    setContextTarget(ids)
+    setContextMenu({ deviceId, x: e.clientX, y: e.clientY, count: ids.length })
+  }
+
   const rescan = () => {
     setSpinning(true)
     setTimeout(() => setSpinning(false), 1400)
@@ -203,12 +233,22 @@ export function DevicesScreen() {
           selected={selection.selected}
           onItemMouseDown={selection.onItemMouseDown}
           onItemDoubleClick={selection.onItemDoubleClick}
+          onItemContextMenu={openContextMenu}
           onToggle={selection.toggle}
           onSelectAll={(checked) => (checked ? selection.set(filteredIds) : selection.clear())}
           queuedFor={queuedFor}
         />
       ) : (
-        <ScreensGrid devices={filtered} cardWidth={cardWidth} selection={selection} />
+        <ScreensGrid devices={filtered} cardWidth={cardWidth} selection={selection} onItemContextMenu={openContextMenu} />
+      )}
+
+      {contextMenu && (
+        <DeviceContextMenu
+          request={contextMenu}
+          target={{ deviceIds: [...contextTarget] }}
+          onClose={() => setContextMenu(null)}
+          onOpenControl={(id) => setFocus(id, retargetSelection(id, [...contextTarget]))}
+        />
       )}
 
       {selection.selected.size > 0 && (
