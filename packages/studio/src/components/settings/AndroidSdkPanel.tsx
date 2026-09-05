@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AndroidSdkStatus } from '@enkaku/protocol'
 import { Badge, Button, Checkbox, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Spinner, cn } from '@enkaku/ui'
-import { fetchAndroidSdk, fetchSdkInstallLog, installAndroidSdk } from '@/lib/api'
+import { fetchAndroidSdk, fetchSdkInstallLog, installAndroidSdk, installCmdlineTools } from '@/lib/api'
 import { toast } from 'sonner'
 
 const API_LEVELS = [36, 35, 34, 33, 31, 30] as const
@@ -37,6 +37,7 @@ export function AndroidSdkPanel() {
   const [installId, setInstallId] = useState<string | null>(null)
   const [lines, setLines] = useState<string[]>([])
   const [running, setRunning] = useState(false)
+  const [bootstrapping, setBootstrapping] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
 
   const refresh = useCallback(() => {
@@ -160,12 +161,44 @@ export function AndroidSdkPanel() {
           </span>
         </label>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={!canInstall} onClick={() => void start()}>
             {running ? <Spinner className="size-3.5" /> : null}
             {running ? 'Installing…' : 'Install'}
           </Button>
-          {!sdk.sdkmanager && <span className="text-meta text-faint">sdkmanager is missing, so nothing can be installed from here yet.</span>}
+          {/*
+            The bootstrap. Without sdkmanager there is nothing for the button
+            above to run, and a screen that only says so is a dead end — which
+            is exactly what this one was until the owner asked why
+            (2026-09-06). This is the ONE package Enkaku fetches itself,
+            sha256-pinned from Google's own repository, the same treatment adb
+            has had since the beginning. See `LICENSES.md`.
+          */}
+          {!sdk.sdkmanager && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={bootstrapping || !accepted}
+                onClick={() => {
+                  setBootstrapping(true)
+                  void installCmdlineTools()
+                    .then((next) => {
+                      setSdk(next)
+                      toast.success('Command-line tools installed.')
+                    })
+                    .catch((err: unknown) => toast.error(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setBootstrapping(false))
+                }}
+              >
+                {bootstrapping ? <Spinner className="size-3.5" /> : null}
+                {bootstrapping ? 'Downloading…' : 'Install command-line tools (~150 MB)'}
+              </Button>
+              <span className="text-meta text-faint">
+                {accepted ? 'Downloaded by Enkaku, verified against a pinned sha256.' : 'Accept the terms above first.'}
+              </span>
+            </>
+          )}
         </div>
 
         {lines.length > 0 && (

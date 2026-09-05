@@ -5,7 +5,7 @@ import { entrypointRelPath } from './entrypoints'
 import { ToolchainError } from './errors'
 import { extractZip, placeRaw } from './extract'
 import { moveDir, rmPath } from './fs-safe'
-import { checkAdbBinary, checkFileHash } from './health'
+import { checkAdbBinary, checkExtractedEntrypoint, checkFileHash } from './health'
 import { ManifestStore } from './manifest'
 import { ActivePointerStore, createPaths, ensureLayout, type ToolchainPaths } from './paths'
 import { currentPlatformKey, pickPlatformKey } from './platform'
@@ -324,7 +324,11 @@ export class ToolchainManager {
       const candidatePath = join(this.paths.toolsDir, toolId, version, entrypointRelPath(toolId, this.platform))
       // The candidate's health check MUST pass before activation (spec §7.8).
       const health =
-        toolId === 'adb' ? await checkAdbBinary(candidatePath) : await checkFileHash(candidatePath, installed.sha256)
+        toolId === 'adb'
+          ? await checkAdbBinary(candidatePath)
+          : this.mustGetTool(toolId).format === 'zip'
+            ? await checkExtractedEntrypoint(candidatePath)
+            : await checkFileHash(candidatePath, installed.sha256)
       if (!health.ok) {
         throw new ToolchainError('E_HEALTH_CHECK_FAILED', `health check failed for ${toolId}@${version}: ${health.detail}`)
       }
@@ -378,7 +382,12 @@ export class ToolchainManager {
     if (!ptr) throw new ToolchainError('E_TOOL_NOT_PROVISIONED', `tool ${toolId} is not provisioned yet`)
     const path = join(this.paths.toolsDir, toolId, ptr.version, entrypointRelPath(toolId, this.platform))
     const rec = this.opts.store.listByTool(tool.id).find((r) => r.version === ptr.version)
-    const health = toolId === 'adb' ? await checkAdbBinary(path) : await checkFileHash(path, rec?.sha256 ?? null)
+    // Chosen by FORMAT, not by name. `adb` keeps its own spawn check because
+    // running `adb version` proves more than any file test can; every other
+    // `zip` tool is checked for a real extracted entrypoint, and only `raw`
+    // tools — where the entrypoint IS the downloaded file — are hashed.
+    const health =
+      toolId === 'adb' ? await checkAdbBinary(path) : tool.format === 'zip' ? await checkExtractedEntrypoint(path) : await checkFileHash(path, rec?.sha256 ?? null)
     this.healthCache.set(toolId, health)
     return health
   }

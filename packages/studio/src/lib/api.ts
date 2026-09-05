@@ -812,6 +812,11 @@ export async function fetchWorkflowLastRun(name: string): Promise<WorkflowLastRu
   }
 }
 
+/** `POST /api/vms/sdk/cmdline-tools` — the ONE package Enkaku fetches itself, sha256-pinned. Answers with the refreshed status. */
+export function installCmdlineTools(): Promise<AndroidSdkStatus> {
+  return api('/api/vms/sdk/cmdline-tools', AndroidSdkStatusResponseSchema, { json: {} }).then((r) => r.sdk)
+}
+
 /** `GET /api/vms/sdk` — what the host actually has, so a screen can say what is missing instead of letting a create fail two minutes in. */
 export function fetchAndroidSdk(): Promise<AndroidSdkStatus> {
   return api('/api/vms/sdk', AndroidSdkStatusResponseSchema).then((r) => r.sdk)

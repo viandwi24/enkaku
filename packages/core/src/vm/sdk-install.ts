@@ -58,8 +58,37 @@ export interface SdkInstallRequest {
 export interface SdkInstallDeps {
   dataDir: string
   log: Logger
+  /**
+   * The `sdkmanager` the Toolchain Manager installed, if any.
+   *
+   * `cmdline-tools` is a toolchain entry now (sha256-pinned, from Google's
+   * own repository, exactly as adb is), so it lands under `<dataDir>/tools/`
+   * — NOT inside the operator's SDK, where `resolveAndroidSdk` looks. A
+   * resolver that knew only one of the two places would tell an operator who
+   * had just installed the tools that they were still missing.
+   *
+   * Resolves to `null` when the tool is not installed; never throws.
+   */
+  toolchainSdkmanager?: () => Promise<string | null>
   /** Injected for tests; defaults to a real `Bun.spawn`. */
   spawn?: (cmd: string[], opts: { onLine: (line: string) => void }) => Promise<{ exitCode: number }>
+}
+
+/**
+ * The `sdkmanager` to run: the SDK's own first, the Toolchain Manager's
+ * second.
+ *
+ * The SDK's own wins because an operator who installed the tools themselves
+ * expects those to be the ones used — and because a `sdkmanager` sitting
+ * inside the SDK it manages needs no `--sdk_root` argument to be sensible.
+ * Ours is the fallback that makes a bare host workable at all.
+ */
+export async function resolveSdkmanager(sdk: AndroidSdk, fromToolchain?: () => Promise<string | null>): Promise<string | null> {
+  const beside = sdk.avdmanager.replace(/avdmanager(\.bat)?$/, (m) => (m.endsWith('.bat') ? 'sdkmanager.bat' : 'sdkmanager'))
+  if (await Bun.file(beside).exists().catch(() => false)) return beside
+  const managed = await fromToolchain?.().catch(() => null)
+  if (managed && (await Bun.file(managed).exists().catch(() => false))) return managed
+  return null
 }
 
 /** `<dataDir>/android-sdk` — the directory this farm owns, beside `tools/`. */
@@ -137,9 +166,12 @@ export async function installSdkPackages(
     )
   }
   // `avdmanager` and `sdkmanager` are siblings in the same bin directory.
-  const sdkmanager = sdk.avdmanager.replace(/avdmanager(\.bat)?$/, (m) => (m.endsWith('.bat') ? 'sdkmanager.bat' : 'sdkmanager'))
-  if (!(await Bun.file(sdkmanager).exists())) {
-    throw new EnkakuError('E_SDK_MANAGER_MISSING', `expected sdkmanager beside avdmanager at ${sdkmanager}, and it is not there`)
+  const sdkmanager = await resolveSdkmanager(sdk, deps.toolchainSdkmanager)
+  if (!sdkmanager) {
+    throw new EnkakuError(
+      'E_SDK_MANAGER_MISSING',
+      'no sdkmanager was found — neither inside the SDK nor installed by the Toolchain Manager. Install the command-line tools first (Settings → Virtual devices).',
+    )
   }
 
   const root = req.target === 'managed' ? managedSdkRoot(deps.dataDir) : sdk.root
@@ -180,7 +212,7 @@ async function listDir(path: string): Promise<string[]> {
  * is a fact about a file or a directory; nothing here runs a process, so it
  * is cheap enough to poll a settings screen with.
  */
-export async function readSdkInventory(dataDir: string): Promise<SdkInventory> {
+export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: () => Promise<string | null>): Promise<SdkInventory> {
   const managedRoot = managedSdkRoot(dataDir)
   let sdk: AndroidSdk | null = null
   try {
@@ -203,12 +235,12 @@ export async function readSdkInventory(dataDir: string): Promise<SdkInventory> {
     }
   }
 
-  const sdkmanagerPath = sdk.avdmanager.replace(/avdmanager(\.bat)?$/, (m) => (m.endsWith('.bat') ? 'sdkmanager.bat' : 'sdkmanager'))
-  const [emulator, sdkmanager, avdmanager] = await Promise.all([
+  const [emulator, sdkmanagerPath, avdmanager] = await Promise.all([
     Bun.file(sdk.emulator).exists().catch(() => false),
-    Bun.file(sdkmanagerPath).exists().catch(() => false),
+    resolveSdkmanager(sdk, toolchainSdkmanager),
     Bun.file(sdk.avdmanager).exists().catch(() => false),
   ])
+  const sdkmanager = sdkmanagerPath !== null
 
   const platforms = (await listDir(join(sdk.root, 'platforms'))).filter((d) => d.startsWith('android-')).sort()
   const images: string[] = []

@@ -9,6 +9,7 @@ Dokumen ini mencatat setiap komponen eksternal yang disentuh Enkaku, statusnya, 
 | Komponen | Lisensi | Kita redistribusi? | Keputusan |
 |---|---|---|---|
 | **adb / platform-tools** (Google) | Android SDK Terms of Service | **TIDAK** | Diunduh saat first-run langsung dari `dl.google.com`, diverifikasi sha256. Binary tidak pernah masuk ke image/installer kami. |
+| **Android SDK command-line tools** (Google) | Android SDK Terms of Service | **TIDAK** | Diunduh oleh Toolchain Manager dari `dl.google.com`, diverifikasi sha256 — perlakuan identik dengan adb. Hanya `sdkmanager`/`avdmanager`; system image tidak pernah kami unduh. |
 | **scrcpy-server.jar** (Genymobile) | Apache-2.0 | Tidak (diunduh dari GitHub Releases resmi) | Apache-2.0 mengizinkan redistribusi dengan atribusi; kita tetap memilih unduh-saat-runtime agar checksum selalu mengacu rilis resmi. Atribusi tetap dicantumkan. |
 | **android-uiautomator-server** (openatx) — APK inspector | Perlu dikonfirmasi (repo openatx) | Tidak (diunduh dari GitHub Releases) | **PERLU REVIEW HUKUM**: konfirmasi lisensi repo & syarat redistribusi APK sebelum bundling. Saat ini hanya diunduh runtime. |
 | **redroid** (Android in container) | Perlu dikonfirmasi | Tidak | Opsional, dijalankan user sendiri. Ditinjau saat M8. |
@@ -23,16 +24,38 @@ Android SDK Terms of Service membatasi redistribusi komponen SDK. Menghindari pe
 
 **Implikasi air-gapped:** instalasi tanpa internet tidak bisa mengambil adb dari Google. Solusinya: sediakan mirror internal dan arahkan `ENKAKU_TOOLS_MANIFEST_URL` ke manifest yang menunjuk mirror tersebut — mengunduh dari mirror internal milik organisasi user adalah keputusan (dan tanggung jawab) mereka, bukan redistribusi oleh kami.
 
-## Android Emulator dan system images: lebih ketat daripada adb
+## Android Emulator dan system images: garisnya ada di ukuran, bukan di penerbitnya
 
-adb diunduh saat first-run dan diverifikasi sha256 — masih "kami" yang mengambilnya, hanya
-tidak dibundel. Untuk fitur virtual devices (plan 400–404), Enkaku memilih posisi yang
-lebih ketat: **system image sama sekali tidak diunduh oleh kode kami**, dalam bentuk apa
-pun. Satu system image berukuran 1.5–3 GB dan tunduk pada Android SDK Terms of Service
-yang sama; operator memasang SDK, `emulator`, dan system image-nya sendiri di mesin yang
-menjalankan core, dan Enkaku hanya membaca (`ANDROID_SDK_ROOT`/`ANDROID_HOME`, atau
-`ENKAKU_ANDROID_SDK_PATH`) — tidak pernah menulis ke lokasi itu maupun mengambil sesuatu
-dari `dl.google.com` atas nama fitur ini. Lihat `docs/guide/virtual-devices.md`.
+**Direvisi 2026-09-06 (keputusan owner).** Versi sebelumnya menyatakan Enkaku "tidak pernah
+menulis ke lokasi itu maupun mengambil sesuatu dari `dl.google.com` atas nama fitur ini".
+Kalimat itu sudah tidak benar, dan dibiarkan berdiri akan lebih buruk daripada diubah.
+
+Yang berubah: **`cmdline-tools` kini diunduh oleh Toolchain Manager**, dari URL resmi Google,
+dengan sha256 terkunci — perlakuan yang persis sama dengan adb/platform-tools, dari
+repositori yang sama (`dl.google.com/android/repository`), dan dengan alasan yang sama:
+user selalu mendapat binary asli dari sumbernya, terverifikasi, tanpa kami redistribusi
+apa pun. Menolaknya sementara adb diperlakukan begitu adalah pembedaan yang tidak punya
+dasar.
+
+Yang **tidak** berubah, dan inilah garis sebenarnya: **system image tetap tidak pernah
+diunduh oleh kode kami**, dalam bentuk apa pun. Satu system image berukuran 1.5–3 GB —
+itu bukan lagi "mengambilkan alat", itu mendistribusikan platform. Begitu juga paket
+`emulator` dan `platform-tools` tambahan: Enkaku menyediakan tombolnya di Settings →
+Virtual devices, tetapi yang mengunduh adalah **`sdkmanager` milik operator sendiri**,
+dijalankan atas permintaan mereka, dengan Android SDK Terms yang mereka setujui lewat
+kotak centang di layar itu (per permintaan, tidak pernah disimpan).
+
+Ringkasnya:
+
+| Komponen | Siapa yang mengunduh | Verifikasi |
+|---|---|---|
+| `cmdline-tools` (~150 MB) | Toolchain Manager kami | sha256 terkunci di manifest |
+| `emulator`, `platform-tools` | `sdkmanager` milik operator | oleh `sdkmanager` sendiri |
+| system image (1.5–3 GB) | `sdkmanager` milik operator | oleh `sdkmanager` sendiri |
+
+Enkaku boleh menulis ke SDK root yang dipilih operator di layar itu, atau ke direktorinya
+sendiri (`<dataDir>/android-sdk`) — dua tujuan, keduanya ditentukan server, tidak pernah
+path bebas dari browser. Lihat `docs/guide/virtual-devices.md`.
 
 ## gost, dan kenapa bukan Toolchain Manager
 

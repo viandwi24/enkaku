@@ -52,7 +52,7 @@ function toWire(record: CoreVmRecord): VmRecord {
  * embeds, or looks up a `devices` row. The `serial` field is observational
  * only.
  */
-export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log: Logger }): Hono<AuthEnv> {
+export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log: Logger; toolchainSdkmanager?: () => Promise<string | null>; installCmdlineTools?: () => Promise<void> }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
   function authorizeView(user: { role: 'admin' | 'operator' } | undefined): void {
@@ -95,9 +95,26 @@ export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log:
   const installs = new Map<string, { lines: string[]; done: boolean; error: string | null }>()
   const MAX_LINES = 500
 
+  /**
+   * Install the Android SDK command-line tools through the Toolchain Manager
+   * — the ONE package Enkaku fetches itself, sha256-pinned from Google's own
+   * repository, exactly as adb is (`LICENSES.md`, revised 2026-09-06).
+   *
+   * Separate from `/sdk/install` because it is a different act with different
+   * licensing: this one is Enkaku downloading, that one is the operator's
+   * `sdkmanager` downloading. It is also the bootstrap — without it, a bare
+   * host has nothing for `/sdk/install` to run.
+   */
+  app.post('/sdk/cmdline-tools', async (c) => {
+    authorizeManage(c.get('user'))
+    if (!deps.installCmdlineTools) throw new EnkakuError('E_NOT_SUPPORTED', 'this core has no toolchain manager wired')
+    await deps.installCmdlineTools()
+    return typedJson(c, AndroidSdkStatusResponseSchema, { sdk: await readSdkInventory(deps.dataDir, deps.toolchainSdkmanager) })
+  })
+
   app.get('/sdk', async (c) => {
     authorizeView(c.get('user'))
-    return typedJson(c, AndroidSdkStatusResponseSchema, { sdk: await readSdkInventory(deps.dataDir) })
+    return typedJson(c, AndroidSdkStatusResponseSchema, { sdk: await readSdkInventory(deps.dataDir, deps.toolchainSdkmanager) })
   })
 
   app.get('/sdk/install/:id', (c) => {
@@ -130,7 +147,7 @@ export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log:
     }
     // Answered immediately: a system image is gigabytes, and a request that
     // waits for it is a request that times out somewhere in between.
-    void installSdkPackages(body.data, { dataDir: deps.dataDir, log: deps.log }, push)
+    void installSdkPackages(body.data, { dataDir: deps.dataDir, log: deps.log, ...(deps.toolchainSdkmanager ? { toolchainSdkmanager: deps.toolchainSdkmanager } : {}) }, push)
       .then((r) => push(`done — ${r.packages.length} package(s) into ${r.root}`))
       .catch((err) => {
         run.error = err instanceof Error ? err.message : String(err)
