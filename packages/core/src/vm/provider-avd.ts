@@ -1,5 +1,7 @@
+import { join } from 'node:path'
 import type { AndroidSdk } from './sdk'
 import type { VmHandle, VmProvider, VmSpec } from './types'
+import { resolveJavaHome } from './sdk-install'
 import { EnkakuError } from '../util/errors'
 
 /**
@@ -22,7 +24,26 @@ const STDERR_TAIL_BYTES = 4096
 export interface VmProviderAvdDeps {
   sdk: AndroidSdk
   /** Injectable so tests can prove the argv without spawning a process — mirrors `adb-server-control.ts`'s `spawnAdb` seam. Defaults to a real `Bun.spawn`. */
-  spawn?: (binary: string, args: string[], opts: { stdin?: 'pipe'; stdout?: 'pipe' | 'ignore'; stderr?: 'pipe' | 'ignore' }) => Bun.Subprocess<'pipe' | 'ignore', 'pipe' | 'ignore', 'pipe' | 'ignore'>
+  spawn?: (binary: string, args: string[], opts: { stdin?: 'pipe'; stdout?: 'pipe' | 'ignore'; stderr?: 'pipe' | 'ignore'; env?: Record<string, string | undefined> }) => Bun.Subprocess<'pipe' | 'ignore', 'pipe' | 'ignore', 'pipe' | 'ignore'>
+  /** Injected for tests; defaults to the real search. */
+  javaHome?: () => Promise<string | null>
+}
+
+/**
+ * `avdmanager` is a Java program, and the core's environment is whatever
+ * started it — frequently a shell that has never seen a JDK, because on
+ * macOS Homebrew leaves `openjdk` unlinked and `/usr/bin/java` is a stub
+ * whose entire job is to tell you there is no Java.
+ *
+ * `sdk-install.ts` solved this for `sdkmanager` and the provider was left
+ * with the plain environment, so the first thing to happen after
+ * `avdmanager` became reachable at all was `Unable to locate a Java Runtime`
+ * (owner, 2026-09-06). Same search, same reason, same fix.
+ */
+async function javaEnv(find: () => Promise<string | null>): Promise<Record<string, string | undefined> | undefined> {
+  const home = await find()
+  if (!home) return undefined
+  return { ...process.env, JAVA_HOME: home, PATH: `${join(home, 'bin')}:${process.env.PATH ?? ''}` }
 }
 
 function readTail(chunks: Uint8Array[], maxBytes: number): string {
@@ -33,6 +54,7 @@ function readTail(chunks: Uint8Array[], maxBytes: number): string {
 
 export function createAvdProvider(deps: VmProviderAvdDeps): VmProvider {
   const spawn = deps.spawn ?? ((binary, args, opts) => Bun.spawn([binary, ...args], opts))
+  const findJava = deps.javaHome ?? resolveJavaHome
 
   return {
     async create(spec: VmSpec): Promise<void> {
@@ -40,10 +62,11 @@ export function createAvdProvider(deps: VmProviderAvdDeps): VmProvider {
       const sysImage = `system-images;android-${spec.apiLevel};${spec.variant};${abi}`
       // Do NOT pass `-f`: overwriting an operator's existing AVD is destructive, and
       // an existing AVD of this name is an error (`VmProvider.create`'s own contract).
+      const env = await javaEnv(findJava)
       const proc = spawn(
         deps.sdk.avdmanager,
         ['create', 'avd', '-n', spec.name, '-k', sysImage, '-d', spec.deviceProfile],
-        { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
+        { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', ...(env ? { env } : {}) },
       )
       // avdmanager asks "Do you wish to create a custom hardware profile [no]" —
       // feed `no` on stdin so the process can never hang waiting for a TTY.
@@ -90,7 +113,8 @@ export function createAvdProvider(deps: VmProviderAvdDeps): VmProvider {
     },
 
     async destroy(spec: VmSpec): Promise<void> {
-      const proc = spawn(deps.sdk.avdmanager, ['delete', 'avd', '-n', spec.name], { stdout: 'pipe', stderr: 'pipe' })
+      const env = await javaEnv(findJava)
+      const proc = spawn(deps.sdk.avdmanager, ['delete', 'avd', '-n', spec.name], { stdout: 'pipe', stderr: 'pipe', ...(env ? { env } : {}) })
       const [exitCode, stderrChunks] = await Promise.all([proc.exited, collect(proc.stderr)])
       if (exitCode !== 0) {
         throw new EnkakuError('E_VM_DESTROY_FAILED', `avdmanager delete avd failed (exit ${exitCode}): ${readTail(stderrChunks, STDERR_TAIL_BYTES)}`)

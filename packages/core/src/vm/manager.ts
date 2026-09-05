@@ -129,6 +129,24 @@ export function createVmManager(deps: VmManagerDeps): VmManager {
         throw new EnkakuError('E_VM_LIMIT', `${cap} virtual device(s) already running or in progress (ENKAKU_VM_MAX_CONCURRENT)`)
       }
 
+      /*
+        A name collision is the operator's mistake, not the server's.
+
+        `virtual_devices.name` is UNIQUE, so a second device of the same name
+        reached the caller as a raw `SQLiteError` mapped to
+        `E_INTERNAL`/"internal error" — which says nothing, and said it most
+        often right after a create had FAILED and left its row behind, when
+        the operator's natural next move is to try the same name again
+        (owner, 2026-09-06).
+      */
+      const existing = deps.db.select().from(virtualDevices).where(eq(virtualDevices.name, spec.name)).get()
+      if (existing) {
+        throw new EnkakuError(
+          'E_VM_NAME_TAKEN',
+          `a virtual device named "${spec.name}" already exists (${existing.state}). Delete it first, or choose another name.`,
+        )
+      }
+
       const taken = new Set(deps.db.select().from(virtualDevices).all().map((r) => r.consolePort))
       const consolePort = await nextFreeConsolePort({ taken, probe: deps.probePort })
 
@@ -151,12 +169,43 @@ export function createVmManager(deps: VmManagerDeps): VmManager {
         setRow(id, { state: 'failed', message: err instanceof Error ? err.message : String(err) })
         throw err
       }
+      /*
+        A created VM is `stopped`: it exists on disk and is not running.
+
+        This line was missing, and the row sat at `creating` for the rest of
+        the core's life — never startable-looking, counted against
+        `ENKAKU_VM_MAX_CONCURRENT` as work in progress, and turned into
+        `failed` ("the core restarted while this VM was being created") by
+        `adopt()` on the next boot. Nobody had seen it because on this host
+        no create had ever SUCCEEDED: `avdmanager` was unreachable, so every
+        attempt took the catch above instead (owner, 2026-09-06).
+      */
+      setRow(id, { state: 'stopped', message: null })
 
       return rowToRecord(getRow(id))
     },
 
     async start(id: string): Promise<VmRecord> {
       const row = getRow(id)
+      /*
+        The cap belongs here, not only on `create`.
+
+        `ENKAKU_VM_MAX_CONCURRENT` limits how many emulators run at once —
+        each one is a full Android system with its own RAM. Until a created
+        VM settled at `stopped`, every create counted as work in progress and
+        the check on `create` happened to enforce it; now that a created VM
+        is correctly `stopped`, the only place concurrency is really decided
+        is the moment one is started.
+      */
+      const live = deps.db
+        .select()
+        .from(virtualDevices)
+        .all()
+        .filter((r) => r.id !== id && (r.state === 'starting' || r.state === 'running'))
+      const cap = deps.maxConcurrent()
+      if (live.length >= cap) {
+        throw new EnkakuError('E_VM_LIMIT', `${cap} virtual device(s) already running (ENKAKU_VM_MAX_CONCURRENT)`)
+      }
       const spec = VmSpecSchema.parse(row.spec)
       setRow(id, { state: 'starting', message: null })
 

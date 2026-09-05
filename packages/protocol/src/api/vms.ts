@@ -86,7 +86,7 @@ export const SdkInstallBodySchema = z
   .object({
     /** Never a path. Two destinations, both chosen by the server. */
     target: z.enum(['detected', 'managed']).default('detected'),
-    packages: z.array(z.enum(['emulator', 'platform-tools'])).default([]),
+    packages: z.array(z.enum(['emulator', 'platform-tools', 'cmdline-tools'])).default([]),
     systemImage: z
       .object({
         apiLevel: z.number().int().min(24).max(40),

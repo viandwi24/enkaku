@@ -85,7 +85,11 @@ export function AndroidSdkPanel() {
     try {
       const id = await installAndroidSdk({
         target,
-        packages: sdk?.emulator ? [] : ['emulator'],
+        // `cmdline-tools` whenever the SDK has no avdmanager of its own:
+        // that is the package the create path actually needs, and leaving it
+        // to the operator to know that is how a farm ends up with a green
+        // status panel and a device it cannot create.
+        packages: [...(sdk?.emulator ? [] : (['emulator'] as const)), ...(sdk?.avdmanager ? [] : (['cmdline-tools'] as const))],
         ...(withImage ? { systemImage: { apiLevel, variant: 'google_apis' as const, abi: navigator.userAgent.includes('Intel') ? ('x86_64' as const) : ('arm64-v8a' as const) } } : {}),
         acceptLicenses: accepted,
       })
@@ -98,7 +102,7 @@ export function AndroidSdkPanel() {
 
   if (!sdk) return <div className="px-[14px] py-3 text-body text-dim">Reading the host’s Android SDK…</div>
 
-  const canInstall = sdk.sdkmanager && accepted && !running && (!sdk.emulator || withImage)
+  const canInstall = sdk.sdkmanager && accepted && !running && (!sdk.emulator || !sdk.avdmanager || withImage)
 
   return (
     <div className="space-y-3 px-[14px] py-3">

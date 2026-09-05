@@ -26,7 +26,27 @@ import { resolveAndroidSdk, type AndroidSdk } from './sdk'
  */
 
 /** What an operator may ask to install. A closed list: this is not a shell. */
-export const INSTALLABLE_PACKAGES = ['emulator', 'platform-tools'] as const
+export const INSTALLABLE_PACKAGES = ['emulator', 'platform-tools', 'cmdline-tools'] as const
+
+/**
+ * The sdkmanager coordinate each of those maps to.
+ *
+ * `cmdline-tools` is the one that is not its own name, and it is the one
+ * that matters most. `avdmanager` derives the SDK it manages from where the
+ * script itself sits — so the Toolchain Manager's copy, living under
+ * `<dataDir>/tools/`, runs perfectly and then reports "Package path is not
+ * valid. Valid system image paths are: null", because it is looking at a
+ * directory with no system images in it (verified on the owner's host,
+ * 2026-09-06). Installing `cmdline-tools;latest` INTO the SDK root puts
+ * `avdmanager` where it can see the images, and creating a virtual device
+ * starts working. Ours stays the bootstrap that makes this install possible
+ * on a host that has no sdkmanager at all.
+ */
+const PACKAGE_COORDINATE: Record<(typeof INSTALLABLE_PACKAGES)[number], string> = {
+  emulator: 'emulator',
+  'platform-tools': 'platform-tools',
+  'cmdline-tools': 'cmdline-tools;latest',
+}
 
 /** `system-images;android-<api>;<variant>;<abi>` — assembled here, never accepted as free text. */
 export interface SystemImageRequest {
@@ -139,7 +159,7 @@ export function managedSdkRoot(dataDir: string): string {
 
 /** The package coordinates a request resolves to, in the order `sdkmanager` will be given them. */
 export function packagesFor(req: SdkInstallRequest): string[] {
-  const out: string[] = [...req.packages]
+  const out: string[] = req.packages.map((p) => PACKAGE_COORDINATE[p])
   if (req.systemImage) {
     const { apiLevel, variant, abi } = req.systemImage
     out.push(`system-images;android-${apiLevel};${variant};${abi}`)
@@ -334,12 +354,24 @@ export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: ()
     }
   }
 
-  const [emulator, sdkmanagerPath, avdmanager] = await Promise.all([
+  const [emulator, sdkmanagerPath, avdmanagerExists] = await Promise.all([
     Bun.file(sdk.emulator).exists().catch(() => false),
     resolveSdkmanager(sdk, toolchainSdkmanager),
     Bun.file(sdk.avdmanager).exists().catch(() => false),
   ])
   const sdkmanager = sdkmanagerPath !== null
+  /*
+    `avdmanager` reports whether a device can actually be CREATED, which is
+    not the same as whether the binary exists.
+
+    It derives the SDK it manages from its own location, so the Toolchain
+    Manager's copy under `<dataDir>/tools/` runs and then finds no system
+    images at all — "Package path is not valid. Valid system image paths are:
+    null". Reporting that as installed would put a green line on the screen
+    above a create that cannot work. Only a copy inside the SDK root counts;
+    the remedy below says how to get one, and the Install button can do it.
+  */
+  const avdmanager = avdmanagerExists && sdk.avdmanager.startsWith(sdk.root)
 
   const platforms = (await listDir(join(sdk.root, 'platforms'))).filter((d) => d.startsWith('android-')).sort()
   const images: string[] = []
@@ -354,8 +386,10 @@ export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: ()
   // One remedy, the most blocking first — a screen listing four problems at
   // once teaches nobody what to do next.
   const javaHome = await resolveJavaHome()
-  const remedy = !sdkmanager || !avdmanager
+  const remedy = !sdkmanager
     ? 'The SDK is here but its command-line tools are not — install them below; Enkaku fetches that one package itself, verified against a pinned checksum.'
+    : !avdmanager
+      ? 'The SDK has no avdmanager of its own, and a copy from anywhere else cannot see this SDK’s system images. Install the command-line tools into it below — one package, about 150 MB.'
     : !javaHome
       ? 'No Java runtime was found, and sdkmanager is a Java program. Install a JDK (17 or newer) — on macOS, `brew install openjdk@17`.'
     : !emulator

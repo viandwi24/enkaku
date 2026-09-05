@@ -144,25 +144,32 @@ describe('VmManager.adopt', () => {
 })
 
 describe('VmManager concurrency cap', () => {
-  test('create at the cap throws E_VM_LIMIT, read live from maxConcurrent()', async () => {
+  /*
+    Creating no longer counts against the cap, because a created VM is
+    `stopped` — it exists on disk and consumes nothing. The cap is about how
+    many emulators RUN at once, so it is asserted where that is decided.
+  */
+  test('start at the cap throws E_VM_LIMIT, read live from maxConcurrent()', async () => {
     let cap = 1
-    const { deps } = setUp({ maxConcurrent: () => cap })
+    const { deps } = setUp({ maxConcurrent: () => cap, shell: async () => '1\n' })
     const manager = createVmManager(deps)
-    await manager.create(testSpec({ name: 'first' }))
+    const first = await manager.create(testSpec({ name: 'first' }))
+    const second = await manager.create(testSpec({ name: 'second' }))
+    await manager.start(first.id)
 
     let caught: unknown
     try {
-      await manager.create(testSpec({ name: 'second' }))
+      await manager.start(second.id)
     } catch (err) {
       caught = err
     }
     expect(caught).toBeInstanceOf(EnkakuError)
     expect((caught as EnkakuError).code).toBe('E_VM_LIMIT')
 
-    // Raising the cap live (never captured once) lets the next create through.
+    // Raising the cap live (never captured once) lets the next start through.
     cap = 2
-    const second = await manager.create(testSpec({ name: 'second' }))
-    expect(second.name).toBe('second')
+    const started = await manager.start(second.id)
+    expect(started.state).toBe('running')
   })
 })
 

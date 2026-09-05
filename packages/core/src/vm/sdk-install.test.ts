@@ -19,7 +19,13 @@ describe('packagesFor', () => {
   })
 
   test('the installable list is closed — this is not a shell', () => {
-    expect(INSTALLABLE_PACKAGES).toEqual(['emulator', 'platform-tools'])
+    expect(INSTALLABLE_PACKAGES).toEqual(['emulator', 'platform-tools', 'cmdline-tools'])
+  })
+
+  test('cmdline-tools resolves to the sdkmanager coordinate, not its own name', () => {
+    // `avdmanager` reads the SDK it manages off its own location, so this is
+    // the package that has to land INSIDE the SDK root for a create to work.
+    expect(packagesFor({ ...base, packages: ['cmdline-tools'] })).toEqual(['cmdline-tools;latest'])
   })
 })
 
