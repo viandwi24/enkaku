@@ -799,32 +799,40 @@ export const scripts = sqliteTable(
 export type ScriptRow = typeof scripts.$inferSelect
 
 /**
- * A named parameter set for a script NAME (plan 95 §4.7, §5 step 95.8).
- * Keyed on `scriptName`, never a `scripts.id`: a preset is standing intent
- * about a script, exactly as a schedule's `scriptRef` is (plan 62 §3.3) — it
- * must outlive the version it was written against, and be reconciled
- * (`@enkaku/protocol`'s `reconcileParams`) whenever it meets one. Applying a
- * set to a form, or to a new schedule, copies its `params` in — nothing
- * downstream of that moment ever reads this table again for that job or
- * schedule, the same "reference on the standing thing, resolution on the
- * concrete thing" split plan 62 draws between `schedules.scriptRef` and
- * `jobs.scriptId`.
+ * A named parameter set, for a script NAME or a workflow NAME (plan 95 §4.7,
+ * §5 step 95.8; generalised to workflows by plan 311 §3.3, §4.1). Keyed on
+ * `(kind, ownerName)`, never a `scripts.id`/workflow row id: a preset is
+ * standing intent about the thing named, exactly as a schedule's `scriptRef`
+ * is (plan 62 §3.3) — it must outlive the version it was written against,
+ * and be reconciled (`@enkaku/protocol`'s `reconcileParams`) whenever it
+ * meets one. Applying a preset to a form, or to a new schedule, copies its
+ * `params` in — nothing downstream of that moment ever reads this table
+ * again for that job or schedule, the same "reference on the standing thing,
+ * resolution on the concrete thing" split plan 62 draws between
+ * `schedules.scriptRef` and `jobs.scriptId`.
+ *
+ * The table NAME is unchanged (`script_param_sets`) — renaming it would
+ * rewrite it for nothing; only `kind` is new and `script_name` is renamed to
+ * `owner_name` (plan 311 §4.1).
  */
-export const scriptParamSets = sqliteTable(
+export const paramPresets = sqliteTable(
   'script_param_sets',
   {
     id: text('id').primaryKey(),
-    scriptName: text('script_name').notNull(),
+    /** `'script' | 'workflow'` (plan 311 §3.3). */
+    kind: text('kind').notNull().default('script'),
+    /** A script's `plugin/script` name, or a workflow's `name`. Never a version (plan 311 §3.1). */
+    ownerName: text('owner_name').notNull(),
     name: text('name').notNull(),
     params: text('params', { mode: 'json' }),
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   },
-  (t) => [uniqueIndex('idx_param_sets_script_name').on(t.scriptName, t.name)],
+  (t) => [uniqueIndex('idx_param_sets_owner').on(t.kind, t.ownerName, t.name)],
 )
 
-export type ScriptParamSetRow = typeof scriptParamSets.$inferSelect
+export type ParamPresetRow = typeof paramPresets.$inferSelect
 
 /**
  * A workflow document (plan 210, MVP 03 §2.2 rule 4): owned by the farm,

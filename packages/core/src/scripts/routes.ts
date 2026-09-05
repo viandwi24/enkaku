@@ -2,9 +2,9 @@ import { Hono } from 'hono'
 import { and, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import {
-  ParamSetDeleteResponseSchema,
-  ParamSetListResponseSchema,
-  ParamSetResponseSchema,
+  ParamPresetDeleteResponseSchema,
+  ParamPresetListResponseSchema,
+  ParamPresetResponseSchema,
   ScriptDeleteResponseSchema,
   ScriptResponseSchema,
   ScriptsListResponseSchema,
@@ -18,14 +18,15 @@ import { jobRuns, jobs, plugins, scripts } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 import { createLogger, type Logger } from '../util/logger'
 import { typedJson } from '../api/typed-json'
-import { createParamSet, deleteParamSet, listParamSets, updateParamSet } from './param-sets'
+import { createParamPreset, deleteParamPreset, listParamPresets, updateParamPreset } from './param-sets'
 import { getScriptDetail, isUnownedScriptRow, listActiveScripts, parseScriptRuntime } from './service'
 
-// Plan 95 §4.7, §4.8, §5 step 95.8 — a set's own `params` is `z.unknown()`,
-// same reasoning `ParamSetInfoSchema`'s doc comment gives: it is checked
-// against the SCHEMA it meets when applied (`reconcileParams`), not against
-// a fixed shape at save time. `name` gets the same ceiling as every other
-// author-facing label this plan already caps (`SCHEMA_LIMITS.maxLabelChars`).
+// Plan 95 §4.7, §4.8, §5 step 95.8 — a preset's own `params` is
+// `z.unknown()`, same reasoning `ParamPresetInfoSchema`'s doc comment gives:
+// it is checked against the SCHEMA it meets when applied
+// (`reconcileParams`), not against a fixed shape at save time. `name` gets
+// the same ceiling as every other author-facing label this plan already
+// caps (`SCHEMA_LIMITS.maxLabelChars`).
 const ParamSetCreateBody = z.object({ name: z.string().min(1).max(60), params: z.unknown() })
 const ParamSetUpdateBody = z.object({ name: z.string().min(1).max(60).optional(), params: z.unknown().optional() })
 
@@ -73,8 +74,8 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string; audit?
   // literal second segment (`param-sets`) never collides with a one-segment
   // `/:id` match.
   app.get('/:name/param-sets', requirePermission('script.view'), (c) => {
-    const items = listParamSets(db, c.req.param('name'))
-    return typedJson(c, ParamSetListResponseSchema, { items })
+    const items = listParamPresets(db, 'script', c.req.param('name'))
+    return typedJson(c, ParamPresetListResponseSchema, { items })
   })
 
   // `job.run`, not `script.publish` (plan 95 §4.8's own route table) — a
@@ -85,9 +86,9 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string; audit?
     if (!body.success) {
       return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
     }
-    const paramSet = createParamSet(db, { scriptName: name, name: body.data.name, params: body.data.params, createdBy: actorId(c) })
-    deps.audit?.record({ userId: actorId(c), action: 'script.param_set.create', target: paramSet.id, meta: { scriptName: name, name: paramSet.name } })
-    return typedJson(c, ParamSetResponseSchema, { paramSet }, 201)
+    const preset = createParamPreset(db, { kind: 'script', ownerName: name, name: body.data.name, params: body.data.params, createdBy: actorId(c) })
+    deps.audit?.record({ userId: actorId(c), action: 'script.param_set.create', target: preset.id, meta: { scriptName: name, name: preset.name } })
+    return typedJson(c, ParamPresetResponseSchema, { preset }, 201)
   })
 
   app.patch('/:name/param-sets/:id', requirePermission('job.run'), async (c) => {
@@ -96,17 +97,17 @@ export function createScriptRoutes(deps: { db: Db; publishToken?: string; audit?
     if (!body.success) {
       return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
     }
-    const paramSet = updateParamSet(db, name, c.req.param('id'), body.data)
-    deps.audit?.record({ userId: actorId(c), action: 'script.param_set.update', target: paramSet.id, meta: { scriptName: name, name: paramSet.name } })
-    return typedJson(c, ParamSetResponseSchema, { paramSet })
+    const preset = updateParamPreset(db, 'script', name, c.req.param('id'), body.data)
+    deps.audit?.record({ userId: actorId(c), action: 'script.param_set.update', target: preset.id, meta: { scriptName: name, name: preset.name } })
+    return typedJson(c, ParamPresetResponseSchema, { preset })
   })
 
   app.delete('/:name/param-sets/:id', requirePermission('job.run'), (c) => {
     const name = c.req.param('name')
     const id = c.req.param('id')
-    const deleted = deleteParamSet(db, name, id)
+    const deleted = deleteParamPreset(db, 'script', name, id)
     deps.audit?.record({ userId: actorId(c), action: 'script.param_set.delete', target: id, meta: { scriptName: name, name: deleted.name } })
-    return typedJson(c, ParamSetDeleteResponseSchema, { ok: true })
+    return typedJson(c, ParamPresetDeleteResponseSchema, { ok: true })
   })
 
   // `GET /api/scripts` (plan 210 §4.2, §4.5) — one row per member of an

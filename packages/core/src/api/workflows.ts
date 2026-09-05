@@ -1,10 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { and, desc, eq, ne } from 'drizzle-orm'
+import { and, desc, eq, notInArray } from 'drizzle-orm'
 import {
   checkDeclaredSchema,
   checkWorkflow,
   compileWorkflowParams,
+  ParamPresetDeleteResponseSchema,
+  ParamPresetListResponseSchema,
+  ParamPresetResponseSchema,
   WorkflowDocSchema,
   WorkflowResponseSchema,
   WorkflowsListResponseSchema,
@@ -14,6 +17,8 @@ import {
   WorkflowPinSetRequestSchema,
   WorkflowRunNodeRequestSchema,
   WorkflowRunNodeResponseSchema,
+  WorkflowSimulateRequestSchema,
+  WorkflowSimulateResponseSchema,
   WorkflowLastRunResponseSchema,
   WORKFLOW_STEP_STATUSES,
   type ResolvedNodeScript,
@@ -29,12 +34,15 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { jobRuns, jobs, workflowSteps, type WorkflowStepRow } from '../db/schema'
+import { jobRuns, jobs, workflowSteps, type RunTrigger, type WorkflowStepRow } from '../db/schema'
 import { rowToJobInfo } from '../queue/job-store'
 import type { ScriptRegistry } from '../scripts/registry'
+import { createParamPreset, deleteParamPreset, listParamPresets, updateParamPreset } from '../scripts/param-sets'
 import type { WorkflowStore } from '../workflows/store'
 import { upgradeWorkflowDoc } from '../workflows/upgrade'
 import type { PinStore } from '../workflows/pins'
+import { simulateWorkflow } from '../workflows/simulate'
+import { storeSimulateRun } from '../workflows/simulate-store'
 import type { RunStore } from '../jobs/runs/store'
 import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
@@ -49,6 +57,20 @@ import { WORKFLOW_MAX_TOTAL_MS } from '../config/constants'
  */
 
 const DocBody = z.object({ doc: z.unknown() })
+
+// Named parameter presets for a workflow (plan 311 §3.3, §4.4) — same body
+// shape as the script route family (`scripts/routes.ts`), one store behind
+// both (plan 311 G4).
+const PresetCreateBody = z.object({ name: z.string().min(1).max(60), params: z.unknown() })
+const PresetUpdateBody = z.object({ name: z.string().min(1).max(60).optional(), params: z.unknown().optional() })
+
+/**
+ * Triggers that never count as a workflow's or a script's "last run" (plan
+ * 304 §4.6, plan 309 §3.4 G4): `node-test` runs one node alone and must
+ * never overwrite the data an author sees for every other node; `simulate`
+ * never touches a device at all and must never be shown as if it had.
+ */
+const NON_REAL_RUN_TRIGGERS: RunTrigger[] = ['node-test', 'simulate']
 
 const ERROR_STATUS: Record<string, number> = {
   workflow_not_found: 404,
@@ -70,6 +92,8 @@ const ERROR_STATUS: Record<string, number> = {
   E_PIN_NOT_PINNABLE: 400,
   pin_not_found: 404,
   workflow_never_run: 404,
+  param_set_not_found: 404,
+  param_set_name_exists: 409,
 }
 
 function parseErrorFindings(issues: readonly { path: readonly PropertyKey[]; message: string }[]): WorkflowFinding[] {
@@ -270,7 +294,7 @@ function lastRecordedInput(db: Db, workflowName: string, nodeId: string): { ok: 
     .from(workflowSteps)
     .innerJoin(jobRuns, eq(jobRuns.id, workflowSteps.runId))
     .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
-    .where(and(eq(jobs.workflowName, workflowName), eq(workflowSteps.stepId, nodeId), ne(jobRuns.trigger, 'node-test')))
+    .where(and(eq(jobs.workflowName, workflowName), eq(workflowSteps.stepId, nodeId), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
     .orderBy(desc(workflowSteps.startedAt))
     .limit(1)
     .get()
@@ -336,6 +360,36 @@ export function createWorkflowRoutes(deps: {
     return c.json(findings)
   })
 
+  // ---- Simulate (plan 309 §4.3) ----
+
+  /**
+   * Runs the WHOLE document with no device contact at all (plan 309 G1) —
+   * permission `script.view`, deliberately NOT `job.run`, because nothing is
+   * run: `simulateWorkflow` substitutes a pin, a sample, or a mock for every
+   * `script` node, and the SAME `checkWorkflow`/`workflow-resolve.ts` the
+   * publish route and the real executor use decide every gate/switch/set
+   * (G3). `doc` is the EDITOR's own unsaved document (§4.4) — an author
+   * simulates the graph in front of them, including a node not yet saved.
+   */
+  app.post('/simulate', requirePermission('script.view'), async (c) => {
+    const body = WorkflowSimulateRequestSchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
+
+    const validated = validateForWrite(registry, deps, body.data.doc)
+    if (!validated.ok) return c.json(validated.body, validated.status)
+
+    const result = simulateWorkflow({ doc: validated.doc, params: body.data.params, mocks: body.data.mocks }, { pins: deps.pins, registry })
+    const { jobId, runId } = storeSimulateRun(deps.db, {
+      workflowName: validated.doc.name,
+      workflowDoc: validated.doc,
+      params: body.data.params,
+      createdBy: actorId(c),
+      result,
+    })
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.simulate', target: validated.doc.name, meta: { jobId, runId, status: result.status } })
+    return typedJson(c, WorkflowSimulateResponseSchema, { jobId, runId }, 202)
+  })
+
   app.get('/', requirePermission('script.view'), (c) => {
     const items = store.list()
     return typedJson(c, WorkflowsListResponseSchema, { items, total: items.length })
@@ -383,6 +437,48 @@ export function createWorkflowRoutes(deps: {
     deps.pins.removeAll(name)
     deps.audit?.record({ userId: actorId(c), action: 'workflow.delete', target: workflow.id, meta: { name } })
     return typedJson(c, WorkflowDeleteResponseSchema, { ok: true })
+  })
+
+  // ---- Presets (plan 311 §3.3, §4.4) — the same store the script route
+  // family (`scripts/routes.ts`) uses, `kind: 'workflow'` instead of
+  // `'script'`. A literal second segment (`presets`) never collides with the
+  // bare `/:name` routes above or below it.
+
+  app.get('/:name/presets', requirePermission('script.view'), (c) => {
+    const items = listParamPresets(deps.db, 'workflow', c.req.param('name'))
+    return typedJson(c, ParamPresetListResponseSchema, { items })
+  })
+
+  // `job.run`, not `script.publish` (mirrors the script preset route table)
+  // — a preset is a convenience for someone about to RUN a workflow.
+  app.post('/:name/presets', requirePermission('job.run'), async (c) => {
+    const name = c.req.param('name')
+    const body = PresetCreateBody.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) {
+      return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
+    }
+    const preset = createParamPreset(deps.db, { kind: 'workflow', ownerName: name, name: body.data.name, params: body.data.params, createdBy: actorId(c) })
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.preset.create', target: preset.id, meta: { workflowName: name, name: preset.name } })
+    return typedJson(c, ParamPresetResponseSchema, { preset }, 201)
+  })
+
+  app.patch('/:name/presets/:id', requirePermission('job.run'), async (c) => {
+    const name = c.req.param('name')
+    const body = PresetUpdateBody.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) {
+      return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
+    }
+    const preset = updateParamPreset(deps.db, 'workflow', name, c.req.param('id'), body.data)
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.preset.update', target: preset.id, meta: { workflowName: name, name: preset.name } })
+    return typedJson(c, ParamPresetResponseSchema, { preset })
+  })
+
+  app.delete('/:name/presets/:id', requirePermission('job.run'), (c) => {
+    const name = c.req.param('name')
+    const id = c.req.param('id')
+    const deleted = deleteParamPreset(deps.db, 'workflow', name, id)
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.preset.delete', target: id, meta: { workflowName: name, name: deleted.name } })
+    return typedJson(c, ParamPresetDeleteResponseSchema, { ok: true })
   })
 
   // ---- Pins (plan 300 P10, plan 304 §3.3, §4.3) ----
@@ -435,7 +531,7 @@ export function createWorkflowRoutes(deps: {
         .from(workflowSteps)
         .innerJoin(jobRuns, eq(jobRuns.id, workflowSteps.runId))
         .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
-        .where(and(eq(jobs.workflowName, name), eq(workflowSteps.stepId, nodeId), ne(jobRuns.trigger, 'node-test')))
+        .where(and(eq(jobs.workflowName, name), eq(workflowSteps.stepId, nodeId), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
         .orderBy(desc(workflowSteps.startedAt))
         .limit(1)
         .get()
@@ -542,7 +638,7 @@ export function createWorkflowRoutes(deps: {
       .select({ jobId: jobRuns.jobId, runId: jobRuns.id, startedAt: jobRuns.startedAt, createdAt: jobRuns.createdAt, seed: jobRuns.seed, params: jobs.params })
       .from(jobRuns)
       .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
-      .where(and(eq(jobs.workflowName, name), ne(jobRuns.trigger, 'node-test')))
+      .where(and(eq(jobs.workflowName, name), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
       .orderBy(desc(jobRuns.createdAt))
       .limit(1)
       .get()

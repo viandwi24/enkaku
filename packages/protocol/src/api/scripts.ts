@@ -66,32 +66,3 @@ export const ScriptResponseSchema = z.object({ script: ScriptRowSchema })
 
 /** `DELETE /api/scripts/:id` (unowned rows only). */
 export const ScriptDeleteResponseSchema = z.object({ ok: z.literal(true) })
-
-/**
- * A named parameter set (plan 95 §4.7, §5 step 95.8) — a convenience for a
- * human filling a form, keyed on the script NAME rather than one published
- * version, so it survives every publish. `params` is `z.unknown()`: like
- * `ScriptRow.paramsSchema`'s sibling columns (`jobs.params`,
- * `schedules.params`), it is validated against the SCHEMA it is about to
- * meet at the moment it is applied (`reconcileParams`), not against any
- * fixed shape here.
- */
-export const ParamSetInfoSchema = z.object({
-  id: z.string(),
-  scriptName: z.string(),
-  name: z.string(),
-  params: z.unknown(),
-  createdBy: z.string().nullable(),
-  createdAt: z.number(),
-  updatedAt: z.number(),
-})
-export type ParamSetInfo = z.infer<typeof ParamSetInfoSchema>
-
-/** `GET /api/scripts/:name/param-sets`. */
-export const ParamSetListResponseSchema = z.object({ items: z.array(ParamSetInfoSchema) })
-
-/** `POST`/`PATCH /api/scripts/:name/param-sets(/:id)` — both echo the full row back. */
-export const ParamSetResponseSchema = z.object({ paramSet: ParamSetInfoSchema })
-
-/** `DELETE /api/scripts/:name/param-sets/:id` — `{ok: true}`, not an empty 204 body. */
-export const ParamSetDeleteResponseSchema = z.object({ ok: z.literal(true) })

@@ -45,7 +45,7 @@ import {
   TabsTrigger,
   Textarea,
 } from '@enkaku/ui'
-import { ParamSetPicker } from '@/components/ParamSetPicker'
+import { PresetRow } from '@/components/presets/PresetRow'
 import { ScriptTrigger } from '@/components/scripts/ScriptPalette'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
@@ -382,8 +382,9 @@ export function ScheduleDialog({
 
               {scriptOption?.paramsSchema ? (
                 <>
-                  <ParamSetPicker
-                    scriptName={scriptName}
+                  <PresetRow
+                    kind="script"
+                    ownerName={scriptName}
                     schema={clampedSchema}
                     value={params}
                     onApply={(next) => {

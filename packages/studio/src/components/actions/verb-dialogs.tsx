@@ -18,6 +18,7 @@ import {
 } from '@enkaku/ui'
 import { jobHref } from '@/components/jobs/job-view'
 import { ArtifactPicker, uploadArtifactSource, type ArtifactSource } from '@/components/ArtifactPicker'
+import { PresetRow } from '@/components/presets/PresetRow'
 import { ScriptTrigger } from '@/components/scripts/ScriptPalette'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import { narrowSchema } from '@/components/schema-form/narrowSchema'
@@ -218,6 +219,19 @@ function RunScriptFields({ value, onChange }: { value: RunScriptValue; onChange:
         <ScriptTrigger scripts={scripts} selected={selected} onPick={(s) => onChange({ ...value, scriptId: s.id, params: undefined })} />
       </div>
       {selected?.paramsSchema && (
+        // The preset row (plan 311 G1) sits ABOVE the parameter form, never
+        // below it and never in a tab (plan 311 §3.2) — keyed on the
+        // script's own NAME (`selected.name`), not `selected.id`, so a
+        // preset survives every publish (plan 311 §3.1, G6).
+        <PresetRow
+          kind="script"
+          ownerName={selected.name}
+          schema={selected.paramsSchema as JsonSchemaNode}
+          value={value.params}
+          onApply={(params) => onChange({ ...value, params })}
+        />
+      )}
+      {selected?.paramsSchema && (
         <SchemaForm
           schema={selected.paramsSchema as JsonSchemaNode}
           value={value.params}
@@ -312,7 +326,18 @@ function RunWorkflowFields({ value, onChange }: { value: RunWorkflowValue; onCha
         </div>
       )}
       {schema ? (
-        <SchemaForm schema={schema as JsonSchemaNode} value={value.params} onChange={(params) => onChange({ ...value, params })} />
+        <>
+          {/* The preset row (plan 311 G1, §4.3) — between the workflow
+              trigger and its params form, keyed on the workflow's own NAME. */}
+          <PresetRow
+            kind="workflow"
+            ownerName={value.workflowName}
+            schema={schema as JsonSchemaNode}
+            value={value.params}
+            onApply={(params) => onChange({ ...value, params })}
+          />
+          <SchemaForm schema={schema as JsonSchemaNode} value={value.params} onChange={(params) => onChange({ ...value, params })} />
+        </>
       ) : (
         <p className="text-body text-dim">This workflow takes no parameters.</p>
       )}

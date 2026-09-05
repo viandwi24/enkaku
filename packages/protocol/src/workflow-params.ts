@@ -141,7 +141,7 @@ function fieldFor(param: WorkflowParam): z.ZodTypeAny {
  * §3.8, §4.2). This is the ONE place a workflow "compiles" — and it compiles
  * to a SCHEMA, not to code: the output goes straight into `scripts.paramsSchema`
  * (the same column a CLI-published script's schema lives in), so the run
- * dialog, `ParamSetPicker`, `validateAgainstSchema`, `reconcileParams`,
+ * dialog, `PresetRow`, `validateAgainstSchema`, `reconcileParams`,
  * `checkDeclaredSchema`, the batch form, and the agent's enqueue validation all
  * work with no code written for workflows at all.
  *
