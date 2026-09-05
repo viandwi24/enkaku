@@ -315,6 +315,27 @@ export const DeviceInfoSchema = z.object({
    */
   agent: AgentStateSchema.default('absent'),
   /**
+   * A preparation pass is running for this device RIGHT NOW — the guest
+   * agent installing, the ui-server APKs going on, a repair retrying.
+   *
+   * Its own boolean rather than a seventh `AgentState`, because it is not a
+   * persisted state and must never become one: `preparation/runner.ts` and
+   * `agent-provisioner.ts` both keep "a pass is in flight" in memory
+   * deliberately (their `runningSince` doc comments), so a core that dies
+   * mid-install cannot leave a device stuck reading `provisioning` forever.
+   * This carries that in-memory fact to the fleet list, where until now
+   * nothing did.
+   *
+   * What it fixes: a device added for the first time showed `agent: failed`
+   * while the agent was still installing behind it, because `agent` reads
+   * the persisted row and the row still held the check that ran before the
+   * install started (owner, 2026-09-06). A row that is preparing is not a
+   * row that failed, and the two must not look alike.
+   *
+   * Defaulted `false` so every existing constructor still parses.
+   */
+  preparing: z.boolean().default(false),
+  /**
    * The device's short operator-facing number (plan 89 §3.1, §3.2). Lives in
    * its own `device_numbers` table keyed by `stableId`, NOT a column on
    * `devices` — that is what lets it survive Forget. Nullable only for a

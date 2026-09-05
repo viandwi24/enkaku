@@ -73,6 +73,13 @@ const DEFAULT_RETRY_BACKOFF_S = [5, 20, 60]
 
 export interface AgentProvisionerDeps {
   db: Db
+  /**
+   * Called when a pass STARTS and when it ENDS for one device — the two
+   * edges at which `runningSince` changes its answer, so a fleet list can
+   * show "preparing" while an agent installs instead of showing the
+   * pre-install check's `failed`. Optional.
+   */
+  onRunningChange?: (deviceId: string) => void
   /** Per-device shell exec, through the adb queue — the same shape `guestAgentExec` in `daemon.ts` already builds for `createGuestAgentRoutes`. */
   exec: (serial: string, cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number | null }>
   /**
@@ -535,6 +542,14 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // `failed`/`outdated` result, or the `E_ADB_UNAVAILABLE` defer's early
     // `return prior` below.
     runningSinceMap.set(row.id, checkedAt)
+    // The START of a pass. Its END already reaches the host through the
+    // `device.agent` event it records; without this edge a fleet list learns
+    // a device was installing only once it had finished (owner, 2026-09-06).
+    try {
+      deps.onRunningChange?.(row.id)
+    } catch {
+      // Observation must never take down the pass it is observing.
+    }
     try {
       // `reinstall` is the operator saying "put the APK I have on this
       // phone", and it is a DIFFERENT intent from `force`. `force` only
@@ -562,6 +577,11 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       throw err
     } finally {
       runningSinceMap.delete(row.id)
+      try {
+        deps.onRunningChange?.(row.id)
+      } catch {
+        // as above
+      }
     }
 
     // An explicit retry is the honest version of "try again from scratch"

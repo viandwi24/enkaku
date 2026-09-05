@@ -637,6 +637,22 @@ let blobGc: BlobGc | null = null
    * silently resurrect §96.25's own race).
    */
   let preparationRunnerRef: PreparationRunner | null = null
+
+  /**
+   * "Is a preparation pass in flight for this device right now?" — the ONE
+   * place the two in-memory sources are joined, so every caller that builds
+   * a `DeviceInfo` asks the same question and gets the same answer.
+   *
+   * Both `runningSince` maps are deliberately in-memory and unpersisted (see
+   * their own doc comments): a core that dies mid-install must not leave a
+   * device reading `provisioning` for ever. This reads them live rather than
+   * caching, which is why it is a function and not a set.
+   */
+  const isPreparing = (deviceId: string): boolean =>
+    // `?? null` on the second half matters: with no provisioner wired,
+    // `undefined !== null` is TRUE and every device would report itself as
+    // preparing for ever.
+    Object.keys(preparationRunnerRef?.runningSince(deviceId) ?? {}).length > 0 || (agentProvisionerRef?.runningSince(deviceId) ?? null) !== null
   /**
    * The labelling service (plan 89 §4.6, §5 step 89.6) — `null` until it is
    * built, right after `guestAgent` (same reason `agentProvisionerRef`
@@ -1486,6 +1502,25 @@ let blobGc: BlobGc | null = null
           type: 'device.status',
           payload: { id: row.id, stableId: row.stableId, status: status ?? ((row.status ?? 'offline') as DeviceStatus) },
         })
+      }
+
+      /**
+       * Rebroadcast one device's WHOLE row, so a client's list picks up
+       * anything that changed — `device.updated` replaces the row in place
+       * and needs no new message type.
+       *
+       * Used for the edges of a preparation pass: `preparing` is an
+       * in-memory fact (`isPreparing`), so nothing in the database changes
+       * when a pass starts and no existing broadcast fires. Without this a
+       * device installing its agent for the first time looked, in the fleet
+       * list, exactly like one sitting idle — while still showing the
+       * `failed` its pre-install check had written.
+       */
+      const broadcastDeviceRow = (deviceId: string): void => {
+        const row = listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing).find(
+          (d) => d.id === deviceId,
+        )
+        if (row) hub.broadcast({ type: 'device.updated', payload: row })
       }
 
       const states = createDeviceStateMachine({
@@ -2483,12 +2518,16 @@ let blobGc: BlobGc | null = null
         record: (event) => {
           recorder!.record(event)
           if (event.kind === 'device.agent') {
-            const row = listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)).find(
+            const row = listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing).find(
               (d) => d.id === event.deviceId,
             )
             if (row) hub.broadcast({ type: 'device.updated', payload: row })
           }
         },
+        // Both edges of a pass rebroadcast the device, so a fleet list shows
+        // "preparing" for exactly as long as it is true — the end already
+        // arrived through the `device.agent` event above; this adds the start.
+        onRunningChange: (deviceId) => broadcastDeviceRow(deviceId),
         log: log.child('agent-provisioner'),
       })
       agentProvisionerRef = agentProvisioner
@@ -2593,6 +2632,9 @@ let blobGc: BlobGc | null = null
           log: log.child('preparation'),
         }),
         record: recorder!.record,
+        // Both edges of a pass, same reasoning as the provisioner's own
+        // `onRunningChange` above.
+        onRunningChange: (deviceId) => broadcastDeviceRow(deviceId),
         log: log.child('preparation'),
       })
       preparationRunnerRef = preparationRunner
@@ -2902,7 +2944,7 @@ let blobGc: BlobGc | null = null
         infoWithTags: (deviceId) => getDeviceOwner(deviceId) ?? { ownerId: null },
         // The same accessor `listDevices` below is wired to — one read for a
         // whole `set-group`, never one per device.
-        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)),
+        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
       }
       const actionRoutesHandle = createActionRoutes(actionsDeps)
 
@@ -2935,7 +2977,7 @@ let blobGc: BlobGc | null = null
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithTags` call in this function gets.
-        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints)),
+        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
         deviceCount: () => db.select().from(devices).all().length,
         // Plan 126 §3.5, step 126.5 — the sidebar's farm-health badge, read
         // off the health poll Studio already makes instead of the whole

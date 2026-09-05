@@ -42,6 +42,13 @@ export interface PreparationRunnerDeps {
   registry: PreparationComponent[]
   /** Main-stream device events: `device.preparation`. */
   record?: EventRecorder['record']
+  /**
+   * Called when a pass STARTS and when it ENDS for one device — the two
+   * edges at which `runningSince` changes its answer. The host rebroadcasts
+   * the device so a fleet list can show "preparing" while it happens.
+   * Optional: a caller with nothing to tell simply omits it.
+   */
+  onRunningChange?: (deviceId: string) => void
   log: Logger
   /** Test seam — defaults to `DEFAULT_RETRY_BACKOFF_S`. */
   retryBackoffS?: number[]
@@ -96,6 +103,24 @@ export function createPreparationRunner(deps: PreparationRunnerDeps): Preparatio
   const registryById = new Map(deps.registry.map((c) => [c.id, c]))
   /** Plan 106 §5 step 106.7 — see `runningSince`'s own doc comment on the `PreparationRunner` interface above. Keyed `${deviceId}:${componentId}`. */
   const runningSinceMap = new Map<string, number>()
+
+  /**
+   * Tell the host a pass started or ended, so a fleet list can say so.
+   *
+   * `runningSince` has always been readable, and nothing outside a per-device
+   * endpoint ever read it — a device installing its agent for the first time
+   * looked identical in the fleet list to one sitting idle, and (worse) still
+   * carried the `failed` its pre-install check had written (owner,
+   * 2026-09-06). A poll would have to guess an interval; this fires exactly
+   * twice per pass, on the two edges that change the answer.
+   */
+  const announce = (deviceId: string): void => {
+    try {
+      deps.onRunningChange?.(deviceId)
+    } catch {
+      // Observation must never take down the pass it is observing.
+    }
+  }
 
   const mustGet = (id: string): DeviceRow => {
     const row = db.select().from(devices).where(eq(devices.id, id)).get()
@@ -167,6 +192,7 @@ export function createPreparationRunner(deps: PreparationRunnerDeps): Preparatio
     // return inside the `catch`). See `runningSince`'s own doc comment.
     const inFlightKey = `${deviceId}:${componentId}`
     runningSinceMap.set(inFlightKey, checkedAt)
+    announce(deviceId)
     try {
       try {
         result = await component.run(row)
@@ -188,6 +214,7 @@ export function createPreparationRunner(deps: PreparationRunnerDeps): Preparatio
       }
     } finally {
       runningSinceMap.delete(inFlightKey)
+      announce(deviceId)
     }
 
     const { attempts, nextAttemptAt } = nextBoundedRetry({

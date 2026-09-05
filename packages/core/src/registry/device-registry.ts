@@ -357,6 +357,14 @@ export function rowToDeviceInfo(
    * existing caller keeps parsing exactly as before.
    */
   metrics: DeviceMetrics | null = null,
+  /**
+   * A preparation pass is in flight for this device right now — read from
+   * the runner's and the provisioner's IN-MEMORY `runningSince`, never from
+   * a column (there is none, deliberately: see `DeviceInfoSchema.preparing`).
+   * Defaulted `false`, which is what a caller with no runner to ask can
+   * honestly say.
+   */
+  preparing = false,
 ): DeviceInfo {
   return DeviceInfoSchema.parse({
     id: row.id,
@@ -381,6 +389,7 @@ export function rowToDeviceInfo(
     lastControl: activityState.lastControl,
     connection: deriveConnection(row.serial, networks, declaredMedia.get(`${row.stableId} ${row.serial}`)),
     agent: deriveAgentState(row),
+    preparing,
     number,
     metrics,
   })
@@ -433,6 +442,13 @@ export function listDevicesWithTags(
    * parameter existed.
    */
   declaredMedia?: Map<string, ConnectionMedium | null>,
+  /**
+   * "A preparation pass is in flight for this device right now" — read from
+   * the runner's and the provisioner's IN-MEMORY `runningSince`, never from
+   * a column. Omitted call sites report `false`, which is what a caller with
+   * no runner to ask can honestly say.
+   */
+  preparingOf?: (deviceId: string) => boolean,
 ): DeviceInfo[] {
   const rows = db.select().from(devices).all()
   const tagMap = loadDeviceTags(db)
@@ -455,6 +471,8 @@ export function listDevicesWithTags(
       networks,
       declaredMedia ?? new Map(),
       numbers.get(r.stableId) ?? null,
+      null,
+      preparingOf?.(r.id) ?? false,
     ),
   )
 }

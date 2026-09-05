@@ -227,6 +227,9 @@ export function createNode(opts: NodeOptions): Node {
               // rather than a live value; nothing here provisions an agent
               // for a device a node owns.
               agent: 'absent',
+              // A cloud node's own preparation, if it ever gains one, is that
+              // node's fact to report — this bridge never runs a pass itself.
+              preparing: false,
               // The device number (plan 89 §3.1, §3.2) is control-plane
               // state, exactly like activities/agent above — `device_numbers` is
               // a core-only table this node has no access to, so a
