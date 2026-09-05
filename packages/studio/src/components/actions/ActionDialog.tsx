@@ -1,11 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ActionResponse, ActionResult, DeviceInfo, GroupInfo } from '@enkaku/protocol'
 import { Button, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, cn, describeApiError } from '@enkaku/ui'
 import { toast } from 'sonner'
 import { useOverlay } from '@/lib/overlays'
-import { awaitOperation, groupResults, runAction } from '@/lib/actions'
+import { groupResults, runAction } from '@/lib/actions'
+import { detachOperation, dismissOperation, getOperation, trackOperation, useOperation, whenSettled } from '@/lib/operations'
 import { DevicePicker } from '@/components/target/DevicePicker'
 import { useTarget, type TargetContext } from '@/components/target/useTarget'
 import { ActionOutcome } from './ActionOutcome'
@@ -38,6 +39,25 @@ export function ActionDialog<P>({
   const [value, setValue] = useState<P>(() => (prefill ? { ...spec.initial, ...prefill } : spec.initial))
   const [results, setResults] = useState<ActionResult[] | null>(null)
   const [busy, setBusy] = useState(false)
+  /**
+   * The operation this dialog is watching, once the core has accepted the
+   * work and gone away to do it. Held in the shared store rather than here,
+   * so closing this dialog hands the work over instead of orphaning it.
+   */
+  const [opId, setOpId] = useState<string | null>(null)
+  const tracked = useOperation(opId)
+  const opRef = useRef<string | null>(null)
+  opRef.current = opId
+
+  // Any way out while work is still running — Minimise, Cancel, Escape, the X
+  // — is the same act: the dialog stops watching and the tray starts. One
+  // unmount handler rather than four call sites, so no route out of this
+  // dialog can forget.
+  useEffect(() => {
+    return () => {
+      if (opRef.current) detachOperation(opRef.current)
+    }
+  }, [])
 
   // Rule 4 (§4.4): Escape closes through the shell's own tier stack, not
   // through Radix's own DismissableLayer — `onEscapeKeyDown` below prevents
@@ -60,7 +80,17 @@ export function ActionDialog<P>({
       target.applyResults(final)
       setResults(final)
       if (final.some((r) => r.status === 'accepted')) {
-        final = (await awaitOperation(res.operationId)).results
+        // Hand it to the store BEFORE awaiting it: from here on the work
+        // belongs to the operation, not to this component, and the operator
+        // can walk away from the modal without losing it.
+        trackOperation({ id: res.operationId, verb: spec.verb, title: spec.title(target.count), results: final, visible: false })
+        setOpId(res.operationId)
+        final = (await whenSettled(res.operationId)).results
+        // Still ours means still on screen: the outcome is about to be shown
+        // right here, so the tray does not also need a card for it. Minimised
+        // means the operator is watching the card instead — leave it alone.
+        if (getOperation(res.operationId)?.visible === false) dismissOperation(res.operationId)
+        setOpId(null)
         target.applyResults(final)
         setResults(final)
       }
@@ -109,12 +139,16 @@ export function ActionDialog<P>({
                of its own: "The two never share a background or a border." */}
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-panel px-[14px] py-3">
           {Fields ? <Fields value={value} onChange={setValue} target={target} /> : spec.note ? <p className="text-body text-dim">{spec.note}</p> : null}
-          {results && <ActionOutcome results={results} devices={devices} />}
+          {(tracked?.results ?? results) && <ActionOutcome results={tracked?.results ?? results ?? []} devices={devices} />}
         </div>
 
         <DialogFooter className="flex-none border-t border-line px-[14px] py-3">
+          {/* While the core is working, Cancel would be a lie — nothing here
+              can call the install back. The honest verb is Minimise: the work
+              carries on and moves to the tray in the corner (CEO,
+              2026-09-05). */}
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            {opId ? 'Minimise' : 'Cancel'}
           </Button>
           <Button
             variant={spec.destructive ? 'destructive' : 'default'}

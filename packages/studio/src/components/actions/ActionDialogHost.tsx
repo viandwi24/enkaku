@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { runAction, groupResults } from '@/lib/actions'
 import { GroupInfoSchema, type DeviceInfo, type GroupInfo } from '@enkaku/protocol'
 import { applyActivityEvent } from '@/lib/activity'
+import { trackOperation } from '@/lib/operations'
 import { fetchAllPages, fetchDevices } from '@/lib/api'
 import { ws } from '@/lib/ws'
 import type { TargetContext } from '@/components/target/useTarget'
@@ -59,9 +60,21 @@ export function useActionDialogs(): ActionDialogApi {
         setCurrent({ verb, ctx, prefill })
         return
       }
-      const label = VERB_DIALOGS[verb].submitLabel((ctx.deviceIds ?? []).length)
+      const count = (ctx.deviceIds ?? []).length
+      const label = VERB_DIALOGS[verb].submitLabel(count)
       void runAction(verb, ctx as never, (prefill ?? {}) as never)
         .then((res: Awaited<ReturnType<typeof runAction>>) => {
+          // Some of these finish before the request returns (wake, sleep,
+          // reconnect) and some take minutes on twenty phones (installing the
+          // guest agent). The difference is not a property of the verb we have
+          // to keep a list of — it is `accepted` in the answer, meaning the
+          // core went away to do it. Those go to the tray in the corner, which
+          // is the whole point of running them without a modal: no window in
+          // the way, and still somewhere to watch (CEO, 2026-09-05).
+          if (res.results.some((r) => r.status === 'accepted')) {
+            trackOperation({ id: res.operationId, verb, title: VERB_DIALOGS[verb].title(count), results: res.results, visible: true })
+            return
+          }
           const grouped = groupResults(res.results)
           const failed = grouped.failed.length + grouped.forbidden.length
           if (failed > 0) toast.warning(`${label}: ${grouped.done.length} done, ${failed} refused`)
