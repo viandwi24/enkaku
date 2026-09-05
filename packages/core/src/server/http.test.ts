@@ -52,6 +52,7 @@ function buildDeps(overrides: Partial<HttpDeps> = {}): HttpDeps {
     agentProvisionerRoutes: emptyAuthEnvApp(),
     deviceIdentityRoutes: emptyAuthEnvApp(),
     devicePreparationRoutes: emptyAuthEnvApp(),
+    vmRoutes: emptyAuthEnvApp(),
     tagRoutes: emptyApp(),
     groupRoutes: emptyAuthEnvApp(),
     batchRoutes: emptyAuthEnvApp(),

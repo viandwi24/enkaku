@@ -996,3 +996,33 @@ plus the workspace quotas that became constants) moved off `/api/settings`
 onto `GET`/`PATCH /api/agents/settings`, served by `createAgentSettingsStore`
 against row 2 of `farm_settings` (row 1 is the farm's own settings — no new
 table).
+
+## Virtual devices (plan 401)
+
+`packages/core/src/vm/` is the AVD-backed provider for the `400-vm-program`
+series: `sdk.ts` resolves the host's Android SDK in three tiers
+(`ENKAKU_ANDROID_SDK_PATH` → `ANDROID_SDK_ROOT`/`ANDROID_HOME`/per-OS default
+→ `E_ANDROID_SDK_MISSING`), never downloading anything (plan 400 D3);
+`provider-avd.ts` shells out to `avdmanager`/`emulator` to create, start,
+stop, and destroy one headless, cold-booted AVD per VM row (plan 400 D5);
+`ports.ts` picks the next free even console port in 5554–5682 (plan 400 D2);
+and `manager.ts` (plan 402) owns the `virtual_devices` table, the
+`ENKAKU_VM_MAX_CONCURRENT` cap (default 2, hard max 8), boot-completion
+polling against `ENKAKU_VM_BOOT_TIMEOUT_SEC`, and adoption-by-port-probe on
+boot rather than trusting a stored PID (plan 400 D8).
+
+**This subsystem's job ends at "booted."** It never calls `adb connect` and
+never writes an `EndpointStore` entry — the existing device reconciler
+(`registry/reconcile.ts`) already re-derives `host:devices-l` on an interval
+and admits a running emulator as an ordinary device, with `stableId` linking
+it to the VM row only observationally through the `emulator-<port>` serial
+(plan 400 D2, D6). Deleting a VM stops the process and deletes the AVD; it
+never touches the device row.
+
+The SDK is resolved lazily, on each `create`/`start`/`destroy` call, not once
+at boot (`daemon.ts`'s `createDeferredAvdProvider()`) — a farm with no
+Android SDK installed still boots and runs normally, and only a VM mutation
+returns `E_ANDROID_SDK_MISSING` (HTTP 503) from `/api/vms`. `bun run doctor`'s
+"Android SDK" row reports which tier would be taken and what is missing,
+provisioning nothing, mirroring the guest-agent check's own rule. See
+`docs/guide/virtual-devices.md` for the operator-facing guide.

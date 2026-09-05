@@ -8,6 +8,8 @@ import {
   WorkflowPinsListResponseSchema,
   WorkflowRunNodeResponseSchema,
   WorkflowSimulateResponseSchema,
+  VmListResponseSchema,
+  VmResponseSchema,
   type VideoLatencyResponse,
   VideoLatencyResponseSchema,
   type WorkflowLastRunResponse,
@@ -21,6 +23,8 @@ import type {
   NetworkEngineId,
   NodeType,
   RouteCheckId,
+  VmRecord,
+  VmSpec,
   WorkflowDoc,
   WorkflowFinding,
   WorkflowStepInfo,
@@ -846,4 +850,41 @@ export async function setWorkflowPin(name: string, nodeId: string, body: { data:
 /** `DELETE /api/workflows/:name/pins/:nodeId`. `204 No Content`. */
 export async function deleteWorkflowPin(name: string, nodeId: string): Promise<void> {
   await api(`/api/workflows/${encodeURIComponent(name)}/pins/${encodeURIComponent(nodeId)}`, z.void(), { method: 'DELETE' })
+}
+
+// ---- Virtual devices (plan 400 D6, plan 402, plan 403 §4.1) ----
+//
+// A VM row owns a process, not a device (plan 400 D6): these calls never
+// touch `/api/devices`. `startVm`/`stopVm` return whatever the manager's
+// synchronous prefix already wrote to the row — `starting`/`stopping` — per
+// plan 402's handoff (`POST /:id/start` and `/stop` answer 202 immediately,
+// the boot or shutdown continues in the background).
+
+/** `GET /api/vms`. */
+export async function fetchVms(): Promise<VmRecord[]> {
+  const res = await api('/api/vms', VmListResponseSchema)
+  return res.vms
+}
+
+/** `POST /api/vms` — `201` with the terminal `creating → stopped` row (plan 402 §11). */
+export async function createVm(spec: VmSpec): Promise<VmRecord> {
+  const res = await api('/api/vms', VmResponseSchema, { method: 'POST', json: spec })
+  return res.vm
+}
+
+/** `POST /api/vms/:id/start` — `202`, row already `starting`. The boot itself is not awaited here. */
+export async function startVm(id: string): Promise<VmRecord> {
+  const res = await api(`/api/vms/${encodeURIComponent(id)}/start`, VmResponseSchema, { method: 'POST' })
+  return res.vm
+}
+
+/** `POST /api/vms/:id/stop` — `202`, row already `stopping`. */
+export async function stopVm(id: string): Promise<VmRecord> {
+  const res = await api(`/api/vms/${encodeURIComponent(id)}/stop`, VmResponseSchema, { method: 'POST' })
+  return res.vm
+}
+
+/** `DELETE /api/vms/:id` — stops first if running, then deletes the AVD from disk (plan 400 D6). `204 No Content`. */
+export async function deleteVm(id: string): Promise<void> {
+  await api(`/api/vms/${encodeURIComponent(id)}`, z.void(), { method: 'DELETE' })
 }

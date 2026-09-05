@@ -127,6 +127,8 @@ export interface HttpDeps {
   /** `GET/POST/PATCH/DELETE /api/webhooks` (plan 68 §4.1, §4.5). */
   webhookRoutes: Hono<AuthEnv>
   deviceRoutes: Hono<AuthEnv>
+  /** `GET/POST /api/vms`, `POST /:id/start`, `POST /:id/stop`, `DELETE /:id` (plan 402 §4.2) — a virtual device (plan 400). Mounted at its OWN `/api/vms` prefix, never `/api/devices`: a VM row is not a device row (plan 400 D6). */
+  vmRoutes: Hono<AuthEnv>
   /**
    * `GET /api/transfers` (plan 107 §3.1, §3.4, §4, step 107.2) — its own
    * top-level prefix, NOT `/api/devices` (this list is farm-wide, not
@@ -395,6 +397,10 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // Plan 106 §3.3, §4 — a fourth Hono app at the same base path, same
   // reasoning as `guestAgentRoutes`/`deviceIdentityRoutes` above.
   app.route('/api/devices', deps.devicePreparationRoutes)
+
+  // A virtual device (plan 400) is not a device row (plan 400 D6): its own
+  // `/api/vms` prefix, never `/api/devices` (plan 402 §4.3).
+  app.route('/api/vms', deps.vmRoutes)
 
   // Plan 107 §3.1, §3.4, §4, step 107.2 — its OWN top-level prefix, not
   // `/api/devices`: `GET /api/transfers` is farm-wide (every in-flight or
