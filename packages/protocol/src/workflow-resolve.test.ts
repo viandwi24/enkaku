@@ -342,7 +342,8 @@ describe('$run.index and $run.count (the fleet-split case, 2026-09-05)', () => {
     for (let i = 0; i < 20; i++) {
       const outcome = resolveValue({ expr: '$run.index % 4' }, scopeFor(i, 20))
       expect(outcome.ok).toBe(true)
-      buckets[(outcome as { value: number }).value] += 1
+      const bucket = (outcome as { value: number }).value
+      buckets[bucket] = (buckets[bucket] ?? 0) + 1
     }
     expect(buckets).toEqual([5, 5, 5, 5])
   })
