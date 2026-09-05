@@ -109,7 +109,7 @@
     },
     {
       "id": "ui-server-test",
-      "displayName": "Enkaku UI inspector server \u2014 test APK (instrumentation)",
+      "displayName": "Enkaku UI inspector server — test APK (instrumentation)",
       "swappable": false,
       "format": "raw",
       "versions": [
@@ -134,19 +134,19 @@
       "format": "raw",
       "versions": [
         {
-          "version": "0.1.8",
+          "version": "0.2.0",
           "releasedAt": "unknown",
           "compatibleCoreRange": ">=0.1.8",
           "deviceArtifact": {
             "packageName": "dev.enkaku.guestagent",
-            "versionCode": 1008,
+            "versionCode": 2000,
             "signatureSha256": "420222E0C1BD95A6EA11C0F735B0F7CEEF48C05877F487308F80FCF5895048B6"
           },
           "platforms": {
             "*": {
-              "url": "https://github.com/viandwi24/enkaku/releases/download/v0.1.8/guest-agent.apk",
-              "sha256": "15ee925d13a47d068ed9cf14f5959e2b4bd5599454ffb1cc65c2846312ecc198",
-              "sizeBytes": 1198993
+              "url": "https://github.com/viandwi24/enkaku/releases/download/v0.2.0/guest-agent.apk",
+              "sha256": "bdfba12fe134b078b94c604fc9bbb0a35d9544232a4b0aa33c4a4f9f88fed1a7",
+              "sizeBytes": 1240589
             }
           }
         }
