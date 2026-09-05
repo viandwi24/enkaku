@@ -12,6 +12,7 @@ Dokumen ini mencatat setiap komponen eksternal yang disentuh Enkaku, statusnya, 
 | **scrcpy-server.jar** (Genymobile) | Apache-2.0 | Tidak (diunduh dari GitHub Releases resmi) | Apache-2.0 mengizinkan redistribusi dengan atribusi; kita tetap memilih unduh-saat-runtime agar checksum selalu mengacu rilis resmi. Atribusi tetap dicantumkan. |
 | **android-uiautomator-server** (openatx) — APK inspector | Perlu dikonfirmasi (repo openatx) | Tidak (diunduh dari GitHub Releases) | **PERLU REVIEW HUKUM**: konfirmasi lisensi repo & syarat redistribusi APK sebelum bundling. Saat ini hanya diunduh runtime. |
 | **redroid** (Android in container) | Perlu dikonfirmasi | Tidak | Opsional, dijalankan user sendiri. Ditinjau saat M8. |
+| **Android Emulator + system images** (Google) | Android SDK Terms of Service | **TIDAK** | Dipasang sendiri oleh operator, tidak pernah diunduh maupun dibundel oleh Enkaku. Ditinjau saat plan 400-404 (virtual devices). |
 | **Bun** (runtime) | MIT | Ya (jika single-binary compile) | MIT — sertakan teks lisensi di distribusi biner. |
 | **gost** (go-gost) | MIT | Tidak (diunduh oleh `plugins/proxy-manager` sendiri, bukan Toolchain Manager) | Diunduh dari GitHub Releases resmi dan diverifikasi sha256 terhadap versi yang di-pin, hanya di Windows, hanya kalau operator mengaktifkan record `direct` dengan `bindAddress` terisi — lihat "gost, dan kenapa bukan Toolchain Manager" di bawah. |
 | **Dependency npm** | Beragam (mayoritas MIT/Apache-2.0) | Ya (ter-bundle) | Lihat bagian "Dependency npm" di bawah; regenerate tiap rilis. |
@@ -21,6 +22,17 @@ Dokumen ini mencatat setiap komponen eksternal yang disentuh Enkaku, statusnya, 
 Android SDK Terms of Service membatasi redistribusi komponen SDK. Menghindari perdebatan itu sekaligus lebih aman secara teknis: Toolchain Manager mengunduh platform-tools dari URL resmi Google dan **memverifikasi sha256** sebelum dipakai (spec §7.8), sehingga user selalu mendapat binary asli dari sumbernya.
 
 **Implikasi air-gapped:** instalasi tanpa internet tidak bisa mengambil adb dari Google. Solusinya: sediakan mirror internal dan arahkan `ENKAKU_TOOLS_MANIFEST_URL` ke manifest yang menunjuk mirror tersebut — mengunduh dari mirror internal milik organisasi user adalah keputusan (dan tanggung jawab) mereka, bukan redistribusi oleh kami.
+
+## Android Emulator dan system images: lebih ketat daripada adb
+
+adb diunduh saat first-run dan diverifikasi sha256 — masih "kami" yang mengambilnya, hanya
+tidak dibundel. Untuk fitur virtual devices (plan 400–404), Enkaku memilih posisi yang
+lebih ketat: **system image sama sekali tidak diunduh oleh kode kami**, dalam bentuk apa
+pun. Satu system image berukuran 1.5–3 GB dan tunduk pada Android SDK Terms of Service
+yang sama; operator memasang SDK, `emulator`, dan system image-nya sendiri di mesin yang
+menjalankan core, dan Enkaku hanya membaca (`ANDROID_SDK_ROOT`/`ANDROID_HOME`, atau
+`ENKAKU_ANDROID_SDK_PATH`) — tidak pernah menulis ke lokasi itu maupun mengambil sesuatu
+dari `dl.google.com` atas nama fitur ini. Lihat `docs/guide/virtual-devices.md`.
 
 ## gost, dan kenapa bukan Toolchain Manager
 

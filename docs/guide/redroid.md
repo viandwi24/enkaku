@@ -1,6 +1,6 @@
 # Cloud devices without physical phones (redroid)
 
-[redroid](https://github.com/remote-android/redroid-doc) runs Android inside a container. Enkaku treats it exactly like a physical device over the `adb-tcp` transport — there is no special-case code.
+[redroid](https://github.com/remote-android/redroid-doc) runs Android inside a container. Enkaku treats it exactly like a physical device over the `adb-tcp` transport — there is no special-case code. redroid needs a Linux host with `binder`/`ashmem` support in the kernel; it does not run on macOS or Windows. If you need an emulator on a Mac or a Windows box — or want the farm itself to manage the instance's lifecycle instead of a container you run by hand — see [virtual devices](virtual-devices.md), the AVD-backed path that works on all three.
 
 ```bash
 docker run -itd --rm --privileged \

@@ -1,6 +1,6 @@
 # Plan 403 — VM : Studio — where a virtual device is created, and what it looks like while it boots
 
-> Status: draft
+> Status: implemented (software) — G1–G7 done and verified by their own commands 2026-09-05. G8 stays open, verified only by the owner in a browser, on a real machine with the SDK installed.
 > Ships: packages/studio/src/components/devices/CreateVirtualDeviceDialog.tsx
 > Depends on: plan 402 (the `/api/vms` routes and the protocol schemas)
 > Spec references: `docs/design.md` (tokens, screen patterns, writing rules)

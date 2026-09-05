@@ -1,6 +1,6 @@
 # Plan 402 — VM : Protocol schemas, `/api/vms`, and daemon wiring
 
-> Status: draft
+> Status: implemented (software) — G1–G8 done and verified by their own commands 2026-09-05. G9 stays open, verified only by the owner on a real machine with the SDK installed.
 > Ships: packages/core/src/api/vms.ts
 > Depends on: plan 401 (the `vm` subsystem it exposes); plan 400 (D2, D6, R5)
 > Spec references: §7 (toolchain), §12 (API conventions via `00-overview.md` §4.4)

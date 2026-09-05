@@ -1,6 +1,6 @@
 # Plan 401 — VM : The `vm` subsystem — SDK resolution, the AVD provider, lifecycle and adoption
 
-> Status: draft
+> Status: implemented (software) — G1–G9 done and verified by their own commands 2026-09-05. G10/G11 stay open, verified only by the owner on a real machine with the SDK installed.
 > Ships: packages/core/src/vm/provider-avd.ts
 > Depends on: plan 400 (the decisions D1–D8 and the verified references R1–R9)
 > Spec references: §5 (driver layers — untouched here), §7 (toolchain)

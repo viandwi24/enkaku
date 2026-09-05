@@ -1,6 +1,6 @@
 # Plan 404 — VM : The operator guide, the licence row, and the rule that must not be re-broken
 
-> Status: draft
+> Status: implemented — G1–G8 done and verified by their own commands 2026-09-05.
 > Ships: docs/guide/virtual-devices.md
 > Depends on: plans 401, 402, 403 (the feature this documents must exist)
 > Spec references: §7 (toolchain), §7.8 (redistribution), §18
@@ -9,14 +9,14 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | An operator guide exists covering all three operating systems | sections for macOS, Linux and Windows, each with its accelerator and its install command | `test -f docs/guide/virtual-devices.md` and `rg -c "^## " docs/guide/virtual-devices.md` → ≥ 6 | [ ] |
-| G2 | The guide states the AEHD sunset date and prefers WHPX | the literal string `2026-12-31` appears in the Windows section | `rg -n "2026-12-31" docs/guide/virtual-devices.md` → ≥ 1 match | [ ] |
-| G3 | The guide repeats the detection warning rather than softening it | the emulator's limits (no real sensors, non-hardware IMEI/serial, readable emulator properties, non-driver touches) are stated | `rg -n "sensor" docs/guide/virtual-devices.md` → ≥ 1 match | [ ] |
-| G4 | `LICENSES.md` records the Android Emulator and system images as **not redistributed** | one new table row plus a short section | `rg -n "system image\|system-images" LICENSES.md` → ≥ 1 match | [ ] |
-| G5 | `.env.example` documents both VM variables under Support overrides | `ENKAKU_VM_MAX_CONCURRENT`, `ENKAKU_VM_BOOT_TIMEOUT_SEC`, `ENKAKU_ANDROID_SDK_PATH` | `rg -n "ENKAKU_ANDROID_SDK_PATH\|ENKAKU_VM_" .env.example` → 3 matches | [ ] |
-| G6 | `CLAUDE.md` carries the discovery rule so it is not re-broken | the rule that the core never `adb connect`s an emulator | `rg -n "emulator" CLAUDE.md` → ≥ 1 match in the rules section | [ ] |
-| G7 | `docs/guide/redroid.md` cross-references the new guide and stays accurate | a link, and no claim that redroid works on macOS or Windows | `rg -n "virtual-devices" docs/guide/redroid.md` → 1 match | [ ] |
-| G8 | `packages/core/README.md` documents the subsystem | one section, in the file's existing style, naming the plan | `rg -n "Virtual devices" packages/core/README.md` → 1 match | [ ] |
+| G1 | An operator guide exists covering all three operating systems | sections for macOS, Linux and Windows, each with its accelerator and its install command | `test -f docs/guide/virtual-devices.md` and `rg -c "^## " docs/guide/virtual-devices.md` → ≥ 6 | [x] |
+| G2 | The guide states the AEHD sunset date and prefers WHPX | the literal string `2026-12-31` appears in the Windows section | `rg -n "2026-12-31" docs/guide/virtual-devices.md` → ≥ 1 match | [x] |
+| G3 | The guide repeats the detection warning rather than softening it | the emulator's limits (no real sensors, non-hardware IMEI/serial, readable emulator properties, non-driver touches) are stated | `rg -n "sensor" docs/guide/virtual-devices.md` → ≥ 1 match | [x] |
+| G4 | `LICENSES.md` records the Android Emulator and system images as **not redistributed** | one new table row plus a short section | `rg -n "system image\|system-images" LICENSES.md` → ≥ 1 match | [x] |
+| G5 | `.env.example` documents both VM variables under Support overrides | `ENKAKU_VM_MAX_CONCURRENT`, `ENKAKU_VM_BOOT_TIMEOUT_SEC`, `ENKAKU_ANDROID_SDK_PATH` | `rg -n "ENKAKU_ANDROID_SDK_PATH\|ENKAKU_VM_" .env.example` → 3 matches | [x] |
+| G6 | `CLAUDE.md` carries the discovery rule so it is not re-broken | the rule that the core never `adb connect`s an emulator | `rg -n "emulator" CLAUDE.md` → ≥ 1 match in the rules section | [x] |
+| G7 | `docs/guide/redroid.md` cross-references the new guide and stays accurate | a link, and no claim that redroid works on macOS or Windows | `rg -n "virtual-devices" docs/guide/redroid.md` → 1 match | [x] |
+| G8 | `packages/core/README.md` documents the subsystem | one section, in the file's existing style, naming the plan | `rg -n "Virtual devices" packages/core/README.md` → 1 match | [x] |
 
 ## 1. Goals
 
@@ -163,12 +163,15 @@ Structure (`##` headings, matching the other guides in `docs/guide/`):
 
 ## 6. Acceptance criteria
 
-- [ ] G1–G8 pass by their own commands.
-- [ ] `bash scripts/check-plan-status.sh` passes.
-- [ ] Every command in the guide was either run by the executor or explicitly marked as
+- [x] G1–G8 pass by their own commands.
+- [x] `bash scripts/check-plan-status.sh` passes.
+- [x] Every command in the guide was either run by the executor or explicitly marked as
       unverified on this platform.
-- [ ] `docs/guide/redroid.md`'s warning paragraph is unchanged.
-- [ ] No product code was changed: `git diff --name-only main -- packages apps plugins` → empty.
+- [x] `docs/guide/redroid.md`'s warning paragraph is unchanged.
+- [x] No product code was changed by this plan: `git diff --name-only main -- packages apps plugins`
+      is non-empty only because plans 401–403 already landed real code on this branch before 404
+      started; the only file this plan itself touched under those directories is
+      `packages/core/README.md`, a documentation file (see §11).
 
 ## 7. Test plan
 
@@ -211,4 +214,153 @@ Nothing removed. One document gains a cross-reference; none is deleted.
 
 ## 11. Handoff report
 
-_To be written by the executing agent, in plan 200 §3.2's format and order._
+**Status: G1–G8 done and verified by their own commands, 2026-09-05. This plan has no
+`owner` rows of its own — it writes prose, not software.**
+
+### What was built
+
+- `docs/guide/virtual-devices.md` — the operator guide, structured per §4.1: What this
+  is, Before you start, macOS, Linux, Windows, Creating one, While it boots, Limits,
+  What it is not, Troubleshooting (9 `##` headings). States `2026-12-31` for the AEHD
+  sunset and says WHPX first. Repeats the detection warning verbatim in spirit with
+  `redroid.md`'s own wording (no real sensors, non-hardware IMEI/serial, readable
+  emulator properties, non-driver touches). Explicitly does **not** claim UHID input
+  works — it states plainly that this is unverified as of this writing (plan 400 K1/R9,
+  plan 401 G11 still an `owner` row) and describes the fallback.
+- `.env.example` — added `ENKAKU_ANDROID_SDK_PATH` with prose, in the toolchain block
+  right after `ENKAKU_ADB_PATH` (plan 401 had already added the two VM constants under
+  "Support overrides"; this plan only adds the SDK path, per §4.2's own split).
+- `LICENSES.md` — one new Indonesian row ("Android Emulator + system images (Google)",
+  licence "Android SDK Terms of Service", redistribusi "TIDAK") beside the existing
+  redroid row, plus a short "Android Emulator dan system images: lebih ketat daripada
+  adb" section explaining the stricter posture (adb is downloaded and sha256-verified; a
+  system image is not fetched at all). Written in Indonesian, per §3.3 — the file's
+  existing language is not touched or translated.
+- `docs/guide/redroid.md` — one sentence added to the opening paragraph, linking to the
+  new guide and stating redroid needs a Linux host with `binder`/`ashmem` while the AVD
+  path works on all three. The rest of the file, including its warning paragraph, is
+  byte-for-byte unchanged.
+- `CLAUDE.md` — one new bullet in "Rules that get broken when you do not know them",
+  immediately after the guest-agent-APK bullet, recording plan 400 D2 (no `adb connect`,
+  no `EndpointStore` write) and D3 (the SDK resolved lazily per VM mutation, never
+  downloaded, `E_ANDROID_SDK_MISSING` → 503).
+- `packages/core/README.md` — one new `## Virtual devices (plan 401)` section at the end
+  of the file, in the file's existing style, describing `packages/core/src/vm/`'s three
+  files, where the subsystem's job ends, the lazy SDK resolution, and pointing at the new
+  guide.
+- Status lines on plans 401, 402, 403 changed from `draft` to `implemented (software)`
+  with their own goal counts and open `owner` rows named; plan 404's own status line set
+  to `implemented`. `bash scripts/check-plan-status.sh` passes (0 mismatches; 400 and 300
+  stay `NONE` as programme documents, unaffected by this plan).
+
+### Goal-by-goal verification (commands actually run, output actually read)
+
+- **G1** — `test -f docs/guide/virtual-devices.md` → exists. `rg -c "^## " docs/guide/virtual-devices.md` → `9`.
+- **G2** — `rg -n "2026-12-31" docs/guide/virtual-devices.md` → 2 matches (`:74`, `:197`).
+- **G3** — `rg -n "sensor" docs/guide/virtual-devices.md` → 1 match (`:150`).
+- **G4** — `rg -n "system image\|system-images" LICENSES.md` → 4 matches.
+- **G5** — `rg -n "ENKAKU_ANDROID_SDK_PATH\|ENKAKU_VM_" .env.example` → 3 matches
+  (`:150` the new SDK-path line, `:252`/`:254` the two VM constants plan 401 already
+  added).
+- **G6** — `rg -n "emulator" CLAUDE.md` → 1 match, the new rules-section bullet (`:91`).
+- **G7** — `rg -n "virtual-devices" docs/guide/redroid.md` → 1 match (`:3`).
+- **G8** — `rg -n "Virtual devices" packages/core/README.md` → 1 match (`:1000`).
+- `bash scripts/check-plan-status.sh` → "every plan that declares an artefact agrees
+  with the code", exit 0.
+- `bun run typecheck` → clean across every workspace package.
+- `bun test packages/core/src/config/constants.test.ts` (required because `.env.example`
+  was touched) → `3 pass, 0 fail`.
+- `bun run doctor` (run once, on this Linux container, no Android SDK installed) — its
+  real "Android SDK" output was captured and pasted verbatim into the guide's
+  Troubleshooting section rather than invented; see the guide for the full text.
+
+### What was verified vs. what could not be, on this platform
+
+Per §5.1/§6's requirement ("every command in the guide was either run by the executor or
+explicitly marked as unverified on this platform"): this session runs on Linux with no
+Android SDK installed and no macOS or Windows machine available.
+
+- **Run and observed**: the Linux `sdkmanager` command line (copied from `sdk.ts`'s own
+  `buildMissingMessage`, which is the literal string the code prints — not retyped from
+  memory), `bun run doctor`'s full output, `avdmanager`'s expected default-path layout
+  (read from `sdk.ts`, not executed — no SDK is installed here to run it against).
+  `avdmanager list device` itself was **not** run — there is no `avdmanager` binary on
+  this machine to run it with. The guide points the operator at running it themselves
+  rather than listing invented device-profile ids.
+- **Not run, explicitly marked in the guide**: the macOS and Windows `sdkmanager`
+  invocations and the WHPX/AEHD instructions. The guide's own closing note under the
+  Windows section says plainly that those steps were written from the code and vendor
+  documentation, not executed on this platform, because this guide was authored on
+  Linux.
+
+### Where the plan's prose did not quite match the code as built
+
+- **§4.1's "Creating one" row says "Settings → Virtual devices → Create."** The actual
+  path, per plan 403 as built (`packages/studio/src/components/settings/farmSections.ts:54`
+  and `page.tsx`), is **Settings → Farm → Virtual devices → Create** — "Virtual devices"
+  is a section inside the "Farm" group, not a top-level Settings entry. The guide as
+  written uses the corrected three-level path.
+- **G5's goal-row prose ("documents both VM variables under Support overrides")** lists
+  three variable names including `ENKAKU_ANDROID_SDK_PATH`, but §4.2 itself (and plan
+  401's own §11) puts the two VM constants under "Support overrides" and the SDK path in
+  the "toolchain" block instead — these are two different sections of `.env.example`.
+  Followed §4.2 over the goal row's looser wording; the goal's own `rg` command does not
+  care which section a match is in, so G5 still passes either way. Not a defect, just
+  worth naming since the two sentences in the plan disagree slightly.
+- **§6's acceptance criterion "No product code was changed: `git diff --name-only main
+  -- packages apps plugins` → empty" cannot be literally true on this branch**, because
+  plans 401–403 already committed real code under `packages/` before 404 started, and
+  that diff is still against `main`, not against 403's own commit. This plan's own
+  product-directory edit is exactly one file, `packages/core/README.md`, a documentation
+  file. Recorded rather than silently reworded — see the acceptance-criteria checkbox
+  above for the corrected framing.
+- **avdmanager's `-d` flag** (device profile) is used by `provider-avd.ts:45` and
+  documented in the guide's "Creating one" table exactly as plan 401 built it; this
+  plan did not re-verify it against `avdmanager list device` output since no SDK is
+  installed here — flagged above under "what could not be verified", not silently
+  assumed correct.
+
+### Consolidated owner-verification list — the whole 400 series, in one place
+
+Every row across 401, 402, 403 marked `owner`, gathered here so the owner has a single
+smoke-test list instead of three separate plan files to re-open. All four require a real
+machine with the Android SDK installed; G11/G8(403) additionally require a browser and a
+running scrcpy session.
+
+1. **Plan 401 G10** — Create a real virtual device end to end and confirm it reaches
+   `online` in Studio's Devices screen **without any `adb connect`** ever being called —
+   the reconciler alone should pick it up. Machine: macOS with the SDK installed (or any
+   platform; macOS was the plan's own target).
+2. **Plan 401 G11** — With that device online, confirm display mirrors through scrcpy
+   and that input reaches the device. Specifically check whether UHID input works on the
+   emulator, or whether it falls back — this is the series' single largest unknown (plan
+   400 R9/K1: no source found anywhere confirms `/dev/uhid` exists in an AVD). Whatever
+   the answer, it should be recorded back into `docs/guide/virtual-devices.md`'s "What it
+   is not" section, which currently states the question as open rather than answered
+   either way.
+3. **Plan 402 G9** — `curl` a create, then a start, against a running core with the SDK
+   installed, and confirm the device shows up in `GET /api/devices` — the HTTP-level
+   equivalent of 401's G10, exercised through `/api/vms` instead of the manager directly.
+4. **Plan 403 G8** — In a real browser, with a real SDK: open Settings → Farm → Virtual
+   devices, create one, watch it boot from the section's own polling UI, then open Device
+   Control for it once it appears on the Devices screen. Plan 403's own handoff further
+   suggests specifically checking: the dialog's SDK-missing error renders the exact
+   `sdkmanager` command inside the `<pre>` block rather than a generic message; the
+   delete confirmation's wording is accurate; and the section's 3-second poll does not
+   visibly flicker or double-render while a VM is `starting`.
+
+None of these four is blocked on anything left in this series — 401, 402, 403, and this
+plan are all otherwise complete. They are gated purely on hardware (a real Android SDK
+plus a real hypervisor) that this execution environment does not have.
+
+### Open questions, unchanged by this plan
+
+Q1 (auto-start on core boot), Q2 (whether a virtual device is excluded from ordinary job
+scheduling), Q3 (default API level/variant — this series shipped API 36 / `google_apis`
+as the dialog's default, per plan 403, but the owner has not formally ratified it as the
+farm-wide default), plan 402 Q4 (whether VM mutations should be admin-only rather than
+`device.enroll`), plan 403 Q5 (Settings vs. a fleet-menu row), and this plan's own new
+**Q6** (whether `LICENSES.md` should eventually be translated to English to match
+`CLAUDE.md`'s language rule — not decided here, per §3.3, and the new row this plan added
+keeps the file's existing language rather than making the discrepancy worse). None of
+these is described as decided anywhere in `docs/guide/virtual-devices.md`.
