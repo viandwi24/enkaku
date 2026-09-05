@@ -97,8 +97,9 @@ tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
 ./enkaku
 ```
 
-On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe`
-(SmartScreen will warn about the unsigned binary — "More info" → "Run anyway").
+On Windows the archive is `enkaku-<version>-windows-x64.zip` — extract it and run `enkaku.exe`
+(SmartScreen will warn about the unsigned binary — "More info" → "Run anyway"). `install.ps1`
+above does all of that for you, checksum included.
 
 To build the archives yourself: `bash scripts/build-release.sh` (all five
 targets cross-compile from any host; artifacts land in `release/`).
@@ -610,6 +611,21 @@ needed when it is absent. OS and architecture are detected (`linux`/`darwin`
 × `x64`/`arm64`, plus `windows-x64` under Git Bash) and can be overridden with
 `ENKAKU_OS`/`ENKAKU_ARCH`. Point it at a different binary with `ENKAKU_BIN`, or
 a fork with `ENKAKU_REPO`.
+
+**On native Windows there is no `enkaku-update.sh`** — it is a POSIX shell
+script, so it runs under Git Bash and nowhere else. Update by re-running the
+installer, which fetches the latest release and swaps the binary the same way:
+
+```powershell
+irm https://raw.githubusercontent.com/viandwi24/enkaku/main/install.ps1 | iex
+```
+
+This works with the farm up. Windows refuses to *overwrite* a running `.exe`
+but does allow *renaming* one, so the script moves the old binary aside to
+`enkaku.exe.bak` rather than replacing it in place — the running core keeps its
+own loaded image and carries on **on the old version until you restart it**,
+exactly as on Linux and macOS. If the move is refused anyway, it says so and
+installs nothing instead of leaving you half-upgraded.
 
 It verifies the download against the release's `SHA256SUMS.txt` and refuses to
 install on a mismatch. When the sums file or a hashing tool is missing it says
