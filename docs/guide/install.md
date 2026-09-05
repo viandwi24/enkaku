@@ -55,7 +55,9 @@ If you would rather read the archive URL yourself, the Releases page lists every
 tag:
 
 ```bash
-VERSION=v0.2.0
+# Resolve the latest tag the same way install.sh does, or set it by hand —
+# the Releases page lists every one.
+VERSION=$(curl -fsSL https://api.github.com/repos/viandwi24/enkaku/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
 curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
 tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
 ./enkaku
