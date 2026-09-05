@@ -46,7 +46,12 @@ function makeDevice(id: string, address: string): DeviceInfo {
     screenW: null,
     screenH: null,
     density: null,
-    status: 'idle',
+    // `idle` was a device status until plan 205 shrank the column to what is
+    // physically true (offline | online | quarantined). These fixtures kept
+    // the old value and have been failing the plugin's own suite — and CI —
+    // ever since; the same slip was fixed in `identity-bridge.test.ts` at the
+    // R2 gate and missed here (2026-09-05).
+    status: 'online',
     lastSeen: null,
     connection: { kind: 'tcp', medium: 'wired', mediumSource: 'declared', address, port: 5555, networkLabel: null },
   })

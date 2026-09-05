@@ -484,6 +484,41 @@ credentials themselves — restrict who can read it, never send it over chat
 or email unencrypted, encrypt it at rest if it leaves this machine, and
 delete copies you no longer need.
 
+### Updating
+
+`scripts/enkaku-update.sh` downloads the latest release binary and swaps it in.
+Copy it next to your `enkaku` binary — it needs no checkout, no Bun, and no
+running core, which matters because "the core will not start" is exactly when
+you reach for it.
+
+```bash
+./enkaku-update.sh                     # update to the latest release, if newer
+./enkaku-update.sh --check             # say what would happen, change nothing
+./enkaku-update.sh --force             # reinstall the same version
+./enkaku-update.sh --version v0.1.30   # a specific tag, including a downgrade
+```
+
+`curl` and `tar` are the only requirements; `jq` is used when present and not
+needed when it is absent. OS and architecture are detected (`linux`/`darwin`
+× `x64`/`arm64`, plus `windows-x64` under Git Bash) and can be overridden with
+`ENKAKU_OS`/`ENKAKU_ARCH`. Point it at a different binary with `ENKAKU_BIN`, or
+a fork with `ENKAKU_REPO`.
+
+It verifies the download against the release's `SHA256SUMS.txt` and refuses to
+install on a mismatch. When the sums file or a hashing tool is missing it says
+so out loud rather than skipping quietly.
+
+Two details worth knowing:
+
+- **The old binary is kept** at `<binary>.bak`. An update you cannot undo is a
+  worse outage than the one it was meant to fix.
+- **It replaces the binary with a rename, not a copy.** Copying over a running
+  executable fails on Linux with `ETXTBSY` ("Text file busy") — which is
+  precisely the case an updater meets, since the farm is usually up while you
+  update it. A rename swaps the directory entry; the running core keeps its own
+  open inode and carries on unharmed **on the old version until you restart
+  it**. The script says so when it detects one still running.
+
 ### Resetting a data directory
 
 `enkaku reset` deletes parts of a data directory on purpose — the answer to

@@ -113,7 +113,13 @@ if [ -n "$INSTALLED" ] && [ "$INSTALLED" = "$VERSION" ] && [ "$FORCE" -eq 0 ]; t
   exit 0
 fi
 if [ "$CHECK_ONLY" -eq 1 ]; then
-  echo "An update is available. Re-run without --check to install it."
+  # "Available" would be a lie for a pinned downgrade, which is a legitimate
+  # thing to check for before doing it.
+  if [ -n "$WANT_VERSION" ]; then
+    echo "$VERSION differs from what is installed. Re-run without --check to install it."
+  else
+    echo "An update is available. Re-run without --check to install it."
+  fi
   exit 0
 fi
 
