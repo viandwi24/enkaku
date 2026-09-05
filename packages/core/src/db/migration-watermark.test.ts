@@ -29,7 +29,18 @@ const PARTIAL_CUT_TAG = '0035_cloudy_lightspeed'
 function freshDb() {
   const dir = mkdtempSync(join(tmpdir(), 'enkaku-watermark-'))
   const opened = openDb(join(dir, 'test.db'))
-  return { ...opened, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  return {
+    ...opened,
+    // Close the database BEFORE removing the directory it lives in. POSIX
+    // lets you unlink an open file and says nothing; Windows refuses, so
+    // every test in this file failed on `check-windows` at its own cleanup
+    // rather than on anything it asserts. The handle was always being leaked
+    // — one platform simply told us.
+    cleanup: () => {
+      opened.sqlite.close()
+      rmSync(dir, { recursive: true, force: true })
+    },
+  }
 }
 
 function watermark(sqlite: ReturnType<typeof freshDb>['sqlite']): number {

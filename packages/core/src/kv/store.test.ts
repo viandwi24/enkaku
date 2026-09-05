@@ -1,3 +1,4 @@
+import type { Database } from 'bun:sqlite'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +10,18 @@ import { buildSecretRedactor, createKvStore, type KvQuotas, type KvStore } from 
 const GENEROUS: KvQuotas = { maxValueBytes: 65_536, maxKeyLength: 256, maxEntriesPerNamespace: 1_000, maxEntriesPerDevice: 5_000 }
 
 let tmpDirs: string[] = []
+/**
+ * Every file-backed database this file opens, closed in `afterEach` before
+ * the directory holding it is removed.
+ *
+ * POSIX lets you unlink an open file and says nothing, so the leak was
+ * invisible here for as long as this test has existed. Windows refuses: the
+ * first `setUpFileBacked` test left a handle open, `rmSync` threw, `tmpDirs`
+ * was never cleared, and every test after it in this file failed in its
+ * cleanup rather than on anything it asserts — 17 of them on
+ * `check-windows`.
+ */
+let openDbs: Database[] = []
 
 function tempDataDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'enkaku-kv-'))
@@ -34,6 +47,7 @@ function setUpFileBacked(quotas: KvQuotas = GENEROUS): {
   const dataDir = tempDataDir()
   const dbPath = join(dataDir, 'enkaku.db')
   const opened = openDb(dbPath)
+  openDbs.push(opened.sqlite)
   runMigrations(opened.db)
   return {
     store: createKvStore(opened.db, dataDir, () => quotas),
@@ -44,6 +58,8 @@ function setUpFileBacked(quotas: KvQuotas = GENEROUS): {
 }
 
 afterEach(() => {
+  for (const sqlite of openDbs) sqlite.close()
+  openDbs = []
   for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true })
   tmpDirs = []
 })

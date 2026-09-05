@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { openDb, runMigrations, type Db } from '../db'
 import { plugins, scripts } from '../db/schema'
@@ -9,7 +11,7 @@ import { createScriptRegistry } from './registry'
 function setUp(): { db: Db; dataDir: string } {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
-  return { db: opened.db, dataDir: `/tmp/enkaku-registry-test-${crypto.randomUUID()}` }
+  return { db: opened.db, dataDir: join(tmpdir(), `enkaku-registry-test-${crypto.randomUUID()}`) }
 }
 
 /**

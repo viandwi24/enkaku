@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import type { AdbClient, TrackedDevice } from '@enkaku/adb'
 import type { AdbServerPhase } from '@enkaku/protocol'
@@ -372,7 +372,11 @@ describe('workspace-wide guard — adb kill-server has exactly one implementatio
       for (const file of listImplementationFiles(srcDir)) {
         const code = stripComments(readFileSync(file, 'utf8'))
         if (code.toLowerCase().includes('kill' + '-server')) {
-          offenders.push(relative(repoRoot, file))
+          // `relative()` answers in the platform's own separator, so on
+          // Windows this reads `packages\\core\\src\\...` and never matches the
+          // expectation below — the guard failed on `check-windows` for the
+          // shape of its path, not for anything it was written to catch.
+          offenders.push(relative(repoRoot, file).split(sep).join('/'))
         }
       }
     }

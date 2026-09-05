@@ -238,11 +238,18 @@ describe('guest-agent (plan 90 §90.1 — fixes F5, F6)', () => {
       // The active pointer must name a version the BUNDLED manifest actually
       // has an entry for — `deviceArtifactExpectation` matches by exact
       // string (`manager.ts`: `tool.versions.find(x => x.version === version)`,
-      // no fallback). This pinned `'TODO-first-release'` before the guest
-      // agent's first real release landed in the manifest as `'0.1.8'`; the
-      // fixture was never updated to match, so this always resolved to
-      // `null` regardless of the manifest's own correctness.
-      pinActivePointer(dataDir, 'guest-agent', '0.1.8', 'guest-agent.apk')
+      // no fallback).
+      //
+      // So it is READ from the manifest, never written down here. Twice now a
+      // literal has rotted: `'TODO-first-release'` before the first release,
+      // then `'0.1.8'` until `scripts/pin-guest-agent.ts` REPLACED the
+      // versions array at v0.2.0 (it keeps one entry, it does not append) and
+      // CI went red on main. A fixture that names a released version is a
+      // fixture that expires at the next release, and this test is not about
+      // which version is pinned — it is about the entry being complete.
+      const manifestVersion = new ToolchainManager({ dataDir, coreVersion: '0.0.0-test', store: fakeStore() }).manifests.getTool('guest-agent')?.versions[0]?.version
+      expect(manifestVersion).toBeString()
+      pinActivePointer(dataDir, 'guest-agent', manifestVersion!, 'guest-agent.apk')
       const manager = new ToolchainManager({ dataDir, coreVersion: '0.0.0-test', store: fakeStore() })
       await manager.init()
 
