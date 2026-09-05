@@ -72,12 +72,25 @@ export class UiautomatorDumpInspector implements Inspector {
      * hierarchy dumped to: <path>"; anything else is its own error text, and
      * that text is the diagnosis.
      */
-    const dumpSaid = (await this.transport.exec(`uiautomator dump ${path}`, { profile: 'inspectorDump' })).stdout
-    if (!dumpSaid.includes(path)) {
-      throw new InspectorError('INSPECTOR_DUMP_FAILED', `uiautomator dump did not write a file: ${short(dumpSaid)}`)
-    }
+    /**
+     * `uiautomator dump` writes its "UI hierarchy dumped to: <path>" line to
+     * STDERR on most builds, not stdout. Gating the read on stdout alone
+     * rejected dumps that had in fact succeeded and reported "(nothing)"
+     * (2026-09-05) — a check that broke the working path to improve an error
+     * message. So: run it, keep both streams, and let the FILE decide. Its
+     * output only matters when the read then fails, which is exactly when it
+     * is the diagnosis.
+     */
+    const said = await this.transport.exec(`uiautomator dump ${path}`, { profile: 'inspectorDump' })
+    const toolOutput = `${said.stdout ?? ''}${said.stderr ?? ''}`.trim()
     const xml = new TextDecoder().decode(await this.transport.execOut(`cat ${path}`, { profile: 'inspectorDump' }))
     await this.transport.exec(`rm -f ${path}`, { profile: 'inspectorDump' })
+    if (!xml.includes('<?xml')) {
+      throw new InspectorError(
+        'INSPECTOR_DUMP_FAILED',
+        `uiautomator dump produced no hierarchy — the tool said ${short(toolOutput)}, reading ${path} gave ${short(xml)}`,
+      )
+    }
     return xml
   }
 
