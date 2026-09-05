@@ -30,9 +30,34 @@ export interface ExprScope {
   $run: Readonly<{ summary: unknown; index?: number; count?: number }>
   $now: number
   $random: number
+  /**
+   * The step's draw counter for `rand()`, shared by every expression the step
+   * evaluates so two `rand()` calls never collide (`SCOPE_FUNCTIONS`).
+   * Optional: a caller that omits it gets a counter of its own, which is
+   * correct for a one-off evaluation and is what every test does.
+   */
+  draws?: { n: number }
 }
 
 const hasOwn = Object.prototype.hasOwnProperty
+
+/**
+ * The counter `rand()` advances. Attached to the scope so every expression of
+ * ONE step shares it — `buildExprScope` caches one scope object per step, so
+ * two fields of the same `set` node draw different numbers, the way they
+ * would in JavaScript. A scope with no counter gets one, so a bare
+ * `evaluate()` still works.
+ */
+const fallbackDraws = new WeakMap<object, { n: number }>()
+function drawsOf(scope: ExprScope): { n: number } {
+  if (scope.draws) return scope.draws
+  let d = fallbackDraws.get(scope)
+  if (!d) {
+    d = { n: 0 }
+    fallbackDraws.set(scope, d)
+  }
+  return d
+}
 
 function byteLength(s: string): number {
   return new TextEncoder().encode(s).length
@@ -157,7 +182,7 @@ function evalNode(node: Expr, scope: ExprScope, fuel: Fuel): unknown {
       // `SCOPE_FUNCTIONS`. Checked first so a future ordinary function can
       // never shadow one of them by accident.
       const scoped = SCOPE_FUNCTIONS[node.fn]
-      if (scoped) return scoped(args, { $random: scope.$random, $now: scope.$now }, fuel)
+      if (scoped) return scoped(args, { $random: scope.$random, $now: scope.$now, draws: drawsOf(scope) }, fuel)
       const fn = FUNCTIONS[node.fn]
       if (!fn) typeError(`unknown function '${node.fn}'`)
       return fn(args, fuel)

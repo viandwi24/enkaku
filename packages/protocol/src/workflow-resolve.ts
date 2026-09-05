@@ -161,6 +161,11 @@ function buildExprScope(scope: ResolveScope): ExprScope {
     $run: { summary: toScopeValue(scope.summary), index: scope.runIndex ?? 0, count: scope.runCount ?? 1 },
     $now: scope.now ?? Date.now(),
     $random: scope.randomSeed ?? 0,
+    // One counter per STEP, not per expression: `buildExprScope` caches one
+    // of these per `ResolveScope`, and a step builds exactly one, so two
+    // `rand()` calls in two different fields of the same `set` node draw
+    // different numbers — the way they would in JavaScript.
+    draws: { n: 0 },
   }
   exprScopeCache.set(scope, built)
   return built

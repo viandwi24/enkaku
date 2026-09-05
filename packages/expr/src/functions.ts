@@ -356,17 +356,59 @@ export const FUNCTIONS: Record<string, ExprFn> = {
  *
  * A fresh number per step, not per run: step 3 and step 6 differ.
  */
-export type ScopeFn = (args: unknown[], scope: { $random: number; $now: number }, fuel: Fuel) => unknown
+export interface ScopeFnScope {
+  $random: number
+  $now: number
+  /** Draws taken so far in THIS step — see `rand()`. Mutable on purpose; one counter per step, shared by every expression the step evaluates. */
+  draws: { n: number }
+}
+
+export type ScopeFn = (args: unknown[], scope: ScopeFnScope, fuel: Fuel) => unknown
+
+/**
+ * A fresh draw, derived rather than generated.
+ *
+ * `rand()` behaves the way `Math.random()` behaves — call it twice, get two
+ * different numbers — while staying reproducible, because the Nth draw of a
+ * step is a pure function of that step's own `$random` and N. The evaluator
+ * walks an expression in a fixed order, so the Nth call is always the same
+ * call, and a replay of a finished run re-derives exactly the numbers it ran
+ * with. That is the "cache it behind the scenes" the owner asked for
+ * (2026-09-05): the shape a user expects on the surface, determinism
+ * underneath, no host entropy anywhere.
+ */
+function nextDraw(scope: ScopeFnScope): number {
+  const i = scope.draws.n++
+  // Fold the step's own draw into a 32-bit state with the call index. The
+  // multiplier is the same odd constant `deriveRandom` uses, for the same
+  // reason: nearby indices must not produce visibly related output.
+  const state = (Math.imul(Math.floor(scope.$random * 4294967296) | 0, 0x9e3779b1) ^ (i | 0)) | 0
+  let t = (state + 0x6d2b79f5) | 0
+  t = Math.imul(t ^ (t >>> 15), t | 1)
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
 
 export const SCOPE_FUNCTIONS: Record<string, ScopeFn> = {
-  /** `rand()` → 0–1, the same value everywhere in this step. `rand(n)` → a whole number 0…n-1, the shape `floor(rand() * n)` is always written as. */
+  /**
+   * `rand()` → a new number in `[0, 1)`, exactly like `Math.random()`.
+   * `rand(n)` → a new whole number in `0…n-1`, the shape `floor(rand() * n)`
+   * is always written as.
+   *
+   * Two calls give two numbers. The same two calls, replayed, give the same
+   * two numbers — see `nextDraw`. When you need one draw that several
+   * SEPARATE expressions of the same step must agree on (drawing an item in
+   * one field and removing that item in another), read `$random` instead:
+   * that is the step's single value and it does not advance.
+   */
   rand: (args, scope) => {
-    if (args.length === 0) return scope.$random
+    const r = nextDraw(scope)
+    if (args.length === 0) return r
     const n = num(args[0], 'rand')
     if (!(n > 0)) typeError(`rand(n) needs a positive count — got ${n}`)
-    return Math.floor(scope.$random * n)
+    return Math.floor(r * n)
   },
-  /** `now()` → the step's start time in unix milliseconds, the same value everywhere in this step. */
+  /** `now()` → this step's start time in unix milliseconds. Supplied by the caller, never read from the host clock, so a replay reports when the step actually ran. */
   now: (_args, scope) => scope.$now,
 }
 

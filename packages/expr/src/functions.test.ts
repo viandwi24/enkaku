@@ -178,24 +178,39 @@ describe('rand() and now() — the names people already have (2026-09-05)', () =
     return evaluate(parse(source), { ...scope(), $random, $now })
   }
 
-  test('rand() is the step’s drawn number, and rand(n) is the whole number 0…n-1', () => {
-    expect(withScope('rand()', 0.42)).toBe(0.42)
-    expect(withScope('rand(4)', 0.42)).toBe(1)
-    expect(withScope('rand(4)', 0.99)).toBe(3)
-    expect(withScope('rand(4)', 0)).toBe(0)
+  test('rand() answers in [0,1) and rand(n) a whole number in 0…n-1', () => {
+    for (const seed of [0, 0.13, 0.42, 0.99]) {
+      const r = withScope('rand()', seed) as number
+      expect(r).toBeGreaterThanOrEqual(0)
+      expect(r).toBeLessThan(1)
+      const n = withScope('rand(4)', seed) as number
+      expect(Number.isInteger(n)).toBe(true)
+      expect(n).toBeGreaterThanOrEqual(0)
+      expect(n).toBeLessThan(4)
+    }
   })
 
-  test('it is the SAME value every time inside one step — what makes a replay honest', () => {
-    // A draw and the decision based on it must agree. `Math.random()` would
-    // give two different answers here and the workflow would remove an item
-    // it did not pick.
-    expect(withScope('rand(4) == rand(4)', 0.7)).toBe(true)
-    expect(withScope('rand() + rand()', 0.25)).toBe(0.5)
+  test('two calls give two numbers, exactly like Math.random()', () => {
+    expect(withScope('rand() == rand()', 0.7)).toBe(false)
   })
 
-  test('and it still reads the same as the dollar form, because it is the same value', () => {
-    expect(withScope('rand()', 0.31)).toBe(withScope('$random', 0.31))
-    expect(withScope('floor(rand() * 4)', 0.8)).toBe(withScope('floor($random * 4)', 0.8))
+  test('but the same expression re-evaluated gives the same numbers — what makes a replay honest', () => {
+    // A replay of a finished run must light the branch that actually fired.
+    // Host entropy could not promise this; a derived draw can.
+    const once = withScope('rand() + rand() * 100', 0.42)
+    const twice = withScope('rand() + rand() * 100', 0.42)
+    expect(once).toBe(twice)
+  })
+
+  test('a different step draws differently', () => {
+    expect(withScope('rand()', 0.42)).not.toBe(withScope('rand()', 0.43))
+  })
+
+  test('$random is still the step’s ONE value, and does not advance', () => {
+    // The escape hatch for two separate expressions that must agree on a
+    // single draw — picking an item in one field, removing it in another.
+    expect(withScope('$random == $random', 0.31)).toBe(true)
+    expect(withScope('$random', 0.31)).toBe(0.31)
   })
 
   test('now() is the step’s own clock, supplied — never read from the host', () => {
