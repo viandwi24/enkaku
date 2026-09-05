@@ -5,7 +5,7 @@ export { toScopeValue } from './scope'
 export { evaluate } from './eval'
 export type { ExprScope } from './eval'
 export { deriveRandom } from './random'
-export { GATE_OPS } from './functions'
+export { GATE_OPS, FUNCTION_NAMES } from './functions'
 export type { GateOp } from './functions'
 
 /**

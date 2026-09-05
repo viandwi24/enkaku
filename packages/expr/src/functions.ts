@@ -335,4 +335,39 @@ export const FUNCTIONS: Record<string, ExprFn> = {
   },
 }
 
-export const FUNCTION_NAMES: ReadonlySet<string> = new Set(Object.keys(FUNCTIONS))
+/**
+ * Functions that read the SCOPE rather than only their arguments — the two
+ * values a pure evaluator cannot invent for itself.
+ *
+ * They exist because `$random` and `$now` are unguessable. Everyone who
+ * writes automation knows `Math.random()`; nobody arrives knowing that this
+ * language hands you a pre-drawn number under a dollar sign, and there is
+ * nowhere they could have learnt it (the owner's own question, 2026-09-05:
+ * "lah kalau $random ini darimana user belajarnya?"). `rand()` and `now()`
+ * are the names people already have.
+ *
+ * What they are NOT is `Math.random()`, and the difference is deliberate:
+ * both return the SAME value every time they are called within one step.
+ * That is what lets the Timeline replay a finished run and light the branch
+ * that actually fired, instead of drawing a new number and showing a path
+ * the device never took. It is also what makes a draw and the decision based
+ * on it agree — a workflow that picks an item and then removes the one it
+ * picked would otherwise remove a different one, silently.
+ *
+ * A fresh number per step, not per run: step 3 and step 6 differ.
+ */
+export type ScopeFn = (args: unknown[], scope: { $random: number; $now: number }, fuel: Fuel) => unknown
+
+export const SCOPE_FUNCTIONS: Record<string, ScopeFn> = {
+  /** `rand()` → 0–1, the same value everywhere in this step. `rand(n)` → a whole number 0…n-1, the shape `floor(rand() * n)` is always written as. */
+  rand: (args, scope) => {
+    if (args.length === 0) return scope.$random
+    const n = num(args[0], 'rand')
+    if (!(n > 0)) typeError(`rand(n) needs a positive count — got ${n}`)
+    return Math.floor(scope.$random * n)
+  },
+  /** `now()` → the step's start time in unix milliseconds, the same value everywhere in this step. */
+  now: (_args, scope) => scope.$now,
+}
+
+export const FUNCTION_NAMES: ReadonlySet<string> = new Set([...Object.keys(FUNCTIONS), ...Object.keys(SCOPE_FUNCTIONS)])

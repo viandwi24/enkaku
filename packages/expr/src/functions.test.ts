@@ -172,3 +172,37 @@ describe('an empty path names the element itself (2026-09-05)', () => {
     expect(run(`count(filterWhere($params.rows, 'ok', 'eq', true))`, { rows: [{ ok: true }, { ok: false }, { ok: true }] })).toBe(2)
   })
 })
+
+describe('rand() and now() — the names people already have (2026-09-05)', () => {
+  function withScope(source: string, $random: number, $now = 0): unknown {
+    return evaluate(parse(source), { ...scope(), $random, $now })
+  }
+
+  test('rand() is the step’s drawn number, and rand(n) is the whole number 0…n-1', () => {
+    expect(withScope('rand()', 0.42)).toBe(0.42)
+    expect(withScope('rand(4)', 0.42)).toBe(1)
+    expect(withScope('rand(4)', 0.99)).toBe(3)
+    expect(withScope('rand(4)', 0)).toBe(0)
+  })
+
+  test('it is the SAME value every time inside one step — what makes a replay honest', () => {
+    // A draw and the decision based on it must agree. `Math.random()` would
+    // give two different answers here and the workflow would remove an item
+    // it did not pick.
+    expect(withScope('rand(4) == rand(4)', 0.7)).toBe(true)
+    expect(withScope('rand() + rand()', 0.25)).toBe(0.5)
+  })
+
+  test('and it still reads the same as the dollar form, because it is the same value', () => {
+    expect(withScope('rand()', 0.31)).toBe(withScope('$random', 0.31))
+    expect(withScope('floor(rand() * 4)', 0.8)).toBe(withScope('floor($random * 4)', 0.8))
+  })
+
+  test('now() is the step’s own clock, supplied — never read from the host', () => {
+    expect(withScope('now()', 0, 1_700_000_000_000)).toBe(1_700_000_000_000)
+  })
+
+  test('rand(0) is refused rather than answering 0 for every draw', () => {
+    expect(() => withScope('rand(0)', 0.5)).toThrow()
+  })
+})

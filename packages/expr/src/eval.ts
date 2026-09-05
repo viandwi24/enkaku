@@ -18,7 +18,7 @@
 //    bounded deep value.
 
 import { EXPR_LIMITS, ExprEvalError, Fuel, type BinOp, type Expr, type RootName } from './ast'
-import { FUNCTIONS } from './functions'
+import { FUNCTIONS, SCOPE_FUNCTIONS } from './functions'
 
 export { ExprEvalError, Fuel }
 
@@ -151,10 +151,15 @@ function evalNode(node: Expr, scope: ExprScope, fuel: Fuel): unknown {
     case 'cond':
       return truthy(evalNode(node.c, scope, fuel)) ? evalNode(node.a, scope, fuel) : evalNode(node.b, scope, fuel)
     case 'call': {
-      const fn = FUNCTIONS[node.fn]
-      if (!fn) typeError(`unknown function '${node.fn}'`)
       const args = node.args.map((a) => evalNode(a, scope, fuel))
       fuel.spend()
+      // `rand()`/`now()` read the scope's own pre-drawn values — see
+      // `SCOPE_FUNCTIONS`. Checked first so a future ordinary function can
+      // never shadow one of them by accident.
+      const scoped = SCOPE_FUNCTIONS[node.fn]
+      if (scoped) return scoped(args, { $random: scope.$random, $now: scope.$now }, fuel)
+      const fn = FUNCTIONS[node.fn]
+      if (!fn) typeError(`unknown function '${node.fn}'`)
       return fn(args, fuel)
     }
   }
