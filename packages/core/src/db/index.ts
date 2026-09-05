@@ -25,6 +25,52 @@ export function openDb(path: string): OpenedDb {
 }
 
 /**
+ * Open an existing `enkaku.db` for READING, from a process that does not own
+ * it — `enkaku doctor`'s registry checks and `createBackup`'s `VACUUM INTO`.
+ *
+ * Read-only is what these callers want and what they try first: it is a
+ * structural guarantee that a diagnostic or a backup can never perturb a
+ * database the core may be actively writing to.
+ *
+ * It is not always available. A WAL database whose write-ahead log has not
+ * been checkpointed needs recovery before it can be read, and recovery is a
+ * WRITE — SQLite answers `SQLITE_READONLY_RECOVERY`/`unable to open database
+ * file` rather than doing it from a read-only connection, and it needs a
+ * writable `-shm` for the same reason. The core holds an uncheckpointed WAL
+ * for as long as it is running, which is most of the time, and the platform
+ * decides whether that read still squeaks through: it does on macOS and
+ * Linux, and `check-windows`'s first ever run (2026-09-05) failed fifteen
+ * tests across backup and doctor in exactly the pattern a refused read-only
+ * open produces — every case expecting real rows failed, and the one case
+ * expecting "no database" passed.
+ *
+ * So a refusal falls back to a read-write open rather than giving up. That is
+ * strictly better than what each caller did without it — throw, or report a
+ * populated farm as having no database at all — and it is not a licence to
+ * write: neither caller issues anything but reads. What it costs is the
+ * guarantee, in the narrow case where the alternative was not working, so the
+ * fallback is second and never first.
+ *
+ * `create: false` on both: a caller reading a database must never conjure an
+ * empty one, and "no such file" has to stay distinguishable from "would not
+ * open".
+ */
+export function openForReading(path: string): Database {
+  try {
+    return new Database(path, { readonly: true, create: false })
+  } catch (readonlyErr) {
+    try {
+      return new Database(path, { readonly: false, create: false })
+    } catch {
+      // The read-only error is the one worth reporting: it is the open we
+      // wanted, and the fallback's own failure is almost always the same
+      // cause wearing different words.
+      throw readonlyErr
+    }
+  }
+}
+
+/**
  * How many rows a Drizzle `.run()` statement changed.
  * bun:sqlite returns { changes, lastInsertRowid } at runtime, but Drizzle's
  * bun-sqlite types declare `.run()` as void — this helper

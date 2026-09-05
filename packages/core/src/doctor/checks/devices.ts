@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
+import { openForReading } from '../../db'
 import { formatDeviceLabel } from '../../registry/device-number'
 import type { Check } from '../types'
 
@@ -43,7 +44,7 @@ function readRegistrySerials(dataDir: string): RegistryRead {
   if (!existsSync(path)) return { kind: 'none' }
   let sqlite: Database
   try {
-    sqlite = new Database(path, { readonly: true, create: false })
+    sqlite = openForReading(path)
   } catch (err) {
     // A database that IS there and will not open is not "no local database
     // yet". Both used to answer `null` and print the same benign sentence,

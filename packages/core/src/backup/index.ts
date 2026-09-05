@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite'
+import { openForReading } from '../db'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -142,13 +143,19 @@ export async function createBackup(opts: { dataDir: string; outputPath: string; 
   const tmpDir = mkdtempSync(join(tmpdir(), 'enkaku-backup-'))
   try {
     const vacuumPath = join(tmpDir, DB_FILE)
-    // Read-only: VACUUM INTO only ever reads the source, and opening it
-    // readonly guarantees a backup can never itself perturb a database the
-    // core may be actively writing to. SQLite takes its own consistent
+    // Read-only FIRST: VACUUM INTO only ever reads the source, and opening
+    // it readonly guarantees a backup can never itself perturb a database
+    // the core may be actively writing to. SQLite takes its own consistent
     // snapshot read transaction here, so committed writes still sitting
     // only in `enkaku.db-wal` (never checkpointed) are captured correctly —
     // see this module's doc comment for why a raw file copy cannot do that.
-    const source = new Database(dbPath, { readonly: true, create: false })
+    //
+    // `openForReading` keeps that preference and adds the case where it is
+    // not on offer: an uncheckpointed WAL cannot always be read from a
+    // read-only connection, and refusing to back a farm up at all is the
+    // worse of the two answers. See its own comment for what the fallback
+    // gives up and why it is second.
+    const source = openForReading(dbPath)
     try {
       source.query('VACUUM INTO ?').run(vacuumPath)
     } finally {

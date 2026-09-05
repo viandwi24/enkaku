@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
+import { openForReading } from '../../db'
 import { DEFAULT_DEVICE_LABEL_STATE, DeviceLabelStateSchema, DeviceSettingsSchema, FarmSettingsSchema, defaultFarmSettings } from '@enkaku/protocol'
 import { DEVICE_LABEL_SURFACE } from '../../config/constants'
 import { formatDeviceLabel } from '../../registry/device-number'
@@ -32,7 +33,7 @@ function readLabelledDevices(dataDir: string): LabelledRead {
   if (!existsSync(path)) return { kind: 'none' }
   let sqlite: Database
   try {
-    sqlite = new Database(path, { readonly: true, create: false })
+    sqlite = openForReading(path)
   } catch (err) {
     // `skip` on a database that exists and will not open is a false benign
     // state — "nothing to report" and "we could not look" are different
