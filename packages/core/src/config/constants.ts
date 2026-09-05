@@ -221,3 +221,16 @@ export const RECORDING_CAPTURE_SCREENSHOTS = bool('ENKAKU_RECORDING_CAPTURE_SCRE
 // ── Network geo verification (replaces network.geoProvider/geoIntervalSec) ────
 export const GEO_PROVIDER_URL = strOrNull('ENKAKU_GEO_PROVIDER_URL', null, z.string().url())
 export const GEO_RECHECK_INTERVAL_SEC = num('ENKAKU_GEO_RECHECK_INTERVAL_SEC', 300, z.number().int().min(30).max(86_400))
+
+// ── Virtual devices (plan 400 D6, plan 401 §4.6) ──────────────────────────────
+/**
+ * Plan 400 D6 — how many virtual devices may run at once. The owner's own number is 2
+ * ("paling dipakai 1 atau 2 devices"), and the hard ceiling of 8 is well inside adb's
+ * emulator discovery range of 16 (plan 400 R5). This is a support override, not a
+ * setting: a farm that needs a hundred emulators needs redroid (plan 400 D1), not a
+ * bigger number here.
+ */
+export const VM_MAX_CONCURRENT = num('ENKAKU_VM_MAX_CONCURRENT', 2, z.number().int().min(1).max(8))
+
+/** Plan 401 §4.4 — how long a cold boot may take before the VM is failed and the child stopped. */
+export const VM_BOOT_TIMEOUT_SEC = num('ENKAKU_VM_BOOT_TIMEOUT_SEC', 300, z.number().int().min(60).max(1800))
