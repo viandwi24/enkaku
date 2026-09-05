@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { and, desc, eq, ne } from 'drizzle-orm'
+import { and, desc, eq, notInArray } from 'drizzle-orm'
 import {
   checkDeclaredSchema,
   checkWorkflow,
@@ -17,6 +17,8 @@ import {
   WorkflowPinSetRequestSchema,
   WorkflowRunNodeRequestSchema,
   WorkflowRunNodeResponseSchema,
+  WorkflowSimulateRequestSchema,
+  WorkflowSimulateResponseSchema,
   WorkflowLastRunResponseSchema,
   WORKFLOW_STEP_STATUSES,
   type ResolvedNodeScript,
@@ -32,13 +34,15 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { jobRuns, jobs, workflowSteps, type WorkflowStepRow } from '../db/schema'
+import { jobRuns, jobs, workflowSteps, type RunTrigger, type WorkflowStepRow } from '../db/schema'
 import { rowToJobInfo } from '../queue/job-store'
 import type { ScriptRegistry } from '../scripts/registry'
 import { createParamPreset, deleteParamPreset, listParamPresets, updateParamPreset } from '../scripts/param-sets'
 import type { WorkflowStore } from '../workflows/store'
 import { upgradeWorkflowDoc } from '../workflows/upgrade'
 import type { PinStore } from '../workflows/pins'
+import { simulateWorkflow } from '../workflows/simulate'
+import { storeSimulateRun } from '../workflows/simulate-store'
 import type { RunStore } from '../jobs/runs/store'
 import { EnkakuError } from '../util/errors'
 import { typedJson } from './typed-json'
@@ -59,6 +63,14 @@ const DocBody = z.object({ doc: z.unknown() })
 // both (plan 311 G4).
 const PresetCreateBody = z.object({ name: z.string().min(1).max(60), params: z.unknown() })
 const PresetUpdateBody = z.object({ name: z.string().min(1).max(60).optional(), params: z.unknown().optional() })
+
+/**
+ * Triggers that never count as a workflow's or a script's "last run" (plan
+ * 304 §4.6, plan 309 §3.4 G4): `node-test` runs one node alone and must
+ * never overwrite the data an author sees for every other node; `simulate`
+ * never touches a device at all and must never be shown as if it had.
+ */
+const NON_REAL_RUN_TRIGGERS: RunTrigger[] = ['node-test', 'simulate']
 
 const ERROR_STATUS: Record<string, number> = {
   workflow_not_found: 404,
@@ -282,7 +294,7 @@ function lastRecordedInput(db: Db, workflowName: string, nodeId: string): { ok: 
     .from(workflowSteps)
     .innerJoin(jobRuns, eq(jobRuns.id, workflowSteps.runId))
     .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
-    .where(and(eq(jobs.workflowName, workflowName), eq(workflowSteps.stepId, nodeId), ne(jobRuns.trigger, 'node-test')))
+    .where(and(eq(jobs.workflowName, workflowName), eq(workflowSteps.stepId, nodeId), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
     .orderBy(desc(workflowSteps.startedAt))
     .limit(1)
     .get()
@@ -346,6 +358,36 @@ export function createWorkflowRoutes(deps: {
     const { resolved, findings: refFindings } = resolveDocRefs(registry, doc)
     const findings: WorkflowFinding[] = [...refFindings, ...checkWorkflow(doc, resolved, budgetFor(deps))]
     return c.json(findings)
+  })
+
+  // ---- Simulate (plan 309 §4.3) ----
+
+  /**
+   * Runs the WHOLE document with no device contact at all (plan 309 G1) —
+   * permission `script.view`, deliberately NOT `job.run`, because nothing is
+   * run: `simulateWorkflow` substitutes a pin, a sample, or a mock for every
+   * `script` node, and the SAME `checkWorkflow`/`workflow-resolve.ts` the
+   * publish route and the real executor use decide every gate/switch/set
+   * (G3). `doc` is the EDITOR's own unsaved document (§4.4) — an author
+   * simulates the graph in front of them, including a node not yet saved.
+   */
+  app.post('/simulate', requirePermission('script.view'), async (c) => {
+    const body = WorkflowSimulateRequestSchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
+
+    const validated = validateForWrite(registry, deps, body.data.doc)
+    if (!validated.ok) return c.json(validated.body, validated.status)
+
+    const result = simulateWorkflow({ doc: validated.doc, params: body.data.params, mocks: body.data.mocks }, { pins: deps.pins, registry })
+    const { jobId, runId } = storeSimulateRun(deps.db, {
+      workflowName: validated.doc.name,
+      workflowDoc: validated.doc,
+      params: body.data.params,
+      createdBy: actorId(c),
+      result,
+    })
+    deps.audit?.record({ userId: actorId(c), action: 'workflow.simulate', target: validated.doc.name, meta: { jobId, runId, status: result.status } })
+    return typedJson(c, WorkflowSimulateResponseSchema, { jobId, runId }, 202)
   })
 
   app.get('/', requirePermission('script.view'), (c) => {
@@ -489,7 +531,7 @@ export function createWorkflowRoutes(deps: {
         .from(workflowSteps)
         .innerJoin(jobRuns, eq(jobRuns.id, workflowSteps.runId))
         .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
-        .where(and(eq(jobs.workflowName, name), eq(workflowSteps.stepId, nodeId), ne(jobRuns.trigger, 'node-test')))
+        .where(and(eq(jobs.workflowName, name), eq(workflowSteps.stepId, nodeId), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
         .orderBy(desc(workflowSteps.startedAt))
         .limit(1)
         .get()
@@ -596,7 +638,7 @@ export function createWorkflowRoutes(deps: {
       .select({ jobId: jobRuns.jobId, runId: jobRuns.id, startedAt: jobRuns.startedAt, createdAt: jobRuns.createdAt, seed: jobRuns.seed, params: jobs.params })
       .from(jobRuns)
       .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
-      .where(and(eq(jobs.workflowName, name), ne(jobRuns.trigger, 'node-test')))
+      .where(and(eq(jobs.workflowName, name), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
       .orderBy(desc(jobRuns.createdAt))
       .limit(1)
       .get()
