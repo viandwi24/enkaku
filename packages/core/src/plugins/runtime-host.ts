@@ -669,11 +669,34 @@ function emptyCounters(): PluginServiceCounters {
 /** `ctx.isPortFree(port)` — a plugin's own argument is external input like any other. */
 const PortSchema = z.number().int().min(1).max(65_535)
 
+/**
+ * The stack when it carries the message, the message when it does not.
+ *
+ * `err.stack` normally reads `"Error: <message>\n    at …"`, so preferring it
+ * gives the plugin's own words AND the frames that attribute them. But the
+ * engine does not guarantee that first line: under CPU pressure Bun has been
+ * observed producing a stack that begins with a bare `"Error"` and no message
+ * at all (measured 2026-09-05: 3 of 25 runs of `runtime-host.rejection-child.ts`
+ * under eight busy loops). The old `err.stack ?? err.message` then threw the
+ * plugin's message away entirely and stored frames alone.
+ *
+ * That is a loss an operator pays for: §4.2's error-budget log and the
+ * `lastError` a plugin's page shows are both meant to be the plugin's OWN text,
+ * verbatim — the surrounding tests assert exactly that. A stack with no message
+ * is the one shape that silently is not.
+ */
+function withMessage(err: Error): string {
+  const stack = typeof err.stack === 'string' ? err.stack : ''
+  if (!stack) return err.message
+  if (err.message && !stack.includes(err.message)) return `${err.message}\n${stack}`
+  return stack
+}
+
 function describe(err: unknown): { code: string; message: string } {
   if (err instanceof EnkakuError) return { code: err.code, message: err.message }
   if (err instanceof Error) {
     const code = (err as { code?: unknown }).code
-    return { code: typeof code === 'string' ? code : 'E_PLUGIN_HANDLER_FAILED', message: err.stack ?? err.message }
+    return { code: typeof code === 'string' ? code : 'E_PLUGIN_HANDLER_FAILED', message: withMessage(err) }
   }
   return { code: 'E_PLUGIN_HANDLER_FAILED', message: String(err) }
 }
