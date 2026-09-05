@@ -17,6 +17,8 @@
 | G6 | `pluck` and `filterWhere` cover per-element array work with no lambda and no new grammar | 2 functions, closed table | `bun test packages/expr/src/functions.test.ts` → `array paths` passes | [ ] |
 | G7 | A `switch` can branch by weight instead of predicate | `mode: 'weighted'`; weights sum-normalised; draw from `$random` | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `weighted switch` passes | [ ] |
 | G8 | A weighted draw is reproducible for a given run | same seed, same branch | same file → `weighted is deterministic` passes | [ ] |
+| G11 | The JSON tab and the Fields tab round-trip losslessly, both directions | a document edited in either tab reads identically in the other | `bun test packages/studio/src/../json-view.test.ts` is forbidden (§8); proven instead by `bun test packages/protocol/src/workflow-set.test.ts` → `json round trip` over the pure codec | [ ] |
+| G12 | A JSON document that cannot become assignments is refused with its reason, not stored | 3 cases: top-level array, duplicate key, unholdable value | same file → `json refusals` passes | [ ] |
 | G9 | The expression engine gains no new grammar, no regex, no lambda | `parse.ts` unchanged except the function table's names | `git diff --stat packages/expr/src/parse.ts` → 0 changed lines | [ ] |
 | G10 | `bun run typecheck` and `bun run build:studio` clean; no Studio test file added | 0 errors, 0 `*.test.tsx` | both exit 0 | [ ] |
 
@@ -38,7 +40,7 @@ and the two expression functions the gap analysis found missing.
 
 | Not done here | Where |
 |---|---|
-| A JSON-template authoring mode | §9 Q1 — refused, with a reason |
+| — | (the JSON view is IN scope, §4.6) |
 | Lambdas (`map(a, $item.id)`) | §9 Q2 — the escalation if `pluck` proves insufficient, not before |
 | Regular expressions | never (plan 95 §3.8 R2, plan 300 D4) |
 | Binary data flowing between nodes | §9 Q3 — artefacts already have a home |
@@ -237,6 +239,45 @@ One row per assignment:
 - The row shows a live preview of the resolved value, from `usePreview`
   (plan 306 §4.4) — the same local, network-free evaluator.
 
+### 4.6 The JSON view — a projection, never a second source of truth
+
+The `set` node's PARAMETERS column has two tabs, **Fields** and **JSON**, and
+they edit **the same `assignments[]`**. There is one stored shape, one
+executor path, one checker. The JSON editor renders the assignments as a JSON
+document and parses edits back into assignments — the same discipline
+`WorkflowCanvas` already applies to edges, which are drawn from the document
+and never held as independent state.
+
+```
+{                                              report.count = { expr: 'len($nodes.n1.videos)' }
+  "report": { "count": "=len($nodes.n1.videos)" },   ⇄     label        = 'nightly'
+  "label": "nightly"
+}
+```
+
+Three rules make the round trip unambiguous:
+
+1. **A string value beginning with `=` is an expression**; everything after
+   the `=` is parsed by `@enkaku/expr`. A literal string that really does
+   begin with `=` is escaped `==`. This is n8n's own internal convention and
+   the same idea as Step Functions' `"key.$"` suffix (§5 R5) — a marker, not
+   a grammar. `parse.ts` is untouched (G9 still holds).
+2. **Interpolation inside an expression string**: `"run-{{ $now }}"` compiles
+   at publish time to `'"run-" + toText($now)'` and is stored as an ordinary
+   expression. No new `ValueExpr` form, no executor change, no second
+   evaluator. The splitter is ~40 lines with its own test file, and it is a
+   splitter: the text between markers is literal, the text inside is handed to
+   the existing parser.
+3. **What cannot round-trip is refused in the editor, never stored raw.** A
+   top-level array, a duplicate key, a value type no assignment can hold — the
+   JSON tab shows the reason and does not commit. The moment the JSON tab can
+   save something the Fields tab cannot read, there are two sources of truth,
+   and that — not the cost of a template — is the real hazard this design
+   exists to avoid.
+
+Switching tabs is therefore always lossless in both directions, which is what
+makes two authoring modes safe to offer at all.
+
 ### 4.5 The palette
 
 `set` joins the core group with icon `list` and the description "Build new
@@ -279,10 +320,16 @@ the literal-name type check.
 
 **312.7 — Drag sources in `DataTree`** and the drop targets. *Result*: G5.
 
-**312.8 — Palette entry** and `docs/design.md`'s Flow editor section gains the
+**312.8 — The JSON view.** The codec (`assignments ⇄ JSON`) as a **pure
+module in `@enkaku/protocol`** with its own test file, so the round trip is
+proven without a Studio test (plan 200 §8.3); then the tab in `NodePanel`.
+The interpolation splitter lands here too, compiling to concatenation at
+publish. *Result*: G11, G12.
+
+**312.9 — Palette entry** and `docs/design.md`'s Flow editor section gains the
 assignment row's measurements.
 
-**312.9 — Status and report.**
+**312.10 — Status and report.**
 
 ## 7. Test plan
 
@@ -306,7 +353,7 @@ Owner smoke, **no device needed** (this is what plan 309's simulate is for):
 
 | # | Question | Current answer |
 |---|---|---|
-| Q1 | A JSON-template mode, like n8n's **JSON Output**? | **No, and the reason is structural.** A JSON template needs string interpolation (`{{ … }}`) to embed expressions, and interpolation is a templating language — a second grammar beside `@enkaku/expr`, with its own escaping rules and its own parser. Dot notation already builds nested output. Revisit only if an author hits a shape dot notation cannot express. |
+| Q1 | ~~A JSON-template mode?~~ | **Decided: yes.** See §4.6. The first draft of this plan refused it and the refusal was wrong on its own technical claim — a marker convention needs no second grammar, and interpolation is a splitter, not a language. Overturned by the CEO, 2026-09-05, on the ground the plan had not weighed: a client who says "my API needs exactly this shape" pastes JSON, and telling them to type fourteen fields one at a time is a lost client, not a design decision. |
 | Q2 | Lambdas (`map(arr, $item.id)`)? | Not yet. `pluck`/`filterWhere` cover the observed cases without introducing binding. If an author needs a second lambda-shaped function within three months, that is the evidence, and the answer is a bounded `$item` binding — never a general one. |
 | Q3 | Binary data (screenshots) flowing through `set`? | No. Artefacts have their own store and a 256 KB node-output cap; passing images through the data path would blow both. |
 | Q4 | Should `set` be able to DELETE a field from the input? | Yes, and it is the same feature: an assignment whose value is the literal `null` with a `remove` flag, or `keepOnlySet` plus re-listing what to keep. Decide in 312.2 and record which; do not ship both. |
