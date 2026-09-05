@@ -309,7 +309,26 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           priority: 0,
         })
 
-        const settled = await deps.watcher.waitForTerminal(stepRun.id, ctx.signal)
+        /*
+         * Published BEFORE the wait, not after it.
+         *
+         * `currentChildRunId` is what the abort handler cancels, and it used
+         * to be assigned from this function's RETURN value — which only
+         * exists once the child has already settled. So for the whole time a
+         * step was actually running, the handler had `null` and cancelled
+         * nothing: cancelling a workflow marked the parent failed and left
+         * its script running on the phone, holding the device against every
+         * job behind it. Seen on the owner's own farm on 2026-09-05, where a
+         * cancelled workflow's `auto-scroll` kept a device busy and the next
+         * run sat `queued` behind a job nobody could see.
+         */
+        currentChildRunId = stepRun.id
+        let settled: Awaited<ReturnType<typeof deps.watcher.waitForTerminal>>
+        try {
+          settled = await deps.watcher.waitForTerminal(stepRun.id, ctx.signal)
+        } finally {
+          currentChildRunId = null
+        }
         void stepJob
         if (settled.status !== 'success') {
           const err = settled.error ?? 'the step failed'
@@ -576,7 +595,8 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
 
           // A script step.
           const outcome = await runScriptStep(node, step, seq, rowStartedAt)
-          if (outcome.run) currentChildRunId = outcome.run.id
+          // `currentChildRunId` is owned by `runScriptNode` now (set before the
+          // wait, cleared after) — nothing to publish here any more.
           const finishedAt = new Date()
 
           if (outcome.ok) {

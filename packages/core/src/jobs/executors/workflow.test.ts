@@ -769,3 +769,68 @@ describe('weighted switch (plan 312 §3.6, §4.2, §4.3, G7, G8)', () => {
     expect(results[2]).toBe(results[0])
   })
 })
+
+/* ------------------------------------------------------------------------ *
+ * Cancelling a workflow must reach the step that is actually running.
+ * ------------------------------------------------------------------------ */
+
+describe('cancellation reaches the running child step (2026-09-05)', () => {
+  test('aborting mid-step cancels that step’s run — not nothing', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db, opened.sqlite)
+    const db = opened.db
+    const runs = createRunStore(db)
+    const watcher = createRunWatcher({ getRun: (id) => runs.getRun(id) })
+    const cancelledRunIds: string[] = []
+    let stepRunId: string | null = null
+
+    const deps: WorkflowOrchestratorDeps = {
+      db,
+      runs,
+      watcher,
+      registry: fakeRegistry(),
+      pins: createPinStore(db),
+      // Leaves the step RUNNING and never settles it — the state a real
+      // device script is in for minutes at a time, and the only state in
+      // which cancelling it matters.
+      enqueueStep(input) {
+        const job = runs.createJob({
+          kind: 'script',
+          scriptId: input.scriptId,
+          deviceId: input.deviceId,
+          params: input.params,
+          scriptName: input.scriptName,
+          scriptVersion: input.scriptVersion,
+          parentWorkflowJobId: input.parentWorkflowJobId,
+          stepSeq: input.stepSeq,
+        })
+        const run = runs.addRun(job.id, { trigger: 'workflow-step', priority: input.priority })
+        db.update(jobRuns).set({ status: 'running' }).where(eq(jobRuns.id, run.id)).run()
+        stepRunId = run.id
+        return { job, run }
+      },
+      cancelRun(runId) {
+        cancelledRunIds.push(runId)
+      },
+      settings: () => ({ maxTotalMs: 3_600_000 }),
+      log: silentLog(),
+    }
+
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, threeStepDoc())
+    const controller = new AbortController()
+    const running = orchestrator.run(job, { runId: run.id, run, signal: controller.signal, heartbeat: () => {}, log: deps.log })
+
+    // Let the first step be enqueued and the executor settle into its wait.
+    for (let i = 0; i < 50 && stepRunId === null; i++) await new Promise((r) => setTimeout(r, 5))
+    expect(stepRunId).not.toBeNull()
+
+    controller.abort()
+    await running.catch(() => undefined)
+
+    // Before this fix `currentChildRunId` was assigned from the step's RETURN
+    // value, so it was still null while the step ran and this array stayed
+    // empty — the parent went failed and the child kept the device.
+    expect(cancelledRunIds).toContain(stepRunId as unknown as string)
+  })
+})
