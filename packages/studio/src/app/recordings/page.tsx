@@ -34,71 +34,79 @@ export default function RecordingsPage() {
     })
 
   return (
-    <>
+    /*
+      `PagePanel` is `overflow-hidden` — right for the screens that split into
+      panes that scroll separately, wrong for a page that is one long document.
+      With no scroller of its own, everything below the panel height was simply
+      unreachable. The header holds still; the body scrolls.
+    */
+    <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader title="Recordings" description="Macros captured from the device screen — review, promote a selector, publish as an ordinary script" />
 
-      <div className="space-y-4 px-5 py-4">
-        <PaginatedTable<RecordingListItem>
-          ref={tableRef}
-          fetchPage={fetchPage}
-          rowKey={(r) => r.slug}
-          sort={(list) => [...list].sort((a, b) => b.recordedAt - a.recordedAt)}
-          header={
-            <>
-              <TableHead>Name</TableHead>
-              <TableHead>Steps</TableHead>
-              <TableHead>Recorded</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </>
-          }
-          renderRow={(r) => (
-            <>
-              <TableCell>
-                <Link href={`/recordings/detail?slug=${encodeURIComponent(r.slug)}`} className="font-medium hover:underline">
-                  {r.name}
-                </Link>
-                {r.description && <p className="mt-0.5 truncate text-[11px] text-fg-muted">{r.description}</p>}
-              </TableCell>
-              <TableCell className="readout text-[12px] text-fg-muted">{r.corrupt ? '—' : r.stepCount}</TableCell>
-              <TableCell className="text-[12px] text-fg-muted">{r.recordedAt ? relativeTime(r.recordedAt) : '—'}</TableCell>
-              <TableCell>
-                {r.corrupt ? (
-                  <Badge variant="destructive">corrupt</Badge>
-                ) : r.detached ? (
-                  <Badge variant="outline">detached</Badge>
-                ) : r.publishedVersion ? (
-                  <Badge variant="secondary">published {r.publishedVersion}</Badge>
-                ) : (
-                  <Badge variant="outline">not published</Badge>
-                )}
-              </TableCell>
-              <TableCell className="text-right">
-                <div className="flex justify-end gap-2">
-                  <Button asChild variant="outline" size="sm">
-                    <Link href={`/recordings/detail?slug=${encodeURIComponent(r.slug)}`}>Review</Link>
-                  </Button>
-                  <ConfirmDialog
-                    trigger={
-                      <Button variant="outline" size="sm" disabled={isPending(`del-${r.slug}`)}>
-                        Delete
-                      </Button>
-                    }
-                    title={`Delete ${r.name}?`}
-                    description="This removes the recording document and its compiled entry from the workspace. Already-published script versions are not affected."
-                    onConfirm={() => remove(r)}
-                  />
-                </div>
-              </TableCell>
-            </>
-          )}
-          empty={{
-            icon: <Film className="size-4" aria-hidden />,
-            title: 'No recordings yet',
-            description: 'Open a device, switch the screen to Record, and start recording — a finished recording lands here once it is saved.',
-          }}
-        />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="space-y-4 px-5 py-4">
+          <PaginatedTable<RecordingListItem>
+            ref={tableRef}
+            fetchPage={fetchPage}
+            rowKey={(r) => r.slug}
+            sort={(list) => [...list].sort((a, b) => b.recordedAt - a.recordedAt)}
+            header={
+              <>
+                <TableHead>Name</TableHead>
+                <TableHead>Steps</TableHead>
+                <TableHead>Recorded</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </>
+            }
+            renderRow={(r) => (
+              <>
+                <TableCell>
+                  <Link href={`/recordings/detail?slug=${encodeURIComponent(r.slug)}`} className="font-medium hover:underline">
+                    {r.name}
+                  </Link>
+                  {r.description && <p className="mt-0.5 truncate text-[11px] text-fg-muted">{r.description}</p>}
+                </TableCell>
+                <TableCell className="readout text-[12px] text-fg-muted">{r.corrupt ? '—' : r.stepCount}</TableCell>
+                <TableCell className="text-[12px] text-fg-muted">{r.recordedAt ? relativeTime(r.recordedAt) : '—'}</TableCell>
+                <TableCell>
+                  {r.corrupt ? (
+                    <Badge variant="destructive">corrupt</Badge>
+                  ) : r.detached ? (
+                    <Badge variant="outline">detached</Badge>
+                  ) : r.publishedVersion ? (
+                    <Badge variant="secondary">published {r.publishedVersion}</Badge>
+                  ) : (
+                    <Badge variant="outline">not published</Badge>
+                  )}
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link href={`/recordings/detail?slug=${encodeURIComponent(r.slug)}`}>Review</Link>
+                    </Button>
+                    <ConfirmDialog
+                      trigger={
+                        <Button variant="outline" size="sm" disabled={isPending(`del-${r.slug}`)}>
+                          Delete
+                        </Button>
+                      }
+                      title={`Delete ${r.name}?`}
+                      description="This removes the recording document and its compiled entry from the workspace. Already-published script versions are not affected."
+                      onConfirm={() => remove(r)}
+                    />
+                  </div>
+                </TableCell>
+              </>
+            )}
+            empty={{
+              icon: <Film className="size-4" aria-hidden />,
+              title: 'No recordings yet',
+              description: 'Open a device, switch the screen to Record, and start recording — a finished recording lands here once it is saved.',
+            }}
+          />
+        </div>
       </div>
-    </>
+    </div>
   )
 }

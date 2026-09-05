@@ -110,7 +110,13 @@ function PluginsScreen() {
   const failedCount = (items ?? []).filter((p) => p.status === 'failed').length
 
   return (
-    <>
+    /*
+      `PagePanel` is `overflow-hidden` — right for the screens that split into
+      panes that scroll separately, wrong for a page that is one long document.
+      With no scroller of its own, everything below the panel height was simply
+      unreachable. The header holds still; the body scrolls.
+    */
+    <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
         title="Plugins"
         description="Everything this farm can run — the plugins installed on it, and the scripts they register"
@@ -132,130 +138,132 @@ function PluginsScreen() {
           </>
         }
       />
+      <div className="min-h-0 flex-1 overflow-y-auto">
 
-      {/* The two-way toggle standing in for tabs the handoff does not draw
-          (plan 219 §3.3.6): the handoff's own "Choice" field visual —
-          option buttons, selected = accent border + accent-soft fill. */}
-      <div className="flex gap-1.5 px-5 pt-4" role="tablist" aria-label="Plugins view">
-        {(['plugins', 'storage'] as const).map((v) => (
-          <button
-            key={v}
-            type="button"
-            role="tab"
-            aria-selected={view === v}
-            onClick={() => setView(v)}
-            className={cn(
-              'rounded-input border px-3 py-[7px] text-body font-medium transition-colors',
-              view === v ? 'border-accent bg-accent-soft text-accent' : 'border-border-2 bg-panel-2 text-text-2 hover:bg-muted-2',
+        {/* The two-way toggle standing in for tabs the handoff does not draw
+            (plan 219 §3.3.6): the handoff's own "Choice" field visual —
+            option buttons, selected = accent border + accent-soft fill. */}
+        <div className="flex gap-1.5 px-5 pt-4" role="tablist" aria-label="Plugins view">
+          {(['plugins', 'storage'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              className={cn(
+                'rounded-input border px-3 py-[7px] text-body font-medium transition-colors',
+                view === v ? 'border-accent bg-accent-soft text-accent' : 'border-border-2 bg-panel-2 text-text-2 hover:bg-muted-2',
+              )}
+            >
+              {v === 'plugins' ? 'Plugins' : 'Key/Value store'}
+            </button>
+          ))}
+        </div>
+
+        {view === 'plugins' ? (
+          <div className="px-5 py-4">
+            {failedCount > 0 && (
+              <div className="mb-4 flex items-start gap-2.5 rounded-inner border border-danger/40 bg-danger-soft px-3.5 py-2.5 text-body text-danger">
+                <WarningIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <span>
+                  {failedCount} plugin{failedCount === 1 ? '' : 's'} failed to register — every other plugin, and every script it registered, is
+                  unaffected. See the error below each one.
+                </span>
+              </div>
             )}
-          >
-            {v === 'plugins' ? 'Plugins' : 'Key/Value store'}
-          </button>
-        ))}
-      </div>
 
-      {view === 'plugins' ? (
-        <div className="px-5 py-4">
-          {failedCount > 0 && (
-            <div className="mb-4 flex items-start gap-2.5 rounded-inner border border-danger/40 bg-danger-soft px-3.5 py-2.5 text-body text-danger">
-              <WarningIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-              <span>
-                {failedCount} plugin{failedCount === 1 ? '' : 's'} failed to register — every other plugin, and every script it registered, is
-                unaffected. See the error below each one.
-              </span>
-            </div>
-          )}
-
-          <div className="@container mb-4">
-            <div className="relative min-w-0 max-w-md">
-              <MagnifyingGlassIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search plugins…"
-                aria-label="Search plugins"
-                className="h-8 pr-8 pl-8"
-              />
-              {query && (
-                <button
-                  type="button"
-                  aria-label="Clear the search"
-                  onClick={() => setQuery('')}
-                  className="absolute top-1/2 right-2 -translate-y-1/2 text-faint hover:text-text"
-                >
-                  <XIcon className="size-3.5" aria-hidden />
-                </button>
+            <div className="@container mb-4">
+              <div className="relative min-w-0 max-w-md">
+                <MagnifyingGlassIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search plugins…"
+                  aria-label="Search plugins"
+                  className="h-8 pr-8 pl-8"
+                />
+                {query && (
+                  <button
+                    type="button"
+                    aria-label="Clear the search"
+                    onClick={() => setQuery('')}
+                    className="absolute top-1/2 right-2 -translate-y-1/2 text-faint hover:text-text"
+                  >
+                    <XIcon className="size-3.5" aria-hidden />
+                  </button>
+                )}
+              </div>
+              {query && items !== null && (
+                <p className="mt-1.5 text-meta text-faint">
+                  {matches.length + shownDev.length} of {groups.length + (dev?.length ?? 0)} match "{query}"
+                </p>
               )}
             </div>
-            {query && items !== null && (
-              <p className="mt-1.5 text-meta text-faint">
-                {matches.length + shownDev.length} of {groups.length + (dev?.length ?? 0)} match "{query}"
-              </p>
+
+            {error ? (
+              <ErrorState message={error} onRetry={load} />
+            ) : items === null || dev === null ? (
+              <LoadingRows rows={4} />
+            ) : items.length === 0 && dev.length === 0 ? (
+              <EmptyState
+                title="No plugins yet"
+                description="Install one with the button above, or publish it from the SDK (definePlugin) — one bundle, many scripts sharing helpers and a KV namespace."
+              />
+            ) : matches.length === 0 && shownDev.length === 0 ? (
+              <EmptyState
+                title={`No plugin matches "${query}"`}
+                description={`${groups.length + (dev?.length ?? 0)} plugin${groups.length + (dev?.length ?? 0) === 1 ? ' is' : 's are'} installed on this farm — none of them by that name, slug, version, or description.`}
+                action={<Button size="sm" variant="outline" onClick={() => setQuery('')}>Show all plugins</Button>}
+              />
+            ) : (
+              <>
+                {shownDev.length > 0 && (
+                  <div className="mb-5">
+                    <h3 className="mb-2 text-meta font-medium text-faint">Dev slots</h3>
+                    <div className="space-y-2">
+                      {shownDev.map((s) => (
+                        <DevSlotCard key={s.pluginName} slot={s} onChanged={load} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {matches.length === 0 ? (
+                  <EmptyState title="No published plugin versions" description="Dev slots above are runnable without publishing." />
+                ) : (
+                  // The horizontal-scroll container the handoff's `min-width: 940px` implies: a
+                  // window narrower than the table scrolls the TABLE, matching every other page.
+                  <div className="overflow-x-auto rounded-card border border-line-2">
+                    <Table className="min-w-[940px]">
+                      <TableHeader>
+                        <TableRow className="hover:bg-transparent">
+                          {/* grid 1.7fr 100px 160px 88px 132px, expressed as column widths on TableHead. */}
+                          <TableHead className="w-[38%]">Plugin</TableHead>
+                          <TableHead className="w-[100px]">Status</TableHead>
+                          <TableHead className="w-[160px]">Scripts</TableHead>
+                          <TableHead className="w-[88px]">Verified</TableHead>
+                          <TableHead className="w-[132px] text-right">Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {matches.map((m) => (
+                          <PluginRowView key={m.group.name} match={m} onChanged={load} />
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </>
             )}
           </div>
-
-          {error ? (
-            <ErrorState message={error} onRetry={load} />
-          ) : items === null || dev === null ? (
-            <LoadingRows rows={4} />
-          ) : items.length === 0 && dev.length === 0 ? (
-            <EmptyState
-              title="No plugins yet"
-              description="Install one with the button above, or publish it from the SDK (definePlugin) — one bundle, many scripts sharing helpers and a KV namespace."
-            />
-          ) : matches.length === 0 && shownDev.length === 0 ? (
-            <EmptyState
-              title={`No plugin matches "${query}"`}
-              description={`${groups.length + (dev?.length ?? 0)} plugin${groups.length + (dev?.length ?? 0) === 1 ? ' is' : 's are'} installed on this farm — none of them by that name, slug, version, or description.`}
-              action={<Button size="sm" variant="outline" onClick={() => setQuery('')}>Show all plugins</Button>}
-            />
-          ) : (
-            <>
-              {shownDev.length > 0 && (
-                <div className="mb-5">
-                  <h3 className="mb-2 text-meta font-medium text-faint">Dev slots</h3>
-                  <div className="space-y-2">
-                    {shownDev.map((s) => (
-                      <DevSlotCard key={s.pluginName} slot={s} onChanged={load} />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {matches.length === 0 ? (
-                <EmptyState title="No published plugin versions" description="Dev slots above are runnable without publishing." />
-              ) : (
-                // The horizontal-scroll container the handoff's `min-width: 940px` implies: a
-                // window narrower than the table scrolls the TABLE, matching every other page.
-                <div className="overflow-x-auto rounded-card border border-line-2">
-                  <Table className="min-w-[940px]">
-                    <TableHeader>
-                      <TableRow className="hover:bg-transparent">
-                        {/* grid 1.7fr 100px 160px 88px 132px, expressed as column widths on TableHead. */}
-                        <TableHead className="w-[38%]">Plugin</TableHead>
-                        <TableHead className="w-[100px]">Status</TableHead>
-                        <TableHead className="w-[160px]">Scripts</TableHead>
-                        <TableHead className="w-[88px]">Verified</TableHead>
-                        <TableHead className="w-[132px] text-right">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {matches.map((m) => (
-                        <PluginRowView key={m.group.name} match={m} onChanged={load} />
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      ) : (
-        <div className="px-5 py-4">
-          <KvPanel scope={{ kind: 'global' }} />
-        </div>
-      )}
-    </>
+        ) : (
+          <div className="px-5 py-4">
+            <KvPanel scope={{ kind: 'global' }} />
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 

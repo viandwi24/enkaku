@@ -89,7 +89,13 @@ export default function NodesPage() {
     })
 
   return (
-    <>
+    /*
+      `PagePanel` is `overflow-hidden` — right for the screens that split into
+      panes that scroll separately, wrong for a page that is one long document.
+      With no scroller of its own, everything below the panel height was simply
+      unreachable. The header holds still; the body scrolls.
+    */
+    <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
         title="Nodes"
         description="Machines that hold devices and dial out to this control plane"
@@ -100,117 +106,119 @@ export default function NodesPage() {
           </Button>
         }
       />
+      <div className="min-h-0 flex-1 overflow-y-auto">
 
-      <div className="px-5 py-4">
-        {mode === 'local' && (
-          <div className="mb-4 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] leading-relaxed text-fg-muted">
-            This core runs in <span className="readout">local</span> mode, so it also handles devices plugged in here.
-            Nodes still work — a node's devices simply appear alongside the local ones. For a control plane that
-            holds no devices of its own, start the core with{' '}
-            <code className="readout">ENKAKU_MODE=orchestrator</code>.
-          </div>
-        )}
-
-        <PaginatedTable<Node>
-          ref={tableRef}
-          fetchPage={(cursor) => api(`/api/nodes?limit=50${cursor ? `&cursor=${cursor}` : ''}`, NodesPageResponseSchema)}
-          rowKey={(a) => a.id}
-          header={
-            <>
-              <TableHead className="w-[40%]">Name</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Platform</TableHead>
-              <TableHead>Last seen</TableHead>
-            </>
-          }
-          renderRow={(a) => (
-            <>
-              <TableCell className="font-medium">{a.name}</TableCell>
-              <TableCell>
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]',
-                    a.status === 'online'
-                      ? 'border-led-ok/35 bg-led-ok/10 text-led-ok'
-                      : 'border-line text-fg-subtle',
-                  )}
-                >
-                  <span className="size-1.5 rounded-full bg-current" aria-hidden />
-                  {a.status}
-                </span>
-              </TableCell>
-              <TableCell className="readout text-[12px] text-fg-muted">{a.platform ?? '—'}</TableCell>
-              <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(a.lastSeen, now)}</TableCell>
-            </>
+        <div className="px-5 py-4">
+          {mode === 'local' && (
+            <div className="mb-4 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] leading-relaxed text-fg-muted">
+              This core runs in <span className="readout">local</span> mode, so it also handles devices plugged in here.
+              Nodes still work — a node's devices simply appear alongside the local ones. For a control plane that
+              holds no devices of its own, start the core with{' '}
+              <code className="readout">ENKAKU_MODE=orchestrator</code>.
+            </div>
           )}
-          empty={{
-            icon: <Server className="size-4" aria-hidden />,
-            title: 'No nodes yet',
-            description: (
+
+          <PaginatedTable<Node>
+            ref={tableRef}
+            fetchPage={(cursor) => api(`/api/nodes?limit=50${cursor ? `&cursor=${cursor}` : ''}`, NodesPageResponseSchema)}
+            rowKey={(a) => a.id}
+            header={
               <>
-                A node runs next to your phones and opens an outbound tunnel here — no port forwarding, and NAT is
-                not a problem. Create one to get a single-use enrollment token.
+                <TableHead className="w-[40%]">Name</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Platform</TableHead>
+                <TableHead>Last seen</TableHead>
               </>
-            ),
-            action: <Button onClick={() => setOpen(true)}>New node</Button>,
-          }}
-        />
-      </div>
+            }
+            renderRow={(a) => (
+              <>
+                <TableCell className="font-medium">{a.name}</TableCell>
+                <TableCell>
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]',
+                      a.status === 'online'
+                        ? 'border-led-ok/35 bg-led-ok/10 text-led-ok'
+                        : 'border-line text-fg-subtle',
+                    )}
+                  >
+                    <span className="size-1.5 rounded-full bg-current" aria-hidden />
+                    {a.status}
+                  </span>
+                </TableCell>
+                <TableCell className="readout text-[12px] text-fg-muted">{a.platform ?? '—'}</TableCell>
+                <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(a.lastSeen, now)}</TableCell>
+              </>
+            )}
+            empty={{
+              icon: <Server className="size-4" aria-hidden />,
+              title: 'No nodes yet',
+              description: (
+                <>
+                  A node runs next to your phones and opens an outbound tunnel here — no port forwarding, and NAT is
+                  not a problem. Create one to get a single-use enrollment token.
+                </>
+              ),
+              action: <Button onClick={() => setOpen(true)}>New node</Button>,
+            }}
+          />
+        </div>
 
-      <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setIssued(null) }}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{issued ? 'Node created' : 'New node'}</DialogTitle>
-            <DialogDescription>
-              {issued
-                ? 'Copy the token now — it is stored only as a hash and cannot be shown again.'
-                : 'Name it after where the devices live, so it is obvious later which rack this is.'}
-            </DialogDescription>
-          </DialogHeader>
+        <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setIssued(null) }}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{issued ? 'Node created' : 'New node'}</DialogTitle>
+              <DialogDescription>
+                {issued
+                  ? 'Copy the token now — it is stored only as a hash and cannot be shown again.'
+                  : 'Name it after where the devices live, so it is obvious later which rack this is.'}
+              </DialogDescription>
+            </DialogHeader>
 
-          {issued ? (
-            <div className="space-y-3">
-              <div className="rounded-lg border bg-surface-2 p-3">
-                <p className="rack-label mb-1.5">run this on the node machine</p>
-                <pre className="readout overflow-x-auto whitespace-pre text-[11.5px] leading-relaxed">
+            {issued ? (
+              <div className="space-y-3">
+                <div className="rounded-lg border bg-surface-2 p-3">
+                  <p className="rack-label mb-1.5">run this on the node machine</p>
+                  <pre className="readout overflow-x-auto whitespace-pre text-[11.5px] leading-relaxed">
 {`ENKAKU_CP_URL=${coreBase()} \\
 ENKAKU_ENROLL_TOKEN=${issued.token} \\
 bunx enkaku-node`}
-                </pre>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void navigator.clipboard?.writeText(issued.token)}
-              >
-                <Copy className="size-4" aria-hidden />
-                Copy token
-              </Button>
-              <div className="flex justify-end border-t pt-3">
-                <Button onClick={() => { setOpen(false); setIssued(null) }}>Done</Button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="node-name" className="text-[13px] font-normal">Name</Label>
-                <Input
-                  id="node-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="lab-jakarta"
-                />
-              </div>
-              <div className="flex justify-end gap-2 border-t pt-3">
-                <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-                <Button disabled={!name.trim() || isPending('create')} onClick={() => void create()}>
-                  {isPending('create') ? 'Creating…' : 'Create'}
+                  </pre>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void navigator.clipboard?.writeText(issued.token)}
+                >
+                  <Copy className="size-4" aria-hidden />
+                  Copy token
                 </Button>
+                <div className="flex justify-end border-t pt-3">
+                  <Button onClick={() => { setOpen(false); setIssued(null) }}>Done</Button>
+                </div>
               </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-    </>
+            ) : (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="node-name" className="text-[13px] font-normal">Name</Label>
+                  <Input
+                    id="node-name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="lab-jakarta"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 border-t pt-3">
+                  <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+                  <Button disabled={!name.trim() || isPending('create')} onClick={() => void create()}>
+                    {isPending('create') ? 'Creating…' : 'Create'}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+      </div>
+    </div>
   )
 }

@@ -13,6 +13,21 @@ import { cn } from '@enkaku/ui'
  * scroller, with the bulk pill and Device Control positioned against the
  * panel). The prototype's root panel has all three.
  *
+ * **`overflow-hidden` stays, and a page that does not scroll itself must say
+ * so.** Hidden is right for the screens the handoff drew — Jobs and Devices
+ * own their scrolling internally, a sidebar and a detail pane moving
+ * independently — but it is a trap for every screen that does not: a plain
+ * document page has nothing to scroll and its content is simply cut off. The
+ * proxy-manager plugin view needed 737px in a 384px panel with not one
+ * scrollable element anywhere on the page (measured, owner report
+ * 2026-09-06).
+ *
+ * Turning this to `overflow-y-auto` was tried and reverted: it fixes the
+ * document pages and breaks the self-scrolling ones, which then overflow the
+ * panel by 200px ON TOP of their own two scrollers — a second scrollbar for
+ * the same content. The screens that manage their own scrolling are the
+ * reason this is hidden; the fix belongs in the pages that do not.
+ *
  * There is NO page title here, deliberately. The handoff puts each screen's
  * header inside its own panel and says so for Jobs: "The tab strip **is** the
  * page header (no separate 'Jobs / N total' title above it)."

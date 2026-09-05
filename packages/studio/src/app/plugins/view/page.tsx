@@ -188,27 +188,39 @@ function PluginView() {
   // and 00-overview §4.3 forbids keeping a weaker parallel path around.
   const react = resolved.view.react
   return (
-    <>
+    /*
+      `PagePanel` is `overflow-hidden` (the handoff's own rule, right for the
+      screens that scroll a sidebar and a detail pane separately), so a page
+      that is just a document has to bring its own scroller. This one did not:
+      the proxy-manager view needed 737px in a 384px panel with nothing on the
+      page able to scroll at all, so a third of it was simply unreachable
+      (owner, 2026-09-06). A plugin's view is arbitrary content by definition —
+      it is the last page that can assume it fits.
+    */
+    <div className="flex min-h-0 flex-1 flex-col">
       {header}
-      {react ? (
+      {/* The header stays; only the view moves. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {react ? (
         // `resolved.version` and not the manifest's declared version: for a
         // dev slot the core answers `1.2.0+dev.<n>`, and that `<n>` increments
         // on every `enkaku dev` push. It is both half of the registry key and
         // the `?v=` on the script URL, which is what makes a rebuild serve the
         // NEW component instead of the module map's copy of the old one (plan
         // 111 criterion 8).
-        <ReactView
-          plugin={resolved.plugin}
-          version={resolved.version}
-          viewId={resolved.viewId}
-          entry={react.entry}
-          params={passthrough}
-          setParams={setParams}
-        />
-      ) : (
-        <ViewRenderer plugin={resolved.plugin} view={resolved.view} actions={resolved.actions} />
-      )}
-    </>
+          <ReactView
+            plugin={resolved.plugin}
+            version={resolved.version}
+            viewId={resolved.viewId}
+            entry={react.entry}
+            params={passthrough}
+            setParams={setParams}
+          />
+        ) : (
+          <ViewRenderer plugin={resolved.plugin} view={resolved.view} actions={resolved.actions} />
+        )}
+      </div>
+    </div>
   )
 }
 
