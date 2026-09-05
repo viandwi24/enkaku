@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import type { ActionResponse, ActionResult, DeviceInfo, GroupInfo } from '@enkaku/protocol'
-import { Button, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, describeApiError } from '@enkaku/ui'
+import { Button, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, cn, describeApiError } from '@enkaku/ui'
 import { toast } from 'sonner'
 import { useOverlay } from '@/lib/overlays'
 import { awaitOperation, groupResults, runAction } from '@/lib/actions'
@@ -93,7 +93,7 @@ export function ActionDialog<P>({
         dialogs are short and legitimately scroll as a whole.
       */}
       <DialogContent
-        className="flex w-full max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]"
+        className={cn('flex w-full max-h-[90dvh] flex-col gap-0 overflow-hidden p-0', spec.wide ? 'sm:max-w-[820px]' : 'sm:max-w-[520px]')}
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
         <DialogHeader className="flex-none px-[14px] pt-[14px] pb-[10px]">

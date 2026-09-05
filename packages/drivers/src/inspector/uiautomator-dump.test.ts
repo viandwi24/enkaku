@@ -94,7 +94,8 @@ test('a device whose /dev/tty dump stops returning XML falls back to the file pa
   const transport = {
     exec: async (cmd: string) => {
       calls.push(cmd)
-      return { stdout: '', stderr: '', exitCode: 0 }
+      // `uiautomator dump` announces where it wrote; the engine checks for it.
+      return { stdout: cmd.includes('uiautomator dump') ? 'UI hierarchy dumped to: /sdcard/enkaku-dump.xml' : '', stderr: '', exitCode: 0 }
     },
     execOut: async (cmd: string) => {
       calls.push(cmd)

@@ -142,6 +142,28 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
  * keeps a live `UiAutomation` (a running ui-server, or a `uiautomator dump`)
  * from ever suppressing a connected `UiTreeService`.
  */
+/**
+ * Devices whose `ui-server` failed to start during this core's lifetime.
+ *
+ * Every session builds its own inspector, and a phone typically has two open
+ * at once — the wall and Device Control. Without this, EVERY new session paid
+ * `ui-server`'s crash again: opening Device Control, closing it and opening it
+ * once more meant a fresh instrumentation start, a fresh crash, and a fresh
+ * fallback, which is exactly the "sometimes it works, sometimes it does not"
+ * the owner kept hitting (2026-09-05). The first press of a new window landed
+ * on the corpse; the second, after the demote, worked.
+ *
+ * In memory on purpose, not persisted: a phone that could not run the server
+ * five minutes ago may run it after a reboot or an update, and a restart of
+ * the core is the cheapest way to say "try again".
+ */
+const uiServerRefused = new Set<string>()
+
+/** Test seam: module state outlives a test file, and every test here uses the same device id. */
+export function forgetUiServerRefusals(): void {
+  uiServerRefused.clear()
+}
+
 export async function createInspectorForSession(
   deps: InspectorFactoryDeps,
   opts: { deviceId: string; transport: Transport; requested: string | null },
@@ -188,6 +210,10 @@ export async function createInspectorForSession(
   }
 
   // ---- rung 2: ui-server ----
+  if (uiServerRefused.has(opts.deviceId)) {
+    deps.log.info(`ui-server already failed on ${opts.deviceId} this run — going straight to uiautomator-dump`)
+    return dumpHandle()
+  }
   let port: number | null = null
   try {
     const apkPaths = async () => ({
@@ -268,6 +294,7 @@ export async function createInspectorForSession(
     const reason = err instanceof Error ? err.message : String(err)
     deps.log.warn(`ui-server cannot be used on ${opts.deviceId} (${reason}) — falling back to uiautomator-dump`)
     deps.onFallback?.(opts.deviceId, 'ui-server', 'uiautomator-dump', reason)
+    uiServerRefused.add(opts.deviceId)
     return dumpHandle()
   }
 }

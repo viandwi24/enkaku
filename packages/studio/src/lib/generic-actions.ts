@@ -73,10 +73,22 @@ export interface GenericAction {
 }
 
 /**
- * The runs, in render order. `danger` is last and holds only Forget.
+ * The runs, in render order, each with the label its own row carries.
+ *
+ * `danger` has no label and is never a submenu: Forget is one row, and
+ * burying the only destructive action behind a hover is how someone deletes
+ * a device they meant to look at.
  */
-export const ACTION_GROUPS = ['connection', 'device', 'run', 'files', 'config', 'rare', 'danger'] as const
-export type ActionGroup = (typeof ACTION_GROUPS)[number]
+export const ACTION_GROUPS = [
+  { id: 'connection', label: 'Connection' },
+  { id: 'device', label: 'Device' },
+  { id: 'run', label: 'Run' },
+  { id: 'files', label: 'Files & agent' },
+  { id: 'config', label: 'Configure' },
+  { id: 'rare', label: 'Maintenance' },
+  { id: 'danger', label: '' },
+] as const
+export type ActionGroup = (typeof ACTION_GROUPS)[number]['id']
 
 export const GENERIC_ACTIONS: readonly GenericAction[] = [
   // Connection — nothing else on this menu works until these do.

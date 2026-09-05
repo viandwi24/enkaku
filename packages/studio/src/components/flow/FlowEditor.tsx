@@ -85,6 +85,23 @@ export function FlowEditor({
   const { run, isPending } = useAction()
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  /**
+   * React Flow fires `onSelectionChange` whenever it re-syncs its internal
+   * node array — including on the re-sync caused by our OWN `nodes` prop
+   * changing identity. Building `new Set(ids)` unconditionally therefore
+   * looped: new Set → state change → the `flowNodes` memo (which depends on
+   * `selectedIds`) rebuilds → React Flow re-syncs → fires again. "Maximum
+   * update depth exceeded", on mount, before the editor ever rendered.
+   *
+   * Returning the PREVIOUS set when the contents are equal is what breaks it:
+   * React bails out of a state update whose value is reference-identical, so
+   * the cycle ends at step two. Content equality, not reference equality, is
+   * the check — the incoming array is fresh every time by construction.
+   */
+  const setSelectionIfChanged = useCallback((ids: string[]) => {
+    setSelectedIds((prev) => (prev.size === ids.length && ids.every((id) => prev.has(id)) ? prev : new Set(ids)))
+  }, [])
   const [paletteOpen, setPaletteOpen] = useState(false)
   const pendingInsert = useRef<PendingInsert | null>(null)
   const dirty = doc !== initialDoc
@@ -330,7 +347,7 @@ export function FlowEditor({
             selectedIds={selectedIds}
             notInstalledScriptRefs={notInstalledScriptRefs}
             pinnedIds={pinnedIds}
-            onSelectionChange={(ids) => setSelectedIds(new Set(ids))}
+            onSelectionChange={setSelectionIfChanged}
             onNodesMoved={(positions) => dispatch({ t: 'move-nodes', positions }, 'move-nodes')}
             onEdgeChange={(change) => dispatch({ t: 'set-edge', from: change.nodeId, kind: change.kind, to: change.targetId ?? undefined })}
             onEdgesRemoved={(removed) => {

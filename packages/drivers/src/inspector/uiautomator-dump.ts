@@ -63,7 +63,19 @@ export class UiautomatorDumpInspector implements Inspector {
     }
     // Fallback: dump to a file, then cat it.
     const path = '/sdcard/enkaku-dump.xml'
-    await this.transport.exec(`uiautomator dump ${path}`, { profile: 'inspectorDump' })
+    /**
+     * `uiautomator dump` prints its verdict and this used to ignore it, so a
+     * failed dump was followed by `cat` on a file that was never written and
+     * the operator got `cat: … No such file or directory` — the shell's
+     * complaint about the second command, never the reason the first one
+     * failed (owner, 2026-09-05). The tool announces success with "UI
+     * hierarchy dumped to: <path>"; anything else is its own error text, and
+     * that text is the diagnosis.
+     */
+    const dumpSaid = (await this.transport.exec(`uiautomator dump ${path}`, { profile: 'inspectorDump' })).stdout
+    if (!dumpSaid.includes(path)) {
+      throw new InspectorError('INSPECTOR_DUMP_FAILED', `uiautomator dump did not write a file: ${short(dumpSaid)}`)
+    }
     const xml = new TextDecoder().decode(await this.transport.execOut(`cat ${path}`, { profile: 'inspectorDump' }))
     await this.transport.exec(`rm -f ${path}`, { profile: 'inspectorDump' })
     return xml

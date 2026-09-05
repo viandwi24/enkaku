@@ -1,10 +1,13 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import type { AdbStreamHandle, AdbStreamOptions } from '@enkaku/adb'
 import type { DeviceArtifact, ToolchainManager } from '@enkaku/toolchain'
 import type { Transport } from '@enkaku/protocol'
-import { createInspectorForSession, UI_TREE_PROBE_BUDGET_MS, uiTreeUnavailableReason, type InspectorFactoryDeps } from './inspector-factory'
+import { createInspectorForSession, forgetUiServerRefusals, UI_TREE_PROBE_BUDGET_MS, uiTreeUnavailableReason, type InspectorFactoryDeps } from './inspector-factory'
 import { PortAllocator } from './port-allocator'
 import type { Logger } from './logger'
+
+// A device that refused ui-server stays refused for the core's lifetime; tests share one id.
+beforeEach(forgetUiServerRefusals)
 
 const PKG = 'com.github.uiautomator'
 

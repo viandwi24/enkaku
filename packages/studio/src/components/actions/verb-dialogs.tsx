@@ -46,6 +46,15 @@ export interface VerbDialogSpec<P> {
   Fields: React.ComponentType<{ value: P; onChange: (next: P) => void; target: TargetState }> | null
   /** Rendered in the form container when `Fields` is null: one sentence saying what will happen. */
   note?: string
+  /**
+   * A wider dialog for a verb whose form is genuinely two-dimensional. Every
+   * dialog is 520px, which suits a form that is one column of fields; the
+   * Settings form is a section nav BESIDE a column of fields, and at 520px
+   * the nav took a third of the width and left the fields in a gutter — the
+   * ratio the owner reported as looking off (2026-09-05). Opt-in, so the
+   * fifteen one-column dialogs keep the width they were designed at.
+   */
+  wide?: boolean
   /** Blocks submit while false. */
   canSubmit: (value: P) => boolean
   /** The plan-207 request params. May upload an artifact first, which is why it is async. */
@@ -659,7 +668,7 @@ function SettingsFields({ value, onChange, target }: { value: SettingsValue; onC
 
   return (
     <div className="space-y-3">
-      <div className="grid gap-3 sm:grid-cols-[160px_1fr]">
+      <div className="grid gap-4 sm:grid-cols-[180px_1fr]">
         <SectionNav
           navOnly
           sections={sections.map((x) => ({ id: x.id, title: x.title, render: () => null }))}
@@ -682,6 +691,7 @@ function SettingsFields({ value, onChange, target }: { value: SettingsValue; onC
 }
 const settings: VerbDialogSpec<SettingsValue> = {
   verb: 'settings',
+  wide: true,
   title: (c) => `Apply settings to ${n(c)}`,
   submitLabel: (c) => `Apply to ${n(c)}`,
   initial: { schema: null, seed: {}, draft: {}, formOk: true },
