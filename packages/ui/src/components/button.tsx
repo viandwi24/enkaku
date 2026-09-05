@@ -13,7 +13,22 @@ const buttonVariants = cva(
         outline: "border border-border-2 bg-muted text-text hover:bg-muted-2",
         secondary: "bg-muted text-text hover:bg-muted-2",
         ghost: "text-faint hover:bg-muted-2 hover:text-text",
-        destructive: "bg-danger-soft text-danger hover:bg-danger/15",
+        // Solid, the way `default` is solid, and for the same reason: this is
+        // the primary action of the dialog it sits in. The soft tint it used
+        // to be read as a disabled control next to an `outline` Cancel — the
+        // owner reported exactly that (2026-09-05) — and three call sites had
+        // already hand-rolled `bg-led-danger text-white` around it rather than
+        // use it, which is the clearest possible verdict on a variant.
+        //
+        // `text-panel` and not a new `--on-danger`: the handoff pins this
+        // palette at 36 tokens and `check-design-tokens` enforces the count,
+        // so adding one is the owner's call, not a side effect of a bug fix.
+        // The surface colour punched out of a solid fill is the right answer
+        // anyway, and it carries in both themes: white on the light theme's
+        // red measures 5.9:1, and the dark theme's near-black panel on its
+        // lighter red measures 7.0:1. (No hex here — `check-design-tokens`
+        // forbids a colour literal in this package, comments included.)
+        destructive: "bg-danger text-panel hover:bg-danger/90",
         link: "text-accent underline-offset-4 hover:underline",
       },
       size: {

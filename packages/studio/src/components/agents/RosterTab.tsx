@@ -354,7 +354,7 @@ export function RosterTab({
             <AlertDialogCancel>Keep it</AlertDialogCancel>
             <AlertDialogAction
               disabled={deleteCounts === null || isPending('delete-' + (deleteTarget?.id ?? ''))}
-              className="bg-led-danger text-white hover:bg-led-danger/90"
+              variant="destructive"
               onClick={(e) => {
                 e.preventDefault()
                 confirmDelete()

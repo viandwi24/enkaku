@@ -64,9 +64,17 @@ export function ConfirmDialog({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          {/*
+            The variant, not a hand-written copy of it. Spelling the
+            destructive colours out here left the button carrying BOTH these
+            classes and the default variant's, and the stylesheet — not the
+            intent — picked the winner: red background, near-black
+            `text-on-accent` text, a button that reads as disabled while being
+            perfectly clickable (owner, 2026-09-05).
+          */}
           <AlertDialogAction
             disabled={busy}
-            className={destructive ? 'bg-danger-soft text-danger hover:bg-danger/15' : undefined}
+            variant={destructive ? 'destructive' : 'default'}
             onClick={async (e) => {
               e.preventDefault()
               setBusy(true)

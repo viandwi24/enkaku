@@ -136,7 +136,7 @@ export function AppRestartDialog({ trigger }: { trigger: ReactNode }) {
             Cancel
           </Button>
           <Button
-            className="bg-led-danger text-white hover:bg-led-danger/90"
+            variant="destructive"
             disabled={!canConfirm || busy}
             title={!canConfirm && preview ? 'Check the box above to restart despite the running work' : undefined}
             onClick={() => void confirm()}

@@ -147,6 +147,24 @@ function AlertDialogMedia({
   )
 }
 
+/*
+ * `className` goes to the BUTTON, not to the Radix child.
+ *
+ * It used to sit on the child, and `asChild` then handed both class lists to
+ * Radix's `Slot`, which concatenates them and lets the STYLESHEET decide who
+ * wins. Tailwind emits `.bg-accent` before `.bg-danger-soft` and
+ * `.text-danger` before `.text-on-accent`, so a caller asking for a red
+ * destructive button got the red background and kept the default variant's
+ * near-black `text-on-accent` on top of it — which is what a disabled button
+ * looks like. The owner reported the Delete button as "kaya disabled padahal
+ * bisa diklik" (2026-09-05), and they were reading it exactly right.
+ *
+ * On the Button, the same classes go through `cn`/tailwind-merge, which
+ * resolves a conflict by INTENT — the caller's `text-danger` replaces the
+ * variant's `text-on-accent` — instead of by whichever rule Tailwind happened
+ * to emit last. Passing `variant="destructive"` is still the better way to
+ * ask; this is what makes the other way stop lying.
+ */
 function AlertDialogAction({
   className,
   variant = "default",
@@ -155,12 +173,8 @@ function AlertDialogAction({
 }: React.ComponentProps<typeof AlertDialogPrimitive.Action> &
   Pick<React.ComponentProps<typeof Button>, "variant" | "size">) {
   return (
-    <Button variant={variant} size={size} asChild>
-      <AlertDialogPrimitive.Action
-        data-slot="alert-dialog-action"
-        className={cn(className)}
-        {...props}
-      />
+    <Button variant={variant} size={size} className={cn(className)} asChild>
+      <AlertDialogPrimitive.Action data-slot="alert-dialog-action" {...props} />
     </Button>
   )
 }
@@ -173,12 +187,8 @@ function AlertDialogCancel({
 }: React.ComponentProps<typeof AlertDialogPrimitive.Cancel> &
   Pick<React.ComponentProps<typeof Button>, "variant" | "size">) {
   return (
-    <Button variant={variant} size={size} asChild>
-      <AlertDialogPrimitive.Cancel
-        data-slot="alert-dialog-cancel"
-        className={cn(className)}
-        {...props}
-      />
+    <Button variant={variant} size={size} className={cn(className)} asChild>
+      <AlertDialogPrimitive.Cancel data-slot="alert-dialog-cancel" {...props} />
     </Button>
   )
 }
