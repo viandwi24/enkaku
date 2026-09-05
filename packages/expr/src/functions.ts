@@ -148,6 +148,21 @@ function gateDeepEqual(a: unknown, b: unknown, depth = 0): boolean {
 
 /** Walks a dotted `path` against `root` — segments are identifier-ish or digits-only (an array index); total, never throws. Spends one fuel unit per segment, matching `get()`'s own walk above. */
 function pathWalk(root: unknown, path: string, fuel: Fuel): { found: boolean; value: unknown } {
+  // An empty path means the element ITSELF.
+  //
+  // It used to mean nothing usable: `''.split('.')` is `['']`, and no value
+  // has a field called `""` — an object failed `Object.hasOwn`, an array
+  // failed the digits test, a scalar failed the `typeof` guard. So
+  // `filterWhere(list, '', 'ne', x)` — the only way to filter a list of
+  // plain strings or numbers, since there is no other way to name the
+  // element — returned an empty list for every input. Found while writing a
+  // workflow that draws one script at a time out of a pool of names and
+  // removes the one it drew (owner, 2026-09-05): the pool emptied on the
+  // first pass and the loop ran exactly one script.
+  //
+  // Nothing relied on the old answer, because the old answer was always
+  // "not found".
+  if (path === '') return { found: true, value: root }
   let cur: unknown = root
   for (const segment of path.split('.')) {
     fuel.spend()

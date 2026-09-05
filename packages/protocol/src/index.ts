@@ -136,7 +136,7 @@ export {
   type UiSpec,
 } from './schema/vocabulary'
 export { SCHEMA_LIMITS, checkDeclaredSchema, type SchemaCheckFinding } from './schema/limits'
-export { validateAgainstSchema, type ParamIssue, type ValidateParamsResult } from './schema/validate'
+export { validateAgainstSchema, applySchemaDefaults, type ParamIssue, type ValidateParamsResult } from './schema/validate'
 export { clampSchema, summarizeClamp, type ClampedSchema } from './schema/clamp'
 export { HOSTILE_PARAMS_FIXTURES, HOSTILE_BLOCKING, type HostileFixtureName } from './schema/hostile-fixtures'
 // Plan 97 §4.1, step 97.1 — `formatValue` (moved here from

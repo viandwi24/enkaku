@@ -157,3 +157,18 @@ describe('array paths — pluck/filterWhere (plan 312 §3.5, G6)', () => {
     expect(a).toEqual([{ id: 1 }, { id: 2 }])
   })
 })
+
+describe('an empty path names the element itself (2026-09-05)', () => {
+  test('filterWhere can filter a list of plain strings — the only way to name the element', () => {
+    expect(run(`filterWhere(split('profile,notifs,shop,fyp', ','), '', 'ne', 'notifs')`)).toEqual(['profile', 'shop', 'fyp'])
+    expect(run(`join(filterWhere(split('a,b,c', ','), '', 'ne', 'b'), ',')`)).toBe('a,c')
+  })
+
+  test('removing the last remaining entry leaves an empty list, not the whole list', () => {
+    expect(run(`filterWhere(split('only', ','), '', 'ne', 'only')`)).toEqual([])
+  })
+
+  test('a non-empty path still walks fields, unchanged', () => {
+    expect(run(`count(filterWhere($params.rows, 'ok', 'eq', true))`, { rows: [{ ok: true }, { ok: false }, { ok: true }] })).toBe(2)
+  })
+})

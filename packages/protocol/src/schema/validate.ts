@@ -319,6 +319,59 @@ function check(nodeIn: unknown, value: unknown, root: JsonSchemaNode, path: stri
  * so there is nothing here to read; `enkaku publish` warns about these
  * instead, see `@enkaku/sdk`'s `publish.ts`).
  */
+/** Prototype-poisoning guards — the same three keys every other writer in this codebase refuses. */
+const UNSAFE_DEFAULT_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/**
+ * Fill in every property the schema declares a `default` for and the caller
+ * did not supply.
+ *
+ * A script's own `.default()` used to reach exactly one caller: Studio's
+ * parameter form, which seeds its fields from the schema before a human ever
+ * sees them (`schema-form/resolve.ts`). A workflow `script` node has no form,
+ * so it sent whatever the author typed and nothing else — and every defaulted
+ * field is still `required` in the compiled schema, so a node that left them
+ * out failed validation before it touched the device. The same script, run
+ * from the Run dialog, worked. The owner met that head-on on 2026-09-05:
+ * `tiktok/auto-scroll` refused a workflow step with "videos: required;
+ * maxMinutes: required; keywords: required", each one carrying a perfectly
+ * good default the author had no way to accept.
+ *
+ * Applied BEFORE validation, never instead of it: a field with no default is
+ * still missing, and a supplied field is never overwritten — including one
+ * supplied as `null`, which is an author saying something, unlike `undefined`.
+ *
+ * Objects recurse so a nested default is filled too. Arrays are copied
+ * wholesale from the default and never merged element-wise: half of the
+ * author's list and half of the schema's is a value neither of them wrote.
+ */
+export function applySchemaDefaults(schema: JsonSchemaNode | null | undefined, value: unknown): unknown {
+  if (schema === null || schema === undefined || !isPlainObject(schema)) return value
+  return fillDefaults(schema as Record<string, unknown>, value, schema, 0, new Set<string>())
+}
+
+function fillDefaults(node: Record<string, unknown>, value: unknown, root: JsonSchemaNode, depth: number, refVisited: Set<string>): unknown {
+  if (depth > SCHEMA_LIMITS.maxDepth) return value
+  const resolved = derefNode(node, root, refVisited)
+  if (resolved === null) return value
+
+  const properties = resolved.properties
+  if (isPlainObject(properties)) {
+    const base: Record<string, unknown> = isPlainObject(value) ? { ...(value as Record<string, unknown>) } : {}
+    for (const [key, child] of Object.entries(properties as Record<string, unknown>)) {
+      if (UNSAFE_DEFAULT_KEYS.has(key)) continue
+      if (!isPlainObject(child)) continue
+      const filled = fillDefaults(child as Record<string, unknown>, base[key], root, depth + 1, new Set(refVisited))
+      if (filled !== undefined) base[key] = filled
+    }
+    return base
+  }
+
+  // A leaf: the default only applies when the caller said nothing at all.
+  if (value === undefined && resolved.default !== undefined) return structuredClone(resolved.default)
+  return value
+}
+
 export function validateAgainstSchema(schema: JsonSchemaNode | null | undefined, value: unknown): ValidateParamsResult {
   if (schema === null || schema === undefined || !isPlainObject(schema)) return { ok: true }
   const issues: ParamIssue[] = []

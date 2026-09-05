@@ -1,6 +1,6 @@
 import { and, count, eq } from 'drizzle-orm'
 import { deriveRandom } from '@enkaku/expr'
-import { resolveValue, validateAgainstSchema, WORKFLOW_LIMITS, type ResolveScope, type RunSummaryEntry, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
+import { applySchemaDefaults, resolveValue, validateAgainstSchema, WORKFLOW_LIMITS, type ResolveScope, type RunSummaryEntry, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
 import type { Db } from '../../db'
 import { jobs, workflowSteps, type JobRow, type JobRunRow } from '../../db/schema'
 import { parseWorkflowDoc } from '../../workflows/store'
@@ -285,7 +285,13 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           resolvedParams[key] = outcome.value
         }
 
-        const check = validateAgainstSchema(asSchemaNode(entry.paramsSchema), resolvedParams)
+        // The script's own `.default()`s, filled in before the check — a
+        // workflow node has no form to seed them the way Studio's Run dialog
+        // does, and every defaulted field is still `required`, so without
+        // this a node that omitted one failed before touching the device
+        // (owner, 2026-09-05).
+        const withDefaults = applySchemaDefaults(asSchemaNode(entry.paramsSchema), resolvedParams) as Record<string, unknown>
+        const check = validateAgainstSchema(asSchemaNode(entry.paramsSchema), withDefaults)
         if (!check.ok) {
           return { ok: false, code: 'invalid_job_params', message: `step "${node.id}": ${check.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`, scriptRef }
         }
@@ -295,7 +301,9 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           stepSeq,
           scriptId: entry.id,
           deviceId: job.deviceId,
-          params: resolvedParams,
+          // The filled params, not the raw ones — validating one shape and
+          // running another is the failure this whole change exists to stop.
+          params: withDefaults,
           scriptName: entry.name,
           scriptVersion: entry.version,
           priority: 0,
@@ -698,7 +706,8 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
               resolvedParams[key] = outcome.value
             }
             if (bindingOk) {
-              const check = validateAgainstSchema(asSchemaNode(cleanupEntry.paramsSchema), resolvedParams)
+              const cleanupWithDefaults = applySchemaDefaults(asSchemaNode(cleanupEntry.paramsSchema), resolvedParams) as Record<string, unknown>
+              const check = validateAgainstSchema(asSchemaNode(cleanupEntry.paramsSchema), cleanupWithDefaults)
               if (!check.ok) {
                 deps.log.warn(`workflow ${job.id}: onFail cleanup params failed validation — cleanup skipped`)
               } else {
@@ -707,7 +716,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
                   stepSeq: skipSeq,
                   scriptId: cleanupEntry.id,
                   deviceId: job.deviceId,
-                  params: resolvedParams,
+                  params: cleanupWithDefaults,
                   scriptName: cleanupEntry.name,
                   scriptVersion: cleanupEntry.version,
                   priority: 0,

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
 import { ui } from './vocabulary'
-import { validateAgainstSchema } from './validate'
+import { applySchemaDefaults, validateAgainstSchema } from './validate'
 
 describe('validateAgainstSchema — the flagship case (plan 95 §5 step 95.6 verifiable result)', () => {
   test('{ videos: 9999 } against max(2000) is rejected with the exact path and message the plan names', () => {
@@ -235,5 +235,50 @@ describe('validateAgainstSchema — what it deliberately does not check (§3.6, 
     const withRefine = z.object({ a: z.number(), b: z.number() }).refine((v) => v.a <= v.b, { message: 'a<=b' })
     const schema = z.toJSONSchema(withRefine)
     expect(validateAgainstSchema(schema, { a: 10, b: 1 })).toEqual({ ok: true })
+  })
+})
+
+describe('applySchemaDefaults — a workflow node has no form to seed its fields (2026-09-05)', () => {
+  const schema = {
+    type: 'object',
+    properties: {
+      videos: { type: 'integer', default: 30 },
+      maxMinutes: { type: 'number', default: 20 },
+      keywords: { type: 'array', items: { type: 'string' }, default: ['trade', 'xau'] },
+      note: { type: 'string' },
+    },
+    required: ['videos', 'maxMinutes', 'keywords'],
+  } as never
+
+  test('fills every declared default the caller left out', () => {
+    expect(applySchemaDefaults(schema, {})).toEqual({ videos: 30, maxMinutes: 20, keywords: ['trade', 'xau'] })
+  })
+
+  test('and the result then passes the validation that used to refuse it', () => {
+    expect(validateAgainstSchema(schema, {}).ok).toBe(false)
+    expect(validateAgainstSchema(schema, applySchemaDefaults(schema, {})).ok).toBe(true)
+  })
+
+  test('never overwrites what the author supplied — including an explicit null', () => {
+    expect(applySchemaDefaults(schema, { videos: 5, maxMinutes: null })).toMatchObject({ videos: 5, maxMinutes: null })
+  })
+
+  test('a field with no default stays missing — this fills defaults, it does not invent values', () => {
+    expect(applySchemaDefaults(schema, {})).not.toHaveProperty('note')
+  })
+
+  test('the default array is copied, not shared — a mutated run cannot poison the next one', () => {
+    const first = applySchemaDefaults(schema, {}) as { keywords: string[] }
+    first.keywords.push('mutated')
+    expect((applySchemaDefaults(schema, {}) as { keywords: string[] }).keywords).toEqual(['trade', 'xau'])
+  })
+
+  test('nested objects recurse', () => {
+    const nested = { type: 'object', properties: { inner: { type: 'object', properties: { n: { type: 'integer', default: 7 } } } } } as never
+    expect(applySchemaDefaults(nested, {})).toEqual({ inner: { n: 7 } })
+  })
+
+  test('no schema means the value passes through untouched', () => {
+    expect(applySchemaDefaults(null, { a: 1 })).toEqual({ a: 1 })
   })
 })
