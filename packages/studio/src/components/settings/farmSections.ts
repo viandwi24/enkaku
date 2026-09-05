@@ -45,5 +45,14 @@ export function farmSections(schema: JsonSchemaNode): FarmSectionDef[] {
     })
   const advancedAt = derived.findIndex((s) => s.id === 'advanced')
   const access: FarmSectionDef = { id: 'access', title: 'Access', group: 'Farm', keys: [] }
-  return advancedAt === -1 ? [...derived, access] : [...derived.slice(0, advancedAt), access, ...derived.slice(advancedAt)]
+  /**
+   * Virtual devices (plan 403 §3.2, §4.4): a second bespoke section, spliced
+   * beside `access` in the same style — VM rows live behind `/api/vms`, not
+   * inside `FarmSettingsSchema`, so there is no schema key for `SchemaForm`
+   * to render.
+   */
+  const virtualDevices: FarmSectionDef = { id: 'virtualDevices', title: 'Virtual devices', group: 'Farm', keys: [] }
+  return advancedAt === -1
+    ? [...derived, access, virtualDevices]
+    : [...derived.slice(0, advancedAt), access, virtualDevices, ...derived.slice(advancedAt)]
 }

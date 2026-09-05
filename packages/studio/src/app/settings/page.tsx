@@ -10,6 +10,7 @@ import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import { farmSections } from '@/components/settings/farmSections'
 import { AccessSection } from '@/components/settings/AccessSection'
 import { ToolchainSection } from '@/components/settings/ToolchainSection'
+import { VirtualDevicesSection } from '@/components/settings/VirtualDevicesSection'
 import { StorageUsageRow } from '@/components/settings/StorageUsageRow'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 
@@ -66,12 +67,15 @@ function SettingsScreen() {
   if (data === null || draft === null) return <div className="px-5 py-4"><LoadingRows rows={4} /></div>
 
   // farmSections() (plan 212 §4.5) derives nine schema-backed sections from
-  // FarmSettingsSchema's own top-level keys, and splices in `access` before
-  // `advanced`. This plan splices in one more bespoke section, `toolchain`,
-  // directly after `access` — the ONLY place this page names a section that
-  // is not a schema key, alongside `access` itself (plan 219 §3.3.8). The
-  // splice reads `advancedAt` dynamically rather than assuming a fixed
-  // index, so it survives either order `farmSections()` returns (§8 risk).
+  // FarmSettingsSchema's own top-level keys, and splices in `access` and
+  // `virtualDevices` before `advanced` (plan 403 §3.2, §4.4 — VM rows live
+  // behind `/api/vms`, not inside `FarmSettingsSchema`, same reason `access`
+  // is bespoke). This page splices in one more bespoke section, `toolchain`,
+  // directly after `access`. This is the ONLY place this page names a section that is not a schema
+  // key: as of plan 403 it names three — `access`, `toolchain` (plan 219
+  // §3.3.8), and `virtualDevices` (plan 403). The splice reads `advancedAt`
+  // dynamically rather than assuming a fixed index, so it survives either
+  // order `farmSections()` returns (§8 risk).
   const derived = farmSections(data.schema as never)
   const advancedAt = derived.findIndex((s) => s.id === 'advanced')
   const toolchain = { id: 'toolchain', title: 'Toolchain', group: 'Farm', keys: [] as string[] }
@@ -84,6 +88,7 @@ function SettingsScreen() {
     render: () => {
       if (id === 'access') return <AccessSection />
       if (id === 'toolchain') return <ToolchainSection />
+      if (id === 'virtualDevices') return <VirtualDevicesSection />
       const scoped = narrowSchema(data.schema as never, keys)
       return (
         <>
