@@ -1,5 +1,15 @@
 import { asc, eq, sql } from 'drizzle-orm'
-import { RuntimeEnvelopeSchema, ScriptLastRunSchema, type JsonSchemaNode, type RuntimeEnvelope, type ScriptLastRun, type ScriptListItem } from '@enkaku/protocol'
+import { z } from 'zod'
+import {
+  IconNameSchema,
+  RuntimeEnvelopeSchema,
+  ScriptLastRunSchema,
+  type IconName,
+  type JsonSchemaNode,
+  type RuntimeEnvelope,
+  type ScriptLastRun,
+  type ScriptListItem,
+} from '@enkaku/protocol'
 import type { Db } from '../db'
 import { jobs, plugins, scripts, type ScriptRow } from '../db/schema'
 
@@ -44,7 +54,7 @@ export interface ScriptDetail {
   id: string
   name: string
   exportId: string
-  plugin: { name: string; version: string }
+  plugin: { name: string; version: string; icon: IconName | null }
   paramsSchema: unknown
   resultSchema: unknown
   source: string | null
@@ -55,6 +65,54 @@ export interface ScriptDetail {
 
 const toSec = (d: Date | null): number | null => (d ? Math.floor(d.getTime() / 1000) : null)
 
+/** `plugins.icon` → a real `IconName`, or `null` — the same "validate on read" discipline `parseScriptRuntime` states, applied to a `text` column that could in principle hold anything (plan 310 §3.3, §4.1). */
+function parsePluginIcon(value: string | null): IconName | null {
+  if (value === null) return null
+  const parsed = IconNameSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
+/**
+ * Just enough of `plugins.manifest` to name one member's title/description/
+ * icon (plan 310 §3.3, §4.1) — the same lenient, `.optional()`-everywhere
+ * projection `workflows/registry.ts`'s `ManifestNodeProjectionSchema` uses
+ * for the same reason: this is a JSON column written by whatever core
+ * version last activated the row, and a member that predates this plan (or
+ * a manifest this build cannot read at all) degrades to "no title, no
+ * description, no icon" rather than a throw on the way to the palette.
+ */
+const ManifestMemberMetaProjectionSchema = z.object({
+  scripts: z
+    // `icon` is a bare string here, not `IconNameSchema` — this projection
+    // must not fail (and drop title/description with it) for a manifest
+    // written by an OLDER core against a shorter `ICON_NAMES`. It is
+    // narrowed to a real icon name, member by member, in `projectMemberMeta`
+    // below, so an unrecognised name degrades to "no icon" alone rather than
+    // "no metadata at all" for that member.
+    .array(z.object({ id: z.string(), title: z.string().optional(), description: z.string().optional(), icon: z.string().optional() }))
+    .optional(),
+})
+
+interface MemberMeta {
+  title: string | null
+  description: string | null
+  icon: IconName | null
+}
+
+const NO_META: MemberMeta = { title: null, description: null, icon: null }
+
+/** One `Map<exportId, MemberMeta>` per plugin version's manifest, parsed once and reused across every member row that plugin owns (a plugin with N members would otherwise re-parse the same manifest N times). */
+function projectMemberMeta(manifest: unknown): Map<string, MemberMeta> {
+  const out = new Map<string, MemberMeta>()
+  const parsed = ManifestMemberMetaProjectionSchema.safeParse(manifest)
+  if (!parsed.success) return out
+  for (const s of parsed.data.scripts ?? []) {
+    const icon = IconNameSchema.safeParse(s.icon)
+    out.set(s.id, { title: s.title ?? null, description: s.description ?? null, icon: icon.success ? icon.data : null })
+  }
+  return out
+}
+
 /**
  * `GET /api/scripts` (plan 210 §4.2, §4.5) — one row per member of an
  * ACTIVE plugin, `lastRun` read off `jobs.script_name` (any plugin version's
@@ -62,12 +120,18 @@ const toSec = (d: Date | null): number | null => (d ? Math.floor(d.getTime() / 1
  */
 export function listActiveScripts(db: Db): ScriptListItem[] {
   const rows = db
-    .select({ s: scripts, pluginName: plugins.name, pluginVersion: plugins.version })
+    .select({ s: scripts, pluginName: plugins.name, pluginVersion: plugins.version, pluginIcon: plugins.icon, manifest: plugins.manifest })
     .from(scripts)
     .innerJoin(plugins, eq(plugins.id, scripts.pluginId))
     .where(eq(plugins.status, 'active'))
     .orderBy(asc(scripts.name))
     .all()
+
+  // Keyed on `pluginId` — a manifest is per PLUGIN VERSION, not per member,
+  // so this parses each active plugin's manifest exactly once no matter how
+  // many members it has (plan 310 §4.2's own reasoning for the palette's
+  // single fetch, applied here to the query that feeds it).
+  const metaByPlugin = new Map<string, Map<string, MemberMeta>>()
 
   const names = [...new Set(rows.map((r) => r.s.name))]
   const lastByName = new Map<string, ScriptLastRun>()
@@ -99,32 +163,41 @@ export function listActiveScripts(db: Db): ScriptListItem[] {
     }
   }
 
-  return rows.map(({ s, pluginName, pluginVersion }) => ({
-    id: s.id,
-    name: s.name,
-    exportId: s.exportId ?? s.name.slice(s.name.indexOf('/') + 1),
-    plugin: { name: pluginName, version: pluginVersion },
-    paramsSchema: s.paramsSchema as JsonSchemaNode | null,
-    hasResult: s.resultSchema != null,
-    lastRun: lastByName.get(s.name) ?? null,
-  }))
+  return rows.map(({ s, pluginName, pluginVersion, pluginIcon, manifest }) => {
+    const exportId = s.exportId ?? s.name.slice(s.name.indexOf('/') + 1)
+    const pluginKey = s.pluginId ?? ''
+    if (!metaByPlugin.has(pluginKey)) metaByPlugin.set(pluginKey, projectMemberMeta(manifest))
+    const meta = metaByPlugin.get(pluginKey)?.get(exportId) ?? NO_META
+    return {
+      id: s.id,
+      name: s.name,
+      exportId,
+      plugin: { name: pluginName, version: pluginVersion, icon: parsePluginIcon(pluginIcon) },
+      paramsSchema: s.paramsSchema as JsonSchemaNode | null,
+      hasResult: s.resultSchema != null,
+      lastRun: lastByName.get(s.name) ?? null,
+      title: meta.title,
+      description: meta.description,
+      icon: meta.icon,
+    }
+  })
 }
 
 /** `GET /api/scripts/:id` — any owned row, active or superseded (job history reads pinned rows here). */
 export function getScriptDetail(db: Db, id: string): ScriptDetail | null {
   const row = db
-    .select({ s: scripts, pluginName: plugins.name, pluginVersion: plugins.version })
+    .select({ s: scripts, pluginName: plugins.name, pluginVersion: plugins.version, pluginIcon: plugins.icon })
     .from(scripts)
     .innerJoin(plugins, eq(plugins.id, scripts.pluginId))
     .where(eq(scripts.id, id))
     .get()
   if (!row) return null
-  const { s, pluginName, pluginVersion } = row
+  const { s, pluginName, pluginVersion, pluginIcon } = row
   return {
     id: s.id,
     name: s.name,
     exportId: s.exportId ?? s.name.slice(s.name.indexOf('/') + 1),
-    plugin: { name: pluginName, version: pluginVersion },
+    plugin: { name: pluginName, version: pluginVersion, icon: parsePluginIcon(pluginIcon) },
     paramsSchema: s.paramsSchema,
     resultSchema: s.resultSchema,
     source: s.source,

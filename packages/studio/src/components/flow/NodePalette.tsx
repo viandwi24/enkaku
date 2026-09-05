@@ -5,6 +5,7 @@ import type { NodeType } from '@enkaku/protocol'
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, describeApiError } from '@enkaku/ui'
 import { pluginIcon } from '@/lib/plugin-icons'
 import { fetchNodeTypes } from '@/lib/api'
+import { matchScore } from '@/lib/palette-rank'
 
 /**
  * The palette (plan 305 §3.6, P2, P3) — fed by `GET /api/node-types` (plan
@@ -25,20 +26,9 @@ function groupLabel(type: NodeType): string {
   return type.source === 'core' ? 'Core' : (pluginIdOf(type) ?? type.id)
 }
 
-function matchScore(query: string, type: NodeType): number | null {
-  const q = query.trim().toLowerCase()
-  if (!q) return 0
-  const title = type.title.toLowerCase()
-  const haystacks = [title, type.description.toLowerCase(), type.id.toLowerCase(), ...type.keywords.map((k) => k.toLowerCase())]
-  if (title.startsWith(q)) return 0
-  if (haystacks.some((h) => h.startsWith(q))) return 1
-  if (haystacks.some((h) => h.includes(q))) return 2
-  return null
-}
-
 function rankAndGroup(types: NodeType[], query: string): Map<string, NodeType[]> {
   const scored = types
-    .map((t) => ({ t, score: matchScore(query, t) }))
+    .map((t) => ({ t, score: matchScore(query, { title: t.title, description: t.description, keywords: [t.id, ...t.keywords] }) }))
     .filter((s): s is { t: NodeType; score: number } => s.score !== null)
     .sort((a, b) => a.score - b.score || a.t.title.localeCompare(b.t.title))
   const groups = new Map<string, NodeType[]>()

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ActionSpecSchema, NavEntrySchema, PluginSurfaceSchema, SurfaceIdSchema, ViewSpecSchema } from '../plugin-surface'
+import { ActionSpecSchema, IconNameSchema, NavEntrySchema, PluginSurfaceSchema, SurfaceIdSchema, ViewSpecSchema } from '../plugin-surface'
 import { PluginResetItemSchema, PluginServiceDeclarationSchema, PluginServiceStatusSchema } from '../plugin-service'
 import { RuntimeEnvelopeSchema } from '../runtime-envelope'
 import { KvEntrySchema } from './kv'
@@ -39,6 +39,13 @@ export const VerifiedScriptSchema = z.object({
   runtime: RuntimeEnvelopeSchema.nullable().optional(),
   title: z.string().optional(),
   description: z.string().optional(),
+  /**
+   * Plan 310 §3.3, §4.1 — the member's own icon, from `ICON_NAMES`
+   * (`plugin-surface.ts`). Absent for a member declaring none (every row
+   * written before this plan): the caller applies the default (`play`),
+   * exactly as `ScriptListItemSchema.icon` states.
+   */
+  icon: IconNameSchema.optional(),
 })
 
 export const PluginManifestSchema = z
@@ -100,6 +107,8 @@ export const PluginRowSchema = z.object({
   version: z.string(),
   title: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
+  /** Plan 310 §3.3, §4.1 — the plugin's own icon, from `ICON_NAMES`. `null` = the caller applies the default (`puzzle`). */
+  icon: IconNameSchema.nullable().optional(),
   status: PluginStatusSchema,
   verifiedAt: z.string().nullable(),
   /** Verbatim from the verification child (plan 82 §4.6) — rendered as-is, never summarised. */
@@ -170,6 +179,8 @@ export const PluginListItemSchema = z.object({
    */
   title: z.string().nullable().default(null),
   description: z.string().nullable().default(null),
+  /** Plan 310 §3.3, §4.1 — same column, same leniency as `title`/`description` above. `null` = the caller applies the default (`puzzle`). */
+  icon: IconNameSchema.nullable().default(null),
   status: PluginStatusSchema,
   verifiedAt: z.string().nullable(),
   /** Verbatim from the verification child (plan 82 §4.6) — rendered as-is, never summarised. */
@@ -247,6 +258,8 @@ export const VerifyReportSchema = z.object({
   version: z.string().optional(),
   title: z.string().optional(),
   description: z.string().optional(),
+  /** Plan 310 §3.3, §4.1 — the plugin's own icon, RAW as the bundle declared it. Absent when it declared none. */
+  icon: IconNameSchema.optional(),
   scripts: z.array(VerifiedScriptSchema),
   /** Plan 108 §3.9 — the re-validated surface, present only when the bundle declared one. */
   surface: PluginSurfaceSchema.optional(),

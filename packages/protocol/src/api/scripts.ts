@@ -2,9 +2,20 @@ import { z } from 'zod'
 import { JsonSchemaNodeSchema } from './json-schema'
 import { pageSchema } from './pagination'
 import { RuntimeEnvelopeSchema } from '../runtime-envelope'
+import { IconNameSchema } from '../plugin-surface'
 
 /** The owning plugin, as a script is displayed: `plugin@1.2.0 / login` (MVP 03 §2.2 rule 1). */
-export const ScriptPluginRefSchema = z.object({ name: z.string(), version: z.string() })
+export const ScriptPluginRefSchema = z.object({
+  name: z.string(),
+  version: z.string(),
+  /**
+   * Plan 310 §3.3, §4.2 — the PLUGIN's own icon, carried here rather than on
+   * a second endpoint: the script palette's plugin page is a projection of
+   * this same list (§4.2, "no second endpoint"), and a plugin row needs its
+   * icon to draw. `null` = the caller applies the default (`puzzle`).
+   */
+  icon: IconNameSchema.nullable(),
+})
 export type ScriptPluginRef = z.infer<typeof ScriptPluginRefSchema>
 
 /** The most recent job of this script NAME, whichever plugin version it ran (`jobs.script_name`), or null. */
@@ -26,6 +37,11 @@ export const ScriptListItemSchema = z.object({
   paramsSchema: JsonSchemaNodeSchema.nullable(),
   hasResult: z.boolean(),
   lastRun: ScriptLastRunSchema.nullable(),
+  /** The member's own title, from the manifest (plan 303 §5 step 303.5 already persists it). `null` = the manifest declared none. */
+  title: z.string().nullable(),
+  description: z.string().nullable(),
+  /** `ICON_NAMES` (`plugin-surface.ts`). `null` = the caller applies the default (`play`). */
+  icon: IconNameSchema.nullable(),
 })
 export type ScriptListItem = z.infer<typeof ScriptListItemSchema>
 /** Every member in one page; `nextCursor` is always null (the set is small, see plan 210 §3.2 item 2). */

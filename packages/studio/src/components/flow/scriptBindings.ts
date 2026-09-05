@@ -1,5 +1,5 @@
+import type { ScriptListItem } from '@enkaku/protocol'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { groupScriptsByName, type ScriptOption } from './ScriptPicker'
 
 /** Shared by `FlowEditor.tsx`'s `NodeInspector` (a node's own `params`) — binds a `ScriptRef`'s declared parameters through the same `ValueExprEditor` list. */
 
@@ -13,13 +13,19 @@ export function paramProperties(schema: JsonSchemaNode | null | undefined): { ke
   return Object.entries(schema.properties as Record<string, JsonSchemaNode>).map(([key, node]) => ({ key, node, required: required.has(key) }))
 }
 
-/** The concrete `ScriptOption` a `ScriptRef` string currently resolves to — `latest` resolves to the newest version this picker knows about (`groupScriptsByName`'s own sort), the same approximation `ScriptPicker` renders next to its "latest" option. `undefined` before a script is picked, or if its name is not (yet) in `scripts`. */
-export function resolveScriptOption(ref: string, scripts: readonly ScriptOption[]): ScriptOption | undefined {
+/**
+ * The `ScriptListItem` a `ScriptRef` string currently resolves to (plan 310
+ * §3.4, §4.6 — a version is a fact, not a choice). `GET /api/scripts` lists
+ * only ACTIVE plugin members, so there is exactly one row per script NAME —
+ * a pinned `name@1.4.0` and a stale `name@1.0.0` both resolve to the SAME
+ * row, which is what lets the node panel's `versionNotice` compare the
+ * pinned version against the active one and still show the member's
+ * current title/icon/params either way. `undefined` before a script is
+ * picked, or if its name is not (yet) in `scripts` at all (the plugin was
+ * removed, disabled, or never installed on this farm).
+ */
+export function resolveScriptOption(ref: string, scripts: readonly ScriptListItem[]): ScriptListItem | undefined {
   const at = ref.lastIndexOf('@')
-  if (at <= 0) return undefined
-  const name = ref.slice(0, at)
-  const version = ref.slice(at + 1)
-  const group = groupScriptsByName(scripts).find((g) => g.name === name)
-  if (!group) return undefined
-  return version === 'latest' ? group.versions[0] : group.versions.find((v) => v.version === version)
+  const name = at > 0 ? ref.slice(0, at) : ref
+  return scripts.find((s) => s.name === name)
 }

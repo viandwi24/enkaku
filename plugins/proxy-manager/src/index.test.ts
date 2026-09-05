@@ -167,7 +167,7 @@ describe('the plugin definition', () => {
     // (tag v0.1.19), so leaving the string alone would have made the fix for
     // a silent wrong-egress bug itself silently fail to arrive on every
     // install that had already seeded 0.9.0.
-    expect(plugin.version).toBe('0.11.2')
+    expect(plugin.version).toBe('0.12.0')
     expect(plugin.scripts.length).toBe(1)
   })
 

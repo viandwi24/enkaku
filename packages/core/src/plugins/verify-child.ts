@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import {
   checkDeclaredSchema,
   duplicateWebhookIdsMessage,
+  IconNameSchema,
   PLUGIN_UI_API_VERSION,
   PluginServiceDeclarationSchema,
   handlerViewsWithoutServiceMessage,
@@ -10,6 +11,7 @@ import {
   validatePluginSurface,
   WorkflowNodeDescriptorSchema,
   type ActionSpec,
+  type IconName,
   type PluginServiceDeclaration,
   type PluginSurface,
   type RuntimeEnvelope,
@@ -54,6 +56,14 @@ export interface VerifiedScript {
   title?: string
   description?: string
   /**
+   * Plan 310 §3.3, §5 step 310.1 — the member's own icon, RAW as the bundle
+   * declared it (`ICON_NAMES` in `@enkaku/protocol`). Optional for the same
+   * reason `title`/`description` above are: most members declare none, and a
+   * `VerifiedScript` fixture written before this field existed must keep
+   * compiling.
+   */
+  icon?: IconName
+  /**
    * Plan 303 §4.2, §5 step 303.5 — the member's PARSED workflow node
    * descriptor, present only when the bundle declared one and it passed the
    * independent re-validation in `finalizeReport` below (the same
@@ -70,6 +80,8 @@ export interface VerifyReport {
   version?: string
   title?: string
   description?: string
+  /** Plan 310 §3.3, §5 step 310.1 — the plugin's own icon, RAW as the bundle declared it. Absent when it declared none. */
+  icon?: IconName
   scripts: VerifiedScript[]
   /**
    * Plan 108 §3.9, §5 step 108.3 — the PARSED surface (every default
@@ -234,9 +246,16 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
       }
       node = checked.data
     }
-    const { node: rawNode, ...rest } = s
+    // Plan 310 §3.3, §5 step 310.1 — cosmetic, same as `title`/`description`:
+    // an icon outside `ICON_NAMES` is DROPPED, never refused, on the same
+    // reasoning `verify-child-entry.ts` already states for a mistyped
+    // `title` — this metadata gates nothing, and failing a whole plugin over
+    // one bad icon name would be out of proportion.
+    const iconCheck = s.icon !== undefined ? IconNameSchema.safeParse(s.icon) : undefined
+    const { node: rawNode, icon: rawIcon, ...rest } = s
     void rawNode
-    scripts.push({ ...rest, ...(node !== undefined ? { node } : {}) })
+    void rawIcon
+    scripts.push({ ...rest, ...(node !== undefined ? { node } : {}), ...(iconCheck?.success ? { icon: iconCheck.data } : {}) })
   }
   if (expectedVersion !== undefined && msg.version !== expectedVersion) {
     return failure(
@@ -339,12 +358,16 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
     if (missing) return failure(missing, 'E_PLUGIN_HANDLER_NO_SERVICE')
   }
 
+  // Same cosmetic drop as a member's own icon, just above.
+  const pluginIconCheck = msg.icon !== undefined ? IconNameSchema.safeParse(msg.icon) : undefined
+
   return {
     ok: true,
     pluginId: msg.pluginId,
     version: msg.version,
     title: msg.title,
     description: msg.description,
+    ...(pluginIconCheck?.success ? { icon: pluginIconCheck.data } : {}),
     scripts,
     ...(surface !== undefined ? { surface } : {}),
     ...(service !== undefined ? { service } : {}),

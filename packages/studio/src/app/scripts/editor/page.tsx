@@ -4,12 +4,10 @@ import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
-import { ScriptListItemSchema, type WorkflowDoc } from '@enkaku/protocol'
+import { ScriptListItemSchema, type ScriptListItem, type WorkflowDoc } from '@enkaku/protocol'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ErrorState, LoadingRows, Button, describeApiError } from '@enkaku/ui'
-import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { FlowEditor } from '@/components/flow/FlowEditor'
-import type { ScriptOption } from '@/components/flow/ScriptPicker'
 import { fetchAllPages, fetchWorkflow } from '@/lib/api'
 
 /**
@@ -28,7 +26,7 @@ function WorkflowEditorView() {
   const name = params.get('name')
   const router = useRouter()
 
-  const [scripts, setScripts] = useState<ScriptOption[] | null>(null)
+  const [scripts, setScripts] = useState<ScriptListItem[] | null>(null)
   const [scriptsError, setScriptsError] = useState<string | null>(null)
   const [initialDoc, setInitialDoc] = useState<WorkflowDoc | null>(null)
   /**
@@ -43,9 +41,7 @@ function WorkflowEditorView() {
 
   useEffect(() => {
     void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
-      .then((rows) =>
-        setScripts(rows.map((r) => ({ id: r.id, name: r.name, version: r.plugin.version, paramsSchema: r.paramsSchema as JsonSchemaNode | null }))),
-      )
+      .then(setScripts)
       .catch((e) => setScriptsError(describeApiError(e)))
   }, [])
 

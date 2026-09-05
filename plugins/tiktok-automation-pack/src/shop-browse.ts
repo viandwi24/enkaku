@@ -58,6 +58,8 @@ function categoryChip(tree: UiNode, name: string): UiNode | null {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'shop-browse',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'boxes',
   node: { category: 'device', icon: 'boxes', summary: ['scrolls'], keywords: ['shop', 'browse'] },
   title: 'Browse TikTok Shop',
   description: 'Opens the Shop tab (passing and REPORTING the first-run Tokopedia consent), browses the feed with verified randomised swipes, optionally opens one category chip — and never touches a product, price, or purchase control.',

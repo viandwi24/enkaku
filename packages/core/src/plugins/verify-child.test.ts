@@ -640,3 +640,58 @@ export default {
     expect(report.ok).toBe(true)
   }, 10_000)
 })
+
+describe('verifyPluginBundle — icons (plan 310 §3.3, §5 step 310.1)', () => {
+  const WITH_ICONS = `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  icon: 'puzzle',
+  scripts: [
+    { id: 'login', params: z.object({}), run: async () => 'ok', icon: 'play' },
+    { id: 'warmup', params: z.object({}), run: async () => 'ok' },
+  ],
+}
+`
+  const WITH_BAD_ICONS = `
+import { z } from 'zod'
+export default {
+  id: 'tiktok',
+  version: '1.0.0',
+  icon: 'not-a-real-icon',
+  scripts: [
+    { id: 'login', params: z.object({}), run: async () => 'ok', icon: 'also-not-real' },
+  ],
+}
+`
+
+  test('a bundle declaring no icons verifies exactly as it did before this plan — no key at all', async () => {
+    const path = writeBundle(HEALTHY)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.icon).toBeUndefined()
+    expect(report.scripts.map((s) => s.icon)).toEqual([undefined, undefined])
+  }, 10_000)
+
+  test('a plugin icon and a member icon from `ICON_NAMES` both reach the report', async () => {
+    const path = writeBundle(WITH_ICONS)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.icon).toBe('puzzle')
+    expect(report.scripts[0]?.icon).toBe('play')
+    expect(report.scripts[1]?.icon).toBeUndefined()
+  }, 10_000)
+
+  // Cosmetic, like a mistyped `title`: a hand-crafted bundle that bypassed
+  // `definePlugin`'s own author-time check can still declare an icon outside
+  // `ICON_NAMES` — this is DROPPED, never refused, the same reasoning
+  // `verify-child-entry.ts` states for a mistyped `title`.
+  test('an icon outside `ICON_NAMES` is dropped, not refused — the plugin still verifies', async () => {
+    const path = writeBundle(WITH_BAD_ICONS)
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.icon).toBeUndefined()
+    expect(report.scripts[0]?.icon).toBeUndefined()
+  }, 10_000)
+})

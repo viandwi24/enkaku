@@ -343,6 +343,8 @@ const searchFollowScript: PluginMemberScript<typeof paramsSchema, typeof resultS
   result: resultSchema,
   description:
     'Finds one specific account through search by its exact handle and follows it, with human-shaped browsing first. Does nothing when the account is already followed. Follows at most one account per run.',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'search',
   node: { category: 'device', icon: 'search', summary: ['query', 'target'], keywords: ['search', 'follow', 'account'] },
   params: paramsSchema,
   // Search, a bounded scroll hunt, a profile visit with grid scrolls and an occasional post, then the

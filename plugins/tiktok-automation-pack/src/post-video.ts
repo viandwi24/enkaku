@@ -706,6 +706,8 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
   id: 'post-video',
   title: 'Post a video',
   description: `Pushes a video artifact to the device and drives TikTok's own upload flow to post it, sweeping every known blocking modal along the way.`,
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'upload',
   node: { category: 'device', icon: 'upload', summary: [], keywords: ['post', 'upload', 'video'] },
   params,
   result,

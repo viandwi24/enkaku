@@ -18,6 +18,7 @@ import {
 } from '@enkaku/ui'
 import { jobHref } from '@/components/jobs/job-view'
 import { ArtifactPicker, uploadArtifactSource, type ArtifactSource } from '@/components/ArtifactPicker'
+import { ScriptTrigger } from '@/components/scripts/ScriptPalette'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import { narrowSchema } from '@/components/schema-form/narrowSchema'
 import { deviceSections } from '@/components/settings/deviceSections'
@@ -205,30 +206,16 @@ function RunScriptFields({ value, onChange }: { value: RunScriptValue; onChange:
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
-        <Label htmlFor="run-script-select">Script</Label>
+        <Label>Script</Label>
         {/*
-          A `Combobox`, not a `Select`: a farm's plugins publish dozens of
-          scripts (23 on the owner's own farm the day this changed), and a
-          native select over that is a scroll hunt with no way to type. The
-          plugin name is both the hint under each row and a search term, so
-          "tiktok" narrows to one plugin's scripts even though the label
-          already carries the prefix.
+          The script palette (plan 310 §3.1, §4.3), not a `Combobox` over a
+          flat list: a farm's plugins publish dozens of scripts (23 on the
+          owner's own farm the day this changed), and the owner's own
+          research called the flat dropdown bad UX. Page one browses by
+          plugin; typing on page one also searches scripts across every
+          plugin (plan 310 G2).
         */}
-        <Combobox
-          ariaLabel="Script"
-          value={value.scriptId ?? ''}
-          onValueChange={(id) => onChange({ ...value, scriptId: id, params: undefined })}
-          options={(scripts ?? []).map((s) => ({
-            value: s.id,
-            label: s.name,
-            hint: `${s.plugin.name}@${s.plugin.version}`,
-            keywords: [s.plugin.name, s.exportId],
-          }))}
-          placeholder={scripts === null ? 'Loading…' : 'Choose a script'}
-          searchPlaceholder="Filter scripts…"
-          emptyText={scripts === null ? 'Loading…' : 'No script matches.'}
-          triggerClassName="w-full"
-        />
+        <ScriptTrigger scripts={scripts} selected={selected} onPick={(s) => onChange({ ...value, scriptId: s.id, params: undefined })} />
       </div>
       {selected?.paramsSchema && (
         <SchemaForm

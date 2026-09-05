@@ -211,7 +211,10 @@ export function JobsList({
     return q
   }, [filter?.deviceId, filter?.status, filter?.batchId, filter?.rootJobId])
 
-  const scriptLabel = (j: JobInfo) => (j.scriptName ? `${j.scriptName}@${j.scriptVersion ?? '?'}` : j.scriptId)
+  // Plan 310 §3.4, G7 — a script has no version to show any more, only its
+  // plugin's (`scriptName` is already `plugin/script`, which carries the
+  // plugin identity the way a chip would).
+  const scriptLabel = (j: JobInfo) => j.scriptName ?? j.scriptId
 
   function cancel(j: JobInfo) {
     return run(

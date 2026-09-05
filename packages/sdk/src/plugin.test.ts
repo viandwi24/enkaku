@@ -320,6 +320,43 @@ describe('definePlugin — the node descriptor (plan 303 §4.2, G3)', () => {
   })
 })
 
+describe('definePlugin — icons (plan 310 §3.3, §4.1, G4)', () => {
+  test('a plugin declaring no `icon` is unaffected — no key at all on the way out', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })
+    expect(Object.hasOwn(plugin, 'icon')).toBe(false)
+  })
+
+  test('a plugin `icon` from `ICON_NAMES` survives to the returned `Plugin`', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', icon: 'puzzle', scripts: [member('a')] })
+    expect(plugin.icon).toBe('puzzle')
+  })
+
+  test('an unknown plugin `icon` is refused', () => {
+    expect(() => definePlugin({ id: 'p', version: '1.0.0', icon: 'tiktok' as never, scripts: [member('a')] })).toThrow(/unknown icon "tiktok"/)
+  })
+
+  test('a member declaring no `icon` is unaffected — no key at all on the way out', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })
+    expect(Object.hasOwn(plugin.scripts[0] as object, 'icon')).toBe(false)
+  })
+
+  test('a member `icon` from `ICON_NAMES` survives onto its `ScriptDefinition`', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { icon: 'play' })] })
+    expect((plugin.scripts[0] as { icon?: unknown }).icon).toBe('play')
+  })
+
+  test('an unknown member `icon` is refused, naming the script', () => {
+    expect(() => definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a', { icon: 'tiktok' as never })] })).toThrow(/script "a".*unknown icon "tiktok"/)
+  })
+
+  test('a plugin icon and a member icon are independent — one may be set without the other', () => {
+    const plugin = definePlugin({ id: 'p', version: '1.0.0', icon: 'database', scripts: [member('a', { icon: 'play' }), member('b')] })
+    expect(plugin.icon).toBe('database')
+    expect((plugin.scripts[0] as { icon?: unknown }).icon).toBe('play')
+    expect(Object.hasOwn(plugin.scripts[1] as object, 'icon')).toBe(false)
+  })
+})
+
 describe('isPlugin', () => {
   test('true for a definePlugin() result', () => {
     const plugin = definePlugin({ id: 'p', version: '1.0.0', scripts: [member('a')] })

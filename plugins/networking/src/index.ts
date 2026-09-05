@@ -1145,10 +1145,20 @@ export function assess(input: { whoer: WhoerFacts | null; dns: DnsFacts | null; 
  * internet, and is anything leaking around the tunnel". `leak-test` is its first member; the pack
  * exists so the next one (an exit-address watcher, a DNS-only probe) has an obvious home rather
  * than becoming another loose script.
+ *
+ * ## Changelog
+ *
+ * **3.1.0, plan 310 §3.3: a plugin icon.** The pack declares `icon:
+ * 'network'`, shown wherever it is offered as a choice (the script
+ * palette's plugin page, the Plugins rail entry). Its member declares none
+ * and defaults to `play`. Minor, not patch: an operator meets the icon
+ * immediately, in both places.
  */
 export default definePlugin({
   id: 'networking',
-  version: '3.0.0',
+  version: '3.1.0',
+  /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
+  icon: 'network',
   title: 'Networking',
   description: 'Leak and egress checks driven through a real browser on the device.',
   scripts: [

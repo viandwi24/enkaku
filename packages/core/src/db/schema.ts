@@ -537,7 +537,7 @@ export const jobRuns = sqliteTable(
   ],
 )
 
-export type RunTrigger = 'manual' | 'rerun' | 'schedule' | 'batch' | 'resume' | 'workflow-step' | 'node-test'
+export type RunTrigger = 'manual' | 'rerun' | 'schedule' | 'batch' | 'resume' | 'workflow-step' | 'node-test' | 'simulate'
 export type JobRunRow = typeof jobRuns.$inferSelect
 
 /**

@@ -112,6 +112,7 @@ function pluginRow(name: string, createdBy: string | null): PluginRow {
     version: '1.0.0',
     title: null,
     description: null,
+    icon: null,
     bundle: '',
     source: null,
     bundleHash: '',

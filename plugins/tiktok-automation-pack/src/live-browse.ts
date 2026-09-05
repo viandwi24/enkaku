@@ -71,6 +71,8 @@ const resultSchema = z.object({
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'live-browse',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'activity',
   node: { category: 'device', icon: 'activity', summary: ['query', 'scrolls'], keywords: ['live', 'browse'] },
   title: 'Browse TikTok LIVE',
   description: 'Searches the keyword, turns the LIVE results grid with verified randomised swipes, and optionally watches one room — proving it plays by screenshot motion, touching nothing inside.',
