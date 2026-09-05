@@ -537,7 +537,7 @@ export const jobRuns = sqliteTable(
   ],
 )
 
-export type RunTrigger = 'manual' | 'rerun' | 'schedule' | 'batch' | 'resume' | 'workflow-step' | 'node-test'
+export type RunTrigger = 'manual' | 'rerun' | 'schedule' | 'batch' | 'resume' | 'workflow-step' | 'node-test' | 'simulate'
 export type JobRunRow = typeof jobRuns.$inferSelect
 
 /**
@@ -556,8 +556,8 @@ export const workflowSteps = sqliteTable(
     seq: integer('seq').notNull(),
     /** The document's step id (`WorkflowDoc.nodes[].id`). `_on_fail` for the document's cleanup step. */
     stepId: text('step_id').notNull(),
-    /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds — `start`/`finish` are never logged (plan 301 §3.2, §3.4). */
-    kind: text('kind').notNull().$type<'script' | 'gate' | 'switch' | 'delay'>(),
+    /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds — `start`/`finish` are never logged (plan 301 §3.2, §3.4). `set` joins them by plan 312 §4.3 — a TS-only type widening, no migration: this is a `text()` column with no stored CHECK constraint. */
+    kind: text('kind').notNull().$type<'script' | 'gate' | 'switch' | 'delay' | 'set'>(),
     /** The child script job and the run of it this step waited on. Both null for a gate and until the job is created. */
     jobId: text('job_id'),
     jobRunId: text('job_run_id'),
@@ -799,32 +799,40 @@ export const scripts = sqliteTable(
 export type ScriptRow = typeof scripts.$inferSelect
 
 /**
- * A named parameter set for a script NAME (plan 95 §4.7, §5 step 95.8).
- * Keyed on `scriptName`, never a `scripts.id`: a preset is standing intent
- * about a script, exactly as a schedule's `scriptRef` is (plan 62 §3.3) — it
- * must outlive the version it was written against, and be reconciled
- * (`@enkaku/protocol`'s `reconcileParams`) whenever it meets one. Applying a
- * set to a form, or to a new schedule, copies its `params` in — nothing
- * downstream of that moment ever reads this table again for that job or
- * schedule, the same "reference on the standing thing, resolution on the
- * concrete thing" split plan 62 draws between `schedules.scriptRef` and
- * `jobs.scriptId`.
+ * A named parameter set, for a script NAME or a workflow NAME (plan 95 §4.7,
+ * §5 step 95.8; generalised to workflows by plan 311 §3.3, §4.1). Keyed on
+ * `(kind, ownerName)`, never a `scripts.id`/workflow row id: a preset is
+ * standing intent about the thing named, exactly as a schedule's `scriptRef`
+ * is (plan 62 §3.3) — it must outlive the version it was written against,
+ * and be reconciled (`@enkaku/protocol`'s `reconcileParams`) whenever it
+ * meets one. Applying a preset to a form, or to a new schedule, copies its
+ * `params` in — nothing downstream of that moment ever reads this table
+ * again for that job or schedule, the same "reference on the standing thing,
+ * resolution on the concrete thing" split plan 62 draws between
+ * `schedules.scriptRef` and `jobs.scriptId`.
+ *
+ * The table NAME is unchanged (`script_param_sets`) — renaming it would
+ * rewrite it for nothing; only `kind` is new and `script_name` is renamed to
+ * `owner_name` (plan 311 §4.1).
  */
-export const scriptParamSets = sqliteTable(
+export const paramPresets = sqliteTable(
   'script_param_sets',
   {
     id: text('id').primaryKey(),
-    scriptName: text('script_name').notNull(),
+    /** `'script' | 'workflow'` (plan 311 §3.3). */
+    kind: text('kind').notNull().default('script'),
+    /** A script's `plugin/script` name, or a workflow's `name`. Never a version (plan 311 §3.1). */
+    ownerName: text('owner_name').notNull(),
     name: text('name').notNull(),
     params: text('params', { mode: 'json' }),
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   },
-  (t) => [uniqueIndex('idx_param_sets_script_name').on(t.scriptName, t.name)],
+  (t) => [uniqueIndex('idx_param_sets_owner').on(t.kind, t.ownerName, t.name)],
 )
 
-export type ScriptParamSetRow = typeof scriptParamSets.$inferSelect
+export type ParamPresetRow = typeof paramPresets.$inferSelect
 
 /**
  * A workflow document (plan 210, MVP 03 §2.2 rule 4): owned by the farm,
@@ -1719,6 +1727,8 @@ export const plugins = sqliteTable(
     version: text('version').notNull(),
     title: text('title'),
     description: text('description'),
+    /** Plan 310 §3.3, §4.1 — one of `ICON_NAMES`, same leniency as `title`/`description` (set from the verify report, kept across a re-verify that reports none). Null for every version published before this plan. */
+    icon: text('icon'),
     /** The single bundle every one of this version's scripts rows points at (§3.2). */
     bundle: text('bundle').notNull(),
     source: text('source'),

@@ -192,6 +192,8 @@ function buildGraph(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, findings: Wo
       addEdge(edges, node.id, resolveEdge(nodeIds, node.default, `nodes[${i}].default`, 'succeeded', findings))
     } else if (node.kind === 'delay') {
       addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
+    } else if (node.kind === 'set') {
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
     }
     // `finish` is a sink — no outgoing edge to resolve.
   })
@@ -500,13 +502,28 @@ function* collectBindingSites(doc: WorkflowDoc): Generator<BindingSite> {
     } else if (node.kind === 'switch') {
       // A plain indexed `for`, not `.forEach` — same reason as this
       // function's own opening comment: `yield` cannot cross into a nested
-      // (non-generator) callback.
+      // (non-generator) callback. A `'weighted'` case carries no `when` at
+      // all (plan 312 §4.2) — its `weight` is a plain number, never a
+      // `ValueExpr`, so there is nothing to yield for it.
       for (let ci = 0; ci < node.cases.length; ci++) {
         const c = node.cases[ci]
-        if (!c) continue
+        if (!c || c.when === undefined) continue
         for (const expr of predicateExprs(c.when)) {
           yield { fromNodeId: node.id, path: `nodes[${i}].cases[${ci}].when`, expr }
         }
+      }
+    } else if (node.kind === 'set') {
+      // A `set` node's bindings (plan 312 §4.1) — both the assignment's NAME
+      // and its VALUE are `ValueExpr`s, so both need every check this
+      // function already runs for a script's params (item 2/3's forward-ref
+      // and unknown-param checks; item 3's type-compat check does not apply,
+      // since an assignment has no declared script param to compare against
+      // — that is exactly what `checkSetNode`, below, exists to add).
+      for (let ai = 0; ai < node.assignments.length; ai++) {
+        const a = node.assignments[ai]
+        if (!a) continue
+        yield { fromNodeId: node.id, path: `nodes[${i}].assignments[${ai}].name`, expr: a.name }
+        yield { fromNodeId: node.id, path: `nodes[${i}].assignments[${ai}].value`, expr: a.value }
       }
     } else if (node.kind === 'delay') {
       yield { fromNodeId: node.id, path: `nodes[${i}].ms`, expr: node.ms }
@@ -672,6 +689,40 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
       push(findings, 'onFail.script', 'W_WORKFLOW_LATEST_REF', `"${doc.onFail.script}" resolves to whatever is newest at RUN time — this workflow's behaviour can change without the workflow itself changing`, 'warning')
     }
   }
+
+  // --- `set` node field names (plan 312 §4.1) -----------------------------
+  // A LITERAL name (`{ const }`) is checked here, at publish time: it must
+  // be a non-empty string, and none of its dot-notation segments may be
+  // digits-only (§3.4 — dot notation builds nested OBJECTS, never indexes an
+  // array). An EXPRESSION name resolves only at run time and is left
+  // unchecked here, exactly as any other run-time-only binding is.
+  doc.nodes.forEach((node, i) => {
+    if (node.kind !== 'set') return
+    node.assignments.forEach((a, ai) => {
+      if (!('const' in a.name)) return
+      const path = `nodes[${i}].assignments[${ai}].name`
+      if (typeof a.name.const !== 'string' || a.name.const.length === 0) {
+        push(findings, path, 'E_WORKFLOW_BINDING_TYPE', `a "set" node's field name must be a non-empty string, got ${typeof a.name.const}`, 'error')
+        return
+      }
+      for (const segment of a.name.const.split('.')) {
+        if (segment.length === 0) {
+          push(findings, path, 'E_WORKFLOW_BINDING_TYPE', `"${a.name.const}" has an empty segment — dot notation needs a name on both sides of every "."`, 'error')
+          return
+        }
+        if (/^\d+$/.test(segment)) {
+          push(
+            findings,
+            path,
+            'E_WORKFLOW_BINDING_TYPE',
+            `"${a.name.const}": the segment "${segment}" is only digits — dot notation builds nested objects, never an array index (plan 312 §3.4)`,
+            'error',
+          )
+          return
+        }
+      }
+    })
+  })
 
   // --- 2, 3, 4. Every ValueExpr in the document ---------------------------
   const compiledParams = compileWorkflowParams(doc.params)

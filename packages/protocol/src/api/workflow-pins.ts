@@ -41,3 +41,28 @@ export type WorkflowRunNodeRequest = z.infer<typeof WorkflowRunNodeRequestSchema
 /** The new node-test RUN — a job like any other (plan 304 §6: it appears in the Jobs list, never a hidden execution). */
 export const WorkflowRunNodeResponseSchema = z.object({ job: JobInfoSchema, runId: z.string() })
 export type WorkflowRunNodeResponse = z.infer<typeof WorkflowRunNodeResponseSchema>
+
+/**
+ * `POST /api/workflows/simulate` (plan 309 §4.3) — runs the WHOLE document,
+ * with no device contact at all: `doc` is the editor's own unsaved document
+ * (§4.4), never a stored name, since simulating the graph in front of the
+ * author — including a node not yet saved — is the whole point.
+ */
+export const WorkflowSimulateRequestSchema = z.object({
+  doc: z.unknown(),
+  params: z.record(z.string(), z.unknown()).default({}),
+  /** Author-written mocks, keyed by node id, merged over stored pins (plan 309 §4.1). */
+  mocks: z.record(z.string(), z.unknown()).optional(),
+})
+export type WorkflowSimulateRequest = z.infer<typeof WorkflowSimulateRequestSchema>
+
+/**
+ * A simulated run is stored (plan 309 §3.4) so the canvas replays it through
+ * the SAME overlay a real run uses — this response names it, nothing more.
+ * `jobId` is included alongside `runId` (a small, deliberate widening of the
+ * plan's own `{ runId }` sketch) because that overlay's own data source
+ * (`useRunState`, `GET /api/workflow-jobs/:jobId/runs/:runId/steps`) is
+ * keyed on BOTH — the same shape `run-node`'s response already carries.
+ */
+export const WorkflowSimulateResponseSchema = z.object({ jobId: z.string(), runId: z.string() })
+export type WorkflowSimulateResponse = z.infer<typeof WorkflowSimulateResponseSchema>

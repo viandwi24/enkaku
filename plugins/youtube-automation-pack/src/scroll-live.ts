@@ -107,6 +107,8 @@ function liveRows(tree: UiNode): UiNode[] {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'scroll-live',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'activity',
   node: { category: 'device', icon: 'activity', summary: ['query', 'scrolls'], keywords: ['live', 'scroll'] },
   title: 'Scroll live streams',
   description: 'Searches for LIVE streams, scrolls the results with randomised flings and human dwell, and optionally opens one and watches.',

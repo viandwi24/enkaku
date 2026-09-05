@@ -111,6 +111,8 @@ export interface PluginIdentity {
   version: string
   title: string | null
   description: string | null
+  /** Plan 310 §3.3, §4.1 — one of `ICON_NAMES`, same leniency as `title`/`description`. */
+  icon: string | null
   status: string
   verifiedAt: Date | null
   verifyError: string | null
@@ -510,6 +512,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     version: plugins.version,
     title: plugins.title,
     description: plugins.description,
+    icon: plugins.icon,
     status: plugins.status,
     verifiedAt: plugins.verifiedAt,
     verifyError: plugins.verifyError,
@@ -548,6 +551,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     version: row.version,
     title: row.title,
     description: row.description,
+    icon: row.icon,
     status: row.status,
     verifiedAt: row.verifiedAt,
     verifyError: row.verifyError,
@@ -702,6 +706,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       version: input.version,
       title: null,
       description: null,
+      icon: null,
       bundle: input.bundle,
       source: input.source ?? null,
       bundleHash,
@@ -808,6 +813,7 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
         resetPackages: report.resetPackages.length > 0 ? { packages: report.resetPackages } : null,
         title: report.title ?? p.title,
         description: report.description ?? p.description,
+        icon: report.icon ?? p.icon,
       })
       .where(eq(plugins.id, pluginId))
       .run()

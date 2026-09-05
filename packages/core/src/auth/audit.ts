@@ -87,12 +87,19 @@ export type AuditAction =
   // not a document edit, but it is still an act worth answering for later.
   | 'workflow.pin.set'
   | 'workflow.pin.remove'
+  // Plan 309 §4.3 — a simulation never touches a device, but it is still an
+  // act worth answering for later, same as every other run.
+  | 'workflow.simulate'
   // Named parameter sets (plan 95 §4.7, §4.8, §5 step 95.8) — a preset is
   // "standing intent" about a script the same way a schedule is, and gets
   // the same answerability its sibling `script.*` verbs already have.
   | 'script.param_set.create'
   | 'script.param_set.update'
   | 'script.param_set.delete'
+  // Same preset concept, generalised to workflows (plan 311 §3.3, §4.4).
+  | 'workflow.preset.create'
+  | 'workflow.preset.update'
+  | 'workflow.preset.delete'
   | 'job.run'
   | 'job.cancel'
   // Plan 128 §4.3, §4.5 — the two DESTRUCTIVE job verbs. Cancelling a job

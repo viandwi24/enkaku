@@ -1,6 +1,7 @@
-import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db'
 import { jobRuns, jobs } from '../../db/schema'
+import { SIMULATE_RUN_RETENTION_DAYS } from '../../config/constants'
 import type { RunStore } from './store'
 
 /**
@@ -19,7 +20,17 @@ export function latestWorkflowRunIds(db: Db): Set<string> {
     .select({ id: jobRuns.id, workflowName: jobs.workflowName, at: sql<number>`coalesce(${jobRuns.finishedAt}, ${jobRuns.createdAt})` })
     .from(jobRuns)
     .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
-    .where(and(isNotNull(jobs.workflowName), inArray(jobRuns.status, ['success', 'failed', 'cancelled', 'expired'])))
+    .where(
+      and(
+        isNotNull(jobs.workflowName),
+        inArray(jobRuns.status, ['success', 'failed', 'cancelled', 'expired']),
+        // A `node-test`/`simulate` run must never be exempted from the
+        // simulate/short-horizon sweep by looking like a workflow's own
+        // "latest run" (plan 304 §4.6, plan 309 §3.4 G4) — the read side
+        // (`api/workflows.ts`'s `last-run`) already excludes both the same way.
+        notInArray(jobRuns.trigger, ['node-test', 'simulate']),
+      ),
+    )
     .all()
   const best = new Map<string, { id: string; at: number }>()
   for (const row of rows) {
@@ -82,6 +93,7 @@ export const createRunRetentionSweeper: CreateRunRetentionSweeper = (deps) => {
       .where(
         and(
           inArray(jobRuns.status, ['success', 'failed', 'cancelled', 'expired']),
+          ne(jobRuns.trigger, 'simulate'), // simulate runs have their OWN, much shorter horizon below
           or(isNull(jobs.latestRunId), ne(jobs.latestRunId, jobRuns.id)),
           sql`coalesce(${jobRuns.finishedAt}, ${jobRuns.createdAt}) < ${cutoffSec}`,
         ),
@@ -91,8 +103,33 @@ export const createRunRetentionSweeper: CreateRunRetentionSweeper = (deps) => {
       .filter((id) => !exempt.has(id))
   }
 
+  /**
+   * A `trigger: 'simulate'` run's own, much shorter cutoff (plan 309 §3.4,
+   * G4) — independent of the operator's `storage.historyDays`: it is
+   * scratch work, not history, so it never rides the real-run policy's
+   * (possibly months-long) horizon. Never exempted by `latestWorkflowRunIds`
+   * (which already excludes `simulate`, above) — every terminal simulate
+   * run older than the cutoff goes, including a job's own `latestRunId`,
+   * since a simulate job exists for no other reason.
+   */
+  function candidateSimulateRunIds(): string[] {
+    const cutoffSec = Math.floor((Date.now() - SIMULATE_RUN_RETENTION_DAYS * 86_400_000) / 1000)
+    return deps.db
+      .select({ id: jobRuns.id })
+      .from(jobRuns)
+      .where(
+        and(
+          eq(jobRuns.trigger, 'simulate'),
+          inArray(jobRuns.status, ['success', 'failed', 'cancelled', 'expired']),
+          sql`coalesce(${jobRuns.finishedAt}, ${jobRuns.createdAt}) < ${cutoffSec}`,
+        ),
+      )
+      .all()
+      .map((r) => r.id)
+  }
+
   function sweepOnce(): { runs: number; jobs: number } {
-    const ids = candidateRunIds()
+    const ids = [...candidateRunIds(), ...candidateSimulateRunIds()]
     let runsDeleted = 0
     let jobsDeleted = 0
     for (let i = 0; i < ids.length; i += deps.policy.chunk) {

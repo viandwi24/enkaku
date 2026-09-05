@@ -8,7 +8,7 @@ export const WorkflowStepInfoSchema = z.object({
   seq: z.number().int().min(0),
   stepId: z.string(),
   /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds. */
-  kind: z.enum(['script', 'gate', 'switch', 'delay']),
+  kind: z.enum(['script', 'gate', 'switch', 'delay', 'set']),
   /** The child script job and the run of it this step waited on; both null for a gate. */
   jobId: z.string().nullable(),
   jobRunId: z.string().nullable(),

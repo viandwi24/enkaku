@@ -50,13 +50,21 @@ import openRegister from './open-register'
  */
 export default definePlugin({
   id: 'google',
-  version: '0.2.0',
+  version: '0.3.0',
+  /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
+  icon: 'users',
   title: 'Google automation pack',
   description: 'Account and device automation for the Google apps on a farm device.',
   scripts: [snapshotAccounts, openRegister],
 
   /**
    * ## Changelog
+   *
+   * **0.3.0 — a plugin icon (plan 310 §3.3).** The pack declares `icon:
+   * 'users'`, shown wherever it is offered as a choice (the script palette's
+   * plugin page, the Plugins rail entry). No member declares its own icon
+   * yet — both default to `play`. Cosmetic; nothing about how either member
+   * runs changed.
    *
    * **0.2.0 — `open-register`, the first navigating member.** Opens the Google
    * app, walks the account sheet ("Login" or "add another account"), the

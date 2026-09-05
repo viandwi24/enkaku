@@ -113,3 +113,47 @@ describe('value functions', () => {
     expect(run('type($params.a)', { a: { x: 1 } })).toBe('object')
   })
 })
+
+describe('array paths — pluck/filterWhere (plan 312 §3.5, G6)', () => {
+  test('pluck: the value at a dotted path in each element', () => {
+    expect(run('pluck($params.a, "id")', { a: [{ id: 1 }, { id: 2 }, { id: 3 }] })).toEqual([1, 2, 3])
+  })
+  test('pluck: a dotted (nested) path', () => {
+    expect(run('pluck($params.a, "user.name")', { a: [{ user: { name: 'x' } }, { user: { name: 'y' } }] })).toEqual(['x', 'y'])
+  })
+  test('pluck: a missing path yields undefined for that element, not a throw', () => {
+    expect(run('pluck($params.a, "id")', { a: [{ id: 1 }, {}] })).toEqual([1, undefined])
+  })
+  test('pluck requires an array', () => {
+    expect(() => run('pluck($params.a, "id")', { a: 'nope' })).toThrow(ExprEvalError)
+  })
+  test('pluck is bounded by maxArrayLength', () => {
+    const big = Array.from({ length: 10_001 }, (_, i) => ({ id: i }))
+    expect(() => run('pluck($params.a, "id")', { a: big })).toThrow(ExprEvalError)
+  })
+
+  test('filterWhere: gte over a dotted path', () => {
+    expect(run('filterWhere($params.a, "videos", "gte", 10)', { a: [{ videos: 5 }, { videos: 12 }, { videos: 20 }] })).toEqual([{ videos: 12 }, { videos: 20 }])
+  })
+  test('filterWhere: eq', () => {
+    expect(run('filterWhere($params.a, "tag", "eq", "x")', { a: [{ tag: 'x' }, { tag: 'y' }] })).toEqual([{ tag: 'x' }])
+  })
+  test('filterWhere: exists / notExists over a missing path', () => {
+    expect(run('filterWhere($params.a, "id", "exists", null)', { a: [{ id: 1 }, {}] })).toEqual([{ id: 1 }])
+    expect(run('filterWhere($params.a, "id", "notExists", null)', { a: [{ id: 1 }, {}] })).toEqual([{}])
+  })
+  test('filterWhere: contains, on a string path', () => {
+    expect(run('filterWhere($params.a, "name", "contains", "an")', { a: [{ name: 'anna' }, { name: 'bob' }] })).toEqual([{ name: 'anna' }])
+  })
+  test('filterWhere: an unknown op is a type error, naming the closed set', () => {
+    expect(() => run('filterWhere($params.a, "id", "regex", "x")', { a: [{ id: 1 }] })).toThrow(ExprEvalError)
+  })
+  test('filterWhere requires an array', () => {
+    expect(() => run('filterWhere($params.a, "id", "eq", 1)', { a: 'nope' })).toThrow(ExprEvalError)
+  })
+  test('filterWhere never mutates its input array', () => {
+    const a = [{ id: 1 }, { id: 2 }]
+    run('filterWhere($params.a, "id", "eq", 1)', { a })
+    expect(a).toEqual([{ id: 1 }, { id: 2 }])
+  })
+})

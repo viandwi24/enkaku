@@ -41,6 +41,14 @@ export interface ScriptEntry {
   enabled: boolean
   paramsSchema: unknown
   /**
+   * The script's own declared output shape (plan 97, plan 303 §4.3) — the
+   * SECOND source `simulateWorkflow` (plan 309 §3.2) samples from when a
+   * node has no pin. `null` for a pre-plan-97 row and for every dev entry
+   * today (`DevSlotScript` carries no result shape yet) — both read
+   * identically to "this layer declared nothing".
+   */
+  resultSchema: unknown
+  /**
    * Plan 98 §3.1, §4.4, §5 step 98.4 — the script's own declared execution
    * envelope, pinned exactly as `paramsSchema` is: read straight off the
    * row (or the dev slot) at the moment a job pins this entry, never
@@ -97,6 +105,7 @@ function devEntryFromSlot(slot: DevSlot, exportId: string): ScriptEntry | undefi
     exportId,
     enabled: true,
     paramsSchema: s.paramsSchema,
+    resultSchema: null,
     runtime: s.runtime,
     bundle: { kind: 'file', path: slot.bundlePath },
     ephemeral: true,
@@ -128,6 +137,7 @@ function rowToEntry(row: ScriptRow): ScriptEntry {
     exportId: row.exportId ?? null,
     enabled: row.enabled ?? true,
     paramsSchema: row.paramsSchema,
+    resultSchema: row.resultSchema ?? null,
     runtime: parseScriptRuntime(row.runtime),
     bundle: { kind: 'db', scriptId: row.id },
     ephemeral: false,

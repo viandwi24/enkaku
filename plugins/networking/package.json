@@ -1,6 +1,6 @@
 {
   "name": "@enkaku/plugin-networking",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "type": "module",
   "description": "Networking — leak and egress checks driven through a real browser on the device",

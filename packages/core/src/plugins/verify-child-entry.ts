@@ -28,6 +28,8 @@ export type VerifyChildMessage =
       version: string
       title?: string
       description?: string
+      /** Plan 310 §3.3, §5 step 310.1 — the plugin's own icon, RAW, exactly as the bundle states it. Absent when the bundle declares none. */
+      icon?: string
       scripts: {
         id: string
         paramsSchema: unknown
@@ -36,6 +38,8 @@ export type VerifyChildMessage =
         /** Plan 108 §0.2 P8, step 108.3 — reported at last, so a screen can name a script the way its author did. Present only when the member declared one, so a bundle that declares neither reports exactly what it reported before. */
         title?: string
         description?: string
+        /** Plan 310 §3.3, §5 step 310.1 — the member's own icon, RAW, exactly as the bundle states it. Absent when the member declares none. */
+        icon?: string
         /**
          * Plan 303 §4.2, §5 step 303.5 — the member's workflow node
          * descriptor, RAW, exactly as the bundle states it. `unknown` on
@@ -161,7 +165,7 @@ async function main(): Promise<void> {
       // been through `definePlugin()`. A non-string is DROPPED rather than
       // refused: this metadata is cosmetic, it gates nothing, and refusing a
       // whole plugin over a mistyped label would be out of proportion.
-      const meta = s as { title?: unknown; description?: unknown; node?: unknown }
+      const meta = s as { title?: unknown; description?: unknown; icon?: unknown; node?: unknown }
       // Plan 303 §4.2, §5 step 303.5 — the node descriptor, JSON round-tripped
       // before it crosses the IPC boundary, same reasoning as `surface` below:
       // it is stored as JSON (inside `plugins.manifest`), and a hand-authored
@@ -181,6 +185,7 @@ async function main(): Promise<void> {
         runtime: runtimeParse.data,
         ...(typeof meta.title === 'string' && meta.title.length > 0 ? { title: meta.title } : {}),
         ...(typeof meta.description === 'string' && meta.description.length > 0 ? { description: meta.description } : {}),
+        ...(typeof meta.icon === 'string' && meta.icon.length > 0 ? { icon: meta.icon } : {}),
         ...(node !== undefined ? { node } : {}),
       }
     })
@@ -260,6 +265,7 @@ async function main(): Promise<void> {
       version: def.version,
       ...(def.title ? { title: def.title } : {}),
       ...(def.description ? { description: def.description } : {}),
+      ...(typeof def.icon === 'string' ? { icon: def.icon } : {}),
       scripts,
       ...(surface !== undefined ? { surface } : {}),
       ...(service !== undefined ? { service } : {}),

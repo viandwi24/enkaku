@@ -87,6 +87,8 @@ function isSponsoredRow(row: UiNode): boolean {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'download-home',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'download',
   node: { category: 'device', icon: 'download', summary: ['videos'], keywords: ['download', 'home'] },
   title: 'Download home videos',
   description: 'Walks the home feed, opens each video\'s own overflow menu, and presses YouTube\'s Download — reporting the account\'s real answer, including "Download tidak tersedia".',

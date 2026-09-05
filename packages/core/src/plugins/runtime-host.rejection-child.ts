@@ -175,7 +175,22 @@ async function main(): Promise<void> {
     failures: v.counters.failures,
     lastError: v.lastError?.message ?? null,
   }))
-  console.log(JSON.stringify({ survived: true, views }))
+  /**
+   * Hand the line over with an AWAITED write, never `console.log`.
+   *
+   * stdout here is a pipe (the parent spawns with `stdout: 'pipe'`), and a
+   * write to a pipe is buffered: `console.log` queues the bytes and returns.
+   * The `process.exit(0)` below then ends the process at once and discards
+   * whatever has not drained — so on a loaded runner the parent reads no JSON
+   * line at all, `result` is null, and the case fails in about the time a
+   * SUCCESSFUL run takes (405 ms and 551 ms observed on CI, against a ~640 ms
+   * local baseline; a genuine timeout would have taken the loop's full 3 s).
+   * The finding was never wrong — it just never arrived.
+   *
+   * `Bun.write` resolves once the bytes are handed to the pipe, which is the
+   * one thing this process exists to deliver.
+   */
+  await Bun.write(Bun.stdout, `${JSON.stringify({ survived: true, views })}\n`)
   host.dispose()
   opened.sqlite.close()
   rmSync(dataDir, { recursive: true, force: true })

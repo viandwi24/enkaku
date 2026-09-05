@@ -1,5 +1,14 @@
 import type { z } from 'zod'
-import { validatePluginSurface, WorkflowNodeDescriptorSchema, type PluginSurface, type PluginSurfaceInput, type WorkflowNodeDescriptor, type WorkflowNodeDescriptorInput } from '@enkaku/protocol'
+import {
+  IconNameSchema,
+  validatePluginSurface,
+  WorkflowNodeDescriptorSchema,
+  type IconName,
+  type PluginSurface,
+  type PluginSurfaceInput,
+  type WorkflowNodeDescriptor,
+  type WorkflowNodeDescriptorInput,
+} from '@enkaku/protocol'
 import { foldRuntimeEnvelope } from './runtime-fold'
 import { isService, type PluginService } from './runtime'
 import type { ScriptDefinition } from './types'
@@ -47,6 +56,24 @@ export type PluginMemberScript<S extends z.ZodTypeAny = z.ZodTypeAny, R extends 
   title?: string
   description?: string
   /**
+   * Shown wherever this script is offered as a choice — the script palette's
+   * two pages (plan 310 §3.3, §4.1) and the trigger row that summarises the
+   * pick. One of `ICON_NAMES` (`plugin-surface.ts`), validated by
+   * `definePlugin` below. Defaults to `play` when the member declares none
+   * (applied by the caller, never here — `undefined` on the way out of this
+   * module means exactly that, the same discipline `title`/`description`
+   * already follow).
+   *
+   * This is a NEW top-level field, not `node.icon`: plan 303 put the icon on
+   * the node descriptor because that was the only surface that needed one at
+   * the time. Now two surfaces do (the workflow palette and the script
+   * palette), so the icon moved up to belong to the script itself. A member
+   * that sets `node.icon` but not this field still renders with THAT icon on
+   * both surfaces — see `WorkflowNodeDescriptorSchema`'s own note and plan
+   * 310 §3.3 — but a member should prefer this field going forward.
+   */
+  icon?: IconName
+  /**
    * Presents this member as a workflow node type (plan 300 D6, plan 303
    * §4.2) — a descriptor, never a second execution path (plan 300 D7): the
    * member still runs in the SAME child process, still resolves through the
@@ -67,6 +94,13 @@ export interface PluginDefinition {
   version: string
   title?: string
   description?: string
+  /**
+   * Shown wherever this plugin is offered as a choice (plan 310 §3.3, §4.1)
+   * — the script palette's plugin page, and the Plugins rail entry it must
+   * agree with. One of `ICON_NAMES`, validated by `definePlugin` below.
+   * Defaults to `puzzle` when omitted (applied by the caller, never here).
+   */
+  icon?: IconName
   scripts: PluginMemberScript[]
   /** Merged with each script's own `reset.packages` at the runner (plan 82 §3.10). */
   reset?: { packages?: string[] }
@@ -182,6 +216,15 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
   if (!Array.isArray(def.scripts) || def.scripts.length === 0) {
     throw new Error('definePlugin: `scripts` must be a non-empty array')
   }
+  // Plan 310 §3.3, §4.1 — the plugin's own icon, validated on the author's
+  // machine through the SAME `IconNameSchema` a nav entry's icon already
+  // goes through inside `validatePluginSurface`. No second icon vocabulary.
+  if (def.icon !== undefined) {
+    const checked = IconNameSchema.safeParse(def.icon)
+    if (!checked.success) {
+      throw new Error(`definePlugin: \`icon\` — unknown icon "${String(def.icon)}": not one of the allowed icon names`)
+    }
+  }
   // Plan 108 §4.1 — the author-time half of §3.9's "the parent re-validates
   // independently". One function, run in both places, so the two can never
   // disagree about what is wrong with a surface. Every defect is reported
@@ -246,6 +289,14 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
       throw new Error(`definePlugin: script "${s.id}" — \`result\`, when present, must be a Zod schema`)
     }
     runtimeById.set(s.id, foldRuntimeEnvelope(s, `definePlugin: script "${s.id}" (plugin "${def.id}")`))
+    // Plan 310 §3.3, §4.1 — a member's own icon, validated the same way the
+    // plugin's own icon is validated just above.
+    if (s.icon !== undefined) {
+      const checked = IconNameSchema.safeParse(s.icon)
+      if (!checked.success) {
+        throw new Error(`definePlugin: script "${s.id}" — \`icon\` — unknown icon "${String(s.icon)}": not one of the allowed icon names`)
+      }
+    }
     if (s.node !== undefined) {
       const checked = WorkflowNodeDescriptorSchema.safeParse(s.node)
       if (!checked.success) {

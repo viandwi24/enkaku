@@ -31,6 +31,7 @@ function wireRow(name: string, version: string, status: 'staged' | 'active') {
     version,
     title: null,
     description: null,
+    icon: null,
     status,
     verifiedAt: status === 'active' ? new Date() : null,
     verifyError: null,

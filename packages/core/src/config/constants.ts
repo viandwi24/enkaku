@@ -173,6 +173,8 @@ export const INPUT_EVENT_RETENTION_DAYS = num('ENKAKU_INPUT_EVENT_RETENTION_DAYS
 export const EVENT_MAX_ROWS_PER_DEVICE = num('ENKAKU_EVENT_MAX_ROWS_PER_DEVICE', 50_000, z.number().int().min(1_000))
 export const BLOB_ORPHAN_GRACE_HOURS = num('ENKAKU_BLOB_ORPHAN_GRACE_HOURS', 24, z.number().int().min(1))
 export const AUDIT_RETENTION_DAYS = num('ENKAKU_AUDIT_RETENTION_DAYS', 90, z.number().int().min(1).max(3_650))
+/** A `trigger: 'simulate'` run is scratch work, not history (plan 309 §3.4, G4) — pruned on a much shorter horizon than `storage.historyDays` (the real-run policy), independent of it. */
+export const SIMULATE_RUN_RETENTION_DAYS = num('ENKAKU_SIMULATE_RUN_RETENTION_DAYS', 2, z.number().int().min(1).max(30))
 
 // ── Device terminal and the temporary adb endpoint (replaces shell.* minus the visible switch) ──
 export const SHELL_EXEC_TIMEOUT_MS = num('ENKAKU_SHELL_EXEC_TIMEOUT_MS', 15_000, z.number().int().min(1_000).max(120_000))

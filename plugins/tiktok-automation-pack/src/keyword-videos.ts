@@ -72,6 +72,8 @@ function playerUp(tree: UiNode): boolean {
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'keyword-videos',
   title: 'Watch keyword videos',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'search',
   node: { category: 'device', icon: 'search', summary: ['query', 'videos'], keywords: ['search', 'keyword', 'watch'] },
   description: 'Searches a keyword, opens videos from the results grid by measured cell geometry, and watches them with randomised dwell and verified swipes. Never likes, follows, or comments.',
   params: paramsSchema,

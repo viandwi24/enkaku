@@ -290,8 +290,16 @@ export default definePlugin({
    * deleted per-device manual-hold concept plan 205 replaced with the device
    * activity model — "admission" and "conflict", not the old term. No
    * behaviour change. Patch: invisible to an operator.
+   *
+   * **0.12.0, plan 310 §3.3: a plugin icon.** The pack declares `icon:
+   * 'plug'`, shown wherever it is offered as a choice (the script palette's
+   * plugin page, the Plugins rail entry). Its one member (`checkScript`)
+   * declares none and defaults to `play`. Minor, not patch: an operator
+   * meets the icon immediately, in both places.
    */
-  version: '0.11.2',
+  version: '0.12.0',
+  /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
+  icon: 'plug',
   title: 'Proxy manager',
   description: PLUGIN_NOT_BUILT,
   scripts: [checkScript],

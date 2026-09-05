@@ -60,6 +60,8 @@ function isActivityLine(value: string): boolean {
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'notification-activity',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'bell',
   node: { category: 'inspect', icon: 'bell', summary: ['scrolls', 'maxItems'], keywords: ['notification', 'inbox', 'activity'] },
   title: 'Show notification activity',
   description: 'Opens the Inbox, reports the unread badge and section list, opens the Aktivitas section and reads its entries — reporting them, tapping nothing beyond the section itself.',

@@ -57,6 +57,8 @@ const enqueueVideo: PluginMemberScript<typeof params, typeof result> = {
   title: 'Add a video to the post queue',
   description:
     'Writes one entry to the farm-wide post queue, keyed by the video\'s own artifact id. Used by the "content" screen\'s Add video button; nothing on the device is touched.',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'upload',
   node: { category: 'data', icon: 'upload', summary: ['artifactId'], keywords: ['queue', 'video'] },
   params,
   result,

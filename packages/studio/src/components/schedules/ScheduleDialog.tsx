@@ -20,6 +20,7 @@ import type {
   OnOverlap,
   ScheduleInfo,
   ScheduleThreadMode,
+  ScriptListItem,
 } from '@enkaku/protocol'
 import {
   api,
@@ -33,7 +34,6 @@ import {
   DialogTitle,
   Input,
   Label,
-  Combobox,
   Select,
   SelectContent,
   SelectItem,
@@ -45,19 +45,14 @@ import {
   TabsTrigger,
   Textarea,
 } from '@enkaku/ui'
-import { ParamSetPicker } from '@/components/ParamSetPicker'
+import { PresetRow } from '@/components/presets/PresetRow'
+import { ScriptTrigger } from '@/components/scripts/ScriptPalette'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { fetchAllPages, fetchDevices } from '@/lib/api'
 import { GroupOrDevicesField, type GroupOrDevicesValue } from './GroupOrDevicesField'
 
 export type ScheduleRow = ScheduleInfo
-
-interface ScriptOption {
-  id: string
-  name: string
-  paramsSchema: JsonSchemaNode | null
-}
 
 type WorkKind = 'script' | 'agent'
 
@@ -119,7 +114,7 @@ export function ScheduleDialog({
   const [prompt, setPrompt] = useState('')
   const [threadMode, setThreadMode] = useState<ScheduleThreadMode>('new')
   const [onApprovalRequired, setOnApprovalRequired] = useState<OnApprovalRequired>('deny')
-  const [scripts, setScripts] = useState<ScriptOption[]>([])
+  const [scripts, setScripts] = useState<ScriptListItem[] | null>(null)
   const [scriptName, setScriptName] = useState('')
   const [params, setParams] = useState<unknown>(undefined)
   const [target, setTarget] = useState<GroupOrDevicesValue>({ mode: 'group', groupId: null, deviceIds: [] })
@@ -147,7 +142,7 @@ export function ScheduleDialog({
   useEffect(() => {
     if (!open) return
     void fetchAllPages('/api/scripts', undefined, ScriptListItemSchema)
-      .then((rows) => setScripts(rows.map((r) => ({ id: r.id, name: r.name, paramsSchema: r.paramsSchema as JsonSchemaNode | null }))))
+      .then(setScripts)
       .catch(() => setScripts([]))
     void fetchAllPages<GroupInfo>('/api/groups')
       .then(setGroups)
@@ -235,7 +230,7 @@ export function ScheduleDialog({
     return () => clearTimeout(timer)
   }, [open, cron, timezone])
 
-  const scriptOption = scripts.find((s) => s.name === scriptName) ?? null
+  const scriptOption = (scripts ?? []).find((s) => s.name === scriptName) ?? null
   const { schema: clampedSchema, clamped } = useMemo(() => clampSchema(scriptOption?.paramsSchema ?? null), [scriptOption])
   const reconciliation = useMemo(() => reconcileParams(clampedSchema, params), [clampedSchema, params])
   const blockingReconcileErrors = Object.fromEntries(
@@ -372,29 +367,24 @@ export function ScheduleDialog({
             <>
               <div className="space-y-1.5">
                 <Label className="text-row font-normal">Script</Label>
-                {/* Searchable for the same reason the Run script dialog is: a
-                    farm's plugins publish dozens of scripts. */}
-                <Combobox
-                  ariaLabel="Script"
-                  value={scriptName}
-                  onValueChange={(v) => {
-                    setScriptName(v)
+                {/* The script palette (plan 310 §3.1, §4.3), same as the run-script dialog's — one component, three mounts. */}
+                <ScriptTrigger
+                  scripts={scripts}
+                  selected={scriptOption}
+                  onPick={(s) => {
+                    setScriptName(s.name)
                     setParams(undefined)
                     setServerIssues(undefined)
                     setFormCanSubmit(true)
                   }}
-                  options={scripts.map((s) => ({ value: s.name, label: s.name, keywords: [s.name.split('/')[0] ?? ''] }))}
-                  placeholder="Pick a script"
-                  searchPlaceholder="Filter scripts…"
-                  emptyText="No script matches."
-                  triggerClassName="h-8 w-full text-body"
                 />
               </div>
 
               {scriptOption?.paramsSchema ? (
                 <>
-                  <ParamSetPicker
-                    scriptName={scriptName}
+                  <PresetRow
+                    kind="script"
+                    ownerName={scriptName}
                     schema={clampedSchema}
                     value={params}
                     onApply={(next) => {

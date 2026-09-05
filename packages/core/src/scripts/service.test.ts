@@ -103,3 +103,69 @@ describe('listActiveScripts reads lastRun through job_runs (plan 211 §3.2 decis
     expect(items[0]?.lastRun).toMatchObject({ jobId: 'j1', status: 'success', finishedAt: 1_700_000_200 })
   })
 })
+
+/**
+ * Plan 310 §3.3, §4.1 — `title`/`description`/`icon` live in the ACTIVE
+ * plugin's manifest (the `scripts` table has no columns for them, unlike
+ * `paramsSchema`), so `listActiveScripts` must read them off `plugins.manifest`
+ * and match by `exportId`, not by the row's own columns.
+ */
+describe('listActiveScripts reads title/description/icon off the manifest (plan 310 §3.3, §4.1)', () => {
+  function seedWithManifest(db: Db): void {
+    db.insert(plugins)
+      .values({
+        id: 'p1',
+        name: 'tiktok',
+        version: '1.0.0',
+        bundle: 'export {}',
+        bundleHash: 'h',
+        status: 'active',
+        createdAt: new Date(1_700_000_000_000),
+        manifest: { scripts: [{ id: 'warmup', title: 'Warm up', description: 'Scrolls a bit.', icon: 'play' }] },
+      })
+      .run()
+    db.insert(scripts)
+      .values({ id: 's1', pluginId: 'p1', exportId: 'warmup', name: 'tiktok/warmup', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date(1_700_000_000_000) })
+      .run()
+  }
+
+  test('a member the manifest names comes back with its title, description and icon', () => {
+    const db = setUp()
+    seedWithManifest(db)
+    const items = listActiveScripts(db)
+    expect(items[0]).toMatchObject({ title: 'Warm up', description: 'Scrolls a bit.', icon: 'play' })
+  })
+
+  test('a member the manifest does not mention (or no manifest at all) comes back null on all three, never a throw', () => {
+    const db = setUp()
+    db.insert(plugins)
+      .values({ id: 'p1', name: 'tiktok', version: '1.0.0', bundle: 'export {}', bundleHash: 'h', status: 'active', createdAt: new Date(1_700_000_000_000) })
+      .run()
+    db.insert(scripts)
+      .values({ id: 's1', pluginId: 'p1', exportId: 'warmup', name: 'tiktok/warmup', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date(1_700_000_000_000) })
+      .run()
+    const items = listActiveScripts(db)
+    expect(items[0]).toMatchObject({ title: null, description: null, icon: null })
+  })
+
+  test('an icon outside `ICON_NAMES` in a stored manifest degrades to null rather than throwing', () => {
+    const db = setUp()
+    db.insert(plugins)
+      .values({
+        id: 'p1',
+        name: 'tiktok',
+        version: '1.0.0',
+        bundle: 'export {}',
+        bundleHash: 'h',
+        status: 'active',
+        createdAt: new Date(1_700_000_000_000),
+        manifest: { scripts: [{ id: 'warmup', title: 'Warm up', icon: 'not-a-real-icon' }] },
+      })
+      .run()
+    db.insert(scripts)
+      .values({ id: 's1', pluginId: 'p1', exportId: 'warmup', name: 'tiktok/warmup', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date(1_700_000_000_000) })
+      .run()
+    const items = listActiveScripts(db)
+    expect(items[0]).toMatchObject({ title: 'Warm up', icon: null })
+  })
+})

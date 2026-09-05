@@ -1,0 +1,1 @@
+ALTER TABLE `script_param_sets` ADD `kind` text DEFAULT 'script' NOT NULL;

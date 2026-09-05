@@ -10,7 +10,7 @@ import { Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, S
  * ordinary Select/Input controls rather than routed through the schema-form
  * resolver: there is no JSON Schema for a `ValueExpr` to plan a control
  * from — it is a workflow-editor-native concept, the same category as
- * `DevicePicker` or `ParamSetPicker`, not a second entry in
+ * `DevicePicker` or `PresetRow`, not a second entry in
  * `schema-form/plan.ts`'s `FieldPlan` union. `PredicateEditor.tsx`'s own doc
  * comment explains why THAT control, not this one, is the plan's one
  * bespoke control.

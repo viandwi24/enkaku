@@ -984,6 +984,19 @@ export {
   type WorkflowNodeDescriptor,
   type WorkflowNodeDescriptorInput,
 } from './workflow-node-type'
+export {
+  setPath,
+  isDigitsOnlySegment,
+  SetPathError,
+  hasTemplateMarkers,
+  compileTemplate,
+  jsonToAssignments,
+  assignmentsToJson,
+  type SetAssignment,
+  type JsonRefuseReason,
+  type JsonToAssignmentsResult,
+  type AssignmentsToJsonResult,
+} from './workflow-set'
 
 /**
  * Generic server→client error (a failed reply, an invalid message).

@@ -46,13 +46,21 @@ import searchPlay from './search-play'
  */
 export default definePlugin({
   id: 'youtube',
-  version: '0.12.0',
+  version: '0.13.0',
+  /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
+  icon: 'play',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments and download in the YouTube app on a farm device.',
   scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay],
 
   /**
    * ## Changelog
+   *
+   * **0.13.0 — icons, plugin and member (plan 310 §3.3).** The pack declares
+   * `icon: 'play'`; each of the five members now carries the SAME icon it
+   * already reports on its `node` descriptor, moved up to a top-level field
+   * (`node.icon` stays as a fallback read for a core older than this plan).
+   * Cosmetic; nothing about how any member runs changed.
    *
    * **0.12.0 — every member is now a workflow flow-editor node (plan 303
    * §4.5).** Each of the five scripts gains a `node` descriptor (category,

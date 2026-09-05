@@ -1,5 +1,9 @@
 import { z } from 'zod'
-import { EXPR_LIMITS } from '@enkaku/expr'
+import { EXPR_LIMITS, GATE_OPS, type GateOp } from '@enkaku/expr'
+
+/** Re-exported for backward compatibility — every consumer that imported these from `./workflow` before plan 312 moved the canonical definition into `@enkaku/expr` (§3.5, so `filterWhere` can reuse the same operator set) keeps working unchanged. */
+export { GATE_OPS }
+export type { GateOp }
 import { ScriptRefSchema } from './script-ref'
 import { WorkflowParamNameSchema, WorkflowParamSchema, type WorkflowParam } from './workflow-params'
 
@@ -31,6 +35,8 @@ export const WORKFLOW_LIMITS = {
   maxSwitchCases: 10,
   /** The largest a single `delay` node may declare (plan 303 §3.4, §4.1). Longer waits are a schedule, not a workflow. */
   maxDelayMs: 5 * 60_000,
+  /** A `set` node's assignment ceiling (plan 312 §4.1) — the same ceiling `maxParams` uses, for the same reason: past this it is a data file, not a mapping. */
+  maxAssignments: 40,
 } as const
 
 /**
@@ -129,32 +135,7 @@ export const ValueExprSchema: z.ZodType<ValueExpr> = z.union([
   z.object({ expr: z.string().min(1).max(EXPR_LIMITS.maxSourceBytes) }).strict(),
 ])
 
-/**
- * Closed. No regular expressions, ever (plan 95 §3.8 R2, plan 99 §3.7) — an
- * author who needs a pattern match writes a script node that returns a
- * verdict (§3.7's "escape hatch is a script" doctrine), never a `pattern`
- * evaluated here.
- */
-export const GATE_OPS = [
-  'eq',
-  'ne',
-  'lt',
-  'lte',
-  'gt',
-  'gte',
-  'contains',
-  'notContains',
-  'startsWith',
-  'endsWith',
-  'exists',
-  'notExists',
-  'isEmpty',
-  'notEmpty',
-  'length',
-] as const
-export type GateOp = (typeof GATE_OPS)[number]
-
-/** A closed predicate over values already in scope (plan 99 §3.7). */
+/** A closed predicate over values already in scope (plan 99 §3.7). Closed operator set: no regular expressions, ever (plan 95 §3.8 R2, plan 99 §3.7) — an author who needs a pattern match writes a script node that returns a verdict (§3.7's "escape hatch is a script" doctrine), never a `pattern` evaluated here. */
 export type Predicate =
   | { left: ValueExpr; op: GateOp; right?: ValueExpr }
   | { all: Predicate[] }
@@ -230,12 +211,17 @@ const nodeBase = {
  * device call (§3.7). `kind: 'switch'` and `kind: 'delay'` are new (plan 303
  * §3.2, §4.1): `switch` is the owner's "conditions C -> 1 / 2 / 3" as one
  * node — an ordered list of predicate-plus-target cases, first match wins,
- * `default` otherwise — and `delay` is a bounded, cancellable wait, core-
- * owned because its budget contribution (`maxMs`) must be known statically.
- * Six kinds total, and the list is closed (plan 300 D8): a plugin may never
- * define a seventh.
+ * `default` otherwise, or (plan 312 §3.6) a `mode: 'weighted'` draw from
+ * `$random` — and `delay` is a bounded, cancellable wait, core-owned because
+ * its budget contribution (`maxMs`) must be known statically. `kind: 'set'`
+ * is new (plan 312 §3.3): it builds new output from earlier nodes' output
+ * in-process, no device, no child — the one pure data-shaping node this
+ * catalog has, settled as core rather than a plugin on plan 300 D8's own
+ * logic (a plugin node runs in a child process because it MAY touch a
+ * device; `set` never does). Seven kinds total, and the list is closed (plan
+ * 300 D8): a plugin may never define an eighth.
  */
-export const WORKFLOW_NODE_KINDS = ['start', 'script', 'gate', 'switch', 'delay', 'finish'] as const
+export const WORKFLOW_NODE_KINDS = ['start', 'script', 'gate', 'switch', 'delay', 'finish', 'set'] as const
 export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -288,11 +274,24 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
     .object({
       ...nodeBase,
       kind: z.literal('switch'),
+      /**
+       * `'predicate'` (default, unchanged) evaluates each case's `when` in
+       * array order, first match wins. `'weighted'` (plan 312 §3.6) instead
+       * draws from `$random` over the cases' normalised `weight`s — "30 / 50
+       * / 20" becomes what the author writes, instead of cumulative
+       * `$random < 0.33` thresholds they would otherwise have to compute,
+       * order, and keep consistent by hand. One node, two modes — not a
+       * second node.
+       */
+      mode: z.enum(['predicate', 'weighted']).default('predicate'),
       cases: z
         .array(
           z
             .object({
-              when: PredicateSchema,
+              /** Required in `'predicate'` mode, absent in `'weighted'` mode — enforced below, since a case with BOTH a predicate and a weight is an author who believes one of them does something, and one of them does not. */
+              when: PredicateSchema.optional(),
+              /** Required in `'weighted'` mode, absent in `'predicate'` mode. Normalised against the other cases' weights at run time — the values need not sum to any particular total. */
+              weight: z.number().positive().optional(),
               /** Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2), same as every other dangling edge. */
               to: WorkflowNodeIdSchema.optional(),
               label: z.string().max(40).default(''),
@@ -331,6 +330,39 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
       status: z.enum(['succeed', 'fail']).default('succeed'),
       /** Shown on the job row when this node ends the run — the message `gate.message` used to carry (plan 301 §3.2). */
       message: z.string().max(200).default(''),
+    })
+    .strict(),
+
+  /**
+   * `set` (plan 312 §3.3, §4.1) — builds new output from earlier nodes'
+   * output, in-process, no device, no child job. A field NAME uses dot
+   * notation to build nested output (§3.4); it may NOT index an array
+   * (`a.0.b` names a field literally called `"0"`), because writing into an
+   * array by index needs a rule for the gaps that no author has needed yet —
+   * the checker and the executor's own `setPath` both refuse a digits-only
+   * segment, naming that sentence. Both `name` and `value` are `ValueExpr`s
+   * (a literal or an expression, like every other binding), which is what
+   * gives each assignment row its own Fixed/Expression toggle in the editor.
+   */
+  z
+    .object({
+      ...nodeBase,
+      kind: z.literal('set'),
+      assignments: z
+        .array(
+          z
+            .object({
+              name: ValueExprSchema,
+              value: ValueExprSchema,
+            })
+            .strict(),
+        )
+        .max(WORKFLOW_LIMITS.maxAssignments)
+        .default([]),
+      /** Drop the input and emit only what this node sets — n8n's "Keep Only Set Fields" (§3.6 Q4: this and deleting a field are the same feature; a delete is `keepOnlySet` plus re-listing what to keep). */
+      keepOnlySet: z.boolean().default(false),
+      /** Absent = dangling; reaching it ends the run succeeded (plan 301 §3.2). */
+      next: WorkflowNodeIdSchema.optional(),
     })
     .strict(),
 ])
@@ -405,5 +437,41 @@ export const WorkflowDocSchema = WorkflowDocShapeSchema.superRefine((doc, ctx) =
   if (startNodes.length !== 1) {
     ctx.addIssue({ code: 'custom', message: `a document must have exactly one "start" node (found ${startNodes.length})`, path: ['nodes'] })
   }
+
+  // A `switch` case shape must match its OWN node's mode (plan 312 §4.2) —
+  // enforced here, at the document level, rather than inside the
+  // discriminated union's own branch (a `superRefine` on one union member
+  // there would turn it into something `z.discriminatedUnion` can no longer
+  // read the literal `kind` off of). A case with a predicate AND a weight is
+  // an author who believes one of them does something, and one of them does
+  // not.
+  doc.nodes.forEach((node, i) => {
+    if (node.kind !== 'switch') return
+    node.cases.forEach((c, ci) => {
+      if (node.mode === 'predicate') {
+        if (c.when === undefined) {
+          ctx.addIssue({ code: 'custom', message: `case ${ci}: "when" is required in predicate mode`, path: ['nodes', i, 'cases', ci, 'when'] })
+        }
+        if (c.weight !== undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `case ${ci}: "weight" has no effect in predicate mode — did you mean to switch this node to weighted mode?`,
+            path: ['nodes', i, 'cases', ci, 'weight'],
+          })
+        }
+      } else {
+        if (c.weight === undefined) {
+          ctx.addIssue({ code: 'custom', message: `case ${ci}: "weight" is required in weighted mode`, path: ['nodes', i, 'cases', ci, 'weight'] })
+        }
+        if (c.when !== undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `case ${ci}: "when" has no effect in weighted mode — did you mean to switch this node to predicate mode?`,
+            path: ['nodes', i, 'cases', ci, 'when'],
+          })
+        }
+      }
+    })
+  })
 })
 export type WorkflowDoc = z.infer<typeof WorkflowDocSchema>

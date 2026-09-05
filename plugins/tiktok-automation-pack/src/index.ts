@@ -393,6 +393,8 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
   title: 'Auto-scroll the feed',
   description:
     'Opens TikTok and scrolls the feed with randomised watch times, gesture strength, occasional re-watches, back-scrolls and idle pauses. Never likes, follows, or comments.',
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'activity',
   node: { category: 'device', icon: 'activity', summary: ['videos', 'keywords'], keywords: ['scroll', 'feed', 'watch'] },
   result: resultSchema,
   params: paramsSchema,
@@ -791,7 +793,14 @@ export default definePlugin({
   // params, keywords) so the flow editor's palette can present them —
   // presentation only, nothing about how any member EXECUTES changes (plan
   // 300 D6, D7).
-  version: '1.17.0',
+  // 1.18.0 — icons, plugin and member (plan 310 §3.3): the pack declares
+  // `icon: 'activity'`; every one of the 11 members that already had a
+  // `node` descriptor now carries the SAME icon as a top-level field
+  // (`node.icon` stays as a fallback read for a core older than this plan).
+  // Cosmetic; nothing about how any member runs changed.
+  version: '1.18.0',
+  /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
+  icon: 'activity',
   title: 'TikTok automation pack',
   description: 'Watch, scroll, search, browse shop and live, and read notifications on the TikTok feed, with human-shaped timing.',
   scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript, searchKeyword, keywordVideos, liveBrowse, shopBrowse, notificationActivity],

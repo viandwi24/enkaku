@@ -301,6 +301,8 @@ const switchAccountScript: PluginMemberScript<typeof paramsSchema, typeof result
   result: resultSchema,
   description: 'Switches to another logged-in TikTok account, by list position or by username, and verifies the switch landed before reporting success.',
   // Plan 303 §4.5 — presents this member as a workflow node; never changes how it executes.
+  /** Plan 310 §3.3 — the script's own icon; `node.icon` (same value) stays as a fallback read for a core older than this plan. */
+  icon: 'users',
   node: { category: 'device', icon: 'users', summary: ['target'], keywords: ['switch', 'account', 'login'] },
   params: paramsSchema,
   // Generous relative to how few steps this script has: most of the budget is slack for dialog

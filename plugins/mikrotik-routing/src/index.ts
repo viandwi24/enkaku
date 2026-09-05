@@ -445,6 +445,12 @@ import verifyEgressScript from './verify-egress'
  * browser. The seeded version is STAGED, not activated: the operator still
  * activates `mikrotik-routing@0.14.0` on the Plugins page before it takes
  * effect (plan 216 §11).
+ *
+ * **0.15.0, plan 310 §3.3: a plugin icon.** The pack declares `icon:
+ * 'network'`, shown wherever it is offered as a choice (the script
+ * palette's plugin page, the Plugins rail entry). Its one member
+ * (`checkScript`) declares none and defaults to `play`. Minor, not patch:
+ * an operator meets the icon immediately, in both places.
  */
 
 const checkParams = z.object({})
@@ -469,7 +475,9 @@ export const checkScript: PluginMemberScript<typeof checkParams, typeof checkRes
 
 export default definePlugin({
   id: 'mikrotik-routing',
-  version: '0.14.0',
+  version: '0.15.0',
+  /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
+  icon: 'network',
   title: 'MikroTik routing',
   description:
     'Assigns a farm device its own internet egress path by writing policy routing rules on a MikroTik router. Assign devices individually from the Assignments tab, or as a named group from the Groups tab — activate or deactivate a whole group at once, with the router\'s rules following automatically, and every write refused (§3.2) while every device is not provably still reachable over adb.',

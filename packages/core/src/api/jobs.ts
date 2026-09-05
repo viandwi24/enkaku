@@ -134,6 +134,9 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
       rootJobId: c.req.query('rootJobId') ?? undefined,
       parentWorkflowJobId: c.req.query('parentWorkflowJobId') ?? undefined,
       scheduleId: c.req.query('scheduleId') ?? undefined,
+      // A `simulate` run never touched a device (plan 309 §3.4, G4) — off
+      // the list by default, shown only when a caller asks explicitly.
+      includeSimulate: ['1', 'true'].includes(c.req.query('includeSimulate') ?? ''),
       limit,
       cursor: decodeCursor(cursorParam),
     })

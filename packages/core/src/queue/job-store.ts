@@ -149,6 +149,8 @@ export interface JobStore {
     rootJobId?: string
     parentWorkflowJobId?: string
     scheduleId?: string
+    /** A `trigger: 'simulate'` run never touched a device (plan 309 §3.4, G4) — excluded from the list unless this asks for it explicitly. */
+    includeSimulate?: boolean
     limit: number
     cursor?: JobCursor | null
   }): {
@@ -214,6 +216,13 @@ export function createJobStore(db: Db): JobStore {
        */
       if (filter.status) {
         conds.push(sql`(SELECT ${jobRuns.status} FROM ${jobRuns} WHERE ${jobRuns.id} = ${jobs.latestRunId}) = ${filter.status}`)
+      }
+      // Plan 309 §3.4, G4 — a simulated run is scratch work, not history: it
+      // never counts as real, and stays off the Jobs list unless the filter
+      // asks for it (`includeSimulate`). Same correlated-subquery shape
+      // `status` already uses, since `trigger` lives on `job_runs`.
+      if (!filter.includeSimulate) {
+        conds.push(sql`(SELECT ${jobRuns.trigger} FROM ${jobRuns} WHERE ${jobRuns.id} = ${jobs.latestRunId}) IS NOT 'simulate'`)
       }
       const countWhere = conds.length > 0 ? and(...conds) : undefined
       const total = db.select().from(jobs).where(countWhere).all().length

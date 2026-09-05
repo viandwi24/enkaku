@@ -105,6 +105,107 @@ function typeName(v: unknown): string {
   return typeof v
 }
 
+/**
+ * The closed gate-operator vocabulary (plan 99 §3.7), moved here from
+ * `@enkaku/protocol`'s `workflow.ts` by plan 312 §3.5 so that `filterWhere`
+ * (below) can reuse the SAME set a gate/switch predicate already uses —
+ * "no second operator vocabulary". `workflow.ts` re-exports both names
+ * unchanged, so every existing import of `GATE_OPS`/`GateOp` from that module
+ * keeps working; this is the one and only place the list is written down.
+ */
+export const GATE_OPS = [
+  'eq',
+  'ne',
+  'lt',
+  'lte',
+  'gt',
+  'gte',
+  'contains',
+  'notContains',
+  'startsWith',
+  'endsWith',
+  'exists',
+  'notExists',
+  'isEmpty',
+  'notEmpty',
+  'length',
+] as const
+export type GateOp = (typeof GATE_OPS)[number]
+
+/** Bounded structural equality — mirrors `workflow-resolve.ts`'s `deepEqual`, duplicated here (not imported) because `@enkaku/expr` sits BELOW `@enkaku/protocol` in the dependency graph and may never import from it. */
+function gateDeepEqual(a: unknown, b: unknown, depth = 0): boolean {
+  if (depth > EXPR_LIMITS.maxDepth) return false
+  if (typeof a === 'number' && typeof b === 'number') return a === b
+  if (a === b) return true
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => gateDeepEqual(x, b[i], depth + 1))
+  if (isPlainRecord(a) && isPlainRecord(b)) {
+    const ak = Object.keys(a)
+    const bk = Object.keys(b)
+    return ak.length === bk.length && ak.every((k) => Object.hasOwn(b, k) && gateDeepEqual(a[k], b[k], depth + 1))
+  }
+  return false
+}
+
+/** Walks a dotted `path` against `root` — segments are identifier-ish or digits-only (an array index); total, never throws. Spends one fuel unit per segment, matching `get()`'s own walk above. */
+function pathWalk(root: unknown, path: string, fuel: Fuel): { found: boolean; value: unknown } {
+  let cur: unknown = root
+  for (const segment of path.split('.')) {
+    fuel.spend()
+    if (cur === null || cur === undefined || typeof cur !== 'object') return { found: false, value: undefined }
+    if (Array.isArray(cur)) {
+      if (!/^\d+$/.test(segment)) return { found: false, value: undefined }
+      const index = Number(segment)
+      if (!Number.isSafeInteger(index) || index >= cur.length) return { found: false, value: undefined }
+      cur = cur[index]
+      continue
+    }
+    if (!Object.hasOwn(cur, segment)) return { found: false, value: undefined }
+    cur = (cur as Record<string, unknown>)[segment]
+  }
+  return { found: true, value: cur }
+}
+
+/** One `GATE_OPS` comparison — the same semantics `workflow-resolve.ts`'s `evaluateLeaf` gives a gate, minus the trace (`filterWhere` needs only the verdict). `found` distinguishes "the path resolved to null/undefined" from "the path did not resolve at all", exactly as a gate's own `ResolveOutcome` does. */
+function gateCompare(op: GateOp, found: boolean, left: unknown, right: unknown): boolean {
+  const exists = found && left !== null && left !== undefined
+  switch (op) {
+    case 'exists':
+      return exists
+    case 'notExists':
+      return !exists
+    case 'isEmpty':
+      return !found || isEmptyValue(left)
+    case 'notEmpty':
+      return found && !isEmptyValue(left)
+    case 'eq':
+      return found && gateDeepEqual(left, right)
+    case 'ne':
+      return found && !gateDeepEqual(left, right)
+    case 'lt':
+    case 'lte':
+    case 'gt':
+    case 'gte':
+      if (!found || typeof left !== 'number' || typeof right !== 'number' || Number.isNaN(left) || Number.isNaN(right)) return false
+      return op === 'lt' ? left < right : op === 'lte' ? left <= right : op === 'gt' ? left > right : left >= right
+    case 'contains':
+      if (!found) return false
+      if (typeof left === 'string') return typeof right === 'string' && left.includes(right)
+      if (Array.isArray(left)) return left.some((x) => gateDeepEqual(x, right))
+      return false
+    case 'notContains':
+      return !gateCompare('contains', found, left, right)
+    case 'startsWith':
+      return found && typeof left === 'string' && typeof right === 'string' && left.startsWith(right)
+    case 'endsWith':
+      return found && typeof left === 'string' && typeof right === 'string' && left.endsWith(right)
+    case 'length': {
+      if (!found) return false
+      const len = typeof left === 'string' || Array.isArray(left) ? left.length : undefined
+      return len !== undefined && typeof right === 'number' && Number.isFinite(right) && len === right
+    }
+  }
+}
+
 export const FUNCTIONS: Record<string, ExprFn> = {
   // text
   len: ([v], fuel) => {
@@ -190,6 +291,33 @@ export const FUNCTIONS: Record<string, ExprFn> = {
     return fromJsonValue(parsed)
   },
   type: ([v]) => typeName(v),
+
+  // array paths (plan 312 §3.5) — per-element work without a lambda.
+  /** `pluck(array, "dotted.path")` — the value at that path in each element (`map(i => i.path)` without the binding). A missing path yields `undefined` for that element, exactly as `get()` with no default would. */
+  pluck: ([v, path], fuel) => {
+    const array = boundArray(arr(v, 'pluck'))
+    const p = str(path, 'pluck')
+    return array.map((el) => {
+      fuel.spend()
+      return pathWalk(el, p, fuel).value
+    })
+  },
+  /** `filterWhere(array, "dotted.path", op, value)` — the elements whose path satisfies `op` against `value`, using the SAME closed `GATE_OPS` a gate/switch predicate already evaluates. */
+  filterWhere: ([v, path, op, value], fuel) => {
+    const array = boundArray(arr(v, 'filterWhere'))
+    const p = str(path, 'filterWhere')
+    const opName = str(op, 'filterWhere')
+    if (!(GATE_OPS as readonly string[]).includes(opName)) {
+      typeError(`filterWhere() op must be one of: ${GATE_OPS.join(', ')} — got "${opName}"`)
+    }
+    return boundArray(
+      array.filter((el) => {
+        fuel.spend()
+        const { found, value: leftValue } = pathWalk(el, p, fuel)
+        return gateCompare(opName as GateOp, found, leftValue, value)
+      }),
+    )
+  },
 }
 
 export const FUNCTION_NAMES: ReadonlySet<string> = new Set(Object.keys(FUNCTIONS))

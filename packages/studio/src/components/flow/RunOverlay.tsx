@@ -21,6 +21,13 @@ export interface RunOverlayProps extends Omit<FlowCanvasProps, 'runState'> {
   /** The workflow job whose run this draws, or `null` when there is nothing to show yet (a brand-new workflow that has never run). */
   jobId: string | null
   runId: string | null
+  /**
+   * Plan 309 §3.4, §4.5 — true when `jobId`/`runId` name a `trigger:
+   * 'simulate'` run rather than a real one (G4: unmistakable everywhere it
+   * appears). Drawn as a dashed halo and a "SIMULATED" chip on the SAME
+   * canvas a real run uses (G6) — never a second renderer.
+   */
+  simulated?: boolean
 }
 
 const STATUS_LABEL: Record<'live' | 'replay' | 'none', string> = {
@@ -29,18 +36,25 @@ const STATUS_LABEL: Record<'live' | 'replay' | 'none', string> = {
   none: 'this workflow has never run',
 }
 
-export function RunOverlay({ jobId, runId, ...canvasProps }: RunOverlayProps) {
+export function RunOverlay({ jobId, runId, simulated = false, ...canvasProps }: RunOverlayProps) {
   const { runState, finalized, loading, steps } = useRunState(jobId, runId)
   const status: 'live' | 'replay' | 'none' = !jobId || !runId ? 'none' : finalized ? 'replay' : 'live'
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2">
+    <div className={cn('flex h-full min-h-0 flex-col gap-2', simulated && 'rounded-lg outline outline-dashed outline-2 outline-accent/50')}>
       {jobId && runId && (
         <div className="flex flex-none flex-wrap items-center gap-2 text-[11.5px] text-fg-muted">
-          <span className={cn('flex items-center gap-1', status === 'live' && 'text-accent')}>
-            <CircleIcon weight="fill" className={cn('size-2', status === 'live' && 'animate-pulse')} aria-hidden />
-            {loading ? 'loading run…' : STATUS_LABEL[status]}
-          </span>
+          {simulated ? (
+            <span className="flex items-center gap-1 rounded bg-accent/15 px-1.5 py-0.5 font-medium text-accent">
+              <CircleIcon weight="fill" className="size-2" aria-hidden />
+              SIMULATED
+            </span>
+          ) : (
+            <span className={cn('flex items-center gap-1', status === 'live' && 'text-accent')}>
+              <CircleIcon weight="fill" className={cn('size-2', status === 'live' && 'animate-pulse')} aria-hidden />
+              {loading ? 'loading run…' : STATUS_LABEL[status]}
+            </span>
+          )}
           {!loading && steps.length > 0 && <span>· {steps.length} step{steps.length === 1 ? '' : 's'}</span>}
         </div>
       )}

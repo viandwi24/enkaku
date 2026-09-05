@@ -17,7 +17,7 @@ describe('google-automation-pack manifest', () => {
    */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.2.0')
+    expect(plugin.version).toBe('0.3.0')
     expect(plugin.version).toBe(pkg.version)
   })
 

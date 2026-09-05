@@ -1,27 +1,29 @@
 import { and, eq } from 'drizzle-orm'
-import type { ParamSetInfo } from '@enkaku/protocol'
+import type { ParamPresetInfo, PresetKind } from '@enkaku/protocol'
 import type { Db } from '../db'
-import { scriptParamSets, scripts, type ScriptParamSetRow } from '../db/schema'
+import { paramPresets, scripts, type ParamPresetRow } from '../db/schema'
 import { EnkakuError } from '../util/errors'
 
 /**
- * The plain read/write operations behind named parameter sets (plan 95 §4.7,
- * §4.8, §5 step 95.8) — kept separate from `service.ts` (which is script
- * CRUD) because this is a different table with its own lifecycle, mirroring
- * how `resolve.ts` (script REFERENCES) sits beside `service.ts` (script
- * ROWS) rather than inside it.
+ * The plain read/write operations behind named parameter presets (plan 95
+ * §4.7, §4.8, §5 step 95.8; generalised to workflows by plan 311 §3.3,
+ * §4.1) — kept separate from `service.ts` (which is script CRUD) because
+ * this is a different table with its own lifecycle, mirroring how
+ * `resolve.ts` (script REFERENCES) sits beside `service.ts` (script ROWS)
+ * rather than inside it.
  *
- * A set belongs to a script NAME, never a `scripts.id` (§4.7's own doc
- * comment on the table) — every function here takes `scriptName`, and
- * reconciling a set against a particular version's schema is the CALLER's
- * job (`reconcileParams`, applied where a set is actually used), not this
- * file's.
+ * A preset belongs to a `(kind, ownerName)` pair, never a `scripts.id`/
+ * workflow row id (the table's own doc comment in `schema.ts`) — every
+ * function here takes both, and reconciling a preset against a particular
+ * schema is the CALLER's job (`reconcileParams`, applied where a preset is
+ * actually used), not this file's.
  */
 
-function toInfo(row: ScriptParamSetRow): ParamSetInfo {
+function toInfo(row: ParamPresetRow): ParamPresetInfo {
   return {
     id: row.id,
-    scriptName: row.scriptName,
+    kind: row.kind as PresetKind,
+    ownerName: row.ownerName,
     name: row.name,
     params: row.params,
     createdBy: row.createdBy,
@@ -30,47 +32,56 @@ function toInfo(row: ScriptParamSetRow): ParamSetInfo {
   }
 }
 
-/** Throws `script_not_found` — a set cannot be filed against a name nothing has ever published. */
-function assertScriptNameExists(db: Db, scriptName: string): void {
-  const row = db.select().from(scripts).where(eq(scripts.name, scriptName)).get()
-  if (!row) throw new EnkakuError('script_not_found', `no such script: ${scriptName}`)
+/**
+ * Throws `script_not_found` — a preset cannot be filed against a script name
+ * nothing has ever published. Only checked for `kind === 'script'`: a
+ * workflow preset has no equivalent registry to check against here, and
+ * `store.get(name)` (the workflow store) is not a dependency of this file
+ * (plan 311 §4.1 keeps the two route families independent).
+ */
+function assertOwnerExists(db: Db, kind: PresetKind, ownerName: string): void {
+  if (kind !== 'script') return
+  const row = db.select().from(scripts).where(eq(scripts.name, ownerName)).get()
+  if (!row) throw new EnkakuError('script_not_found', `no such script: ${ownerName}`)
 }
 
-/** Alphabetical by set name — a picker's own most useful order, and stable across reloads (unlike insertion order). */
-export function listParamSets(db: Db, scriptName: string): ParamSetInfo[] {
+/** Alphabetical by preset name — a picker's own most useful order, and stable across reloads (unlike insertion order). */
+export function listParamPresets(db: Db, kind: PresetKind, ownerName: string): ParamPresetInfo[] {
   return db
     .select()
-    .from(scriptParamSets)
-    .where(eq(scriptParamSets.scriptName, scriptName))
+    .from(paramPresets)
+    .where(and(eq(paramPresets.kind, kind), eq(paramPresets.ownerName, ownerName)))
     .all()
     .map(toInfo)
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export interface CreateParamSetInput {
-  scriptName: string
+export interface CreateParamPresetInput {
+  kind: PresetKind
+  ownerName: string
   name: string
   params: unknown
   createdBy: string | null
 }
 
-/** Throws `script_not_found` (404) or `param_set_name_exists` (409, the unique index's own constraint, checked first so the error names the field rather than surfacing as a raw SQL failure). */
-export function createParamSet(db: Db, input: CreateParamSetInput): ParamSetInfo {
-  assertScriptNameExists(db, input.scriptName)
+/** Throws `script_not_found` (404, `kind === 'script'` only) or `param_set_name_exists` (409, the unique index's own constraint, checked first so the error names the field rather than surfacing as a raw SQL failure). */
+export function createParamPreset(db: Db, input: CreateParamPresetInput): ParamPresetInfo {
+  assertOwnerExists(db, input.kind, input.ownerName)
   const existing = db
     .select()
-    .from(scriptParamSets)
-    .where(and(eq(scriptParamSets.scriptName, input.scriptName), eq(scriptParamSets.name, input.name)))
+    .from(paramPresets)
+    .where(and(eq(paramPresets.kind, input.kind), eq(paramPresets.ownerName, input.ownerName), eq(paramPresets.name, input.name)))
     .get()
   if (existing) {
-    throw new EnkakuError('param_set_name_exists', `a parameter set named "${input.name}" already exists for ${input.scriptName}`)
+    throw new EnkakuError('param_set_name_exists', `a preset named "${input.name}" already exists for ${input.ownerName}`)
   }
   const id = crypto.randomUUID()
   const now = new Date()
-  db.insert(scriptParamSets)
+  db.insert(paramPresets)
     .values({
       id,
-      scriptName: input.scriptName,
+      kind: input.kind,
+      ownerName: input.ownerName,
       name: input.name,
       params: input.params ?? null,
       createdBy: input.createdBy,
@@ -80,7 +91,8 @@ export function createParamSet(db: Db, input: CreateParamSetInput): ParamSetInfo
     .run()
   return toInfo({
     id,
-    scriptName: input.scriptName,
+    kind: input.kind,
+    ownerName: input.ownerName,
     name: input.name,
     params: input.params ?? null,
     createdBy: input.createdBy,
@@ -89,35 +101,35 @@ export function createParamSet(db: Db, input: CreateParamSetInput): ParamSetInfo
   })
 }
 
-export interface UpdateParamSetInput {
+export interface UpdateParamPresetInput {
   name?: string
   params?: unknown
 }
 
-/** Throws `param_set_not_found` (404, also when `id` exists but under a DIFFERENT script name — the route param and the row must agree) or `param_set_name_exists` (409, only checked when the name is actually changing). */
-export function updateParamSet(db: Db, scriptName: string, id: string, patch: UpdateParamSetInput): ParamSetInfo {
+/** Throws `param_set_not_found` (404, also when `id` exists but under a DIFFERENT owner/kind — the route params and the row must agree) or `param_set_name_exists` (409, only checked when the name is actually changing). */
+export function updateParamPreset(db: Db, kind: PresetKind, ownerName: string, id: string, patch: UpdateParamPresetInput): ParamPresetInfo {
   const row = db
     .select()
-    .from(scriptParamSets)
-    .where(and(eq(scriptParamSets.id, id), eq(scriptParamSets.scriptName, scriptName)))
+    .from(paramPresets)
+    .where(and(eq(paramPresets.id, id), eq(paramPresets.kind, kind), eq(paramPresets.ownerName, ownerName)))
     .get()
-  if (!row) throw new EnkakuError('param_set_not_found', 'no such parameter set')
+  if (!row) throw new EnkakuError('param_set_not_found', 'no such preset')
   if (patch.name !== undefined && patch.name !== row.name) {
     const dup = db
       .select()
-      .from(scriptParamSets)
-      .where(and(eq(scriptParamSets.scriptName, scriptName), eq(scriptParamSets.name, patch.name)))
+      .from(paramPresets)
+      .where(and(eq(paramPresets.kind, kind), eq(paramPresets.ownerName, ownerName), eq(paramPresets.name, patch.name)))
       .get()
-    if (dup) throw new EnkakuError('param_set_name_exists', `a parameter set named "${patch.name}" already exists for ${scriptName}`)
+    if (dup) throw new EnkakuError('param_set_name_exists', `a preset named "${patch.name}" already exists for ${ownerName}`)
   }
   const now = new Date()
-  db.update(scriptParamSets)
+  db.update(paramPresets)
     .set({
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       ...(patch.params !== undefined ? { params: patch.params } : {}),
       updatedAt: now,
     })
-    .where(eq(scriptParamSets.id, id))
+    .where(eq(paramPresets.id, id))
     .run()
   return toInfo({
     ...row,
@@ -128,18 +140,19 @@ export function updateParamSet(db: Db, scriptName: string, id: string, patch: Up
 }
 
 /**
- * Throws `param_set_not_found` (404), same "route param and row must agree"
- * rule as `updateParamSet`. Returns the deleted row's own `name` — not void —
- * so the route's audit entry can name what was removed, matching
- * `script.delete`'s own `{ name, version }` meta instead of a target id alone.
+ * Throws `param_set_not_found` (404), same "route params and row must
+ * agree" rule as `updateParamPreset`. Returns the deleted row's own `name`
+ * — not void — so the route's audit entry can name what was removed,
+ * matching `script.delete`'s own `{ name, version }` meta instead of a
+ * target id alone.
  */
-export function deleteParamSet(db: Db, scriptName: string, id: string): { name: string } {
+export function deleteParamPreset(db: Db, kind: PresetKind, ownerName: string, id: string): { name: string } {
   const row = db
     .select()
-    .from(scriptParamSets)
-    .where(and(eq(scriptParamSets.id, id), eq(scriptParamSets.scriptName, scriptName)))
+    .from(paramPresets)
+    .where(and(eq(paramPresets.id, id), eq(paramPresets.kind, kind), eq(paramPresets.ownerName, ownerName)))
     .get()
-  if (!row) throw new EnkakuError('param_set_not_found', 'no such parameter set')
-  db.delete(scriptParamSets).where(eq(scriptParamSets.id, id)).run()
+  if (!row) throw new EnkakuError('param_set_not_found', 'no such preset')
+  db.delete(paramPresets).where(eq(paramPresets.id, id)).run()
   return { name: row.name }
 }

@@ -94,6 +94,8 @@ export interface JobService {
     rootJobId?: string
     parentWorkflowJobId?: string
     scheduleId?: string
+    /** A `trigger: 'simulate'` run never touched a device (plan 309 §3.4, G4) — excluded from the list unless this asks for it explicitly. */
+    includeSimulate?: boolean
     limit?: number
     cursor?: JobCursor | null
   }): {
@@ -244,6 +246,7 @@ export function createJobService(deps: {
         rootJobId: filter.rootJobId,
         parentWorkflowJobId: filter.parentWorkflowJobId,
         scheduleId: filter.scheduleId,
+        includeSimulate: filter.includeSimulate,
         limit: filter.limit ?? 50,
         cursor: filter.cursor,
       })
