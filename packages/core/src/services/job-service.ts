@@ -91,6 +91,8 @@ export interface JobService {
     deviceId?: string
     status?: JobStatus
     kind?: string
+    /** Everything EXCEPT this kind — how the Jobs list stops mixing workflow jobs in with the scripts they ran. */
+    excludeKind?: string
     rootJobId?: string
     parentWorkflowJobId?: string
     scheduleId?: string
@@ -243,6 +245,7 @@ export function createJobService(deps: {
         deviceId: filter.deviceId,
         status: filter.status,
         kind: filter.kind,
+        excludeKind: filter.excludeKind,
         rootJobId: filter.rootJobId,
         parentWorkflowJobId: filter.parentWorkflowJobId,
         scheduleId: filter.scheduleId,

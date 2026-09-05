@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { and, desc, eq, notInArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, notInArray } from 'drizzle-orm'
 import {
   checkDeclaredSchema,
   checkWorkflow,
@@ -20,6 +20,7 @@ import {
   WorkflowSimulateRequestSchema,
   WorkflowSimulateResponseSchema,
   WorkflowLastRunResponseSchema,
+  WorkflowRunsResponseSchema,
   WORKFLOW_STEP_STATUSES,
   type ResolvedNodeScript,
   type ScriptRef,
@@ -34,7 +35,8 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { jobRuns, jobs, workflowSteps, type RunTrigger, type WorkflowStepRow } from '../db/schema'
+import { deviceNumbers, devices, jobRuns, jobs, workflowSteps, type RunTrigger, type WorkflowStepRow } from '../db/schema'
+import { formatDeviceLabel } from '../registry/device-number'
 import { rowToJobInfo } from '../queue/job-store'
 import type { ScriptRegistry } from '../scripts/registry'
 import { createParamPreset, deleteParamPreset, listParamPresets, updateParamPreset } from '../scripts/param-sets'
@@ -623,6 +625,85 @@ export function createWorkflowRoutes(deps: {
   })
 
   // ---- Last run (plan 300 P6, plan 306 §3.1, §4.5) ----
+
+  /**
+   * `GET /:name/runs` — this workflow's own history (the n8n Executions
+   * list), newest first.
+   *
+   * A separate route from `GET /api/jobs?kind=workflow` on purpose: that one
+   * answers "what jobs exist on this farm", and an author standing in an
+   * editor is asking "what has THIS pipeline done". It also carries what a
+   * job row cannot — the device by its composed label, and the step counts,
+   * because a run that succeeded while three of its steps failed (every
+   * failing node wired to a recovery edge) is a real state that one status
+   * word cannot express.
+   *
+   * `node-test` and `simulate` runs are excluded by the same
+   * `NON_REAL_RUN_TRIGGERS` list `last-run` uses: neither touched a device,
+   * and a history that mixes them in is a history nobody can trust.
+   */
+  app.get('/:name/runs', requirePermission('script.view'), (c) => {
+    const name = c.req.param('name')
+    if (!store.get(name)) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+    const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 25) || 25, 1), 100)
+
+    const rows = deps.db
+      .select({
+        jobId: jobRuns.jobId,
+        runId: jobRuns.id,
+        status: jobRuns.status,
+        trigger: jobRuns.trigger,
+        error: jobRuns.error,
+        createdAt: jobRuns.createdAt,
+        startedAt: jobRuns.startedAt,
+        finishedAt: jobRuns.finishedAt,
+        deviceId: jobs.deviceId,
+      })
+      .from(jobRuns)
+      .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+      .where(and(eq(jobs.workflowName, name), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
+      .orderBy(desc(jobRuns.createdAt))
+      .limit(limit)
+      .all()
+
+    // One query for every step of every listed run, not one per run: a
+    // history page of twenty-five would otherwise be twenty-six round trips
+    // to answer a count.
+    const runIds = rows.map((r) => r.runId)
+    const stepRows = runIds.length === 0 ? [] : deps.db.select({ runId: workflowSteps.runId, status: workflowSteps.status }).from(workflowSteps).where(inArray(workflowSteps.runId, runIds)).all()
+    const counted = new Map<string, { steps: number; failed: number }>()
+    for (const s of stepRows) {
+      const c2 = counted.get(s.runId) ?? { steps: 0, failed: 0 }
+      c2.steps += 1
+      if (s.status === 'failed') c2.failed += 1
+      counted.set(s.runId, c2)
+    }
+
+    const deviceIds = [...new Set(rows.map((r) => r.deviceId).filter((d): d is string => d !== null))]
+    const deviceRows = deviceIds.length === 0 ? [] : deps.db.select({ id: devices.id, label: devices.label, stableId: devices.stableId }).from(devices).where(inArray(devices.id, deviceIds)).all()
+    const numbers = deviceIds.length === 0 ? [] : deps.db.select({ stableId: deviceNumbers.stableId, number: deviceNumbers.number }).from(deviceNumbers).all()
+    const numberOf = new Map(numbers.map((n) => [n.stableId, n.number]))
+    const labelOf = new Map(deviceRows.map((d) => [d.id, formatDeviceLabel(numberOf.get(d.stableId) ?? null, d.label)]))
+
+    return typedJson(c, WorkflowRunsResponseSchema, {
+      items: rows.map((r, i) => ({
+        jobId: r.jobId,
+        runId: r.runId,
+        seq: rows.length - i,
+        status: r.status,
+        trigger: r.trigger,
+        deviceId: r.deviceId,
+        deviceLabel: r.deviceId ? (labelOf.get(r.deviceId) ?? null) : null,
+        createdAt: Math.floor((r.createdAt as Date).getTime() / 1000),
+        startedAt: r.startedAt ? Math.floor((r.startedAt as Date).getTime() / 1000) : null,
+        finishedAt: r.finishedAt ? Math.floor((r.finishedAt as Date).getTime() / 1000) : null,
+        steps: counted.get(r.runId)?.steps ?? 0,
+        failedSteps: counted.get(r.runId)?.failed ?? 0,
+        error: r.error ?? null,
+      })),
+      total: rows.length,
+    })
+  })
 
   app.get('/:name/last-run', requirePermission('script.view'), (c) => {
     const name = c.req.param('name')

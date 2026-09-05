@@ -131,6 +131,11 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
       deviceId: c.req.query('deviceId') ?? undefined,
       status: status.success ? status.data : undefined,
       kind: c.req.query('kind') ?? undefined,
+      // `excludeKind=workflow` is what lets the Jobs tab stop mixing pipelines
+      // in with the scripts they ran (owner, 2026-09-05). Exclusion rather
+      // than `kind=script`, so a kind added later still shows up on the list
+      // that means "everything else" instead of silently disappearing.
+      excludeKind: c.req.query('excludeKind') ?? undefined,
       rootJobId: c.req.query('rootJobId') ?? undefined,
       parentWorkflowJobId: c.req.query('parentWorkflowJobId') ?? undefined,
       scheduleId: c.req.query('scheduleId') ?? undefined,

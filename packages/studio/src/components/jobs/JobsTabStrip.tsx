@@ -13,11 +13,31 @@ import { cn } from '@enkaku/ui'
  * A `next/link` per tab, not a button: the tab is the address (plan 218
  * §3.3), and a plain <a> would remount React (`CLAUDE.md`).
  */
-export type JobsTab = 'jobs' | 'batches'
+export type JobsTab = 'jobs' | 'batches' | 'workflows'
 
-export function JobsTabStrip({ tab, jobCount, batchCount }: { tab: JobsTab; jobCount: number | null; batchCount: number | null }) {
+export function JobsTabStrip({
+  tab,
+  jobCount,
+  batchCount,
+  workflowCount,
+}: {
+  tab: JobsTab
+  jobCount: number | null
+  batchCount: number | null
+  workflowCount: number | null
+}) {
+  /*
+   * Three, not two. A workflow run is not a script job with a different name
+   * — it is a pipeline over several of them, it fails in ways a script
+   * cannot, and reading its history means reading its graph. Mixing the two
+   * lists made a farm's job list mostly noise and gave pipelines nowhere of
+   * their own (owner, 2026-09-05). The Jobs tab now excludes them; the
+   * scripts a workflow ran stay there, which is right — those really are
+   * ordinary jobs, and that is where an operator looks for one.
+   */
   const tabs: ReadonlyArray<{ key: JobsTab; label: string; count: number | null; href: string }> = [
     { key: 'jobs', label: 'Jobs', count: jobCount, href: '/jobs' },
+    { key: 'workflows', label: 'Workflows', count: workflowCount, href: '/jobs?tab=workflows' },
     { key: 'batches', label: 'Batches', count: batchCount, href: '/jobs?tab=batches' },
   ]
   return (

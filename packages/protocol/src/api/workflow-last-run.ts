@@ -65,3 +65,41 @@ export const WorkflowLastRunResponseSchema = z.object({
   nodes: z.record(z.string(), WorkflowLastRunNodeSchema),
 })
 export type WorkflowLastRunResponse = z.infer<typeof WorkflowLastRunResponseSchema>
+
+/**
+ * One entry in a workflow's own run history — the n8n "Executions" list, and
+ * the reason it is a separate shape from `JobInfo`: an operator reading a
+ * workflow's history is asking about the PIPELINE, not about a job row. What
+ * they need at a glance is which device it ran on, whether it finished, how
+ * many steps it took and how many of those failed. A workflow whose steps
+ * half-failed but whose run succeeded (every failing node wired to a
+ * recovery edge) is a real and common state, and a single `status` cannot
+ * say it (owner, 2026-09-05).
+ */
+export const WorkflowRunSummarySchema = z.object({
+  jobId: z.string(),
+  runId: z.string(),
+  /** 1-based, newest first — what the list numbers each entry with, the way n8n numbers an execution. */
+  seq: z.number().int(),
+  status: z.string(),
+  /** `manual`, `batch`, `schedule`, `rerun`, … — how this run was started. */
+  trigger: z.string(),
+  deviceId: z.string().nullable(),
+  /** `#N Label`, already composed — a history row must never make the reader resolve a device id. */
+  deviceLabel: z.string().nullable(),
+  /** Unix seconds. */
+  createdAt: z.number().int(),
+  startedAt: z.number().int().nullable(),
+  finishedAt: z.number().int().nullable(),
+  /** How many steps this run recorded, and how many of those failed. A loop can record a node more than once; both counts are of STEPS, not of nodes. */
+  steps: z.number().int(),
+  failedSteps: z.number().int(),
+  error: z.string().nullable(),
+})
+export type WorkflowRunSummary = z.infer<typeof WorkflowRunSummarySchema>
+
+export const WorkflowRunsResponseSchema = z.object({
+  items: z.array(WorkflowRunSummarySchema),
+  total: z.number().int(),
+})
+export type WorkflowRunsResponse = z.infer<typeof WorkflowRunsResponseSchema>

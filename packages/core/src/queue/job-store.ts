@@ -1,6 +1,6 @@
 import type { JobDetail, JobInfo, ParamIssue, ResultStatus, RuntimeEnvelope } from '@enkaku/protocol'
 import { RuntimeEnvelopeSchema } from '@enkaku/protocol'
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { changedRows, type Db } from '../db'
 import { devices, jobRuns, jobs, scripts, type JobRow, type JobRunRow } from '../db/schema'
 import { keysetWhere } from '../api/pagination'
@@ -146,6 +146,8 @@ export interface JobStore {
     deviceId?: string
     status?: string
     kind?: string
+    /** Everything EXCEPT this kind — how the Jobs list stops mixing workflow jobs in with the scripts they ran. */
+    excludeKind?: string
     rootJobId?: string
     parentWorkflowJobId?: string
     scheduleId?: string
@@ -199,6 +201,7 @@ export function createJobStore(db: Db): JobStore {
       const conds = []
       if (filter.deviceId) conds.push(eq(jobs.deviceId, filter.deviceId))
       if (filter.kind) conds.push(eq(jobs.kind, filter.kind as JobRow['kind']))
+      if (filter.excludeKind) conds.push(ne(jobs.kind, filter.excludeKind as JobRow['kind']))
       if (filter.rootJobId) conds.push(eq(jobs.rootJobId, filter.rootJobId))
       if (filter.parentWorkflowJobId) conds.push(eq(jobs.parentWorkflowJobId, filter.parentWorkflowJobId))
       if (filter.scheduleId) conds.push(eq(jobs.scheduleId, filter.scheduleId))

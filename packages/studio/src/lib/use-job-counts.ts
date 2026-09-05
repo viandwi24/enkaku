@@ -13,6 +13,7 @@ export interface JobCounts {
   /** The tab strip's two numbers. */
   jobs: number | null
   batches: number | null
+  workflows: number | null
   /** The five filter chips, keyed by filter. Null until the first read settles. */
   byFilter: Record<JobFilter, number | null>
 }
@@ -33,18 +34,28 @@ const EMPTY_BY_FILTER: Record<JobFilter, number | null> = { all: null, running: 
 export function useJobCounts(): JobCounts & { refresh: () => void } {
   const [jobs, setJobs] = useState<number | null>(null)
   const [batches, setBatches] = useState<number | null>(null)
+  const [workflows, setWorkflows] = useState<number | null>(null)
   const [byFilter, setByFilter] = useState<Record<JobFilter, number | null>>(EMPTY_BY_FILTER)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   function load(): void {
-    void api('/api/jobs?limit=1', JobsPageResponseSchema)
+    // The Jobs count must match the Jobs LIST, which no longer holds
+    // workflow jobs — a tab whose number disagrees with its own rows is worse
+    // than no number.
+    void api('/api/jobs?limit=1&excludeKind=workflow', JobsPageResponseSchema)
       .then((p) => setJobs(p.total))
+      .catch(() => undefined)
+    void api('/api/jobs?limit=1&kind=workflow', JobsPageResponseSchema)
+      .then((p) => setWorkflows(p.total))
       .catch(() => undefined)
     void api('/api/batches?limit=1', BatchesPageResponseSchema)
       .then((p) => setBatches(p.total))
       .catch(() => undefined)
+    // Chips count what the JOBS tab lists, which no longer holds workflow
+    // jobs. A chip reading 144 above a list of 7 is the same lie a tab count
+    // would be.
     for (const f of JOB_FILTERS) {
-      const qs = f === 'all' ? '/api/jobs?limit=1' : `/api/jobs?limit=1&status=${f}`
+      const qs = f === 'all' ? '/api/jobs?limit=1&excludeKind=workflow' : `/api/jobs?limit=1&excludeKind=workflow&status=${f}`
       void api(qs, JobsPageResponseSchema)
         .then((p) => setByFilter((prev) => ({ ...prev, [f]: p.total })))
         .catch(() => undefined)
@@ -75,5 +86,5 @@ export function useJobCounts(): JobCounts & { refresh: () => void } {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  return { jobs, batches, byFilter, refresh: load }
+  return { jobs, batches, workflows, byFilter, refresh: load }
 }

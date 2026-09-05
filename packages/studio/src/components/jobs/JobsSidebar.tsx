@@ -65,7 +65,12 @@ export function JobsSidebar({
     if (cursor) q.set('cursor', cursor)
     void (async () => {
       try {
-        if (tab === 'jobs') {
+        if (tab === 'jobs' || tab === 'workflows') {
+          // One list, two lenses. The Jobs tab is everything a workflow is
+          // not; the Workflows tab is only pipelines. Exclusion rather than
+          // `kind=script` on the first, so a kind added later shows up on the
+          // list that means "everything else" instead of vanishing.
+          q.set(tab === 'workflows' ? 'kind' : 'excludeKind', 'workflow')
           const p = await api(`/api/jobs?${q.toString()}`, JobsPageResponseSchema)
           if (disposed) return
           cursors.current[page + 1] = p.nextCursor
@@ -93,7 +98,7 @@ export function JobsSidebar({
       disposed = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, filter, page, counts.jobs, counts.batches])
+  }, [tab, filter, page, counts.jobs, counts.batches, counts.workflows])
 
   // Merge in place only. `counts` above is the page-0 refetch trigger: the
   // coalescer that moves the tab and chip numbers is the same signal that a
@@ -113,7 +118,7 @@ export function JobsSidebar({
   }, [])
 
   const rows: Row[] = useMemo(() => {
-    if (tab === 'jobs') {
+    if (tab === 'jobs' || tab === 'workflows') {
       return jobs.map((j) => ({
         id: j.jobId,
         // `scriptName` for a script job, `scriptName` denormalised from the
@@ -155,7 +160,12 @@ export function JobsSidebar({
             )}
           >
             {f === 'all' ? 'All' : f[0]?.toUpperCase() + f.slice(1)}
-            {counts.byFilter[f] !== null && <span className="ml-[6px] opacity-65">{counts.byFilter[f]}</span>}
+            {/* Counted for the Jobs tab only. The chips still FILTER on every
+                tab, but `byFilter` counts jobs-minus-workflows — showing that
+                number above a list of workflow runs would be a chip reading
+                144 over seven rows, which is the same lie a wrong tab count
+                would be, and this codebase already refuses those. */}
+            {tab === 'jobs' && counts.byFilter[f] !== null && <span className="ml-[6px] opacity-65">{counts.byFilter[f]}</span>}
           </button>
         ))}
       </div>

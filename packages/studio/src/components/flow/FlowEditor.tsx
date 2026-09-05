@@ -8,6 +8,7 @@ import {
   ArrowsClockwiseIcon,
   ArrowCounterClockwiseIcon,
   Badge,
+  ClockCounterClockwiseIcon,
   Button,
   Input,
   Label,
@@ -21,6 +22,7 @@ import {
 } from '@enkaku/ui'
 import { RunOverlay } from './RunOverlay'
 import { CanvasContextMenu, type CanvasMenuRequest } from './CanvasContextMenu'
+import { HistoryPanel } from './HistoryPanel'
 import { NodePalette } from './NodePalette'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
@@ -93,6 +95,16 @@ export function FlowEditor({
   const clipboard = useClipboard(history)
   const importInput = useRef<HTMLInputElement>(null)
   const [canvasMenu, setCanvasMenu] = useState<CanvasMenuRequest | null>(null)
+  /**
+   * The history panel, and the run it has pinned.
+   *
+   * `pinnedRun` overrides `lastRunRef` while it is set — one overlay, two
+   * sources, exactly as Simulate already overrides it. Clearing it falls back
+   * to the last real run rather than to nothing, so closing the panel leaves
+   * the canvas where the author expects it.
+   */
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [pinnedRun, setPinnedRun] = useState<{ jobId: string; runId: string } | null>(null)
   const { run, isPending } = useAction()
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -431,6 +443,16 @@ export function FlowEditor({
           </span>
         )}
         {dirty && <Badge variant="outline">Unsaved</Badge>}
+        {/*
+          The n8n split, in one screen rather than two: Editor is the graph you
+          are shaping, History is what it has actually done — and picking a run
+          there replays it over the SAME canvas, which is the whole reason the
+          panel sits beside it instead of on a page of its own.
+        */}
+        <Button type="button" variant="outline" active={historyOpen} onClick={() => setHistoryOpen((v) => !v)}>
+          <ClockCounterClockwiseIcon className="size-3.5" aria-hidden />
+          History
+        </Button>
         <Button type="button" variant="outline" onClick={() => setSimulateOpen(true)} disabled={doc.nodes.length === 0}>
           <PlayIcon className="size-3.5" aria-hidden />
           Simulate
@@ -499,9 +521,9 @@ export function FlowEditor({
       <div className="flex min-h-0 flex-1 gap-3">
         <div className="min-w-0 flex-1">
           <RunOverlay
-            jobId={lastRunRef?.jobId ?? null}
-            runId={lastRunRef?.runId ?? null}
-            simulated={simulated}
+            jobId={(pinnedRun ?? lastRunRef)?.jobId ?? null}
+            runId={(pinnedRun ?? lastRunRef)?.runId ?? null}
+            simulated={pinnedRun ? false : simulated}
             doc={doc}
             findings={validation.findings}
             selectedIds={selectedIds}
@@ -528,6 +550,11 @@ export function FlowEditor({
             onConnectToEmpty={openConnectPalette}
           />
         </div>
+        {historyOpen && (
+          <div className="flex w-[300px] flex-none flex-col overflow-hidden rounded-card border border-border bg-panel">
+            <HistoryPanel workflowName={doc.name} selectedRunId={pinnedRun?.runId ?? null} onSelect={setPinnedRun} />
+          </div>
+        )}
 
       </div>
 

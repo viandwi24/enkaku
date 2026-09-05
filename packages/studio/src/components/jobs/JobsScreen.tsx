@@ -15,13 +15,14 @@ import { JobsTabStrip, type JobsTab } from './JobsTabStrip'
  */
 export function JobsScreen() {
   const params = useSearchParams()
-  const tab: JobsTab = params.get('tab') === 'batches' ? 'batches' : 'jobs'
+  const raw = params.get('tab')
+  const tab: JobsTab = raw === 'batches' ? 'batches' : raw === 'workflows' ? 'workflows' : 'jobs'
   const jobId = params.get('job')
   const counts = useJobCounts()
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <JobsTabStrip tab={tab} jobCount={counts.jobs} batchCount={counts.batches} />
+      <JobsTabStrip tab={tab} jobCount={counts.jobs} batchCount={counts.batches} workflowCount={counts.workflows} />
       <div className="flex min-h-0 flex-1">
         <JobsSidebar tab={tab} selectedId={jobId} counts={counts} />
         {/*
@@ -34,8 +35,12 @@ export function JobsScreen() {
           {!jobId ? (
             <div className="p-[14px]">
               <EmptyState
-                title="Select a job"
-                description="Pick a job from the list to read its inputs, output, logs, timeline and artifacts."
+                title={tab === 'workflows' ? 'Select a workflow run' : 'Select a job'}
+                description={
+                  tab === 'workflows'
+                    ? 'Pick a run to replay its pipeline: the graph it took, every step in order, and what each one produced.'
+                    : 'Pick a job from the list to read its inputs, output, logs, timeline and artifacts.'
+                }
               />
             </div>
           ) : tab === 'batches' ? (

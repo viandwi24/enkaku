@@ -5,6 +5,8 @@ import {
   GuestAgentStatusResponseSchema,
   NodeTypesResponseSchema,
   WorkflowLastRunResponseSchema,
+  WorkflowRunsResponseSchema,
+  type WorkflowRunsResponse,
   WorkflowPinsListResponseSchema,
   WorkflowRunNodeResponseSchema,
   WorkflowSimulateResponseSchema,
@@ -803,6 +805,15 @@ export async function fetchWorkflowLastRun(name: string): Promise<WorkflowLastRu
   } catch (err) {
     if (err instanceof Error && 'code' in err && (err as { code?: string }).code === 'workflow_never_run') return null
     throw err
+  }
+}
+
+/** `GET /api/workflows/:name/runs` — this workflow's own history, newest first. Empty for a workflow that has never run; never throws for that. */
+export async function fetchWorkflowRuns(name: string, limit = 25): Promise<WorkflowRunsResponse> {
+  try {
+    return await api(`/api/workflows/${encodeURIComponent(name)}/runs?limit=${limit}`, WorkflowRunsResponseSchema)
+  } catch {
+    return { items: [], total: 0 }
   }
 }
 
