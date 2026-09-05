@@ -106,6 +106,9 @@ export function AndroidSdkPanel() {
         <Row label="SDK root" value={sdk.root ?? 'not found'} note={sdk.root ? `found by: ${SOURCE_LABEL[sdk.source]}` : undefined} bad={!sdk.root} />
         <Row label="emulator" value={sdk.emulator ? 'installed' : 'missing'} bad={!sdk.emulator} />
         <Row label="sdkmanager" value={sdk.sdkmanager ? 'installed' : 'missing'} bad={!sdk.sdkmanager} />
+        {/* sdkmanager is a Java program. Without this row an operator learns
+            that only from a failed install. */}
+        <Row label="java" value={sdk.javaHome ?? 'not found'} bad={!sdk.javaHome} />
         <Row label="platforms" value={sdk.platforms.join(', ') || 'none'} bad={sdk.platforms.length === 0} />
         <Row label="system images" value={sdk.systemImages.length === 0 ? 'none' : `${sdk.systemImages.length} installed`} bad={sdk.systemImages.length === 0} />
       </div>

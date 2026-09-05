@@ -62,6 +62,8 @@ export type VmCreateBody = z.infer<typeof VmCreateBodySchema>
 export const AndroidSdkStatusSchema = z.object({
   /** Absent when no tier found a root at all. */
   root: z.string().nullable(),
+  /** The JDK `sdkmanager` will run under — it is a Java program, and a host with none fails only after the button is pressed unless this is on screen. */
+  javaHome: z.string().nullable(),
   source: z.enum(['override', 'env', 'default', 'missing']),
   emulator: z.boolean(),
   sdkmanager: z.boolean(),

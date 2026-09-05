@@ -71,7 +71,7 @@ export interface SdkInstallDeps {
    */
   toolchainSdkmanager?: () => Promise<string | null>
   /** Injected for tests; defaults to a real `Bun.spawn`. */
-  spawn?: (cmd: string[], opts: { onLine: (line: string) => void }) => Promise<{ exitCode: number }>
+  spawn?: (cmd: string[], opts: { onLine: (line: string) => void; javaHome?: string | null }) => Promise<{ exitCode: number }>
 }
 
 /**
@@ -88,6 +88,47 @@ export async function resolveSdkmanager(sdk: AndroidSdk, fromToolchain?: () => P
   if (await Bun.file(beside).exists().catch(() => false)) return beside
   const managed = await fromToolchain?.().catch(() => null)
   if (managed && (await Bun.file(managed).exists().catch(() => false))) return managed
+  return null
+}
+
+/**
+ * A Java runtime for `sdkmanager`, which is a Java program and says so only
+ * after you have already pressed the button.
+ *
+ * `JAVA_HOME` first, then the places a JDK actually sits on a developer's
+ * machine when it is NOT on `PATH` — which is the common case on macOS, where
+ * `/usr/bin/java` is a stub that exists solely to tell you there is no Java.
+ * The owner's own machine had OpenJDK 17 installed by Homebrew and unlinked,
+ * so `command -v java` succeeded, `java -version` failed, and the install got
+ * as far as spawning before anything noticed (2026-09-06).
+ *
+ * Finding it is worth more than reporting it: a button that works beats a
+ * button that explains why it cannot.
+ */
+export async function resolveJavaHome(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  const candidates: string[] = []
+  const fromEnv = env.JAVA_HOME?.trim()
+  if (fromEnv) candidates.push(fromEnv)
+
+  if (process.platform === 'darwin') {
+    // The system helper answers with the JDK macOS itself would pick — and
+    // exits non-zero, loudly, when there is none.
+    const helper = Bun.spawnSync(['/usr/libexec/java_home'], { stdout: 'pipe', stderr: 'pipe' })
+    const out = helper.stdout.toString().trim()
+    if (helper.exitCode === 0 && out) candidates.push(out)
+    for (const brew of ['/opt/homebrew/opt/openjdk@17', '/opt/homebrew/opt/openjdk@21', '/opt/homebrew/opt/openjdk', '/usr/local/opt/openjdk@17', '/usr/local/opt/openjdk']) {
+      candidates.push(join(brew, 'libexec/openjdk.jdk/Contents/Home'), brew)
+    }
+  }
+  for (const dir of ['/usr/lib/jvm', '/Library/Java/JavaVirtualMachines']) {
+    for (const entry of await listDir(dir)) {
+      candidates.push(join(dir, entry, 'Contents', 'Home'), join(dir, entry))
+    }
+  }
+
+  for (const home of candidates) {
+    if (await Bun.file(join(home, 'bin', process.platform === 'win32' ? 'java.exe' : 'java')).exists().catch(() => false)) return home
+  }
   return null
 }
 
@@ -110,8 +151,15 @@ export function packagesFor(req: SdkInstallRequest): string[] {
   return out
 }
 
-async function defaultSpawn(cmd: string[], opts: { onLine: (line: string) => void }): Promise<{ exitCode: number }> {
-  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', stdin: 'pipe' })
+async function defaultSpawn(cmd: string[], opts: { onLine: (line: string) => void; javaHome?: string | null }): Promise<{ exitCode: number }> {
+  // `JAVA_HOME` is passed rather than relied on: the JDK is frequently
+  // installed and not on `PATH` (Homebrew leaves it unlinked by default), and
+  // the core's own environment is whatever started it — often a launchd
+  // session with a minimal PATH that has never seen a shell profile.
+  const env = opts.javaHome
+    ? { ...process.env, JAVA_HOME: opts.javaHome, PATH: `${join(opts.javaHome, 'bin')}:${process.env.PATH ?? ''}` }
+    : process.env
+  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', stdin: 'pipe', env })
   // `sdkmanager` asks "Accept? (y/N)" on stdin for every unaccepted licence.
   // The caller has already said yes in the interface; this is where that
   // answer is delivered, and it is the only thing ever written here.
@@ -179,8 +227,16 @@ export async function installSdkPackages(
   deps.log.info(`android-sdk: installing ${packages.join(', ')} into ${root}`)
   onLine(`$ sdkmanager --sdk_root=${root} ${packages.join(' ')}`)
 
+  const javaHome = await resolveJavaHome()
+  if (!javaHome) {
+    throw new EnkakuError(
+      'E_JAVA_MISSING',
+      'sdkmanager is a Java program and no Java runtime was found. Install a JDK (17 or newer) on the machine running the core — on macOS, `brew install openjdk@17`.',
+    )
+  }
+  onLine(`java: ${javaHome}`)
   const spawn = deps.spawn ?? defaultSpawn
-  const { exitCode } = await spawn(cmd, { onLine })
+  const { exitCode } = await spawn(cmd, { onLine, javaHome })
   if (exitCode !== 0) {
     throw new EnkakuError('E_SDK_INSTALL_FAILED', `sdkmanager exited with ${exitCode} — see the log above for what it refused`)
   }
@@ -190,6 +246,8 @@ export async function installSdkPackages(
 
 export interface SdkInventory {
   root: string | null
+  /** The JDK `sdkmanager` will be run with, or null when the host has none. */
+  javaHome: string | null
   source: 'override' | 'env' | 'default' | 'missing'
   emulator: boolean
   sdkmanager: boolean
@@ -223,6 +281,7 @@ export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: ()
   if (!sdk) {
     return {
       root: null,
+      javaHome: await resolveJavaHome(),
       source: 'missing',
       emulator: false,
       sdkmanager: false,
@@ -254,13 +313,16 @@ export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: ()
 
   // One remedy, the most blocking first — a screen listing four problems at
   // once teaches nobody what to do next.
+  const javaHome = await resolveJavaHome()
   const remedy = !sdkmanager
-    ? 'The SDK is here but its command-line tools are not, so nothing can be installed from this screen. Add "Android SDK Command-line Tools" in Android Studio’s SDK Manager.'
+    ? 'The SDK is here but its command-line tools are not — install them below; Enkaku fetches that one package itself, verified against a pinned checksum.'
+    : !javaHome
+      ? 'No Java runtime was found, and sdkmanager is a Java program. Install a JDK (17 or newer) — on macOS, `brew install openjdk@17`.'
     : !emulator
       ? 'The emulator package is missing — install it below.'
       : images.length === 0
         ? 'No system image is installed, so there is nothing for a virtual device to boot. Install one below.'
         : null
 
-  return { root: sdk.root, source: sdk.source, emulator, sdkmanager, avdmanager, platforms, systemImages: images.sort(), remedy, managedRoot }
+  return { root: sdk.root, javaHome, source: sdk.source, emulator, sdkmanager, avdmanager, platforms, systemImages: images.sort(), remedy, managedRoot }
 }
