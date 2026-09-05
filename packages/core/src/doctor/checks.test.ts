@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
@@ -257,6 +257,18 @@ describe('devices check — adb vs the registry, side by side (plan 85 §3.3, §
     const result = await devicesCheck.run(fakeDoctorContext({ devices: { list: async () => [{ serial: 'ZP1', state: 'device' }] } }))
     expect(result.status).toBe('ok')
     expect(result.observed).toContain('registry: no local database yet')
+  })
+
+  test('a database that exists and will not open says so — never "no local database yet"', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-doctor-devices-'))
+    try {
+      writeFileSync(join(dataDir, 'enkaku.db'), 'this is not a database')
+      const result = await devicesCheck.run(fakeDoctorContext({ dataDir, devices: { list: async () => [{ serial: 'ZP1', state: 'device' }] } }))
+      expect(result.observed).toContain('could not be read')
+      expect(result.observed).not.toContain('no local database yet')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
   })
 
   test('agrees: adb connected and the registry already has it non-offline — ok, side by side in observed', async () => {

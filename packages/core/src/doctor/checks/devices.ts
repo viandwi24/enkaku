@@ -21,6 +21,12 @@ import type { Check } from '../types'
  * yet" state (first run, or the `db` check above already owns reporting a
  * corrupt one) — this returns `null`, never throws.
  */
+/** Three answers, not two — see `readRegistrySerials`'s catch for why the middle one had to stop hiding behind the first. */
+type RegistryRead =
+  | { kind: 'none' }
+  | { kind: 'unreadable'; reason: string }
+  | { kind: 'rows'; rows: Map<string, RegistryDeviceRow> }
+
 interface RegistryDeviceRow {
   status: string
   /** Plan 89 §1, §5 step 89.4 — the number the rack itself carries, joined in below. `null` for a device with no reservation (a real state, never an error). */
@@ -32,14 +38,20 @@ interface RegistryDeviceRow {
  * JOIN, since a numberless device (an explicit release, §3.2) is a real
  * state this check must still show, never a row this query silently drops.
  */
-function readRegistrySerials(dataDir: string): Map<string, RegistryDeviceRow> | null {
+function readRegistrySerials(dataDir: string): RegistryRead {
   const path = join(dataDir, 'enkaku.db')
-  if (!existsSync(path)) return null
+  if (!existsSync(path)) return { kind: 'none' }
   let sqlite: Database
   try {
     sqlite = new Database(path, { readonly: true, create: false })
-  } catch {
-    return null
+  } catch (err) {
+    // A database that IS there and will not open is not "no local database
+    // yet". Both used to answer `null` and print the same benign sentence,
+    // so a doctor run on a farm whose db it could not read said the farm had
+    // no db — the exact class of false-benign this check exists to prevent.
+    // It also cost a day on `check-windows`, where four of these tests failed
+    // with nothing on screen to say why.
+    return { kind: 'unreadable', reason: err instanceof Error ? err.message : String(err) }
   }
   try {
     const rows = sqlite
@@ -47,9 +59,9 @@ function readRegistrySerials(dataDir: string): Map<string, RegistryDeviceRow> | 
         'SELECT d.serial AS serial, d.status AS status, d.label AS label, n.number AS number FROM devices d LEFT JOIN device_numbers n ON n.stable_id = d.stable_id',
       )
       .all() as Array<{ serial: string; status: string | null; label: string; number: number | null }>
-    return new Map(rows.map((r) => [r.serial, { status: r.status ?? 'offline', display: formatDeviceLabel(r.number, r.label) }]))
-  } catch {
-    return null
+    return { kind: 'rows', rows: new Map(rows.map((r) => [r.serial, { status: r.status ?? 'offline', display: formatDeviceLabel(r.number, r.label) }])) }
+  } catch (err) {
+    return { kind: 'unreadable', reason: err instanceof Error ? err.message : String(err) }
   } finally {
     sqlite.close()
   }
@@ -60,15 +72,18 @@ export const devicesCheck: Check = {
   title: 'Devices',
   async run(ctx) {
     const list = await ctx.devices.list()
-    const registry = readRegistrySerials(ctx.dataDir)
+    const read = readRegistrySerials(ctx.dataDir)
+    const registry = read.kind === 'rows' ? read.rows : null
 
     const adbSummary = list.length === 0 ? 'adb: no devices' : `adb: ${list.map((d) => `${d.serial}:${d.state}`).join(', ')}`
     const registrySummary =
-      registry === null
+      read.kind === 'none'
         ? 'registry: no local database yet'
-        : registry.size === 0
-          ? 'registry: no devices enrolled'
-          : `registry: ${[...registry.entries()].map(([serial, r]) => `${r.display} (${serial}):${r.status}`).join(', ')}`
+        : read.kind === 'unreadable'
+          ? `registry: enkaku.db is there but could not be read — ${read.reason}`
+          : registry!.size === 0
+            ? 'registry: no devices enrolled'
+            : `registry: ${[...registry!.entries()].map(([serial, r]) => `${r.display} (${serial}):${r.status}`).join(', ')}`
     const observed = `${adbSummary}; ${registrySummary}`
 
     // Disagreements (plan 85 §3.3, §5 step 85.2 — this is what makes H3

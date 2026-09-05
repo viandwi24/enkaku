@@ -6,6 +6,9 @@ import { DEVICE_LABEL_SURFACE } from '../../config/constants'
 import { formatDeviceLabel } from '../../registry/device-number'
 import type { Check } from '../types'
 
+/** Three answers, not two — a db that will not open is not a farm with no db. */
+type LabelledRead = { kind: 'none' } | { kind: 'unreadable'; reason: string } | { kind: 'rows'; rows: LabelledDeviceRow[] }
+
 interface LabelledDeviceRow {
   display: string
   mode: 'off' | 'lock-screen' | 'wallpaper'
@@ -24,14 +27,18 @@ interface LabelledDeviceRow {
  * `labelling.ts`'s own `readCached`/`readDeviceSettings` give an invalid row,
  * never a thrown error that would abort the whole check.
  */
-function readLabelledDevices(dataDir: string): LabelledDeviceRow[] | null {
+function readLabelledDevices(dataDir: string): LabelledRead {
   const path = join(dataDir, 'enkaku.db')
-  if (!existsSync(path)) return null
+  if (!existsSync(path)) return { kind: 'none' }
   let sqlite: Database
   try {
     sqlite = new Database(path, { readonly: true, create: false })
-  } catch {
-    return null
+  } catch (err) {
+    // `skip` on a database that exists and will not open is a false benign
+    // state — "nothing to report" and "we could not look" are different
+    // sentences, and this check's own doc comment says so about the case it
+    // already handled. Same fix as `devices.ts`.
+    return { kind: 'unreadable', reason: err instanceof Error ? err.message : String(err) }
   }
   try {
     const farmRow = sqlite.query('SELECT value FROM farm_settings WHERE id = 1').get() as { value: string } | null
@@ -43,7 +50,7 @@ function readLabelledDevices(dataDir: string): LabelledDeviceRow[] | null {
         'SELECT d.label AS label, d.stable_id AS stableId, d.settings AS settings, d.label_state AS labelState, n.number AS number FROM devices d LEFT JOIN device_numbers n ON n.stable_id = d.stable_id',
       )
       .all() as Array<{ label: string; stableId: string; settings: string | null; labelState: string | null; number: number | null }>
-    return rows.map((r) => {
+    const mapped = rows.map((r) => {
       const settingsParsed = DeviceSettingsSchema.safeParse(r.settings ? JSON.parse(r.settings) : {})
       const content = settingsParsed.success ? (settingsParsed.data.overrides.deviceLabel ?? farmDeviceLabel) : farmDeviceLabel
       const mode: 'off' | 'lock-screen' | 'wallpaper' = content === 'off' ? 'off' : DEVICE_LABEL_SURFACE
@@ -51,8 +58,9 @@ function readLabelledDevices(dataDir: string): LabelledDeviceRow[] | null {
       const state = stateParsed.success ? stateParsed.data : DEFAULT_DEVICE_LABEL_STATE
       return { display: formatDeviceLabel(r.number, r.label), mode, state: state.state, reason: state.reason }
     })
-  } catch {
-    return null
+    return { kind: 'rows', rows: mapped }
+  } catch (err) {
+    return { kind: 'unreadable', reason: err instanceof Error ? err.message : String(err) }
   } finally {
     sqlite.close()
   }
@@ -71,10 +79,18 @@ export const labellingCheck: Check = {
   id: 'labelling',
   title: 'Labelling',
   async run(ctx) {
-    const rows = readLabelledDevices(ctx.dataDir)
-    if (rows === null) {
+    const read = readLabelledDevices(ctx.dataDir)
+    if (read.kind === 'none') {
       return { status: 'skip', observed: 'no local database yet' }
     }
+    if (read.kind === 'unreadable') {
+      return {
+        status: 'warn',
+        observed: `enkaku.db is there but could not be read — ${read.reason}`,
+        remedy: 'run the db check above for the full diagnosis; labelling has nothing to report until this database opens',
+      }
+    }
+    const rows = read.rows
     const enabled = rows.filter((r) => r.mode !== 'off')
     if (enabled.length === 0) {
       return { status: 'skip', observed: 'no device has physical labelling enabled' }
