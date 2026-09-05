@@ -19,6 +19,7 @@ permissions:
 jobs:
   build-nix:
     runs-on: ubuntu-latest
+    needs: [build-guest-agent]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -29,6 +30,20 @@ jobs:
         with:
           bun-version: '1.3.14'
       - run: bun install --frozen-lockfile
+      # Pin THIS tag's guest agent into the manifest that is about to be
+      # embedded in the binary. The push to the default branch still happens
+      # once, in `build-guest-agent`; this is the same values applied locally
+      # so what ships and what is published are the same artifact.
+      - name: Pin this tag's guest agent before building
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          bun run scripts/pin-guest-agent.ts \
+            --version "${{ needs.build-guest-agent.outputs.version }}" \
+            --version-code "${{ needs.build-guest-agent.outputs.code }}" \
+            --sha256 "${{ needs.build-guest-agent.outputs.sha256 }}" \
+            --size "${{ needs.build-guest-agent.outputs.size }}" \
+            --url "${{ needs.build-guest-agent.outputs.url }}"
       - run: bun run typecheck
       # The packs are EMBEDDED in every archive built below and staged on a user's first boot, so
       # this is the last gate between a broken pack and everyone who downloads this tag. `typecheck`
@@ -56,6 +71,7 @@ jobs:
 
   build-darwin:
     runs-on: macos-latest
+    needs: [build-guest-agent]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -66,6 +82,20 @@ jobs:
         with:
           bun-version: '1.3.14'
       - run: bun install --frozen-lockfile
+      # Pin THIS tag's guest agent into the manifest that is about to be
+      # embedded in the binary. The push to the default branch still happens
+      # once, in `build-guest-agent`; this is the same values applied locally
+      # so what ships and what is published are the same artifact.
+      - name: Pin this tag's guest agent before building
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          bun run scripts/pin-guest-agent.ts \
+            --version "${{ needs.build-guest-agent.outputs.version }}" \
+            --version-code "${{ needs.build-guest-agent.outputs.code }}" \
+            --sha256 "${{ needs.build-guest-agent.outputs.sha256 }}" \
+            --size "${{ needs.build-guest-agent.outputs.size }}" \
+            --url "${{ needs.build-guest-agent.outputs.url }}"
       - run: VERSION="${{ github.ref_name }}" TARGETS="darwin-arm64 darwin-x64" bash scripts/build-release.sh
       - uses: actions/upload-artifact@v4
         with:
@@ -77,8 +107,21 @@ jobs:
   # `deviceArtifact` in the toolchain manifest had nothing real behind it. Independent of
   # build-nix/build-darwin — a completely separate toolchain (Gradle/JDK/NDK, not Bun) — so it runs
   # in parallel with them rather than gating on their output.
+  # Runs BEFORE the binaries, not beside them (2026-09-05). The pin used to be
+  # pushed to the default branch after all three jobs had already built from
+  # the tag, so every released binary embedded a manifest pinning the PREVIOUS
+  # release's APK — v0.1.9's binary shipped a 0.1.8 pin, and the ui-tree
+  # inspector would have reached no customer even after its own release. The
+  # binary jobs now depend on this one and pin locally from its outputs before
+  # compiling, so what ships and what is published are the same artifact.
   build-guest-agent:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.artifact.outputs.version }}
+      code: ${{ steps.artifact.outputs.code }}
+      sha256: ${{ steps.artifact.outputs.sha256 }}
+      size: ${{ steps.artifact.outputs.size }}
+      url: ${{ steps.artifact.outputs.url }}
     steps:
       - uses: actions/checkout@v4
       - run: git submodule update --init --recursive
@@ -157,6 +200,7 @@ jobs:
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           echo "version=${{ steps.version.outputs.name }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ steps.version.outputs.code }}" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/guest-agent.apk" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: guest-agent-apk

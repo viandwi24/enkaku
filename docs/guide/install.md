@@ -484,6 +484,31 @@ credentials themselves — restrict who can read it, never send it over chat
 or email unencrypted, encrypt it at rest if it leaves this machine, and
 delete copies you no longer need.
 
+### A starting point for running it
+
+`scripts/enkaku-example-run.sh` is a copy-and-edit example, not a wrapper to
+keep: it binds to the LAN and lets Enkaku manage its own TLS certificate.
+
+```sh
+export ENKAKU_BIND=0.0.0.0
+export ENKAKU_TLS_MODE=self
+exec ./enkaku "$@"
+```
+
+That is the whole of it, with the rest of the file being comments on what each
+line does and which variables to uncomment next (`ENKAKU_DATA_DIR`,
+`ENKAKU_PORT`, bring-your-own certificate). Arguments pass through, so
+`./enkaku-example-run.sh doctor` works.
+
+Two things it does on purpose:
+
+- **No `ENKAKU_ALLOW_INSECURE=1`.** That variable only does something when TLS
+  is `off` in server mode — it is the "yes, plain HTTP, passwords in the clear"
+  override. With `self` there is no insecurity to allow, so setting it is a
+  no-op that teaches the wrong habit.
+- **`exec`, not a plain call.** Without it the core is a child process that
+  never receives Ctrl-C or systemd's stop signal, and shuts down uncleanly.
+
 ### Updating
 
 `scripts/enkaku-update.sh` downloads the latest release binary and swaps it in.
