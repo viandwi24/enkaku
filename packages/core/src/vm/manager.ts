@@ -181,7 +181,27 @@ export function createVmManager(deps: VmManagerDeps): VmManager {
         await stopImpl(id)
       }
       const spec = VmSpecSchema.parse(getRow(id).spec)
-      await deps.provider.destroy(spec)
+      /*
+        A failed VM must still be deletable.
+
+        `destroy` shells out to `avdmanager`, and the whole reason a VM ends
+        up `failed` is often that `avdmanager` could not be run at all — a
+        missing SDK, no command-line tools, a JDK that is not there. Letting
+        that failure propagate meant the row created by the broken create
+        could never be removed by the same broken tool: a permanent line in
+        the table with a Delete button that could not work (owner,
+        2026-09-06).
+
+        So the on-disk cleanup is best-effort and the row always goes. The
+        AVD name is logged when cleanup fails, because an AVD that really
+        does exist on disk is now the operator's to remove — and saying which
+        one, once, is worth more than a row nobody can get rid of.
+      */
+      await deps.provider.destroy(spec).catch((err: unknown) => {
+        deps.log.warn(
+          `vm ${id}: could not remove the AVD "${spec.name}" (${err instanceof Error ? err.message : String(err)}) — deleting the row anyway; if that AVD exists, remove it with \`avdmanager delete avd -n ${spec.name}\``,
+        )
+      })
       deps.db.delete(virtualDevices).where(eq(virtualDevices.id, id)).run()
     },
 

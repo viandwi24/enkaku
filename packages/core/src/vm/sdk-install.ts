@@ -231,7 +231,7 @@ export async function installSdkPackages(
   // doc comment. Resolving the SDK is how we find one.
   let sdk: AndroidSdk
   try {
-    sdk = await resolveAndroidSdk()
+    sdk = await resolveAndroidSdk({ ...(deps.toolchainSdkmanager ? { toolchainSdkmanager: deps.toolchainSdkmanager } : {}), managedRoot: managedSdkRoot(deps.dataDir) })
   } catch (err) {
     throw new EnkakuError(
       'E_SDK_MANAGER_MISSING',
@@ -273,7 +273,7 @@ export interface SdkInventory {
   root: string | null
   /** The JDK `sdkmanager` will be run with, or null when the host has none. */
   javaHome: string | null
-  source: 'override' | 'env' | 'default' | 'missing'
+  source: 'override' | 'env' | 'default' | 'managed' | 'missing'
   emulator: boolean
   sdkmanager: boolean
   avdmanager: boolean
@@ -281,6 +281,17 @@ export interface SdkInventory {
   systemImages: string[]
   remedy: string | null
   managedRoot: string
+  /**
+   * Whether `managedRoot` actually holds packages.
+   *
+   * Studio offers this directory as an install destination, and the status
+   * block above it reports the RESOLVED root, which is usually a different
+   * one. An operator who picked "managed", waited out two gigabytes and then
+   * watched every line of the status stay exactly the same was not looking
+   * at a bug in the install — they were looking at the wrong directory, with
+   * nothing on screen to tell them so (owner, 2026-09-06).
+   */
+  managedRootInstalled: boolean
 }
 
 async function listDir(path: string): Promise<string[]> {
@@ -299,7 +310,10 @@ export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: ()
   const managedRoot = managedSdkRoot(dataDir)
   let sdk: AndroidSdk | null = null
   try {
-    sdk = await resolveAndroidSdk()
+    // The same two extras every other resolver in this file already had:
+    // `avdmanager` may be the Toolchain Manager's, and the managed root is a
+    // real place packages land.
+    sdk = await resolveAndroidSdk({ ...(toolchainSdkmanager ? { toolchainSdkmanager } : {}), managedRoot })
   } catch {
     sdk = null
   }
@@ -316,6 +330,7 @@ export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: ()
       remedy:
         'No Android SDK was found. Enkaku does not download it — a system image is 1.5-3 GB and is covered by the Android SDK Terms. Install the command-line tools once (Android Studio’s SDK Manager, or the cmdline-tools archive) and set ANDROID_SDK_ROOT, then everything else can be installed from here.',
       managedRoot,
+      managedRootInstalled: (await listDir(managedRoot)).length > 0,
     }
   }
 
@@ -339,7 +354,7 @@ export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: ()
   // One remedy, the most blocking first — a screen listing four problems at
   // once teaches nobody what to do next.
   const javaHome = await resolveJavaHome()
-  const remedy = !sdkmanager
+  const remedy = !sdkmanager || !avdmanager
     ? 'The SDK is here but its command-line tools are not — install them below; Enkaku fetches that one package itself, verified against a pinned checksum.'
     : !javaHome
       ? 'No Java runtime was found, and sdkmanager is a Java program. Install a JDK (17 or newer) — on macOS, `brew install openjdk@17`.'
@@ -349,5 +364,6 @@ export async function readSdkInventory(dataDir: string, toolchainSdkmanager?: ()
         ? 'No system image is installed, so there is nothing for a virtual device to boot. Install one below.'
         : null
 
-  return { root: sdk.root, javaHome, source: sdk.source, emulator, sdkmanager, avdmanager, platforms, systemImages: images.sort(), remedy, managedRoot }
+  const managedRootInstalled = sdk.root !== managedRoot && (await listDir(managedRoot)).length > 0
+  return { root: sdk.root, javaHome, source: sdk.source, emulator, sdkmanager, avdmanager, platforms, systemImages: images.sort(), remedy, managedRoot, managedRootInstalled }
 }

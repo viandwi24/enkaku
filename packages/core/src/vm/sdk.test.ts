@@ -89,16 +89,71 @@ describe('resolveAndroidSdk', () => {
     expect(sdk.avdmanager.endsWith('avdmanager.bat')).toBe(true)
   })
 
-  test('the legacy tools/bin/avdmanager is used when cmdline-tools/latest is absent', async () => {
+  test('the legacy tools/bin/avdmanager is used when it is the one that exists', async () => {
     const root = '/sdk'
+    const legacy = `${root}/tools/bin/avdmanager`
     const deps: SdkResolveDeps = {
       env: { ENKAKU_ANDROID_SDK_PATH: root },
-      // Nothing exists at cmdline-tools/latest, so the legacy path is used.
-      exists: neverExists,
+      exists: onlyExists(legacy),
       platform: 'linux',
     }
     const sdk = await resolveAndroidSdk(deps)
-    expect(sdk.avdmanager).toBe(`${root}/tools/bin/avdmanager`)
+    expect(sdk.avdmanager).toBe(legacy)
+  })
+
+  /*
+    This used to assert the legacy path was returned when NOTHING existed —
+    the bug, written down as the contract. A path to a file that is not there
+    is not a fallback; it reaches the operator as `posix_spawn ENOENT` at the
+    end of a create, and it made a failed VM impossible to delete, because
+    delete runs the same tool (owner, 2026-09-06).
+  */
+  test('the Toolchain Manager’s own avdmanager is found when the SDK has none', async () => {
+    const root = '/sdk'
+    const toolchain = '/data/tools/cmdline-tools/1/cmdline-tools/bin/sdkmanager'
+    const sibling = '/data/tools/cmdline-tools/1/cmdline-tools/bin/avdmanager'
+    const sdk = await resolveAndroidSdk({
+      env: { ENKAKU_ANDROID_SDK_PATH: root },
+      exists: onlyExists(sibling),
+      platform: 'linux',
+      toolchainSdkmanager: async () => toolchain,
+    })
+    expect(sdk.avdmanager).toBe(sibling)
+  })
+
+  test('with no avdmanager anywhere, the modern path is the one named', async () => {
+    const root = '/sdk'
+    const sdk = await resolveAndroidSdk({
+      env: { ENKAKU_ANDROID_SDK_PATH: root },
+      exists: neverExists,
+      platform: 'linux',
+      toolchainSdkmanager: async () => null,
+    })
+    expect(sdk.avdmanager).toBe(`${root}/cmdline-tools/latest/bin/avdmanager`)
+  })
+
+  test('the managed root answers when no other tier does', async () => {
+    const managedRoot = '/data/android-sdk'
+    const sdk = await resolveAndroidSdk({
+      env: {},
+      exists: onlyExists(managedRoot),
+      platform: 'linux',
+      managedRoot,
+    })
+    expect(sdk.root).toBe(managedRoot)
+    expect(sdk.source).toBe('managed')
+  })
+
+  test('a real SDK still beats the managed root', async () => {
+    const managedRoot = '/data/android-sdk'
+    const real = '/home/u/Android/Sdk'
+    const sdk = await resolveAndroidSdk({
+      env: { ANDROID_SDK_ROOT: real },
+      exists: async (p) => p === real || p === managedRoot,
+      platform: 'linux',
+      managedRoot,
+    })
+    expect(sdk.root).toBe(real)
   })
 
   test('the modern cmdline-tools/latest/bin/avdmanager wins when present', async () => {

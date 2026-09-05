@@ -106,11 +106,22 @@ export function AndroidSdkPanel() {
         <Row label="SDK root" value={sdk.root ?? 'not found'} note={sdk.root ? `found by: ${SOURCE_LABEL[sdk.source]}` : undefined} bad={!sdk.root} />
         <Row label="emulator" value={sdk.emulator ? 'installed' : 'missing'} bad={!sdk.emulator} />
         <Row label="sdkmanager" value={sdk.sdkmanager ? 'installed' : 'missing'} bad={!sdk.sdkmanager} />
+        {/* `avdmanager` was computed by the status endpoint and sent over the
+            wire from the day the screen shipped, and no row ever rendered it.
+            It is the tool that creates, starts and DELETES a virtual device,
+            so when it was missing every one of those failed with a raw
+            `posix_spawn` ENOENT and this panel said the SDK was fine. */}
+        <Row label="avdmanager" value={sdk.avdmanager ? 'installed' : 'missing'} bad={!sdk.avdmanager} />
         {/* sdkmanager is a Java program. Without this row an operator learns
             that only from a failed install. */}
         <Row label="java" value={sdk.javaHome ?? 'not found'} bad={!sdk.javaHome} />
         <Row label="platforms" value={sdk.platforms.join(', ') || 'none'} bad={sdk.platforms.length === 0} />
         <Row label="system images" value={sdk.systemImages.length === 0 ? 'none' : `${sdk.systemImages.length} installed`} bad={sdk.systemImages.length === 0} />
+        {/* Every row above describes the RESOLVED root. An operator who
+            installed into the farm's own directory instead saw all of them
+            stay identical and reasonably concluded the install had done
+            nothing. This row is where those packages actually went. */}
+        {sdk.managedRootInstalled && <Row label="farm SDK" value={sdk.managedRoot} note="packages installed here; the root above is the one in use" />}
       </div>
 
       {sdk.remedy && <p className="rounded-inner border border-warn/30 bg-warn-soft px-3 py-2 text-body text-warn">{sdk.remedy}</p>}
@@ -218,6 +229,7 @@ const SOURCE_LABEL: Record<AndroidSdkStatus['source'], string> = {
   override: 'ENKAKU_ANDROID_SDK_PATH',
   env: 'ANDROID_SDK_ROOT / ANDROID_HOME',
   default: 'the per-OS default location',
+  managed: 'the SDK this farm installed for itself',
   missing: 'nothing',
 }
 

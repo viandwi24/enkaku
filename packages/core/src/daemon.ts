@@ -279,7 +279,7 @@ import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type Devi
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
 import { createVmManager, type VmManager } from './vm/manager'
 import { createAvdProvider } from './vm/provider-avd'
-import { resolveAndroidSdk } from './vm/sdk'
+import { resolveAndroidSdk, type SdkResolveDeps } from './vm/sdk'
 import type { VmProvider } from './vm/types'
 import { createEndpointStore, type EndpointStore } from './registry/endpoints'
 import { createDeviceReconnector, defaultTcpPreProbe, type DeviceReconnector } from './registry/reconnect'
@@ -496,9 +496,13 @@ function jobConstants(s: FarmSettings): JobSettings {
  * directly rather than resolving the SDK just to reach a method that never
  * reads it.
  */
-function createDeferredAvdProvider(): VmProvider {
+function createDeferredAvdProvider(sdkDeps: SdkResolveDeps): VmProvider {
   async function resolved() {
-    const sdk = await resolveAndroidSdk()
+    // Resolved with the SAME two extras the SDK screen uses, or the provider
+    // and the screen disagree about where `avdmanager` is — which is exactly
+    // how a host with a perfectly good toolchain copy came to fail every
+    // create with ENOENT on a path inside the SDK root.
+    const sdk = await resolveAndroidSdk(sdkDeps)
     return createAvdProvider({ sdk })
   }
   return {
@@ -2958,7 +2962,10 @@ let blobGc: BlobGc | null = null
       // actually started, adb has long since come up.
       const vmManager: VmManager = createVmManager({
         db,
-        provider: createDeferredAvdProvider(),
+        provider: createDeferredAvdProvider({
+          toolchainSdkmanager: () => toolchain.resolveToolPath('cmdline-tools').catch(() => null),
+          managedRoot: join(cfg.dataDir, 'android-sdk'),
+        }),
         shell: async (serial, cmd) => {
           if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'the adb server is not ready yet')
           return (await adb.exec(serial, cmd)).stdout

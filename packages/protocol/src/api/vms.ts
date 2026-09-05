@@ -64,7 +64,7 @@ export const AndroidSdkStatusSchema = z.object({
   root: z.string().nullable(),
   /** The JDK `sdkmanager` will run under — it is a Java program, and a host with none fails only after the button is pressed unless this is on screen. */
   javaHome: z.string().nullable(),
-  source: z.enum(['override', 'env', 'default', 'missing']),
+  source: z.enum(['override', 'env', 'default', 'managed', 'missing']),
   emulator: z.boolean(),
   sdkmanager: z.boolean(),
   avdmanager: z.boolean(),
@@ -76,6 +76,8 @@ export const AndroidSdkStatusSchema = z.object({
   remedy: z.string().nullable(),
   /** Where a `target: 'managed'` install would put things. */
   managedRoot: z.string(),
+  /** True when that directory holds packages and is NOT the resolved root — the case where an install visibly changes nothing above. */
+  managedRootInstalled: z.boolean().default(false),
 })
 export type AndroidSdkStatus = z.infer<typeof AndroidSdkStatusSchema>
 export const AndroidSdkStatusResponseSchema = z.object({ sdk: AndroidSdkStatusSchema })

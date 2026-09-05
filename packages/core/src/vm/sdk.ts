@@ -29,7 +29,7 @@ export interface AndroidSdk {
   emulator: string
   /** `<root>/cmdline-tools/latest/bin/avdmanager[.bat]`, falling back to the legacy `<root>/tools/bin/`. */
   avdmanager: string
-  source: 'override' | 'env' | 'default'
+  source: 'override' | 'env' | 'default' | 'managed'
 }
 
 /**
@@ -42,6 +42,25 @@ export interface SdkResolveDeps {
   /** Defaults to a real filesystem existence check. Injected so tests need no disk. */
   exists?: (path: string) => Promise<boolean>
   platform?: NodeJS.Platform
+  /**
+   * The Toolchain Manager's `sdkmanager`, if it installed `cmdline-tools`.
+   *
+   * `avdmanager` is its sibling in the same `bin/` directory, and that is
+   * the ONLY place it exists on a host whose SDK came from Android Studio's
+   * SDK Manager without the command-line tools package — which is the
+   * ordinary case. `sdk-install.ts` already resolved `sdkmanager` this way
+   * and `avdmanager` was left behind, so a farm could install packages
+   * perfectly and then fail every single VM operation on a path that was
+   * never there (owner, 2026-09-06).
+   */
+  toolchainSdkmanager?: () => Promise<string | null>
+  /**
+   * `<dataDir>/android-sdk` — the root a `target: 'managed'` install writes
+   * to. Offered as a destination in Studio since the SDK screen landed, and
+   * never once looked at when resolving: an operator could send two
+   * gigabytes there and watch nothing change.
+   */
+  managedRoot?: string
 }
 
 /**
@@ -83,6 +102,7 @@ async function resolveRoot(
   env: NodeJS.ProcessEnv,
   exists: (path: string) => Promise<boolean>,
   platform: NodeJS.Platform,
+  managedRoot?: string,
 ): Promise<{ root: string; source: AndroidSdk['source'] } | null> {
   const override = readVar(env, 'ENKAKU_ANDROID_SDK_PATH')
   if (override) return { root: override, source: 'override' }
@@ -96,19 +116,48 @@ async function resolveRoot(
   for (const candidate of defaultCandidates(platform, env)) {
     if (await exists(candidate)) return { root: candidate, source: 'default' }
   }
+  // Last: the root this farm installed for itself. Last because a host that
+  // already has a real SDK should keep using it — but present, because
+  // Studio offers this directory as an install destination and a
+  // destination nothing resolves is a two-gigabyte no-op.
+  if (managedRoot && (await exists(managedRoot))) return { root: managedRoot, source: 'managed' }
   return null
 }
 
+/**
+ * Three places, in the order an operator would expect them to win.
+ *
+ * The last of them is the one that was missing. `cmdline-tools` is a pinned
+ * toolchain entry, so `avdmanager` frequently lives OUTSIDE the SDK root
+ * entirely — and this function only ever looked inside it, then returned the
+ * legacy path whether or not anything was there. A path that does not exist
+ * is not a fallback; it is a `posix_spawn` ENOENT at the far end of a create
+ * the operator already waited for, and it made a failed VM impossible to
+ * even delete.
+ */
 async function resolveAvdmanagerPath(
   root: string,
   platform: NodeJS.Platform,
   exists: (path: string) => Promise<boolean>,
+  toolchainSdkmanager?: () => Promise<string | null>,
 ): Promise<string> {
   const bin = platform === 'win32' ? 'avdmanager.bat' : 'avdmanager'
   const modern = join(root, 'cmdline-tools', 'latest', 'bin', bin)
   if (await exists(modern)) return modern
   // Legacy layout — still shipped, still works (plan 400 D4).
-  return join(root, 'tools', 'bin', bin)
+  const legacy = join(root, 'tools', 'bin', bin)
+  if (await exists(legacy)) return legacy
+  // The Toolchain Manager's own copy: `avdmanager` beside the `sdkmanager`
+  // it installed, the exact mirror of `resolveSdkmanager`'s sibling walk.
+  const managed = await toolchainSdkmanager?.().catch(() => null)
+  if (managed) {
+    const sibling = managed.replace(/sdkmanager(\.bat)?$/, (m) => (m.endsWith('.bat') ? 'avdmanager.bat' : 'avdmanager'))
+    if (sibling !== managed && (await exists(sibling))) return sibling
+  }
+  // Nothing found. The modern path is the one to NAME in the failure, so the
+  // error points at where it belongs rather than at a legacy layout this
+  // host never had.
+  return modern
 }
 
 function buildMissingMessage(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
@@ -130,13 +179,13 @@ export async function resolveAndroidSdk(deps: SdkResolveDeps = {}): Promise<Andr
   const exists = deps.exists ?? defaultExists
   const platform = deps.platform ?? process.platform
 
-  const found = await resolveRoot(env, exists, platform)
+  const found = await resolveRoot(env, exists, platform, deps.managedRoot)
   if (!found) {
     throw new EnkakuError('E_ANDROID_SDK_MISSING', buildMissingMessage(platform, env))
   }
 
   const emulator = join(found.root, 'emulator', platform === 'win32' ? 'emulator.exe' : 'emulator')
-  const avdmanager = await resolveAvdmanagerPath(found.root, platform, exists)
+  const avdmanager = await resolveAvdmanagerPath(found.root, platform, exists, deps.toolchainSdkmanager)
   return { root: found.root, emulator, avdmanager, source: found.source }
 }
 
@@ -148,7 +197,14 @@ export async function resolveAndroidSdk(deps: SdkResolveDeps = {}): Promise<Andr
 export async function describeAndroidSdk(deps: SdkResolveDeps = {}): Promise<{ source: AndroidSdk['source'] | 'missing'; detail: string }> {
   try {
     const sdk = await resolveAndroidSdk(deps)
-    const label = sdk.source === 'override' ? 'ENKAKU_ANDROID_SDK_PATH' : sdk.source === 'env' ? 'ANDROID_SDK_ROOT/ANDROID_HOME' : 'the per-OS default location'
+    const label =
+      sdk.source === 'override'
+        ? 'ENKAKU_ANDROID_SDK_PATH'
+        : sdk.source === 'env'
+          ? 'ANDROID_SDK_ROOT/ANDROID_HOME'
+          : sdk.source === 'managed'
+            ? 'the SDK this farm installed for itself'
+            : 'the per-OS default location'
     return { source: sdk.source, detail: `${label} → ${sdk.root}` }
   } catch (err) {
     if (err instanceof EnkakuError && err.code === 'E_ANDROID_SDK_MISSING') {
