@@ -2,24 +2,104 @@
 
 Enkaku manages every tool it needs itself (adb, scrcpy-server, the inspector APKs). **You do not need to install adb** or set up a PATH.
 
-## 0. Portable binary (no Bun, no checkout)
+## 0. One-line install (no Bun, no checkout)
 
 Each GitHub Release ships one self-contained binary per platform — Studio, the
 database migrations, and the example plugin packs are embedded, so nothing else
-is needed:
+is needed. An install script fetches the right one.
+
+On **Linux and macOS** (and Windows under Git Bash):
 
 ```bash
-# Linux server (also: darwin-arm64, darwin-x64, linux-arm64)
-# Set VERSION to the tag you want — the Releases page lists them.
-VERSION=v0.1.6
-curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
-tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
-./enkaku
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh
+enkaku
 # open http://localhost:7700
 ```
 
-On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe`
-(SmartScreen will warn about the unsigned binary — "More info" → "Run anyway").
+On **Windows**, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/viandwi24/enkaku/main/install.ps1 | iex
+enkaku
+```
+
+There are two scripts rather than one because native PowerShell and `cmd` have
+no `sh` to pipe into — the shell one-liner cannot run there at all. `install.sh`
+does cover Windows under Git Bash / MSYS / Cygwin, where `uname` reports
+`MINGW*`/`MSYS*`/`CYGWIN*`; `install.ps1` is for everyone else on Windows.
+
+`install.sh` detects your platform (`linux`/`darwin` × `x64`/`arm64`), downloads
+that archive from the latest release, **verifies it against the release's
+`SHA256SUMS.txt` and refuses to install on a mismatch**, then puts the binary in
+`~/.enkaku/bin` and adds that directory to your PATH. `curl` and `tar` are the
+only requirements; `jq` is used when present and not needed when it is absent.
+
+`install.ps1` does the same with `Invoke-WebRequest`, `Get-FileHash` and
+`Expand-Archive` — all built in, nothing to install first. It writes to
+`%USERPROFILE%\.enkaku\bin` and appends to the **user** PATH (never the machine
+one), so it never needs an elevated prompt. The release builds `windows-x64`
+only; Windows on ARM gets that build and runs it under emulation, which the
+script says out loud rather than silently.
+
+Because it is piped into `sh`, options go through `sh -s --`:
+
+```bash
+# a specific release, including a downgrade
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --version v0.1.30
+# install somewhere else (a directory you can write to)
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --dir /usr/local/bin
+# leave every shell rc file untouched — you manage PATH yourself
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --no-modify-path
+```
+
+The same values are also readable from the environment (`ENKAKU_VERSION`,
+`ENKAKU_INSTALL_DIR`, `ENKAKU_OS`, `ENKAKU_ARCH`, and `ENKAKU_REPO` for a fork),
+which is what you want from a provisioning script or a Dockerfile.
+
+`irm | iex` cannot pass parameters at all, so on Windows the environment is the
+way in (`ENKAKU_NO_MODIFY_PATH=1` stands in for `--no-modify-path`):
+
+```powershell
+$env:ENKAKU_VERSION = 'v0.1.30'
+$env:ENKAKU_INSTALL_DIR = 'C:\enkaku'
+irm https://raw.githubusercontent.com/viandwi24/enkaku/main/install.ps1 | iex
+```
+
+Saved to a file, `install.ps1` also takes them as ordinary parameters:
+`.\install.ps1 -Version v0.1.30 -Dir C:\enkaku -NoModifyPath`.
+
+Three things it does on purpose:
+
+- **The PATH line is written once.** It is added only when the install directory
+  is not already on PATH, only to the rc file your `$SHELL` actually reads, and
+  it is marked, so re-running the installer never leaves a second copy behind.
+- **The old binary is kept** at `<binary>.bak` when you re-run it over an
+  existing install.
+- **It replaces the binary with a rename, not a copy** — copying over a running
+  executable fails on Linux with `ETXTBSY` ("Text file busy"), which is exactly
+  what re-running an installer on a live farm would hit. A running core keeps
+  its own open inode and carries on **on the old version until you restart it**.
+  `install.ps1` moves the old binary aside for the same reason: Windows refuses
+  to overwrite a running `.exe` but does allow renaming one.
+
+It also drops `enkaku-update.sh` next to the binary, so [updating](#updating) is
+already set up.
+
+If you would rather read the archive URL yourself, the Releases page lists every
+tag:
+
+```bash
+# Resolve the latest tag the same way install.sh does, or set it by hand —
+# the Releases page lists every one.
+VERSION=$(curl -fsSL https://api.github.com/repos/viandwi24/enkaku/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
+curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
+tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
+./enkaku
+```
+
+On Windows the archive is `enkaku-<version>-windows-x64.zip` — extract it and run `enkaku.exe`
+(SmartScreen will warn about the unsigned binary — "More info" → "Run anyway"). `install.ps1`
+above does all of that for you, checksum included.
 
 To build the archives yourself: `bash scripts/build-release.sh` (all five
 targets cross-compile from any host; artifacts land in `release/`).
@@ -512,9 +592,12 @@ Two things it does on purpose:
 ### Updating
 
 `scripts/enkaku-update.sh` downloads the latest release binary and swaps it in.
-Copy it next to your `enkaku` binary — it needs no checkout, no Bun, and no
-running core, which matters because "the core will not start" is exactly when
-you reach for it.
+`install.sh` already put it next to your `enkaku` binary; if you installed by
+hand, copy it there. It needs no checkout, no Bun, and no running core, which
+matters because "the core will not start" is exactly when you reach for it.
+(Re-running `install.sh` upgrades in place too — the updater is the smaller
+tool for the job, and the one that still works with no network path to
+raw.githubusercontent.com.)
 
 ```bash
 ./enkaku-update.sh                     # update to the latest release, if newer
@@ -528,6 +611,21 @@ needed when it is absent. OS and architecture are detected (`linux`/`darwin`
 × `x64`/`arm64`, plus `windows-x64` under Git Bash) and can be overridden with
 `ENKAKU_OS`/`ENKAKU_ARCH`. Point it at a different binary with `ENKAKU_BIN`, or
 a fork with `ENKAKU_REPO`.
+
+**On native Windows there is no `enkaku-update.sh`** — it is a POSIX shell
+script, so it runs under Git Bash and nowhere else. Update by re-running the
+installer, which fetches the latest release and swaps the binary the same way:
+
+```powershell
+irm https://raw.githubusercontent.com/viandwi24/enkaku/main/install.ps1 | iex
+```
+
+This works with the farm up. Windows refuses to *overwrite* a running `.exe`
+but does allow *renaming* one, so the script moves the old binary aside to
+`enkaku.exe.bak` rather than replacing it in place — the running core keeps its
+own loaded image and carries on **on the old version until you restart it**,
+exactly as on Linux and macOS. If the move is refused anyway, it says so and
+installs nothing instead of leaving you half-upgraded.
 
 It verifies the download against the release's `SHA256SUMS.txt` and refuses to
 install on a mismatch. When the sums file or a hashing tool is missing it says

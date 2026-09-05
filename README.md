@@ -2,21 +2,88 @@
 
 A device farm platform for remote control and automation of Android phones — self-hosted, zero-config. Full spec: [`docs/spec.md`](docs/spec.md); the sequential work plan: [`docs/plans/`](docs/plans/).
 
-## Running it (prebuilt binary)
+## Install
 
-Each [GitHub Release](https://github.com/viandwi24/enkaku/releases) ships one self-contained binary per platform — Studio, the database migrations, and the example plugin packs are embedded, so nothing else is needed. No Bun, no checkout.
+**Linux and macOS** (and Windows under Git Bash) — `install.sh` works out which build
+you need, `linux`/`darwin` × `x64`/`arm64`:
 
 ```bash
-# Linux server (also: darwin-arm64, darwin-x64, linux-arm64)
-# Set VERSION to the tag you want — the Releases page lists them.
-VERSION=v0.1.6
-curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
-tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
-./enkaku
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh
+```
+
+**Windows** (PowerShell) — native PowerShell and `cmd` have no `sh` to pipe into, so
+Windows has its own script:
+
+```powershell
+irm https://raw.githubusercontent.com/viandwi24/enkaku/main/install.ps1 | iex
+```
+
+Then:
+
+```bash
+enkaku
 # open http://localhost:7700
 ```
 
-On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe` (SmartScreen will warn about the unsigned binary — "More info" → "Run anyway").
+Each [GitHub Release](https://github.com/viandwi24/enkaku/releases) ships one self-contained
+binary per platform — Studio, the database migrations, and the example plugin packs are
+embedded, so nothing else is needed. No Bun, no checkout.
+
+Either script takes the **latest release** unless you say otherwise, **verifies the download
+against the release's `SHA256SUMS.txt` and refuses to install on a mismatch**, installs into
+your home directory, and puts it on your PATH — no `sudo`, no elevated prompt. On the shell
+side, `curl` and `tar` are all it needs.
+
+Because it is piped into `sh`, options go after `sh -s --`:
+
+```bash
+# install a specific release instead of the latest
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --version v0.1.30
+
+# install somewhere else
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --dir /usr/local/bin
+
+# don't touch any shell rc file; you manage PATH yourself
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --no-modify-path
+```
+
+`irm | iex` cannot take parameters, so the PowerShell script reads the same options from
+the environment:
+
+```powershell
+$env:ENKAKU_VERSION = 'v0.1.30'          # a specific release
+$env:ENKAKU_INSTALL_DIR = 'C:\enkaku'    # somewhere else
+$env:ENKAKU_NO_MODIFY_PATH = '1'         # leave PATH alone
+irm https://raw.githubusercontent.com/viandwi24/enkaku/main/install.ps1 | iex
+```
+
+It installs to `%USERPROFILE%\.enkaku\bin` and appends to the **user** PATH, so it never
+needs an elevated prompt.
+
+Prefer to read a script before running it? Both are in this repo — [`install.sh`](install.sh)
+and [`install.ps1`](install.ps1) — and those are the same files the URLs serve:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | less
+```
+
+To upgrade later, run `enkaku-update.sh` (the installer puts it next to the binary) or just
+re-run the one-liner.
+
+### Or download an archive by hand
+
+From the [Releases page](https://github.com/viandwi24/enkaku/releases):
+
+```bash
+# Resolve the latest tag the same way install.sh does, or set it by hand —
+# the Releases page lists every one.
+VERSION=$(curl -fsSL https://api.github.com/repos/viandwi24/enkaku/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
+curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
+tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
+./enkaku
+```
+
+On Windows the archive is `enkaku-<version>-windows-x64.zip` — extract it and run `enkaku.exe` (SmartScreen will warn about the unsigned binary — "More info" → "Run anyway"). Windows on ARM runs the x64 build under emulation; that is the only Windows build the release produces.
 
 Full install guide, including the systemd service and Docker: [`docs/guide/install.md`](docs/guide/install.md).
 
