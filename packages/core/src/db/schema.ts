@@ -1815,3 +1815,39 @@ export const pluginWebhooks = sqliteTable(
 
 export type PluginWebhookRow = typeof pluginWebhooks.$inferSelect
 export type PluginWebhookInsert = typeof pluginWebhooks.$inferInsert
+
+/**
+ * A virtual device (plan 400, plan 401 §4.5) — the emulator process and its
+ * AVD that the `vm` subsystem started. This is NOT the device row: the
+ * device row is created by the existing admission path once adb sees the
+ * emulator (plan 400 D2, D6), and the two are linked only observationally by
+ * the serial `emulator-<consolePort>`.
+ *
+ * **No `pid` column** (plan 400 D8, plan 401 §3.3): a stored PID is wrong
+ * after a host reboot because PIDs are reused, and this repo already prefers
+ * re-derivation over a cached handle (`registry/reconcile.ts`'s whole
+ * rationale). On boot, `VmManager.adopt()` probes each row's console port and
+ * sets state from what it finds — the in-memory `Subprocess` handle used for
+ * a graceful `stop()` is a runtime field only, never persisted here.
+ *
+ * **No `autoStart` column** — plan 400 Q1 is unanswered and this plan does
+ * not invent the answer.
+ */
+export const virtualDevices = sqliteTable('virtual_devices', {
+  id: text('id').primaryKey(),
+  /** The AVD name on disk. Unique: two rows may not own one AVD (plan 400 D5). */
+  name: text('name').notNull().unique(),
+  /** 'creating' | 'starting' | 'running' | 'stopping' | 'stopped' | 'failed'. */
+  state: text('state').notNull(),
+  /** Even console port, 5554-5682. The adb serial is `emulator-<consolePort>` (plan 400 R5). */
+  consolePort: integer('console_port').notNull(),
+  /** The full `VmSpec` as JSON — validated through `VmSpecSchema` on read, never `as`-cast (CLAUDE.md). */
+  spec: text('spec', { mode: 'json' }).notNull(),
+  /** Operator-facing detail for `failed`, and the adoption note for `running`. */
+  message: text('message'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  startedAt: integer('started_at', { mode: 'timestamp' }),
+})
+
+export type VirtualDeviceRow = typeof virtualDevices.$inferSelect
+export type VirtualDeviceInsert = typeof virtualDevices.$inferInsert
