@@ -7,6 +7,7 @@ import { BatchDetail } from './BatchDetail'
 import { JobDetail } from './JobDetail'
 import { JobsSidebar } from './JobsSidebar'
 import { JobsTabStrip, type JobsTab } from './JobsTabStrip'
+import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 
 /**
  * Jobs (design handoff, "Screen: Jobs"): the tab strip that IS the page
@@ -19,10 +20,25 @@ export function JobsScreen() {
   const tab: JobsTab = raw === 'batches' ? 'batches' : raw === 'workflows' ? 'workflows' : 'jobs'
   const jobId = params.get('job')
   const counts = useJobCounts()
+  const { open } = useActionDialogs()
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <JobsTabStrip tab={tab} jobCount={counts.jobs} batchCount={counts.batches} workflowCount={counts.workflows} />
+      <JobsTabStrip
+        tab={tab}
+        jobCount={counts.jobs}
+        batchCount={counts.batches}
+        workflowCount={counts.workflows}
+        /*
+          A batch is a script run across several devices — the run-script
+          dialog's own Concurrency and Order fields ARE the batch controls, so
+          there is no second dialog to build and no second door to keep in
+          step. The target starts empty and the dialog's device picker is
+          where it gets chosen, which is the only sensible answer on a screen
+          that lists runs rather than devices.
+        */
+        onRun={(t) => open(t === 'workflows' ? 'run-workflow' : 'run-script', { deviceIds: [] })}
+      />
       <div className="flex min-h-0 flex-1">
         <JobsSidebar tab={tab} selectedId={jobId} counts={counts} />
         {/*

@@ -4,8 +4,10 @@ import { useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { BatchResponseSchema, BatchWithJobsResponseSchema, type BatchInfo, type JobInfo } from '@enkaku/protocol'
-import { ArrowsClockwiseIcon, EmptyState, ErrorState, ExportIcon, ListDashesIcon, LoadingRows, PlayIcon, SignInIcon, api, cn, duration } from '@enkaku/ui'
+import { ArrowsClockwiseIcon, Button, DeviceName, EmptyState, ErrorState, ExportIcon, ListDashesIcon, LoadingRows, PlayIcon, SignInIcon, api, cn, duration } from '@enkaku/ui'
 import { toast } from 'sonner'
+import { fetchDevices } from '@/lib/api'
+import { runOnDevice } from '@/lib/actions'
 import { useNow } from '@/lib/useNow'
 import { ws } from '@/lib/ws'
 import { STATE_DOT, batchState, clockTime, jobHref, jobSubLine } from './job-view'
@@ -23,10 +25,65 @@ import { SubTabs, type SubTab } from './SubTabs'
 export function BatchDetail({ batchId }: { batchId: string }) {
   const [batch, setBatch] = useState<BatchInfo | null>(null)
   const [jobs, setJobs] = useState<JobInfo[]>([])
+  /**
+   * `deviceId` → the operator's own name for it.
+   *
+   * The members list showed `deviceId.slice(0, 12)` — the first twelve
+   * characters of a UUID. Nobody has ever matched a phone on a rack to
+   * `fcf03c6a-bf1`, and the number that IS on the rack was two fields away
+   * the whole time. One read for the batch, never one per row.
+   */
+  const [deviceNames, setDeviceNames] = useState<Map<string, { number: number | null; label: string }>>(new Map())
+  const [rerunning, setRerunning] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
   const now = useNow()
   const params = useSearchParams()
   const view = params.get('view') === 'members' ? 'members' : 'inputs'
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchDevices()
+      .then((rows) => {
+        if (!cancelled) setDeviceNames(new Map(rows.map((d) => [d.id, { number: d.number, label: d.label }])))
+      })
+      // A name is a courtesy: a batch whose device list cannot be read still
+      // shows every member, by id, rather than showing nothing.
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /**
+   * Re-run ONE member. The header's "Re-run failed" covers the whole batch in
+   * one click, which is the right tool for eight failures out of twenty; this
+   * is for the one device an operator wants to try again on its own, and it
+   * goes through the same door a job's own Re-run button uses — a new RUN on
+   * the existing job, never a new job row.
+   */
+  async function rerunOne(job: JobInfo, batchParams: unknown): Promise<void> {
+    setRerunning((prev) => new Set(prev).add(job.jobId))
+    try {
+      // The BATCH's params, not the job's: a member of a batch ran with them
+      // by construction, and `JobInfo` in this list does not carry its own
+      // (the job detail fetches a fuller shape for exactly that reason).
+      const params = (batchParams ?? {}) as Record<string, unknown>
+      if (job.kind === 'workflow') {
+        await runOnDevice('run-workflow', job.deviceId, { workflowName: job.scriptName ?? '', params, jobId: job.jobId })
+      } else {
+        await runOnDevice('run-script', job.deviceId, { scriptId: job.scriptId, params, jobId: job.jobId, concurrency: 0, order: 'as-listed' })
+      }
+      toast.success(`Queued again on ${deviceNames.get(job.deviceId)?.label ?? job.deviceId.slice(0, 8)}`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRerunning((prev) => {
+        const next = new Set(prev)
+        next.delete(job.jobId)
+        return next
+      })
+    }
+  }
 
   function load(): void {
     setError(null)
@@ -153,16 +210,57 @@ export function BatchDetail({ batchId }: { batchId: string }) {
             <EmptyState title="No members" description="This batch dispatched to no device." />
           </div>
         ) : (
+          /*
+            A table, because the question an operator brings to this screen is
+            "which ones worked" — and a list of links answers it one row at a
+            time. Device, outcome, how long, and what went wrong, side by side
+            so twenty rows read at a glance (owner, 2026-09-06).
+          */
           <div className="px-2 pt-2 pb-3">
-            {jobs.map((j) => (
-              <Link key={j.jobId} href={jobHref(j.jobId)} className="flex items-center gap-[10px] rounded-button px-2 py-[9px] hover:bg-muted">
-                <span className={cn('size-[7px] flex-none rounded-pill', STATE_DOT[j.status])} aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-[12px]">{j.deviceId.slice(0, 12)}</div>
-                  <div className="mt-1 truncate pl-[14px] text-label text-faint">{jobSubLine(j, now)}</div>
+            <div className="grid grid-cols-[16px_1.2fr_84px_84px_1.6fr_92px] items-center gap-x-2 border-b border-line px-2 pb-1.5 text-label font-medium text-faint">
+              <span />
+              <span>Device</span>
+              <span>Status</span>
+              <span>Duration</span>
+              <span>Result</span>
+              <span />
+            </div>
+            {jobs.map((j) => {
+              const name = deviceNames.get(j.deviceId)
+              const failed = j.status === 'failed'
+              return (
+                <div
+                  key={j.jobId}
+                  className="grid grid-cols-[16px_1.2fr_84px_84px_1.6fr_92px] items-center gap-x-2 border-b border-muted-2 px-2 py-[9px] transition-colors hover:bg-muted"
+                >
+                  <span className={cn('size-[7px] flex-none rounded-pill', STATE_DOT[j.status])} aria-hidden />
+                  <Link href={jobHref(j.jobId)} className="min-w-0 truncate text-row text-text hover:underline">
+                    {name ? <DeviceName number={name.number} label={name.label} /> : <span className="font-mono text-[12px]">{j.deviceId.slice(0, 12)}</span>}
+                  </Link>
+                  <span className="truncate text-body text-dim">{j.status}</span>
+                  <span className="truncate text-body text-dim tabular-nums">{duration(j.startedAt ?? j.createdAt, j.finishedAt, now)}</span>
+                  {/* The error verbatim, on one line — a batch screen is for
+                      finding WHICH device broke, and the full text is one
+                      click away on the job itself. */}
+                  <span className={cn('min-w-0 truncate text-body', failed ? 'text-danger' : 'text-faint')} title={j.error ?? undefined}>
+                    {j.error ?? jobSubLine(j, now)}
+                  </span>
+                  <span className="flex justify-end">
+                    {failed && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={rerunning.has(j.jobId)}
+                        onClick={() => void rerunOne(j, batch.params)}
+                      >
+                        <ArrowsClockwiseIcon className="size-3.5" aria-hidden />
+                        {rerunning.has(j.jobId) ? 'Queuing…' : 'Re-run'}
+                      </Button>
+                    )}
+                  </span>
                 </div>
-              </Link>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
