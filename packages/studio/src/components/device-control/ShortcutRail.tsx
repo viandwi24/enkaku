@@ -99,12 +99,18 @@ function ShortcutRailImpl({
         Explicit, not a toggle. `PowerIcon` above sends KEYCODE_POWER, which
         flips whatever the screen currently is; these two say which state you
         want and are the pair an operator actually reaches for (CEO,
-        2026-09-05). The `sleep`/`wake` ACTIONS are a different thing — they
-        set the farm's desired readiness, which an open session then holds
-        awake; these turn this screen off and on now.
+        2026-09-05).
+
+        They run the `sleep`/`wake` ACTIONS rather than sending KEYCODE_SLEEP
+        and KEYCODE_WAKEUP down the input channel, because a raw keyevent
+        loses to the farm: this device is held lit by `svc power stayon`, so
+        the screen goes dark for a moment and Android turns it straight back
+        on. The action goes through readiness, which drops always-on before
+        it sleeps and restores it on wake — the difference between a button
+        that works and one that flickers.
       */}
-      <RailButton icon={MoonIcon} label="Sleep screen" onClick={() => sendKey(KEYCODES.SLEEP)} />
-      <RailButton icon={LightningIcon} label="Wake screen" onClick={() => sendKey(KEYCODES.WAKEUP)} />
+      <RailButton icon={MoonIcon} label="Sleep screen" onClick={() => void runOnDevice('sleep', deviceId, {})} />
+      <RailButton icon={LightningIcon} label="Wake screen" onClick={() => void runOnDevice('wake', deviceId, {})} />
       <RailButton icon={SpeakerHighIcon} label="Volume up" onClick={() => sendKey(KEYCODES.VOLUME_UP)} />
       <RailButton icon={SpeakerLowIcon} label="Volume down" onClick={() => sendKey(KEYCODES.VOLUME_DOWN)} />
       <RailButton icon={SpeakerSlashIcon} label="Mute" onClick={() => sendKey(KEYCODES.VOLUME_MUTE)} />

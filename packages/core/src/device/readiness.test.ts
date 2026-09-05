@@ -212,7 +212,7 @@ function setUp(
     record: (e) => events.push(e),
     log: createLogger('test'),
   })
-  return { db, states, activities, readiness, execCalls, broadcasts, events, acquireCalls, isLive }
+  return { db, states, activities, readiness, sessions, execCalls, broadcasts, events, acquireCalls, isLive }
 }
 
 /** The observation a healthy fake device produces — spelled out once so the expectations below stay readable. */
@@ -911,5 +911,65 @@ describe('sleep overrides presentation holds, never work holds', () => {
     await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
 
     expect(execCalls.slice(before).some((c) => c.includes('input keyevent 223'))).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------------ *
+ * Sleep and Wake as an operator presses them (owner, 2026-09-05).
+ * ------------------------------------------------------------------------ */
+
+describe('ReadinessManager — explicit Sleep and Wake on a farm where every online device has a session', () => {
+  test('Wake works after a Sleep, even though the session is still open', async () => {
+    const { db, readiness, sessions, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    // Plan 206: a session per online device, held by the always-on manager
+    // and nothing to do with readiness. `rawActual` therefore reads `hot`
+    // whatever the panel is doing — which is what made Wake a no-op.
+    await sessions.acquire(D1, () => {})
+
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: null })
+    expect(execCalls).toContain('input keyevent 223')
+
+    execCalls.length = 0
+    await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
+    expect(execCalls).toContain('input keyevent KEYCODE_WAKEUP')
+    // ...and always-on comes back on with it, the second half of the model.
+    expect(execCalls.some((c) => c.startsWith('svc power stayon') && c.endsWith('true'))).toBe(true)
+  })
+
+  test('Sleep decides from the phone’s own stay_on_while_plugged_in, and skips the 1422 ms write when it is already off', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1) // wakes: writes stayon true
+
+    execCalls.length = 0
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: null })
+    expect(execCalls).toContain('settings get global stay_on_while_plugged_in')
+    expect(execCalls.filter((c) => c.startsWith('svc power stayon'))).toEqual(['svc power stayon false'])
+
+    // Second pass: the phone reads back 0, so the expensive call is skipped
+    // rather than repeated. The keyevent still goes — it is cheap and
+    // idempotent, and re-sending it is how a panel someone woke by hand
+    // returns to the state the operator asked for.
+    execCalls.length = 0
+    await readiness.reconcile(D1)
+    expect(execCalls.filter((c) => c.startsWith('svc power stayon'))).toEqual([])
+    expect(execCalls).toContain('input keyevent 223')
+  })
+
+  test('opening a viewer does not relight a device someone deliberately slept', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
+    const hold = await readiness.hold(D1, 'viewer')
+    expect(execCalls).not.toContain('input keyevent KEYCODE_WAKEUP')
+    hold.release()
+  })
+
+  test('a job hold DOES wake a slept device — work needs the panel, a glance does not', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
+    const hold = await readiness.hold(D1, 'job')
+    expect(execCalls).toContain('input keyevent KEYCODE_WAKEUP')
+    hold.release()
   })
 })
