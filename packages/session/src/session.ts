@@ -21,6 +21,7 @@ import { applyRotation, type RotationLock } from './orientation'
 import { applyTextInput, type TextInputSetup } from './text-input'
 import { resolveVideoProfile, type VideoProfile } from './video-profile'
 import { wakeDevice } from './wake'
+import { refuseUiServer } from './inspector-factory'
 
 /**
  * Plan 91 §4.1, §4.5 — the arbiter's bounded-queue budget. `daemon.ts`'s
@@ -919,6 +920,9 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       if (inspectorFallback === 'uiautomator-dump') return
       log.warn(`inspector ${session.inspectorEngineId} is not answering on ${opts.deviceId} (${reason}) — falling back to uiautomator-dump, which has no server to lose`)
       inspectorFallback = 'uiautomator-dump'
+      // Device-wide, not just this session: the next window must not start
+      // the same doomed instrumentation over again.
+      if (session.inspectorEngineId === 'ui-server') refuseUiServer(opts.deviceId)
       const dying = inspectorHandle
       inspectorHandle = null
       inspectorPromise = null

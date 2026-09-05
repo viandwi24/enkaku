@@ -159,6 +159,19 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
  */
 const uiServerRefused = new Set<string>()
 
+/**
+ * Mark a device as one whose `ui-server` cannot be trusted for the rest of
+ * this run.
+ *
+ * The ladder records this when the engine fails to START. A session calls it
+ * when the engine starts fine and then DIES seconds later, which is what the
+ * owner's phone does: the instrumentation reported ready, crashed, and every
+ * new session cheerfully started it again (2026-09-05).
+ */
+export function refuseUiServer(deviceId: string): void {
+  uiServerRefused.add(deviceId)
+}
+
 /** Test seam: module state outlives a test file, and every test here uses the same device id. */
 export function forgetUiServerRefusals(): void {
   uiServerRefused.clear()
