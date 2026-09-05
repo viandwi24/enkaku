@@ -309,6 +309,10 @@ const GROUP_3 = [
   'PaperPlaneRightIcon',
   'PaperclipIcon',
   'RocketIcon',
+  // Plan 312 (the `set` node's assignment editor) — the row's drag handle. The
+  // six-dot grip, deliberately not the three-dot kebab above it: a handle you
+  // drag, not a menu you open.
+  'DotsSixVerticalIcon',
 ]
 
 async function checkIcons(): Promise<void> {
