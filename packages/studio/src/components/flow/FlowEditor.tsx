@@ -85,6 +85,15 @@ export function FlowEditor({
   const { run, isPending } = useAction()
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  /**
+   * Which node's panel is OPEN — deliberately not "which node is selected".
+   * Selecting and opening are two different acts: a click selects (so it can
+   * be dragged, copied, box-selected with others), a double-click opens. The
+   * first version of this editor gated the 1040px sheet on selection, so the
+   * panel covered the canvas the instant a drag began and multi-select was
+   * unusable. n8n draws the same line for the same reason.
+   */
+  const [openNodeId, setOpenNodeId] = useState<string | null>(null)
 
   /**
    * React Flow fires `onSelectionChange` whenever it re-syncs its internal
@@ -207,6 +216,7 @@ export function FlowEditor({
       }
       pendingInsert.current = null
       setSelectedIds(new Set([id]))
+      setOpenNodeId(id)
     },
     [doc, dispatch],
   )
@@ -269,8 +279,7 @@ export function FlowEditor({
     return () => window.removeEventListener('keydown', handler)
   }, [paletteOpen, selectedIds, doc.nodes, undo, redo, clipboard, dispatch, openConnectPalette])
 
-  const selectedId = selectedIds.size === 1 ? [...selectedIds][0]! : null
-  const selectedIndex = selectedId ? doc.nodes.findIndex((n) => n.id === selectedId) : -1
+  const selectedIndex = openNodeId ? doc.nodes.findIndex((n) => n.id === openNodeId) : -1
   const selectedNode = selectedIndex === -1 ? undefined : doc.nodes[selectedIndex]
 
   const rootFindings = validation.findings.filter((f) => nodeIndexOf(f.path) === undefined)
@@ -348,6 +357,7 @@ export function FlowEditor({
             notInstalledScriptRefs={notInstalledScriptRefs}
             pinnedIds={pinnedIds}
             onSelectionChange={setSelectionIfChanged}
+            onNodeOpen={setOpenNodeId}
             onNodesMoved={(positions) => dispatch({ t: 'move-nodes', positions }, 'move-nodes')}
             onEdgeChange={(change) => dispatch({ t: 'set-edge', from: change.nodeId, kind: change.kind, to: change.targetId ?? undefined })}
             onEdgesRemoved={(removed) => {
@@ -361,7 +371,7 @@ export function FlowEditor({
 
       </div>
 
-      <Sheet open={!!selectedNode} onOpenChange={(open) => !open && setSelectedIds(new Set())}>
+      <Sheet open={!!selectedNode} onOpenChange={(open) => !open && setOpenNodeId(null)}>
         <SheetContent side="right" showCloseButton={false} className="w-[1040px] max-w-[96vw] p-0">
           {selectedNode && (
             <NodePanel
@@ -372,9 +382,10 @@ export function FlowEditor({
               onChange={(patch) => dispatch({ t: 'update-node', id: selectedNode.id, patch })}
               onRemove={() => {
                 dispatch({ t: 'remove-nodes', ids: [selectedNode.id] })
+                setOpenNodeId(null)
                 setSelectedIds(new Set())
               }}
-              onClose={() => setSelectedIds(new Set())}
+              onClose={() => setOpenNodeId(null)}
               onSetParams={(params) => dispatch({ t: 'set-meta', patch: { params } })}
               onPinsChanged={refreshPinnedIds}
             />

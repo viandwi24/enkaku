@@ -17,6 +17,17 @@ import { applyDocEdit, type DocEdit } from './doc-edit'
  * history entry instead of one per keystroke/drag-tick. A `key` changes (or
  * is omitted) the next time an unrelated field is touched, which starts a
  * new entry.
+ *
+ * **The three stacks are ONE state object, and that is load-bearing.** The
+ * first implementation held `past`, `present` and `future` as three
+ * `useState`s and updated them by nesting `setFuture` inside a `setPresent`
+ * updater inside a `setPast` updater. A state updater must be pure; React 19
+ * invokes them twice in development precisely to surface that, so every undo
+ * pushed the SAME snapshot onto `future` twice. Redo then appeared to do
+ * nothing — it restored an identical duplicate — and the Redo button stayed
+ * lit afterwards. Found on 2026-09-05 by pressing the keys, not by reading
+ * the code: it typechecks, builds, and is wrong. One object, one pure
+ * updater per transition, no nesting.
  */
 
 const MAX_HISTORY = 50
@@ -33,73 +44,60 @@ export interface UseHistoryResult {
 }
 
 export function useHistory(initial: WorkflowDoc): UseHistoryResult {
-  const [past, setPast] = useState<WorkflowDoc[]>([])
-  const [present, setPresent] = useState<WorkflowDoc>(initial)
-  const [future, setFuture] = useState<WorkflowDoc[]>([])
+  const [history, setHistory] = useState<{ past: WorkflowDoc[]; present: WorkflowDoc; future: WorkflowDoc[] }>({
+    past: [],
+    present: initial,
+    future: [],
+  })
   const lastCoalesceKey = useRef<string | undefined>(undefined)
 
-  const dispatch = useCallback(
-    (edit: DocEdit, coalesceKey?: string) => {
-      setPresent((current) => {
-        const next = applyDocEdit(current, edit)
-        if (next === current) return current
-        setFuture([])
-        setPast((p) => {
-          // Coalesce: the same key as the last dispatch replaces the top of
-          // the undo stack's PRESENT rather than pushing a new entry — the
-          // entry pushed onto `past` is still the state BEFORE this whole
-          // coalesced run started.
-          if (coalesceKey !== undefined && coalesceKey === lastCoalesceKey.current && p.length > 0) {
-            return p
-          }
-          const pushed = [...p, current]
-          return pushed.length > MAX_HISTORY ? pushed.slice(pushed.length - MAX_HISTORY) : pushed
-        })
-        lastCoalesceKey.current = coalesceKey
-        return next
-      })
-    },
-    [],
-  )
+  const dispatch = useCallback((edit: DocEdit, coalesceKey?: string) => {
+    const coalesces = coalesceKey !== undefined && coalesceKey === lastCoalesceKey.current
+    lastCoalesceKey.current = coalesceKey
+    setHistory((h) => {
+      const next = applyDocEdit(h.present, edit)
+      if (next === h.present) return h
+      // Coalescing keeps the entry pushed BEFORE this run started, so a whole
+      // drag (or a whole focus session in a text field) undoes as one step.
+      const past = coalesces && h.past.length > 0 ? h.past : [...h.past, h.present]
+      return { past: past.length > MAX_HISTORY ? past.slice(past.length - MAX_HISTORY) : past, present: next, future: [] }
+    })
+  }, [])
 
   const undo = useCallback(() => {
     lastCoalesceKey.current = undefined
-    setPast((p) => {
-      if (p.length === 0) return p
-      const prev = p[p.length - 1]!
-      setPresent((current) => {
-        setFuture((f) => [current, ...f])
-        return prev
-      })
-      return p.slice(0, -1)
+    setHistory((h) => {
+      const prev = h.past[h.past.length - 1]
+      if (prev === undefined) return h
+      return { past: h.past.slice(0, -1), present: prev, future: [h.present, ...h.future] }
     })
   }, [])
 
   const redo = useCallback(() => {
     lastCoalesceKey.current = undefined
-    setFuture((f) => {
-      if (f.length === 0) return f
-      const nextDoc = f[0]!
-      setPresent((current) => {
-        setPast((p) => {
-          const pushed = [...p, current]
-          return pushed.length > MAX_HISTORY ? pushed.slice(pushed.length - MAX_HISTORY) : pushed
-        })
-        return nextDoc
-      })
-      return f.slice(1)
+    setHistory((h) => {
+      const next = h.future[0]
+      if (next === undefined) return h
+      const past = [...h.past, h.present]
+      return { past: past.length > MAX_HISTORY ? past.slice(past.length - MAX_HISTORY) : past, present: next, future: h.future.slice(1) }
     })
   }, [])
 
   const reset = useCallback((doc: WorkflowDoc) => {
     lastCoalesceKey.current = undefined
-    setPast([])
-    setFuture([])
-    setPresent(doc)
+    setHistory({ past: [], present: doc, future: [] })
   }, [])
 
   return useMemo(
-    () => ({ doc: present, dispatch, undo, redo, canUndo: past.length > 0, canRedo: future.length > 0, reset }),
-    [present, dispatch, undo, redo, past.length, future.length, reset],
+    () => ({
+      doc: history.present,
+      dispatch,
+      undo,
+      redo,
+      canUndo: history.past.length > 0,
+      canRedo: history.future.length > 0,
+      reset,
+    }),
+    [history, dispatch, undo, redo, reset],
   )
 }

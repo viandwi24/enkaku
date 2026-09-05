@@ -52,6 +52,8 @@ export interface FlowCanvasProps {
   /** Node ids with an authoring-state pin (plan 300 P10) — the canvas badge (plan 306 §4.2 step 306.7). */
   pinnedIds: ReadonlySet<string>
   onSelectionChange(ids: string[]): void
+  /** A DOUBLE click opens a node's panel; a single click only selects it (plan 305 §4.3). Absent on the read-only replay canvas, which opens nothing. */
+  onNodeOpen?: (id: string) => void
   /** Fired once per drag gesture (one `move-nodes` history entry, plan 305 §3.3). */
   onNodesMoved(positions: Record<string, WorkflowPoint>): void
   onEdgeChange(change: EdgeChange): void
@@ -73,6 +75,7 @@ function FlowCanvasInner({
   notInstalledScriptRefs,
   pinnedIds,
   onSelectionChange,
+  onNodeOpen,
   onNodesMoved,
   onEdgeChange,
   onEdgesRemoved,
@@ -201,6 +204,8 @@ function FlowCanvasInner({
     [onSelectionChange],
   )
 
+  const handleNodeDoubleClick = useCallback((_event: unknown, node: { id: string }) => onNodeOpen?.(node.id), [onNodeOpen])
+
   const handleConnectEnd = useCallback<OnConnectEnd>(
     (_event, connectionState) => {
       if (connectionState.toNode || !connectionState.fromNode || !connectionState.fromHandle?.id) return
@@ -222,6 +227,7 @@ function FlowCanvasInner({
         onNodesDelete={handleNodesDelete}
         onNodeDragStop={handleNodeDragStop}
         onSelectionChange={handleSelectionChange}
+        onNodeDoubleClick={handleNodeDoubleClick}
         onConnectEnd={handleConnectEnd}
         fitView
         nodesDraggable={!readOnly}
