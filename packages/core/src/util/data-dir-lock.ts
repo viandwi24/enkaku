@@ -89,6 +89,21 @@ function readLock(path: string): LockContents | null {
 }
 
 /**
+ * Whether a live core currently holds this data directory, and which pid.
+ *
+ * The read-only half of `acquireDataDirLock` below, for the commands that
+ * must not touch a running farm's files (`enkaku reset`) but have no business
+ * claiming the lock themselves. Same staleness rule: a lock whose pid is gone
+ * is not in use.
+ */
+export function dataDirHolder(dataDir: string): { pid: number; startedAt: string } | null {
+  const path = join(dataDir, LOCK_FILE)
+  if (!existsSync(path)) return null
+  const held = readLock(path)
+  return held && isAlive(held.pid) ? held : null
+}
+
+/**
  * Claim `<dataDir>/enkaku.lock`, or refuse to start.
  *
  * A lock whose pid is gone is taken over — that is the normal case after a

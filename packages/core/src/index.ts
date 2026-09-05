@@ -135,6 +135,13 @@ if (process.argv.includes('--job-child')) {
     const { runBackup } = await import('./backup/index')
     const exitCode = await runBackup(process.argv.slice(3))
     process.exit(exitCode)
+  } else if (cmd === 'reset') {
+    // The counterpart to `backup`, and the one the release binary was
+    // missing: `bun run reset` at the repo root is an `rm -rf` of dev paths
+    // that no shipped binary has (owner, 2026-09-05).
+    const { runReset } = await import('./reset/index')
+    const exitCode = await runReset(process.argv.slice(3))
+    process.exit(exitCode)
   } else if (cmd === '--version' || cmd === '-v') {
     const pkg = await import('../package.json')
     console.log(pkg.version)

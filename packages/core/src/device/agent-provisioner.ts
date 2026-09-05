@@ -177,6 +177,32 @@ function readCached(row: DeviceRow, log: Logger): AgentStatus {
     checkedAt: prep.checkedAt,
     attempts: prep.attempts,
     nextAttemptAt: prep.nextAttemptAt,
+    apkSha256: identity.apkSha256,
+  }
+}
+
+/**
+ * sha256 of the APK a pass would install, cached by path and mtime.
+ *
+ * Read once per build, not once per device: a hundred phones provisioning
+ * against one local file must not hash it a hundred times.
+ */
+const apkHashes = new Map<string, { mtimeMs: number; sha256: string }>()
+
+async function apkFingerprint(path: string): Promise<string | null> {
+  try {
+    const file = Bun.file(path)
+    const mtimeMs = (await file.stat()).mtimeMs
+    const cached = apkHashes.get(path)
+    if (cached && cached.mtimeMs === mtimeMs) return cached.sha256
+    const sha256 = new Bun.CryptoHasher('sha256').update(await file.arrayBuffer()).digest('hex')
+    apkHashes.set(path, { mtimeMs, sha256 })
+    return sha256
+  } catch {
+    // A path that cannot be read is the installer's problem to report, not
+    // this function's: it answers "which build is this", and "none" is a
+    // legitimate answer that simply disables the comparison.
+    return null
   }
 }
 
@@ -292,7 +318,9 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     row: DeviceRow,
     priorAppVersion: string | null,
     forceReinstall: boolean,
-  ): Promise<{ state: AgentState; appVersion: string | null; versionCode: number | null; androidSdkInt: number | null; capabilities: GuestAgentCapability[]; reason: string | null }> {
+    /** The APK hash this device was last installed from — see `AgentStatusSchema.apkSha256`. */
+    priorApkSha256: string | null,
+  ): Promise<{ state: AgentState; appVersion: string | null; versionCode: number | null; androidSdkInt: number | null; capabilities: GuestAgentCapability[]; reason: string | null; /** Set only where an install actually ran; every other exit keeps the stored value. */ apkSha256?: string | null }> {
     // A mutable holder, not a bare `let` (TS's control-flow narrowing treats
     // a `let` written only from inside a callback as staying at its
     // initial `null` type across the `await` below, which then narrows the
@@ -317,7 +345,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // has an `opts.force` fast-repair path R1 (plan 90 §3.9 rule 1) relies on
     // — a forced uninstall+reinstall+reverify triggered by a live `hello()`
     // protocol mismatch, recursed into from THIS function (`runOnePass`,
-    // below, `return runOnePass(row, priorAppVersion, true)`) as one outer
+    // below, `return runOnePass(row, priorAppVersion, true, priorApkSha256)`) as one outer
     // attempt. `runTransfer` has no equivalent of that recursive, mid-pass,
     // protocol-driven re-trigger; forcing it through would mean rebuilding
     // R1's own repair cycle on a different primitive, not merely swapping
@@ -325,9 +353,30 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // spent effort getting right once. Left as future work if the owner
     // wants it (plan 106 §9 Q5's own closing paragraph has the full
     // reasoning and the tradeoff, stated for the owner to weigh).
+    /**
+     * A local build that changed since this device was installed from it.
+     *
+     * The released path compares `deviceArtifact.versionCode` from the
+     * manifest and reinstalls on a mismatch. A local build has no manifest
+     * entry, so that check is skipped entirely and the installer only checks
+     * that SOMETHING is installed — which is why a freshly rebuilt APK never
+     * reached a phone that already had one, and every iteration cost a manual
+     * uninstall (owner, 2026-09-05). The file's own hash gives the local path
+     * the same behaviour: different build, replace it.
+     *
+     * Only when there is no manifest expectation. Where there is one, the
+     * versionCode is the better check and this must not second-guess it.
+     */
+    const apkSha256 = await apkFingerprint(await deps.apkPath().catch(() => ''))
+    const staleLocalBuild =
+      !expectedArtifact && apkSha256 !== null && priorApkSha256 !== null && priorApkSha256 !== apkSha256
+    if (staleLocalBuild) {
+      deps.log.info(`the local guest agent build changed since ${row.id} was installed from it — reinstalling`)
+    }
+
     let versionCode: number | null = null
     try {
-      const result = await launcher.ensureInstalled(forceReinstall ? { force: true } : undefined)
+      const result = await launcher.ensureInstalled(forceReinstall || staleLocalBuild ? { force: true } : undefined)
       versionCode = result.versionCode
     } catch (err) {
       // 96.25 fix 2 (docs/plans/96-m61-hotfixes.md §96.25): `E_ADB_UNAVAILABLE`
@@ -413,7 +462,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
         // caught, that the on-device artifact check alone cannot see —
         // exactly one forced repair, then re-`hello()`, never a loop.
         deps.log.warn(`guest agent on device ${row.id} answered ${err.code} on hello() — forcing one reinstall + re-hello (plan 90 §3.9 rule 1)`)
-        return runOnePass(row, priorAppVersion, true)
+        return runOnePass(row, priorAppVersion, true, priorApkSha256)
       }
       const reason = err instanceof Error ? err.message : String(err)
       // Installed (verify says so) but not answering `hello()` — a genuine
@@ -435,6 +484,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // row from the ordinary device probe.
     if (row.apiLevel !== null && row.apiLevel < MIN_SUPPORTED_SDK) {
       const next: AgentStatus = {
+        apkSha256: null,
         state: 'unsupported',
         appVersion: null,
         versionCode: null,
@@ -496,7 +546,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       // this: uninstall+reinstall across a hundred phones is not what
       // "provision all" means, and it would drop every accessibility grant
       // on the farm to fix a problem most of them do not have.
-      result = await runOnePass(row, prior.appVersion, opts?.reinstall === true)
+      result = await runOnePass(row, prior.appVersion, opts?.reinstall === true, prior.apkSha256)
     } catch (err) {
       // 96.25 fix 2: a core-side `E_ADB_UNAVAILABLE` (rethrown by
       // `runOnePass` above) means this pass never reached the device at
@@ -533,7 +583,9 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       forced: !!opts?.force,
     })
 
-    const next: AgentStatus = { ...result, checkedAt, attempts, nextAttemptAt }
+    // A pass that did not install keeps the stored fingerprint: only an
+    // install can change which build this phone is running.
+    const next: AgentStatus = { ...result, apkSha256: result.apkSha256 ?? prior.apkSha256, checkedAt, attempts, nextAttemptAt }
     writeCached(row.id, next)
     maybeRecordTransition(row, prior, next)
     return next

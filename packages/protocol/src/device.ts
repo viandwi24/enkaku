@@ -127,6 +127,22 @@ export const AgentStatusSchema = z.object({
   checkedAt: z.number().int().nullable(),
   attempts: z.number().int(),
   nextAttemptAt: z.number().int().nullable(),
+  /**
+   * sha256 of the APK file this device was last installed FROM.
+   *
+   * A released build is version-checked against the toolchain manifest's
+   * `deviceArtifact.versionCode`, and a mismatch reinstalls on its own. A
+   * LOCAL build carries no manifest pin, so that check is skipped entirely
+   * and the installer verifies presence only — meaning a freshly rebuilt APK
+   * never reached a phone that already had one, and the owner had to
+   * uninstall by hand every time (2026-09-05). Comparing the file's own hash
+   * gives the local path the same "the build changed, replace it" behaviour
+   * the released path has always had.
+   *
+   * Null for a device provisioned before this field existed, or from a
+   * manifest-pinned artifact, where the versionCode is the better check.
+   */
+  apkSha256: z.string().nullable().default(null),
 })
 export type AgentStatus = z.infer<typeof AgentStatusSchema>
 
@@ -141,6 +157,7 @@ export const DEFAULT_AGENT_STATUS: AgentStatus = {
   checkedAt: null,
   attempts: 0,
   nextAttemptAt: null,
+  apkSha256: null,
 }
 
 /**
@@ -165,11 +182,14 @@ export const GuestAgentIdentitySchema = z.object({
   versionCode: z.number().int().nullable(),
   androidSdkInt: z.number().int().nullable(),
   capabilities: z.array(GuestAgentCapabilitySchema),
+  /** See `AgentStatusSchema.apkSha256` — the identity half is where it is stored. */
+  apkSha256: z.string().nullable().default(null),
 })
 export type GuestAgentIdentity = z.infer<typeof GuestAgentIdentitySchema>
 
 /** No guest-agent pass has ever populated identity facts for this device — the default for a brand-new row, and the safe fallback for a stored value that fails validation. */
 export const DEFAULT_GUEST_AGENT_IDENTITY: GuestAgentIdentity = {
+  apkSha256: null,
   appVersion: null,
   versionCode: null,
   androidSdkInt: null,

@@ -24,7 +24,13 @@ export function JobsScreen() {
       <JobsTabStrip tab={tab} jobCount={counts.jobs} batchCount={counts.batches} />
       <div className="flex min-h-0 flex-1">
         <JobsSidebar tab={tab} selectedId={jobId} counts={counts} />
-        <div className="flex min-h-0 flex-1 flex-col">
+        {/*
+          `min-w-0`: a flex item defaults to `min-width: auto`, so it refuses
+          to shrink below its content — the timeline's wide strip pushed this
+          whole pane past the viewport instead of scrolling inside it, and no
+          `overflow-x` further in could ever fire (owner, 2026-09-05).
+        */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {!jobId ? (
             <div className="p-[14px]">
               <EmptyState

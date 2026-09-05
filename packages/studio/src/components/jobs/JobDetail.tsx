@@ -197,7 +197,7 @@ export function JobDetail({ jobId }: { jobId: string }) {
           <span className="min-w-0 flex-1 truncate font-mono">{run.error ?? 'no message was recorded'}</span>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         {compareRunId ? (
           <RunCompare jobId={jobId} runId={run.runId} compareRunId={compareRunId} view={view} />
         ) : view === 'inputs' ? (

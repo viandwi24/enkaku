@@ -95,8 +95,17 @@ export function assertTlsPolicy(cfg: CoreConfig, mode: AuthMode): void {
       'server mode requires TLS: set tls.mode to "self" (with certPath/keyPath) or "external" (reverse proxy)',
     )
   }
-  if (cfg.tls.mode === 'self' && (!cfg.tls.certPath || !cfg.tls.keyPath)) {
-    throw new EnkakuError('E_TLS_REQUIRED', 'tls.mode "self" needs certPath and keyPath')
+  // `self` with only ONE of the two paths is still a mistake — it reads as
+  // "I brought my own certificate" and then half of it is missing. With
+  // NEITHER, the core manages the pair itself (`tls/self-signed.ts`), which
+  // is what the mode's name always implied; refusing there was the reason an
+  // operator had to carry an openssl incantation and four variables to serve
+  // a farm over HTTPS on their own LAN (owner, 2026-09-05).
+  if (cfg.tls.mode === 'self' && Boolean(cfg.tls.certPath) !== Boolean(cfg.tls.keyPath)) {
+    throw new EnkakuError(
+      'E_TLS_REQUIRED',
+      'tls.mode "self" needs certPath AND keyPath together, or neither — with neither, Enkaku generates and renews its own certificate under <dataDir>/tls/',
+    )
   }
 }
 

@@ -30,6 +30,7 @@ describe('AgentStatusSchema', () => {
 
   test('a full ready status parses', () => {
     const status: AgentStatus = {
+      apkSha256: null,
       state: 'ready',
       appVersion: '1.2.0',
       versionCode: 12,

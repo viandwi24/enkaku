@@ -40,7 +40,8 @@ function loadConfigSummary(): ConfigLoadResult {
       port: cfg.port,
       authMode,
       tlsMode: cfg.tls.mode,
-      tlsConfigured: cfg.tls.mode === 'external' || Boolean(cfg.tls.certPath && cfg.tls.keyPath),
+      // `self` with no paths is configured too: the core owns the pair and generates it at boot (`tls/self-signed.ts`).
+      tlsConfigured: cfg.tls.mode === 'external' || cfg.tls.mode === 'self',
       ...(tlsPolicyError ? { tlsPolicyError } : {}),
     }
   } catch (err) {

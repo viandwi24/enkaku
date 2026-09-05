@@ -127,6 +127,7 @@ import { createStorageRoutes } from './api/storage'
 import { createRunRetentionSweeper } from './jobs/runs/sweeper'
 import { createBlobGc, type BlobGc } from './agent/blob/gc'
 import { assertTlsPolicy, resolveAuthMode } from './config'
+import { ensureSelfSignedCert } from './tls/self-signed'
 import { createArtifactRoutes, MAX_REQUEST_BODY_BYTES } from './api/artifacts'
 import { createWorkspaceFileRoutes } from './api/workspace'
 import { createDeviceRoutes } from './api/devices'
@@ -3469,10 +3470,20 @@ let blobGc: BlobGc | null = null
         webhookRoutes: createWebhookRoutes({ store: webhookStore, audit }),
         startedAt,
       })
-      const tlsOptions =
-        cfg.tls.mode === 'self' && cfg.tls.certPath && cfg.tls.keyPath
-          ? { tls: { cert: Bun.file(cfg.tls.certPath), key: Bun.file(cfg.tls.keyPath) } }
-          : {}
+      // `self` resolves to a pair on disk here, one way or the other: the
+      // operator's own two paths, or the managed pair under `<dataDir>/tls/`
+      // that `ensureSelfSignedCert` generates and renews (plan-less, owner
+      // 2026-09-05). It THROWS rather than falling back to plain HTTP — a
+      // config that asked for TLS and silently got none is the ws-scrcpy
+      // mistake `assertTlsPolicy` already names.
+      let tlsOptions: { tls?: { cert: ReturnType<typeof Bun.file>; key: ReturnType<typeof Bun.file> } } = {}
+      if (cfg.tls.mode === 'self') {
+        const { certPath, keyPath } =
+          cfg.tls.certPath && cfg.tls.keyPath
+            ? { certPath: cfg.tls.certPath, keyPath: cfg.tls.keyPath }
+            : await ensureSelfSignedCert({ dataDir: cfg.dataDir, host: cfg.host, log })
+        tlsOptions = { tls: { cert: Bun.file(certPath), key: Bun.file(keyPath) } }
+      }
 
       // Plan 120 §4 — wrapped in a named closure (rather than inlined
       // exactly as before plan 120) purely so `closeHttpPort()`/

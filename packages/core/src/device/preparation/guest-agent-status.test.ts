@@ -70,12 +70,13 @@ describe('deriveGuestAgentPreparation', () => {
 
 describe('deriveGuestAgentIdentity', () => {
   test('never provisioned reads the default (all null / empty)', () => {
-    expect(deriveGuestAgentIdentity(row({}))).toEqual({ appVersion: null, versionCode: null, androidSdkInt: null, capabilities: [] })
+    expect(deriveGuestAgentIdentity(row({}))).toEqual({ appVersion: null, versionCode: null, androidSdkInt: null, capabilities: [], apkSha256: null })
   })
 
   test('reads the narrowed post-106.5 shape', () => {
     const r = row({ agent: { appVersion: '1.2.3', versionCode: 7, androidSdkInt: 34, capabilities: ['egress-probe'] } as unknown as DeviceRow['agent'] })
-    expect(deriveGuestAgentIdentity(r)).toEqual({ appVersion: '1.2.3', versionCode: 7, androidSdkInt: 34, capabilities: ['egress-probe'] })
+    // `apkSha256` defaults to null for a row written before the field existed.
+    expect(deriveGuestAgentIdentity(r)).toEqual({ appVersion: '1.2.3', versionCode: 7, androidSdkInt: 34, capabilities: ['egress-probe'], apkSha256: null })
   })
 
   test('extracts the identity subset from a legacy full-shape row too — Zod strips the extra state/reason/etc. keys rather than rejecting them', () => {
@@ -92,6 +93,7 @@ describe('deriveGuestAgentIdentity', () => {
         nextAttemptAt: null,
       } as unknown as DeviceRow['agent'],
     })
-    expect(deriveGuestAgentIdentity(r)).toEqual({ appVersion: '1.2.3', versionCode: 7, androidSdkInt: 34, capabilities: ['egress-probe'] })
+    // `apkSha256` defaults to null for a row written before the field existed.
+    expect(deriveGuestAgentIdentity(r)).toEqual({ appVersion: '1.2.3', versionCode: 7, androidSdkInt: 34, capabilities: ['egress-probe'], apkSha256: null })
   })
 })

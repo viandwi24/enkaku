@@ -454,6 +454,7 @@ describe('GET /api/devices/:id/guest-agent — the state machine (plan 44 §5.8)
 describe('GET /api/devices/:id/guest-agent — wired to AgentProvisioner.status() (plan 90 §4.7, docs/plans/96-m61-hotfixes.md Gap 2 fix)', () => {
   function agentStatus(overrides: Partial<AgentStatus> = {}): AgentStatus {
     return {
+      apkSha256: null,
       state: 'ready',
       appVersion: '1.0.0',
       versionCode: 5,
