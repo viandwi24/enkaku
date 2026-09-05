@@ -475,6 +475,23 @@ export interface CreateSessionOpts {
 
 
 
+/**
+ * Is this the engine being gone, rather than the engine saying no?
+ *
+ * Matched on the message because these arrive from `fetch` and the socket
+ * layer with no code of their own. Deliberately narrow: a timeout or a
+ * "could not get idle state" is a working engine refusing, and must never
+ * cost a device its fast inspector.
+ */
+function isEngineGone(message: string): boolean {
+  return (
+    message.includes('Unable to connect') ||
+    message.includes('socket connection was closed') ||
+    message.includes('ECONNREFUSED') ||
+    message.includes('the instrumentation ended')
+  )
+}
+
 export async function createSession(opts: CreateSessionOpts, deps: CreateSessionDeps): Promise<DeviceSession> {
   const { client, log } = deps
   const onPhase = deps.onPhase ?? (() => {})
@@ -535,6 +552,49 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * server to crash.
    */
   let inspectorFallback: string | null = null
+  /**
+   * Every inspector call, watched for the engine dying underneath it.
+   *
+   * The demote used to be wired in ONE place — the WS handler for
+   * `inspect.*` — so a click in Device Control recovered and a running SCRIPT
+   * did not: a job calling `dump()` got the raw "socket connection was closed
+   * unexpectedly" and failed the run (owner, 2026-09-05). Guarding the engine
+   * itself covers every caller there will ever be, and retries the call once
+   * on the replacement so the caller never sees the swap.
+   *
+   * Only transport-level failures demote. A timeout, a bad selector, or a
+   * screen that will not settle are the engine WORKING and saying no.
+   */
+  function guardEngine(engine: Inspector): Inspector {
+    const run = async <T>(name: string, call: (e: Inspector) => Promise<T>): Promise<T> => {
+      try {
+        return await call(engine)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        if (!isEngineGone(message)) throw err
+        session.demoteInspector(`${name}: ${message}`)
+        await inspectorPromise
+        const replacement = session.inspector
+        if (!replacement || replacement === engine) throw err
+        return await call(replacement)
+      }
+    }
+    return {
+      get id() {
+        return engine.id
+      },
+      dump: () => run('dump', (e) => e.dump()),
+      find: (sel) => run('find', (e) => e.find(sel)),
+      screenshot: () => run('screenshot', (e) => e.screenshot()),
+      ...(engine.findDetailed ? { findDetailed: (sel: Parameters<NonNullable<Inspector['findDetailed']>>[0]) => run('findDetailed', (e) => e.findDetailed!(sel)) } : {}),
+      // `watch` and `lastDump` pass straight through: one owns a long-lived
+      // subscription that a retry cannot meaningfully replay, and the other
+      // is a synchronous cache read that cannot fail at the transport.
+      ...(engine.watch ? { watch: (onChange: () => void) => engine.watch!(onChange) } : {}),
+      ...(engine.lastDump ? { lastDump: () => engine.lastDump!() } : {}),
+    } as Inspector
+  }
+
   const startInspector = (): Promise<void> => {
     if (!deps.makeInspector) return Promise.resolve()
     inspectorPromise ??= (async () => {
@@ -542,7 +602,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       try {
         const h = await deps.makeInspector!(opts.deviceId, transport, inspectorFallback ?? opts.inspection ?? null)
         inspectorHandle = h
-        session.inspector = h.inspector
+        session.inspector = guardEngine(h.inspector)
         session.inspectorEngineId = h.engineId
         session.inspectorPollIntervalMs = h.pollIntervalMs
         log.info(`inspector ready: ${h.engineId} on ${opts.deviceId} in ${Date.now() - t0} ms`)

@@ -1079,3 +1079,74 @@ describe('demoteInspector — the engine can go down, the feature cannot', () =>
     await session.close()
   })
 })
+
+/**
+ * A running script must survive the engine dying, exactly like a click does.
+ *
+ * The demote was wired in one place — the WS handler for `inspect.*` — so
+ * Device Control recovered and a job did not: a script calling `dump()` got
+ * the raw "socket connection was closed unexpectedly" and failed the run
+ * (owner, 2026-09-05). Guarding the engine covers every caller.
+ */
+test('a transport failure inside dump() demotes and retries on the replacement, invisibly', async () => {
+  let built = 0
+  const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async (_id, _t, req) => {
+    built += 1
+    const engineId = req ?? 'ui-server'
+    return {
+      inspector: {
+        id: engineId,
+        dump: async () => {
+          if (engineId === 'ui-server') throw new Error('http://127.0.0.1:1/jsonrpc/0 failed: Error: The socket connection was closed unexpectedly.')
+          return { class: 'ok', children: [] } as never
+        },
+        find: async () => null,
+        screenshot: async () => new Uint8Array(),
+      } as never,
+      engineId,
+      pollIntervalMs: 500,
+      release: async () => {},
+    }
+  }
+
+  const session = await createSession(
+    { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', inspection: 'ui-server' },
+    { client: fakeClient(), log: silentLog(), makeInspector },
+  )
+  await session.whenInspectorReady()
+
+  // The caller sees a tree, not the crash underneath it.
+  const root = await session.inspector!.dump()
+  expect(root).toBeDefined()
+  expect(built).toBe(2)
+  expect(session.inspectorEngineId).toBe('uiautomator-dump')
+
+  await session.close()
+})
+
+test('a refusal that is NOT the transport is passed through — a working engine keeps its place', async () => {
+  const makeInspector: NonNullable<CreateSessionDeps['makeInspector']> = async (_id, _t, req) => ({
+    inspector: {
+      id: req ?? 'ui-server',
+      dump: async () => {
+        throw new Error('uiautomator: could not get idle state (the UI keeps changing)')
+      },
+      find: async () => null,
+      screenshot: async () => new Uint8Array(),
+    } as never,
+    engineId: req ?? 'ui-server',
+    pollIntervalMs: 500,
+    release: async () => {},
+  })
+
+  const session = await createSession(
+    { deviceId: 'dev-2', serial: 'SER2', stableId: 'STABLE2', inspection: 'ui-server' },
+    { client: fakeClient(), log: silentLog(), makeInspector },
+  )
+  await session.whenInspectorReady()
+
+  await expect(session.inspector!.dump()).rejects.toThrow('could not get idle state')
+  expect(session.inspectorEngineId).toBe('ui-server')
+
+  await session.close()
+})
