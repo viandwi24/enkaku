@@ -137,3 +137,10 @@ export { DotsThreeVerticalIcon } from '@phosphor-icons/react'
 
 /** Plan 312 §4.4 — the assignment row's own drag handle in the `set` node's editor. The six-dot grip, not the three-dot kebab above: a handle you drag, not a menu you open. */
 export { DotsSixVerticalIcon } from '@phosphor-icons/react'
+
+/**
+ * Plan 500 — the picture-in-picture panel: the rail's per-item PiP
+ * affordance, and the panel's own zoom controls (`ArrowsClockwiseIcon` above
+ * already covers refresh, `XIcon` already covers close).
+ */
+export { MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, PictureInPictureIcon } from '@phosphor-icons/react'

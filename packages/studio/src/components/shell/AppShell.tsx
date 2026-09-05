@@ -5,6 +5,8 @@ import { usePathname, useSearchParams } from 'next/navigation'
 import { coreBase } from '@/lib/ws'
 import { useShellHotkeys, useOutsideMenuClick } from '@/lib/overlays'
 import { PagePanel } from './PagePanel'
+import { PipHost } from './PipHost'
+import { isPipFrame } from './pip-frame'
 import { Rail } from './Rail'
 import { StatusBar } from './StatusBar'
 import { PluginNavResponseSchema, activePluginView, pluginNavItems, type PluginNavGroup } from './nav'
@@ -43,6 +45,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   useShellHotkeys()
   useOutsideMenuClick()
 
+  // The document loaded INSIDE a picture-in-picture panel's iframe (§3.7,
+  // G8): `?pip=1`, set only by `PipPanel`'s own `src`. No rail, no status
+  // bar, no `PipHost` — a framed document must not be able to open a panel
+  // of its own, which would make the "exactly one panel" guarantee (G2) a
+  // per-document promise instead of a per-tab one.
+  const framed = isPipFrame(searchParams)
+
   /**
    * `pathname` is the dependency, not a timer and not a WS event. The screens
    * a plugin declares cannot change because a job moved from `queued` to
@@ -72,6 +81,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }, [pathname])
 
+  if (framed) {
+    // Fills the iframe exactly: no rail, no status bar, no outer padding —
+    // the panel chrome around this document already belongs to `PipPanel`.
+    return <PagePanel className="h-screen rounded-none border-0">{children}</PagePanel>
+  }
+
   return (
     <div
       className="flex h-screen min-h-[460px] gap-[10px] overflow-hidden p-[10px] font-sans text-row text-text"
@@ -97,6 +112,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <PagePanel>{children}</PagePanel>
         <StatusBar />
       </div>
+      <PipHost />
     </div>
   )
 }

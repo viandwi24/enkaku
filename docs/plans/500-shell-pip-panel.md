@@ -9,18 +9,18 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | A rail entry can be opened as a floating panel instead of a navigation | one affordance per eligible rail item | `rg -n "openPip" packages/studio/src/components/shell/Rail.tsx` → at least 1 match | [ ] |
-| G2 | There is exactly **one** panel, and opening another page switches its content in place | 1 host, 1 store value, no array | `rg -n "current|OpenRequest" packages/studio/src/components/shell/PipHost.tsx` → a single nullable value, no list | [ ] |
-| G3 | Devices is not eligible, and the exclusion is data, not a special case at the call site | `pip: false` (or absent) on the `/` entry in `NAV` | `rg -n "pip" packages/studio/src/components/shell/nav.ts` → the `/` entry is excluded | [ ] |
+| G1 | A rail entry can be opened as a floating panel instead of a navigation | one affordance per eligible rail item | `rg -n "openPip" packages/studio/src/components/shell/Rail.tsx` → at least 1 match | [x] |
+| G2 | There is exactly **one** panel, and opening another page switches its content in place | 1 host, 1 store value, no array | `rg -n "current|OpenRequest" packages/studio/src/components/shell/PipHost.tsx` → a single nullable value, no list | [x] |
+| G3 | Devices is not eligible, and the exclusion is data, not a special case at the call site | `pip: false` (or absent) on the `/` entry in `NAV` | `rg -n "pip" packages/studio/src/components/shell/nav.ts` → the `/` entry is excluded | [x] |
 | G4 | The panel is dragged by its title bar and snaps to a viewport edge within the magnet threshold | 20 px threshold, 4 edges, snap survives a window resize | owner smoke §7 step 2 | owner |
-| G5 | Close, refresh, zoom out and zoom in are the panel's four controls | 4 buttons, in that order | `rg -n "aria-label=" packages/studio/src/components/shell/PipPanel.tsx` → 4 matches plus the drag handle's | [ ] |
-| G6 | Refresh reloads the framed document itself, never remounts the shell around it | `contentWindow.location.reload()` | `rg -n "location.reload" packages/studio/src/components/shell/PipPanel.tsx` → 1 match | [ ] |
-| G7 | Zoom scales the framed page and the frame keeps filling the panel | `transform: scale(z)` with inverse `width`/`height`; 5 steps, 50 %–150 % | `rg -n "scale\(" packages/studio/src/components/shell/PipPanel.tsx` → 1 match | [ ] |
-| G8 | Inside the panel the framed Studio renders **no rail, no status bar and no Device Control** | `?pip=1`; 3 suppressions | `rg -n "isPipFrame|pip=1" packages/studio/src` → `AppShell`, `DeviceControlHost` and the helper only | [ ] |
-| G9 | Position, size, zoom and the snapped edge survive a reload | 1 `localStorage` key, parsed through Zod, a bad value falls back to the default geometry | `rg -n "localStorage" packages/studio/src/components/shell/pip-store.ts` → 1 read, 1 write; `rg -n "safeParse" packages/studio/src/components/shell/pip-store.ts` → 1 match | [ ] |
-| G10 | The frame is loaded from `coreBase()`, not from a hand-built origin | 1 call | `rg -n "coreBase\(\)" packages/studio/src/components/shell/PipPanel.tsx` → 1 match | [ ] |
-| G11 | No Studio test file is added, and no `dark:` or v3 bracket colour class enters the shell | 0 each | `rg --files packages/studio -g '*.test.tsx'` → empty; `rg -n "dark:|bg-\[--|text-\[--" packages/studio/src/components/shell` → empty | [ ] |
-| G12 | `bun run typecheck` and `bun run build:studio` are clean | 0 errors, exit 0 | both exit 0 | [ ] |
+| G5 | Close, refresh, zoom out and zoom in are the panel's four controls | 4 buttons, in that order | `rg -n "aria-label=" packages/studio/src/components/shell/PipPanel.tsx` → 4 matches plus the drag handle's | [x] |
+| G6 | Refresh reloads the framed document itself, never remounts the shell around it | `contentWindow.location.reload()` | `rg -n "location.reload" packages/studio/src/components/shell/PipPanel.tsx` → 1 match | [x] |
+| G7 | Zoom scales the framed page and the frame keeps filling the panel | `transform: scale(z)` with inverse `width`/`height`; 5 steps, 50 %–150 % | `rg -n "scale\(" packages/studio/src/components/shell/PipPanel.tsx` → 1 match | [x] |
+| G8 | Inside the panel the framed Studio renders **no rail, no status bar and no Device Control** | `?pip=1`; 3 suppressions | `rg -n "isPipFrame|pip=1" packages/studio/src` → `AppShell`, `DeviceControlHost` and the helper only | [x] |
+| G9 | Position, size, zoom and the snapped edge survive a reload | 1 `localStorage` key, parsed through Zod, a bad value falls back to the default geometry | `rg -n "localStorage" packages/studio/src/components/shell/pip-store.ts` → 1 read, 1 write; `rg -n "safeParse" packages/studio/src/components/shell/pip-store.ts` → 1 match | [x] |
+| G10 | The frame is loaded from `coreBase()`, not from a hand-built origin | 1 call | `rg -n "coreBase\(\)" packages/studio/src/components/shell/PipPanel.tsx` → 1 match | [x] |
+| G11 | No Studio test file is added, and no `dark:` or v3 bracket colour class enters the shell | 0 each | `rg --files packages/studio -g '*.test.tsx'` → empty; `rg -n "dark:|bg-\[--|text-\[--" packages/studio/src/components/shell` → empty | [x] |
+| G12 | `bun run typecheck` and `bun run build:studio` are clean | 0 errors, exit 0 | both exit 0 | [x] |
 | G13 | The panel is usable: dragging is smooth, the magnet feels deliberate rather than sticky, and a switched page does not flash the previous one | owner judgement | owner smoke §7 | owner |
 
 ## 1. Goals
@@ -257,6 +257,75 @@ than "check it works".
 
 ## 11. Handoff
 
-To be written by the executing agent: the geometry key's final shape, whether
-the magnet threshold survived contact with the owner's hand, and anything the
-framed document did that this plan did not predict.
+**Files.** `PipHost.tsx` and `pip-store.ts` (module store + geometry), `PipPanel.tsx`
+(the window), `pip-frame.ts` (the `isPipFrame` helper), edits to `AppShell.tsx`,
+`Rail.tsx`, `nav.ts`, `DeviceControlHost.tsx`, `packages/ui/src/icons.ts`, and
+`scripts/check-design-tokens.ts` (the icon-count guard, widened by 3 for the
+three icons this plan adds — the guard caught the omission on the first pass,
+exactly as designed).
+
+**The geometry key's final shape.** One `localStorage` key,
+`enkaku:pip-geometry`, holding `{ x, y, w, h, zoom, edge }` — `x`/`y`/`w`/`h`
+in px, `zoom` a number bounded to `[0.5, 1.5]` (not a literal-union enum: a
+value from a future step table still clamps sanely rather than failing to
+parse), `edge` one of `'left' | 'right' | 'top' | 'bottom' | null`. Read once
+through `GeometrySchema.safeParse`, written on drag pointer-up, resize
+pointer-up, and on every zoom-button click. A snapped panel is re-pinned to
+its edge on `window.resize` via `repinToEdge`, then re-clamped to the new
+viewport.
+
+**Deviations from the plan's own §4 steps, and why:**
+
+- **G2's stated grep targets the wrong file.** §0's G2 row says
+  `rg -n "current|OpenRequest" packages/studio/src/components/shell/PipHost.tsx`,
+  but §4.2 itself says the module store (`current`, the `Listener` type, the
+  subscriber `Set`) belongs in **`pip-store.ts`**, mirroring
+  `DeviceControlHost.tsx` in spirit but not in file layout — `PipHost.tsx` is
+  kept as a thin render host (`usePipRequest()` + `usePip().close`), matching
+  `DeviceControlHost`'s own render body rather than its whole file. The goal
+  itself (exactly one nullable value, no array) is real and verified — just
+  against `pip-store.ts`, not `PipHost.tsx`. Re-run as
+  `rg -n "current|OpenRequest" packages/studio/src/components/shell/pip-store.ts`
+  to see it.
+- **Escape tier.** §4.6 says "a tier below dialogs" without naming one;
+  `lib/overlays.ts` only has three tiers (`menu`, `window`, `selection`), and
+  both `ActionDialog` and `DeviceControl` register at `window`. The panel
+  registers at `selection` — the only tier below `window` — via
+  `registerOverlay('selection', onClose)` in a plain `useEffect`, so an open
+  dialog's Escape is consumed first and the panel only closes once nothing
+  else is registered.
+- **The icon set.** The plan names no icons. `MagnifyingGlassMinusIcon`,
+  `MagnifyingGlassPlusIcon` and `PictureInPictureIcon` (Phosphor, already
+  vendored at `@phosphor-icons/react` 2.1.10) were added to `@enkaku/ui`'s
+  barrel and to `check-design-tokens.ts`'s `GROUP_3` allowlist, which asserts
+  an exact total — an omission the guard is built to catch, and did.
+- **Magnet margin.** §3.5 states the 20 px threshold but not how far inside
+  the edge a snapped panel sits. Implemented as an 8 px gap
+  (`EDGE_MARGIN_PX`) between the panel and the true viewport edge, matching
+  the visual margin the shell's own root padding uses elsewhere
+  (`AppShell.tsx`'s `p-[10px]`) closely enough to look intentional rather
+  than flush-to-glass.
+- **Default panel geometry.** Not specified by the plan. Opens at 480×360,
+  bottom-right, pre-snapped to the right edge — a corner an operator's eye
+  returns to least, chosen the same way `DeviceControl`'s own centred default
+  was: a reasonable starting point with no owner input yet.
+
+**What the framed document does that the plan did not predict:** nothing
+observed — this was verified by build output and code inspection only (see
+below), not by loading the panel in a browser, so "did not predict" cannot
+yet be answered from real evidence. The one behaviour the plan itself flags
+as a known cost (§3.4) — the frame's `src` is `coreBase()`, so under
+`bun run dev:studio` the panel shows the last `build:studio` output, not a
+live-reloading page — is documented in `PipPanel.tsx`'s own file comment and
+was not re-verified in a browser either.
+
+**Whether the magnet threshold survived contact with the owner's hand:**
+untested — no browser session was run this pass (see the report's "never
+exercised" list). The 20 px/8 px numbers are implemented exactly as specified
+but unverified by touch.
+
+**Verification actually run:** `bun run typecheck`, `bun run build:studio`,
+`bun run scripts/check-design-tokens.ts` (not itself part of §0, but the
+coordinator's own gate — it caught the icon-count omission on the first
+pass), and every §0 grep. No `bun test` of any kind was run — this plan
+touches no backend package.
