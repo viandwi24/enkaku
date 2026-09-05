@@ -45,6 +45,25 @@ export interface ResolveScope {
    * §11's handoff for the record of this deferral).
    */
   randomSeed?: number
+  /**
+   * This run's position in its batch, 0-based, and how many runs the batch
+   * holds — `$run.index` and `$run.count`.
+   *
+   * The one fact a workflow needs to divide a fleet into equal shares and
+   * could not see. `$random` splits twenty devices into four branches at
+   * roughly five each, which is a different promise from five each: measured
+   * over a thousand batches of twenty, a single batch lands 5/5/5/5 about 1%
+   * of the time, and 8/2/6/4 is ordinary. An exact share cannot come from
+   * twenty independent draws — it has to be decided once, for the batch, and
+   * `jobs.batchSeq` already decides it at dispatch. This is what lets an
+   * expression read the decision: `$run.index % 4` is exactly five per branch,
+   * every time, and `createWorkflowBatch`'s `order: 'random'` is what makes
+   * WHICH device lands where random rather than fixed.
+   *
+   * Absent for a run with no batch — a single manual run is index 0 of 1.
+   */
+  runIndex?: number
+  runCount?: number
 }
 
 /**
@@ -139,7 +158,7 @@ function buildExprScope(scope: ResolveScope): ExprScope {
     $params: toScopeValue(scope.params) as Readonly<Record<string, unknown>>,
     $nodes: toScopeValue(Object.fromEntries(scope.outputs)) as Readonly<Record<string, unknown>>,
     $input: toScopeValue(lastOutput),
-    $run: { summary: toScopeValue(scope.summary) },
+    $run: { summary: toScopeValue(scope.summary), index: scope.runIndex ?? 0, count: scope.runCount ?? 1 },
     $now: scope.now ?? Date.now(),
     $random: scope.randomSeed ?? 0,
   }

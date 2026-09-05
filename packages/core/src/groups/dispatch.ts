@@ -253,6 +253,13 @@ export function createWorkflowBatch(
   const batchId = crypto.randomUUID()
   const now = new Date()
   const priority = input.priority ?? 0
+  // The SAME line `createBatch` has, and its absence here was a plain bug:
+  // this function took `order`, wrote it onto the batch row, and then walked
+  // `resolved.usable` — so a workflow batch asked for a random order ran in
+  // resolution order while its own row claimed otherwise. It matters more
+  // than presentation now that `$run.index` exists: that index IS this order,
+  // and a stable one means device #1 draws the same branch every single run.
+  const ordered = input.order === 'random' ? shuffle(resolved.usable) : resolved.usable
 
   db.transaction(() => {
     db.insert(batches)
@@ -270,7 +277,7 @@ export function createWorkflowBatch(
         skipped: resolved.skipped.length > 0 ? resolved.skipped : null,
       })
       .run()
-    resolved.usable.forEach((t, i) => {
+    ordered.forEach((t, i) => {
       const job = deps.runs.createJob({
         kind: 'workflow',
         workflowName: input.workflowName,

@@ -26,7 +26,8 @@ export interface ExprScope {
   $params: Readonly<Record<string, unknown>>
   $nodes: Readonly<Record<string, unknown>>
   $input: unknown
-  $run: Readonly<{ summary: unknown }>
+  /** `index`/`count` are this run's position in its batch and the batch's size (plan 211 + the fleet-split case, 2026-09-05). */
+  $run: Readonly<{ summary: unknown; index?: number; count?: number }>
   $now: number
   $random: number
 }

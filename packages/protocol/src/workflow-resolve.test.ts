@@ -324,3 +324,32 @@ describe('PredicateTrace — shape sanity', () => {
     expect(compoundTrace.children).toHaveLength(1)
   })
 })
+
+/* ------------------------------------------------------------------------ *
+ * `$run.index` / `$run.count` — dividing a fleet into equal shares.
+ * ------------------------------------------------------------------------ */
+
+describe('$run.index and $run.count (the fleet-split case, 2026-09-05)', () => {
+  const scopeFor = (runIndex: number, runCount: number): ResolveScope => ({ params: {}, outputs: new Map(), summary: [], runIndex, runCount })
+
+  test('an expression can read this run’s place in its batch', () => {
+    expect(resolveValue({ expr: '$run.index' }, scopeFor(7, 20))).toEqual({ ok: true, value: 7 })
+    expect(resolveValue({ expr: '$run.count' }, scopeFor(7, 20))).toEqual({ ok: true, value: 20 })
+  })
+
+  test('index % 4 divides twenty devices into EXACTLY five each — the thing $random cannot promise', () => {
+    const buckets = [0, 0, 0, 0]
+    for (let i = 0; i < 20; i++) {
+      const outcome = resolveValue({ expr: '$run.index % 4' }, scopeFor(i, 20))
+      expect(outcome.ok).toBe(true)
+      buckets[(outcome as { value: number }).value] += 1
+    }
+    expect(buckets).toEqual([5, 5, 5, 5])
+  })
+
+  test('a run with no batch is index 0 of 1, never undefined', () => {
+    const bare: ResolveScope = { params: {}, outputs: new Map(), summary: [] }
+    expect(resolveValue({ expr: '$run.index' }, bare)).toEqual({ ok: true, value: 0 })
+    expect(resolveValue({ expr: '$run.count' }, bare)).toEqual({ ok: true, value: 1 })
+  })
+})

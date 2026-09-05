@@ -69,7 +69,11 @@ export function usePreview(source: string, scope: PreviewScope): PreviewResult {
           $params: toScopeValue(scope.params) as Readonly<Record<string, unknown>>,
           $nodes: toScopeValue(scope.nodes) as Readonly<Record<string, unknown>>,
           $input: toScopeValue(scope.input),
-          $run: { summary: toScopeValue(scope.summary ?? []) },
+          // The preview has no batch, so it previews the FIRST device of one:
+          // index 0 of 1. An author checking `$run.index % 4` sees branch 0,
+          // which is the honest answer for a single simulated device — the
+          // split only exists once a batch does.
+          $run: { summary: toScopeValue(scope.summary ?? []), index: 0, count: 1 },
           $now: Date.now(),
           $random: deriveRandom(scope.seed, scope.seq),
         }

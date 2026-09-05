@@ -1,8 +1,8 @@
-import { and, eq } from 'drizzle-orm'
+import { and, count, eq } from 'drizzle-orm'
 import { deriveRandom } from '@enkaku/expr'
 import { resolveValue, validateAgainstSchema, WORKFLOW_LIMITS, type ResolveScope, type RunSummaryEntry, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
 import type { Db } from '../../db'
-import { workflowSteps, type JobRow, type JobRunRow } from '../../db/schema'
+import { jobs, workflowSteps, type JobRow, type JobRunRow } from '../../db/schema'
 import { parseWorkflowDoc } from '../../workflows/store'
 import type { PinStore } from '../../workflows/pins'
 import type { ScriptEntry, ScriptRegistry } from '../../scripts/registry'
@@ -135,6 +135,28 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
       const doc = parseWorkflowDoc(job.workflowDoc)
       if (!doc) throw new EnkakuError('E_WORKFLOW_INVALID', `workflow job ${job.id} carries no valid workflow document`)
 
+      /*
+       * `$run.index` / `$run.count` — where this device sits in its batch,
+       * and how big the batch is.
+       *
+       * The fact that lets a workflow divide a fleet into EQUAL shares.
+       * `$random` gives each run an independent draw, which splits twenty
+       * devices four ways at roughly five each — and roughly is a different
+       * promise from five: a thousand simulated batches land exactly 5/5/5/5
+       * about 1% of the time, with 8/2/6/4 entirely ordinary. Twenty
+       * independent draws cannot produce an exact share; the split has to be
+       * decided once for the batch, and `createWorkflowBatch` already decided
+       * it when it numbered the jobs. Nothing could read that number until
+       * now (owner, 2026-09-05).
+       *
+       * Read once per run, not per step: the batch is closed by the time any
+       * of its jobs runs, so the count cannot change underneath a run.
+       */
+      const runIndex = job.batchSeq ?? 0
+      const runCount = job.batchId
+        ? (deps.db.select({ n: count() }).from(jobs).where(eq(jobs.batchId, job.batchId)).get()?.n ?? 1)
+        : 1
+
       // `__nodeTest` (plan 304 §4.6) is a reserved key `POST
       // /:name/run-node` (`api/workflows.ts`) uses to hand this run its
       // seeded predecessor — stripped out here so it can never reach a
@@ -252,7 +274,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         // §3.4) — the RUN's own seed, folded with this step's own workflow
         // step sequence number, so a replay or a resume evaluates the exact
         // same value.
-        const scope: ResolveScope = { params, outputs, summary, now: stepStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, rowSeq) }
+        const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: stepStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, rowSeq) }
         const resolvedParams: Record<string, unknown> = {}
         for (const [key, expr] of Object.entries(node.params)) {
           const outcome = resolveValue(expr, scope)
@@ -413,7 +435,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           }
 
           if (node.kind === 'gate') {
-            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const { trace, takenEdge, output } = computeGateStep(node, scope)
             const finishedAt = new Date()
             deps.db.update(workflowSteps).set({ status: 'success', finishedAt, verdict: trace, output, takenEdge }).where(eq(workflowSteps.id, rowId)).run()
@@ -436,7 +458,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           }
 
           if (node.kind === 'switch') {
-            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             // Plan 312 §3.6, §4.3 — normalise the declared weights and draw
             // from `$random` (the SAME per-step `deriveRandom(seed, seq)` a
             // gate already uses), so the branch taken is reproducible for a
@@ -468,7 +490,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // resolved by `computeDelayMs`, clamped to the document's own
             // declared `maxMs` — a budget `checkWorkflow` could not have
             // computed statically from an unbounded `ms` is not a budget.
-            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const waitMs = computeDelayMs(node, scope)
             await cancellableDelay(waitMs, ctx.signal)
             const finishedAt = new Date()
@@ -498,7 +520,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // no fields to carry through) seeds the base that each
             // assignment writes into, in array order, so a LATER assignment
             // may overwrite an EARLIER one's path.
-            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const result = computeSetStep(node, scope, currentInputValue())
 
             const finishedAt = new Date()
@@ -662,7 +684,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         // genuine failure (never on a cancel).
         if (finalStatus === 'failed' && !cancelled && doc.onFail) {
           try {
-            const cleanupScope: ResolveScope = { params, outputs, summary, now: Date.now(), randomSeed: deriveRandom(ctx.run.seed, skipSeq) }
+            const cleanupScope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: Date.now(), randomSeed: deriveRandom(ctx.run.seed, skipSeq) }
             const cleanupEntry = deps.registry.resolve(doc.onFail.script)
             const resolvedParams: Record<string, unknown> = {}
             let bindingOk = true
