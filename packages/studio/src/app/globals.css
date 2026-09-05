@@ -191,3 +191,70 @@
     white-space: nowrap;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   React Flow, themed.
+
+   `@xyflow/react/dist/style.css` ships its own palette and the flow editor
+   imports it raw, so the minimap and the zoom controls rendered as solid
+   white blocks on the dark theme — the most obvious visual defect in the
+   editor, and one no token in this file could reach because the library's
+   rules are not written against them. Reported by the owner on 2026-09-05
+   with a screenshot.
+
+   Every selector is scoped under the canvas container rather than written
+   bare: the library's stylesheet is imported INSIDE `FlowCanvas.tsx`, so it
+   lands after this file in the bundle and wins every tie on equal
+   specificity. The descendant selector is what makes these rules apply at
+   all — the first attempt used bare class names and changed nothing.
+
+   These are the only React Flow internals this app styles: everything a node
+   or an edge draws comes from our own components. Tokens only, both themes
+   at once, no `dark:` — the palette switches, the class does not
+   (`docs/design.md`).
+--------------------------------------------------------------------------- */
+
+[data-testid='flow-canvas'] .react-flow__minimap {
+  background-color: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+[data-testid='flow-canvas'] .react-flow__minimap-mask {
+  fill: var(--color-scrim);
+  stroke: var(--color-line-strong);
+  stroke-width: 1px;
+}
+
+[data-testid='flow-canvas'] .react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+[data-testid='flow-canvas'] .react-flow__controls-button {
+  background-color: var(--color-panel);
+  border-bottom: 1px solid var(--color-line);
+  color: var(--color-fg-muted);
+  fill: currentColor;
+}
+
+[data-testid='flow-canvas'] .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+[data-testid='flow-canvas'] .react-flow__controls-button:hover {
+  background-color: var(--color-hover);
+  color: var(--color-fg);
+}
+
+[data-testid='flow-canvas'] .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+[data-testid='flow-canvas'] .react-flow__node:focus,
+[data-testid='flow-canvas'] .react-flow__node:focus-visible {
+  outline: none;
+}

@@ -69,11 +69,13 @@ interface PendingInsert {
 
 export function FlowEditor({
   initialDoc,
+  onDirtyChange,
   scripts,
   mode,
   onSaved,
 }: {
   initialDoc: WorkflowDoc
+  onDirtyChange?: (dirty: boolean) => void
   scripts: readonly ScriptOption[]
   mode: 'create' | 'update'
   onSaved(workflow: WorkflowInfo): void
@@ -158,6 +160,15 @@ export function FlowEditor({
       cancelled = true
     }
   }, [doc.name])
+
+  // `beforeunload` covers a reload or a closed tab, but NOT Next's
+  // client-side navigation — the "All workflows" link in the page header is a
+  // `next/link`, and it took unsaved work with it silently (owner report,
+  // 2026-09-05). The page owns that link, so the page is told when the
+  // document is dirty and guards its own navigation.
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
 
   // A browser-level warning on navigate-away, never autosave (plan 305 §3.5).
   useEffect(() => {
@@ -322,7 +333,18 @@ export function FlowEditor({
           </span>
         )}
         {dirty && <Badge variant="outline">Unsaved</Badge>}
-        <Button type="button" onClick={() => void handleSave()} disabled={isPending('publish') || doc.nodes.length === 0}>
+        <Button
+          type="button"
+          onClick={() => void handleSave()}
+          // The server refuses a document with an error, so offering Save
+          // here only produced a red toast an author could miss — and then
+          // the "All workflows" link took the unsaved graph with it. Reported
+          // by the owner on 2026-09-05: a workflow saved holding nothing but
+          // its `start` node while a script node they had added was gone.
+          // The error count beside this button already says how many.
+          disabled={isPending('publish') || doc.nodes.length === 0 || errorCount > 0}
+          title={errorCount > 0 ? `Fix ${errorCount} error${errorCount === 1 ? '' : 's'} before saving` : undefined}
+        >
           {isPending('publish') ? 'Saving…' : 'Save'}
         </Button>
       </div>

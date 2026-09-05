@@ -230,6 +230,11 @@ function FlowCanvasInner({
         onNodeDoubleClick={handleNodeDoubleClick}
         onConnectEnd={handleConnectEnd}
         fitView
+        /* Without a maxZoom, fitView on a one- or two-node document zooms to
+           the library's default ceiling and a single card fills the canvas —
+           the "nodes are enormous" half of the owner's 2026-09-05 report.
+           Capped at 1: fit shrinks to show everything, and never magnifies. */
+        fitViewOptions={{ maxZoom: 1, padding: 0.25 }}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
         elementsSelectable={!readOnly}

@@ -13,7 +13,12 @@ import { ParamsEditor } from './ParamsEditor'
  */
 export function StartPanel({ doc, onSetParams }: { doc: WorkflowDoc; onSetParams(params: WorkflowParam[]): void }) {
   return (
-    <div className="space-y-3 p-3.5">
+    // The panel is 1040px wide; this form is configuration prose and reads
+    // badly stretched across all of it — two 1fr columns become ~400px each
+    // and the fields stop looking related (owner report, 2026-09-05, image 1).
+    // Capped at a column width, left-aligned, so the grid inside `ParamsEditor`
+    // keeps the proportions it was drawn for.
+    <div className="max-w-3xl space-y-3 p-3.5">
       <div className="space-y-1">
         <p className="rack-label">workflow parameters</p>
         <p className="text-[11.5px] text-fg-subtle">What this workflow takes as input — shown to whoever runs it, in the Run dialog.</p>

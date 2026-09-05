@@ -42,6 +42,14 @@ function WorkflowEditorView() {
   const [scripts, setScripts] = useState<ScriptOption[] | null>(null)
   const [scriptsError, setScriptsError] = useState<string | null>(null)
   const [initialDoc, setInitialDoc] = useState<WorkflowDoc | null>(null)
+  /**
+   * The editor's `beforeunload` guard cannot see a `next/link` — client-side
+   * navigation never fires it. The back link below is the one way out of this
+   * page, so it asks first when the document has unsaved changes. Reported by
+   * the owner on 2026-09-05: a workflow that came back holding nothing but
+   * its `start` node, because the node they had added left with the link.
+   */
+  const [dirty, setDirty] = useState(false)
   const [docError, setDocError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -67,7 +75,12 @@ function WorkflowEditorView() {
 
   const backAction = (
     <Button asChild variant="ghost" size="sm">
-      <Link href="/scripts?tab=workflows">
+      <Link
+        href="/scripts?tab=workflows"
+        onClick={(e) => {
+          if (dirty && !window.confirm('This workflow has unsaved changes. Leave and lose them?')) e.preventDefault()
+        }}
+      >
         <ArrowLeft className="size-4" aria-hidden />
         All workflows
       </Link>
@@ -100,6 +113,7 @@ function WorkflowEditorView() {
           initialDoc={initialDoc}
           scripts={scripts}
           mode={name ? 'update' : 'create'}
+          onDirtyChange={setDirty}
           onSaved={() => router.push('/scripts?tab=workflows')}
         />
       )}

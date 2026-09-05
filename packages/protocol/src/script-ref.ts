@@ -15,7 +15,14 @@ import { z } from 'zod'
  */
 export const ScriptRefSchema = z
   .string()
-  .regex(/^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)?@(?:latest|\d+\.\d+\.\d+(?:[-+].+)?)$/)
+  .regex(
+    /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)?@(?:latest|\d+\.\d+\.\d+(?:[-+].+)?)$/,
+    // Without a message Zod prints the pattern itself, and the flow editor
+    // showed that raw regex to the operator as its only error whenever a
+    // script node had no script picked yet (owner report, 2026-09-05). The
+    // same wording discipline `WorkflowNameSchema` already uses.
+    'a script reference is `plugin/script@1.2.3` or `plugin/script@latest` — lowercase letters, digits, and . _ -',
+  )
 export type ScriptRef = z.infer<typeof ScriptRefSchema>
 
 /** Split an already-validated reference into its name and version parts. */
