@@ -132,8 +132,8 @@ gone  stale-schema-comments "No producer yet" packages/core/src/db/schema.ts
 gonew view-not-built "VIEW_NOT_BUILT" plugins
 gone  lockfile      "werift|reflect-metadata|tsyringe" bun.lock
 
-present networking-version '"version": "3.0.0"' plugins/networking/package.json
-present proxy-manager-version '"version": "0.11.2"' plugins/proxy-manager/package.json
+present networking-version '"version": "3.1.0"' plugins/networking/package.json
+present proxy-manager-version '"version": "0.12.0"' plugins/proxy-manager/package.json
 
 # labelling.ts carried three raw control bytes (0x00, 0x1f, 0x7f) inside a
 # regex character class, which made `grep` skip the file as binary (docs/mvp/13 B.2).
