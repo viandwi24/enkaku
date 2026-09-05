@@ -1,26 +1,26 @@
 # Plan 312 — Workflow data: the `set` node, the assignment editor, array functions, and the weighted switch
 
-> Status: draft
+> Status: implemented (software)
 > Ships: `packages/studio/src/components/flow/AssignmentEditor.tsx`
-> Depends on: plans 301–307 (implemented); plan 300 D3, D4, D8; plan 309 (simulate — the cheapest way to test this)
+> Depends on: plans 301–307 (implemented); plan 300 D3, D4, D8. Plan 309 (simulate) is NOT a precondition — this plan lands first and 309 follows it; no §0 verification row here needs simulate.
 > Spec references: §4.6
 
 ## 0. Goal checklist
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | A `set` node builds new data from earlier nodes without touching a device | 7th node kind; in-process; no child job | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `set node` group passes | [ ] |
-| G2 | A field name uses dot notation to build nested output | `a.b` + `20` ⇒ `{ a: { b: 20 } }` | `bun test packages/protocol/src/workflow-set.test.ts` → `dot notation` passes | [ ] |
+| G1 | A `set` node builds new data from earlier nodes without touching a device | 7th node kind; in-process; no child job | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `set node` group passes | [x] |
+| G2 | A field name uses dot notation to build nested output | `a.b` + `20` ⇒ `{ a: { b: 20 } }` | `bun test packages/protocol/src/workflow-set.test.ts` → `dot notation` passes | [x] |
 | G3 | Each assignment's value toggles between a literal and an expression, and so does its **name** | 2 toggles per row | owner smoke §7 step 2 | owner |
-| G4 | `keepOnlySet` decides whether the input is carried through | 2 behaviours, tested | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `keepOnlySet` passes | [ ] |
+| G4 | `keepOnlySet` decides whether the input is carried through | 2 behaviours, tested | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `keepOnlySet` passes | [x] |
 | G5 | Dragging a value from the INPUT pane creates an assignment with the name AND value filled | 1 drag ⇒ 1 complete row | owner smoke §7 step 1 | owner |
-| G6 | `pluck` and `filterWhere` cover per-element array work with no lambda and no new grammar | 2 functions, closed table | `bun test packages/expr/src/functions.test.ts` → `array paths` passes | [ ] |
-| G7 | A `switch` can branch by weight instead of predicate | `mode: 'weighted'`; weights sum-normalised; draw from `$random` | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `weighted switch` passes | [ ] |
-| G8 | A weighted draw is reproducible for a given run | same seed, same branch | same file → `weighted is deterministic` passes | [ ] |
-| G11 | The JSON tab and the Fields tab round-trip losslessly, both directions | a document edited in either tab reads identically in the other | `bun test packages/studio/src/../json-view.test.ts` is forbidden (§8); proven instead by `bun test packages/protocol/src/workflow-set.test.ts` → `json round trip` over the pure codec | [ ] |
-| G12 | A JSON document that cannot become assignments is refused with its reason, not stored | 3 cases: top-level array, duplicate key, unholdable value | same file → `json refusals` passes | [ ] |
-| G9 | The expression engine gains no new grammar, no regex, no lambda | `parse.ts` unchanged except the function table's names | `git diff --stat packages/expr/src/parse.ts` → 0 changed lines | [ ] |
-| G10 | `bun run typecheck` and `bun run build:studio` clean; no Studio test file added | 0 errors, 0 `*.test.tsx` | both exit 0 | [ ] |
+| G6 | `pluck` and `filterWhere` cover per-element array work with no lambda and no new grammar | 2 functions, closed table | `bun test packages/expr/src/functions.test.ts` → `array paths` passes | [x] |
+| G7 | A `switch` can branch by weight instead of predicate | `mode: 'weighted'`; weights sum-normalised; draw from `$random` | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `weighted switch` passes | [x] |
+| G8 | A weighted draw is reproducible for a given run | same seed, same branch | same file → `weighted is deterministic` passes | [x] |
+| G11 | The JSON tab and the Fields tab round-trip losslessly, both directions | a document edited in either tab reads identically in the other | `bun test packages/studio/src/../json-view.test.ts` is forbidden (§8); proven instead by `bun test packages/protocol/src/workflow-set.test.ts` → `json round trip` over the pure codec | [x] |
+| G12 | A JSON document that cannot become assignments is refused with its reason, not stored | 3 cases: top-level array, duplicate key, unholdable value | same file → `json refusals` passes | [x] |
+| G9 | The expression engine gains no new grammar, no regex, no lambda | `parse.ts` unchanged except the function table's names | `git diff --stat packages/expr/src/parse.ts` → 0 changed lines | [x] |
+| G10 | `bun run typecheck` and `bun run build:studio` clean; no Studio test file added | 0 errors, 0 `*.test.tsx` | both exit 0 | [x] |
 
 ## 1. Goals
 
@@ -364,7 +364,38 @@ Owner smoke, **no device needed** (this is what plan 309's simulate is for):
 | What | Where it was | Proof |
 |---|---|---|
 | `node.icon` on a plugin member | `packages/protocol/src/workflow-node-type.ts` | plan 310 §3.3 moved it to the member; `rg -n "node.*icon" packages/sdk/src/plugin.ts` → the member-level field only |
+| The local `GATE_OPS`/`GateOp` definition | `packages/protocol/src/workflow.ts` | Moved (not deleted) to `packages/expr/src/functions.ts` so `filterWhere` (§3.5) can share the one operator vocabulary without `@enkaku/expr` importing from `@enkaku/protocol` (the dependency runs the other way); `workflow.ts` now imports and re-exports both names, so every existing consumer (`workflow.test.ts`, `workflow-resolve.ts`, `packages/protocol/src/index.ts`) is unchanged. `rg -n "^export const GATE_OPS" packages/protocol/src/workflow.ts` → no hit; `rg -n "^export const GATE_OPS" packages/expr/src/functions.ts` → one hit. |
 
 ## 11. Handoff report
 
-_To be written by the executing agent._
+**Status: implemented (software)** — every non-`owner` §0 row passes its own stated command (output captured below); G3 and G5 are genuinely owner-only (a drag gesture and a UI toggle interaction cannot be proven from a terminal) and are left unticked for the owner's smoke pass (§7).
+
+**Header correction** (requested before starting): plan 312's `Depends on:` line named plan 309 (simulate) as a dependency. Landing order is the other way round — 312 lands first, 309 after it — and no §0 row here ever needed simulate to verify. The header now says so explicitly instead of leaving a misleading citation for the next reader.
+
+### What was built, by area
+
+- **`@enkaku/expr`** (`packages/expr/src/functions.ts`): `pluck(array, path)` and `filterWhere(array, path, op, value)`, plus a `GATE_OPS`/`GateOp` export **moved here** from `@enkaku/protocol`'s `workflow.ts` (§10) so `filterWhere` could reuse the exact operator set a gate/switch predicate uses, without `@enkaku/expr` importing from `@enkaku/protocol` (the dependency graph runs the other way — `protocol` already imports `EXPR_LIMITS` from `expr`). `workflow.ts` now imports and re-exports both names, so no existing consumer changed. `parse.ts` and `eval.ts` are untouched — `git diff --stat packages/expr/src/parse.ts` shows 0 changed lines (G9); the two new functions are entries in the closed function table, which is what that table is for.
+- **`@enkaku/protocol`**: the `set` node (`workflow.ts`'s discriminated union gained a 7th member: `assignments[]`, `keepOnlySet`, `next`), the weighted `switch` (`mode: 'predicate' | 'weighted'`, a `weight` field per case, shape-exclusivity enforced in `WorkflowDocSchema`'s own doc-level `superRefine` rather than inside the discriminated union — see the correction below), `checkWorkflow` gaining the `set` node's zero-cost budget treatment (free: `nodeCostMs`'s existing default already returns 0 for an unlisted kind), a literal-name type/digits-only check, and a new file `workflow-set.ts` holding the pure, tested pieces: `setPath` (the dot-notation write), the interpolation splitter (`compileTemplate`/`hasTemplateMarkers`), and the JSON ⇄ assignments codec (`jsonToAssignments`/`assignmentsToJson`) backed by a small hand-rolled duplicate-key-aware JSON reader (`JSON.parse` cannot detect a duplicate key — it silently keeps the last one).
+- **The core executor** (`packages/core/src/jobs/executors/workflow.ts`): a `set` node block (resolves every assignment's name and value through the existing `resolveValue`, writes with `setPath`, fails the step with a named reason on an unresolvable binding or a bad name) and the weighted-switch draw (`deriveRandom(seed, seq) * totalWeight`, cumulative subtraction — the SAME per-step random value a gate already computes, so the branch is reproducible for a run and different between runs). `packages/core/src/db/schema.ts`'s `workflowSteps.kind` column gained `'set'` to its TS union (a `text()` column with no stored CHECK constraint — no migration needed). `packages/core/src/workflows/registry.ts` gained the `core:set` palette entry (icon `list`, category `data`); `registry.test.ts` updated for seven core kinds, not six.
+- **Studio**: `AssignmentEditor.tsx` (new) — the Fields/JSON tab switch, one row per assignment (`ExprField` for both name and value, a drag handle, a remove button), `keepOnlySet` toggle, and an HTML5 drop target reading `DataTree`'s new `draggable` prop (a leaf's own key becomes the row's literal name, a reference expression becomes its value — one drag, one complete row, G5). Mounted in `NodePanel.tsx` for `kind: 'set'`; `isPinnable` extended to include `set` (it has a single unconditional successor, same as `script`/`delay` — R6's own rule), matched by the same extension in `packages/core/src/api/workflows.ts`'s pin-eligibility check. The weighted switch got a mode toggle plus a per-case weight input in `NodePanel.tsx`'s existing switch section. Every exhaustive `switch (node.kind)` the type checker could reach — `doc-edit.ts`, `FlowNode.tsx`, `FlowCanvas.tsx`, `FlowEditor.tsx`, `packages/core/src/api/workflows.ts` — was extended for the 7th kind; `bun run typecheck` is what surfaced every one of them (TS does not error on a switch silently missing a case with no `default`/`never` guard, so this was read off the compiler's own type-mismatch errors on the object literals each branch builds, not caught by exhaustiveness alone). Added `DotsSixVerticalIcon` to `@enkaku/ui`'s icon export list (the drag handle glyph) — no test added to `@enkaku/ui`, per plan 200 §8.3. `docs/design.md`'s Flow editor section gained the assignment row's measurements and updated the "colour groups nodes into three" / "six core kinds" lines to say seven.
+- **`docs/plans/312-workflow-data.md`** itself: the header correction above, §0 ticked, §10 gained the `GATE_OPS` relocation row, this report.
+
+### One design call made without an explicit plan instruction
+
+§9 Q4 asked "should `set` be able to DELETE a field?" and the plan's own answer was "yes, via `keepOnlySet` plus re-listing what to keep" — implemented as specified, no `remove` flag added.
+
+G12's third refusal case, "unholdable value", was not spelled out beyond its name. I read it as **a digits-only object key** — the same rule §3.4 already names for a literal assignment name (dot notation may not index an array, so a segment that is only digits cannot become a name segment, and there is nowhere else for such a key to go). Every JSON leaf type (string/number/boolean/null/array) is otherwise representable as `{ const }`, so a digits-only key was the one shape that is syntactically valid JSON yet genuinely cannot become an assignment. This is a judgement call, recorded here rather than left silent; `packages/protocol/src/workflow-set.test.ts`'s `json refusals` group tests it under both a top-level and a nested key.
+
+### What I could not verify
+
+- **G3 and G5** (owner smoke, §7 steps 1–2): a drag gesture and a Fixed/Expression toggle click cannot be exercised from this terminal. The code paths exist (`ExprField`'s existing toggle is reused unchanged for both `name` and `value`; `AssignmentEditor`'s drop handler is wired and typechecks) but were not clicked through a browser.
+- **The weighted-switch distribution and pluck/filterWhere real-workflow feel** were exercised only by unit tests (deterministic seeds, synthetic arrays), not by drawing an actual workflow in Studio — that is exactly what plan 309's simulate (landing next) is for, per this plan's own test-plan note.
+
+### Things the plan got right that a reader should not re-derive
+
+- Plan 303 §4.1's `WORKFLOW_LIMITS.maxSwitchCases` and D8's "core owns control flow" both held without needing a second look — the weighted switch is a mode on the existing node, not a new one, exactly as §3.6 said.
+- `nodeCostMs` in `workflow-check.ts` already defaulted an unrecognised node kind to a budget cost of `0` (it only special-cases `'script'` and `'delay'`), so **G1's "`set` costs zero time in the budget walk" needed no code change at all** — only a doc-comment note. Worth flagging so a later reader does not go looking for a change that was never necessary.
+
+### One correction to the plan's own technical design (§4.2)
+
+§4.2's sketch for the weighted switch's schema shows `cases: z.array(z.object({ when: PredicateSchema.optional(), weight: ... }).strict())...` with the shape-exclusivity described as enforced by "the schema's own `superRefine`" — read literally, that means attaching `.superRefine` to the `switch` branch **inside** `WorkflowNodeSchema`'s `z.discriminatedUnion`. That does not work: `z.discriminatedUnion` needs every member to be a plain object schema it can read the `kind` literal off of directly, and wrapping one member in `.superRefine()` turns it into a `ZodEffects` the discriminated union can no longer introspect (confirmed by trying it — Zod's own discriminated-union machinery throws at schema-construction time, not import time, so this would have been a runtime failure on first use, not a type error). The fix: the `switch` branch stays a plain `.strict()` object, and the mode/case shape check moved into `WorkflowDocSchema`'s own existing doc-level `superRefine` (which already walks `doc.nodes` for the entry/start-node checks) — same enforcement, same error messages, one level up. Recorded here because the next person to read §4.2 literally will hit the exact same wall.

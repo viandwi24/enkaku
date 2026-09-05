@@ -1,10 +1,11 @@
 import { z } from 'zod'
-import { WorkflowNodeDescriptorSchema, type JsonSchemaNode, type NodeType } from '@enkaku/protocol'
+import { IconNameSchema, WorkflowNodeDescriptorSchema, type IconName, type JsonSchemaNode, type NodeType } from '@enkaku/protocol'
 import type { PluginRuntime } from '../plugins/runtime'
 
 /**
- * The flow editor's node catalog (plan 300 D6, plan 303 §4.3) — the six core
- * control kinds, constant, plus every ACTIVATED plugin's node members, read
+ * The flow editor's node catalog (plan 300 D6, plan 303 §4.3) — the seven
+ * core control kinds (`set` added by plan 312 §4.6), constant, plus every
+ * ACTIVATED plugin's node members, read
  * fresh off `runtime.active(name)`'s manifest on every call (the same "never
  * caches" discipline `surface-registry.ts` already documents for exactly the
  * same reason: a plugin's manifest is small, and a cache is one more thing to
@@ -34,6 +35,17 @@ const CORE_NODE_TYPES: NodeType[] = [
   },
   { id: 'core:delay', source: 'core', kind: 'delay', title: 'Delay', description: 'A bounded, cancellable wait — costs a step, touches no device.', category: 'other', icon: 'pause', summary: [], keywords: ['wait', 'sleep', 'pause'] },
   { id: 'core:finish', source: 'core', kind: 'finish', title: 'Finish', description: 'Ends the run, succeeded or failed.', category: 'other', icon: 'check', summary: [], keywords: ['end', 'done'] },
+  {
+    id: 'core:set',
+    source: 'core',
+    kind: 'set',
+    title: 'Set',
+    description: 'Build new data from earlier nodes — no device involved.',
+    category: 'data',
+    icon: 'list',
+    summary: [],
+    keywords: ['data', 'assign', 'map', 'edit fields', 'json'],
+  },
 ]
 
 /**
@@ -51,6 +63,12 @@ const ManifestNodeProjectionSchema = z.object({
         id: z.string(),
         title: z.string().optional(),
         description: z.string().optional(),
+        // Plan 310 §3.3 — the member's OWN icon, preferred over `node.icon`
+        // below. A bare string, not `IconNameSchema`: this projection must
+        // not fail (and drop the WHOLE plugin's node registry with it) over
+        // one member's icon written against a shorter `ICON_NAMES` by an
+        // older core. Narrowed in `listNodeTypes` below instead.
+        icon: z.string().optional(),
         paramsSchema: z.unknown().optional(),
         resultSchema: z.unknown().optional(),
         node: WorkflowNodeDescriptorSchema.optional(),
@@ -91,7 +109,16 @@ export function listNodeTypes(deps: { plugins: PluginRuntime }): NodeType[] {
         title: s.title ?? s.id,
         description: s.description ?? '',
         category: s.node.category,
-        icon: s.node.icon,
+        // Plan 310 §3.3 — the member's OWN icon wins; `node.icon` is a
+        // fallback read for packs published before this plan (plan 312 §10
+        // deletes the fallback once both shipped packs are bumped). Narrowed
+        // through `IconNameSchema` here rather than trusted from the JSON
+        // column — the same "validate on read, not merely on write"
+        // discipline `parseScriptRuntime` states.
+        icon: (() => {
+          const checked = s.icon !== undefined ? IconNameSchema.safeParse(s.icon) : undefined
+          return checked?.success ? (checked.data as IconName) : s.node.icon
+        })(),
         summary: s.node.summary,
         keywords: s.node.keywords,
         ...(isJsonSchemaNode(s.paramsSchema) ? { paramsSchema: s.paramsSchema } : {}),

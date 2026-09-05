@@ -556,8 +556,8 @@ export const workflowSteps = sqliteTable(
     seq: integer('seq').notNull(),
     /** The document's step id (`WorkflowDoc.nodes[].id`). `_on_fail` for the document's cleanup step. */
     stepId: text('step_id').notNull(),
-    /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds — `start`/`finish` are never logged (plan 301 §3.2, §3.4). */
-    kind: text('kind').notNull().$type<'script' | 'gate' | 'switch' | 'delay'>(),
+    /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds — `start`/`finish` are never logged (plan 301 §3.2, §3.4). `set` joins them by plan 312 §4.3 — a TS-only type widening, no migration: this is a `text()` column with no stored CHECK constraint. */
+    kind: text('kind').notNull().$type<'script' | 'gate' | 'switch' | 'delay' | 'set'>(),
     /** The child script job and the run of it this step waited on. Both null for a gate and until the job is created. */
     jobId: text('job_id'),
     jobRunId: text('job_run_id'),
@@ -1719,6 +1719,8 @@ export const plugins = sqliteTable(
     version: text('version').notNull(),
     title: text('title'),
     description: text('description'),
+    /** Plan 310 §3.3, §4.1 — one of `ICON_NAMES`, same leniency as `title`/`description` (set from the verify report, kept across a re-verify that reports none). Null for every version published before this plan. */
+    icon: text('icon'),
     /** The single bundle every one of this version's scripts rows points at (§3.2). */
     bundle: text('bundle').notNull(),
     source: text('source'),

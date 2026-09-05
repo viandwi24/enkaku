@@ -222,6 +222,7 @@ function findPredecessorId(doc: WorkflowDoc, nodeId: string): string | null {
     switch (n.kind) {
       case 'start':
       case 'delay':
+      case 'set':
         if (n.next === nodeId) return n.id
         break
       case 'script':
@@ -250,6 +251,7 @@ function stripSuccessors(node: WorkflowNode): WorkflowNode {
     case 'switch':
       return { ...node, cases: node.cases.map((c) => ({ ...c, to: undefined })), default: undefined }
     case 'delay':
+    case 'set':
       return { ...node, next: undefined }
     default:
       return node
@@ -411,11 +413,11 @@ export function createWorkflowRoutes(deps: {
     // never evaluate its predicate and the run would leave by a branch nobody
     // chose — a pin that lies about control flow, which is exactly what plan
     // 304 §3.3 exists to prevent. `start` and `finish` produce no output at
-    // all. That leaves `script` and `delay`, both of which have a single
-    // unconditional successor.
+    // all. That leaves `script`, `delay`, and `set` (plan 312 §4.1) — all
+    // three have a single unconditional successor (`next`).
     const target = workflow.doc.nodes.find((n) => n.id === nodeId)
     if (!target) throw new EnkakuError('E_NODE_UNKNOWN', `"${nodeId}" is not a node of workflow "${name}"`)
-    if (target.kind !== 'script' && target.kind !== 'delay') {
+    if (target.kind !== 'script' && target.kind !== 'delay' && target.kind !== 'set') {
       throw new EnkakuError(
         'E_PIN_NOT_PINNABLE',
         `a ${target.kind} node cannot be pinned: only a node with a single main output may be (plan 300 R6). Pinning it would skip the decision that chooses its successor.`,

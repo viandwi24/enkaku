@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import type { DeviceInfo, GroupInfo, NodeType, ValueExpr, WorkflowDoc, WorkflowFinding, WorkflowNode, WorkflowParam } from '@enkaku/protocol'
+import type { DeviceInfo, GroupInfo, NodeType, ScriptListItem, ValueExpr, WorkflowDoc, WorkflowFinding, WorkflowNode, WorkflowParam } from '@enkaku/protocol'
 import { GroupInfoSchema } from '@enkaku/protocol'
 import {
   Button,
@@ -18,7 +18,7 @@ import { useTarget } from '@/components/target/useTarget'
 import { fetchAllPages, fetchDevices, fetchNodeTypes, fetchWorkflowLastRun, listWorkflowPins, runWorkflowNode, setWorkflowPin, deleteWorkflowPin } from '@/lib/api'
 import type { WorkflowLastRunResponse } from '@/lib/api'
 import { PredicateEditor } from './PredicateEditor'
-import { ScriptPicker, type ScriptOption } from './ScriptPicker'
+import { ScriptTrigger } from '@/components/scripts/ScriptPalette'
 import { paramProperties, resolveScriptOption } from './scriptBindings'
 import { DataTree, type DataTreeSegment } from './DataTree'
 import { DataView } from './DataView'
@@ -28,6 +28,8 @@ import { StartPanel } from './StartPanel'
 import type { PreviewScope } from './usePreview'
 import type { NodeOption } from './ValueExprEditor'
 import { deriveGraph } from './derive-graph'
+import { placeholderPredicate } from './doc-edit'
+import { AssignmentEditor } from './AssignmentEditor'
 
 /**
  * The node panel (plan 306 §4.1–§4.2) — a right-hand drawer replacing plan
@@ -39,9 +41,9 @@ import { deriveGraph } from './derive-graph'
  * the plan's own diagram, recorded in the handoff report.
  */
 
-/** Only a `script` or a `delay` node may be pinned (plan 300 R6, `E_PIN_NOT_PINNABLE` since commit `388f8c5`) — this control is never even rendered for anything else. */
-function isPinnable(node: WorkflowNode): node is Extract<WorkflowNode, { kind: 'script' | 'delay' }> {
-  return node.kind === 'script' || node.kind === 'delay'
+/** Only a `script`, `delay`, or `set` node may be pinned (plan 300 R6, `E_PIN_NOT_PINNABLE` since commit `388f8c5`; `set` joins them by plan 312 §4.1 — it too has a single unconditional successor) — this control is never even rendered for anything else. */
+function isPinnable(node: WorkflowNode): node is Extract<WorkflowNode, { kind: 'script' | 'delay' | 'set' }> {
+  return node.kind === 'script' || node.kind === 'delay' || node.kind === 'set'
 }
 
 function emptyPreviewScope(): PreviewScope {
@@ -61,7 +63,7 @@ export function NodePanel({
 }: {
   doc: WorkflowDoc
   node: WorkflowNode
-  scripts: readonly ScriptOption[]
+  scripts: readonly ScriptListItem[]
   findings: readonly { path: string; message: string; severity: 'error' | 'warning' }[]
   onChange(patch: Partial<WorkflowNode>): void
   onRemove(): void
@@ -187,6 +189,7 @@ export function NodePanel({
                   value={inputValue}
                   root="$input"
                   onInsert={(ref, segments) => activeField?.onLeafClick(ref, segments)}
+                  draggable={node.kind === 'set'}
                 />
               )}
             </section>
@@ -231,7 +234,20 @@ export function NodePanel({
 
               {node.kind === 'script' && (
                 <div className="space-y-3">
-                  <ScriptPicker scripts={scripts} value={node.script} onChange={(ref) => onChange({ script: ref })} />
+                  {/*
+                    Plan 310 §3.4, §4.3 — the palette's trigger row, not the
+                    name `Combobox` plus version `Select` this replaced. A
+                    pick writes `name@<active plugin version>` (§4.6, "a
+                    script reference is still pinned, and the pin is shown as
+                    a fact") — never `@latest`, so placing a node writes down
+                    exactly what ran, matching `registry.ts`'s own pin rule
+                    for a dragged palette node (plan 303 §4.4).
+                  */}
+                  <ScriptTrigger
+                    scripts={scripts}
+                    selected={scriptOption ?? null}
+                    onPick={(picked) => onChange({ script: `${picked.name}@${picked.plugin.version}` } as Partial<WorkflowNode>)}
+                  />
                   {bindingFields.map(({ key, node: fieldSchema, required }) => (
                     <div key={key} className="space-y-1">
                       <p className="text-[12px] font-medium">
@@ -261,18 +277,61 @@ export function NodePanel({
 
               {node.kind === 'switch' && (
                 <div className="space-y-2">
+                  <Label className="flex items-center gap-2 text-[12px]">
+                    <Switch
+                      checked={node.mode === 'weighted'}
+                      onCheckedChange={(on) =>
+                        onChange({
+                          mode: on ? 'weighted' : 'predicate',
+                          cases: node.cases.map((c) => (on ? { to: c.to, label: c.label, weight: c.weight ?? 1 } : { to: c.to, label: c.label, when: c.when ?? placeholderPredicate() })),
+                        } as Partial<WorkflowNode>)
+                      }
+                    />
+                    {node.mode === 'weighted' ? 'Weighted — a case is drawn at random' : 'Predicate — the first matching case wins'}
+                  </Label>
                   {node.cases.map((c, i) => (
                     <div key={i} className="space-y-1 rounded-md border border-dashed p-2">
                       <p className="rack-label">case {i + 1}</p>
-                      <PredicateEditor
-                        value={c.when}
-                        onChange={(when) => onChange({ cases: node.cases.map((x, j) => (j === i ? { ...x, when } : x)) })}
-                        workflowParams={doc.params}
-                        nodeOptions={nodeOptions}
-                      />
+                      {node.mode === 'weighted' ? (
+                        <div className="space-y-1">
+                          <Label className="text-[11.5px] font-normal text-fg-muted">Weight</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            className="h-8 text-[12.5px]"
+                            value={c.weight ?? 0}
+                            onChange={(e) => {
+                              const weight = Math.max(0, e.target.valueAsNumber || 0)
+                              onChange({ cases: node.cases.map((x, j) => (j === i ? { ...x, weight } : x)) } as Partial<WorkflowNode>)
+                            }}
+                            aria-label={`Case ${i + 1} weight`}
+                          />
+                        </div>
+                      ) : (
+                        <PredicateEditor
+                          value={c.when ?? placeholderPredicate()}
+                          onChange={(when) => onChange({ cases: node.cases.map((x, j) => (j === i ? { ...x, when } : x)) } as Partial<WorkflowNode>)}
+                          workflowParams={doc.params}
+                          nodeOptions={nodeOptions}
+                        />
+                      )}
                     </div>
                   ))}
                 </div>
+              )}
+
+              {node.kind === 'set' && (
+                <AssignmentEditor
+                  assignments={node.assignments}
+                  keepOnlySet={node.keepOnlySet}
+                  onChange={(assignments) => onChange({ assignments } as Partial<WorkflowNode>)}
+                  onChangeKeepOnlySet={(keepOnlySet) => onChange({ keepOnlySet } as Partial<WorkflowNode>)}
+                  workflowParams={doc.params}
+                  nodeOptions={nodeOptions}
+                  previewScope={previewScope}
+                  predecessorId={predecessorId}
+                  onRegisterActive={setActiveField}
+                />
               )}
 
               {node.kind === 'delay' && (
@@ -361,7 +420,7 @@ function RunAndPin({
   onPinChanged,
 }: {
   workflowName: string
-  node: Extract<WorkflowNode, { kind: 'script' | 'delay' }>
+  node: Extract<WorkflowNode, { kind: 'script' | 'delay' | 'set' }>
   pinned: boolean
   hasLastOutput: boolean
   onRunSuccess(): void

@@ -34,11 +34,12 @@ export type DocEdit =
    */
   | { t: 'set-meta'; patch: Partial<Pick<WorkflowDoc, 'name' | 'title' | 'description' | 'maxSteps' | 'params'>> }
 
-/** The edge kinds a node actually owns — a `start`/`script`/`delay` node has `next` (script also `onFailure`), a `gate` has `then`/`else`, a `switch` has one `case:<i>` per declared case plus `default`, and `finish` is a sink with none. */
+/** The edge kinds a node actually owns — a `start`/`script`/`delay`/`set` node has `next` (script also `onFailure`), a `gate` has `then`/`else`, a `switch` has one `case:<i>` per declared case plus `default`, and `finish` is a sink with none. */
 export function edgeKindsOf(node: WorkflowNode): EdgeKind[] {
   switch (node.kind) {
     case 'start':
     case 'delay':
+    case 'set':
       return ['next']
     case 'script':
       return ['next', 'onFailure']
@@ -59,7 +60,7 @@ export function edgeTargetOf(node: WorkflowNode, kind: EdgeKind): string | undef
     if (!m) return undefined
     return node.cases[Number(m[1])]?.to
   }
-  if (kind === 'next' && (node.kind === 'start' || node.kind === 'script' || node.kind === 'delay')) return node.next
+  if (kind === 'next' && (node.kind === 'start' || node.kind === 'script' || node.kind === 'delay' || node.kind === 'set')) return node.next
   if (kind === 'onFailure' && node.kind === 'script') return node.onFailure
   if (kind === 'then' && node.kind === 'gate') return node.then
   if (kind === 'else' && node.kind === 'gate') return node.else
@@ -77,7 +78,7 @@ export function setEdgeField(node: WorkflowNode, kind: EdgeKind, to: string | un
     const cases = node.cases.map((c, idx) => (idx === i ? { ...c, to } : c))
     return { ...node, cases }
   }
-  if (kind === 'next' && (node.kind === 'start' || node.kind === 'script' || node.kind === 'delay')) return { ...node, next: to }
+  if (kind === 'next' && (node.kind === 'start' || node.kind === 'script' || node.kind === 'delay' || node.kind === 'set')) return { ...node, next: to }
   if (kind === 'onFailure' && node.kind === 'script') return { ...node, onFailure: to }
   if (kind === 'then' && node.kind === 'gate') return { ...node, then: to }
   if (kind === 'else' && node.kind === 'gate') return { ...node, else: to }

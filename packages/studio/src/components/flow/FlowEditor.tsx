@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { NodeType, WorkflowDoc, WorkflowNode } from '@enkaku/protocol'
+import type { NodeType, ScriptListItem, WorkflowDoc, WorkflowNode } from '@enkaku/protocol'
 import { fetchWorkflowLastRun, listWorkflowPins, saveWorkflow, type WorkflowInfo } from '@/lib/api'
 import { Sheet, SheetContent } from '@enkaku/ui'
 import {
@@ -20,7 +20,6 @@ import { RunOverlay } from './RunOverlay'
 import { NodePalette } from './NodePalette'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
-import type { ScriptOption } from './ScriptPicker'
 import { useHistory, type UseHistoryResult } from './useHistory'
 import { useValidation, nodeIndexOf } from './useValidation'
 import { useClipboard } from './useClipboard'
@@ -48,11 +47,13 @@ function newNodeFromType(type: NodeType, id: string, x: number, y: number): Work
     case 'gate':
       return { kind: 'gate', id, title, ui, when: placeholderPredicate() }
     case 'switch':
-      return { kind: 'switch', id, title, ui, cases: [{ when: placeholderPredicate(), label: '' }] }
+      return { kind: 'switch', id, title, ui, mode: 'predicate', cases: [{ when: placeholderPredicate(), label: '' }] }
     case 'delay':
       return { kind: 'delay', id, title, ui, ms: { const: 1000 }, maxMs: 60_000 }
     case 'finish':
       return { kind: 'finish', id, title, ui, status: 'succeed', message: '' }
+    case 'set':
+      return { kind: 'set', id, title, ui, assignments: [], keepOnlySet: false }
     case 'start':
       // `start` cannot be placed a second time (plan 301 §3.4) — the
       // palette never lists it as pickable; kept only so the switch above
@@ -76,7 +77,7 @@ export function FlowEditor({
 }: {
   initialDoc: WorkflowDoc
   onDirtyChange?: (dirty: boolean) => void
-  scripts: readonly ScriptOption[]
+  scripts: readonly ScriptListItem[]
   mode: 'create' | 'update'
   onSaved(workflow: WorkflowInfo): void
 }) {

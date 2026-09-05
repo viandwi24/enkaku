@@ -80,11 +80,11 @@ const NODE_SCRIPT = {
 const PLAIN_SCRIPT = { id: 'noop', paramsSchema: { type: 'object' }, runtime: null }
 
 describe('listNodeTypes — registry lists both (plan 303 G4)', () => {
-  test('the six core kinds are always present, one `core:<kind>` id each', () => {
+  test('the seven core kinds are always present, one `core:<kind>` id each', () => {
     const h = setUp()
     const types = listNodeTypes({ plugins: h.runtime })
     const coreIds = types.filter((t) => t.source === 'core').map((t) => t.id)
-    expect(coreIds.sort()).toEqual(['core:delay', 'core:finish', 'core:gate', 'core:script', 'core:start', 'core:switch'])
+    expect(coreIds.sort()).toEqual(['core:delay', 'core:finish', 'core:gate', 'core:script', 'core:set', 'core:start', 'core:switch'])
   })
 
   test('an activated plugin member declaring `node` appears, with title/description/schemas/descriptor', async () => {
@@ -160,9 +160,9 @@ describe('listNodeTypes — pins version (plan 303 G6)', () => {
 })
 
 describe('listNodeTypes — an uninstalled/unresolvable plugin node does not crash the registry (plan 303 §6)', () => {
-  test('a farm with no plugins at all still returns the six core types', () => {
+  test('a farm with no plugins at all still returns the seven core types', () => {
     const h = setUp()
     expect(() => listNodeTypes({ plugins: h.runtime })).not.toThrow()
-    expect(listNodeTypes({ plugins: h.runtime })).toHaveLength(6)
+    expect(listNodeTypes({ plugins: h.runtime })).toHaveLength(7)
   })
 })

@@ -26,6 +26,49 @@ function delayNode(overrides: Record<string, unknown> = {}) {
   return { kind: 'delay', id: 'dl', title: '', ui: { x: 0, y: 0 }, ms: { const: 1 }, maxMs: 50, ...overrides }
 }
 
+function setNode(overrides: Record<string, unknown> = {}) {
+  return { kind: 'set', id: 'set1', title: '', ui: { x: 0, y: 0 }, assignments: [], keepOnlySet: false, ...overrides }
+}
+
+/** `start -> s1 (a script) -> set1` — `s1`'s own output is `set1`'s `$input`/`$nodes.s1`. */
+function setDoc(assignments: Record<string, unknown>[], opts: { keepOnlySet?: boolean } = {}): WorkflowDoc {
+  return WorkflowDocSchema.parse({
+    schema: 2,
+    name: 'set-doc',
+    title: '',
+    description: '',
+    params: [],
+    entry: 'start',
+    nodes: [startNode({ next: 's1' }), scriptNode({ id: 's1', script: 'demo/s1@1.0.0', next: 'set1' }), setNode({ assignments, keepOnlySet: opts.keepOnlySet ?? false })],
+  })
+}
+
+function weightedSwitchDoc(): WorkflowDoc {
+  return WorkflowDocSchema.parse({
+    schema: 2,
+    name: 'weighted-doc',
+    title: '',
+    description: '',
+    params: [],
+    entry: 'start',
+    nodes: [
+      startNode({ next: 'sw' }),
+      {
+        kind: 'switch',
+        id: 'sw',
+        title: '',
+        ui: { x: 0, y: 0 },
+        mode: 'weighted',
+        cases: [
+          { weight: 30, label: 'a' },
+          { weight: 50, label: 'b' },
+          { weight: 20, label: 'c' },
+        ],
+      },
+    ],
+  })
+}
+
 function threeStepDoc(): WorkflowDoc {
   return WorkflowDocSchema.parse({
     schema: 2,
@@ -597,5 +640,132 @@ describe('plan 304 — executor v2: per-step input/edge recording, pins, determi
     // A resume inherits the ORIGINAL run's seed automatically (jobs/runs/store.ts's own rule).
     const resumeRun = runsA.addRun(jobA.id, { trigger: 'resume', resumedFromRunId: runA.id, resumedFromStep: 0 })
     expect(resumeRun.seed).toBe(runA.seed)
+  })
+})
+
+describe('set node (plan 312 §3.3, §4.3, G1, G2)', () => {
+  test('builds new output from earlier nodes, in-process — no child job, no device', async () => {
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: { videos: [1, 2, 3] } }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = setDoc([{ name: { const: 'report.count' }, value: { expr: 'len($nodes.s1.videos)' } }])
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    const setRow = stepRows.find((s) => s.stepId === 'set1')
+    expect(setRow?.jobId).toBeNull()
+    expect(setRow?.jobRunId).toBeNull()
+    expect(setRow?.status).toBe('success')
+    expect(setRow?.takenEdge).toBe('next')
+    // `keepOnlySet` defaults to false — the input (`s1`'s own output) is carried through, overlaid by the assignment.
+    expect(setRow?.output).toEqual({ videos: [1, 2, 3], report: { count: 3 } })
+  })
+
+  test('dot notation builds nested output — a.b + 20 => { a: { b: 20 } } (G2)', async () => {
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: {} }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = setDoc([{ name: { const: 'a.b' }, value: { const: 20 } }])
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    expect(stepRows.find((s) => s.stepId === 'set1')?.output).toEqual({ a: { b: 20 } })
+  })
+
+  test('a later assignment overwrites an earlier one at the same path — order matters', async () => {
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: {} }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = setDoc([
+      { name: { const: 'a' }, value: { const: 1 } },
+      { name: { const: 'a' }, value: { const: 2 } },
+    ])
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    expect(stepRows.find((s) => s.stepId === 'set1')?.output).toEqual({ a: 2 })
+  })
+
+  test('an assignment whose value fails to resolve fails the step, naming the reason', async () => {
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: {} }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = setDoc([{ name: { const: 'a' }, value: { from: 'no-such-node', optional: false } }])
+    const { job, run } = workflowJobFor(runs, doc)
+    await expect(orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })).rejects.toThrow()
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    const setRow = stepRows.find((s) => s.stepId === 'set1')
+    expect(setRow?.status).toBe('failed')
+    expect(setRow?.error).toContain('no-such-node')
+  })
+})
+
+describe('keepOnlySet (plan 312 §4.3, G4)', () => {
+  test('false (the default) carries the input through, overlaid by the assignments', async () => {
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: { existing: 1, videos: [1, 2] } }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = setDoc([{ name: { const: 'added' }, value: { const: true } }], { keepOnlySet: false })
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    expect(stepRows.find((s) => s.stepId === 'set1')?.output).toEqual({ existing: 1, videos: [1, 2], added: true })
+  })
+
+  test('true drops the input — only what this node sets remains', async () => {
+    const { runs, deps } = setUp(new Map([['script-demo/s1', { status: 'success', result: { existing: 1 } }]]))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = setDoc([{ name: { const: 'added' }, value: { const: true } }], { keepOnlySet: true })
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    expect(stepRows.find((s) => s.stepId === 'set1')?.output).toEqual({ added: true })
+  })
+})
+
+describe('weighted switch (plan 312 §3.6, §4.2, §4.3, G7, G8)', () => {
+  test('draws a branch from $random, weighted — the distribution varies across seeds', async () => {
+    const seen = new Set<number>()
+    for (let seed = 0; seed < 30; seed++) {
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, weightedSwitchDoc(), { seed })
+      await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+      const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+      const output = stepRows.find((s) => s.stepId === 'sw')?.output as { case: number | null } | null | undefined
+      if (output && output.case !== null) seen.add(output.case)
+    }
+    expect(seen.size).toBeGreaterThan(1)
+  }, 20_000)
+
+  test('a case whose weight is larger is fired more often across many seeds — 50 beats 20', async () => {
+    const counts = new Map<number, number>()
+    for (let seed = 0; seed < 60; seed++) {
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, weightedSwitchDoc(), { seed })
+      await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+      const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+      const output = stepRows.find((s) => s.stepId === 'sw')?.output as { case: number | null } | null | undefined
+      if (output && output.case !== null) counts.set(output.case, (counts.get(output.case) ?? 0) + 1)
+    }
+    expect(counts.get(1) ?? 0).toBeGreaterThan(counts.get(2) ?? 0) // 50% case fires more than the 20% case
+  }, 20_000)
+
+  test('weighted is deterministic — the same seed draws the same branch every time (G8)', async () => {
+    const results: (number | null)[] = []
+    for (let i = 0; i < 3; i++) {
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, weightedSwitchDoc(), { seed: 777 })
+      await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+      const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+      const output = stepRows.find((s) => s.stepId === 'sw')?.output as { case: number | null } | null | undefined
+      results.push(output?.case ?? null)
+    }
+    expect(results[0]).not.toBeNull()
+    expect(results[1]).toBe(results[0])
+    expect(results[2]).toBe(results[0])
   })
 })

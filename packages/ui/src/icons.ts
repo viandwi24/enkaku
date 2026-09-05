@@ -134,3 +134,6 @@ export {
  * lie. This is the vertical one.
  */
 export { DotsThreeVerticalIcon } from '@phosphor-icons/react'
+
+/** Plan 312 §4.4 — the assignment row's own drag handle in the `set` node's editor. The six-dot grip, not the three-dot kebab above: a handle you drag, not a menu you open. */
+export { DotsSixVerticalIcon } from '@phosphor-icons/react'

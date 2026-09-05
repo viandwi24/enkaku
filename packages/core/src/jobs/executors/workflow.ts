@@ -3,6 +3,7 @@ import { deriveRandom } from '@enkaku/expr'
 import {
   evaluatePredicate,
   resolveValue,
+  setPath,
   validateAgainstSchema,
   WORKFLOW_LIMITS,
   type ResolveScope,
@@ -130,6 +131,7 @@ function defaultEdgeFor(node: WorkflowNode): string {
     }
     case 'script':
     case 'delay':
+    case 'set':
       return 'next'
     default:
       return 'next'
@@ -147,8 +149,8 @@ function edgeTarget(node: WorkflowNode, edge: string): string | null {
       return node.cases[idx]?.to ?? null
     }
     case 'script':
-      return node.next ?? null
     case 'delay':
+    case 'set':
       return node.next ?? null
     default:
       return null
@@ -482,24 +484,50 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           }
 
           if (node.kind === 'switch') {
-            // Plan 303 §3.3, §3.3: cases evaluated in ARRAY order, first
-            // match wins; `default` fires when none do. Reuses
-            // `evaluatePredicate` unchanged — a case's `when` is the exact
-            // same `Predicate` a gate already evaluates.
             const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             let chosen: string | undefined
             let firedIndex: number | null = null
-            for (let ci = 0; ci < node.cases.length; ci++) {
-              const c = node.cases[ci]
-              if (!c) continue
-              const { value } = evaluatePredicate(c.when, scope)
-              if (value) {
-                chosen = c.to
-                firedIndex = ci
-                break
+            if (node.mode === 'weighted') {
+              // Plan 312 §3.6, §4.3 — normalise the declared weights and
+              // draw from `$random` (the SAME per-step
+              // `deriveRandom(seed, seq)` a gate already uses), so the
+              // branch taken is reproducible for a given run and different
+              // between runs (G8): twenty devices each get their own
+              // branch, and a replay of any one of them takes the branch it
+              // actually took.
+              const weights = node.cases.map((c) => c.weight ?? 0)
+              const total = weights.reduce((a, b) => a + b, 0)
+              let remaining = (scope.randomSeed ?? 0) * total
+              for (let ci = 0; ci < node.cases.length; ci++) {
+                remaining -= weights[ci] ?? 0
+                if (remaining <= 0) {
+                  chosen = node.cases[ci]?.to
+                  firedIndex = ci
+                  break
+                }
               }
+              if (firedIndex === null) {
+                // Floating-point edge case only (the draw landed exactly on the total, or every weight was 0) — the last case.
+                firedIndex = node.cases.length - 1
+                chosen = node.cases[firedIndex]?.to
+              }
+            } else {
+              // Plan 303 §3.3: cases evaluated in ARRAY order, first match
+              // wins; `default` fires when none do. Reuses
+              // `evaluatePredicate` unchanged — a case's `when` is the exact
+              // same `Predicate` a gate already evaluates.
+              for (let ci = 0; ci < node.cases.length; ci++) {
+                const c = node.cases[ci]
+                if (!c || c.when === undefined) continue
+                const { value } = evaluatePredicate(c.when, scope)
+                if (value) {
+                  chosen = c.to
+                  firedIndex = ci
+                  break
+                }
+              }
+              if (firedIndex === null) chosen = node.default
             }
-            if (firedIndex === null) chosen = node.default
             const finishedAt = new Date()
             const output = { case: firedIndex, branch: chosen ?? null }
             const takenEdge = firedIndex === null ? 'default' : `case:${firedIndex}`
@@ -537,6 +565,84 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             const finishedAt = new Date()
             const output = { ms: waitMs }
             deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output, takenEdge: 'next' }).where(eq(workflowSteps.id, rowId)).run()
+            summary.push({
+              nodeId: node.id,
+              script: null,
+              status: 'success',
+              startedAt: toSec(rowStartedAt),
+              finishedAt: toSec(finishedAt),
+              durationMs: finishedAt.getTime() - rowStartedAt.getTime(),
+              output,
+            })
+
+            step += 1
+            // Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2).
+            cursor = node.next ?? null
+            continue
+          }
+
+          if (node.kind === 'set') {
+            // Plan 312 §3.3, §4.3 — pure, in-process, no device, no child
+            // job; the checker already treats this node as costing zero
+            // time in the budget walk. `keepOnlySet` drops the input;
+            // otherwise the input (when it is an object — anything else has
+            // no fields to carry through) seeds the base that each
+            // assignment writes into, in array order, so a LATER assignment
+            // may overwrite an EARLIER one's path.
+            const scope: ResolveScope = { params, outputs, summary, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const inputForBase = currentInputValue()
+            let base: Record<string, unknown> = !node.keepOnlySet && isPlainObject(inputForBase) ? { ...inputForBase } : {}
+            let setError: string | null = null
+            for (const a of node.assignments) {
+              const nameOutcome = resolveValue(a.name, scope)
+              if (!nameOutcome.ok) {
+                setError = `an assignment's name: ${nameOutcome.detail}`
+                break
+              }
+              if (typeof nameOutcome.value !== 'string' || nameOutcome.value.length === 0) {
+                setError = `an assignment's name resolved to ${typeof nameOutcome.value === 'string' ? 'an empty string' : typeof nameOutcome.value}, not a non-empty string`
+                break
+              }
+              const valueOutcome = resolveValue(a.value, scope)
+              if (!valueOutcome.ok) {
+                setError = `assignment "${nameOutcome.value}": ${valueOutcome.detail}`
+                break
+              }
+              try {
+                base = setPath(base, nameOutcome.value, valueOutcome.value)
+              } catch (err) {
+                setError = err instanceof Error ? err.message : String(err)
+                break
+              }
+            }
+
+            const finishedAt = new Date()
+            if (setError !== null) {
+              deps.db
+                .update(workflowSteps)
+                .set({ status: 'failed', finishedAt, error: setError, errorCode: 'E_WORKFLOW_SET_FAILED', takenEdge: null })
+                .where(eq(workflowSteps.id, rowId))
+                .run()
+              summary.push({
+                nodeId: node.id,
+                script: null,
+                status: 'failed',
+                startedAt: toSec(rowStartedAt),
+                finishedAt: toSec(finishedAt),
+                durationMs: finishedAt.getTime() - rowStartedAt.getTime(),
+                output: null,
+              })
+              step += 1
+              cursor = null
+              finalStatus = 'failed'
+              finalErrorCode = 'E_WORKFLOW_SET_FAILED'
+              finalErrorMessage = `step "${node.id}" failed: ${setError}`
+              continue
+            }
+
+            const { output, truncated } = capOutput(base)
+            outputs.set(node.id, output)
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output, outputTruncated: truncated, takenEdge: 'next' }).where(eq(workflowSteps.id, rowId)).run()
             summary.push({
               nodeId: node.id,
               script: null,

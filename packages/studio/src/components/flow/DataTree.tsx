@@ -89,11 +89,20 @@ const TYPE_COLOR: Record<JsonNodeType, string> = {
   array: 'text-fg-muted',
 }
 
+/** The HTML5 drag payload a `DataTree` row carries when `draggable` is on (plan 312 §4.4, G5) — `AssignmentEditor.tsx`'s own drop target reads this MIME type. */
+export const DATA_TREE_DRAG_MIME = 'application/x-enkaku-data-ref'
+export interface DataTreeDragPayload {
+  ref: string
+  /** The leaf's OWN key — an assignment row's default `name` when dropped (n8n's documented default, plan 312 §4.4). */
+  leafName: string
+}
+
 export function DataTree({
   value,
   root,
   onInsert,
   emptyLabel = 'No data',
+  draggable = false,
 }: {
   value: unknown
   /** Which root this tree's leaves belong to — `$input` for the input pane, `$nodes.<id>` for a browsed earlier node's output. */
@@ -109,6 +118,8 @@ export function DataTree({
    */
   onInsert?: (ref: string, segments: readonly DataTreeSegment[]) => void
   emptyLabel?: string
+  /** Plan 312 §4.4, G5 — every row also becomes an HTML5 drag source carrying a `DataTreeDragPayload`, so a drop onto the `set` node's assignment list creates a row with the name AND value filled in one gesture. */
+  draggable?: boolean
 }) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const rows = dataTreeRows(value, collapsed)
@@ -138,6 +149,19 @@ export function DataTree({
             className={cn('flex items-center gap-1 rounded px-1 py-0.5', onInsert && 'cursor-pointer hover:bg-panel-2')}
             onClick={onInsert ? () => onInsert(ref, row.segments) : undefined}
             title={onInsert ? `Insert ${ref}` : ref}
+            draggable={draggable}
+            onDragStart={
+              draggable
+                ? (e) => {
+                    const lastSegment = row.segments[row.segments.length - 1]
+                    const leafName = lastSegment ? String(lastSegment.key) : row.key
+                    const payload: DataTreeDragPayload = { ref, leafName }
+                    e.dataTransfer.setData(DATA_TREE_DRAG_MIME, JSON.stringify(payload))
+                    e.dataTransfer.setData('text/plain', ref)
+                    e.dataTransfer.effectAllowed = 'copy'
+                  }
+                : undefined
+            }
           >
             {row.collapsible ? (
               <button

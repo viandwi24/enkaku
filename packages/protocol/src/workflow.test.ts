@@ -442,6 +442,7 @@ describe('WORKFLOW_LIMITS — pinned so a future change to these numbers is a de
       maxSawKeys: 20,
       maxSwitchCases: 10,
       maxDelayMs: 5 * 60_000,
+      maxAssignments: 40,
     })
   })
 })

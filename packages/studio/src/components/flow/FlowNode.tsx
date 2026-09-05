@@ -40,6 +40,7 @@ const KIND_LABEL: Record<WorkflowNode['kind'], string> = {
   switch: 'Switch',
   delay: 'Delay',
   finish: 'Finish',
+  set: 'Set',
 }
 
 /** One source `Handle` per edge kind the node owns, positioned so a `then`/`next`/`case:0` sits on the right and a secondary/failure edge sits lower — mirrors `WorkflowCanvas.tsx`'s pre-305 handle layout (plan 102 step 102.5), extended to `switch`'s N cases and `delay`'s single `next`. */
@@ -47,6 +48,7 @@ function outputHandles(node: WorkflowNode): { kind: EdgeKind; title: string; y: 
   switch (node.kind) {
     case 'start':
     case 'delay':
+    case 'set':
       return [{ kind: 'next', title: 'Drag to set what runs next', y: 50 }]
     case 'script':
       return [
