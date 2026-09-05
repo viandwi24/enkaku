@@ -313,6 +313,11 @@ const GROUP_3 = [
   // six-dot grip, deliberately not the three-dot kebab above it: a handle you
   // drag, not a menu you open.
   'DotsSixVerticalIcon',
+  // Plan 500 (the picture-in-picture panel) — the rail's per-item PiP
+  // affordance and the panel's own zoom controls.
+  'MagnifyingGlassMinusIcon',
+  'MagnifyingGlassPlusIcon',
+  'PictureInPictureIcon',
 ]
 
 async function checkIcons(): Promise<void> {

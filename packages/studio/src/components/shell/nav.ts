@@ -16,6 +16,15 @@ export interface NavItem {
   /** The rail has no labels; this is the `title` and the `aria-label`. */
   label: string
   icon: Icon
+  /**
+   * Whether this entry may be opened as a picture-in-picture panel (plan 500
+   * §3.7). Absent or `false` on Devices only: a framed copy of that screen
+   * would mount a SECOND Device Control window against the same phone — a
+   * second scrcpy session, not a picture the operator does not already have.
+   * `Rail.tsx` reads this flag rather than testing `href === '/'` so the
+   * exclusion is data, not a special case at the call site.
+   */
+  pip?: boolean
 }
 
 /**
@@ -31,14 +40,16 @@ export interface NavItem {
  */
 export const NAV: readonly NavItem[] = [
   { href: '/', label: 'Devices', icon: DevicesIcon },
-  { href: '/scripts', label: 'Scripts & workflows', icon: CodeIcon },
-  { href: '/jobs', label: 'Jobs', icon: LightningIcon },
-  ...(AGENTS_IN_RAIL ? [{ href: '/agents', label: 'Agents', icon: RobotIcon }] : []),
-  { href: '/plugins', label: 'Plugins', icon: PuzzlePieceIcon },
+  { href: '/scripts', label: 'Scripts & workflows', icon: CodeIcon, pip: true },
+  { href: '/jobs', label: 'Jobs', icon: LightningIcon, pip: true },
+  ...(AGENTS_IN_RAIL ? [{ href: '/agents', label: 'Agents', icon: RobotIcon, pip: true }] : []),
+  { href: '/plugins', label: 'Plugins', icon: PuzzlePieceIcon, pip: true },
 ]
 
 /** The gear below the spacer. Kept out of `NAV` so the four-or-five count above stays readable. */
 export const SETTINGS_HREF = '/settings'
+/** Settings is eligible for the picture-in-picture panel too (plan 500 §4.1); it is rendered separately from `NAV` in `Rail.tsx`. */
+export const SETTINGS_PIP = true
 
 /**
  * The shell's own read of `GET /api/plugins/ui`. Deliberately LOOSER than

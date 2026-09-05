@@ -1,8 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { DeviceControl } from './DeviceControl'
 import { useActionDialogs } from '@/components/actions/ActionDialogHost'
+import { isPipFrame } from '@/components/shell/pip-frame'
 
 /**
  * Device Control, mounted ONCE by the root layout.
@@ -63,9 +65,25 @@ export function useFocusedDeviceId(): string | null {
   return req?.deviceId ?? null
 }
 
+/**
+ * Mounted directly by `RootLayout`, outside `AuthGate`'s own `<Suspense>`
+ * boundary — so this component wraps its OWN `useSearchParams()` read in one,
+ * exactly like `app/settings/page.tsx` and `app/scripts/page.tsx` already do,
+ * which a static export needs before it will prerender a `useSearchParams()`
+ * caller at all.
+ */
 export function DeviceControlHost(): React.JSX.Element | null {
+  return (
+    <Suspense fallback={null}>
+      <DeviceControlHostInner />
+    </Suspense>
+  )
+}
+
+function DeviceControlHostInner(): React.JSX.Element | null {
   const [request, setRequest] = useState<OpenRequest | null>(current)
   const { open: openActionDialog } = useActionDialogs()
+  const searchParams = useSearchParams()
 
   useEffect(() => {
     const listener: Listener = (next) => setRequest(next)
@@ -74,6 +92,12 @@ export function DeviceControlHost(): React.JSX.Element | null {
       listeners.delete(listener)
     }
   }, [])
+
+  // Never a second cast inside a picture-in-picture panel's own framed
+  // document (plan 500 §3.7, G8): that would double the encode load of
+  // whatever device the OUTER window already has under control, for a
+  // picture the operator already has.
+  if (isPipFrame(searchParams)) return null
 
   if (!request) return null
 

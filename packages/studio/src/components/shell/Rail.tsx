@@ -1,11 +1,12 @@
 'use client'
 
 import Link from 'next/link'
-import { GearIcon, cn } from '@enkaku/ui'
+import { GearIcon, PictureInPictureIcon, cn } from '@enkaku/ui'
 import { pluginIcon } from '@/lib/plugin-icons'
+import { usePip } from './pip-store'
 import { AvatarMenu } from './AvatarMenu'
 import { ThemeToggle } from './ThemeToggle'
-import { NAV, SETTINGS_HREF, isNavActive, type PluginNavItem } from './nav'
+import { NAV, SETTINGS_HREF, SETTINGS_PIP, isNavActive, type PluginNavItem } from './nav'
 
 /**
  * The 60px icon rail (design handoff, "Global shell"):
@@ -17,6 +18,33 @@ import { NAV, SETTINGS_HREF, isNavActive, type PluginNavItem } from './nav'
 const ITEM = 'flex size-9 shrink-0 items-center justify-center rounded-button transition-colors'
 const IDLE = 'text-faint hover:bg-muted-2 hover:text-text'
 const ACTIVE = 'bg-accent-soft text-accent'
+
+/**
+ * The picture-in-picture affordance (plan 500 §4.5): a small button revealed
+ * on hover/focus, overlaid on the item's own 36px cell rather than replacing
+ * it. It calls `openPip(item)` instead of navigating, so it must NOT be
+ * nested inside the `Link` above it — a button inside an anchor is invalid
+ * HTML and swallows the click — the caller renders it as a sibling in a
+ * `relative` cell instead.
+ */
+function PipButton({ href, label }: { href: string; label: string }) {
+  const { open: openPip } = usePip()
+  return (
+    <button
+      type="button"
+      title={`Open ${label} in a panel`}
+      aria-label={`Open ${label} in a panel`}
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        openPip(href, label)
+      }}
+      className="absolute -right-[3px] -bottom-[3px] flex size-4 items-center justify-center rounded-small border border-border bg-panel text-faint opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted-2 hover:text-text focus-visible:opacity-100"
+    >
+      <PictureInPictureIcon className="size-[10px]" aria-hidden />
+    </button>
+  )
+}
 
 export function Rail({
   pathname,
@@ -38,16 +66,18 @@ export function Rail({
         const active = isNavActive(item.href, pathname)
         const Icon = item.icon
         return (
-          <Link
-            key={item.href}
-            href={item.href}
-            title={item.label}
-            aria-label={item.label}
-            aria-current={active ? 'page' : undefined}
-            className={cn(ITEM, active ? ACTIVE : IDLE)}
-          >
-            <Icon className="size-[17px]" aria-hidden />
-          </Link>
+          <div key={item.href} className="group relative">
+            <Link
+              href={item.href}
+              title={item.label}
+              aria-label={item.label}
+              aria-current={active ? 'page' : undefined}
+              className={cn(ITEM, active ? ACTIVE : IDLE)}
+            >
+              <Icon className="size-[17px]" aria-hidden />
+            </Link>
+            {item.pip && <PipButton href={item.href} label={item.label} />}
+          </div>
         )
       })}
 
@@ -72,19 +102,22 @@ export function Rail({
               // falls back. A plugin never supplies markup here.
               const Icon = pluginIcon(item.icon)
               return (
-                <Link
-                  key={item.key}
-                  href={item.href}
-                  title={item.isDev ? `${item.label} (DEV) · ${item.plugin}` : `${item.label} · ${item.plugin}`}
-                  aria-label={item.label}
-                  aria-current={active ? 'page' : undefined}
-                  className={cn(ITEM, 'relative', active ? ACTIVE : IDLE)}
-                >
-                  <Icon className="size-[17px]" aria-hidden />
-                  {item.isDev && (
-                    <span aria-hidden className="absolute top-[5px] right-[5px] size-[5px] rounded-pill bg-warn" />
-                  )}
-                </Link>
+                <div key={item.key} className="group relative">
+                  <Link
+                    href={item.href}
+                    title={item.isDev ? `${item.label} (DEV) · ${item.plugin}` : `${item.label} · ${item.plugin}`}
+                    aria-label={item.label}
+                    aria-current={active ? 'page' : undefined}
+                    className={cn(ITEM, 'relative', active ? ACTIVE : IDLE)}
+                  >
+                    <Icon className="size-[17px]" aria-hidden />
+                    {item.isDev && (
+                      <span aria-hidden className="absolute top-[5px] right-[5px] size-[5px] rounded-pill bg-warn" />
+                    )}
+                  </Link>
+                  {/* A plugin nav entry is an ordinary page (§4.1) — always eligible, no flag to read. */}
+                  <PipButton href={item.href} label={item.label} />
+                </div>
               )
             })}
           </div>
@@ -95,15 +128,18 @@ export function Rail({
 
       <ThemeToggle className={cn(ITEM, IDLE)} iconClassName="size-[17px]" />
 
-      <Link
-        href={SETTINGS_HREF}
-        title="Settings"
-        aria-label="Settings"
-        aria-current={isNavActive(SETTINGS_HREF, pathname) ? 'page' : undefined}
-        className={cn(ITEM, isNavActive(SETTINGS_HREF, pathname) ? ACTIVE : IDLE)}
-      >
-        <GearIcon className="size-[17px]" aria-hidden />
-      </Link>
+      <div className="group relative">
+        <Link
+          href={SETTINGS_HREF}
+          title="Settings"
+          aria-label="Settings"
+          aria-current={isNavActive(SETTINGS_HREF, pathname) ? 'page' : undefined}
+          className={cn(ITEM, isNavActive(SETTINGS_HREF, pathname) ? ACTIVE : IDLE)}
+        >
+          <GearIcon className="size-[17px]" aria-hidden />
+        </Link>
+        {SETTINGS_PIP && <PipButton href={SETTINGS_HREF} label="Settings" />}
+      </div>
 
       <AvatarMenu />
     </nav>
