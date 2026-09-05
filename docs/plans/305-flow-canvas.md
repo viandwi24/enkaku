@@ -40,7 +40,7 @@ no second place to edit a workflow.
 
 ### 3.1 What exists and is kept
 
-[WorkflowCanvas.tsx](../../packages/studio/src/components/workflow/WorkflowCanvas.tsx)
+[FlowCanvas.tsx](../../packages/studio/src/components/flow/FlowCanvas.tsx) (named `WorkflowCanvas.tsx` when this plan was written; step 305.1 renamed it)
 already uses React Flow v12 with pan, zoom, minimap, hit-testing, connection
 dragging and edge reconnection, and already turns a completed connection back
 into an `EdgeChange` for the caller rather than holding edge state of its own.
