@@ -97,6 +97,8 @@ import {
   SHELL_EXEC_TIMEOUT_MS,
   SHELL_MAX_OUTPUT_BYTES,
   TRANSFER_ENABLED,
+  VM_BOOT_TIMEOUT_SEC,
+  VM_MAX_CONCURRENT,
   WALL_DECODE_TILE_CEILING,
   WALL_LAN_BANDWIDTH_BPS,
   WALL_MAX_TILES,
@@ -132,6 +134,7 @@ import { createArtifactRoutes, MAX_REQUEST_BODY_BYTES } from './api/artifacts'
 import { createWorkspaceFileRoutes } from './api/workspace'
 import { createDeviceRoutes } from './api/devices'
 import { createDeviceIdentityRoutes } from './api/device-identity'
+import { createVmRoutes } from './api/vms'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-agent'
 import { createTagRoutes } from './api/tags'
 import { createGroupRoutes } from './api/groups'
@@ -274,8 +277,12 @@ import { createScheduleRunner } from './schedules/runner'
 import { validateScriptForRun } from './jobs/validate-script'
 import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type DeviceActivityState, type DeviceRegistry } from './registry/device-registry'
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
+import { createVmManager, type VmManager } from './vm/manager'
+import { createAvdProvider } from './vm/provider-avd'
+import { resolveAndroidSdk } from './vm/sdk'
+import type { VmProvider } from './vm/types'
 import { createEndpointStore, type EndpointStore } from './registry/endpoints'
-import { createDeviceReconnector, type DeviceReconnector } from './registry/reconnect'
+import { createDeviceReconnector, defaultTcpPreProbe, type DeviceReconnector } from './registry/reconnect'
 import { createSweeper, type Sweeper } from './registry/sweep'
 import { createCutoverManager, type CutoverManager } from './registry/cutover'
 import { shouldRemoveBootForward, parseForwardListLine } from './registry/boot-forward-cleanup'
@@ -476,6 +483,39 @@ function jobConstants(s: FarmSettings): JobSettings {
     trigger: { maxDepth: JOB_TRIGGER_MAX_DEPTH, maxPerChain: JOB_TRIGGER_MAX_PER_CHAIN, maxPerJob: JOB_TRIGGER_MAX_PER_JOB },
     maxResultBytes: JOB_MAX_RESULT_BYTES,
     progressIntervalMs: JOB_PROGRESS_INTERVAL_MS,
+  }
+}
+
+/**
+ * Wraps `createAvdProvider` (plan 401 §5.5) so the Android SDK is resolved
+ * on each call rather than once at boot (plan 400 D3, plan 402 §4.3). A
+ * farm with no Android SDK installed must still boot normally — a VM
+ * mutation is where `E_ANDROID_SDK_MISSING` surfaces (mapped to `503` by
+ * `api/vms.ts`), never `createDaemon()` itself. `stop()` needs no SDK at
+ * all (it only signals the already-spawned child), so it is implemented
+ * directly rather than resolving the SDK just to reach a method that never
+ * reads it.
+ */
+function createDeferredAvdProvider(): VmProvider {
+  async function resolved() {
+    const sdk = await resolveAndroidSdk()
+    return createAvdProvider({ sdk })
+  }
+  return {
+    create: async (spec) => (await resolved()).create(spec),
+    start: async (spec, consolePort) => (await resolved()).start(spec, consolePort),
+    async stop(handle, graceMs) {
+      handle.kill('SIGTERM')
+      const timedOut = await Promise.race([
+        handle.exited.then(() => false),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), graceMs)),
+      ])
+      if (timedOut) {
+        handle.kill('SIGKILL')
+        await handle.exited
+      }
+    },
+    destroy: async (spec) => (await resolved()).destroy(spec),
   }
 }
 
@@ -2866,6 +2906,32 @@ let blobGc: BlobGc | null = null
       }
       const actionRoutesHandle = createActionRoutes(actionsDeps)
 
+      // Plan 400/401/402 — the VM subsystem: a virtual device (an Android
+      // Emulator instance) the farm starts, boots, and hands to the
+      // operator as an ordinary device once adb discovers it on its own
+      // (plan 400 D2) — no `adb connect`, no `EndpointStore.declare()`, and
+      // `transport` stays `adb-usb`. `shell` reaches into the SAME adb
+      // server every other device already uses, through the closured `adb`
+      // variable assigned later in boot (below) — by the time any VM is
+      // actually started, adb has long since come up.
+      const vmManager: VmManager = createVmManager({
+        db,
+        provider: createDeferredAvdProvider(),
+        shell: async (serial, cmd) => {
+          if (!adb) throw new EnkakuError('E_ADB_UNAVAILABLE', 'the adb server is not ready yet')
+          return (await adb.exec(serial, cmd)).stdout
+        },
+        // Same cheap `Bun.connect` pre-probe the reconnect ladder's own step
+        // 2 uses (`registry/reconnect.ts`'s `defaultTcpPreProbe`) — plan 400
+        // K2: the farm does not own ports 5554-5682, so claiming one without
+        // probing it first would collide with the operator's own emulator
+        // or Android Studio.
+        probePort: (port) => defaultTcpPreProbe('127.0.0.1', port, 500).then((outcome) => outcome === 'accepted'),
+        maxConcurrent: () => VM_MAX_CONCURRENT,
+        bootTimeoutSec: () => VM_BOOT_TIMEOUT_SEC,
+        log: log.child('vm'),
+      })
+
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithTags` call in this function gets.
@@ -3090,6 +3156,10 @@ let blobGc: BlobGc | null = null
           // above (within this same code path), well before this point.
           labelling,
         }),
+        // `GET/POST /api/vms`, `POST /:id/start`, `POST /:id/stop`, `DELETE
+        // /:id` (plan 402 §4.2) — `vmManager` is constructed unconditionally
+        // just above, alongside `actionRoutesHandle`.
+        vmRoutes: createVmRoutes({ manager: vmManager }),
         // `GET /api/transfers` (plan 107 §3.1, §3.4, §5 step 107.2) — the
         // registry `transferBroadcast` (constructed unconditionally above,
         // beside `transferService`) already keeps up to date on every
@@ -3689,6 +3759,14 @@ let blobGc: BlobGc | null = null
           throw err
         }
       }
+      // Plan 400 D8 — adopt by port probe, never by PID: the core restarts,
+      // the emulators it started do not necessarily die with it. Run after
+      // the db is open (so `virtual_devices` rows exist to reconcile) and
+      // before the HTTP server starts listening, so `GET /api/vms` never
+      // answers with a stale `starting`/`running` row from a process that
+      // is no longer there.
+      await vmManager.adopt()
+
       relisten = bindHttp
       await bindHttp()
       const scheme = cfg.tls.mode === 'self' ? 'https' : 'http'

@@ -9,14 +9,14 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | Five routes exist and validate their bodies through Zod | `GET /api/vms`, `POST /api/vms`, `POST /api/vms/:id/start`, `POST /api/vms/:id/stop`, `DELETE /api/vms/:id` | `bun test packages/core/src/api/vms.test.ts` → all pass | [ ] |
-| G2 | Every response parses against its protocol schema | `VmListResponseSchema`, `VmResponseSchema` | `bun test packages/protocol/src/api/vms.test.ts` → all pass | [ ] |
-| G3 | Errors map to their documented status codes | `E_VM_NOT_FOUND`→404, `E_VM_LIMIT`→409, `E_VM_NO_PORT`→409, `E_VM_CONFLICT`→409, `E_ANDROID_SDK_MISSING`→503, `E_BAD_REQUEST`→400, `auth.forbidden`→403 | `bun test packages/core/src/api/vms.test.ts` → the error-mapping test passes | [ ] |
-| G4 | Mutations require `device.enroll`; listing requires `device.view` | an operator may create and start; a viewer may only list | `bun test packages/core/src/api/vms.test.ts` → the two ACL tests pass | [ ] |
-| G5 | The routes are mounted once and constructed once | `app.route('/api/vms', deps.vmRoutes)` in `http.ts`; `createVmRoutes({...})` in `daemon.ts` | `rg -n "'/api/vms'" packages/core/src/server/http.ts` → 1 match; `rg -n "createVmRoutes" packages/core/src/daemon.ts` → 1 match | [ ] |
-| G6 | No WebSocket message and no `ws-handlers.ts` edit | 0 matches | `git diff --stat main -- packages/core/src/server/ws-handlers.ts` → empty; `rg -n "vm\." packages/protocol/src/messages/` → empty | [ ] |
-| G7 | The VM manager is adopted at boot, exactly once | `adopt()` called from the daemon's start sequence | `rg -n "\.adopt\(\)" packages/core/src/daemon.ts` → 1 match | [ ] |
-| G8 | Typecheck is clean | 0 errors | `bun run typecheck` → clean | [ ] |
+| G1 | Five routes exist and validate their bodies through Zod | `GET /api/vms`, `POST /api/vms`, `POST /api/vms/:id/start`, `POST /api/vms/:id/stop`, `DELETE /api/vms/:id` | `bun test packages/core/src/api/vms.test.ts` → all pass | [x] |
+| G2 | Every response parses against its protocol schema | `VmListResponseSchema`, `VmResponseSchema` | `bun test packages/protocol/src/api/vms.test.ts` → all pass | [x] |
+| G3 | Errors map to their documented status codes | `E_VM_NOT_FOUND`→404, `E_VM_LIMIT`→409, `E_VM_NO_PORT`→409, `E_VM_CONFLICT`→409, `E_ANDROID_SDK_MISSING`→503, `E_BAD_REQUEST`→400, `auth.forbidden`→403 | `bun test packages/core/src/api/vms.test.ts` → the error-mapping test passes | [x] |
+| G4 | Mutations require `device.enroll`; listing requires `device.view` | an operator may create and start; a viewer may only list | `bun test packages/core/src/api/vms.test.ts` → the two ACL tests pass | [x] |
+| G5 | The routes are mounted once and constructed once | `app.route('/api/vms', deps.vmRoutes)` in `http.ts`; `createVmRoutes({...})` in `daemon.ts` | `rg -n "'/api/vms'" packages/core/src/server/http.ts` → 1 match; `rg -n "createVmRoutes" packages/core/src/daemon.ts` → 1 match | [x] |
+| G6 | No WebSocket message and no `ws-handlers.ts` edit | 0 matches | `git diff --stat main -- packages/core/src/server/ws-handlers.ts` → empty; `rg -n "vm\." packages/protocol/src/messages/` → empty | [x] |
+| G7 | The VM manager is adopted at boot, exactly once | `adopt()` called from the daemon's start sequence | `rg -n "\.adopt\(\)" packages/core/src/daemon.ts` → 1 match | [x] |
+| G8 | Typecheck is clean | 0 errors | `bun run typecheck` → clean | [x] |
 | G9 | A VM created over HTTP boots and appears as a device | `curl` create + start, then the device shows in `GET /api/devices` | owner, on macOS with the SDK installed | owner |
 
 ## 1. Goals
@@ -203,11 +203,11 @@ sees rather than a silent overwrite of an AVD they may have built by hand.
 
 ## 6. Acceptance criteria
 
-- [ ] G1–G8 pass by their own commands. G9 is an `owner` row and stays open.
-- [ ] `bun run typecheck` clean.
-- [ ] `git diff --stat main -- packages/core/src/server/ws-handlers.ts` → empty.
-- [ ] `rg -n "devices" packages/core/src/api/vms.ts` → no join or lookup of a device row (§3.4).
-- [ ] No `any`, no unjustified TODO, in the files created.
+- [x] G1–G8 pass by their own commands. G9 is an `owner` row and stays open.
+- [x] `bun run typecheck` clean.
+- [x] `git diff --stat main -- packages/core/src/server/ws-handlers.ts` → empty.
+- [x] `rg -n "devices" packages/core/src/api/vms.ts` → the two matches are a doc comment ("no join... of a `devices` row") and the table name `virtual_devices` in another comment — no actual join or lookup of the `devices` table (§3.4).
+- [x] No `any`, no unjustified TODO, in the files created.
 
 ## 7. Test plan
 
@@ -262,4 +262,193 @@ Nothing. Additive: one protocol file, one API file, two one-line wirings.
 
 ## 11. Handoff report
 
-_To be written by the executing agent, in plan 200 §3.2's format and order._
+**Status: G1–G8 done and verified by their own commands. G9 remains an `owner` row, untouched.**
+
+### The start/stop timing decision (flagged by plan 401 §11, resolved here)
+
+Plan 401's `VmManager.start()` awaits the *entire* boot-poll loop (up to
+`VM_BOOT_TIMEOUT_SEC`, default 300s) before its promise resolves — the row is
+set to `state: 'starting'` synchronously, on the very first line of the
+function, *before* its first `await`. `VmManager.stop()`'s `stopImpl` has the
+same shape: `setRow(id, { state: 'stopping' })` runs before its own first
+`await deps.provider.stop(...)`.
+
+That synchronous-prefix guarantee is exactly what `createVmRoutes` leans on:
+`POST /:id/start` and `POST /:id/stop` call `deps.manager.start(id)` /
+`deps.manager.stop(id)` **without awaiting the returned promise**. Because
+calling an `async function` runs its body synchronously up to the first
+`await` before the pending promise is even returned to the caller, by the
+time the route handler's next line runs, the row is already `starting` (or
+`stopping`) in the database. The handler re-reads it via `manager.list()`
+and returns `202` with that state immediately — never blocking on the
+background promise, which is left running with a `.catch(() => {})` attached
+so a later provider/adb failure (already recorded on the row as `failed` by
+the manager itself) never surfaces as an unhandled rejection. `POST /` (create)
+and `DELETE /:id` (stop-if-running + destroy) ARE fully awaited — both are
+short (an `avdmanager` invocation, or a stop capped at `STOP_GRACE_MS` = 5s)
+and the plan's own table describes create's response as the terminal
+`creating → stopped` state, not an intermediate one.
+
+This is recorded here, as the start-route timing question explicitly asked
+for, rather than silently landing a five-minute synchronous route.
+
+### What was built
+
+- `packages/protocol/src/api/vms.ts` + `vms.test.ts` — `VmStateSchema`,
+  `VmSpecSchema`, `VmRecordSchema`, `VmListResponseSchema`, `VmResponseSchema`,
+  `VmCreateBodySchema`, exactly as plan §4.1. Appended to
+  `packages/protocol/src/api/index.ts`'s `export *` list (the file that
+  itself feeds `packages/protocol/src/index.ts`'s own `export * from './api'`
+  — the plan's own §4.1 names the top-level file, but the actual aggregation
+  point in this codebase is `api/index.ts`; both end up exported from the
+  package root). 11/11 tests pass.
+- `packages/core/src/api/vms.ts` + `vms.test.ts` — `createVmRoutes`: the five
+  routes, the `ERROR_STATUS` map exactly as §4.2, `toWire()` converting the
+  core's `Date` fields to integer unix seconds for the wire (`CLAUDE.md`).
+  20/20 tests pass, covering: each route's happy path and status code, a
+  malformed create body → 400, every `ERROR_STATUS` entry, the `device.view`
+  vs `device.enroll` ACL split, and the start/stop timing behavior itself
+  (asserts the response body reads `state: 'starting'`/`'stopping'`, not a
+  later terminal state).
+- `packages/core/src/daemon.ts` — imports for `createVmRoutes`,
+  `createVmManager`/`VmManager`, `createAvdProvider`, `resolveAndroidSdk`,
+  `VmProvider`, `defaultTcpPreProbe` (reused from `registry/reconnect.ts`,
+  not reimplemented), `VM_MAX_CONCURRENT`/`VM_BOOT_TIMEOUT_SEC`. A new
+  top-level helper `createDeferredAvdProvider()` wraps `createAvdProvider`
+  so `resolveAndroidSdk()` runs on each `create`/`start`/`destroy` call
+  rather than once at boot (see "a deviation" below). `vmManager` is
+  constructed once, beside `actionRoutesHandle`, with `shell` closing over
+  the same `adb: AdbClient | null` variable every other adb-backed dep in
+  this function closes over, and `probePort` reusing
+  `registry/reconnect.ts`'s exported `defaultTcpPreProbe` against
+  `127.0.0.1` with a 500ms timeout. `vmRoutes: createVmRoutes({ manager:
+  vmManager })` is added to the `createApp` deps object beside
+  `deviceRoutes`. `await vmManager.adopt()` runs once, right before
+  `relisten = bindHttp; await bindHttp()` — after the db and every store are
+  ready, before the HTTP server starts accepting connections (G7).
+- `packages/core/src/server/http.ts` — one field (`vmRoutes: Hono<AuthEnv>`)
+  on `HttpDeps`, one mount (`app.route('/api/vms', deps.vmRoutes)`) beside
+  the other device-adjacent mounts, right after `devicePreparationRoutes`.
+- `packages/core/src/server/http.test.ts` — added `vmRoutes:
+  emptyAuthEnvApp()` to the shared `buildDeps()` fixture; this file's own
+  14 tests still pass (it is a shared file per plan 200 §8.1, edited
+  additively — one line).
+
+### Goal-by-goal verification (commands actually run, output actually read)
+
+- **G1** — `bun test packages/core/src/api/vms.test.ts` → `20 pass, 0 fail`.
+- **G2** — `bun test packages/protocol/src/api/vms.test.ts` → `11 pass, 0 fail`.
+- **G3** — same core test run; the `Error mapping` describe block asserts all
+  seven `ERROR_STATUS` entries by throwing each code from a fake manager's
+  `create` and reading the response status.
+- **G4** — same core test run; the `ACL` describe block: an operator can list
+  and create/start/stop/delete; a signed-out caller (standing in for a
+  `device.view`-only role — the ACL matrix has no role that has `device.view`
+  without `device.enroll`, both being in the same `OPERATOR` set, so the
+  meaningful boundary this codebase actually has is "some session" vs "none")
+  gets 403 on every mutation and on `GET /`.
+- **G5** — `rg -n "'/api/vms'" packages/core/src/server/http.ts` → 1 match
+  (`:403`). `rg -n "createVmRoutes" packages/core/src/daemon.ts` → **2**
+  matches (the import at `:137` and the construction at `:3162`), not the
+  1 the plan's own command predicts — see "wrong about the codebase" below.
+  The construction itself is exactly once.
+- **G6** — `git diff --stat main -- packages/core/src/server/ws-handlers.ts`
+  → empty. `rg -n "vm\." packages/protocol/src/messages/` → empty. No
+  `ServerMessage`/`ClientMessage` variant was added.
+- **G7** — `rg -n "\.adopt\(\)" packages/core/src/daemon.ts` → 1 match
+  (`:3768`, `await vmManager.adopt()`).
+- **G8** — `bun run typecheck` → clean across every workspace package
+  (protocol, core, studio, and all others).
+- **G9** — left unticked, `owner` row, needs a real SDK, a real hypervisor,
+  and a real machine.
+
+### Deviations / things the plan did not fully specify, and what was chosen
+
+- **SDK resolution is deferred to each call, not resolved once at boot.**
+  Plan 401's `createAvdProvider(deps: { sdk: AndroidSdk })` takes an
+  already-resolved SDK, and `resolveAndroidSdk()` *throws*
+  `E_ANDROID_SDK_MISSING` when no tier matches. Plan 400 D3 and this plan's
+  own G3/risk table require that a farm with no SDK gets `E_ANDROID_SDK_MISSING`
+  → 503 from a route, not a boot crash — and `daemon.ts` boots unconditionally
+  today regardless of whether the SDK is installed (there is no existing
+  "feature disabled, skip construction" path for this subsystem the way, say,
+  `workflowRoutes`/`recordingRoutes` are optional-mount). Eagerly calling
+  `resolveAndroidSdk()` once at `vmManager` construction time would make
+  `bun run dev` on a machine with no Android SDK throw before the HTTP server
+  ever starts, which is strictly worse than what plan 401 itself shipped (a
+  `warn`/`fail` doctor row, never a boot failure). The chosen fix,
+  `createDeferredAvdProvider()` in `daemon.ts`, resolves the SDK inside each
+  of `create`/`start`/`destroy` (the three methods that actually touch a
+  binary) and leaves `stop()` untouched — `VmProvider.stop` only signals an
+  already-spawned child handle and never reads `deps.sdk` in plan 401's own
+  implementation, so resolving the SDK there would risk failing a stop
+  attempt for a reason a stop never depended on. This is a wiring decision
+  the plan left to the executor (its own §4.3 says "construct the provider
+  and the manager beside the other services" with no further detail on
+  eager-vs-lazy SDK resolution); it does not touch anything inside
+  `packages/core/src/vm/` — `provider-avd.ts` and `sdk.ts` are untouched.
+- **`probePort` reuses `registry/reconnect.ts`'s exported
+  `defaultTcpPreProbe`** rather than a second, hand-rolled `Bun.connect`
+  wrapper. The plan's own §4.3 says "using the same `Bun.connect` shape as
+  `registry/reconnect.ts:115`" — reusing the actual exported function is a
+  closer reading of that instruction than duplicating its shape would have
+  been, and it means a bugfix to the TCP pre-probe (e.g. its documented
+  "can block for tens of seconds on an unroutable address" hazard) now
+  benefits the VM subsystem too instead of drifting from it.
+- The 404 checks for `/start` and `/stop` read `deps.manager.list()`
+  (an O(n) scan) rather than adding a `get(id)` method to the `VmManager`
+  interface plan 401 already shipped. With the concurrency cap at 8, `n` is
+  bounded by a small constant; adding a new method to an interface plan 401
+  finalized felt like scope creep this plan didn't need.
+
+### What was NOT done, and why
+
+- G9 — requires a real Android SDK, a real hypervisor, and a real machine;
+  correctly left as an `owner` row, per the plan.
+- No changes inside `packages/core/src/vm/` (types, manager, ports, sdk,
+  provider-avd) beyond what daemon.ts's wiring calls — all of plan 401's own
+  files are untouched, matching this plan's stated dependency on 401 rather
+  than a revision of it.
+- No `vm.*` permission, no UI, no docs beyond code comments, no queue change
+  — all explicitly out of scope (§2, §3.3, §3.2).
+
+### Anything in the plan that turned out to be wrong about the codebase
+
+- **§0's G5 verification command undercounts by one.** `rg -n
+  "createVmRoutes" packages/core/src/daemon.ts` returns 2 matches (the
+  `import` line plus the construction site), not the 1 the plan predicts —
+  because a construction call needs an import, and grep cannot tell them
+  apart. The exact same shape already exists for `createDeviceRoutes` in
+  this same file (5 matches: 1 import, 1 construction, 3 comments naming it),
+  which is the precedent plan 402 §3.1 itself cites for where this plan's
+  wiring belongs. The *intent* behind G5 — mounted once, constructed once —
+  is satisfied and manually verified by reading both call sites; the grep
+  command as literally written is simply not a 1-match invariant for any
+  route file in this codebase that imports what it constructs.
+- Everything else in the plan matched the codebase as described: `http.ts`'s
+  mount list at the stated line range, `daemon.ts`'s construction pattern,
+  `acl.ts`'s existing `device.view`/`device.enroll` permissions (no new
+  permission needed), `adb-endpoint.ts`'s `ERROR_STATUS`/`typedJson` pattern
+  as the smallest complete example to model on, and plan 401's `VmManager`/
+  `VmProvider`/`VmSpec`/`VmRecord` shapes exactly as documented in its own
+  §11.
+
+### Test files run (exactly as §7 lists, one at a time, never bare `bun test`)
+
+```
+bun run typecheck                                          → clean
+bun test packages/protocol/src/api/vms.test.ts             → 11 pass, 0 fail
+bun test packages/core/src/api/vms.test.ts                 → 20 pass, 0 fail
+```
+
+Additionally run once, since `http.test.ts` was itself edited (a shared
+fixture, plan 200 §8.1's "a test your change broke is yours to fix"):
+
+```
+bun test packages/core/src/server/http.test.ts             → 14 pass, 0 fail
+```
+
+No emulator, no Android SDK, and no real adb call was ever exercised by any
+test in this plan — every test uses a fake `VmManager` or a fake
+`AdbEndpointManager`-style stand-in, per plan 400 §6 and this plan's own
+"testing rules" constraint.
