@@ -370,7 +370,25 @@ async function call<TResult>(
     throw new GuestAgentClientError(envelope.data.error.code, envelope.data.error.message)
   }
 
-  const result = resultSchema.safeParse(envelope.data.result)
+  /**
+   * Validate the caller's schema against the RAW result, never the envelope's.
+   *
+   * `GuestAgentOkResponseSchema.result` is a `z.union` of every method's
+   * result shape, and Zod picks the FIRST member that parses while stripping
+   * unknown keys. `UiUnwatchResultSchema` is `{ watching: z.literal(false) }`
+   * and sits before `UiStatusResultSchema` in that union — so a complete
+   * `ui.status` reply, which legitimately carries `watching: false` among six
+   * other fields, matched the unwatch shape and was cut down to
+   * `{"watching":false}` before this line ever saw it.
+   *
+   * That cost a whole night: the phone's own log proved it computed and sent
+   * every field, the request was right, the dispatch was right, and the
+   * damage was done inside our own envelope parse (2026-09-05). The union
+   * still guards the wire's overall shape; it must not be what a caller's
+   * result is taken from.
+   */
+  const rawResult = (json as { result?: unknown }).result
+  const result = resultSchema.safeParse(rawResult)
   if (!result.success) {
     /**
      * The payload the phone actually sent, beside the fields the host wanted.
@@ -386,7 +404,7 @@ async function call<TResult>(
      * and a log line is not the place for it. The agent's responses carry no
      * secret — the token travels in the REQUEST — so this leaks nothing.
      */
-    const raw = JSON.stringify(envelope.data.result)
+    const raw = JSON.stringify(rawResult)
     const shown = raw.length > 400 ? `${raw.slice(0, 400)}… (${raw.length} bytes)` : raw
     /**
      * The request line as it went onto the wire, with the token redacted.

@@ -61,7 +61,15 @@ sudo systemctl enable --now enkaku
 A non-loopback bind means `server` mode, which means **login is required and TLS is required**. Two options:
 
 - Behind a reverse proxy (Caddy or nginx) that terminates TLS: `ENKAKU_TLS_MODE=external`.
-- Your own certificate: `ENKAKU_TLS_MODE=self`, `ENKAKU_TLS_CERT=/path/cert.pem`, `ENKAKU_TLS_KEY=/path/key.pem`.
+- A certificate Enkaku manages: `ENKAKU_TLS_MODE=self` **and nothing else**. On the first start it generates a
+  self-signed pair into `<dataDir>/tls/self-signed.crt` and `.key`, loads it, and reuses that same pair on every later
+  start — it only regenerates when the file is missing, unreadable, or within 30 days of expiry. It needs `openssl` on
+  `PATH` (present on macOS and every mainstream Linux); if it is missing, the error prints the exact command to run and
+  the two variables to set. **A self-signed certificate encrypts the connection and proves no identity**, so every
+  browser warns on first visit — right for a trusted LAN, wrong for anything reachable from the internet, which is what
+  `external` above is for.
+- Your own certificate: `ENKAKU_TLS_MODE=self`, `ENKAKU_TLS_CERT=/path/cert.pem`, `ENKAKU_TLS_KEY=/path/key.pem`. Set
+  both or neither — one alone is refused at boot.
 
 Open Studio and the setup page asks for the first admin's email and password. After that the setup endpoint closes permanently.
 
@@ -475,6 +483,41 @@ decrypt every credential this farm has ever stored.** Treat it like the
 credentials themselves — restrict who can read it, never send it over chat
 or email unencrypted, encrypt it at rest if it leaves this machine, and
 delete copies you no longer need.
+
+### Resetting a data directory
+
+`enkaku reset` deletes parts of a data directory on purpose — the answer to
+"the database will not open" or "this farm has 500 GB of traces I no longer
+need" that does not involve guessing which files are safe to remove.
+
+```bash
+./enkaku reset                       # lists every scope and its size. Deletes nothing.
+./enkaku reset --cache --logs        # still deletes nothing — it shows what --yes would remove
+./enkaku reset --cache --logs --yes  # actually deletes those two
+./enkaku reset --all --yes           # everything below
+```
+
+Scopes: `--db`, `--artifacts`, `--traces`, `--cache`, `--logs`, `--plugins`,
+`--tools`, `--workspace`, and `--all` for every one of them.
+
+Three things it will not do:
+
+- **Delete anything without `--yes`.** With no flag, or with scopes but no
+  `--yes`, it prints what it would remove, how big each scope is, and what
+  the consequence would be.
+- **Touch a data directory a core is using.** Deleting `enkaku.db` under a
+  live SQLite connection does not stop that core — it keeps writing to an
+  unlinked file and loses everything on exit. The command refuses with the
+  pid instead.
+- **Delete `secrets.key` or `network-credentials.key`**, under any scope,
+  including `--all`. Those keys decrypt the credentials inside a backup you
+  took *before* the reset; removing them would silently turn every existing
+  backup into an unreadable one. Delete them by hand if you truly mean to.
+
+`--cache`, `--logs` and `--traces` are safe at any time. `--db` starts the
+farm over: phones come back as Discovered, and scripts, jobs, users, tokens
+and settings are gone. Take an `enkaku backup` first if any of it still
+matters.
 
 ### This backup does not include your workspace's video/media files
 

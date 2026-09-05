@@ -501,3 +501,31 @@ describe('createGuestAgentClient (plan 44 §5.5)', () => {
     await client.hello({ expectVersionCode: 1042 })
   })
 })
+
+/**
+ * A result must not be narrowed by the envelope's union before its own schema
+ * sees it.
+ *
+ * `GuestAgentOkResponseSchema.result` is a union of every method's result
+ * shape and Zod takes the FIRST member that parses, stripping unknown keys.
+ * `UiUnwatchResultSchema` is `{ watching: z.literal(false) }` and precedes
+ * `UiStatusResultSchema`, so a complete `ui.status` reply — which carries
+ * `watching: false` among six other fields — was cut down to
+ * `{"watching":false}` inside our own parse, and reported as the phone
+ * sending a malformed answer. The phone's log proved it had sent all seven
+ * fields (2026-09-05).
+ */
+test('a ui.status reply survives the envelope union intact', async () => {
+  const full = {
+    enabled: true,
+    connected: false,
+    watching: false,
+    lastDumpAgoMs: null,
+    lastDumpNodes: null,
+    lastError: null,
+  }
+  const { connect } = scriptedConnect((req) => ({ id: req.id, ok: true, result: full }))
+  const client = createGuestAgentClient({ port: 1, token: 't', connect })
+
+  await expect(client.uiStatus()).resolves.toEqual(full)
+})

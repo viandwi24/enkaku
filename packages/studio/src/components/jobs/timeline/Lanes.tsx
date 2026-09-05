@@ -70,7 +70,19 @@ export function Lanes({
               'absolute inset-y-0 flex items-center overflow-hidden rounded-[6px] pl-2 text-[9.5px] uppercase tracking-[.5px] text-panel',
               PHASE_FILL[b.phase] ?? PHASE_FILL.unknown,
             )}
-            style={{ left: `${pct(b.startMs)}%`, width: `${Math.max(pct(b.endMs) - pct(b.startMs), 4)}%` }}
+            /*
+              The 4% floor keeps a millisecond-long phase visible, and it used
+              to be applied without checking where the bar starts — so
+              `FINISHED`, which begins at the very end of every run, was given
+              4% of width past 100% and hung off the right edge of the lane
+              (owner, 2026-09-05). Clamping the left edge instead of the width
+              keeps the floor AND the boundary: a bar at the end is pushed
+              left to fit rather than allowed to leave.
+            */
+            style={(() => {
+              const width = Math.max(pct(b.endMs) - pct(b.startMs), 4)
+              return { left: `${Math.min(pct(b.startMs), 100 - width)}%`, width: `${width}%` }
+            })()}
           >
             {b.phase}
           </div>
