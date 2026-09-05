@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
 import type { AdbClient } from '@enkaku/adb'
 import { AdbTcpTransport, AdbUsbTransport } from '@enkaku/drivers'
-import { wakeDevice, type SessionManager } from '@enkaku/session'
+import { readPowerState, satisfiesStayOn, wakeDevice, type SessionManager } from '@enkaku/session'
 import {
   DeviceReadinessSchema,
   DeviceSettingsSchema,
@@ -199,6 +199,19 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
 
   /** Devices this manager has directly run `wakeDevice` for for (no session backing it). */
   const keepAwakeApplied = new Set<string>()
+  /**
+   * Devices an operator explicitly put to sleep, which is NOT the same thing
+   * as a device that merely has nothing keeping it awake.
+   *
+   * It exists because sleep leaves the session up on purpose (`docs/spec.md`
+   * line 199), and a session is what `rawActual` reads as `hot` — so after a
+   * sleep the device looks fully awake to `ensureAwake`, which skips its work
+   * and returns. Pressing Wake then did nothing at all, on every online
+   * device, because plan 206 gives every online device a session (owner,
+   * 2026-09-05: "di actions itu udah ada wake dan sleep tapi saya coba ga
+   * works"). Membership survives exactly until the next successful wake.
+   */
+  const forcedAsleep = new Set<string>()
   /** deviceId → release() for the standing `SessionManager` subscriber keeping a `desired: hot` device warm. */
   const desiredHotRelease = new Map<string, () => void>()
   /** deviceId → why `actual` cannot reach `desired` right now, or null. */
@@ -223,6 +236,19 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
 
   /** Presentation only — a person looking at the screen, not work depending on it. */
   const PRESENTATION_HOLDS: ReadonlySet<HoldReason> = new Set(['viewer', 'control', 'monitor'])
+  /**
+   * Narrower than `PRESENTATION_HOLDS`, and deliberately so — the two answer
+   * different questions.
+   *
+   * `PRESENTATION_HOLDS` asks "does this hold's owner break if the panel goes
+   * dark?"; a monitor stream does not, so an explicit sleep may override it.
+   * This set asks "should merely taking this hold undo a sleep the operator
+   * asked for?", and only the two holds that exist because a human opened a
+   * panel answer no. `monitor` stays out: plan 43 acceptance #17 pins a
+   * monitor hold to waking a sleeping device, and a logcat that needs the
+   * device up is a use, not a glance.
+   */
+  const SLEEP_RESPECTING_HOLDS: ReadonlySet<HoldReason> = new Set(['viewer', 'control'])
 
   function workHolds(deviceId: string): number {
     let n = 0
@@ -379,7 +405,10 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     if (!row) return
     const status = (row.status ?? 'offline') as DeviceStatus
     if (status === 'offline' || status === 'quarantined') return
-    if (rawActual(deviceId, row) !== 'asleep') return
+    // `forcedAsleep` first: a device slept by hand still has its session, so
+    // `rawActual` calls it `hot` while its panel is dark, and skipping here is
+    // how Wake became a button that did nothing.
+    if (!forcedAsleep.has(deviceId) && rawActual(deviceId, row) !== 'asleep') return
     const transport = transportFor(row)
     if (!transport) return
     // Plan 205 §4.9 — visible to any other viewer of the device exactly the
@@ -412,6 +441,11 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       deps.activities.end(deviceId, wakeActivityId)
     }
     keepAwakeApplied.add(deviceId)
+    // `wakeDevice` has just re-applied `svc power stayon` for this device's
+    // `prep.keepAwake` mode, so the always-on the sleep turned off is back on
+    // — the second half of the owner's model (2026-09-05): forcing sleep
+    // switches always-on off, and waking switches it back on.
+    forcedAsleep.delete(deviceId)
     broadcast(deviceId)
   }
 
@@ -437,21 +471,47 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
    * hold would break the caller that took it, and `set()` already refuses
    * sleep for a running job.
    */
-  async function releaseAwake(deviceId: string, opts?: { overridePresentationHolds?: boolean }): Promise<void> {
+  async function releaseAwake(deviceId: string, opts?: { overridePresentationHolds?: boolean }): Promise<boolean> {
     const blocking = opts?.overridePresentationHolds ? workHolds(deviceId) : (holdCounts.get(deviceId) ?? 0)
-    if (blocking > 0) return
-    const hadKeepAwake = keepAwakeApplied.delete(deviceId)
+    if (blocking > 0) return false
+    keepAwakeApplied.delete(deviceId)
     const row = getRow(deviceId)
-    if (!row) return
+    if (!row) return false
     const transport = transportFor(row)
-    if (!transport) return
+    if (!transport) return false
     await transport.connect()
     try {
-      if (hadKeepAwake) await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
+      // Ask the phone, not our own bookkeeping.
+      //
+      // This used to drop `stayon` only when `keepAwakeApplied` said THIS
+      // process had set it. That set is memory: after a core restart it is
+      // empty while the phone is still pinned lit by the
+      // `stay_on_while_plugged_in` a previous core wrote, so the keyevent
+      // below landed in a display Android relit immediately and Sleep looked
+      // broken for reasons the operator could not possibly see. Two `settings
+      // get` calls settle it from the only authority there is; a device
+      // already at 0 skips `svc power stayon` entirely, measured at 1422 ms
+      // (plan 96 §22).
+      //
+      // A device opted out of keeping the screen awake is left alone, because
+      // we never wrote its `stay_on_while_plugged_in` and plan 125 §0.2 is
+      // about not overwriting settings we have no record of. Its screen still
+      // gets the sleep keyevent; if something else on that phone pins the
+      // display on, the panel relights and that is the operator's own setting
+      // winning, not ours failing quietly.
+      if (keepAwakeModeFor(row) !== 'off') {
+        const state = await readPowerState(transport).catch(() => null)
+        // Unreadable counts as on: the write is cheap next to a Sleep that
+        // does nothing, and `svc power stayon false` is the phone's own default.
+        if (state === null || !satisfiesStayOn(state.stayOnWhilePluggedIn, 'off')) {
+          await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
+        }
+      }
       await transport.exec('input keyevent 223', { profile: 'probe' }).catch(() => undefined)
     } finally {
       await transport.disconnect()
     }
+    return true
   }
 
   function releaseDesiredHot(deviceId: string): void {
@@ -485,6 +545,10 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // (§0.2), so the reconnect test in `readiness.test.ts` pins the whole
       // chain rather than just this function.
       keepAwakeApplied.delete(deviceId)
+      // Whatever we forced on a phone that has since left the farm is gone
+      // with it — it comes back with its own power state, and the wake that
+      // follows a reconnect must not be skipped because of a flag from before.
+      forcedAsleep.delete(deviceId)
       blockedReason.set(deviceId, desired !== 'asleep' ? 'offline' : null)
       markUnobservable(deviceId, 'the device is offline')
       broadcast(deviceId)
@@ -553,7 +617,7 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // is looking (CEO, 2026-09-05: forcing sleep is allowed). A running job
       // still refuses. The session stays up and the tile goes dark, which is
       // what `docs/spec.md` line 199 describes and what makes waking instant.
-      await releaseAwake(deviceId, { overridePresentationHolds: true })
+      if (await releaseAwake(deviceId, { overridePresentationHolds: true })) forcedAsleep.add(deviceId)
     }
     // One of §3.6's two probe points ("on reconcile and on demand — never on a
     // timer"), placed AFTER the wake so what it observes is the state this
@@ -701,7 +765,15 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       const byReason = holdReasons.get(deviceId) ?? new Map<HoldReason, number>()
       byReason.set(reason, (byReason.get(reason) ?? 0) + 1)
       holdReasons.set(deviceId, byReason)
-      if (count === 1) await ensureAwake(deviceId)
+      // A hold taken only because someone is LOOKING must not undo a sleep
+      // the operator asked for — otherwise opening the Wall relights every
+      // phone that was deliberately dark, and Sleep is a button with no
+      // lasting effect. A work hold (job, transfer, adb-endpoint, capability)
+      // still wakes it: that work needs a live panel, and `desired` stays
+      // `asleep`, so the next reconcile after the work finishes puts the
+      // device back down.
+      const respectSleep = SLEEP_RESPECTING_HOLDS.has(reason) && desiredOf(getRow(deviceId)) === 'asleep'
+      if (count === 1 && !respectSleep) await ensureAwake(deviceId)
       let released = false
       const id = crypto.randomUUID()
       return {
