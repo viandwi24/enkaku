@@ -104,6 +104,15 @@ plan's §9, because they change what the programme claims:
   worth copying — its nodes call live APIs — so this is the programme's own,
   and on a device farm it matters more than anything in P1–P12: a phone is
   slow, non-deterministic, and often not plugged in.
+- **P14 — build data inside the document.** A `set` node takes earlier nodes'
+  output and produces new output for later ones, with a drag-to-map
+  assignment editor. Owned by **plan 312**. Until it exists, reshaping data
+  means running a script on a phone to compute a number the author could have
+  written.
+- **Choosing a script is a palette, not a dropdown.** Owned by **plan 310**,
+  from the owner's own user research, 2026-09-05. Presets — built, routed,
+  and mounted in one place nobody looks — move to where parameters are
+  actually typed, in **plan 311**.
 - **Naming is once, at creation.** A workflow is named in a dialog, created,
   and only then edited. The editor no longer opens on a blank document
   quoting the name grammar in red. `name` stays the identity (URLs, API
@@ -325,6 +334,9 @@ D1, D2, D3, D6, D7, D8 are engineering calls and are **made**. Two are not:
 | 307 | 3 | The run view: live and replay on the canvas; spec §4.6 rewritten | 304, 305, 306 |
 | 308 | 4 | Per-node device targets and fan-out across devices (starts `draft`) | 307; **owner decision** |
 | 309 | 4 | Simulate: run a whole workflow with no device, from pins, mocks and schema samples | 307; **owner decision, taken 2026-09-05** |
+| 310 | 5 | Choosing a script: the plugin → script palette, icons, and the end of the version picker | 216, 217, 303, 307 |
+| 311 | 5 | Presets: saved parameter sets, wherever parameters are entered | 310 |
+| 312 | 5 | Workflow data: the `set` node, the assignment editor, array functions, the weighted switch | 306, 307, 309 |
 
 Wave 0's two plans are independent of each other and may be executed in
 parallel by two executors in two worktrees (plan 200 §8.1). Wave 1's two are
