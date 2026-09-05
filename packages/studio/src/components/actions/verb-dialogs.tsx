@@ -840,23 +840,95 @@ const setLabel: VerbDialogSpec<Record<string, never>> = {
 // 15. Network (overflow)
 // ---------------------------------------------------------------------------
 interface SetNetworkValue {
-  op: 'enable' | 'disable' | 'retry' | 'clear'
+  op: 'set' | 'enable' | 'disable' | 'retry' | 'clear'
+  engine: 'vpn-helper' | 'adb-proxy'
+  host: string
+  port: string
+  username: string
+  password: string
 }
+
+/**
+ * `set` was missing here, and it is the only op that can CONFIGURE a route —
+ * the other four act on one that already exists. So an operator could enable
+ * and disable a proxy across a fleet but never point one at a new upstream,
+ * and the single-device panel was the only place a route could be created
+ * (owner, 2026-09-06). For twenty phones on one SOAX session that is the
+ * difference between one dialog and twenty.
+ *
+ * Two engines rather than all four: `vpn-helper` (the full tunnel an app
+ * cannot bypass) and `adb-proxy` (the device's own HTTP proxy setting). The
+ * two reverse/farm-placed variants need a farm-side listener whose port is
+ * per-device, which is not something a bulk form can answer — those stay on
+ * the device's own Network tab, where the panel knows the device.
+ */
 function SetNetworkFields({ value, onChange }: { value: SetNetworkValue; onChange: (v: SetNetworkValue) => void }) {
+  const set = (patch: Partial<SetNetworkValue>) => onChange({ ...value, ...patch })
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor="set-network-op">Change</Label>
-      <Select value={value.op} onValueChange={(v) => onChange({ op: v as SetNetworkValue['op'] })}>
-        <SelectTrigger id="set-network-op" className="w-full">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="enable">Enable</SelectItem>
-          <SelectItem value="disable">Disable</SelectItem>
-          <SelectItem value="retry">Retry</SelectItem>
-          <SelectItem value="clear">Clear</SelectItem>
-        </SelectContent>
-      </Select>
+    <div className="space-y-3">
+      <div className="space-y-1.5">
+        <Label htmlFor="set-network-op">Change</Label>
+        <Select value={value.op} onValueChange={(v) => set({ op: v as SetNetworkValue['op'] })}>
+          <SelectTrigger id="set-network-op" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="set">Set a route…</SelectItem>
+            <SelectItem value="enable">Enable</SelectItem>
+            <SelectItem value="disable">Disable</SelectItem>
+            <SelectItem value="retry">Retry</SelectItem>
+            <SelectItem value="clear">Clear</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {value.op === 'set' && (
+        <>
+          <div className="space-y-1.5">
+            <Label htmlFor="set-network-engine">Mode</Label>
+            <Select value={value.engine} onValueChange={(v) => set({ engine: v as SetNetworkValue['engine'] })}>
+              <SelectTrigger id="set-network-engine" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="vpn-helper">VPN — a full tunnel through the guest agent</SelectItem>
+                <SelectItem value="adb-proxy">HTTP proxy — the device's own setting</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-meta text-faint">
+              {value.engine === 'vpn-helper'
+                ? 'Every connection goes through it, including apps that ignore the proxy setting. Needs the guest agent on each device.'
+                : 'The phone’s own proxy setting. No agent needed, and an app that ignores it is not routed.'}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <Label htmlFor="set-network-host">Host</Label>
+              <Input id="set-network-host" value={value.host} onChange={(e) => set({ host: e.target.value })} placeholder="proxy.example.com" />
+            </div>
+            <div className="w-[110px] space-y-1.5">
+              <Label htmlFor="set-network-port">Port</Label>
+              <Input id="set-network-port" value={value.port} onChange={(e) => set({ port: e.target.value })} placeholder="1080" inputMode="numeric" />
+            </div>
+          </div>
+          {value.engine === 'vpn-helper' && (
+            <div className="flex gap-2">
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <Label htmlFor="set-network-user">Username</Label>
+                <Input id="set-network-user" value={value.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" />
+              </div>
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <Label htmlFor="set-network-pass">Password</Label>
+                {/* Sent once and stored encrypted; never read back on the
+                    device panel's own poll. Blank leaves whatever each device
+                    already has, so one field can re-point twenty phones
+                    without retyping twenty passwords. */}
+                <Input id="set-network-pass" type="password" value={value.password} onChange={(e) => set({ password: e.target.value })} autoComplete="off" placeholder="leave blank to keep" />
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -864,10 +936,30 @@ const setNetwork: VerbDialogSpec<SetNetworkValue> = {
   verb: 'set-network',
   title: (c) => `Apply a network change to ${n(c)}`,
   submitLabel: (c) => `Apply to ${n(c)}`,
-  initial: { op: 'enable' },
+  initial: { op: 'enable', engine: 'vpn-helper', host: '', port: '', username: '', password: '' },
   Fields: SetNetworkFields,
-  canSubmit: () => true,
-  toParams: async (v) => ({ op: v.op }),
+  // A `set` with no host would be submitted, refused per device, and reported
+  // as twenty failures for one empty field.
+  canSubmit: (v) => v.op !== 'set' || (v.host.trim().length > 0 && Number.isInteger(Number(v.port)) && Number(v.port) > 0),
+  toParams: async (v) => {
+    if (v.op !== 'set') return { op: v.op }
+    const port = Number(v.port)
+    return {
+      op: 'set',
+      route:
+        v.engine === 'vpn-helper'
+          ? {
+              engine: 'vpn-helper',
+              host: v.host.trim(),
+              port,
+              // Omitted rather than sent empty: an empty string is a value,
+              // and would clear a credential the operator meant to keep.
+              ...(v.username.trim() ? { username: v.username.trim() } : {}),
+              ...(v.password ? { password: v.password } : {}),
+            }
+          : { engine: 'adb-proxy', host: v.host.trim(), port },
+    }
+  },
 }
 
 /**
