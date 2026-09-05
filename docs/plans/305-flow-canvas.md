@@ -277,6 +277,40 @@ the owner sitting:
 | The `workflowEditorView` local preference | `packages/studio/src/lib/prefs.ts` | `rg -n "workflowEditorView" packages/studio/src` → empty |
 | The old `components/workflow/` directory | — | `test ! -d packages/studio/src/components/workflow` (its survivors moved to `components/flow/`) |
 
+## 11a. Browser verification, 2026-09-05
+
+Run by the orchestrating session with the in-app browser against `bun run
+dev:studio` on :3001 and a core on :7700, on the owner's `.dev-data`. This is
+NOT the owner's gate sitting — it is a machine driving a page, and three rows
+below still need a person. It is recorded because it found three defects that
+`typecheck`, `build:studio` and the static export all passed.
+
+**Defects found and fixed** (commit `8d7e4c0`):
+
+| # | Defect | Effect |
+|---|---|---|
+| 1 | `onSelectionChange` built a new `Set` unconditionally; React Flow fires it on every re-sync, including the one our own `nodes` prop caused | "Maximum update depth exceeded" on mount — **the editor did not render at all** |
+| 2 | The 1040px node panel was gated on SELECTION (`open={!!selectedNode}`) | The panel covered the canvas the instant a drag began; multi-select was unusable. Now a click selects and a double click opens |
+| 3 | `useHistory` nested `setFuture` inside a `setPresent` updater inside a `setPast` updater | Every undo pushed two identical snapshots onto the redo stack, so redo restored a duplicate and appeared to do nothing while its button stayed lit. The three stacks are now one state object — the shape §3.3 specified |
+
+**Rows verified in the browser**:
+
+| Row | Verified | How |
+|---|---|---|
+| G1 / P1 | ✅ (one browser) | Dragged `start`, saved, re-opened `?name=parity-check`: `ui = {x:-48,y:40}` in the stored document AND `translate(-48px, 40px)` on the restored canvas. The "second browser" half of G1 is still `owner` |
+| G2 / P2 | ⚠️ partial | Toolbar → palette → type → Enter adds the node. **Drag-from-handle-to-empty-canvas and `+`-on-edge were not exercised** and stay `owner` |
+| P3 | ✅ | `gat` (3 chars) ranks Gate as the only result; the item carries `data-selected`, and Enter picks it |
+| G3 / P4 | ⚠️ partial | `cmd+a` selected 2, `cmd+d` → `delay-2`, `cmd+c`/`cmd+v` → `delay-3` (id remap correct), `Backspace` removed all three and **`start` survived**, one undo restored them. **Box-select and multi-drag were not exercised** and stay `owner` |
+| G4 / P5 | ⚠️ partial | Drag → `translate(-48px,40px)`; undo → `translate(0px,0px)`; redo → back, redo stack then empty (one entry, no duplicate). **The 50-deep half was not exercised** |
+| G5 / P12 | ✅ | Auto-arrange moved `start` (-48,40) → (0,0); one undo restored the scatter exactly |
+| G8 | ⚠️ partial | An unreachable `gate` renders with an amber ring and an `UNREACHABLE` badge, and the panel names both findings (`edge-dangling`, `node-unreachable`). The dashed dangling-edge stub was not observed |
+
+**Observed, not fixed** (each needs a decision, none is in this plan's §0):
+
+- **React Flow's `MiniMap` and `Controls` render white on the dark theme.** They ship their own CSS and this plan's tokens never reach them. Visible in every screenshot; it is the most obvious visual defect in the editor.
+- **Opening a saved workflow immediately shows "Unsaved"** with no edit made — probably schema defaults applied on load making the parsed document differ from the fetched one.
+- Two false alarms worth recording so they are not re-reported: the node palette's Enter key works as merged (the first failure was the driving tool sending `Return`, a different key), and Auto-arrange works as merged (the first click missed the button). Both were re-tested against the unmodified code before anything was changed.
+
 ## 11. Handoff report
 
 - **Worktree branch**: `worktree-agent-abd9e6e13e6cad0d7`, cut (long before this
