@@ -1,4 +1,4 @@
-import { and, count, eq } from 'drizzle-orm'
+import { and, count, desc, eq } from 'drizzle-orm'
 import { deriveRandom } from '@enkaku/expr'
 import { applySchemaDefaults, resolveValue, validateAgainstSchema, WORKFLOW_LIMITS, type ResolveScope, type RunSummaryEntry, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
 import type { Db } from '../../db'
@@ -681,7 +681,29 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         // Every step the cursor never reached is written down too (H4).
         // `start`/`finish` are never logged at all (plan 301 §3.2, §3.4) —
         // they cost no step whether the cursor reaches them or not.
-        let skipSeq = step + seqOffset
+        /*
+         * After the highest seq this run ACTUALLY wrote, not after the step
+         * counter.
+         *
+         * `step` is incremented once a step is fully handled, so a run that
+         * threw or was cancelled mid-step has written its row and not counted
+         * it — and `step + seqOffset` then names a seq that already exists.
+         * The first skipped node collided with it and the whole run died with
+         * `UNIQUE constraint failed: workflow_steps.run_id, workflow_steps.seq`,
+         * replacing the real reason it stopped with a database error (seen on
+         * the owner's farm, 2026-09-05, on a workflow cancelled mid-step).
+         *
+         * The table is the authority on what it holds, so ask it. One query,
+         * once, on a path that only runs as the whole thing winds down.
+         */
+        const highestWritten = deps.db
+          .select({ seq: workflowSteps.seq })
+          .from(workflowSteps)
+          .where(eq(workflowSteps.runId, ctx.runId))
+          .orderBy(desc(workflowSteps.seq))
+          .limit(1)
+          .get()
+        let skipSeq = Math.max(step + seqOffset, (highestWritten?.seq ?? -1) + 1)
         for (const n of doc.nodes) {
           if (n.kind === 'start' || n.kind === 'finish') continue
           if (runCounts.has(n.id) || carriedOverIds.has(n.id)) continue

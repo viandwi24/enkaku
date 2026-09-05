@@ -834,3 +834,60 @@ describe('cancellation reaches the running child step (2026-09-05)', () => {
     expect(cancelledRunIds).toContain(stepRunId as unknown as string)
   })
 })
+
+describe('the skipped-node sweep never collides with a row the run already wrote (2026-09-05)', () => {
+  test('a run cancelled mid-step still records its skipped nodes instead of dying on a UNIQUE constraint', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db, opened.sqlite)
+    const db = opened.db
+    const runs = createRunStore(db)
+    const watcher = createRunWatcher({ getRun: (id) => runs.getRun(id) })
+    let stepRunId: string | null = null
+
+    const deps: WorkflowOrchestratorDeps = {
+      db,
+      runs,
+      watcher,
+      registry: fakeRegistry(),
+      pins: createPinStore(db),
+      enqueueStep(input) {
+        const job = runs.createJob({
+          kind: 'script',
+          scriptId: input.scriptId,
+          deviceId: input.deviceId,
+          params: input.params,
+          scriptName: input.scriptName,
+          scriptVersion: input.scriptVersion,
+          parentWorkflowJobId: input.parentWorkflowJobId,
+          stepSeq: input.stepSeq,
+        })
+        const run = runs.addRun(job.id, { trigger: 'workflow-step', priority: input.priority })
+        db.update(jobRuns).set({ status: 'running' }).where(eq(jobRuns.id, run.id)).run()
+        stepRunId = run.id
+        return { job, run }
+      },
+      cancelRun() {},
+      settings: () => ({ maxTotalMs: 3_600_000 }),
+      log: silentLog(),
+    }
+
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, threeStepDoc())
+    const controller = new AbortController()
+    const running = orchestrator.run(job, { runId: run.id, run, signal: controller.signal, heartbeat: () => {}, log: deps.log })
+    for (let i = 0; i < 50 && stepRunId === null; i++) await new Promise((r) => setTimeout(r, 5))
+
+    // Cancelled while step 1 is in flight: its row is written, its counter is
+    // not. The two nodes the cursor never reached are swept next, and used to
+    // start at the seq that row already holds.
+    controller.abort()
+    await running.catch(() => undefined)
+
+    const rows = db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    const seqs = rows.map((r) => r.seq)
+    expect(new Set(seqs).size).toBe(seqs.length)
+    expect(rows.filter((r) => r.status === 'skipped').length).toBeGreaterThan(0)
+    // And the run reports why it stopped, not a database error.
+    expect(runs.getRun(run.id)?.error ?? '').not.toContain('UNIQUE')
+  })
+})
