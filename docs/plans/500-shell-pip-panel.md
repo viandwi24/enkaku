@@ -1,6 +1,6 @@
 # Plan 500 — Shell : the picture-in-picture page panel
 
-> Status: draft
+> Status: implemented (software) — G1-G3 and G5-G12 done and verified by their own commands 2026-09-05. G4 (the magnet) and G13 (how it feels to use) stay open: they are owner rows, and nothing in this repo can render a browser.
 > Ships: packages/studio/src/components/shell/PipHost.tsx
 > Depends on: plan 213 (the shell, rail and page panel); plan 216's `ActionDialogHost` and `DeviceControlHost` for the module-store pattern
 > Spec references: §13 (Studio)
