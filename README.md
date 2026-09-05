@@ -7,16 +7,31 @@ A device farm platform for remote control and automation of Android phones — s
 Each [GitHub Release](https://github.com/viandwi24/enkaku/releases) ships one self-contained binary per platform — Studio, the database migrations, and the example plugin packs are embedded, so nothing else is needed. No Bun, no checkout.
 
 ```bash
-# Linux server (also: darwin-arm64, darwin-x64, linux-arm64)
-# Set VERSION to the tag you want — the Releases page lists them.
-VERSION=v0.1.6
-curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
-tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
-./enkaku
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh
+enkaku
 # open http://localhost:7700
 ```
 
-On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe` (SmartScreen will warn about the unsigned binary — "More info" → "Run anyway").
+The installer picks the build for your platform (linux/darwin × x64/arm64), verifies it
+against the release's `SHA256SUMS.txt`, installs it into `~/.enkaku/bin` and puts that on
+PATH. Pass options through `sh -s --`:
+
+```bash
+curl -fsSL .../install.sh | sh -s -- --version v0.1.30       # a specific release
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin    # somewhere else
+curl -fsSL .../install.sh | sh -s -- --no-modify-path        # leave shell rc files alone
+```
+
+Or download an archive by hand from the [Releases page](https://github.com/viandwi24/enkaku/releases):
+
+```bash
+VERSION=v0.2.0
+curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
+tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
+./enkaku
+```
+
+On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe` (SmartScreen will warn about the unsigned binary — "More info" → "Run anyway"). The installer works under Git Bash too.
 
 Full install guide, including the systemd service and Docker: [`docs/guide/install.md`](docs/guide/install.md).
 

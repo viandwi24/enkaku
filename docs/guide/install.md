@@ -2,20 +2,63 @@
 
 Enkaku manages every tool it needs itself (adb, scrcpy-server, the inspector APKs). **You do not need to install adb** or set up a PATH.
 
-## 0. Portable binary (no Bun, no checkout)
+## 0. One-line install (no Bun, no checkout)
 
 Each GitHub Release ships one self-contained binary per platform — Studio, the
 database migrations, and the example plugin packs are embedded, so nothing else
-is needed:
+is needed. `install.sh` fetches the right one:
 
 ```bash
-# Linux server (also: darwin-arm64, darwin-x64, linux-arm64)
-# Set VERSION to the tag you want — the Releases page lists them.
-VERSION=v0.1.6
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh
+enkaku
+# open http://localhost:7700
+```
+
+It detects your platform (`linux`/`darwin` × `x64`/`arm64`, plus `windows-x64`
+under Git Bash), downloads that archive from the latest release, **verifies it
+against the release's `SHA256SUMS.txt` and refuses to install on a mismatch**,
+then puts the binary in `~/.enkaku/bin` and adds that directory to your PATH.
+`curl` and `tar` are the only requirements; `jq` is used when present and not
+needed when it is absent.
+
+Because it is piped into `sh`, options go through `sh -s --`:
+
+```bash
+# a specific release, including a downgrade
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --version v0.1.30
+# install somewhere else (a directory you can write to)
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --dir /usr/local/bin
+# leave every shell rc file untouched — you manage PATH yourself
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --no-modify-path
+```
+
+The same values are also readable from the environment (`ENKAKU_VERSION`,
+`ENKAKU_INSTALL_DIR`, `ENKAKU_OS`, `ENKAKU_ARCH`, and `ENKAKU_REPO` for a fork),
+which is what you want from a provisioning script or a Dockerfile.
+
+Three things it does on purpose:
+
+- **The PATH line is written once.** It is added only when the install directory
+  is not already on PATH, only to the rc file your `$SHELL` actually reads, and
+  it is marked, so re-running the installer never leaves a second copy behind.
+- **The old binary is kept** at `<binary>.bak` when you re-run it over an
+  existing install.
+- **It replaces the binary with a rename, not a copy** — copying over a running
+  executable fails on Linux with `ETXTBSY` ("Text file busy"), which is exactly
+  what re-running an installer on a live farm would hit. A running core keeps
+  its own open inode and carries on **on the old version until you restart it**.
+
+It also drops `enkaku-update.sh` next to the binary, so [updating](#updating) is
+already set up.
+
+If you would rather read the archive URL yourself, the Releases page lists every
+tag:
+
+```bash
+VERSION=v0.2.0
 curl -LO "https://github.com/viandwi24/enkaku/releases/download/$VERSION/enkaku-$VERSION-linux-x64.tar.gz"
 tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
 ./enkaku
-# open http://localhost:7700
 ```
 
 On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe`
@@ -512,9 +555,12 @@ Two things it does on purpose:
 ### Updating
 
 `scripts/enkaku-update.sh` downloads the latest release binary and swaps it in.
-Copy it next to your `enkaku` binary — it needs no checkout, no Bun, and no
-running core, which matters because "the core will not start" is exactly when
-you reach for it.
+`install.sh` already put it next to your `enkaku` binary; if you installed by
+hand, copy it there. It needs no checkout, no Bun, and no running core, which
+matters because "the core will not start" is exactly when you reach for it.
+(Re-running `install.sh` upgrades in place too — the updater is the smaller
+tool for the job, and the one that still works with no network path to
+raw.githubusercontent.com.)
 
 ```bash
 ./enkaku-update.sh                     # update to the latest release, if newer
