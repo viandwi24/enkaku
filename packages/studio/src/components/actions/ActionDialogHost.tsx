@@ -1,6 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import { runAction, groupResults } from '@/lib/actions'
 import { GroupInfoSchema, type DeviceInfo, type GroupInfo } from '@enkaku/protocol'
 import { applyActivityEvent } from '@/lib/activity'
 import { fetchAllPages, fetchDevices } from '@/lib/api'
@@ -42,7 +44,31 @@ export interface ActionDialogApi {
  */
 export function useActionDialogs(): ActionDialogApi {
   return {
-    open: (verb, ctx, prefill) => setCurrent({ verb, ctx, prefill }),
+    /**
+     * A verb marked `immediate` runs here instead of opening anything.
+     *
+     * Handled in `open` rather than at each call site so every entry point —
+     * the bulk menu, Device Control's Actions tab, a plugin's own button —
+     * gets it without knowing the rule exists. A modal whose only content is
+     * one sentence and a button repeating the menu item just clicked is two
+     * clicks for one act, and the target was already chosen by the selection
+     * the menu opened from (CEO, 2026-09-05).
+     */
+    open: (verb, ctx, prefill) => {
+      if (!VERB_DIALOGS[verb]?.immediate) {
+        setCurrent({ verb, ctx, prefill })
+        return
+      }
+      const label = VERB_DIALOGS[verb].submitLabel((ctx.deviceIds ?? []).length)
+      void runAction(verb, ctx as never, (prefill ?? {}) as never)
+        .then((res: Awaited<ReturnType<typeof runAction>>) => {
+          const grouped = groupResults(res.results)
+          const failed = grouped.failed.length + grouped.forbidden.length
+          if (failed > 0) toast.warning(`${label}: ${grouped.done.length} done, ${failed} refused`)
+          else toast.success(`${label}: done`)
+        })
+        .catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
+    },
   }
 }
 

@@ -867,3 +867,49 @@ describe('ReadinessManager — the no-timer rule survives plan 125 (readiness.ts
     expect(code).not.toMatch(/setInterval\s*\(/)
   })
 })
+
+/**
+ * An operator's Sleep is not blocked by the window they pressed it in.
+ *
+ * Device Control takes a `control` hold so the screen it is showing does not
+ * go dark on its own. Sleep then refused, because a bare hold count could not
+ * tell that hold from a running job's — so the button did nothing, every
+ * time, from the one screen it is pressed from most (owner, 2026-09-05).
+ */
+describe('sleep overrides presentation holds, never work holds', () => {
+  test('a control hold does not block an explicit sleep', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await readiness.hold(D1, 'control')
+
+    const before = execCalls.length
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
+
+    // 223 is KEYCODE_SLEEP — the device was actually put to sleep.
+    expect(execCalls.slice(before).some((c) => c.includes('input keyevent 223'))).toBe(true)
+  })
+
+  test('a job hold still blocks it — sleeping under running work breaks the work', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await readiness.hold(D1, 'job')
+
+    const before = execCalls.length
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
+
+    expect(execCalls.slice(before).some((c) => c.includes('input keyevent 223'))).toBe(false)
+  })
+
+  test('releasing a presentation hold leaves a work hold counted — the two are tracked apart', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    const viewer = await readiness.hold(D1, 'viewer')
+    await readiness.hold(D1, 'job')
+    viewer.release()
+
+    const before = execCalls.length
+    await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
+
+    expect(execCalls.slice(before).some((c) => c.includes('input keyevent 223'))).toBe(false)
+  })
+})

@@ -38,6 +38,18 @@ export interface VerbDialogSpec<P> {
   title: (n: number) => string
   submitLabel: (n: number) => string
   destructive?: boolean
+  /**
+   * Runs on click, with no dialog at all (CEO, 2026-09-05).
+   *
+   * A modal exists to collect something. A verb that takes no input and asks
+   * no question puts a box on screen whose only content is a sentence and a
+   * button that repeats the menu item just clicked — two clicks for one act.
+   * The target is already chosen: the menu was opened from a selection.
+   *
+   * Never set on a `destructive` verb. Forgetting a device or removing its
+   * agent is exactly where the second click earns its place.
+   */
+  immediate?: boolean
   /** Plugins may declare 1 (MVP 07 §2.1). No MVP verb does. */
   maxTargets?: number
   /** The initial draft. */
@@ -69,6 +81,7 @@ const n = (count: number) => `${count} device${count === 1 ? '' : 's'}`
 // ---------------------------------------------------------------------------
 const reconnect: VerbDialogSpec<Record<string, never>> = {
   verb: 'reconnect',
+  immediate: true,
   title: (c) => `Reconnect ${n(c)}`,
   submitLabel: (c) => `Reconnect ${n(c)}`,
   initial: {},
@@ -83,6 +96,7 @@ const reconnect: VerbDialogSpec<Record<string, never>> = {
 // ---------------------------------------------------------------------------
 const disconnect: VerbDialogSpec<Record<string, never>> = {
   verb: 'disconnect',
+  immediate: true,
   title: (c) => `Disconnect ${n(c)}`,
   submitLabel: (c) => `Disconnect ${n(c)}`,
   initial: {},
@@ -351,6 +365,7 @@ const screenshot: VerbDialogSpec<Record<string, never>> = {
 // ---------------------------------------------------------------------------
 const sleep: VerbDialogSpec<Record<string, never>> = {
   verb: 'sleep',
+  immediate: true,
   title: (c) => `Sleep ${n(c)}`,
   submitLabel: (c) => `Sleep ${n(c)}`,
   initial: {},
@@ -372,6 +387,7 @@ const sleep: VerbDialogSpec<Record<string, never>> = {
  */
 const wake: VerbDialogSpec<Record<string, never>> = {
   verb: 'wake',
+  immediate: true,
   title: (c) => `Wake ${n(c)}`,
   submitLabel: (c) => `Wake ${n(c)}`,
   initial: {},
@@ -763,6 +779,7 @@ const prepare: VerbDialogSpec<PrepareValue> = {
  */
 const installAgent: VerbDialogSpec<Record<string, never>> = {
   verb: 'install-agent',
+  immediate: true,
   title: (c) => `Install the guest agent on ${n(c)}`,
   submitLabel: (c) => `Install on ${n(c)}`,
   initial: {},
