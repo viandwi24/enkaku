@@ -80,6 +80,8 @@ export interface HttpDeps {
    * the exact lines to add for as long as this gap is open.
    */
   workflowRoutes?: Hono<AuthEnv>
+  /** `GET :id/runs/:runId/steps` and `POST :id/resume` (plan 211 §7.1) — mounted at `/api/workflow-jobs`. Optional on the same terms as `workflowRoutes` above. */
+  workflowJobRoutes?: Hono<AuthEnv>
   /**
    * `GET`/`GET :slug`/`POST`/`PATCH :slug`/`DELETE :slug`/`POST :slug/publish`/
    * `POST :slug/detach` (plan 94 §4.9, §5 step 94.5) — mounted at
@@ -456,6 +458,20 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // `/api/workflows/*` falls through to the catch-all 404 below like any
   // other unmounted path — never a boot failure.
   if (deps.workflowRoutes) app.route('/api/workflows', deps.workflowRoutes)
+
+  /*
+   * Plan 211 §7.1 — the workflow RUN's own routes: the per-step list the
+   * Timeline tab draws for a workflow job, and `resume`.
+   *
+   * `api/workflow-jobs.ts` has existed, with its own passing test file, since
+   * plan 211 and was never mounted by anything. Every request to it answered
+   * "no such route", so a workflow job's Timeline read `Steps · 0` however
+   * many steps the run had actually recorded, and Resume was unreachable
+   * — a whole surface dark because of a missing line here (owner,
+   * 2026-09-05). The test suite could not see it: it mounts the router
+   * itself.
+   */
+  if (deps.workflowJobRoutes) app.route('/api/workflow-jobs', deps.workflowJobRoutes)
 
   // Plan 94 §4.9, §5 step 94.5 — same optional-mount pattern as `workflowRoutes` above.
   if (deps.recordingRoutes) app.route('/api/recordings', deps.recordingRoutes)

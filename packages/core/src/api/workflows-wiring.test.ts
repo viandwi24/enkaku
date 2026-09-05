@@ -76,3 +76,45 @@ describe('daemon.ts wiring — /api/workflows (plan 99 §4.5, §4.9, §5 step 99
     expect(call).toContain('store: workflowStore')
   })
 })
+
+/*
+ * The same guard for `/api/workflow-jobs` — and it is here because that
+ * router went unmounted for longer.
+ *
+ * `api/workflow-jobs.ts` (plan 211 §7.1) has had its own passing test file
+ * since the day it was written, and `daemon.ts` never constructed it. Every
+ * request answered "no such route": a workflow job's Timeline tab reported
+ * `Steps · 0` however many steps the run had recorded, and Resume was
+ * unreachable. `workflow-jobs.test.ts` could not see any of it, because it
+ * mounts the router itself — which is exactly the blind spot this style of
+ * test exists to cover (owner, 2026-09-05).
+ */
+describe('daemon.ts wiring — /api/workflow-jobs (plan 211 §7.1)', () => {
+  test('daemon.ts imports createWorkflowJobRoutes from ./api/workflow-jobs', () => {
+    expect(daemonSource).toContain("import { createWorkflowJobRoutes } from './api/workflow-jobs'")
+  })
+
+  test('createApp({...}) passes a real workflowJobRoutes — without it a workflow run has no steps to show', () => {
+    const call = extractCall(daemonSource, 'const app = createApp({')
+    expect(call).toContain('workflowJobRoutes:')
+    expect(call).toContain('createWorkflowJobRoutes(')
+    // The SAME run store and job service every other route in this file
+    // shares — a second instance would answer from a different view of the
+    // same rows.
+    expect(call).toMatch(/createWorkflowJobRoutes\(\{[^}]*runs[^}]*jobService/)
+  })
+})
+
+/*
+ * And the mount itself. `http.ts` is where the previous gap actually lived:
+ * `daemon.ts` could construct a router perfectly and still reach nothing if
+ * `createApp` never routed it.
+ */
+describe('http.ts mounts what daemon.ts constructs', () => {
+  const httpSource = readFileSync(join(import.meta.dir, '..', 'server', 'http.ts'), 'utf8')
+
+  test('/api/workflows and /api/workflow-jobs are both routed', () => {
+    expect(httpSource).toContain("app.route('/api/workflows', deps.workflowRoutes)")
+    expect(httpSource).toContain("app.route('/api/workflow-jobs', deps.workflowJobRoutes)")
+  })
+})

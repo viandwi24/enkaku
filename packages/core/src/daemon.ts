@@ -160,6 +160,7 @@ import { createAgentSettingsStore } from './settings/agent-settings'
 import { buildRegistryResponse } from './registry/engines'
 import { createScriptRoutes } from './scripts/routes'
 import { createWorkflowRoutes } from './api/workflows'
+import { createWorkflowJobRoutes } from './api/workflow-jobs'
 import { createRecordingRoutes } from './api/recordings'
 import { createScriptRegistry } from './scripts/registry'
 import { createWorkflowStore } from './workflows/store'
@@ -3359,6 +3360,7 @@ let blobGc: BlobGc | null = null
         // executor's runtime clock already enforced (the `createWorkflowExecutor`
         // call below, wired since plan 99 §5 items 1-2). Guarded by
         // `daemon-wiring.test.ts`'s workflow-routes describe block.
+        workflowJobRoutes: createWorkflowJobRoutes({ db, runs, jobService, scheduler: scheduler! }),
         workflowRoutes: createWorkflowRoutes({
           db,
           registry: scriptRegistry,
