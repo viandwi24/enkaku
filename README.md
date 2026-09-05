@@ -2,27 +2,55 @@
 
 A device farm platform for remote control and automation of Android phones — self-hosted, zero-config. Full spec: [`docs/spec.md`](docs/spec.md); the sequential work plan: [`docs/plans/`](docs/plans/).
 
-## Running it (prebuilt binary)
+## Install
 
-Each [GitHub Release](https://github.com/viandwi24/enkaku/releases) ships one self-contained binary per platform — Studio, the database migrations, and the example plugin packs are embedded, so nothing else is needed. No Bun, no checkout.
+One command, on Linux and macOS (and Windows under Git Bash):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh
+```
+
+Then:
+
+```bash
 enkaku
 # open http://localhost:7700
 ```
 
-The installer picks the build for your platform (linux/darwin × x64/arm64), verifies it
-against the release's `SHA256SUMS.txt`, installs it into `~/.enkaku/bin` and puts that on
-PATH. Pass options through `sh -s --`:
+Each [GitHub Release](https://github.com/viandwi24/enkaku/releases) ships one self-contained
+binary per platform — Studio, the database migrations, and the example plugin packs are
+embedded, so nothing else is needed. No Bun, no checkout. The installer works out which
+build you need (`linux`/`darwin` × `x64`/`arm64`), takes the **latest release** unless you
+say otherwise, **verifies the download against the release's `SHA256SUMS.txt` and refuses
+to install on a mismatch**, drops the binary in `~/.enkaku/bin`, and puts that directory on
+your PATH. `curl` and `tar` are all it needs.
+
+Because it is piped into `sh`, options go after `sh -s --`:
 
 ```bash
-curl -fsSL .../install.sh | sh -s -- --version v0.1.30       # a specific release
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin    # somewhere else
-curl -fsSL .../install.sh | sh -s -- --no-modify-path        # leave shell rc files alone
+# install a specific release instead of the latest
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --version v0.1.30
+
+# install somewhere else
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --dir /usr/local/bin
+
+# don't touch any shell rc file; you manage PATH yourself
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --no-modify-path
 ```
 
-Or download an archive by hand from the [Releases page](https://github.com/viandwi24/enkaku/releases):
+Prefer to read the script before running it? It is [`install.sh`](install.sh) in this repo —
+the same file that URL serves:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | less
+```
+
+To upgrade later, run `enkaku-update.sh` (the installer puts it next to the binary) or just
+re-run the one-liner.
+
+### Or download an archive by hand
+
+From the [Releases page](https://github.com/viandwi24/enkaku/releases):
 
 ```bash
 # Resolve the latest tag the same way install.sh does, or set it by hand —
