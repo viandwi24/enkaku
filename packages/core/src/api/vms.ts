@@ -46,20 +46,30 @@ export function createVmRoutes(deps: { manager: VmManager }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
   function authorizeView(user: { role: 'admin' | 'operator' } | undefined): void {
-    if (!user || !can(user.role, 'device.view')) {
-      throw new EnkakuError('auth.forbidden', 'requires the device.view permission')
+    if (!user || !can(user.role, 'vm.view')) {
+      throw new EnkakuError('auth.forbidden', 'requires the vm.view permission')
     }
   }
 
   /**
-   * Creating, starting, stopping, or deleting a virtual device is adding (or
-   * removing) a device to this farm, which is what `device.enroll` names
-   * (plan 402 §3.3). Whether this should instead be admin-only is plan 402
-   * §9 Q4 — an owner decision, not this route's.
+   * Creating, starting, stopping or deleting a virtual device now needs
+   * `vm.manage`, which is admin-only.
+   *
+   * It used to need `device.enroll`, on the reading that adding a virtual
+   * device is adding a device (plan 402 §3.3) — and this function's own
+   * comment recorded the doubt: "whether this should instead be admin-only
+   * is plan 402 §9 Q4 — an owner decision". The owner took it on 2026-09-05.
+   *
+   * The reading was too generous. Operators hold `device.enroll`, so
+   * DELETING a host VM was as easy as enrolling a phone — while installing a
+   * single toolchain tool needed `tool.manage`. But a VM is not a phone
+   * someone plugged in: it is a process on the host, several gigabytes of
+   * disk, and a claimed console port, created and destroyed by this farm.
+   * That is the shape of `tool.manage`, and it is graded to match.
    */
-  function authorizeEnroll(user: { role: 'admin' | 'operator' } | undefined): void {
-    if (!user || !can(user.role, 'device.enroll')) {
-      throw new EnkakuError('auth.forbidden', 'requires the device.enroll permission')
+  function authorizeManage(user: { role: 'admin' | 'operator' } | undefined): void {
+    if (!user || !can(user.role, 'vm.manage')) {
+      throw new EnkakuError('auth.forbidden', 'requires the vm.manage permission')
     }
   }
 
@@ -69,7 +79,7 @@ export function createVmRoutes(deps: { manager: VmManager }): Hono<AuthEnv> {
   })
 
   app.post('/', async (c) => {
-    authorizeEnroll(c.get('user'))
+    authorizeManage(c.get('user'))
     const body = VmCreateBodySchema.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a valid virtual device spec is required')
     const record = await deps.manager.create(body.data)
@@ -77,7 +87,7 @@ export function createVmRoutes(deps: { manager: VmManager }): Hono<AuthEnv> {
   })
 
   app.post('/:id/start', (c) => {
-    authorizeEnroll(c.get('user'))
+    authorizeManage(c.get('user'))
     const id = c.req.param('id')
     // The row must exist before anything is kicked off, so a bad id is a
     // synchronous 404 rather than a background failure nobody is polling
@@ -110,7 +120,7 @@ export function createVmRoutes(deps: { manager: VmManager }): Hono<AuthEnv> {
   })
 
   app.post('/:id/stop', (c) => {
-    authorizeEnroll(c.get('user'))
+    authorizeManage(c.get('user'))
     const id = c.req.param('id')
     const before = deps.manager.list().find((v) => v.id === id)
     if (!before) throw new EnkakuError('E_VM_NOT_FOUND', `no virtual device with id ${id}`)
@@ -132,7 +142,7 @@ export function createVmRoutes(deps: { manager: VmManager }): Hono<AuthEnv> {
   })
 
   app.delete('/:id', async (c) => {
-    authorizeEnroll(c.get('user'))
+    authorizeManage(c.get('user'))
     const id = c.req.param('id')
     // Stops first if running, then deletes the AVD (plan 402 §4.2). This
     // never touches the device row (plan 400 D6) — `VmManager.remove` only

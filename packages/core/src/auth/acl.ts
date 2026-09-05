@@ -113,6 +113,20 @@ export type Permission =
   | 'job.history.purge'
   | 'tool.view'
   | 'tool.manage'
+  /**
+   * Virtual devices (plan 400) — `GET /api/vms` and the create/start/stop/
+   * delete verbs beside it.
+   *
+   * They arrived with no permission at all: every route under `/api/vms`
+   * carried authentication and nothing else, so any operator could create or
+   * DELETE an emulator while installing a single toolchain tool needed
+   * `tool.manage`. That asymmetry was never decided; it was a missing line
+   * (2026-09-05).
+   *
+   * Split the way `tool.view`/`tool.manage` are, and graded the same way.
+   */
+  | 'vm.view'
+  | 'vm.manage'
   | 'settings.view'
   | 'settings.manage'
   | 'user.manage'
@@ -182,6 +196,10 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'job.view',
   'job.run',
   'tool.view',
+  // Seeing what virtual devices exist is operator work; creating and
+  // destroying one — a host process, gigabytes of disk, a claimed console
+  // port — is not, so `vm.manage` stays admin the way `tool.manage` does.
+  'vm.view',
   'settings.view',
   'plugin.data',
   'plugin.runtime',
@@ -216,6 +234,8 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   'job.history.purge',
   'tool.view',
   'tool.manage',
+  'vm.view',
+  'vm.manage',
   'settings.view',
   'settings.manage',
   'user.manage',

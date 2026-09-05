@@ -102,8 +102,8 @@ describe('GET /api/vms (plan 402 §4.2, G1)', () => {
 })
 
 describe('POST /api/vms (plan 402 §4.2, G1)', () => {
-  test('an operator may create — 201 in state creating→stopped', async () => {
-    const app = makeApp({ role: 'operator' })
+  test('an admin may create — 201 in state creating→stopped', async () => {
+    const app = makeApp({ role: 'admin' })
     const res = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -116,7 +116,7 @@ describe('POST /api/vms (plan 402 §4.2, G1)', () => {
   })
 
   test('a malformed body → 400', async () => {
-    const app = makeApp({ role: 'operator' })
+    const app = makeApp({ role: 'admin' })
     const res = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -140,7 +140,7 @@ describe('POST /api/vms (plan 402 §4.2, G1)', () => {
 
 describe('POST /api/vms/:id/start (plan 402 §4.2, G1 — the timing decision)', () => {
   test('returns 202 immediately, in state starting, without waiting for the boot poll', async () => {
-    const app = makeApp({ role: 'operator' })
+    const app = makeApp({ role: 'admin' })
     const res = await app.request('/vm-1/start', { method: 'POST' })
     expect(res.status).toBe(202)
     const body = (await res.json()) as { vm: { state: string } }
@@ -148,7 +148,7 @@ describe('POST /api/vms/:id/start (plan 402 §4.2, G1 — the timing decision)',
   })
 
   test('an unknown id → 404 E_VM_NOT_FOUND', async () => {
-    const app = makeApp({ role: 'operator' })
+    const app = makeApp({ role: 'admin' })
     const res = await app.request('/does-not-exist/start', { method: 'POST' })
     expect(res.status).toBe(404)
     const body = (await res.json()) as { error: { code: string } }
@@ -161,7 +161,7 @@ describe('POST /api/vms/:id/stop (plan 402 §4.2, G1)', () => {
     const manager = fakeManager()
     // Drive it into `running` first so `stop` has something to transition from.
     await manager.start('vm-1')
-    const app = makeApp({ role: 'operator', manager })
+    const app = makeApp({ role: 'admin', manager })
     const res = await app.request('/vm-1/stop', { method: 'POST' })
     expect(res.status).toBe(202)
     const body = (await res.json()) as { vm: { state: string } }
@@ -169,7 +169,7 @@ describe('POST /api/vms/:id/stop (plan 402 §4.2, G1)', () => {
   })
 
   test('an unknown id → 404 E_VM_NOT_FOUND', async () => {
-    const app = makeApp({ role: 'operator' })
+    const app = makeApp({ role: 'admin' })
     const res = await app.request('/does-not-exist/stop', { method: 'POST' })
     expect(res.status).toBe(404)
   })
@@ -177,13 +177,13 @@ describe('POST /api/vms/:id/stop (plan 402 §4.2, G1)', () => {
 
 describe('DELETE /api/vms/:id (plan 402 §4.2, G1)', () => {
   test('an operator may delete — 204', async () => {
-    const app = makeApp({ role: 'operator' })
+    const app = makeApp({ role: 'admin' })
     const res = await app.request('/vm-1', { method: 'DELETE' })
     expect(res.status).toBe(204)
   })
 
   test('an unknown id → 404 E_VM_NOT_FOUND', async () => {
-    const app = makeApp({ role: 'operator' })
+    const app = makeApp({ role: 'admin' })
     const res = await app.request('/does-not-exist', { method: 'DELETE' })
     expect(res.status).toBe(404)
   })
@@ -191,7 +191,7 @@ describe('DELETE /api/vms/:id (plan 402 §4.2, G1)', () => {
 
 describe('ACL (plan 402 §4.4, G4)', () => {
   test('an operator may list AND create/start/stop/delete (device.enroll is in OPERATOR)', async () => {
-    const app = makeApp({ role: 'operator' })
+    const app = makeApp({ role: 'admin' })
     expect((await app.request('/')).status).toBe(200)
     expect(
       (
@@ -236,7 +236,7 @@ describe('Error mapping (plan 402 §4.2, G3)', () => {
           throw new EnkakuError(code, 'boom')
         },
       })
-      const app = makeApp({ role: 'operator', manager })
+      const app = makeApp({ role: 'admin', manager })
       const res = await app.request('/', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -245,4 +245,29 @@ describe('Error mapping (plan 402 §4.2, G3)', () => {
       expect(res.status).toBe(status)
     })
   }
+})
+
+/* ------------------------------------------------------------------------ *
+ * `vm.manage` is admin-only (owner decision, 2026-09-05 — plan 402 §9 Q4).
+ * ------------------------------------------------------------------------ */
+
+describe('an operator may look but not touch', () => {
+  test('listing is allowed — vm.view is operator work', async () => {
+    const res = await makeApp({ role: 'operator' }).request('/')
+    expect(res.status).toBe(200)
+  })
+
+  test.each([
+    ['create', 'POST', '/', JSON.stringify({ name: 'vm-a' })],
+    ['start', 'POST', '/vm-1/start', undefined],
+    ['stop', 'POST', '/vm-1/stop', undefined],
+    ['delete', 'DELETE', '/vm-1', undefined],
+  ])('%s is refused — a host VM is a process, disk and a port, not a phone someone plugged in', async (_label, method, path, body) => {
+    const res = await makeApp({ role: 'operator' }).request(path, {
+      method,
+      ...(body ? { body, headers: { 'content-type': 'application/json' } } : {}),
+    })
+    expect(res.status).toBe(403)
+    expect(JSON.stringify(await res.json())).toContain('vm.manage')
+  })
 })
