@@ -15,6 +15,8 @@ import {
   SquaresFourIcon,
   PlusIcon,
   Textarea,
+  TrayArrowDownIcon,
+  UploadSimpleIcon,
   useAction,
 } from '@enkaku/ui'
 import { RunOverlay } from './RunOverlay'
@@ -24,7 +26,8 @@ import { ParamsEditor } from './ParamsEditor'
 import { SimulateDialog } from './SimulateDialog'
 import { useHistory, type UseHistoryResult } from './useHistory'
 import { useValidation, nodeIndexOf } from './useValidation'
-import { useClipboard } from './useClipboard'
+import { docToJson, useClipboard } from './useClipboard'
+import { toast } from 'sonner'
 import { placeholderPredicate, edgeKindsOf, freshNodeId, nodeIdsOf, type EdgeKind } from './doc-edit'
 import { autoArrangePositions } from './layout'
 
@@ -87,6 +90,7 @@ export function FlowEditor({
   const { doc, dispatch, undo, redo, canUndo, canRedo } = history
   const validation = useValidation(doc)
   const clipboard = useClipboard(history)
+  const importInput = useRef<HTMLInputElement>(null)
   const { run, isPending } = useAction()
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -285,11 +289,15 @@ export function FlowEditor({
         clipboard.cut(selectedIds)
         setSelectedIds(new Set())
       } else if (meta && e.key.toLowerCase() === 'v') {
-        clipboard.paste()
+        // Not awaited: the handler must stay synchronous so the browser's own
+        // paste is not delayed behind a clipboard read that may prompt.
+        void clipboard.paste().then((ok) => {
+          if (!ok) toast.message('Nothing to paste — copy some nodes, or put a workflow’s JSON on the clipboard.')
+        })
       } else if (meta && e.key.toLowerCase() === 'd') {
         e.preventDefault()
         clipboard.copy(selectedIds)
-        clipboard.paste()
+        void clipboard.paste()
       } else if (meta && e.key.toLowerCase() === 'a') {
         e.preventDefault()
         setSelectedIds(new Set(doc.nodes.map((n) => n.id)))
@@ -317,6 +325,41 @@ export function FlowEditor({
   const selectedNode = selectedIndex === -1 ? undefined : doc.nodes[selectedIndex]
 
   const rootFindings = validation.findings.filter((f) => nodeIndexOf(f.path) === undefined)
+  /**
+   * Export the document as a file. A blob URL rather than a data URI so a
+   * large graph is not capped by URL length, and revoked on the next tick
+   * because the click has already consumed it.
+   */
+  const handleExport = useCallback(() => {
+    const blob = new Blob([docToJson(doc)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${doc.name || 'workflow'}.json`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }, [doc])
+
+  /**
+   * Import APPENDS rather than replaces, for the same reason paste does: the
+   * editor already holds a document with a name, an identifier and a history,
+   * and silently swapping all three for a stranger's is not something Undo
+   * can honestly put back. The nodes arrive with fresh ids beside what is
+   * already there, and the author wires or deletes from a canvas they can see.
+   */
+  const handleImport = useCallback(
+    async (file: File) => {
+      const text = await file.text().catch(() => null)
+      if (text === null) {
+        toast.error(`Could not read ${file.name}.`)
+        return
+      }
+      if (clipboard.pasteJson(text)) toast.success(`Imported ${file.name}.`)
+      else toast.error(`${file.name} is not a workflow this editor can read.`)
+    },
+    [clipboard],
+  )
+
   const errorCount = validation.findings.filter((f) => f.severity === 'error').length
   const warningCount = validation.findings.length - errorCount
 
@@ -339,6 +382,36 @@ export function FlowEditor({
           <SquaresFourIcon className="size-3.5" aria-hidden />
           Auto-arrange
         </Button>
+        {/*
+          Export writes the document an operator sends someone else; Import
+          reads one back. Both go through the SAME payload path Ctrl+C/Ctrl+V
+          uses, so a pasted graph and an imported file land identically —
+          nodes appended with fresh ids, edges rewired, nothing overwritten
+          (owner, 2026-09-05).
+        */}
+        <Button type="button" variant="outline" size="sm" onClick={handleExport} disabled={doc.nodes.length === 0}>
+          <TrayArrowDownIcon className="size-3.5" aria-hidden />
+          Export
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => importInput.current?.click()}>
+          <UploadSimpleIcon className="size-3.5" aria-hidden />
+          Import
+        </Button>
+        <input
+          ref={importInput}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            // Cleared straight away so choosing the SAME file twice fires
+            // again — a browser input fires `change` only when the value
+            // differs, and re-importing the file you just edited is the
+            // ordinary case.
+            e.target.value = ''
+            if (file) void handleImport(file)
+          }}
+        />
         <div className="flex-1" />
         {validation.findings.length > 0 && (
           <span className="readout text-[11.5px] text-fg-muted">

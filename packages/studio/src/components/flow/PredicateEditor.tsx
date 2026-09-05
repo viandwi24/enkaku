@@ -4,7 +4,9 @@ import { Plus, X } from 'lucide-react'
 import { GATE_OPS, WORKFLOW_LIMITS, type GateOp, type Predicate, type WorkflowParam } from '@enkaku/protocol'
 import { Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@enkaku/ui'
 import { placeholderPredicate } from './doc-edit'
-import { type NodeOption, ValueExprEditor } from './ValueExprEditor'
+import { type NodeOption } from './ValueExprEditor'
+import { ExprField, type ActiveField } from './ExprField'
+import type { PreviewScope } from './usePreview'
 
 /**
  * The one bespoke control this plan builds (plan 99 §4.11, §5 step 99.9).
@@ -66,12 +68,21 @@ export function PredicateEditor({
   onChange,
   workflowParams,
   nodeOptions,
+  previewScope,
+  predecessorId,
+  onRegisterActive,
   depth = 1,
 }: {
   value: Predicate
   onChange(next: Predicate): void
   workflowParams: readonly WorkflowParam[]
   nodeOptions: readonly NodeOption[]
+  /* The three `ExprField` needs. Drilled rather than contextualised: this
+     tree is three components deep and every one of them already passes
+     `workflowParams`/`nodeOptions` the same way. */
+  previewScope: PreviewScope
+  predecessorId: string | null
+  onRegisterActive(active: ActiveField | null): void
   depth?: number
 }) {
   const shape = shapeOf(value)
@@ -105,7 +116,15 @@ export function PredicateEditor({
       </Select>
 
       {shape === 'leaf' && 'left' in value && (
-        <LeafEditor value={value} onChange={onChange} workflowParams={workflowParams} nodeOptions={nodeOptions} />
+        <LeafEditor
+          value={value}
+          onChange={onChange}
+          workflowParams={workflowParams}
+          nodeOptions={nodeOptions}
+          previewScope={previewScope}
+          predecessorId={predecessorId}
+          onRegisterActive={onRegisterActive}
+        />
       )}
 
       {shape === 'all' && 'all' in value && (
@@ -114,6 +133,9 @@ export function PredicateEditor({
           setItems={(next) => onChange({ all: next })}
           workflowParams={workflowParams}
           nodeOptions={nodeOptions}
+          previewScope={previewScope}
+          predecessorId={predecessorId}
+          onRegisterActive={onRegisterActive}
           depth={depth}
           atMaxDepth={atMaxDepth}
         />
@@ -125,6 +147,9 @@ export function PredicateEditor({
           setItems={(next) => onChange({ any: next })}
           workflowParams={workflowParams}
           nodeOptions={nodeOptions}
+          previewScope={previewScope}
+          predecessorId={predecessorId}
+          onRegisterActive={onRegisterActive}
           depth={depth}
           atMaxDepth={atMaxDepth}
         />
@@ -140,6 +165,9 @@ export function PredicateEditor({
               onChange={(next) => onChange({ not: next })}
               workflowParams={workflowParams}
               nodeOptions={nodeOptions}
+              previewScope={previewScope}
+              predecessorId={predecessorId}
+              onRegisterActive={onRegisterActive}
               depth={depth + 1}
             />
           )}
@@ -154,6 +182,9 @@ function CombinatorList({
   setItems,
   workflowParams,
   nodeOptions,
+  previewScope,
+  predecessorId,
+  onRegisterActive,
   depth,
   atMaxDepth,
 }: {
@@ -161,6 +192,12 @@ function CombinatorList({
   setItems(next: Predicate[]): void
   workflowParams: readonly WorkflowParam[]
   nodeOptions: readonly NodeOption[]
+  /* The three `ExprField` needs. Drilled rather than contextualised: this
+     tree is three components deep and every one of them already passes
+     `workflowParams`/`nodeOptions` the same way. */
+  previewScope: PreviewScope
+  predecessorId: string | null
+  onRegisterActive(active: ActiveField | null): void
   depth: number
   atMaxDepth: boolean
 }) {
@@ -179,6 +216,9 @@ function CombinatorList({
                 onChange={(next) => setItems(items.map((c, j) => (j === i ? next : c)))}
                 workflowParams={workflowParams}
                 nodeOptions={nodeOptions}
+                previewScope={previewScope}
+                predecessorId={predecessorId}
+                onRegisterActive={onRegisterActive}
                 depth={depth + 1}
               />
             )}
@@ -217,16 +257,44 @@ function LeafEditor({
   onChange,
   workflowParams,
   nodeOptions,
+  previewScope,
+  predecessorId,
+  onRegisterActive,
 }: {
   value: Extract<Predicate, { left: unknown }>
   onChange(next: Predicate): void
   workflowParams: readonly WorkflowParam[]
   nodeOptions: readonly NodeOption[]
+  /* The three `ExprField` needs. Drilled rather than contextualised: this
+     tree is three components deep and every one of them already passes
+     `workflowParams`/`nodeOptions` the same way. */
+  previewScope: PreviewScope
+  predecessorId: string | null
+  onRegisterActive(active: ActiveField | null): void
 }) {
   const unary = UNARY_OPS.has(value.op)
   return (
     <div className="flex flex-wrap items-start gap-1.5">
-      <ValueExprEditor value={value.left} onChange={(next) => onChange({ ...value, left: next ?? value.left })} workflowParams={workflowParams} nodeOptions={nodeOptions} allowUnset={false} />
+      {/*
+        `ExprField`, not the bare `ValueExprEditor` — the same field a script
+        parameter, a delay and a `set` assignment already get, so a condition
+        can be an EXPRESSION too. It could not before: the source picker
+        offered const/param/from/run and nothing else, so `$run.index % 4` —
+        the whole basis of splitting a fleet into equal shares — was
+        expressible in the document, evaluated by the executor, validated on
+        publish, and impossible to type (owner, 2026-09-05).
+      */}
+      <div className="min-w-[220px]">
+        <ExprField
+          value={value.left}
+          onChange={(next) => onChange({ ...value, left: next ?? value.left })}
+          workflowParams={workflowParams}
+          nodeOptions={nodeOptions}
+          previewScope={previewScope}
+          predecessorId={predecessorId}
+          onRegisterActive={onRegisterActive}
+        />
+      </div>
       <Select
         value={value.op}
         onValueChange={(op) => {
@@ -247,13 +315,17 @@ function LeafEditor({
         </SelectContent>
       </Select>
       {!unary && (
-        <ValueExprEditor
-          value={value.right}
-          onChange={(next) => onChange({ ...value, right: next ?? { const: '' } })}
-          workflowParams={workflowParams}
-          nodeOptions={nodeOptions}
-          allowUnset={false}
-        />
+        <div className="min-w-[220px]">
+          <ExprField
+            value={value.right}
+            onChange={(next) => onChange({ ...value, right: next ?? { const: '' } })}
+            workflowParams={workflowParams}
+            nodeOptions={nodeOptions}
+            previewScope={previewScope}
+            predecessorId={predecessorId}
+            onRegisterActive={onRegisterActive}
+          />
+        </div>
       )}
     </div>
   )

@@ -276,7 +276,17 @@ export function NodePanel({
                 </div>
               )}
 
-              {node.kind === 'gate' && <PredicateEditor value={node.when} onChange={(when) => onChange({ when })} workflowParams={doc.params} nodeOptions={nodeOptions} />}
+              {node.kind === 'gate' && (
+                <PredicateEditor
+                  value={node.when}
+                  onChange={(when) => onChange({ when })}
+                  workflowParams={doc.params}
+                  nodeOptions={nodeOptions}
+                  previewScope={previewScope}
+                  predecessorId={predecessorId}
+                  onRegisterActive={setActiveField}
+                />
+              )}
 
               {node.kind === 'switch' && (
                 <div className="space-y-2">
@@ -316,6 +326,9 @@ export function NodePanel({
                           onChange={(when) => onChange({ cases: node.cases.map((x, j) => (j === i ? { ...x, when } : x)) } as Partial<WorkflowNode>)}
                           workflowParams={doc.params}
                           nodeOptions={nodeOptions}
+                          previewScope={previewScope}
+                          predecessorId={predecessorId}
+                          onRegisterActive={setActiveField}
                         />
                       )}
                     </div>
