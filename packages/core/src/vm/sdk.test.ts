@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { EnkakuError } from '../util/errors'
 import { describeAndroidSdk, resolveAndroidSdk, type SdkResolveDeps } from './sdk'
 
@@ -132,5 +135,24 @@ describe('describeAndroidSdk', () => {
     const result = await describeAndroidSdk(deps)
     expect(result.source).toBe('missing')
     expect(result.detail).toContain('sdkmanager')
+  })
+})
+
+describe('the default existence check handles a DIRECTORY (2026-09-05)', () => {
+  test('an SDK sitting in the per-OS default location is found with nothing injected', async () => {
+    // The bug this pins: `Bun.file(dir).exists()` is false for a directory,
+    // so the default tier could never match in production while the doctor —
+    // which injects `existsSync` — reported the same SDK as present. Every
+    // other test in this file injects `exists`, which is precisely why none
+    // of them could see it. This one injects nothing but the location.
+    const root = mkdtempSync(join(tmpdir(), 'enkaku-sdk-'))
+    try {
+      mkdirSync(join(root, 'emulator'), { recursive: true })
+      const resolved = await resolveAndroidSdk({ env: { ENKAKU_ANDROID_SDK_PATH: root } as NodeJS.ProcessEnv, platform: 'darwin' })
+      expect(resolved.root).toBe(root)
+      expect(resolved.source).toBe('override')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

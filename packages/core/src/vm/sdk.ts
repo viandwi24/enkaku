@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { EnkakuError } from '../util/errors'
 
@@ -43,8 +44,22 @@ export interface SdkResolveDeps {
   platform?: NodeJS.Platform
 }
 
+/**
+ * `Bun.file(path).exists()` answers FALSE for a directory, and every SDK root
+ * this module looks for is a directory.
+ *
+ * So in production — where nothing injects `exists` — the per-OS default tier
+ * could never match, and a host with the SDK sitting in its standard location
+ * was told "the Android SDK was not found". The doctor check disagreed
+ * loudly, because `doctor/context.ts` injects `existsSync`, which does handle
+ * directories: the same module gave two opposite answers depending on who
+ * asked (owner's machine, 2026-09-05). Every test injects its own `exists`,
+ * which is exactly why no test could see it.
+ *
+ * `stat` treats a directory as the thing it is.
+ */
 async function defaultExists(path: string): Promise<boolean> {
-  return await Bun.file(path).exists().catch(() => false)
+  return await stat(path).then(() => true).catch(() => false)
 }
 
 function readVar(env: NodeJS.ProcessEnv, name: string): string | undefined {
