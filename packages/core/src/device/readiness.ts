@@ -206,7 +206,31 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
   /** deviceId → the last observed `actual` level and when it was first seen — drives `since`. */
   const lastActual = new Map<string, { level: Readiness; since: number }>()
   /** deviceId → number of open holds (viewer/job/monitor/adb-endpoint/transfer/control). */
+  /**
+   * Live holds per device, counted BY REASON.
+   *
+   * A bare count could not tell a viewer from a running job, so an explicit
+   * Sleep pressed inside Device Control was refused by Device Control's own
+   * hold — the operator's request blocked by the window they pressed it in
+   * (owner, 2026-09-05). Presentation holds (`viewer`, `control`, `monitor`)
+   * exist so a screen someone is watching does not go dark on its own; an
+   * operator asking for exactly that is not the case they guard against.
+   * Work holds (`job`, `transfer`, `adb-endpoint`, `capability`) still refuse:
+   * sleeping under a running job breaks it.
+   */
+  const holdReasons = new Map<string, Map<HoldReason, number>>()
   const holdCounts = new Map<string, number>()
+
+  /** Presentation only — a person looking at the screen, not work depending on it. */
+  const PRESENTATION_HOLDS: ReadonlySet<HoldReason> = new Set(['viewer', 'control', 'monitor'])
+
+  function workHolds(deviceId: string): number {
+    let n = 0
+    for (const [reason, count] of holdReasons.get(deviceId) ?? []) {
+      if (!PRESENTATION_HOLDS.has(reason)) n += count
+    }
+    return n
+  }
   /**
    * deviceId → the last thing the PHONE said about its own screen (plan 125
    * §3.6). Absent means "never probed", which the wire reports as `null` —
@@ -413,8 +437,9 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
    * hold would break the caller that took it, and `set()` already refuses
    * sleep for a running job.
    */
-  async function releaseAwake(deviceId: string): Promise<void> {
-    if ((holdCounts.get(deviceId) ?? 0) > 0) return
+  async function releaseAwake(deviceId: string, opts?: { overridePresentationHolds?: boolean }): Promise<void> {
+    const blocking = opts?.overridePresentationHolds ? workHolds(deviceId) : (holdCounts.get(deviceId) ?? 0)
+    if (blocking > 0) return
     const hadKeepAwake = keepAwakeApplied.delete(deviceId)
     const row = getRow(deviceId)
     if (!row) return
@@ -524,7 +549,11 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // is precisely the dark tile the spec describes. `releaseAwake` still
       // declines under a `hold()`, which is the one case that genuinely
       // must not be slept out from under.
-      await releaseAwake(deviceId)
+      // An explicit sleep overrides the holds that exist only because someone
+      // is looking (CEO, 2026-09-05: forcing sleep is allowed). A running job
+      // still refuses. The session stays up and the tile goes dark, which is
+      // what `docs/spec.md` line 199 describes and what makes waking instant.
+      await releaseAwake(deviceId, { overridePresentationHolds: true })
     }
     // One of §3.6's two probe points ("on reconcile and on demand — never on a
     // timer"), placed AFTER the wake so what it observes is the state this
@@ -666,9 +695,12 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
 
     reconcile,
 
-    async hold(deviceId, _reason) {
+    async hold(deviceId, reason) {
       const count = (holdCounts.get(deviceId) ?? 0) + 1
       holdCounts.set(deviceId, count)
+      const byReason = holdReasons.get(deviceId) ?? new Map<HoldReason, number>()
+      byReason.set(reason, (byReason.get(reason) ?? 0) + 1)
+      holdReasons.set(deviceId, byReason)
       if (count === 1) await ensureAwake(deviceId)
       let released = false
       const id = crypto.randomUUID()
@@ -680,6 +712,13 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
           const left = Math.max(0, (holdCounts.get(deviceId) ?? 1) - 1)
           if (left === 0) holdCounts.delete(deviceId)
           else holdCounts.set(deviceId, left)
+          const byReason = holdReasons.get(deviceId)
+          if (byReason) {
+            const n = Math.max(0, (byReason.get(reason) ?? 1) - 1)
+            if (n === 0) byReason.delete(reason)
+            else byReason.set(reason, n)
+            if (byReason.size === 0) holdReasons.delete(deviceId)
+          }
           // No timer here (§3.7, acceptance #17): a pure-awake hold (no
           // session behind it) reconciles back toward `desired` immediately.
           // A hold on a device with an open BASE session is not torn down by

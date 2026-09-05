@@ -9,6 +9,8 @@ import {
   TooltipTrigger,
   CaretLeftIcon,
   CircleIcon,
+  LightningIcon,
+  MoonIcon,
   ClockCounterClockwiseIcon,
   PowerIcon,
   SpeakerHighIcon,
@@ -93,6 +95,16 @@ function ShortcutRailImpl({
   return (
     <>
       <RailButton icon={PowerIcon} label="Power" hotkeyId="power" onClick={() => sendKey(KEYCODES.POWER)} />
+      {/*
+        Explicit, not a toggle. `PowerIcon` above sends KEYCODE_POWER, which
+        flips whatever the screen currently is; these two say which state you
+        want and are the pair an operator actually reaches for (CEO,
+        2026-09-05). The `sleep`/`wake` ACTIONS are a different thing — they
+        set the farm's desired readiness, which an open session then holds
+        awake; these turn this screen off and on now.
+      */}
+      <RailButton icon={MoonIcon} label="Sleep screen" onClick={() => sendKey(KEYCODES.SLEEP)} />
+      <RailButton icon={LightningIcon} label="Wake screen" onClick={() => sendKey(KEYCODES.WAKEUP)} />
       <RailButton icon={SpeakerHighIcon} label="Volume up" onClick={() => sendKey(KEYCODES.VOLUME_UP)} />
       <RailButton icon={SpeakerLowIcon} label="Volume down" onClick={() => sendKey(KEYCODES.VOLUME_DOWN)} />
       <RailButton icon={SpeakerSlashIcon} label="Mute" onClick={() => sendKey(KEYCODES.VOLUME_MUTE)} />
