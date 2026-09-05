@@ -181,8 +181,20 @@ fi
 echo "Extracting..."
 mkdir -p "$WORK/x"
 if [ "$EXT" = zip ]; then
-  command -v unzip >/dev/null 2>&1 || { echo "Error: unzip is required for the Windows archive." >&2; exit 1; }
-  unzip -q -o "$WORK/$ASSET" -d "$WORK/x"
+  # Git for Windows does NOT bundle `unzip`, so requiring it would fail the one
+  # environment that reaches this branch. Windows 10 1803+ ships bsdtar as
+  # System32\tar.exe, which reads zip -- but Git Bash resolves `tar` to its own
+  # GNU tar first, and that exits 2 on a zip. Try both, then say what to do.
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q -o "$WORK/$ASSET" -d "$WORK/x"
+  elif tar -xf "$WORK/$ASSET" -C "$WORK/x" 2>/dev/null; then
+    : # bsdtar handled it
+  else
+    echo "Error: could not extract $ASSET -- no 'unzip', and this 'tar' cannot read a zip." >&2
+    echo "       On native Windows use install.ps1 instead:" >&2
+    echo "         irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex" >&2
+    exit 1
+  fi
 else
   tar -xzf "$WORK/$ASSET" -C "$WORK/x"
 fi

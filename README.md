@@ -4,10 +4,18 @@ A device farm platform for remote control and automation of Android phones — s
 
 ## Install
 
-One command, on Linux and macOS (and Windows under Git Bash):
+**Linux and macOS** (and Windows under Git Bash) — `install.sh` works out which build
+you need, `linux`/`darwin` × `x64`/`arm64`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh
+```
+
+**Windows** (PowerShell) — native PowerShell and `cmd` have no `sh` to pipe into, so
+Windows has its own script:
+
+```powershell
+irm https://raw.githubusercontent.com/viandwi24/enkaku/main/install.ps1 | iex
 ```
 
 Then:
@@ -19,11 +27,12 @@ enkaku
 
 Each [GitHub Release](https://github.com/viandwi24/enkaku/releases) ships one self-contained
 binary per platform — Studio, the database migrations, and the example plugin packs are
-embedded, so nothing else is needed. No Bun, no checkout. The installer works out which
-build you need (`linux`/`darwin` × `x64`/`arm64`), takes the **latest release** unless you
-say otherwise, **verifies the download against the release's `SHA256SUMS.txt` and refuses
-to install on a mismatch**, drops the binary in `~/.enkaku/bin`, and puts that directory on
-your PATH. `curl` and `tar` are all it needs.
+embedded, so nothing else is needed. No Bun, no checkout.
+
+Either script takes the **latest release** unless you say otherwise, **verifies the download
+against the release's `SHA256SUMS.txt` and refuses to install on a mismatch**, installs into
+your home directory, and puts it on your PATH — no `sudo`, no elevated prompt. On the shell
+side, `curl` and `tar` are all it needs.
 
 Because it is piped into `sh`, options go after `sh -s --`:
 
@@ -38,8 +47,21 @@ curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | 
 curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | sh -s -- --no-modify-path
 ```
 
-Prefer to read the script before running it? It is [`install.sh`](install.sh) in this repo —
-the same file that URL serves:
+`irm | iex` cannot take parameters, so the PowerShell script reads the same options from
+the environment:
+
+```powershell
+$env:ENKAKU_VERSION = 'v0.1.30'          # a specific release
+$env:ENKAKU_INSTALL_DIR = 'C:\enkaku'    # somewhere else
+$env:ENKAKU_NO_MODIFY_PATH = '1'         # leave PATH alone
+irm https://raw.githubusercontent.com/viandwi24/enkaku/main/install.ps1 | iex
+```
+
+It installs to `%USERPROFILE%\.enkaku\bin` and appends to the **user** PATH, so it never
+needs an elevated prompt.
+
+Prefer to read a script before running it? Both are in this repo — [`install.sh`](install.sh)
+and [`install.ps1`](install.ps1) — and those are the same files the URLs serve:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/viandwi24/enkaku/main/install.sh | less
@@ -61,7 +83,7 @@ tar xzf "enkaku-$VERSION-linux-x64.tar.gz"
 ./enkaku
 ```
 
-On Windows: download `enkaku-<version>-windows-x64.zip` from the same release, extract, run `enkaku.exe` (SmartScreen will warn about the unsigned binary — "More info" → "Run anyway"). The installer works under Git Bash too.
+On Windows the archive is `enkaku-<version>-windows-x64.zip` — extract it and run `enkaku.exe` (SmartScreen will warn about the unsigned binary — "More info" → "Run anyway"). Windows on ARM runs the x64 build under emulation; that is the only Windows build the release produces.
 
 Full install guide, including the systemd service and Docker: [`docs/guide/install.md`](docs/guide/install.md).
 
