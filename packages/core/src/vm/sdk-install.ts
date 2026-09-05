@@ -151,6 +151,24 @@ export function packagesFor(req: SdkInstallRequest): string[] {
   return out
 }
 
+/**
+ * Append a line to an install log, collapsing the progress bar in place.
+ *
+ * With CR splitting on, `sdkmanager` emits a redraw several times a second —
+ * thousands of `[====   ] 41% Downloading ...` lines for one package. Kept as
+ * history that is not progress, it is a flood that pushes every real line out
+ * of the buffer. Kept as the LAST line, rewritten, it is exactly the progress
+ * bar the operator would have seen in a terminal.
+ */
+const PROGRESS_BAR = /^\[[=\s]*\]\s*\d+%/
+
+export function appendInstallLine(lines: string[], line: string): void {
+  const isProgress = PROGRESS_BAR.test(line)
+  const lastIsProgress = lines.length > 0 && PROGRESS_BAR.test(lines[lines.length - 1] ?? '')
+  if (isProgress && lastIsProgress) lines[lines.length - 1] = line
+  else lines.push(line)
+}
+
 async function defaultSpawn(cmd: string[], opts: { onLine: (line: string) => void; javaHome?: string | null }): Promise<{ exitCode: number }> {
   // `JAVA_HOME` is passed rather than relied on: the JDK is frequently
   // installed and not on `PATH` (Homebrew leaves it unlinked by default), and
@@ -173,7 +191,14 @@ async function defaultSpawn(cmd: string[], opts: { onLine: (line: string) => voi
       const { done, value } = await reader.read()
       if (done) break
       buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n')
+      // Split on CR as well as LF. `sdkmanager` draws its progress bar by
+      // rewriting one line with a carriage return and never emits a newline
+      // until the package is finished — so a pump that splits on `\n` alone
+      // reports the two-line deprecation warning and then goes utterly
+      // silent for the twenty minutes a 2 GB system image takes. Verified on
+      // the owner's host, 2026-09-06: 45 carriage returns in the first 4 KB
+      // and not one newline among them.
+      const lines = buf.split(/\r\n|\r|\n/)
       buf = lines.pop() ?? ''
       for (const l of lines) if (l.trim()) opts.onLine(l.trim())
     }

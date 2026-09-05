@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { INSTALLABLE_PACKAGES, installSdkPackages, managedSdkRoot, packagesFor, type SdkInstallRequest } from './sdk-install'
+import { INSTALLABLE_PACKAGES, appendInstallLine, installSdkPackages, managedSdkRoot, packagesFor, type SdkInstallRequest } from './sdk-install'
 import { createLogger } from '../util/logger'
 
 const base: SdkInstallRequest = { target: 'detected', packages: ['emulator'], acceptLicenses: true }
@@ -40,5 +40,29 @@ describe('the managed destination is this farm’s own directory', () => {
     // directory would be an authenticated operator telling the core to write
     // gigabytes anywhere it can reach.
     expect(Object.keys(base)).not.toContain('path')
+  })
+})
+
+describe('appendInstallLine keeps the progress bar in place', () => {
+  test('a progress redraw replaces the previous one', () => {
+    const lines: string[] = []
+    appendInstallLine(lines, '$ sdkmanager --sdk_root=/x system-images;android-35;google_apis;x86_64')
+    appendInstallLine(lines, '[=====                  ] 12% Downloading system-image...')
+    appendInstallLine(lines, '[==========             ] 41% Downloading system-image...')
+    appendInstallLine(lines, '[====================   ] 88% Downloading system-image...')
+    expect(lines).toEqual(['$ sdkmanager --sdk_root=/x system-images;android-35;google_apis;x86_64', '[====================   ] 88% Downloading system-image...'])
+  })
+
+  test('an ordinary line after a bar is kept, and starts a new bar', () => {
+    const lines: string[] = []
+    appendInstallLine(lines, '[=====                  ] 12% Downloading system-image...')
+    appendInstallLine(lines, '"Install system-images;android-35;google_apis;x86_64"')
+    appendInstallLine(lines, '[=                      ] 3% Downloading platforms...')
+    appendInstallLine(lines, '[===                    ] 9% Downloading platforms...')
+    expect(lines).toEqual([
+      '[=====                  ] 12% Downloading system-image...',
+      '"Install system-images;android-35;google_apis;x86_64"',
+      '[===                    ] 9% Downloading platforms...',
+    ])
   })
 })

@@ -12,7 +12,7 @@ import { can } from '../auth/acl'
 import type { AuthEnv } from '../auth/middleware'
 import { EnkakuError } from '../util/errors'
 import type { VmManager } from '../vm/manager'
-import { installSdkPackages, readSdkInventory } from '../vm/sdk-install'
+import { appendInstallLine, installSdkPackages, readSdkInventory } from '../vm/sdk-install'
 import type { Logger } from '../util/logger'
 import type { VmRecord as CoreVmRecord } from '../vm/types'
 import { typedJson } from './typed-json'
@@ -142,7 +142,10 @@ export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log:
     const run = { lines: [] as string[], done: false, error: null as string | null }
     installs.set(id, run)
     const push = (line: string) => {
-      run.lines.push(line)
+      // Rewrites the progress bar in place rather than appending it — see
+      // `appendInstallLine`. Without that, one system image is thousands of
+      // redraws and MAX_LINES throws away everything that mattered.
+      appendInstallLine(run.lines, line)
       if (run.lines.length > MAX_LINES) run.lines.splice(0, run.lines.length - MAX_LINES)
     }
     // Answered immediately: a system image is gigabytes, and a request that
