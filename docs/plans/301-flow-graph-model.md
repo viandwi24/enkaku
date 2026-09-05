@@ -60,7 +60,7 @@ refused, for three reasons in order of weight:
    *name*, which is why renaming a node there rewrites the graph. Here an edge
    names an immutable `id`, and `title` is free text that renames for free.
 
-`deriveGraph` ([derive-graph.ts:38](../../packages/studio/src/components/workflow/derive-graph.ts) —
+`deriveGraph` ([derive-graph.ts:38](../../packages/studio/src/components/flow/derive-graph.ts) —
 `EdgeKind = 'next' | 'onFailure' | 'then' | 'else'`) already projects exactly
 this into React Flow and keeps working.
 

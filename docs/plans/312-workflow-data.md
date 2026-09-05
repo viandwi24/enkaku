@@ -40,7 +40,7 @@ and the two expression functions the gap analysis found missing.
 
 | Not done here | Where |
 |---|---|
-| — | (the JSON view is IN scope, §4.6) |
+| — | (the JSON view is IN scope, §4.5) |
 | Lambdas (`map(a, $item.id)`) | §9 Q2 — the escalation if `pluck` proves insufficient, not before |
 | Regular expressions | never (plan 95 §3.8 R2, plan 300 D4) |
 | Binary data flowing between nodes | §9 Q3 — artefacts already have a home |
@@ -239,7 +239,7 @@ One row per assignment:
 - The row shows a live preview of the resolved value, from `usePreview`
   (plan 306 §4.4) — the same local, network-free evaluator.
 
-### 4.6 The JSON view — a projection, never a second source of truth
+### 4.5 The JSON view — a projection, never a second source of truth
 
 The `set` node's PARAMETERS column has two tabs, **Fields** and **JSON**, and
 they edit **the same `assignments[]`**. There is one stored shape, one
@@ -278,7 +278,7 @@ Three rules make the round trip unambiguous:
 Switching tabs is therefore always lossless in both directions, which is what
 makes two authoring modes safe to offer at all.
 
-### 4.5 The palette
+### 4.6 The palette
 
 `set` joins the core group with icon `list` and the description "Build new
 data from earlier nodes — no device involved." The weighted switch is not a
@@ -353,7 +353,7 @@ Owner smoke, **no device needed** (this is what plan 309's simulate is for):
 
 | # | Question | Current answer |
 |---|---|---|
-| Q1 | ~~A JSON-template mode?~~ | **Decided: yes.** See §4.6. The first draft of this plan refused it and the refusal was wrong on its own technical claim — a marker convention needs no second grammar, and interpolation is a splitter, not a language. Overturned by the CEO, 2026-09-05, on the ground the plan had not weighed: a client who says "my API needs exactly this shape" pastes JSON, and telling them to type fourteen fields one at a time is a lost client, not a design decision. |
+| Q1 | ~~A JSON-template mode?~~ | **Decided: yes.** See §4.5. The first draft of this plan refused it and the refusal was wrong on its own technical claim — a marker convention needs no second grammar, and interpolation is a splitter, not a language. Overturned by the CEO, 2026-09-05, on the ground the plan had not weighed: a client who says "my API needs exactly this shape" pastes JSON, and telling them to type fourteen fields one at a time is a lost client, not a design decision. |
 | Q2 | Lambdas (`map(arr, $item.id)`)? | Not yet. `pluck`/`filterWhere` cover the observed cases without introducing binding. If an author needs a second lambda-shaped function within three months, that is the evidence, and the answer is a bounded `$item` binding — never a general one. |
 | Q3 | Binary data (screenshots) flowing through `set`? | No. Artefacts have their own store and a 256 KB node-output cap; passing images through the data path would blow both. |
 | Q4 | Should `set` be able to DELETE a field from the input? | Yes, and it is the same feature: an assignment whose value is the literal `null` with a `remove` flag, or `keepOnlySet` plus re-listing what to keep. Decide in 312.2 and record which; do not ship both. |
