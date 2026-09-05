@@ -5,6 +5,10 @@ import {
   GuestAgentStatusResponseSchema,
   NodeTypesResponseSchema,
   WorkflowLastRunResponseSchema,
+  AndroidSdkStatusResponseSchema,
+  SdkInstallResponseSchema,
+  type AndroidSdkStatus,
+  type SdkInstallBody,
   WorkflowRunsResponseSchema,
   type WorkflowRunsResponse,
   WorkflowPinsListResponseSchema,
@@ -806,6 +810,21 @@ export async function fetchWorkflowLastRun(name: string): Promise<WorkflowLastRu
     if (err instanceof Error && 'code' in err && (err as { code?: string }).code === 'workflow_never_run') return null
     throw err
   }
+}
+
+/** `GET /api/vms/sdk` — what the host actually has, so a screen can say what is missing instead of letting a create fail two minutes in. */
+export function fetchAndroidSdk(): Promise<AndroidSdkStatus> {
+  return api('/api/vms/sdk', AndroidSdkStatusResponseSchema).then((r) => r.sdk)
+}
+
+/** `POST /api/vms/sdk/install` — runs the HOST's own sdkmanager. Answers immediately with an id; the log is polled. */
+export function installAndroidSdk(body: SdkInstallBody): Promise<string> {
+  return api('/api/vms/sdk/install', SdkInstallResponseSchema, { json: body }).then((r) => r.operationId)
+}
+
+/** The install log so far. `done` flips once sdkmanager has exited either way. */
+export function fetchSdkInstallLog(id: string): Promise<{ lines: string[]; done: boolean; error: string | null }> {
+  return api(`/api/vms/sdk/install/${encodeURIComponent(id)}`, z.object({ lines: z.array(z.string()), done: z.boolean(), error: z.string().nullable() }))
 }
 
 /** `GET /api/workflows/:name/runs` — this workflow's own history, newest first. Empty for a workflow that has never run; never throws for that. */

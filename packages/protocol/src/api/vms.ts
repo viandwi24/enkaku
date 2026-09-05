@@ -50,3 +50,50 @@ export type VmResponse = z.infer<typeof VmResponseSchema>
 /** `POST /api/vms` body. */
 export const VmCreateBodySchema = VmSpecSchema
 export type VmCreateBody = z.infer<typeof VmCreateBodySchema>
+
+/**
+ * `GET /api/vms/sdk` — what the host actually has, so Studio can say what is
+ * missing instead of an operator finding out from a failed create.
+ *
+ * `source` is which tier answered (`ENKAKU_ANDROID_SDK_PATH`, the standard
+ * env vars, or the per-OS default), because "the SDK is at X" and "the SDK is
+ * at X *because you set this variable*" are different facts when X is wrong.
+ */
+export const AndroidSdkStatusSchema = z.object({
+  /** Absent when no tier found a root at all. */
+  root: z.string().nullable(),
+  source: z.enum(['override', 'env', 'default', 'missing']),
+  emulator: z.boolean(),
+  sdkmanager: z.boolean(),
+  avdmanager: z.boolean(),
+  /** `android-35`, `android-36`, … — the platforms present, so the UI can offer an API level that will actually work. */
+  platforms: z.array(z.string()),
+  /** `system-images;android-35;google_apis;arm64-v8a` style ids, already assembled. */
+  systemImages: z.array(z.string()),
+  /** The one thing to do next, in words. Null when nothing is missing. */
+  remedy: z.string().nullable(),
+  /** Where a `target: 'managed'` install would put things. */
+  managedRoot: z.string(),
+})
+export type AndroidSdkStatus = z.infer<typeof AndroidSdkStatusSchema>
+export const AndroidSdkStatusResponseSchema = z.object({ sdk: AndroidSdkStatusSchema })
+
+export const SdkInstallBodySchema = z
+  .object({
+    /** Never a path. Two destinations, both chosen by the server. */
+    target: z.enum(['detected', 'managed']).default('detected'),
+    packages: z.array(z.enum(['emulator', 'platform-tools'])).default([]),
+    systemImage: z
+      .object({
+        apiLevel: z.number().int().min(24).max(40),
+        variant: z.enum(['google_apis', 'google_apis_playstore', 'default', 'aosp_atd']).default('google_apis'),
+        abi: z.enum(['arm64-v8a', 'x86_64']),
+      })
+      .optional(),
+    /** The caller's own acceptance of the Android SDK Terms, for this request. No default: accepting a licence on someone's behalf is a legal act. */
+    acceptLicenses: z.boolean(),
+  })
+  .strict()
+export type SdkInstallBody = z.infer<typeof SdkInstallBodySchema>
+
+export const SdkInstallResponseSchema = z.object({ operationId: z.string() })

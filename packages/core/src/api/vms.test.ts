@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { createLogger } from '../util/logger'
+
+const silentLog = () => createLogger('test')
 import { Hono } from 'hono'
 import type { AuthEnv } from '../auth/middleware'
 import { EnkakuError } from '../util/errors'
@@ -81,7 +84,7 @@ function fakeManager(overrides: Partial<VmManager> = {}): VmManager {
 }
 
 function makeApp(opts: { role: 'admin' | 'operator' | null; manager?: VmManager }): Hono<AuthEnv> {
-  const inner = createVmRoutes({ manager: opts.manager ?? fakeManager() })
+  const inner = createVmRoutes({ dataDir: '/tmp/enkaku-vms-test', log: silentLog(), manager: opts.manager ?? fakeManager() })
   return withUser(opts.role, inner)
 }
 

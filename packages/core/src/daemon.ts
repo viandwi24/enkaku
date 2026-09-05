@@ -3159,7 +3159,7 @@ let blobGc: BlobGc | null = null
         // `GET/POST /api/vms`, `POST /:id/start`, `POST /:id/stop`, `DELETE
         // /:id` (plan 402 §4.2) — `vmManager` is constructed unconditionally
         // just above, alongside `actionRoutesHandle`.
-        vmRoutes: createVmRoutes({ manager: vmManager }),
+        vmRoutes: createVmRoutes({ manager: vmManager, dataDir: cfg.dataDir, log }),
         // `GET /api/transfers` (plan 107 §3.1, §3.4, §5 step 107.2) — the
         // registry `transferBroadcast` (constructed unconditionally above,
         // beside `transferService`) already keeps up to date on every

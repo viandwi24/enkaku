@@ -1,9 +1,19 @@
 import { Hono } from 'hono'
-import { VmCreateBodySchema, VmListResponseSchema, VmResponseSchema, type VmRecord } from '@enkaku/protocol'
+import {
+  AndroidSdkStatusResponseSchema,
+  SdkInstallBodySchema,
+  SdkInstallResponseSchema,
+  VmCreateBodySchema,
+  VmListResponseSchema,
+  VmResponseSchema,
+  type VmRecord,
+} from '@enkaku/protocol'
 import { can } from '../auth/acl'
 import type { AuthEnv } from '../auth/middleware'
 import { EnkakuError } from '../util/errors'
 import type { VmManager } from '../vm/manager'
+import { installSdkPackages, readSdkInventory } from '../vm/sdk-install'
+import type { Logger } from '../util/logger'
 import type { VmRecord as CoreVmRecord } from '../vm/types'
 import { typedJson } from './typed-json'
 
@@ -42,7 +52,7 @@ function toWire(record: CoreVmRecord): VmRecord {
  * embeds, or looks up a `devices` row. The `serial` field is observational
  * only.
  */
-export function createVmRoutes(deps: { manager: VmManager }): Hono<AuthEnv> {
+export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log: Logger }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
   function authorizeView(user: { role: 'admin' | 'operator' } | undefined): void {
@@ -72,6 +82,65 @@ export function createVmRoutes(deps: { manager: VmManager }): Hono<AuthEnv> {
       throw new EnkakuError('auth.forbidden', 'requires the vm.manage permission')
     }
   }
+
+  /**
+   * The SDK install log, in memory, keyed by the id the POST hands back.
+   *
+   * Not a job and not an operation: an SDK install belongs to the HOST, not
+   * to a device, and every existing progress surface in this codebase is
+   * device-scoped. Memory is honest about what it is — a core restart loses
+   * the log, and the install itself was a child process that died with it.
+   * Bounded, because `sdkmanager` on a slow line can print for minutes.
+   */
+  const installs = new Map<string, { lines: string[]; done: boolean; error: string | null }>()
+  const MAX_LINES = 500
+
+  app.get('/sdk', async (c) => {
+    authorizeView(c.get('user'))
+    return typedJson(c, AndroidSdkStatusResponseSchema, { sdk: await readSdkInventory(deps.dataDir) })
+  })
+
+  app.get('/sdk/install/:id', (c) => {
+    authorizeView(c.get('user'))
+    const run = installs.get(c.req.param('id'))
+    if (!run) throw new EnkakuError('E_NOT_FOUND', 'no such install')
+    return c.json({ lines: run.lines, done: run.done, error: run.error })
+  })
+
+  /**
+   * Install Android SDK packages using the host's OWN `sdkmanager`.
+   *
+   * Enkaku still never downloads the SDK — `vm/sdk.ts` states that rule and
+   * the Android SDK Terms are why. What this adds is the button: the
+   * operator's own tool, packages they picked from a closed list, a
+   * destination the SERVER chooses between two, and licences they accepted
+   * in the interface rather than on a prompt nobody can see.
+   */
+  app.post('/sdk/install', async (c) => {
+    authorizeManage(c.get('user'))
+    const body = SdkInstallBodySchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', body.error.issues.map((i) => i.message).join('; '))
+
+    const id = crypto.randomUUID()
+    const run = { lines: [] as string[], done: false, error: null as string | null }
+    installs.set(id, run)
+    const push = (line: string) => {
+      run.lines.push(line)
+      if (run.lines.length > MAX_LINES) run.lines.splice(0, run.lines.length - MAX_LINES)
+    }
+    // Answered immediately: a system image is gigabytes, and a request that
+    // waits for it is a request that times out somewhere in between.
+    void installSdkPackages(body.data, { dataDir: deps.dataDir, log: deps.log }, push)
+      .then((r) => push(`done — ${r.packages.length} package(s) into ${r.root}`))
+      .catch((err) => {
+        run.error = err instanceof Error ? err.message : String(err)
+        push(run.error)
+      })
+      .finally(() => {
+        run.done = true
+      })
+    return typedJson(c, SdkInstallResponseSchema, { operationId: id }, 202)
+  })
 
   app.get('/', (c) => {
     authorizeView(c.get('user'))

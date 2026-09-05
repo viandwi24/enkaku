@@ -5,6 +5,7 @@ import type { VmRecord, VmState } from '@enkaku/protocol'
 import { Button, ConfirmDialog, EmptyState, ErrorState, LoadingRows, PlayIcon, PlusIcon, SquareIcon, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TrashIcon, cn, relativeTime, useAction } from '@enkaku/ui'
 import { deleteVm, fetchVms, startVm, stopVm } from '@/lib/api'
 import { CreateVirtualDeviceDialog } from '@/components/devices/CreateVirtualDeviceDialog'
+import { AndroidSdkPanel } from './AndroidSdkPanel'
 
 const POLL_MS = 3000
 
@@ -77,6 +78,14 @@ export function VirtualDevicesSection() {
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <PlusIcon className="size-3.5" aria-hidden /> Create virtual device
         </Button>
+      </div>
+
+      {/* The host's SDK first, and above the VM list on purpose: everything
+          below it is impossible until this reads right, and an operator who
+          learns that from a failed create has already waited two minutes to
+          be told something the screen knew all along. */}
+      <div className="overflow-hidden rounded-card border border-line-2">
+        <AndroidSdkPanel />
       </div>
 
       {error ? (
