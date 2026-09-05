@@ -11,6 +11,7 @@ import {
   Button,
   Input,
   Label,
+  PlayIcon,
   SquaresFourIcon,
   PlusIcon,
   Textarea,
@@ -20,6 +21,7 @@ import { RunOverlay } from './RunOverlay'
 import { NodePalette } from './NodePalette'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
+import { SimulateDialog } from './SimulateDialog'
 import { useHistory, type UseHistoryResult } from './useHistory'
 import { useValidation, nodeIndexOf } from './useValidation'
 import { useClipboard } from './useClipboard'
@@ -142,25 +144,45 @@ export function FlowEditor({
   // read the node panel already makes (`fetchWorkflowLastRun`, plan 306
   // §3.1). `null`/`null` is the correct, quiet "nothing to show" state for a
   // workflow that has never run — `RunOverlay` renders no run chrome then.
+  //
+  // Plan 309 §4.5 — a fresh Simulate result overrides this SAME ref (one
+  // overlay, no second read path, G6): `simulated` is what tells `RunOverlay`
+  // to draw the dashed halo and chip rather than the "live/replay" chrome a
+  // real run gets. Opening a different node, editing the graph, or refetching
+  // the real last run all clear it, so a stale simulation is never mistaken
+  // for the workflow's own history the moment either changes.
   const [lastRunRef, setLastRunRef] = useState<{ jobId: string; runId: string } | null>(null)
-  useEffect(() => {
+  const [simulated, setSimulated] = useState(false)
+  const [simulateOpen, setSimulateOpen] = useState(false)
+  /** Author-written mocks from the node panel's "Use as mock" (plan 309 §4.5, §9 Q2) — session-only, merged over stored pins by `simulateWorkflow` itself; never persisted unless the author separately pins the node. */
+  const [mocks, setMocks] = useState<Record<string, unknown>>({})
+
+  const refreshLastRun = useCallback(() => {
     const name = doc.name.trim()
     if (!name) {
       setLastRunRef(null)
-      return
+      setSimulated(false)
+      return () => {}
     }
     let cancelled = false
     void fetchWorkflowLastRun(name)
       .then((r) => {
-        if (!cancelled) setLastRunRef(r ? { jobId: r.jobId, runId: r.runId } : null)
+        if (!cancelled) {
+          setLastRunRef(r ? { jobId: r.jobId, runId: r.runId } : null)
+          setSimulated(false)
+        }
       })
       .catch(() => {
-        if (!cancelled) setLastRunRef(null)
+        if (!cancelled) {
+          setLastRunRef(null)
+          setSimulated(false)
+        }
       })
     return () => {
       cancelled = true
     }
   }, [doc.name])
+  useEffect(() => refreshLastRun(), [refreshLastRun])
 
   // `beforeunload` covers a reload or a closed tab, but NOT Next's
   // client-side navigation — the "All workflows" link in the page header is a
@@ -334,6 +356,10 @@ export function FlowEditor({
           </span>
         )}
         {dirty && <Badge variant="outline">Unsaved</Badge>}
+        <Button type="button" variant="outline" onClick={() => setSimulateOpen(true)} disabled={doc.nodes.length === 0}>
+          <PlayIcon className="size-3.5" aria-hidden />
+          Simulate
+        </Button>
         <Button
           type="button"
           onClick={() => void handleSave()}
@@ -374,6 +400,7 @@ export function FlowEditor({
           <RunOverlay
             jobId={lastRunRef?.jobId ?? null}
             runId={lastRunRef?.runId ?? null}
+            simulated={simulated}
             doc={doc}
             findings={validation.findings}
             selectedIds={selectedIds}
@@ -411,12 +438,26 @@ export function FlowEditor({
               onClose={() => setOpenNodeId(null)}
               onSetParams={(params) => dispatch({ t: 'set-meta', patch: { params } })}
               onPinsChanged={refreshPinnedIds}
+              onMock={(nodeId, value) => setMocks((prev) => ({ ...prev, [nodeId]: value }))}
             />
           )}
         </SheetContent>
       </Sheet>
 
       <NodePalette open={paletteOpen} onOpenChange={setPaletteOpen} onPick={handlePick} />
+
+      <SimulateDialog
+        open={simulateOpen}
+        onOpenChange={setSimulateOpen}
+        doc={doc}
+        scripts={scripts}
+        pinnedIds={pinnedIds}
+        mocks={mocks}
+        onSimulated={(ref) => {
+          setLastRunRef(ref)
+          setSimulated(true)
+        }}
+      />
     </div>
   )
 }

@@ -7,6 +7,7 @@ import {
   WorkflowLastRunResponseSchema,
   WorkflowPinsListResponseSchema,
   WorkflowRunNodeResponseSchema,
+  WorkflowSimulateResponseSchema,
   type VideoLatencyResponse,
   VideoLatencyResponseSchema,
   type WorkflowLastRunResponse,
@@ -805,6 +806,30 @@ export async function fetchWorkflowLastRun(name: string): Promise<WorkflowLastRu
 export async function runWorkflowNode(name: string, body: WorkflowRunNodeRequest): Promise<{ jobId: string; runId: string }> {
   const res = await api(`/api/workflows/${encodeURIComponent(name)}/run-node`, WorkflowRunNodeResponseSchema, { json: body })
   return { jobId: res.job.jobId, runId: res.runId }
+}
+
+/**
+ * `POST /api/workflows/simulate` (plan 309 §4.3) — runs the WHOLE document
+ * with no device attached; `doc` is the EDITOR's own unsaved document
+ * (§4.4), never a stored name. Never throws on a stopped/failed simulation —
+ * that outcome is still stored and returned as a `runId` to replay, exactly
+ * like a real run; only a structurally invalid document (the same
+ * `E_WORKFLOW_INVALID` gate `saveWorkflow` uses) throws.
+ */
+export async function simulateWorkflow(doc: WorkflowDoc | Record<string, unknown>, params: Record<string, unknown>, mocks?: Record<string, unknown>): Promise<{ jobId: string; runId: string }> {
+  const res = await fetch(`${coreBase()}/api/workflows/simulate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ doc, params, ...(mocks ? { mocks } : {}) }),
+  })
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    const err = (body as { error?: { code?: string; message?: string } } | null)?.error
+    throw new Error(err?.message ?? `POST /api/workflows/simulate → ${res.status}`)
+  }
+  const parsed = WorkflowSimulateResponseSchema.safeParse(body)
+  if (!parsed.success) throw new BadResponseError('/api/workflows/simulate', z.prettifyError(parsed.error))
+  return parsed.data
 }
 
 /** `GET /api/workflows/:name/pins` (plan 300 P10, plan 304 §4.3). */

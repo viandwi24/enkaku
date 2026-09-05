@@ -70,4 +70,34 @@ describe('createRunRetentionSweeper', () => {
   test('NO_OP_RUN_SWEEPER still returns zero for both counts', () => {
     expect(NO_OP_RUN_SWEEPER.sweepOnce()).toEqual({ runs: 0, jobs: 0 })
   })
+
+  test('a `simulate` run is pruned on its OWN, much shorter horizon — independent of policy.runDays, and even as its job\'s only run (plan 309 §3.4, G4)', () => {
+    const { db, runs } = freshStore()
+    const job = runs.createJob({ kind: 'workflow', workflowName: 'wf', deviceId: '', params: {}, scriptName: 'wf', scriptVersion: null })
+    const simRun = runs.addRun(job.id, { trigger: 'simulate' })
+    // Well under `policy.runDays` (30) but past `SIMULATE_RUN_RETENTION_DAYS` (2).
+    settleAged(db, simRun.id, 3)
+
+    const sweeper = createRunRetentionSweeper({ db, runs, policy: POLICY })
+    const result = sweeper.sweepOnce()
+
+    expect(result.runs).toBe(1)
+    expect(runs.getRun(simRun.id)).toBeNull()
+    // The job existed for this run alone — it is swept too.
+    expect(result.jobs).toBe(1)
+    expect(runs.getJob(job.id)).toBeNull()
+  })
+
+  test('a fresh `simulate` run, still within its own short horizon, survives a sweep', () => {
+    const { db, runs } = freshStore()
+    const job = runs.createJob({ kind: 'workflow', workflowName: 'wf', deviceId: '', params: {}, scriptName: 'wf', scriptVersion: null })
+    const simRun = runs.addRun(job.id, { trigger: 'simulate' })
+    settleAged(db, simRun.id, 1)
+
+    const sweeper = createRunRetentionSweeper({ db, runs, policy: POLICY })
+    const result = sweeper.sweepOnce()
+
+    expect(result.runs).toBe(0)
+    expect(runs.getRun(simRun.id)).not.toBeNull()
+  })
 })

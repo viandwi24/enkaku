@@ -60,6 +60,7 @@ export function NodePanel({
   onClose,
   onSetParams,
   onPinsChanged,
+  onMock,
 }: {
   doc: WorkflowDoc
   node: WorkflowNode
@@ -72,6 +73,8 @@ export function NodePanel({
   onSetParams(params: WorkflowParam[]): void
   /** The canvas's own pin badges are a separate fetch (`FlowEditor.tsx`) — this tells it to refresh after a pin/unpin/edit here. */
   onPinsChanged(): void
+  /** "Use as mock" (plan 309 §4.5, §9 Q2) — a session-only override `simulateWorkflow` reads ahead of a stored pin, never persisted on its own. */
+  onMock?(nodeId: string, value: unknown): void
 }) {
   const [lastRun, setLastRun] = useState<WorkflowLastRunResponse | null | 'loading'>('loading')
   const [nodeTypes, setNodeTypes] = useState<NodeType[]>([])
@@ -400,7 +403,14 @@ export function NodePanel({
               ) : nodeRun.output.state === 'empty' ? (
                 <p className="px-2 py-3 text-[11.5px] text-fg-subtle">This node ran and returned nothing.</p>
               ) : (
-                <DataView value={outputValue} />
+                <>
+                  <DataView value={outputValue} />
+                  {node.kind === 'script' && onMock && (
+                    <Button type="button" variant="outline" size="sm" onClick={() => onMock(node.id, outputValue)}>
+                      Use as mock
+                    </Button>
+                  )}
+                </>
               )}
             </section>
           </div>

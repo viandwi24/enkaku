@@ -21,8 +21,14 @@ export type JobStatus = z.infer<typeof JobStatusSchema>
  * meta line. `node-test` (plan 304 §4.1) is a single node run alone, on
  * purpose, from the node panel (plan 300 P9) — it appears in the Jobs list
  * like any other run (plan 304 §6), never a hidden execution.
+ *
+ * `simulate` (plan 309 §3.4) is the OPPOSITE: it never counts as real (G4).
+ * It touches no device, is excluded from the Jobs list unless the filter
+ * asks for it, is never a workflow's or a script's "last run", never
+ * satisfies a schedule, and is pruned on a much shorter retention horizon —
+ * it is scratch work, not history.
  */
-export const RunTriggerSchema = z.enum(['manual', 'rerun', 'schedule', 'batch', 'resume', 'workflow-step', 'node-test'])
+export const RunTriggerSchema = z.enum(['manual', 'rerun', 'schedule', 'batch', 'resume', 'workflow-step', 'node-test', 'simulate'])
 export type RunTrigger = z.infer<typeof RunTriggerSchema>
 
 /** 'script' or 'workflow' (MVP 05 §1.2), visible per row in the one Jobs list (MVP 15 §1). */

@@ -48,6 +48,7 @@ function seedJobAndRun(
     notBefore?: number | null
     parentWorkflowJobId?: string | null
     kind?: 'script' | 'workflow'
+    trigger?: 'manual' | 'batch' | 'simulate'
   },
 ) {
   const runs = createRunStore(db)
@@ -66,7 +67,7 @@ function seedJobAndRun(
     stepSeq: input.parentWorkflowJobId ? (seq += 1) : null,
   })
   const run = runs.addRun(job.id, {
-    trigger: input.batchId ? 'batch' : 'manual',
+    trigger: input.trigger ?? (input.batchId ? 'batch' : 'manual'),
     priority: input.priority ?? 0,
     maxConcurrent: input.maxConcurrent ?? null,
     notBefore: input.notBefore ?? null,
@@ -272,5 +273,23 @@ describe('list({ status }) filters in SQL, and total agrees with items (owner re
 
     expect(page.rows.map((r) => r.id)).toEqual([queuedJob.id])
     expect(page.total).toBe(1)
+  })
+})
+
+describe('list — a `simulate` run is excluded by default (plan 309 §3.4, G4)', () => {
+  test('a simulate job is absent from the default list and its total, but appears when includeSimulate is asked for', () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const { job: realJob } = seedJobAndRun(db, { deviceId: 'd1' })
+    const { job: simJob } = seedJobAndRun(db, { deviceId: 'd1', trigger: 'simulate' })
+
+    const store = createJobStore(db)
+    const defaultList = store.list({ limit: 20, cursor: null })
+    expect(defaultList.rows.map((r) => r.id)).toEqual([realJob.id])
+    expect(defaultList.total).toBe(1)
+
+    const withSimulate = store.list({ limit: 20, cursor: null, includeSimulate: true })
+    expect(withSimulate.rows.map((r) => r.id).sort()).toEqual([realJob.id, simJob.id].sort())
+    expect(withSimulate.total).toBe(2)
   })
 })
