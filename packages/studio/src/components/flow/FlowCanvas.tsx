@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -8,6 +8,8 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  useNodesInitialized,
+  useReactFlow,
   type Connection,
   type Edge,
   type Node,
@@ -155,6 +157,34 @@ function FlowCanvasInner({
       })),
     [graph.edges, onInsertOnEdge, readOnly, runState],
   )
+
+  /**
+   * Fit the view ONCE, after React Flow has measured the nodes.
+   *
+   * The `fitView` prop alone is a race and it lost about half the time: the
+   * library fits on its own initial pass, and if the nodes have not been
+   * measured by then it silently does nothing, leaving the viewport at
+   * `translate(0,0) scale(1)`. A document whose nodes sit at negative
+   * coordinates — which `computeLayout` and any leftward drag both produce —
+   * then renders entirely above and left of the visible area, and the canvas
+   * looks EMPTY. The owner reported it twice: once as "the start node
+   * sometimes disappears", and again as a saved three-node workflow that came
+   * back blank (2026-09-05). The document was intact both times; only the
+   * camera was wrong.
+   *
+   * `useNodesInitialized` is the library's own answer to "have the nodes been
+   * measured yet", so the fit happens when it can actually succeed. The ref
+   * keeps it to once per mount: refitting on every later change would yank
+   * the canvas away from wherever the author had panned to.
+   */
+  const { fitView } = useReactFlow()
+  const nodesInitialized = useNodesInitialized()
+  const hasFitted = useRef(false)
+  useEffect(() => {
+    if (!nodesInitialized || hasFitted.current) return
+    hasFitted.current = true
+    void fitView({ maxZoom: 1, padding: 0.25 })
+  }, [nodesInitialized, fitView])
 
   const handleConnect = useCallback(
     (connection: Connection) => {
