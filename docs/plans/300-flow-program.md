@@ -91,6 +91,25 @@ the difference between a 5-second loop and a 2-minute one), and the
 screenshot/UI-tree rendering inside P6's data panes (plan 306 §4.6) has no n8n
 analogue at all.
 
+### 2.0 Added after the first manual pass
+
+The owner's first hands-on session, 2026-09-05, added one interaction to this
+list and settled the shape of another. Both are recorded here rather than in a
+plan's §9, because they change what the programme claims:
+
+- **P13 — simulate.** Run a whole workflow with no device attached: every node
+  takes a pinned value, an author's mock, or a sample derived from its
+  `resultSchema`; gates, switches and expressions evaluate for real; the
+  canvas fills like a real run. Owned by **plan 309**. n8n has no equivalent
+  worth copying — its nodes call live APIs — so this is the programme's own,
+  and on a device farm it matters more than anything in P1–P12: a phone is
+  slow, non-deterministic, and often not plugged in.
+- **Naming is once, at creation.** A workflow is named in a dialog, created,
+  and only then edited. The editor no longer opens on a blank document
+  quoting the name grammar in red. `name` stays the identity (URLs, API
+  paths, schedules), derived from the title and read-only afterwards; `title`
+  is the one an author writes and changes.
+
 ### 2.1 Explicitly out of the parity claim
 
 Naming these keeps a later reviewer from calling the programme incomplete for
@@ -305,6 +324,7 @@ D1, D2, D3, D6, D7, D8 are engineering calls and are **made**. Two are not:
 | 306 | 2 | The node panel: parameters, data in/out, expression editor with live preview | 302, 303, 304, 305 |
 | 307 | 3 | The run view: live and replay on the canvas; spec §4.6 rewritten | 304, 305, 306 |
 | 308 | 4 | Per-node device targets and fan-out across devices (starts `draft`) | 307; **owner decision** |
+| 309 | 4 | Simulate: run a whole workflow with no device, from pins, mocks and schema samples | 307; **owner decision, taken 2026-09-05** |
 
 Wave 0's two plans are independent of each other and may be executed in
 parallel by two executors in two worktrees (plan 200 §8.1). Wave 1's two are
