@@ -8,6 +8,8 @@ import {
   ArrowsClockwiseIcon,
   ArrowCounterClockwiseIcon,
   Badge,
+  ClipboardIcon,
+  CopyIcon,
   ClockCounterClockwiseIcon,
   Button,
   Input,
@@ -374,6 +376,26 @@ export function FlowEditor({
     [clipboard],
   )
 
+  /** Export's twin: the same JSON, on the clipboard instead of on disk. */
+  const handleCopyJson = useCallback(async () => {
+    const json = docToJson(doc)
+    try {
+      await navigator.clipboard.writeText(json)
+      toast.success('Workflow JSON copied.')
+    } catch {
+      // A refused permission or an insecure context is not this editor's
+      // fault, and there is a working alternative one button away.
+      toast.error('Could not reach the clipboard — use Export to write a file instead.')
+    }
+  }, [doc])
+
+  /** Import's twin. The same payload path, so a pasted document lands exactly as an imported file does. */
+  const handlePasteJson = useCallback(async () => {
+    const ok = await clipboard.paste()
+    if (ok) toast.success('Workflow pasted from the clipboard.')
+    else toast.error('The clipboard holds nothing this editor can read — copy a workflow’s JSON first.')
+  }, [clipboard])
+
   const errorCount = validation.findings.filter((f) => f.severity === 'error').length
   const warningCount = validation.findings.length - errorCount
 
@@ -407,9 +429,23 @@ export function FlowEditor({
           <TrayArrowDownIcon className="size-3.5" aria-hidden />
           Export
         </Button>
+        {/*
+          The same document, without a file in the middle. Sending a workflow
+          to someone over chat is the common case and a download is the long
+          way round for it (CEO, 2026-09-06); the clipboard already carried
+          this exact JSON for Ctrl+C/Ctrl+V, it simply had no button.
+        */}
+        <Button type="button" variant="outline" size="sm" onClick={handleCopyJson} disabled={doc.nodes.length === 0}>
+          <CopyIcon className="size-3.5" aria-hidden />
+          Copy JSON
+        </Button>
         <Button type="button" variant="outline" size="sm" onClick={() => importInput.current?.click()}>
           <UploadSimpleIcon className="size-3.5" aria-hidden />
           Import
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={handlePasteJson}>
+          <ClipboardIcon className="size-3.5" aria-hidden />
+          Paste JSON
         </Button>
         <input
           ref={importInput}
