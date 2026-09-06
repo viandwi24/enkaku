@@ -939,9 +939,37 @@ export function createDeviceRoutes(deps: {
         (k) => JSON.stringify(beforeData[k]) !== JSON.stringify(parsed.data[k]),
       )
       logInputTextJustEnabled = !beforeData.logInputText && parsed.data.logInputText
-      if (beforeData.prep.rotation !== parsed.data.prep.rotation) {
+      /*
+        Only a rotation the CALLER ASKED FOR counts.
+
+        `parsed.data` is the body run through `DeviceSettingsSchema`, which
+        fills every absent field with its default — so a PATCH that saves
+        `prep.keepAwake` and says nothing about rotation arrives here looking
+        exactly like a request to set rotation to the default. That silently
+        re-locked a screen on the strength of an unrelated edit, which is the
+        one thing the test beside this route says must never happen.
+
+        It was invisible while the default was `device`, because a device left
+        alone was already `device` and the spurious change diffed to nothing.
+        Making `lock-portrait` the default (a farm wants its screens the same
+        way up) turned a dormant bug into a phone rotating on every settings
+        save (owner, 2026-09-06).
+
+        So the raw body decides. `parsed.data` still supplies the VALUE — it
+        is the validated one — but an omitted key is not a request.
+      */
+      const askedForRotation =
+        typeof body.data.settings === 'object' &&
+        body.data.settings !== null &&
+        typeof (body.data.settings as { prep?: unknown }).prep === 'object' &&
+        (body.data.settings as { prep?: Record<string, unknown> }).prep !== null &&
+        'rotation' in ((body.data.settings as { prep?: Record<string, unknown> }).prep ?? {})
+      if (askedForRotation && beforeData.prep.rotation !== parsed.data.prep.rotation) {
         rotationChange = { from: beforeData.prep.rotation, to: parsed.data.prep.rotation }
       }
+      // An omitted rotation keeps the stored one, rather than being reset to
+      // the schema default by the write below.
+      if (!askedForRotation) parsed.data.prep.rotation = beforeData.prep.rotation
       patch.settings = parsed.data
       patch.transport = engines.transport
       patch.display = engines.display

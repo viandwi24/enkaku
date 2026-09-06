@@ -574,7 +574,22 @@ export const DeviceSettingsSchema = z.object({
           .default(false)
           .describe('Turn the device screen off while streaming')
           .meta({ title: 'Turn the device screen off while streaming' }),
-        rotation: RotationModeSchema.default('device')
+        /*
+          Portrait, locked, from the first session — the default a farm
+          actually wants (CEO, 2026-09-06).
+
+          A device farm runs scripts against coordinates and selectors. A
+          phone that rotates under a running job changes every one of them,
+          and `device` (follow the sensor) made that the out-of-the-box
+          behaviour. Locking is also what an operator watching a wall expects:
+          twenty tiles the same way up.
+
+          This is a DEFAULT, so it reaches devices admitted from here on.
+          Every device already admitted carries an explicit stored value and
+          is left exactly as it is — the rail's Auto-rotate button is how one
+          is handed back to its sensor, per device.
+        */
+        rotation: RotationModeSchema.default('lock-portrait')
           .describe('Whether the device rotates freely or is pinned while a session is open')
           .meta({ title: 'Screen rotation' }),
         textInput: TextInputModeSchema.default('auto')
@@ -582,7 +597,7 @@ export const DeviceSettingsSchema = z.object({
           .meta({ title: 'Text input' }),
       }),
     )
-    .default({ keepAwake: 'always', standbyScreenOff: false, rotation: 'device', textInput: 'auto' })
+    .default({ keepAwake: 'always', standbyScreenOff: false, rotation: 'lock-portrait', textInput: 'auto' })
     .meta({ title: 'Before a job runs', 'x-enkaku': { group: 'Power & readiness' } }),
 
   autoReconnect: z.boolean().default(true).describe('Reconnect automatically when the device disappears').meta({ title: 'Auto-reconnect' }),

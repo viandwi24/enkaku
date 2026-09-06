@@ -11,5 +11,28 @@
  * inside a frame.
  */
 export function isPipFrame(searchParams: { get(name: string): string | null }): boolean {
-  return searchParams.get('pip') === '1'
+  if (searchParams.get('pip') === '1') return true
+  // Braces to the flag's belt: BEING framed is the fact, and `?pip=1` is only
+  // how it is usually announced. A link inside the panel that rebuilds the
+  // query string from scratch drops the flag — `/jobs?tab=workflows` did
+  // exactly that — and the whole app shell, rail and status bar, appeared
+  // inside the panel (owner, 2026-09-06). The links are fixed too, but a
+  // guarantee that every future link must remember a parameter is not a
+  // guarantee. This one holds whatever anyone writes.
+  return isFramedDocument()
+}
+
+/**
+ * Same-origin frame detection.
+ *
+ * A cross-origin parent makes the comparison itself throw, and that throw is
+ * the answer: a document that cannot see its own top IS framed.
+ */
+function isFramedDocument(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.self !== window.top
+  } catch {
+    return true
+  }
 }
