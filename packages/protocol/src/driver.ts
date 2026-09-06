@@ -75,7 +75,7 @@ export interface Transport {
   id: string
   /** The adb transport address — it can change (USB ↔ ip:port). */
   serial: string
-  /** Identitas device stabil (spec §7.5). */
+  /** The device's stable identity (spec §7.5) — `ro.serialno`, with an ANDROID_ID fallback. */
   stableId: string
   /**
    * Session-scoped, NOT farm-scoped (plan 88 §3.7): make this transport
