@@ -312,3 +312,58 @@ describe('preparation runner — runningSince (plan 106 §5 step 106.7)', () => 
     expect(runner.runningSince('dev-1')).toEqual({}) // never left stuck
   })
 })
+
+/*
+  `nextAttemptAt` was written on every failure and read by one thing only —
+  `isWithinBackoffWindow`, which uses it to REFUSE a retry that arrives too
+  early. Nothing ever arrived. A component that failed while its device
+  stayed online was never tried again for the life of the core, which is what
+  an emulator hits every time: adb says `device` before Android's services
+  are up, both components fail, the boot finishes, and nothing looks again.
+*/
+describe('sweepDue — the retry that nothing used to fire (owner, 2026-09-06)', () => {
+  test('a due component is re-run, and succeeds the second time', async () => {
+    const db = makeDb()
+    seedDevice(db, { status: 'online' })
+    const { component, calls } = fakeComponent('ui-server', {
+      queue: [
+        { state: 'failed', version: null, reason: 'cmd: Can’t find service: package' },
+        { state: 'ready', version: '2.3.3', reason: null },
+      ],
+    })
+    const { runner, advance } = makeRunner(db, [component])
+
+    await runner.ensure('dev-1')
+    expect(calls.length).toBe(1)
+    expect(readPreparation(db)['ui-server']?.state).toBe('failed')
+
+    // Still inside the backoff window: the sweep must not hammer it.
+    const swept = await runner.sweepDue()
+    expect(swept.swept).toEqual([])
+    expect(calls.length).toBe(1)
+
+    // Past `nextAttemptAt` — the emulator has finished booting by now.
+    advance(6_000)
+    const after = await runner.sweepDue()
+    expect(after.swept).toEqual(['dev-1'])
+    expect(calls.length).toBe(2)
+    expect(readPreparation(db)['ui-server']?.state).toBe('ready')
+  })
+
+  test('a device that is offline, or has nothing failed, is left alone', async () => {
+    const db = makeDb()
+    seedDevice(db, { status: 'online' })
+    seedDevice(db, { id: 'dev-2', stableId: 'stable-dev-2', serial: 'serial-dev-2', status: 'offline' })
+    const { component, calls } = fakeComponent('ui-server', { queue: [{ state: 'ready', version: '2.3.3', reason: null }] })
+    const { runner, advance } = makeRunner(db, [component])
+
+    await runner.ensure('dev-1')
+    expect(readPreparation(db)['ui-server']?.state).toBe('ready')
+
+    advance(600_000)
+    const swept = await runner.sweepDue()
+    expect(swept.swept).toEqual([])
+    // One call, from the `ensure` above — the sweep added nothing.
+    expect(calls.length).toBe(1)
+  })
+})

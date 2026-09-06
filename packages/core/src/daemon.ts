@@ -109,6 +109,7 @@ import {
   WORKSPACE_MAX_BYTES_PER_SCOPE,
   WORKSPACE_MAX_FILES_PER_SCOPE,
   WORKSPACE_MAX_FILE_BYTES,
+  PREPARATION_SWEEP_MS,
 } from './config/constants'
 
 import { createNodeRoutes } from './api/nodes'
@@ -676,6 +677,8 @@ let blobGc: BlobGc | null = null
   let dataDirLock: DataDirLock | null = null
   /** The 15s application-level `heartbeat` broadcast (plan 85 §3.6, §4.6, §5 85.7a) — cleared in `stop()` like every other periodic timer here. */
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null
+  /** The preparation retry sweep (`PreparationRunner.sweepDue`) — cleared in `stop()` like every other periodic timer here. */
+  let preparationSweepInterval: ReturnType<typeof setInterval> | null = null
   /**
    * The debounced `reprofile` pass (plan 92 §3.8 rule 2, §5 step 92.2) —
    * cleared in `stop()` like every other timer here, so a settings save made
@@ -3839,6 +3842,29 @@ let blobGc: BlobGc | null = null
         hub.broadcast({ type: 'heartbeat', payload: { t: Date.now() } })
       }, 15_000)
 
+      /*
+        The preparation retry sweep.
+
+        `nextAttemptAt` was written on every failed component and read only to
+        REFUSE a retry that came too early — and none ever came. Preparation
+        runs on device events (admission, reconnect) plus one `ensureAll()` at
+        boot, so a component that failed while the device stayed online was
+        never tried again for the life of the core.
+
+        An emulator hits that every time: adb reports `device` seconds before
+        Android's own services are up, `guest-agent` and `ui-server` both fail
+        with "cmd: Can't find service: package", the boot finishes, and nothing
+        looks again (owner, 2026-09-06).
+
+        One in-memory SQLite read a minute, and adb work only for a device
+        with a component genuinely due. Bounded by the retry budget that
+        already exists, so an exhausted component costs nothing and still
+        waits for the operator's explicit retry.
+      */
+      preparationSweepInterval = setInterval(() => {
+        void preparationRunnerRef?.sweepDue().catch((err) => log.debug(`preparation sweep failed, tolerated: ${String(err)}`))
+      }, PREPARATION_SWEEP_MS)
+
       // The plugin packs carried inside a compiled binary (staged, not
       // activated). Deliberately after `listen` and deliberately not awaited:
       // it spawns a verify child per pack, and nothing about serving requests
@@ -4952,6 +4978,8 @@ let blobGc: BlobGc | null = null
       log.info('stopping...')
       if (heartbeatInterval) clearInterval(heartbeatInterval)
       heartbeatInterval = null
+      if (preparationSweepInterval) clearInterval(preparationSweepInterval)
+      preparationSweepInterval = null
       if (reprofileDebounceTimer) clearTimeout(reprofileDebounceTimer)
       reprofileDebounceTimer = null
       server?.stop(true)

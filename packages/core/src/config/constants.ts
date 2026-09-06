@@ -234,3 +234,20 @@ export const VM_MAX_CONCURRENT = num('ENKAKU_VM_MAX_CONCURRENT', 2, z.number().i
 
 /** Plan 401 §4.4 — how long a cold boot may take before the VM is failed and the child stopped. */
 export const VM_BOOT_TIMEOUT_SEC = num('ENKAKU_VM_BOOT_TIMEOUT_SEC', 300, z.number().int().min(60).max(1800))
+
+// ── Preparation retry sweep ───────────────────────────────────────────────────
+/**
+ * How often to re-run preparation components whose `nextAttemptAt` has come
+ * due (`PreparationRunner.sweepDue`).
+ *
+ * Preparation is event-driven — admission, reconnect, plus one boot sweep —
+ * so a component that fails while the device stays online had nothing to
+ * bring it back. `nextAttemptAt` was written on every failure and read only
+ * to refuse a retry that arrived too early, and none ever arrived.
+ *
+ * A minute is chosen against what actually fails here: a device that is
+ * still coming up. Faster buys nothing (the retry backoff gates it anyway)
+ * and costs an adb round trip per device; slower leaves a freshly booted
+ * emulator without its guest agent for longer than an operator will wait.
+ */
+export const PREPARATION_SWEEP_MS = num('ENKAKU_PREPARATION_SWEEP_MS', 60_000, z.number().int().min(5_000).max(3_600_000))

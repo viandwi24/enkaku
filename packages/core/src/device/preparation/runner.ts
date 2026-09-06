@@ -66,6 +66,27 @@ export interface PreparationRunner {
   /** Every device currently online, bounded by the shared install lane (same reasoning as `agent-provisioner.ts`'s own `ensureAll` — no second concurrency mechanism). */
   ensureAll(opts?: { force?: boolean }): Promise<{ total: number; results: Array<{ deviceId: string; preparation: DevicePreparation }> }>
   /**
+   * Re-run only the components whose `nextAttemptAt` has come due.
+   *
+   * `nextAttemptAt` was written on every failure and read by exactly one
+   * thing: `isWithinBackoffWindow`, which uses it to REFUSE a retry that
+   * arrives too early. Nothing ever arrived to be refused. Preparation is
+   * driven by device events — admission, reconnect — plus one `ensureAll()`
+   * at boot, so a component that failed while the device stayed online was
+   * never tried again for the life of the core.
+   *
+   * That is not hypothetical, and an emulator hits it every single time: adb
+   * reports `device` while Android is still coming up, both components fail
+   * with "cmd: Can't find service: package", the emulator finishes booting
+   * seconds later, and nothing ever looks again (owner, 2026-09-06).
+   *
+   * Cheap by construction: one in-memory SQLite read per sweep, and adb work
+   * only for a device with a component genuinely due. The existing bounded
+   * retry budget still applies, so an exhausted component costs nothing at
+   * all and waits for the operator's explicit retry, exactly as before.
+   */
+  sweepDue(): Promise<{ swept: string[] }>
+  /**
    * Plan 106 §5 step 106.7 — which of this device's components have a
    * `component.run()` call genuinely executing RIGHT NOW, and since when
    * (unix seconds). In-memory only, never persisted to `devices.preparation`
@@ -279,6 +300,28 @@ export function createPreparationRunner(deps: PreparationRunnerDeps): Preparatio
         if (key.startsWith(prefix)) out[key.slice(prefix.length)] = startedAt
       }
       return out
+    },
+
+    async sweepDue() {
+      const nowSec = Math.floor(now() / 1000)
+      const swept: string[] = []
+      for (const row of db.select().from(devices).all()) {
+        if (row.status === 'offline') continue
+        const preparation = readPreparation(row, deps.log)
+        const due = Object.values(preparation).some(
+          (status) => status.state === 'failed' && status.nextAttemptAt !== null && status.nextAttemptAt !== undefined && status.nextAttemptAt <= nowSec,
+        )
+        if (!due) continue
+        swept.push(row.id)
+        // Sequential, not `Promise.all`: a sweep is background work and must
+        // never contend with an operator's own action for the install lane.
+        try {
+          await ensureImpl(row.id)
+        } catch (err) {
+          deps.log.debug(`preparation sweep: device ${row.id} failed, tolerated: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      return { swept }
     },
 
     async ensureAll(opts) {
