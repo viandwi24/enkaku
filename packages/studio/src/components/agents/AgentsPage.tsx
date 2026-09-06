@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { tabHref } from '@/lib/tab-href'
 import { ListAgentsResponseSchema } from '@enkaku/protocol'
 import { api } from '@enkaku/ui'
 import { EntityTabs, type EntityTab } from '@/components/layout/EntityTabs'
@@ -74,7 +75,7 @@ function AgentsScreen() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <EntityTabs tabs={tabs} active={tab} hrefFor={(k) => (k === 'roster' ? '/agents' : `/agents?tab=${k}`)} />
+      <EntityTabs tabs={tabs} active={tab} hrefFor={(k) => tabHref('/agents', searchParams, k)} />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === 'roster' && <RosterTab agents={agents} error={agentsError} reload={loadAgents} onNavigate={(href) => router.push(href)} />}
         {tab === 'runs' && <RunsTab />}
