@@ -1,6 +1,8 @@
 'use client'
 
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { tabHref } from '@/lib/tab-href'
 import { Button, PlayIcon, cn } from '@enkaku/ui'
 
 /**
@@ -38,10 +40,13 @@ export function JobsTabStrip({
    * scripts a workflow ran stay there, which is right — those really are
    * ordinary jobs, and that is where an operator looks for one.
    */
+  const params = useSearchParams()
+  const hrefFor = (key: JobsTab) => tabHref('/jobs', params, key)
+
   const tabs: ReadonlyArray<{ key: JobsTab; label: string; count: number | null; href: string }> = [
-    { key: 'jobs', label: 'Jobs', count: jobCount, href: '/jobs' },
-    { key: 'workflows', label: 'Workflows', count: workflowCount, href: '/jobs?tab=workflows' },
-    { key: 'batches', label: 'Batches', count: batchCount, href: '/jobs?tab=batches' },
+    { key: 'jobs', label: 'Jobs', count: jobCount, href: hrefFor('jobs') },
+    { key: 'workflows', label: 'Workflows', count: workflowCount, href: hrefFor('workflows') },
+    { key: 'batches', label: 'Batches', count: batchCount, href: hrefFor('batches') },
   ]
   return (
     <div className="flex flex-none items-center gap-[3px] border-b border-line px-[14px] py-[10px]">
