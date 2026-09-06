@@ -1,7 +1,7 @@
 # Plan 600 — Live picture : a tile that recovers, and words that are true
 
 > Status: implemented (software) — G1-G9 done and verified by their own commands 2026-09-06. G10 (how it reads on a real farm) stays open: it is an owner row, and nothing in this repo can render a browser or unplug a phone.
-> Ships: `packages/studio/src/components/device-control/cast-status.ts`
+> Ships: packages/studio/src/components/device-control/cast-status.ts
 > Depends on: plan 206 (always-on sessions, the base/control encoder split and the rebuild ladder); plan 214 (the Screens grid and its tile budget); plan 215 (`useCast`, the one cast implementation); plan 85 (the discovery reconciler)
 > Spec references: §5 (drivers), §13 (Studio)
 
