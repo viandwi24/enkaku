@@ -18,6 +18,9 @@ const BOOT_POLL_INTERVAL_MS = 2_000
 
 /** How long a graceful stop waits before a kill. */
 const STOP_GRACE_MS = 5_000
+/** `stop` waits this long for the console port to go quiet before it admits the emulator is still there. */
+const STOP_VERIFY_ATTEMPTS = 10
+const STOP_VERIFY_INTERVAL_MS = 500
 
 export interface VmManagerDeps {
   db: Db
@@ -25,6 +28,22 @@ export interface VmManagerDeps {
   /** `getprop sys.boot_completed` against `emulator-<port>`, through the core's existing AdbClient. */
   shell: (serial: string, command: string) => Promise<string>
   probePort: (port: number) => Promise<boolean>
+  /**
+   * Stop an emulator this process did not spawn — `adb -s emulator-<port> emu
+   * kill`, the documented way to shut one down from outside.
+   *
+   * `handles` is an in-memory Map and nothing else knows how to reach a
+   * running emulator. It does not survive a core restart, and `adopt()`
+   * deliberately readmits a VM that is still live afterwards ("adopted after
+   * a core restart") — so from that moment the row said `running`, Stop had
+   * nothing to kill, and wrote `stopped` anyway. The emulator kept running,
+   * adb kept the device online, and the Devices list was right while the
+   * Virtual devices page was wrong (owner, 2026-09-06).
+   *
+   * Optional: a host or test that does not wire it keeps the handle-only
+   * behaviour, and `stop` now reports honestly when that is not enough.
+   */
+  killByConsolePort?: (port: number) => Promise<void>
   maxConcurrent: () => number
   /** Seconds a cold boot may take before the VM is failed and the child stopped. Read live, not captured once. */
   bootTimeoutSec: () => number
@@ -103,13 +122,42 @@ export function createVmManager(deps: VmManagerDeps): VmManager {
   }
 
   async function stopImpl(id: string): Promise<VmRecord> {
+    const row = getRow(id)
     setRow(id, { state: 'stopping' })
     const handle = handles.get(id)
     if (handle) {
       await deps.provider.stop(handle, STOP_GRACE_MS)
       handles.delete(id)
+    } else if (deps.killByConsolePort) {
+      // No handle: this emulator outlived the core that spawned it. See
+      // `killByConsolePort`'s own doc comment — without this, Stop was a
+      // no-op that reported success.
+      await deps.killByConsolePort(row.consolePort).catch((err: unknown) => {
+        deps.log.warn(`vm ${id}: emu kill on console port ${row.consolePort} failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
     }
-    return rowToRecord(setRow(id, { state: 'stopped', message: null }))
+
+    /*
+      Verify, then write. `stopped` used to be written unconditionally — a row
+      that claimed one thing while adb went on listing the device as online,
+      which is the shape the owner met and the reason this check exists.
+
+      The console port going quiet is the emulator being gone; it is the same
+      probe `adopt()` uses to decide a VM survived a restart, so the two
+      always agree.
+    */
+    for (let i = 0; i < STOP_VERIFY_ATTEMPTS; i++) {
+      if (!(await deps.probePort(row.consolePort))) {
+        return rowToRecord(setRow(id, { state: 'stopped', message: null }))
+      }
+      await sleep(STOP_VERIFY_INTERVAL_MS)
+    }
+    return rowToRecord(
+      setRow(id, {
+        state: 'running',
+        message: `stop did not take: the emulator is still answering on console port ${row.consolePort}`,
+      }),
+    )
   }
 
   return {
@@ -257,7 +305,26 @@ export function createVmManager(deps: VmManagerDeps): VmManager {
     async adopt(): Promise<void> {
       const rows = deps.db.select().from(virtualDevices).all()
       for (const row of rows) {
-        if (row.state === 'stopped' || row.state === 'failed') continue
+        /*
+          A `stopped` row is still probed, not skipped.
+
+          Skipping it assumed the row could be trusted, and it could not: a
+          `stop` with no handle used to write `stopped` without killing
+          anything (see `killByConsolePort`), so the row said stopped while
+          the emulator ran on and adb kept the device in the Devices list.
+          Once that had happened the row was never re-examined and the two
+          screens disagreed for good (owner, 2026-09-06).
+
+          The probe is the same one every other branch here uses, and it is
+          cheap: one TCP connect per row, at boot only.
+        */
+        if (row.state === 'failed') continue
+        if (row.state === 'stopped') {
+          if (await deps.probePort(row.consolePort)) {
+            setRow(row.id, { state: 'running', message: 'adopted after a core restart — it was still running despite a stopped row' })
+          }
+          continue
+        }
         if (row.state === 'creating') {
           setRow(row.id, { state: 'failed', message: 'the core restarted while this VM was being created' })
           continue

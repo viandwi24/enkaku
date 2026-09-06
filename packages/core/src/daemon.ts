@@ -2979,6 +2979,17 @@ let blobGc: BlobGc | null = null
         // probing it first would collide with the operator's own emulator
         // or Android Studio.
         probePort: (port) => defaultTcpPreProbe('127.0.0.1', port, 500).then((outcome) => outcome === 'accepted'),
+        // `adb emu kill` — the documented way to stop an emulator from
+        // outside the process that spawned it, and the only way to stop one
+        // that outlived its core. The toolchain's adb, never the system's
+        // (`CLAUDE.md`); a host with no adb yet simply has no fallback, and
+        // `stop` says so rather than claiming success.
+        killByConsolePort: async (port) => {
+          const adbPath = await toolchain.resolveToolPath('adb')
+          const proc = Bun.spawn([adbPath, '-s', `emulator-${port}`, 'emu', 'kill'], { stdout: 'ignore', stderr: 'pipe' })
+          const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
+          if (exitCode !== 0) throw new EnkakuError('E_VM_STOP_FAILED', `adb emu kill exited ${exitCode}: ${stderr.trim()}`)
+        },
         maxConcurrent: () => VM_MAX_CONCURRENT,
         bootTimeoutSec: () => VM_BOOT_TIMEOUT_SEC,
         log: log.child('vm'),

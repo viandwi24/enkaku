@@ -189,3 +189,93 @@ describe('VmManager.remove', () => {
     expect(manager.list().find((r) => r.id === created.id)).toBeUndefined()
   })
 })
+
+/*
+  The owner stopped a virtual device on the Virtual devices page, the row read
+  `stopped`, and the emulator went on running with adb still listing it in
+  Devices (2026-09-06). `handles` is an in-memory Map, so an emulator that
+  outlived the core that spawned it has none — and `stop` wrote `stopped`
+  regardless of whether anything was actually killed.
+*/
+describe('VmManager.stop on an emulator this process did not spawn', () => {
+  test('falls back to emu kill by console port, and settles at stopped once the port goes quiet', async () => {
+    const ports: number[] = []
+    // False while `create` allocates a port (every port would otherwise read
+    // as taken), true once the VM is "running", false again after the kill.
+    let alive = false
+    const { deps, db } = setUp({
+      killByConsolePort: async (port) => {
+        ports.push(port)
+        alive = false
+      },
+      probePort: async () => alive,
+    })
+    const manager = createVmManager(deps)
+    const created = await manager.create(testSpec({ name: 'orphan' }))
+    // Exactly what `adopt()` leaves behind after a core restart: running, no handle.
+    db.update(virtualDevices).set({ state: 'running' }).where(eq(virtualDevices.id, created.id)).run()
+    alive = true
+
+    const stopped = await manager.stop(created.id)
+    expect(ports).toEqual([created.consolePort])
+    expect(stopped.state).toBe('stopped')
+  })
+
+  test('a stop that does not take is reported, never written as stopped', async () => {
+    let alive = false
+    const { deps, db } = setUp({
+      // The kill is issued and the emulator ignores it — the port stays open.
+      killByConsolePort: async () => {},
+      probePort: async () => alive,
+    })
+    const manager = createVmManager(deps)
+    const created = await manager.create(testSpec({ name: 'stubborn' }))
+    db.update(virtualDevices).set({ state: 'running' }).where(eq(virtualDevices.id, created.id)).run()
+    alive = true
+
+    const after = await manager.stop(created.id)
+    expect(after.state).toBe('running')
+    expect(after.message).toContain('still answering on console port')
+  })
+
+  test('with no fallback wired at all, a stop that cannot kill still refuses to claim success', async () => {
+    let alive = false
+    const { deps, db } = setUp({ probePort: async () => alive })
+    const manager = createVmManager(deps)
+    const created = await manager.create(testSpec({ name: 'no-fallback' }))
+    db.update(virtualDevices).set({ state: 'running' }).where(eq(virtualDevices.id, created.id)).run()
+    alive = true
+
+    const after = await manager.stop(created.id)
+    expect(after.state).toBe('running')
+  })
+})
+
+describe('VmManager.adopt reconciles a row that lied', () => {
+  test('a stopped row whose console port still answers comes back as running', async () => {
+    let alive = false
+    const { deps, db } = setUp({ probePort: async () => alive })
+    const manager = createVmManager(deps)
+    const created = await manager.create(testSpec({ name: 'ghost' }))
+    // The state the old `stop` left behind: written stopped, never killed.
+    db.update(virtualDevices).set({ state: 'stopped' }).where(eq(virtualDevices.id, created.id)).run()
+    alive = true
+
+    await manager.adopt()
+    const row = manager.list().find((v) => v.id === created.id)
+    expect(row?.state).toBe('running')
+    expect(row?.message).toContain('still running despite a stopped row')
+  })
+
+  test('a stopped row whose port is quiet is left exactly as it was', async () => {
+    const { deps, db } = setUp({ probePort: async () => false })
+    const manager = createVmManager(deps)
+    const created = await manager.create(testSpec({ name: 'genuinely-stopped' }))
+    db.update(virtualDevices).set({ state: 'stopped' }).where(eq(virtualDevices.id, created.id)).run()
+
+    await manager.adopt()
+    const row = manager.list().find((v) => v.id === created.id)
+    expect(row?.state).toBe('stopped')
+    expect(row?.message).toBeNull()
+  })
+})
