@@ -30,10 +30,32 @@ function dataDirWithLiveDb(): string {
   return dataDir
 }
 
+/*
+  Teardown is janitorial and must never be able to fail a test.
+
+  Windows refuses to unlink a file another handle still holds, and a SQLite
+  database that has just been closed can stay locked for a moment longer
+  (`-wal`/`-shm`, and any scanner that opened them). When `rmSync` threw, the
+  loop stopped, the array was never cleared, and EVERY LATER TEST IN THIS FILE
+  failed in its cleanup rather than on anything it asserts — the cascade is
+  visible in `check-windows` as one slow real failure followed by a run of
+  1ms ones (owner, 2026-09-06).
+
+  Closing the handles first, which is what the previous fix did, is necessary
+  and was not sufficient. So each step is now independent and tolerant, and
+  the arrays are reset unconditionally: a temp directory the runner will
+  destroy in a minute anyway is not worth a red build, and the assertions
+  above it have already run.
+*/
 afterEach(() => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
-    if (dir) rmSync(dir, { recursive: true, force: true })
+    if (!dir) continue
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Windows still holds it. Leave it; the runner is thrown away.
+    }
   }
 })
 

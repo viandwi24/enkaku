@@ -19,6 +19,26 @@ import {
 import { fakeDoctorContext } from './test-helpers'
 
 /**
+ * Remove a temp directory, tolerating a refusal.
+ *
+ * Windows will not unlink a file another handle still holds, and a SQLite
+ * database that has just been closed can stay locked a moment longer
+ * (`-wal`/`-shm`, and anything that scanned them). This sits in a `finally`,
+ * so a throw here failed a test that had already asserted everything it cares
+ * about — every test in this file, on `check-windows` (owner, 2026-09-06).
+ *
+ * The directory is the runner's to destroy. The assertion is the point.
+ */
+function removeTemp(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // Left behind deliberately — see above.
+  }
+}
+
+
+/**
  * A real, on-disk `enkaku.db` with the given device rows (plan 85 §5 step
  * 85.2's doctor check reads the file directly rather than through
  * `DoctorContext` — see `checks/devices.ts`'s own comment for why). Returns
@@ -267,7 +287,7 @@ describe('devices check — adb vs the registry, side by side (plan 85 §3.3, §
       expect(result.observed).toContain('could not be read')
       expect(result.observed).not.toContain('no local database yet')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 
@@ -282,7 +302,7 @@ describe('devices check — adb vs the registry, side by side (plan 85 §3.3, §
       // bare label) alongside the serial, not the serial alone.
       expect(result.observed).toContain('registry: Phone 0 (ZP1):idle')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 
@@ -294,7 +314,7 @@ describe('devices check — adb vs the registry, side by side (plan 85 §3.3, §
       expect(result.remedy).toContain('ZP1')
       expect(result.remedy).toContain('rescan')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 
@@ -305,7 +325,7 @@ describe('devices check — adb vs the registry, side by side (plan 85 §3.3, §
       expect(result.status).toBe('fail')
       expect(result.remedy).toContain('ZP-GONE')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 
@@ -315,7 +335,7 @@ describe('devices check — adb vs the registry, side by side (plan 85 §3.3, §
       const result = await devicesCheck.run(fakeDoctorContext({ dataDir, devices: { list: async () => [{ serial: 'ZP-NEW', state: 'device' }] } }))
       expect(result.status).toBe('ok')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 })

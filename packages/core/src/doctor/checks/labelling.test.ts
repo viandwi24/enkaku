@@ -9,6 +9,26 @@ import { deviceNumbers, devices } from '../../db/schema'
 import { fakeDoctorContext } from '../test-helpers'
 import { labellingCheck } from './labelling'
 
+/**
+ * Remove a temp directory, tolerating a refusal.
+ *
+ * Windows will not unlink a file another handle still holds, and a SQLite
+ * database that has just been closed can stay locked a moment longer
+ * (`-wal`/`-shm`, and anything that scanned them). This sits in a `finally`,
+ * so a throw here failed a test that had already asserted everything it cares
+ * about — every test in this file, on `check-windows` (owner, 2026-09-06).
+ *
+ * The directory is the runner's to destroy. The assertion is the point.
+ */
+function removeTemp(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // Left behind deliberately — see above.
+  }
+}
+
+
 function makeDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'enkaku-doctor-labelling-'))
 }
@@ -33,7 +53,7 @@ describe('labelling doctor check (plan 89 §4.7, §5 step 89.4/89.9)', () => {
       expect(result.status).toBe('skip')
       expect(result.observed).toContain('no device')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 
@@ -62,7 +82,7 @@ describe('labelling doctor check (plan 89 §4.7, §5 step 89.4/89.9)', () => {
       expect(result.remedy).toBeUndefined()
       expect(result.observed).toContain('1 of 1 labelled')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 
@@ -102,7 +122,7 @@ describe('labelling doctor check (plan 89 §4.7, §5 step 89.4/89.9)', () => {
       expect(result.remedy).toBeDefined()
       expect(result.remedy).toContain('#14 Pixel 5')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 
@@ -139,7 +159,7 @@ describe('labelling doctor check (plan 89 §4.7, §5 step 89.4/89.9)', () => {
       expect(result.observed).toContain('Pixel 5')
       expect(result.observed).not.toContain('#Pixel 5')
     } finally {
-      rmSync(dataDir, { recursive: true, force: true })
+      removeTemp(dataDir)
     }
   })
 })
