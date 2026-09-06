@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import type { JobRunInfo } from '@enkaku/protocol'
 import { ArrowsLeftRightIcon, CaretDownIcon, cn, duration, relativeTime } from '@enkaku/ui'
 import { useOverlay } from '@/lib/overlays'
@@ -48,6 +48,7 @@ export function RunPicker({
 }) {
   const [open, setOpen] = useState(false)
   const router = useRouter()
+  const tab = useSearchParams().get('tab')
   const now = useNow()
   useOverlay('menu', open, () => setOpen(false))
 
@@ -85,7 +86,9 @@ export function RunPicker({
                 role="menuitem"
                 onClick={() => {
                   setOpen(false)
-                  router.push(jobHref(jobId, { run: r.runId }))
+                  // Carries the tab for the same reason the sidebar rows do:
+                  // picking another run of a WORKFLOW must not land on Jobs.
+                  router.push(jobHref(jobId, { run: r.runId, ...(tab === 'workflows' ? { tab } : {}) }))
                 }}
                 className="flex min-w-0 flex-1 items-center gap-[9px] text-left"
               >

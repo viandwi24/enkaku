@@ -49,8 +49,21 @@ export function batchState(status: BatchInfo['status']): JobStatus {
  * The one address shape for a job (plan 218 §3.3). The old detail route no
  * longer exists; every link into a job goes through this.
  */
-export function jobHref(jobId: string, opts?: { view?: string; run?: string }): string {
-  const q = new URLSearchParams({ job: jobId })
+/**
+ * `tab` is optional and matters more than it looks.
+ *
+ * Without it the link is `/jobs?job=<id>`, and `JobsScreen` reads a missing
+ * `tab` as `jobs` — so opening a run from the WORKFLOWS list threw you back
+ * to the Jobs tab the moment the detail rendered. `batchHref` had always
+ * written `tab=batches`, which is exactly why Batches never did this (owner,
+ * 2026-09-07).
+ *
+ * Left optional rather than required: a caller that means an ordinary script
+ * job — `run-script`'s own "go to the job you just made" — wants the default
+ * tab, and saying so twice would be noise.
+ */
+export function jobHref(jobId: string, opts?: { view?: string; run?: string; tab?: 'jobs' | 'workflows' }): string {
+  const q = new URLSearchParams(opts?.tab && opts.tab !== 'jobs' ? { tab: opts.tab, job: jobId } : { job: jobId })
   if (opts?.view) q.set('view', opts.view)
   if (opts?.run) q.set('run', opts.run)
   return `/jobs?${q.toString()}`

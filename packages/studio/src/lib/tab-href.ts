@@ -15,9 +15,29 @@
  * One implementation, so a new tab strip inherits the behaviour instead of
  * re-deciding it.
  */
-export function tabHref(basePath: string, params: { toString(): string }, key: string, paramName = 'tab'): string {
+/**
+ * `drop` is the other half, and it took a second bug to see it.
+ *
+ * Preserving the whole query string is right for everything that describes
+ * HOW you are looking — the panel flag, a search term, a filter. It is wrong
+ * for what you had SELECTED. A batch open at `?tab=batches&job=<batch id>`
+ * carried that id onto the Workflows tab, which then looked it up among
+ * workflow runs and reported "Could not load — no such job" (owner,
+ * 2026-09-07). The hardcoded hrefs this helper replaced dropped everything,
+ * so they got this half right by accident and the panel flag wrong.
+ *
+ * A tab switch means "show me this list", so the selection goes and the view
+ * of it stays.
+ */
+export function tabHref(
+  basePath: string,
+  params: { toString(): string },
+  key: string,
+  opts?: { paramName?: string; drop?: readonly string[] },
+): string {
   const next = new URLSearchParams(params.toString())
-  next.set(paramName, key)
+  for (const name of opts?.drop ?? []) next.delete(name)
+  next.set(opts?.paramName ?? 'tab', key)
   const query = next.toString()
   return query ? `${basePath}?${query}` : basePath
 }

@@ -41,7 +41,9 @@ export function JobsTabStrip({
    * ordinary jobs, and that is where an operator looks for one.
    */
   const params = useSearchParams()
-  const hrefFor = (key: JobsTab) => tabHref('/jobs', params, key)
+  // `job` is the open item, `view`/`run` are which part of it you were
+  // reading. None of them survive a move to another list.
+  const hrefFor = (key: JobsTab) => tabHref('/jobs', params, key, { drop: ['job', 'view', 'run'] })
 
   const tabs: ReadonlyArray<{ key: JobsTab; label: string; count: number | null; href: string }> = [
     { key: 'jobs', label: 'Jobs', count: jobCount, href: hrefFor('jobs') },

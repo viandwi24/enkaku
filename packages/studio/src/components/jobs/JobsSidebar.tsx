@@ -127,7 +127,7 @@ export function JobsSidebar({
         name: j.scriptName ?? j.jobId.slice(0, 12),
         state: j.status,
         sub: jobSubLine(j, now),
-        href: jobHref(j.jobId),
+        href: jobHref(j.jobId, { tab }),
       }))
     }
     return batches.map((b) => {
