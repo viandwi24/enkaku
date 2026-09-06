@@ -230,9 +230,27 @@ export function SchemaForm({
       </div>
 
       {onSubmit && (
-        // Solid background, not translucent: the save bar often covers the
-        // last field, and text bleeding through makes both unreadable.
-        <div className="sticky bottom-0 z-10 mt-5 flex flex-wrap items-center gap-2 border-t bg-bg py-3">
+        /*
+          Solid, and the SAME solid as whatever it is sticky over.
+
+          Solid is deliberate — the bar often covers the last field, and text
+          bleeding through makes both unreadable. But it was `bg-bg`, the
+          APPLICATION background (#0c0c0e in dark), while every screen that
+          renders this form sits on a panel (#16161a). The result was a black
+          slab across the page that belonged to no surface on it (owner,
+          2026-09-07).
+
+          `bg-panel` is that surface. Every screen this form renders on is a
+          panel: the Settings page inside `PagePanel`, a dialog, and
+          `ResultView`, which already paints `bg-panel` itself.
+
+          Not `bg-inherit`, which looks like the general answer and is not
+          one: CSS inherits the PARENT's computed background, and the `form`
+          between the bar and the panel is transparent — so the bar would
+          inherit transparent and bleed exactly the text this is solid to
+          hide.
+        */
+        <div className="sticky bottom-0 z-10 mt-5 flex flex-wrap items-center gap-2 border-t bg-panel py-3">
           <Button type="submit" disabled={busy || dirty === false}>
             {busy ? 'Saving…' : submitLabel}
           </Button>
