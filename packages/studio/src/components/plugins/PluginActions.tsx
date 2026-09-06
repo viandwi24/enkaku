@@ -226,7 +226,7 @@ export function PluginActions({
               <ResetPluginAction selected={p} onChanged={onChanged} dense trigger={<span className="w-full">Reset data</span>} />
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem asChild className="text-led-danger focus:text-led-danger">
+          <DropdownMenuItem asChild className="text-danger focus:text-danger">
             <RemovePluginAction
               versions={versions}
               selected={p}

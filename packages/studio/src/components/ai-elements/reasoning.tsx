@@ -173,7 +173,7 @@ export const ReasoningTrigger = memo(
         // Same visual language as the quant ToolRow trigger: w-fit inline row, small muted mono
         // text, chevron packed right after the label (not pushed to the edge).
         className={cn(
-          "flex w-fit max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 font-mono text-muted-foreground text-xs transition-colors duration-150 hover:bg-surface-2/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          "flex w-fit max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 font-mono text-dim text-xs transition-colors duration-150 hover:bg-panel-2/60 hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
           className
         )}
         {...props}
@@ -208,7 +208,7 @@ export const ReasoningContent = memo(
     <CollapsibleContent
       className={cn(
         "mt-1.5 ml-6 text-sm",
-        "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-muted-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
+        "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-dim outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
         className
       )}
       {...props}

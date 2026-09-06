@@ -30,15 +30,15 @@ function ImageViewer({ path, src }: PresenterProps) {
 
   if (broken) {
     return (
-      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 bg-surface-2 p-6 text-center">
-        <ImageOff className="size-5 text-fg-subtle" aria-hidden />
-        <p className="text-[12.5px] text-fg-muted">This image could not be decoded by the browser.</p>
+      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 bg-panel-2 p-6 text-center">
+        <ImageOff className="size-5 text-faint" aria-hidden />
+        <p className="text-[12.5px] text-dim">This image could not be decoded by the browser.</p>
       </div>
     )
   }
 
   return (
-    <div className="flex min-h-[40vh] items-center justify-center bg-surface-2 p-4">
+    <div className="flex min-h-[40vh] items-center justify-center bg-panel-2 p-4">
       {/* eslint-disable-next-line @next/next/no-img-element -- a core-served workspace blob, never a build-time asset next/image could optimise */}
       <img src={src} alt={path} className="max-h-[70vh] max-w-full rounded-md object-contain" onError={() => setBroken(true)} />
     </div>

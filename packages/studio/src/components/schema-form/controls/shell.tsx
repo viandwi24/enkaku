@@ -53,7 +53,7 @@ export function FieldRow({
           <Label htmlFor={id} className="text-[13px] font-normal">
             {label}
           </Label>
-          {help && <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">{help}</p>}
+          {help && <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">{help}</p>}
         </div>
         <div className="shrink-0">{children}</div>
       </div>
@@ -72,11 +72,11 @@ export function FieldRow({
           </Label>
           {badge}
         </div>
-        {readout != null && <span className="readout shrink-0 text-[12px] text-fg-muted">{readout}</span>}
+        {readout != null && <span className="readout shrink-0 text-[12px] text-dim">{readout}</span>}
       </div>
-      {help && <p className="text-[11.5px] leading-relaxed text-fg-muted">{help}</p>}
+      {help && <p className="text-[11.5px] leading-relaxed text-dim">{help}</p>}
       {children}
-      {error && <p className="text-[11.5px] text-led-danger">{error}</p>}
+      {error && <p className="text-[11.5px] text-danger">{error}</p>}
     </div>
   )
 }

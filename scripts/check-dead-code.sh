@@ -81,6 +81,34 @@ present() { # present <label> <fixed string> <file>   (a fact that must hold)
   fi
 }
 
+# minversion <label> <floor> <package.json>   (the version must be >= floor)
+#
+# These two plugin versions used to be pinned with `present` against an exact
+# literal, which asserted the wrong thing. What matters is that a rebuild never
+# drops a pack BELOW the version that carried a fix — seeding is keyed on
+# `${name}@${version}` and a version already in `seeded-packs.json` is skipped
+# on every later boot, so a reverted version ships nothing to a farm that has
+# already run (CLAUDE.md, the plugin-version rule).
+#
+# Pinned equality turned that into "this pack may never be bumped again": the
+# very act CLAUDE.md requires when anything under `plugins/*/src/` changes
+# failed this check instead (proxy-manager 0.12.0 → 0.13.0 did exactly that,
+# 2026-09-06). A floor keeps the guarantee and stops punishing the rule.
+minversion() {
+  local actual lowest
+  actual=$(grep -oE '"version": "[0-9]+\.[0-9]+\.[0-9]+"' "$3" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+  if [ -z "$actual" ]; then
+    printf '  MISSING  %-34s no parseable "version" in %s\n' "$1" "$3"
+    fail=1
+    return
+  fi
+  lowest=$(printf '%s\n%s\n' "$2" "$actual" | sort -V | head -1)
+  if [ "$lowest" != "$2" ]; then
+    printf '  REGRESSED %-33s %s is below the %s floor in %s\n' "$1" "$actual" "$2" "$3"
+    fail=1
+  fi
+}
+
 # ---- plan 201: files and directories (§10 table A) --------------------------
 absent licensing            packages/core/src/licensing
 absent telemetry            packages/core/src/telemetry
@@ -132,8 +160,12 @@ gone  stale-schema-comments "No producer yet" packages/core/src/db/schema.ts
 gonew view-not-built "VIEW_NOT_BUILT" plugins
 gone  lockfile      "werift|reflect-metadata|tsyringe" bun.lock
 
-present networking-version '"version": "3.1.0"' plugins/networking/package.json
-present proxy-manager-version '"version": "0.12.0"' plugins/proxy-manager/package.json
+# A pack must never ship BELOW the version that carried its fix — bumping past
+# it is the rule, not a violation. See `minversion` above for why these stopped
+# being exact-literal `present` assertions.
+minversion networking-version 3.1.0 plugins/networking/package.json
+minversion proxy-manager-version 0.12.0 plugins/proxy-manager/package.json
+minversion mikrotik-routing-version 0.15.0 plugins/mikrotik-routing/package.json
 
 # labelling.ts carried three raw control bytes (0x00, 0x1f, 0x7f) inside a
 # regex character class, which made `grep` skip the file as binary (docs/mvp/13 B.2).

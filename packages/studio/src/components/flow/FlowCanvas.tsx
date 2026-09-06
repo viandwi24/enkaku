@@ -269,7 +269,7 @@ function FlowCanvasInner({
   )
 
   return (
-    <div className="h-full min-h-[420px] w-full overflow-hidden rounded-lg border bg-surface" data-testid="flow-canvas">
+    <div className="h-full min-h-[420px] w-full overflow-hidden rounded-lg border bg-panel" data-testid="flow-canvas">
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
@@ -304,7 +304,7 @@ function FlowCanvasInner({
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--color-line)" />
         <Controls showInteractive={false} />
-        <MiniMap pannable zoomable nodeColor={(n) => (n.data?.node && (n.data.node as { kind: string }).kind === 'gate' ? 'var(--color-led-warn)' : 'var(--color-accent)')} />
+        <MiniMap pannable zoomable nodeColor={(n) => (n.data?.node && (n.data.node as { kind: string }).kind === 'gate' ? 'var(--warn)' : 'var(--color-accent)')} />
       </ReactFlow>
     </div>
   )

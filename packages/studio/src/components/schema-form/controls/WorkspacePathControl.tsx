@@ -132,14 +132,14 @@ export function WorkspacePathControl({
 
   const browser = (
     <div className="overflow-hidden rounded-md border">
-      <div className="flex flex-wrap items-center gap-1 border-b bg-surface-2 px-2 py-1.5 text-[11.5px]">
+      <div className="flex flex-wrap items-center gap-1 border-b bg-panel-2 px-2 py-1.5 text-[11.5px]">
         {breadcrumbs(prefix).map((crumb, i) => (
           <span key={crumb.prefix} className="flex items-center gap-1">
-            {i > 0 && <span className="text-fg-subtle">/</span>}
+            {i > 0 && <span className="text-faint">/</span>}
             <button
               type="button"
               onClick={() => setPrefix(crumb.prefix)}
-              className={cn('rounded px-1 hover:bg-surface', crumb.prefix === prefix ? 'font-medium text-fg' : 'text-fg-muted')}
+              className={cn('rounded px-1 hover:bg-panel', crumb.prefix === prefix ? 'font-medium text-text' : 'text-dim')}
             >
               {crumb.label}
             </button>
@@ -162,7 +162,7 @@ export function WorkspacePathControl({
       <div className="max-h-56 overflow-y-auto">
         {listError !== null && (
           <div className="px-3 py-3">
-            <p className="text-[12px] text-led-danger">Could not list the workspace — {listError}</p>
+            <p className="text-[12px] text-danger">Could not list the workspace — {listError}</p>
             <Button type="button" size="sm" variant="outline" className="mt-2 h-6 px-2 text-[11.5px]" onClick={() => load(prefix)}>
               Try again
             </Button>
@@ -178,7 +178,7 @@ export function WorkspacePathControl({
         )}
 
         {listError === null && entries !== null && visible.length === 0 && (
-          <p className="px-3 py-4 text-center text-[11.5px] text-fg-muted">
+          <p className="px-3 py-4 text-center text-[11.5px] text-dim">
             {prefix === '/'
               ? 'The workspace is empty. Add a file on the Workspace page first — a folder only exists once something is inside it.'
               : target === 'folder'
@@ -201,14 +201,14 @@ export function WorkspacePathControl({
                     disabled={!offered}
                     onClick={() => (isDir ? setPrefix(entry.path) : onChange(path, stored))}
                     className={cn(
-                      'flex w-full items-center gap-2 px-3 py-1 text-left text-[12px] hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent',
-                      isSelected && 'bg-surface-2 font-medium',
+                      'flex w-full items-center gap-2 px-3 py-1 text-left text-[12px] hover:bg-panel-2 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent',
+                      isSelected && 'bg-panel-2 font-medium',
                     )}
                   >
                     {isDir ? (
-                      <Folder className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                      <Folder className="size-3.5 shrink-0 text-dim" aria-hidden />
                     ) : (
-                      <File className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                      <File className="size-3.5 shrink-0 text-dim" aria-hidden />
                     )}
                     <span className="truncate">{baseName(entry.path)}</span>
                   </button>
@@ -220,10 +220,10 @@ export function WorkspacePathControl({
       </div>
 
       {filterHid && selectable.length === 0 && entries !== null && (
-        <p className="border-t px-3 py-1.5 text-[11px] text-fg-muted">Nothing here matches {extensions?.join(', ')}.</p>
+        <p className="border-t px-3 py-1.5 text-[11px] text-dim">Nothing here matches {extensions?.join(', ')}.</p>
       )}
       {filterHid && selectable.length > 0 && (
-        <p className="border-t px-3 py-1.5 text-[11px] text-fg-muted">Only {extensions?.join(', ')} files can be picked here.</p>
+        <p className="border-t px-3 py-1.5 text-[11px] text-dim">Only {extensions?.join(', ')} files can be picked here.</p>
       )}
     </div>
   )
@@ -246,7 +246,7 @@ export function WorkspacePathControl({
                 type="button"
                 aria-label={`Clear ${label}`}
                 onClick={() => onChange(path, undefined)}
-                className="rounded p-0.5 text-fg-subtle hover:bg-surface-2 hover:text-fg"
+                className="rounded p-0.5 text-faint hover:bg-panel-2 hover:text-text"
               >
                 <X className="size-3" aria-hidden />
               </button>

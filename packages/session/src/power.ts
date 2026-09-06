@@ -116,14 +116,32 @@ function toInt(raw: string | null): number | null {
  * Read-only. Never writes, so it is safe on the capture path (which must run
  * BEFORE the first write, plan 125 §3.3) and on a pure status probe.
  *
- * Two round trips, and every caller in this codebase reuses the answer rather
- * than re-reading: `applyScreenOffTimeout`/`applyStayOn` below take the
+ * ONE round trip, not two. Every caller in this codebase reuses the answer
+ * rather than re-reading: `applyScreenOffTimeout`/`applyStayOn` below take the
  * current value as an argument for exactly that reason. It is also what pays
  * for itself — plan 96 §22 measured `svc power stayon` at **1422 ms**, ten
  * times everything else in a session build combined, so one cheap read that
  * lets an already-correct device skip that write is a large net win.
+ *
+ * The two `settings get` calls used to be awaited one after the other. Each
+ * one is a full adb `exec` — process spawn, transport round trip, teardown —
+ * and this runs on the wake path for EVERY device, so a twenty-phone farm
+ * paid forty of them to learn two values. `adb shell` runs a real shell, so
+ * both reads go in one command and the answers come back on their own lines.
+ *
+ * A device that answers with the wrong number of lines (a ROM that prints a
+ * warning first, a truncated read) falls back to the original two calls
+ * rather than guessing which line is which — the whole point of this module
+ * is that it never reports a value it did not actually observe.
  */
 export async function readPowerState(transport: Transport): Promise<PowerReadback> {
+  const combined = await transport
+    .exec(`settings get ${SCREEN_OFF_TIMEOUT_NS} ${SCREEN_OFF_TIMEOUT_KEY}; settings get ${STAY_ON_NS} ${STAY_ON_KEY}`, { profile: 'probe' })
+    .then((r) => r.stdout.split('\n'))
+    .catch(() => null)
+  if (combined && combined.length >= 2) {
+    return { screenOffTimeoutMs: toInt(normaliseUnset(combined[0]!)), stayOnWhilePluggedIn: normaliseUnset(combined[1]!) }
+  }
   const timeoutRaw = await settingsGet(transport, SCREEN_OFF_TIMEOUT_NS, SCREEN_OFF_TIMEOUT_KEY)
   const stayOnRaw = await settingsGet(transport, STAY_ON_NS, STAY_ON_KEY)
   return { screenOffTimeoutMs: toInt(timeoutRaw), stayOnWhilePluggedIn: stayOnRaw }

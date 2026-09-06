@@ -14,12 +14,12 @@ import type { FilePresenter, PresenterProps } from './index'
 function DownloadPresenterComponent({ meta, src }: PresenterProps) {
   return (
     <div className="flex flex-col items-start gap-3 px-1 py-10">
-      <FileQuestion className="size-6 text-fg-muted" aria-hidden />
+      <FileQuestion className="size-6 text-dim" aria-hidden />
       <div className="space-y-1">
         <p className="text-[13px]">
           No viewer is installed for <span className="readout">{meta.contentType}</span> files.
         </p>
-        <p className="text-[12px] text-fg-muted">{fileSize(meta.size)}</p>
+        <p className="text-[12px] text-dim">{fileSize(meta.size)}</p>
       </div>
       <Button asChild size="sm" variant="secondary">
         <a href={src} target="_blank" rel="noreferrer">

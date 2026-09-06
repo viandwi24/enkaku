@@ -21,7 +21,7 @@ const INITIAL_STATE: GateState = { status: 'loading', user: null, authMode: 'loc
 function FullScreenLoading() {
   return (
     <div className="grid h-dvh place-items-center bg-bg">
-      <Spinner className="size-6 text-fg-subtle" />
+      <Spinner className="size-6 text-faint" />
     </div>
   )
 }

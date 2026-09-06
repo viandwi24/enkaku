@@ -62,7 +62,7 @@ export function TagEditor({ deviceId, tags }: { deviceId: string; tags: string[]
   return (
     <div className="space-y-2.5">
       <div className="flex flex-wrap gap-1.5">
-        {current.length === 0 && <span className="text-[12px] text-fg-muted">No tags yet.</span>}
+        {current.length === 0 && <span className="text-[12px] text-dim">No tags yet.</span>}
         {current.map((tag) => (
           <Badge key={tag} variant="secondary" className="gap-1 py-0.5 pr-1">
             <span className="readout">{tag}</span>
@@ -71,7 +71,7 @@ export function TagEditor({ deviceId, tags }: { deviceId: string; tags: string[]
               onClick={() => removeTag(tag)}
               disabled={busy}
               aria-label={`Remove tag ${tag}`}
-              className="rounded-full p-0.5 hover:bg-surface-3"
+              className="rounded-full p-0.5 hover:bg-muted"
             >
               <X className="size-3" aria-hidden />
             </button>
@@ -95,7 +95,7 @@ export function TagEditor({ deviceId, tags }: { deviceId: string; tags: string[]
           className="h-8 text-[12.5px]"
         />
         {preview && preview !== draft.trim() && (
-          <p className="text-[11px] text-fg-subtle">
+          <p className="text-[11px] text-faint">
             Stored as <span className="readout">{preview}</span>
           </p>
         )}
@@ -109,9 +109,9 @@ export function TagEditor({ deviceId, tags }: { deviceId: string; tags: string[]
               type="button"
               onClick={() => addTag(s.tag)}
               disabled={busy}
-              className="rounded-full border border-line px-2 py-0.5 text-[11px] text-fg-muted hover:border-line-strong"
+              className="rounded-full border border-line px-2 py-0.5 text-[11px] text-dim hover:border-border-3"
             >
-              <span className="readout">{s.tag}</span> <span className="text-fg-subtle">×{s.count}</span>
+              <span className="readout">{s.tag}</span> <span className="text-faint">×{s.count}</span>
             </button>
           ))}
         </div>

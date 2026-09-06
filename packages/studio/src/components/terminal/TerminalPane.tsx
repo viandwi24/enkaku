@@ -180,7 +180,7 @@ export function TerminalPane({
 
   return (
     <div className="px-5 py-4">
-      <p className="mb-3 max-w-3xl text-[12px] leading-relaxed text-fg-muted">
+      <p className="mb-3 max-w-3xl text-[12px] leading-relaxed text-dim">
         Commands run with the device&apos;s own adb shell privileges — this is not a sandbox. Every command and its
         outcome is written to this device&apos;s Logs tab, with the account that ran it. The prompt below is an
         emulated working directory (Studio tracks it; the device does not) — each command actually runs in a fresh
@@ -188,7 +188,7 @@ export function TerminalPane({
       </p>
 
       {error && (
-        <div className="mb-3 rounded-lg border border-led-danger/40 bg-led-danger/5 px-3.5 py-2.5 text-[12.5px] text-led-danger">
+        <div className="mb-3 rounded-lg border border-danger/40 bg-danger/5 px-3.5 py-2.5 text-[12.5px] text-danger">
           {error}
         </div>
       )}
@@ -201,7 +201,7 @@ export function TerminalPane({
       ) : (
         <div
           ref={scrollRef}
-          className="readout mb-3 max-h-[28rem] overflow-y-auto rounded-lg border bg-surface p-3 text-[11.5px] leading-relaxed"
+          className="readout mb-3 max-h-[28rem] overflow-y-auto rounded-lg border bg-panel p-3 text-[11.5px] leading-relaxed"
         >
           {entries.map((e) => (
             <TranscriptRow key={e.id} entry={e} deviceId={deviceId} onRunAsStream={onRunAsStream} />
@@ -211,7 +211,7 @@ export function TerminalPane({
 
       {canType ? (
         <div className="flex items-center gap-2">
-          <span className="readout shrink-0 text-[12px] text-fg-muted">{cwd} $</span>
+          <span className="readout shrink-0 text-[12px] text-dim">{cwd} $</span>
           <Input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -225,7 +225,7 @@ export function TerminalPane({
           </Button>
         </div>
       ) : (
-        <p className="rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] text-fg-muted">
+        <p className="rounded-lg border bg-panel px-3.5 py-2.5 text-[12.5px] text-dim">
           Take control to run commands. Everyone watching this device sees the transcript live.
         </p>
       )}
@@ -236,7 +236,7 @@ export function TerminalPane({
             <AlertDialogTitle>Run this command?</AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div>
-                <code className="readout mt-1 block rounded-md bg-surface-2 px-2 py-1.5 text-[12px] break-all">{confirmCmd}</code>
+                <code className="readout mt-1 block rounded-md bg-panel-2 px-2 py-1.5 text-[12px] break-all">{confirmCmd}</code>
                 <p className="mt-2">
                   This looks like it could affect the whole device (reboot, power, or adb settings). This is a
                   Studio-side reminder, not a server-side restriction — it runs exactly as typed either way.
@@ -275,15 +275,15 @@ function TranscriptRow({
   return (
     <div className="border-b border-line/60 py-1.5 last:border-b-0">
       <div className="flex flex-wrap items-baseline gap-x-2">
-        <span className="text-fg-subtle">{entry.cwd} $</span>
-        <span className="font-medium break-all text-fg">{cmd}</span>
-        {actor && <span className="text-[10.5px] text-fg-subtle">{actor}</span>}
+        <span className="text-faint">{entry.cwd} $</span>
+        <span className="font-medium break-all text-text">{cmd}</span>
+        {actor && <span className="text-[10.5px] text-faint">{actor}</span>}
       </div>
       {result === null ? (
-        <div className="pl-4 text-fg-subtle">running…</div>
+        <div className="pl-4 text-faint">running…</div>
       ) : (
         <>
-          {result.stdout.length > 0 && <pre className="whitespace-pre-wrap break-all text-fg-muted">{result.stdout}</pre>}
+          {result.stdout.length > 0 && <pre className="whitespace-pre-wrap break-all text-dim">{result.stdout}</pre>}
           {/*
             stderr is a separate stream, not a verdict. Plenty of Android tools
             write warnings and progress to it while exiting 0 — `dumpsys` on a
@@ -292,21 +292,21 @@ function TranscriptRow({
             succeeded is the `exit` badge's job, and only its job.
           */}
           {result.stderr.length > 0 && (
-            <div className="border-l-2 border-led-warn/40 pl-2">
-              <div className="readout text-[10px] uppercase tracking-wide text-led-warn/70">stderr</div>
-              <pre className="whitespace-pre-wrap break-all text-led-warn">{result.stderr}</pre>
+            <div className="border-l-2 border-warn/40 pl-2">
+              <div className="readout text-[10px] uppercase tracking-wide text-warn/70">stderr</div>
+              <pre className="whitespace-pre-wrap break-all text-warn">{result.stderr}</pre>
             </div>
           )}
           <div className="flex flex-wrap items-center gap-x-3 text-[10.5px]">
             <span
               className={cn(
-                result.exitCode === 0 ? 'text-led-ok' : result.exitCode === null ? 'text-fg-subtle' : 'text-led-danger',
+                result.exitCode === 0 ? 'text-ok' : result.exitCode === null ? 'text-faint' : 'text-danger',
               )}
             >
               exit {result.exitCode ?? '?'}
             </span>
-            <span className="text-fg-subtle">{result.durationMs} ms</span>
-            {result.truncated && <span className="text-led-warn">output truncated</span>}
+            <span className="text-faint">{result.durationMs} ms</span>
+            {result.truncated && <span className="text-warn">output truncated</span>}
             {result.hint === 'stream_suggested' && (
               <button type="button" className="text-accent underline" onClick={() => onRunAsStream(cmd)}>
                 Run as a stream

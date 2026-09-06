@@ -74,7 +74,7 @@ export function ChoiceControl({
                 <div>
                   <SelectItem value={o.value} disabled>
                     {o.label}
-                    <span className="ml-2 text-[10px] text-fg-subtle">not available</span>
+                    <span className="ml-2 text-[10px] text-faint">not available</span>
                   </SelectItem>
                 </div>
               </TooltipTrigger>
@@ -91,7 +91,7 @@ export function ChoiceControl({
     <FieldRow id={id} label={label} help={help} error={error}>
       {control}
       {selected && !selected.available && (
-        <p className="text-[11.5px] text-led-warn">
+        <p className="text-[11.5px] text-warn">
           This engine is not available{selected.reason ? ` — ${selected.reason}` : ''}. The device will use a fallback.
         </p>
       )}

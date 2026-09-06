@@ -20,11 +20,11 @@ const STATE_LABEL: Record<VmState, string> = {
 
 const STATE_CLASS: Record<VmState, string> = {
   creating: 'text-faint',
-  starting: 'text-led-warn',
-  running: 'text-led-ok',
-  stopping: 'text-led-warn',
+  starting: 'text-warn',
+  running: 'text-ok',
+  stopping: 'text-warn',
   stopped: 'text-faint',
-  failed: 'text-led-danger',
+  failed: 'text-danger',
 }
 
 /**
@@ -160,7 +160,7 @@ function VmRow({
           {(vm.state === 'starting' || vm.state === 'stopping') && <span className="ml-1.5 text-meta text-faint">{elapsed}</span>}
         </div>
         {vm.state === 'failed' && vm.message && (
-          <p className="mt-1 max-w-md text-meta text-led-danger">{vm.message}</p>
+          <p className="mt-1 max-w-md text-meta text-danger">{vm.message}</p>
         )}
       </TableCell>
       <TableCell className="font-mono text-meta text-faint">{vm.serial}</TableCell>

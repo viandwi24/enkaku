@@ -145,19 +145,19 @@ export function ExprField({
           <CodeIcon className="size-3.5" aria-hidden />
         </Button>
       </div>
-      {convertError && <p className="text-[11px] text-led-warn">{convertError}</p>}
-      {clickError && <p className="text-[11px] text-led-warn">{clickError}</p>}
+      {convertError && <p className="text-[11px] text-warn">{convertError}</p>}
+      {clickError && <p className="text-[11px] text-warn">{clickError}</p>}
       {isExpr && (
         <div className="rounded border bg-panel-2 px-2 py-1 text-[11px]">
-          <p className="mb-0.5 text-fg-subtle">preview</p>
+          <p className="mb-0.5 text-faint">preview</p>
           {preview.error ? (
-            <p className="text-led-danger">unresolved</p>
+            <p className="text-danger">unresolved</p>
           ) : preview.pending ? (
-            <p className="text-fg-subtle">…</p>
+            <p className="text-faint">…</p>
           ) : preview.hasValue ? (
-            <pre className="whitespace-pre-wrap break-all font-mono text-fg">{formatPreviewValue(preview.value)}</pre>
+            <pre className="whitespace-pre-wrap break-all font-mono text-text">{formatPreviewValue(preview.value)}</pre>
           ) : (
-            <p className="text-fg-subtle">(empty)</p>
+            <p className="text-faint">(empty)</p>
           )}
         </div>
       )}

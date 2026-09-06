@@ -91,9 +91,9 @@ function isoTime(v: string | null | undefined): string {
 
 function Card({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
-    <section className="@container rounded-lg border bg-surface p-4">
+    <section className="@container rounded-lg border bg-panel p-4">
       <h2 className="text-[14px] font-semibold tracking-tight">{title}</h2>
-      {hint && <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{hint}</p>}
+      {hint && <p className="mt-1 text-[12px] leading-relaxed text-dim">{hint}</p>}
       <div className="mt-3">{children}</div>
     </section>
   )
@@ -104,7 +104,7 @@ function Rows({ rows }: { rows: [string, React.ReactNode][] }) {
     <dl className="divide-y overflow-hidden rounded border">
       {rows.map(([k, v]) => (
         <div key={k} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-3 py-2">
-          <dt className="text-[12px] text-fg-muted">{k}</dt>
+          <dt className="text-[12px] text-dim">{k}</dt>
           <dd className="readout min-w-0 wrap-anywhere text-[12px]">{v}</dd>
         </div>
       ))}
@@ -293,7 +293,7 @@ function PluginDetail() {
                 </SelectContent>
               </Select>
             ) : (
-              <span className="readout text-[12.5px] text-fg-muted">{p.version}</span>
+              <span className="readout text-[12.5px] text-dim">{p.version}</span>
             )}
           </span>
         }
@@ -318,11 +318,11 @@ function PluginDetail() {
             only `overflow-wrap: anywhere` lowers min-content enough to keep a
             narrow column from scrolling sideways. */}
         {p.status === 'failed' && (
-          <section className="rounded-lg border border-led-danger/40 bg-led-danger/5 p-4">
-            <h2 className="text-[14px] font-semibold tracking-tight text-led-danger">This version failed to register</h2>
-            <p className="readout mt-2 wrap-anywhere text-[12px] text-led-danger">{p.verifyErrorCode ?? 'E_PLUGIN_VERIFY_FAILED'}</p>
-            <p className="mt-1 whitespace-pre-wrap wrap-anywhere text-[12.5px] leading-relaxed text-led-danger">{p.verifyError}</p>
-            <p className="mt-3 text-[12px] leading-relaxed text-fg-muted">
+          <section className="rounded-lg border border-danger/40 bg-danger/5 p-4">
+            <h2 className="text-[14px] font-semibold tracking-tight text-danger">This version failed to register</h2>
+            <p className="readout mt-2 wrap-anywhere text-[12px] text-danger">{p.verifyErrorCode ?? 'E_PLUGIN_VERIFY_FAILED'}</p>
+            <p className="mt-1 whitespace-pre-wrap wrap-anywhere text-[12.5px] leading-relaxed text-danger">{p.verifyError}</p>
+            <p className="mt-3 text-[12px] leading-relaxed text-dim">
               Registration is all-or-nothing per plugin, so none of its {declared.length || 'declared'} script
               {declared.length === 1 ? '' : 's'} registered. Every other plugin on this farm, and every script they registered, is
               unaffected. Reload, above, re-runs verification against the same bundle.
@@ -346,7 +346,7 @@ function PluginDetail() {
               ['row id', p.id],
             ]}
           />
-          <p className="mt-3 text-[11.5px] leading-relaxed text-fg-subtle">
+          <p className="mt-3 text-[11.5px] leading-relaxed text-faint">
             Every version of {p.name} shares one key/value namespace. Only one version of a name is ever live, which is why Enable is
             refused while another one holds the slot.
           </p>
@@ -361,7 +361,7 @@ function PluginDetail() {
           }
         >
           {declared.length === 0 ? (
-            <p className="text-[12.5px] text-fg-subtle">
+            <p className="text-[12.5px] text-faint">
               {!full
                 ? 'Reading this version…'
                 : full.manifest
@@ -382,9 +382,9 @@ function PluginDetail() {
                           {full}
                         </Link>
                       ) : (
-                        <span className="readout wrap-anywhere text-[12.5px] text-fg-muted">{full}</span>
+                        <span className="readout wrap-anywhere text-[12.5px] text-dim">{full}</span>
                       )}
-                      {s.title && <span className="ml-2 text-[12px] text-fg">{s.title}</span>}
+                      {s.title && <span className="ml-2 text-[12px] text-text">{s.title}</span>}
                     </span>
                     {/* Only once the manifest is here. Before that the params
                         are not "unknown", they are simply not read yet, and
@@ -395,9 +395,9 @@ function PluginDetail() {
                       </span>
                     )}
                     {s.runtime ? <span className="rack-label shrink-0">runtime</span> : null}
-                    {s.description && <p className="w-full text-[11.5px] leading-relaxed text-fg-muted">{s.description}</p>}
+                    {s.description && <p className="w-full text-[11.5px] leading-relaxed text-dim">{s.description}</p>}
                     {!rowId && (
-                      <p className="w-full text-[11px] leading-relaxed text-fg-subtle">
+                      <p className="w-full text-[11px] leading-relaxed text-faint">
                         Not registered on this farm right now, so it has no page of its own — only the live version of a plugin registers
                         its members.
                       </p>
@@ -407,7 +407,7 @@ function PluginDetail() {
               })}
             </ul>
           )}
-          <p className="mt-3 text-[11.5px] leading-relaxed text-fg-subtle">
+          <p className="mt-3 text-[11.5px] leading-relaxed text-faint">
             {(p.scriptCount ?? 0)} registered from this version{declared.length > 0 ? ` of ${declared.length} declared` : ''}.
           </p>
         </Card>
@@ -420,9 +420,9 @@ function PluginDetail() {
             /* Not "contributes no screen" — that is an answer, and it is not
                known yet (plan 126 §3.3: the surface arrives with the version
                read, not with the list). */
-            <p className="text-[12.5px] text-fg-subtle">Reading this version…</p>
+            <p className="text-[12.5px] text-faint">Reading this version…</p>
           ) : !surface || surface.nav.length === 0 ? (
-            <p className="text-[12.5px] text-fg-subtle">
+            <p className="text-[12.5px] text-faint">
               This version contributes no screen — it adds nothing to the sidebar and has no page of its own.
             </p>
           ) : (
@@ -439,14 +439,14 @@ function PluginDetail() {
                           <ExternalLink className="size-3" aria-hidden />
                         </Link>
                       ) : (
-                        <span className="text-[12.5px] font-medium text-fg-muted">{entry.label}</span>
+                        <span className="text-[12.5px] font-medium text-dim">{entry.label}</span>
                       )}
-                      <span className="readout ml-2 text-[11.5px] text-fg-subtle">{entry.view}</span>
+                      <span className="readout ml-2 text-[11.5px] text-faint">{entry.view}</span>
                     </span>
                     <span className="rack-label shrink-0">{view?.react ? 'react' : 'table'}</span>
-                    {view?.description && <p className="w-full text-[11.5px] leading-relaxed text-fg-muted">{view.description}</p>}
+                    {view?.description && <p className="w-full text-[11.5px] leading-relaxed text-dim">{view.description}</p>}
                     {!isActive && (
-                      <p className="w-full text-[11px] leading-relaxed text-fg-subtle">
+                      <p className="w-full text-[11px] leading-relaxed text-faint">
                         Not reachable while this version is {p.status} — a plugin screen resolves against the active version only.
                       </p>
                     )}
@@ -466,9 +466,9 @@ function PluginDetail() {
                "declares no service" tells an operator nothing of this plugin
                runs inside the core, and that sentence must never be printed
                before the manifest that decides it has arrived. */
-            <p className="text-[12.5px] text-fg-subtle">Reading this version…</p>
+            <p className="text-[12.5px] text-faint">Reading this version…</p>
           ) : !service ? (
-            <p className="text-[12.5px] text-fg-subtle">
+            <p className="text-[12.5px] text-faint">
               This version declares no service. Nothing of it runs inside the core between jobs; its scripts run in their own job processes
               as usual.
             </p>
@@ -487,7 +487,7 @@ function PluginDetail() {
               <div>
                 <h3 className="rack-label mb-1.5">permissions</h3>
                 {service.permissions.length === 0 ? (
-                  <p className="text-[12px] text-fg-subtle">None — its service cannot call the farm at all.</p>
+                  <p className="text-[12px] text-faint">None — its service cannot call the farm at all.</p>
                 ) : (
                   <div className="flex flex-wrap gap-1.5">
                     {service.permissions.map((perm) => (
@@ -497,7 +497,7 @@ function PluginDetail() {
                     ))}
                   </div>
                 )}
-                <p className="mt-1.5 text-[11px] leading-relaxed text-fg-subtle">
+                <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
                   Exhaustive: the service is refused any capability absent from this list before the call is made.
                 </p>
               </div>
@@ -516,7 +516,7 @@ function PluginDetail() {
               {service.resetData && (
                 <div>
                   <h3 className="rack-label mb-1.5">reset data</h3>
-                  <p className="text-[12px] leading-relaxed text-fg-muted">
+                  <p className="text-[12px] leading-relaxed text-dim">
                     {service.resetData.description ??
                       'This plugin declares a cleanup handler for Reset data, and no description of what it undoes.'}
                   </p>
@@ -529,7 +529,7 @@ function PluginDetail() {
                           </Badge>
                         ))}
                       </div>
-                      <p className="mt-1.5 text-[11px] leading-relaxed text-fg-subtle">
+                      <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
                         Borrowed for the length of one Reset data pass, through the context that pass hands the handler — not part of the
                         list above, and refused everywhere else, including this plugin&apos;s own screens and scripts.
                       </p>
@@ -547,11 +547,11 @@ function PluginDetail() {
                         <span className="readout min-w-0 flex-1 wrap-anywhere text-[12px]">{l.id}</span>
                         <span className="rack-label shrink-0">{l.proto}</span>
                         <span className="rack-label shrink-0">{l.deviceReachable ? 'device-reachable' : 'host-only'}</span>
-                        {l.description && <p className="w-full text-[11.5px] leading-relaxed text-fg-muted">{l.description}</p>}
+                        {l.description && <p className="w-full text-[11.5px] leading-relaxed text-dim">{l.description}</p>}
                       </li>
                     ))}
                   </ul>
-                  <p className="mt-1.5 text-[11px] leading-relaxed text-fg-subtle">
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
                     Declaring a port grants and reserves nothing — the plugin opens it itself. This list is what it said it intends to open.
                   </p>
                 </div>
@@ -567,7 +567,7 @@ function PluginDetail() {
                       </Badge>
                     ))}
                   </div>
-                  <p className="mt-1.5 text-[11px] leading-relaxed text-fg-subtle">
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
                     Observation only — a handler cannot veto, delay, or rewrite one.
                   </p>
                 </div>
@@ -580,7 +580,7 @@ function PluginDetail() {
                     {service.webhooks.map((w) => (
                       <li key={w.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2">
                         <span className="readout min-w-0 flex-1 wrap-anywhere text-[12px]">{w.id}</span>
-                        {w.description && <p className="w-full text-[11.5px] leading-relaxed text-fg-muted">{w.description}</p>}
+                        {w.description && <p className="w-full text-[11.5px] leading-relaxed text-dim">{w.description}</p>}
                       </li>
                     ))}
                   </ul>
@@ -598,17 +598,17 @@ function PluginDetail() {
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">DEV</Badge>
               <span className="readout text-[12px]">{devSlot.buildVersion}</span>
-              <span className="text-[11.5px] text-fg-muted">
+              <span className="text-[11.5px] text-dim">
                 {devSlot.lastBuildOk ? 'built' : 'build failed'} {relativeTime(devSlot.lastBuildAt)}
               </span>
             </div>
-            <p className="mt-2 text-[12px] text-fg-muted">
+            <p className="mt-2 text-[12px] text-dim">
               owned by {devSlot.owner.kind === 'workspace' ? 'workspace' : 'enkaku dev'}{' '}
               <span className="readout wrap-anywhere">{devSlot.owner.label}</span> — shares this plugin&apos;s key/value namespace (
               <span className="readout">{devSlot.kvNamespace}</span>). Drop it from the Plugins tab.
             </p>
             {!devSlot.lastBuildOk && devSlot.lastError && (
-              <p className="mt-2 whitespace-pre-wrap wrap-anywhere text-[12px] text-led-danger">{devSlot.lastError}</p>
+              <p className="mt-2 whitespace-pre-wrap wrap-anywhere text-[12px] text-danger">{devSlot.lastError}</p>
             )}
           </Card>
         )}

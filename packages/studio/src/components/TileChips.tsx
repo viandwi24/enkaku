@@ -70,7 +70,7 @@ export function TileChips({
             // component doc comment) — battery survives longer than
             // temperature because it is the one most operators check first.
             'readout flex shrink-0 items-center gap-1 @max-[160px]:hidden',
-            lowBattery ? 'text-led-warn' : 'text-fg-muted',
+            lowBattery ? 'text-warn' : 'text-dim',
           )}
         >
           <Battery className="size-2.5" aria-hidden />
@@ -82,7 +82,7 @@ export function TileChips({
           className={cn(
             // Drops first (plan 92 §4.8's own example threshold).
             'readout flex shrink-0 items-center gap-1 @max-[200px]:hidden',
-            hot ? 'text-led-danger' : 'text-fg-muted',
+            hot ? 'text-danger' : 'text-dim',
           )}
         >
           <Thermometer className="size-2.5" aria-hidden />

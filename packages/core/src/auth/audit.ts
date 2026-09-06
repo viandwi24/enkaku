@@ -161,6 +161,14 @@ export type AuditAction =
   // which leaves the core process (and every job's queue state) untouched.
   | 'app.restart'
   | 'settings.update'
+  /**
+   * A section of `farm_settings` put back to this build's defaults
+   * (`POST /api/settings/reset`). Distinct from `settings.update` because it
+   * is the one settings write nobody typed the resulting values for — `meta`
+   * carries `{ sections }`, so the log answers "who asked for the new
+   * defaults, and on which parts" without having to diff two rows.
+   */
+  | 'settings.reset'
   /** The nightly retention sweep (plan 224): runs, orphan jobs, trace directories, artifacts, device/job events and stale audit rows. */
   | 'retention.sweep'
   // AI agent records (plan 65 §4.5, §5.5) — creating/editing/deleting the

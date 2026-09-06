@@ -164,7 +164,7 @@ function PluginView() {
       meta={
         <span className="flex items-center gap-2">
           {resolved.origin === 'dev' && <Badge variant="outline">DEV</Badge>}
-          <span className="readout text-[11.5px] text-fg-muted">
+          <span className="readout text-[11.5px] text-dim">
             {resolved.plugin} {resolved.version}
           </span>
         </span>

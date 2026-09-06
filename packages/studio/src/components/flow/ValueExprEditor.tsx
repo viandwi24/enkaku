@@ -126,7 +126,7 @@ export function ValueExprEditor({
         <FromEditor value={value} onChange={onChange} nodeOptions={nodeOptions} />
       )}
 
-      {kind === 'run' && <span className="mt-1.5 text-[11.5px] text-fg-muted">one entry per completed node</span>}
+      {kind === 'run' && <span className="mt-1.5 text-[11.5px] text-dim">one entry per completed node</span>}
     </div>
   )
 }
@@ -205,7 +205,7 @@ function FromEditor({
         onChange={(e) => onChange({ ...value, path: e.target.value || undefined })}
         aria-label="Path into the output"
       />
-      <label className="flex items-center gap-1.5 text-[11.5px] text-fg-muted">
+      <label className="flex items-center gap-1.5 text-[11.5px] text-dim">
         <Switch
           checked={value.optional}
           onCheckedChange={(optional) => onChange({ ...value, optional, default: optional ? (value.default ?? '') : undefined })}

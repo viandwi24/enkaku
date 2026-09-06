@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Transport } from '@enkaku/protocol'
-import { observeScreen, satisfiesStayOn } from './power'
+import { observeScreen, readPowerState, satisfiesStayOn } from './power'
 import type { Logger } from './logger'
 
 const silentLog: Logger = {
@@ -84,5 +84,55 @@ describe('observeScreen — the mWakefulness probe (plan 125 §3.6, acceptance c
 
   test('mWakefulnessChanging cannot be mistaken for the state line', async () => {
     expect((await observeScreen(probing('mWakefulnessChanging=false'), silentLog)).state).toBe('unknown')
+  })
+})
+
+/**
+ * `readPowerState` asks a real device shell for both keys in one command. The
+ * fallback matters more than the fast path: this module's contract is that it
+ * never reports a value it did not observe, so an answer it cannot line up
+ * with the keys it asked for must cost an extra round trip, not a guess.
+ */
+describe('readPowerState — one round trip, with a fallback that never guesses', () => {
+  function shell(handler: (cmd: string) => string | Error) {
+    const calls: string[] = []
+    const transport = {
+      exec: async (cmd: string) => {
+        calls.push(cmd)
+        const out = handler(cmd)
+        if (out instanceof Error) throw out
+        return { stdout: out, stderr: '', exitCode: 0 }
+      },
+    } as unknown as Transport
+    return { transport, calls }
+  }
+
+  test('reads both keys in a single exec and maps the lines in the order they were asked for', async () => {
+    const { transport, calls } = shell(() => '1800000\n7')
+    expect(await readPowerState(transport)).toEqual({ screenOffTimeoutMs: 1800000, stayOnWhilePluggedIn: '7' })
+    expect(calls).toEqual(['settings get system screen_off_timeout; settings get global stay_on_while_plugged_in'])
+  })
+
+  test('a one-line answer is not split between the two keys — it falls back to a call each', async () => {
+    const { transport, calls } = shell((cmd) => {
+      if (cmd.includes(';')) return '1800000'
+      return cmd.includes('screen_off_timeout') ? '1800000' : '2'
+    })
+    expect(await readPowerState(transport)).toEqual({ screenOffTimeoutMs: 1800000, stayOnWhilePluggedIn: '2' })
+    expect(calls).toHaveLength(3)
+  })
+
+  test('a combined read that throws falls back rather than reporting both keys unreadable', async () => {
+    const { transport, calls } = shell((cmd) => {
+      if (cmd.includes(';')) return new Error('shell refused the compound command')
+      return cmd.includes('screen_off_timeout') ? '60000' : '0'
+    })
+    expect(await readPowerState(transport)).toEqual({ screenOffTimeoutMs: 60000, stayOnWhilePluggedIn: '0' })
+    expect(calls).toHaveLength(3)
+  })
+
+  test('an unset key still reads as null through the combined path', async () => {
+    const { transport } = shell(() => 'null\n')
+    expect(await readPowerState(transport)).toEqual({ screenOffTimeoutMs: null, stayOnWhilePluggedIn: null })
   })
 })

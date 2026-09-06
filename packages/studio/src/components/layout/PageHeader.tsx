@@ -35,7 +35,7 @@ export function PageHeader({
       <div className="flex flex-wrap items-center gap-3 px-5 py-3">
         <div className="min-w-0 flex-1">
           {titlePill ? (
-            <div className="inline-flex h-9 items-center gap-2.5 rounded-full border border-line bg-surface-2/55 px-4 text-[14px] font-semibold shadow-lg backdrop-blur-[18px] backdrop-saturate-[150%]">
+            <div className="inline-flex h-9 items-center gap-2.5 rounded-full border border-line bg-panel-2/55 px-4 text-[14px] font-semibold shadow-lg backdrop-blur-[18px] backdrop-saturate-[150%]">
               {/* A real `<h1>` (not a `<span>`) — the pill is a different
                   SHAPE for the title, not a different semantic level; every
                   other screen's `<h1>` above still answers "where am I" the
@@ -51,7 +51,7 @@ export function PageHeader({
           ) : (
             <>
               <h1 className="truncate text-[15px] font-semibold tracking-tight">{title}</h1>
-              {description && <p className="mt-0.5 truncate text-[12px] text-fg-muted">{description}</p>}
+              {description && <p className="mt-0.5 truncate text-[12px] text-dim">{description}</p>}
             </>
           )}
         </div>

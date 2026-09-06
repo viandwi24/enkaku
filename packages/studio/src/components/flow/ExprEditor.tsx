@@ -39,7 +39,7 @@ export const ExprEditor = forwardRef<HTMLTextAreaElement, { value: string; onCha
             ref={ref}
             className={cn(
               'relative min-h-16 resize-y bg-transparent px-3 py-2 font-mono text-[12px] leading-[1.45] text-transparent caret-text',
-              error && 'border-led-danger focus-visible:ring-led-danger/40',
+              error && 'border-danger focus-visible:ring-danger/40',
             )}
             value={value}
             onChange={(e) => onChange(e.target.value)}
@@ -50,15 +50,15 @@ export const ExprEditor = forwardRef<HTMLTextAreaElement, { value: string; onCha
           />
         </div>
         {error && (
-          <div className="space-y-0.5 rounded border border-led-danger/30 bg-led-danger/5 px-2 py-1 text-[11px]">
-            <p className="whitespace-pre-wrap break-all font-mono text-fg-muted">
+          <div className="space-y-0.5 rounded border border-danger/30 bg-danger/5 px-2 py-1 text-[11px]">
+            <p className="whitespace-pre-wrap break-all font-mono text-dim">
               {value.slice(0, error.offset)}
-              <span className="rounded-sm bg-led-danger/30 text-led-danger underline decoration-led-danger decoration-2">
+              <span className="rounded-sm bg-danger/30 text-danger underline decoration-danger decoration-2">
                 {value.slice(error.offset, error.offset + 1) || ' '}
               </span>
               {value.slice(error.offset + 1)}
             </p>
-            <p className="text-led-danger">{error.message}</p>
+            <p className="text-danger">{error.message}</p>
           </div>
         )}
       </div>

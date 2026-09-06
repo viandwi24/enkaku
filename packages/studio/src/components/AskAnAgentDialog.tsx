@@ -133,13 +133,13 @@ export function AskAnAgentDialog({
                       onClick={() => setSelected(a.id)}
                       className={cn(
                         'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12.5px] transition-colors',
-                        !r.ok ? 'cursor-not-allowed opacity-50' : selected === a.id ? 'bg-accent/10' : 'hover:bg-surface-2',
+                        !r.ok ? 'cursor-not-allowed opacity-50' : selected === a.id ? 'bg-accent/10' : 'hover:bg-panel-2',
                       )}
                     >
-                      <Bot className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                      <Bot className="size-3.5 shrink-0 text-dim" aria-hidden />
                       <span className="min-w-0 flex-1 truncate">{a.name}</span>
                     </button>
-                    {!r.ok && <p className="px-2.5 pb-1 text-[10.5px] text-fg-subtle">{r.reason}</p>}
+                    {!r.ok && <p className="px-2.5 pb-1 text-[10.5px] text-faint">{r.reason}</p>}
                   </div>
                 )
               })}

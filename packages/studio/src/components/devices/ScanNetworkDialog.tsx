@@ -127,7 +127,7 @@ export function ScanNetworkDialog({ open, onOpenChange, onScanned }: { open: boo
         )}
 
         <DialogFooter className="items-center">
-          <p className={cn('mr-auto min-w-0 text-meta', dirty ? 'text-led-warn' : 'text-faint')}>
+          <p className={cn('mr-auto min-w-0 text-meta', dirty ? 'text-warn' : 'text-faint')}>
             {dirty ? 'Unsaved changes — a sweep probes what is saved, not what is on screen.' : 'Saved.'}
           </p>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -171,7 +171,7 @@ function SweepSummary({ report }: { report: SweepReport }) {
       {report.conflicts.length > 0 && (
         <ul className="mt-2 space-y-1">
           {report.conflicts.map((c) => (
-            <li key={c.address} className="readout text-meta text-led-danger">
+            <li key={c.address} className="readout text-meta text-danger">
               {c.address} answered as {c.found}, but the address book remembers it for {c.expected} — not adopted.
             </li>
           ))}

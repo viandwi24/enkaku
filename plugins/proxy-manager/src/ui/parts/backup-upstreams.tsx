@@ -117,7 +117,7 @@ export function BackupUpstreamsEditor({ value, onChange, failover, onFailoverCha
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[13px] font-medium">Backup upstreams</p>
-          <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">
             Tried in order when the primary upstream above fails a sustained streak of dials AND a confirmation probe through it also fails — a flaky
             target site never burns through these on its own. Another local egress, or a third-party rotating proxy such as SOAX, in the same shapes as
             the primary above.
@@ -129,7 +129,7 @@ export function BackupUpstreamsEditor({ value, onChange, failover, onFailoverCha
       </div>
 
       {upstreams.length === 0 ? (
-        <p className="text-[11.5px] leading-relaxed text-fg-muted">No backups configured — this record only ever uses its primary upstream.</p>
+        <p className="text-[11.5px] leading-relaxed text-dim">No backups configured — this record only ever uses its primary upstream.</p>
       ) : (
         <div className="space-y-3">
           {upstreams.map((upstream, index) => {
@@ -154,7 +154,7 @@ export function BackupUpstreamsEditor({ value, onChange, failover, onFailoverCha
                     >
                       Down
                     </Button>
-                    <Button variant="ghost" size="sm" className="text-destructive" onClick={() => remove(index)}>
+                    <Button variant="ghost" size="sm" className="text-danger" onClick={() => remove(index)}>
                       Remove
                     </Button>
                   </div>
@@ -195,7 +195,7 @@ export function BackupUpstreamsEditor({ value, onChange, failover, onFailoverCha
           large, varied fleet and a blanket ceiling would be guessing at a
           number nobody asked for). `min={1}` mirrors `readProxyRecord`'s own
           floor for `failover.failureThreshold`, not an added opinion. */}
-      <p className="text-[11.5px] leading-relaxed text-fg-muted">
+      <p className="text-[11.5px] leading-relaxed text-dim">
         Consecutive dial failures against whichever upstream is active before a confirmation probe runs and, if it also fails, a switch happens.
       </p>
 
@@ -204,7 +204,7 @@ export function BackupUpstreamsEditor({ value, onChange, failover, onFailoverCha
           <Label htmlFor="pm-auto-failback" className="text-[13px] font-normal">
             Auto failback
           </Label>
-          <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">
             When the primary is confirmed healthy again by a background probe, switch back to it automatically. Off leaves only the manual “Reset to
             primary” action on the row.
           </p>

@@ -203,6 +203,17 @@ export const AdbStatsResponseSchema = z.object({
       maxTiles: z.number().int(),
       maxTilesAuto: z.boolean(),
       /**
+       * `WALL_RAMP_CONCURRENCY` — how many tiles may newly ask for a stream
+       * at the same time while the Screens grid fills in.
+       *
+       * It was a constant nothing ever sent: `daemon.ts` imported it and
+       * never read it, so `ScreensGrid` fell back to a hard-coded 2 and the
+       * `ENKAKU_WALL_RAMP_CONCURRENCY` override could not move it. A knob
+       * that cannot be turned is worse than no knob, because an operator
+       * sets it and believes the farm changed.
+       */
+      rampConcurrency: z.number().int(),
+      /**
        * Plan 100 §3.1, §4.1, step 100.3 — how the `maxTilesAuto` count above
        * was actually resolved: `'wan'` means the bandwidth bound is the
        * pre-plan-100 hard-pinned 20 Mbit/s constant (§3.6, byte-identical to

@@ -123,7 +123,7 @@ export function PhysicalLabellingPanel({
           this writes to the phone and outlives the session, the control
           marker, and the core process, and clearing it later is a separate,
           explicit action. */}
-      <p className="rounded-lg border bg-surface-2/40 px-3 py-2.5 text-[12px] leading-relaxed text-fg-muted">
+      <p className="rounded-lg border bg-panel-2/40 px-3 py-2.5 text-[12px] leading-relaxed text-dim">
         Turning this on writes to the phone itself, not just to this session — it stays on screen after you close
         this tab, after the control marker ends, even across a restart of Enkaku. "Wallpaper" replaces the phone's wallpaper
         and needs the guest agent; "Lock screen" writes one line of text under the lock-screen clock and needs
@@ -151,17 +151,17 @@ export function PhysicalLabellingPanel({
         <div className="min-w-0 flex-1 basis-56 space-y-2">
           <p className="rack-label">Current state</p>
           {mode === 'off' ? (
-            <p className="text-[12.5px] text-fg-muted">Labelling is off for this device — nothing is written to it.</p>
+            <p className="text-[12.5px] text-dim">Labelling is off for this device — nothing is written to it.</p>
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <LabelStateBadge state={labelState} />
                 {(!labelState || labelState.state === 'unknown') && (
-                  <span className="text-[12px] text-fg-subtle">Not yet checked</span>
+                  <span className="text-[12px] text-faint">Not yet checked</span>
                 )}
               </div>
               {labelState?.appliedAt && (
-                <p className="text-[11.5px] text-fg-subtle">Last applied {relativeTime(labelState.appliedAt)}</p>
+                <p className="text-[11.5px] text-faint">Last applied {relativeTime(labelState.appliedAt)}</p>
               )}
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button
@@ -178,7 +178,7 @@ export function PhysicalLabellingPanel({
                 </Button>
                 <ConfirmDialog
                   trigger={
-                    <Button size="sm" variant="ghost" className="text-led-danger" disabled={actionBusy !== null}>
+                    <Button size="sm" variant="ghost" className="text-danger" disabled={actionBusy !== null}>
                       Clear label…
                     </Button>
                   }
@@ -211,7 +211,7 @@ export function PhysicalLabellingPanel({
               </div>
             </>
           )}
-          {actionError && <p className="text-[10.5px] text-led-danger">{actionError}</p>}
+          {actionError && <p className="text-[10.5px] text-danger">{actionError}</p>}
         </div>
       </div>
 
@@ -222,7 +222,7 @@ export function PhysicalLabellingPanel({
         <Button type="button" variant="ghost" onClick={onReset} disabled={busy || !dirty}>
           Discard changes
         </Button>
-        {!dirty && <span className="text-[12px] text-fg-subtle">No changes</span>}
+        {!dirty && <span className="text-[12px] text-faint">No changes</span>}
       </div>
     </div>
   )

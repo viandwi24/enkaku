@@ -69,10 +69,10 @@ function RevealedSecret({ revealed, onHide }: { revealed: KvRevealResponse; onHi
   return (
     <div className="min-w-0 max-w-[28rem] space-y-1">
       <div className="flex min-w-0 items-baseline gap-2">
-        <code className="min-w-0 flex-1 select-all break-all font-mono text-[12px] text-fg">{text}</code>
+        <code className="min-w-0 flex-1 select-all break-all font-mono text-[12px] text-text">{text}</code>
         <button
           type="button"
-          className="shrink-0 text-[11px] text-fg-muted underline hover:text-fg"
+          className="shrink-0 text-[11px] text-dim underline hover:text-text"
           onClick={() => {
             void navigator.clipboard?.writeText(text).then(
               () => {
@@ -90,11 +90,11 @@ function RevealedSecret({ revealed, onHide }: { revealed: KvRevealResponse; onHi
         </button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className="inline-flex items-center gap-1 text-[11px] text-fg-muted underline hover:text-fg" onClick={onHide}>
+        <button type="button" className="inline-flex items-center gap-1 text-[11px] text-dim underline hover:text-text" onClick={onHide}>
           <EyeOff className="size-3" aria-hidden />
           Hide
         </button>
-        <span className="text-[11px] text-fg-subtle">Shown at {new Date(revealed.revealedAt * 1000).toLocaleTimeString()}</span>
+        <span className="text-[11px] text-faint">Shown at {new Date(revealed.revealedAt * 1000).toLocaleTimeString()}</span>
       </div>
     </div>
   )
@@ -310,7 +310,7 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
        page and inside the device popup's Settings → KV section (~400px), where
        a viewport breakpoint describes the wrong box. */
     <div className="@container">
-      <p className="mb-3 max-w-xl text-[12.5px] leading-relaxed text-fg-muted">
+      <p className="mb-3 max-w-xl text-[12.5px] leading-relaxed text-dim">
         {scope.kind === 'global'
           ? 'Values written under ctx.kv.global — one set shared by the whole farm.'
           : 'Values written under ctx.kv.device for THIS device only — deleted when the device is forgotten.'}{' '}
@@ -324,7 +324,7 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
         <LoadingRows rows={2} />
       ) : index.length > 0 ? (
         <div className="mb-3">
-          <p className="rack-label mb-1.5 text-fg-subtle">{scope.kind === 'global' ? 'Namespaces with farm-wide values' : 'Namespaces with values for this device'}</p>
+          <p className="rack-label mb-1.5 text-faint">{scope.kind === 'global' ? 'Namespaces with farm-wide values' : 'Namespaces with values for this device'}</p>
           <div className="flex flex-wrap gap-1.5">
             {index.map((n) => {
               const active = n.namespace === browsedNamespace
@@ -335,11 +335,11 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
                   onClick={() => open(n.namespace)}
                   aria-pressed={active}
                   className={`flex min-w-0 max-w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
-                    active ? 'border-accent bg-accent/10' : 'bg-surface-2 hover:bg-surface-3'
+                    active ? 'border-accent bg-accent/10' : 'bg-panel-2 hover:bg-muted'
                   }`}
                 >
                   <span className="readout min-w-0 truncate text-[12.5px]">{n.namespace}</span>
-                  <span className="shrink-0 text-[11.5px] text-fg-muted">{countLabel(n.entries, n.secrets)}</span>
+                  <span className="shrink-0 text-[11.5px] text-dim">{countLabel(n.entries, n.secrets)}</span>
                 </button>
               )
             })}
@@ -361,13 +361,13 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
         <>
           <form onSubmit={browse} className="mb-1.5 flex flex-wrap items-end gap-2">
             <div className="min-w-0 flex-1 basis-40">
-              <Label htmlFor={`${uid}-ns`} className="mb-1 block text-[11.5px] text-fg-muted">
+              <Label htmlFor={`${uid}-ns`} className="mb-1 block text-[11.5px] text-dim">
                 Browse another namespace
               </Label>
               <Input id={`${uid}-ns`} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder="tiktok" className="h-8 text-[12.5px]" />
             </div>
             <div className="min-w-0 flex-1 basis-32">
-              <Label htmlFor={`${uid}-prefix`} className="mb-1 block text-[11.5px] text-fg-muted">
+              <Label htmlFor={`${uid}-prefix`} className="mb-1 block text-[11.5px] text-dim">
                 Key prefix (optional)
               </Label>
               <Input id={`${uid}-prefix`} value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="session:" className="h-8 text-[12.5px]" />
@@ -379,7 +379,7 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
           </form>
           {/* Worded for whichever state is actually on screen — "the list above" is a lie when
               the index came back empty and there is no list above. */}
-          <p className="mb-3 max-w-xl text-[11.5px] leading-relaxed text-fg-subtle">
+          <p className="mb-3 max-w-xl text-[11.5px] leading-relaxed text-faint">
             {index.length > 0
               ? 'The list above is every namespace that currently holds values. A namespace with none has no rows to be indexed by, so type it here to reach it.'
               : 'A namespace holding nothing has no rows to be indexed by, so it is never listed. If you know one by name, type it here to reach it.'}
@@ -402,7 +402,7 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
       ) : (
         <>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="min-w-0 text-[12px] text-fg-muted">
+            <p className="min-w-0 text-[12px] text-dim">
               <span className="readout">{browsedNamespace}</span> — {countLabel(items.length, shownSecrets)}
             </p>
             <Button size="sm" variant="outline" onClick={() => setFormOpen((v) => !v)}>
@@ -411,19 +411,19 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
           </div>
 
           {formOpen && (
-            <form onSubmit={submit} className="@container mb-3 space-y-2 rounded-lg border bg-surface px-3.5 py-3">
+            <form onSubmit={submit} className="@container mb-3 space-y-2 rounded-lg border bg-panel px-3.5 py-3">
               {/* A key field beside the secret switch and its sentence: 2 ×
                   11.5rem + 0.5rem gap ≈ 24rem of the card's own width. */}
               <div className="grid gap-2 @min-[24rem]:grid-cols-2">
                 <div className="min-w-0">
-                  <Label htmlFor={`${uid}-key`} className="mb-1 block text-[11.5px] text-fg-muted">
+                  <Label htmlFor={`${uid}-key`} className="mb-1 block text-[11.5px] text-dim">
                     Key
                   </Label>
                   <Input id={`${uid}-key`} value={key} onChange={(e) => setKey(e.target.value)} className="h-8 text-[12.5px]" required />
                 </div>
                 <div className="flex min-w-0 items-center gap-2 pt-5">
                   <Switch id={`${uid}-secret`} checked={secret} onCheckedChange={setSecret} />
-                  <Label htmlFor={`${uid}-secret`} className="text-[12px] text-fg-muted">
+                  <Label htmlFor={`${uid}-secret`} className="text-[12px] text-dim">
                     Secret — encrypted at rest, shown again only on request
                   </Label>
                 </div>
@@ -434,9 +434,9 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
               {secret && (
                 <div className="flex min-w-0 items-start gap-2 rounded border bg-bg px-2.5 py-2">
                   <Switch id={`${uid}-hint`} checked={storeHint} onCheckedChange={setStoreHint} className="mt-0.5" />
-                  <Label htmlFor={`${uid}-hint`} className="text-[12px] font-normal text-fg-muted">
-                    <span className="text-fg">Store a hint</span>
-                    <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+                  <Label htmlFor={`${uid}-hint`} className="text-[12px] font-normal text-dim">
+                    <span className="text-text">Store a hint</span>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-dim">
                       {storeHint
                         ? 'The first 7 and last 4 characters are stored in the clear and appear in every listing of this namespace. Right for an API key you need to tell apart from another; a real disclosure for a password.'
                         : 'Off: nothing about the value is readable without showing it, which is recorded. The row lists as “secret” with no fragment beside it.'}
@@ -445,7 +445,7 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
                 </div>
               )}
               <div className="min-w-0">
-                <Label htmlFor={`${uid}-value`} className="mb-1 block text-[11.5px] text-fg-muted">
+                <Label htmlFor={`${uid}-value`} className="mb-1 block text-[11.5px] text-dim">
                   Value (JSON, or a plain string)
                 </Label>
                 <Textarea id={`${uid}-value`} value={value} onChange={(e) => setValue(e.target.value)} className="min-h-20 font-mono text-[12px]" placeholder={'{"example": true}'} />
@@ -511,10 +511,10 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
                                (globals.css) — right for a duration or a count, wrong for a
                                200-character JSON object, which otherwise renders as one clipped
                                line no `line-clamp` can ever reach. */
-                            <span className="readout line-clamp-3 max-w-[28rem] break-all whitespace-normal text-fg-muted">{JSON.stringify(it.value)}</span>
+                            <span className="readout line-clamp-3 max-w-[28rem] break-all whitespace-normal text-dim">{JSON.stringify(it.value)}</span>
                           )}
                         </TableCell>
-                        <TableCell className="readout whitespace-nowrap text-[11.5px] text-fg-muted">{relativeTime(it.updatedAt)}</TableCell>
+                        <TableCell className="readout whitespace-nowrap text-[11.5px] text-dim">{relativeTime(it.updatedAt)}</TableCell>
                         <TableCell className="text-right">
                           <ConfirmDialog
                             trigger={
@@ -536,7 +536,7 @@ export function KvPanel({ scope }: { scope: KvPanelScope }) {
                   panel — not a warning banner. It is only rendered when there is something to
                   show, so a namespace of plain values does not carry a sentence about secrets. */}
               {shownSecrets > 0 && (
-                <p className="mt-1.5 max-w-xl text-[11.5px] leading-relaxed text-fg-subtle">
+                <p className="mt-1.5 max-w-xl text-[11.5px] leading-relaxed text-faint">
                   Show reads one secret back in full. The farm records who showed it, which namespace and key, and when.
                 </p>
               )}

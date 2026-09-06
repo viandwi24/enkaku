@@ -19,13 +19,13 @@ import { cn } from '@enkaku/ui'
  * neither is a claim this component can honestly make one way or the other.
  */
 const TONE: Record<'applied' | 'stale' | 'partial' | 'unavailable', string> = {
-  applied: 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  stale: 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  applied: 'text-ok border-ok/35 bg-ok/10',
+  stale: 'text-warn border-warn/35 bg-warn/10',
   // Never the `applied` tone: only SOME of what was asked for actually
   // showed up on the phone (plan 89 §0.2 H5 — an OEM skin refusing one
   // surface). Sharing `stale`'s amber, not `applied`'s green, is the point.
-  partial: 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  unavailable: 'text-led-danger border-led-danger/40 bg-led-danger/10',
+  partial: 'text-warn border-warn/35 bg-warn/10',
+  unavailable: 'text-danger border-danger/40 bg-danger/10',
 }
 
 const WORD: Record<'applied' | 'stale' | 'partial' | 'unavailable', string> = {

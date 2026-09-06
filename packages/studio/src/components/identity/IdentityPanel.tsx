@@ -152,16 +152,16 @@ export function IdentityPanel({
     <div className="@container">
       <div className="py-4 @min-[32rem]:px-5">
         {disabled && (
-          <p className="mb-4 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] text-fg-muted">
+          <p className="mb-4 rounded-lg border bg-panel px-3.5 py-2.5 text-[12.5px] text-dim">
             Take control of this device to change its timezone, locale, or GPS location.
           </p>
         )}
 
         <div className="max-w-2xl space-y-4">
           {showDrift && (
-            <section className="rounded-lg border border-led-warn/35 bg-led-warn/10 p-4">
-              <h3 className="text-[13px] font-semibold text-led-warn">Identity does not match the proxy&apos;s exit</h3>
-              <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+            <section className="rounded-lg border border-warn/35 bg-warn/10 p-4">
+              <h3 className="text-[13px] font-semibold text-warn">Identity does not match the proxy&apos;s exit</h3>
+              <p className="mt-1 text-[12px] leading-relaxed text-dim">
                 {[
                   drift.timezone && 'timezone',
                   drift.locale && 'locale',
@@ -185,7 +185,7 @@ export function IdentityPanel({
             </section>
           )}
 
-          <section className="@container rounded-lg border bg-surface p-4">
+          <section className="@container rounded-lg border bg-panel p-4">
             {/* `flex-wrap`: a heading and a button on one row is a promise the
                 row cannot keep at ~340px, and the button is not shrinkable. */}
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -199,7 +199,7 @@ export function IdentityPanel({
                 {isPending('sync') ? 'Checking proxy…' : 'Fill in from proxy'}
               </Button>
             </div>
-            <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+            <p className="mt-1 text-[12px] leading-relaxed text-dim">
               Applied with <code className="rounded bg-bg px-1 py-0.5 text-[11px]">adb shell setprop</code> — works on any
               reachable device, no guest agent required.
             </p>
@@ -233,9 +233,9 @@ export function IdentityPanel({
             </div>
           </section>
 
-          <section className="@container rounded-lg border bg-surface p-4">
+          <section className="@container rounded-lg border bg-panel p-4">
             <h3 className="text-[13.5px] font-semibold tracking-tight">GPS location</h3>
-            <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+            <p className="mt-1 text-[12px] leading-relaxed text-dim">
               Installed as a mock location provider through the guest agent. Requires an installed
               agent build that advertises the <code className="rounded bg-bg px-1 py-0.5 text-[11px]">mock-location</code>{' '}
               capability — an older build cannot carry this out, and applying will say so rather than
@@ -287,16 +287,16 @@ export function IdentityPanel({
                 />
               </div>
             </div>
-            {!gpsValid && <p className="mt-2 text-[11.5px] text-led-danger">Latitude must be -90..90 and longitude -180..180.</p>}
+            {!gpsValid && <p className="mt-2 text-[11.5px] text-danger">Latitude must be -90..90 and longitude -180..180.</p>}
 
             {lastResult?.gps === 'unavailable' && (
-              <p className="mt-3 rounded-md border border-led-warn/35 bg-led-warn/10 px-3 py-2 text-[12px] text-led-warn">
+              <p className="mt-3 rounded-md border border-warn/35 bg-warn/10 px-3 py-2 text-[12px] text-warn">
                 GPS was not applied: {lastResult.gpsDetail ?? "this device's guest agent cannot set a mock location"}.
                 Timezone and locale above were still applied.
               </p>
             )}
             {lastResult?.gps === 'applied' && (
-              <p className="mt-3 text-[11.5px] text-led-ok">Mock location installed on the device.</p>
+              <p className="mt-3 text-[11.5px] text-ok">Mock location installed on the device.</p>
             )}
           </section>
 

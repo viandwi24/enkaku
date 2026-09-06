@@ -54,7 +54,7 @@ const ShimmerComponent = ({
         "relative inline-block bg-[length:250%_100%,auto] bg-clip-text text-transparent",
         // Token-driven: base text = muted-foreground, moving highlight = foreground (brightens on
         // the dark canvas, darkens on light — correct in both themes, no hardcoded colors).
-        "[--bg:linear-gradient(90deg,#0000_calc(50%-var(--spread)),var(--color-foreground),#0000_calc(50%+var(--spread)))] [background-repeat:no-repeat,padding-box]",
+        "[--bg:linear-gradient(90deg,#0000_calc(50%-var(--spread)),var(--text),#0000_calc(50%+var(--spread)))] [background-repeat:no-repeat,padding-box]",
         className
       )}
       initial={{ backgroundPosition: "100% center" }}
@@ -62,7 +62,7 @@ const ShimmerComponent = ({
         {
           "--spread": `${dynamicSpread}px`,
           backgroundImage:
-            "var(--bg), linear-gradient(var(--color-muted-foreground), var(--color-muted-foreground))",
+            "var(--bg), linear-gradient(var(--dim), var(--dim))",
         } as CSSProperties
       }
       transition={{

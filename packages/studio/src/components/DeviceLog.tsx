@@ -59,24 +59,24 @@ const KIND_LABEL: Record<string, string> = {
 }
 
 const KIND_TONE: Record<string, string> = {
-  'device.online': 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  'device.offline': 'text-fg-subtle border-line bg-transparent',
-  'device.unauthorized': 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  'activity.started': 'text-led-active border-led-active/35 bg-led-active/10',
-  'activity.ended': 'text-fg-subtle border-line bg-transparent',
-  'session.degraded': 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  'job.finished': 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  'job.retry': 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  'job.triggered': 'text-led-active border-led-active/35 bg-led-active/10',
-  'battery.warning': 'text-led-danger border-led-danger/40 bg-led-danger/10',
-  'adb.endpoint.opened': 'text-led-active border-led-active/35 bg-led-active/10',
-  'adb.endpoint.closed': 'text-fg-subtle border-line bg-transparent',
-  'app.crashed': 'text-led-danger border-led-danger/40 bg-led-danger/10',
-  'inspector.healthy': 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  'inspector.restarting': 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  'inspector.dead': 'text-led-danger border-led-danger/40 bg-led-danger/10',
+  'device.online': 'text-ok border-ok/35 bg-ok/10',
+  'device.offline': 'text-faint border-line bg-transparent',
+  'device.unauthorized': 'text-warn border-warn/35 bg-warn/10',
+  'activity.started': 'text-accent border-accent/35 bg-accent/10',
+  'activity.ended': 'text-faint border-line bg-transparent',
+  'session.degraded': 'text-warn border-warn/35 bg-warn/10',
+  'job.finished': 'text-ok border-ok/35 bg-ok/10',
+  'job.retry': 'text-warn border-warn/35 bg-warn/10',
+  'job.triggered': 'text-accent border-accent/35 bg-accent/10',
+  'battery.warning': 'text-danger border-danger/40 bg-danger/10',
+  'adb.endpoint.opened': 'text-accent border-accent/35 bg-accent/10',
+  'adb.endpoint.closed': 'text-faint border-line bg-transparent',
+  'app.crashed': 'text-danger border-danger/40 bg-danger/10',
+  'inspector.healthy': 'text-ok border-ok/35 bg-ok/10',
+  'inspector.restarting': 'text-warn border-warn/35 bg-warn/10',
+  'inspector.dead': 'text-danger border-danger/40 bg-danger/10',
 }
-const DEFAULT_TONE = 'text-fg-muted border-line bg-transparent'
+const DEFAULT_TONE = 'text-dim border-line bg-transparent'
 
 function summarize(ev: DeviceEvent): string {
   const meta = (ev.meta ?? {}) as Record<string, unknown>
@@ -193,7 +193,7 @@ function EventRow({ ev, now }: { ev: DeviceEvent; now: number }) {
   return (
     <div className="border-b px-3.5 py-2 text-[12.5px] last:border-b-0">
       <div className="flex items-start gap-2.5">
-        <span className="readout mt-0.5 w-14 shrink-0 text-[11px] text-fg-subtle">{relativeTime(ev.at, now)}</span>
+        <span className="readout mt-0.5 w-14 shrink-0 text-[11px] text-faint">{relativeTime(ev.at, now)}</span>
         <span
           className={cn(
             'inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[10.5px] font-medium leading-none whitespace-nowrap',
@@ -203,12 +203,12 @@ function EventRow({ ev, now }: { ev: DeviceEvent; now: number }) {
           {KIND_LABEL[ev.kind] ?? ev.kind}
         </span>
         <span className="min-w-0 flex-1 truncate">{summarize(ev)}</span>
-        {ev.actor && <span className="readout shrink-0 text-[11px] text-fg-subtle">{ev.actor}</span>}
+        {ev.actor && <span className="readout shrink-0 text-[11px] text-faint">{ev.actor}</span>}
         {hasMeta && (
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="shrink-0 text-fg-subtle hover:text-fg"
+            className="shrink-0 text-faint hover:text-text"
             aria-label={open ? 'Hide details' : 'Show details'}
           >
             {open ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
@@ -216,7 +216,7 @@ function EventRow({ ev, now }: { ev: DeviceEvent; now: number }) {
         )}
       </div>
       {open && hasMeta && (
-        <pre className="readout mt-2 ml-[4.5rem] overflow-x-auto rounded-md bg-surface-2 p-2 text-[11px] leading-relaxed text-fg-muted">
+        <pre className="readout mt-2 ml-[4.5rem] overflow-x-auto rounded-md bg-panel-2 p-2 text-[11px] leading-relaxed text-dim">
           {JSON.stringify(ev.meta, null, 2)}
         </pre>
       )}
@@ -339,7 +339,7 @@ export function DeviceLog({ deviceId, deviceOffline }: { deviceId: string; devic
               onClick={() => setActive(s.key)}
               className={cn(
                 'rounded-[5px] px-3 py-1 text-[12.5px] font-medium transition-colors',
-                active === s.key ? 'bg-surface-2 text-fg shadow-xs' : 'text-fg-muted hover:text-fg',
+                active === s.key ? 'bg-panel-2 text-text shadow-xs' : 'text-dim hover:text-text',
               )}
             >
               {s.label}
@@ -352,7 +352,7 @@ export function DeviceLog({ deviceId, deviceOffline }: { deviceId: string; devic
             <button
               type="button"
               onClick={togglePause}
-              className="readout rounded-full border border-led-active/35 bg-led-active/10 px-2 py-0.5 text-[11px] text-led-active"
+              className="readout rounded-full border border-accent/35 bg-accent/10 px-2 py-0.5 text-[11px] text-accent"
             >
               {slot.pending.length} new event{slot.pending.length === 1 ? '' : 's'}
             </button>
@@ -399,7 +399,7 @@ export function DeviceLog({ deviceId, deviceOffline }: { deviceId: string; devic
             </div>
           )}
           {slot.nextCursor === null && (
-            <div className="px-3.5 py-2 text-center text-[11px] text-fg-subtle">Beginning of the log</div>
+            <div className="px-3.5 py-2 text-center text-[11px] text-faint">Beginning of the log</div>
           )}
         </div>
       )}

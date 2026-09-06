@@ -102,7 +102,7 @@ export function PredicateEditor({
   }
 
   return (
-    <div className="space-y-2 rounded-md border border-dashed bg-surface-2/40 p-2.5">
+    <div className="space-y-2 rounded-md border border-dashed bg-panel-2/40 p-2.5">
       <Select value={shape} onValueChange={(v) => setShape(v as Shape)}>
         <SelectTrigger className="h-7 w-40 text-[11.5px]" aria-label="Condition shape">
           <SelectValue />
@@ -158,7 +158,7 @@ export function PredicateEditor({
       {shape === 'not' && 'not' in value && (
         <div className="border-l-2 pl-2.5">
           {atMaxDepth ? (
-            <p className="text-[11px] text-fg-subtle">Nested {WORKFLOW_LIMITS.maxPredicateDepth} levels deep — the limit for one gate.</p>
+            <p className="text-[11px] text-faint">Nested {WORKFLOW_LIMITS.maxPredicateDepth} levels deep — the limit for one gate.</p>
           ) : (
             <PredicateEditor
               value={value.not}
@@ -209,7 +209,7 @@ function CombinatorList({
         <div key={i} className="flex items-start gap-1.5">
           <div className="min-w-0 flex-1">
             {atMaxDepth ? (
-              <p className="text-[11px] text-fg-subtle">Nested {WORKFLOW_LIMITS.maxPredicateDepth} levels deep — the limit for one gate.</p>
+              <p className="text-[11px] text-faint">Nested {WORKFLOW_LIMITS.maxPredicateDepth} levels deep — the limit for one gate.</p>
             ) : (
               <PredicateEditor
                 value={child}

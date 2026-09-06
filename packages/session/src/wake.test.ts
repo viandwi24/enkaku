@@ -14,7 +14,11 @@ const silentLog: Logger = {
 
 const GET_TIMEOUT = 'settings get system screen_off_timeout'
 const GET_STAYON = 'settings get global stay_on_while_plugged_in'
-const KEYGUARD = 'dumpsys window | grep -m1 isKeyguardShowing'
+/** `readPowerState` asks for both values in ONE `adb shell`; the answers come back a line each. */
+const READ_POWER = `${GET_TIMEOUT}; ${GET_STAYON}`
+/** The cheap probe `wake.ts` tries first; the full `dumpsys window` is only reached when this prints nothing recognisable. */
+const KEYGUARD = 'dumpsys window policy | grep -m1 isKeyguardShowing'
+const KEYGUARD_FULL = 'dumpsys window | grep -m1 isKeyguardShowing'
 
 /** Records every command issued, and answers from a prefix→output map — same shape `reset.test.ts` uses. */
 function recordingTransport(responses: Record<string, string> = {}) {
@@ -44,6 +48,11 @@ function fakeDevice(initial: { timeout?: string; stayOn?: string; refuse?: Array
   const transport = {
     exec: async (cmd: string) => {
       calls.push(cmd)
+      // Checked before the single-key reads: the combined command STARTS WITH
+      // `GET_TIMEOUT`, so testing that prefix first would answer one line to a
+      // two-line question and silently exercise the fallback path instead of
+      // the one the code actually takes on a device.
+      if (cmd === READ_POWER) return { stdout: `${state.timeout}\n${state.stayOn}`, stderr: '', exitCode: 0 }
       if (cmd.startsWith(GET_TIMEOUT)) return { stdout: state.timeout, stderr: '', exitCode: 0 }
       if (cmd.startsWith(GET_STAYON)) return { stdout: state.stayOn, stderr: '', exitCode: 0 }
       if (cmd.startsWith('settings put system screen_off_timeout')) {
@@ -76,8 +85,7 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
     const { transport, calls } = fakeDevice({ stayOn: '0' })
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
     expect(calls).toEqual([
-      GET_TIMEOUT,
-      GET_STAYON,
+      READ_POWER,
       `svc power stayon ${STAYON['while-charging']}`,
       GET_STAYON,
       'input keyevent KEYCODE_WAKEUP',
@@ -120,13 +128,14 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
       exec: async (cmd: string) => {
         calls.push(cmd)
         if (cmd === 'input keyevent KEYCODE_WAKEUP') throw new Error('boom')
+        if (cmd === READ_POWER) return { stdout: '60000\n2', stderr: '', exitCode: 0 }
         if (cmd.startsWith(GET_STAYON)) return { stdout: '2', stderr: '', exitCode: 0 }
         if (cmd.startsWith('dumpsys window')) return { stdout: 'isKeyguardShowing=false', stderr: '', exitCode: 0 }
         return { stdout: '', stderr: '', exitCode: 0 }
       },
     } as unknown as Transport
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
-    expect(calls).toEqual([GET_TIMEOUT, GET_STAYON, 'input keyevent KEYCODE_WAKEUP', KEYGUARD])
+    expect(calls).toEqual([READ_POWER, 'input keyevent KEYCODE_WAKEUP', KEYGUARD])
   })
 })
 
@@ -192,5 +201,67 @@ describe('wakeDevice — the persisted screen timeout (plan 125 §3.3, step 125.
     })
     expect(calls).toContain('input keyevent KEYCODE_WAKEUP')
     expect(result.stayOn).toBe('applied')
+  })
+})
+
+/**
+ * The keyguard probe is the most expensive command on the wake path and it
+ * runs per device, so it asks `dumpsys window policy` first. What has to hold
+ * is that the saving never costs correctness: a device whose policy section
+ * says nothing recognisable must reach the full dump, not default to
+ * "unlocked" and leave a lock screen up over the session.
+ */
+describe('wakeDevice — the keyguard probe tries the cheap dump first (owner, 2026-09-06)', () => {
+  function keyguardTransport(answers: Record<string, string>) {
+    const calls: string[] = []
+    const transport = {
+      exec: async (cmd: string) => {
+        calls.push(cmd)
+        if (cmd === READ_POWER) return { stdout: '60000\n2', stderr: '', exitCode: 0 }
+        if (cmd.startsWith(GET_STAYON)) return { stdout: '2', stderr: '', exitCode: 0 }
+        for (const [prefix, out] of Object.entries(answers)) {
+          if (cmd === prefix) return { stdout: out, stderr: '', exitCode: 0 }
+        }
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+    } as unknown as Transport
+    return { transport, calls }
+  }
+
+  test('the policy section answering is enough — the full dump is never issued', async () => {
+    const { transport, calls } = keyguardTransport({ [KEYGUARD]: 'isKeyguardShowing=false' })
+    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).toContain(KEYGUARD)
+    expect(calls).not.toContain(KEYGUARD_FULL)
+    expect(calls).not.toContain('input keyevent 82')
+  })
+
+  test('a locked device found through the policy section is still nudged', async () => {
+    const { transport, calls } = keyguardTransport({ [KEYGUARD]: 'isKeyguardShowing=true' })
+    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).not.toContain(KEYGUARD_FULL)
+    expect(calls).toContain('input keyevent 82')
+  })
+
+  test('a policy section that prints nothing recognisable falls back to the full dump, and the fallback decides', async () => {
+    const { transport, calls } = keyguardTransport({ [KEYGUARD]: '', [KEYGUARD_FULL]: 'isKeyguardShowing=true' })
+    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).toContain(KEYGUARD)
+    expect(calls).toContain(KEYGUARD_FULL)
+    expect(calls).toContain('input keyevent 82')
+  })
+
+  test('both probes failing leaves the keyguard alone — never a blind KEYCODE_MENU into an unlocked launcher', async () => {
+    const calls: string[] = []
+    const transport = {
+      exec: async (cmd: string) => {
+        calls.push(cmd)
+        if (cmd === READ_POWER) return { stdout: '60000\n2', stderr: '', exitCode: 0 }
+        if (cmd.startsWith('dumpsys window')) throw new Error('dumpsys unavailable')
+        return { stdout: '2', stderr: '', exitCode: 0 }
+      },
+    } as unknown as Transport
+    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).not.toContain('input keyevent 82')
   })
 })

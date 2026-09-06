@@ -43,13 +43,13 @@ export function RuntimeOverrideSection({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1.5 text-[12.5px] font-medium text-fg-muted hover:text-fg">
+      <CollapsibleTrigger className="flex items-center gap-1.5 text-[12.5px] font-medium text-dim hover:text-text">
         <ChevronRight className={cn('size-3.5 transition-transform', open && 'rotate-90')} aria-hidden />
         Runtime
         {hasValue && <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent">set</span>}
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-3 space-y-3">
-        <p className="text-[11.5px] leading-relaxed text-fg-muted">
+        <p className="text-[11.5px] leading-relaxed text-dim">
           Overrides this run's timeout and memory limit for THIS job only — never above the farm's own ceiling, which
           refuses the run outright rather than quietly shrinking your number (Plan 98).
         </p>

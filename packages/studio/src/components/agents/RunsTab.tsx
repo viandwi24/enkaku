@@ -17,12 +17,12 @@ const CHIPS: { key: 'all' | AgentRunStatus; label: string }[] = [
 ]
 
 const DOT: Record<AgentRunStatus, string> = {
-  queued: 'bg-fg-subtle',
-  running: 'bg-led-warn animate-enkaku-pulse',
-  paused: 'bg-led-warn',
-  succeeded: 'bg-led-ok',
-  failed: 'bg-led-danger',
-  cancelled: 'bg-fg-subtle',
+  queued: 'bg-faint',
+  running: 'bg-warn animate-enkaku-pulse',
+  paused: 'bg-warn',
+  succeeded: 'bg-ok',
+  failed: 'bg-danger',
+  cancelled: 'bg-faint',
 }
 
 /**
@@ -74,7 +74,7 @@ export function RunsTab() {
               key={c.key}
               type="button"
               onClick={() => setFilter(c.key)}
-              className={cn('rounded-lg px-2.5 py-1 text-[11.5px]', filter === c.key ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-surface-2')}
+              className={cn('rounded-lg px-2.5 py-1 text-[11.5px]', filter === c.key ? 'bg-accent-soft text-accent' : 'text-dim hover:bg-panel-2')}
             >
               {c.label} <span className="readout">{c.n}</span>
             </button>
@@ -89,13 +89,13 @@ export function RunsTab() {
                 <button
                   type="button"
                   onClick={() => setSelectedId(r.run.id)}
-                  className={cn('flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left', selected?.run.id === r.run.id ? 'bg-accent-soft' : 'hover:bg-surface-2')}
+                  className={cn('flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left', selected?.run.id === r.run.id ? 'bg-accent-soft' : 'hover:bg-panel-2')}
                 >
                   <span className="flex items-center gap-1.5">
                     <span className={cn('size-1.5 shrink-0 rounded-full', DOT[r.run.status])} aria-hidden />
                     <span className="readout text-[12px]">{r.agentName}</span>
                   </span>
-                  <span className="pl-3 text-[11px] text-fg-subtle">
+                  <span className="pl-3 text-[11px] text-faint">
                     {r.run.status}
                     {r.run.stopReason ? ` · ${r.run.stopReason}` : ''} · {relativeTime(r.run.startedAt ?? 0)}
                   </span>
@@ -117,7 +117,7 @@ export function RunsTab() {
                   <h2 className="text-[15px] font-medium">{selected.agentName}</h2>
                   <Badge variant={selected.run.status === 'failed' ? 'destructive' : ['succeeded', 'cancelled'].includes(selected.run.status) ? 'secondary' : 'default'}>{selected.run.status}</Badge>
                 </div>
-                <p className="readout mt-0.5 text-[12px] text-fg-muted">
+                <p className="readout mt-0.5 text-[12px] text-dim">
                   {selected.run.id} · {selected.run.steps} step{selected.run.steps === 1 ? '' : 's'} · {duration(selected.run.startedAt, selected.run.finishedAt)}
                 </p>
               </div>
@@ -125,10 +125,10 @@ export function RunsTab() {
                 <Link href={`/agents/detail?id=${selected.agentId}&thread=${selected.run.threadId}`}>Open thread</Link>
               </Button>
             </div>
-            {selected.run.stopReason && <p className="text-[12.5px] text-fg-muted">stop reason: {selected.run.stopReason}</p>}
-            {selected.run.errorClass && <p className="text-[12.5px] text-led-danger">error: {selected.run.errorClass}</p>}
+            {selected.run.stopReason && <p className="text-[12.5px] text-dim">stop reason: {selected.run.stopReason}</p>}
+            {selected.run.errorClass && <p className="text-[12.5px] text-danger">error: {selected.run.errorClass}</p>}
             {selected.run.usage && <UsageBadge usage={selected.run.usage} />}
-            {selected.run.usage && <p className="text-[11.5px] text-fg-subtle">total {formatUsd(selected.run.usage.costUsd)}</p>}
+            {selected.run.usage && <p className="text-[11.5px] text-faint">total {formatUsd(selected.run.usage.costUsd)}</p>}
           </div>
         )}
       </div>

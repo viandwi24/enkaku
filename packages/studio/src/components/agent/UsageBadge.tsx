@@ -11,12 +11,12 @@ import { formatTokens, formatUsd } from '@enkaku/ui'
 export function UsageBadge({ usage, compact }: { usage: AgentUsage; compact?: boolean }) {
   if (compact) {
     return (
-      <span className="readout inline-flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-fg-muted">
+      <span className="readout inline-flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-dim">
         <span title="Input tokens">in {formatTokens(usage.inputTokens)}</span>
         <span title="Output tokens">out {formatTokens(usage.outputTokens)}</span>
         <span title="Cache read tokens — shown separately from input, not folded into it">cache-read {formatTokens(usage.cacheReadTokens)}</span>
         <span title="Cache write tokens">cache-write {formatTokens(usage.cacheWriteTokens)}</span>
-        <span className="font-medium text-fg" title="Estimated cost">
+        <span className="font-medium text-text" title="Estimated cost">
           {formatUsd(usage.costUsd)}
         </span>
       </span>
@@ -36,8 +36,8 @@ export function UsageBadge({ usage, compact }: { usage: AgentUsage; compact?: bo
 function Stat({ label, value, emphasize }: { label: string; value: string; emphasize?: boolean }) {
   return (
     <div>
-      <dt className="text-[10.5px] uppercase tracking-wide text-fg-subtle">{label}</dt>
-      <dd className={`readout ${emphasize ? 'font-semibold text-fg' : 'text-fg-muted'}`}>{value}</dd>
+      <dt className="text-[10.5px] uppercase tracking-wide text-faint">{label}</dt>
+      <dd className={`readout ${emphasize ? 'font-semibold text-text' : 'text-dim'}`}>{value}</dd>
     </div>
   )
 }

@@ -323,7 +323,7 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
             )
           })}
           {table.selectable && selectedRows.length > 0 && (
-            <span className="readout text-[11.5px] text-fg-muted">
+            <span className="readout text-[11.5px] text-dim">
               {selectedRows.length} row{selectedRows.length === 1 ? '' : 's'} selected · {selectedDeviceIds.length} device
               {selectedDeviceIds.length === 1 ? '' : 's'}
             </span>
@@ -374,7 +374,7 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
                 aria-label="Filter rows"
                 className="h-8 max-w-xs text-[12.5px]"
               />
-              <span className="readout text-[11.5px] text-fg-muted">
+              <span className="readout text-[11.5px] text-dim">
                 {shownRows.length} of {rows.length} row{rows.length === 1 ? '' : 's'}
               </span>
             </div>
@@ -438,7 +438,7 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
                       {table.columns.map((column) => {
                         const cell = planColumn(column.schema, readRowField(row, column.field), now)
                         return (
-                          <TableCell key={column.field} className={cell.raw ? 'readout text-[11.5px] text-fg-muted' : 'text-[12.5px]'}>
+                          <TableCell key={column.field} className={cell.raw ? 'readout text-[11.5px] text-dim' : 'text-[12.5px]'}>
                             {cell.text}
                           </TableCell>
                         )

@@ -53,13 +53,13 @@ function lineTone(line: string): string {
   switch (logLevelOf(line)) {
     case 'E':
     case 'F':
-      return 'text-led-danger'
+      return 'text-danger'
     case 'W':
-      return 'text-led-warn'
+      return 'text-warn'
     case 'I':
-      return 'text-fg'
+      return 'text-text'
     default:
-      return 'text-fg-muted'
+      return 'text-dim'
   }
 }
 
@@ -306,7 +306,7 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
 
         <div className="ml-auto flex items-center gap-2">
           {isStreaming && subscribers > 1 && (
-            <span className="readout inline-flex items-center gap-1 rounded-full border border-line bg-surface-2 px-2 py-0.5 text-[11px] text-fg-muted">
+            <span className="readout inline-flex items-center gap-1 rounded-full border border-line bg-panel-2 px-2 py-0.5 text-[11px] text-dim">
               <Users className="size-3" aria-hidden />
               {subscribers} watching
             </span>
@@ -317,7 +317,7 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
                 <button
                   type="button"
                   onClick={togglePause}
-                  className="readout rounded-full border border-led-active/35 bg-led-active/10 px-2 py-0.5 text-[11px] text-led-active"
+                  className="readout rounded-full border border-accent/35 bg-accent/10 px-2 py-0.5 text-[11px] text-accent"
                 >
                   {pending.length} new line{pending.length === 1 ? '' : 's'}
                 </button>
@@ -359,7 +359,7 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
       </div>
 
       {endedReason && (
-        <div className="mb-3 rounded-lg border border-led-warn/35 bg-led-warn/5 px-3.5 py-2.5 text-[12.5px] text-led-warn">
+        <div className="mb-3 rounded-lg border border-warn/35 bg-warn/5 px-3.5 py-2.5 text-[12.5px] text-warn">
           {END_REASON_LABEL[endedReason]}
         </div>
       )}
@@ -376,7 +376,7 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
         ) : (
           <div
             ref={scrollRef}
-            className="readout max-h-[32rem] overflow-y-auto rounded-lg border bg-surface p-3 text-[11.5px] leading-relaxed"
+            className="readout max-h-[32rem] overflow-y-auto rounded-lg border bg-panel p-3 text-[11.5px] leading-relaxed"
           >
             {lines.map((line, i) => (
               <div key={i} className={cn('whitespace-pre-wrap break-all', lineTone(line))}>
@@ -390,11 +390,11 @@ export function MonitorPane({ deviceId }: { deviceId: string }) {
       ) : oneshotError ? (
         <ErrorState message={oneshotError} onRetry={runOneshot} />
       ) : oneshotText !== null ? (
-        <div className="rounded-lg border bg-surface p-3">
+        <div className="rounded-lg border bg-panel p-3">
           {oneshotTruncated && (
-            <p className="mb-2 text-[11.5px] text-led-warn">Output was truncated to fit.</p>
+            <p className="mb-2 text-[11.5px] text-warn">Output was truncated to fit.</p>
           )}
-          <pre className="readout max-h-[32rem] overflow-auto whitespace-pre-wrap break-all text-[11.5px] leading-relaxed text-fg-muted">
+          <pre className="readout max-h-[32rem] overflow-auto whitespace-pre-wrap break-all text-[11.5px] leading-relaxed text-dim">
             {oneshotText}
           </pre>
         </div>

@@ -733,3 +733,113 @@ describe('EndpointStore wiring — observe() on a successful probe (plan 88 §3.
     await registry.stop()
   })
 })
+
+/**
+ * The flap the grace exists to stop.
+ *
+ * `onTrackerEvent` already refuses to act on adb's `offline`/`authorizing`
+ * states, because "they often resolve themselves within a second or two"
+ * (plan 85 §3.3, F10) — the reconciler watches those over
+ * `DEVICE_OFFLINE_GRACE_SEC` instead. But a brief problem on an `adb-tcp`
+ * link does not produce `offline` at all: the adb server drops the transport,
+ * and the tracker emits `remove`. That went straight to `DEVICE_DISCONNECTED`,
+ * so a phone read "Disconnected" and was back moments later with nothing
+ * actually wrong (owner, 2026-09-06).
+ */
+describe('registry — a dropped transport is held before it is called offline', () => {
+  type TrackerEv = { kind: 'add'; serial: string; state: string } | { kind: 'remove'; serial: string }
+
+  async function onlineDevice(removalGraceMs: number) {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const listeners: Array<(ev: TrackerEv) => void> = []
+    const client = fakeAdb()
+    ;(client as unknown as { trackDevices: () => unknown }).trackDevices = () => ({
+      on: (cb: (ev: TrackerEv) => void) => {
+        listeners.push(cb)
+        return () => {}
+      },
+      start: async () => {},
+      stop: () => {},
+    })
+    const registry = createDeviceRegistry({
+      client,
+      db,
+      hub: new WsHub(log),
+      log,
+      states: createDeviceStateMachine({ db, log, onChange: () => {} }),
+      removalGraceMs: () => removalGraceMs,
+    })
+    await registry.start()
+    const emit = (ev: TrackerEv) => {
+      for (const cb of listeners) cb(ev)
+    }
+    // Admitted first, so there is a real row whose status can move.
+    emit({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    admitDevice(db, 'HW-SERIAL-1')
+    emit({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    const statusOf = () => db.select().from(devices).where(eq(devices.stableId, 'HW-SERIAL-1')).get()?.status
+    expect(statusOf()).toBe('online')
+    return { registry, emit, statusOf }
+  }
+
+  test('a remove does not go offline while the grace is still running', async () => {
+    const { registry, emit, statusOf } = await onlineDevice(400)
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    await new Promise((r) => setTimeout(r, 100))
+    expect(statusOf()).toBe('online')
+    await registry.stop()
+  })
+
+  test('a device that comes back inside the grace never transitions at all — no flap to render', async () => {
+    const { registry, emit, statusOf } = await onlineDevice(400)
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    await new Promise((r) => setTimeout(r, 100))
+    emit({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 500))
+    expect(statusOf()).toBe('online')
+    await registry.stop()
+  })
+
+  test('a device that stays gone does go offline once the grace expires', async () => {
+    const { registry, emit, statusOf } = await onlineDevice(200)
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    await new Promise((r) => setTimeout(r, 500))
+    expect(statusOf()).toBe('offline')
+    await registry.stop()
+  })
+
+  test('repeated removes do not push the deadline back — a reconciler tick every 10s must not keep a dead phone online forever', async () => {
+    const { registry, emit, statusOf } = await onlineDevice(300)
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    for (let i = 0; i < 4; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      registry.onRemove('TESTSERIAL')
+    }
+    await new Promise((r) => setTimeout(r, 300))
+    expect(statusOf()).toBe('offline')
+    await registry.stop()
+  })
+
+  test('a grace of 0 restores the old synchronous behaviour', async () => {
+    const { registry, emit, statusOf } = await onlineDevice(0)
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(statusOf()).toBe('offline')
+    await registry.stop()
+  })
+
+  test('stop() drops a held removal rather than firing it against a stopped registry', async () => {
+    const { registry, emit, statusOf } = await onlineDevice(300)
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    await registry.stop()
+    await new Promise((r) => setTimeout(r, 500))
+    // `start()` re-derives every status from the tracker's first snapshot, so
+    // a removal that never fired has cost nothing.
+    expect(statusOf()).toBe('online')
+  })
+})

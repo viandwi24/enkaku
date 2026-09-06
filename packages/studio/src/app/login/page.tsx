@@ -73,7 +73,7 @@ function LoginForm() {
       </div>
 
       {error && (
-        <div role="alert" className="rounded-md border border-led-danger/40 bg-led-danger/5 p-3 text-[12.5px] text-led-danger">
+        <div role="alert" className="rounded-md border border-danger/40 bg-danger/5 p-3 text-[12.5px] text-danger">
           {error}
         </div>
       )}

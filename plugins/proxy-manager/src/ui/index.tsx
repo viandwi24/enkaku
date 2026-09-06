@@ -113,7 +113,7 @@ function ProxyManagerView({ params, setParams }: PluginViewProps) {
         in Studio's compiled CSS, so this renders as a flat panel — visibly
         wrong, rather than invisibly wrong — if `ui/index.css` never arrives.
       */}
-      <div className="rounded-lg border border-led-warn/35 bg-[repeating-linear-gradient(135deg,transparent_0_9px,rgb(255_255_255/0.035)_9px_18px)] px-4 py-3">
+      <div className="rounded-lg border border-warn/35 bg-[repeating-linear-gradient(135deg,transparent_0_9px,rgb(255_255_255/0.035)_9px_18px)] px-4 py-3">
         {/*
           The headline says the claim that survives everything this plan built.
           It used to read "Nothing on this screen contacts a proxy", which was
@@ -123,7 +123,7 @@ function ProxyManagerView({ params, setParams }: PluginViewProps) {
           controls, not less.
         */}
         <p className="text-[12.5px] font-medium">A proxy an app can be pointed at is not a route an app cannot escape</p>
-        <p className="mt-1 max-w-prose text-[12px] leading-relaxed text-fg-muted">{BANNER_NOT_BUILT}</p>
+        <p className="mt-1 max-w-prose text-[12px] leading-relaxed text-dim">{BANNER_NOT_BUILT}</p>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>

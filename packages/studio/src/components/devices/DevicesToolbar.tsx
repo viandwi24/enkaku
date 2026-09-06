@@ -158,7 +158,7 @@ export function DevicesToolbar({
           <MagnifyingGlassIcon className="size-4" aria-hidden />
         </button>
         {searchOpen && (
-          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[300px] rounded-card border border-border bg-panel p-3 shadow-popover">
+          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[300px] rounded-card border border-border bg-panel p-3 shadow-panel-2">
             <Input
               variant="search"
               autoFocus
@@ -186,7 +186,7 @@ export function DevicesToolbar({
           <FunnelIcon className="size-4" aria-hidden />
         </button>
         {filterOpen && (
-          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[216px] rounded-card border border-border bg-panel p-1 shadow-popover">
+          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[216px] rounded-card border border-border bg-panel p-1 shadow-panel-2">
             {filterRows.map((row, i) => (
               <div key={row.id} className="contents">
                 {/* One heading per run of rows sharing a `group`, so the two
@@ -223,7 +223,7 @@ export function DevicesToolbar({
           {view === 'table' ? <RowsIcon className="size-4" aria-hidden /> : <SquaresFourIcon className="size-4" aria-hidden />}
         </button>
         {viewOpen && (
-          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[200px] rounded-card border border-border bg-panel p-1 shadow-popover">
+          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[200px] rounded-card border border-border bg-panel p-1 shadow-panel-2">
             {(['table', 'screens'] as const).map((v) => (
               <button
                 key={v}
@@ -288,7 +288,7 @@ export function DevicesToolbar({
           <DotsThreeVerticalIcon className="size-4" aria-hidden />
         </button>
         {moreOpen && (
-          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[248px] rounded-card border border-border bg-panel p-1 shadow-popover">
+          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[248px] rounded-card border border-border bg-panel p-1 shadow-panel-2">
             <button
               type="button"
               className={ROW}

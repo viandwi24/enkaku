@@ -52,7 +52,7 @@ export function RunsTab() {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-start gap-3">
-        <p className="max-w-prose grow text-[12px] leading-relaxed text-fg-muted">{RUNS_NOTE}</p>
+        <p className="max-w-prose grow text-[12px] leading-relaxed text-dim">{RUNS_NOTE}</p>
         <Button variant="outline" size="sm" onClick={reload}>
           Refresh
         </Button>
@@ -81,14 +81,14 @@ export function RunsTab() {
                   <TableRow key={job.jobId}>
                     <TableCell>
                       <div className="font-medium">{job.scriptName}</div>
-                      <div className="readout text-[11px] text-fg-muted">{job.scriptVersion ?? '—'}</div>
+                      <div className="readout text-[11px] text-dim">{job.scriptVersion ?? '—'}</div>
                     </TableCell>
-                    <TableCell className="text-[12px] text-fg-muted">
+                    <TableCell className="text-[12px] text-dim">
                       <StatusDot status={job.status} />
                     </TableCell>
-                    <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(job.createdAt)}</TableCell>
-                    <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(job.finishedAt)}</TableCell>
-                    <TableCell className="text-[12px] text-fg-muted">
+                    <TableCell className="readout text-[11.5px] text-dim">{relativeTime(job.createdAt)}</TableCell>
+                    <TableCell className="readout text-[11.5px] text-dim">{relativeTime(job.finishedAt)}</TableCell>
+                    <TableCell className="text-[12px] text-dim">
                       {job.error ?? (job.status === 'success' ? 'Ran, dialled nothing, reported “not reachable”.' : '—')}
                     </TableCell>
                   </TableRow>
@@ -96,7 +96,7 @@ export function RunsTab() {
               </TableBody>
             </Table>
           </div>
-          <p className="readout text-[11px] text-fg-muted">
+          <p className="readout text-[11px] text-dim">
             {mine.length} run{mine.length === 1 ? '' : 's'} found in the farm’s {data?.scanned ?? 0} most recent jobs. The jobs list cannot be filtered by plugin, so an
             older run is not shown here.
           </p>

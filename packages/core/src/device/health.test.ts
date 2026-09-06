@@ -14,7 +14,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 function fakeSettingsStore(failuresBeforeQuarantine?: number): FarmSettingsStore {
   const base = defaultFarmSettings()
   const cfg = { ...base, advanced: { ...base.advanced, failuresBeforeQuarantine: failuresBeforeQuarantine ?? base.advanced.failuresBeforeQuarantine } }
-  return { get: () => cfg, update: () => cfg, onChange: () => () => {} }
+  return { get: () => cfg, update: () => cfg, resetSections: () => cfg, onChange: () => () => {} }
 }
 
 function setUp(opts?: { failuresBeforeQuarantine?: number; autoQuarantineOverride?: boolean }) {

@@ -52,15 +52,15 @@ export function PendingClearNotice({ pendingClear, now }: { pendingClear: Pendin
      * would be a statement about the browser window, which is a lie inside a
      * modal (`NetworkRouteForm`'s own note on the same trap).
      */
-    <div className="rounded-lg border border-led-warn/35 bg-led-warn/5 p-3.5">
+    <div className="rounded-lg border border-warn/35 bg-warn/5 p-3.5">
       <div className="flex items-start gap-2.5">
-        <Hourglass className="mt-0.5 size-4 shrink-0 text-led-warn" aria-hidden />
+        <Hourglass className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden />
         <div className="min-w-0 flex-1">
           {/* 1. What is true right now. The subject is the PHONE, not the record. */}
-          <h4 className="text-[13px] font-medium text-led-warn">
+          <h4 className="text-[13px] font-medium text-warn">
             {isVpn ? 'The phone is still carrying this tunnel' : 'The phone is still carrying this proxy'}
           </h4>
-          <p className="mt-1 wrap-anywhere text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="mt-1 wrap-anywhere text-[11.5px] leading-relaxed text-dim">
             {isVpn ? (
               <>
                 This farm has stopped wanting it, and the device was never told to stop. Until it is, this phone’s
@@ -84,18 +84,18 @@ export function PendingClearNotice({ pendingClear, now }: { pendingClear: Pendin
             panel has it — the reason can carry an unbroken error code.
           */}
           <p className="mt-2 flex flex-wrap items-baseline gap-x-1.5 text-[11.5px] leading-relaxed">
-            <span className="shrink-0 text-fg-subtle">Why:</span>
-            <span className="min-w-0 wrap-anywhere text-fg">{pendingClear.reason}</span>
+            <span className="shrink-0 text-faint">Why:</span>
+            <span className="min-w-0 wrap-anywhere text-text">{pendingClear.reason}</span>
           </p>
 
           {/*
             4. What happens next — and that nothing is required. This is the
             single most important sentence in the notice: the honest answer is
             "you do not have to do anything", and an operator who does not know
-            that goes hunting for a button that does not exist. So it is `text-fg`,
+            that goes hunting for a button that does not exist. So it is `text-text`,
             not muted, and it leads with the reassurance rather than ending on it.
           */}
-          <p className="mt-2 wrap-anywhere text-[11.5px] leading-relaxed text-fg">
+          <p className="mt-2 wrap-anywhere text-[11.5px] leading-relaxed text-text">
             <span className="font-medium">Nothing is required of you.</span> The farm settles this by itself the next
             time the device is admitted — it tells the phone then, and this note disappears.
           </p>
@@ -108,7 +108,7 @@ export function PendingClearNotice({ pendingClear, now }: { pendingClear: Pendin
             still shows that config either way — so which of the two is coming has
             to be said here rather than left to be discovered when the row vanishes.
           */}
-          <p className="mt-1.5 wrap-anywhere text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="mt-1.5 wrap-anywhere text-[11.5px] leading-relaxed text-dim">
             {pendingClear.forget ? (
               <>
                 The saved route goes with it: its address, and any saved credentials, are erased once the phone has
@@ -130,25 +130,25 @@ export function PendingClearNotice({ pendingClear, now }: { pendingClear: Pendin
             refreshed by a later failed attempt on the core side, so how long the
             phone has been carrying this is exactly what this reads.
           */}
-          <dl className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 border-t border-led-warn/20 pt-2 text-[11px]">
+          <dl className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 border-t border-warn/20 pt-2 text-[11px]">
             <div className="flex min-w-0 items-baseline gap-1.5">
-              <dt className="shrink-0 text-fg-subtle">owed since</dt>
-              <dd className="readout min-w-0 text-fg-muted">{relativeTime(pendingClear.since, now)}</dd>
+              <dt className="shrink-0 text-faint">owed since</dt>
+              <dd className="readout min-w-0 text-dim">{relativeTime(pendingClear.since, now)}</dd>
             </div>
             {/* The engine the DEVICE is carrying, which is not necessarily what
                 `config` says by now — an engine switch that could not tear the
                 incumbent down is exactly the case where the two differ. */}
             <div className="flex min-w-0 items-baseline gap-1.5">
-              <dt className="shrink-0 text-fg-subtle">on the phone</dt>
-              <dd className="readout min-w-0 wrap-anywhere text-fg-muted">{pendingClear.engine}</dd>
+              <dt className="shrink-0 text-faint">on the phone</dt>
+              <dd className="readout min-w-0 wrap-anywhere text-dim">{pendingClear.engine}</dd>
             </div>
             {pendingClear.devicePort !== undefined && (
               /* The loopback address the phone itself still dials, so an
                  operator running `settings get global http_proxy` by hand
                  recognises the value they are looking at as this farm's. */
               <div className="flex min-w-0 items-baseline gap-1.5">
-                <dt className="shrink-0 text-fg-subtle">the phone dials</dt>
-                <dd className="readout min-w-0 wrap-anywhere text-fg-muted">127.0.0.1:{pendingClear.devicePort}</dd>
+                <dt className="shrink-0 text-faint">the phone dials</dt>
+                <dd className="readout min-w-0 wrap-anywhere text-dim">127.0.0.1:{pendingClear.devicePort}</dd>
               </div>
             )}
           </dl>

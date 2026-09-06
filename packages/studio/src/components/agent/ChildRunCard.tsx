@@ -31,14 +31,14 @@ function elapsedLabel(node: AgentTreeNode): string {
 export function ChildRunCard({ node, agentColour, expanded, onToggle }: { node: AgentTreeNode; agentColour?: string | null; expanded: boolean; onToggle: () => void }) {
   const terminal = node.status === 'succeeded' || node.status === 'failed' || node.status === 'cancelled'
   return (
-    <div className="flex items-center gap-1 rounded-md border bg-surface pr-2 text-[12px]">
+    <div className="flex items-center gap-1 rounded-md border bg-panel pr-2 text-[12px]">
       <button type="button" onClick={onToggle} className="flex min-w-0 flex-1 items-center justify-between gap-2 px-2.5 py-1.5 text-left" aria-expanded={expanded}>
         <span className="flex min-w-0 items-center gap-1.5">
-          <CaretRightIcon className={`size-3 shrink-0 text-fg-subtle transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden />
+          <CaretRightIcon className={`size-3 shrink-0 text-faint transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden />
           <AgentAvatar name={node.agentName} colour={agentColour} size="sm" />
-          <span className="truncate font-medium text-fg">{node.agentName}</span>
+          <span className="truncate font-medium text-text">{node.agentName}</span>
         </span>
-        <span className="flex shrink-0 items-center gap-1.5 text-fg-subtle">
+        <span className="flex shrink-0 items-center gap-1.5 text-faint">
           {node.drivingDeviceIds.length > 0 && <span className="readout">{node.drivingDeviceIds.length} device{node.drivingDeviceIds.length === 1 ? '' : 's'}</span>}
           <Badge variant={node.status === 'failed' ? 'destructive' : terminal ? 'secondary' : 'default'}>{node.status}</Badge>
           <span className="readout">{node.steps} steps</span>
@@ -47,7 +47,7 @@ export function ChildRunCard({ node, agentColour, expanded, onToggle }: { node: 
       </button>
       <Link
         href={`/agents/detail?id=${node.agentId}&thread=${node.threadId}`}
-        className="shrink-0 text-fg-subtle hover:text-accent"
+        className="shrink-0 text-faint hover:text-accent"
         aria-label={`Open ${node.agentName}'s full workbench`}
         title="Open in its own workbench tab"
       >

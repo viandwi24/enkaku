@@ -241,8 +241,8 @@ export function SchemaForm({
               Discard changes
             </Button>
           )}
-          {touched && hasErrors && <span className="text-[12px] text-led-danger">Fix the fields marked in red first.</span>}
-          {dirty === false && <span className="text-[12px] text-fg-subtle">No changes</span>}
+          {touched && hasErrors && <span className="text-[12px] text-danger">Fix the fields marked in red first.</span>}
+          {dirty === false && <span className="text-[12px] text-faint">No changes</span>}
         </div>
       )}
     </form>
@@ -288,16 +288,16 @@ function Field({
       return (
         <section className="border-l-2 pl-3.5">
           <h4 className="rack-label">{field.label}</h4>
-          {field.help && <p className="mt-1 text-[11.5px] leading-relaxed text-fg-muted">{field.help}</p>}
+          {field.help && <p className="mt-1 text-[11.5px] leading-relaxed text-dim">{field.help}</p>}
           {body}
         </section>
       )
     }
 
     return (
-      <section className="rounded-lg border bg-surface p-5">
+      <section className="rounded-lg border bg-panel p-5">
         <h3 className="text-[14px] font-semibold tracking-tight">{field.label}</h3>
-        {field.help && <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">{field.help}</p>}
+        {field.help && <p className="mt-1 text-[12px] leading-relaxed text-dim">{field.help}</p>}
         {body}
       </section>
     )

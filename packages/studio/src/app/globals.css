@@ -119,17 +119,17 @@
     border-radius: 3px 0 0 3px;
   }
   .status-rail[data-status='idle'] {
-    background: var(--color-led-ok);
+    background: var(--ok);
   }
   .status-rail[data-status='manual'],
   .status-rail[data-status='busy'] {
-    background: var(--color-led-active);
+    background: var(--accent);
   }
   .status-rail[data-status='quarantined'] {
-    background: var(--color-led-danger);
+    background: var(--danger);
   }
   .status-rail[data-status='offline'] {
-    background: var(--color-led-off);
+    background: var(--faint-2);
   }
 
   /*
@@ -146,10 +146,10 @@
    * needing `!important`.
    */
   .status-rail[data-agent-alert='failed'] {
-    background: var(--color-led-danger);
+    background: var(--danger);
   }
   .status-rail[data-agent-alert='outdated'] {
-    background: var(--color-led-warn);
+    background: var(--warn);
   }
 
   /* Only a device that is actually working pulses — motion marks real
@@ -174,7 +174,7 @@
     font-size: 10px;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--color-fg-subtle);
+    color: var(--faint);
   }
 
   /* Measurements: every instrument readout is monospaced so digits line up
@@ -223,7 +223,7 @@
 
 [data-testid='flow-canvas'] .react-flow__minimap-mask {
   fill: var(--color-scrim);
-  stroke: var(--color-line-strong);
+  stroke: var(--border-3);
   stroke-width: 1px;
 }
 
@@ -237,7 +237,7 @@
 [data-testid='flow-canvas'] .react-flow__controls-button {
   background-color: var(--color-panel);
   border-bottom: 1px solid var(--color-line);
-  color: var(--color-fg-muted);
+  color: var(--dim);
   fill: currentColor;
 }
 
@@ -247,7 +247,7 @@
 
 [data-testid='flow-canvas'] .react-flow__controls-button:hover {
   background-color: var(--color-hover);
-  color: var(--color-fg);
+  color: var(--text);
 }
 
 [data-testid='flow-canvas'] .react-flow__controls-button svg {

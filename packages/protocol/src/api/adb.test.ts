@@ -52,6 +52,7 @@ describe('AdbStatsResponseSchema.video (plan 92 §3.3, §4.5)', () => {
         farmCeiling: 16,
         maxTiles: 25,
         maxTilesAuto: true,
+        rampConcurrency: 12,
         transport: 'loopback' as const,
       },
     }

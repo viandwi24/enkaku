@@ -35,7 +35,7 @@ export function ActivityBadge({
     if (!lastControl) return null
     const elapsedSec = Math.max(0, Math.floor(now / 1000) - lastControl.endedAt)
     if (elapsedSec > LAST_CONTROL_TAIL_SEC) return null
-    return <span className={`text-[11px] text-fg-muted ${className ?? ''}`}>Last controlled {elapsedSec}s ago by {lastControl.actor.label}</span>
+    return <span className={`text-[11px] text-dim ${className ?? ''}`}>Last controlled {elapsedSec}s ago by {lastControl.actor.label}</span>
   }
 
   return (
@@ -48,7 +48,7 @@ export function ActivityBadge({
 }
 
 function ActivityChip({ activity, asLink }: { activity: DeviceActivity; asLink: boolean }) {
-  const cls = 'inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface-2 px-2 py-0.5 text-[11px] text-fg-muted hover:bg-surface-3'
+  const cls = 'inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-panel-2 px-2 py-0.5 text-[11px] text-dim hover:bg-muted'
   if (asLink && activity.href) {
     return (
       <Link href={activity.href} className={cls} title={activity.label}>

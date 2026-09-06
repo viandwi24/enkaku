@@ -249,7 +249,7 @@ export function RemovePluginAction({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             {scopes.map((s) => (
-              <DropdownMenuItem key={s} className="text-led-danger focus:text-led-danger" onSelect={() => openRemove(s)}>
+              <DropdownMenuItem key={s} className="text-danger focus:text-danger" onSelect={() => openRemove(s)}>
                 {describeRemoveScope(s, ctx).item}
               </DropdownMenuItem>
             ))}
@@ -287,27 +287,27 @@ export function RemovePluginAction({
           <>
             {copy.body}
             {preview && (
-              <div className="mt-2.5 space-y-2 rounded border border-line bg-surface-2 px-3 py-2 text-[12.5px]">
+              <div className="mt-2.5 space-y-2 rounded border border-line bg-panel-2 px-3 py-2 text-[12.5px]">
                 <div>
-                  <span className="font-medium text-fg">
+                  <span className="font-medium text-text">
                     {preview.going.length} {preview.going.length === 1 ? 'version goes' : 'versions go'}
                   </span>
                   {preview.going.length > 0 ? (
-                    <span className="readout ml-1.5 break-words text-fg-muted">{preview.going.join(', ')}</span>
+                    <span className="readout ml-1.5 break-words text-dim">{preview.going.join(', ')}</span>
                   ) : (
                     // A real outcome, not an empty state: pruning a plugin whose
                     // every row is live or newest removes nothing, and saying so
                     // here is better than a confirm that promises an act it
                     // cannot perform.
-                    <span className="ml-1.5 text-fg-muted">— there is nothing older to remove.</span>
+                    <span className="ml-1.5 text-dim">— there is nothing older to remove.</span>
                   )}
                 </div>
                 {preview.staying.length > 0 && (
                   <div>
-                    <span className="font-medium text-fg">
+                    <span className="font-medium text-text">
                       {preview.staying.length} {preview.staying.length === 1 ? 'version stays' : 'versions stay'}
                     </span>
-                    <ul className="mt-0.5 space-y-0.5 text-fg-muted">
+                    <ul className="mt-0.5 space-y-0.5 text-dim">
                       {preview.staying.map((s) => (
                         <li key={s.version}>
                           <span className="readout">{s.version}</span> — {s.reason}
@@ -319,7 +319,7 @@ export function RemovePluginAction({
               </div>
             )}
             {copy.offersKv && (
-              <label className="mt-2.5 flex items-start gap-2 rounded border border-line bg-surface-2 px-3 py-2 text-[12.5px] text-fg">
+              <label className="mt-2.5 flex items-start gap-2 rounded border border-line bg-panel-2 px-3 py-2 text-[12.5px] text-text">
                 <input
                   type="checkbox"
                   className="mt-0.5 shrink-0"

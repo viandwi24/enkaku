@@ -37,12 +37,12 @@ export function PinControls({
     <div className="space-y-1.5 rounded border bg-panel-2 px-2 py-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
         {pinned ? (
-          <span className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-led-ok">
+          <span className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-ok">
             <CheckCircleIcon className="size-3.5" aria-hidden />
             pinned{pinnedUpdatedAt ? ` · ${new Date(pinnedUpdatedAt * 1000).toLocaleString()}` : ''}
           </span>
         ) : (
-          <span className="text-[11px] text-fg-subtle">not pinned</span>
+          <span className="text-[11px] text-faint">not pinned</span>
         )}
         <div className="flex-1" />
         {!pinned && (
@@ -79,7 +79,7 @@ export function PinControls({
             placeholder="JSON value to pin"
             aria-label="Pin data, as JSON"
           />
-          {draftError && <p className="text-[11px] text-led-danger">{draftError}</p>}
+          {draftError && <p className="text-[11px] text-danger">{draftError}</p>}
           <Button
             type="button"
             size="sm"

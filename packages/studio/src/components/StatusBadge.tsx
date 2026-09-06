@@ -15,9 +15,9 @@ const DEVICE_LABEL: Record<DeviceStatus, string> = {
 }
 
 const DEVICE_TONE: Record<DeviceStatus, string> = {
-  online: 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  offline: 'text-fg-subtle border-line bg-transparent',
-  quarantined: 'text-led-danger border-led-danger/40 bg-led-danger/10',
+  online: 'text-ok border-ok/35 bg-ok/10',
+  offline: 'text-faint border-line bg-transparent',
+  quarantined: 'text-danger border-danger/40 bg-danger/10',
 }
 
 const JOB_LABEL: Record<JobStatus, string> = {
@@ -32,15 +32,15 @@ const JOB_LABEL: Record<JobStatus, string> = {
 }
 
 const JOB_TONE: Record<JobStatus, string> = {
-  queued: 'text-fg-muted border-line bg-transparent',
-  running: 'text-led-active border-led-active/35 bg-led-active/10',
-  success: 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
-  cancelled: 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  queued: 'text-dim border-line bg-transparent',
+  running: 'text-accent border-accent/35 bg-accent/10',
+  success: 'text-ok border-ok/35 bg-ok/10',
+  failed: 'text-danger border-danger/40 bg-danger/10',
+  cancelled: 'text-warn border-warn/35 bg-warn/10',
   // A visually distinct tone from `failed` (plan 21 §21.1) — a muted slate
   // dot (`led-off`, otherwise unused by any status badge) rather than red,
   // since this is a capacity outcome, not a script bug.
-  expired: 'text-led-off border-led-off/35 bg-led-off/10',
+  expired: 'text-faint-2 border-faint-2/35 bg-faint-2/10',
 }
 
 const base =
@@ -108,9 +108,9 @@ export function JobStatusBadge({
 const READINESS_LABEL: Record<'asleep' | 'awake' | 'hot', string> = { asleep: 'asleep', awake: 'awake', hot: 'hot' }
 
 const READINESS_TONE: Record<'asleep' | 'awake' | 'hot', string> = {
-  asleep: 'text-fg-subtle border-line bg-transparent',
-  awake: 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  hot: 'text-led-ok border-led-ok/35 bg-led-ok/10',
+  asleep: 'text-faint border-line bg-transparent',
+  awake: 'text-warn border-warn/35 bg-warn/10',
+  hot: 'text-ok border-ok/35 bg-ok/10',
 }
 
 /**
@@ -153,12 +153,12 @@ const PLUGIN_LABEL: Record<string, string> = {
 }
 
 const PLUGIN_TONE: Record<string, string> = {
-  staged: 'text-fg-muted border-line bg-transparent',
-  verifying: 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  active: 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  superseded: 'text-fg-subtle border-line bg-transparent',
-  failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
-  disabled: 'text-led-off border-led-off/35 bg-led-off/10',
+  staged: 'text-dim border-line bg-transparent',
+  verifying: 'text-warn border-warn/35 bg-warn/10',
+  active: 'text-ok border-ok/35 bg-ok/10',
+  superseded: 'text-faint border-line bg-transparent',
+  failed: 'text-danger border-danger/40 bg-danger/10',
+  disabled: 'text-faint-2 border-faint-2/35 bg-faint-2/10',
 }
 
 export function PluginStatusBadge({ status, className }: { status: string; className?: string }) {

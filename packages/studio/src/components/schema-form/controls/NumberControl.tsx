@@ -23,7 +23,7 @@ function EnforcementBadge({ enforcement }: { enforcement: EnforcementLevel | und
       : 'Recorded, but nothing acts on a breach of this field today.'
   return (
     <span
-      className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] tracking-wide text-fg-subtle uppercase"
+      className="rounded bg-muted px-1.5 py-0.5 text-[10px] tracking-wide text-faint uppercase"
       title={title}
     >
       {enforcement}

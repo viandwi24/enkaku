@@ -296,8 +296,19 @@ export default definePlugin({
    * plugin page, the Plugins rail entry). Its one member (`checkScript`)
    * declares none and defaults to `play`. Minor, not patch: an operator
    * meets the icon immediately, in both places.
+   *
+   * **0.13.0: the screens follow the theme.** Every colour class in this
+   * plugin's views named `theme.css` block D — the prototype vocabulary,
+   * whose values are hard-coded dark oklch literals rather than palette
+   * entries — so on the default LIGHT theme these tabs rendered dark text
+   * roles on a light ground. Migrated onto the handoff palette
+   * (`text-fg-muted` → `text-dim`, `bg-surface` → `bg-panel`, `text-led-*` →
+   * `text-ok`/`warn`/`danger`, and the rest), and
+   * `scripts/check-design-tokens.ts` now fails the build if one comes back.
+   * Minor, not patch: an operator meets the difference the moment the screen
+   * opens.
    */
-  version: '0.12.0',
+  version: '0.13.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'plug',
   title: 'Proxy manager',

@@ -166,8 +166,8 @@ function ModePicker({ mode, disabled, onChange }: { mode: ProxyApplyMode; disabl
           ))}
         </SelectContent>
       </Select>
-      <p className="max-w-prose text-[11px] leading-relaxed text-fg-muted">{PROXY_APPLY_MODE_DESCRIPTIONS[mode]}</p>
-      {mode === 'vpn' ? <p className="max-w-prose text-[11px] leading-relaxed text-led-warn">{VPN_CREDENTIAL_WARNING}</p> : null}
+      <p className="max-w-prose text-[11px] leading-relaxed text-dim">{PROXY_APPLY_MODE_DESCRIPTIONS[mode]}</p>
+      {mode === 'vpn' ? <p className="max-w-prose text-[11px] leading-relaxed text-warn">{VPN_CREDENTIAL_WARNING}</p> : null}
     </div>
   )
 }
@@ -198,10 +198,10 @@ function ModePicker({ mode, disabled, onChange }: { mode: ProxyApplyMode; disabl
 function ApplyOutcome({ result }: { result: ApplyResult | undefined }) {
   if (!result) return null
   if (!result.ok) {
-    return <p className={`mt-1 max-w-prose text-left text-[11px] leading-relaxed ${result.kind === 'refusal' ? 'text-led-danger' : 'text-fg-muted'}`}>{result.message}</p>
+    return <p className={`mt-1 max-w-prose text-left text-[11px] leading-relaxed ${result.kind === 'refusal' ? 'text-danger' : 'text-dim'}`}>{result.message}</p>
   }
   return (
-    <p className="mt-1 max-w-prose text-left text-[11px] leading-relaxed text-fg-muted">
+    <p className="mt-1 max-w-prose text-left text-[11px] leading-relaxed text-dim">
       Applied as <span className="readout">{result.mode === 'vpn' ? PROXY_APPLY_MODE_LABELS.vpn : PROXY_APPLY_MODE_LABELS.http}</span> — engine <span className="readout">{result.engine}</span>, health{' '}
       <span className="readout">{result.health}</span>
       {result.setBy ? `, recorded as set by ${result.setBy.id}` : ''}.{' '}
@@ -415,7 +415,7 @@ export function AssignmentsTab() {
       at 360 px, where this table used to be 469 px wide inside a 340 px box.
     */
     <div className="@container space-y-3">
-      <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">{ASSIGNMENT_NOTE}</p>
+      <p className="max-w-prose text-[12px] leading-relaxed text-dim">{ASSIGNMENT_NOTE}</p>
 
       {writeError ? <ErrorState message={writeError} onRetry={() => setWriteError(null)} /> : null}
 
@@ -450,7 +450,7 @@ export function AssignmentsTab() {
               aria-label="Filter devices"
               className="h-8 max-w-xs text-[12.5px]"
             />
-            <span className="readout text-[11.5px] text-fg-muted">
+            <span className="readout text-[11.5px] text-dim">
               {shown.length} of {devices.length} device{devices.length === 1 ? '' : 's'}
             </span>
           </div>
@@ -492,9 +492,9 @@ export function AssignmentsTab() {
                           replace it.
                         */}
                         <DeviceName number={device.number} label={device.label || device.stableId} className="max-w-full font-medium" />
-                        <div className="readout wrap-anywhere whitespace-normal text-[11px] text-fg-muted">{device.stableId}</div>
+                        <div className="readout wrap-anywhere whitespace-normal text-[11px] text-dim">{device.stableId}</div>
                       </TableCell>
-                      <TableCell className="text-[12px] text-fg-muted">
+                      <TableCell className="text-[12px] text-dim">
                         <StatusDot status={device.status ?? 'unknown'} />
                       </TableCell>
                       <TableCell>
@@ -532,10 +532,10 @@ export function AssignmentsTab() {
                           }
                         />
                         {device.assigned && capacityLabel(catalogue, device.assigned) ? (
-                          <p className="mt-1 text-[11px] leading-relaxed text-fg-muted">{capacityLabel(catalogue, device.assigned)}</p>
+                          <p className="mt-1 text-[11px] leading-relaxed text-dim">{capacityLabel(catalogue, device.assigned)}</p>
                         ) : null}
                       </TableCell>
-                      <TableCell className="readout hidden text-[11.5px] text-fg-muted @4xl:table-cell">{relativeTime(device.updatedAt)}</TableCell>
+                      <TableCell className="readout hidden text-[11.5px] text-dim @4xl:table-cell">{relativeTime(device.updatedAt)}</TableCell>
                       <TableCell className="space-y-2 text-left align-top">
                         {/*
                           Apply is a SEPARATE press from choosing a proxy (plan 114

@@ -37,9 +37,9 @@ function defaultParamValue(param: WorkflowParam): unknown {
 
 function ParamField({ param, value, onChange }: { param: WorkflowParam; value: unknown; onChange(v: unknown): void }) {
   const label = (
-    <Label className="text-[11.5px] font-normal text-fg-muted">
+    <Label className="text-[11.5px] font-normal text-dim">
       {param.title || param.name}
-      {param.required && <span className="ml-1 text-led-warn">*</span>}
+      {param.required && <span className="ml-1 text-warn">*</span>}
     </Label>
   )
   if (param.type === 'boolean') {
@@ -143,7 +143,7 @@ export function SimulateDialog({
           {sampledNodes.length > 0 && (
             <div className="space-y-1.5 rounded-md border border-dashed p-2.5">
               <p className="rack-label">will use a sample</p>
-              <p className="text-[11.5px] text-fg-subtle">
+              <p className="text-[11.5px] text-faint">
                 These nodes have no pin and no mock — their value is invented from the script&apos;s declared result shape, or the simulation stops there if it declares none.
               </p>
               <ul className="space-y-0.5 text-[12px]">
@@ -152,7 +152,7 @@ export function SimulateDialog({
                   return (
                     <li key={n.id} className="flex items-center justify-between gap-2">
                       <span>{n.title.trim() || n.id}</span>
-                      <span className={entry?.hasResult ? 'text-fg-subtle' : 'text-led-warn'}>{entry?.hasResult ? 'sample' : 'no result shape'}</span>
+                      <span className={entry?.hasResult ? 'text-faint' : 'text-warn'}>{entry?.hasResult ? 'sample' : 'no result shape'}</span>
                     </li>
                   )
                 })}

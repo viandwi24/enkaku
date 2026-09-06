@@ -117,11 +117,11 @@ export function AdbEndpointCard({
   }
 
   return (
-    <div className="mb-4 rounded-lg border bg-surface p-4">
+    <div className="mb-4 rounded-lg border bg-panel p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-[13.5px] font-semibold tracking-tight">adb endpoint</h3>
-          <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
+          <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-dim">
             Grants whoever can reach this address full adb control of the device — install, push/pull, logcat, a
             debugger, exactly like a real <code className="readout">adbd</code>. It exists only while the device
             stays online and closes automatically when you stop controlling it or after it sits idle.
@@ -144,13 +144,13 @@ export function AdbEndpointCard({
       </div>
 
       {disabled && (
-        <p className="mt-3 text-[11.5px] text-fg-subtle">Take control of this device to open an adb endpoint.</p>
+        <p className="mt-3 text-[11.5px] text-faint">Take control of this device to open an adb endpoint.</p>
       )}
 
       {command && (
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
-            <code className="readout rounded-md border bg-surface-2 px-2.5 py-1.5 text-[12px]">{command}</code>
+            <code className="readout rounded-md border bg-panel-2 px-2.5 py-1.5 text-[12px]">{command}</code>
             <Button
               size="sm"
               variant="outline"
@@ -160,11 +160,11 @@ export function AdbEndpointCard({
               <Copy className="size-3.5" aria-hidden />
             </Button>
           </div>
-          <span className="text-[11.5px] text-fg-subtle">
+          <span className="text-[11.5px] text-faint">
             {endpoint?.connections ?? 0} connection{endpoint?.connections === 1 ? '' : 's'}
           </span>
           {endpoint && endpoint.connections === 0 && idleInSec !== null && (
-            <span className="text-[11.5px] text-fg-subtle">closes in {idleInSec}s if unused</span>
+            <span className="text-[11.5px] text-faint">closes in {idleInSec}s if unused</span>
           )}
         </div>
       )}

@@ -194,13 +194,13 @@ function ScriptDetail() {
 
       {tab === 'overview' && (
         <div className="max-w-3xl space-y-4 px-5 py-4">
-          <div className="rounded-lg border bg-surface p-4">
+          <div className="rounded-lg border bg-panel p-4">
             <h2 className="text-[14px] font-semibold tracking-tight">Parameters</h2>
-            <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+            <p className="mt-1 text-[12px] leading-relaxed text-dim">
               Declared by the script's Zod schema. Studio builds the run form from exactly this.
             </p>
             {paramFields.length === 0 ? (
-              <p className="mt-3 text-[12.5px] text-fg-subtle">This script takes no parameters.</p>
+              <p className="mt-3 text-[12.5px] text-faint">This script takes no parameters.</p>
             ) : (
               <dl className="mt-3 divide-y overflow-hidden rounded border">
                 {paramFields.map(([key, def]) => (
@@ -208,10 +208,10 @@ function ScriptDetail() {
                     <dt className="readout text-[12.5px]">{key}</dt>
                     <span className="rack-label">{def.type ?? 'any'}</span>
                     {def.default !== undefined && (
-                      <span className="readout text-[11px] text-fg-subtle">default {JSON.stringify(def.default)}</span>
+                      <span className="readout text-[11px] text-faint">default {JSON.stringify(def.default)}</span>
                     )}
                     {def.description && (
-                      <dd className="w-full text-[11.5px] leading-relaxed text-fg-muted">{def.description}</dd>
+                      <dd className="w-full text-[11.5px] leading-relaxed text-dim">{def.description}</dd>
                     )}
                   </div>
                 ))}
@@ -227,7 +227,7 @@ function ScriptDetail() {
               video settings step already shipped). */}
           {farmJobSettings && <RuntimeCard farm={farmJobSettings} scriptRuntime={script.runtime ?? null} />}
 
-          <div className="rounded-lg border bg-surface p-4">
+          <div className="rounded-lg border bg-panel p-4">
             <h2 className="rack-label mb-2.5">identity</h2>
             <dl className="space-y-1.5">
               {[
@@ -236,12 +236,12 @@ function ScriptDetail() {
                 ['published by', script.createdBy ?? '—'],
               ].map(([k, v]) => (
                 <div key={k} className="flex items-baseline justify-between gap-3">
-                  <dt className="text-[12px] text-fg-muted">{k}</dt>
+                  <dt className="text-[12px] text-dim">{k}</dt>
                   <dd className="readout min-w-0 truncate text-[12px]">{v}</dd>
                 </div>
               ))}
             </dl>
-            <p className="mt-3 text-[11.5px] leading-relaxed text-fg-subtle">
+            <p className="mt-3 text-[11.5px] leading-relaxed text-faint">
               A script has no version of its own — it carries its plugin's. Jobs record the specific script id, so
               older runs stay reproducible.
             </p>
@@ -269,9 +269,9 @@ function ScriptDetail() {
               E_SCRIPT_OWNED` (plan 210 §3.2 rule 4). Deleting an unowned
               leftover row is an admin cleanup task with no UI in the MVP
               (plan 217 §4.10). */}
-          <div className="rounded-lg border bg-surface p-4">
+          <div className="rounded-lg border bg-panel p-4">
             <p className="text-[13px] font-medium">Lifecycle</p>
-            <p className="mt-0.5 mb-3 text-[12px] leading-relaxed text-fg-muted">
+            <p className="mt-0.5 mb-3 text-[12px] leading-relaxed text-dim">
               Version history, activation, rollback and removal live on the Plugins page.
             </p>
             <Button asChild variant="outline" size="sm">
@@ -296,9 +296,9 @@ function ScriptDetail() {
 function RuntimeCard({ farm, scriptRuntime }: { farm: JobSettings; scriptRuntime: ScriptDetailRow['runtime'] }) {
   const { rows } = computeRuntimeReadout(farm, scriptRuntime ?? null)
   return (
-    <div className="rounded-lg border bg-surface p-4">
+    <div className="rounded-lg border bg-panel p-4">
       <h2 className="text-[14px] font-semibold tracking-tight">Runtime</h2>
-      <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+      <p className="mt-1 text-[12px] leading-relaxed text-dim">
         What this script actually runs under, and which of the script, the farm default, or a farm ceiling decided it
         (Plan 98). A per-job override typed into the Run form's Runtime section can still change any of these for one
         run — this card shows the script's own declaration only.
@@ -306,22 +306,22 @@ function RuntimeCard({ farm, scriptRuntime }: { farm: JobSettings; scriptRuntime
       <dl className="mt-3 divide-y overflow-hidden rounded border">
         {rows.map((r) => (
           <div key={r.label} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3 py-2">
-            <dt className="text-[12.5px] text-fg-muted">{r.label}</dt>
+            <dt className="text-[12.5px] text-dim">{r.label}</dt>
             <dd className="flex items-baseline gap-1.5">
-              <span className="readout text-[12.5px] font-medium text-fg">{r.value}</span>
+              <span className="readout text-[12.5px] font-medium text-text">{r.value}</span>
               {r.enforcement === 'sampled' && (
                 <span
-                  className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] tracking-wide text-fg-subtle uppercase"
+                  className="rounded bg-muted px-1.5 py-0.5 text-[10px] tracking-wide text-faint uppercase"
                   title="Enforced by sampling: a breach is caught on the next check, not prevented instantly."
                 >
                   sampled
                 </span>
               )}
-              <span className={cn('text-[11px]', r.origin === 'clamped' ? 'text-led-warn' : 'text-fg-subtle')}>
+              <span className={cn('text-[11px]', r.origin === 'clamped' ? 'text-warn' : 'text-faint')}>
                 {r.originLabel}
               </span>
             </dd>
-            {r.detail && <p className="w-full text-[11px] leading-relaxed text-led-warn">{r.detail}</p>}
+            {r.detail && <p className="w-full text-[11px] leading-relaxed text-warn">{r.detail}</p>}
           </div>
         ))}
       </dl>

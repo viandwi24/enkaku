@@ -110,7 +110,7 @@ export default function NodesPage() {
 
         <div className="px-5 py-4">
           {mode === 'local' && (
-            <div className="mb-4 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] leading-relaxed text-fg-muted">
+            <div className="mb-4 rounded-lg border bg-panel px-3.5 py-2.5 text-[12.5px] leading-relaxed text-dim">
               This core runs in <span className="readout">local</span> mode, so it also handles devices plugged in here.
               Nodes still work — a node's devices simply appear alongside the local ones. For a control plane that
               holds no devices of its own, start the core with{' '}
@@ -138,16 +138,16 @@ export default function NodesPage() {
                     className={cn(
                       'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]',
                       a.status === 'online'
-                        ? 'border-led-ok/35 bg-led-ok/10 text-led-ok'
-                        : 'border-line text-fg-subtle',
+                        ? 'border-ok/35 bg-ok/10 text-ok'
+                        : 'border-line text-faint',
                     )}
                   >
                     <span className="size-1.5 rounded-full bg-current" aria-hidden />
                     {a.status}
                   </span>
                 </TableCell>
-                <TableCell className="readout text-[12px] text-fg-muted">{a.platform ?? '—'}</TableCell>
-                <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(a.lastSeen, now)}</TableCell>
+                <TableCell className="readout text-[12px] text-dim">{a.platform ?? '—'}</TableCell>
+                <TableCell className="readout text-[11.5px] text-dim">{relativeTime(a.lastSeen, now)}</TableCell>
               </>
             )}
             empty={{
@@ -177,7 +177,7 @@ export default function NodesPage() {
 
             {issued ? (
               <div className="space-y-3">
-                <div className="rounded-lg border bg-surface-2 p-3">
+                <div className="rounded-lg border bg-panel-2 p-3">
                   <p className="rack-label mb-1.5">run this on the node machine</p>
                   <pre className="readout overflow-x-auto whitespace-pre text-[11.5px] leading-relaxed">
 {`ENKAKU_CP_URL=${coreBase()} \\

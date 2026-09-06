@@ -213,12 +213,12 @@ export function LogsTab({ proxy, onProxyChange }: { proxy: string | null; onProx
 
         <div className="flex items-center gap-2">
           <Switch id="pm-follow" checked={follow} onCheckedChange={setFollow} />
-          <Label htmlFor="pm-follow" className="text-[12px] font-normal text-fg-muted">
+          <Label htmlFor="pm-follow" className="text-[12px] font-normal text-dim">
             Follow
           </Label>
         </div>
 
-        <span className="readout text-[11.5px] text-fg-muted">{lines.length} lines</span>
+        <span className="readout text-[11.5px] text-dim">{lines.length} lines</span>
 
         <div className="grow" />
         <Button variant="outline" size="sm" onClick={() => void fetchPage(true)}>
@@ -232,23 +232,23 @@ export function LogsTab({ proxy, onProxyChange }: { proxy: string | null; onProx
         about `logbook.ts`'s own field allowlist — a screen that paraphrased it
         could promise something the code does not do.
       */}
-      <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">
+      <p className="max-w-prose text-[12px] leading-relaxed text-dim">
         {proxy === null
           ? `Every line this plugin’s service has written and the farm still keeps, refreshed every ${POLL_MS / 1000} seconds while Follow is on. Lines that belong to no single proxy — the supervisor’s own — appear only here.`
           : `Only the lines tagged “${label}”. Lines that belong to no single proxy — the supervisor’s own — are under All proxies.`}{' '}
         {LOGS_SHARED_RING_NOTE}
       </p>
-      <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">{LOGS_CONTENT_NOTE}</p>
+      <p className="max-w-prose text-[12px] leading-relaxed text-dim">{LOGS_CONTENT_NOTE}</p>
 
       {truncated ? (
-        <p className="rounded-lg border border-led-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
+        <p className="rounded-lg border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
           Lines were dropped before this view could read them — either older ones the farm no longer keeps, or more than one page’s worth
           ({PROXY_LOGS_DEFAULT_LIMIT}) arriving at once. What is missing here is not a proxy that did nothing; press Reload for the most recent page.
         </p>
       ) : null}
 
       {filterNotHonoured ? (
-        <p className="rounded-lg border border-led-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
+        <p className="rounded-lg border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
           The farm answered without applying the filter, so these are lines from every proxy rather than only “{label}”. They are shown as they came
           back rather than trimmed here, because a page this view filtered itself would be missing whatever the ring had already evicted — and would say
           nothing about it.
@@ -266,7 +266,7 @@ export function LogsTab({ proxy, onProxyChange }: { proxy: string | null; onProx
         */
         <div className="space-y-2">
           <ErrorState message={error} onRetry={() => void fetchPage(true)} />
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="text-[11.5px] leading-relaxed text-dim">
             No lines are shown because none could be read — not because none were written. Following is paused until this succeeds.
           </p>
         </div>
@@ -312,11 +312,11 @@ export function LogsTab({ proxy, onProxyChange }: { proxy: string | null; onProx
  */
 function LogRow({ line, showSubject }: { line: LogLine; showSubject: boolean }) {
   const tone =
-    line.level === 'error' ? 'text-led-danger' : line.level === 'warn' ? 'text-led-warn' : line.level === 'debug' ? 'text-fg-muted' : 'text-fg'
+    line.level === 'error' ? 'text-danger' : line.level === 'warn' ? 'text-warn' : line.level === 'debug' ? 'text-dim' : 'text-text'
   const fields = Object.entries(line.fields ?? {})
   return (
     <li className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 px-3 py-1.5 text-[12px]">
-      <span className="readout shrink-0 text-[11px] text-fg-muted">{new Date(line.ts).toLocaleTimeString()}</span>
+      <span className="readout shrink-0 text-[11px] text-dim">{new Date(line.ts).toLocaleTimeString()}</span>
       <span className={cn('readout shrink-0 text-[11px] uppercase', tone)}>{line.level}</span>
       {showSubject && line.subject ? (
         <Badge variant="outline" className="shrink-0 text-[10.5px]">
@@ -329,7 +329,7 @@ function LogRow({ line, showSubject }: { line: LogLine; showSubject: boolean }) 
            a table cell and wrong for a bag of fields that can name a code, a
            reason and three counters: under nowrap the list scrolls sideways
            inside its own box, which is a scrollbar per line. */
-        <span className="readout min-w-0 break-words whitespace-normal text-[11px] text-fg-muted">
+        <span className="readout min-w-0 break-words whitespace-normal text-[11px] text-dim">
           {fields.map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`).join(' ')}
         </span>
       ) : null}

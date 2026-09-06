@@ -74,7 +74,7 @@ export function WebhooksSettingsSection() {
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-        <p className="max-w-xl text-[12.5px] leading-relaxed text-fg-muted">
+        <p className="max-w-xl text-[12.5px] leading-relaxed text-dim">
           A POST to this URL, signed with HMAC-SHA256 over the body plus a timestamp (the{' '}
           <span className="readout">X-Enkaku-Signature</span> header), so a receiver can verify who sent it. An agent's{' '}
           <span className="readout">notify.send</span> names one of these by name — it never sees or chooses a raw URL.
@@ -119,17 +119,17 @@ export function WebhooksSettingsSection() {
                     {w.name}
                     {!w.enabled && <Badge variant="outline" className="ml-1.5">disabled</Badge>}
                   </TableCell>
-                  <TableCell className="readout max-w-xs truncate text-[12px] text-fg-muted">{w.url}</TableCell>
+                  <TableCell className="readout max-w-xs truncate text-[12px] text-dim">{w.url}</TableCell>
                   <TableCell>
                     {w.lastStatus === null ? (
-                      <span className="text-[12px] text-fg-subtle">never delivered</span>
+                      <span className="text-[12px] text-faint">never delivered</span>
                     ) : w.failureCount > 0 ? (
                       <Badge variant="destructive">unhealthy · {w.failureCount} failure{w.failureCount === 1 ? '' : 's'}</Badge>
                     ) : (
                       <Badge variant="secondary">ok</Badge>
                     )}
                     {w.lastAttemptAt && (
-                      <p className="readout mt-0.5 text-[11px] text-fg-subtle">last attempt {relativeTime(w.lastAttemptAt)}</p>
+                      <p className="readout mt-0.5 text-[11px] text-faint">last attempt {relativeTime(w.lastAttemptAt)}</p>
                     )}
                   </TableCell>
                   <TableCell className="text-right">
@@ -186,7 +186,7 @@ export function WebhooksSettingsSection() {
                 Name
               </Label>
               <Input id="wh-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="on-call-slack" />
-              <p className="text-[11.5px] text-fg-subtle">What an agent's notify.send names in its channels list.</p>
+              <p className="text-[11.5px] text-faint">What an agent's notify.send names in its channels list.</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="wh-url" className="text-[13px] font-normal">
@@ -199,7 +199,7 @@ export function WebhooksSettingsSection() {
                 Signing secret
               </Label>
               <Input id="wh-secret" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="optional, but recommended" />
-              <p className="text-[11.5px] text-fg-subtle">Used to sign every delivery — leave blank to send unsigned.</p>
+              <p className="text-[11.5px] text-faint">Used to sign every delivery — leave blank to send unsigned.</p>
             </div>
             <div className="flex justify-end gap-2 border-t pt-3">
               <Button variant="ghost" onClick={() => setOpen(false)}>

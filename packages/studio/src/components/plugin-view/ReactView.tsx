@@ -116,7 +116,7 @@ export function ReactView({ plugin, version, viewId, entry, params, setParams, h
   if (state.status === 'loading') {
     return (
       <div className="space-y-2 px-5 py-4">
-        <p className="readout text-[11.5px] text-fg-muted">
+        <p className="readout text-[11.5px] text-dim">
           Loading this screen’s code from “{plugin}” {version}…
         </p>
         <LoadingRows rows={4} />
@@ -177,14 +177,14 @@ function FailurePanel({
   onRetry: () => void
 }) {
   return (
-    <div className="rounded-lg border border-led-danger/40 bg-led-danger/5 px-4 py-4">
+    <div className="rounded-lg border border-danger/40 bg-danger/5 px-4 py-4">
       <div className="flex items-start gap-2.5">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-led-danger" aria-hidden />
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden />
         <div className="min-w-0 flex-1 space-y-1.5">
           <p className="text-[13px] font-medium">{title}</p>
-          <p className="break-words text-[12px] text-fg-muted">{message}</p>
-          <p className="readout break-all text-[11.5px] text-fg-muted">{detail}</p>
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">{hint}</p>
+          <p className="break-words text-[12px] text-dim">{message}</p>
+          <p className="readout break-all text-[11.5px] text-dim">{detail}</p>
+          <p className="text-[11.5px] leading-relaxed text-dim">{hint}</p>
         </div>
         <Button variant="outline" size="sm" onClick={onRetry}>
           Try again

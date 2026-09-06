@@ -107,12 +107,12 @@ function EgressCell({ path, health }: { path: Path; health: PathHealth | undefin
 
   return (
     <div className="space-y-1">
-      <Badge variant="outline" className={cn(status === 'ok' ? 'text-led-ok' : status === 'fail' ? 'text-led-danger' : 'text-fg-muted')}>
-        <span className={cn('size-1.5 rounded-full', status === 'ok' ? 'bg-led-ok' : status === 'fail' ? 'bg-led-danger' : 'bg-led-off')} aria-hidden />
+      <Badge variant="outline" className={cn(status === 'ok' ? 'text-ok' : status === 'fail' ? 'text-danger' : 'text-dim')}>
+        <span className={cn('size-1.5 rounded-full', status === 'ok' ? 'bg-ok' : status === 'fail' ? 'bg-danger' : 'bg-faint-2')} aria-hidden />
         {status === 'ok' ? 'Reaches internet' : status === 'fail' ? 'No internet' : 'Not measured'}
       </Badge>
-      {probe ? <p className="max-w-[42ch] text-[11px] leading-relaxed text-fg-muted">{probe.message}</p> : null}
-      {error ? <p className="max-w-[42ch] text-[11px] leading-relaxed text-led-danger">{error}</p> : null}
+      {probe ? <p className="max-w-[42ch] text-[11px] leading-relaxed text-dim">{probe.message}</p> : null}
+      {error ? <p className="max-w-[42ch] text-[11px] leading-relaxed text-danger">{error}</p> : null}
       {iface ? (
         <Button size="sm" variant="ghost" onClick={run} disabled={busy} title={`Sends a few packets out of ${iface}. Costs a little mobile data.`}>
           {busy ? 'Probing…' : probe ? 'Probe again' : 'Probe'}
@@ -121,7 +121,7 @@ function EgressCell({ path, health }: { path: Path; health: PathHealth | undefin
         // No `immediate-gw` means the router could not resolve an uplink for
         // this path — the plan 133 fault. There is nothing to probe THROUGH,
         // and the health cell beside this one already says why.
-        <p className="text-[11px] text-fg-muted">No uplink resolved — nothing to probe through.</p>
+        <p className="text-[11px] text-dim">No uplink resolved — nothing to probe through.</p>
       )}
     </div>
   )
@@ -130,15 +130,15 @@ function EgressCell({ path, health }: { path: Path; health: PathHealth | undefin
 function HealthBadge({ health }: { health: PathHealth | undefined }) {
   if (!health) {
     return (
-      <Badge variant="outline" className="text-fg-muted">
-        <span className="size-1.5 rounded-full bg-led-off" aria-hidden />
+      <Badge variant="outline" className="text-dim">
+        <span className="size-1.5 rounded-full bg-faint-2" aria-hidden />
         Unknown
       </Badge>
     )
   }
   return (
-    <Badge variant="outline" className={cn(health.up ? 'text-led-ok' : 'text-led-danger')}>
-      <span className={cn('size-1.5 rounded-full', health.up ? 'bg-led-ok' : 'bg-led-danger')} aria-hidden />
+    <Badge variant="outline" className={cn(health.up ? 'text-ok' : 'text-danger')}>
+      <span className={cn('size-1.5 rounded-full', health.up ? 'bg-ok' : 'bg-danger')} aria-hidden />
       {health.up ? 'Up' : 'Down'}
     </Badge>
   )
@@ -162,7 +162,7 @@ export function PathsTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">
+        <p className="max-w-prose text-[12px] leading-relaxed text-dim">
           Every routing table on the router that carries a default route — the egress paths a device can be assigned to. Read live from the router; nothing here is cached.
         </p>
         <Button variant="outline" size="sm" onClick={reload} disabled={loading}>
@@ -201,8 +201,8 @@ export function PathsTab() {
             {data.paths.map((path) => (
               <TableRow key={path.id}>
                 <TableCell className="font-medium">{path.table}</TableCell>
-                <TableCell className="text-fg-muted">{path.gateway ?? '—'}</TableCell>
-                <TableCell className="text-fg-muted">{boundInterface(path.gateway, data.interfaces) ?? '—'}</TableCell>
+                <TableCell className="text-dim">{path.gateway ?? '—'}</TableCell>
+                <TableCell className="text-dim">{boundInterface(path.gateway, data.interfaces) ?? '—'}</TableCell>
                 <TableCell>
                   <HealthBadge health={data.health.get(path.id)} />
                   {/* Plan 133 §3.3 — a red chip tells an operator that
@@ -212,14 +212,14 @@ export function PathsTab() {
                       leaves the cell exactly as it was. */}
                   {(() => {
                     const why = describeDownReason(data.health.get(path.id)?.reason, path.gateway)
-                    return why ? <p className="mt-1 max-w-[38ch] text-[11px] leading-relaxed text-fg-muted">{why}</p> : null
+                    return why ? <p className="mt-1 max-w-[38ch] text-[11px] leading-relaxed text-dim">{why}</p> : null
                   })()}
                   {/* Plan 134 §3.4 — the loudest thing on the screen, because
                       it is the fault that cost the owner a router CLI session:
                       two uplinks holding the same address. It names the other
                       path so nobody has to cross-reference forty rows. */}
                   {(data.health.get(path.id)?.duplicateAddressWith ?? []).length > 0 ? (
-                    <p className="mt-1 max-w-[38ch] text-[11px] leading-relaxed text-led-danger">
+                    <p className="mt-1 max-w-[38ch] text-[11px] leading-relaxed text-danger">
                       This uplink holds the SAME address as {(data.health.get(path.id)?.duplicateAddressWith ?? []).join(', ')}. Two modems are on one subnet — almost always a modem left on its
                       factory-default LAN range. Change one modem's LAN subnet; the router cannot route to either reliably until you do.
                     </p>
@@ -229,7 +229,7 @@ export function PathsTab() {
                   <EgressCell path={path} health={data.health.get(path.id)} />
                 </TableCell>
                 {/* Always 0 — no group/assignment data model exists yet (plan 122 §5 steps 122.5–122.8). The column is shown, not hidden, so this reads as "not built yet" rather than "silently wrong". */}
-                <TableCell className="text-fg-muted" title="No assignments exist yet — this column is not faked.">
+                <TableCell className="text-dim" title="No assignments exist yet — this column is not faked.">
                   0
                 </TableCell>
               </TableRow>

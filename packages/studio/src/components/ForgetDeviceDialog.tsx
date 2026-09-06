@@ -125,8 +125,8 @@ export function ForgetDeviceDialog({
         </DialogHeader>
 
         {refusal ? (
-          <div className="rounded-md border border-led-danger/40 bg-led-danger/5 p-3 text-[12.5px]">
-            <p className="text-led-danger">{refusal.message}</p>
+          <div className="rounded-md border border-danger/40 bg-danger/5 p-3 text-[12.5px]">
+            <p className="text-danger">{refusal.message}</p>
             {refusal.code === 'device_online' && (
               <Button variant="outline" size="sm" className="mt-2.5" disabled={busy} onClick={() => void blockInstead()}>
                 {busy ? 'Blocking…' : 'Block instead'}
@@ -138,15 +138,15 @@ export function ForgetDeviceDialog({
             <label className="flex items-center justify-between gap-3 rounded-md border p-3 text-[12.5px]">
               <span>
                 <span className="block font-medium">Also delete history</span>
-                <span className="text-fg-muted">Permanently deletes its jobs, artifacts, and events too.</span>
+                <span className="text-dim">Permanently deletes its jobs, artifacts, and events too.</span>
               </span>
               <Switch checked={deleteHistory} onCheckedChange={setDeleteHistory} aria-label="Also delete history" />
             </label>
 
             {deleteHistory && (
-              <div className="rounded-md border border-led-warn/40 bg-led-warn/5 p-3 text-[12.5px]">
+              <div className="rounded-md border border-warn/40 bg-warn/5 p-3 text-[12.5px]">
                 {countsLoading || !counts ? (
-                  <p className="text-fg-muted">Counting what would be deleted…</p>
+                  <p className="text-dim">Counting what would be deleted…</p>
                 ) : (
                   <p>
                     This deletes <span className="font-medium">{counts.jobs}</span> job{counts.jobs === 1 ? '' : 's'},{' '}
@@ -166,7 +166,7 @@ export function ForgetDeviceDialog({
           </Button>
           {!refusal && (
             <Button
-              className={deleteHistory ? 'bg-led-danger text-white hover:bg-led-danger/90' : undefined}
+              className={deleteHistory ? 'bg-danger text-white hover:bg-danger/90' : undefined}
               disabled={confirmDisabled}
               onClick={() => void forget()}
             >

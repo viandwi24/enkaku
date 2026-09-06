@@ -43,7 +43,7 @@ export function renderControl(plan: FieldPlan, props: BaseControlProps) {
   return (
     <div className="space-y-1">
       {control}
-      <p className="text-[11.5px] text-fg-muted">{props.hint}</p>
+      <p className="text-[11.5px] text-dim">{props.hint}</p>
     </div>
   )
 }

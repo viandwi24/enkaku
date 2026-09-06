@@ -150,7 +150,7 @@ export function UpstreamFieldGroup({ idPrefix, upstream, onChange, password, onP
       </div>
 
       {upstream.proto === 'direct' ? (
-        <p className="text-[11.5px] leading-relaxed text-fg-muted">
+        <p className="text-[11.5px] leading-relaxed text-dim">
           Binds the outgoing connection to one of this host's own addresses — `net.connect`'s own <span className="readout">localAddress</span> and
           nothing more. Empty means dial out however this host normally would, which is a plain local bridge and needs no proxy account at all. What a
           bind address maps to physically — a NIC, a route, a link — is set up on this host outside this screen; the plugin only checks the address
@@ -168,7 +168,7 @@ export function UpstreamFieldGroup({ idPrefix, upstream, onChange, password, onP
             <Label htmlFor={`${idPrefix}-resolve-through-egress`} className="text-[13px] font-normal">
               Resolve names through this address
             </Label>
-            <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
+            <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">
               On: a hostname is looked up through the bind address's own path before connecting, so the lookup leaves the same way the connection does.
               Off: this host's ordinary resolver answers it instead — a different path than the packets, and worth knowing which one this record uses. A
               lookup that fails through the bind address is reported, never silently retried through the host's default resolver. If this address's own
@@ -187,10 +187,10 @@ export function UpstreamFieldGroup({ idPrefix, upstream, onChange, password, onP
 
       {upstream.proto === 'direct' ? null : (
         <div className="space-y-1.5 rounded-md border border-border px-3 py-2">
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">{hasStoredPassword ? PASSWORD_SAVED_HINT : PASSWORD_ABSENT_HINT}</p>
+          <p className="text-[11.5px] leading-relaxed text-dim">{hasStoredPassword ? PASSWORD_SAVED_HINT : PASSWORD_ABSENT_HINT}</p>
           {hasStoredPassword ? (
             clearPassword ? (
-              <p className="text-[11.5px] leading-relaxed text-destructive">
+              <p className="text-[11.5px] leading-relaxed text-danger">
                 The saved password will be deleted when you save.{' '}
                 <Button variant="ghost" size="sm" className="h-5 px-1 text-[11.5px]" onClick={() => onClearPasswordChange(false)}>
                   Keep it instead
@@ -200,7 +200,7 @@ export function UpstreamFieldGroup({ idPrefix, upstream, onChange, password, onP
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 px-1 text-[11.5px] text-fg-muted"
+                className="h-6 px-1 text-[11.5px] text-dim"
                 disabled={password.length > 0}
                 title={password.length > 0 ? 'Clear the field above first — typing in it replaces the saved password rather than removing it.' : undefined}
                 onClick={() => onClearPasswordChange(true)}
@@ -212,7 +212,7 @@ export function UpstreamFieldGroup({ idPrefix, upstream, onChange, password, onP
           {/* Declared in `shared.ts`, narrowed by step 112.2 rather than
               deleted: what is stored, that it is never shown back, and what
               the farm's secret box does and does not claim. */}
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">{CREDENTIAL_NOT_STORED}</p>
+          <p className="text-[11.5px] leading-relaxed text-dim">{CREDENTIAL_NOT_STORED}</p>
         </div>
       )}
     </>

@@ -98,7 +98,7 @@ function OverrideRow({ label, overridden, farmValueLabel, onEnable, onClear, chi
       <div className="flex items-center justify-between gap-2">
         <Label className="text-[13px] font-normal">{label}</Label>
         {overridden ? (
-          <button type="button" onClick={onClear} className="flex items-center gap-1 text-[11.5px] text-fg-muted hover:text-fg">
+          <button type="button" onClick={onClear} className="flex items-center gap-1 text-[11.5px] text-dim hover:text-text">
             <ArrowCounterClockwiseIcon className="size-3" aria-hidden />
             Reset to farm default
           </button>
@@ -111,8 +111,8 @@ function OverrideRow({ label, overridden, farmValueLabel, onEnable, onClear, chi
       {overridden ? (
         children
       ) : (
-        <p className="readout rounded-md border border-dashed bg-surface-2/40 px-3 py-1.5 text-[12.5px] text-fg-muted">
-          {farmValueLabel} <span className="text-fg-subtle">(farm default)</span>
+        <p className="readout rounded-md border border-dashed bg-panel-2/40 px-3 py-1.5 text-[12.5px] text-dim">
+          {farmValueLabel} <span className="text-faint">(farm default)</span>
         </p>
       )}
     </div>
@@ -125,7 +125,7 @@ function SectionCard({ title, description, actions, children }: { title: string;
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-[13.5px] font-medium">{title}</h2>
-          {description && <p className="mt-0.5 text-[12px] text-fg-muted">{description}</p>}
+          {description && <p className="mt-0.5 text-[12px] text-dim">{description}</p>}
         </div>
         {actions}
       </div>
@@ -484,7 +484,7 @@ function IdentitySection({ draft, setDraft, autoFocusName }: { draft: Agent; set
         <div className="space-y-1.5">
           <Label className="text-[13px] font-normal">Slug</Label>
           <Input value={draft.slug} disabled />
-          <p className="text-[11.5px] text-fg-subtle">The slug cannot change — it names this agent's workspace home, /agents/{draft.slug}/.</p>
+          <p className="text-[11.5px] text-faint">The slug cannot change — it names this agent's workspace home, /agents/{draft.slug}/.</p>
         </div>
         <div className="space-y-1.5">
           <Label className="text-[13px] font-normal">Description</Label>
@@ -497,7 +497,7 @@ function IdentitySection({ draft, setDraft, autoFocusName }: { draft: Agent; set
         <div className="flex items-center justify-between rounded-md border px-3 py-2">
           <div>
             <p className="text-[13px] font-medium">Enabled</p>
-            <p className="text-[11.5px] text-fg-muted">A disabled agent cannot be run.</p>
+            <p className="text-[11.5px] text-dim">A disabled agent cannot be run.</p>
           </div>
           <Switch checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
         </div>
@@ -541,7 +541,7 @@ function ModelSection({
             ))}
           </SelectContent>
         </Select>
-        {connectors.length === 0 && <p className="text-[11.5px] text-fg-subtle">No connectors configured yet — add one under Settings → Connectors.</p>}
+        {connectors.length === 0 && <p className="text-[11.5px] text-faint">No connectors configured yet — add one under Settings → Connectors.</p>}
       </OverrideRow>
 
       <OverrideRow
@@ -558,7 +558,7 @@ function ModelSection({
               <option key={m.id} value={m.id} />
             ))}
           </datalist>
-          <p className="text-[11.5px] text-fg-subtle">
+          <p className="text-[11.5px] text-faint">
             {models?.fallback ? 'Showing a pinned fallback list — the provider could not be reached.' : 'Fetched from the provider.'} A hand-typed id is accepted.
           </p>
         </div>
@@ -597,7 +597,7 @@ function ModelSection({
         }}
       >
         <div className="flex items-center justify-between rounded-md border px-3 py-2">
-          <p className="text-[12.5px] text-fg-muted">Adaptive thinking</p>
+          <p className="text-[12.5px] text-dim">Adaptive thinking</p>
           <Switch checked={draft.settings.thinking ?? farmDefaults.thinking} onCheckedChange={(v) => setDraft({ ...draft, settings: { ...draft.settings, thinking: v } })} />
         </div>
       </OverrideRow>
@@ -641,7 +641,7 @@ function InstructionsSection({ draft, setDraft, farmDefaults }: { draft: Agent; 
       >
         <Textarea value={text} onChange={(e) => setDraft({ ...draft, systemPrompt: e.target.value })} rows={12} className="font-mono text-[12.5px]" />
       </OverrideRow>
-      <div className="flex items-center justify-between text-[11.5px] text-fg-muted">
+      <div className="flex items-center justify-between text-[11.5px] text-dim">
         <span>~{approxTokens.toLocaleString()} tokens (rough estimate)</span>
       </div>
       {warning && (
@@ -721,7 +721,7 @@ function ToolsSection({
                         <Badge variant={cap.effect === 'destructive' ? 'destructive' : cap.effect === 'write' ? 'secondary' : 'outline'} className="align-middle text-[10px]">
                           {cap.effect}
                         </Badge>
-                        <span className="block text-fg-muted">{cap.description}</span>
+                        <span className="block text-dim">{cap.description}</span>
                       </span>
                     </label>
                   ))}
@@ -807,7 +807,7 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
                 filter: without it "Select these 3" is a number with nothing
                 to compare against. */}
             {filtering && (
-              <span className="readout ml-1.5 text-[11px] text-fg-subtle">
+              <span className="readout ml-1.5 text-[11px] text-faint">
                 {filteredDevices.length} of {devices.length}
               </span>
             )}
@@ -836,7 +836,7 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
             )}
           </div>
         </div>
-        <p className="mb-2 text-[11.5px] text-fg-muted">
+        <p className="mb-2 text-[11.5px] text-dim">
           An agent with no grants may reach every device — this is deliberate (plan 65 §3.5). Check specific devices to narrow it.
         </p>
         {devices.length > 0 && (
@@ -845,7 +845,7 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
           // to look at and to type into. The live count beside the label is
           // what makes the scoped bulk button above legible.
           <div className="relative mb-2">
-            <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden />
+            <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
             <Input
               value={deviceQuery}
               onChange={(e) => setDeviceQuery(e.target.value)}
@@ -857,23 +857,23 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
         )}
         <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
           {devices.length === 0 ? (
-            <p className="px-1 py-2 text-[12px] text-fg-subtle">No devices enrolled yet.</p>
+            <p className="px-1 py-2 text-[12px] text-faint">No devices enrolled yet.</p>
           ) : filteredDevices.length === 0 ? (
             // Never an empty box: an operator who filtered to nothing must be
             // told it was the filter, not the farm (§4.5's own rule for the
             // plugin table search, applied here for the same reason).
-            <p className="px-1 py-2 text-[12px] text-fg-subtle">
+            <p className="px-1 py-2 text-[12px] text-faint">
               No device matches “{deviceQuery.trim()}” — {devices.length} enrolled.
             </p>
           ) : (
             filteredDevices.map((d) => (
-              <label key={d.id} className="flex items-center gap-2 rounded px-1 py-1 text-[12.5px] hover:bg-surface-2/50">
+              <label key={d.id} className="flex items-center gap-2 rounded px-1 py-1 text-[12.5px] hover:bg-panel-2/50">
                 <input type="checkbox" checked={draft.deviceGrants.includes(d.id)} onChange={() => toggleDevice(d.id)} />
                 {/* A checkbox row, so the two-span form (plan 124 §3.2) — the
                     number dims beside the label rather than being read as
                     part of it. */}
                 <DeviceName number={d.number} label={d.label} />
-                <span className="readout text-fg-subtle">{d.stableId}</span>
+                <span className="readout text-faint">{d.stableId}</span>
               </label>
             ))
           )}
@@ -884,15 +884,15 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
         <Label className="mb-2 block text-[13px] font-normal">Workspace scope</Label>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
-            <p className="text-[11.5px] text-fg-muted">Read prefixes</p>
+            <p className="text-[11.5px] text-dim">Read prefixes</p>
             <Textarea rows={3} value={draft.workspaceScope.read.join('\n')} onChange={(e) => editScope('read', e.target.value)} className="font-mono text-[12px]" />
           </div>
           <div className="space-y-1">
-            <p className="text-[11.5px] text-fg-muted">Write prefixes</p>
+            <p className="text-[11.5px] text-dim">Write prefixes</p>
             <Textarea rows={3} value={draft.workspaceScope.write.join('\n')} onChange={(e) => editScope('write', e.target.value)} className="font-mono text-[12px]" />
           </div>
         </div>
-        <p className="mt-1 text-[11.5px] text-fg-subtle">Defaults to write /agents/{draft.slug}/, read everywhere. One prefix per line, e.g. /shared/.</p>
+        <p className="mt-1 text-[11.5px] text-faint">Defaults to write /agents/{draft.slug}/, read everywhere. One prefix per line, e.g. /shared/.</p>
       </div>
 
       <div>
@@ -902,11 +902,11 @@ function AccessSection({ draft, setDraft, devices }: { draft: Agent; setDraft(a:
             {permissionBulk.allChecked ? 'Clear all' : 'Select all'}
           </Button>
         </div>
-        <p className="mb-2 text-[11.5px] text-fg-muted">A ceiling, not a default — never more than this agent's owner already holds, checked again every time it runs.</p>
+        <p className="mb-2 text-[11.5px] text-dim">A ceiling, not a default — never more than this agent's owner already holds, checked again every time it runs.</p>
         <div className="max-h-56 space-y-2 overflow-y-auto rounded-md border p-2">
           {permissionGroups.map(([group, perms]) => (
             <div key={group}>
-              <label className="mb-1 flex items-center gap-1.5 px-1 py-0.5 text-[11px] font-medium capitalize text-fg-muted">
+              <label className="mb-1 flex items-center gap-1.5 px-1 py-0.5 text-[11px] font-medium capitalize text-dim">
                 <TriStateCheckbox state={permissionBulk.groupState(perms)} onChange={() => permissionBulk.toggleGroup(perms)} aria-label={`Select all ${group} permissions`} />
                 {group}
               </label>
@@ -971,7 +971,7 @@ function LimitsSection({ draft, setDraft, farmDefaults }: { draft: Agent; setDra
           value={draft.settings.compactAtRatio ?? farmDefaults.compactAtRatio}
           onChange={(e) => setDraft({ ...draft, settings: { ...draft.settings, compactAtRatio: Number(e.target.value) } })}
         />
-        <p className="mt-1 text-[11.5px] text-fg-subtle">Fraction of the model's own context window, not a fixed token count.</p>
+        <p className="mt-1 text-[11.5px] text-faint">Fraction of the model's own context window, not a fixed token count.</p>
       </OverrideRow>
       {numberRow('maxConcurrentRuns', 'Max concurrent runs', 1)}
       {numberRow('maxImagesPerRequest', 'Max images per request (plan 70 §3.6 — oldest dropped first)', 0)}
@@ -983,19 +983,19 @@ function LimitsSection({ draft, setDraft, farmDefaults }: { draft: Agent; setDra
 function ConnectorsSection({ connectors }: { connectors: Connector[] }) {
   return (
     <SectionCard title="Connectors" description="Farm-level — shared across every agent. Edit credentials from Settings, not from here.">
-      <p className="text-[12px] text-fg-muted">
+      <p className="text-[12px] text-dim">
         A credential is write-only: not readable by grepping the database, encrypted at rest with a key kept beside enkaku.db — the same honest claim the network
         layer already makes, nothing stronger.
       </p>
       <div className="space-y-2">
         {connectors.length === 0 ? (
-          <p className="text-[12.5px] text-fg-subtle">No connectors configured yet.</p>
+          <p className="text-[12.5px] text-faint">No connectors configured yet.</p>
         ) : (
           connectors.map((c) => (
             <div key={c.id} className="flex items-center justify-between rounded-md border px-3 py-2">
               <div>
                 <p className="text-[12.5px] font-medium">{c.name}</p>
-                <p className="readout text-[11px] text-fg-muted">{c.kind} · {c.configured ? c.hint : 'no credential'}</p>
+                <p className="readout text-[11px] text-dim">{c.kind} · {c.configured ? c.hint : 'no credential'}</p>
               </div>
               <Badge variant={c.status === 'ok' ? 'secondary' : c.status === 'unknown' ? 'outline' : 'destructive'}>{c.status}</Badge>
             </div>

@@ -3377,7 +3377,7 @@ let blobGc: BlobGc | null = null
           shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
           transferEnabled: () => TRANSFER_ENABLED,
         }),
-        settingsRoutes: createSettingsRoutes(settingsStore),
+        settingsRoutes: createSettingsRoutes(settingsStore, { audit }),
         storageRoutes: createStorageRoutes(db),
         artifactRoutes: createArtifactRoutes({
           db,
@@ -3454,6 +3454,12 @@ let blobGc: BlobGc | null = null
                   })
                 : wallMaxTiles,
               maxTilesAuto,
+              // The ramp gate's own budget (`ENKAKU_WALL_RAMP_CONCURRENCY`).
+              // Sent because `ScreensGrid` has no other way to learn it —
+              // before this, that constant was imported here and never read,
+              // so the client's hard-coded fallback WAS the farm's value and
+              // the override did nothing.
+              rampConcurrency: WALL_RAMP_CONCURRENCY,
               transport,
             }
           },

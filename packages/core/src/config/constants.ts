@@ -191,7 +191,20 @@ export const DISPLAY_FALLBACK_RETRIES = num('ENKAKU_DISPLAY_FALLBACK_RETRIES', 6
 
 // ── Screens view budgets (replaces wall.*, readiness.*) ───────────────────────
 export const WALL_MAX_TILES = num('ENKAKU_WALL_MAX_TILES', 0, z.number().int().min(0).max(64))
-export const WALL_RAMP_CONCURRENCY = num('ENKAKU_WALL_RAMP_CONCURRENCY', 2, z.number().int().min(1).max(8))
+/**
+ * The ramp gate existed to stop a grid of tiles racing the session BUILDER:
+ * before always-on sessions, twenty tiles asking at once meant twenty
+ * concurrent builds. Plan 206 made every online device's session already
+ * open, so `stream.start` now attaches to an existing entry — `useLiveSet`'s
+ * own comment says it outright ("nothing server-side needs pacing to protect
+ * any more").
+ *
+ * At 2, with `RAMP_STEP_MS` at 800, a twenty-phone farm took ~8s to fill and
+ * looked like it was waking two devices at a time (owner, 2026-09-06). 12
+ * fills a full grid in one step under the `maxTiles` budget that actually
+ * governs it, and the ceiling is 32 so a farm can go wider still.
+ */
+export const WALL_RAMP_CONCURRENCY = num('ENKAKU_WALL_RAMP_CONCURRENCY', 12, z.number().int().min(1).max(32))
 /** 24 is still plan 100 §7.3's unmeasured placeholder; plan 223 measures it (MVP 09 §7). */
 export const WALL_DECODE_TILE_CEILING = num('ENKAKU_WALL_DECODE_TILE_CEILING', 24, z.number().int().min(4).max(64))
 export const WALL_LAN_BANDWIDTH_BPS = num('ENKAKU_WALL_LAN_BANDWIDTH_BPS', 200_000_000, z.number().int().min(1_000_000).max(1_000_000_000))

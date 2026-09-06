@@ -57,8 +57,8 @@ export function ArtifactControl({ id, path, label, help, error, value, required,
   const picker = (
     <div className="space-y-1.5">
       <ArtifactPicker value={source} onChange={handleChange} disabled={uploading} />
-      {uploading && <p className="text-[11.5px] text-fg-muted">Uploading…</p>}
-      {uploadError !== null && <p className="text-[11.5px] text-led-danger">Upload failed — {uploadError}</p>}
+      {uploading && <p className="text-[11.5px] text-dim">Uploading…</p>}
+      {uploadError !== null && <p className="text-[11.5px] text-danger">Upload failed — {uploadError}</p>}
     </div>
   )
 
@@ -79,7 +79,7 @@ export function ArtifactControl({ id, path, label, help, error, value, required,
                 type="button"
                 aria-label={`Clear ${label}`}
                 onClick={() => handleChange(null)}
-                className="rounded p-0.5 text-fg-subtle hover:bg-surface-2 hover:text-fg"
+                className="rounded p-0.5 text-faint hover:bg-panel-2 hover:text-text"
               >
                 <X className="size-3" aria-hidden />
               </button>

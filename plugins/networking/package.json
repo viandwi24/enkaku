@@ -13,7 +13,6 @@
     "publish:farm": "bun run ../../packages/sdk/src/cli/index.ts publish src/index.ts"
   },
   "dependencies": {
-    "@enkaku/protocol": "workspace:*",
     "@enkaku/sdk": "workspace:*",
     "zod": "^4.0.0"
   }

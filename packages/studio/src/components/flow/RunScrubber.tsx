@@ -24,10 +24,10 @@ export function RunScrubber({
   const current = steps.find((s) => s.seq === value)
 
   return (
-    <div className="flex flex-none flex-wrap items-center gap-2 rounded border bg-surface px-2.5 py-1.5 text-[11.5px]">
+    <div className="flex flex-none flex-wrap items-center gap-2 rounded border bg-panel px-2.5 py-1.5 text-[11.5px]">
       <button
         type="button"
-        className="rounded px-1.5 py-0.5 text-fg-muted hover:bg-muted disabled:opacity-40"
+        className="rounded px-1.5 py-0.5 text-dim hover:bg-muted disabled:opacity-40"
         disabled={value <= 0}
         onClick={() => onSelect(Math.max(0, value - 1))}
         aria-label="Previous step"
@@ -46,26 +46,26 @@ export function RunScrubber({
       />
       <button
         type="button"
-        className="rounded px-1.5 py-0.5 text-fg-muted hover:bg-muted disabled:opacity-40"
+        className="rounded px-1.5 py-0.5 text-dim hover:bg-muted disabled:opacity-40"
         disabled={value >= maxSeq}
         onClick={() => onSelect(Math.min(maxSeq, value + 1))}
         aria-label="Next step"
       >
         ›
       </button>
-      <span className="readout text-fg-muted">
+      <span className="readout text-dim">
         step {value + 1} / {maxSeq + 1}
         {current && (
           <>
             {' · '}
-            <span className={cn(current.status === 'failed' && 'text-led-danger')}>{current.stepId}</span>
+            <span className={cn(current.status === 'failed' && 'text-danger')}>{current.stepId}</span>
             {' · '}
             {current.status}
           </>
         )}
       </span>
       {selectedSeq !== null && (
-        <button type="button" className="ml-auto rounded px-1.5 py-0.5 text-fg-muted hover:bg-muted" onClick={() => onSelect(null)}>
+        <button type="button" className="ml-auto rounded px-1.5 py-0.5 text-dim hover:bg-muted" onClick={() => onSelect(null)}>
           back to latest
         </button>
       )}

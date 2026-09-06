@@ -8,7 +8,6 @@
   },
   "dependencies": {
     "@enkaku/adb": "workspace:*",
-    "@enkaku/drivers": "workspace:*",
     "@enkaku/protocol": "workspace:*",
     "@enkaku/toolchain": "workspace:*",
     "zod": "^4.0.0",

@@ -34,7 +34,7 @@ This package's configuration follows what `create-next-app` produces (TypeScript
 
 ## Design system
 
-Tokens, screen patterns, and writing rules live in [`docs/design.md`](../../docs/design.md). One rule worth repeating: write Tailwind v4 colour classes as `bg-surface` and `text-fg-muted`, never `bg-[--color-surface]` — the v3 bracket form compiles to nothing in v4 and fails silently.
+Tokens, screen patterns, and writing rules live in [`docs/design.md`](../../docs/design.md). One rule worth repeating: write Tailwind v4 colour classes as `bg-panel` and `text-faint`, never `bg-[--color-panel]` — the v3 bracket form compiles to nothing in v4 and fails silently. `bg-surface`/`text-fg-muted` are the prototype vocabulary (`theme.css` block D); no screen names them any more, and `scripts/check-design-tokens.ts` fails the build if one comes back.
 
 ## Notes
 

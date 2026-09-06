@@ -56,7 +56,7 @@ export function PairControl({
         error={Boolean(error)}
         onChange={setLo}
       />
-      <span className="text-[11px] text-fg-subtle">~</span>
+      <span className="text-[11px] text-faint">~</span>
       <NumberField
         ariaLabel={`${label} maximum`}
         value={hi}

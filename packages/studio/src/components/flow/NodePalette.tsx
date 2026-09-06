@@ -75,9 +75,9 @@ export function NodePalette({
         <CommandInput placeholder="Search nodes…" value={query} onValueChange={setQuery} aria-label="Search nodes" />
         <CommandList className="max-h-60">
           {error ? (
-            <div className="px-3 py-4 text-[12.5px] text-led-danger">{error}</div>
+            <div className="px-3 py-4 text-[12.5px] text-danger">{error}</div>
           ) : !types ? (
-            <div className="px-3 py-4 text-[12.5px] text-fg-muted">Loading…</div>
+            <div className="px-3 py-4 text-[12.5px] text-dim">Loading…</div>
           ) : (
             <>
               <CommandEmpty>No node matches.</CommandEmpty>
@@ -94,10 +94,10 @@ export function NodePalette({
                           onOpenChange(false)
                         }}
                       >
-                        <Icon className="size-4 shrink-0 text-fg-muted" aria-hidden />
+                        <Icon className="size-4 shrink-0 text-dim" aria-hidden />
                         <div className="min-w-0 flex-1">
                           <p className="truncate">{t.title}</p>
-                          {t.description && <p className="truncate text-[11px] text-fg-subtle">{t.description}</p>}
+                          {t.description && <p className="truncate text-[11px] text-faint">{t.description}</p>}
                         </div>
                       </CommandItem>
                     )

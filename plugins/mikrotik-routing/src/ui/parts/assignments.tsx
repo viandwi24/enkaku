@@ -147,10 +147,10 @@ export const PAIRING_NOTE_LABEL: Record<PairingNote, string> = {
 }
 
 export const PAIRING_NOTE_TONE: Record<PairingNote, string> = {
-  ok: 'text-led-ok',
-  'no-such-device': 'text-led-danger',
-  'already-assigned': 'text-led-warn',
-  'no-path': 'text-led-warn',
+  ok: 'text-ok',
+  'no-such-device': 'text-danger',
+  'already-assigned': 'text-warn',
+  'no-path': 'text-warn',
 }
 
 // ---------------------------------------------------------------------------
@@ -315,13 +315,13 @@ export function describeSkipReason(reason: string | undefined): string {
 function HealthBadge({ health }: { health: PathHealth | undefined }) {
   if (!health) {
     return (
-      <Badge variant="outline" className="text-fg-muted">
+      <Badge variant="outline" className="text-dim">
         Unknown
       </Badge>
     )
   }
   return (
-    <Badge variant="outline" className={cn(health.up ? 'text-led-ok' : 'text-led-danger')}>
+    <Badge variant="outline" className={cn(health.up ? 'text-ok' : 'text-danger')}>
       {health.up ? 'Up' : 'Down'}
     </Badge>
   )
@@ -336,7 +336,7 @@ function LanCell({ row, draft, onDraftChange, onSaveManual, busy }: { row: Fleet
   if (row.lan.state === 'needs-address') {
     return (
       <div className="space-y-1.5">
-        <p className="text-[11px] text-fg-muted">No address known yet — type one in.</p>
+        <p className="text-[11px] text-dim">No address known yet — type one in.</p>
         <div className="flex gap-1.5">
           <Input value={draft} onChange={(e) => onDraftChange(e.target.value)} placeholder="192.168.10.x" className="h-8 w-36 text-[12px]" />
           <Button size="sm" variant="outline" disabled={!looksLikeIpv4(draft) || busy} onClick={onSaveManual}>
@@ -349,10 +349,10 @@ function LanCell({ row, draft, onDraftChange, onSaveManual, busy }: { row: Fleet
   return (
     <div className="space-y-1">
       <span className="readout text-[12px]">{row.lan.lanIp}</span>
-      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-fg-muted">
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-dim">
         <Badge variant="outline">{row.lan.lanIpSource}</Badge>
         {row.lan.leaseKind === 'dynamic' ? (
-          <span className="text-led-warn" title="This IP was handed out by DHCP and can move to a different phone — a stale IP silently steers the wrong device (§3.4).">
+          <span className="text-warn" title="This IP was handed out by DHCP and can move to a different phone — a stale IP silently steers the wrong device (§3.4).">
             dynamic lease
           </span>
         ) : null}
@@ -362,20 +362,20 @@ function LanCell({ row, draft, onDraftChange, onSaveManual, busy }: { row: Fleet
 }
 
 const PLAN_KIND_LABEL: Record<PlanRow['kind'], string> = { create: '+ create', update: '~ update', delete: '- delete', skip: '! skip', foreign: '? foreign' }
-const PLAN_KIND_TONE: Record<PlanRow['kind'], string> = { create: 'text-led-ok', update: 'text-fg', delete: 'text-led-danger', skip: 'text-led-warn', foreign: 'text-fg-muted' }
+const PLAN_KIND_TONE: Record<PlanRow['kind'], string> = { create: 'text-ok', update: 'text-text', delete: 'text-danger', skip: 'text-warn', foreign: 'text-dim' }
 
 function PlanRowLine({ row }: { row: PlanRow }) {
   const overDownPath = (row.kind === 'create' || row.kind === 'update') && row.overDownPath === true
   return (
-    <div className={cn('flex flex-wrap items-baseline gap-2 border-b border-border py-1.5 text-[12px] last:border-0', overDownPath ? 'text-led-warn' : PLAN_KIND_TONE[row.kind])}>
+    <div className={cn('flex flex-wrap items-baseline gap-2 border-b border-border py-1.5 text-[12px] last:border-0', overDownPath ? 'text-warn' : PLAN_KIND_TONE[row.kind])}>
       <span className="w-16 shrink-0 font-medium">{PLAN_KIND_LABEL[row.kind]}</span>
       <span className="readout">{row.endpointKey ?? '—'}</span>
       {row.kind === 'update' ? (
-        <span className="text-fg-muted">
+        <span className="text-dim">
           {row.fromPathId} → {row.toPathId}
         </span>
       ) : (
-        <span className="text-fg-muted">{row.pathId ?? '—'}</span>
+        <span className="text-dim">{row.pathId ?? '—'}</span>
       )}
       {/*
         Plan 132 (M97) §4.3, acceptance criterion 2: a row written over a down
@@ -384,11 +384,11 @@ function PlanRowLine({ row }: { row: PlanRow }) {
         the mark right where the row is, not a count they have to cross-check.
       */}
       {(row.kind === 'create' || row.kind === 'update') && row.overDownPath ? (
-        <span className="w-full basis-full text-led-warn">Path is down — no internet on this device until it returns.</span>
+        <span className="w-full basis-full text-warn">Path is down — no internet on this device until it returns.</span>
       ) : row.kind === 'skip' ? (
-        <span className="w-full basis-full text-fg-muted">{describeSkipReason(row.reason)}</span>
+        <span className="w-full basis-full text-dim">{describeSkipReason(row.reason)}</span>
       ) : row.reason ? (
-        <span className="text-fg-muted">({row.reason})</span>
+        <span className="text-dim">({row.reason})</span>
       ) : null}
     </div>
   )
@@ -436,23 +436,23 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
         ) : error ? (
           <ErrorState message={error} onRetry={() => setError(null)} />
         ) : preview && isRefusal(preview) ? (
-          <p className="text-[12px] text-led-danger">{preview.message}</p>
+          <p className="text-[12px] text-danger">{preview.message}</p>
         ) : previewOk ? (
           <div className="space-y-3">
             {previewOk.localException.status !== 'ok' ? (
-              <div className="space-y-1.5 rounded-lg border border-led-danger/40 bg-led-danger/5 p-3">
-                <p className="text-[12px] font-medium text-led-danger">Apply is refused — the local-exception rule (§3.2) is not ok.</p>
-                <p className="text-[11px] leading-relaxed text-fg-muted">{previewOk.localException.message}</p>
-                <p className="text-[11px] text-fg-muted">Fix it on the Settings tab first — applying with this unresolved risks losing ADB to every device it touches.</p>
+              <div className="space-y-1.5 rounded-lg border border-danger/40 bg-danger/5 p-3">
+                <p className="text-[12px] font-medium text-danger">Apply is refused — the local-exception rule (§3.2) is not ok.</p>
+                <p className="text-[11px] leading-relaxed text-dim">{previewOk.localException.message}</p>
+                <p className="text-[11px] text-dim">Fix it on the Settings tab first — applying with this unresolved risks losing ADB to every device it touches.</p>
               </div>
             ) : null}
 
             {previewOk.blocked.length > 0 ? (
-              <div className="space-y-1 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
-                <p className="text-[12px] font-medium text-led-warn">
+              <div className="space-y-1 rounded-lg border border-warn/40 bg-warn/5 p-3">
+                <p className="text-[12px] font-medium text-warn">
                   {previewOk.blocked.length} device{previewOk.blocked.length === 1 ? '' : 's'} cannot be applied yet
                 </p>
-                <ul className="list-inside list-disc text-[11px] text-fg-muted">
+                <ul className="list-inside list-disc text-[11px] text-dim">
                   {previewOk.blocked.map((b) => (
                     <li key={b.deviceId}>
                       {b.label} — {b.reason}
@@ -474,8 +474,8 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
               any other path.
             */}
             {overDownPath ? (
-              <div className="space-y-1.5 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
-                <p className="text-[12px] font-medium text-led-warn">
+              <div className="space-y-1.5 rounded-lg border border-warn/40 bg-warn/5 p-3">
+                <p className="text-[12px] font-medium text-warn">
                   {overDownPath.count} device{overDownPath.count === 1 ? '' : 's'} will have no internet: the assigned path is down ({overDownPath.pathIds.join(', ')}).
                 </p>
                 {/*
@@ -488,7 +488,7 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
                   names the exact subnet.
                 */}
                 {overDownPath.paths.some((p) => describeDownReason(p.reason, null)) ? (
-                  <ul className="space-y-0.5 text-[11px] leading-relaxed text-fg-muted">
+                  <ul className="space-y-0.5 text-[11px] leading-relaxed text-dim">
                     {overDownPath.paths.map((p) => {
                       const why = describeDownReason(p.reason, null)
                       return why ? (
@@ -499,7 +499,7 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
                     })}
                   </ul>
                 ) : null}
-                <p className="text-[11px] leading-relaxed text-fg-muted">
+                <p className="text-[11px] leading-relaxed text-dim">
                   The rule is written anyway — an assignment is a hard constraint, not a preference. This is what keeps a device off any other path (and off any other IP) rather than quietly sharing
                   one it should not be on: it stays offline until the path comes back, instead of falling back to its previous route.
                 </p>
@@ -507,7 +507,7 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
             ) : null}
 
             {previewOk.rows.length === 0 ? (
-              <p className="text-[12px] text-fg-muted">Nothing to change — the router already matches every noted assignment.</p>
+              <p className="text-[12px] text-dim">Nothing to change — the router already matches every noted assignment.</p>
             ) : (
               <div className="max-h-72 overflow-y-auto rounded-lg border border-border p-2">
                 {previewOk.rows.map((row, i) => (
@@ -522,14 +522,14 @@ function ApplyDialog({ open, onOpenChange, onApplied }: { open: boolean; onOpenC
                 {result.ok ? (
                   <ul className="space-y-0.5">
                     {result.outcomes.map((o, i) => (
-                      <li key={i} className={o.outcome === 'applied' ? 'text-led-ok' : 'text-led-danger'}>
+                      <li key={i} className={o.outcome === 'applied' ? 'text-ok' : 'text-danger'}>
                         {o.row.kind} {o.row.endpointKey ?? ''} — {o.outcome}
                         {o.message ? `: ${o.message}` : ''}
                       </li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="text-led-danger">{result.message}</p>
+                  <p className="text-danger">{result.message}</p>
                 )}
               </div>
             ) : null}
@@ -674,15 +674,15 @@ function BulkBuilderDialog({
         <div className="space-y-3">
           <div className="grid gap-3 @sm:grid-cols-4">
             <div className="space-y-1">
-              <label className="text-[11px] font-medium text-fg-muted">From device #</label>
+              <label className="text-[11px] font-medium text-dim">From device #</label>
               <Input type="number" inputMode="numeric" value={fromText} onChange={(e) => setFromText(e.target.value)} placeholder="1" className="h-8 text-[12.5px]" />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] font-medium text-fg-muted">To device #</label>
+              <label className="text-[11px] font-medium text-dim">To device #</label>
               <Input type="number" inputMode="numeric" value={toText} onChange={(e) => setToText(e.target.value)} placeholder="20" className="h-8 text-[12.5px]" />
             </div>
             <div className="space-y-1 @sm:col-span-1">
-              <label className="text-[11px] font-medium text-fg-muted">Starting path</label>
+              <label className="text-[11px] font-medium text-dim">Starting path</label>
               <Combobox
                 value={startPathId}
                 onValueChange={setStartPathId}
@@ -694,7 +694,7 @@ function BulkBuilderDialog({
               />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] font-medium text-fg-muted">When devices outrun paths</label>
+              <label className="text-[11px] font-medium text-dim">When devices outrun paths</label>
               <Select value={overflow} onValueChange={(v) => setOverflow(v as BulkPairing['overflow'])}>
                 <SelectTrigger className="h-8 w-full text-[12px]">
                   <SelectValue />
@@ -708,21 +708,21 @@ function BulkBuilderDialog({
           </div>
 
           {duplicates.length > 0 ? (
-            <p className="text-[11px] text-led-warn">
+            <p className="text-[11px] text-warn">
               Device number{duplicates.length === 1 ? '' : 's'} {duplicates.join(', ')} {duplicates.length === 1 ? 'is' : 'are'} carried by more than one enrolled device — only one of them can be
               matched by number, and the preview below cannot show which. Fix the duplicate number on the fleet before relying on this range.
             </p>
           ) : null}
 
           {!rangeEntered ? (
-            <p className="text-[12px] text-fg-muted">Enter both ends of the range to see a preview.</p>
+            <p className="text-[12px] text-dim">Enter both ends of the range to see a preview.</p>
           ) : preview && 'error' in preview ? (
-            <p className="text-[12px] text-led-danger">{preview.error}</p>
+            <p className="text-[12px] text-danger">{preview.error}</p>
           ) : paths.length === 0 ? (
-            <p className="text-[12px] text-fg-muted">No egress paths on the router — nothing to pair against.</p>
+            <p className="text-[12px] text-dim">No egress paths on the router — nothing to pair against.</p>
           ) : (
             <div className="space-y-1.5">
-              <p className="text-[11px] text-fg-muted">
+              <p className="text-[11px] text-dim">
                 {writable.length} of {rows.length} row{rows.length === 1 ? '' : 's'} will be written.
               </p>
               <div className="max-h-64 overflow-y-auto rounded-lg border border-border">
@@ -933,7 +933,7 @@ export function AssignmentsTab() {
   return (
     <div className="@container space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">
+        <p className="max-w-prose text-[12px] leading-relaxed text-dim">
           Every device in the farm, its resolved LAN address (§3.4), and which egress path it is noted to use. Choosing a path here writes a note only — nothing on the router changes until Apply
           is pressed and confirmed.
         </p>
@@ -959,18 +959,18 @@ export function AssignmentsTab() {
         scrolling list is a warning nobody read.
       */}
       {sharedPublicIps.length > 0 ? (
-        <div className="space-y-1.5 rounded-lg border border-led-danger/40 bg-led-danger/5 p-3">
-          <p className="text-[12px] font-medium text-led-danger">
+        <div className="space-y-1.5 rounded-lg border border-danger/40 bg-danger/5 p-3">
+          <p className="text-[12px] font-medium text-danger">
             {sharedPublicIps.length === 1 ? 'Two paths are egressing from one public IP.' : `${sharedPublicIps.length} public IPs are each shared by more than one path.`}
           </p>
-          <ul className="list-inside list-disc text-[11px] leading-relaxed text-fg-muted">
+          <ul className="list-inside list-disc text-[11px] leading-relaxed text-dim">
             {sharedPublicIps.map((shared) => (
               <li key={shared.publicIp}>
                 <span className="readout">{shared.publicIp}</span> — seen from {shared.pathIds.join(', ')}
               </li>
             ))}
           </ul>
-          <p className="text-[11px] leading-relaxed text-fg-muted">
+          <p className="text-[11px] leading-relaxed text-dim">
             Read from the devices themselves by <span className="readout">verify-egress</span>, not assumed from the router. Devices on different paths are supposed to carry different identities; two paths behind one
             IP usually means those modems share an upstream, or one path is not steering the traffic it was assigned.
           </p>
@@ -1005,7 +1005,7 @@ export function AssignmentsTab() {
               aria-label="Filter devices"
               className="h-8 max-w-xs text-[12.5px]"
             />
-            <span className="readout text-[11.5px] text-fg-muted">
+            <span className="readout text-[11.5px] text-dim">
               {filtered.length} of {devices.length} device{devices.length === 1 ? '' : 's'}
             </span>
             {/*
@@ -1015,8 +1015,8 @@ export function AssignmentsTab() {
               write (§0.3).
             */}
             {revalidating ? (
-              <span className="flex items-center gap-1.5 text-[11px] text-fg-muted">
-                <span className="size-1.5 animate-pulse rounded-full bg-fg-subtle" aria-hidden />
+              <span className="flex items-center gap-1.5 text-[11px] text-dim">
+                <span className="size-1.5 animate-pulse rounded-full bg-faint" aria-hidden />
                 refreshing
               </span>
             ) : null}
@@ -1106,7 +1106,7 @@ export function AssignmentsTab() {
                             neither has been given a number yet.
                           */}
                           <DeviceName number={row.number} label={row.label || row.stableId} className="font-medium" />
-                          <div className="readout wrap-anywhere whitespace-normal text-[11px] text-fg-muted">{row.stableId}</div>
+                          <div className="readout wrap-anywhere whitespace-normal text-[11px] text-dim">{row.stableId}</div>
                         </TableCell>
                         <TableCell>
                           <LanCell
@@ -1143,7 +1143,7 @@ export function AssignmentsTab() {
                             triggerClassName="h-8 text-[12px]"
                           />
                         </TableCell>
-                        <TableCell>{row.assignment.pathId ? <HealthBadge health={assignedHealth} /> : <span className="text-fg-muted">—</span>}</TableCell>
+                        <TableCell>{row.assignment.pathId ? <HealthBadge health={assignedHealth} /> : <span className="text-dim">—</span>}</TableCell>
                         <TableCell>
                           <Button variant="ghost" size="sm" disabled={(!row.assignment.pathId && !row.assignment.lanIp) || rowBusy} onClick={() => void unassign(row)}>
                             Unassign

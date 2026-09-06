@@ -97,3 +97,124 @@ describe('createFarmSettingsStore — legacy row migration (plan 212 §4.8)', ()
     expect(second.get().devices.tempThresholdC).toBe(41)
   })
 })
+
+/**
+ * `resetSections` — the only way a farm that has already run picks up a
+ * default CHANGED in a later release.
+ *
+ * The row is written out in full on first boot, so every key is stored
+ * explicitly and a stored value always beats a new schema default. Dropping
+ * the key and re-parsing is what hands the section back to the schema.
+ */
+describe('createFarmSettingsStore — resetSections (owner, 2026-09-06)', () => {
+  test('a section an operator changed goes back to the schema default', () => {
+    const store = createFarmSettingsStore(setUpDb())
+    store.update({ general: { name: 'Rack B' } })
+    expect(store.get().general.name).toBe('Rack B')
+
+    const after = store.resetSections(['general'])
+    expect(after.general.name).toBe('Enkaku farm')
+    expect(store.get().general.name).toBe('Enkaku farm')
+  })
+
+  test('only the named section moves — everything else keeps the operator’s values', () => {
+    const store = createFarmSettingsStore(setUpDb())
+    store.update({ general: { name: 'Rack B' }, privacy: { overControl: 'forbid' } })
+
+    store.resetSections(['general'])
+    expect(store.get().general.name).toBe('Enkaku farm')
+    expect(store.get().privacy.overControl).toBe('forbid')
+  })
+
+  test('several sections at once', () => {
+    const store = createFarmSettingsStore(setUpDb())
+    store.update({ general: { name: 'Rack B' }, privacy: { overControl: 'forbid' } })
+
+    const after = store.resetSections(['general', 'privacy'])
+    expect(after.general.name).toBe('Enkaku farm')
+    expect(after.privacy.overControl).toBe('allow')
+  })
+
+  test('the write is persisted, not just cached — a second store on the same db reads it back', () => {
+    const db = setUpDb()
+    const store = createFarmSettingsStore(db)
+    store.update({ general: { name: 'Rack B' } })
+    store.resetSections(['general'])
+
+    expect(createFarmSettingsStore(db).get().general.name).toBe('Enkaku farm')
+  })
+
+  test('onChange listeners are notified, the same as an update', () => {
+    const store = createFarmSettingsStore(setUpDb())
+    store.update({ general: { name: 'Rack B' } })
+    const seen: string[] = []
+    store.onChange((s) => seen.push(s.general.name))
+
+    store.resetSections(['general'])
+    expect(seen).toEqual(['Enkaku farm'])
+  })
+
+  /**
+   * The one that matters most. `privacy.adbCommand` is `true` in the schema
+   * and `false` on a server-mode (network-exposed) farm, and that difference
+   * is applied outside Zod. A reset that handed back the schema's own `true`
+   * would quietly re-enable the Adb command action for every operator on an
+   * install that had deliberately been given it off — a settings reset must
+   * never widen what a farm exposes.
+   */
+  test('resetting privacy on a server-mode farm keeps adbCommand off, not the schema’s true', () => {
+    const store = createFarmSettingsStore(setUpDb(), { authMode: 'server' })
+    store.update({ privacy: { adbCommand: true, overControl: 'forbid' } })
+    expect(store.get().privacy.adbCommand).toBe(true)
+
+    const after = store.resetSections(['privacy'])
+    expect(after.privacy.adbCommand).toBe(false)
+    // ...and the rest of the section still resets normally.
+    expect(after.privacy.overControl).toBe('allow')
+  })
+
+  test('a loopback farm resetting privacy gets the ordinary schema default', () => {
+    const store = createFarmSettingsStore(setUpDb(), { authMode: 'local' })
+    store.update({ privacy: { adbCommand: false } })
+
+    expect(store.resetSections(['privacy']).privacy.adbCommand).toBe(true)
+  })
+
+  test('an unknown section is refused, and nothing is written', () => {
+    const store = createFarmSettingsStore(setUpDb())
+    store.update({ general: { name: 'Rack B' } })
+
+    expect(() => store.resetSections(['generall'])).toThrow(/not a settings section/)
+    expect(store.get().general.name).toBe('Rack B')
+  })
+
+  test('one bad name in a list refuses the whole call — never a partial reset', () => {
+    const store = createFarmSettingsStore(setUpDb())
+    store.update({ general: { name: 'Rack B' }, privacy: { overControl: 'forbid' } })
+
+    expect(() => store.resetSections(['general', 'nope'])).toThrow(/not a settings section/)
+    expect(store.get().general.name).toBe('Rack B')
+    expect(store.get().privacy.overControl).toBe('forbid')
+  })
+
+  test('an empty list is a caller bug, not a silent no-op', () => {
+    const store = createFarmSettingsStore(setUpDb())
+    expect(() => store.resetSections([])).toThrow(/at least one/)
+  })
+
+  test('resetting a section that is already at its defaults is a harmless no-op', () => {
+    const store = createFarmSettingsStore(setUpDb())
+    const before = store.get()
+    expect(store.resetSections(['general'])).toEqual(before)
+  })
+
+  test('the reset never reaches outside farm_settings — the row count is unchanged', () => {
+    const db = setUpDb()
+    const store = createFarmSettingsStore(db)
+    store.update({ general: { name: 'Rack B' } })
+    store.resetSections(['general'])
+
+    expect(db.select().from(farmSettings).all()).toHaveLength(1)
+    expect(db.select().from(farmSettings).where(eq(farmSettings.id, 1)).get()).toBeDefined()
+  })
+})

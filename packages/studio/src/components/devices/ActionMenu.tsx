@@ -129,7 +129,7 @@ export function ActionMenu({
                */
               <div
                 className={cn(
-                  'absolute w-[212px] rounded-card border border-border bg-panel p-1 shadow-popover',
+                  'absolute w-[212px] rounded-card border border-border bg-panel p-1 shadow-panel-2',
                   submenuSide === 'left' ? 'right-full mr-1' : 'left-full ml-1',
                   submenuAlign === 'bottom' ? 'bottom-0' : 'top-0',
                 )}

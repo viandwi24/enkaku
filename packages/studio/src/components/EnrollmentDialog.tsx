@@ -110,16 +110,16 @@ function UsbSteps({ unauthorizedSerials, detected }: { unauthorizedSerials: stri
       <ol className="space-y-2">
         {steps.map((text, i) => (
           <li key={i} className="flex gap-2.5 text-[12.5px] leading-relaxed">
-            <span className="readout mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-surface-2 text-[10px] text-fg-muted">
+            <span className="readout mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-panel-2 text-[10px] text-dim">
               {i + 1}
             </span>
-            <span className="text-fg-muted">{text}</span>
+            <span className="text-dim">{text}</span>
           </li>
         ))}
       </ol>
 
       {unauthorizedSerials.length > 0 && (
-        <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-2 text-[12px] text-led-warn">
+        <p className="rounded border border-warn/30 bg-warn/5 px-2.5 py-2 text-[12px] text-warn">
           Waiting for approval on the phone: <span className="readout">{unauthorizedSerials.join(', ')}</span>
         </p>
       )}
@@ -173,9 +173,9 @@ function WirelessSteps({ detected }: { detected: Detected | null }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-[12.5px] leading-relaxed text-fg-muted">
-        On the phone: Developer options → <strong className="text-fg">Wireless debugging</strong> → tap{' '}
-        <strong className="text-fg">Pair device with pairing code</strong>. Leave that screen open — the code
+      <p className="text-[12.5px] leading-relaxed text-dim">
+        On the phone: Developer options → <strong className="text-text">Wireless debugging</strong> → tap{' '}
+        <strong className="text-text">Pair device with pairing code</strong>. Leave that screen open — the code
         expires when it closes.
       </p>
 
@@ -207,7 +207,7 @@ function WirelessSteps({ detected }: { detected: Detected | null }) {
       </div>
 
       {/* Two different ports is the single most common point of confusion. */}
-      <p className="text-[11.5px] leading-relaxed text-fg-subtle">
+      <p className="text-[11.5px] leading-relaxed text-faint">
         The pairing port is in the code window that is open right now. The connect port is on the main Wireless
         debugging screen — it is a different number.
       </p>
@@ -220,7 +220,7 @@ function WirelessSteps({ detected }: { detected: Detected | null }) {
         <pre
           className={cn(
             'readout max-h-32 overflow-auto whitespace-pre-wrap rounded border p-2 text-[11px]',
-            failed ? 'border-led-danger/40 text-led-danger' : 'text-fg-muted',
+            failed ? 'border-danger/40 text-danger' : 'text-dim',
           )}
         >
           {message}
@@ -234,15 +234,15 @@ function WirelessSteps({ detected }: { detected: Detected | null }) {
 
 function DetectionStatus({ detected, waiting }: { detected: Detected | null; waiting: string }) {
   return detected ? (
-    <p className="flex items-center gap-2 rounded border border-led-ok/30 bg-led-ok/5 px-2.5 py-2 text-[12.5px] text-led-ok">
+    <p className="flex items-center gap-2 rounded border border-ok/30 bg-ok/5 px-2.5 py-2 text-[12.5px] text-ok">
       <Check className="size-4" aria-hidden />
       {detected.admitted
         ? `${detected.label} is in the farm.`
         : `${detected.label} is connected. Add it from Discovered to finish.`}
     </p>
   ) : (
-    <p className="flex items-center gap-2 text-[12px] text-fg-subtle">
-      <span className="size-1.5 animate-pulse rounded-full bg-fg-subtle" aria-hidden />
+    <p className="flex items-center gap-2 text-[12px] text-faint">
+      <span className="size-1.5 animate-pulse rounded-full bg-faint" aria-hidden />
       {waiting}
     </p>
   )

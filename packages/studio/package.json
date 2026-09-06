@@ -34,7 +34,6 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@enkaku/plugin-tiktok": "workspace:*",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^20",
     "@types/react": "^19",

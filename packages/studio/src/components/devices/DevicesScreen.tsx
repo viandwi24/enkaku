@@ -150,8 +150,11 @@ export function DevicesScreen() {
   const selection = useDeviceSelection({
     filteredIds,
     containerRef,
-    onOpenControl: (id) => {
-      const mirror = retargetSelection(id, [...selection.selected])
+    // `selectedNow` comes from the hook rather than from `selection` in this
+    // closure: reading it back off the object being declared here made the
+    // mirror depend on whether a pending collapse had already fired.
+    onOpenControl: (id, selectedNow) => {
+      const mirror = retargetSelection(id, selectedNow)
       selection.set(mirror)
       setFocus(id, mirror)
     },

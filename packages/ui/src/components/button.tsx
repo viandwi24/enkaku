@@ -17,7 +17,7 @@ const buttonVariants = cva(
         // the primary action of the dialog it sits in. The soft tint it used
         // to be read as a disabled control next to an `outline` Cancel — the
         // owner reported exactly that (2026-09-05) — and three call sites had
-        // already hand-rolled `bg-led-danger text-white` around it rather than
+        // already hand-rolled `bg-danger text-white` around it rather than
         // use it, which is the clearest possible verdict on a variant.
         //
         // `text-panel` and not a new `--on-danger`: the handoff pins this

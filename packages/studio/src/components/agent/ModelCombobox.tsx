@@ -62,7 +62,7 @@ export function ModelCombobox({
           aria-expanded={open}
           aria-label="Model"
           disabled={disabled}
-          className="h-8 justify-between gap-1 rounded-md border-none bg-transparent px-2 font-medium text-fg-muted shadow-none hover:bg-surface-2 hover:text-fg aria-expanded:bg-surface-2 aria-expanded:text-fg"
+          className="h-8 justify-between gap-1 rounded-md border-none bg-transparent px-2 font-medium text-dim shadow-none hover:bg-panel-2 hover:text-text aria-expanded:bg-panel-2 aria-expanded:text-text"
         >
           <span className="readout max-w-40 truncate">{value || 'Select a model'}</span>
           <CaretUpDownIcon className="size-3.5 shrink-0 opacity-60" aria-hidden />
@@ -76,7 +76,7 @@ export function ModelCombobox({
           <CommandInput placeholder="Filter models…" />
           <CommandList>
             {error ? (
-              <div className="px-3 py-4 text-[12px] text-fg-subtle">The model list failed to load — {error}</div>
+              <div className="px-3 py-4 text-[12px] text-faint">The model list failed to load — {error}</div>
             ) : (
               <>
                 <CommandEmpty>No matching model.</CommandEmpty>
