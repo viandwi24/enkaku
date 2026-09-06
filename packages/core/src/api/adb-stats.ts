@@ -62,6 +62,10 @@ const ZERO_VIDEO: VideoStats = {
   farmCeiling: 0,
   maxTiles: 0,
   maxTilesAuto: false,
+  // 0 means "the farm did not answer"; `ScreensGrid` reads that as "keep my
+  // own default" rather than as a ramp budget of zero, which would stall the
+  // grid outright.
+  rampConcurrency: 0,
   // Plan 100 §3.1, §4.1, step 100.3 — a harmless default for the same brief
   // window every other zero-fill above covers; `daemon.ts` always supplies
   // the real classification once `deps.video` is wired.
@@ -110,7 +114,7 @@ export function createAdbStatsRoutes(deps: {
    * settings/live split). Same optional/zero-default contract as
    * `transport`/`hostAdb`/`adbHealth` above.
    */
-  video?: () => { buildsPerUsbRoot: number; farmCeiling: number; maxTiles: number; maxTilesAuto: boolean; transport: NonNullable<VideoStats>['transport'] } | null
+  video?: () => { buildsPerUsbRoot: number; farmCeiling: number; maxTiles: number; maxTilesAuto: boolean; rampConcurrency: number; transport: NonNullable<VideoStats>['transport'] } | null
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -150,6 +154,7 @@ export function createAdbStatsRoutes(deps: {
           farmCeiling: videoSettings?.farmCeiling ?? 0,
           maxTiles: videoSettings?.maxTiles ?? 0,
           maxTilesAuto: videoSettings?.maxTilesAuto ?? false,
+          rampConcurrency: videoSettings?.rampConcurrency ?? 0,
           transport: videoSettings?.transport ?? 'loopback',
         }
       : ZERO_VIDEO

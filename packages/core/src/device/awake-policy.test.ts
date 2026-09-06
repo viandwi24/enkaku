@@ -37,6 +37,8 @@ const silentLog: Logger = {
 
 const GET_TIMEOUT = 'settings get system screen_off_timeout'
 const GET_STAYON = 'settings get global stay_on_while_plugged_in'
+/** `readPowerState` asks for both keys in ONE `adb shell`; the answers come back a line each. */
+const READ_POWER = `${GET_TIMEOUT}; ${GET_STAYON}`
 
 function setUpDb(): Db {
   const opened = openDb(':memory:')
@@ -66,6 +68,11 @@ function fakeDevice(initial: { timeout?: string; stayOn?: string; wakefulness?: 
     disconnect: async () => {},
     exec: async (cmd: string) => {
       calls.push(cmd)
+      // Before the single-key reads: the combined command STARTS WITH
+      // `GET_TIMEOUT`, so matching that prefix first would answer one line to
+      // a two-line question and quietly exercise the fallback instead of the
+      // path a real device takes.
+      if (cmd === READ_POWER) return { stdout: `${state.timeout}\n${state.stayOn}`, stderr: '', exitCode: 0 }
       if (cmd.startsWith(GET_TIMEOUT)) return { stdout: state.timeout, stderr: '', exitCode: 0 }
       if (cmd.startsWith(GET_STAYON)) return { stdout: state.stayOn, stderr: '', exitCode: 0 }
       if (cmd.startsWith('settings put system screen_off_timeout')) {
@@ -200,8 +207,9 @@ describe('awake policy — apply (plan 125 §3.3, acceptance criterion 4)', () =
     const { transport, calls } = fakeDevice({ timeout: '1800000', stayOn: '7' })
     const result = await createAwakePolicy(makeDeps(db, transport)).apply(row.id, 'always')
     expect(result).toEqual({ screenOffTimeout: 'unchanged', stayOn: 'unchanged', reason: null })
-    // Two reads, nothing else — no `svc power stayon`, plan 96 §22's 1422 ms.
-    expect(calls).toEqual([GET_TIMEOUT, GET_STAYON])
+    // ONE read, nothing else — no `svc power stayon`, plan 96 §22's 1422 ms.
+    // It was two calls until the pair was batched into a single `adb shell`.
+    expect(calls).toEqual([READ_POWER])
   })
 
   /**

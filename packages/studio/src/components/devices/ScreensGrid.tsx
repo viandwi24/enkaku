@@ -8,8 +8,16 @@ import { DeviceScreenCard } from './DeviceScreenCard'
 import { useLiveSet } from './useLiveSet'
 import type { DeviceSelection } from './useDeviceSelection'
 
-const DEFAULT_MAX_TILES = 8
-const DEFAULT_RAMP_CONCURRENCY = 2
+/**
+ * Only ever reached when `/api/adb/stats` does not answer. It used to be 8,
+ * far below the ~24 `computeAutoTiles` actually resolves on a local farm, so
+ * a slow or failed stats call silently capped a twenty-phone grid at eight
+ * live tiles — and nothing on screen said why. Matching
+ * `WALL_DECODE_TILE_CEILING` makes the fallback agree with the real budget.
+ */
+const DEFAULT_MAX_TILES = 24
+/** Mirrors `WALL_RAMP_CONCURRENCY`'s own default; the server sends the real one. */
+const DEFAULT_RAMP_CONCURRENCY = 12
 
 /**
  * The auto-fill card grid (design handoff, "Screens view (card grid)") and
@@ -34,12 +42,16 @@ export function ScreensGrid({
 
   useEffect(() => {
     void api('/api/adb/stats', AdbStatsResponseSchema)
-      .then((b) => setMaxTiles(b.video && b.video.maxTiles > 0 ? b.video.maxTiles : DEFAULT_MAX_TILES))
+      .then((b) => {
+        setMaxTiles(b.video && b.video.maxTiles > 0 ? b.video.maxTiles : DEFAULT_MAX_TILES)
+        // `WALL_RAMP_CONCURRENCY`, as the farm actually resolved it. The
+        // setter used to exist with no caller, so the constant and its
+        // `ENKAKU_WALL_RAMP_CONCURRENCY` override reached nothing.
+        if (b.video && b.video.rampConcurrency > 0) setRampConcurrency(b.video.rampConcurrency)
+      })
       .catch(() => setMaxTiles(DEFAULT_MAX_TILES))
   }, [])
 
-  // Plan 212 §4.1 — `wall.rampConcurrency` is the constant `WALL_RAMP_CONCURRENCY`
-  // now (default 2, matching `DEFAULT_RAMP_CONCURRENCY` above); no live fetch.
   const liveSet = useLiveSet({ devices, maxTiles: maxTiles ?? 0, rampConcurrency })
 
   return (

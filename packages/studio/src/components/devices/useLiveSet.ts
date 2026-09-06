@@ -44,16 +44,19 @@ export const DWELL_MS = 400
 
 /**
  * How long a newly-promoted batch is assumed to occupy its ramp slot before
- * the next batch gets a turn (§3.3: "a card that waits ~900ms for its
- * turn is correct"). This is a CLIENT-side courtesy only — sessions are
- * always on now (plan 206 §4.3), so a card's `stream.start` attaches to
+ * the next batch gets a turn. This is a CLIENT-side courtesy only — sessions
+ * are always on now (plan 206 §4.3), so a card's `stream.start` attaches to
  * an already-built entry rather than racing a build; nothing server-side
  * needs pacing to protect any more. Nothing here can gate on a real
- * "connected" signal instead: `LiveView` reports no such callback, and this
- * step's file-ownership boundary excludes `LiveView.tsx` (a concurrent
- * worker's file for plan 94 step 94.2).
+ * "connected" signal instead: `LiveView` reports no such callback.
+ *
+ * It was 800ms, paired with a `rampConcurrency` of 2 — so a twenty-phone farm
+ * took ten batches and about eight seconds to fill, which reads as the farm
+ * waking two phones at a time (owner, 2026-09-06). With the gate no longer
+ * protecting anything, the step only has to be long enough that a batch has
+ * actually been handed to the decoder before the next is queued behind it.
  */
-export const RAMP_STEP_MS = 800
+export const RAMP_STEP_MS = 150
 
 export type BlockedReason = 'offline' | 'quarantined'
 

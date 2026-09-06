@@ -275,6 +275,9 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       farmCeiling: 0,
       maxTiles: 0,
       maxTilesAuto: false,
+      // 0 = "the farm did not answer"; the client keeps its own default
+      // rather than reading it as a ramp budget of zero.
+      rampConcurrency: 0,
       transport: 'loopback',
     })
   })
@@ -298,7 +301,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       auto: () => true,
       sessions: () => fakeSessions,
       alwaysOn: () => ({ running: 1, queued: 3 }),
-      video: () => ({ buildsPerUsbRoot: 4, farmCeiling: 16, maxTiles: 25, maxTilesAuto: true, transport: 'loopback' }),
+      video: () => ({ buildsPerUsbRoot: 4, farmCeiling: 16, maxTiles: 25, maxTilesAuto: true, rampConcurrency: 12, transport: 'loopback' }),
     })
     const app = withUser('operator', inner)
     const res = await app.request('/')
@@ -312,6 +315,7 @@ describe('GET /api/adb/stats (plan 23 §4.6, §6.8)', () => {
       farmCeiling: 16,
       maxTiles: 25,
       maxTilesAuto: true,
+      rampConcurrency: 12,
       transport: 'loopback',
     })
   })

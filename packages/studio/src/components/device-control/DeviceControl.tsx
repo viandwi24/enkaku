@@ -60,8 +60,29 @@ export function DeviceControl({
   const resizeStart = useRef({ my: 0, h: 0 })
   const [tab, setTab] = useState<'actions' | 'inspector' | 'device' | 'network'>('actions')
 
+  /**
+   * Refetch on retarget, and drop everything scoped to the device we are
+   * leaving.
+   *
+   * `DeviceControlHost` used to give this component `key={deviceId}`, so a
+   * retarget was a full unmount: the WebSocket went, the H.264 decoder was
+   * destroyed and rebuilt, and moving the window between two phones cost as
+   * much as opening it from cold. It does not need to — `useCast`'s own
+   * effect is keyed on `deviceId` and already tears its stream down and
+   * starts the next one — but without the remount, the two pieces of
+   * device-scoped state up here have to be cleared by hand, or the window
+   * would show the previous phone's details and rotation while streaming the
+   * new one.
+   *
+   * Deliberately NOT cleared: `drag`, `height` and `tab`. Those describe the
+   * window, not the device, and an operator moving between phones wants to
+   * keep the frame they arranged. `pendingRotation` is the other
+   * device-scoped value and is cleared in its own effect, beside where it is
+   * declared.
+   */
   useEffect(() => {
     let cancelled = false
+    setDevice(null)
     void api(`/api/devices/${encodeURIComponent(deviceId)}`, DeviceDetailResponseSchema)
       .then((res) => {
         if (!cancelled) setDevice(res.device)
@@ -70,6 +91,7 @@ export function DeviceControl({
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId])
 
   const targets = [deviceId, ...selectedIds.filter((id) => id !== deviceId)]
@@ -162,6 +184,17 @@ export function DeviceControl({
   useEffect(() => {
     if (pendingRotation !== null && storedRotation === pendingRotation) setPendingRotation(null)
   }, [storedRotation, pendingRotation])
+  /**
+   * Retargeting the window to another phone drops any optimistic rotation
+   * still held for the one we left. Without this the rail would report the
+   * previous device's requested orientation as the new device's state — the
+   * exact "a control that reports state, lying" failure the optimistic value
+   * above exists to prevent. Free before the `key` was removed, because the
+   * whole component was thrown away instead.
+   */
+  useEffect(() => {
+    setPendingRotation(null)
+  }, [deviceId])
 
   const ROTATION_LABEL: Record<RotationMode, string> = {
     device: 'Auto-rotate',

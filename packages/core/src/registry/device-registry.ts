@@ -15,6 +15,7 @@ import {
   type Readiness,
 } from '@enkaku/protocol'
 import { and, eq, gte, ne, sql } from 'drizzle-orm'
+import { DEVICE_OFFLINE_GRACE_SEC } from '../config/constants'
 import type { Db } from '../db'
 import { groups, devices, deviceEvents, discoveredDevices, type DeviceRow } from '../db/schema'
 import type { DeviceStateMachine } from '../device/state-machine'
@@ -46,6 +47,13 @@ export interface DeviceRegistryDeps {
   onDeviceReady?: (deviceId: string) => void
   /** Main-stream device events: device.online / device.offline / device.unauthorized (Plan 18 §4.2). */
   record?: EventRecorder['record']
+  /**
+   * How long a serial adb has dropped is held before the device is called
+   * offline. Defaults to `DEVICE_OFFLINE_GRACE_SEC`; `() => 0` restores the
+   * pre-grace behaviour (`onRemove` applies synchronously), which is what
+   * the tests that assert an immediate transition pass.
+   */
+  removalGraceMs?: () => number
   /** `readiness.defaultDesired` (plan 43 §4.4) — see the comment on `defaultsForNewDevice` below. Plan 212 §4.1, §3.3 decision 3 removed the farm-wide `deviceDefaults` accessor entirely: a new device always starts from `defaultDeviceSettings()`. */
   defaultDesiredReadiness?: () => Readiness
   /**
@@ -543,6 +551,40 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
   /** serial → how many backoff steps have already been used; reset to 0 the moment a probe succeeds. */
   const probeRetryAttempt = new Map<string, number>()
 
+  /**
+   * serial → the timer holding a removal open until the grace expires
+   * (`removalGraceMs`).
+   *
+   * ### Why a `remove` needs the same grace an `offline` already had
+   *
+   * `onTrackerEvent` deliberately ignores `state: 'offline'`/`'authorizing'`
+   * and lets the reconciler watch them over `DEVICE_OFFLINE_GRACE_SEC`,
+   * because "they often resolve themselves within a second or two" (plan 85
+   * §3.3, F10). That reasoning is about the LINK, not about which of adb's
+   * words describes it — and for an `adb-tcp` device a brief link problem
+   * does not produce `state: 'offline'` at all: the adb server drops the
+   * transport outright, so the tracker emits `remove`. That path jumped
+   * straight to `DEVICE_DISCONNECTED`, which is why a phone read
+   * "Disconnected" and was back moments later with nothing wrong (owner,
+   * 2026-09-06).
+   *
+   * So the grace moves into `onRemove` itself rather than into the tracker
+   * branch: the reconciler's own safety net (`reconcile.ts`, for a `remove`
+   * event that never arrived) calls the same function and needs the same
+   * patience. `onOnline` cancels a pending removal, so a device that comes
+   * back inside the window never transitions at all — no flap to render.
+   */
+  const pendingRemovals = new Map<string, ReturnType<typeof setTimeout>>()
+
+  function cancelPendingRemoval(serial: string): void {
+    const timer = pendingRemovals.get(serial)
+    if (timer) {
+      clearTimeout(timer)
+      pendingRemovals.delete(serial)
+      log.debug(`device ${serial} reappeared inside the offline grace — removal cancelled`)
+    }
+  }
+
   function cancelProbeRetry(serial: string): void {
     const timer = pendingProbeRetries.get(serial)
     if (timer) {
@@ -569,6 +611,11 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
   }
 
   async function onOnline(serial: string): Promise<void> {
+    // Before the in-flight guard: a serial that reappears while a probe is
+    // already running still has its pending removal to call off, and
+    // returning early without doing so would let the timer fire underneath a
+    // device that is demonstrably back.
+    cancelPendingRemoval(serial)
     if (probesInFlight.has(serial)) return
     probesInFlight.add(serial)
     try {
@@ -725,12 +772,40 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     }
   }
 
+  /**
+   * The deferring front half. Holds the transition for `removalGraceMs` so a
+   * link that repairs itself never becomes a "Disconnected" the operator has
+   * to interpret — see `pendingRemovals` for why `remove` needs the grace
+   * `state: 'offline'` already had.
+   *
+   * `cancelProbeRetry` still runs immediately, not after the grace: plan 85
+   * §5 step 85.2 requires the backoff to stop "the instant the device
+   * disappears", and a device that returns inside the window comes back
+   * through `onOnline`, which probes fresh anyway.
+   */
   function onRemove(serial: string): void {
-    // Cancel BEFORE the early returns below (plan 85 §5 step 85.2's "the
-    // retry is cancelled when the device disappears") — a serial can be
-    // mid-backoff with no `devices` row at all (every probe has failed so
-    // far), and it must still stop retrying the instant adb says it is gone.
     cancelProbeRetry(serial)
+    // Already counting down — a reconciler tick every 10s must not keep
+    // pushing the deadline back, or a genuinely unplugged phone would never
+    // go offline at all.
+    if (pendingRemovals.has(serial)) return
+    const graceMs = deps.removalGraceMs?.() ?? DEVICE_OFFLINE_GRACE_SEC * 1000
+    if (graceMs <= 0) {
+      applyRemoval(serial)
+      return
+    }
+    log.debug(`device ${serial} dropped by adb — holding it online for ${Math.round(graceMs / 1000)}s in case it comes back`)
+    pendingRemovals.set(
+      serial,
+      setTimeout(() => {
+        pendingRemovals.delete(serial)
+        applyRemoval(serial)
+      }, graceMs),
+    )
+  }
+
+  /** What `onRemove` did before the grace: the transition itself, unchanged. */
+  function applyRemoval(serial: string): void {
     const stableId = serialToStableId.get(serial)
     serialToStableId.delete(serial)
     const row = stableId
@@ -807,6 +882,11 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       for (const timer of pendingProbeRetries.values()) clearTimeout(timer)
       pendingProbeRetries.clear()
       probeRetryAttempt.clear()
+      // A held removal is bookkeeping, not a pending write: dropping it on
+      // stop is right, because `start()` already re-derives every status
+      // from the tracker's first snapshot.
+      for (const timer of pendingRemovals.values()) clearTimeout(timer)
+      pendingRemovals.clear()
       await client.trackDevices().stop()
     },
     listDevices() {

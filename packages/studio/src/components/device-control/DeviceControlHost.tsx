@@ -101,9 +101,20 @@ function DeviceControlHostInner(): React.JSX.Element | null {
 
   if (!request) return null
 
+  /**
+   * No `key={request.deviceId}` here, deliberately.
+   *
+   * It used to be there, and it made every host change a full unmount and
+   * remount: the WebSocket dropped, the H.264 decoder was destroyed and
+   * rebuilt, and the picture went black for as long as a cold open — so
+   * double-clicking another phone to move the window read as the click not
+   * working (owner, 2026-09-06). Nothing needed the remount: `useCast`'s
+   * stream effect is keyed on `deviceId` and already stops the old stream
+   * and starts the next one, and `DeviceControl` clears its own two
+   * device-scoped values when `deviceId` changes.
+   */
   return (
     <DeviceControl
-      key={request.deviceId}
       deviceId={request.deviceId}
       selectedIds={request.selectedIds}
       onClose={() => setCurrent(null)}

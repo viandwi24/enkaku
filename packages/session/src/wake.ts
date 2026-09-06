@@ -120,13 +120,40 @@ export async function wakeDevice(transport: Transport, opts: WakeDeviceOpts): Pr
   // swipe-only keyguard, but on a phone that is already unlocked it opens the
   // launcher's wallpaper/widget menu — and the user's next tap just closes
   // that menu instead of hitting the app they aimed at.
-  const locked = await transport
-    .exec('dumpsys window | grep -m1 isKeyguardShowing', { profile: 'probe' })
-    .then((r) => /isKeyguardShowing=true/.test(r.stdout))
-    .catch(() => false)
+  const locked = await isKeyguardShowing(transport)
   if (locked) {
     await transport.exec('input keyevent 82', { profile: 'probe' }).catch((err) => log.debug(`keyguard nudge failed: ${String(err)}`))
   }
 
   return { screenOffTimeout: timeout.outcome, stayOn: stayOn.outcome, reason: firstPowerReason(timeout, stayOn) }
+}
+
+/**
+ * Is a lock screen up right now?
+ *
+ * This ran as `dumpsys window | grep -m1 isKeyguardShowing`, which asks the
+ * WindowManager to serialise EVERYTHING — every window, every token, every
+ * animation — and then throws all but one line of it away. It is the most
+ * expensive command on the wake path, and the wake path runs per device.
+ *
+ * `dumpsys window policy` prints the section the flag actually lives in and
+ * is a small fraction of the output. It is not universal, though: the section
+ * name and the flag's spelling have both moved between Android releases, so a
+ * device that prints nothing recognisable falls back to the full dump rather
+ * than defaulting to "unlocked" — guessing wrong here means either a keyguard
+ * left up over a session (guessing false) or the launcher's widget menu
+ * opened under the operator's first tap (guessing true), and the fallback
+ * costs one extra call on exactly the devices that need it.
+ */
+async function isKeyguardShowing(transport: Transport): Promise<boolean> {
+  const read = async (cmd: string): Promise<string | null> =>
+    transport
+      .exec(cmd, { profile: 'probe' })
+      .then((r) => r.stdout)
+      .catch(() => null)
+
+  const cheap = await read('dumpsys window policy | grep -m1 isKeyguardShowing')
+  if (cheap !== null && /isKeyguardShowing=(true|false)/.test(cheap)) return /isKeyguardShowing=true/.test(cheap)
+  const full = await read('dumpsys window | grep -m1 isKeyguardShowing')
+  return full !== null && /isKeyguardShowing=true/.test(full)
 }
