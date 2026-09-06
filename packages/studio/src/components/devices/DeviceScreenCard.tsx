@@ -65,7 +65,9 @@ export function DeviceScreenCard({
     >
       <div className="relative aspect-[9/19.5] overflow-hidden rounded-inner bg-muted-2">
         {live ? (
-          <LiveView deviceId={device.id} />
+          // While the farm is rebuilding, THIS card owns the word over the
+          // picture (plan 600 §3.4) — see the overlay block below.
+          <LiveView deviceId={device.id} overlay={reconnecting !== null ? 'none' : 'auto'} />
         ) : (
           <div className="absolute inset-0 opacity-70" style={STRIPE} />
         )}
@@ -92,7 +94,19 @@ export function DeviceScreenCard({
             <span className="max-w-full truncate font-mono text-[19px] font-semibold leading-none text-text">{device.number}</span>
           )}
         </div>
-        {!live && (
+        {/*
+          The reconnect spinner is rendered over a LIVE tile too (plan 600
+          §3.4), not only over a dead one.
+
+          It used to be inside the `!live` branch alone, which meant the one
+          case it was written for — a device the always-on builder is
+          rebuilding right now — never showed it: a tile whose session dies
+          keeps `live` true (the device is still `online`; it is the SESSION
+          that died), so the operator watched the frozen last frame under the
+          word "Disconnected" while the farm was two seconds from having the
+          picture back. The activity was on the wire the whole time.
+        */}
+        {(reconnecting !== null || !live) && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5">
             {reconnecting !== null ? (
               <>

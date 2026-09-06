@@ -364,7 +364,27 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         onDisplayError: (err) => {
           const reason = err instanceof Error ? err.message : String(err)
           const current = entries.get(key)?.session
-          if (current !== undefined && current !== created) {
+          /*
+            A close we asked for is not a death (plan 600 §3.6).
+
+            Closing a scrcpy session ends its video socket, and the socket's
+            own close event runs the same `onClose` chain a crash does — so
+            every deliberate teardown arrived here as "the scrcpy session
+            ended: socket closed". The old guard let it through whenever the
+            entry was already gone from the map, which is precisely the state
+            `closeEntry` and `restartAt` are in when they call `close()`
+            (both delete the key first). The consequences were real and
+            invisible: applying video settings emitted a `stream.ended` to
+            every viewer and made the always-on builder schedule a rebuild of
+            a session that had just been rebuilt on purpose, and a device
+            being unplugged reported its end twice.
+
+            `created === null` is the one case that must still be reported:
+            the session died during its own build, before it was ever put in
+            `entries`, and there is no deliberate close that can look like
+            that.
+          */
+          if (created !== null && current !== created) {
             deps.log.debug(`ignoring a display error from a session no longer in use on ${deviceId} (${quality}): ${reason}`)
             return
           }
@@ -702,6 +722,20 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const keys = [...entries.entries()].filter(([, e]) => e.deviceId === deviceId).map(([key]) => key)
       pendingSwitches.delete(deviceId)
       await Promise.all(keys.map((key) => closeEntry(key, 'device_gone')))
+      // Tell the viewers (plan 600 §3.6).
+      //
+      // This path took every frame subscriber down with the entries and said
+      // nothing on the wire, so a browser that was watching this device kept
+      // a dead subscription and a frozen last frame, with `streaming` still
+      // true, for as long as the tab stayed open — and nothing ever asked
+      // again once the phone came back. `onDisplayError` above has always
+      // reported its own deaths; a device being unplugged is no less the end
+      // of a picture.
+      //
+      // Safe against a rebuild loop: `daemon.ts`'s `onDeviceGone` calls
+      // `alwaysOn.deviceOffline()` BEFORE this, which deletes the device's
+      // record, and `alwaysOn.sessionEnded()` schedules nothing without one.
+      if (keys.length > 0) deps.onSessionEnded?.(deviceId, 'device_gone')
     },
 
     async closeAll(reason = 'shutdown') {

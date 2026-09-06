@@ -22,6 +22,22 @@ export interface DeviceReconcilerDeps {
     onOnline(serial: string): Promise<void>
     onRemove(serial: string): void
     knownSerials(): Set<string>
+    /**
+     * Serials whose `devices` row currently reads `offline` (plan 600 §3.5).
+     *
+     * `knownSerials()` cannot answer this: it deliberately mixes the live
+     * adb view with every serial in the table, so a device the registry has
+     * marked offline still counts as "known" and the adopt path below
+     * skipped it — for as long as the core ran. That left exactly one way
+     * back for a device whose row went offline while adb kept reporting it
+     * as `device`: another tracker event, which is the very signal this
+     * whole reconciler exists because it may never come.
+     *
+     * Quarantined rows are NOT in here. `onOnline` would leave a quarantine
+     * in place (the state machine keeps it sticky), so re-probing one every
+     * tick costs a shell round-trip per device per scan and changes nothing.
+     */
+    staleOfflineSerials(): Set<string>
     /** Surfaced verbatim in `ReconcileReport.retriesPending` (plan 85 §4.4). */
     pendingRetryCount(): number
   }
@@ -90,6 +106,7 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
     const nowMs = Date.now()
     const adbList = await deps.client.listDevices()
     const known = deps.registry.knownSerials()
+    const staleOffline = deps.registry.staleOfflineSerials()
     const seenSerials = new Set<string>()
 
     const toAdopt: string[] = []
@@ -101,7 +118,12 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
       if (d.state === 'device') {
         offlineSince.delete(d.serial)
         nudgeCounts.delete(d.serial)
-        if (!known.has(d.serial)) toAdopt.push(d.serial)
+        // Unknown, or known but stuck offline (plan 600 §3.5) — both are a
+        // device adb can reach that the registry is not treating as
+        // reachable, and `onOnline` is idempotent (`probesInFlight` dedupes
+        // a concurrent tracker probe, a blocked or unadmitted device
+        // short-circuits before any row is touched).
+        if (!known.has(d.serial) || staleOffline.has(d.serial)) toAdopt.push(d.serial)
         continue
       }
       if (d.state === 'offline') {

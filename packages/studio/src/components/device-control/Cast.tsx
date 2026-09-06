@@ -1,7 +1,8 @@
 'use client'
 
-import { StatusDot, Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
+import { Spinner, StatusDot, Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
 import { LatencyOverlay } from '@/components/video/LatencyOverlay'
+import { castStatusOf } from './cast-status'
 import { castWidthPx } from './geometry'
 import type { UseCast } from './use-cast'
 
@@ -22,7 +23,12 @@ export function Cast({
   onStartDrag: (e: React.MouseEvent) => void
 }) {
   const { stats, focused, canvasRef, canvasProps } = cast
-  const live = stats.streaming && stats.staleSec < 5
+  // One vocabulary for every cast surface in Studio (plan 600 §3.3): this
+  // strip, this window's own overlay, and the Screens tile all read the
+  // same function, so a phone can never be "Disconnected" in one and
+  // "Reconnecting" in the other.
+  const status = castStatusOf(stats)
+  const live = status.kind === 'live'
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-muted">
@@ -34,7 +40,7 @@ export function Cast({
       >
         <span className="pointer-events-none flex items-center gap-1.5">
           <StatusDot state={live ? 'free' : 'offline'} className="size-2" />
-          {live ? 'Streaming' : stats.staleSec >= 5 ? `No frames for ${stats.staleSec}s` : 'Not streaming'}
+          {status.label}
         </span>
         <span className="pointer-events-none">{stats.fps.toFixed(1)} fps</span>
         <span className="pointer-events-none font-mono">{stats.width && stats.height ? `${stats.width}x${stats.height}` : '–'}</span>
@@ -74,8 +80,11 @@ export function Cast({
           )}
           <canvas ref={canvasRef} {...canvasProps} className={cn('h-full w-full bg-black object-contain outline-none', focused && 'ring-2 ring-accent')} />
           {!live && (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <span className="text-label text-dim">Disconnected</span>
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5">
+              {status.busy && <Spinner className="size-4 text-accent" />}
+              <span className={cn('text-label', status.kind === 'unauthorized' ? 'text-warn' : status.busy ? 'text-accent' : 'text-dim')}>
+                {status.label}
+              </span>
             </div>
           )}
           {latencyOverlay && stats.summary && <LatencyOverlay summary={stats.summary} inputHost={stats.inputHost} />}

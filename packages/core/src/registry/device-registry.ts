@@ -114,6 +114,13 @@ export interface DeviceRegistry {
    */
   knownSerials(): Set<string>
   /**
+   * The subset of `knownSerials()` whose stored status is `offline` — the
+   * reconciler's repair set (plan 600 §3.5). See
+   * `DeviceReconcilerDeps.registry.staleOfflineSerials` for why the adopt
+   * path cannot answer this from `knownSerials()` alone.
+   */
+  staleOfflineSerials(): Set<string>
+  /**
    * How many serials currently have a scheduled probe-retry backoff pending
    * (plan 85 §3.3 point 7, §5 step 85.2) — surfaced verbatim in
    * `ReconcileReport.retriesPending` so a human watching Rescan can see F9's
@@ -823,6 +830,17 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       const serials = new Set(serialToStableId.keys())
       for (const row of db.select({ serial: devices.serial }).from(devices).all()) {
         if (row.serial) serials.add(row.serial)
+      }
+      return serials
+    },
+    staleOfflineSerials() {
+      // Read straight from the table rather than from `serialToStableId`:
+      // the disagreement this repairs is precisely between what adb reports
+      // and what the STORED status says, and the in-memory map is on adb's
+      // side of it (see `DeviceReconcilerDeps.registry.staleOfflineSerials`).
+      const serials = new Set<string>()
+      for (const row of db.select({ serial: devices.serial, status: devices.status }).from(devices).all()) {
+        if (row.serial && row.status === 'offline') serials.add(row.serial)
       }
       return serials
     },
