@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { SettingsResponseSchema, UpdateSettingsResponseSchema } from '@enkaku/protocol'
+import { SettingsResponseSchema, UpdateSettingsResponseSchema, type FarmSettings } from '@enkaku/protocol'
 import { ErrorState, LoadingRows, api, useAction } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { narrowSchema } from '@/components/schema-form/narrowSchema'
@@ -11,6 +11,7 @@ import { farmSections } from '@/components/settings/farmSections'
 import { AccessSection } from '@/components/settings/AccessSection'
 import { ToolchainSection } from '@/components/settings/ToolchainSection'
 import { VirtualDevicesSection } from '@/components/settings/VirtualDevicesSection'
+import { ResetSectionAction } from '@/components/settings/ResetSectionAction'
 import { StorageUsageRow } from '@/components/settings/StorageUsageRow'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
 
@@ -35,7 +36,7 @@ function SettingsScreen() {
   const router = useRouter()
   const params = useSearchParams()
   const tab = params.get('tab') ?? 'general'
-  const [data, setData] = useState<{ settings: unknown; schema: unknown } | null>(null)
+  const [data, setData] = useState<{ settings: FarmSettings; schema: unknown; defaults: FarmSettings } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<unknown>(null)
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({})
@@ -103,6 +104,29 @@ function SettingsScreen() {
             busy={isPending('save')}
             dirty={JSON.stringify(draft) !== JSON.stringify(data.settings)}
           />
+          {/*
+            Distinct from `SchemaForm`'s own `onReset`, which drops unsaved
+            edits back to the SAVED values. This puts the saved values back to
+            what the BUILD ships — the only way a farm that has already run
+            picks up a default changed in a later release, since its
+            `farm_settings` row stores every key explicitly (see
+            `ResetSectionAction`). One key per section, so it renders only for
+            the schema-backed sections; `access`, `toolchain` and
+            `virtualDevices` are not settings rows at all.
+          */}
+          {keys.length === 1 && keys[0] !== undefined && (
+            <ResetSectionAction
+              sectionId={keys[0]}
+              sectionTitle={title}
+              settings={data.settings}
+              defaults={data.defaults}
+              onReset={(settings) => {
+                setData((d) => (d ? { ...d, settings } : d))
+                setDraft(settings)
+                setServerErrors({})
+              }}
+            />
+          )}
         </>
       )
     },

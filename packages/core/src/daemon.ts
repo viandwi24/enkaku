@@ -3377,7 +3377,7 @@ let blobGc: BlobGc | null = null
           shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
           transferEnabled: () => TRANSFER_ENABLED,
         }),
-        settingsRoutes: createSettingsRoutes(settingsStore),
+        settingsRoutes: createSettingsRoutes(settingsStore, { audit }),
         storageRoutes: createStorageRoutes(db),
         artifactRoutes: createArtifactRoutes({
           db,
