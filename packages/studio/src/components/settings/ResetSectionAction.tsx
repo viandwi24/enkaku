@@ -96,7 +96,7 @@ export function ResetSectionAction({
   const changes = diffSection(current, fallback, '')
 
   if (changes.length === 0) {
-    return <p className="text-meta text-fg-subtle">{sectionTitle} already matches this version&rsquo;s defaults.</p>
+    return <p className="text-meta text-faint-2">{sectionTitle} already matches this version&rsquo;s defaults.</p>
   }
 
   const reset = () =>
@@ -110,8 +110,8 @@ export function ResetSectionAction({
     <div className="mt-6 border-t border-line pt-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-row text-fg">Restore defaults</p>
-          <p className="mt-0.5 text-meta text-fg-subtle">
+          <p className="text-row text-text">Restore defaults</p>
+          <p className="mt-0.5 text-meta text-faint-2">
             {changes.length} {changes.length === 1 ? 'value differs' : 'values differ'} from what this version ships.
           </p>
         </div>
@@ -133,11 +133,11 @@ export function ResetSectionAction({
               <ul className="mt-3 max-h-56 overflow-y-auto rounded-small border border-line">
                 {changes.map((c) => (
                   <li key={c.path} className="flex items-baseline justify-between gap-3 border-b border-line px-2.5 py-1.5 last:border-b-0">
-                    <span className="min-w-0 truncate font-mono text-meta text-fg-muted">{c.path}</span>
+                    <span className="min-w-0 truncate font-mono text-meta text-faint">{c.path}</span>
                     <span className="shrink-0 text-meta">
-                      <span className="text-fg-subtle line-through">{show(c.from)}</span>
-                      <span className="mx-1.5 text-fg-subtle">&rarr;</span>
-                      <span className="text-fg">{show(c.to)}</span>
+                      <span className="text-faint-2 line-through">{show(c.from)}</span>
+                      <span className="mx-1.5 text-faint-2">&rarr;</span>
+                      <span className="text-text">{show(c.to)}</span>
                     </span>
                   </li>
                 ))}
