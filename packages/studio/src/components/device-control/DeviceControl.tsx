@@ -1,9 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DeviceDetail } from '@enkaku/protocol'
-import { api, BroadcastIcon, Button, StatusDot, Tabs, TabsContent, TabsList, TabsTrigger, XIcon } from '@enkaku/ui'
-import { DeviceDetailResponseSchema } from '@enkaku/protocol'
+import type { DeviceDetail, RotationMode } from '@enkaku/protocol'
+import { api, BroadcastIcon, Button, describeApiError, StatusDot, Tabs, TabsContent, TabsList, TabsTrigger, XIcon } from '@enkaku/ui'
+import { toast } from 'sonner'
+import { DeviceDetailResponseSchema, DeviceResponseSchema } from '@enkaku/protocol'
 import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 import { useOverlay } from '@/lib/overlays'
 import { dotStateOf } from '@/components/devices/device-state'
@@ -79,7 +80,10 @@ export function DeviceControl({
     interactive: true,
     targets,
     latencyOverlay: readLocalPrefs().latencyOverlay,
-    onRotate: () => void cycleRotation(),
+    // The hotkey stays a flip: a key chord has no face to show state on, so
+    // "the other orientation" is the only thing it can sensibly mean. The
+    // rail buttons below are the ones that name a state.
+    onRotate: () => void setRotation(rotationMode === 'lock-landscape' ? 'lock-portrait' : 'lock-landscape'),
   })
 
   /**
@@ -102,26 +106,93 @@ export function DeviceControl({
    * once and always call the CURRENT function, so there is no stale-closure
    * risk of the kind a `useCallback` with a wrong dependency list creates.
    */
-  const railRef = useRef({ sendKey: cast.sendKey, cycleRotation: () => {}, clear: cast.clearDeviceClipboardHistory, read: cast.readDeviceClipboard })
+  const railRef = useRef({ sendKey: cast.sendKey, setRotation: (_m: RotationMode) => {}, clear: cast.clearDeviceClipboardHistory, read: cast.readDeviceClipboard })
   railRef.current = {
     sendKey: cast.sendKey,
-    cycleRotation: () => void cycleRotation(),
+    setRotation: (mode: RotationMode) => void setRotation(mode),
     clear: cast.clearDeviceClipboardHistory,
     read: cast.readDeviceClipboard,
   }
   const railSendKey = useCallback((keycode: number) => railRef.current.sendKey(keycode), [])
-  const railRotate = useCallback(() => railRef.current.cycleRotation(), [])
+  const railSetRotation = useCallback((mode: RotationMode) => railRef.current.setRotation(mode), [])
   const railClearClipboard = useCallback(() => railRef.current.clear(), [])
   const railReadClipboard = useCallback(() => railRef.current.read(), [])
 
-  async function cycleRotation() {
+  /**
+   * Ask for one rotation mode, and say what the DEVICE did about it.
+   *
+   * This used to cycle `lock-portrait → lock-landscape → device` and end in
+   * `.catch(() => {})`. Two things followed from that. A cycle makes the
+   * operator press a button an unknown number of times to reach the state
+   * they want — the same objection that split Sleep and Wake into two rail
+   * buttons (CEO, 2026-09-05). And the catch swallowed everything: a refused
+   * write, a validation error, a phone that would not turn. The button wrote
+   * a database row and reported nothing, which is precisely what "the rotate
+   * button does not work" looked like from the outside.
+   *
+   * The catch hid a second, larger fault, and it is why the button had never
+   * worked at all rather than merely worked quietly: this parsed the reply
+   * with `DeviceDetailResponseSchema`, and `PATCH /api/devices/:id` answers
+   * with `DeviceResponseSchema` — a DIFFERENT device shape. Every press threw
+   * on the parse, the catch ate it, and the operator saw nothing. The setting
+   * still reached the database, which is what made it look like a UI that
+   * "sometimes" worked.
+   *
+   * `DeviceResponseSchema` is the route's own contract, and it carries the
+   * `rotation` apply result: the honest answer to "did the screen I am
+   * looking at just re-lock?", reported here rather than discarded.
+   */
+  /**
+   * What the rail highlights: the mode the device row carries, or the one
+   * just asked for while the row catches up.
+   *
+   * `device` is refetched on a poll, so without the optimistic half a button
+   * whose entire job is to show the current state stayed dark for a second or
+   * two after being pressed — the lock had already reached the phone
+   * (verified: `user_rotation=1` before the highlight moved), and the rail
+   * still showed the old one. For a control that reports state, that reads
+   * exactly like the press not registering.
+   *
+   * Cleared by the row agreeing, or by the request failing — never left to
+   * claim a state the device is not in.
+   */
+  const [pendingRotation, setPendingRotation] = useState<RotationMode | null>(null)
+  const storedRotation = (((device?.settings ?? {}) as { prep?: { rotation?: RotationMode } }).prep?.rotation ?? 'device') as RotationMode
+  const rotationMode = pendingRotation ?? storedRotation
+  useEffect(() => {
+    if (pendingRotation !== null && storedRotation === pendingRotation) setPendingRotation(null)
+  }, [storedRotation, pendingRotation])
+
+  const ROTATION_LABEL: Record<RotationMode, string> = {
+    device: 'Auto-rotate',
+    'lock-portrait': 'Portrait lock',
+    'lock-landscape': 'Landscape lock',
+    'lock-current': 'Orientation lock',
+  }
+
+  async function setRotation(mode: 'device' | 'lock-portrait' | 'lock-landscape' | 'lock-current') {
     if (!device) return
     const base = (device.settings ?? {}) as { prep?: { rotation?: string } }
-    const order = ['lock-portrait', 'lock-landscape', 'device'] as const
-    const current = base.prep?.rotation ?? 'device'
-    const next = order[(order.indexOf(current as (typeof order)[number]) + 1) % order.length]
-    const nextSettings = { ...base, prep: { ...base.prep, rotation: next } }
-    await api(`/api/devices/${deviceId}`, DeviceDetailResponseSchema, { method: 'PATCH', json: { settings: nextSettings } }).catch(() => {})
+    if ((base.prep?.rotation ?? 'device') === mode) return
+    const nextSettings = { ...base, prep: { ...base.prep, rotation: mode } }
+    setPendingRotation(mode)
+    try {
+      const res = await api(`/api/devices/${deviceId}`, DeviceResponseSchema, { method: 'PATCH', json: { settings: nextSettings } })
+      const outcome = res.rotation
+      if (!outcome || outcome.state === 'applied') return
+      // `no-session` is the common one and is not an error: the setting is
+      // saved and takes effect the moment a session opens. It still has to be
+      // said, or the screen not moving reads as a broken button.
+      if (outcome.state === 'no-session') toast.info(`${ROTATION_LABEL[mode]} saved — it applies when a session is open.`)
+      else if (outcome.state === 'busy') toast.info(`${ROTATION_LABEL[mode]}: ${outcome.reason ?? 'the device was busy; it will settle shortly'}`)
+      else {
+        setPendingRotation(null)
+        toast.error(`${ROTATION_LABEL[mode]} did not take: ${outcome.reason ?? 'the device did not report the requested orientation'}`)
+      }
+    } catch (err) {
+      setPendingRotation(null)
+      toast.error(describeApiError(err))
+    }
   }
 
   const close = () => {
@@ -209,7 +280,8 @@ export function DeviceControl({
         <ShortcutRail
           deviceId={deviceId}
           sendKey={railSendKey}
-          onRotate={railRotate}
+          rotationMode={rotationMode}
+          onSetRotation={railSetRotation}
           clipboardHistory={cast.deviceClipboardHistory}
           onClearClipboardHistory={railClearClipboard}
           onReadClipboard={railReadClipboard}
