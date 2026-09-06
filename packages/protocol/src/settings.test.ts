@@ -26,12 +26,21 @@ describe('FarmSettingsSchema — the 27-field model (plan 212, plus `capture.tim
     expect(() => z.toJSONSchema(FarmSettingsSchema)).not.toThrow()
   })
 
-  test('every field of the eleven advanced settings carries a hint', () => {
+  /**
+   * Twelve, not plan 212's eleven. `advanced.disableAdbInstallVerifier` was
+   * added on 2026-09-06: Play Protect stops an `adb install` on a modal until
+   * a human taps through it, once per phone, and the owner asked for the
+   * choice rather than a support override nobody would find. Plan 212 capped
+   * this model on purpose, so the count stays pinned here for the same reason
+   * the visible-settings count is: the next field is a decision someone has to
+   * make on purpose too, not a drift.
+   */
+  test('every field of the twelve advanced settings carries a hint', () => {
     type JsonNode = { properties?: Record<string, JsonNode>; description?: string }
     const json = z.toJSONSchema(FarmSettingsSchema) as unknown as { properties: Record<string, JsonNode> }
     const advanced = json.properties.advanced
     const fields = Object.values(advanced?.properties ?? {})
-    expect(fields.length).toBe(11)
+    expect(fields.length).toBe(12)
     for (const field of fields) {
       expect(readHints(field as never).hint, JSON.stringify(field)).toBeTruthy()
     }

@@ -66,6 +66,15 @@ export interface PreparationRunner {
   /** Every device currently online, bounded by the shared install lane (same reasoning as `agent-provisioner.ts`'s own `ensureAll` — no second concurrency mechanism). */
   ensureAll(opts?: { force?: boolean }): Promise<{ total: number; results: Array<{ deviceId: string; preparation: DevicePreparation }> }>
   /**
+   * `ensureAll` narrowed to ONE component — every online device, that
+   * component only. It exists for a farm setting whose value a component
+   * reads: flipping it has to change what the farm does, and `ensureAll`
+   * would achieve that only by dragging every OTHER component through a
+   * full pass (and, with `force`, clearing their retry bounds too) for a
+   * setting that has nothing to do with them.
+   */
+  ensureAllComponent(componentId: string, opts?: { force?: boolean }): Promise<{ total: number }>
+  /**
    * Re-run only the components whose `nextAttemptAt` has come due.
    *
    * `nextAttemptAt` was written on every failure and read by exactly one
@@ -343,6 +352,25 @@ export function createPreparationRunner(deps: PreparationRunnerDeps): Preparatio
         }),
       )
       return { total: results.length, results }
+    },
+
+    async ensureAllComponent(componentId, opts) {
+      const rows = db.select().from(devices).all()
+      let total = 0
+      await Promise.all(
+        rows.map(async (row) => {
+          if (row.status === 'offline') return // unreachable by construction — nothing to verify
+          try {
+            await this.ensureComponent(row.id, componentId, opts)
+            total += 1
+          } catch (err) {
+            // Same rule as `ensureAll` above: one device's surprise (or an
+            // unknown componentId) never aborts the fleet pass.
+            deps.log.warn(`preparation-runner: ensureAllComponent(${componentId}) skipped device ${row.id} after an unexpected error: ${String(err)}`)
+          }
+        }),
+      )
+      return { total }
     },
   }
 }

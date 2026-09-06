@@ -389,7 +389,7 @@ export const FarmSettingsSchema = z.object({
        * USB bandwidth exactly where it is actually shared, a farm-wide 1 only
        * served to make devices on unrelated hubs queue behind each other —
        * including behind an install parked on a Play Protect modal waiting
-       * for a human (`ENKAKU_ADB_INSTALL_VERIFIER`).
+       * for a human (`disableAdbInstallVerifier` below).
        */
       installsPerUsbRoot: z
         .number()
@@ -401,6 +401,30 @@ export const FarmSettingsSchema = z.object({
           'APK installs and file pushes allowed at once across the whole farm. Devices sharing one USB root hub always install one at a time regardless, because USB bandwidth is shared.',
         )
         .meta(ui({ title: 'Max concurrent installs (farm-wide)', kind: 'count', hint: 'Raise this for a farm whose devices are spread across several USB hubs.' })),
+      /**
+       * `adb install` is not exempt from Play Protect on a device with Google
+       * services: the global `verifier_verify_adb_installs` defaults to 1, so
+       * every install Enkaku performs is sent to Play Services for a verdict,
+       * and an "unsafe" verdict puts a modal on that device's screen and holds
+       * the install open until a human taps through it. The pinned openatx
+       * ui-server pair draws exactly that; our own guest agent does not,
+       * despite asking for strictly more — the verdict is about the binary's
+       * reputation, not what it requests.
+       *
+       * On by default because a device farm's phones exist to have the farm's
+       * own APKs pushed to them, and an install that stops for a human defeats
+       * the point. Turning it off is a real choice and stays available: it only
+       * disables verification of installs arriving OVER ADB — Play Protect's
+       * scan of Play Store installs, and its periodic scan of what is already
+       * on the device, are untouched.
+       */
+      disableAdbInstallVerifier: z
+        .boolean()
+        .default(true)
+        .describe(
+          "Turn off Play Protect's check on APKs Enkaku installs over adb, so preparation never stops for an \"Install anyway\" tap. Only affects installs over adb — Play Store installs and Play Protect's ongoing scanning are unaffected. Turn it off for phones you do not own outright.",
+        )
+        .meta(ui({ title: "Turn off Play Protect's adb-install check", hint: 'Turn this off for a phone the farm does not own outright.' })),
       sessionBuildsPerUsbRoot: z
         .number()
         .int()
@@ -513,6 +537,7 @@ export const FarmSettingsSchema = z.object({
     .default(() => ({
       adbMaxConcurrent: 0,
       installsPerUsbRoot: 4,
+      disableAdbInstallVerifier: true,
       sessionBuildsPerUsbRoot: 4,
       infraRetry: { attempts: 3, backoffBaseMs: 1_000 },
       jobMemoryLimitBytes: 268_435_456,

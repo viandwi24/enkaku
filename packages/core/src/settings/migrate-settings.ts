@@ -120,6 +120,9 @@ export function migrateFarmSettings(raw: unknown, log: Logger): FarmSettings {
       // 4 rather than the pre-plan-223 value of 1 (see the field's own doc
       // comment in `settings.ts` for why 1 is now over-tight).
       installsPerUsbRoot: clamp('advanced.installsPerUsbRoot', 1, 16, n(get(raw, 'adb', 'maxInstallConcurrent')) ?? 4),
+      // No pre-212 key ever held this — a farm migrating from an old shape
+      // simply takes the new default, exactly as a fresh farm does.
+      disableAdbInstallVerifier: true,
       sessionBuildsPerUsbRoot: clamp('advanced.sessionBuildsPerUsbRoot', 1, 16, n(get(raw, 'session', 'buildsPerUsbRoot')) ?? 4),
       infraRetry: {
         attempts: clamp('advanced.infraRetry.attempts', 0, 10, n(get(raw, 'job', 'retry', 'maxInfraAttempts')) ?? 3),

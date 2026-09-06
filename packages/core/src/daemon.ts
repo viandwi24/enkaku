@@ -29,7 +29,6 @@ import {
   ADB_ENDPOINT_ENABLED,
   ADB_ENDPOINT_IDLE_SEC,
   ADB_ENDPOINT_MAX_STREAMS,
-  ADB_INSTALL_VERIFIER,
   ADB_MAX_HOST_PROCESSES,
   ADB_MAX_STREAMS_FARM,
   ADB_MAX_STREAMS_PER_DEVICE,
@@ -1152,6 +1151,31 @@ let blobGc: BlobGc | null = null
         }
       }
       settingsStore.onChange(() => recomputeAdbConcurrency())
+
+      /*
+        Same rule as the video block below, for the same reason: a setting an
+        operator can see has to change something, or it is a lie.
+
+        `adb-verifier`'s pass is driven by device events (admission, reconnect)
+        plus the boot sweep — and the retry sweep only revisits a component
+        that FAILED. Toggling this setting leaves every device's row exactly as
+        the last pass wrote it (`unsupported` when it was off, `ready` when it
+        was on), so without this the change would sit there until each device
+        next reconnected, or until a restart.
+
+        `onChange` fires on every farm settings PATCH, and Studio's form PATCHes
+        field by field, so the previous value is tracked and the sweep runs only
+        on a real flip — not once per keystroke elsewhere in the form.
+      */
+      let lastVerifierPolicy = settingsStore.get().advanced.disableAdbInstallVerifier
+      settingsStore.onChange((s) => {
+        if (s.advanced.disableAdbInstallVerifier === lastVerifierPolicy) return
+        lastVerifierPolicy = s.advanced.disableAdbInstallVerifier
+        log.info('the Play Protect adb-install check setting changed — re-running the adb-verifier preparation component across the farm')
+        void preparationRunnerRef
+          ?.ensureAllComponent('adb-verifier', { force: true })
+          .catch((err) => log.warn(`adb-verifier re-run after a settings change failed, tolerated: ${String(err)}`))
+      })
 
       /**
        * plan 92 §3.8 rule 2, §5 step 92.2 — "changing a video setting must
@@ -2637,7 +2661,9 @@ let blobGc: BlobGc | null = null
             test: await toolchain.resolveToolPath('ui-server-test'),
           }),
           uiServerExpectedArtifact: () => toolchain.deviceArtifactExpectation('ui-server'),
-          adbInstallVerifier: () => ADB_INSTALL_VERIFIER,
+          // Read fresh per pass (never captured here) so an operator toggling
+          // the setting changes what the NEXT pass does, with no restart.
+          adbInstallVerifier: () => (settingsStore.get().advanced.disableAdbInstallVerifier ? 'disable' : 'keep'),
           log: log.child('preparation'),
         }),
         record: recorder!.record,
