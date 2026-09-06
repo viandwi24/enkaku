@@ -373,14 +373,34 @@ export const FarmSettingsSchema = z.object({
         .default(0)
         .describe('Total adb commands in flight across the farm. 0 scales it automatically with the device count.')
         .meta(ui({ title: 'Max concurrent adb commands', kind: 'count', hint: 'Raise this if the adb server saturates on a large hub.' })),
+      /**
+       * The field name is historical and does NOT describe what it gates:
+       * this is the FARM-WIDE ceiling on concurrent installs (`host-adb.ts`
+       * reads it as `maxInstallConcurrent`), not a per-root allowance. The
+       * per-root gate beside it is `INSTALL_PER_USB_ROOT = 1`, a hard
+       * constant, because spec §17 fixes it there: "concurrent installs per
+       * USB root — serialised, never more than one" (plan 223 G4, MVP 09 §2's
+       * H5 incident). Raising this number therefore parallelises devices on
+       * DIFFERENT hubs and never two devices on the same one.
+       *
+       * The default is 4, not 1: before plan 223 there was no per-root gate
+       * at all, so a farm-wide 1 was the only thing standing between the farm
+       * and the H5 install storm. Now that the per-root Semaphore(1) bounds
+       * USB bandwidth exactly where it is actually shared, a farm-wide 1 only
+       * served to make devices on unrelated hubs queue behind each other —
+       * including behind an install parked on a Play Protect modal waiting
+       * for a human (`ENKAKU_ADB_INSTALL_VERIFIER`).
+       */
       installsPerUsbRoot: z
         .number()
         .int()
         .min(1)
         .max(16)
-        .default(1)
-        .describe('APK installs and file pushes allowed at once on one USB root hub. USB bandwidth is shared.')
-        .meta(ui({ title: 'Max concurrent installs', kind: 'count', hint: 'Raise this if installs time out on a hub that can take more.' })),
+        .default(4)
+        .describe(
+          'APK installs and file pushes allowed at once across the whole farm. Devices sharing one USB root hub always install one at a time regardless, because USB bandwidth is shared.',
+        )
+        .meta(ui({ title: 'Max concurrent installs (farm-wide)', kind: 'count', hint: 'Raise this for a farm whose devices are spread across several USB hubs.' })),
       sessionBuildsPerUsbRoot: z
         .number()
         .int()
@@ -492,7 +512,7 @@ export const FarmSettingsSchema = z.object({
     })
     .default(() => ({
       adbMaxConcurrent: 0,
-      installsPerUsbRoot: 1,
+      installsPerUsbRoot: 4,
       sessionBuildsPerUsbRoot: 4,
       infraRetry: { attempts: 3, backoffBaseMs: 1_000 },
       jobMemoryLimitBytes: 268_435_456,
