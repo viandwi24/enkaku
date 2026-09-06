@@ -9,14 +9,18 @@ import { usePip, usePipRequest } from './pip-store'
  * document itself (`AppShell` renders no rail, no status bar and no
  * `PipHost` when `isPipFrame` is true, §3.7).
  *
+ * Renders only when the ONE store value is in `pip` mode (plan 501 §3.3,
+ * §4.6): the same request in `side` mode belongs to `SidePanel` instead —
+ * there is still exactly one panel, just two places that know how to draw it.
+ *
  * Same shape as `DeviceControlHost`: render nothing while the store holds no
- * request, mount `PipPanel` keyed on the target `href` once it does, so
- * switching pages replaces the panel's content rather than reusing state
- * meant for a different page.
+ * matching request, mount `PipPanel` keyed on the target `href` once it does,
+ * so switching pages (or switching mode) replaces the panel's content rather
+ * than reusing state meant for a different page.
  */
 export function PipHost(): React.JSX.Element | null {
   const request = usePipRequest()
   const { close } = usePip()
-  if (!request) return null
+  if (!request || request.mode !== 'pip') return null
   return <PipPanel key={request.href} request={request} onClose={close} />
 }

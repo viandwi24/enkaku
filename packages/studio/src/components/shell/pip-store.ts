@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from 'react'
 import { z } from 'zod'
+import { ZOOM_STEPS } from './panel-frame'
 
 /**
- * The picture-in-picture panel's store (plan 500 §4.2).
+ * The picture-in-picture panel's store (plan 500 §4.2, revised by plan 501
+ * §3.3/§4.1 to carry a mode).
  *
  * Mirrors `DeviceControlHost`'s module-level pattern exactly — one value,
  * one subscriber `Set`, no React context above `AppShell` — for the same
@@ -12,15 +14,21 @@ import { z } from 'zod'
  * the shell whenever the panel's target changed, which is precisely what
  * this store exists to avoid doing.
  *
- * There is exactly ONE panel (G2, plan §3.2, owner 2026-09-05: "cukup satu
- * panel aja"): `current` is a single nullable value, never a list. Opening a
- * second page retargets it in place; there is no stack to reason about.
+ * There is exactly ONE panel (G2, G5, plan 500 §3.2, owner 2026-09-05: "cukup
+ * satu panel aja"): `current` is a single nullable value, never a list, even
+ * though it can now hold either of two modes. Opening a second page — or the
+ * same page in the other mode — retargets it in place; there is no stack, no
+ * second store, to reason about (plan 501 §3.3).
  */
+
+/** Floating over the work, or docked to the right (plan 501 §1). */
+export type PanelMode = 'pip' | 'side'
 
 export interface PipRequest {
   href: string
   /** The panel's title-bar text — the label of the rail entry that opened it, so the panel never has to look it up. */
   label: string
+  mode: PanelMode
 }
 
 type Listener = (req: PipRequest | null) => void
@@ -34,14 +42,14 @@ function setCurrent(next: PipRequest | null): void {
 }
 
 export interface PipApi {
-  /** Opens the panel on this page, or retargets it if already open. */
-  open: (href: string, label: string) => void
+  /** Opens the panel on this page in this mode, or retargets/moves it if already open. */
+  open: (href: string, label: string, mode: PanelMode) => void
   close: () => void
 }
 
 export function usePip(): PipApi {
   return {
-    open: (href, label) => setCurrent({ href, label }),
+    open: (href, label, mode) => setCurrent({ href, label, mode }),
     close: () => setCurrent(null),
   }
 }
@@ -68,9 +76,6 @@ export function usePipRequest(): PipRequest | null {
 export const PIP_EDGES = ['left', 'right', 'top', 'bottom'] as const
 export type PipEdge = (typeof PIP_EDGES)[number]
 
-/** 50 % to 150 %, five steps (§3.6). */
-export const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5] as const
-
 /** 20 px, evaluated on pointer-up only (§3.5) — not continuously, so the panel does not jump while the pointer is still down. */
 export const MAGNET_THRESHOLD_PX = 20
 
@@ -79,6 +84,15 @@ const EDGE_MARGIN_PX = 8
 
 export const MIN_PANEL_W = 280
 export const MIN_PANEL_H = 200
+
+/**
+ * The side panel's width bound (plan 501 §3.5): below 320px a framed page is
+ * unreadable. The upper bound is half the viewport, evaluated at read time
+ * against the CURRENT viewport (`clampSideWidth`) rather than baked into the
+ * schema, since "half of what" only means something once a viewport exists.
+ */
+export const MIN_SIDE_W = 320
+const DEFAULT_SIDE_W = 420
 
 const GeometrySchema = z.object({
   x: z.number(),
@@ -90,6 +104,9 @@ const GeometrySchema = z.object({
   // different step table still clamps sanely instead of failing to parse.
   zoom: z.number().min(ZOOM_STEPS[0]).max(ZOOM_STEPS[ZOOM_STEPS.length - 1]),
   edge: z.enum(PIP_EDGES).nullable(),
+  // The side panel's own width, in the SAME key as the rest of the geometry
+  // (plan 501 §3.5) — one `localStorage` key for both modes, not a second one.
+  sideWidth: z.number().min(MIN_SIDE_W),
 })
 export type PipGeometry = z.infer<typeof GeometrySchema>
 
@@ -108,7 +125,14 @@ export function defaultGeometry(): PipGeometry {
     h: DEFAULT_H,
     zoom: 1,
     edge: 'right',
+    sideWidth: DEFAULT_SIDE_W,
   }
+}
+
+/** Clamped between `MIN_SIDE_W` and half the viewport (§3.5) — above half, the page body the owner is reading becomes the smaller half. */
+export function clampSideWidth(w: number, vw: number): number {
+  const max = Math.max(vw / 2, MIN_SIDE_W)
+  return Math.min(Math.max(w, MIN_SIDE_W), max)
 }
 
 /** A stored geometry that no longer fits the current viewport is CLAMPED, never discarded (§4.2). */
@@ -117,7 +141,7 @@ export function clampGeometry(g: PipGeometry, vw: number, vh: number): PipGeomet
   const h = Math.min(g.h, Math.max(vh - EDGE_MARGIN_PX * 2, MIN_PANEL_H))
   const x = Math.min(Math.max(g.x, 0), Math.max(vw - w, 0))
   const y = Math.min(Math.max(g.y, 0), Math.max(vh - h, 0))
-  return { ...g, w, h, x, y }
+  return { ...g, w, h, x, y, sideWidth: clampSideWidth(g.sideWidth, vw) }
 }
 
 /** Re-pins a snapped panel flush to its captured edge under a NEW viewport size — the one thing that makes edge-snapping worth having (§3.5). A no-op when nothing is snapped. */

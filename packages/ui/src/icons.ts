@@ -144,3 +144,10 @@ export { DotsSixVerticalIcon } from '@phosphor-icons/react'
  * already covers refresh, `XIcon` already covers close).
  */
 export { MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, PictureInPictureIcon } from '@phosphor-icons/react'
+
+/**
+ * Plan 501 — the rail's right-click menu: the "Open in side panel" row.
+ * `PictureInPictureIcon` above already covers "Open in PiP"; `ArrowSquareOutIcon`
+ * (plan 220, group 3) already covers the plain "Open" row.
+ */
+export { SidebarSimpleIcon } from '@phosphor-icons/react'
