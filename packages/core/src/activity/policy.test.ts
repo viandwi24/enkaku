@@ -42,7 +42,10 @@ describe('evaluate — the policy matrix (MVP 04 §1.3)', () => {
     expect(evaluate('prep', [activity('job')], ALLOW).decision).toBe('forbid')
     expect(evaluate('prep', [activity('workflow-job')], ALLOW).decision).toBe('forbid')
     expect(evaluate('prep', [activity('install')], ALLOW).decision).toBe('forbid')
-    expect(evaluate('prep', [activity('prep')], ALLOW).decision).toBe('forbid')
+    // Warn, not forbid: `retry-prepare` is the way out of a stuck
+    // preparation, and a forbid can never be forced — so a forbid here
+    // locked the escape hatch behind the state it exists to clear.
+    expect(evaluate('prep', [activity('prep')], ALLOW).decision).toBe('warn')
     expect(evaluate('prep', [activity('control')], ALLOW).decision).toBe('allow')
     expect(evaluate('prep', [activity('command')], ALLOW).decision).toBe('allow')
   })

@@ -26,8 +26,29 @@ export const POLICY: Record<StartingKind, Partial<Record<ExistingKind, Decision>
   transfer: { job: 'allow', 'workflow-job': 'allow', install: 'forbid', control: 'allow', command: 'allow', prep: 'allow' },
   wake: { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'allow', prep: 'allow' },
   'network-apply': { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'allow', prep: 'allow' },
-  // Proposed (§9 Q1): a preparation pass reinstalls on-device tooling, so it never runs under a job or an install.
-  prep: { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'allow', prep: 'forbid' },
+  /*
+    Proposed (§9 Q1): a preparation pass reinstalls on-device tooling, so it
+    never runs under a job or an install.
+
+    `prep` over `prep` is a WARN, not a forbid, and that is a correction. It
+    was a forbid, and a forbid can never be overridden — `force` acknowledges
+    a warn and nothing more. But `retry-prepare` is the operator's ONLY way
+    out of a stuck preparation, and the thing that blocked it was a `prep`
+    activity: the escape hatch was locked by the very state it exists to
+    clear. The owner's emulator sat behind exactly that, reporting
+    "Preparing, step 4 of 5; prep cannot start until it ends" to every retry
+    (2026-09-06).
+
+    Warn keeps the guard where it belongs. An unforced pass still refuses and
+    says why; an operator who has read that sentence and asked again gets
+    through. Nothing is corrupted by the attempt either — `PreparationRunner`
+    coalesces concurrent `ensure()` calls per device and serialises its
+    components, so a second pass is at worst redundant work.
+
+    The two rows that matter for safety are untouched: a preparation pass
+    still never starts under a job, a workflow job, or an install.
+  */
+  prep: { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'allow', prep: 'warn' },
   // Proposed (§9 Q1): an agent is an operator with a longer attention span; same row as `control`.
   agent: { job: 'warn', 'workflow-job': 'warn', install: 'warn', control: 'allow', command: 'allow', prep: 'allow' },
 }

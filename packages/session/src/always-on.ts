@@ -10,6 +10,25 @@ export const DEFAULT_BUILDS_PER_USB_ROOT = 4
 export const SESSION_BUILD_FARM_CEILING = 16
 export const SCRCPY_FALLBACK_AFTER_FAILURES = 4
 export const INSPECTOR_PREWARM_DELAY_MS = 2_000
+/**
+ * How long a built session may sit at `waiting-frame` before the build is
+ * called a failure.
+ *
+ * `SessionManager.build()` RESOLVES at step 4: it starts the display and
+ * returns. Step 5 (`ready`) is emitted from the first-frame handler in
+ * `session.ts`, so a device that never produces a frame leaves the record at
+ * `preparing` with nothing left to move it — `runBuild`'s catch never fires,
+ * no rebuild is scheduled, and no timer exists. The device sits at
+ * "Preparing, step 4 of 5" for the life of the core, its screen never
+ * appears, and `retry-prepare` is refused BY that activity: the only way out
+ * is blocked by the thing you are trying to get out of (owner's emulator,
+ * 2026-09-06).
+ *
+ * Generous on purpose. A healthy scrcpy first frame arrives in well under a
+ * second; a cold-booted emulator or a phone waking from deep sleep can take
+ * several. Anything past this is not slow, it is not coming.
+ */
+export const FIRST_FRAME_TIMEOUT_MS = 30_000
 export const USB_ROOT_CACHE_MS = 5_000
 export const NETWORK_ROOT = 'network'
 export const UNKNOWN_ROOT = 'unknown'
@@ -100,6 +119,8 @@ interface Record_ {
   usbRoot: string | null
   activityId: string | null
   timer: unknown
+  /** The `FIRST_FRAME_TIMEOUT_MS` deadline armed once `build()` resolves, cleared by the first frame. */
+  frameTimer: unknown
 }
 
 /** The activity sentence for a build state — shared with `ws-handlers.ts`'s `E_SESSION_PREPARING` message. */
@@ -163,9 +184,18 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
     }
   }
 
+  /** Disarm the first-frame deadline — the frame came, or the device went away. */
+  function clearFrameDeadline(record: Record_): void {
+    if (record.frameTimer !== null && record.frameTimer !== undefined) {
+      timers.clear(record.frameTimer)
+      record.frameTimer = null
+    }
+  }
+
   function onFirstFrame(deviceId: string): void {
     const record = records.get(deviceId)
     if (!record) return
+    clearFrameDeadline(record)
     record.state = 'ready'
     record.failures = 0
     record.attempt = 0
@@ -178,6 +208,7 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
 
   function scheduleRebuild(deviceId: string, why: unknown): void {
     const record = records.get(deviceId)
+    if (record) clearFrameDeadline(record)
     if (!record) return
     record.state = 'recovering'
     const delay = rebuildDelayMs(record.attempt)
@@ -211,6 +242,31 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
             if (step === 5) onFirstFrame(deviceId)
           },
         })
+        /*
+          `build()` returned, which means the display started — NOT that a
+          frame arrived. Only the first frame emits step 5, and until this
+          deadline existed there was nothing else that could ever move the
+          record off `preparing`. Arm it unless the frame already beat us
+          here (the common case, and why this is a check rather than an
+          unconditional set).
+
+          A timeout is routed through `scheduleRebuild`, so it inherits the
+          ladder that already exists: backoff, a visible "Recovering,
+          attempt N", and `SCRCPY_FALLBACK_AFTER_FAILURES` dropping
+          `requireScrcpy` after four tries — which is exactly the escape a
+          device whose encoder produces nothing needs.
+        */
+        if (record.state !== 'ready') {
+          record.frameTimer = timers.set(() => {
+            record.frameTimer = null
+            const live = records.get(deviceId)
+            if (!live || live.state === 'ready') return
+            live.failures++
+            live.attempt++
+            deps.log.warn(`always-on: device ${deviceId} produced no first frame within ${FIRST_FRAME_TIMEOUT_MS}ms — rebuilding`)
+            scheduleRebuild(deviceId, new Error(`no first frame within ${FIRST_FRAME_TIMEOUT_MS}ms`))
+          }, FIRST_FRAME_TIMEOUT_MS)
+        }
       } catch (err) {
         record.failures++
         record.attempt++
@@ -263,7 +319,7 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
       const existing = records.get(deviceId)
       if (existing && (existing.state === 'queued' || existing.state === 'preparing' || existing.state === 'ready')) return
       const activityId = deps.activities.start(deviceId, { kind: 'prep', label: PREP_QUEUED_LABEL, actor: ALWAYS_ON_ACTOR })
-      records.set(deviceId, { state: 'queued', step: null, attempt: 0, failures: 0, usbRoot: null, activityId, timer: null })
+      records.set(deviceId, { state: 'queued', step: null, attempt: 0, failures: 0, usbRoot: null, activityId, timer: null, frameTimer: null })
       queued.push(deviceId)
       pump()
     },
@@ -272,6 +328,9 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
       const record = records.get(deviceId)
       if (!record) return
       if (record.timer) timers.clear(record.timer)
+      // The record is about to be deleted; a live frame deadline would fire
+      // against a device that is gone and schedule a rebuild for it.
+      clearFrameDeadline(record)
       endActivity(record, deviceId)
       records.delete(deviceId)
       const idx = queued.indexOf(deviceId)

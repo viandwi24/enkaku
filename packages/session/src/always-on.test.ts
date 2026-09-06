@@ -9,6 +9,7 @@ import {
   PREP_QUEUED_LABEL,
   REBUILD_BACKOFF_MS,
   INSPECTOR_PREWARM_DELAY_MS,
+  FIRST_FRAME_TIMEOUT_MS,
   type ActivityPort,
   type AlwaysOnDeps,
 } from './always-on'
@@ -491,5 +492,81 @@ describe('createAlwaysOn — inspector prewarm (plan 206 §3.9, §4.2)', () => {
     advance(1)
     await Bun.sleep(5)
     expect(prewarmed).toBe(1)
+  })
+})
+
+/*
+  The owner's emulator sat at "Preparing, step 4 of 5" for the life of the
+  core: `build()` had resolved, the display had started, and no frame ever
+  arrived. Step 5 is emitted only by the first-frame handler, so nothing was
+  left to move the record — and `retry-prepare` was refused BY that same
+  activity. These assert the deadline that ends it.
+*/
+/** Lets every pending microtask and real-timer callback run — `pump()` is async. */
+const flush = () => new Promise<void>((r) => setTimeout(r, 0))
+
+describe('a session that never produces a first frame', () => {
+  test('is rebuilt once the deadline passes, instead of preparing for ever', async () => {
+    const { timers, advance } = fakeTimers()
+    const activities = recordingActivities()
+    let builds = 0
+    const deps = baseDeps({
+      timers,
+      activities,
+      // Reaches `waiting-frame` and stops there — exactly what an emulator
+      // whose encoder produces nothing does.
+      sessions: fakeSessions(async (_id, opts) => {
+        builds++
+        opts.onStep?.(1)
+        opts.onStep?.(4)
+      }),
+    })
+    const alwaysOn = createAlwaysOn(deps)
+    alwaysOn.start()
+    alwaysOn.deviceOnline('d1')
+    await Promise.resolve()
+    advance(0)
+    await flush()
+
+    expect(activities.lastLabel('d1')).toBe(prepLabel(4))
+    expect(builds).toBe(1)
+
+    // Nothing happens before the deadline — a slow first frame is still a
+    // first frame, and rebuilding under it would be worse than waiting.
+    advance(FIRST_FRAME_TIMEOUT_MS - 1)
+    await flush()
+    expect(activities.lastLabel('d1')).toBe(prepLabel(4))
+
+    advance(2)
+    await flush()
+    expect(activities.lastLabel('d1')).toBe(recoveringLabel(1))
+  })
+
+  test('a frame that does arrive disarms the deadline and ends the activity', async () => {
+    const { timers, advance } = fakeTimers()
+    const activities = recordingActivities()
+    let builds = 0
+    const deps = baseDeps({
+      timers,
+      activities,
+      sessions: fakeSessions(async (_id, opts) => {
+        builds++
+        opts.onStep?.(4)
+        opts.onStep?.(5)
+      }),
+    })
+    const alwaysOn = createAlwaysOn(deps)
+    alwaysOn.start()
+    alwaysOn.deviceOnline('d1')
+    await Promise.resolve()
+    advance(0)
+    await flush()
+
+    expect(activities.calls).toContain('end:d1:prep:d1')
+    // Long past the deadline: it must not fire against a healthy device.
+    advance(FIRST_FRAME_TIMEOUT_MS * 3)
+    await flush()
+    expect(builds).toBe(1)
+    expect(activities.lastLabel('d1')).not.toBe(recoveringLabel(1))
   })
 })
