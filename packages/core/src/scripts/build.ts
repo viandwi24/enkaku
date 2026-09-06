@@ -88,6 +88,31 @@ function assertAllowedBareSpecifier(spec: string): void {
  * actually reaches, source text included, so the subsequent build never
  * needs to touch the store again.
  */
+/**
+ * `import.meta.resolveSync`, with the failure said out loud.
+ *
+ * The two call sites below are the only places this bundler touches real
+ * disk, and a throw inside a `Bun.build` plugin surfaces as an opaque build
+ * failure: the operator publishing a workspace script is told the build
+ * failed and nothing about why, and so is anyone reading a CI log.
+ *
+ * `check-windows` has failed on the allowlisted-`zod` case since that job
+ * existed. Its sibling test — the same bundler, a relative import, no disk —
+ * passes there, so the fault is in exactly this resolution and nowhere else.
+ * I could not reproduce it on macOS or determine it from the source, and
+ * would rather name it on the next run than guess at it now (2026-09-07).
+ */
+function resolveFromDisk(specifier: string, referrer: string): string {
+  try {
+    return import.meta.resolveSync(specifier, referrer)
+  } catch (err) {
+    throw new EnkakuError(
+      'E_BUILD_FAILED',
+      `could not resolve "${specifier}" from ${referrer}: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
 function walkWorkspaceGraph(workspace: WorkspaceStore, entry: string, maxFiles: number): Map<string, string> {
   const files = new Map<string, string>()
   const queue = [entry]
@@ -149,7 +174,7 @@ function workspacePlugin(files: ReadonlyMap<string, string>, entry: string): imp
           // that implicit path does not reliably find a workspace package's
           // OWN workspace dependencies, even though `import.meta.resolveSync`
           // from the importer's own location always does.
-          return { path: import.meta.resolveSync(args.path, args.importer) }
+          return { path: resolveFromDisk(args.path, args.importer) }
         }
         if (isRelativeOrAbsolute(args.path)) {
           const resolved = resolveWithinWorkspace(args.importer, args.path)
@@ -159,7 +184,7 @@ function workspacePlugin(files: ReadonlyMap<string, string>, entry: string): imp
           return { path: resolved, namespace: WORKSPACE_NAMESPACE }
         }
         // Already validated by `walkWorkspaceGraph` — resolve for real.
-        return { path: import.meta.resolveSync(args.path, import.meta.url) }
+        return { path: resolveFromDisk(args.path, import.meta.url) }
       })
       build.onLoad({ filter: /.*/, namespace: WORKSPACE_NAMESPACE }, (args) => {
         const contents = files.get(args.path)
