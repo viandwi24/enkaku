@@ -115,7 +115,11 @@ export function migrateFarmSettings(raw: unknown, log: Logger): FarmSettings {
     },
     advanced: {
       adbMaxConcurrent: clamp('advanced.adbMaxConcurrent', 0, 24, n(get(raw, 'adb', 'maxConcurrent')) ?? 0),
-      installsPerUsbRoot: clamp('advanced.installsPerUsbRoot', 1, 16, n(get(raw, 'adb', 'maxInstallConcurrent')) ?? 1),
+      // An old config that set `adb.maxInstallConcurrent` keeps its own
+      // number; one that never set it picks up the new farm-wide default of
+      // 4 rather than the pre-plan-223 value of 1 (see the field's own doc
+      // comment in `settings.ts` for why 1 is now over-tight).
+      installsPerUsbRoot: clamp('advanced.installsPerUsbRoot', 1, 16, n(get(raw, 'adb', 'maxInstallConcurrent')) ?? 4),
       sessionBuildsPerUsbRoot: clamp('advanced.sessionBuildsPerUsbRoot', 1, 16, n(get(raw, 'session', 'buildsPerUsbRoot')) ?? 4),
       infraRetry: {
         attempts: clamp('advanced.infraRetry.attempts', 0, 10, n(get(raw, 'job', 'retry', 'maxInfraAttempts')) ?? 3),
