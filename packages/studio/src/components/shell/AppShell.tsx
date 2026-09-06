@@ -8,6 +8,7 @@ import { PagePanel } from './PagePanel'
 import { PipHost } from './PipHost'
 import { isPipFrame } from './pip-frame'
 import { Rail } from './Rail'
+import { SidePanel } from './SidePanel'
 import { StatusBar } from './StatusBar'
 import { PluginNavResponseSchema, activePluginView, pluginNavItems, type PluginNavGroup } from './nav'
 
@@ -112,6 +113,13 @@ export function AppShell({ children }: { children: ReactNode }) {
         <PagePanel>{children}</PagePanel>
         <StatusBar />
       </div>
+      {/* A sibling of the page COLUMN above, not a child of it (plan 501
+          §3.4) — so the right panel spans the status bar's height too,
+          rather than leaving a notch of background beside it. It reads the
+          one panel store itself and renders nothing unless the current
+          request is in `side` mode; the floating host below does the same
+          for `pip` mode. */}
+      <SidePanel />
       <PipHost />
     </div>
   )

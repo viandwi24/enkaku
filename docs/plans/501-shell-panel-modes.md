@@ -1,6 +1,6 @@
 # Plan 501 — Shell : the rail context menu and the right panel
 
-> Status: draft
+> Status: implemented (software) — G1-G12 done and verified by their own commands 2026-09-06. G13 and G14 stay open: they are owner rows, and nothing in this repo can render a browser.
 > Ships: packages/studio/src/components/shell/RailContextMenu.tsx
 > Depends on: plan 500 (the PiP panel, its store, its frame flag) — this plan revises it
 > Spec references: §13 (Studio)
@@ -9,18 +9,18 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | Right-clicking a rail entry opens a context menu; the hover PiP button is gone | `onContextMenu` on the rail cell; `PipButton` deleted | `rg -n "PipButton" packages/studio/src` → empty; `rg -n "onContextMenu" packages/studio/src/components/shell/Rail.tsx` → at least 1 | [ ] |
-| G2 | The menu offers Open, Open in PiP, Open in side panel — in that order | 3 rows | `rg -n "Open in" packages/studio/src/components/shell/RailContextMenu.tsx` → 2 matches | [ ] |
-| G3 | An entry that may not be panelled offers only Open | Devices shows 1 row | `rg -n "item.pip|canPanel" packages/studio/src/components/shell/RailContextMenu.tsx` → the two panel rows are conditional | [ ] |
-| G4 | The menu follows this repo's existing context menus, not a new primitive | positioned by viewport coords, closed through `useOverlay` | `rg -n "useOverlay" packages/studio/src/components/shell/RailContextMenu.tsx` → 1 match; `rg -n "radix|ContextMenu\." packages/studio/src/components/shell/` → empty | [ ] |
-| G5 | There is still exactly **one** panel; it has a mode | `mode: 'pip' \| 'side'` on one nullable store value, no second store | `rg -n "mode" packages/studio/src/components/shell/pip-store.ts` → a `PanelMode` on `PipRequest`; `rg --files packages/studio/src/components/shell -g '*store*'` → 1 file | [ ] |
-| G6 | Opening in the other mode moves the panel, never opens a second one | 1 request in, 1 panel out | `rg -n "usePipRequest" packages/studio/src/components/shell/PipHost.tsx` → one read, one branch per mode | [ ] |
-| G7 | The layout becomes rail, page, right panel — three siblings, each its own bordered container | `AppShell` renders `SidePanel` as the third child of the root flex row | `rg -n "SidePanel" packages/studio/src/components/shell/AppShell.tsx` → 1 match | [ ] |
-| G8 | The right panel is resizable by its left edge, and its width persists | drag handle; width in the same `localStorage` key as the PiP geometry, Zod-parsed | `rg -n "sideWidth" packages/studio/src/components/shell/pip-store.ts` → in the schema and the default | [ ] |
-| G9 | The right panel carries close, refresh, zoom out, zoom in — and no drag or magnet | 4 controls | `rg -n "aria-label=" packages/studio/src/components/shell/SidePanel.tsx` → 4 plus the resize handle's | [ ] |
-| G10 | Both modes frame the same way: `coreBase()`, `?pip=1`, one iframe each | no second framing path | `rg -n "coreBase\(\)" packages/studio/src/components/shell/` → `PipPanel` and `SidePanel` only; `rg -n "pip=1" packages/studio/src/components/shell/` → the shared helper | [ ] |
-| G11 | No Studio test file is added, and no `dark:` or v3 bracket colour class enters the shell | 0 each | `rg --files packages/studio -g '*.test.tsx'` → empty; `rg -n "dark:\|bg-\[--\|text-\[--" packages/studio/src/components/shell` → empty | [ ] |
-| G12 | `bun run typecheck` and `bun run build:studio` are clean | 0 errors, exit 0 | both exit 0 | [ ] |
+| G1 | Right-clicking a rail entry opens a context menu; the hover PiP button is gone | `onContextMenu` on the rail cell; `PipButton` deleted | `rg -n "PipButton" packages/studio/src` → empty; `rg -n "onContextMenu" packages/studio/src/components/shell/Rail.tsx` → at least 1 | [x] |
+| G2 | The menu offers Open, Open in PiP, Open in side panel — in that order | 3 rows | `rg -n "Open in" packages/studio/src/components/shell/RailContextMenu.tsx` → 2 matches | [x] |
+| G3 | An entry that may not be panelled offers only Open | Devices shows 1 row | `rg -n "item.pip|canPanel" packages/studio/src/components/shell/RailContextMenu.tsx` → the two panel rows are conditional | [x] |
+| G4 | The menu follows this repo's existing context menus, not a new primitive | positioned by viewport coords, closed through `useOverlay` | `rg -n "useOverlay" packages/studio/src/components/shell/RailContextMenu.tsx` → 1 match; `rg -n "radix|ContextMenu\." packages/studio/src/components/shell/` → empty | [x] |
+| G5 | There is still exactly **one** panel; it has a mode | `mode: 'pip' \| 'side'` on one nullable store value, no second store | `rg -n "mode" packages/studio/src/components/shell/pip-store.ts` → a `PanelMode` on `PipRequest`; `rg --files packages/studio/src/components/shell -g '*store*'` → 1 file | [x] |
+| G6 | Opening in the other mode moves the panel, never opens a second one | 1 request in, 1 panel out | `rg -n "usePipRequest" packages/studio/src/components/shell/PipHost.tsx` → one read, one branch per mode | [x] |
+| G7 | The layout becomes rail, page, right panel — three siblings, each its own bordered container | `AppShell` renders `SidePanel` as the third child of the root flex row | `rg -n "SidePanel" packages/studio/src/components/shell/AppShell.tsx` → 1 match | [x] |
+| G8 | The right panel is resizable by its left edge, and its width persists | drag handle; width in the same `localStorage` key as the PiP geometry, Zod-parsed | `rg -n "sideWidth" packages/studio/src/components/shell/pip-store.ts` → in the schema and the default | [x] |
+| G9 | The right panel carries close, refresh, zoom out, zoom in — and no drag or magnet | 4 controls | `rg -n "aria-label=" packages/studio/src/components/shell/SidePanel.tsx` → 4 plus the resize handle's | [x] |
+| G10 | Both modes frame the same way: `coreBase()`, `?pip=1`, one iframe each | no second framing path | `rg -n "coreBase\(\)" packages/studio/src/components/shell/` → `PipPanel` and `SidePanel` only; `rg -n "pip=1" packages/studio/src/components/shell/` → the shared helper | [x] |
+| G11 | No Studio test file is added, and no `dark:` or v3 bracket colour class enters the shell | 0 each | `rg --files packages/studio -g '*.test.tsx'` → empty; `rg -n "dark:\|bg-\[--\|text-\[--" packages/studio/src/components/shell` → empty | [x] |
+| G12 | `bun run typecheck` and `bun run build:studio` are clean | 0 errors, exit 0 | both exit 0 | [x] |
 | G13 | The three-column layout holds together: the page panel still fills its space, the right panel does not crush it, and the status bar still spans correctly | owner judgement | owner smoke §7 | owner |
 | G14 | The menu opens where the cursor is, flips near an edge, and closes on Escape and on an outside click | owner smoke §7 step 1 | owner | owner |
 
@@ -222,6 +222,113 @@ verified by `bun run typecheck`, `bun run build:studio`, the greps in §0, and �
 
 ## 10. Handoff
 
-To be written by the executing agent: the final geometry key shape, whether the
-900 px cutoff felt right against the handoff's own breakpoints, and anything the
-three-column layout did that this plan did not predict.
+**Files.** `RailContextMenu.tsx` (new — the menu), `panel-frame.ts` (new — the
+one framing helper: `frameSrc`, `ZOOM_STEPS`, `frameStyle`), `SidePanel.tsx`
+(new — the docked panel); edits to `pip-store.ts` (`PanelMode`, `mode` on
+`PipRequest`, `open()`'s new third argument, `sideWidth`/`MIN_SIDE_W`/
+`clampSideWidth` on the geometry), `PipPanel.tsx` (now calls `frameSrc`/
+`frameStyle` instead of building the src/style inline), `PipHost.tsx` (renders
+only when `mode === 'pip'`), `Rail.tsx` (the hover `PipButton` deleted, replaced
+by local menu state and an `onContextMenu` handler per cell), `AppShell.tsx`
+(`<SidePanel />` added as the third child of the root row), `packages/ui/src/icons.ts`
+and `scripts/check-design-tokens.ts` (`SidebarSimpleIcon` added to `GROUP_3`,
+widening the expected total by 1 — the guard's exact-count check passed on the
+first try because this was done alongside the icon addition itself).
+
+**The final geometry key shape.** Still the ONE `localStorage` key from plan
+500, `enkaku:pip-geometry`, now also carrying `sideWidth: number` — clamped on
+every read/write between `MIN_SIDE_W` (320) and half the CURRENT viewport
+(`clampSideWidth`, evaluated against `window.innerWidth` at read time, not
+baked into the Zod schema — "half of what" only means something once a
+viewport exists). Default 420px. `x`, `y`, `w`, `h`, `zoom` and `edge` are
+unchanged from plan 500 and unused by `SidePanel`, which reads only `zoom` and
+`sideWidth` out of the same object. There is still exactly one geometry
+record for exactly one panel, whichever mode it is in.
+
+**The panel MODE itself is not persisted.** `PipRequest.mode` lives only in
+the in-memory module store (`current`), not in `localStorage` — plan 500 §9
+Q1 already decided that *openness* does not survive a reload ("geometry
+persists, openness does not"); this plan's mode inherits that same answer by
+construction, since it is a property of `current`, not of the geometry
+object. A reload leaves the panel closed, exactly as before; reopening it
+requires a fresh choice of mode from the menu.
+
+**Whether the 900px cutoff felt right against the handoff's own breakpoints.**
+Untested — no browser session was run this pass (see the report's "never
+exercised" list). It is implemented exactly as specified (`MIN_SIDE_VIEWPORT_PX`
+in `RailContextMenu.tsx`, checked once against `window.innerWidth` in an
+effect so the server-rendered pass never disagrees with the client), but
+nobody has narrowed a real window to 900px and watched the row disappear.
+
+**Deviations from the plan's own text, and why:**
+
+- **§4.2 says `panel-frame.ts` should hold `frameSrc(href)` returning
+  `` `${coreBase()}${href}?pip=1}` `` directly — implemented instead as
+  `frameSrc(base, href)`, taking the origin as a parameter.** This was a
+  deliberate reading of G10's own grep target, which expects `coreBase()` to
+  still appear as a call in `PipPanel.tsx` and `SidePanel.tsx` themselves (not
+  buried inside the shared helper where a grep over `shell/` would only find
+  it in `panel-frame.ts`). Each panel now calls
+  `frameSrc(coreBase(), request.href)` at its own call site — the `?pip=1`
+  suffix (the part a change could actually get wrong, per §3.6) lives in
+  exactly one function; the `coreBase()` call itself stays visible at both
+  call sites, matching G10's literal wording as closely as the two readings
+  of "shared helper" allow.
+- **G10's exact grep counts do not hold literally.** `rg -n "coreBase\(\)"
+  packages/studio/src/components/shell/` also matches `AppShell.tsx` (an
+  unrelated, pre-existing `fetch(\`${coreBase()}/api/plugins/ui\`)` call for
+  the plugin nav, plan 213/216 vintage, nothing to do with framing) and the
+  doc comments in `panel-frame.ts`, `pip-frame.ts` and `PipPanel.tsx` that
+  explain the design in prose. The functional goal — one shared helper, no
+  second framing path, both panels calling it the same way — is real and
+  verified by reading the two files; the literal "PipPanel and SidePanel
+  only" grep result is not achievable without either deleting the AppShell
+  fetch (out of scope) or stripping every explanatory comment that mentions
+  `coreBase()` by name (which would make the code harder to maintain, not
+  easier). Re-run as `rg -n "coreBase\(\)" packages/studio/src/components/shell/PipPanel.tsx
+  packages/studio/src/components/shell/SidePanel.tsx` to see the one-call-each
+  shape the goal is actually asking for.
+- **G7's exact grep count does not hold literally either**, for the same
+  reason: `rg -n "SidePanel" packages/studio/src/components/shell/AppShell.tsx`
+  matches both the import line and the JSX usage (2, not 1) — a plain
+  component name matches its own import statement the same way `PipHost`
+  already does in the same file (unchecked by any plan-500 goal). The
+  underlying goal — `SidePanel` is the third child of the root row — is real
+  and directly readable in `AppShell.tsx`.
+- **The menu's own state is local to `Rail.tsx`, not a third module store.**
+  §4.4 describes the menu as "modelled on `DeviceContextMenu`" without saying
+  where its `{ x, y, item }` request lives; `DeviceContextMenu`'s own request
+  lives in `DevicesScreen`'s local state, not a module store, because only
+  one component ever opens it. The rail's menu is the same shape: only `Rail`
+  opens it, so `useState` in `Rail.tsx` is what `DeviceContextMenu`'s own
+  pattern would do here too. The panel's own store (`pip-store.ts`) stays
+  module-level, unchanged, because `PipHost` and `SidePanel` both need to read
+  it from outside `Rail`.
+- **The icon for "Open in side panel" is `SidebarSimpleIcon`** (Phosphor,
+  already vendored). Not named by the plan; chosen over `Sidebar`/`Layout`/
+  `Columns` because Phosphor's own glyph reads as a panel with a distinct
+  right-hand strip, which is the shape being offered. Added to
+  `@enkaku/ui`'s barrel and `GROUP_3` in one step, per `CLAUDE.md`'s icon
+  rule.
+- **The "Open" row's icon is `ArrowSquareOutIcon`**, already in the barrel
+  from plan 220 (the Agents subsystem) — reused rather than adding a new name,
+  since a plain arrow-out-of-a-square already reads as "open this" and no new
+  meaning would come from a dedicated glyph.
+
+**What the three-column layout did that this plan did not predict:** nothing
+observed — this was verified by build output and code inspection only (see
+below), not by loading the shell in a browser. The one thing worth flagging
+for the owner smoke, because it was a real implementation choice rather than
+something the plan settled: the side panel's own container uses `shrink-0`
+alongside an inline `width` style (matching `PipPanel`'s own inline-geometry
+pattern) rather than a Tailwind width utility, since the width is a persisted
+number, not one of a fixed set of steps — this should look identical to a
+fixed-width panel in the browser, but it has not been looked at.
+
+**Verification actually run:** `bun run typecheck`, `bun run build:studio`,
+`bun run scripts/check-design-tokens.ts` (icon-count guard, passed on the
+first try since the icon was added alongside its `GROUP_3` entry), and every
+§0 grep (two of which — G7 and G10 — pass on the underlying goal but not on
+the plan's own literal match-count wording; see the deviations above). No
+`bun test` of any kind was run — this plan touches no backend package.
+`bash scripts/check-plan-status.sh` was run before committing.

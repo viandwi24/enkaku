@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowsClockwiseIcon, Button, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, XIcon } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
 import { registerOverlay } from '@/lib/overlays'
+import { frameSrc, frameStyle, ZOOM_STEPS } from './panel-frame'
 import {
-  ZOOM_STEPS,
   applyMagnet,
   clampGeometry,
   defaultGeometry,
@@ -177,15 +177,10 @@ export function PipPanel({ request, onClose }: { request: PipRequest; onClose: (
         <iframe
           key={request.href}
           ref={iframeRef}
-          src={`${coreBase()}${request.href}?pip=1`}
+          src={frameSrc(coreBase(), request.href)}
           title={request.label}
           className="absolute top-0 left-0 border-0"
-          style={{
-            width: `${100 / geometry.zoom}%`,
-            height: `${100 / geometry.zoom}%`,
-            transform: `scale(${geometry.zoom})`,
-            transformOrigin: 'top left',
-          }}
+          style={frameStyle(geometry.zoom)}
         />
       </div>
 

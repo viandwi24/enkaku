@@ -318,6 +318,8 @@ const GROUP_3 = [
   'MagnifyingGlassMinusIcon',
   'MagnifyingGlassPlusIcon',
   'PictureInPictureIcon',
+  // Plan 501 (the rail's right-click menu) — the "Open in side panel" row.
+  'SidebarSimpleIcon',
 ]
 
 async function checkIcons(): Promise<void> {
