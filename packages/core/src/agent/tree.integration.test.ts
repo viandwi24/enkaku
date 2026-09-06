@@ -625,7 +625,16 @@ describe('tree — a parent killed by maxRunSeconds cancels its still-running ch
     })
     expect(env.agentHolderOf('d1')).toBeNull()
     expect(env.agentHolderOf('d2')).toBeNull()
-  })
+    // Same reason as the 12s above, and the arithmetic is worse here: this
+    // test deliberately burns 1.2s inside `test_slow` to cross the 1s budget,
+    // then declares two `waitUntil(…, 6000)` and one more at the 4000
+    // default — up to ~17s of internal budget inside a test bun:test caps at
+    // 5s. It could never use what it asks for: on an unloaded machine it
+    // finishes in about a second and a half and passes, and on a loaded CI
+    // runner it hits the 5s cap and reports a timeout that looks like a
+    // cascade bug rather than a test that under-declared its own budget
+    // (observed on CI, 2026-09-06).
+  }, 20_000)
 })
 
 describe('tree — one device holder, sibling contention refused naming the winner (plan 67 §3.7, criterion 14)', () => {
