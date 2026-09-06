@@ -91,7 +91,10 @@ describe('resolveAndroidSdk', () => {
 
   test('the legacy tools/bin/avdmanager is used when it is the one that exists', async () => {
     const root = '/sdk'
-    const legacy = `${root}/tools/bin/avdmanager`
+    // `join`, not a `/` literal: `resolveAvdmanagerPath` builds this with
+    // `node:path`, so on Windows the real answer carries backslashes and a
+    // hardcoded forward slash can never match it (CI check-windows, 2026-09-06).
+    const legacy = join(root, 'tools', 'bin', 'avdmanager')
     const deps: SdkResolveDeps = {
       env: { ENKAKU_ANDROID_SDK_PATH: root },
       exists: onlyExists(legacy),
@@ -129,7 +132,7 @@ describe('resolveAndroidSdk', () => {
       platform: 'linux',
       toolchainSdkmanager: async () => null,
     })
-    expect(sdk.avdmanager).toBe(`${root}/cmdline-tools/latest/bin/avdmanager`)
+    expect(sdk.avdmanager).toBe(join(root, 'cmdline-tools', 'latest', 'bin', 'avdmanager'))
   })
 
   test('the managed root answers when no other tier does', async () => {
@@ -158,7 +161,7 @@ describe('resolveAndroidSdk', () => {
 
   test('the modern cmdline-tools/latest/bin/avdmanager wins when present', async () => {
     const root = '/sdk'
-    const modern = `${root}/cmdline-tools/latest/bin/avdmanager`
+    const modern = join(root, 'cmdline-tools', 'latest', 'bin', 'avdmanager')
     const deps: SdkResolveDeps = {
       env: { ENKAKU_ANDROID_SDK_PATH: root },
       exists: onlyExists(modern),

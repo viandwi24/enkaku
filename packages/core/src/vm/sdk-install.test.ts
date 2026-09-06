@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { join } from 'node:path'
 import { INSTALLABLE_PACKAGES, appendInstallLine, installSdkPackages, managedSdkRoot, packagesFor, type SdkInstallRequest } from './sdk-install'
 import { createLogger } from '../util/logger'
 
@@ -41,7 +42,9 @@ describe('installSdkPackages refuses before it spawns anything', () => {
 
 describe('the managed destination is this farm’s own directory', () => {
   test('never a caller-supplied path — the request cannot name one at all', () => {
-    expect(managedSdkRoot('/var/enkaku')).toBe('/var/enkaku/android-sdk')
+    // `join`, not a `/` literal — `managedSdkRoot` builds this with `node:path`,
+    // so the real answer carries backslashes on Windows.
+    expect(managedSdkRoot('/var/enkaku')).toBe(join('/var/enkaku', 'android-sdk'))
     // The type has no field for a path, which is the point: a free-text
     // directory would be an authenticated operator telling the core to write
     // gigabytes anywhere it can reach.
