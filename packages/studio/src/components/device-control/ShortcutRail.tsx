@@ -2,6 +2,7 @@
 
 import { memo, useState } from 'react'
 import { KEYCODES, chordLabel, DEVICE_CONTROL_HOTKEYS } from '@enkaku/protocol'
+import type { RotationMode } from '@enkaku/protocol'
 import {
   Button,
   Tooltip,
@@ -11,13 +12,15 @@ import {
   CircleIcon,
   LightningIcon,
   MoonIcon,
-  ClockCounterClockwiseIcon,
+  ArrowsClockwiseIcon,
+  DeviceMobileIcon,
   PowerIcon,
   SpeakerHighIcon,
   SpeakerLowIcon,
   SpeakerSlashIcon,
   SquareIcon,
   SunIcon,
+  cn,
   type Icon,
 } from '@enkaku/ui'
 import { runOnDevice } from '@/lib/actions'
@@ -33,14 +36,16 @@ import type { ClipboardEntry } from './use-cast'
 function ShortcutRailImpl({
   deviceId,
   sendKey,
-  onRotate,
+  rotationMode,
+  onSetRotation,
   clipboardHistory,
   onClearClipboardHistory,
   onReadClipboard,
 }: {
   deviceId: string
   sendKey: (keycode: number) => void
-  onRotate: () => void
+  rotationMode: RotationMode
+  onSetRotation: (mode: RotationMode) => void
   /** Everything the device has copied while this window has been open (`use-cast.ts`). */
   clipboardHistory: ClipboardEntry[]
   onClearClipboardHistory: () => void
@@ -69,13 +74,28 @@ function ShortcutRailImpl({
     return hk ? chordLabel(hk) : undefined
   }
 
-  const RailButton = ({ icon: Icon, label, hotkeyId, title, onClick }: { icon: Icon; label: string; hotkeyId?: string; title?: string; onClick: () => void }) => {
+  const RailButton = ({ icon: Icon, label, hotkeyId, title, onClick, active, iconClassName }: { icon: Icon; label: string; hotkeyId?: string; title?: string; onClick: () => void; active?: boolean; iconClassName?: string }) => {
     const chord = hotkeyId ? hotkeyChordFor(hotkeyId) : undefined
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-lg" className="rounded-[10px] text-dim" aria-label={label} onClick={onClick}>
-            <Icon className="size-4" aria-hidden />
+          {/* `active` is what makes a state button honest: three rotation
+              buttons that all look identical cannot tell you which one the
+              device is actually in. */}
+          <Button
+            variant="ghost"
+            size="icon-lg"
+            className="rounded-[10px] text-dim"
+            // `data-active` is the Button's own convention — its base class
+            // already carries `data-[active=true]:bg-accent-soft` and
+            // `data-[active=true]:text-accent`, so the lit state belongs to
+            // the design system rather than to a className written here.
+            {...(active ? { 'data-active': 'true' } : {})}
+            aria-label={label}
+            aria-pressed={active}
+            onClick={onClick}
+          >
+            <Icon className={cn('size-4', iconClassName)} aria-hidden />
           </Button>
         </TooltipTrigger>
         {/*
@@ -117,7 +137,36 @@ function ShortcutRailImpl({
       <RailButton icon={CaretLeftIcon} label="Back" hotkeyId="back" onClick={() => sendKey(KEYCODES.BACK)} />
       <RailButton icon={CircleIcon} label="Home" hotkeyId="home" onClick={() => sendKey(KEYCODES.HOME)} />
       <RailButton icon={SquareIcon} label="Recents" hotkeyId="recents" onClick={() => sendKey(KEYCODES.APP_SWITCH)} />
-      <RailButton icon={ClockCounterClockwiseIcon} label="Rotate" hotkeyId="rotate" onClick={onRotate} />
+      {/*
+        Three buttons, not one that cycles — the same argument that split
+        Sleep and Wake above: a cycle makes an operator press an unknown
+        number of times to reach the state they want, and shows nothing about
+        where they are now. These name the state, and the one in force is lit.
+
+        They are the two systems in one row. WHICH WAY UP is Portrait vs
+        Landscape; LOCKED OR NOT is either of those vs Auto-rotate, which
+        hands the screen back to the device's own sensor.
+      */}
+      <RailButton
+        icon={DeviceMobileIcon}
+        label="Portrait lock"
+        hotkeyId="rotate"
+        active={rotationMode === 'lock-portrait'}
+        onClick={() => onSetRotation('lock-portrait')}
+      />
+      <RailButton
+        icon={DeviceMobileIcon}
+        iconClassName="rotate-90"
+        label="Landscape lock"
+        active={rotationMode === 'lock-landscape'}
+        onClick={() => onSetRotation('lock-landscape')}
+      />
+      <RailButton
+        icon={ArrowsClockwiseIcon}
+        label="Auto-rotate (follow the device)"
+        active={rotationMode === 'device'}
+        onClick={() => onSetRotation('device')}
+      />
       <RailButton icon={SunIcon} label="Brightness" title={brightnessLabel ?? 'Brightness'} onClick={() => void cycleBrightness()} />
       <ClipboardPopover
         deviceId={deviceId}

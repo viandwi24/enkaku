@@ -1,8 +1,10 @@
 import { Hono } from 'hono'
+import { eq } from 'drizzle-orm'
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { defaultDeviceSettings } from '@enkaku/protocol'
 import type { RegistryResponse, RotationApplyResult, RotationMode } from '@enkaku/protocol'
 import type { RotationOutcome, SessionManager } from '@enkaku/session'
 import { createAuditLogger } from '../auth/audit'
@@ -55,9 +57,27 @@ function fakeActivities(): Pick<ActivityRegistry, 'list' | 'endWhere'> {
   return { list: () => [], endWhere: () => 0 }
 }
 
+/**
+ * Seeded with `rotation: 'device'` explicitly.
+ *
+ * The row used to carry no settings at all and pick up the schema default,
+ * which was `device`. That default is `lock-portrait` now (a farm wants its
+ * screens the same way up), and a test that PATCHes to `lock-portrait` from
+ * a `lock-portrait` row is asserting a no-op: this route only reports a
+ * `rotation` result when the mode actually CHANGED. Naming the starting
+ * point keeps each test below testing the transition it was written for,
+ * whatever the default becomes next.
+ */
 function seedDevice(db: Db, id: string): void {
   db.insert(devices)
-    .values({ id, stableId: `stable-${id}`, serial: `serial-${id}`, label: 'Test Phone', status: 'online' })
+    .values({
+      id,
+      stableId: `stable-${id}`,
+      serial: `serial-${id}`,
+      label: 'Test Phone',
+      status: 'online',
+      settings: { ...defaultDeviceSettings(), prep: { ...defaultDeviceSettings().prep, rotation: 'device' } },
+    })
     .run()
 }
 
@@ -244,5 +264,39 @@ describe('PATCH /api/devices/:id applies prep.rotation to a LIVE session (plan 8
     const res = await app.request('/a', patchReq({ settings: { prep: { rotation: 'lock-portrait' } } }))
     expect(res.status).toBe(200)
     expect((await bodyOf(res)).rotation).toEqual({ mode: 'lock-portrait', state: 'no-session' })
+  })
+})
+
+/*
+  The hazard the default change exposed: `DeviceSettingsSchema` fills every
+  absent field, so a PATCH that never mentions rotation used to arrive looking
+  like a request to set it to the default. Dormant while that default was
+  `device`; a phone rotating on every settings save once it became
+  `lock-portrait`.
+*/
+describe('a rotation nobody asked for', () => {
+  test('an omitted prep.rotation keeps the stored mode, and touches no session', async () => {
+    const sessions = fakeSessions(applied('lock-portrait', '0'))
+    const { db, app } = makeApp({ sessions })
+    seedDevice(db, 'a') // stored as `device`
+
+    const res = await app.request('/a', patchReq({ settings: { prep: { keepAwake: 'always' } } }))
+    expect(res.status).toBe(200)
+    expect(sessions.applied).toEqual([])
+    expect((await bodyOf(res)).rotation).toBeUndefined()
+
+    const row = db.select().from(devices).where(eq(devices.id, 'a')).get()
+    expect((row?.settings as { prep: { rotation: string } }).prep.rotation).toBe('device')
+  })
+
+  test('an explicit prep.rotation is still honoured, unchanged', async () => {
+    const sessions = fakeSessions(applied('lock-landscape', '1'))
+    const { db, app } = makeApp({ sessions })
+    seedDevice(db, 'a')
+
+    const res = await app.request('/a', patchReq({ settings: { prep: { rotation: 'lock-landscape' } } }))
+    expect(res.status).toBe(200)
+    expect(sessions.applied).toEqual([{ deviceId: 'a', mode: 'lock-landscape' }])
+    expect((await bodyOf(res)).rotation?.state).toBe('applied')
   })
 })
