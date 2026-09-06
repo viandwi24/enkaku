@@ -78,7 +78,7 @@ export default {
 describe('createScriptExecutor — dev shadow logging (criterion 16)', () => {
   test('running a dev entry that shadows a published one logs which was used, naming the published version and the dev owner, on the first log line', async () => {
     const db = setUpDb()
-    const dataDir = `/tmp/enkaku-script-executor-test-${crypto.randomUUID()}`
+    const dataDir = join(tmpdir(), `enkaku-script-executor-test-${crypto.randomUUID()}`)
 
     // A published, active `tiktok/login@1.0.0`.
     db.insert(scripts)
@@ -100,7 +100,7 @@ describe('createScriptExecutor — dev shadow logging (criterion 16)', () => {
     expect(devEntry.origin).toBe('dev') // dev wins over published (§4.4)
 
     const runner = createJobRunner({
-      logDir: `/tmp/enkaku-script-executor-test-logs-${crypto.randomUUID()}`,
+      logDir: join(tmpdir(), `enkaku-script-executor-test-logs-${crypto.randomUUID()}`),
       sessions: fakeSessions(),
       artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
@@ -135,13 +135,13 @@ describe('createScriptExecutor — dev shadow logging (criterion 16)', () => {
 
   test('running a PUBLISHED entry (no shadowing) logs nothing about a dev build', async () => {
     const db = setUpDb()
-    const dataDir = `/tmp/enkaku-script-executor-test-${crypto.randomUUID()}`
+    const dataDir = join(tmpdir(), `enkaku-script-executor-test-${crypto.randomUUID()}`)
     db.insert(scripts)
       .values({ pluginId: 'p-fixture', exportId: 'main', id: 's-solo', name: 'checkout', version: '1.0.0', bundle: `export default { id: 'checkout', version: '1.0.0', params: { parse: (v) => v }, run: async () => 'ok' }`, enabled: true, createdAt: new Date() })
       .run()
     const registry = createScriptRegistry({ db, dataDir, devSlots: createDevSlotStore() })
     const runner = createJobRunner({
-      logDir: `/tmp/enkaku-script-executor-test-logs-${crypto.randomUUID()}`,
+      logDir: join(tmpdir(), `enkaku-script-executor-test-logs-${crypto.randomUUID()}`),
       sessions: fakeSessions(),
       artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
@@ -183,7 +183,7 @@ export default {
 describe("ctx.kv's namespace for a plugin member is the PLUGIN's id, shared across every member (plan 79 §3.2, plan 82 §3.10)", () => {
   test('two DIFFERENT members of the SAME plugin issue kv calls under the SAME namespace — the plugin id, not their own export id', async () => {
     const db = setUpDb()
-    const dataDir = `/tmp/enkaku-script-executor-kv-test-${crypto.randomUUID()}`
+    const dataDir = join(tmpdir(), `enkaku-script-executor-kv-test-${crypto.randomUUID()}`)
     db.insert(scripts)
       .values([
         { id: 's-login', name: 'tiktok/login', version: '1.0.0', bundle: NAMESPACE_PLUGIN_BUNDLE, pluginId: 'p1', exportId: 'login', enabled: true, createdAt: new Date() },
@@ -202,7 +202,7 @@ describe("ctx.kv's namespace for a plugin member is the PLUGIN's id, shared acro
     }
 
     const runner = createJobRunner({
-      logDir: `/tmp/enkaku-script-executor-kv-test-logs-${crypto.randomUUID()}`,
+      logDir: join(tmpdir(), `enkaku-script-executor-kv-test-logs-${crypto.randomUUID()}`),
       sessions: fakeSessions(),
       artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
       log: silentLog() as never,
@@ -236,7 +236,7 @@ describe('createScriptExecutor.validateParams (plan 95 §5 step 95.6)', () => {
     db.insert(scripts)
       .values({ pluginId: 'p-fixture', exportId: 'main', id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, paramsSchema, createdAt: new Date() })
       .run()
-    return createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    return createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-validate-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
   }
 
   test('an out-of-range value is rejected with the path and message the plan names, and carries EnkakuError.issues', () => {
@@ -269,14 +269,14 @@ describe('createScriptExecutor.validateParams (plan 95 §5 step 95.6)', () => {
   test('a script with no declared paramsSchema accepts anything (F10: no schema is not a violation)', () => {
     const db = setUpDb()
     db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 'no-params', name: 'no-params', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
-    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-validate-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
     const executor = createScriptExecutor({ registry, runner: {} as never })
     expect(executor.validateParams({ anything: 'goes' }, 'no-params')).toEqual({ anything: 'goes' })
   })
 
   test('an unknown scriptId throws unknown_script rather than crashing on a missing entry', () => {
     const db = setUpDb()
-    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-validate-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-validate-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
     const executor = createScriptExecutor({ registry, runner: {} as never })
     expect(() => executor.validateParams({}, 'does-not-exist')).toThrow(EnkakuError)
   })
@@ -311,7 +311,7 @@ describe("createScriptExecutor threads the registry entry's runtime through to J
     db.insert(scripts)
       .values({ pluginId: 'p-fixture', exportId: 'main', id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, runtime: declared, createdAt: new Date() })
       .run()
-    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-runtime-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-runtime-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
     const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
@@ -324,7 +324,7 @@ describe("createScriptExecutor threads the registry entry's runtime through to J
   test('a script with no declared runtime passes `null` through — never `undefined`, so the runner can tell "declared nothing" apart from "the host never wired this"', async () => {
     const db = setUpDb()
     db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 'no-runtime', name: 'no-runtime', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
-    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-runtime-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-runtime-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
     const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
@@ -355,7 +355,7 @@ describe('createScriptExecutor — a finish() salvage on failure (plan 97 §3.5,
 
   function baseRegistry(db: Db, scriptId: string) {
     db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: scriptId, name: scriptId, version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
-    return createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-partial-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    return createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-partial-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
   }
 
   test('a FAILURE with an outcome still calls ctx.onResultOutcome, and the salvage value rides the thrown error as partialResult', async () => {
@@ -478,7 +478,7 @@ describe("createScriptExecutor threads jobs.runtime_override through to JobRunne
   test("a job's own runtimeOverride reaches runner.execute() unchanged, parsed off the JobRow", async () => {
     const db = setUpDb()
     db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
-    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-override-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
     const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
@@ -492,7 +492,7 @@ describe("createScriptExecutor threads jobs.runtime_override through to JobRunne
   test('a job with no override at all passes `null` through', async () => {
     const db = setUpDb()
     db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
-    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-override-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
     const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }
@@ -505,7 +505,7 @@ describe("createScriptExecutor threads jobs.runtime_override through to JobRunne
   test('a corrupt column value degrades to null rather than throwing — the same discipline `scripts.runtime` already has', async () => {
     const db = setUpDb()
     db.insert(scripts).values({ pluginId: 'p-fixture', exportId: 'main', id: 'checkout', name: 'checkout', version: '1.0.0', bundle: 'export {}', enabled: true, createdAt: new Date() }).run()
-    const registry = createScriptRegistry({ db, dataDir: `/tmp/enkaku-script-executor-override-test-${crypto.randomUUID()}`, devSlots: createDevSlotStore() })
+    const registry = createScriptRegistry({ db, dataDir: join(tmpdir(), `enkaku-script-executor-override-test-${crypto.randomUUID()}`), devSlots: createDevSlotStore() })
     const { runner, seen } = fakeRunner()
     const executor = createScriptExecutor({ registry, runner: runner as never })
     const ctx = { signal: new AbortController().signal, heartbeat: () => {}, log: silentLog(), run: { runtimeOverride: null } as never }

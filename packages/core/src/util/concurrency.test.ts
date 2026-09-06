@@ -44,15 +44,36 @@ describe('mapWithConcurrency (plan 23 §4.5)', () => {
     expect(results[4]).toEqual({ status: 'fulfilled', value: 5 })
   })
 
-  test('the whole run takes roughly the slowest item, not the sum, when one item is artificially slow', async () => {
-    const items = [5, 5, 5, 5, 200]
+  /*
+    The property is PARALLELISM, and it used to be measured with a stopwatch
+    that had no room in it: items `[5,5,5,5,200]` make the serial total 220ms
+    and the parallel total 200ms, so `elapsed < 220` allowed twenty
+    milliseconds of scheduling for the whole run. Windows' default timer
+    resolution alone is about 15.6ms, and a loaded CI runner spends more than
+    that just waking a timer — `check-windows` failed here (owner,
+    2026-09-07).
+
+    So the concurrency is counted directly, which is the thing under test and
+    needs no clock at all. The wall clock stays only as a coarse sanity
+    check, with a gap wide enough that it can only fail if the work really did
+    run one item at a time.
+  */
+  test('runs items concurrently up to the limit, rather than one at a time', async () => {
+    const items = [80, 80, 80, 80]
+    let inFlight = 0
+    let peak = 0
     const start = Date.now()
-    await mapWithConcurrency(items, 8, async (ms) => {
+    await mapWithConcurrency(items, 4, async (ms) => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
       await sleep(ms)
+      inFlight--
     })
     const elapsed = Date.now() - start
-    // Sum would be ~220ms; bounded parallelism should land close to 200ms.
-    expect(elapsed).toBeLessThan(220)
+    expect(peak).toBe(4)
+    // Serial would be 320ms. Anything under 240 had to overlap, and leaves
+    // 160ms of slack over the 80ms the parallel run actually needs.
+    expect(elapsed).toBeLessThan(240)
   })
 
   test('an empty items array resolves to an empty array without spawning any workers', async () => {

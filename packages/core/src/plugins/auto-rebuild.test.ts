@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { openDb, runMigrations, type Db } from '../db'
 import { createKvStore } from '../kv/store'
 import { createScriptRegistry } from '../scripts/registry'
@@ -33,7 +35,7 @@ function setUp() {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db: Db = opened.db
-  const dataDir = `/tmp/enkaku-auto-rebuild-test-${crypto.randomUUID()}`
+  const dataDir = join(tmpdir(), `enkaku-auto-rebuild-test-${crypto.randomUUID()}`)
   const workspace = createWorkspaceStore(db, () => QUOTAS)
   const kv = createKvStore(db, dataDir, () => ({ maxValueBytes: 65536, maxKeyLength: 256, maxEntriesPerNamespace: 1000, maxEntriesPerDevice: 5000 }))
   const devSlots = createDevSlotStore()
