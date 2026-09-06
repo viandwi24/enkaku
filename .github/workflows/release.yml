@@ -60,6 +60,7 @@ jobs:
       - run: bun run --cwd plugins/mikrotik-routing test
       - run: bun run --cwd plugins/google-automation-pack test
       - run: bun run --cwd plugins/youtube-automation-pack test
+      - run: bun run --cwd plugins/instagram-automation-pack test
       - run: VERSION="${{ github.ref_name }}" TARGETS="linux-x64 linux-arm64 windows-x64" bash scripts/build-release.sh
       - uses: actions/upload-artifact@v4
         with:

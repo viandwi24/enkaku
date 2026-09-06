@@ -49,6 +49,7 @@ const PACK_ENTRIES = [
   'plugins/mikrotik-routing/src/index.ts',
   'plugins/google-automation-pack/src/index.ts',
   'plugins/youtube-automation-pack/src/index.ts',
+  'plugins/instagram-automation-pack/src/index.ts',
 ]
 
 export interface PackIndexEntry {
