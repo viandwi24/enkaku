@@ -538,7 +538,7 @@ function collectFiles(dir: string, predicate: (name: string) => boolean): string
 const SHADCN_PATTERN = /(bg|text|border|ring|fill|placeholder|selection)-(background|foreground|primary|primary-foreground|secondary|secondary-foreground|popover|popover-foreground|card|card-foreground|muted-foreground|destructive|input|ring)\b/
 
 function checkDesignRules(): void {
-  console.log('\n== design rules across packages/ui/src (G6, G8) ==')
+  console.log('\n== design rules (G6, G8) — packages/ui/src, plus the block-D ban everywhere ==')
   const sourceFiles = collectFiles(UI_SRC, (n) => /\.tsx?$/.test(n) && !n.endsWith('.test.ts') && !n.endsWith('.test.tsx'))
   const cssFiles = collectFiles(UI_SRC, (n) => n.endsWith('.css'))
 
@@ -580,6 +580,72 @@ function checkDesignRules(): void {
   if (shadcnOffenders === 0) ok('no shadcn bridge-name utility class in packages/ui/src/components')
 
   void cssFiles // .css is never scanned for hex/dark:/bracket-form — palette.css legitimately holds hex values.
+
+  checkPrototypeVocabulary()
+}
+
+/**
+ * The names in `theme.css` block D carry hard-coded dark oklch literals rather
+ * than living in `palette.css`, so a screen that uses one renders a dark role
+ * on a light ground and never follows the theme. Block D says so itself: "NOT
+ * part of the design ... A NEW screen must never name one of these."
+ *
+ * Nothing enforced it. The design rules above only ever scanned
+ * `packages/ui/src`, which is the one place that had already been migrated —
+ * so Studio and the plugin views accumulated 1,530 of them, including 140 in
+ * the Flow editor, the newest subsystem in the repo, written long after the
+ * rule was set down. They were all migrated on 2026-09-06; this keeps them
+ * from coming back.
+ *
+ * Prose is exempt. A comment recording that `text-fg-muted` BECAME
+ * `text-faint` is documentation of the migration, not a live class, and
+ * rewriting those was the one thing the migration itself got wrong before it
+ * was caught.
+ */
+function checkPrototypeVocabulary(): void {
+  const PROTOTYPE_NAMES = [
+    'fg-muted',
+    'fg-subtle',
+    'fg',
+    'surface-2',
+    'surface-3',
+    'surface',
+    'line-strong',
+    'led-ok',
+    'led-warn',
+    'led-danger',
+    'led-active',
+    'led-off',
+    'accent-strong',
+    'accent-fg',
+  ]
+  const PREFIXES = 'bg|text|border|fill|stroke|ring|from|to|via|shadow|outline|decoration|divide|caret|placeholder'
+  const pattern = new RegExp(`(?<![a-z-])(?:${PREFIXES})-(?:${PROTOTYPE_NAMES.join('|')})(?![a-z0-9-])`)
+
+  const roots = [
+    join(ROOT, 'packages/studio/src'),
+    UI_SRC,
+    ...readdirSync(join(ROOT, 'plugins'))
+      .map((name) => join(ROOT, 'plugins', name, 'src'))
+      .filter((dir) => existsSync(dir)),
+  ]
+
+  let offenders = 0
+  let scanned = 0
+  for (const root of roots) {
+    for (const f of collectFiles(root, (n) => /\.tsx?$/.test(n))) {
+      scanned++
+      for (const [i, line] of readFileSync(f, 'utf8').split('\n').entries()) {
+        // A comment line is prose about the migration, not a class list.
+        const trimmed = line.trim()
+        if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) continue
+        if (!pattern.test(line)) continue
+        fail(`prototype token (theme.css block D) in ${relative(ROOT, f)}:${i + 1} — ${trimmed.slice(0, 100)}`)
+        offenders++
+      }
+    }
+  }
+  if (offenders === 0) ok(`no theme.css block-D token in Studio, @enkaku/ui or any plugin view (${scanned} files)`)
 }
 
 // ---------------------------------------------------------------------------

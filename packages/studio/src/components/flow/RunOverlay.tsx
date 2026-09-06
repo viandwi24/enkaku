@@ -43,7 +43,7 @@ export function RunOverlay({ jobId, runId, simulated = false, ...canvasProps }: 
   return (
     <div className={cn('flex h-full min-h-0 flex-col gap-2', simulated && 'rounded-lg outline outline-dashed outline-2 outline-accent/50')}>
       {jobId && runId && (
-        <div className="flex flex-none flex-wrap items-center gap-2 text-[11.5px] text-fg-muted">
+        <div className="flex flex-none flex-wrap items-center gap-2 text-[11.5px] text-dim">
           {simulated ? (
             <span className="flex items-center gap-1 rounded bg-accent/15 px-1.5 py-0.5 font-medium text-accent">
               <CircleIcon weight="fill" className="size-2" aria-hidden />

@@ -43,7 +43,7 @@ export function ViewerList({
   return (
     <div>
       {viewers.length === 0 ? (
-        <p className="text-[12px] text-fg-muted">Nobody is watching this device right now.</p>
+        <p className="text-[12px] text-dim">Nobody is watching this device right now.</p>
       ) : (
         <ul className="space-y-1.5">
           {viewers.map((v) => {
@@ -55,7 +55,7 @@ export function ViewerList({
                 onMouseLeave={() => onHoverSession(null)}
                 className={cn(
                   'rounded-md px-1.5 py-1 text-[12.5px] leading-snug transition-colors',
-                  v.holdsControl && 'bg-led-ok/5',
+                  v.holdsControl && 'bg-ok/5',
                   hoveredSessionId === v.sessionId && 'bg-accent/10',
                 )}
               >
@@ -65,12 +65,12 @@ export function ViewerList({
                 <div className="flex items-center justify-between gap-2">
                   <span className="min-w-0 truncate">
                     {labelFor(v)}
-                    {isMe && <span className="text-fg-muted"> — this tab</span>}
+                    {isMe && <span className="text-dim"> — this tab</span>}
                   </span>
-                  <span className="readout shrink-0 text-[11px] text-fg-muted">{relativeTime(v.since, now)}</span>
+                  <span className="readout shrink-0 text-[11px] text-dim">{relativeTime(v.since, now)}</span>
                 </div>
                 {v.holdsControl && (
-                  <div className="mt-0.5 flex items-center gap-1 text-[11px] text-led-ok">
+                  <div className="mt-0.5 flex items-center gap-1 text-[11px] text-ok">
                     <Hand className="size-3" aria-hidden />
                     holding control
                   </div>

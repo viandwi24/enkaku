@@ -249,7 +249,7 @@ export function VpnAgentPrecondition({
 
   if (agent.loading) {
     return (
-      <p className="flex items-center gap-2 rounded-lg border bg-surface px-3.5 py-2.5 text-[12px] text-fg-muted">
+      <p className="flex items-center gap-2 rounded-lg border bg-panel px-3.5 py-2.5 text-[12px] text-dim">
         <Loader2 className="size-3.5 animate-spin" aria-hidden />
         Checking whether this phone has the guest agent…
       </p>
@@ -262,9 +262,9 @@ export function VpnAgentPrecondition({
   // smaller cost than refusing a device whose agent is fine.
   if (agent.loadError) {
     return (
-      <div className="rounded-lg border bg-surface p-3.5">
-        <h3 className="text-[12.5px] font-medium text-fg">Could not read this phone’s guest-agent state</h3>
-        <p className="mt-1 text-[11.5px] leading-relaxed text-fg-muted">
+      <div className="rounded-lg border bg-panel p-3.5">
+        <h3 className="text-[12.5px] font-medium text-text">Could not read this phone’s guest-agent state</h3>
+        <p className="mt-1 text-[11.5px] leading-relaxed text-dim">
           {agent.loadError}. VPN mode is not blocked on that account — if the agent turns out to be missing, applying
           says so instead of guessing here.
         </p>
@@ -292,12 +292,12 @@ export function VpnAgentPrecondition({
           : null
 
   return (
-    <div className="rounded-lg border bg-surface p-3.5">
+    <div className="rounded-lg border bg-panel p-3.5">
       <div className="flex flex-wrap items-center gap-2">
-        {state === 'provisioning' && <Loader2 className="size-3.5 animate-spin text-led-active" aria-hidden />}
-        <h3 className="text-[12.5px] font-medium text-fg">{described.title}</h3>
+        {state === 'provisioning' && <Loader2 className="size-3.5 animate-spin text-accent" aria-hidden />}
+        <h3 className="text-[12.5px] font-medium text-text">{described.title}</h3>
       </div>
-      <p className="mt-1 text-[11.5px] leading-relaxed text-fg-muted">{described.body}</p>
+      <p className="mt-1 text-[11.5px] leading-relaxed text-dim">{described.body}</p>
 
       {/* The reason verbatim, never summarised — plan 106's own rule for
           `reason`, and the only thing that makes a `failed`/`unsupported` row
@@ -306,7 +306,7 @@ export function VpnAgentPrecondition({
         <p
           className={cn(
             'mt-2 rounded border bg-bg px-2.5 py-2 text-[11.5px] leading-relaxed',
-            state === 'failed' ? 'border-led-danger/40 text-led-danger' : 'border-line text-fg-muted',
+            state === 'failed' ? 'border-danger/40 text-danger' : 'border-line text-dim',
           )}
         >
           {agent.status.reason}
@@ -317,7 +317,7 @@ export function VpnAgentPrecondition({
           call, with no tick to render (the same ceiling `PreparationPanel`
           states). Elapsed time, never a fabricated percentage. */}
       {state === 'provisioning' && agent.status?.checkedAt && (
-        <p className="mt-2 text-[11.5px] text-fg-muted">
+        <p className="mt-2 text-[11.5px] text-dim">
           Running for <span className="readout">{duration(agent.status.checkedAt, null, now)}</span> — no progress
           percentage is available for this install, only whether it is still running.
         </p>
@@ -336,7 +336,7 @@ export function VpnAgentPrecondition({
             {busy ? `${primary.label}…` : primary.label}
           </Button>
           {isPending('install') && (
-            <span className="text-[11.5px] text-fg-muted">
+            <span className="text-[11.5px] text-dim">
               Pushing the APK and provisioning it — this can take a couple of minutes. Safe to leave this tab.
             </span>
           )}
@@ -352,8 +352,8 @@ export function VpnAgentPrecondition({
       */}
       {unsavedSelection && (
         <div className="mt-3 border-t pt-3">
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">
-            <span className="font-medium text-fg">Nothing has been applied.</span> Choosing VPN here does not save a
+          <p className="text-[11.5px] leading-relaxed text-dim">
+            <span className="font-medium text-text">Nothing has been applied.</span> Choosing VPN here does not save a
             mode and does not change this phone — it keeps using whatever the route status shows, and nothing has been
             switched to HTTP proxy on your behalf.
           </p>
@@ -373,7 +373,7 @@ export function VpnAgentPrecondition({
       */}
       {onChooseHttp && (
         <div className="mt-3 border-t pt-3">
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="text-[11.5px] leading-relaxed text-dim">
             HTTP proxy mode works on this phone without the agent, but it is not the same thing: apps can ignore it.
             WebView and many HTTP libraries use it; an app with its own networking does not, and nothing on the phone
             stops it.

@@ -169,10 +169,10 @@ const PAIRING_NOTE_LABEL: Record<PairingNote, string> = {
   'no-path': 'ran out of paths from the chosen start',
 }
 const PAIRING_NOTE_TONE: Record<PairingNote, string> = {
-  ok: 'text-led-ok',
-  'no-such-device': 'text-led-danger',
-  'already-assigned': 'text-led-warn',
-  'no-path': 'text-led-warn',
+  ok: 'text-ok',
+  'no-such-device': 'text-danger',
+  'already-assigned': 'text-warn',
+  'no-path': 'text-warn',
 }
 
 /**
@@ -301,15 +301,15 @@ function BulkAddDialog({
         <div className="space-y-3">
           <div className="grid gap-3 @sm:grid-cols-3">
             <div className="space-y-1">
-              <label className="text-[11px] font-medium text-fg-muted">From device #</label>
+              <label className="text-[11px] font-medium text-dim">From device #</label>
               <Input type="number" value={fromText} onChange={(e) => setFromText(e.target.value)} className="readout" />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] font-medium text-fg-muted">To device #</label>
+              <label className="text-[11px] font-medium text-dim">To device #</label>
               <Input type="number" value={toText} onChange={(e) => setToText(e.target.value)} className="readout" />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] font-medium text-fg-muted">When devices outrun the paths</label>
+              <label className="text-[11px] font-medium text-dim">When devices outrun the paths</label>
               <Select value={overflow} onValueChange={(v) => setOverflow(v as BulkPairing['overflow'])}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -323,7 +323,7 @@ function BulkAddDialog({
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-medium text-fg-muted">Starting path</label>
+            <label className="text-[11px] font-medium text-dim">Starting path</label>
             <Combobox
               value={paths[pathStartIndex]?.id ?? ''}
               onValueChange={(v) => {
@@ -338,16 +338,16 @@ function BulkAddDialog({
               triggerClassName="h-8 w-full text-[12px]"
               disabled={paths.length === 0}
             />
-            <p className="text-[11px] text-fg-muted">Device #{Number.isFinite(fromNumber) ? fromNumber : '?'} pairs with this path; each following device number pairs with the next path in the Paths tab's own order.</p>
+            <p className="text-[11px] text-dim">Device #{Number.isFinite(fromNumber) ? fromNumber : '?'} pairs with this path; each following device number pairs with the next path in the Paths tab's own order.</p>
           </div>
 
           {!rangeValid ? (
-            <p className="text-[12px] text-led-danger">Enter whole numbers with "To" greater than or equal to "From".</p>
+            <p className="text-[12px] text-danger">Enter whole numbers with "To" greater than or equal to "From".</p>
           ) : rows.length === 0 ? (
-            <p className="text-[12px] text-fg-muted">Nothing to preview yet.</p>
+            <p className="text-[12px] text-dim">Nothing to preview yet.</p>
           ) : (
             <div className="space-y-1.5">
-              <p className="text-[12px] text-fg-muted">
+              <p className="text-[12px] text-dim">
                 {writable.length} of {rows.length} device{rows.length === 1 ? '' : 's'} in this range will be added to the group.
               </p>
               <div className="max-h-64 overflow-y-auto rounded-lg border border-border">
@@ -365,13 +365,13 @@ function BulkAddDialog({
                       const { row } = plan
                       const ambiguous = duplicateNumbers.has(row.deviceNumber)
                       return (
-                        <TableRow key={row.deviceNumber} className={cn(plan.entry === null && 'bg-led-warn/5')}>
+                        <TableRow key={row.deviceNumber} className={cn(plan.entry === null && 'bg-warn/5')}>
                           <TableCell className="readout">{row.deviceNumber}</TableCell>
-                          <TableCell>{row.deviceId ? labelFor(row.deviceId, devices) : <span className="text-fg-muted">—</span>}</TableCell>
-                          <TableCell className="readout">{row.pathLabel ?? <span className="text-fg-muted">—</span>}</TableCell>
-                          <TableCell className={cn('text-[11px]', plan.alreadyInGroup ? 'text-led-warn' : PAIRING_NOTE_TONE[row.note])}>
+                          <TableCell>{row.deviceId ? labelFor(row.deviceId, devices) : <span className="text-dim">—</span>}</TableCell>
+                          <TableCell className="readout">{row.pathLabel ?? <span className="text-dim">—</span>}</TableCell>
+                          <TableCell className={cn('text-[11px]', plan.alreadyInGroup ? 'text-warn' : PAIRING_NOTE_TONE[row.note])}>
                             {plan.alreadyInGroup ? 'already in this group' : PAIRING_NOTE_LABEL[row.note]}
-                            {ambiguous ? <div className="text-led-danger">{'>'}1 device shares number #{row.deviceNumber} — ambiguous, resolved to one of them</div> : null}
+                            {ambiguous ? <div className="text-danger">{'>'}1 device shares number #{row.deviceNumber} — ambiguous, resolved to one of them</div> : null}
                           </TableCell>
                         </TableRow>
                       )
@@ -552,11 +552,11 @@ function EditGroupDialog({
         <div className="space-y-3">
           <div className="grid gap-3 @sm:grid-cols-2">
             <div className="space-y-1">
-              <label className="text-[11px] font-medium text-fg-muted">Name</label>
+              <label className="text-[11px] font-medium text-dim">Name</label>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jadwal-1" />
             </div>
             <div className="space-y-1">
-              <label className="text-[11px] font-medium text-fg-muted">When deactivated</label>
+              <label className="text-[11px] font-medium text-dim">When deactivated</label>
               <Select value={onDeactivate} onValueChange={(v) => setOnDeactivate(v as GroupOnDeactivate)}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -570,13 +570,13 @@ function EditGroupDialog({
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-medium text-fg-muted">Note</label>
+            <label className="text-[11px] font-medium text-dim">Note</label>
             <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Optional" />
           </div>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="text-[11px] font-medium text-fg-muted">Devices in this group</label>
+              <label className="text-[11px] font-medium text-dim">Devices in this group</label>
               <div className="flex gap-1.5">
                 <Button size="sm" variant="outline" disabled={addableDevices.length === 0} onClick={() => setPickerOpen(true)}>
                   Add devices…
@@ -619,7 +619,7 @@ function EditGroupDialog({
               the list picker (plan 129 §5 step 129.7).
             */}
             {addableDevices.length === 0 ? (
-              <p className="rounded-lg border border-dashed px-3 py-4 text-center text-[12px] text-fg-muted">
+              <p className="rounded-lg border border-dashed px-3 py-4 text-center text-[12px] text-dim">
                 Every enrolled device is already in this group.
               </p>
             ) : null}
@@ -634,7 +634,7 @@ function EditGroupDialog({
             <BulkAddDialog open={bulkOpen} onOpenChange={setBulkOpen} devices={devices} paths={paths} usedDeviceIds={usedDeviceIds} onCommit={addEntriesFromBulk} />
 
             {entries.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-border p-4 text-center text-[12px] text-fg-muted">No devices yet — add at least one above.</p>
+              <p className="rounded-lg border border-dashed border-border p-4 text-center text-[12px] text-dim">No devices yet — add at least one above.</p>
             ) : (
               <div className="max-h-64 overflow-y-auto rounded-lg border border-border">
                 <Table>
@@ -652,7 +652,7 @@ function EditGroupDialog({
                       // one case that has no number and no label to render.
                       const deviceRow = devices.find((d) => d.deviceId === e.deviceId)
                       return (
-                        <TableRow key={e.deviceId} className={cn(dupes.includes(e.deviceId) && 'bg-led-danger/5')}>
+                        <TableRow key={e.deviceId} className={cn(dupes.includes(e.deviceId) && 'bg-danger/5')}>
                           <TableCell>
                             {/*
                               `DeviceName` (the two-span visual form, plan 124
@@ -664,7 +664,7 @@ function EditGroupDialog({
                               id and renders no number at all.
                             */}
                             <DeviceName number={deviceRow?.number ?? null} label={deviceRow ? deviceRow.label || deviceRow.stableId : e.deviceId} className="font-medium" />
-                            {e.lanIp === '' ? <div className="text-[11px] text-led-warn">No LAN address known — this entry will be blocked until one is (§3.4).</div> : <div className="readout text-[11px] text-fg-muted">{e.lanIp}</div>}
+                            {e.lanIp === '' ? <div className="text-[11px] text-warn">No LAN address known — this entry will be blocked until one is (§3.4).</div> : <div className="readout text-[11px] text-dim">{e.lanIp}</div>}
                           </TableCell>
                           <TableCell>
                             {/*
@@ -701,10 +701,10 @@ function EditGroupDialog({
                 </Table>
               </div>
             )}
-            {dupes.length > 0 ? <p className="text-[11px] text-led-danger">Listed more than once: {dupes.map((id) => labelFor(id, devices)).join(', ')} — one device can only be at one path in this group (acceptance criterion 12).</p> : null}
+            {dupes.length > 0 ? <p className="text-[11px] text-danger">Listed more than once: {dupes.map((id) => labelFor(id, devices)).join(', ')} — one device can only be at one path in this group (acceptance criterion 12).</p> : null}
           </div>
 
-          {error ? <p className="text-[12px] text-led-danger">{error}</p> : null}
+          {error ? <p className="text-[12px] text-danger">{error}</p> : null}
         </div>
 
         <DialogFooter>
@@ -727,7 +727,7 @@ function EditGroupDialog({
 
 /** The same five-kind rendering `assignments.tsx`'s own `PlanRowLine` uses — duplicated rather than imported, matching this file's own precedent (`conflictingDeviceIds` above) of a small local copy over reaching into another screen's module for one component. */
 const PLAN_KIND_LABEL: Record<PlanRow['kind'], string> = { create: '+ create', update: '~ update', delete: '- delete', skip: '! skip', foreign: '? foreign' }
-const PLAN_KIND_TONE: Record<PlanRow['kind'], string> = { create: 'text-led-ok', update: 'text-fg', delete: 'text-led-danger', skip: 'text-led-warn', foreign: 'text-fg-muted' }
+const PLAN_KIND_TONE: Record<PlanRow['kind'], string> = { create: 'text-ok', update: 'text-text', delete: 'text-danger', skip: 'text-warn', foreign: 'text-dim' }
 
 function PlanRowLine({ row }: { row: PlanRow }) {
   return (
@@ -735,17 +735,17 @@ function PlanRowLine({ row }: { row: PlanRow }) {
       <span className="w-16 shrink-0 font-medium">{PLAN_KIND_LABEL[row.kind]}</span>
       <span className="readout">{row.endpointKey ?? '—'}</span>
       {row.kind === 'update' ? (
-        <span className="text-fg-muted">
+        <span className="text-dim">
           {row.fromPathId} → {row.toPathId}
         </span>
       ) : (
-        <span className="text-fg-muted">{row.pathId ?? '—'}</span>
+        <span className="text-dim">{row.pathId ?? '—'}</span>
       )}
-      {row.reason ? <span className="text-fg-muted">({row.reason})</span> : null}
+      {row.reason ? <span className="text-dim">({row.reason})</span> : null}
       {/* Plan 132 §10 — the same mark `assignments.tsx` puts on a row that
           lands on a currently-down path. Without it this dialog wrote those
           rules and said nothing, which is §0.4's complaint one screen over. */}
-      {'overDownPath' in row && row.overDownPath ? <span className="text-led-warn">(path is down — this device will have no internet until it returns)</span> : null}
+      {'overDownPath' in row && row.overDownPath ? <span className="text-warn">(path is down — this device will have no internet until it returns)</span> : null}
     </div>
   )
 }
@@ -820,12 +820,12 @@ function ActivateDialog({ open, onOpenChange, group, devices, onDone }: { open: 
         {result ? (
           result.ok ? (
             <div className="space-y-2 text-[12px]">
-              <p className="font-medium text-led-ok">
+              <p className="font-medium text-ok">
                 Activated — {result.apply.outcomes.length} rule change{result.apply.outcomes.length === 1 ? '' : 's'} applied.
               </p>
               <ul className="max-h-48 space-y-0.5 overflow-y-auto">
                 {result.apply.outcomes.map((o, i) => (
-                  <li key={i} className={o.outcome === 'applied' ? 'text-led-ok' : 'text-led-danger'}>
+                  <li key={i} className={o.outcome === 'applied' ? 'text-ok' : 'text-danger'}>
                     {o.row.kind} {o.row.endpointKey ?? ''} — {o.outcome}
                     {o.message ? `: ${o.message}` : ''}
                   </li>
@@ -835,7 +835,7 @@ function ActivateDialog({ open, onOpenChange, group, devices, onDone }: { open: 
                 <div className="rounded-lg border border-border p-2">
                   <p className="font-medium">Deactivated to make room:</p>
                   {result.deactivated.map((d) => (
-                    <p key={d.group.id} className="text-fg-muted">
+                    <p key={d.group.id} className="text-dim">
                       {d.group.name || d.group.id} — {d.outcomes.length} device{d.outcomes.length === 1 ? '' : 's'}
                     </p>
                   ))}
@@ -843,39 +843,39 @@ function ActivateDialog({ open, onOpenChange, group, devices, onDone }: { open: 
               ) : null}
             </div>
           ) : (
-            <p className="text-[12px] text-led-danger">{result.message}</p>
+            <p className="text-[12px] text-danger">{result.message}</p>
           )
         ) : previewLoading ? (
           <LoadingRows rows={4} />
         ) : previewError ? (
           <ErrorState message={previewError} onRetry={() => setPreviewNonce((n) => n + 1)} />
         ) : previewRefusal ? (
-          <p className="text-[12px] text-led-danger">{previewRefusal.message}</p>
+          <p className="text-[12px] text-danger">{previewRefusal.message}</p>
         ) : previewOk ? (
           <div className="space-y-3">
             {localExceptionBlocks ? (
-              <div className="space-y-1.5 rounded-lg border border-led-danger/40 bg-led-danger/5 p-3">
-                <p className="text-[12px] font-medium text-led-danger">Activation would be refused — the local-exception rule (§3.2) is not ok.</p>
-                <p className="text-[11px] leading-relaxed text-fg-muted">{previewOk.localException.message}</p>
-                <p className="text-[11px] text-fg-muted">Fix it on the Settings tab first — activating with this unresolved risks losing ADB to every device it touches.</p>
+              <div className="space-y-1.5 rounded-lg border border-danger/40 bg-danger/5 p-3">
+                <p className="text-[12px] font-medium text-danger">Activation would be refused — the local-exception rule (§3.2) is not ok.</p>
+                <p className="text-[11px] leading-relaxed text-dim">{previewOk.localException.message}</p>
+                <p className="text-[11px] text-dim">Fix it on the Settings tab first — activating with this unresolved risks losing ADB to every device it touches.</p>
               </div>
             ) : null}
 
             {previewOk.decision.kind === 'refuse' ? (
-              <div className="space-y-2 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3 text-[12px]">
-                <p className="font-medium text-led-warn">{describeConflictsLocal(group.name || group.id, previewOk.decision.conflicts)}</p>
+              <div className="space-y-2 rounded-lg border border-warn/40 bg-warn/5 p-3 text-[12px]">
+                <p className="font-medium text-warn">{describeConflictsLocal(group.name || group.id, previewOk.decision.conflicts)}</p>
                 {previewOk.decision.conflicts.map((c) => (
-                  <p key={c.group.id} className="text-fg-muted">
+                  <p key={c.group.id} className="text-dim">
                     {c.group.name || c.group.id} would be deactivated — devices: {c.overlappingDeviceIds.map((id) => labelFor(id, devices)).join(', ')}
                   </p>
                 ))}
-                <p className="text-fg-muted">Force activate deactivates the groups above, in this same operation, so there is never a moment a device has no assignment (§4.6).</p>
+                <p className="text-dim">Force activate deactivates the groups above, in this same operation, so there is never a moment a device has no assignment (§4.6).</p>
               </div>
             ) : previewOk.decision.kind === 'force' ? (
-              <div className="space-y-1.5 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3 text-[12px]">
-                <p className="font-medium text-led-warn">These groups would be deactivated first, in this same operation:</p>
+              <div className="space-y-1.5 rounded-lg border border-warn/40 bg-warn/5 p-3 text-[12px]">
+                <p className="font-medium text-warn">These groups would be deactivated first, in this same operation:</p>
                 {previewOk.decision.toDeactivate.map((c) => (
-                  <p key={c.group.id} className="text-fg-muted">
+                  <p key={c.group.id} className="text-dim">
                     {c.group.name || c.group.id} — devices: {c.overlappingDeviceIds.map((id) => labelFor(id, devices)).join(', ')}
                   </p>
                 ))}
@@ -883,11 +883,11 @@ function ActivateDialog({ open, onOpenChange, group, devices, onDone }: { open: 
             ) : null}
 
             {blocked.length > 0 ? (
-              <div className="space-y-1 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
-                <p className="text-[12px] font-medium text-led-warn">
+              <div className="space-y-1 rounded-lg border border-warn/40 bg-warn/5 p-3">
+                <p className="text-[12px] font-medium text-warn">
                   {blocked.length} device{blocked.length === 1 ? '' : 's'} cannot be activated yet
                 </p>
-                <ul className="list-inside list-disc text-[11px] text-fg-muted">
+                <ul className="list-inside list-disc text-[11px] text-dim">
                   {blocked.map((b) => (
                     <li key={b.deviceId}>
                       {b.label} — {b.reason}
@@ -903,18 +903,18 @@ function ActivateDialog({ open, onOpenChange, group, devices, onDone }: { open: 
                 assignment is a constraint — but an operator must be told
                 before they scroll, not after. */}
             {overDownPath ? (
-              <div className="space-y-1 rounded-lg border border-led-warn/40 bg-led-warn/5 p-3">
-                <p className="text-[12px] font-medium text-led-warn">
+              <div className="space-y-1 rounded-lg border border-warn/40 bg-warn/5 p-3">
+                <p className="text-[12px] font-medium text-warn">
                   {overDownPath.count} device{overDownPath.count === 1 ? '' : 's'} will lose internet: {overDownPath.pathIds.join(', ')} {overDownPath.pathIds.length === 1 ? 'is' : 'are'} down.
                 </p>
-                <p className="text-[11px] leading-relaxed text-fg-muted">
+                <p className="text-[11px] leading-relaxed text-dim">
                   The rule is written anyway, and that is the point — a device keeps the egress path you assigned it instead of falling back to another one. Traffic resumes on its own when the path returns.
                 </p>
               </div>
             ) : null}
 
             {previewOk.plan.length === 0 ? (
-              <p className="text-[12px] text-fg-muted">Nothing to change on the router — it already matches this group's own entries.</p>
+              <p className="text-[12px] text-dim">Nothing to change on the router — it already matches this group's own entries.</p>
             ) : (
               <div className="max-h-64 overflow-y-auto rounded-lg border border-border p-2">
                 {previewOk.plan.map((row, i) => (
@@ -980,7 +980,7 @@ function DeactivateButton({ group, devices, onDone }: { group: Group; devices: F
                   ))}
                 </ul>
               ) : (
-                <p className="text-led-danger">{result.message}</p>
+                <p className="text-danger">{result.message}</p>
               )}
             </div>
           ) : null}
@@ -1041,7 +1041,7 @@ export function GroupsTab() {
   return (
     <div className="@container space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">
+        <p className="max-w-prose text-[12px] leading-relaxed text-dim">
           A named set of device → path assignments (§4.6) — activate or deactivate the whole set at once, and the router's rules follow. Many groups may be active at once as long as their device
           sets are disjoint.
         </p>
@@ -1071,19 +1071,19 @@ export function GroupsTab() {
                   <TableRow key={g.id}>
                     <TableCell>
                       <div className="font-medium">{g.name || g.id}</div>
-                      {g.note ? <div className="text-[11px] text-fg-muted">{g.note}</div> : null}
+                      {g.note ? <div className="text-[11px] text-dim">{g.note}</div> : null}
                     </TableCell>
                     <TableCell>{g.entries.length}</TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={cn(g.active ? 'text-led-ok' : 'text-fg-muted')}>
+                      <Badge variant="outline" className={cn(g.active ? 'text-ok' : 'text-dim')}>
                         {g.active ? 'Active' : 'Inactive'}
                       </Badge>
                     </TableCell>
                     <TableCell>
                       {g.active || conflicts.length === 0 ? (
-                        <span className="text-fg-muted">—</span>
+                        <span className="text-dim">—</span>
                       ) : (
-                        <span className="text-led-warn" title="Activating this group would deactivate these, since their device sets overlap (§4.6).">
+                        <span className="text-warn" title="Activating this group would deactivate these, since their device sets overlap (§4.6).">
                           {conflicts.map((c) => c.group.name || c.group.id).join(', ')}
                         </span>
                       )}
@@ -1126,7 +1126,7 @@ export function GroupsTab() {
 
       {groups.length > 1 ? (
         <div className="space-y-1.5">
-          <p className="text-[11px] font-medium text-fg-muted">Conflict matrix — which groups can be active at the same time</p>
+          <p className="text-[11px] font-medium text-dim">Conflict matrix — which groups can be active at the same time</p>
           <div className="overflow-x-auto rounded-lg border border-border">
             <Table>
               <TableHeader>
@@ -1144,16 +1144,16 @@ export function GroupsTab() {
                   <TableRow key={row.id}>
                     <TableCell className="font-medium">{row.name || row.id}</TableCell>
                     {groups.map((col) => {
-                      if (col.id === row.id) return <TableCell key={col.id} className="text-center text-fg-muted">—</TableCell>
+                      if (col.id === row.id) return <TableCell key={col.id} className="text-center text-dim">—</TableCell>
                       const overlap = conflictingDeviceIds(row, col)
                       return (
                         <TableCell key={col.id} className="text-center">
                           {overlap.length > 0 ? (
-                            <span className="text-led-danger" title={`Shares ${overlap.map((id) => labelFor(id, devices)).join(', ')}`}>
+                            <span className="text-danger" title={`Shares ${overlap.map((id) => labelFor(id, devices)).join(', ')}`}>
                               conflicts
                             </span>
                           ) : (
-                            <span className="text-led-ok">ok</span>
+                            <span className="text-ok">ok</span>
                           )}
                         </TableCell>
                       )

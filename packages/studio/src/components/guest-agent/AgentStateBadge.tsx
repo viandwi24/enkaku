@@ -28,15 +28,15 @@ const LABEL: Record<GuestAgentState, string> = {
 }
 
 const TONE: Record<GuestAgentState, string> = {
-  'not-installed': 'text-fg-subtle border-line bg-transparent',
-  installed: 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  ready: 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  unreachable: 'text-led-danger border-led-danger/40 bg-led-danger/10',
-  unsupported: 'text-fg-subtle border-line bg-transparent',
-  outdated: 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  failed: 'text-led-danger border-led-danger/40 bg-led-danger/10',
+  'not-installed': 'text-faint border-line bg-transparent',
+  installed: 'text-warn border-warn/35 bg-warn/10',
+  ready: 'text-ok border-ok/35 bg-ok/10',
+  unreachable: 'text-danger border-danger/40 bg-danger/10',
+  unsupported: 'text-faint border-line bg-transparent',
+  outdated: 'text-warn border-warn/35 bg-warn/10',
+  failed: 'text-danger border-danger/40 bg-danger/10',
   // `warn`, not `danger` — nothing is broken, a tap on the phone is pending.
-  'consent-required': 'text-led-warn border-led-warn/35 bg-led-warn/10',
+  'consent-required': 'text-warn border-warn/35 bg-warn/10',
 }
 
 const base =

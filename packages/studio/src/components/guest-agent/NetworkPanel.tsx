@@ -91,7 +91,7 @@ export function NetworkPanel({
     <div className="@container">
       <div className="py-4 @min-[32rem]:px-5">
         {disabled && (
-          <p className="mb-4 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] text-fg-muted">
+          <p className="mb-4 rounded-lg border bg-panel px-3.5 py-2.5 text-[12.5px] text-dim">
             Take control of this device to configure its network route.
           </p>
         )}
@@ -105,10 +105,10 @@ export function NetworkPanel({
           */}
           <Link
             href={agentHref}
-            className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] transition-colors hover:border-line-strong"
+            className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-lg border bg-panel px-3.5 py-2.5 text-[12.5px] transition-colors hover:border-border-3"
           >
             <span className="flex min-w-0 items-center gap-2">
-              <span className="shrink-0 text-fg-muted">Guest agent</span>
+              <span className="shrink-0 text-dim">Guest agent</span>
               {/*
                 Three renderings, none of which is allowed to become the whole
                 screen: the state once it is known, a quiet "checking" while it
@@ -118,16 +118,16 @@ export function NetworkPanel({
                 `devices.preparation` for itself.
               */}
               {loadError ? (
-                <span className="min-w-0 truncate text-led-danger" title={loadError}>
+                <span className="min-w-0 truncate text-danger" title={loadError}>
                   {loadError}
                 </span>
               ) : status === null ? (
-                <span className="text-fg-subtle">checking…</span>
+                <span className="text-faint">checking…</span>
               ) : (
                 <AgentStateBadge state={status.state} />
               )}
             </span>
-            <span className="flex min-w-0 items-center gap-1 text-fg-subtle">
+            <span className="flex min-w-0 items-center gap-1 text-faint">
               Install, update, or view capabilities in the Agent tab
               <ChevronRight className="size-3.5 shrink-0" aria-hidden />
             </span>

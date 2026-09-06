@@ -68,7 +68,7 @@ export function FailoverChip({
           type="button"
           className={cn(
             'mt-1 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] leading-none font-medium transition-colors',
-            'border-led-warn/35 bg-led-warn/10 text-led-warn hover:bg-led-warn/20',
+            'border-warn/35 bg-warn/10 text-warn hover:bg-warn/20',
           )}
           title={`On backup #${failover.activeIndex}${since ? `, since ${since}` : ''} — open for the history and a manual reset.`}
         >
@@ -78,7 +78,7 @@ export function FailoverChip({
       <PopoverContent align="start" className="w-80 space-y-2">
         <div>
           <p className="text-[13px] font-medium">“{label}” is on backup #{failover.activeIndex}</p>
-          <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">
             {latest ? `Switched ${since} — ${latest.reason}.` : 'The primary upstream has not been confirmed healthy recently.'} If this record has auto
             failback on, it switches back to primary on its own once the primary is confirmed healthy again — this button forces it back sooner.
           </p>
@@ -90,10 +90,10 @@ export function FailoverChip({
 
         {failover.history.length > 0 ? (
           <div className="space-y-1 border-t border-border pt-2">
-            <p className="text-[11px] font-medium text-fg-muted">History, most recent first</p>
+            <p className="text-[11px] font-medium text-dim">History, most recent first</p>
             <ul className="space-y-1">
               {failover.history.map((entry, i) => (
-                <li key={i} className="text-[11px] leading-relaxed text-fg-muted">
+                <li key={i} className="text-[11px] leading-relaxed text-dim">
                   {relativeTime(entry.at)} — {entry.from === entry.to ? `stayed on #${entry.from}` : `#${entry.from} → #${entry.to}`}: {entry.reason}
                 </li>
               ))}

@@ -48,21 +48,21 @@ function CrashRow({ ev, now }: { ev: DeviceEvent; now: number }) {
   return (
     <div className="border-b px-3.5 py-2.5 text-[12.5px] last:border-b-0">
       <div className="flex items-start gap-2.5">
-        <span className="readout mt-0.5 w-14 shrink-0 text-[11px] text-fg-subtle">{relativeTime(ev.at, now)}</span>
+        <span className="readout mt-0.5 w-14 shrink-0 text-[11px] text-faint">{relativeTime(ev.at, now)}</span>
         <span
           className={cn(
             'inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[10.5px] font-medium uppercase leading-none',
-            meta.kind === 'anr' ? 'border-led-warn/40 bg-led-warn/10 text-led-warn' : 'border-led-danger/40 bg-led-danger/10 text-led-danger',
+            meta.kind === 'anr' ? 'border-warn/40 bg-warn/10 text-warn' : 'border-danger/40 bg-danger/10 text-danger',
           )}
         >
           {meta.kind}
         </span>
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium">{meta.package}</p>
-          <p className="truncate text-fg-muted">{meta.kind === 'anr' ? meta.message : meta.exception}</p>
+          <p className="truncate text-dim">{meta.kind === 'anr' ? meta.message : meta.exception}</p>
         </div>
         {meta.system && (
-          <span className="readout shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-subtle">system</span>
+          <span className="readout shrink-0 rounded-full bg-panel-2 px-1.5 py-0.5 text-[10px] text-faint">system</span>
         )}
         {meta.jobId && (
           <Link href={jobHref(meta.jobId)} className="readout shrink-0 text-[11px] text-accent hover:underline">
@@ -72,7 +72,7 @@ function CrashRow({ ev, now }: { ev: DeviceEvent; now: number }) {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="shrink-0 text-fg-subtle hover:text-fg"
+          className="shrink-0 text-faint hover:text-text"
           aria-label={open ? 'Hide details' : 'Show details'}
         >
           {open ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
@@ -81,25 +81,25 @@ function CrashRow({ ev, now }: { ev: DeviceEvent; now: number }) {
       {open && (
         <div className="mt-2 ml-[4.5rem] space-y-1.5">
           <dl className="grid grid-cols-[5rem_1fr] gap-x-2 gap-y-1 text-[11.5px]">
-            <dt className="text-fg-subtle">Process</dt>
+            <dt className="text-faint">Process</dt>
             <dd className="readout truncate">{meta.process}</dd>
             {meta.kind === 'crash' && (
               <>
-                <dt className="text-fg-subtle">Exception</dt>
+                <dt className="text-faint">Exception</dt>
                 <dd className="readout truncate">{meta.exception}</dd>
-                <dt className="text-fg-subtle">Message</dt>
+                <dt className="text-faint">Message</dt>
                 <dd className="break-words">{meta.message || '—'}</dd>
               </>
             )}
             {meta.kind === 'anr' && (
               <>
-                <dt className="text-fg-subtle">Reason</dt>
+                <dt className="text-faint">Reason</dt>
                 <dd className="break-words">{meta.message || '—'}</dd>
               </>
             )}
           </dl>
           {meta.truncated && (
-            <p className="text-[11px] text-led-warn">The trace was capped at 200 lines — it never found a natural end.</p>
+            <p className="text-[11px] text-warn">The trace was capped at 200 lines — it never found a natural end.</p>
           )}
           {meta.artifactId && (
             <a

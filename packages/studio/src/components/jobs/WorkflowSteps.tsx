@@ -119,7 +119,7 @@ export function WorkflowSteps({
             <span className={cn('flex-none rounded-pill px-[10px] py-1 text-badge font-semibold', STEP_BADGE[step.status])}>
               {step.status}
             </span>
-            {step.pinned && <span className="flex-none rounded-pill bg-led-ok/20 px-[10px] py-1 text-badge font-semibold text-led-ok">pinned</span>}
+            {step.pinned && <span className="flex-none rounded-pill bg-ok/20 px-[10px] py-1 text-badge font-semibold text-ok">pinned</span>}
             <span className="ml-auto flex-none font-mono text-meta text-faint">{duration(step.startedAt, step.finishedAt, now)}</span>
           </div>
           {step.kind === 'script' && step.jobId ? (

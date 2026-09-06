@@ -139,7 +139,7 @@ export function Combobox({
           disabled={disabled}
           className={cn('w-full justify-between gap-2 font-normal', triggerClassName)}
         >
-          <span className={cn('truncate', selected ? undefined : 'text-fg-subtle')}>
+          <span className={cn('truncate', selected ? undefined : 'text-faint')}>
             {selected ? selected.label : placeholder}
           </span>
           <CaretUpDownIcon className="size-3.5 shrink-0 opacity-60" aria-hidden />
@@ -155,7 +155,7 @@ export function Combobox({
           <CommandInput placeholder={searchPlaceholder} />
           <CommandList>
             {error ? (
-              <div className="px-3 py-4 text-[12px] text-fg-subtle">{error}</div>
+              <div className="px-3 py-4 text-[12px] text-faint">{error}</div>
             ) : (
               <>
                 <CommandEmpty>{emptyText}</CommandEmpty>
@@ -188,9 +188,9 @@ export function Combobox({
                       ) : (
                         <span className="min-w-0 flex-1">
                           <span className="block truncate">{o.label}</span>
-                          {o.hint && <span className="block truncate text-[11px] text-fg-subtle">{o.hint}</span>}
+                          {o.hint && <span className="block truncate text-[11px] text-faint">{o.hint}</span>}
                           {o.disabled && o.disabledReason && (
-                            <span className="block truncate text-[11px] text-fg-subtle">{o.disabledReason}</span>
+                            <span className="block truncate text-[11px] text-faint">{o.disabledReason}</span>
                           )}
                         </span>
                       )}

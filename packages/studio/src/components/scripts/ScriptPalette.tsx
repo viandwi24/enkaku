@@ -59,10 +59,10 @@ function ScriptRow({ script, onSelect }: { script: ScriptListItem; onSelect(): v
   const Icon = pluginIcon(script.icon ?? 'play')
   return (
     <CommandItem value={script.id} onSelect={onSelect}>
-      <Icon className="size-4 shrink-0 text-fg-muted" aria-hidden />
+      <Icon className="size-4 shrink-0 text-dim" aria-hidden />
       <div className="min-w-0 flex-1">
         <p className="truncate">{scriptLabel(script)}</p>
-        <p className="truncate text-[11px] text-fg-subtle">{script.plugin.name}</p>
+        <p className="truncate text-[11px] text-faint">{script.plugin.name}</p>
       </div>
     </CommandItem>
   )
@@ -173,9 +173,9 @@ export function ScriptPalette({
         />
         <CommandList className="max-h-72">
           {scripts === null ? (
-            <div className="px-3 py-4 text-[12.5px] text-fg-muted">Loading…</div>
+            <div className="px-3 py-4 text-[12.5px] text-dim">Loading…</div>
           ) : scripts.length === 0 ? (
-            <div className="px-3 py-4 text-[12.5px] text-fg-muted">
+            <div className="px-3 py-4 text-[12.5px] text-dim">
               No plugin publishes a script yet. Install one from the{' '}
               <a href="/plugins" className="text-accent hover:underline">
                 Plugins page
@@ -200,10 +200,10 @@ export function ScriptPalette({
                     const Icon = pluginIcon(g.icon ?? 'puzzle')
                     return (
                       <CommandItem key={g.name} value={g.name} onSelect={() => openPlugin(g.name)}>
-                        <Icon className="size-4 shrink-0 text-fg-muted" aria-hidden />
+                        <Icon className="size-4 shrink-0 text-dim" aria-hidden />
                         <div className="min-w-0 flex-1">
                           <p className="truncate">{g.name}</p>
-                          <p className="truncate text-[11px] text-fg-subtle">
+                          <p className="truncate text-[11px] text-faint">
                             {g.scripts.length} script{g.scripts.length === 1 ? '' : 's'}
                           </p>
                         </div>
@@ -270,15 +270,15 @@ export function ScriptTrigger({
       >
         {selected ? (
           <span className="flex min-w-0 flex-1 items-center gap-2">
-            {Icon && <Icon className="size-4 shrink-0 text-fg-muted" aria-hidden />}
+            {Icon && <Icon className="size-4 shrink-0 text-dim" aria-hidden />}
             <span className="truncate">{selected.title ?? selected.exportId}</span>
             <Badge variant="secondary" className="shrink-0">
               {selected.plugin.name}
             </Badge>
-            <span className="shrink-0 text-[11px] text-fg-subtle">@{selected.plugin.version}</span>
+            <span className="shrink-0 text-[11px] text-faint">@{selected.plugin.version}</span>
           </span>
         ) : (
-          <span className="truncate text-fg-subtle">{scripts === null ? 'Loading…' : placeholder}</span>
+          <span className="truncate text-faint">{scripts === null ? 'Loading…' : placeholder}</span>
         )}
         <CaretUpDownIcon className="size-3.5 shrink-0 opacity-60" aria-hidden />
       </Button>

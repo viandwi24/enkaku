@@ -34,7 +34,7 @@ export function ChoiceGroup({
   className?: string
 }) {
   return (
-    <fieldset className={cn('rounded-lg border bg-surface p-3.5', className)}>
+    <fieldset className={cn('rounded-lg border bg-panel p-3.5', className)}>
       <legend className="rack-label px-1">{label}</legend>
       <div className="space-y-0.5">{children}</div>
     </fieldset>
@@ -86,8 +86,8 @@ export function Choice({
         className="mt-0.5 size-3.5 shrink-0 accent-accent"
       />
       <span className="min-w-0">
-        <span className="block text-[12.5px] font-medium text-fg">{title}</span>
-        <span className="mt-0.5 block text-[11.5px] leading-relaxed text-fg-muted">{description}</span>
+        <span className="block text-[12.5px] font-medium text-text">{title}</span>
+        <span className="mt-0.5 block text-[11.5px] leading-relaxed text-dim">{description}</span>
       </span>
     </label>
   )

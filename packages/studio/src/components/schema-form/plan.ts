@@ -607,7 +607,7 @@ export function planField(node: JsonSchemaNode, ctx: PlanContext, inheritedHints
   }
 
   // Rows 10/11 — an array. Object items become a row editor (closes F18,
-  // the `[object Object]` text-input defect); anything else becomes a list
+  // the `[object Object]` text-border-3 defect); anything else becomes a list
   // of the planned item.
   if (type === 'array') {
     return isObjectItemsArray(node, ctx.root) ? planTable(node, ctx) : planList(node, ctx)

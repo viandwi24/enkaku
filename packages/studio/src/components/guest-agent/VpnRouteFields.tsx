@@ -74,11 +74,11 @@ function RevealedValue({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <div className="flex items-baseline gap-2">
-      <span className="w-16 shrink-0 text-[11px] text-fg-subtle">{label}</span>
-      <code className="min-w-0 flex-1 break-all select-all font-mono text-[11.5px] text-fg">{value}</code>
+      <span className="w-16 shrink-0 text-[11px] text-faint">{label}</span>
+      <code className="min-w-0 flex-1 break-all select-all font-mono text-[11.5px] text-text">{value}</code>
       <button
         type="button"
-        className="shrink-0 text-[11px] underline text-fg-muted hover:text-fg"
+        className="shrink-0 text-[11px] underline text-dim hover:text-text"
         onClick={() => {
           void navigator.clipboard?.writeText(value).then(
             () => {
@@ -339,7 +339,7 @@ export function VpnRouteFields({
         /* `@container`, not `sm:` — see `NetworkRouteForm`'s own note: this card
            renders full width on the device page and inside one column of a
            ~400px dialog pane, and a viewport breakpoint describes neither. */
-        className="@container rounded-lg border bg-surface p-3.5"
+        className="@container rounded-lg border bg-panel p-3.5"
         onSubmit={(e) => {
           e.preventDefault()
           void applyRoute()
@@ -349,7 +349,7 @@ export function VpnRouteFields({
 
         <div className="mb-3 flex flex-wrap items-end gap-2">
           <div className="min-w-0 flex-1 space-y-1.5">
-            <Label htmlFor={`paste-${deviceId}`} className="text-[12px] font-normal text-fg-muted">
+            <Label htmlFor={`paste-${deviceId}`} className="text-[12px] font-normal text-dim">
               Paste a socks5:// URL to fill the fields below
             </Label>
             <Input
@@ -376,7 +376,7 @@ export function VpnRouteFields({
             Fill fields
           </Button>
         </div>
-        {pasteError && <p className="mb-3 text-[11.5px] text-led-danger">{pasteError}</p>}
+        {pasteError && <p className="mb-3 text-[11.5px] text-danger">{pasteError}</p>}
 
         {/* Same arithmetic as `HttpProxyFields`: 7rem port + 0.75rem gap + a
             13rem minimum for the host = 21rem of container width. */}
@@ -439,7 +439,7 @@ export function VpnRouteFields({
                 stopped being true the moment the reveal below existed, and a sentence that
                 contradicts the button under it is worse than no sentence. What is still true is
                 that the field itself never pre-fills: leaving it blank keeps whatever is stored. */}
-            <p className="text-[11px] text-fg-subtle">
+            <p className="text-[11px] text-faint">
               {config?.credentialRef
                 ? 'Leave blank to keep the stored password. It is never filled in here — use Show stored credential below to read it back.'
                 : 'Type one to give this route an account. It is never filled back in here after a save.'}
@@ -455,22 +455,22 @@ export function VpnRouteFields({
         */}
         <div className="mt-2 text-[11px]">
           {clearCredential ? (
-            <p className="text-led-warn">
+            <p className="text-warn">
               Saving will drop the stored credential and connect with no authentication.{' '}
               <button type="button" className="underline" onClick={() => setClearCredential(false)}>
                 Keep it
               </button>
             </p>
           ) : config?.credentialRef ? (
-            <p className="text-fg-subtle">
-              Authenticating with stored credential <span className="font-mono text-fg-muted">{config.credentialRef}</span>
+            <p className="text-faint">
+              Authenticating with stored credential <span className="font-mono text-dim">{config.credentialRef}</span>
               {/* The username is not a secret — it is the session string that says WHICH upstream
                   identity this phone is on (`package-…-sessionid-…` on a rotating residential
                   pool). Showing only the opaque ref made every route look alike. */}
               {config.credentialUsername ? (
                 <>
                   {' '}
-                  as <span className="font-mono text-fg-muted">{config.credentialUsername}</span>
+                  as <span className="font-mono text-dim">{config.credentialUsername}</span>
                 </>
               ) : null}
               . Leave the fields above blank to keep it, or type a new username and password to replace it.{' '}
@@ -479,7 +479,7 @@ export function VpnRouteFields({
               </button>
             </p>
           ) : (
-            <p className="text-fg-subtle">This route has no stored credential — it connects to the upstream anonymously.</p>
+            <p className="text-faint">This route has no stored credential — it connects to the upstream anonymously.</p>
           )}
         </div>
 
@@ -502,10 +502,10 @@ export function VpnRouteFields({
                 <RevealedValue label="Username" value={revealed.username ?? '(none)'} />
                 <RevealedValue label="Password" value={revealed.password} />
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-                  <span className="text-[11px] text-fg-subtle">
+                  <span className="text-[11px] text-faint">
                     Shown to you at {new Date(revealed.revealedAt * 1000).toLocaleTimeString()} and recorded in the audit log.
                   </span>
-                  <button type="button" className="text-[11px] underline text-fg-muted hover:text-fg" onClick={() => setRevealed(null)}>
+                  <button type="button" className="text-[11px] underline text-dim hover:text-text" onClick={() => setRevealed(null)}>
                     Hide
                   </button>
                 </div>
@@ -522,7 +522,7 @@ export function VpnRouteFields({
                 >
                   {isPending('reveal') ? 'Showing…' : 'Show stored credential'}
                 </Button>
-                <span className="text-[11px] leading-relaxed text-fg-muted">
+                <span className="text-[11px] leading-relaxed text-dim">
                   {canReveal
                     ? 'Shows the username and password this route authenticates with. The farm records who showed it, for which device, and when.'
                     : 'Only an admin can read a stored upstream password back — setting a route is operator work, taking its account out of the farm is not. Ask an admin; the reveal is recorded under their name.'}
@@ -561,8 +561,8 @@ export function VpnRouteFields({
             aria-label="Fail closed on tunnel failure"
           />
           <Label htmlFor={`fail-closed-${deviceId}`} className="text-[12px] font-normal">
-            <span className="text-fg">Fail closed</span>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+            <span className="text-text">Fail closed</span>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-dim">
               {failClosed
                 ? 'When the tunnel breaks, the device blocks its own traffic instead of falling back to its real address. Recommended, and the default.'
                 : 'Off: a broken tunnel falls back to the device’s real address instead of blocking traffic — only useful while debugging the route by hand.'}
@@ -579,8 +579,8 @@ export function VpnRouteFields({
             actually get by 1.25rem on each side. A nested container measures the
             box itself, which is what the variants below are about. */}
         <div className="@container mt-3 rounded border bg-bg px-2.5 py-2.5">
-          <h4 className="text-[12px] font-medium text-fg">Expected exit</h4>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+          <h4 className="text-[12px] font-medium text-text">Expected exit</h4>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-dim">
             Where this route should exit. Only fields filled in here are checked — declaring just a
             country will not fail on a city change, but a drift is still shown.
           </p>
@@ -663,7 +663,7 @@ export function VpnRouteFields({
                   <SelectItem value="hold">Hold the device closed</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-[11px] leading-relaxed text-fg-muted">
+              <p className="text-[11px] leading-relaxed text-dim">
                 {onGeoFail === 'hold'
                   ? 'A drifted exit blocks the device’s own traffic on purpose, the same as a failed tunnel — it recovers on its own once the exit is back in range. Only turn this on if presenting the wrong identity is worse than no connectivity at all.'
                   : 'A drifted exit only shows up in health and the checks below — the device keeps routing.'}
@@ -686,7 +686,7 @@ export function VpnRouteFields({
           >
             {isPending('apply') ? 'Applying…' : config ? 'Update route' : 'Apply route'}
           </Button>
-          {agentBlocks && blockedReason && <span className="text-[11.5px] text-fg-muted">{blockedReason}</span>}
+          {agentBlocks && blockedReason && <span className="text-[11.5px] text-dim">{blockedReason}</span>}
         </div>
       </form>
     </div>

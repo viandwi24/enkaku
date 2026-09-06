@@ -83,15 +83,15 @@ export function ParamsEditor({
   return (
     <div className="space-y-3">
       {params.length === 0 && (
-        <p className="text-[12px] text-fg-muted">
+        <p className="text-[12px] text-dim">
           No workflow parameters yet. Add one here, or bind a node field and use <span className="font-medium">Promote</span> to create one from it.
         </p>
       )}
       {params.map((param, i) => (
-        <div key={i} className="space-y-2.5 rounded-lg border bg-surface p-3">
+        <div key={i} className="space-y-2.5 rounded-lg border bg-panel p-3">
           <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
             <div className="space-y-1">
-              <Label className="text-[11.5px] font-normal text-fg-muted">Name</Label>
+              <Label className="text-[11.5px] font-normal text-dim">Name</Label>
               <Input
                 className="readout h-8 text-[12.5px]"
                 value={param.name}
@@ -100,7 +100,7 @@ export function ParamsEditor({
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-[11.5px] font-normal text-fg-muted">Type</Label>
+              <Label className="text-[11.5px] font-normal text-dim">Type</Label>
               <Select value={param.type} onValueChange={(type) => update(i, withoutHintKind({ ...param, type: type as WorkflowParamType }) )}>
                 <SelectTrigger className="h-8 w-full text-[12.5px]" aria-label="Parameter type">
                   <SelectValue />
@@ -115,7 +115,7 @@ export function ParamsEditor({
               </Select>
             </div>
             <div className="flex items-end justify-end gap-2">
-              <label className="flex items-center gap-1.5 pb-1.5 text-[11.5px] text-fg-muted">
+              <label className="flex items-center gap-1.5 pb-1.5 text-[11.5px] text-dim">
                 <Switch checked={param.required} onCheckedChange={(required) => update(i, { required })} aria-label="Required" />
                 required
               </label>
@@ -127,11 +127,11 @@ export function ParamsEditor({
 
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label className="text-[11.5px] font-normal text-fg-muted">Title</Label>
+              <Label className="text-[11.5px] font-normal text-dim">Title</Label>
               <Input className="h-8 text-[12.5px]" value={param.title} onChange={(e) => update(i, { title: e.target.value })} aria-label="Title" />
             </div>
             <div className="space-y-1">
-              <Label className="text-[11.5px] font-normal text-fg-muted">Group (optional)</Label>
+              <Label className="text-[11.5px] font-normal text-dim">Group (optional)</Label>
               <Input
                 className="h-8 text-[12.5px]"
                 value={param.hints?.group ?? ''}
@@ -142,7 +142,7 @@ export function ParamsEditor({
           </div>
 
           <div className="space-y-1">
-            <Label className="text-[11.5px] font-normal text-fg-muted">Description</Label>
+            <Label className="text-[11.5px] font-normal text-dim">Description</Label>
             <Textarea
               className="min-h-14 text-[12.5px]"
               value={param.description}
@@ -153,7 +153,7 @@ export function ParamsEditor({
 
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label className="text-[11.5px] font-normal text-fg-muted">Meaning (optional)</Label>
+              <Label className="text-[11.5px] font-normal text-dim">Meaning (optional)</Label>
               <Select
                 value={param.hints?.kind ?? 'none'}
                 onValueChange={(kind) =>
@@ -194,9 +194,9 @@ function DefaultEditor({ param, onChange }: { param: WorkflowParam; onChange(nex
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <Label className="text-[11.5px] font-normal text-fg-muted">Default (optional)</Label>
+        <Label className="text-[11.5px] font-normal text-dim">Default (optional)</Label>
         {has && (
-          <button type="button" className="text-[11px] text-fg-subtle hover:text-fg-muted" onClick={() => onChange(undefined)}>
+          <button type="button" className="text-[11px] text-faint hover:text-dim" onClick={() => onChange(undefined)}>
             clear
           </button>
         )}
@@ -229,7 +229,7 @@ function DefaultEditor({ param, onChange }: { param: WorkflowParam; onChange(nex
             onChange={(e) => onChange([e.target.valueAsNumber || 0, Array.isArray(current) ? (current[1] ?? 0) : 0])}
             aria-label="Default low value"
           />
-          <span className="text-fg-subtle">–</span>
+          <span className="text-faint">–</span>
           <Input
             type="number"
             className="h-8 text-[12.5px]"

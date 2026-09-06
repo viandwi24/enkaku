@@ -21,7 +21,7 @@ export function StartPanel({ doc, onSetParams }: { doc: WorkflowDoc; onSetParams
     <div className="max-w-3xl space-y-3 p-3.5">
       <div className="space-y-1">
         <p className="rack-label">workflow parameters</p>
-        <p className="text-[11.5px] text-fg-subtle">What this workflow takes as input — shown to whoever runs it, in the Run dialog.</p>
+        <p className="text-[11.5px] text-faint">What this workflow takes as input — shown to whoever runs it, in the Run dialog.</p>
       </div>
       <ParamsEditor params={doc.params} onChange={onSetParams} />
     </div>

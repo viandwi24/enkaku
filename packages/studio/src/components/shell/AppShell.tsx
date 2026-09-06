@@ -90,19 +90,13 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div
-      className="flex h-screen min-h-[460px] gap-[10px] overflow-hidden p-[10px] font-sans text-row text-text"
-      // NOT the `bg-bg` utility: `packages/ui/src/theme.css`'s block D (the
-      // still-live prototype vocabulary, plan 204 §3.5/§9 Q1) separately
-      // declares a `--color-bg` of its own for the ~30 old screens that still
-      // read `bg-bg` expecting that fixed dark value, and Tailwind keeps only
-      // the LAST declaration of a custom property with a given name — so the
-      // `bg-bg` utility class currently compiles to that prototype colour
-      // everywhere in this workspace, never to the handoff's `--bg` (verified
-      // by compiling `@enkaku/ui/theme.css` in isolation, 2026-09-04). Every
-      // other handoff colour name here (`panel`, `border`, `text`, …) has no
-      // such collision; this one variable is read directly to route around
-      // it. Fixed the same day block D is deleted (plan 204 §10.2).
-      style={{ backgroundColor: 'var(--bg)' }}
+      // `bg-bg` again, and it is correct again. Block D used to redeclare
+      // `--color-bg` after block B had mapped it to the handoff's `var(--bg)`,
+      // and the later declaration won, so this had to read the variable
+      // directly through an inline style to get the theme's own page colour.
+      // That redeclaration is deleted; the utility resolves to `var(--bg)`
+      // like every other handoff name here.
+      className="flex h-screen min-h-[460px] gap-[10px] overflow-hidden bg-bg p-[10px] font-sans text-row text-text"
     >
       <Rail
         pathname={pathname}

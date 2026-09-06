@@ -152,8 +152,8 @@ export function SectionNav({
         className={cn(
           'shrink-0 rounded-md px-3 py-2 text-left text-[13px] transition-colors sm:w-full',
           isActive
-            ? 'bg-surface-2 font-medium text-fg'
-            : 'text-fg-muted hover:bg-surface-2/60 hover:text-fg',
+            ? 'bg-panel-2 font-medium text-text'
+            : 'text-dim hover:bg-panel-2/60 hover:text-text',
         )}
       >
         {s.title}
@@ -171,7 +171,7 @@ export function SectionNav({
       {hasGroups
         ? runs.map((r, i) => (
             <div key={r.group ?? `ungrouped-${i}`} className="contents sm:block">
-              {r.group && <p className="rack-label px-3 pb-1 pt-3 text-fg-subtle first:pt-0">{r.group}</p>}
+              {r.group && <p className="rack-label px-3 pb-1 pt-3 text-faint first:pt-0">{r.group}</p>}
               {r.items.map(tab)}
             </div>
           ))

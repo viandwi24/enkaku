@@ -90,19 +90,19 @@ export function AppRestartDialog({ trigger }: { trigger: ReactNode }) {
         <DialogHeader>
           <DialogTitle>Restart Enkaku itself?</DialogTitle>
           <DialogDescription asChild>
-            <div className="space-y-2 text-[13px] leading-relaxed text-fg-muted">
+            <div className="space-y-2 text-[13px] leading-relaxed text-dim">
               <p>
-                This restarts the <strong className="text-fg">whole application</strong> — not just the adb connection. Every live session and
+                This restarts the <strong className="text-text">whole application</strong> — not just the adb connection. Every live session and
                 stream drops, every in-flight job is interrupted, and the farm is briefly fully unreachable while it comes back.
               </p>
 
-              {loadError && <p className="text-led-danger">{loadError}</p>}
+              {loadError && <p className="text-danger">{loadError}</p>}
               {!preview && !loadError && <p>Checking this farm's current state…</p>}
 
               {preview && (
                 <>
                   <p>
-                    <strong className="text-fg">Here:</strong> all {plural(preview.devicesTotal, 'device')} go dark for a moment.{' '}
+                    <strong className="text-text">Here:</strong> all {plural(preview.devicesTotal, 'device')} go dark for a moment.{' '}
                     {preview.sessionsActive > 0
                       ? `${plural(preview.sessionsActive, 'live screen')} stop and must be reopened.`
                       : 'No live screens are open right now.'}
@@ -112,7 +112,7 @@ export function AppRestartDialog({ trigger }: { trigger: ReactNode }) {
                   <p>{modeExplanation(preview.mode)}</p>
 
                   {busyFarm && (
-                    <label className="flex items-start gap-2 rounded border border-led-danger/35 bg-led-danger/10 px-3 py-2 text-[12.5px] text-fg">
+                    <label className="flex items-start gap-2 rounded border border-danger/35 bg-danger/10 px-3 py-2 text-[12.5px] text-text">
                       <input
                         type="checkbox"
                         className="mt-0.5"

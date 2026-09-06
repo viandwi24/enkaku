@@ -20,15 +20,15 @@ export function VideoQualityReadout({ controlRows, wallRows }: { controlRows: Re
 
 function ReadoutCard({ title, rows }: { title: string; rows: ReadoutRow[] }) {
   return (
-    <div className="rounded-lg border bg-surface p-3">
+    <div className="rounded-lg border bg-panel p-3">
       <h4 className="rack-label mb-2">{title}</h4>
       <dl className="space-y-1.5 text-[12.5px]">
         {rows.map((r) => (
           <div key={r.label} className="flex items-baseline justify-between gap-2">
-            <dt className="text-fg-muted">{r.label}</dt>
+            <dt className="text-dim">{r.label}</dt>
             <dd className="flex items-baseline gap-1.5">
-              <span className="readout font-medium text-fg">{r.value}</span>
-              <span className="text-[11px] text-fg-subtle">{r.sourceLabel}</span>
+              <span className="readout font-medium text-text">{r.value}</span>
+              <span className="text-[11px] text-faint">{r.sourceLabel}</span>
             </dd>
           </div>
         ))}

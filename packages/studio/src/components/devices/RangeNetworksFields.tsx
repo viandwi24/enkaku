@@ -132,7 +132,7 @@ export function RangeNetworksFields({
                       placeholder="10.20.0.0"
                       aria-label={`Range ${i + 1} start IP`}
                       aria-invalid={!!err}
-                      className={cn('h-8 w-28 font-mono text-[12px]', err && 'border-led-danger text-led-danger')}
+                      className={cn('h-8 w-28 font-mono text-[12px]', err && 'border-danger text-danger')}
                     />
                   </TableCell>
                   <TableCell>
@@ -142,9 +142,9 @@ export function RangeNetworksFields({
                       placeholder="10.20.0.255"
                       aria-label={`Range ${i + 1} end IP`}
                       aria-invalid={!!err}
-                      className={cn('h-8 w-28 font-mono text-[12px]', err && 'border-led-danger text-led-danger')}
+                      className={cn('h-8 w-28 font-mono text-[12px]', err && 'border-danger text-danger')}
                     />
-                    {err && <p className="mt-1 text-[10.5px] text-led-danger">{err}</p>}
+                    {err && <p className="mt-1 text-[10.5px] text-danger">{err}</p>}
                   </TableCell>
                   <TableCell>
                     <Input
@@ -157,9 +157,9 @@ export function RangeNetworksFields({
                       inputMode="numeric"
                       aria-label={`Range ${i + 1} port (optional override)`}
                       aria-invalid={!!portErr}
-                      className={cn('readout h-8 w-[68px] text-[12px]', portErr && 'border-led-danger text-led-danger')}
+                      className={cn('readout h-8 w-[68px] text-[12px]', portErr && 'border-danger text-danger')}
                     />
-                    {portErr && <p className="mt-1 text-[10.5px] text-led-danger">{portErr}</p>}
+                    {portErr && <p className="mt-1 text-[10.5px] text-danger">{portErr}</p>}
                   </TableCell>
                   <TableCell>
                     <Input
@@ -217,7 +217,7 @@ export function RangeNetworksFields({
         <Button variant="outline" size="sm" onClick={addRow}>
           <PlusIcon className="size-3.5" aria-hidden /> Add a range
         </Button>
-        <p className={cn('readout text-[12px]', overLimit ? 'font-semibold text-led-danger' : 'text-faint')}>
+        <p className={cn('readout text-[12px]', overLimit ? 'font-semibold text-danger' : 'text-faint')}>
           {scannedTotal.toLocaleString()} / {maxAddresses.toLocaleString()} addresses in the sweep
           {overLimit && ' — over the limit: untick one, or narrow a range'}
         </p>

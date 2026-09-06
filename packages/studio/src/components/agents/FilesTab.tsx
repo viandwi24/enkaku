@@ -367,10 +367,10 @@ export function FilesTab() {
           <div className="flex flex-wrap items-center gap-1 border-b px-3 py-2 text-[12px]">
             {breadcrumbs(prefix).map((c, i) => (
               <span key={c.prefix} className="flex items-center gap-1">
-                {i > 0 && <span className="text-fg-muted">/</span>}
+                {i > 0 && <span className="text-dim">/</span>}
                 <button
                   onClick={() => setPrefix(c.prefix)}
-                  className={cn('rounded px-1 hover:bg-surface-2', c.prefix === prefix ? 'font-medium text-fg' : 'text-fg-muted')}
+                  className={cn('rounded px-1 hover:bg-panel-2', c.prefix === prefix ? 'font-medium text-text' : 'text-dim')}
                 >
                   {c.label}
                 </button>
@@ -404,14 +404,14 @@ export function FilesTab() {
             <input ref={uploadInputRef} type="file" className="hidden" onChange={(e) => void handleUploadChange(e)} />
           </div>
 
-          {uploadError && <p className="px-3 py-2 text-[12px] text-led-danger">{uploadError}</p>}
-          {listError && <p className="px-3 py-3 text-[12px] text-led-danger">{listError}</p>}
+          {uploadError && <p className="px-3 py-2 text-[12px] text-danger">{uploadError}</p>}
+          {listError && <p className="px-3 py-3 text-[12px] text-danger">{listError}</p>}
           {!listError && entries === null && (
             <div className="px-3 py-3">
               <LoadingRows rows={4} />
             </div>
           )}
-          {!listError && entries !== null && entries.length === 0 && <p className="px-3 py-6 text-center text-[12px] text-fg-muted">Nothing here yet.</p>}
+          {!listError && entries !== null && entries.length === 0 && <p className="px-3 py-6 text-center text-[12px] text-dim">Nothing here yet.</p>}
           {!listError && entries !== null && entries.length > 0 && (
             <ul className="py-1">
               {entries.map((e) => (
@@ -419,9 +419,9 @@ export function FilesTab() {
                   {e.kind === 'dir' ? (
                     <button
                       onClick={() => setPrefix(e.path)}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] hover:bg-panel-2"
                     >
-                      <FolderSimpleIcon className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                      <FolderSimpleIcon className="size-3.5 shrink-0 text-dim" aria-hidden />
                       <span className="truncate">{fileName(e.path)}</span>
                     </button>
                   ) : renamingPath === e.path ? (
@@ -450,13 +450,13 @@ export function FilesTab() {
                           <XIcon className="size-3.5" aria-hidden />
                         </Button>
                       </div>
-                      {renameError && <p className="mt-1 text-[11.5px] text-led-danger">{renameError}</p>}
+                      {renameError && <p className="mt-1 text-[11.5px] text-danger">{renameError}</p>}
                     </div>
                   ) : (
                     <div
                       className={cn(
-                        'group flex w-full items-center gap-1.5 px-3 py-1.5 hover:bg-surface-2',
-                        selectedPath === e.path && 'bg-surface-2',
+                        'group flex w-full items-center gap-1.5 px-3 py-1.5 hover:bg-panel-2',
+                        selectedPath === e.path && 'bg-panel-2',
                       )}
                     >
                       <button
@@ -466,15 +466,15 @@ export function FilesTab() {
                           selectedPath === e.path && 'font-medium',
                         )}
                       >
-                        <FileCodeIcon className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                        <FileCodeIcon className="size-3.5 shrink-0 text-dim" aria-hidden />
                         <span className="truncate">{fileName(e.path)}</span>
                       </button>
-                      <span className="shrink-0 text-[11px] text-fg-muted">{fileSize(e.size)}</span>
+                      <span className="shrink-0 text-[11px] text-dim">{fileSize(e.size)}</span>
                       <button
                         type="button"
                         aria-label={`Rename ${fileName(e.path)}`}
                         title="Rename"
-                        className="shrink-0 rounded p-1 text-fg-muted hover:bg-surface-3 hover:text-fg"
+                        className="shrink-0 rounded p-1 text-dim hover:bg-muted hover:text-text"
                         onClick={(ev) => {
                           ev.stopPropagation()
                           startRename(e)
@@ -513,7 +513,7 @@ export function FilesTab() {
                       Publish as script
                     </Button>
                   )}
-                  <Button size="sm" variant="ghost" className="h-7 text-[12px] text-led-danger hover:text-led-danger" onClick={() => void removeSelected()} disabled={loadingFile || !meta}>
+                  <Button size="sm" variant="ghost" className="h-7 text-[12px] text-danger hover:text-danger" onClick={() => void removeSelected()} disabled={loadingFile || !meta}>
                     <TrashIcon className="size-3.5" aria-hidden />
                     Delete
                   </Button>
@@ -527,7 +527,7 @@ export function FilesTab() {
               </div>
 
               {meta && (
-                <p className="border-b px-4 py-1.5 text-[11.5px] text-fg-muted">
+                <p className="border-b px-4 py-1.5 text-[11.5px] text-dim">
                   written by {attributionLabel(meta.createdBy)}
                   {meta.updatedBy && meta.updatedBy !== meta.createdBy && <> · last edited by {attributionLabel(meta.updatedBy)}</>}
                   {' · '}
@@ -538,13 +538,13 @@ export function FilesTab() {
               {/* Generated from the registry (§3.2) — a presenter's `readOnlyReason` shows here verbatim, so
                   adding an editor for this type later flips one boolean and this line stops appearing on its own. */}
               {presenter && !canEdit && presenter.readOnlyReason && (
-                <p className="border-b px-4 py-1.5 text-[11.5px] text-fg-muted">{presenter.readOnlyReason}</p>
+                <p className="border-b px-4 py-1.5 text-[11.5px] text-dim">{presenter.readOnlyReason}</p>
               )}
 
               {conflict && (
-                <div className="border-b border-led-danger/40 bg-led-danger/5 px-4 py-3">
+                <div className="border-b border-danger/40 bg-danger/5 px-4 py-3">
                   <p className="text-[12.5px] font-medium">This file changed since you opened it</p>
-                  <p className="mt-0.5 text-[12px] text-fg-muted">{conflict.message}</p>
+                  <p className="mt-0.5 text-[12px] text-dim">{conflict.message}</p>
                   <div className="mt-2 flex gap-2">
                     <Button size="sm" variant="outline" className="h-7 text-[12px]" onClick={reloadDiscardingEdits}>
                       Reload (lose my edits)
@@ -556,7 +556,7 @@ export function FilesTab() {
                 </div>
               )}
 
-              {fileError && <p className="border-b px-4 py-2 text-[12px] text-led-danger">{fileError}</p>}
+              {fileError && <p className="border-b px-4 py-2 text-[12px] text-danger">{fileError}</p>}
 
               <div className="flex-1 px-4 py-3">
                 {loadingFile ? (
@@ -567,7 +567,7 @@ export function FilesTab() {
                       <p className="text-[13px]">
                         This file is {fileSize(meta.size)} — over the {fileSize(presenter.maxBytes)} limit for viewing it here.
                       </p>
-                      <p className="text-[12px] text-fg-muted">{meta.contentType}</p>
+                      <p className="text-[12px] text-dim">{meta.contentType}</p>
                       <Button asChild size="sm" variant="secondary">
                         <a href={workspaceFileUrl(meta.path)} target="_blank" rel="noreferrer">
                           <DownloadSimpleIcon className="size-3.5" aria-hidden />
@@ -610,10 +610,10 @@ export function FilesTab() {
                 onChange={(e) => setPublishPlugin(e.target.value)}
                 placeholder="checkout"
                 aria-invalid={pluginHint !== null}
-                className={cn(pluginHint && 'border-led-danger')}
+                className={cn(pluginHint && 'border-danger')}
               />
             </div>
-            {pluginHint && <p className="text-[11.5px] text-led-danger">{pluginHint}</p>}
+            {pluginHint && <p className="text-[11.5px] text-danger">{pluginHint}</p>}
             <div className="space-y-1.5">
               <Label htmlFor="publish-version">Version</Label>
               <Input
@@ -622,12 +622,12 @@ export function FilesTab() {
                 onChange={(e) => setPublishVersion(e.target.value)}
                 placeholder="1.0.0"
                 aria-invalid={versionHint !== null}
-                className={cn(versionHint && 'border-led-danger')}
+                className={cn(versionHint && 'border-danger')}
               />
-              {versionHint && <p className="text-[11.5px] text-led-danger">{versionHint}</p>}
+              {versionHint && <p className="text-[11.5px] text-danger">{versionHint}</p>}
             </div>
             {publishError && (
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-led-danger/40 bg-led-danger/5 p-2 text-[11.5px] text-led-danger">
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-danger/40 bg-danger/5 p-2 text-[11.5px] text-danger">
                 {publishError}
               </pre>
             )}

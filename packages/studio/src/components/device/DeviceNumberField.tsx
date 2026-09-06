@@ -86,12 +86,12 @@ export function DeviceNumberField({
       <Label htmlFor="device-number" className="text-[13px] font-normal">
         Number
       </Label>
-      <p className="text-[11.5px] text-fg-subtle">
+      <p className="text-[11.5px] text-faint">
         The short number this device shows on a rack. It survives Forget and re-admission — it is a reservation on
         the hardware, not on this row — and is released only by the action below.
       </p>
       <div className="flex items-center gap-2">
-        <span className="readout text-[13px] text-fg-subtle" aria-hidden="true">
+        <span className="readout text-[13px] text-faint" aria-hidden="true">
           #
         </span>
         <Input
@@ -115,8 +115,8 @@ export function DeviceNumberField({
           </Button>
         )}
       </div>
-      {invalid && <p className="text-[10.5px] text-led-danger">Must be a positive whole number.</p>}
-      {error && <p className="text-[10.5px] text-led-danger">{error}</p>}
+      {invalid && <p className="text-[10.5px] text-danger">Must be a positive whole number.</p>}
+      {error && <p className="text-[10.5px] text-danger">{error}</p>}
     </div>
   )
 }

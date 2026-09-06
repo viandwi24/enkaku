@@ -104,12 +104,12 @@ export function AssignmentEditor({
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
         >
-          {assignments.length === 0 && <p className="px-1 py-2 text-[11.5px] text-fg-subtle">No fields yet — drag a value from the input pane, or add one below.</p>}
+          {assignments.length === 0 && <p className="px-1 py-2 text-[11.5px] text-faint">No fields yet — drag a value from the input pane, or add one below.</p>}
           {assignments.map((a, i) => (
             <div key={i} className="flex items-start gap-1.5 rounded-md border p-1.5">
               <button
                 type="button"
-                className="mt-1.5 shrink-0 cursor-grab text-fg-subtle hover:text-fg"
+                className="mt-1.5 shrink-0 cursor-grab text-faint hover:text-text"
                 draggable
                 onDragStart={(e) => {
                   e.dataTransfer.setData('text/plain', String(i))
@@ -137,7 +137,7 @@ export function AssignmentEditor({
                   onRegisterActive={onRegisterActive}
                 />
               </div>
-              <span className="mt-1.5 shrink-0 text-[12px] text-fg-subtle">=</span>
+              <span className="mt-1.5 shrink-0 text-[12px] text-faint">=</span>
               <div className="min-w-0 flex-[1.4] space-y-1">
                 <ExprField
                   value={a.value}
@@ -192,12 +192,12 @@ function JsonTab({ assignments, onChange }: { assignments: readonly SetAssignmen
   return (
     <div className="space-y-1.5">
       {!encoded.ok && (
-        <p className="rounded border border-led-warn/30 bg-led-warn/5 px-2 py-1 text-[11.5px] text-led-warn">
+        <p className="rounded border border-warn/30 bg-warn/5 px-2 py-1 text-[11.5px] text-warn">
           Some fields cannot be shown as JSON: {encoded.message}. Edit them on the Fields tab first.
         </p>
       )}
       <Textarea className="min-h-40 font-mono text-[12px]" value={text} onChange={(e) => commit(e.target.value)} aria-label="Assignments as JSON" spellCheck={false} />
-      {error && <p className="text-[11px] text-led-danger">{error}</p>}
+      {error && <p className="text-[11px] text-danger">{error}</p>}
     </div>
   )
 }

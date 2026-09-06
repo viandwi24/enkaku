@@ -118,14 +118,51 @@
  * NOT part of the design. These are the v0.1.32 Studio's token names, kept
  * verbatim so the old screens and the two plugin views keep rendering on the
  * `mvp` branch until wave 3 replaces them (plan 204 §3.5, §9 Q1). A NEW
- * screen must never name one of these. Deleted by: the last of plans 213–220
- * to delete an importer (Studio), and the plugin-view migration plan
- * (plan 204 §9 Q2). Old names that collide with a handoff name
- * (`--color-accent`, `--color-line`, `--color-muted`, `--color-border`,
- * `--radius-card`) are already gone; the handoff value wins.
+ * screen must never name one of these. Old names that collide with a handoff
+ * name (`--color-accent`, `--color-line`, `--color-muted`, `--color-border`,
+ * `--radius-card`) are already gone; the handoff value wins. `--color-bg` was
+ * a sixth collision this list had missed, and it is gone too — see the note
+ * inside the block below.
+ *
+ * ### Status: no consumer left in this repository (2026-09-06)
+ *
+ * Every utility class and every `var(--color-…)` reference in Studio,
+ * `@enkaku/ui` and the bundled plugin views was migrated onto the handoff
+ * vocabulary. `scripts/check-design-tokens.ts` now fails the build if one
+ * comes back. The only remaining mentions anywhere are prose comments
+ * recording what was renamed.
+ *
+ * ### Why it is still here anyway
+ *
+ * Deleting it is not free, and the cost falls on somebody else's code.
+ * `theme(reference)` compiles a plugin's `bg-surface` to
+ * `var(--color-surface, <the value on the day that plugin was built>)`
+ * (`packages/sdk/src/cli/build-ui.ts`). While Studio still emits these names,
+ * an already-built third-party plugin stylesheet resolves them against the
+ * live palette. Delete them and that plugin silently falls back to a
+ * hard-coded dark colour instead — a visual regression in code its author
+ * cannot rebuild on our schedule.
+ *
+ * So: delete this block on a release that rebuilds and re-publishes the packs
+ * anyway (`bun run build:packs`, with the version bumps CLAUDE.md requires),
+ * and say so in the release note. Nothing in this repository is waiting on
+ * it.
  */
 @theme {
-  --color-bg: oklch(0.185 0.012 245);
+  /*
+   * `--color-bg` used to be redeclared here, and because block B above maps
+   * the handoff's own `--color-bg: var(--bg)` EARLIER in this file, the later
+   * declaration won: `bg-bg` compiled to this fixed dark value everywhere in
+   * the workspace, in both themes. The block comment above claims the names
+   * that collide with a handoff name "are already gone" — `bg` was missed.
+   *
+   * It is gone now, because leaving it became actively unsafe rather than
+   * merely wrong: every OTHER utility in Studio and the plugin views was
+   * migrated off this block's vocabulary, so a screen pairing `bg-bg` with
+   * `text-text` would have rendered a dark ground under dark text on the
+   * light palette. `AppShell` no longer needs the inline `var(--bg)` it
+   * carried to route around this.
+   */
   --color-surface: oklch(0.209 0.004 245);
   --color-surface-2: oklch(0.159 0.004 245);
   --color-surface-3: oklch(0.27 0.006 245);

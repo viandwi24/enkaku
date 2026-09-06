@@ -52,7 +52,7 @@ export function LabelPreview({
   return (
     <div className="space-y-1.5" style={{ width: PREVIEW_WIDTH_PX }}>
       <div
-        className="relative flex w-full flex-col items-center justify-center overflow-hidden rounded-md border border-line-strong bg-black"
+        className="relative flex w-full flex-col items-center justify-center overflow-hidden rounded-md border border-border-3 bg-black"
         style={{ aspectRatio: ratio }}
       >
         {/* The centre-safe square (§4.4: `min(w,h) × 0.8`) — approximated
@@ -69,7 +69,7 @@ export function LabelPreview({
           </span>
         </div>
       </div>
-      <p className="text-[10.5px] leading-snug text-fg-subtle">
+      <p className="text-[10.5px] leading-snug text-faint">
         Preview of the words and layout only — the phone renders the real image itself, with its own font, so the
         exact look on screen will differ.
       </p>

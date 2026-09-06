@@ -46,7 +46,7 @@ export function DeviceName({
   return (
     <span className={cn('inline-flex min-w-0 items-center gap-1.5', className)}>
       {number != null && (
-        <span className={cn('readout shrink-0 text-[11px] text-fg-subtle', numberClassName)}>#{number}</span>
+        <span className={cn('readout shrink-0 text-[11px] text-faint', numberClassName)}>#{number}</span>
       )}
       <span className="truncate">{label}</span>
     </span>

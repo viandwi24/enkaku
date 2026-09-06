@@ -159,7 +159,7 @@ export function PresetRow({
   }
 
   return (
-    <div className="space-y-1.5 rounded-lg border bg-surface-2/40 p-3">
+    <div className="space-y-1.5 rounded-lg border bg-panel-2/40 p-3">
       <Label className="text-[12.5px] font-normal">Preset</Label>
       <div className="flex flex-wrap items-center gap-2">
         <Select
@@ -196,7 +196,7 @@ export function PresetRow({
         <Button type="button" variant="ghost" size="sm" className="h-8 text-[12px]" disabled={busy || !selected || !dirty} onClick={() => void update()}>
           {selected ? `Update "${selected.name}"` : 'Update'}
         </Button>
-        <Button type="button" variant="ghost" size="sm" className="h-8 text-[12px] text-led-danger" disabled={busy || !selected} onClick={() => void remove()}>
+        <Button type="button" variant="ghost" size="sm" className="h-8 text-[12px] text-danger" disabled={busy || !selected} onClick={() => void remove()}>
           Delete
         </Button>
       </div>

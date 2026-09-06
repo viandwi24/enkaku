@@ -293,11 +293,11 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
             {/* Named by this component, from the row and the resolved target
                 — the author's own sentence is never rewritten to say it. */}
             <p>
-              This runs <span className="text-fg">{action.label}</span>
+              This runs <span className="text-text">{action.label}</span>
               {targetName ? (
                 <>
                   {' '}
-                  on <span className="text-fg">{targetName}</span>
+                  on <span className="text-text">{targetName}</span>
                 </>
               ) : null}
               .
@@ -341,7 +341,7 @@ export function ActionRunner({ plugin, rowKey, invocation, onClose, onDone }: Ac
 
         {stage === 'target' &&
           (devices === null ? (
-            <p className="text-[12.5px] text-fg-muted">Loading devices…</p>
+            <p className="text-[12.5px] text-dim">Loading devices…</p>
           ) : (
             // `forceExpanded`: this dialog IS the picker at this stage — the
             // same shape `DevicePickerDialog` (`components/host`) uses for a

@@ -12,7 +12,7 @@ export function AgentAvatar({ name, colour, size = 'md' }: { name: string; colou
   return (
     <span
       className={cn('grid shrink-0 place-items-center rounded-full font-semibold text-white', dims)}
-      style={{ backgroundColor: colour ?? 'var(--color-fg-subtle)' }}
+      style={{ backgroundColor: colour ?? 'var(--faint)' }}
       aria-hidden
     >
       {initial || <RobotIcon className="size-3" />}

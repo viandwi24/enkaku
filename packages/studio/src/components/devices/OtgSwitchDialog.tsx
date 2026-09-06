@@ -381,15 +381,15 @@ function StateCell({ state, now }: { state: CutoverState | null; now: number }) 
 
   if (state.step === 'done') {
     return (
-      <span className="text-meta text-led-ok">
+      <span className="text-meta text-ok">
         On the network{state.connectedAddress ? ` · ${state.connectedAddress}` : ''}
       </span>
     )
   }
-  if (state.step === 'failed') return <span className="text-meta text-led-danger">{state.detail}</span>
+  if (state.step === 'failed') return <span className="text-meta text-danger">{state.detail}</span>
   if (state.step === 'enabling-tcp') return <span className="text-meta text-faint">Enabling TCP mode over USB…</span>
   return (
-    <span className={cn('text-meta', 'text-led-warn')}>
+    <span className={cn('text-meta', 'text-warn')}>
       Flip this chassis port to OTG now
       {remainingMs !== null && ` · ${Math.ceil(remainingMs / 1000)}s left`}
     </span>

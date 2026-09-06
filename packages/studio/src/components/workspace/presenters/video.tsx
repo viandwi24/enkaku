@@ -49,19 +49,19 @@ function VideoViewer({ path, src }: PresenterProps) {
 
   if (error) {
     return (
-      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 bg-surface-2 p-6 text-center">
-        <AlertTriangle className="size-5 text-led-danger" aria-hidden />
-        <p className="text-[12.5px] text-fg-muted">{error}</p>
+      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 bg-panel-2 p-6 text-center">
+        <AlertTriangle className="size-5 text-danger" aria-hidden />
+        <p className="text-[12.5px] text-dim">{error}</p>
       </div>
     )
   }
 
   return (
-    <div className="flex min-h-[40vh] items-center justify-center bg-surface-2 p-4">
+    <div className="flex min-h-[40vh] items-center justify-center bg-panel-2 p-4">
       {/* `max-h-[70vh]` keeps a portrait recording from blowing out the pane; `object-contain`
           via the browser's own aspect-ratio handling on `<video>` needs no extra class for that. */}
       <video controls preload="metadata" src={src} className="max-h-[70vh] max-w-full rounded-md" onError={handleError}>
-        <p className="text-[12.5px] text-fg-muted">{path}</p>
+        <p className="text-[12.5px] text-dim">{path}</p>
       </video>
     </div>
   )

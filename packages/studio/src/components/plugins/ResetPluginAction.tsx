@@ -50,10 +50,10 @@ import type { PluginListRow } from '@/app/plugins/plugin-list'
 
 /** How each outcome is coloured and worded in the result list. Failures read as failures; a debt never reads as a success. */
 const OUTCOME: Record<PluginResetItem['outcome'], { label: string; tone: string }> = {
-  failed: { label: 'not done', tone: 'text-led-danger' },
-  pending: { label: 'owed', tone: 'text-led-warn' },
-  cleared: { label: 'undone', tone: 'text-fg-muted' },
-  unchanged: { label: 'left alone', tone: 'text-fg-subtle' },
+  failed: { label: 'not done', tone: 'text-danger' },
+  pending: { label: 'owed', tone: 'text-warn' },
+  cleared: { label: 'undone', tone: 'text-dim' },
+  unchanged: { label: 'left alone', tone: 'text-faint' },
 }
 
 export function ResetPluginAction({
@@ -172,16 +172,16 @@ export function ResetPluginAction({
           <>
             <p>
               This deletes {counted} under the <span className="readout">{p.name}</span> namespace — farm-wide and on every device.{' '}
-              <span className="font-medium text-fg">There is no undo.</span> Every version of {p.name} shares that one namespace, so this
+              <span className="font-medium text-text">There is no undo.</span> Every version of {p.name} shares that one namespace, so this
               deletes what the other versions wrote too. The plugin itself stays installed and active.
             </p>
             {reset ? (
-              <div className="mt-2.5 space-y-2 rounded border border-line bg-surface-2 px-3 py-2 text-[12.5px]">
-                <p className="text-fg">
+              <div className="mt-2.5 space-y-2 rounded border border-line bg-panel-2 px-3 py-2 text-[12.5px]">
+                <p className="text-text">
                   <span className="font-medium">{p.name} cleans up first.</span> {reset.description ?? 'It declares a cleanup handler and no description of what it does.'}
                 </p>
                 {borrowed.length > 0 && (
-                  <p className="text-fg-muted">
+                  <p className="text-dim">
                     For this one pass it may use{' '}
                     {borrowed.map((perm, i) => (
                       <span key={perm}>
@@ -192,13 +192,13 @@ export function ResetPluginAction({
                     {borrowed.length === 1 ? ', which it' : ', which it'} cannot use at any other time.
                   </p>
                 )}
-                <p className="text-fg-muted">
-                  If any part of that cleanup fails, <span className="font-medium text-fg">nothing is deleted</span> — the data is the only
+                <p className="text-dim">
+                  If any part of that cleanup fails, <span className="font-medium text-text">nothing is deleted</span> — the data is the only
                   record of what is still out there, and you can fix the cause and reset again.
                 </p>
               </div>
             ) : handler.state === 'loading' ? (
-              <p className="mt-2.5 text-[12.5px] text-fg-subtle">Reading what {p.name} cleans up first…</p>
+              <p className="mt-2.5 text-[12.5px] text-faint">Reading what {p.name} cleans up first…</p>
             ) : handler.state === 'unavailable' ? (
               /*
                 The honest third state. "Declares no cleanup handler" is a
@@ -208,12 +208,12 @@ export function ResetPluginAction({
                 read: what the reset actually runs is decided server-side off
                 the active row's own manifest, and this dialog only describes it.
               */
-              <p className="mt-2.5 text-[12.5px] text-fg-subtle">
+              <p className="mt-2.5 text-[12.5px] text-faint">
                 This farm could not read whether {p.name} declares a cleanup handler, so this dialog cannot say what it will undo first. The
                 reset itself still runs whatever the active version declares.
               </p>
             ) : (
-              <p className="mt-2.5 text-[12.5px] text-fg-subtle">
+              <p className="mt-2.5 text-[12.5px] text-faint">
                 {p.name} declares no cleanup handler, so nothing outside this farm&apos;s database is touched — there is nothing for it to
                 undo.
               </p>
@@ -244,7 +244,7 @@ export function ResetResultDialog({ result, onClose }: { result: PluginResetResp
     <Dialog open onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle className={blocked ? 'text-led-danger' : debts ? 'text-led-warn' : undefined}>
+          <DialogTitle className={blocked ? 'text-danger' : debts ? 'text-warn' : undefined}>
             {blocked ? `${result.plugin} was not reset` : debts ? `${result.plugin} was reset — with ${result.handler.counts.pending} still owed` : `${result.plugin} was reset`}
           </DialogTitle>
           {/* The server's own sentence, verbatim. Re-wording it here would give
@@ -258,13 +258,13 @@ export function ResetResultDialog({ result, onClose }: { result: PluginResetResp
           {/* Named before the list, because "the handler never ran" explains
               every empty list below it and is not something to infer. */}
           {(result.handler.skipped ?? result.handler.error) && (
-            <p className="rounded border border-led-danger/40 bg-led-danger/5 px-3 py-2 leading-relaxed text-led-danger">
+            <p className="rounded border border-danger/40 bg-danger/5 px-3 py-2 leading-relaxed text-danger">
               <span className="readout">{(result.handler.skipped ?? result.handler.error)?.code}</span>{' '}
               {(result.handler.skipped ?? result.handler.error)?.message}
             </p>
           )}
 
-          {result.handler.note && <p className="leading-relaxed text-fg-muted">{result.handler.note}</p>}
+          {result.handler.note && <p className="leading-relaxed text-dim">{result.handler.note}</p>}
 
           {result.handler.items.length > 0 && (
             <ul className="divide-y overflow-hidden rounded border">
@@ -274,7 +274,7 @@ export function ResetResultDialog({ result, onClose }: { result: PluginResetResp
                     <span className={`rack-label shrink-0 ${OUTCOME[item.outcome].tone}`}>{OUTCOME[item.outcome].label}</span>
                     <span className="readout min-w-0 flex-1 wrap-anywhere text-[12px]">{item.label ?? item.id}</span>
                   </div>
-                  <p className={`mt-0.5 leading-relaxed ${item.outcome === 'failed' ? 'text-led-danger' : 'text-fg-muted'}`}>{item.message}</p>
+                  <p className={`mt-0.5 leading-relaxed ${item.outcome === 'failed' ? 'text-danger' : 'text-dim'}`}>{item.message}</p>
                 </li>
               ))}
             </ul>
@@ -283,7 +283,7 @@ export function ResetResultDialog({ result, onClose }: { result: PluginResetResp
           {/* Said plainly and separately from the message, because "was my data
               deleted" is the one question this dialog must never leave to
               inference. */}
-          <p className={blocked ? 'font-medium text-led-danger' : 'text-fg-muted'}>
+          <p className={blocked ? 'font-medium text-danger' : 'text-dim'}>
             {result.data.deleted
               ? `${result.data.entries} stored ${result.data.entries === 1 ? 'entry' : 'entries'} deleted — ${result.data.global} farm-wide, ${result.data.device} across ${result.data.devices} device${result.data.devices === 1 ? '' : 's'}.`
               : 'Nothing was deleted. Every entry this plugin stored is still there, including the ones for the parts that did clean up — the cleanup handler is safe to run again.'}

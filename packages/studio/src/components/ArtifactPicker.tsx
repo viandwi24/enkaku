@@ -94,13 +94,13 @@ export function ArtifactPicker({
       </TabsContent>
       <TabsContent value="existing" className="mt-2">
         {unavailable ? (
-          <p className="rounded-md border bg-surface-2/40 px-2.5 py-2 text-[12px] text-fg-muted">
+          <p className="rounded-md border bg-panel-2/40 px-2.5 py-2 text-[12px] text-dim">
             Browsing previously uploaded files isn&apos;t available on this build yet — upload the file instead.
           </p>
         ) : existing === null ? (
-          <p className="text-[12px] text-fg-subtle">Loading…</p>
+          <p className="text-[12px] text-faint">Loading…</p>
         ) : existing.length === 0 ? (
-          <p className="rounded-md border bg-surface-2/40 px-2.5 py-2 text-[12px] text-fg-muted">
+          <p className="rounded-md border bg-panel-2/40 px-2.5 py-2 text-[12px] text-dim">
             No previously uploaded files yet.
           </p>
         ) : (
@@ -114,12 +114,12 @@ export function ArtifactPicker({
                     type="button"
                     disabled={disabled}
                     onClick={() => onChange({ kind: 'existing', artifactId: a.id, label })}
-                    className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left hover:bg-surface-2/60 disabled:opacity-50 ${
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left hover:bg-panel-2/60 disabled:opacity-50 ${
                       selected ? 'bg-accent/10' : ''
                     }`}
                   >
                     <span className="min-w-0 truncate">{label}</span>
-                    <span className="shrink-0 text-fg-subtle">{a.sizeBytes !== null ? fileSize(a.sizeBytes) : ''}</span>
+                    <span className="shrink-0 text-faint">{a.sizeBytes !== null ? fileSize(a.sizeBytes) : ''}</span>
                   </button>
                 </li>
               )

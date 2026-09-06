@@ -100,14 +100,14 @@ export function DisconnectDeviceDialog({
         <DialogHeader>
           <DialogTitle>Disconnect {name} from the network?</DialogTitle>
           <DialogDescription asChild>
-            <div className="space-y-2 text-[13px] leading-relaxed text-fg-muted">
+            <div className="space-y-2 text-[13px] leading-relaxed text-dim">
               <p>Enkaku drops its adb connection. The phone keeps running.</p>
               <p>
-                <strong className="text-fg">Unchanged:</strong> its record, tags, group, settings, job history and
+                <strong className="text-text">Unchanged:</strong> its record, tags, group, settings, job history and
                 artifacts. This is not Remove.
               </p>
               <p>
-                <strong className="text-fg">Until you reconnect it:</strong> it shows as Offline, and it cannot be
+                <strong className="text-text">Until you reconnect it:</strong> it shows as Offline, and it cannot be
                 controlled or scheduled.
               </p>
               {address && (
@@ -120,10 +120,10 @@ export function DisconnectDeviceDialog({
         </DialogHeader>
 
         {refusal && (
-          <div className="rounded-md border border-led-danger/40 bg-led-danger/5 p-3 text-[12.5px]">
-            <p className="text-led-danger">{refusal.message}</p>
+          <div className="rounded-md border border-danger/40 bg-danger/5 p-3 text-[12.5px]">
+            <p className="text-danger">{refusal.message}</p>
             {refusal.code === E_DEVICE_CONFLICT && (
-              <label className="mt-2.5 flex items-start gap-2 text-[12.5px] text-fg">
+              <label className="mt-2.5 flex items-start gap-2 text-[12.5px] text-text">
                 <input
                   type="checkbox"
                   className="mt-0.5"

@@ -257,7 +257,7 @@ export function JobsList({
         const when = columns.time === 'started' ? (j.startedAt ?? j.createdAt) : j.createdAt
         return (
           <>
-            {columns.seq && <TableCell className="readout text-[11.5px] text-fg-subtle">{(j.batchSeq ?? 0) + 1}</TableCell>}
+            {columns.seq && <TableCell className="readout text-[11.5px] text-faint">{(j.batchSeq ?? 0) + 1}</TableCell>}
 
             {columns.script && (
               <TableCell>
@@ -277,7 +277,7 @@ export function JobsList({
                 {/* Plan 97 §4.8 — the one operator-legible line `buildResultSummary`
                     computed at settle. Absent whenever the script declared no
                     `summary` fields or the job has not settled `valid`. */}
-                {j.resultSummary && <div className="truncate text-[11.5px] text-fg-muted">{j.resultSummary}</div>}
+                {j.resultSummary && <div className="truncate text-[11.5px] text-dim">{j.resultSummary}</div>}
               </TableCell>
             )}
 
@@ -303,7 +303,7 @@ export function JobsList({
                       label={resolved?.name ?? j.deviceId.slice(0, 8)}
                       className="group-hover:underline"
                     />
-                    <span className="readout text-[10.5px] text-fg-subtle">{resolved?.ident ?? j.deviceId}</span>
+                    <span className="readout text-[10.5px] text-faint">{resolved?.ident ?? j.deviceId}</span>
                   </Link>
                 </TableCell>
               )
@@ -323,14 +323,14 @@ export function JobsList({
                     absent for every other row (an ordinary script, or a
                     workflow row that has not yet received a live push). */}
                 {liveNode(j) && (
-                  <span className="readout text-[10.5px] text-fg-subtle">
+                  <span className="readout text-[10.5px] text-faint">
                     node {liveNode(j)!.seq + 1}/{liveNode(j)!.total}
                   </span>
                 )}
               </div>
             </TableCell>
 
-            <TableCell className="readout text-[11.5px] text-fg-muted">
+            <TableCell className="readout text-[11.5px] text-dim">
               {j.startedAt ? duration(j.startedAt, j.finishedAt, now) : '—'}
             </TableCell>
 
@@ -342,8 +342,8 @@ export function JobsList({
                 `notBefore` that no longer means anything once the job has
                 already run. */}
             {columns.pacing && (
-              <TableCell className="readout text-[11.5px] text-fg-muted">
-                {j.batchRepeat !== null && <span className="text-fg-subtle">rep {j.batchRepeat + 1}</span>}
+              <TableCell className="readout text-[11.5px] text-dim">
+                {j.batchRepeat !== null && <span className="text-faint">rep {j.batchRepeat + 1}</span>}
                 {j.batchRepeat !== null && <span> · </span>}
                 {(() => {
                   const w = waiting?.[j.jobId]
@@ -366,7 +366,7 @@ export function JobsList({
               <TableCell>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <span className="readout text-[11.5px] text-fg-muted">{relativeTime(when, now)}</span>
+                    <span className="readout text-[11.5px] text-dim">{relativeTime(when, now)}</span>
                   </TooltipTrigger>
                   <TooltipContent>{new Date(when * 1000).toLocaleString()}</TooltipContent>
                 </Tooltip>

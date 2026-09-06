@@ -976,7 +976,7 @@ export const PromptInputButton = ({
       <TooltipContent side={side}>
         {tooltipContent}
         {shortcut && (
-          <span className="ml-2 text-muted-foreground">{shortcut}</span>
+          <span className="ml-2 text-dim">{shortcut}</span>
         )}
       </TooltipContent>
     </Tooltip>
@@ -1056,8 +1056,8 @@ export const PromptInputSelectTrigger = ({
 }: PromptInputSelectTriggerProps) => (
   <SelectTrigger
     className={cn(
-      "h-8 rounded-md border-none bg-transparent px-2 font-medium text-muted-foreground shadow-none transition-colors",
-      "hover:bg-accent hover:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground",
+      "h-8 rounded-md border-none bg-transparent px-2 font-medium text-dim shadow-none transition-colors",
+      "hover:bg-accent hover:text-text aria-expanded:bg-accent aria-expanded:text-text",
       className
     )}
     {...props}

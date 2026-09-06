@@ -36,27 +36,27 @@ export function ApprovalCard({
   const expiresIn = approval.expiresAt - now
 
   return (
-    <div className="w-full rounded-lg border border-led-warn/40 bg-led-warn/10 px-3 py-2.5">
+    <div className="w-full rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           {context && <AgentAvatar name={context.agentName} colour={context.agentColour} size="sm" />}
           <p className="text-[12.5px] font-medium">
-            {context && <span className="text-fg">{context.agentName} · </span>}
+            {context && <span className="text-text">{context.agentName} · </span>}
             Approval requested — <span className="readout">{approval.capabilityId}</span>
           </p>
         </div>
-        <span className="readout shrink-0 text-[11px] text-fg-muted" title={new Date(approval.createdAt * 1000).toLocaleString()}>
+        <span className="readout shrink-0 text-[11px] text-dim" title={new Date(approval.createdAt * 1000).toLocaleString()}>
           {relativeTime(approval.createdAt)} · expires {expiresIn > 0 ? `in ${Math.max(1, Math.round(expiresIn / 60))}m` : 'soon'}
         </span>
       </div>
 
-      {context?.deviceLabel && <p className="mt-1 text-[11.5px] text-fg-muted">device: {context.deviceLabel}</p>}
-      {context?.threadTitle && <p className="text-[11.5px] text-fg-muted">thread: {context.threadTitle}</p>}
+      {context?.deviceLabel && <p className="mt-1 text-[11.5px] text-dim">device: {context.deviceLabel}</p>}
+      {context?.threadTitle && <p className="text-[11.5px] text-dim">thread: {context.threadTitle}</p>}
 
       {/* The COMPLETE input, never truncated (criterion 7) — long content scrolls inside its own
           box rather than being elided with an ellipsis, because that is exactly where an injected
           instruction would hide. */}
-      <pre className="readout mt-2 max-h-64 w-full overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2.5 py-2 text-[11.5px] text-fg">
+      <pre className="readout mt-2 max-h-64 w-full overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2.5 py-2 text-[11.5px] text-text">
         {JSON.stringify(approval.input, null, 2)}
       </pre>
 
@@ -70,7 +70,7 @@ export function ApprovalCard({
           </Button>
         </div>
       ) : (
-        <p className="mt-2 text-[11.5px] text-fg-muted">
+        <p className="mt-2 text-[11.5px] text-dim">
           {approval.status} {approval.decidedBy ? `by ${approval.decidedBy}` : ''}
         </p>
       )}

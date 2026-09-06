@@ -100,7 +100,7 @@ export function NewWorkflowDialog({ trigger }: { trigger: ReactNode }) {
         </DialogHeader>
 
         <div className="space-y-1.5">
-          <Label htmlFor="new-workflow-title" className="text-[11.5px] font-normal text-fg-muted">
+          <Label htmlFor="new-workflow-title" className="text-[11.5px] font-normal text-dim">
             Name
           </Label>
           <Input
@@ -114,13 +114,13 @@ export function NewWorkflowDialog({ trigger }: { trigger: ReactNode }) {
             }}
           />
           {name ? (
-            <p className="text-[11.5px] text-fg-subtle">
-              Saved as <span className="readout text-fg-muted">{name}</span> — this is the identity schedules point at, and it does not change later.
+            <p className="text-[11.5px] text-faint">
+              Saved as <span className="readout text-dim">{name}</span> — this is the identity schedules point at, and it does not change later.
             </p>
           ) : (
-            <p className="text-[11.5px] text-fg-subtle">Letters and digits, please — the identity is derived from what you type.</p>
+            <p className="text-[11.5px] text-faint">Letters and digits, please — the identity is derived from what you type.</p>
           )}
-          {error && <p className="text-[11.5px] text-led-danger">{error}</p>}
+          {error && <p className="text-[11.5px] text-danger">{error}</p>}
         </div>
 
         <DialogFooter>

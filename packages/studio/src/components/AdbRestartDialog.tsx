@@ -84,16 +84,16 @@ export function AdbRestartDialog({ trigger }: { trigger: ReactNode }) {
         <DialogHeader>
           <DialogTitle>Restart the adb server?</DialogTitle>
           <DialogDescription asChild>
-            <div className="space-y-2 text-[13px] leading-relaxed text-fg-muted">
+            <div className="space-y-2 text-[13px] leading-relaxed text-dim">
               <p>This stops and restarts the adb server that this computer shares with every other program using adb.</p>
 
-              {loadError && <p className="text-led-danger">{loadError}</p>}
+              {loadError && <p className="text-danger">{loadError}</p>}
               {!preview && !loadError && <p>Checking this farm's current state…</p>}
 
               {preview && (
                 <>
                   <p>
-                    <strong className="text-fg">Here:</strong> all {plural(preview.devicesTotal, 'device')} disconnect and reconnect.{' '}
+                    <strong className="text-text">Here:</strong> all {plural(preview.devicesTotal, 'device')} disconnect and reconnect.{' '}
                     {preview.sessionsActive > 0
                       ? `${plural(preview.sessionsActive, 'live screen')} stop and resume.`
                       : 'No live screens are open right now.'}
@@ -101,18 +101,18 @@ export function AdbRestartDialog({ trigger }: { trigger: ReactNode }) {
                     {preview.jobsRunning > 0 && ` ${plural(preview.jobsRunning, 'running job')} fail${preview.jobsRunning === 1 ? 's' : ''}.`}
                   </p>
                   <p>
-                    <strong className="text-fg">Elsewhere:</strong> any other program using adb on this machine loses its connection at the same
+                    <strong className="text-text">Elsewhere:</strong> any other program using adb on this machine loses its connection at the same
                     moment — Android Studio's device list and Logcat, a terminal running <code className="readout">adb logcat</code>, Flutter or
                     React Native tooling. Most reconnect on their own; a command already running will exit.
                   </p>
                   <p>
-                    <strong className="text-fg">Network devices</strong> ({preview.networkDevicesWithEndpoint} here) are dialled again from their
+                    <strong className="text-text">Network devices</strong> ({preview.networkDevicesWithEndpoint} here) are dialled again from their
                     last known addresses afterwards. Any whose address has changed need a rescan.
                   </p>
                   <p>Usually takes 5–15 seconds.</p>
 
                   {busyFarm && (
-                    <label className="flex items-start gap-2 rounded border border-led-danger/35 bg-led-danger/10 px-3 py-2 text-[12.5px] text-fg">
+                    <label className="flex items-start gap-2 rounded border border-danger/35 bg-danger/10 px-3 py-2 text-[12.5px] text-text">
                       <input
                         type="checkbox"
                         className="mt-0.5"

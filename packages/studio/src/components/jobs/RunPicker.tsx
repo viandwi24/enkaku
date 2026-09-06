@@ -76,7 +76,7 @@ export function RunPicker({
       {open && (
         <div
           role="menu"
-          className="absolute left-0 top-[calc(100%+6px)] z-50 w-[320px] overflow-hidden rounded-card border border-border-2 bg-panel p-1 shadow-popover"
+          className="absolute left-0 top-[calc(100%+6px)] z-50 w-[320px] overflow-hidden rounded-card border border-border-2 bg-panel p-1 shadow-panel-2"
         >
           {runs.map((r) => (
             <div key={r.runId} className="flex items-center gap-2 rounded-button px-[10px] py-[9px] hover:bg-muted">

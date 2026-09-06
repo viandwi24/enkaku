@@ -61,18 +61,18 @@ export function ThreadList({
             <LoadingRows rows={3} />
           </div>
         ) : threads.length === 0 ? (
-          <p className="px-3 py-4 text-[12px] text-fg-subtle">No conversations yet.</p>
+          <p className="px-3 py-4 text-[12px] text-faint">No conversations yet.</p>
         ) : (
           <ul className="px-1 pb-2">
             {threads.map((t) => (
               <li key={t.id} className="group relative">
                 <Link
                   href={`/agents/detail?id=${agentId}&thread=${t.id}`}
-                  className={cn('block truncate rounded px-2 py-1.5 pr-7 text-[12.5px] hover:bg-surface', t.id === activeThreadId && 'bg-surface font-medium')}
+                  className={cn('block truncate rounded px-2 py-1.5 pr-7 text-[12.5px] hover:bg-panel', t.id === activeThreadId && 'bg-panel font-medium')}
                 >
                   {t.title ?? `Thread ${t.id.slice(0, 8)}`}
-                  <span className="ml-1.5 text-[10.5px] text-fg-subtle">{relativeTime(t.updatedAt)}</span>
-                  {t.origin !== 'chat' && <span className="ml-1.5 rounded bg-surface-2 px-1 text-[10px] text-fg-subtle">{t.origin}</span>}
+                  <span className="ml-1.5 text-[10.5px] text-faint">{relativeTime(t.updatedAt)}</span>
+                  {t.origin !== 'chat' && <span className="ml-1.5 rounded bg-panel-2 px-1 text-[10px] text-faint">{t.origin}</span>}
                 </Link>
                 <ThreadRowMenu thread={t} onDeleted={() => onThreadDeleted?.(t.id)} />
               </li>

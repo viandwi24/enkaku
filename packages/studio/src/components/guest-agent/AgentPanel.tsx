@@ -42,7 +42,7 @@ const FACET_LABELS: Record<string, string> = {
   'egress-probe': 'Network route',
   'route-hold': 'Network route',
   'screen-label': 'Screen label',
-  'text-input': 'Keyboard',
+  'text-border-3': 'Keyboard',
   'mock-location': 'Location',
 }
 
@@ -162,7 +162,7 @@ export function AgentPanel({
     <div className="@container">
       <div className="py-4 @min-[32rem]:px-5">
         {disabled && (
-          <p className="mb-4 rounded-lg border bg-surface px-3.5 py-2.5 text-[12.5px] text-fg-muted">
+          <p className="mb-4 rounded-lg border bg-panel px-3.5 py-2.5 text-[12.5px] text-dim">
             Take control of this device to install, update, or remove its guest agent.
           </p>
         )}
@@ -173,9 +173,9 @@ export function AgentPanel({
           <LoadingRows rows={2} />
         ) : (
           <div className="max-w-3xl space-y-4">
-            <section className="@container rounded-lg border bg-surface p-4">
+            <section className="@container rounded-lg border bg-panel p-4">
               <h3 className="text-[13.5px] font-semibold tracking-tight">Guest agent</h3>
-              <p className="mt-1 text-[12px] leading-relaxed text-fg-muted">
+              <p className="mt-1 text-[12px] leading-relaxed text-dim">
                 The on-device helper behind the network route, the screen label, non-ASCII typing, and mock location —
                 one app, four facets, negotiated by capability (plan 90). A package being present does not mean it can
                 be driven — "installed" and "ready" are shown as different states on purpose.
@@ -183,7 +183,7 @@ export function AgentPanel({
 
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <AgentStateBadge state={status.state} />
-                {status.reason && <span className="text-[12px] text-fg-muted">{status.reason}</span>}
+                {status.reason && <span className="text-[12px] text-dim">{status.reason}</span>}
               </div>
 
               {/* Two `label … value` rows sit side by side once the card can
@@ -205,20 +205,20 @@ export function AgentPanel({
               </dl>
 
               <div className="mt-3">
-                <h4 className="text-[11px] font-medium uppercase tracking-wide text-fg-subtle">Capabilities</h4>
+                <h4 className="text-[11px] font-medium uppercase tracking-wide text-faint">Capabilities</h4>
                 {namedFacets(status.capabilities).length > 0 ? (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {namedFacets(status.capabilities).map((facet) => (
                       <span
                         key={facet}
-                        className="inline-flex items-center rounded-full border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-fg-muted"
+                        className="inline-flex items-center rounded-full border bg-panel-2 px-2 py-0.5 text-[11px] font-medium text-dim"
                       >
                         {facet}
                       </span>
                     ))}
                   </div>
                 ) : (
-                  <p className="mt-1 text-[12px] text-fg-subtle">Not reported yet — the agent has not answered a handshake.</p>
+                  <p className="mt-1 text-[12px] text-faint">Not reported yet — the agent has not answered a handshake.</p>
                 )}
               </div>
 
@@ -237,7 +237,7 @@ export function AgentPanel({
                     to no number. Without it the panel looks stuck, which is what led to this being
                     reported as a broken button (carried over from the old NetworkPanel block). */}
                 {isPending('install') && (
-                  <span className="text-[12px] text-fg-muted">
+                  <span className="text-[12px] text-dim">
                     Pushing the APK and provisioning it — this can take a couple of minutes. Safe to leave this tab.
                   </span>
                 )}
@@ -266,7 +266,7 @@ export function AgentPanel({
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <dt className="text-[12px] text-fg-subtle">{label}</dt>
+      <dt className="text-[12px] text-faint">{label}</dt>
       <dd className="readout min-w-0 truncate text-[12px]" title={value}>
         {value}
       </dd>

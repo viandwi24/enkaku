@@ -217,7 +217,7 @@ export function HttpProxyFields({
       /* `@container`, not `sm:` — see `NetworkRouteForm`'s own note. This card
          is rendered both full width (device page) and inside one column of a
          ~400px dialog pane, and a viewport breakpoint cannot tell those apart. */
-      className="@container rounded-lg border bg-surface p-3.5"
+      className="@container rounded-lg border bg-panel p-3.5"
       onSubmit={(e) => {
         e.preventDefault()
         void applyRoute()
@@ -250,7 +250,7 @@ export function HttpProxyFields({
         <>
           <div className="mt-3 mb-3 flex flex-wrap items-end gap-2">
             <div className="min-w-0 flex-1 space-y-1.5">
-              <Label htmlFor={`http-paste-${deviceId}`} className="text-[12px] font-normal text-fg-muted">
+              <Label htmlFor={`http-paste-${deviceId}`} className="text-[12px] font-normal text-dim">
                 Paste an http://host:port address to fill the fields below
               </Label>
               <Input
@@ -272,7 +272,7 @@ export function HttpProxyFields({
             </Button>
           </div>
           {pasteError && (
-            <div className="mb-3 rounded border border-led-warn/35 bg-led-warn/5 px-2.5 py-2 text-[11.5px] leading-relaxed text-led-warn">
+            <div className="mb-3 rounded border border-warn/35 bg-warn/5 px-2.5 py-2 text-[11.5px] leading-relaxed text-warn">
               <p>{pasteError}</p>
               <div className="mt-1.5 flex flex-wrap gap-3">
                 <button type="button" className="underline" onClick={() => setPlacement('farm')}>
@@ -319,7 +319,7 @@ export function HttpProxyFields({
           {/* An absent password field with no explanation reads as a missing
               feature, and the operator's next move is to paste the account
               into the host box. Say why, and say where it does go. */}
-          <p className="mt-2 text-[11px] leading-relaxed text-fg-subtle">
+          <p className="mt-2 text-[11px] leading-relaxed text-faint">
             There is no username or password here, and there will not be one. Android’s system proxy value is
             host:port with nowhere to put an account, and every app on the phone can read it. A proxy that needs an
             account has to run on this farm’s machine — the choice above.
@@ -341,7 +341,7 @@ export function HttpProxyFields({
             placeholder="9902"
             disabled={!canUse}
           />
-          <p className="text-[11px] leading-relaxed text-fg-subtle">
+          <p className="text-[11px] leading-relaxed text-faint">
             Where the proxy already listens on this farm’s own machine. The phone dials a loopback port of its own,
             which the farm allocates and shows in the route status — it is never typed here.
           </p>
@@ -351,10 +351,10 @@ export function HttpProxyFields({
       {/* Plan 114 §3.5, §3.1 rule 3 — always on screen, never only after
           something fails: `health` cannot leave `unverified` in this mode, and
           an unexplained `unverified` reads as "still loading". */}
-      <p className="mt-3 rounded border border-led-warn/35 bg-led-warn/5 px-2.5 py-2 text-[11.5px] leading-relaxed text-led-warn">
+      <p className="mt-3 rounded border border-warn/35 bg-warn/5 px-2.5 py-2 text-[11.5px] leading-relaxed text-warn">
         {HTTP_PROXY_ADVISORY}
       </p>
-      <p className="mt-2 text-[11px] leading-relaxed text-fg-subtle">{PERSISTENCE_NOTE[placement]}</p>
+      <p className="mt-2 text-[11px] leading-relaxed text-faint">{PERSISTENCE_NOTE[placement]}</p>
 
       <div className="mt-4 flex items-center gap-2 border-t pt-3">
         <Button type="submit" size="sm" disabled={!canApply || isPending('apply')}>

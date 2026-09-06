@@ -50,7 +50,7 @@ export function JsonControl({
   return (
     <FieldRow id={id} label={label} help={help} error={error}>
       {field}
-      <p className="text-[11px] text-fg-subtle">{plan.reason} — enter it as JSON.</p>
+      <p className="text-[11px] text-faint">{plan.reason} — enter it as JSON.</p>
     </FieldRow>
   )
 }

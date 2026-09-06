@@ -21,7 +21,7 @@ export function ChanceControl({ id, path, label, help, error, value, onChange, b
     return (
       <div className="flex w-full max-w-56 items-center gap-3">
         <Slider aria-label={label} min={0} max={100} step={1} value={[percent]} aria-invalid={Boolean(error)} onValueChange={handleChange} />
-        <span className="readout w-9 shrink-0 text-right text-[11px] text-fg-muted">{percent}%</span>
+        <span className="readout w-9 shrink-0 text-right text-[11px] text-dim">{percent}%</span>
       </div>
     )
   }

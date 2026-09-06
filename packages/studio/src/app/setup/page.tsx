@@ -76,7 +76,7 @@ function SetupForm() {
           onChange={(e) => setPassword(e.target.value)}
           disabled={busy}
         />
-        <p className={tooShort ? 'text-[11.5px] text-led-danger' : 'text-[11.5px] text-fg-subtle'}>
+        <p className={tooShort ? 'text-[11.5px] text-danger' : 'text-[11.5px] text-faint'}>
           At least {MIN_PASSWORD_LENGTH} characters.
         </p>
       </div>
@@ -92,11 +92,11 @@ function SetupForm() {
           onChange={(e) => setConfirm(e.target.value)}
           disabled={busy}
         />
-        {mismatch && <p className="text-[11.5px] text-led-danger">Passwords do not match.</p>}
+        {mismatch && <p className="text-[11.5px] text-danger">Passwords do not match.</p>}
       </div>
 
       {error && (
-        <div role="alert" className="rounded-md border border-led-danger/40 bg-led-danger/5 p-3 text-[12.5px] text-led-danger">
+        <div role="alert" className="rounded-md border border-danger/40 bg-danger/5 p-3 text-[12.5px] text-danger">
           {error}
         </div>
       )}

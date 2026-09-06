@@ -65,10 +65,10 @@ export default function RecordingsPage() {
                   <Link href={`/recordings/detail?slug=${encodeURIComponent(r.slug)}`} className="font-medium hover:underline">
                     {r.name}
                   </Link>
-                  {r.description && <p className="mt-0.5 truncate text-[11px] text-fg-muted">{r.description}</p>}
+                  {r.description && <p className="mt-0.5 truncate text-[11px] text-dim">{r.description}</p>}
                 </TableCell>
-                <TableCell className="readout text-[12px] text-fg-muted">{r.corrupt ? '—' : r.stepCount}</TableCell>
-                <TableCell className="text-[12px] text-fg-muted">{r.recordedAt ? relativeTime(r.recordedAt) : '—'}</TableCell>
+                <TableCell className="readout text-[12px] text-dim">{r.corrupt ? '—' : r.stepCount}</TableCell>
+                <TableCell className="text-[12px] text-dim">{r.recordedAt ? relativeTime(r.recordedAt) : '—'}</TableCell>
                 <TableCell>
                   {r.corrupt ? (
                     <Badge variant="destructive">corrupt</Badge>

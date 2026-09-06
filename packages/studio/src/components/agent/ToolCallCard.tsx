@@ -39,14 +39,14 @@ export function ToolCallCardView({ name, input, status, durationMs, resultConten
   const text = resultContent ? textOfToolResult(resultContent) : null
 
   return (
-    <div className={cn('rounded-md border text-[12px]', status === 'error' ? 'border-led-danger/40 bg-led-danger/5' : 'bg-surface')}>
+    <div className={cn('rounded-md border text-[12px]', status === 'error' ? 'border-danger/40 bg-danger/5' : 'bg-panel')}>
       <button type="button" onClick={onToggle} className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left" aria-expanded={expanded}>
-        <CaretRightIcon className={cn('size-3 shrink-0 text-fg-subtle transition-transform', expanded && 'rotate-90')} aria-hidden />
-        <span className="readout truncate font-medium text-fg">{capabilityId}</span>
-        {deviceId && <span className="readout shrink-0 truncate text-fg-subtle">{deviceId}</span>}
+        <CaretRightIcon className={cn('size-3 shrink-0 text-faint transition-transform', expanded && 'rotate-90')} aria-hidden />
+        <span className="readout truncate font-medium text-text">{capabilityId}</span>
+        {deviceId && <span className="readout shrink-0 truncate text-faint">{deviceId}</span>}
         <span className="flex-1" />
         {status === 'running' ? (
-          <span className="shrink-0 text-fg-subtle">running…</span>
+          <span className="shrink-0 text-faint">running…</span>
         ) : (
           <Badge variant={status === 'ok' ? 'secondary' : 'destructive'} className="shrink-0">
             {status}
@@ -58,10 +58,10 @@ export function ToolCallCardView({ name, input, status, durationMs, resultConten
       {expanded && (
         <div className="space-y-2 border-t px-2.5 py-2">
           <div>
-            <p className="mb-1 text-[10.5px] uppercase tracking-wide text-fg-subtle">input</p>
+            <p className="mb-1 text-[10.5px] uppercase tracking-wide text-faint">input</p>
             {/* Full width, never truncated — the same rule the approval inbox holds itself to
                 (§3.3): a long input scrolls, it does not elide. */}
-            <pre className="readout max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2 py-1.5 text-[11px] text-fg">
+            <pre className="readout max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2 py-1.5 text-[11px] text-text">
               {JSON.stringify(input, null, 2)}
             </pre>
           </div>
@@ -72,21 +72,21 @@ export function ToolCallCardView({ name, input, status, durationMs, resultConten
               {/* eslint-disable-next-line @next/next/no-img-element -- a core-served blob URL, never a same-origin asset next/image could optimise */}
               <img src={blobUrl(image.blobId)} alt={`Screenshot from ${deviceId ?? 'the device'}`} className="max-h-96 w-auto rounded border" />
               {inContext === false && (
-                <p className="flex items-center gap-1.5 text-fg-subtle">
+                <p className="flex items-center gap-1.5 text-faint">
                   <EyeSlashIcon className="size-3.5" aria-hidden />
                   Dropped from the agent&apos;s current context — it can no longer see this screen.
                 </p>
               )}
             </div>
           ) : status === 'ok' && capabilityId === 'device.screenshot' ? (
-            <p className="flex items-center gap-1.5 text-fg-subtle">
+            <p className="flex items-center gap-1.5 text-faint">
               <ImageBrokenIcon className="size-3.5" aria-hidden />
               Screenshot data could not be read.
             </p>
           ) : text ? (
             <div>
-              <p className="mb-1 text-[10.5px] uppercase tracking-wide text-fg-subtle">result</p>
-              <pre className={cn('readout max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2 py-1.5 text-[11px]', status === 'error' && 'text-led-danger')}>{text}</pre>
+              <p className="mb-1 text-[10.5px] uppercase tracking-wide text-faint">result</p>
+              <pre className={cn('readout max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2 py-1.5 text-[11px]', status === 'error' && 'text-danger')}>{text}</pre>
             </div>
           ) : null}
         </div>

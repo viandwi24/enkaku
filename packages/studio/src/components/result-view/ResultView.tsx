@@ -98,7 +98,7 @@ export function renderCell(plan: FieldPlan, value: unknown): string {
 function Row({ label, help, children }: { label: string; help?: string; children: ReactNode }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-line/60 py-1.5 last:border-b-0">
-      <span className="text-[12px] text-fg-muted" title={help}>
+      <span className="text-[12px] text-dim" title={help}>
         {label}
       </span>
       <span className="text-[13px]">{children}</span>
@@ -120,7 +120,7 @@ function GroupNode({ heading, fields, value }: { heading: string; fields: Planne
   return (
     <Block heading={heading}>
       {fields.length === 0 ? (
-        <p className="text-[12px] text-fg-subtle">no entries</p>
+        <p className="text-[12px] text-faint">no entries</p>
       ) : (
         <div className="pl-2">
           {fields.map((field) => (
@@ -137,14 +137,14 @@ function TableNode({ heading, columns, value }: { heading: string; columns: { ke
   return (
     <Block heading={heading}>
       {rows.length === 0 ? (
-        <p className="text-[12px] text-fg-subtle">no rows</p>
+        <p className="text-[12px] text-faint">no rows</p>
       ) : (
         <div className="overflow-auto rounded-md border">
           <table className="w-full text-[12px]">
             <thead>
-              <tr className="border-b bg-surface">
+              <tr className="border-b bg-panel">
                 {columns.map((c) => (
-                  <th key={c.key} className="px-2 py-1 text-left font-medium text-fg-muted">
+                  <th key={c.key} className="px-2 py-1 text-left font-medium text-dim">
                     {c.label}
                   </th>
                 ))}
@@ -173,7 +173,7 @@ function ListNode({ heading, item, value }: { heading: string; item: FieldPlan; 
   return (
     <Block heading={heading}>
       {items.length === 0 ? (
-        <p className="text-[12px] text-fg-subtle">no items</p>
+        <p className="text-[12px] text-faint">no items</p>
       ) : (
         <ul className="list-inside list-disc space-y-0.5 text-[13px]">
           {items.map((it, i) => (
@@ -241,7 +241,7 @@ export function ResultView({ schema, value }: ResultViewProps) {
   const unknownFields = fields.filter((f) => f.unknown)
 
   if (declared.length === 0 && unknownFields.length === 0) {
-    return <p className="text-[12.5px] text-fg-subtle">This result has no fields to show.</p>
+    return <p className="text-[12.5px] text-faint">This result has no fields to show.</p>
   }
 
   return (
@@ -249,7 +249,7 @@ export function ResultView({ schema, value }: ResultViewProps) {
       <div>{declared.map((field) => <div key={field.path}>{renderField(field.plan, field.value, field.label, field.help)}</div>)}</div>
       {unknownFields.length > 0 && (
         <div className="mt-3 border-t pt-2">
-          <p className="rack-label mb-1 text-fg-subtle">not declared by the schema</p>
+          <p className="rack-label mb-1 text-faint">not declared by the schema</p>
           {unknownFields.map((field) => (
             <UnknownField key={field.path} field={field} />
           ))}

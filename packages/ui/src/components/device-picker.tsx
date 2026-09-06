@@ -201,7 +201,7 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
   return (
     <div className="space-y-2">
       <div className="relative">
-        <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden />
+        <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -222,8 +222,8 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
               className={cn(
                 'rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none transition-colors',
                 activeTag === tag
-                  ? 'border-accent bg-accent/15 text-accent-strong'
-                  : 'border-line text-fg-muted hover:border-line-strong',
+                  ? 'border-accent bg-accent/15 text-accent-2'
+                  : 'border-line text-dim hover:border-border-3',
               )}
             >
               <TagLabel tag={tag} />
@@ -234,12 +234,12 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
 
       <div role="listbox" aria-multiselectable={props.multiple} className="max-h-72 space-y-1 overflow-y-auto rounded-lg border p-1">
         {filtered.length === 0 ? (
-          <p className="px-2 py-3 text-center text-[12px] text-fg-muted">No device matches.</p>
+          <p className="px-2 py-3 text-center text-[12px] text-dim">No device matches.</p>
         ) : groups ? (
           groups.map((g) => (
             <div key={g.label}>
               <p className="rack-label px-2 pb-1 pt-1.5 first:pt-0.5">
-                {g.label} <span className="text-fg-subtle">· {g.items.length}</span>
+                {g.label} <span className="text-faint">· {g.items.length}</span>
               </p>
               {g.items.map((d) => renderDeviceRow(d))}
             </div>
@@ -263,7 +263,7 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
         onClick={() => toggleDevice(d)}
         className={cn(
           'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-          unavailable ? 'cursor-not-allowed opacity-50' : selected ? 'bg-accent/10' : 'hover:bg-surface-2',
+          unavailable ? 'cursor-not-allowed opacity-50' : selected ? 'bg-accent/10' : 'hover:bg-panel-2',
         )}
       >
         {props.multiple && (
@@ -271,7 +271,7 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
             aria-hidden
             className={cn(
               'flex size-4 shrink-0 items-center justify-center rounded border',
-              selected ? 'border-accent bg-accent text-accent-fg' : 'border-line',
+              selected ? 'border-accent bg-accent text-on-accent' : 'border-line',
             )}
           >
             {selected && <CheckIcon className="size-3" />}
@@ -295,9 +295,9 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
             {props.renderStatus?.(d)}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className="readout text-[11px] text-fg-subtle">{d.stableId}</span>
+            <span className="readout text-[11px] text-faint">{d.stableId}</span>
             {(d.tags ?? []).map((t: string) => (
-              <span key={t} className="text-[10.5px] text-fg-subtle">
+              <span key={t} className="text-[10.5px] text-faint">
                 <TagLabel tag={t} />
               </span>
             ))}
@@ -313,7 +313,7 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
                 operator has to already know `claimNext`'s predicate to trust
                 the choice they are being offered. */}
             {d.status === 'offline' && (
-              <span className="text-[10.5px] text-fg-subtle">Queues until this device reconnects</span>
+              <span className="text-[10.5px] text-faint">Queues until this device reconnects</span>
             )}
           </div>
         </div>
@@ -346,7 +346,7 @@ function TagLabel({ tag }: { tag: string }) {
   if (i === -1) return <>{tag}</>
   return (
     <>
-      <span className="text-fg-subtle">{tag.slice(0, i + 1)}</span>
+      <span className="text-faint">{tag.slice(0, i + 1)}</span>
       {tag.slice(i + 1)}
     </>
   )

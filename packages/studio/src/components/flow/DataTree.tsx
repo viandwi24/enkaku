@@ -81,12 +81,12 @@ export function refFor(root: '$input' | `$nodes.${string}`, segments: readonly D
 }
 
 const TYPE_COLOR: Record<JsonNodeType, string> = {
-  string: 'text-led-ok',
+  string: 'text-ok',
   number: 'text-accent',
-  boolean: 'text-led-warn',
-  null: 'text-fg-subtle',
-  object: 'text-fg-muted',
-  array: 'text-fg-muted',
+  boolean: 'text-warn',
+  null: 'text-faint',
+  object: 'text-dim',
+  array: 'text-dim',
 }
 
 /** The HTML5 drag payload a `DataTree` row carries when `draggable` is on (plan 312 §4.4, G5) — `AssignmentEditor.tsx`'s own drop target reads this MIME type. */
@@ -125,7 +125,7 @@ export function DataTree({
   const rows = dataTreeRows(value, collapsed)
 
   if (value === undefined) {
-    return <p className="px-2 py-3 text-[11.5px] text-fg-subtle">{emptyLabel}</p>
+    return <p className="px-2 py-3 text-[11.5px] text-faint">{emptyLabel}</p>
   }
 
   const toggle = (path: string) => {
@@ -170,15 +170,15 @@ export function DataTree({
                   e.stopPropagation()
                   toggle(row.path)
                 }}
-                className="shrink-0 text-fg-subtle hover:text-fg"
+                className="shrink-0 text-faint hover:text-text"
                 aria-label={collapsed.has(row.path) ? 'Expand' : 'Collapse'}
               >
                 {collapsed.has(row.path) ? <CaretRightIcon className="size-3" aria-hidden /> : <CaretDownIcon className="size-3" aria-hidden />}
               </button>
             ) : (
-              <DotOutlineIcon className="size-3 shrink-0 text-fg-subtle" aria-hidden />
+              <DotOutlineIcon className="size-3 shrink-0 text-faint" aria-hidden />
             )}
-            <span className="shrink-0 text-fg-muted">{row.key || '(root)'}</span>
+            <span className="shrink-0 text-dim">{row.key || '(root)'}</span>
             {row.display !== '' && <span className={cn('min-w-0 truncate', TYPE_COLOR[row.type])}>{row.display}</span>}
           </div>
         )

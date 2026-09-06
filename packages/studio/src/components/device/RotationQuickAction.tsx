@@ -169,7 +169,7 @@ export function RotationQuickAction({
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
-        <p className="mt-1 border-t px-2 pt-2 text-[11px] leading-relaxed text-fg-muted">
+        <p className="mt-1 border-t px-2 pt-2 text-[11px] leading-relaxed text-dim">
           Applies to this device only, immediately if it is streaming now. The phone’s own setting is put back when its last
           session closes.
         </p>

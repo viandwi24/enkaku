@@ -81,13 +81,13 @@ const STATE_WORD: Record<string, string> = {
 }
 
 const STATE_TONE: Record<string, string> = {
-  absent: 'text-fg-subtle',
-  provisioning: 'text-led-active',
-  ready: 'text-led-ok',
-  outdated: 'text-led-warn',
-  failed: 'text-led-danger',
-  unsupported: 'text-fg-subtle',
-  'consent-required': 'text-led-warn',
+  absent: 'text-faint',
+  provisioning: 'text-accent',
+  ready: 'text-ok',
+  outdated: 'text-warn',
+  failed: 'text-danger',
+  unsupported: 'text-faint',
+  'consent-required': 'text-warn',
 }
 
 /**
@@ -280,13 +280,13 @@ export function AgentAlertDetail({
     <div className="@container">
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <h2 className="rack-label">guest agent</h2>
-        <span className={cn('text-[11px] font-medium', STATE_TONE[state] ?? 'text-fg-muted')}>{STATE_WORD[state] ?? state}</span>
+        <span className={cn('text-[11px] font-medium', STATE_TONE[state] ?? 'text-dim')}>{STATE_WORD[state] ?? state}</span>
       </div>
 
       {loadError ? (
         <ErrorState message={loadError} onRetry={reload} />
       ) : status === null ? (
-        <p className="flex items-center gap-2 text-[12px] text-fg-muted">
+        <p className="flex items-center gap-2 text-[12px] text-dim">
           <Loader2 className="size-3.5 animate-spin" aria-hidden />
           Reading why…
         </p>
@@ -308,7 +308,7 @@ export function AgentAlertDetail({
             // A `ready` agent has no reason and never should — saying so
             // would read as a missing field rather than a healthy one.
             status.state !== 'ready' && (
-              <p className="text-[12.5px] leading-relaxed text-fg-muted">
+              <p className="text-[12.5px] leading-relaxed text-dim">
                 No reason was recorded for this state — the core did not write one.
               </p>
             )
@@ -318,7 +318,7 @@ export function AgentAlertDetail({
             <>
               <button
                 type="button"
-                className="mt-1.5 inline-flex items-center gap-1 text-[11.5px] text-fg-muted transition-colors hover:text-fg"
+                className="mt-1.5 inline-flex items-center gap-1 text-[11.5px] text-dim transition-colors hover:text-text"
                 aria-expanded={showFull}
                 onClick={() => setShowFull((v) => !v)}
               >
@@ -335,7 +335,7 @@ export function AgentAlertDetail({
                 // `--radix-popover-content-available-height`), so there is one
                 // vertical scroller in this panel rather than a box inside a box
                 // that a trackpad has to guess between.
-                <pre className="readout mt-1.5 overflow-x-auto rounded-md border bg-surface-2 p-2 text-[11px] leading-relaxed whitespace-pre">
+                <pre className="readout mt-1.5 overflow-x-auto rounded-md border bg-panel-2 p-2 text-[11px] leading-relaxed whitespace-pre">
                   {rest}
                 </pre>
               )}
@@ -345,7 +345,7 @@ export function AgentAlertDetail({
           {/* "Failed once, 3 minutes ago" and "failed 40 times over two hours"
               call for different responses from an operator, and both numbers
               are already in the record. */}
-          <p className="mt-2 text-[11.5px] text-fg-muted">
+          <p className="mt-2 text-[11.5px] text-dim">
             {status.attempts > 0 && (
               <>
                 <span className="readout">{status.attempts}</span> failed {status.attempts === 1 ? 'attempt' : 'attempts'} ·{' '}
@@ -357,13 +357,13 @@ export function AgentAlertDetail({
           {/* Say what the backoff is actually doing, rather than pretending a
               click starts something that was going to happen anyway. */}
           {secondsToAuto !== null && secondsToAuto > 0 && (
-            <p className="mt-1 text-[11.5px] text-fg-subtle">
+            <p className="mt-1 text-[11.5px] text-faint">
               The farm retries this on its own in <span className="readout">{secondsToAuto}s</span>.
             </p>
           )}
-          {secondsToAuto === 0 && <p className="mt-1 text-[11.5px] text-fg-subtle">Another automatic attempt is already due.</p>}
+          {secondsToAuto === 0 && <p className="mt-1 text-[11.5px] text-faint">Another automatic attempt is already due.</p>}
           {exhausted && (
-            <p className="mt-1 text-[11.5px] text-fg-subtle">
+            <p className="mt-1 text-[11.5px] text-faint">
               Automatic retries for this device are used up — nothing will try again unless you do.
             </p>
           )}
@@ -373,14 +373,14 @@ export function AgentAlertDetail({
               not stale — this panel is what changed it — so the outcome
               sentence below says that instead, and the note stands down. */}
           {note && !(outcome !== null && status.state === 'ready') && (
-            <p className="mt-2 text-[11.5px] leading-relaxed text-fg-muted">{note}</p>
+            <p className="mt-2 text-[11.5px] leading-relaxed text-dim">{note}</p>
           )}
 
           {outcome && (
             <p
               className={cn(
                 'mt-2 wrap-anywhere text-[11.5px] leading-relaxed',
-                outcome.tone === 'ok' ? 'text-led-ok' : outcome.tone === 'warn' ? 'text-led-warn' : 'text-led-danger',
+                outcome.tone === 'ok' ? 'text-ok' : outcome.tone === 'warn' ? 'text-warn' : 'text-danger',
               )}
               role="status"
             >
@@ -401,13 +401,13 @@ export function AgentAlertDetail({
           </div>
           {/* Worded as what `force: true` actually does, not as a euphemism. */}
           {label && secondsToAuto !== null && secondsToAuto > 0 && (
-            <p className="mt-1.5 text-[11px] text-fg-subtle">{label} runs the pass now instead of waiting out that window.</p>
+            <p className="mt-1.5 text-[11px] text-faint">{label} runs the pass now instead of waiting out that window.</p>
           )}
           {label && exhausted && (
-            <p className="mt-1.5 text-[11px] text-fg-subtle">{label} starts a fresh pass and resets the attempt count.</p>
+            <p className="mt-1.5 text-[11px] text-faint">{label} starts a fresh pass and resets the attempt count.</p>
           )}
           {copyFailed && (
-            <p className="mt-1.5 text-[11px] text-led-danger">This browser refused the clipboard — select the text above instead.</p>
+            <p className="mt-1.5 text-[11px] text-danger">This browser refused the clipboard — select the text above instead.</p>
           )}
         </>
       )}

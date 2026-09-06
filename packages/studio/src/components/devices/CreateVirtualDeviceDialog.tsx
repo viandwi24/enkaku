@@ -117,7 +117,7 @@ export function CreateVirtualDeviceDialog({
               placeholder="test-device-1"
               aria-invalid={!!nameError}
             />
-            {nameError && <p className="text-meta text-led-danger">{nameError}</p>}
+            {nameError && <p className="text-meta text-danger">{nameError}</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -167,7 +167,7 @@ export function CreateVirtualDeviceDialog({
                 aria-invalid={!!memoryError}
               />
               {memoryError ? (
-                <p className="text-meta text-led-danger">{memoryError}</p>
+                <p className="text-meta text-danger">{memoryError}</p>
               ) : (
                 <p className="text-meta text-faint">API 37+ phone profiles require at least 4096 MB.</p>
               )}

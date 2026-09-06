@@ -592,7 +592,7 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
           className="h-8 max-w-xs text-[12.5px]"
           aria-label="Filter proxies"
         />
-        <span className="readout text-[11.5px] text-fg-muted">
+        <span className="readout text-[11.5px] text-dim">
           {rows.length} of {data?.rows.length ?? 0}
         </span>
         <div className="grow" />
@@ -633,7 +633,7 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
         once on the row an operator is looking at.
       */}
       {data?.statusError ? (
-        <p className="rounded-lg border border-led-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-fg-muted">
+        <p className="rounded-lg border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
           The farm did not report what these bridges are doing, so every state below reads <span className="readout">unknown</span> rather than a
           guess. The records are stored and can still be edited. <span className="readout">{data.statusError}</span>
         </p>
@@ -716,9 +716,9 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
                           measurement belongs on one line — and a storage key is
                           not a measurement: it can be 256 characters, and under
                           nowrap that is the column's min-content width. */}
-                      <div className="readout wrap-anywhere whitespace-normal text-[11px] text-fg-muted">{row.key}</div>
+                      <div className="readout wrap-anywhere whitespace-normal text-[11px] text-dim">{row.key}</div>
                       {/* At the narrowest width the "Listens on" column is gone, so the address comes here instead of disappearing. */}
-                      <div className="readout text-[11px] text-fg-muted @3xl:hidden">
+                      <div className="readout text-[11px] text-dim @3xl:hidden">
                         {row.record.listen.port === null ? 'no local port' : `${row.record.listen.bindHost}:${row.record.listen.port}`}
                       </div>
                     </TableCell>
@@ -736,7 +736,7 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
 
                     <TableCell className="hidden @3xl:table-cell">
                       {row.record.listen.port === null ? (
-                        <span className="text-[11.5px] text-fg-muted">Needs a local port</span>
+                        <span className="text-[11.5px] text-dim">Needs a local port</span>
                       ) : (
                         <span className="readout">
                           <Badge variant="outline">{LISTEN_PROTO_LABELS[row.record.listen.proto]}</Badge>{' '}
@@ -763,7 +763,7 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
                         <>
                           <Badge variant="outline">{PROXY_KIND_LABELS[row.record.upstream.proto]}</Badge> {row.record.upstream.host || '—'}
                           {row.record.upstream.port ? `:${row.record.upstream.port}` : ''}
-                          {row.record.upstream.username ? <span className="ml-1 text-fg-muted">as {row.record.upstream.username}</span> : null}
+                          {row.record.upstream.username ? <span className="ml-1 text-dim">as {row.record.upstream.username}</span> : null}
                         </>
                       )}
                     </TableCell>
@@ -788,12 +788,12 @@ export function CatalogueTab({ query, onQueryChange, onShowLogs }: { query: stri
                       </Badge>
                     </TableCell>
 
-                    <TableCell className="hidden text-fg-muted @6xl:table-cell">
+                    <TableCell className="hidden text-dim @6xl:table-cell">
                       <span className="line-clamp-2" title={row.record.notes}>
                         {row.record.notes || '—'}
                       </span>
                     </TableCell>
-                    <TableCell className="readout hidden text-[11.5px] whitespace-nowrap text-fg-muted @5xl:table-cell">{relativeTime(row.updatedAt)}</TableCell>
+                    <TableCell className="readout hidden text-[11.5px] whitespace-nowrap text-dim @5xl:table-cell">{relativeTime(row.updatedAt)}</TableCell>
 
                     <TableCell className="align-top">
                       {/* Wraps to as many lines as the box needs at the
@@ -1006,19 +1006,19 @@ function StateCell({
         that the table fits its container. The full sentence is on `title`.
       */}
       {refusal ? (
-        <div className="line-clamp-2 text-[11px] text-destructive" title={refusal.message}>
+        <div className="line-clamp-2 text-[11px] text-danger" title={refusal.message}>
           <span className="readout wrap-anywhere whitespace-normal">{refusal.code}</span> {refusal.message}
         </div>
       ) : status?.lastError ? (
-        <div className="line-clamp-2 text-[11px] text-fg-muted" title={status.lastError.message}>
+        <div className="line-clamp-2 text-[11px] text-dim" title={status.lastError.message}>
           <span className="readout wrap-anywhere whitespace-normal">{status.lastError.code}</span> {status.lastError.message}
         </div>
       ) : precondition ? (
-        <div className="line-clamp-2 text-[11px] text-fg-muted" title={precondition.message}>
+        <div className="line-clamp-2 text-[11px] text-dim" title={precondition.message}>
           {precondition.message}
         </div>
       ) : status && status.totalConnections > 0 ? (
-        <div className="line-clamp-2 text-[11px] text-fg-muted">
+        <div className="line-clamp-2 text-[11px] text-dim">
           {status.totalConnections} total · {fileSize(status.bytesUp)} up · {fileSize(status.bytesDown)} down
         </div>
       ) : null}
@@ -1049,7 +1049,7 @@ function ProbeCell({ probe }: { probe: ProxyProbeResult | null }) {
     <div className="min-w-0 space-y-0.5">
       <Badge variant={state === 'confirmed' ? 'default' : 'outline'}>{PROXY_PROBE_STATE_LABELS[state]}</Badge>
       {state === 'confirmed' && probe?.publicAddress ? (
-        <div className="readout wrap-anywhere text-[11px] text-fg-muted">
+        <div className="readout wrap-anywhere text-[11px] text-dim">
           {probe.publicAddress}
           {probe.latencyMs !== undefined ? ` · ${Math.round(probe.latencyMs)} ms` : ''}
         </div>
@@ -1058,11 +1058,11 @@ function ProbeCell({ probe }: { probe: ProxyProbeResult | null }) {
         // all (that case has no `error` to show), and never worded as a
         // pass: `line-clamp-2`, not `truncate`, for the same reason every
         // other reason column on this screen uses it.
-        <div className="line-clamp-2 text-[11px] text-fg-muted" title={probe.error}>
+        <div className="line-clamp-2 text-[11px] text-dim" title={probe.error}>
           {probe.error}
         </div>
       ) : null}
-      {checkedAt ? <div className="text-[11px] text-fg-muted">Checked {checkedAt}</div> : null}
+      {checkedAt ? <div className="text-[11px] text-dim">Checked {checkedAt}</div> : null}
     </div>
   )
 }
@@ -1268,10 +1268,10 @@ function ProxyDialog({
                   Fill fields
                 </Button>
               </div>
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">
+              <p className="text-[11.5px] leading-relaxed text-dim">
                 {PROXY_PASTE_SINGLE_HINT} Accepted: <span className="readout wrap-anywhere whitespace-normal">{PROXY_PASTE_FORMATS.join('  ·  ')}</span>
               </p>
-              {pasteError ? <p className="text-[11.5px] leading-relaxed text-destructive">Not read: {pasteError}.</p> : null}
+              {pasteError ? <p className="text-[11.5px] leading-relaxed text-danger">Not read: {pasteError}.</p> : null}
             </div>
           ) : null}
 
@@ -1291,10 +1291,10 @@ function ProxyDialog({
                 <span className="text-[13px]">Filed as</span>
                 <span className="readout wrap-anywhere min-w-0 whitespace-normal text-[12px]">{effectiveKey || `${PROXY_KEY_PREFIX}…`}</span>
               </div>
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">{keyWasSuffixed ? PROXY_KEY_COLLISION_HINT : PROXY_KEY_DERIVED_HINT}</p>
+              <p className="text-[11.5px] leading-relaxed text-dim">{keyWasSuffixed ? PROXY_KEY_COLLISION_HINT : PROXY_KEY_DERIVED_HINT}</p>
               <Collapsible>
                 <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-6 px-1 text-[11.5px] text-fg-muted">
+                  <Button variant="ghost" size="sm" className="h-6 px-1 text-[11.5px] text-dim">
                     Storage key
                   </Button>
                 </CollapsibleTrigger>
@@ -1306,12 +1306,12 @@ function ProxyDialog({
                     className="readout"
                     aria-label="Storage key"
                   />
-                  <p className="text-[11.5px] leading-relaxed text-fg-muted">{PROXY_KEY_HINT}</p>
+                  <p className="text-[11.5px] leading-relaxed text-dim">{PROXY_KEY_HINT}</p>
                   {local.keyTouched ? (
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-6 px-1 text-[11.5px] text-fg-muted"
+                      className="h-6 px-1 text-[11.5px] text-dim"
                       onClick={() => setLocal({ ...local, key: '', keyTouched: false })}
                     >
                       Go back to the key made from the name
@@ -1319,8 +1319,8 @@ function ProxyDialog({
                   ) : null}
                 </CollapsibleContent>
               </Collapsible>
-              {keyIsTaken ? <p className="text-[11.5px] leading-relaxed text-destructive">{PROXY_KEY_TAKEN_HINT}</p> : null}
-              {keyLooksWrong ? <p className="text-[11.5px] leading-relaxed text-fg-muted">{PROXY_KEY_HINT}</p> : null}
+              {keyIsTaken ? <p className="text-[11.5px] leading-relaxed text-danger">{PROXY_KEY_TAKEN_HINT}</p> : null}
+              {keyLooksWrong ? <p className="text-[11.5px] leading-relaxed text-dim">{PROXY_KEY_HINT}</p> : null}
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -1331,7 +1331,7 @@ function ProxyDialog({
               {/* Locked, and it says why — a change here would not rename this
                   record, it would create a second one and abandon this one's
                   credential row. */}
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">{PROXY_KEY_LOCKED_HINT}</p>
+              <p className="text-[11.5px] leading-relaxed text-dim">{PROXY_KEY_LOCKED_HINT}</p>
             </div>
           )}
 
@@ -1429,7 +1429,7 @@ function ProxyDialog({
               <Label htmlFor="pm-enabled" className="text-[13px] font-normal">
                 Enabled
               </Label>
-              <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
+              <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">
                 The farm starts this bridge when the plugin loads, and restores it after a core restart. Start and Stop on the row act now and leave
                 this alone — a bridge you stopped by hand comes back the next time the plugin does.
               </p>
@@ -1445,7 +1445,7 @@ function ProxyDialog({
               {/* Declared in `shared.ts` so the switch and anything else that
                   describes it cannot drift into two different promises about
                   what turning it on records. */}
-              <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">{LOG_DESTINATIONS_HINT}</p>
+              <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">{LOG_DESTINATIONS_HINT}</p>
             </div>
             <Switch id="pm-log-destinations" checked={local.logDestinations} onCheckedChange={(next) => setLocal({ ...local, logDestinations: next })} />
           </div>
@@ -1477,7 +1477,7 @@ function ProxyDialog({
               className="readout"
             />
           </div>
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="text-[11.5px] leading-relaxed text-dim">
             A bridge accepts at most this many connections at once ({DEFAULT_MAX_CONNECTIONS} by default — a bound on a runaway client, not a measured
             cliff), and a Stop gives whatever is still open this long before destroying it.
           </p>
@@ -1504,7 +1504,7 @@ function ProxyDialog({
               className="readout"
             />
           </div>
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="text-[11.5px] leading-relaxed text-dim">
             How many devices may hold this record at once through the Assignments tab. 0 means unlimited. Apply refuses over this number, naming the
             devices already holding it.
           </p>
@@ -1514,7 +1514,7 @@ function ProxyDialog({
               <Label htmlFor="pm-exclusive" className="text-[13px] font-normal">
                 Exclusive
               </Label>
-              <p className="mt-0.5 text-[11.5px] leading-relaxed text-fg-muted">
+              <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">
                 Refuses a second device on this record at the same time — the stricter sibling of Capacity, for a record meant to carry exactly one device.
               </p>
             </div>
@@ -1535,12 +1535,12 @@ function ProxyDialog({
           </div>
 
           {refusals.map((problem) => (
-            <p key={problem.code} className="text-[11.5px] leading-relaxed text-destructive">
+            <p key={problem.code} className="text-[11.5px] leading-relaxed text-danger">
               <span className="readout wrap-anywhere whitespace-normal">{problem.code}</span> — {problem.message}
             </p>
           ))}
           {preconditions.map((problem) => (
-            <p key={problem.code} className="text-[11.5px] leading-relaxed text-fg-muted">
+            <p key={problem.code} className="text-[11.5px] leading-relaxed text-dim">
               {problem.message}
             </p>
           ))}
@@ -1734,7 +1734,7 @@ function PasteDialog({
         <div className="@container space-y-3">
           <div className="flex flex-wrap gap-x-3 gap-y-1">
             {PROXY_PASTE_FORMATS.map((format) => (
-              <span key={format} className="readout wrap-anywhere min-w-0 whitespace-normal text-[11.5px] text-fg-muted">
+              <span key={format} className="readout wrap-anywhere min-w-0 whitespace-normal text-[11.5px] text-dim">
                 {format}
               </span>
             ))}
@@ -1760,7 +1760,7 @@ function PasteDialog({
           />
 
           {/* The rule the colon form is read by, where it is read. */}
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">{PROXY_PASTE_RULE}</p>
+          <p className="text-[11.5px] leading-relaxed text-dim">{PROXY_PASTE_RULE}</p>
 
           <div className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-3 gap-y-2">
             <Label htmlFor="pm-paste-listen" className="text-[13px] font-normal">
@@ -1798,7 +1798,7 @@ function PasteDialog({
 
           {plan.length > 0 ? (
             <div className="space-y-2">
-              <p className="text-[11.5px] leading-relaxed text-fg-muted">{PROXY_PASTE_PREVIEW_NOTE}</p>
+              <p className="text-[11.5px] leading-relaxed text-dim">{PROXY_PASTE_PREVIEW_NOTE}</p>
               <ul className="space-y-2">
                 {plan.map((row) => (
                   <li key={row.line.line} className="min-w-0 space-y-1.5 rounded-md border border-border px-3 py-2">
@@ -1810,13 +1810,13 @@ function PasteDialog({
                             {row.proxy.host}:{row.proxy.port}
                           </span>
                           {row.proxy.username ? (
-                            <span className="readout wrap-anywhere min-w-0 whitespace-normal text-[11.5px] text-fg-muted">as {row.proxy.username}</span>
+                            <span className="readout wrap-anywhere min-w-0 whitespace-normal text-[11.5px] text-dim">as {row.proxy.username}</span>
                           ) : (
-                            <span className="text-[11.5px] text-fg-muted">no account</span>
+                            <span className="text-[11.5px] text-dim">no account</span>
                           )}
                           {/* Never the password. Whether there is one is a fact
                               worth showing; the characters are not, anywhere. */}
-                          <span className="text-[11.5px] text-fg-muted">
+                          <span className="text-[11.5px] text-dim">
                             {row.proxy.password.length > 0 ? (
                               <>
                                 password <span className="readout">{PASSWORD_MASK}</span> saved with the record
@@ -1825,11 +1825,11 @@ function PasteDialog({
                               'no password'
                             )}
                           </span>
-                          {row.proxy.schemeGiven ? null : <span className="text-[11.5px] text-fg-muted">· no scheme on the line</span>}
+                          {row.proxy.schemeGiven ? null : <span className="text-[11.5px] text-dim">· no scheme on the line</span>}
                         </div>
 
                         <div className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5">
-                          <Label htmlFor={`pm-paste-name-${row.line.line}`} className="text-[11.5px] font-normal text-fg-muted">
+                          <Label htmlFor={`pm-paste-name-${row.line.line}`} className="text-[11.5px] font-normal text-dim">
                             Name
                           </Label>
                           <Input
@@ -1838,7 +1838,7 @@ function PasteDialog({
                             onChange={(e) => setEdits((current) => ({ ...current, [row.line.line]: { ...current[row.line.line], name: e.target.value } }))}
                             className="h-7 text-[12.5px]"
                           />
-                          <Label htmlFor={`pm-paste-port-${row.line.line}`} className="text-[11.5px] font-normal text-fg-muted">
+                          <Label htmlFor={`pm-paste-port-${row.line.line}`} className="text-[11.5px] font-normal text-dim">
                             Local port
                           </Label>
                           <Input
@@ -1855,15 +1855,15 @@ function PasteDialog({
                           />
                         </div>
 
-                        <div className="readout wrap-anywhere min-w-0 whitespace-normal text-[11px] text-fg-muted">{row.key}</div>
+                        <div className="readout wrap-anywhere min-w-0 whitespace-normal text-[11px] text-dim">{row.key}</div>
                         {row.portClash ? (
-                          <p className="text-[11px] leading-relaxed text-fg-muted">
+                          <p className="text-[11px] leading-relaxed text-dim">
                             Another record — or another line above — already names this local port. Both are saved; only one of them can bind it, and the
                             second will fail to start with that reason on its own row.
                           </p>
                         ) : null}
                         {row.refusals.map((problem) => (
-                          <p key={problem.code} className="text-[11px] leading-relaxed text-destructive">
+                          <p key={problem.code} className="text-[11px] leading-relaxed text-danger">
                             <span className="readout wrap-anywhere whitespace-normal">{problem.code}</span> — {problem.message} This line is not created.
                           </p>
                         ))}
@@ -1871,13 +1871,13 @@ function PasteDialog({
                     ) : (
                       <>
                         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                          <span className="text-[11.5px] text-fg-muted">Line {row.line.line}</span>
+                          <span className="text-[11.5px] text-dim">Line {row.line.line}</span>
                           {/* Masked before it reached this component — see
                               `maskProxyLine`. Shown at all because a line that
                               cannot be read has to be findable in the box. */}
                           <span className="readout wrap-anywhere min-w-0 whitespace-normal text-[12px]">{row.line.masked}</span>
                         </div>
-                        <p className="text-[11px] leading-relaxed text-destructive">Not read: {row.reason}.</p>
+                        <p className="text-[11px] leading-relaxed text-danger">Not read: {row.reason}.</p>
                       </>
                     )}
                   </li>
@@ -1894,7 +1894,7 @@ function PasteDialog({
               {report
                 .filter((r) => r.error !== null)
                 .map((r) => (
-                  <p key={r.line} className="text-[11px] leading-relaxed text-destructive">
+                  <p key={r.line} className="text-[11px] leading-relaxed text-danger">
                     Line {r.line} — <span className="readout wrap-anywhere whitespace-normal">{r.error}</span>
                   </p>
                 ))}
@@ -2194,13 +2194,13 @@ function GenerateDialog({
             <Input id="pm-gen-count" type="number" min={1} max={255} value={count} onChange={(e) => setCount(Number.parseInt(e.target.value, 10) || 1)} className="readout" />
           </div>
 
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="text-[11.5px] leading-relaxed text-dim">
             “{'{n}'}” in the label pattern becomes 1, 2, 3, … for each row; the local port and the bind address's last octet count up the same way from what
             you typed above. Each row is a plain “direct” record — what its bind address maps to on this host (a NIC, a route, a link) is set up outside
             this screen, the same as for one typed by hand.
           </p>
 
-          {range.error ? <p className="text-[11.5px] leading-relaxed text-destructive">{range.error}</p> : null}
+          {range.error ? <p className="text-[11.5px] leading-relaxed text-danger">{range.error}</p> : null}
 
           {range.rows.length > 0 ? (
             <div className="overflow-x-auto rounded-lg border border-border">
@@ -2223,7 +2223,7 @@ function GenerateDialog({
                           className="h-7 text-[12.5px]"
                           aria-label={`Name, row ${row.n}`}
                         />
-                        <div className="readout wrap-anywhere whitespace-normal text-[11px] text-fg-muted">{row.key}</div>
+                        <div className="readout wrap-anywhere whitespace-normal text-[11px] text-dim">{row.key}</div>
                       </TableCell>
                       <TableCell className="min-w-0">
                         <Input
@@ -2238,7 +2238,7 @@ function GenerateDialog({
                           className="readout h-7 text-[12.5px]"
                           aria-label={`Local port, row ${row.n}`}
                         />
-                        {row.portClash ? <p className="text-[11px] leading-relaxed text-fg-muted">Already claimed by another record or an earlier row.</p> : null}
+                        {row.portClash ? <p className="text-[11px] leading-relaxed text-dim">Already claimed by another record or an earlier row.</p> : null}
                       </TableCell>
                       <TableCell className="min-w-0">
                         <Input
@@ -2248,7 +2248,7 @@ function GenerateDialog({
                           aria-label={`Bind address, row ${row.n}`}
                         />
                       </TableCell>
-                      <TableCell className="min-w-0 text-[11px] text-destructive">
+                      <TableCell className="min-w-0 text-[11px] text-danger">
                         {row.refusals.map((problem) => (
                           <p key={problem.code} className="leading-relaxed">
                             <span className="readout wrap-anywhere whitespace-normal">{problem.code}</span> — not created
@@ -2270,7 +2270,7 @@ function GenerateDialog({
               {report
                 .filter((r) => r.error !== null)
                 .map((r) => (
-                  <p key={r.n} className="text-[11px] leading-relaxed text-destructive">
+                  <p key={r.n} className="text-[11px] leading-relaxed text-danger">
                     Row {r.n} — <span className="readout wrap-anywhere whitespace-normal">{r.error}</span>
                   </p>
                 ))}

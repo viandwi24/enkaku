@@ -80,8 +80,8 @@ export function AgentAlertChip({
   const label = agent === 'failed' ? 'Agent failed' : agent === 'outdated' ? 'Agent outdated' : 'Needs VPN consent'
   const tone =
     agent === 'failed'
-      ? 'text-led-danger border-led-danger/40 bg-led-danger/10 hover:bg-led-danger/20'
-      : 'text-led-warn border-led-warn/35 bg-led-warn/10 hover:bg-led-warn/20'
+      ? 'text-danger border-danger/40 bg-danger/10 hover:bg-danger/20'
+      : 'text-warn border-warn/35 bg-warn/10 hover:bg-warn/20'
 
   return (
     <Popover>

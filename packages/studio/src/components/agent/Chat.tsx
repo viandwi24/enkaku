@@ -360,13 +360,13 @@ export function Chat({
 
           {run && ['succeeded', 'failed', 'cancelled'].includes(run.status) && (
             <div className="mx-auto max-w-[85%] space-y-1.5 text-center">
-              <p className="text-[11.5px] text-fg-subtle">
+              <p className="text-[11.5px] text-faint">
                 run {run.status}
                 {run.stopReason ? ` — ${run.stopReason}` : ''}
                 {run.errorClass ? ` (${run.errorClass})` : ''}
               </p>
               {run.usage && (
-                <div className="inline-block rounded-md border bg-surface px-3 py-1.5 text-left">
+                <div className="inline-block rounded-md border bg-panel px-3 py-1.5 text-left">
                   <UsageBadge usage={run.usage} compact />
                 </div>
               )}
@@ -375,7 +375,7 @@ export function Chat({
 
           {run && directChildren.length > 0 && (
             <div className="mx-auto max-w-[85%] space-y-1.5">
-              <p className="text-[11px] font-medium text-fg-subtle">Sub-agents ({directChildren.length})</p>
+              <p className="text-[11px] font-medium text-faint">Sub-agents ({directChildren.length})</p>
               {directChildren.map((n) => (
                 <div key={n.runId} className="space-y-1.5">
                   <ChildRunCard node={n} expanded={expandedChildId === n.runId} onToggle={() => setExpandedChildId((id) => (id === n.runId ? null : n.runId))} />
@@ -396,10 +396,10 @@ export function Chat({
           leaving the UI indistinguishable from a slow one. `Retry` re-sends the exact last user
           message via the same non-awaited `sendMessage` path `submit` uses. */}
       {streamError && (
-        <div className="mx-2 mb-2 flex items-start justify-between gap-3 rounded-md border border-led-danger/30 bg-led-danger/10 px-3 py-2 text-[12.5px]">
+        <div className="mx-2 mb-2 flex items-start justify-between gap-3 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-[12.5px]">
           <div>
-            <p className="font-medium text-led-danger">The message failed to send</p>
-            <p className="text-fg-muted">{streamError}</p>
+            <p className="font-medium text-danger">The message failed to send</p>
+            <p className="text-dim">{streamError}</p>
           </div>
           {lastUserMessage && (
             <Button variant="outline" size="sm" onClick={retry} className="shrink-0">
@@ -409,7 +409,7 @@ export function Chat({
         </div>
       )}
       {backgroundError && !streamError && (
-        <p className="mx-2 mb-1.5 text-[11px] text-fg-subtle">{backgroundError}</p>
+        <p className="mx-2 mb-1.5 text-[11px] text-faint">{backgroundError}</p>
       )}
 
       <PromptInputProvider>
@@ -491,7 +491,7 @@ function SlashCommandMenu({ commands }: { commands: AgentCommand[] }) {
   const filtered = commands.filter((c) => c.name.toLowerCase().startsWith(query))
   if (filtered.length === 0) return null
   return (
-    <div className="absolute bottom-full left-0 z-10 mb-1 w-72 overflow-hidden rounded-md border bg-popover shadow-md">
+    <div className="absolute bottom-full left-0 z-10 mb-1 w-72 overflow-hidden rounded-md border bg-panel-2 shadow-md">
       <PromptInputCommand>
         <PromptInputCommandList>
           <PromptInputCommandEmpty>No matching command.</PromptInputCommandEmpty>
@@ -499,7 +499,7 @@ function SlashCommandMenu({ commands }: { commands: AgentCommand[] }) {
             {filtered.map((c) => (
               <PromptInputCommandItem key={c.name} value={c.name} onSelect={() => controller.textInput.setInput(`/${c.name} `)}>
                 <span className="readout shrink-0">/{c.name}</span>
-                <span className="truncate text-fg-subtle">{c.description}</span>
+                <span className="truncate text-faint">{c.description}</span>
               </PromptInputCommandItem>
             ))}
           </PromptInputCommandGroup>
@@ -531,7 +531,7 @@ function AttachmentStrip() {
             type="button"
             onClick={() => attachments.remove(f.id)}
             aria-label="Remove attachment"
-            className="absolute -right-1.5 -top-1.5 flex size-4.5 items-center justify-center rounded-full bg-fg text-bg"
+            className="absolute -right-1.5 -top-1.5 flex size-4.5 items-center justify-center rounded-full bg-text text-bg"
           >
             <XIcon className="size-3" aria-hidden />
           </button>
@@ -552,7 +552,7 @@ function ChatMessage({
 }) {
   if (message.role === 'system') {
     const text = message.parts.filter((p) => p.type === 'text').map((p) => p.text).join(' ')
-    return <p className="text-center text-[12px] italic text-fg-subtle">{text}</p>
+    return <p className="text-center text-[12px] italic text-faint">{text}</p>
   }
   return (
     <Message from={message.role}>

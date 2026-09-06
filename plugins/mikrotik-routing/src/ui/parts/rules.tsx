@@ -24,23 +24,23 @@ function MarkerCell({ row }: { row: RuleRow }) {
     return (
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge variant="secondary">{row.marker.groupId}</Badge>
-        <span className="text-[11px] text-fg-muted">{row.marker.endpointKey}</span>
+        <span className="text-[11px] text-dim">{row.marker.endpointKey}</span>
       </div>
     )
   }
   if (row.markerIssue) {
     return (
-      <span className="text-[11px] text-led-warn" title={row.markerIssue}>
+      <span className="text-[11px] text-warn" title={row.markerIssue}>
         {row.markerIssue}
       </span>
     )
   }
-  return <span className="text-fg-muted">—</span>
+  return <span className="text-dim">—</span>
 }
 
 function RuleTable({ rows, foreign }: { rows: RuleRow[]; foreign: boolean }) {
   if (rows.length === 0) {
-    return <p className="px-1 text-[12px] text-fg-muted">{foreign ? 'No foreign rules on this router.' : 'No managed rules yet — nothing has ever written one.'}</p>
+    return <p className="px-1 text-[12px] text-dim">{foreign ? 'No foreign rules on this router.' : 'No managed rules yet — nothing has ever written one.'}</p>
   }
   return (
     <Table>
@@ -55,11 +55,11 @@ function RuleTable({ rows, foreign }: { rows: RuleRow[]; foreign: boolean }) {
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
-          <TableRow key={row.id} className={foreign ? 'text-fg-muted opacity-70' : undefined}>
+          <TableRow key={row.id} className={foreign ? 'text-dim opacity-70' : undefined}>
             <TableCell className="max-w-xs truncate font-mono text-[12px]" title={row.comment}>
               {row.comment || '—'}
               {row.isLocalException && (
-                <Badge variant="outline" className="ml-2 text-led-warn">
+                <Badge variant="outline" className="ml-2 text-warn">
                   local exception (§3.2) — never touched
                 </Badge>
               )}
@@ -88,7 +88,7 @@ export function RulesTab() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
-        <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">
+        <p className="max-w-prose text-[12px] leading-relaxed text-dim">
           Every rule on the router, split by whether its comment carries this plugin's own marker (§4.2). Foreign rows are greyed and have no action here — this plugin only ever writes a comment starting with{' '}
           <span className="font-mono">enkaku:mikrotik-routing:</span>.
         </p>

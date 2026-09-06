@@ -178,15 +178,15 @@ export function NodePanel({
             <section className="min-w-0 space-y-1.5">
               <p className="rack-label">input</p>
               {lastRun === 'loading' ? (
-                <p className="px-2 py-3 text-[11.5px] text-fg-subtle">Loading…</p>
+                <p className="px-2 py-3 text-[11.5px] text-faint">Loading…</p>
               ) : !lastRun ? (
-                <p className="px-2 py-3 text-[11.5px] text-fg-subtle">This workflow has never run — save and run it once to see real data here.</p>
+                <p className="px-2 py-3 text-[11.5px] text-faint">This workflow has never run — save and run it once to see real data here.</p>
               ) : !nodeRun || nodeRun.input.state === 'none' ? (
-                <p className="px-2 py-3 text-[11.5px] text-fg-subtle">This node has not run in the most recent run.</p>
+                <p className="px-2 py-3 text-[11.5px] text-faint">This node has not run in the most recent run.</p>
               ) : nodeRun.input.state === 'dropped' ? (
-                <p className="px-2 py-3 text-[11.5px] text-led-warn">The input was over the 256 KB cap and was not recorded.</p>
+                <p className="px-2 py-3 text-[11.5px] text-warn">The input was over the 256 KB cap and was not recorded.</p>
               ) : nodeRun.input.state === 'empty' ? (
-                <p className="px-2 py-3 text-[11.5px] text-fg-subtle">This node ran and its input was empty.</p>
+                <p className="px-2 py-3 text-[11.5px] text-faint">This node ran and its input was empty.</p>
               ) : (
                 <DataTree
                   value={inputValue}
@@ -201,7 +201,7 @@ export function NodePanel({
               <p className="rack-label">parameters</p>
 
               <div className="space-y-1">
-                <Label className="text-[11.5px] font-normal text-fg-muted">Title</Label>
+                <Label className="text-[11.5px] font-normal text-dim">Title</Label>
                 <Input className="h-8 text-[13px]" value={node.title} onChange={(e) => onChange({ title: e.target.value })} aria-label="Node title" />
               </div>
 
@@ -214,8 +214,8 @@ export function NodePanel({
                       data-severity={f.severity}
                       className={
                         f.severity === 'error'
-                          ? 'rounded border border-led-danger/30 bg-led-danger/5 px-2 py-1 text-[11.5px] text-led-danger'
-                          : 'rounded border border-led-warn/30 bg-led-warn/5 px-2 py-1 text-[11.5px] text-led-warn'
+                          ? 'rounded border border-danger/30 bg-danger/5 px-2 py-1 text-[11.5px] text-danger'
+                          : 'rounded border border-warn/30 bg-warn/5 px-2 py-1 text-[11.5px] text-warn'
                       }
                     >
                       {f.message}
@@ -225,7 +225,7 @@ export function NodePanel({
               )}
 
               {versionNotice && (
-                <div className="flex flex-wrap items-center gap-2 rounded border border-led-warn/30 bg-led-warn/5 px-2 py-1.5 text-[11.5px] text-led-warn">
+                <div className="flex flex-wrap items-center gap-2 rounded border border-warn/30 bg-warn/5 px-2 py-1.5 text-[11.5px] text-warn">
                   <span>
                     {versionNotice.activeVersion} is activated; this node uses {versionNotice.pinnedVersion}.
                   </span>
@@ -255,7 +255,7 @@ export function NodePanel({
                     <div key={key} className="space-y-1">
                       <p className="text-[12px] font-medium">
                         {typeof fieldSchema.title === 'string' ? fieldSchema.title : key}
-                        {required && <span className="ml-1 text-led-warn">*</span>}
+                        {required && <span className="ml-1 text-warn">*</span>}
                       </p>
                       <ExprField
                         value={node.params[key]}
@@ -307,7 +307,7 @@ export function NodePanel({
                       <p className="rack-label">case {i + 1}</p>
                       {node.mode === 'weighted' ? (
                         <div className="space-y-1">
-                          <Label className="text-[11.5px] font-normal text-fg-muted">Weight</Label>
+                          <Label className="text-[11.5px] font-normal text-dim">Weight</Label>
                           <Input
                             type="number"
                             min={0}
@@ -365,7 +365,7 @@ export function NodePanel({
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-[11.5px] font-normal text-fg-muted">Maximum wait (ms)</Label>
+                    <Label className="text-[11.5px] font-normal text-dim">Maximum wait (ms)</Label>
                     <Input
                       type="number"
                       className="h-8 text-[12.5px]"
@@ -406,15 +406,15 @@ export function NodePanel({
             <section className="min-w-0 space-y-1.5">
               <p className="rack-label">output</p>
               {lastRun === 'loading' ? (
-                <p className="px-2 py-3 text-[11.5px] text-fg-subtle">Loading…</p>
+                <p className="px-2 py-3 text-[11.5px] text-faint">Loading…</p>
               ) : !lastRun ? (
-                <p className="px-2 py-3 text-[11.5px] text-fg-subtle">This workflow has never run.</p>
+                <p className="px-2 py-3 text-[11.5px] text-faint">This workflow has never run.</p>
               ) : !nodeRun || nodeRun.output.state === 'none' ? (
-                <p className="px-2 py-3 text-[11.5px] text-fg-subtle">This node has not run in the most recent run.</p>
+                <p className="px-2 py-3 text-[11.5px] text-faint">This node has not run in the most recent run.</p>
               ) : nodeRun.output.state === 'dropped' ? (
-                <p className="px-2 py-3 text-[11.5px] text-led-warn">The output was over the 256 KB cap and was not recorded.</p>
+                <p className="px-2 py-3 text-[11.5px] text-warn">The output was over the 256 KB cap and was not recorded.</p>
               ) : nodeRun.output.state === 'empty' ? (
-                <p className="px-2 py-3 text-[11.5px] text-fg-subtle">This node ran and returned nothing.</p>
+                <p className="px-2 py-3 text-[11.5px] text-faint">This node ran and returned nothing.</p>
               ) : (
                 <>
                   <DataView value={outputValue} />
@@ -486,7 +486,7 @@ function RunAndPin({
     <div className="space-y-2 border-t pt-2.5">
       <p className="rack-label">run this node</p>
       {!workflowName ? (
-        <p className="text-[11.5px] text-fg-subtle">Save the workflow first.</p>
+        <p className="text-[11.5px] text-faint">Save the workflow first.</p>
       ) : (
         <>
           <DevicePicker state={target} forceExpanded className="rounded-md border" />

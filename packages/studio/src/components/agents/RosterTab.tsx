@@ -69,7 +69,7 @@ function SpendCell({ agentId }: { agentId: string }) {
     }
   }, [agentId])
 
-  if (costUsd === undefined) return <span className="readout text-fg-subtle">…</span>
+  if (costUsd === undefined) return <span className="readout text-faint">…</span>
   return <span className="readout">{formatUsd(costUsd)}</span>
 }
 
@@ -185,7 +185,7 @@ export function RosterTab({
   return (
     <>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3 px-5 pt-4">
-        <p className="max-w-xl text-[12.5px] leading-relaxed text-fg-muted">
+        <p className="max-w-xl text-[12.5px] leading-relaxed text-dim">
           Stored, editable AI agents — model, tools, and what they may touch.
         </p>
         <Button
@@ -233,19 +233,19 @@ export function RosterTab({
                       <Link href={`/agents/detail?id=${a.id}`} className="hover:text-accent">
                         {a.name}
                       </Link>
-                      <p className="readout mt-0.5 text-[11px] text-fg-subtle">/agents/{a.slug}/</p>
+                      <p className="readout mt-0.5 text-[11px] text-faint">/agents/{a.slug}/</p>
                     </TableCell>
-                    <TableCell className="readout text-[12.5px] text-fg-muted">{a.model ?? <span className="italic text-fg-subtle">farm default</span>}</TableCell>
+                    <TableCell className="readout text-[12.5px] text-dim">{a.model ?? <span className="italic text-faint">farm default</span>}</TableCell>
                     <TableCell>
                       <Badge variant={a.enabled ? 'secondary' : 'outline'}>{a.enabled ? 'enabled' : 'disabled'}</Badge>
                     </TableCell>
-                    <TableCell className="text-[12.5px] text-fg-muted">
+                    <TableCell className="text-[12.5px] text-dim">
                       {a.deviceGrants.length === 0 ? 'All devices (no restriction)' : `${a.deviceGrants.length} device${a.deviceGrants.length === 1 ? '' : 's'}`}
                     </TableCell>
-                    <TableCell className="text-[12.5px] text-fg-muted">
+                    <TableCell className="text-[12.5px] text-dim">
                       <SpendCell agentId={a.id} />
                     </TableCell>
-                    <TableCell className="readout text-[11.5px] text-fg-muted">{relativeTime(a.updatedAt)}</TableCell>
+                    <TableCell className="readout text-[11.5px] text-dim">{relativeTime(a.updatedAt)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Link href={`/agents/detail?id=${a.id}`} className="text-[12.5px] text-accent hover:underline">
@@ -265,7 +265,7 @@ export function RosterTab({
                               <CopyIcon className="size-3.5" aria-hidden />
                               {isPending('duplicate-' + a.id) ? 'Duplicating…' : 'Duplicate'}
                             </DropdownMenuItem>
-                            <DropdownMenuItem className="text-led-danger focus:text-led-danger" onSelect={() => openDelete(a)}>
+                            <DropdownMenuItem className="text-danger focus:text-danger" onSelect={() => openDelete(a)}>
                               <TrashIcon className="size-3.5" aria-hidden />
                               Delete…
                             </DropdownMenuItem>
@@ -315,7 +315,7 @@ export function RosterTab({
                 }}
                 placeholder="triage-bot"
               />
-              <p className="text-[11.5px] text-fg-subtle">Its workspace home: /agents/{slug || '…'}/</p>
+              <p className="text-[11.5px] text-faint">Its workspace home: /agents/{slug || '…'}/</p>
             </div>
             <div className="flex justify-end gap-2 border-t pt-3">
               <Button variant="ghost" onClick={() => setOpen(false)}>

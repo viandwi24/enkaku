@@ -464,15 +464,15 @@ export function FlowEditor({
         />
         <div className="flex-1" />
         {validation.findings.length > 0 && (
-          <span className="readout text-[11.5px] text-fg-muted">
+          <span className="readout text-[11.5px] text-dim">
             {errorCount > 0 ? (
-              <span className="text-led-danger">
+              <span className="text-danger">
                 {errorCount} error{errorCount === 1 ? '' : 's'}
               </span>
             ) : null}
             {errorCount > 0 && warningCount > 0 ? ', ' : ''}
             {warningCount > 0 ? (
-              <span className="text-led-warn">
+              <span className="text-warn">
                 {warningCount} warning{warningCount === 1 ? '' : 's'}
               </span>
             ) : null}
@@ -544,8 +544,8 @@ export function FlowEditor({
               data-severity={f.severity}
               className={
                 f.severity === 'error'
-                  ? 'rounded border border-led-danger/30 bg-led-danger/5 px-2.5 py-1.5 text-[12px] text-led-danger'
-                  : 'rounded border border-led-warn/30 bg-led-warn/5 px-2.5 py-1.5 text-[12px] text-led-warn'
+                  ? 'rounded border border-danger/30 bg-danger/5 px-2.5 py-1.5 text-[12px] text-danger'
+                  : 'rounded border border-warn/30 bg-warn/5 px-2.5 py-1.5 text-[12px] text-warn'
               }
             >
               {f.message}
@@ -645,7 +645,7 @@ export function FlowEditor({
 function WorkflowMetaForm({ doc, dispatch }: { doc: WorkflowDoc; dispatch: UseHistoryResult['dispatch'] }) {
   const [expanded, setExpanded] = useState(false)
   return (
-    <section className="space-y-2 rounded-lg border bg-surface p-3">
+    <section className="space-y-2 rounded-lg border bg-panel p-3">
       <div className="flex flex-wrap items-center gap-3">
         {/*
           One editable name, not two (owner, 2026-09-05: "kenapa ada nama dan
@@ -657,7 +657,7 @@ function WorkflowMetaForm({ doc, dispatch }: { doc: WorkflowDoc; dispatch: UseHi
           kind of edit a text input invites.
         */}
         <div className="min-w-40 flex-1 space-y-1">
-          <Label className="text-[11.5px] font-normal text-fg-muted">Name</Label>
+          <Label className="text-[11.5px] font-normal text-dim">Name</Label>
           <Input
             className="h-8 text-[12.5px]"
             value={doc.title}
@@ -666,13 +666,13 @@ function WorkflowMetaForm({ doc, dispatch }: { doc: WorkflowDoc; dispatch: UseHi
           />
         </div>
         <div className="min-w-40 flex-1 space-y-1">
-          <Label className="text-[11.5px] font-normal text-fg-muted">Identifier</Label>
-          <p className="readout flex h-8 items-center truncate rounded-md border bg-panel px-2.5 text-[12.5px] text-fg-muted" title={`${doc.name} — used by URLs, the API and schedules`}>
+          <Label className="text-[11.5px] font-normal text-dim">Identifier</Label>
+          <p className="readout flex h-8 items-center truncate rounded-md border bg-panel px-2.5 text-[12.5px] text-dim" title={`${doc.name} — used by URLs, the API and schedules`}>
             {doc.name}
           </p>
         </div>
         <div className="w-28 space-y-1">
-          <Label className="text-[11.5px] font-normal text-fg-muted">Step budget</Label>
+          <Label className="text-[11.5px] font-normal text-dim">Step budget</Label>
           <Input
             type="number"
             min={1}
@@ -690,7 +690,7 @@ function WorkflowMetaForm({ doc, dispatch }: { doc: WorkflowDoc; dispatch: UseHi
       {expanded && (
         <div className="space-y-3 border-t pt-2.5">
           <div className="space-y-1">
-            <Label className="text-[11.5px] font-normal text-fg-muted">Description</Label>
+            <Label className="text-[11.5px] font-normal text-dim">Description</Label>
             <Textarea
               className="min-h-14 text-[12.5px]"
               value={doc.description}

@@ -69,10 +69,10 @@ const HEALTH_LABEL: Record<NetworkHealth, string> = {
   unknown: 'unknown',
 }
 const HEALTH_TONE: Record<NetworkHealth, string> = {
-  ok: 'text-led-ok border-led-ok/35 bg-led-ok/10',
-  unverified: 'text-led-warn border-led-warn/35 bg-led-warn/10',
-  degraded: 'text-led-danger border-led-danger/40 bg-led-danger/10',
-  unknown: 'text-fg-subtle border-line bg-transparent',
+  ok: 'text-ok border-ok/35 bg-ok/10',
+  unverified: 'text-warn border-warn/35 bg-warn/10',
+  degraded: 'text-danger border-danger/40 bg-danger/10',
+  unknown: 'text-faint border-line bg-transparent',
 }
 
 function HealthBadge({ health }: { health: NetworkHealth }) {
@@ -118,17 +118,17 @@ const CHECK_STATE_LABEL: Record<RouteCheckState, string> = {
 }
 
 const CHECK_STATE_DOT: Record<RouteCheckState, string> = {
-  pass: 'bg-led-ok',
-  fail: 'bg-led-danger',
-  skip: 'bg-fg-subtle',
-  unknown: 'bg-led-warn',
+  pass: 'bg-ok',
+  fail: 'bg-danger',
+  skip: 'bg-faint',
+  unknown: 'bg-warn',
 }
 
 const CHECK_STATE_TEXT: Record<RouteCheckState, string> = {
-  pass: 'text-led-ok',
-  fail: 'text-led-danger',
-  skip: 'text-fg-subtle',
-  unknown: 'text-led-warn',
+  pass: 'text-ok',
+  fail: 'text-danger',
+  skip: 'text-faint',
+  unknown: 'text-warn',
 }
 
 /** Renders a `GeoObservation` for the exit history list — whatever the provider could attribute, `—` for what it could not. */
@@ -149,7 +149,7 @@ function CheckRow({ check }: { check: RouteCheck }) {
       <div className="flex min-w-0 items-start gap-2">
         <span className={cn('mt-1 size-1.5 shrink-0 rounded-full', CHECK_STATE_DOT[check.state])} aria-hidden />
         <div className="min-w-0">
-          <div className="text-[12px] text-fg">{CHECK_LABEL[check.id]}</div>
+          <div className="text-[12px] text-text">{CHECK_LABEL[check.id]}</div>
           {/* `wrap-anywhere`, not `break-words`: a check detail is server text
               and routinely carries an unbreakable token (`ENKAKU_NETWORK_PROBE_DNS_ZONE`,
               `packages/probe-server/README.md`). Only `overflow-wrap: anywhere`
@@ -157,7 +157,7 @@ function CheckRow({ check }: { check: RouteCheck }) {
               visible line but still reports the long word as the minimum, which
               is what forced this whole panel to 327px and put a horizontal
               scrollbar under the popup. */}
-          {check.detail && <div className="wrap-anywhere text-[11px] leading-relaxed text-fg-muted">{check.detail}</div>}
+          {check.detail && <div className="wrap-anywhere text-[11px] leading-relaxed text-dim">{check.detail}</div>}
         </div>
       </div>
       <span className={cn('shrink-0 text-[11px] font-medium whitespace-nowrap', CHECK_STATE_TEXT[check.state])}>
@@ -336,11 +336,11 @@ function describeRecovery(recovery: NetworkRecoveryStatus | null, nowMs: number)
 }
 
 const TOGGLE_TONE_CLASS: Record<ToggleTone, string> = {
-  off: 'text-fg-muted',
-  ok: 'text-led-ok',
-  asked: 'text-fg',
-  warn: 'text-led-warn',
-  danger: 'text-led-danger',
+  off: 'text-dim',
+  ok: 'text-ok',
+  asked: 'text-text',
+  warn: 'text-warn',
+  danger: 'text-danger',
 }
 
 /**
@@ -369,7 +369,7 @@ function setByReadout(setBy: NetworkStatus['setBy'], now: number): string {
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <dt className="text-[12px] text-fg-subtle">{label}</dt>
+      <dt className="text-[12px] text-faint">{label}</dt>
       <dd className="readout min-w-0 truncate text-[12px]" title={value}>
         {value}
       </dd>
@@ -500,7 +500,7 @@ export function NetworkRouteForm({
        * visible control had no way to tell the feature had one. Disabled
        * (never hidden) when there is nothing saved to switch on.
        */}
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-surface p-3.5">
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-panel p-3.5">
         <Switch
           checked={toggle.checked}
           disabled={!canUse || !status.config || toggling}
@@ -510,16 +510,16 @@ export function NetworkRouteForm({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className={cn('text-[13px] font-medium', TOGGLE_TONE_CLASS[toggle.tone])}>{toggle.title}</span>
-            {toggling && <span className="text-[11.5px] text-fg-subtle">Working…</span>}
+            {toggling && <span className="text-[11.5px] text-faint">Working…</span>}
           </div>
           {/* The note embeds server text (`setting.detail`, `lastError.message`), so
               it needs the same `wrap-anywhere` as the check rows below. */}
-          <p className="mt-0.5 wrap-anywhere text-[11.5px] leading-relaxed text-fg-muted">{toggle.note}</p>
+          <p className="mt-0.5 wrap-anywhere text-[11.5px] leading-relaxed text-dim">{toggle.note}</p>
           {/* Plan 90 §3.7 rule 5, fixes F20 — an attempt count and a live
               countdown instead of the static "not routed" sentence this
               banner showed before this. */}
           {recoveryNote && (
-            <p className="mt-1 flex flex-wrap items-center gap-2 text-[11.5px] text-led-warn">
+            <p className="mt-1 flex flex-wrap items-center gap-2 text-[11.5px] text-warn">
               {recoveryNote}
               <Button
                 type="button"
@@ -618,7 +618,7 @@ export function NetworkRouteForm({
           </ChoiceGroup>
 
           {mode === 'off' && (
-            <div className="rounded-lg border bg-surface p-3.5">
+            <div className="rounded-lg border bg-panel p-3.5">
               <h3 className="rack-label mb-2.5">off</h3>
               {status.config ? (
                 <>
@@ -633,7 +633,7 @@ export function NetworkRouteForm({
                     "this farm cannot say", which is a third answer and is
                     worded as one rather than being rounded down to "cleared".
                   */}
-                  <p className="text-[11.5px] leading-relaxed text-fg-muted">
+                  <p className="text-[11.5px] leading-relaxed text-dim">
                     {status.captured === undefined ? (
                       <>
                         Turning the proxy off clears the saved route and puts the phone’s own proxy setting back the
@@ -654,7 +654,7 @@ export function NetworkRouteForm({
                       </>
                     )}
                   </p>
-                  <p className="mt-1.5 text-[11px] leading-relaxed text-fg-subtle">
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
                     To keep the saved route and stop using it for now, use the switch above instead.
                   </p>
                   <div className="mt-3 border-t pt-3">
@@ -677,7 +677,7 @@ export function NetworkRouteForm({
                   </div>
                 </>
               ) : (
-                <p className="text-[11.5px] leading-relaxed text-fg-muted">
+                <p className="text-[11.5px] leading-relaxed text-dim">
                   No proxy is set on this phone. It reaches the network on its own address.
                 </p>
               )}
@@ -717,7 +717,7 @@ export function NetworkRouteForm({
           )}
         </div>
 
-        <div className="rounded-lg border bg-surface p-3.5">
+        <div className="rounded-lg border bg-panel p-3.5">
           <h3 className="rack-label mb-2.5">route status</h3>
           <dl className="space-y-1.5">
             {/* Plan 114 §3.10 — above `engine`, because "which of the three
@@ -762,7 +762,7 @@ export function NetworkRouteForm({
             */}
             {status.config && <Row label="set by" value={setByReadout(status.setBy, now)} />}
             <div className="flex items-baseline justify-between gap-3">
-              <dt className="text-[12px] text-fg-subtle">health</dt>
+              <dt className="text-[12px] text-faint">health</dt>
               <dd>
                 <HealthBadge health={status.health} />
               </dd>
@@ -770,7 +770,7 @@ export function NetworkRouteForm({
           </dl>
 
           {status.health === 'unverified' && (
-            <p className="mt-2.5 text-[11.5px] leading-relaxed text-fg-muted">
+            <p className="mt-2.5 text-[11.5px] leading-relaxed text-dim">
               {appliedIsHttp
                 ? 'This is the normal, permanent state for an HTTP proxy: the setting is on the phone, and no check can confirm an app actually used it.'
                 : 'The route was applied and the device accepted it, but no egress check has confirmed traffic is actually leaving through this proxy yet.'}
@@ -790,13 +790,13 @@ export function NetworkRouteForm({
           )}
 
           {status.drift && (
-            <div className="mt-2.5 rounded border border-led-warn/35 bg-led-warn/5 px-2.5 py-2 text-[11.5px] text-led-warn">
+            <div className="mt-2.5 rounded border border-warn/35 bg-warn/5 px-2.5 py-2 text-[11.5px] text-warn">
               What the device reports does not match what was requested — see the readings below.
             </div>
           )}
 
           {status.config === null ? (
-            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-fg-subtle">No route saved yet.</p>
+            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-faint">No route saved yet.</p>
           ) : status.config.engine === 'adb-proxy' ? (
             <dl className="mt-2.5 space-y-1.5 border-t pt-2.5">
               <Row label="requested proxy" value={`${status.config.host}:${status.config.port}`} />
@@ -820,7 +820,7 @@ export function NetworkRouteForm({
           )}
 
           {appliedIsHttp ? (
-            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-fg-subtle">
+            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-faint">
               This mode has nothing for the device to report beyond the setting itself, which is checked above.
             </p>
           ) : status.observed ? (
@@ -835,17 +835,17 @@ export function NetworkRouteForm({
               <Row label="upstream (device)" value={status.observed.upstream ?? '—'} />
             </dl>
           ) : (
-            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-fg-subtle">
+            <p className="mt-2.5 border-t pt-2.5 text-[11.5px] text-faint">
               The device has not reported a route observation yet.
             </p>
           )}
 
           {status.lastError && (
-            <div className="mt-2.5 rounded border border-led-danger/40 bg-led-danger/5 px-2.5 py-2 text-[11.5px]">
+            <div className="mt-2.5 rounded border border-danger/40 bg-danger/5 px-2.5 py-2 text-[11.5px]">
               {/* Same reason as `CheckRow`'s detail: an error code and an
                   upstream's message are both unbroken tokens often enough. */}
-              <span className="readout wrap-anywhere font-medium text-led-danger">{status.lastError.code}</span>
-              <p className="mt-0.5 wrap-anywhere text-fg-muted">{status.lastError.message}</p>
+              <span className="readout wrap-anywhere font-medium text-danger">{status.lastError.code}</span>
+              <p className="mt-0.5 wrap-anywhere text-dim">{status.lastError.message}</p>
             </div>
           )}
 
@@ -856,7 +856,7 @@ export function NetworkRouteForm({
           {status.recovery && (
             <div className="mt-2.5 border-t pt-2.5">
               <div className="flex items-center justify-between gap-2">
-                <h4 className="text-[12px] font-medium text-fg-subtle">automatic recovery</h4>
+                <h4 className="text-[12px] font-medium text-faint">automatic recovery</h4>
                 <Button
                   type="button"
                   variant="ghost"
@@ -886,7 +886,7 @@ export function NetworkRouteForm({
               — an unconfigured geo provider means this stays empty forever, which is honest. */}
           {status.exitHistory.length > 0 && (
             <div className="mt-2.5 border-t pt-2.5">
-              <h4 className="text-[12px] font-medium text-fg-subtle">exit history</h4>
+              <h4 className="text-[12px] font-medium text-faint">exit history</h4>
               <ul className="mt-1.5 space-y-1">
                 {status.exitHistory.map((o, i) => (
                   // eslint-disable-next-line react/no-array-index-key -- addresses can repeat; (address, at) pairs are the real key but at can collide within the same second too.
@@ -895,9 +895,9 @@ export function NetworkRouteForm({
                   // below roughly 20rem it wraps to its own line instead of
                   // squeezing the address and the location into two ellipses.
                   <li key={`${o.at}-${i}`} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-[11.5px]">
-                    <span className="readout min-w-0 truncate text-fg">{o.address}</span>
-                    <span className="min-w-0 truncate text-fg-muted">{describeExitLocation(o)}</span>
-                    <span className="shrink-0 text-fg-subtle">{new Date(o.at * 1000).toLocaleString()}</span>
+                    <span className="readout min-w-0 truncate text-text">{o.address}</span>
+                    <span className="min-w-0 truncate text-dim">{describeExitLocation(o)}</span>
+                    <span className="shrink-0 text-faint">{new Date(o.at * 1000).toLocaleString()}</span>
                   </li>
                 ))}
               </ul>

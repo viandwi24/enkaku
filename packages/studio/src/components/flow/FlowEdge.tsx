@@ -39,8 +39,8 @@ export function FlowEdge({ id, source, sourceX, sourceY, targetX, targetY, sourc
           taken
             ? { stroke: 'var(--color-accent)', strokeWidth: 2 }
             : backward
-              ? { stroke: 'var(--color-led-warn)', strokeDasharray: '5 4' }
-              : { stroke: 'var(--color-line-strong)' }
+              ? { stroke: 'var(--warn)', strokeDasharray: '5 4' }
+              : { stroke: 'var(--border-3)' }
         }
       />
       <EdgeLabelRenderer>
@@ -48,14 +48,14 @@ export function FlowEdge({ id, source, sourceX, sourceY, targetX, targetY, sourc
           style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`, pointerEvents: 'all' }}
           className="nodrag nopan flex items-center gap-1"
         >
-          {data?.label && <span className="rack-label rounded bg-surface px-1 py-0.5 text-fg-muted">{data.label}</span>}
+          {data?.label && <span className="rack-label rounded bg-panel px-1 py-0.5 text-dim">{data.label}</span>}
           {data?.editable && data.onInsert && (
             <button
               type="button"
               aria-label="Insert a node on this edge"
               title="Insert a node here"
               onClick={() => data.onInsert?.(source, data.kind, labelX, labelY)}
-              className={cn('flex size-4 items-center justify-center rounded-full border bg-surface text-fg-subtle hover:border-accent hover:text-accent')}
+              className={cn('flex size-4 items-center justify-center rounded-full border bg-panel text-faint hover:border-accent hover:text-accent')}
             >
               <Plus className="size-2.5" aria-hidden />
             </button>

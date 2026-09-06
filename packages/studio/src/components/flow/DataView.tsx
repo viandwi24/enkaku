@@ -86,15 +86,15 @@ function UiTreeRow({ node, depth }: { node: UiTreeNode; depth: number }) {
     <div>
       <div style={{ paddingLeft: `${depth * 14}px` }} className="flex items-center gap-1 py-0.5 font-mono text-[11.5px]">
         {children.length > 0 ? (
-          <button type="button" onClick={() => setCollapsed((v) => !v)} className="shrink-0 text-fg-subtle hover:text-fg" aria-label={collapsed ? 'Expand' : 'Collapse'}>
+          <button type="button" onClick={() => setCollapsed((v) => !v)} className="shrink-0 text-faint hover:text-text" aria-label={collapsed ? 'Expand' : 'Collapse'}>
             {collapsed ? <CaretRightIcon className="size-3" aria-hidden /> : <CaretDownIcon className="size-3" aria-hidden />}
           </button>
         ) : (
           <span className="inline-block w-3" />
         )}
         <span className="text-accent">{node.class ?? 'node'}</span>
-        {node.text ? <span className="truncate text-led-ok">“{node.text}”</span> : null}
-        {node.bounds !== undefined ? <span className="truncate text-fg-subtle">{formatBounds(node.bounds)}</span> : null}
+        {node.text ? <span className="truncate text-ok">“{node.text}”</span> : null}
+        {node.bounds !== undefined ? <span className="truncate text-faint">{formatBounds(node.bounds)}</span> : null}
       </div>
       {!collapsed && children.map((c, i) => <UiTreeRow key={i} node={c} depth={depth + 1} />)}
     </div>
@@ -103,14 +103,14 @@ function UiTreeRow({ node, depth }: { node: UiTreeNode; depth: number }) {
 
 export function DataView({ value }: { value: unknown }) {
   if (value === undefined || value === null) {
-    return <p className="px-2 py-3 text-[11.5px] text-fg-subtle">No data</p>
+    return <p className="px-2 py-3 text-[11.5px] text-faint">No data</p>
   }
 
   const imageSrc = findImageSrc(value)
   if (imageSrc) {
     return (
       <div className="space-y-1.5">
-        <div className="flex items-center gap-1.5 text-[11px] text-fg-subtle">
+        <div className="flex items-center gap-1.5 text-[11px] text-faint">
           <ImageIcon className="size-3.5" aria-hidden />
           image
         </div>
@@ -130,7 +130,7 @@ export function DataView({ value }: { value: unknown }) {
   }
 
   return (
-    <pre className={cn('max-h-80 overflow-auto whitespace-pre-wrap break-all rounded border bg-panel-2 p-2 font-mono text-[11px] text-fg')}>
+    <pre className={cn('max-h-80 overflow-auto whitespace-pre-wrap break-all rounded border bg-panel-2 p-2 font-mono text-[11px] text-text')}>
       {JSON.stringify(value, null, 2)}
     </pre>
   )

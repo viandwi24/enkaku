@@ -63,7 +63,7 @@ export function EntityTabs({
                   <span
                     tabIndex={0}
                     aria-disabled="true"
-                    className="flex cursor-not-allowed items-center gap-2 border-b-2 border-transparent px-3 py-2.5 text-[13px] text-fg-subtle"
+                    className="flex cursor-not-allowed items-center gap-2 border-b-2 border-transparent px-3 py-2.5 text-[13px] text-faint"
                   >
                     {t.label}
                   </span>
@@ -80,13 +80,13 @@ export function EntityTabs({
               className={cn(
                 'flex items-center gap-2 border-b-2 px-3 py-2.5 text-[13px] transition-colors',
                 isActive
-                  ? 'border-accent font-medium text-fg'
-                  : 'border-transparent text-fg-muted hover:border-line-strong hover:text-fg',
+                  ? 'border-accent font-medium text-text'
+                  : 'border-transparent text-dim hover:border-border-3 hover:text-text',
               )}
             >
               {t.label}
               {t.count !== null && t.count !== undefined && (
-                <span className="readout rounded-full bg-surface-2 px-1.5 text-[10.5px] text-fg-muted">{t.count}</span>
+                <span className="readout rounded-full bg-panel-2 px-1.5 text-[10.5px] text-dim">{t.count}</span>
               )}
               {/* A native `title`, not a Radix `Tooltip`: this strip is rendered
                   by pages that are mounted without a `TooltipProvider` (the
@@ -94,7 +94,7 @@ export function EntityTabs({
                   which supplies one), and a marker that throws is worse than a
                   marker with a plainer tooltip. */}
               {t.alert && (
-                <span className="flex items-center text-led-danger" title={t.alert} aria-label={t.alert}>
+                <span className="flex items-center text-danger" title={t.alert} aria-label={t.alert}>
                   <AlertTriangle className="size-3.5" aria-hidden />
                 </span>
               )}

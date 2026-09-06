@@ -48,36 +48,36 @@ export function ContextPanel({ agent, devices, capabilities }: { agent: Agent; d
     <aside className="hidden w-72 shrink-0 flex-col gap-5 overflow-y-auto border-l p-4 lg:flex">
       <Section title="Devices" hint={agent.deviceGrants.length === 0 ? 'all devices — no restriction' : `${grantedDevices.length} granted`}>
         {grantedDevices.length === 0 ? (
-          <p className="text-[11.5px] text-fg-subtle">No devices enrolled.</p>
+          <p className="text-[11.5px] text-faint">No devices enrolled.</p>
         ) : (
           <ul className="space-y-1">
             {grantedDevices.slice(0, 12).map((d) => (
               <li key={d.id}>
-                <Link href={`/device?id=${encodeURIComponent(d.id)}`} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-[12px] hover:bg-surface-2/60">
+                <Link href={`/device?id=${encodeURIComponent(d.id)}`} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-[12px] hover:bg-panel-2/60">
                   {/* Plan 124 §4.4 Group D, step 124.4 — a list row, so the
                       two-span `<DeviceName>` (§3.2). This rail answers "which
                       phones may this agent touch"; on a rack of identically
                       modelled devices the bare label answered it with the same
                       word repeated twelve times. */}
                   <DeviceName number={d.number} label={d.label} className="min-w-0" />
-                  <span className="readout shrink-0 text-[10.5px] text-fg-subtle">{d.status}</span>
+                  <span className="readout shrink-0 text-[10.5px] text-faint">{d.status}</span>
                 </Link>
               </li>
             ))}
-            {grantedDevices.length > 12 && <li className="px-1.5 text-[11px] text-fg-subtle">+{grantedDevices.length - 12} more</li>}
+            {grantedDevices.length > 12 && <li className="px-1.5 text-[11px] text-faint">+{grantedDevices.length - 12} more</li>}
           </ul>
         )}
       </Section>
 
       <Section title="Tools" hint={`${agent.tools.length} capabilit${agent.tools.length === 1 ? 'y' : 'ies'}`}>
         {agent.tools.length === 0 ? (
-          <p className="text-[11.5px] text-fg-subtle">No tools granted.</p>
+          <p className="text-[11.5px] text-faint">No tools granted.</p>
         ) : (
           <ul className="space-y-1">
             {[...toolsByGroup.entries()].map(([group, count]) => (
               <li key={group} className="flex items-center justify-between text-[12px]">
                 <span className="capitalize">{group}</span>
-                <span className="readout text-fg-subtle">{count}</span>
+                <span className="readout text-faint">{count}</span>
               </li>
             ))}
           </ul>
@@ -87,7 +87,7 @@ export function ContextPanel({ agent, devices, capabilities }: { agent: Agent; d
             so it is the one thing worth calling out here that is not visible from the group counts
             above. */}
         {agent.requiresApproval.length > 0 && (
-          <p className="mt-1.5 text-[11px] text-fg-subtle">
+          <p className="mt-1.5 text-[11px] text-faint">
             +{agent.requiresApproval.length} tool{agent.requiresApproval.length === 1 ? '' : 's'} set to pause for approval beyond the registry default.
           </p>
         )}
@@ -96,12 +96,12 @@ export function ContextPanel({ agent, devices, capabilities }: { agent: Agent; d
       <Section title="Files" hint={`/agents/${agent.slug}/`}>
         <div className="space-y-1.5 text-[11.5px]">
           <div>
-            <p className="text-fg-subtle">read</p>
-            {agent.workspaceScope.read.length === 0 ? <p className="text-fg-subtle">(none)</p> : agent.workspaceScope.read.map((p) => <p key={p} className="readout truncate">{p}</p>)}
+            <p className="text-faint">read</p>
+            {agent.workspaceScope.read.length === 0 ? <p className="text-faint">(none)</p> : agent.workspaceScope.read.map((p) => <p key={p} className="readout truncate">{p}</p>)}
           </div>
           <div>
-            <p className="text-fg-subtle">write</p>
-            {agent.workspaceScope.write.length === 0 ? <p className="text-fg-subtle">(none)</p> : agent.workspaceScope.write.map((p) => <p key={p} className="readout truncate">{p}</p>)}
+            <p className="text-faint">write</p>
+            {agent.workspaceScope.write.length === 0 ? <p className="text-faint">(none)</p> : agent.workspaceScope.write.map((p) => <p key={p} className="readout truncate">{p}</p>)}
           </div>
         </div>
         <Link href={`/agents?tab=files&path=${encodeURIComponent(`/agents/${agent.slug}/`)}`} className="mt-1.5 inline-block text-[11.5px] text-accent hover:underline">
@@ -111,12 +111,12 @@ export function ContextPanel({ agent, devices, capabilities }: { agent: Agent; d
 
       <Section title="Usage" hint="last 14 days">
         {usage === null ? (
-          <p className="text-[11.5px] text-fg-subtle">Loading…</p>
+          <p className="text-[11.5px] text-faint">Loading…</p>
         ) : (
           <>
             <UsageSparkline days={usage.days} />
-            <p className="readout mt-1.5 text-[13px] font-medium text-fg">{formatUsd(usage.total.costUsd)}</p>
-            {usage.truncated && <p className="mt-1 text-[10.5px] text-fg-subtle">Computed from this agent's most recently active threads — not its full history.</p>}
+            <p className="readout mt-1.5 text-[13px] font-medium text-text">{formatUsd(usage.total.costUsd)}</p>
+            {usage.truncated && <p className="mt-1 text-[10.5px] text-faint">Computed from this agent's most recently active threads — not its full history.</p>}
           </>
         )}
       </Section>
@@ -129,7 +129,7 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
     <section>
       <div className="mb-1.5 flex items-baseline justify-between">
         <h2 className="rack-label">{title}</h2>
-        {hint && <span className="text-[10.5px] text-fg-subtle">{hint}</span>}
+        {hint && <span className="text-[10.5px] text-faint">{hint}</span>}
       </div>
       {children}
     </section>

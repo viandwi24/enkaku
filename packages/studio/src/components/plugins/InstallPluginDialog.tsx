@@ -144,7 +144,7 @@ export function InstallPluginDialog({ trigger, onInstalled }: { trigger: ReactNo
         <DialogHeader>
           <DialogTitle>{result === null ? 'Install a plugin' : failed ? `${name.trim()}@${version.trim()} did not verify` : `Activate ${title}?`}</DialogTitle>
           <DialogDescription asChild>
-            <div className="text-[13px] leading-relaxed text-fg-muted">
+            <div className="text-[13px] leading-relaxed text-dim">
               {result === null
                 ? 'A plugin is one bundle with many scripts inside it. It is verified in a separate process first, and nothing it declares runs until you activate it on the next step.'
                 : failed
@@ -166,7 +166,7 @@ export function InstallPluginDialog({ trigger, onInstalled }: { trigger: ReactNo
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />
-                <p className="text-[11.5px] text-fg-muted">
+                <p className="text-[11.5px] text-dim">
                   The identifier, not a human title — it is the KV namespace and half of every <span className="readout">plugin/script@version</span>{' '}
                   reference.
                 </p>
@@ -181,7 +181,7 @@ export function InstallPluginDialog({ trigger, onInstalled }: { trigger: ReactNo
                   onChange={(e) => setVersion(e.target.value)}
                   aria-invalid={version.length > 0 && !versionOk}
                 />
-                <p className={version.length > 0 && !versionOk ? 'text-[11.5px] text-led-danger' : 'text-[11.5px] text-fg-muted'}>
+                <p className={version.length > 0 && !versionOk ? 'text-[11.5px] text-danger' : 'text-[11.5px] text-dim'}>
                   {version.length > 0 && !versionOk ? 'Three numbers, e.g. 1.0.0 — a suffix like 1.0.0-beta.1 is allowed.' : 'Three numbers, e.g. 1.0.0.'}
                 </p>
               </div>
@@ -193,15 +193,15 @@ export function InstallPluginDialog({ trigger, onInstalled }: { trigger: ReactNo
                 id="plugin-file"
                 type="file"
                 accept=".mjs,.js,text/javascript"
-                className="block w-full text-[12.5px] text-fg-muted file:mr-3 file:rounded-md file:border file:border-line file:bg-surface-2 file:px-2.5 file:py-1 file:text-[12.5px] file:text-fg"
+                className="block w-full text-[12.5px] text-dim file:mr-3 file:rounded-md file:border file:border-line file:bg-panel-2 file:px-2.5 file:py-1 file:text-[12.5px] file:text-text"
                 onChange={(e) => void pickFile(e.target.files?.[0])}
               />
               {fileName && (
-                <p className="text-[11.5px] text-fg-muted">
+                <p className="text-[11.5px] text-dim">
                   Read <span className="readout">{fileName}</span> — {bundle.length.toLocaleString()} characters.
                 </p>
               )}
-              {fileError && <p className="text-[11.5px] text-led-danger">{fileError}</p>}
+              {fileError && <p className="text-[11.5px] text-danger">{fileError}</p>}
               <Textarea
                 aria-label="Bundle text"
                 className="readout max-h-48 min-h-24 text-[11.5px]"
@@ -215,47 +215,47 @@ export function InstallPluginDialog({ trigger, onInstalled }: { trigger: ReactNo
             </div>
           </div>
         ) : failed ? (
-          <div className="rounded-md border border-led-danger/30 bg-led-danger/5 px-3 py-2.5">
-            <p className="readout text-[11.5px] text-led-danger">{verify?.errorCode ?? result.plugin?.verifyErrorCode ?? 'E_PLUGIN_VERIFY_FAILED'}</p>
-            <p className="mt-1 whitespace-pre-wrap break-words text-[12.5px] text-led-danger">
+          <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2.5">
+            <p className="readout text-[11.5px] text-danger">{verify?.errorCode ?? result.plugin?.verifyErrorCode ?? 'E_PLUGIN_VERIFY_FAILED'}</p>
+            <p className="mt-1 whitespace-pre-wrap break-words text-[12.5px] text-danger">
               {verify?.error ?? result.plugin?.verifyError ?? 'The verification process reported no message.'}
             </p>
             {declared.length > 0 && (
-              <p className="mt-1.5 text-[11.5px] text-fg-muted">
+              <p className="mt-1.5 text-[11.5px] text-dim">
                 {declared.length} script{declared.length === 1 ? '' : 's'} declared ({declared.map((s) => s.id).join(', ')}) — none registered.
               </p>
             )}
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="rounded-md border bg-surface-2 px-3 py-2.5">
+            <div className="rounded-md border bg-panel-2 px-3 py-2.5">
               <div className="font-medium">{title}</div>
-              <div className="readout mt-0.5 text-[11.5px] text-fg-muted">
+              <div className="readout mt-0.5 text-[11.5px] text-dim">
                 {name.trim()}@{version.trim()}
               </div>
               {description ? (
-                <p className="mt-1.5 text-[12.5px] leading-relaxed text-fg-muted">{description}</p>
+                <p className="mt-1.5 text-[12.5px] leading-relaxed text-dim">{description}</p>
               ) : (
-                <p className="mt-1.5 text-[12.5px] text-fg-subtle">This plugin describes itself with nothing — it published no description.</p>
+                <p className="mt-1.5 text-[12.5px] text-faint">This plugin describes itself with nothing — it published no description.</p>
               )}
             </div>
             <div>
-              <p className="mb-1.5 text-[12px] font-medium text-fg-muted">
+              <p className="mb-1.5 text-[12px] font-medium text-dim">
                 {declared.length} script{declared.length === 1 ? '' : 's'} become runnable
               </p>
               {declared.length === 0 ? (
-                <p className="text-[12.5px] text-fg-subtle">It declares no scripts at all — activating it registers nothing.</p>
+                <p className="text-[12.5px] text-faint">It declares no scripts at all — activating it registers nothing.</p>
               ) : (
                 <ul className="space-y-1">
                   {declared.map((s) => (
-                    <li key={s.id} className="readout rounded border bg-surface px-2.5 py-1 text-[11.5px]">
+                    <li key={s.id} className="readout rounded border bg-panel px-2.5 py-1 text-[11.5px]">
                       {name.trim()}/{s.id}
                     </li>
                   ))}
                 </ul>
               )}
             </div>
-            <p className="text-[12px] text-fg-muted">
+            <p className="text-[12px] text-dim">
               Activating replaces whichever version of <span className="readout">{name.trim()}</span> is live now. It never touches a job already
               running.
             </p>
@@ -293,7 +293,7 @@ export function InstallPluginDialog({ trigger, onInstalled }: { trigger: ReactNo
                   {isPending('activate') ? 'Activating…' : 'Activate'}
                 </Button>
               ) : (
-                <span className="self-center text-[12px] text-fg-muted">
+                <span className="self-center text-[12px] text-dim">
                   The farm did not return the stored version, so it cannot be activated from here — activate it from the row in the list.
                 </span>
               )}

@@ -213,11 +213,11 @@ function PaginatedTableInner<T>(
       )}
 
       {error && items.length > 0 && (
-        <p className="text-[11.5px] text-led-danger">Could not load more: {error}</p>
+        <p className="text-[11.5px] text-danger">Could not load more: {error}</p>
       )}
 
       <div className="flex items-center justify-between px-0.5">
-        <p className="readout text-[11px] text-fg-subtle">
+        <p className="readout text-[11px] text-faint">
           {items.length} loaded{total !== null ? ` of ${total}` : ''}
         </p>
         {loadMore === 'button' && nextCursor !== null && (

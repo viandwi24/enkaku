@@ -82,13 +82,13 @@ export function RecordPanel({
   const seconds = Math.max(0, Math.floor(elapsedMs / 1000))
   const showStrip = phase === 'active' || phase === 'stopping' || phase === 'reviewing'
   return (
-    <div className="space-y-2.5 rounded-lg border bg-surface p-3" data-testid="record-panel">
+    <div className="space-y-2.5 rounded-lg border bg-panel p-3" data-testid="record-panel">
       {/* Plan 94 §5 step 94.4's own requirement: stated ON SCREEN, not only
           in the plan document (§4.6: "In memory... A core restart loses an
           in-progress recording"). Shown in every phase — an operator who
           reads it only once, before starting, is the operator most likely
           to lose ten minutes of taps to a restart they did not see coming. */}
-      <p className="text-[11px] leading-relaxed text-fg-muted">
+      <p className="text-[11px] leading-relaxed text-dim">
         A recording lives only in this core&apos;s memory until it is saved — a core restart, or losing control of
         this device, discards anything not yet published.
       </p>
@@ -101,7 +101,7 @@ export function RecordPanel({
               device gets no element candidates and no screenshots — never a
               failed recording, but worth saying before the operator starts,
               not after they discover it in the review panel. */}
-          <p className="text-[11.5px] leading-relaxed text-fg-muted">
+          <p className="text-[11.5px] leading-relaxed text-dim">
             Element candidates and screenshots need the Inspect tab to have attached an inspector to this device
             first. A recording still captures every tap, swipe and key by coordinate without one.
           </p>
@@ -110,18 +110,18 @@ export function RecordPanel({
           </Button>
         </div>
       )}
-      {disabledReason && phase === 'idle' && <p className="text-[11px] text-led-danger">{disabledReason}</p>}
-      {error && <p className="text-[11px] text-led-danger">{error}</p>}
+      {disabledReason && phase === 'idle' && <p className="text-[11px] text-danger">{disabledReason}</p>}
+      {error && <p className="text-[11px] text-danger">{error}</p>}
 
-      {phase === 'starting' && <p className="text-[12px] text-fg-muted">Starting…</p>}
+      {phase === 'starting' && <p className="text-[12px] text-dim">Starting…</p>}
 
       {(phase === 'active' || phase === 'stopping') && (
         <div className="flex flex-wrap items-center justify-between gap-2.5">
           <span className="flex items-center gap-2">
-            <span className="size-2 animate-pulse rounded-full bg-led-danger" aria-hidden />
-            <span className="rack-label text-led-danger">Recording</span>
-            <span className="readout text-[11px] text-fg-muted">{mmss(seconds)}</span>
-            <span className="text-[11px] text-fg-muted">
+            <span className="size-2 animate-pulse rounded-full bg-danger" aria-hidden />
+            <span className="rack-label text-danger">Recording</span>
+            <span className="readout text-[11px] text-dim">{mmss(seconds)}</span>
+            <span className="text-[11px] text-dim">
               {stepCount} {stepCount === 1 ? 'step' : 'steps'}
             </span>
           </span>
@@ -141,13 +141,13 @@ export function RecordPanel({
       {phase === 'reviewing' && (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2.5">
-            <span className="rack-label text-fg">Review</span>
-            <span className="text-[11px] text-fg-muted">
+            <span className="rack-label text-text">Review</span>
+            <span className="text-[11px] text-dim">
               {stepCount} {stepCount === 1 ? 'step' : 'steps'} · {mmss(seconds)}
             </span>
           </div>
           {stoppedReason && (
-            <p className="text-[11.5px] text-led-warn">Recording {STOPPED_REASON_TEXT[stoppedReason]}</p>
+            <p className="text-[11.5px] text-warn">Recording {STOPPED_REASON_TEXT[stoppedReason]}</p>
           )}
         </div>
       )}
@@ -221,14 +221,14 @@ function SaveAndReview({ deviceId, startedAt }: { deviceId: string; startedAt: n
       >
         {saving ? 'Saving…' : 'Save & review'}
       </Button>
-      {saveError && <p className="w-full text-[11px] text-led-danger">{saveError}</p>}
+      {saveError && <p className="w-full text-[11px] text-danger">{saveError}</p>}
     </div>
   )
 }
 
 function StepStrip({ steps }: { steps: RecordedStepEntry[] }) {
   if (steps.length === 0) {
-    return <p className="text-[11px] text-fg-subtle">No steps yet — tap or swipe on the screen above.</p>
+    return <p className="text-[11px] text-faint">No steps yet — tap or swipe on the screen above.</p>
   }
   return (
     <ol className="flex gap-1.5 overflow-x-auto pb-1" aria-label="Recorded steps">
@@ -237,11 +237,11 @@ function StepStrip({ steps }: { steps: RecordedStepEntry[] }) {
           key={step.index}
           className={cn(
             'flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-[11px]',
-            step.hasCandidate ? 'border-led-active/40 bg-led-active/5 text-fg' : 'text-fg-muted',
+            step.hasCandidate ? 'border-accent/40 bg-accent/5 text-text' : 'text-dim',
           )}
           title={step.hasCandidate ? `${STEP_LABEL[step.kind]} — has an element candidate` : STEP_LABEL[step.kind]}
         >
-          <span className="readout text-[10px] text-fg-subtle">{step.index + 1}</span>
+          <span className="readout text-[10px] text-faint">{step.index + 1}</span>
           {STEP_LABEL[step.kind]}
         </li>
       ))}

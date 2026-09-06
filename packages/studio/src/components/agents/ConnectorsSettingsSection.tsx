@@ -77,7 +77,7 @@ export function ConnectorsSettingsSection() {
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-        <p className="max-w-xl text-[12.5px] leading-relaxed text-fg-muted">
+        <p className="max-w-xl text-[12.5px] leading-relaxed text-dim">
           A configured provider endpoint plus credential — an agent names one to run against. A credential here is not readable by
           grepping the database; it is encrypted with a key kept in a file beside enkaku.db. Anyone with read access to the whole
           data directory can still decrypt it — this is not a key management service, and does not claim to be one.
@@ -118,11 +118,11 @@ export function ConnectorsSettingsSection() {
               {connectors.map((c) => (
                 <TableRow key={c.id}>
                   <TableCell className="font-medium">{c.name}</TableCell>
-                  <TableCell className="text-[12.5px] text-fg-muted">{c.kind}</TableCell>
-                  <TableCell className="readout text-[12px] text-fg-muted">{c.configured ? c.hint : 'not configured'}</TableCell>
+                  <TableCell className="text-[12.5px] text-dim">{c.kind}</TableCell>
+                  <TableCell className="readout text-[12px] text-dim">{c.configured ? c.hint : 'not configured'}</TableCell>
                   <TableCell>
                     <Badge variant={c.status === 'ok' ? 'secondary' : c.status === 'unknown' ? 'outline' : 'destructive'}>{c.status}</Badge>
-                    {c.statusMessage && <p className="mt-0.5 max-w-xs truncate text-[11px] text-fg-subtle">{c.statusMessage}</p>}
+                    {c.statusMessage && <p className="mt-0.5 max-w-xs truncate text-[11px] text-faint">{c.statusMessage}</p>}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
@@ -198,7 +198,7 @@ export function ConnectorsSettingsSection() {
                 API key
               </Label>
               <Input id="conn-credential" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} placeholder={kind === 'openrouter' ? 'sk-or-…' : 'sk-ant-…'} />
-              <p className="text-[11.5px] text-fg-subtle">
+              <p className="text-[11.5px] text-faint">
                 Leave blank to configure {kind === 'openrouter' ? 'ENKAKU_OPENROUTER_API_KEY' : 'ENKAKU_ANTHROPIC_API_KEY'} as an env var fallback instead.
               </p>
             </div>

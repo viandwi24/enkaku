@@ -54,7 +54,7 @@ export function ConnectionBadge({ connection, className }: { connection: DeviceC
         // TCP (medium unknown) reads a shade quieter than the other three —
         // that dimness IS the honest "we don't know", not a warning (plan 88
         // §3.1's whole point: never guess WI-FI here).
-        badge === 'TCP' ? 'border-line text-fg-subtle' : 'border-line-strong text-fg-muted',
+        badge === 'TCP' ? 'border-line text-faint' : 'border-border-3 text-dim',
         className,
       )}
       title={connectionTooltip(connection)}

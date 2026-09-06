@@ -39,7 +39,7 @@ export function LatencyOverlay({ summary, inputHost }: { summary: LatencySummary
   return (
     <dl
       data-testid="latency-overlay"
-      className="absolute left-2 top-2 z-10 rounded-md bg-surface/90 px-2 py-1.5 text-[11px] leading-tight text-fg-muted shadow"
+      className="absolute left-2 top-2 z-10 rounded-md bg-panel/90 px-2 py-1.5 text-[11px] leading-tight text-dim shadow"
     >
       <div className="flex justify-between gap-3">
         <dt className="rack-label">device→host</dt>
@@ -77,7 +77,7 @@ export function LatencyOverlay({ summary, inputHost }: { summary: LatencySummary
         <dt className="rack-label">input (host)</dt>
         <dd className="readout">{formatInputHost(inputHost)}</dd>
       </div>
-      <div className="mt-1 text-[10px] text-fg-subtle">
+      <div className="mt-1 text-[10px] text-faint">
         device→host and host→browser are relative to the fastest frame seen, not absolute. Glass-to-glass needs a
         camera. input (host) is the core&apos;s own dispatch time from the WebSocket message to the control-socket
         write; scrcpy sends no acknowledgement, so the device leg is not measured.

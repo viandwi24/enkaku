@@ -103,14 +103,14 @@ export function usePoll(fn: () => void, ms: number | null): void {
 export function ProxyStateBadge({ state, label, detail }: { state: ProxyState; label: string; detail?: string }) {
   const tone =
     state === 'running'
-      ? 'bg-led-ok'
+      ? 'bg-ok'
       : state === 'failed'
-        ? 'bg-led-danger'
+        ? 'bg-danger'
         : state === 'starting'
-          ? 'bg-led-active'
+          ? 'bg-accent'
           : state === 'stopping'
-            ? 'bg-led-warn'
-            : 'bg-led-off'
+            ? 'bg-warn'
+            : 'bg-faint-2'
   return (
     /**
      * `whitespace-nowrap` is on the WORD and not on the row. A table sizes a
@@ -122,8 +122,8 @@ export function ProxyStateBadge({ state, label, detail }: { state: ProxyState; l
      */
     <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5" title={PROXY_STATE_MEANING[state]}>
       <span className={cn('size-1.5 shrink-0 rounded-full', tone, state === 'starting' || state === 'stopping' ? 'animate-pulse' : '')} aria-hidden />
-      <span className={cn('whitespace-nowrap', state === 'unknown' ? 'text-fg-muted' : '')}>{label}</span>
-      {detail ? <span className="min-w-0 text-[11px] text-fg-muted">{detail}</span> : null}
+      <span className={cn('whitespace-nowrap', state === 'unknown' ? 'text-dim' : '')}>{label}</span>
+      {detail ? <span className="min-w-0 text-[11px] text-dim">{detail}</span> : null}
     </span>
   )
 }
@@ -132,12 +132,12 @@ export function ProxyStateBadge({ state, label, detail }: { state: ProxyState; l
 export function StatusDot({ status }: { status: string }) {
   const tone =
     status === 'success' || status === 'online' || status === 'ready'
-      ? 'bg-led-ok'
+      ? 'bg-ok'
       : status === 'failed' || status === 'error'
-        ? 'bg-led-danger'
+        ? 'bg-danger'
         : status === 'running' || status === 'queued'
-          ? 'bg-led-active'
-          : 'bg-led-off'
+          ? 'bg-accent'
+          : 'bg-faint-2'
   return (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
       <span className={cn('size-1.5 rounded-full', tone)} aria-hidden />

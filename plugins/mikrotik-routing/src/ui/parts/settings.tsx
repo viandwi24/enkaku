@@ -38,9 +38,9 @@ import { useLoader } from './bits'
  */
 
 function localExceptionTone(status: LocalExceptionResult['status']): string {
-  if (status === 'ok') return 'text-led-ok'
-  if (status === 'partial') return 'text-led-warn'
-  return 'text-led-danger'
+  if (status === 'ok') return 'text-ok'
+  if (status === 'partial') return 'text-warn'
+  return 'text-danger'
 }
 
 function localExceptionLabel(status: LocalExceptionResult['status']): string {
@@ -58,11 +58,11 @@ function LocalExceptionWarning({ report }: { report: DoctorResult }) {
   if (isRefusal(report) || report.localException.status === 'ok') return null
   const { localException } = report
   return (
-    <div className="space-y-2 rounded-lg border border-led-danger/40 bg-led-danger/5 p-4">
-      <p className="text-[13px] font-medium text-led-danger">{localException.status === 'missing' ? 'No local-exception rule protects any device (§3.2)' : 'The local-exception rule does not protect every device (§3.2)'}</p>
-      <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">{localException.message}</p>
+    <div className="space-y-2 rounded-lg border border-danger/40 bg-danger/5 p-4">
+      <p className="text-[13px] font-medium text-danger">{localException.status === 'missing' ? 'No local-exception rule protects any device (§3.2)' : 'The local-exception rule does not protect every device (§3.2)'}</p>
+      <p className="max-w-prose text-[12px] leading-relaxed text-dim">{localException.message}</p>
       {localException.uncoveredDevices.length > 0 && (
-        <p className="text-[12px] text-fg-muted">
+        <p className="text-[12px] text-dim">
           {/*
             `label` alone is useless once a farm has more than one device of
             the same model — the owner's own farm printed "SM-F721U1,
@@ -76,10 +76,10 @@ function LocalExceptionWarning({ report }: { report: DoctorResult }) {
             would print `#7 #7 SM-F721U1` — the exact double-naming plan 124's
             own §10 notes record from a since-deleted device-list schema.
           */}
-          Uncovered: <span className="font-medium text-fg">{localException.uncoveredDevices.map((d) => `${d.label} (${d.address})`).join(', ')}</span>
+          Uncovered: <span className="font-medium text-text">{localException.uncoveredDevices.map((d) => `${d.label} (${d.address})`).join(', ')}</span>
         </p>
       )}
-      <p className="text-[12px] text-fg-muted">{coreAddressCaption(localException.coreAddress)}</p>
+      <p className="text-[12px] text-dim">{coreAddressCaption(localException.coreAddress)}</p>
       {/*
         Why this is refused, not just flagged. The panel used to assert the
         consequence ("would lose ADB") without explaining the mechanism, which
@@ -89,12 +89,12 @@ function LocalExceptionWarning({ report }: { report: DoctorResult }) {
         it is the same explanation `docs/guide/mikrotik-routing.md` gives at
         length.
       */}
-      <details className="rounded-md border border-line bg-surface-2/40 p-3">
+      <details className="rounded-md border border-line bg-panel-2/40 p-3">
         <summary className="cursor-pointer text-[12px] font-medium">Why this is required</summary>
-        <div className="mt-2 space-y-2 max-w-prose text-[12px] leading-relaxed text-fg-muted">
+        <div className="mt-2 space-y-2 max-w-prose text-[12px] leading-relaxed text-dim">
           <p>
-            A rule this plugin writes matches on a device&rsquo;s <span className="font-medium text-fg">source address</span>, so it captures{' '}
-            <span className="font-medium text-fg">every packet that device sends</span> — including its replies to this controller. The egress
+            A rule this plugin writes matches on a device&rsquo;s <span className="font-medium text-text">source address</span>, so it captures{' '}
+            <span className="font-medium text-text">every packet that device sends</span> — including its replies to this controller. The egress
             table it points into holds a default route and nothing else.
           </p>
           <p>
@@ -110,7 +110,7 @@ function LocalExceptionWarning({ report }: { report: DoctorResult }) {
         </div>
       </details>
       <p className="text-[12px] font-medium">Add it on the router, in this exact order:</p>
-      <pre className="overflow-x-auto rounded-md bg-surface-2 p-3 text-[11px] leading-relaxed">
+      <pre className="overflow-x-auto rounded-md bg-panel-2 p-3 text-[11px] leading-relaxed">
         <code>{localException.suggestedFixCommands.join('\n')}</code>
       </pre>
     </div>
@@ -133,14 +133,14 @@ function DoctorSummary({ report, loading, error, onRetest }: { report: DoctorRes
         ) : error ? (
           <ErrorState message={error} onRetry={onRetest} />
         ) : report && isRefusal(report) ? (
-          <p className="text-[12px] text-led-danger">{report.message}</p>
+          <p className="text-[12px] text-danger">{report.message}</p>
         ) : report ? (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className={report.reachable ? 'text-led-ok' : 'text-led-danger'}>
+              <Badge variant="outline" className={report.reachable ? 'text-ok' : 'text-danger'}>
                 {report.reachable ? 'Reachable' : 'Not reachable'}
               </Badge>
-              <Badge variant="outline" className={report.authenticated ? 'text-led-ok' : 'text-led-danger'}>
+              <Badge variant="outline" className={report.authenticated ? 'text-ok' : 'text-danger'}>
                 {report.authenticated ? 'Authenticated' : 'Not authenticated'}
               </Badge>
               {report.restVersion && <Badge variant="secondary">RouterOS {report.restVersion}</Badge>}
@@ -148,11 +148,11 @@ function DoctorSummary({ report, loading, error, onRetest }: { report: DoctorRes
                 {localExceptionLabel(report.localException.status)}
               </Badge>
             </div>
-            <p className="text-[12px] text-fg-muted">
+            <p className="text-[12px] text-dim">
               {report.managedRuleCount} managed rule{report.managedRuleCount === 1 ? '' : 's'}, {report.foreignRuleCount} foreign rule{report.foreignRuleCount === 1 ? '' : 's'} on the router right now.
             </p>
             {report.errors.length > 0 && (
-              <ul className="list-inside list-disc text-[12px] text-led-warn">
+              <ul className="list-inside list-disc text-[12px] text-warn">
                 {report.errors.map((e) => (
                   <li key={e}>{e}</li>
                 ))}
@@ -161,7 +161,7 @@ function DoctorSummary({ report, loading, error, onRetest }: { report: DoctorRes
             <LocalExceptionWarning report={report} />
           </div>
         ) : (
-          <p className="text-[12px] text-fg-muted">Save a connection below, then test it.</p>
+          <p className="text-[12px] text-dim">Save a connection below, then test it.</p>
         )}
       </CardContent>
     </Card>
@@ -189,7 +189,7 @@ function ConnectionCard({ presence, onSaved }: { presence: RouterPresence | unde
           <div className="space-y-1.5">
             <Label htmlFor="mikrotik-base-url">Router address</Label>
             <Input id="mikrotik-base-url" placeholder="192.168.88.1 or 192.168.88.1:8729" value={draft.baseUrl} onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })} />
-            <p className="text-[11px] text-fg-muted">Host, or host:port — no scheme. TLS below picks http vs. https.</p>
+            <p className="text-[11px] text-dim">Host, or host:port — no scheme. TLS below picks http vs. https.</p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="mikrotik-username">Username</Label>
@@ -215,7 +215,7 @@ function ConnectionCard({ presence, onSaved }: { presence: RouterPresence | unde
           <Switch id="mikrotik-tls" checked={draft.tls} onCheckedChange={(checked) => setDraft({ ...draft, tls: checked })} />
           <Label htmlFor="mikrotik-tls">Use TLS (https)</Label>
         </div>
-        <p className="max-w-prose text-[11px] leading-relaxed text-fg-muted">{PLAIN_HTTP_WARNING}</p>
+        <p className="max-w-prose text-[11px] leading-relaxed text-dim">{PLAIN_HTTP_WARNING}</p>
         <Button
           size="sm"
           disabled={!canSave || isPending('save-router')}
@@ -344,22 +344,22 @@ function ReconcileCard() {
         >
           Reconcile now
         </Button>
-        {result && isRefusal(result) && <p className="text-[12px] text-led-danger">{result.message}</p>}
+        {result && isRefusal(result) && <p className="text-[12px] text-danger">{result.message}</p>}
         {result && !isRefusal(result) && (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className={result.drifts.length === 0 ? 'text-led-ok' : 'text-led-warn'}>
+              <Badge variant="outline" className={result.drifts.length === 0 ? 'text-ok' : 'text-warn'}>
                 {result.drifts.length} drift item{result.drifts.length === 1 ? '' : 's'}
               </Badge>
               {result.newDrifts.length > 0 && (
-                <Badge variant="outline" className="text-led-warn">
+                <Badge variant="outline" className="text-warn">
                   {result.newDrifts.length} newly detected
                 </Badge>
               )}
               {result.autoRepaired.length > 0 && <Badge variant="outline">{result.autoRepaired.length} auto-repaired</Badge>}
             </div>
             {result.drifts.length > 0 && (
-              <ul className="list-inside list-disc text-[12px] text-fg-muted">
+              <ul className="list-inside list-disc text-[12px] text-dim">
                 {summariseDriftKinds(result.drifts).map((row) => (
                   <li key={row.kind}>
                     {driftKindLabel(row.kind)} × {row.count}
@@ -394,7 +394,7 @@ export function SettingsTab() {
 
   return (
     <div className="space-y-6">
-      <p className="max-w-prose text-[12px] leading-relaxed text-fg-muted">
+      <p className="max-w-prose text-[12px] leading-relaxed text-dim">
         The router-side API user should be scoped with <span className="font-mono">address=</span> to the controller's own subnet, and given write access to{' '}
         <span className="font-mono">/routing/rule</span> only (§4.10).
       </p>
