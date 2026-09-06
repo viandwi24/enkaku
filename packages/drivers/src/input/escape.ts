@@ -2,8 +2,8 @@
  * Escaping for `adb shell input text` (plan 03 §4.5):
  * - printable ASCII only — `input text` is unreliable for unicode and IMEs;
  *   full text arrives with UHID (Plan 08) and ui-server set_text (Plan 06)
- * - spasi → %s (kontrak `input text`), % literal → \%
- * - dibungkus single-quote shell, ' → '\''
+ * - a space becomes %s (the `input text` contract), a literal % becomes \%
+ * - wrapped in a single-quoted shell string, so ' becomes '\''
  */
 export class InputTextError extends Error {
   code = 'INPUT_TEXT_UNSUPPORTED'

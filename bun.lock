@@ -34,13 +34,10 @@
     "packages/adb": {
       "name": "@enkaku/adb",
       "version": "0.0.1",
-      "dependencies": {
-        "@enkaku/protocol": "workspace:*",
-      },
     },
     "packages/core": {
       "name": "enkaku-core",
-      "version": "0.1.32",
+      "version": "0.2.7",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.33",
         "@enkaku/adb": "workspace:*",
@@ -92,7 +89,6 @@
       "version": "0.0.1",
       "dependencies": {
         "@enkaku/adb": "workspace:*",
-        "@enkaku/drivers": "workspace:*",
         "@enkaku/protocol": "workspace:*",
         "@enkaku/scrcpy": "workspace:*",
         "@enkaku/session": "workspace:*",
@@ -118,9 +114,6 @@
     "packages/scrcpy": {
       "name": "@enkaku/scrcpy",
       "version": "0.0.1",
-      "dependencies": {
-        "@enkaku/protocol": "workspace:*",
-      },
     },
     "packages/sdk": {
       "name": "@enkaku/sdk",
@@ -179,7 +172,6 @@
         "zod": "^4.0.0",
       },
       "devDependencies": {
-        "@enkaku/plugin-tiktok": "workspace:*",
         "@tailwindcss/postcss": "^4.3.3",
         "@types/node": "^20",
         "@types/react": "^19",
@@ -224,7 +216,7 @@
     },
     "plugins/google-automation-pack": {
       "name": "@enkaku/plugin-google",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -242,7 +234,7 @@
     },
     "plugins/mikrotik-routing": {
       "name": "@enkaku/plugin-mikrotik-routing",
-      "version": "0.14.0",
+      "version": "0.15.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -256,16 +248,15 @@
     },
     "plugins/networking": {
       "name": "@enkaku/plugin-networking",
-      "version": "3.0.0",
+      "version": "3.1.0",
       "dependencies": {
-        "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
         "zod": "^4.0.0",
       },
     },
     "plugins/proxy-manager": {
       "name": "@enkaku/plugin-proxy-manager",
-      "version": "0.11.2",
+      "version": "0.12.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -283,7 +274,7 @@
     },
     "plugins/tiktok-automation-pack": {
       "name": "@enkaku/plugin-tiktok",
-      "version": "1.17.0",
+      "version": "1.18.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -292,7 +283,7 @@
     },
     "plugins/youtube-automation-pack": {
       "name": "@enkaku/plugin-youtube",
-      "version": "0.12.0",
+      "version": "0.13.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",

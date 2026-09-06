@@ -5,6 +5,5 @@
   "type": "module",
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
-    "@enkaku/protocol": "workspace:*"
   }
 }

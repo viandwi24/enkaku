@@ -48,6 +48,14 @@ jobs:
       # release path. Cheap, and it catches a drift that is otherwise invisible
       # until a tag is already published.
       - run: bash scripts/check-release-packs.sh
+      # AGENTS.md and CLAUDE.md are one document with two addressees. They
+      # drifted once and nothing noticed — AGENTS.md spent weeks telling an
+      # agent the release workflow does not build the guest agent APK, that CI
+      # runs a deleted Studio test suite, and that the live plan series is
+      # 01..16. A stale instruction file produces confidently wrong work
+      # rather than an error, which is exactly why it needs a machine to
+      # check it.
+      - run: bun run scripts/check-agent-docs.ts
       - run: bun run typecheck
       # `@enkaku/ui` and Studio have zero tests (plan 200 §8.3); this is
       # their gate instead — the palette, the icon set, and the barrel
