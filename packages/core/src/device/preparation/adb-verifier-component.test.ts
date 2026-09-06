@@ -35,16 +35,25 @@ function fakeDeps(opts: { initial?: string; putRefuses?: boolean; policy?: 'keep
 }
 
 describe('applicability', () => {
-  test('the farm default (keep) makes the component inert — it never touches a device', () => {
+  test('a farm that turned the setting off makes the component inert — it never touches a device', () => {
     const { deps } = fakeDeps({ policy: 'keep' })
     const component = createAdbVerifierComponent(deps)
     expect(component.applicable(makeRow())).toBe(false)
-    expect(component.unsupportedReason(makeRow())).toContain('ENKAKU_ADB_INSTALL_VERIFIER=disable')
+    expect(component.unsupportedReason(makeRow())).toContain('Settings → Advanced')
   })
 
-  test('opting in makes it applicable to every device — this is a farm policy, not a device capability', () => {
+  test('the farm default applies to every device — this is a farm policy, not a device capability', () => {
     const { deps } = fakeDeps({ policy: 'disable' })
     expect(createAdbVerifierComponent(deps).applicable(makeRow())).toBe(true)
+  })
+
+  test('the policy is re-read on every call, so flipping the setting takes effect without a restart', () => {
+    let policy: 'keep' | 'disable' = 'disable'
+    const { deps } = fakeDeps()
+    const component = createAdbVerifierComponent({ ...deps, policy: () => policy })
+    expect(component.applicable(makeRow())).toBe(true)
+    policy = 'keep'
+    expect(component.applicable(makeRow())).toBe(false)
   })
 })
 

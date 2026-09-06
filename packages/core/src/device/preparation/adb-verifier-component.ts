@@ -22,15 +22,19 @@ export interface AdbVerifierComponentDeps {
   /** Per-device shell exec, through the adb queue — the same shape every other component's `exec` dep uses. */
   exec: (serial: string, cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number | null }>
   /**
-   * `ADB_INSTALL_VERIFIER`, read through a function so a test can drive both
-   * policies without reaching into module-load environment state.
+   * `advanced.disableAdbInstallVerifier`, mapped to this component's own
+   * vocabulary. Read through a function, not a value, for two reasons: a
+   * test can drive both policies, and the registry is built once at boot
+   * while the setting can be flipped at any time — so every pass must ask
+   * again rather than capture the value it was built with.
    */
   policy: () => 'keep' | 'disable'
   log: Logger
 }
 
 /**
- * Turns Android's adb-install verifier off on one device (opt-in).
+ * Turns Android's adb-install verifier off on one device, when the farm
+ * setting `advanced.disableAdbInstallVerifier` says to (on by default).
  *
  * Why this is a preparation component rather than a step hidden inside an
  * installer: it is per-device, it can fail per-device, and an operator has
@@ -56,7 +60,7 @@ export function createAdbVerifierComponent(deps: AdbVerifierComponentDeps): Prep
       return deps.policy() === 'disable'
     },
     unsupportedReason() {
-      return `Enkaku leaves this device's install verifier as the device shipped it — set ENKAKU_ADB_INSTALL_VERIFIER=disable to turn Play Protect's adb-install check off farm-wide`
+      return `Enkaku leaves this device's install verifier as the device shipped it — turn on "Turn off Play Protect's adb-install check" in Settings → Advanced to change that farm-wide`
     },
 
     async run(row: DeviceRow): Promise<PreparationRunResult> {

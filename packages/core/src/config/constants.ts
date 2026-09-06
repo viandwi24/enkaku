@@ -136,37 +136,6 @@ export const ADB_TIMEOUT_STORM_RATE = num('ENKAKU_ADB_TIMEOUT_STORM_RATE', 0.5, 
 export const ADB_RESTART_COOLDOWN_SEC = num('ENKAKU_ADB_RESTART_COOLDOWN_SEC', 60, z.number().int().min(10).max(3600))
 export const ADB_DRAIN_TIMEOUT_MS = num('ENKAKU_ADB_DRAIN_TIMEOUT_MS', 30_000, z.number().int().min(5_000).max(300_000))
 
-/**
- * What Enkaku does about Android's own verification of an `adb install`.
- *
- * `adb install` is NOT exempt from Play Protect on a GMS device: the global
- * `verifier_verify_adb_installs` defaults to 1, and what adb skips is the
- * *unknown sources* consent dialog, not the verifier
- * (`docs/research/android-guest-agent.md` §6, read off AOSP's own
- * `VerifyingSession.java`). So every install the core performs is sent to
- * Play Services for a verdict, and a verdict of "unsafe" puts a modal on
- * that device's screen and holds the install session open until a human
- * taps through it.
- *
- * The openatx `ui-server` pair (`com.github.uiautomator` and its `.test`
- * instrumentation, pinned in the toolchain manifest) draws exactly that
- * modal on a GMS device: it is a widely distributed, long-lived public
- * automation binary that Google holds a standing verdict on. Our own guest
- * agent does not, despite asking for strictly more (AccessibilityService
- * AND VpnService) — which is the tell that the verdict is about the
- * binary's reputation, not about what it requests.
- *
- * `keep` (the default) leaves Android's verifier exactly as the device
- * shipped it. `disable` lets the `adb-verifier` preparation component turn
- * it off, once per device, before anything is installed.
- *
- * This is deliberately opt-in and deliberately NOT a farm setting: spec §14
- * closes both settings lists, and weakening a device's install-time malware
- * check is a farm-owner's explicit decision, never a default we make for
- * them. It only makes sense on devices the farm owns outright.
- */
-export const ADB_INSTALL_VERIFIER = pick('ENKAKU_ADB_INSTALL_VERIFIER', 'keep', ['keep', 'disable'] as const)
-
 // ── Network sweep and cutover (replaces discovery.scan.*, discovery.cutover.*) ──
 export const SCAN_MODE = pick('ENKAKU_SCAN_MODE', 'on-demand', ['off', 'on-demand'] as const)
 export const SCAN_MAX_ADDRESSES = num('ENKAKU_SCAN_MAX_ADDRESSES', PROTOCOL_SCAN_MAX_ADDRESSES, z.number().int().min(64).max(4096))

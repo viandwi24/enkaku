@@ -11,7 +11,13 @@ export interface PreparationRegistryDeps {
   uiServerExpectedArtifact: () => Promise<UiServerExpectedArtifact | null>
   /** Plan 106 §5 step 106.8 — see `ui-server-component.ts`'s own `UiServerComponentDeps.installApk` doc comment. Optional; falls back to `hostAdb` (the pre-106.8 path) when absent. */
   installApk?: (deviceId: string, localPath: string, label: 'app' | 'test', packageName: string) => Promise<void>
-  /** `ADB_INSTALL_VERIFIER` — see `adb-verifier-component.ts`. Optional; absent means `keep`, the default policy. */
+  /**
+   * `advanced.disableAdbInstallVerifier`, mapped to the component's own
+   * vocabulary — see `adb-verifier-component.ts`. Read fresh on every pass so
+   * flipping the setting takes effect without a restart. Optional; absent
+   * means `keep`, the conservative reading for a caller with no settings
+   * store to hand it (a unit test, say) rather than the farm default.
+   */
   adbInstallVerifier?: () => 'keep' | 'disable'
   log: Logger
 }
@@ -27,8 +33,8 @@ export interface PreparationRegistryDeps {
  * ORDER MATTERS: `runner.ts`'s `ensureImpl` walks this array in sequence for
  * one device, so `adb-verifier` goes first — turning Play Protect's
  * adb-install check off is only worth anything BEFORE the same pass installs
- * the `ui-server` pair. It resolves `unsupported` and touches nothing unless
- * the farm opted in (`ENKAKU_ADB_INSTALL_VERIFIER=disable`).
+ * the `ui-server` pair. A farm that has turned that setting off gets an
+ * `unsupported` row instead, and the device is never touched.
  */
 export function createPreparationRegistry(deps: PreparationRegistryDeps): PreparationComponent[] {
   return [

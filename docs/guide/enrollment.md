@@ -28,23 +28,22 @@ Wireless debugging uses **two different ports**: one for pairing (single-use, an
 
 If it fails, adb's own message is shown verbatim in the wizard — usually the cause is an expired code or a pairing port that has already changed.
 
-## "Blocked by Play Protect" during the first preparation pass
+## Play Protect and installs over adb
 
-On a phone with Google services, the first preparation pass after admission can put a Play Protect warning on the screen — usually naming **ATX** (`com.github.uiautomator`) and its test APK — that has to be cleared with **Install anyway** before the install finishes.
+`adb install` is not exempt from Play Protect. On a phone with Google services, `verifier_verify_adb_installs` defaults to 1, so every install Enkaku performs is sent to Play Services for a verdict — what adb skips is the *unknown sources* consent dialog, not the verifier. An "unsafe" verdict puts a warning on the phone's screen and holds the install open until someone taps **Install anyway**.
 
-Two things are worth knowing about it.
+It shows up for the openatx pair Enkaku uses for the `ui-server` inspector — usually named **ATX** (`com.github.uiautomator`) and its test APK — because that is a widely distributed public automation binary Google holds a standing verdict on. Enkaku's own guest agent draws no warning, even though it asks for strictly more.
 
-**It is not a bug in the APK.** `adb install` is not exempt from Play Protect: the phone's `verifier_verify_adb_installs` defaults to 1, so every install Enkaku performs is sent to Play Services for a verdict. What adb skips is the *unknown sources* consent dialog, not the verifier. The openatx pair Enkaku uses for the `ui-server` inspector is a widely distributed public automation binary that Google holds a standing verdict on; Enkaku's own guest agent is not, which is why it installs silently even though it asks for strictly more.
+Enkaku turns that check off by default, once per phone, before it installs anything. You will see it as the **Play Protect install check** row in the phone's preparation state. The setting is **Settings → Advanced → "Turn off Play Protect's adb-install check"**; changing it takes effect on the next pass, with no restart.
 
-**The modals appear one phone at a time,** because installs are bounded farm-wide and serialised per USB hub — an install parked on that modal holds its slot until someone taps through it, or until the install times out after two minutes and the pass is retried.
+What turning it on does and does not do:
 
-To stop the modal appearing at all, set the support override in your `.env` and restart the core:
+- It disables verification of installs arriving **over adb** — nothing else. Play Protect still scans Play Store installs, and still scans what is already on the phone.
+- Anyone with adb access to the phone can then install an APK without a warning. They already had full control of the phone through adb; what is lost is the last automatic check on that path.
+- The setting is undocumented (`@hide`), so Google may change it. If that happens the readback fails and the preparation row reports `failed` with the phone's own words — it does not fail quietly.
+- It does not survive a factory reset, and does not need to: the component re-reads and re-applies it on every admission, reconnect and boot sweep.
 
-```bash
-ENKAKU_ADB_INSTALL_VERIFIER=disable
-```
-
-Enkaku then turns the phone's adb-install verifier off, once per phone, before it installs anything — visible on the device as the **Play Protect install check** preparation row. It is off by default because it weakens the phone's install-time malware check: use it on phones the farm owns outright, not on someone's personal handset.
+Turn it **off** for a phone you do not own outright — someone's personal handset joining the farm temporarily. Then the warning comes back, and note that the modals arrive one phone at a time: installs are bounded farm-wide and serialised per USB hub, so an install parked on a modal holds its slot until somebody taps through it, or until it times out after two minutes and the pass is retried.
 
 ## Moving a device to the network (Wi-Fi and OTG)
 
