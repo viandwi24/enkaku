@@ -37,6 +37,45 @@ const PASTE_VIA_CLIPBOARD_MAX = 256
 const PRINTABLE_ASCII = /^[\x20-\x7e\n\r\t]*$/
 const INPUT_TEXT_CHUNK = 1000
 const PREPARING_RETRY_MS = 3_000
+/**
+ * The re-subscribe ladder after `stream.ended` (plan 600 §3.1).
+ *
+ * A cast used to subscribe exactly once and give up the moment the server
+ * said the picture was over: the only resubscribe was `ws.onReconnected`,
+ * which fires when the SOCKET drops, never when the SESSION dies. So a
+ * scrcpy that crashed (or any base-session death, `manager.ts`'s
+ * `onDisplayError`) left every tile of that device dark forever — even
+ * though the always-on builder had rebuilt the session a second later and
+ * `closeEntry` had dropped the tile's frame subscriber on the way out.
+ * Opening Device Control mounted a fresh cast, which is why the same phone
+ * read "Disconnected" on the Screens grid and streamed perfectly in the
+ * window (field report, 2026-09-06).
+ *
+ * The first step is short because the common case — a rebuilt session — is
+ * ready in about a second; the tail is long because a device that is
+ * genuinely gone must not be asked sixty times a minute. Once the ladder is
+ * exhausted it stays at its last step rather than stopping: there is no
+ * state in which giving up entirely is right, and the request is one small
+ * WS message.
+ */
+const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000]
+/**
+ * Seconds without a frame before the cast asks for a fresh keyframe rather
+ * than assuming the worst (plan 600 §3.2).
+ *
+ * A stalled H.264 stream and a dead one look identical from here, and they
+ * need opposite treatments. The server stops forwarding deltas the moment
+ * the socket congests (`ws-handlers.ts`'s `awaitingKeyframe`) and resumes
+ * only on the next IDR, so a picture can freeze with the stream perfectly
+ * alive; asking for the IDR ourselves is what unfreezes it. A restart in
+ * that state would throw away a working subscription and re-run the whole
+ * attach for nothing.
+ *
+ * Cheap enough to repeat: one control message per interval, and scrcpy's
+ * own repeat-frame timer means a healthy stream never reaches this at all.
+ */
+const STALE_KEYFRAME_AFTER_SEC = 6
+const STALE_KEYFRAME_EVERY_SEC = 10
 
 export interface CastStats {
   streaming: boolean
@@ -59,6 +98,14 @@ export interface CastStats {
   stopped: string | null
   error: string | null
   notice: string | null
+  /**
+   * Which of the two retrying start failures produced `notice` (plan 600
+   * §3.3). The distinction is the whole point: `offline` is the ONE state in
+   * which the word "Disconnected" is true, and `preparing` is a farm that is
+   * already working on this device. The message text alone cannot be
+   * classified without matching on server prose.
+   */
+  noticeKind: 'preparing' | 'offline' | null
 }
 
 export interface UseCastOptions {
@@ -175,6 +222,7 @@ export function useCast(opts: UseCastOptions): UseCast {
   const [error, setError] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [noticeKind, setNoticeKind] = useState<'preparing' | 'offline' | null>(null)
   const [summary, setSummary] = useState<LatencySummary | null>(null)
   const [inputHost, setInputHost] = useState<InputHostLatency | null>(null)
   const [focused, setFocused] = useState(false)
@@ -187,11 +235,39 @@ export function useCast(opts: UseCastOptions): UseCast {
     estimatorRef.current.noteKeyframeRequest()
   }
 
-  // stream.start on mount, plus resubscribe on reconnect and manual retry.
+  // stream.start on mount, plus resubscribe on reconnect, on `stream.ended`
+  // (plan 600 §3.1) and on manual retry.
   useEffect(() => {
     let disposed = false
-    let preparingRetryTimer: ReturnType<typeof setTimeout> | null = null
+    /**
+     * The ONE pending `stream.start`, whichever reason scheduled it.
+     *
+     * Two independent timers (the preparing retry and the restart ladder)
+     * can both be armed by a flapping device, and two `stream.start`s that
+     * land together leave a binding on the server that nothing will ever
+     * stop — `streamIdRef` only remembers the last one.
+     */
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    /** True while a `stream.start` is on the wire, for the same reason. */
+    let starting = false
+    let restartAttempt = 0
     const frameTimes: number[] = []
+
+    function scheduleStart(delayMs: number) {
+      if (disposed) return
+      if (retryTimer !== null) clearTimeout(retryTimer)
+      retryTimer = setTimeout(() => {
+        retryTimer = null
+        void startStream()
+      }, delayMs)
+    }
+
+    /** One rung of `RESTART_BACKOFF_MS`, then the last rung forever. */
+    function scheduleRestart() {
+      const delay = RESTART_BACKOFF_MS[Math.min(restartAttempt, RESTART_BACKOFF_MS.length - 1)]!
+      restartAttempt++
+      scheduleStart(delay)
+    }
 
     /**
      * Publish the frame rate at most `FPS_PUBLISH_MS` apart, and only when the
@@ -222,6 +298,14 @@ export function useCast(opts: UseCastOptions): UseCast {
     }
 
     async function startStream() {
+      if (disposed) return
+      // Deferred, never dropped: a reconnect that lands while a start is
+      // still on the wire must not be the one that never happens.
+      if (starting) {
+        scheduleStart(200)
+        return
+      }
+      starting = true
       try {
         const res = await ws.request({ type: 'stream.start', id: newId(), payload: { deviceId, quality } })
         if (res.type !== 'stream.started' || disposed) return
@@ -242,18 +326,23 @@ export function useCast(opts: UseCastOptions): UseCast {
         lastPtsSeqRef.current = null
         setEncoderUnavailable(res.payload.degradedReason === 'control_encoder_unavailable')
         setNotice(null)
+        setNoticeKind(null)
         setError(null)
         setStopped(null)
         setStreaming(true)
+        restartAttempt = 0
       } catch (err) {
         if (disposed) return
         const code = err instanceof WsRequestError ? err.code : null
         if (code === 'E_SESSION_PREPARING' || code === 'device_offline') {
           setNotice(err instanceof Error ? err.message : String(err))
-          preparingRetryTimer = setTimeout(() => void startStream(), PREPARING_RETRY_MS)
+          setNoticeKind(code === 'device_offline' ? 'offline' : 'preparing')
+          scheduleStart(PREPARING_RETRY_MS)
         } else {
           setError(err instanceof Error ? err.message : String(err))
         }
+      } finally {
+        starting = false
       }
     }
 
@@ -270,6 +359,10 @@ export function useCast(opts: UseCastOptions): UseCast {
         setStreaming(false)
         setFps(0)
         setStopped(msg.payload.reason)
+        // The session died; the always-on builder is already rebuilding it.
+        // Nothing on the wire announces the rebuild to a viewer, so the
+        // viewer asks again until it is served (plan 600 §3.1).
+        scheduleRestart()
       } else if (msg.type === 'clipboard.changed' && msg.payload.deviceId === deviceId) {
         setDeviceClipboard(msg.payload.text)
         recordClipboard(msg.payload.text)
@@ -339,7 +432,7 @@ export function useCast(opts: UseCastOptions): UseCast {
 
     return () => {
       disposed = true
-      if (preparingRetryTimer !== null) clearTimeout(preparingRetryTimer)
+      if (retryTimer !== null) clearTimeout(retryTimer)
       offMsg()
       offBinary()
       offStatus()
@@ -385,10 +478,21 @@ export function useCast(opts: UseCastOptions): UseCast {
   }, [latencyOverlay, streaming, deviceId])
 
   useEffect(() => {
+    /** When the last keyframe nudge was sent, in the same seconds unit as `staleSec`. */
+    let nudgedAtSec = 0
     const t = setInterval(() => {
       const last = lastFrameRef.current
       const sec = last === 0 ? 0 : Math.round((performance.now() - last) / 1000)
       setStaleSec(sec)
+      // A frozen picture on a live subscription (plan 600 §3.2): ask for the
+      // IDR the server is waiting for instead of tearing the stream down.
+      if (streamIdRef.current === null || sec < STALE_KEYFRAME_AFTER_SEC) {
+        nudgedAtSec = 0
+        return
+      }
+      if (nudgedAtSec !== 0 && sec - nudgedAtSec < STALE_KEYFRAME_EVERY_SEC) return
+      nudgedAtSec = sec
+      requestKeyframe()
     }, 1000)
     return () => clearInterval(t)
   }, [])
@@ -777,6 +881,7 @@ export function useCast(opts: UseCastOptions): UseCast {
       summary,
       inputHost,
       stopped,
+      noticeKind,
       error,
       notice,
     },

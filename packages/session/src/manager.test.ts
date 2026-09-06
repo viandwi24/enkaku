@@ -537,6 +537,28 @@ describe('SessionManager — encoder split (plan 206 §3.4, §4.3)', () => {
     expect(ended).toEqual([{ deviceId: DEVICE_ID, reason: 'the scrcpy session ended: device unplugged' }])
     expect(manager.encoders()).toEqual([])
   })
+
+  test('closeDevice reports onSessionEnded once, so viewers of an unplugged device are told (plan 600 §3.6)', async () => {
+    const ended: Array<{ deviceId: string; reason: string }> = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      onSessionEnded: (deviceId, reason) => ended.push({ deviceId, reason }),
+      makeScrcpy: async () => fakeScrcpy(),
+    })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    await manager.attachViewer(DEVICE_ID, 'wall', () => {})
+
+    await manager.closeDevice(DEVICE_ID)
+    expect(ended).toEqual([{ deviceId: DEVICE_ID, reason: 'device_gone' }])
+    expect(manager.encoders()).toEqual([])
+
+    // A device with nothing open says nothing: a second call must not
+    // announce the end of a picture that was already over.
+    await manager.closeDevice(DEVICE_ID)
+    expect(ended).toHaveLength(1)
+  })
 })
 
 describe('SessionManager.forwards() (plan 223 §4.3)', () => {

@@ -19,28 +19,36 @@ interface FakeRegistry {
   onOnline: (serial: string) => Promise<void>
   onRemove: (serial: string) => void
   knownSerials: () => Set<string>
+  staleOfflineSerials: () => Set<string>
   pendingRetryCount: () => number
   onlineCalls: string[]
   removeCalls: string[]
   known: Set<string>
+  /** Serials the fake registry stores as `offline` while adb still reports them (plan 600 §3.5). */
+  staleOffline: Set<string>
   retryCount: number
 }
 
-function fakeRegistry(known: string[] = []): FakeRegistry {
+function fakeRegistry(known: string[] = [], staleOffline: string[] = []): FakeRegistry {
   const state: FakeRegistry = {
     onlineCalls: [],
     removeCalls: [],
     known: new Set(known),
+    staleOffline: new Set(staleOffline),
     retryCount: 0,
     onOnline: async (serial: string) => {
       state.onlineCalls.push(serial)
       state.known.add(serial)
+      // A successful probe is what clears the stale-offline state in the
+      // real registry (`states.apply(DEVICE_CONNECTED)`).
+      state.staleOffline.delete(serial)
     },
     onRemove: (serial: string) => {
       state.removeCalls.push(serial)
       state.known.delete(serial)
     },
     knownSerials: () => new Set(state.known),
+    staleOfflineSerials: () => new Set(state.staleOffline),
     pendingRetryCount: () => state.retryCount,
   }
   return state
@@ -66,10 +74,11 @@ const settingsOf = (overrides: Partial<{ scanIntervalSec: number; offlineGraceSe
 function makeDeps(opts: {
   list: TrackedDevice[]
   known?: string[]
+  staleOffline?: string[]
   settings?: ReturnType<typeof settingsOf>
   onReconnect?: () => void
 }): { deps: DeviceReconcilerDeps; registry: FakeRegistry; broadcasts: ServerMessage[] } {
-  const registry = fakeRegistry(opts.known ?? [])
+  const registry = fakeRegistry(opts.known ?? [], opts.staleOffline ?? [])
   const broadcasts: ServerMessage[] = []
   const settings = opts.settings ?? settingsOf()
   const deps: DeviceReconcilerDeps = {
@@ -98,6 +107,19 @@ describe('DeviceReconciler.runOnce — adopt (plan 85 §3.3 point 3, fixes F8/F9
     const report = await reconciler.runOnce()
     expect(report.adopted).toEqual([])
     expect(registry.onlineCalls).toEqual([])
+  })
+
+  test('a known device whose row is stuck offline while adb reports it is re-adopted (plan 600 §3.5)', async () => {
+    const { deps, registry } = makeDeps({ list: [{ serial: 'SER1', state: 'device' }], known: ['SER1'], staleOffline: ['SER1'] })
+    const reconciler = createDeviceReconciler(deps)
+    const report = await reconciler.runOnce()
+    expect(report.adopted).toEqual(['SER1'])
+    expect(registry.onlineCalls).toEqual(['SER1'])
+    // And exactly once: the repair clears the stale status, so the next
+    // pass must not probe the same device again forever.
+    const second = await reconciler.runOnce()
+    expect(second.adopted).toEqual([])
+    expect(registry.onlineCalls).toEqual(['SER1'])
   })
 
   test('does not double-probe a device already known — the reconciler goes through the SAME onOnline dedupe the tracker uses (plan 85 §8 risk table)', async () => {
