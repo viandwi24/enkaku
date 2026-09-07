@@ -334,12 +334,33 @@ export function useCast(opts: UseCastOptions): UseCast {
       } catch (err) {
         if (disposed) return
         const code = err instanceof WsRequestError ? err.code : null
+        const text = err instanceof Error ? err.message : String(err)
         if (code === 'E_SESSION_PREPARING' || code === 'device_offline') {
-          setNotice(err instanceof Error ? err.message : String(err))
+          setNotice(text)
           setNoticeKind(code === 'device_offline' ? 'offline' : 'preparing')
           scheduleStart(PREPARING_RETRY_MS)
+        } else if (code === null) {
+          /*
+            No code means the REQUEST failed, not the device: `ws.request`
+            timed out at 25 s, or the socket went away mid-flight. Neither is
+            a statement about this phone, and neither used to retry — the card
+            painted a red "Video error" and stayed dead until it was
+            remounted.
+
+            That is not a rare case on a big wall. Sixty-odd cards all call
+            `stream.start` at once, and the owner's farm runs adb pinned to
+            `maxConcurrent: 2` with ui-server probes taking 10-11 s apiece, so
+            the cards at the back of that queue routinely wait longer than the
+            client is willing to. They were the ones showing "video error" for
+            a phone that was online and streaming fine a moment later.
+
+            So it climbs the restart ladder like any other lost stream, and
+            reads as "Reconnecting" with the reason in the tooltip.
+          */
+          setStopped(text)
+          scheduleRestart()
         } else {
-          setError(err instanceof Error ? err.message : String(err))
+          setError(text)
         }
       } finally {
         starting = false
@@ -366,9 +387,25 @@ export function useCast(opts: UseCastOptions): UseCast {
       } else if (msg.type === 'clipboard.changed' && msg.payload.deviceId === deviceId) {
         setDeviceClipboard(msg.payload.text)
         recordClipboard(msg.payload.text)
-      } else if (msg.type === 'error') {
-        setError(msg.payload.message)
       }
+      /*
+        There is deliberately no `msg.type === 'error'` branch here.
+
+        `ErrorMessage` carries `{code, message}` and NO deviceId (protocol
+        `ErrorMessage`), so a cast hook cannot tell whether an error is about
+        its own phone. This used to `setError(msg.payload.message)` anyway —
+        and because `ws` is one module-level socket shared by every card on
+        the page, a single such message painted a red "Video error" on all
+        sixty-six tiles at once, for phones that were streaming perfectly.
+
+        Nothing reaches here that belongs to a device in the first place: the
+        client dispatches an error carrying a request `id` straight to that
+        request's waiter and returns (`lib/ws.ts`), so a refusal that IS about
+        this device is already handled by `startStream`'s own catch above.
+        What is left is the un-addressed remainder — a malformed-message
+        complaint, or a reply that arrived after its 25 s waiter gave up — and
+        neither is this card's to report.
+      */
     })
 
     const offBinary = ws.onBinary((buf) => {
