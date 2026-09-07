@@ -54,7 +54,9 @@ describe('GET /api/labels', () => {
     applyDeviceLabels(db, 'd1', 'add', [carried.id])
 
     const { app } = makeApp(db)
-    const body = (await (await app.request('/')).json()) as { labels: Array<{ name: string; color: string; deviceCount: number }> }
+    const body = (await (await app.request('/')).json()) as {
+      labels: Array<{ id: string; name: string; color: string; description: string | null; createdAt: number; deviceCount: number }>
+    }
     expect(body.labels).toEqual([
       { id: expect.any(String), name: 'Smoke Pool', color: 'blue', description: null, createdAt: expect.any(Number), deviceCount: 1 },
       { id: expect.any(String), name: 'Unused', color: 'slate', description: null, createdAt: expect.any(Number), deviceCount: 0 },
