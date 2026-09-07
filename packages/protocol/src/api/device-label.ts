@@ -73,8 +73,8 @@ export const DeviceLabelClearBodySchema = z.object({ restoreOriginal: z.boolean(
 
 /**
  * The fleet-wide `POST /api/devices/labels/apply` body/response envelope
- * that used to live here is removed by plan 207 (MVP 07): `set-label` is now
- * one of the actions API verbs (`POST /api/actions/set-label`), and its
+ * that used to live here is removed by plan 207 (MVP 07): `apply-screen-label` is now
+ * one of the actions API verbs (`POST /api/actions/apply-screen-label`), and its
  * per-device result is `ActionResultSchema` with `detail: DeviceLabelState`
  * (`../actions.ts`), not a bespoke fleet envelope.
  */

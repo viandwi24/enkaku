@@ -371,7 +371,7 @@ function resolveScheduleDeviceIds(db: Db, schedule: ScheduleRow): string[] {
           if (!group) throw new EnkakuError('group_not_found', `no such group: ${target.groupId}`)
           return resolveGroup(db, group)
         })()
-      : resolveTarget(db, { tags: [], deviceIds: target.deviceIds })
+      : resolveTarget(db, { labelIds: [], deviceIds: target.deviceIds })
   if (resolved.usable.length === 0) {
     throw new EnkakuError(
       'E_NO_TARGETS',

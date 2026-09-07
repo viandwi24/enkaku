@@ -115,7 +115,7 @@ export const GENERIC_ACTIONS: readonly GenericAction[] = [
   // How the phone is set up and named.
   { id: 'settings', label: 'Settings', icon: GearIcon, group: 'config' },
   { id: 'set-group', label: 'Move group', icon: FolderSimpleIcon, submenu: 'group', group: 'config' },
-  { id: 'set-label', label: 'Label', icon: PencilSimpleIcon, group: 'config' },
+  { id: 'apply-screen-label', label: 'Screen label', icon: PencilSimpleIcon, group: 'config' },
 
   // Reached deliberately, not in the course of ordinary work. Screenshot
   // moved here from the main set (owner, 2026-09-05): it is not the browser

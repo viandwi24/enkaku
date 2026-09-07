@@ -35,7 +35,7 @@ import { setReadiness } from './impl/readiness'
 import { reconnectDevice, disconnectDevice, cutoverStart, cutoverCancel } from './impl/connection'
 import { forgetDevice, blockDevice, unquarantineDevice } from './impl/lifecycle'
 import { setLabel, clearLabel } from './impl/labelling'
-import { setGroup, setTags } from './impl/membership'
+import { setGroup, setLabels } from './impl/membership'
 import { installGuestAgent, prepareDevice, retryPrepareComponent, uninstallGuestAgent, type PreparationDeps } from './impl/preparation'
 import { installOnDevice, pushToDevice, pullFromDevice, type TransferDeps } from './impl/transfer'
 import { runShellCommand } from './impl/shell'
@@ -102,7 +102,7 @@ export interface ActionsDeps {
    * `set-group` needs to broadcast what changed, and a per-device read would
    * be an N+1 over tags, groups, readiness and activities for a verb whose
    * whole point is moving many devices at once. Wired in `daemon.ts` to the
-   * same `listDevicesWithTags` accessor every other list route uses.
+   * same `listDevicesWithLabels` accessor every other list route uses.
    */
   listDevices: () => DeviceInfo[]
   now?: () => number
@@ -375,12 +375,12 @@ async function dispatchSyncVerb(deps: ActionsDeps, request: ActionRequest, devic
       if (!ok) throw new EnkakuError('not_quarantined', 'not quarantined')
       return { unquarantined: true }
     }
-    case 'set-label':
-      return setLabel(requireDep(deps.labelling, 'set-label'), deviceId, { userId: actor.id })
-    case 'clear-label':
-      return clearLabel(requireDep(deps.labelling, 'clear-label'), deviceId, { restoreOriginal: request.restoreOriginal, actor: { userId: actor.id } })
-    case 'set-tags':
-      return setTags(deps.db, deviceId, request.tags)
+    case 'apply-screen-label':
+      return setLabel(requireDep(deps.labelling, 'apply-screen-label'), deviceId, { userId: actor.id })
+    case 'clear-screen-label':
+      return clearLabel(requireDep(deps.labelling, 'clear-screen-label'), deviceId, { restoreOriginal: request.restoreOriginal, actor: { userId: actor.id } })
+    case 'set-labels':
+      return setLabels(deps.db, deviceId, request.op, request.labelIds)
     case 'reprofile': {
       const sessionsApi = deps.sessions()
       const s = sessionsApi?.get(deviceId)

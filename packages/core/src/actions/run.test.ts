@@ -143,7 +143,7 @@ describe('target resolution and per-device results (MVP 07, plan 207 §4.2)', ()
     const { deps } = setUp()
     const response = await runAction(
       deps,
-      { verb: 'set-tags', target: { deviceIds: ['d-offline'] }, force: false, tags: ['a'] } as ActionRequest,
+      { verb: 'set-labels', target: { deviceIds: ['d-offline'] }, force: false, op: 'add', labelIds: [] } as ActionRequest,
       actor,
     )
     expect(response.results).toHaveLength(1)

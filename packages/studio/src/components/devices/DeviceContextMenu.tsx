@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect } from 'react'
-import type { Target } from '@enkaku/protocol'
-import { DeviceMobileIcon, cn } from '@enkaku/ui'
+import { useEffect, useState } from 'react'
+import type { DeviceInfo, Target } from '@enkaku/protocol'
+import { CaretRightIcon, DeviceMobileIcon, TagIcon, cn } from '@enkaku/ui'
+import { LabelAssign } from '@/components/labels/LabelAssign'
 import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
 import { useOverlay } from '@/lib/overlays'
 import { ActionMenu } from './ActionMenu'
@@ -49,15 +50,27 @@ const ROW = 'flex w-full items-center gap-2.5 rounded-button px-[10px] py-[9px] 
 export function DeviceContextMenu({
   request,
   target,
+  targetDevices,
+  onLabelsChanged,
   onClose,
   onOpenControl,
 }: {
   request: DeviceContextMenuRequest
   /** What the action rows act on — the resolved selection, built by `DevicesScreen`. */
   target: Target
+  /**
+   * The same devices `target` names, as live rows (plan 225 §4.6). The label
+   * panel needs more than their ids: it shows which labels the selection
+   * already carries, and across a mixed selection that is a three-state
+   * answer per label, not a boolean.
+   */
+  targetDevices: DeviceInfo[]
+  /** The farm's label list changed (a label was created from inside the panel) — refresh the counts. */
+  onLabelsChanged: () => void
   onClose: () => void
   onOpenControl: (deviceId: string) => void
 }) {
+  const [labelsOpen, setLabelsOpen] = useState(false)
   useOverlay('menu', true, onClose)
 
   /*
@@ -127,6 +140,48 @@ export function DeviceContextMenu({
         <span className="text-label text-faint">
           {request.count === 1 ? 'Actions for this device' : `Actions for ${request.count} selected`}
         </span>
+      </div>
+
+      {/*
+        Labels sit ABOVE the generic action set, in their own row with their
+        own panel, rather than as a nineteenth verb inside it.
+        `ActionMenu`'s rows all open an `ActionDialog` — a modal with a target
+        picker and a form — and labelling is the one operation an operator
+        does dozens of times in a sitting while looking at the list. A modal
+        per label would make the feature unusable at exactly the scale it is
+        for.
+      */}
+      <div className="relative border-t border-line p-1">
+        <button
+          type="button"
+          className={cn(ROW, labelsOpen && 'bg-muted')}
+          // Click, not hover, unlike the action groups below it. A group's
+          // panel is a list you glance at and leave; this one is a list you
+          // TICK, several times, and a panel that opens and closes with the
+          // pointer would shut itself the moment you reached for a checkbox
+          // by way of the row beneath.
+          onClick={() => setLabelsOpen((v) => !v)}
+          aria-expanded={labelsOpen}
+        >
+          <TagIcon className="size-4 text-faint" aria-hidden />
+          <span className="flex-1 text-left">Labels</span>
+          <CaretRightIcon className="size-3 text-faint" aria-hidden />
+        </button>
+        {labelsOpen && (
+          <div
+            className={cn(
+              'absolute rounded-card border border-border bg-panel shadow-panel-2',
+              submenuSide === 'left' ? 'right-full mr-1' : 'left-full ml-1',
+              flipUp ? 'bottom-0' : 'top-0',
+            )}
+            // Clicks inside the panel must not reach the menu behind it —
+            // the panel stays open across many ticks, which is its point.
+            onClick={(e) => e.stopPropagation()}
+            onMouseEnter={(e) => e.stopPropagation()}
+          >
+            <LabelAssign devices={targetDevices} onChanged={onLabelsChanged} onDone={onClose} />
+          </div>
+        )}
       </div>
 
       <ActionMenu

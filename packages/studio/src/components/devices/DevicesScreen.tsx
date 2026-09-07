@@ -6,6 +6,7 @@ import type { Target } from '@enkaku/protocol'
 import { EnrollmentDialog } from '@/components/EnrollmentDialog'
 import { useDeviceControl, useFocusedDeviceId } from '@/components/device-control/DeviceControlHost'
 import { retargetSelection } from '@/components/device-control/retarget'
+import { useLabels } from '@/lib/labels'
 import { readLocalPrefs, readSessionPrefs, writeLocalPrefs, writeSessionPrefs } from '@/lib/prefs'
 import { ws } from '@/lib/ws'
 import { BulkPill } from './BulkPill'
@@ -36,11 +37,24 @@ export function DevicesScreen() {
 
   const { devices, groups, discovered, reload } = useDevices()
   const { queuedFor } = useQueuedJobs()
+  const labelState = useLabels()
 
   const [activeGroup, setActiveGroup] = useState(params.get('group') ?? 'all')
   const [view, setView] = useState<DevicesView>(() => (params.get('view') as DevicesView) || readSessionPrefs().devicesView || 'table')
   const [cardWidth, setCardWidth] = useState<CardWidth>(() => readLocalPrefs().cardWidth)
   const [filter, setFilter] = useState<DevicesFilter>('all')
+  /**
+   * The label filter, AND across ids: a device must carry EVERY selected
+   * label to survive it. Deliberately not OR — "Smoke Pool and Android 15"
+   * is the question labels exist to answer, and a union of two labels is
+   * already what looking at them one at a time gives you.
+   *
+   * Ids rather than names, so a rename mid-session does not silently empty
+   * the list; and NOT mirrored into the query string, unlike `group`, because
+   * a multi-select would turn a shareable address into a set of ids that
+   * means nothing on another farm.
+   */
+  const [labelIds, setLabelIds] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [discoveryOpen, setDiscoveryOpen] = useState(false)
   // The fleet menu's two dialogs (owner, 2026-09-04). Both live here rather
@@ -134,9 +148,20 @@ export function DevicesScreen() {
     [groupScoped, filter],
   )
 
+  const labelFiltered = useMemo(
+    () =>
+      labelIds.length === 0
+        ? statusFiltered
+        : statusFiltered.filter((d) => {
+            const carried = new Set(d.labels.map((l) => l.id))
+            return labelIds.every((id) => carried.has(id))
+          }),
+    [statusFiltered, labelIds],
+  )
+
   const filtered = useMemo(
-    () => statusFiltered.filter((d) => matchesDevice(d, query, taskLabelOf(d, queuedFor(d.id)))),
-    [statusFiltered, query, queuedFor],
+    () => labelFiltered.filter((d) => matchesDevice(d, query, taskLabelOf(d, queuedFor(d.id)))),
+    [labelFiltered, query, queuedFor],
   )
 
   const filteredIds = useMemo(() => filtered.map((d) => d.id), [filtered])
@@ -221,6 +246,10 @@ export function DevicesScreen() {
         onCardWidthChange={setCardWidthAndPersist}
         filter={filter}
         onFilterChange={setFilter}
+        labelState={labelState}
+        activeLabelIds={labelIds}
+        onToggleLabel={(id) => setLabelIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))}
+        onClearLabels={() => setLabelIds([])}
         query={query}
         onQueryChange={setQuery}
         matchCount={filtered.length}
@@ -249,6 +278,11 @@ export function DevicesScreen() {
         <DeviceContextMenu
           request={contextMenu}
           target={{ deviceIds: [...contextTarget] }}
+          // The devices the label panel edits — the SAME resolved selection
+          // the action rows act on, read from the live list so the panel's
+          // checkboxes reflect what each device carries right now.
+          targetDevices={(devices ?? []).filter((d) => contextTarget.includes(d.id))}
+          onLabelsChanged={labelState.reload}
           onClose={() => setContextMenu(null)}
           onOpenControl={(id) => setFocus(id, retargetSelection(id, [...contextTarget]))}
         />

@@ -561,6 +561,13 @@
       "when": 1788636251914,
       "tag": "0079_regular_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "6",
+      "when": 1788761867562,
+      "tag": "0080_unusual_shadowcat",
+      "breakpoints": true
     }
   ]
 }

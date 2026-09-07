@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { DeviceInfo } from '@enkaku/protocol'
-import { Spinner, StatusDot, cn } from '@enkaku/ui'
+import { LabelChip, Spinner, StatusDot, cn } from '@enkaku/ui'
 import { LiveView } from '@/components/LiveView'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
 import { dotStateOf, dotTooltipOf, reconnectingAttempt } from './device-state'
@@ -115,6 +115,31 @@ export function DeviceScreenCard({
               </>
             ) : (
               <span className={cn('text-label', device.status === 'quarantined' ? 'text-warn' : 'text-faint-2')}>{idleLabelOf(device)}</span>
+            )}
+          </div>
+        )}
+        {/*
+          Labels along the bottom of the tile, one row, clipped.
+          
+          A tile is as narrow as 112px at the smallest card width, so this
+          shows the FIRST label only and counts the rest — the same rule the
+          table's own Labels column follows, for the same reason: a wall is
+          read by scanning, and a tile whose chips wrap has changed height
+          relative to its neighbours.
+          
+          Left-padded past the status dot, right-padded before the agent
+          chip, so it can never sit under either.
+        */}
+        {device.labels.length > 0 && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-1.5 flex items-center justify-center gap-1 overflow-hidden px-7">
+            <LabelChip name={device.labels[0]!.name} color={device.labels[0]!.color} />
+            {device.labels.length > 1 && (
+              <span
+                title={device.labels.slice(1).map((l) => l.name).join(', ')}
+                className="flex-none text-tip text-faint"
+              >
+                +{device.labels.length - 1}
+              </span>
             )}
           </div>
         )}

@@ -1,13 +1,14 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import type { DeviceInfo } from '@enkaku/protocol'
+import type { DeviceInfo, DeviceLabelRef } from '@enkaku/protocol'
 import {
   Badge,
   CaretDownIcon,
   CheckIcon,
   DeviceName,
   Input,
+  LabelChip,
   MagnifyingGlassIcon,
   StatusDot,
   Tabs,
@@ -83,13 +84,13 @@ export function DevicePicker({
             <TabsList variant="compact">
               <TabsTrigger value="devices">Devices</TabsTrigger>
               <TabsTrigger value="group">Group</TabsTrigger>
-              <TabsTrigger value="tags">Tags</TabsTrigger>
+              <TabsTrigger value="labels">Labels</TabsTrigger>
             </TabsList>
           </Tabs>
 
           {state.mode === 'devices' && <DeviceMode state={state} query={query} setQuery={setQuery} />}
           {state.mode === 'group' && <GroupMode state={state} />}
-          {state.mode === 'tags' && <TagMode state={state} />}
+          {state.mode === 'labels' && <LabelMode state={state} />}
         </div>
       )}
 
@@ -234,35 +235,35 @@ function GroupMode({ state }: { state: TargetState }) {
   )
 }
 
-/** Every tag on the farm as a toggle chip; AND semantics, stated in the copy (§3.11). */
-function TagMode({ state }: { state: TargetState }) {
-  const allTags = useMemo(() => {
-    const set = new Set<string>()
-    for (const d of state.devices) for (const t of d.tags) set.add(t)
-    return [...set].sort()
+/** Every label on the farm as a toggle chip; AND semantics, stated in the copy (§3.11). */
+function LabelMode({ state }: { state: TargetState }) {
+  const allLabels = useMemo(() => {
+    // Read off the devices rather than fetched: this picker already holds the
+    // whole fleet, and a label nobody carries resolves to no devices anyway —
+    // so offering it here would only ever produce an empty target.
+    const byId = new Map<string, DeviceLabelRef>()
+    for (const d of state.devices) for (const l of d.labels) byId.set(l.id, l)
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
   }, [state.devices])
 
   return (
     <div className="space-y-1.5">
-      <p className="text-tip text-faint">A device must carry every tag chosen below.</p>
+      <p className="text-tip text-faint">A device must carry every label chosen below.</p>
       <div className="flex flex-wrap gap-1.5">
-        {allTags.length === 0 ? (
-          <p className="px-2 py-3 text-center text-meta text-faint">No tag exists yet.</p>
+        {allLabels.length === 0 ? (
+          <p className="px-2 py-3 text-center text-meta text-faint">No label is on a device yet.</p>
         ) : (
-          allTags.map((tag) => {
-            const active = state.tags.includes(tag)
+          allLabels.map((label) => {
+            const active = state.labelIds.includes(label.id)
             return (
               <button
-                key={tag}
+                key={label.id}
                 type="button"
-                onClick={() => state.toggleTag(tag)}
+                onClick={() => state.toggleLabel(label.id)}
                 aria-pressed={active}
-                className={cn(
-                  'rounded-pill border px-2 py-0.5 text-label transition-colors',
-                  active ? 'border-accent bg-accent-soft text-accent' : 'border-border-2 bg-panel text-text hover:bg-muted',
-                )}
+                className={cn('rounded-chip transition-opacity', active ? 'ring-1 ring-accent' : 'opacity-70 hover:opacity-100')}
               >
-                {tag}
+                <LabelChip name={label.name} color={label.color} />
               </button>
             )
           })

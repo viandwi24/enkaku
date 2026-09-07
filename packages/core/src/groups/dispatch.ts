@@ -115,7 +115,7 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
     groupId = group.id
     resolved = resolveGroup(db, group)
   } else {
-    resolved = resolveTarget(db, { tags: [], deviceIds: input.target.deviceIds })
+    resolved = resolveTarget(db, { labelIds: [], deviceIds: input.target.deviceIds })
   }
 
   if (resolved.usable.length === 0) {
@@ -247,7 +247,7 @@ export function createWorkflowBatch(
     groupId = group.id
     resolved = resolveGroup(db, group)
   } else {
-    resolved = resolveTarget(db, { tags: [], deviceIds: input.target.deviceIds })
+    resolved = resolveTarget(db, { labelIds: [], deviceIds: input.target.deviceIds })
   }
 
   if (resolved.usable.length === 0) {

@@ -1,12 +1,13 @@
 'use client'
 
 import { connectionBadge, type DeviceInfo } from '@enkaku/protocol'
-import { Checkbox, StatusDot, cn, formatDeviceName } from '@enkaku/ui'
+import { Checkbox, LabelChip, StatusDot, cn, formatDeviceName } from '@enkaku/ui'
 import { dotStateOf, dotTooltipOf } from './device-state'
 import { TaskCell } from './TaskCell'
 
 /** The handoff's grid, character for character. Two `fr` columns, so it cannot be a `<table>` (plan 214 §4.8). */
-const COLS = 'grid grid-cols-[38px_44px_1.3fr_108px_92px_138px_70px_74px_62px_62px_62px_76px_1.1fr] items-center'
+const COLS =
+  'grid grid-cols-[38px_44px_1.3fr_1fr_108px_92px_138px_70px_74px_62px_62px_62px_76px_1.1fr] items-center'
 
 const HEAD = 'px-2 text-left text-label font-medium text-faint'
 const MONO = 'px-2 font-mono text-[12px] text-text-3'
@@ -54,13 +55,14 @@ export function DeviceTable({
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <div role="table" className="min-w-[1324px]">
+      <div role="table" className="min-w-[1460px]">
         <div role="row" className={cn(COLS, 'sticky top-0 z-10 h-[38px] border-b border-line bg-panel-2')}>
           <div className="flex items-center justify-center">
             <Checkbox checked={allSelected} onCheckedChange={(v) => onSelectAll(Boolean(v))} />
           </div>
           <span className={HEAD}>#</span>
           <span className={HEAD}>Device</span>
+          <span className={HEAD}>Labels</span>
           <span className={HEAD}>Serial</span>
           <span className={HEAD}>OS</span>
           <span className={HEAD}>Endpoint</span>
@@ -114,6 +116,27 @@ export function DeviceTable({
                   <div className="truncate text-row font-medium text-text">{formatDeviceName(device.number, device.label)}</div>
                   <div className="truncate text-label text-faint">{device.model ?? device.stableId}</div>
                 </div>
+              </div>
+              {/*
+                One row of chips, clipped rather than wrapped: the row height
+                is fixed at 54px by the handoff's grid, and a device carrying
+                six labels must not be allowed to push its neighbours out of
+                alignment. `+N` says how many are hidden, and the title
+                attribute names them, so nothing is silently lost.
+              */}
+              <div className="flex min-w-0 items-center gap-1 overflow-hidden px-2">
+                {device.labels.slice(0, 2).map((l) => (
+                  <LabelChip key={l.id} name={l.name} color={l.color} />
+                ))}
+                {device.labels.length > 2 && (
+                  <span
+                    title={device.labels.slice(2).map((l) => l.name).join(', ')}
+                    className="flex-none text-label text-faint"
+                  >
+                    +{device.labels.length - 2}
+                  </span>
+                )}
+                {device.labels.length === 0 && <span className="text-body text-faint-2">—</span>}
               </div>
               <span className={MONO}>{device.serial}</span>
               <span className="px-2 text-body text-text-3">{device.androidVersion ?? '—'}</span>

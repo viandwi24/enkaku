@@ -94,6 +94,11 @@ export {
  *   prototype file draws them (`Enkaku Device List.dc.html:1400-1401`,
  *   `:1541`); only the README's prose, which group 1 is derived from, does
  *   not name them.
+ * - `TagIcon` for the devices toolbar's label filter and the label chips it
+ *   manages (plan 225 §4.3). The handoff draws no labels control at all —
+ *   the feature postdates it — and a second `FunnelIcon` beside the status
+ *   filter would say the two controls do the same thing, which is exactly
+ *   the confusion the separate control exists to avoid.
  */
 export {
   ArrowsLeftRightIcon,
@@ -103,6 +108,7 @@ export {
   ExportIcon,
   PauseIcon,
   RobotIcon,
+  TagIcon,
 } from '@phosphor-icons/react'
 
 /**

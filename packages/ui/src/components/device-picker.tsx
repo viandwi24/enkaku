@@ -2,9 +2,10 @@
 
 import { useMemo, useState, type ReactNode } from 'react'
 import { CheckIcon, MagnifyingGlassIcon } from '../icons'
-import type { DeviceStatus } from '@enkaku/protocol'
+import type { DeviceLabelRef, DeviceStatus } from '@enkaku/protocol'
 import { DeviceName } from './device-name'
 import { Input } from './input'
+import { LabelChip } from './label-chip'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './tooltip'
 import { cn } from '../lib/utils'
 import { matchesDeviceQuery } from '../lib/device-name'
@@ -57,12 +58,12 @@ function cannotTakeJob(status: DeviceStatus | undefined): boolean {
  *
  * `DeviceInfo` satisfies it, so Studio passes its devices unchanged. A
  * caller that genuinely has less — the MikroTik plugin's `FleetDeviceRow`
- * knows a device's id, name and number but nothing about its status, tags or
+ * knows a device's id, name and number but nothing about its status, labels or
  * group — passes what it has and the picker simply does not draw what it
  * was not given.
  *
  * The alternative was to make such a caller synthesise `status: 'idle'`,
- * `tags: []`, `group: null` to satisfy `DeviceInfo`. That is not a type
+ * `labels: []`, `group: null` to satisfy `DeviceInfo`. That is not a type
  * workaround, it is a lie rendered on screen: every row would carry an
  * "idle" badge that nobody had checked. Optional fields say "unknown"
  * honestly; invented ones say something false confidently.
@@ -75,8 +76,8 @@ interface PickableDevice {
   number?: number | null
   /** Absent = unknown. A device whose status is unknown is never treated as unavailable. */
   status?: DeviceStatus
-  /** Absent = none known; the tag chips row then does not render at all. */
-  tags?: readonly string[]
+  /** Absent = none known; the label chips row then does not render at all. */
+  labels?: readonly DeviceLabelRef[]
   group?: { id: string; name: string } | null
 }
 
@@ -121,24 +122,24 @@ type DevicePickerProps<D extends PickableDevice = PickableDevice> = DevicePicker
 export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<D>) {
   const { devices } = props
   const [query, setQuery] = useState('')
-  const [activeTag, setActiveTag] = useState<string | null>(null)
+  const [activeLabelId, setActiveLabelId] = useState<string | null>(null)
 
-  const allTags = useMemo(() => {
-    const set = new Set<string>()
-    for (const d of devices) for (const t of d.tags ?? []) set.add(t)
-    return [...set].sort()
+  const allLabels = useMemo(() => {
+    const byId = new Map<string, DeviceLabelRef>()
+    for (const d of devices) for (const l of d.labels ?? []) byId.set(l.id, l)
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
   }, [devices])
 
   const filtered = useMemo(() => {
     return devices.filter((d) => {
-      // The tag CHIP is a different control from the search box and stays
-      // here: it is an exact, single-tag toggle driven by `toggleTag` below
-      // (which also bulk-selects in `multiple` mode), not a text match, so
-      // `matchesDeviceQuery`'s substring tag matching would be the wrong
+      // The label CHIP is a different control from the search box and stays
+      // here: it is an exact, single-label toggle driven by `toggleLabel`
+      // below (which also bulk-selects in `multiple` mode), not a text match,
+      // so `matchesDeviceQuery`'s substring name matching would be the wrong
       // predicate for it.
-      if (activeTag && !(d.tags ?? []).includes(activeTag)) return false
+      if (activeLabelId && !(d.labels ?? []).some((l) => l.id === activeLabelId)) return false
       // Plan 124 §4.1, step 124.2 — the four-way match (number both bare and
-      // `#`-prefixed, label, stableId, tag) used to be written out right
+      // `#`-prefixed, label, stableId, label name) used to be written out right
       // here, and this file was the ONLY place in the product that had it.
       // Every other device list grew its own near-miss or none at all, which
       // is the gap plan 124 exists to close: the predicate now lives in
@@ -146,15 +147,15 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
       // table, the agent device-grant list and the group members dialog
       // all behave identically to this picker instead of approximating it.
       // Behaviour here is unchanged but for one strict widening documented
-      // in `matchesDeviceQuery` itself: a tag now matches case-insensitively.
+      // in `matchesDeviceQuery` itself: a label name matches case-insensitively.
       return matchesDeviceQuery(d, query)
     })
-  }, [devices, query, activeTag])
+  }, [devices, query, activeLabelId])
 
   // Grouped by group (plan 22.0 §4.5) — but only once a group is actually
   // in play; a farm with none yet keeps the plain flat list rather than a
   // single "Ungrouped" header that says nothing. "Ungrouped" sorts last,
-  // same as the untagged bucket on the devices list.
+  // same as the unlabelled bucket on the devices list.
   const hasAnyGroup = devices.some((d) => (d.group ?? null) !== null)
   const groups = useMemo(() => {
     if (!hasAnyGroup) return null
@@ -177,13 +178,15 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
 
   const selectedIds = props.multiple ? props.value : props.value ? [props.value] : []
 
-  function toggleTag(tag: string) {
-    const next = activeTag === tag ? null : tag
-    setActiveTag(next)
+  function toggleLabel(labelId: string) {
+    const next = activeLabelId === labelId ? null : labelId
+    setActiveLabelId(next)
     // Clicking a chip filters the list; in multiple mode it also selects
     // every device the filter reveals, in one motion (plan 19 §4.4).
     if (props.multiple && next) {
-      const matches = devices.filter((d) => (d.tags ?? []).includes(next) && !cannotTakeJob(d.status)).map((d) => d.id)
+      const matches = devices
+        .filter((d) => (d.labels ?? []).some((l) => l.id === next) && !cannotTakeJob(d.status))
+        .map((d) => d.id)
       props.onChange([...new Set([...props.value, ...matches])])
     }
   }
@@ -205,28 +208,26 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search number, label, stable id, or tag…"
+          placeholder="Search number, name, stable id, or label…"
           aria-label="Search devices"
           className="h-8 pl-8 text-[12.5px]"
         />
       </div>
 
-      {allTags.length > 0 && (
+      {allLabels.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {allTags.map((tag) => (
+          {allLabels.map((l) => (
             <button
-              key={tag}
+              key={l.id}
               type="button"
-              onClick={() => toggleTag(tag)}
-              aria-pressed={activeTag === tag}
+              onClick={() => toggleLabel(l.id)}
+              aria-pressed={activeLabelId === l.id}
               className={cn(
-                'rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none transition-colors',
-                activeTag === tag
-                  ? 'border-accent bg-accent/15 text-accent-2'
-                  : 'border-line text-dim hover:border-border-3',
+                'rounded-chip transition-opacity',
+                activeLabelId === l.id ? 'ring-1 ring-accent' : 'opacity-70 hover:opacity-100',
               )}
             >
-              <TagLabel tag={tag} />
+              <LabelChip name={l.name} color={l.color} />
             </button>
           ))}
         </div>
@@ -296,10 +297,8 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="readout text-[11px] text-faint">{d.stableId}</span>
-            {(d.tags ?? []).map((t: string) => (
-              <span key={t} className="text-[10.5px] text-faint">
-                <TagLabel tag={t} />
-              </span>
+            {(d.labels ?? []).map((l) => (
+              <LabelChip key={l.id} name={l.name} color={l.color} />
             ))}
             {/* A device with a live job is still pickable — a new one just
                 waits for it to go quiet (plan 71 §3.7) — so what is
@@ -338,16 +337,4 @@ export function DevicePicker<D extends PickableDevice>(props: DevicePickerProps<
       </TooltipProvider>
     )
   }
-}
-
-/** Renders `pool:smoke` with the part up to and including the first colon dimmed (plan 19 §3.1). */
-function TagLabel({ tag }: { tag: string }) {
-  const i = tag.indexOf(':')
-  if (i === -1) return <>{tag}</>
-  return (
-    <>
-      <span className="text-faint">{tag.slice(0, i + 1)}</span>
-      {tag.slice(i + 1)}
-    </>
-  )
 }

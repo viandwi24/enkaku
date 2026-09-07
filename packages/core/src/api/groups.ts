@@ -11,7 +11,7 @@ import { deleteGroupAndUnassign, groupMembers } from '../groups/membership'
 import { resolveGroup } from '../groups/resolve'
 import { rowToDeviceInfo, type DeviceActivityState, type FarmNetwork } from '../registry/device-registry'
 import { loadDeviceNumbers } from '../registry/device-number'
-import { loadDeviceTags } from '../registry/device-tags'
+import { loadDeviceLabels } from '../registry/device-labels'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, decodeStringCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
 import { typedJson } from './typed-json'
@@ -142,11 +142,11 @@ export function createGroupRoutes(deps: {
 
   // This group's members, paginated the same way `/api/devices` is (plan
   // 22.0 §4.4) — label ASC, id ASC, since membership already forces an
-  // in-memory pass (tags live in a separate table, same as the main list).
+  // in-memory pass (labels live in a separate table, same as the main list).
   app.get('/:id/devices', (c) => {
     const row = mustGet(c.req.param('id'))
     const rows = groupMembers(db, row.id)
-    const tagMap = loadDeviceTags(
+    const labelMap = loadDeviceLabels(
       db,
       rows.map((r) => r.id),
     )
@@ -157,11 +157,11 @@ export function createGroupRoutes(deps: {
     const networks = deps.networks?.() ?? []
     const media = deps.declaredMedia?.() ?? new Map<string, ConnectionMedium | null>()
     // The number (plan 89 §4.3) — one query for this list, same N+1
-    // discipline as `tagMap`/`networks`/`media` above.
+    // discipline as `labelMap`/`networks`/`media` above.
     const numbers = loadDeviceNumbers(db)
     const infos: DeviceInfo[] = rows
       .map((r) =>
-        rowToDeviceInfo(r, tagMap.get(r.id) ?? [], group, null, null, deps.activitiesOf?.(r.id) ?? { activities: [], lastControl: null }, networks, media, numbers.get(r.stableId) ?? null),
+        rowToDeviceInfo(r, labelMap.get(r.id) ?? [], group, null, null, deps.activitiesOf?.(r.id) ?? { activities: [], lastControl: null }, networks, media, numbers.get(r.stableId) ?? null),
       )
       .sort((a, b) => (a.label === b.label ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.label < b.label ? -1 : 1))
 

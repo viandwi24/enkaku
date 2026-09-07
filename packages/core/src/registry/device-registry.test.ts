@@ -8,7 +8,7 @@ import { createDeviceStateMachine } from '../device/state-machine'
 import { WsHub } from '../server/ws'
 import { createLogger } from '../util/logger'
 import { admitDevice } from './admission'
-import { createDeviceRegistry, deriveAgentState, deriveConnection, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from './device-registry'
+import { createDeviceRegistry, deriveAgentState, deriveConnection, listDevicesWithLabels, rowToDeviceInfo, type FarmNetwork } from './device-registry'
 import { allocateDeviceNumber, lookupDeviceNumber } from './device-number'
 import type { EndpointStore } from './endpoints'
 
@@ -144,7 +144,7 @@ describe('registry — blocked devices (plan 47 §3.3, §4.2)', () => {
   })
 })
 
-describe('listDevicesWithTags — group (plan 22.0 §4.4, acceptance #10)', () => {
+describe('listDevicesWithLabels — group (plan 22.0 §4.4, acceptance #10)', () => {
   test('DeviceInfo.group is populated, in one query total regardless of device count', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
@@ -172,7 +172,7 @@ describe('listDevicesWithTags — group (plan 22.0 §4.4, acceptance #10)', () =
       return originalPrepare(sql, params)
     }) as typeof opened.sqlite.prepare
 
-    const infos = listDevicesWithTags(db)
+    const infos = listDevicesWithLabels(db)
     expect(infos).toHaveLength(30)
     const grouped = infos.filter((d) => d.group !== null)
     expect(grouped).toHaveLength(10)
@@ -252,7 +252,7 @@ describe('probe-retry backoff (plan 85 §3.3 point 7, §5 step 85.2, fixes F9)',
   }, 10_000)
 })
 
-describe('listDevicesWithTags — lastCrashAt, the device card badge (plan 37 §4.5)', () => {
+describe('listDevicesWithLabels — lastCrashAt, the device card badge (plan 37 §4.5)', () => {
   test('a device that crashed within the last hour carries lastCrashAt; one older than an hour does not', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
@@ -285,7 +285,7 @@ describe('listDevicesWithTags — lastCrashAt, the device card badge (plan 37 §
       })
       .run()
 
-    const infos = listDevicesWithTags(db)
+    const infos = listDevicesWithLabels(db)
     const byId = new Map(infos.map((d) => [d.id, d]))
     expect(byId.get('d-recent')?.lastCrashAt).toBeGreaterThan(nowSec - 400)
     expect(byId.get('d-old')?.lastCrashAt).toBeNull()
@@ -380,7 +380,7 @@ describe('deriveConnection (plan 88 §3.1, §4.1)', () => {
   })
 })
 
-describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, §4.1)', () => {
+describe('rowToDeviceInfo / listDevicesWithLabels — connection (plan 88 §3.1, §4.1)', () => {
   test('GET-style listing returns a connection object for every device: usb stays usb, a tcp address inside the configured network reads OTG-eligible, one outside it stays TCP-unknown', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
@@ -390,7 +390,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     db.insert(devices).values({ id: 'd-tcp-unknown', stableId: 's-tcp-unknown', serial: '192.168.1.51:5555', label: 'Mystery phone', status: 'online' }).run()
 
     const networks: FarmNetwork[] = [{ cidr: '10.20.0.0/24', label: 'Chassis A', medium: 'wired', scan: true }]
-    const infos = listDevicesWithTags(db, undefined, undefined, networks)
+    const infos = listDevicesWithLabels(db, undefined, undefined, networks)
     const byId = new Map(infos.map((d) => [d.id, d]))
 
     expect(byId.get('d-usb')?.connection).toEqual({
@@ -424,7 +424,7 @@ describe('rowToDeviceInfo / listDevicesWithTags — connection (plan 88 §3.1, �
     runMigrations(opened.db)
     const db = opened.db
     db.insert(devices).values({ id: 'd1', stableId: 's1', serial: '10.20.0.37:5555', label: 'Phone', status: 'online' }).run()
-    const infos = listDevicesWithTags(db)
+    const infos = listDevicesWithLabels(db)
     expect(infos[0]?.connection.kind).toBe('tcp')
     expect(infos[0]?.connection.mediumSource).toBe('unknown')
   })
@@ -496,12 +496,12 @@ describe('deriveAgentState / DeviceInfo.agent (plan 106 §5 step 106.5)', () => 
  * The device number (plan 89 §3.1, §3.2, §4.2, §4.3) — a lookup against
  * `device_numbers`, keyed by `stableId`, never a column on `devices` (§3.2).
  * `rowToDeviceInfo` defaults `number` to `null` so every existing call site
- * that omits it keeps parsing exactly as before this plan; `listDevicesWithTags`
+ * that omits it keeps parsing exactly as before this plan; `listDevicesWithLabels`
  * resolves it once for the whole fleet, the same N+1 discipline `networks`/
  * `tags`/`groups` above already follow.
  */
-describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3)', () => {
-  test('listDevicesWithTags populates every device\'s number from one query, never N+1', () => {
+describe('rowToDeviceInfo / listDevicesWithLabels — number (plan 89 §4.2, §4.3)', () => {
+  test('listDevicesWithLabels populates every device\'s number from one query, never N+1', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
@@ -517,19 +517,19 @@ describe('rowToDeviceInfo / listDevicesWithTags — number (plan 89 §4.2, §4.3
       return originalPrepare(sql, params)
     }) as typeof opened.sqlite.prepare
 
-    const infos = listDevicesWithTags(db)
+    const infos = listDevicesWithLabels(db)
     const byId = new Map(infos.map((d) => [d.id, d.number]))
     expect(byId.get('d1')).toBe(1)
     expect(byId.get('d2')).toBe(2)
     expect(numberQueries).toBe(1)
   })
 
-  test('a device with no reservation reads number: null through listDevicesWithTags, not 0 or undefined', () => {
+  test('a device with no reservation reads number: null through listDevicesWithLabels, not 0 or undefined', () => {
     const opened = openDb(':memory:')
     runMigrations(opened.db)
     const db = opened.db
     db.insert(devices).values({ id: 'd1', stableId: 's1', serial: 'ZP2222RMBS', label: 'Phone', status: 'online' }).run()
-    const infos = listDevicesWithTags(db)
+    const infos = listDevicesWithLabels(db)
     expect(infos[0]?.number).toBeNull()
   })
 

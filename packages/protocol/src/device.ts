@@ -3,6 +3,7 @@ import { BatteryStateSchema } from './settings'
 import { DeviceReadinessSchema, ReadinessSchema } from './readiness'
 import { GuestAgentCapabilitySchema } from './guest-agent'
 import { DeviceActivitySchema, LastControlSchema } from './activity'
+import { DeviceLabelRefSchema } from './labels'
 
 /** How a device's transport is reached — OBSERVED from adb (plan 88 §3.1, §4.1). */
 export const ConnectionKindSchema = z.enum(['usb', 'tcp'])
@@ -248,8 +249,17 @@ export const DeviceInfoSchema = z.object({
   battery: BatteryStateSchema.nullable().default(null),
   /** Quarantine reason, e.g. 'thermal:49.8C'. */
   quarantineReason: z.string().nullable().default(null),
-  /** Sorted, normalised. Empty array rather than null, so callers need no guard. */
-  tags: z.array(z.string()).default([]),
+  /**
+   * Every label on this device (plan 225 §3.1), sorted by name. Inline
+   * objects rather than ids, for the same reason `group` below is one: a
+   * chip renders from the row it arrived on, never from a second lookup.
+   *
+   * Replaces the `tags: string[]` this field used to be. A tag was a bare
+   * string that existed only while a device carried it; a label is a row an
+   * operator creates, renames, recolours and deletes on its own. Empty array
+   * rather than null, so callers need no guard.
+   */
+  labels: z.array(DeviceLabelRefSchema).default([]),
   /**
    * The owning group (plan 22.0 §4.2, renamed by MVP 15 §0.1), or null. An
    * object rather than a bare id so every list and picker can render the
@@ -259,7 +269,7 @@ export const DeviceInfoSchema = z.object({
   /**
    * When this device last had an application crash or ANR, IF it was within
    * the last hour — otherwise null (plan 37 §4.5). Only the fleet list
-   * (`listDevicesWithTags`) populates this today; single-device fetches and
+   * (`listDevicesWithLabels`) populates this today; single-device fetches and
    * the `device.added`/`device.status` broadcasts leave it null rather than
    * paying for the lookup on every call site, which is honest (not stale)
    * because the device page has its own full Crashes panel regardless.
@@ -391,7 +401,7 @@ export type DeviceRemoved = z.infer<typeof DeviceRemovedMessage>
  * A phone adb has seen that nobody has admitted to the farm (plan 56).
  *
  * Deliberately NOT a `DeviceInfo`: a discovered device has no id, no status,
- * no group, no readiness and no tags, because it has no `devices` row at
+ * no group, no readiness and no labels, because it has no `devices` row at
  * all. Reusing the device shape would mean inventing values for all of those,
  * and an invented status is exactly how something unadmitted ends up looking
  * schedulable.

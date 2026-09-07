@@ -52,7 +52,17 @@ export function ActionMenu({
   const [openGroup, setOpenGroup] = useState<ActionGroup | null>(null)
 
   const openDialog = (id: ActionDialogVerb) => {
-    const ctx = 'deviceIds' in target ? { deviceIds: target.deviceIds } : 'groupId' in target ? { groupId: target.groupId } : { tags: target.tags }
+    const ctx =
+      'deviceIds' in target
+        ? { deviceIds: target.deviceIds }
+        : 'groupId' in target
+          ? { groupId: target.groupId }
+          : 'labelIds' in target
+            ? { labelIds: target.labelIds }
+            : // The legacy `{ tags }` member (`TargetSchema`) — nothing in
+              // Studio writes it, but a stored target read back from a batch
+              // can still carry it, and the picker has no tag mode to open.
+              {}
     open(id, ctx)
     onDone(id)
   }

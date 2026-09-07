@@ -138,7 +138,7 @@ import { createDeviceRoutes } from './api/devices'
 import { createDeviceIdentityRoutes } from './api/device-identity'
 import { createVmRoutes } from './api/vms'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-agent'
-import { createTagRoutes } from './api/tags'
+import { createLabelRoutes } from './api/labels'
 import { createGroupRoutes } from './api/groups'
 import { createBatchRoutes, createBatchDispatchDeps } from './api/batches'
 import { createScheduleRoutes } from './api/schedules'
@@ -277,7 +277,7 @@ import { createExpiryReaper } from './queue/expiry'
 import { createScheduler } from './queue/scheduler'
 import { createScheduleRunner } from './schedules/runner'
 import { validateScriptForRun } from './jobs/validate-script'
-import { createDeviceRegistry, listDevicesWithTags, loadDeclaredMedia, type DeviceActivityState, type DeviceRegistry } from './registry/device-registry'
+import { createDeviceRegistry, listDevicesWithLabels, loadDeclaredMedia, type DeviceActivityState, type DeviceRegistry } from './registry/device-registry'
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
 import { createVmManager, type VmManager } from './vm/manager'
 import { createAvdProvider } from './vm/provider-avd'
@@ -1591,7 +1591,7 @@ let blobGc: BlobGc | null = null
        * `failed` its pre-install check had written.
        */
       const broadcastDeviceRow = (deviceId: string): void => {
-        const row = listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing).find(
+        const row = listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing).find(
           (d) => d.id === deviceId,
         )
         if (row) hub.broadcast({ type: 'device.updated', payload: row })
@@ -2594,7 +2594,7 @@ let blobGc: BlobGc | null = null
         record: (event) => {
           recorder!.record(event)
           if (event.kind === 'device.agent') {
-            const row = listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing).find(
+            const row = listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing).find(
               (d) => d.id === event.deviceId,
             )
             if (row) hub.broadcast({ type: 'device.updated', payload: row })
@@ -3023,7 +3023,7 @@ let blobGc: BlobGc | null = null
         infoWithTags: (deviceId) => getDeviceOwner(deviceId) ?? { ownerId: null },
         // The same accessor `listDevices` below is wired to — one read for a
         // whole `set-group`, never one per device.
-        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
+        listDevices: () => listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
       }
       const actionRoutesHandle = createActionRoutes(actionsDeps)
 
@@ -3069,8 +3069,8 @@ let blobGc: BlobGc | null = null
 
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
-        // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithTags` call in this function gets.
-        listDevices: () => listDevicesWithTags(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
+        // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithLabels` call in this function gets.
+        listDevices: () => listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
         deviceCount: () => db.select().from(devices).all().length,
         // Plan 126 §3.5, step 126.5 — the sidebar's farm-health badge, read
         // off the health poll Studio already makes instead of the whole
@@ -3323,7 +3323,16 @@ let blobGc: BlobGc | null = null
         // (plan 106 §5 step 106.5 — see `DevicePreparationRoutesDeps.agentProvisioner`'s
         // own doc comment for why it is bridged rather than registered).
         devicePreparationRoutes: createDevicePreparationRoutes({ db, runner: preparationRunner, agentProvisioner }).routes,
-        tagRoutes: createTagRoutes({ db }),
+        // Label CRUD (plan 225 §4.4). `broadcast`/`listDevices` are the same
+        // pair `actionRoutes` gets: a rename, a recolour or a delete changes
+        // the chips on every device carrying the label, and a write that
+        // tells nobody leaves them stale in every open browser.
+        labelRoutes: createLabelRoutes({
+          db,
+          audit,
+          broadcast: (msg) => hub.broadcast(msg as ServerMessage),
+          listDevices: () => listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
+        }),
         // Group CRUD and read-only membership (plan 22.0 §4.4, renamed to
         // `groups` by plan 207 — MVP 15 §0.1 item 3). `/api/topology`'s
         // fleet map is gone entirely (plan 207 §4.7); nothing replaces it.

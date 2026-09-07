@@ -181,7 +181,8 @@ export {
   type ModelListResponse,
   type ConnectorTestResult,
 } from './agent'
-export { normaliseTag, TagSchema } from './tags'
+export { DEFAULT_LABEL_COLOR, LABEL_COLORS, LabelColorSchema, LabelInfoSchema, LabelNameSchema, DeviceLabelRefSchema, normaliseLabelName } from './labels'
+export type { DeviceLabelRef, LabelColor, LabelInfo } from './labels'
 export { ScriptRefSchema, parseScriptRef, compareSemver, isPrereleaseVersion, type ScriptRef } from './script-ref'
 export {
   CAPABILITY_REFUSAL_CODES,
@@ -1400,7 +1401,7 @@ export { DeviceLabelModeSchema, type DeviceLabelMode } from './settings'
 export { DeviceLabelStateSchema, DEFAULT_DEVICE_LABEL_STATE, type DeviceLabelState } from './api/device-label'
 // Step 89.4/89.9's own gap: the labelling HTTP endpoint's body shape, added
 // once `./api/devices.ts` was free again. The fleet-wide apply envelope that
-// used to live beside it is removed by plan 207 — `set-label` is an actions
+// used to live beside it is removed by plan 207 — `apply-screen-label` is an actions
 // API verb now (`./actions.ts`).
 export { DeviceLabelClearBodySchema } from './api/device-label'
 

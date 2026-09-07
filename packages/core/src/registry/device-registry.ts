@@ -8,6 +8,7 @@ import {
   type DeviceActivity,
   type DeviceConnection,
   type DeviceInfo,
+  type DeviceLabelRef,
   type DeviceMetrics,
   type DeviceReadiness,
   type DeviceSettings,
@@ -24,7 +25,7 @@ import { deriveGuestAgentPreparation } from '../device/preparation/guest-agent-s
 import type { Logger } from '../util/logger'
 import { probeDeviceIdentity } from '@enkaku/session'
 import type { WsHub } from '../server/ws'
-import { loadDeviceTags } from './device-tags'
+import { loadDeviceLabels } from './device-labels'
 import { classify, recordSighting } from './admission'
 import { formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber } from './device-number'
 import type { EventRecorder } from '../events/recorder'
@@ -208,7 +209,7 @@ export interface FarmNetwork {
 }
 
 /**
- * What `rowToDeviceInfo`/`listDevicesWithTags` need to fill `DeviceInfo.activities`/
+ * What `rowToDeviceInfo`/`listDevicesWithLabels` need to fill `DeviceInfo.activities`/
  * `.lastControl` (plan 205 §4.10) — the single accessor that replaced the two
  * separate per-holder and secondary-operator parameters this file carried before that plan.
  * `activities` and `lastControl` come from the SAME `ActivityRegistry`, so they can
@@ -317,9 +318,9 @@ export function loadDeclaredMedia(endpoints: Pick<EndpointStore, 'allWithEndpoin
 
 export function rowToDeviceInfo(
   row: DeviceRow,
-  tags: string[] = [],
+  labels: DeviceLabelRef[] = [],
   group: { id: string; name: string } | null = null,
-  /** Populated only by `listDevicesWithTags` (plan 37 §4.5) — see `DeviceInfoSchema.lastCrashAt`. */
+  /** Populated only by `listDevicesWithLabels` (plan 37 §4.5) — see `DeviceInfoSchema.lastCrashAt`. */
   lastCrashAt: number | null = null,
   /**
    * Readiness (plan 43 §4.1) — the live `ReadinessManager.get()` result from
@@ -348,7 +349,7 @@ export function rowToDeviceInfo(
   /**
    * Declared medium per `stableId`+address (plan 88 §3.1, §3.2, §4.3, §5
    * step 88.5) — `loadDeclaredMedia`'s own return shape, resolved ONCE by
-   * the caller (same N+1 discipline as `networks`/`tags`/`group` above),
+   * the caller (same N+1 discipline as `networks`/`labels`/`group` above),
    * not re-queried per row. Defaulted to an empty map so every existing
    * caller (tests, orchestrator mode, call sites that predate this
    * parameter) keeps parsing exactly as before — `mediumSource` then simply
@@ -396,7 +397,7 @@ export function rowToDeviceInfo(
     lastSeen: row.lastSeen ? Math.floor(row.lastSeen.getTime() / 1000) : null,
     battery: row.battery ?? null,
     quarantineReason: row.quarantineReason ?? null,
-    tags,
+    labels,
     group,
     lastCrashAt,
     readiness: readiness ?? staticReadinessFallback(row),
@@ -431,11 +432,11 @@ export function loadRecentCrashes(db: Db, sinceEpochSec: number): Map<string, nu
 }
 
 /**
- * Every device plus its tags and its group, in exactly three queries
+ * Every device plus its labels and its group, in exactly three queries
  * regardless of how many devices there are (plan 19 §4.3 and plan 22.0
  * §4.4, acceptance #7 and #10 — never N+1).
  */
-export function listDevicesWithTags(
+export function listDevicesWithLabels(
   db: Db,
   /** Readiness (plan 43 §4.1) — omitted call sites fall back to `staticReadinessFallback` per-row, same as `rowToDeviceInfo` itself. */
   readinessOf?: (deviceId: string, row: DeviceRow) => DeviceReadiness,
@@ -443,7 +444,7 @@ export function listDevicesWithTags(
   activitiesOf?: (deviceId: string) => DeviceActivityState,
   /**
    * Farm networks (plan 88 §3.6), resolved ONCE for the whole list — the
-   * same N+1 discipline this function already applies to tags, groups and
+   * same N+1 discipline this function already applies to labels, groups and
    * crashes above, extended to `connection.medium`. `rowToDeviceInfo` NEVER
    * re-resolves this per row.
    */
@@ -466,7 +467,7 @@ export function listDevicesWithTags(
   preparingOf?: (deviceId: string) => boolean,
 ): DeviceInfo[] {
   const rows = db.select().from(devices).all()
-  const tagMap = loadDeviceTags(db)
+  const labelMap = loadDeviceLabels(db)
   const groupNames = loadGroupNames(db)
   // The device card crash badge (plan 37 §4.5) — one query for the whole
   // fleet, not one per device.
@@ -478,7 +479,7 @@ export function listDevicesWithTags(
   return rows.map((r) =>
     rowToDeviceInfo(
       r,
-      tagMap.get(r.id) ?? [],
+      labelMap.get(r.id) ?? [],
       r.groupId ? { id: r.groupId, name: groupNames.get(r.groupId) ?? r.groupId } : null,
       recentCrashes.get(r.id) ?? null,
       readinessOf?.(r.id, r) ?? null,
@@ -890,16 +891,16 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       await client.trackDevices().stop()
     },
     listDevices() {
-      // Wired for consistency with `listDevicesWithTags`'s other production
+      // Wired for consistency with `listDevicesWithLabels`'s other production
       // call sites (`daemon.ts`, `capability/context.ts`, `api/topology.ts`,
       // `api/devices.ts`) even though this method itself has no production
       // caller today (`DeviceRegistry.listDevices` — every real list route
-      // goes through `listDevicesWithTags`/`rowToDeviceInfo` directly, with
+      // goes through `listDevicesWithLabels`/`rowToDeviceInfo` directly, with
       // its own live accessors) — leaving it hardcoded to `[]` would be a
       // second dark corner the moment a caller is added, and the fix is a
       // one-line reuse of the same accessor `onOnline`'s broadcast just above
       // was given.
-      return listDevicesWithTags(db, undefined, undefined, deps.networks?.() ?? [], deps.endpoints ? loadDeclaredMedia(deps.endpoints) : undefined)
+      return listDevicesWithLabels(db, undefined, undefined, deps.networks?.() ?? [], deps.endpoints ? loadDeclaredMedia(deps.endpoints) : undefined)
     },
     deviceCount() {
       return db.select().from(devices).all().length
