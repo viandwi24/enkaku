@@ -55,6 +55,36 @@ export const STAYON: Record<KeepAwakeMode, string> = {
   always: 'true',
 }
 
+/**
+ * The same three modes as `STAYON` above, as the raw
+ * `stay_on_while_plugged_in` bitmask — which is what the fast path writes.
+ *
+ * `svc power stayon` reaches `IPowerManager.setStayOnSetting()`, which does
+ * nothing but store this bitmask, and it pays an `app_process` JVM start to
+ * get there: **1422 ms**, measured on this farm's own hardware (plan 96 §22),
+ * ten times everything else on a wake put together. Writing the setting
+ * directly is the same state change through `SettingsProvider` and costs a
+ * normal shell round trip.
+ *
+ * This is not a guess about an internal. It is what scrcpy's own server does
+ * for `--stay-awake` — `CleanUp.java` in the pinned v3.3.1 writes
+ * `Settings.TABLE_GLOBAL / stay_on_while_plugged_in` and restores it the same
+ * way — and it is what `restoreStayOn` below has always done. The module was
+ * already trusting the cheap write to put a value BACK while paying the
+ * expensive one to put it there.
+ *
+ * `always` is `AC|USB|WIRELESS` = 7, matching scrcpy's own constant, not the
+ * 15 a dock-aware `svc power stayon true` writes. `satisfiesStayOn` accepts
+ * both (it asks whether those three bits are set, never for an exact number),
+ * and a phone farm has no dock — so 7 is a value every Android release since
+ * the setting existed understands identically.
+ */
+export const STAYON_MASK: Record<KeepAwakeMode, number> = {
+  off: 0,
+  'while-charging': 2,
+  always: 7,
+}
+
 const SCREEN_OFF_TIMEOUT_NS = 'system'
 const SCREEN_OFF_TIMEOUT_KEY = 'screen_off_timeout'
 const STAY_ON_NS = 'global'
@@ -163,14 +193,24 @@ export async function readPowerState(transport: Transport): Promise<PowerReadbac
 export async function applyScreenOffTimeout(transport: Transport, desiredMs: number | null, current: number | null, log: Logger): Promise<PowerWrite> {
   if (desiredMs === null) return { outcome: 'unchanged', reason: 'this farm leaves the device’s own screen timeout alone' }
   if (current === desiredMs) return UNCHANGED
+  // Write and read back in ONE command, the same batching `readPowerState`
+  // above uses: `adb shell` runs a real shell, so the verification does not
+  // need a second connection. A device that answers with nothing usable falls
+  // through to the mismatch branch below and is reported `refused` — never
+  // `applied` on an unread write (plan 125 acceptance criterion 4).
+  let after: number | null
   try {
-    await transport.exec(`settings put ${SCREEN_OFF_TIMEOUT_NS} ${SCREEN_OFF_TIMEOUT_KEY} ${shellQuote(String(desiredMs))}`, { profile: 'probe' })
+    const out = await transport.exec(
+      `settings put ${SCREEN_OFF_TIMEOUT_NS} ${SCREEN_OFF_TIMEOUT_KEY} ${shellQuote(String(desiredMs))}; settings get ${SCREEN_OFF_TIMEOUT_NS} ${SCREEN_OFF_TIMEOUT_KEY}`,
+      { profile: 'probe' },
+    )
+    const lines = out.stdout.split('\n').map((l) => l.trim()).filter((l) => l !== '')
+    after = lines.length === 0 ? null : toInt(normaliseUnset(lines[lines.length - 1]!))
   } catch (err) {
     const reason = `the device refused the screen timeout write: ${err instanceof Error ? err.message : String(err)}`
     log.debug(reason)
     return { outcome: 'refused', reason }
   }
-  const after = toInt(await settingsGet(transport, SCREEN_OFF_TIMEOUT_NS, SCREEN_OFF_TIMEOUT_KEY))
   if (after === desiredMs) return { outcome: 'applied', reason: null }
   // Read-back mismatch. NEVER `applied` (acceptance criterion 4): a ROM that
   // ignores the key, a shell UID that turns out not to hold
@@ -207,16 +247,40 @@ export function satisfiesStayOn(raw: string | null, mode: KeepAwakeMode): boolea
 }
 
 /**
- * `svc power stayon <mode>`, verified by reading
+ * Hold (or drop) the screen for `mode`, verified by reading
  * `stay_on_while_plugged_in` straight back (plan 125 §3.3 step 2).
  *
- * `svc` is the expensive call in this whole subsystem — plan 96 §22 measured
- * **1422 ms**, because it starts an `app_process` JVM to reach the power
- * service — so the `unchanged` early-out above it is not a micro-optimisation,
- * it is the single cheapest second available on a warm wake.
+ * ### Two rungs, cheap first, and why that ordering is safe
+ *
+ * Rung 1 is `settings put global stay_on_while_plugged_in <mask>`, batched
+ * with its own read-back into ONE shell round trip. Rung 2 is the original
+ * `svc power stayon <token>`, tried only when rung 1 did not land.
+ *
+ * They are the same state change: `svc power stayon` does nothing but call
+ * `IPowerManager.setStayOnSetting()`, which stores this exact bitmask, and
+ * `PowerManagerService` reaches it through a `ContentObserver` on the setting
+ * either way. What differs is the price — `svc` is a shell wrapper around
+ * `app_process`, so every call starts a JVM on the phone, measured at
+ * **1422 ms** (plan 96 §22), against roughly a tenth of that for a `settings`
+ * write. On a farm the size of this one that difference is the whole
+ * complaint: it is paid per device, on every wake, on every sleep, and once
+ * more for every device on the way out.
+ *
+ * The fallback is what makes leading with the cheap rung honest rather than
+ * hopeful. A ROM that ignores a direct write to the key, or a shell UID that
+ * turns out not to hold it, fails the read-back and gets the JVM path anyway,
+ * so no device loses a capability it had before — it only loses the wait.
+ *
+ * `svc power stayon <non-false>` also calls `pm.wakeUp()`, which the direct
+ * write does not. Nothing depends on that: `wakeDevice` sends its own
+ * `KEYCODE_WAKEUP` immediately afterwards, and always did.
  */
 export async function applyStayOn(transport: Transport, mode: KeepAwakeMode, current: string | null, log: Logger): Promise<PowerWrite> {
   if (satisfiesStayOn(current, mode)) return UNCHANGED
+
+  const written = await putStayOn(transport, STAYON_MASK[mode])
+  if (satisfiesStayOn(written, mode)) return { outcome: 'applied', reason: null }
+
   try {
     await transport.exec(`svc power stayon ${STAYON[mode]}`, { profile: 'probe' })
   } catch (err) {
@@ -229,6 +293,30 @@ export async function applyStayOn(transport: Transport, mode: KeepAwakeMode, cur
   const reason = `the device did not accept \`svc power stayon ${STAYON[mode]}\` (stay_on_while_plugged_in reads ${after ?? 'unreadable'} after the write)`
   log.debug(reason)
   return { outcome: 'refused', reason }
+}
+
+/**
+ * Write the bitmask and read it straight back in ONE round trip — the same
+ * batching `readPowerState` above uses, and for the same reason: `adb shell`
+ * runs a real shell, so a write and its verification are one command rather
+ * than two connections.
+ *
+ * Returns the raw string the device printed AFTER the write, or `null` when
+ * the command failed or answered with nothing the caller could verify. Never
+ * throws, and never reports success it did not observe — a `null` here is
+ * what sends `applyStayOn` down to `svc`.
+ */
+async function putStayOn(transport: Transport, mask: number): Promise<string | null> {
+  return transport
+    .exec(`settings put ${STAY_ON_NS} ${STAY_ON_KEY} ${shellQuote(String(mask))}; settings get ${STAY_ON_NS} ${STAY_ON_KEY}`, { profile: 'probe' })
+    .then((r) => {
+      // `settings put` prints nothing on success, so the LAST non-empty line
+      // is the read-back. Taking the last rather than the first is what keeps
+      // this correct on a ROM that prints a warning ahead of the answer.
+      const lines = r.stdout.split('\n').map((l) => l.trim()).filter((l) => l !== '')
+      return lines.length === 0 ? null : normaliseUnset(lines[lines.length - 1]!)
+    })
+    .catch(() => null)
 }
 
 /**

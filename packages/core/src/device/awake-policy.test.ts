@@ -75,14 +75,19 @@ function fakeDevice(initial: { timeout?: string; stayOn?: string; wakefulness?: 
       if (cmd === READ_POWER) return { stdout: `${state.timeout}\n${state.stayOn}`, stderr: '', exitCode: 0 }
       if (cmd.startsWith(GET_TIMEOUT)) return { stdout: state.timeout, stderr: '', exitCode: 0 }
       if (cmd.startsWith(GET_STAYON)) return { stdout: state.stayOn, stderr: '', exitCode: 0 }
+      // Both writes are batched with their own read-back into one shell
+      // command since plan 226 (`settings put ...; settings get ...`), so the
+      // value is the tail of the FIRST statement and the answer is the
+      // read-back. `restoreStayOn` still sends a bare `settings put`, which
+      // the same `split(';')[0]` handles unchanged.
       if (cmd.startsWith('settings put system screen_off_timeout')) {
         // `shellQuote`d on the wire; a real device shell strips the quotes.
-        if (!refuse.has('timeout')) state.timeout = (cmd.split(' ').pop() ?? '').replace(/'/g, '') || state.timeout
-        return { stdout: '', stderr: '', exitCode: 0 }
+        if (!refuse.has('timeout')) state.timeout = (cmd.split(';')[0]?.split(' ').pop() ?? '').replace(/'/g, '') || state.timeout
+        return { stdout: state.timeout, stderr: '', exitCode: 0 }
       }
       if (cmd.startsWith('settings put global stay_on_while_plugged_in')) {
-        if (!refuse.has('stayOn')) state.stayOn = (cmd.split(' ').pop() ?? '').replace(/'/g, '') || state.stayOn
-        return { stdout: '', stderr: '', exitCode: 0 }
+        if (!refuse.has('stayOn')) state.stayOn = (cmd.split(';')[0]?.split(' ').pop() ?? '').replace(/'/g, '') || state.stayOn
+        return { stdout: state.stayOn, stderr: '', exitCode: 0 }
       }
       if (cmd.startsWith('svc power stayon')) {
         const token = cmd.split(' ').pop()

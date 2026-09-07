@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { EnkakuError } from '../util/errors'
 import { normaliseWorkspacePath } from '../workspace/path'
 import type { WorkspaceStore } from '../workspace/store'
@@ -31,6 +32,13 @@ import type { WorkspaceStore } from '../workspace/store'
  */
 
 const ALLOWED_BARE_SPECIFIERS = new Set(['@enkaku/sdk', 'zod'])
+
+/**
+ * This module's own location as a filesystem PATH, never a `file://` URL —
+ * see `resolveFromDisk` below for the Windows failure that distinction
+ * caused. Computed once: it cannot change while the process is running.
+ */
+const THIS_FILE = fileURLToPath(import.meta.url)
 const WORKSPACE_NAMESPACE = 'enkaku-workspace'
 const ENTRY_SPECIFIER = 'enkaku-workspace-entry'
 
@@ -96,11 +104,25 @@ function assertAllowedBareSpecifier(spec: string): void {
  * failure: the operator publishing a workspace script is told the build
  * failed and nothing about why, and so is anyone reading a CI log.
  *
- * `check-windows` has failed on the allowlisted-`zod` case since that job
- * existed. Its sibling test — the same bundler, a relative import, no disk —
- * passes there, so the fault is in exactly this resolution and nowhere else.
- * I could not reproduce it on macOS or determine it from the source, and
- * would rather name it on the next run than guess at it now (2026-09-07).
+ * ### The Windows failure this error message caught, and the fix
+ *
+ * `check-windows` failed on the allowlisted-`zod` case from the day that job
+ * existed, with no mechanism visible from the source. This wrapper was added
+ * to name it on the next run rather than guess, and the next run named it:
+ *
+ * ```
+ * could not resolve "zod" from file:///D:/a/enkaku/enkaku/packages/core/src/scripts/build.ts:
+ *   ResolveMessage: Cannot find package 'zod' from 'file:///D:/a/enkaku/enkaku/packages/core/src/scripts/build.ts'
+ * ```
+ *
+ * The referrer was a `file://` URL carrying a drive letter. Bun's resolver
+ * does not walk up to `node_modules` from that on Windows — it does from a
+ * plain filesystem path, which is exactly what the OTHER call site below
+ * passes (`args.importer`), and that one has never failed there.
+ *
+ * So the referrer is a real path now, via `fileURLToPath`. On Linux and macOS
+ * the two forms are interchangeable, which is why this only ever showed on
+ * one platform.
  */
 function resolveFromDisk(specifier: string, referrer: string): string {
   try {
@@ -184,7 +206,7 @@ function workspacePlugin(files: ReadonlyMap<string, string>, entry: string): imp
           return { path: resolved, namespace: WORKSPACE_NAMESPACE }
         }
         // Already validated by `walkWorkspaceGraph` — resolve for real.
-        return { path: resolveFromDisk(args.path, import.meta.url) }
+        return { path: resolveFromDisk(args.path, THIS_FILE) }
       })
       build.onLoad({ filter: /.*/, namespace: WORKSPACE_NAMESPACE }, (args) => {
         const contents = files.get(args.path)

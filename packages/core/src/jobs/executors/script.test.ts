@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createJobRunner, type KvRunnerDeps } from '@enkaku/session'
@@ -57,11 +57,26 @@ function fakeSessions() {
 }
 
 const dirs: string[] = []
+/**
+ * `writeFileSync`, not `Bun.write`.
+ *
+ * `Bun.write` returns a promise, and this helper is synchronous: it was
+ * handing back a path to a file whose write had been STARTED and not
+ * necessarily finished, and the caller immediately gives that path to the
+ * executor, which spawns a child that imports it. On Linux the write lands
+ * inside the same tick's I/O in practice and the race never shows; on a
+ * slower filesystem it is a genuine coin flip.
+ *
+ * The correlation is exact: this helper has one caller — the dev-shadow
+ * logging test below — and that test is the one test in this file that fails
+ * on the Windows runner. Making the write synchronous removes the race
+ * without changing the helper's shape or any caller.
+ */
 function writeBundle(source: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'enkaku-script-executor-test-'))
   dirs.push(dir)
   const path = join(dir, 'bundle.mjs')
-  Bun.write(path, source)
+  writeFileSync(path, source)
   return path
 }
 

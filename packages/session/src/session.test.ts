@@ -685,7 +685,7 @@ describe('createSession — one wake per session start (plan 125 §3.7, §5 step
   }
 
   /** How many times `wakeDevice` ran, read off the wire rather than a spy. */
-  const wakeCount = (calls: string[]): number => calls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length
+  const wakeCount = (calls: string[]): number => calls.filter((c) => c === 'input keyevent 224').length
 
   test('the baseline: a device nothing is holding awake gets EXACTLY ONE wake, never zero', async () => {
     const { client, calls } = recordingClient()
@@ -694,7 +694,7 @@ describe('createSession — one wake per session start (plan 125 §3.7, §5 step
       { client, log: silentLog() },
     )
     expect(wakeCount(calls)).toBe(1)
-    expect(calls).toContain('svc power stayon true')
+    expect(calls).toContain("settings put global stay_on_while_plugged_in '7'; settings get global stay_on_while_plugged_in")
     await session.close()
   })
 

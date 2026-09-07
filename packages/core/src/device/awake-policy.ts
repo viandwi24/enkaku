@@ -244,9 +244,12 @@ export function createAwakePolicy(deps: AwakePolicyDeps): AwakePolicy {
       row,
       async (transport) => {
         // Read once, use three times: capture, the timeout's "is it already
-        // right" check, and the stayon one. The stayon early-out is what
-        // skips plan 96 §22's measured 1422 ms `svc power stayon` on a device
-        // that already holds it.
+        // right" check, and the stayon one. The read is required for the
+        // capture regardless (§3.3), so the two early-outs it also feeds are
+        // free — they used to skip plan 96 §22's measured 1422 ms
+        // `svc power stayon`, and since plan 226 they skip a batched
+        // `settings` write instead. Smaller saving, same reasoning, and the
+        // read is not what pays for it.
         const current = await readPowerState(transport)
         // Capture-before-write, unconditionally and first (§3.3). A device
         // whose original is already stored is a cheap no-op here.
