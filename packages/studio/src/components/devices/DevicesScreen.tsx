@@ -289,7 +289,13 @@ export function DevicesScreen() {
       )}
 
       {selection.selected.size > 0 && (
-        <BulkPill count={selection.selected.size} target={target} onClear={selection.clear} />
+        <BulkPill
+          count={selection.selected.size}
+          target={target}
+          devices={(devices ?? []).filter((d) => selection.selected.has(d.id))}
+          onLabelsChanged={labelState.reload}
+          onClear={selection.clear}
+        />
       )}
 
       <OtgSwitchDialog open={otgOpen} onOpenChange={setOtgOpen} devices={devices} onDone={reload} />
