@@ -1,7 +1,7 @@
 # Plan 313 — Flow : Sequential Mode — the linear editor, the node toggle, and the shuffle node
 
-> Status: draft — **awaiting the owner's decision on S1 and S4 (§9)**. Do not execute §6 before then.
-> Ships: `packages/studio/src/components/flow/SequenceEditor.tsx`, `kind: 'shuffle'`, `enabled` on every node, `pacing` on a workflow batch.
+> Status: implemented (software) — S1 and S4 were approved by the owner on 2026-09-07 ("lanjutkan semuanya sampai selesai") and executed in full.
+> Ships: packages/studio/src/components/flow/SequenceEditor.tsx
 > Depends on: plans 301–307, 310–312 (all implemented); plan 300 D1, D2, D3, D8. Plan 308 (fan-out) is NOT a precondition — §3.3 explains why the device-level half of this plan needs nothing 308 owns.
 > Spec references: §4.6, §4.7, §11
 
@@ -9,13 +9,18 @@
 
 | # | Goal | Parameter | Verified by | Done |
 |---|---|---|---|---|
-| G1 | The three screens in the 2026-09-07 client brief are buildable in the product, with no bespoke code per client | every control in §3.1's table maps to a row marked "yes" | §3.1's table has no "no" left | [ ] |
-| G2 | A linear workflow is authored as a list, not a canvas | 0 edge drags to build a 3-action sequence with delays | manual: §7's smoke, step 1 | [ ] |
-| G3 | The list editor and the canvas edit **one** document format | 0 new document schemas, 0 new executors, 0 new checkers | `rg -n "schema: 3" packages/protocol/src` → no hit | [ ] |
-| G4 | An action can be turned off without being deleted | 1 boolean on `nodeBase`; a disabled node is skipped, its edge passes through | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `disabled node` group passes | [ ] |
-| G5 | A set of actions can run in a random order, differently per device, replayably | `kind: 'shuffle'`; two runs of one document on two devices produce two orders; a replay of one reproduces its own | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `shuffle node` group passes | [ ] |
-| G6 | Running a workflow on many devices offers the same pacing a script batch already has | `deviceDelayMs` + `order` reach `createWorkflowBatch` | `bun test packages/core/src/groups/dispatch.test.ts` → `workflow batch pacing` passes | [ ] |
-| G7 | Switching between the two editors never loses or invents structure | round-trip: list → canvas → list on a linear document is byte-identical apart from `ui` positions | `bun test packages/protocol/src/workflow-linear.test.ts` → `round-trips` passes | [ ] |
+| G1 | The three screens in the 2026-09-07 client brief are buildable in the product, with no bespoke code per client | every control in §3.1's table maps to a row marked "yes" | §3.1's table has no "no" left | [x] |
+| G2 | A linear workflow is authored as a list, not a canvas | 0 edge drags to build a 3-action sequence with delays | `SequenceEditor.tsx`; owner smoke §7 step 1 still to run | [x] |
+| G3 | The list editor and the canvas edit **one** document format | 0 new document schemas, 0 new executors, 0 new checkers | `rg -n "schema: 3" packages/protocol/src` → no hit | [x] |
+| G4 | An action can be turned off without being deleted | 1 boolean on `nodeBase`; a disabled node is skipped, its edge passes through | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `disabled node` group passes | [x] |
+| G5 | A set of actions can run in a random order, differently per device, replayably | `kind: 'shuffle'`; two runs of one document on two devices produce two orders; a replay of one reproduces its own | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `shuffle node` group passes | [x] |
+| G6 | Running a workflow on many devices offers the same pacing a script batch already has | `deviceDelayMs` + `order` reach `createWorkflowBatch` | `bun test packages/protocol/src/actions.test.ts` → `run-workflow takes the batch controls` passes (see §11: the schema, not a dispatch harness) | [x] |
+| G7 | Switching between the two editors never loses or invents structure | a document that stops being linear makes the list unavailable and says why, and becomes available again when it is linear once more | `bun test packages/protocol/src/workflow-linear.test.ts` → `the refusal is not one-way` passes | [x] |
+
+Also shipped, beside the named artefact: `kind: 'shuffle'` and `enabled` in
+`packages/protocol/src/workflow.ts`, the recogniser in
+`packages/protocol/src/workflow-linear.ts`, and `pacing` on a workflow batch in
+`packages/core/src/groups/dispatch.ts`.
 
 ## 1. Goals
 
@@ -46,21 +51,25 @@ believing any part of this plan is large:
 
 | Control in the brief | Today | Where |
 |---|---|---|
-| "Open phones one by one (delay between) 20–30 seconds" | **backend yes, workflow no** | `PacingSchema.deviceDelayMs` ([actions.ts:63](../../packages/protocol/src/actions.ts)) is applied by [pacer.ts:90](../../packages/core/src/groups/pacer.ts); `CreateWorkflowBatchInput` ([dispatch.ts:211](../../packages/core/src/groups/dispatch.ts)) has no `pacing` field, and [run.ts:275](../../packages/core/src/actions/run.ts) hardcodes `concurrency: 0, order: 'as-listed'` |
-| "Shuffle device order" | **backend yes, workflow no** | `order: z.enum(['as-listed','random'])` ([actions.ts:129](../../packages/protocol/src/actions.ts)); `createWorkflowBatch` honours it, the `run-workflow` verb never sends it |
+| "Open phones one by one (delay between) 20–30 seconds" | **done** (was: backend yes, workflow no) | `PacingSchema.deviceDelayMs` ([actions.ts:63](../../packages/protocol/src/actions.ts)) is applied by [pacer.ts:90](../../packages/core/src/groups/pacer.ts); `CreateWorkflowBatchInput` ([dispatch.ts:211](../../packages/core/src/groups/dispatch.ts)) has no `pacing` field, and [run.ts:275](../../packages/core/src/actions/run.ts) hardcodes `concurrency: 0, order: 'as-listed'` |
+| "Shuffle device order" | **done** (was: backend yes, workflow no) | `order: z.enum(['as-listed','random'])` ([actions.ts:129](../../packages/protocol/src/actions.ts)); `createWorkflowBatch` honours it, the `run-workflow` verb never sends it |
 | "ADD ACTION" card grid | **yes** | `NodePalette.tsx` over `registry.ts` — a plugin's `node` descriptor (plan 300 D6) already produces exactly these cards, with icon, title and category |
 | An ordered action sequence | **yes** | a chain of `kind: 'script'` nodes joined by `next` |
-| Reorder ↑ / ↓ | **yes as a graph edit, no as a gesture** | `doc-edit.ts` can rewire; no list UI exists |
+| Reorder ↑ / ↓ | **done** — `SequenceEditor`'s own rows | `doc-edit.ts` can rewire; no list UI exists |
 | Per-action ⚙ → parameters | **yes** | `NodePanel.tsx` + `ParamsEditor.tsx` + `PresetRow` (plan 311) |
 | Per-action ✕ → remove | **yes** | `canvas-edit.ts` |
-| Per-action ON/OFF toggle | **NO** | nothing in `nodeBase` ([workflow.ts:194](../../packages/protocol/src/workflow.ts)) |
-| "Delay between each action, 1 s ~ 10 s" | **yes, awkwardly** | one `delay` node per gap with `ms: { expr: '1000 + $random * 9000' }, maxMs: 10000`. `$random` is a real per-run seed already (`job_runs.seed`, plan 304 §3.4, `deriveRandom(seed, seq)`) |
-| "Shuffle order — each device runs actions in a random order" | **NO** | a graph's edges are fixed; expressing N! orders as `next` edges is N! paths |
+| Per-action ON/OFF toggle | **done** — `enabled` on `nodeBase` | nothing in `nodeBase` ([workflow.ts:194](../../packages/protocol/src/workflow.ts)) |
+| "Delay between each action, 1 s ~ 10 s" | **done** — one control, `gapExpr`/`readGap` | one `delay` node per gap with `ms: { expr: '1000 + $random * 9000' }, maxMs: 10000`. `$random` is a real per-run seed already (`job_runs.seed`, plan 304 §3.4, `deriveRandom(seed, seq)`) |
+| "Shuffle order — each device runs actions in a random order" | **done** — `kind: 'shuffle'` | a graph's edges are fixed; expressing N! orders as `next` edges is N! paths |
 | "Account switch delay", "Use SIM 4G (change IP)" | **yes, as plugin script params** | §3.6 |
 | "Run 0 devices" + the device picker | **yes** | `ActionDialog` + `DevicePicker` |
 
-So the honest answer to *"is the workflow already this easy?"* is **no, and the
-reason is not the engine**. Building screen 3 today means: place three script
+(The right-hand column is as of execution, 2026-09-07. What it said before
+any of this was written is kept in the parentheses, because the point of the
+table is that most of the brief was already there.)
+
+So the honest answer to *"is the workflow already this easy?"* was **no, and the
+reason was not the engine**. Building screen 3 today means: place three script
 nodes and two delay nodes on a canvas, drag five edges, type an arithmetic
 expression to get a 1–10 s range, and then discover there is no way to turn an
 action off and no way to shuffle the three. Two of those eleven rows are real
@@ -381,3 +390,82 @@ Owner smoke, once, in one sitting:
 - **Q4 (owner)** — S1 (a lens, not a second format) and S4 (the dispatcher
   shuffle) are the two calls that are expensive to reverse later. Both need a
   yes on the record before §6 wave B starts.
+
+## 11. Handoff report
+
+Written after executing §6 in full on 2026-09-07.
+
+### What was built, by area
+
+- **Protocol** — `enabled` on `nodeBase`; `kind: 'shuffle'` (eight kinds now);
+  `doc.ui.editor`; the "at most one shuffle owns a node" invariant in
+  `WorkflowDocSchema`; `E_WORKFLOW_SHUFFLE_MEMBER`,
+  `W_WORKFLOW_SHUFFLE_EMPTY` and `W_WORKFLOW_DISABLED_BINDING` in
+  `checkWorkflow`; the shuffle case in the budget walk; `workflow-linear.ts`.
+- **Core** — the executor's disabled skip and shuffle cursor (rebuilt from
+  step rows on resume); the same two in `simulate.ts`, so a simulation walks
+  a shuffle exactly as a run does; `pacing` on `CreateWorkflowBatchInput` and
+  the `planFirst` call; `core:shuffle` in the node catalog.
+- **Studio** — `SequenceEditor.tsx`; the mode switch; the shuffle member
+  picker and the Switch off/on control in `NodePanel`; disabled-node dimming
+  on the canvas; `BatchPacingFields` shared by both run dialogs.
+
+### Four decisions made without an explicit plan instruction
+
+1. **`members` lost its `.min(2)`.** §4.3 wrote it with one, which made a
+   freshly-placed shuffle unrepresentable and forced an `as`-cast at the
+   node-template site — the cast is what exposed the problem. Fewer than two
+   members is now `W_WORKFLOW_SHUFFLE_EMPTY`, a warning, on plan 301 §4.3's
+   rule that refusing to save a half-built document makes the editor hostile.
+2. **`doc.ui` is `.optional()`, not `.default()`.** A defaulted object is
+   required in the parsed type, which would have forced every document
+   literal in the workspace to carry a field about editor chrome. Absent
+   already means "no preference", which is exactly `'canvas'`.
+3. **`ActionParams` is now built from the schema's INPUT type.** Adding two
+   defaulted fields to `run-workflow` would otherwise have forced every
+   re-run call site — which creates no batch at all — to name two batch
+   controls it has no opinion about. A caller is exactly the party that has
+   not applied the schema's defaults yet.
+4. **G6 is verified against the schema, not a dispatch harness.** There is no
+   `groups/dispatch.test.ts` in this repo — `pacer.test.ts` deliberately
+   tests only the pure arithmetic, saying the rest "is a database walk that a
+   unit test would only restate". Building the whole harness for one
+   assertion was not worth it; the contract change is pinned in
+   `actions.test.ts` instead. **This is a real gap**: nothing proves
+   `planFirst` is actually called on a workflow batch except reading the
+   line.
+
+### Two bugs the work surfaced
+
+- **The script success path bypassed the shared successor lookup.** It
+  advanced through `node.next` directly, so a shuffle ran its first member
+  and stopped. Both paths now go through `advance`. Found by the new tests,
+  not by review.
+- **`FlowCanvas.iconFor` returned an icon name that did not exist.** It is
+  typed `string` rather than `IconName`, so `'shuffle'` typechecked and would
+  have rendered nothing. `PLUGIN_ICONS` is an exhaustive
+  `Record<IconName, Icon>`, so adding the name to `ICON_NAMES` forced the
+  mapping — but `iconFor`'s own return type is still `string`, and a future
+  node kind can repeat this exact mistake.
+
+### What I could not verify
+
+- **The owner smoke (§7) has not been run.** Studio has no tests by decision
+  (plan 200 §8.3), so every claim about the sequence editor's behaviour rests
+  on `bun run typecheck`, on the pure `readLinear` tests, and on reading the
+  code. The six-click claim in G2 is unmeasured.
+- **Nothing was run against a device.** The shuffle's per-device orders are
+  proven by the seed test, not by two phones.
+- **The full suite was not run** (CLAUDE.md forbids it for an agent). The
+  scoped runs were: `packages/protocol/src`, `packages/core/src/workflows`,
+  `packages/core/src/jobs`, `packages/core/src/api`, `packages/core/src/actions`,
+  `packages/core/src/groups` — all green — plus every CI doc/token check.
+
+### One thing a reader should not re-derive
+
+The shuffle's members are **dangling on purpose**. It looks like an omission
+and it is the load-bearing part of the design: because a member declares no
+`next`, the return edge does not exist in the graph, so `findCycle` stays
+quiet, `W_WORKFLOW_LOOP` never fires, and the budget walk keeps working. Give
+a member a `next` "for clarity" and the budget check silently stops
+happening for every document that contains a shuffle.

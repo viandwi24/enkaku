@@ -74,7 +74,7 @@ function outputHandles(node: WorkflowNode): { kind: EdgeKind; title: string; y: 
       // can take is visible on the canvas rather than hidden in its config.
       const n = node.members.length + 1
       return [
-        ...node.members.map((m, i) => ({ kind: `member:${m}` as EdgeKind, title: `member ${i + 1}: ${m}`, y: ((i + 1) * 100) / (n + 1) })),
+        ...node.members.map((m, i) => ({ kind: `member:${m}` as const, title: `member ${i + 1}: ${m}`, y: ((i + 1) * 100) / (n + 1) })),
         { kind: 'next' as const, title: 'Drag to set what runs after every member', y: (n * 100) / (n + 1) },
       ]
     }
