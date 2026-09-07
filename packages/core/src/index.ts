@@ -131,10 +131,28 @@ async function startDaemon(): Promise<void> {
   }
 
   const shutdown = async (signal: string): Promise<void> => {
+    /*
+      Once the devices are being handed back, no further Ctrl+C skips it.
+
+      This used to `process.exit(130)` here, on the reasoning that reaching
+      `leaving` meant two signals had already been spent. That is wrong on an
+      IDLE farm: with no jobs running the FIRST signal goes straight through
+      `draining` into `leave()`, so the SECOND one — the one an operator
+      presses out of habit — killed the release mid-sweep. Measured on the
+      owner's farm the same afternoon: `forced exit — devices may still be
+      held awake`, and a phone left at `stay_on_while_plugged_in = 15` with no
+      core running to undo it (2026-09-07).
+
+      Force-stopping is for WORK. That is the `draining` → `cancelling`
+      transition below, and it stays. The wake release is the one step that
+      must always be waited for — the owner's own condition when this was
+      designed — because there is nothing left afterwards to repair a phone it
+      skipped. It cannot hang the process either: the sweep has its own stall
+      deadline, and `kill -9` is still there for an operator who truly means it.
+    */
     if (phase === 'cancelling' || phase === 'leaving') {
-      // A third one. Something is genuinely stuck; leave without ceremony.
-      process.stderr.write('\nforced exit — devices may still be held awake\n')
-      process.exit(130)
+      process.stderr.write('\nstill handing the devices back — this step is not skipped, or phones stay lit. (kill -9 to override.)\n')
+      return
     }
 
     if (phase === 'draining') {
