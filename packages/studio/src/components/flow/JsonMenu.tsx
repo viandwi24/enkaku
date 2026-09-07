@@ -35,8 +35,19 @@ export function JsonMenu({
     { label: 'Paste JSON', icon: ClipboardIcon, run: onPaste },
   ]
 
+  /*
+    `data-menu-root` is what makes this menu's own rows clickable at all.
+
+    `useOutsideMenuClick` (installed once by `AppShell`) closes every
+    registered menu from a CAPTURE-phase click, skipping only a target inside
+    a `[data-menu-root]`. Without the marker the capture handler ran first on
+    a click landing on a row of this very menu, `setOpen(false)` unmounted the
+    row, and the button's own bubble-phase `onClick` never fired — so all four
+    rows silently did nothing, not just Export (owner, 2026-09-07). Ten other
+    menus in Studio carry the attribute; this one was written without it.
+  */
   return (
-    <div className="relative">
+    <div className="relative" data-menu-root>
       <Button type="button" variant="ghost" size="icon" active={open} aria-label="Import and export" onClick={() => setOpen((v) => !v)}>
         <CodeIcon className="size-4" aria-hidden />
       </Button>
