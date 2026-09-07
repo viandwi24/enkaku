@@ -97,6 +97,24 @@ describe('readLinear — what Sequential Mode can open (plan 313 §3.3)', () => 
     ])
     expect(readLinear(toElsewhere).ok).toBe(false)
   })
+
+  test('an onFailure that goes exactly where next goes is a line, not a branch', () => {
+    // "If this action fails, carry on with the next one" — both edges land on
+    // the same node, so there is nothing for a list to fail to draw. The
+    // owner's `tiktok-sequential` is written this way from end to end and was
+    // refused by the rule above until 2026-09-07.
+    const continues = docOf([
+      startNode({ next: 'a' }),
+      scriptNode({ id: 'a', next: 'b', onFailure: 'b' }),
+      scriptNode({ id: 'b', next: 'c', onFailure: 'c' }),
+      scriptNode({ id: 'c', next: 'end', onFailure: 'end' }),
+      { kind: 'finish', id: 'end', title: '', ui: { x: 0, y: 0 } },
+    ])
+    const result = readLinear(continues)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.view.steps.map((s) => s.node.id)).toEqual(['a', 'b', 'c'])
+  })
 })
 
 describe('the delay-between-actions gap (plan 313 §4.5)', () => {

@@ -146,7 +146,8 @@ export function gapExpr(minMs: number, maxMs: number): { const: number } | { exp
  * 2. every node has exactly one inbound edge, except `start`, which has none —
  *    a shuffle's members are exempt, since the shuffle owns them;
  * 3. the only outgoing edge used is `next`, except that a `script` node's
- *    `onFailure` may point at the document's single `finish`, or be absent;
+ *    `onFailure` may point at the document's single `finish`, at whatever
+ *    `next` points at (failure continues down the same line), or be absent;
  * 4. no `gate` and no `switch` anywhere;
  * 5. at most one `finish`, and it is terminal.
  */
@@ -191,8 +192,19 @@ export function readLinear(doc: WorkflowDoc): LinearResult {
     seen.add(node.id)
     if (node.kind === 'finish') break
     ordered.push(node)
-    // Rule 3 — an `onFailure` is allowed only when it points at the finish.
-    if (node.kind === 'script' && node.onFailure !== undefined && node.onFailure !== finish?.id) {
+    /*
+      Rule 3 — an `onFailure` is allowed when it REJOINS the line it is on:
+      either it ends the run (points at the finish), or it goes exactly where
+      `next` already goes.
+
+      That second case is not a branch at all — both edges land on the same
+      node, so the drawing is still a straight line. It is also the single
+      most common sequential shape there is: "if this action fails, carry on
+      with the next one". The owner's own `tiktok-sequential` is written that
+      way from end to end, and refusing it meant Sequential Mode rejected the
+      one workflow most literally named for it (field report, 2026-09-07).
+    */
+    if (node.kind === 'script' && node.onFailure !== undefined && node.onFailure !== finish?.id && node.onFailure !== linearNext(node)) {
       return {
         ok: false,
         refusal: { code: 'branches', nodeId: node.id, message: `"${node.title || node.id}" has a failure branch that does not end the run, and a list cannot show it` },

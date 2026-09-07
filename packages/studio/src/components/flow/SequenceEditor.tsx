@@ -320,8 +320,28 @@ function relink(doc: WorkflowDoc, view: LinearView, order: WorkflowNode[], dispa
   if (stranded.length > 0) dispatch({ t: 'remove-nodes', ids: stranded }, key)
 
   dispatch({ t: 'set-edge', from: view.start.id, kind: 'next', to: chain[0] }, key)
+  /*
+    A failure edge that FOLLOWS the line has to be carried along with it.
+
+    A script may say "if this fails, carry on with the next action" by
+    pointing `onFailure` at the very node `next` points at. Rewriting only
+    `next` on a reorder would leave that failure edge aimed at the action's
+    old neighbour — which is a jump backwards or a skip, a real branch, and
+    `readLinear` would then refuse the document and eject the author from the
+    editor they were working in. So the intent is read from the node as it
+    stands BEFORE this rewrite, and re-aimed at wherever `next` now goes.
+
+    A failure edge pointing at the finish means something different — "stop
+    the run here" — and is left exactly where it is.
+  */
+  const before = new Map(doc.nodes.map((n) => [n.id, n]))
   chain.forEach((id, i) => {
-    dispatch({ t: 'set-edge', from: id, kind: 'next', to: chain[i + 1] ?? view.finish?.id }, key)
+    const to = chain[i + 1] ?? view.finish?.id
+    dispatch({ t: 'set-edge', from: id, kind: 'next', to }, key)
+    const node = before.get(id)
+    if (node?.kind !== 'script' || node.onFailure === undefined) return
+    if (node.onFailure !== node.next) return
+    dispatch({ t: 'set-edge', from: id, kind: 'onFailure', to }, key)
   })
   // Re-lay the column so the canvas view of the same document stays readable.
   const positions: Record<string, { x: number; y: number }> = { [view.start.id]: { x: COLUMN_X, y: 0 } }
@@ -358,6 +378,14 @@ function insertMissingGaps(doc: WorkflowDoc, view: LinearView, minMs: number, ma
       },
       key,
     )
+    // The gap now sits on the `next` edge, so a failure edge that was
+    // following that same line has to move onto it too — otherwise it skips
+    // the wait, stops matching `next`, and becomes a branch the list cannot
+    // show. Same rule as `relink`: only an edge that was following, never one
+    // that ends the run.
+    if (previous.node.kind === 'script' && previous.node.onFailure !== undefined && previous.node.onFailure === previous.node.next) {
+      dispatch({ t: 'set-edge', from: previous.node.id, kind: 'onFailure' as EdgeKind, to: id }, key)
+    }
   }
 }
 
