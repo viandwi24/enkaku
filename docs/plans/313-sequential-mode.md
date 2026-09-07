@@ -472,7 +472,13 @@ action", the two halves of the brief, could not be asked for together. So the
 shuffle node grew `between`/`betweenMaxMs`, the same resolve-then-clamp pair
 `delay` already has, waited before each member after the first. The wrap
 carries the author's existing gaps into it and the unwrap turns them back into
-`delay` nodes, so the round trip keeps the range.
+`delay` nodes.
+
+The first version of that unwrap read only `betweenMaxMs`, so a 5-10 s wait
+came back as 0-10 s and the author silently lost their floor — while the
+commit message claimed the range survived. One `readRange` now serves both a
+`delay`'s `ms`/`maxMs` and a `shuffle`'s `between`/`betweenMaxMs`, because two
+readers of the same shape is how the halves drift apart.
 
 ### Four bugs the work surfaced
 

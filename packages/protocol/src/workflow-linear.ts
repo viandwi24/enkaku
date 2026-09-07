@@ -80,14 +80,21 @@ function linearNext(node: WorkflowNode): string | undefined | null {
  * own right, and the editor shows it as its own row rather than folding it
  * into the global control it cannot faithfully represent.
  */
-export function readGap(node: WorkflowNode): { minMs: number; maxMs: number } | null {
-  if (node.kind !== 'delay') return null
-  const ms = node.ms as Record<string, unknown>
-
+/**
+ * The `[min, max]` a `ValueExpr` plus a declared ceiling describes, or `null`
+ * when it is not one this editor wrote (plan 313 §4.5).
+ *
+ * ONE definition, used for both places a range is stored: a `delay` node's
+ * `ms`/`maxMs` and a `shuffle`'s `between`/`betweenMaxMs`. They were read by
+ * two different pieces of code once, and the second one dropped the minimum —
+ * a 5-10 s shuffle came back as 0-10 s the moment it was unwrapped.
+ */
+function readRange(value: unknown, ceilingMs: number): { minMs: number; maxMs: number } | null {
+  const v = value as Record<string, unknown>
   const range = ((): { minMs: number; maxMs: number } | null => {
-    if ('const' in ms && typeof ms.const === 'number') return { minMs: ms.const, maxMs: ms.const }
-    if ('expr' in ms && typeof ms.expr === 'string') {
-      const match = /^(\d+) \+ \$random \* (\d+)$/.exec(ms.expr)
+    if (v !== null && typeof v === 'object' && 'const' in v && typeof v.const === 'number') return { minMs: v.const, maxMs: v.const }
+    if (v !== null && typeof v === 'object' && 'expr' in v && typeof v.expr === 'string') {
+      const match = /^(\d+) \+ \$random \* (\d+)$/.exec(v.expr)
       if (!match) return null
       const min = Number(match[1])
       return { minMs: min, maxMs: min + Number(match[2]) }
@@ -96,14 +103,32 @@ export function readGap(node: WorkflowNode): { minMs: number; maxMs: number } | 
   })()
   if (range === null) return null
 
-  // `maxMs` is the executor's own hard clamp, so a node whose ceiling
+  // The ceiling is the executor's own hard clamp, so a value whose ceiling
   // disagrees with its expression does NOT run the range the expression
-  // describes — a `1000 + $random * 9000` with `maxMs: 3000` waits at most
-  // three seconds. Reporting that as a 1–10 s gap would put a number on the
-  // screen that the run does not honour, so it is not an editor-authored gap
-  // at all: it stays its own row, where what it says is what it does.
-  if (node.maxMs !== range.maxMs) return null
+  // describes — `1000 + $random * 9000` under a 3000 ms ceiling waits at most
+  // three seconds. Reporting that as a 1-10 s range would put a number on the
+  // screen that the run does not honour.
+  if (ceilingMs !== range.maxMs) return null
   return range
+}
+
+/**
+ * The gap a `delay` node describes, when the sequence editor itself wrote it
+ * — a literal, or the exact `min + $random * span` form `gapExpr` emits. A
+ * delay an author wrote by hand (any other expression, or a bound value) is
+ * NOT a gap: it is an action in its own right, and the editor shows it as its
+ * own row rather than folding it into a global control it cannot faithfully
+ * represent.
+ */
+export function readGap(node: WorkflowNode): { minMs: number; maxMs: number } | null {
+  if (node.kind !== 'delay') return null
+  return readRange(node.ms, node.maxMs)
+}
+
+/** The same, for a `shuffle`'s wait between members — so wrapping and unwrapping a sequence round-trips the author's range rather than half of it. */
+export function readBetween(node: WorkflowNode): { minMs: number; maxMs: number } | null {
+  if (node.kind !== 'shuffle') return null
+  return readRange(node.between, node.betweenMaxMs)
 }
 
 /** The `ms` expression a gap of `[minMs, maxMs]` is written as — the one form `readGap` reads back. */

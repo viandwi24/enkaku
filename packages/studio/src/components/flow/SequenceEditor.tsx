@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { gapExpr, planSequence, readGap, readLinear, type LinearView, type NodeType, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
+import { gapExpr, planSequence, readBetween, readGap, readLinear, type LinearView, type NodeType, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
 import { ArrowDownIcon, ArrowUpIcon, Button, Input, Label, PlusIcon, ShuffleIcon, XIcon, cn } from '@enkaku/ui'
 import type { DocEdit, EdgeKind } from './doc-edit'
 import { freshNodeId, nodeIdsOf } from './doc-edit'
@@ -397,9 +397,13 @@ function ShuffleToggle({ doc, view, dispatch }: { doc: WorkflowDoc; view: Linear
       const members = shuffle.members.flatMap((id) => doc.nodes.filter((n) => n.id === id))
       dispatch({ t: 'remove-nodes', ids: [shuffle.id] }, key)
       relink(doc, view, members, dispatch, key)
-      if (shuffle.betweenMaxMs > 0) {
+      // The shuffle's own `between` becomes ordinary gaps again, MINIMUM
+      // included — reading only `betweenMaxMs` here turned a 5-10 s wait into
+      // a 0-10 s one every time an author unwrapped a sequence.
+      const between = readBetween(shuffle)
+      if (between !== null && between.maxMs > 0) {
         const unwrapped: LinearView = { ...view, steps: members.map((node) => ({ node, delayBefore: null })) }
-        insertMissingGaps(doc, unwrapped, 0, shuffle.betweenMaxMs, dispatch, key)
+        insertMissingGaps(doc, unwrapped, between.minMs, between.maxMs, dispatch, key)
       }
       return
     }

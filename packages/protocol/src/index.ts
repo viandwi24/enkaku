@@ -1260,7 +1260,7 @@ export {
 // beside it, and for the same reason: it is the one definition of "can this
 // document be shown as a list", and both the editor and any future API caller
 // must reach the same answer.
-export { readLinear, isLinear, readGap, gapExpr, planSequence, type LinearView, type LinearStep, type LinearResult, type LinearRefusal } from './workflow-linear'
+export { readLinear, isLinear, readGap, readBetween, gapExpr, planSequence, type LinearView, type LinearStep, type LinearResult, type LinearRefusal } from './workflow-linear'
 
 // Plan 100 §3.1, §4.1, step 100.3.
 export { WallTransportSchema, type WallTransport } from './settings'

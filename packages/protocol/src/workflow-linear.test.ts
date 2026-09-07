@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { gapExpr, planSequence, readGap, readLinear } from './workflow-linear'
+import { gapExpr, planSequence, readBetween, readGap, readLinear } from './workflow-linear'
 import { WorkflowDocSchema, type WorkflowDoc } from './workflow'
 
 function startNode(overrides: Record<string, unknown> = {}) {
@@ -247,5 +247,37 @@ describe('planSequence — reorder and removal without losing work (plan 313 §4
     // Dropping the shuffle promotes its members rather than deleting the
     // actions the author configured inside it.
     expect(planSequence(view, [...members, tail!]).chain).toEqual(['m1', 'm2', 'tail'])
+  })
+})
+
+describe("readBetween — a shuffle's wait round-trips whole (plan 313)", () => {
+  const shuffleWith = (between: unknown, betweenMaxMs: number) =>
+    ({ kind: 'shuffle' as const, id: 'sh', title: '', ui: { x: 0, y: 0 }, enabled: true, members: ['a', 'b'], between, betweenMaxMs }) as never
+
+  test('a range survives BOTH ends — the minimum is not dropped', () => {
+    // The bug this pins: unwrapping read only `betweenMaxMs`, so a 5-10 s
+    // wait came back as 0-10 s and the author silently lost their floor.
+    expect(readBetween(shuffleWith(gapExpr(5000, 10_000), 10_000))).toEqual({ minMs: 5000, maxMs: 10_000 })
+  })
+
+  test('a fixed wait reads back as itself', () => {
+    expect(readBetween(shuffleWith({ const: 3000 }, 3000))).toEqual({ minMs: 3000, maxMs: 3000 })
+  })
+
+  test('no wait at all reads back as zero, not as null', () => {
+    expect(readBetween(shuffleWith({ const: 0 }, 0))).toEqual({ minMs: 0, maxMs: 0 })
+  })
+
+  test('a ceiling that contradicts the expression is not a readable range — the clamp is what runs', () => {
+    expect(readBetween(shuffleWith(gapExpr(1000, 10_000), 3000))).toBeNull()
+  })
+
+  test('a hand-written expression is not folded into the control', () => {
+    expect(readBetween(shuffleWith({ expr: 'len($nodes.a.items) * 1000' }, 10_000))).toBeNull()
+  })
+
+  test('a delay node is not a shuffle, and vice versa', () => {
+    expect(readBetween({ kind: 'delay', id: 'd', title: '', ui: { x: 0, y: 0 }, enabled: true, ms: { const: 5 }, maxMs: 5 })).toBeNull()
+    expect(readGap(shuffleWith({ const: 5 }, 5))).toBeNull()
   })
 })
