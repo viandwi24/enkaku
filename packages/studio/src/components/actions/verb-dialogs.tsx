@@ -57,7 +57,22 @@ export interface VerbDialogSpec<P> {
   /** The initial draft. */
   initial: P
   /** The fields under the divider, or null for a verb with no parameters. */
-  Fields: React.ComponentType<{ value: P; onChange: (next: P) => void; target: TargetState }> | null
+  /*
+    `onChange` takes an UPDATER as well as a value, because two of these
+    forms set state from more than one place in the same commit.
+
+    `RunScriptFields` does: `SchemaForm` seeds the script's defaults through
+    `onChange`, and reports validity through `onCanSubmitChange`. Both
+    callbacks closed over the same render's `value`, so whichever fired
+    second wrote a snapshot that did not contain the first one's change —
+    the seeded parameters were dropped, the form stayed invalid, and Run
+    stayed disabled until the operator edited a field and produced a fresh
+    value by hand (owner, 2026-09-07).
+
+    It is `setState`'s own signature, so every existing caller that passes a
+    whole value keeps working unchanged.
+  */
+  Fields: React.ComponentType<{ value: P; onChange: (next: P | ((prev: P) => P)) => void; target: TargetState }> | null
   /** Rendered in the form container when `Fields` is null: one sentence saying what will happen. */
   note?: string
   /**
@@ -204,7 +219,7 @@ function secondsOf(raw: string): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
 }
 
-function RunScriptFields({ value, onChange, target }: { value: RunScriptValue; onChange: (v: RunScriptValue) => void; target: { count: number } }) {
+function RunScriptFields({ value, onChange, target }: { value: RunScriptValue; onChange: (v: RunScriptValue | ((prev: RunScriptValue) => RunScriptValue)) => void; target: { count: number } }) {
   const [scripts, setScripts] = useState<ScriptListItem[] | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -253,8 +268,8 @@ function RunScriptFields({ value, onChange, target }: { value: RunScriptValue; o
         <SchemaForm
           schema={selected.paramsSchema as JsonSchemaNode}
           value={value.params}
-          onChange={(params) => onChange({ ...value, params })}
-          onCanSubmitChange={(ok) => onChange({ ...value, formOk: ok })}
+          onChange={(params) => onChange((prev) => ({ ...prev, params }))}
+          onCanSubmitChange={(ok) => onChange((prev) => ({ ...prev, formOk: ok }))}
         />
       )}
       <div className="grid grid-cols-2 gap-3">
