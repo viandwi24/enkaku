@@ -641,7 +641,18 @@ export function FlowEditor({
         working without knowing which editor is showing.
       */}
       {editorMode === 'sequence' && (
-        <div className="absolute inset-0 overflow-auto bg-bg">
+        /*
+          `pt-14` clears the floating action bars.
+
+          The pane fills the whole container so the list can scroll the full
+          height, and the toolbars float ON TOP of it — which put the "4
+          warnings / Save" pill directly over the first row's Configure and
+          remove buttons. Rows 2 and 3 looked like they had controls the first
+          row lacked (owner's screenshot, 2026-09-07). The canvas does not
+          have this problem because a canvas can be panned out from under
+          them; a list cannot.
+        */
+        <div className="absolute inset-0 overflow-auto bg-bg pt-14">
           <SequenceEditor doc={doc} dispatch={dispatch} onOpenNode={setOpenNodeId} onAddAction={(from, edge) => openEdgePalette(from, edge)} selectedId={openNodeId} />
         </div>
       )}
