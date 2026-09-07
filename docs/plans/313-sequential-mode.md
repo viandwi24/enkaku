@@ -14,7 +14,7 @@
 | G3 | The list editor and the canvas edit **one** document format | 0 new document schemas, 0 new executors, 0 new checkers | `rg -n "schema: 3" packages/protocol/src` → no hit | [x] |
 | G4 | An action can be turned off without being deleted | 1 boolean on `nodeBase`; a disabled node is skipped, its edge passes through | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `disabled node` group passes | [x] |
 | G5 | A set of actions can run in a random order, differently per device, replayably | `kind: 'shuffle'`; two runs of one document on two devices produce two orders; a replay of one reproduces its own | `bun test packages/core/src/jobs/executors/workflow.test.ts` → `shuffle node` group passes | [x] |
-| G6 | Running a workflow on many devices offers the same pacing a script batch already has | `deviceDelayMs` + `order` reach `createWorkflowBatch` | `bun test packages/protocol/src/actions.test.ts` → `run-workflow takes the batch controls` passes (see §11: the schema, not a dispatch harness) | [x] |
+| G6 | Running a workflow on many devices offers the same pacing a script batch already has | `deviceDelayMs` + `order` reach `createWorkflowBatch`, and the pacer acts on them | `bun test packages/core/src/groups/dispatch.test.ts` → 7 pass, incl. `the members are staggered`; plus `bun test packages/protocol/src/actions.test.ts` for the wire shape | [x] |
 | G7 | Switching between the two editors never loses or invents structure | a document that stops being linear makes the list unavailable and says why, and becomes available again when it is linear once more | `bun test packages/protocol/src/workflow-linear.test.ts` → `the refusal is not one-way` passes | [x] |
 
 Also shipped, beside the named artefact: `kind: 'shuffle'` and `enabled` in
@@ -426,14 +426,21 @@ Written after executing §6 in full on 2026-09-07.
    re-run call site — which creates no batch at all — to name two batch
    controls it has no opinion about. A caller is exactly the party that has
    not applied the schema's defaults yet.
-4. **G6 is verified against the schema, not a dispatch harness.** There is no
-   `groups/dispatch.test.ts` in this repo — `pacer.test.ts` deliberately
-   tests only the pure arithmetic, saying the rest "is a database walk that a
-   unit test would only restate". Building the whole harness for one
-   assertion was not worth it; the contract change is pinned in
-   `actions.test.ts` instead. **This is a real gap**: nothing proves
-   `planFirst` is actually called on a workflow batch except reading the
-   line.
+4. **G6 was first verified against the schema only, then properly.** The
+   initial pass pinned the wire shape in `actions.test.ts` and left the seam
+   unproven, on the grounds that this repo has no `groups/dispatch.test.ts`
+   and `pacer.test.ts` deliberately covers only the pure arithmetic. That was
+   the wrong call and it is now corrected: `groups/dispatch.test.ts` exists,
+   the harness it needed was about twenty lines (the one in
+   `api/batches-runs.test.ts`, plus a `createBatchPacer` with a seeded
+   `randomUint32` and a fixed clock, which makes the stagger exact rather
+   than approximate), and it holds the thing actually worth holding — a
+   workflow batch is an ordinary batch row, so the pacer that has staggered
+   script batches since plan 94 staggers this one with no code of its own.
+
+   The assertion was mutation-checked: deleting `deps.pacer?.planFirst(batchId)`
+   from `createWorkflowBatch` fails exactly the two tests that claim to cover
+   it, and nothing else.
 
 ### Two bugs the work surfaced
 
@@ -460,6 +467,10 @@ Written after executing §6 in full on 2026-09-07.
   scoped runs were: `packages/protocol/src`, `packages/core/src/workflows`,
   `packages/core/src/jobs`, `packages/core/src/api`, `packages/core/src/actions`,
   `packages/core/src/groups` — all green — plus every CI doc/token check.
+
+So of the two gaps this report first declared, one is closed (G6, above) and
+one stands: **nothing here has touched a device, and the sequence editor has
+no test of any kind.** That is the whole of what the owner smoke is for.
 
 ### One thing a reader should not re-derive
 
