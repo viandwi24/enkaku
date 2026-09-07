@@ -93,6 +93,22 @@ interface PendingInsert {
   kind?: EdgeKind
 }
 
+/**
+ * The document as it is for the purpose of "has anything changed?" — the same
+ * document with the editor preference taken out.
+ *
+ * Compared as text rather than by key: both sides come from the same reducer,
+ * which spreads the previous document, so their key order matches. If that
+ * ever stopped being true this would report a change that is not one, which
+ * is exactly what the code did before this existed — a strictly no-worse
+ * failure.
+ */
+function withoutEditorPref(doc: WorkflowDoc): string {
+  if (doc.ui === undefined) return JSON.stringify(doc)
+  const { editor: _editor, ...rest } = doc.ui
+  return JSON.stringify(Object.keys(rest).length === 0 ? { ...doc, ui: undefined } : { ...doc, ui: rest })
+}
+
 export function FlowEditor({
   initialDoc,
   onDirtyChange,
@@ -168,7 +184,20 @@ export function FlowEditor({
   }, [])
   const [paletteOpen, setPaletteOpen] = useState(false)
   const pendingInsert = useRef<PendingInsert | null>(null)
-  const dirty = doc !== initialDoc
+  /*
+    Which editor is open is a VIEW choice, not an edit.
+
+    The mode is stored on the document on purpose (plan 313 §3.3) so it
+    follows a workflow to another browser — but writing it on every toggle
+    meant merely LOOKING at a workflow in the other editor marked it unsaved,
+    put "Unsaved" in the toolbar, and armed the leave-confirmation dialog for
+    a change the author never made (owner, 2026-09-07). Switching back and
+    forth left it dirty either way.
+
+    So the preference still travels with the document and still saves with it
+    — it just does not, on its own, count as something to save.
+  */
+  const dirty = useMemo(() => doc !== initialDoc && withoutEditorPref(doc) !== withoutEditorPref(initialDoc), [doc, initialDoc])
 
   // Plan 306 §4.2 step 306.7 — the canvas badge plan 305 §4.4 reserved but
   // never actually wired. Pins are authoring state, outside the document
