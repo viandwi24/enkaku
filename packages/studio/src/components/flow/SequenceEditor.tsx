@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { gapExpr, readLinear, type LinearView, type NodeType, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
 import { ArrowDownIcon, ArrowUpIcon, Button, Input, Label, PlusIcon, ShuffleIcon, XIcon, cn } from '@enkaku/ui'
 import type { DocEdit, EdgeKind } from './doc-edit'
@@ -192,20 +192,49 @@ function ActionList({
  */
 function DelayControl({ doc, view, dispatch }: { doc: WorkflowDoc; view: LinearView; dispatch(edit: DocEdit, coalesceKey?: string): void }) {
   const current = view.uniformDelay
-  const minSec = current ? String(Math.round(current.minMs / 1000)) : '0'
-  const maxSec = current ? String(Math.round(current.maxMs / 1000)) : '0'
   const mixed = current === null && view.steps.some((s) => s.delayBefore !== null)
 
-  const apply = (minMs: number, maxMs: number): void => {
+  /**
+   * The two fields are LOCAL state, not values derived from the document on
+   * every render, for two reasons that were both bugs first:
+   *
+   * - Blurring one field has to read what the OTHER field currently shows,
+   *   not what the document currently stores. Reading the document meant
+   *   that with mixed gaps — where the document has no single answer, so both
+   *   derived values were "0" — typing a minimum and tabbing away called
+   *   `apply(min, 0)` and silently deleted every wait in the workflow.
+   * - An empty field is not the same as a zero one. `''` means "no answer
+   *   yet" and applies nothing; `'0'` is the author saying *remove the
+   *   waits*, and still does exactly that.
+   */
+  const seed = (n: number | undefined): string => (n === undefined ? '' : String(Math.round(n / 1000)))
+  const [minText, setMinText] = useState(seed(current?.minMs))
+  const [maxText, setMaxText] = useState(seed(current?.maxMs))
+
+  // Re-seed when the DOCUMENT's gaps change under us — an undo, a reorder, or
+  // an edit on the canvas — but never on every render, which would fight the
+  // author mid-keystroke.
+  useEffect(() => {
+    setMinText(seed(current?.minMs))
+    setMaxText(seed(current?.maxMs))
+  }, [current?.minMs, current?.maxMs])
+
+  const apply = (): void => {
+    // Nothing to do until the author has actually given both numbers. This is
+    // what makes the mixed-gaps case safe: the fields start empty, so tabbing
+    // through them changes nothing.
+    if (minText.trim() === '' || maxText.trim() === '') return
+    const minMs = Math.max(0, Number(minText) || 0) * 1000
+    const maxMs = Math.max(0, Number(maxText) || 0) * 1000
+    if (maxMs < minMs) return
+
     const key = opKey('delay')
     const existing = view.steps.map((s) => s.delayBefore).filter((d): d is WorkflowNode => d !== null)
     if (maxMs <= 0) {
       if (existing.length > 0) dispatch({ t: 'remove-nodes', ids: existing.map((d) => d.id) }, key)
       return
     }
-    // Repoint the gaps that already exist, then relink so the ones that do
-    // not get created. Both go through the same `relink` the reorder uses, so
-    // there is one definition of "what the chain looks like".
+    // Repoint the gaps that already exist, then add the ones that do not.
     for (const gap of existing) {
       dispatch({ t: 'update-node', id: gap.id, patch: { ms: gapExpr(minMs, maxMs), maxMs } as Partial<WorkflowNode> }, key)
     }
@@ -213,6 +242,8 @@ function DelayControl({ doc, view, dispatch }: { doc: WorkflowDoc; view: LinearV
       insertMissingGaps(doc, view, minMs, maxMs, dispatch, key)
     }
   }
+
+  const inverted = minText.trim() !== '' && maxText.trim() !== '' && Number(maxText) < Number(minText)
 
   return (
     <div className="space-y-1.5 rounded-lg border border-border-3 p-3">
@@ -222,26 +253,30 @@ function DelayControl({ doc, view, dispatch }: { doc: WorkflowDoc; view: LinearV
           id="seq-delay-min"
           className="w-[92px]"
           inputMode="numeric"
-          defaultValue={minSec}
-          key={`min-${minSec}`}
-          onBlur={(e) => apply(Math.max(0, Number(e.target.value) || 0) * 1000, Math.max(0, Number(maxSec) || 0) * 1000)}
+          value={minText}
+          onChange={(e) => setMinText(e.target.value)}
+          onBlur={apply}
+          placeholder={mixed ? '—' : '0'}
           aria-label="Minimum delay between actions, seconds"
         />
         <span className="text-body text-faint">to</span>
         <Input
           className="w-[92px]"
           inputMode="numeric"
-          defaultValue={maxSec}
-          key={`max-${maxSec}`}
-          onBlur={(e) => apply(Math.max(0, Number(minSec) || 0) * 1000, Math.max(0, Number(e.target.value) || 0) * 1000)}
+          value={maxText}
+          onChange={(e) => setMaxText(e.target.value)}
+          onBlur={apply}
+          placeholder={mixed ? '—' : '0'}
           aria-label="Maximum delay between actions, seconds"
         />
         <span className="text-body text-faint">seconds</span>
       </div>
       <p className="text-meta text-faint">
-        {mixed
-          ? 'The gaps in this workflow are not all the same. Typing here sets every one of them; until then they are left as they are.'
-          : 'Each action waits a fresh random amount inside this range before it starts. Set the range to 0 to remove the waits.'}
+        {inverted
+          ? 'The range is inverted — the second number has to be at least the first.'
+          : mixed
+            ? 'The gaps in this workflow are not all the same, so there is no single range to show. Filling both fields sets every one of them; leaving them empty changes nothing.'
+            : 'Each action waits a fresh random amount inside this range before it starts. Set both to 0 to remove the waits.'}
       </p>
     </div>
   )

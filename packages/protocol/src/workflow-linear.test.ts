@@ -111,6 +111,17 @@ describe('the delay-between-actions gap (plan 313 §4.5)', () => {
     expect(readGap({ kind: 'delay', id: 'd', title: '', ui: { x: 0, y: 0 }, enabled: true, ms: { const: 5000 }, maxMs: 5000 })).toEqual({ minMs: 5000, maxMs: 5000 })
   })
 
+  test('a delay whose maxMs contradicts its expression is NOT a gap — the clamp, not the expression, is what runs', () => {
+    // `1000 + $random * 9000` describes 1–10 s, but `maxMs: 3000` is the
+    // executor's hard ceiling, so this node waits at most 3 s. Folding it into
+    // the "1 to 10 seconds" control would put a number on screen that the run
+    // does not honour.
+    const clamped = { kind: 'delay' as const, id: 'd', title: '', ui: { x: 0, y: 0 }, enabled: true, ms: gapExpr(1000, 10_000), maxMs: 3000 }
+    expect(readGap(clamped)).toBeNull()
+    // The same node with an honest ceiling reads back fine.
+    expect(readGap({ ...clamped, maxMs: 10_000 })).toEqual({ minMs: 1000, maxMs: 10_000 })
+  })
+
   test('a hand-written expression is NOT read as a gap — the editor never folds away what it cannot write back', () => {
     const handWritten = { kind: 'delay' as const, id: 'd', title: '', ui: { x: 0, y: 0 }, enabled: true, ms: { expr: 'len($nodes.a.items) * 1000' }, maxMs: 10_000 }
     expect(readGap(handWritten)).toBeNull()

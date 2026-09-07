@@ -83,17 +83,27 @@ function linearNext(node: WorkflowNode): string | undefined | null {
 export function readGap(node: WorkflowNode): { minMs: number; maxMs: number } | null {
   if (node.kind !== 'delay') return null
   const ms = node.ms as Record<string, unknown>
-  if ('const' in ms && typeof ms.const === 'number') {
-    return { minMs: ms.const, maxMs: ms.const }
-  }
-  if ('expr' in ms && typeof ms.expr === 'string') {
-    const match = /^(\d+) \+ \$random \* (\d+)$/.exec(ms.expr)
-    if (!match) return null
-    const min = Number(match[1])
-    const span = Number(match[2])
-    return { minMs: min, maxMs: min + span }
-  }
-  return null
+
+  const range = ((): { minMs: number; maxMs: number } | null => {
+    if ('const' in ms && typeof ms.const === 'number') return { minMs: ms.const, maxMs: ms.const }
+    if ('expr' in ms && typeof ms.expr === 'string') {
+      const match = /^(\d+) \+ \$random \* (\d+)$/.exec(ms.expr)
+      if (!match) return null
+      const min = Number(match[1])
+      return { minMs: min, maxMs: min + Number(match[2]) }
+    }
+    return null
+  })()
+  if (range === null) return null
+
+  // `maxMs` is the executor's own hard clamp, so a node whose ceiling
+  // disagrees with its expression does NOT run the range the expression
+  // describes — a `1000 + $random * 9000` with `maxMs: 3000` waits at most
+  // three seconds. Reporting that as a 1–10 s gap would put a number on the
+  // screen that the run does not honour, so it is not an editor-authored gap
+  // at all: it stays its own row, where what it says is what it does.
+  if (node.maxMs !== range.maxMs) return null
+  return range
 }
 
 /** The `ms` expression a gap of `[minMs, maxMs]` is written as — the one form `readGap` reads back. */
