@@ -80,7 +80,7 @@ function newNodeFromType(type: NodeType, id: string, x: number, y: number): Work
     case 'shuffle':
       // Placed empty: membership is assigned by selecting rows in the
       // sequence editor or by dragging members onto it, never guessed here.
-      return { kind: 'shuffle', id, title, ui, enabled, members: [], between: { const: 0 }, betweenMaxMs: 0 }
+      return { kind: 'shuffle', id, title, ui, enabled, members: [], between: { const: 0 }, betweenMaxMs: 0, continueOnMemberFailure: false }
     case 'start':
       // `start` cannot be placed a second time (plan 301 §3.4) — the
       // palette never lists it as pickable; kept only so the switch above

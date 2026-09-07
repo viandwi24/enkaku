@@ -6,6 +6,22 @@ import { between, makeRng, sleep } from './human'
 import { all } from './tree'
 import { capture, frameOf, jitteredPoint, readableStrings, relaunch, TIKTOK_PACKAGE, verifiedPageDown } from './gesture'
 
+/** How long to keep looking for the shop after tapping its tab. */
+const SHOP_OPEN_TIMEOUT_MS = 20_000
+
+/**
+ * Whether this tree is the shop rather than whatever preceded it — the
+ * consent gate or the category strip, since either one means it arrived.
+ * Both labels are the ones the strip and the gate actually carry here; the
+ * gate is already bilingual below, and `Semua` is the chip TikTok ships on
+ * an Indonesian install.
+ */
+function hasShopSurface(tree: UiNode): boolean {
+  const gate = all(tree, (n) => n.clickable && /^(Lanjutkan|Continue)$/.test((n.text || n.desc).trim()))
+  if (gate.length > 0) return true
+  return all(tree, (n) => n.clickable && n.text.trim() === 'Semua' && n.bounds.top > 800 && n.bounds.top < 1_300).length > 0
+}
+
 /**
  * `shop-browse` — open TikTok Shop and browse it as a viewer.
  *
@@ -81,11 +97,26 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const tab = all(nav, (n) => n.clickable && n.desc.trim() === 'Toko' && n.bounds.top > 1_400)[0]
     if (!tab) throw new Error('the Toko tab was not on the bottom navigation — see the first artifact')
     await ctx.device.tap({ point: jitteredPoint(tab) })
-    await sleep(between(rng, 3_000, 5_000))
 
+    /*
+      Poll for the shop, do not sleep a guess at it.
+
+      This was `sleep(3_000..5_000)` followed by ONE dump: whatever the screen
+      held at that instant decided the run. TikTok Shop is a network-loaded
+      surface on a budget phone, and three to five seconds is optimistic —
+      the owner's farm failed here twice in one batch with the dump showing
+      the FEED, i.e. the tab had simply not opened yet (2026-09-07). The
+      consent gate and the category strip are both looked for on every pass,
+      because either one means the shop arrived.
+    */
     let consentPassed = false
     let reached = ''
     let gate = await ctx.device.dump()
+    const openDeadline = Date.now() + SHOP_OPEN_TIMEOUT_MS
+    while (Date.now() < openDeadline && !hasShopSurface(gate)) {
+      await sleep(1_000)
+      gate = await ctx.device.dump()
+    }
     const lanjutkan = all(gate, (n) => n.clickable && /^(Lanjutkan|Continue)$/.test((n.text || n.desc).trim()))[0]
     if (lanjutkan) {
       consentPassed = true

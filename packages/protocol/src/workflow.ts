@@ -439,6 +439,26 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
        */
       between: ValueExprSchema.default({ const: 0 }),
       betweenMaxMs: z.number().int().min(0).max(WORKFLOW_LIMITS.maxDelayMs).default(0),
+      /**
+       * A member that fails hands control back to the shuffle, which draws the
+       * next one, instead of ending the run.
+       *
+       * Off by default: "a failing action aborts the sequence" is what every
+       * existing document was written against, and changing that silently
+       * would be worse than the gap.
+       *
+       * The gap it closes: a member declares no `next` — the shuffle decides
+       * the order at run time — so there is no node id an author could aim
+       * `onFailure` at to mean "carry on with the others". The only
+       * expressible policies were "end the run" and "go to the finish".
+       *
+       * Measured on the owner's 66-device farm (2026-09-07): five devices ran
+       * a four-behaviour warm-up, seven of the twelve scripts succeeded, and
+       * all five runs were recorded `failed` and their six minutes of real
+       * work discarded — each for a single member that met a screen it could
+       * not read.
+       */
+      continueOnMemberFailure: z.boolean().default(false),
       /** Absent = dangling; reaching it ends the run succeeded (plan 301 §3.2). */
       next: WorkflowNodeIdSchema.optional(),
     })

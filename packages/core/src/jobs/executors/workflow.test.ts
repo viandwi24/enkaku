@@ -934,6 +934,26 @@ function shuffleDoc(): WorkflowDoc {
   })
 }
 
+/** `shuffleDoc`, with the shuffle told to survive a member that fails. */
+function forgivingShuffleDoc(): WorkflowDoc {
+  return WorkflowDocSchema.parse({
+    schema: 2,
+    name: 'shuffle-forgiving',
+    title: '',
+    description: '',
+    params: [],
+    entry: 'start',
+    nodes: [
+      startNode({ next: 'sh' }),
+      { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b', 'c'], next: 'tail', continueOnMemberFailure: true },
+      scriptNode({ id: 'a', script: 'demo/a@1.0.0' }),
+      scriptNode({ id: 'b', script: 'demo/b@1.0.0' }),
+      scriptNode({ id: 'c', script: 'demo/c@1.0.0' }),
+      scriptNode({ id: 'tail', script: 'demo/tail@1.0.0' }),
+    ],
+  })
+}
+
 type StepPlan = Map<string, { status: 'success' | 'failed' | 'cancelled'; result?: unknown; error?: string }>
 
 const ALL_OK: StepPlan = new Map([
@@ -989,6 +1009,48 @@ describe('shuffle node (plan 313 §3.5, G5)', () => {
     expect(visits.at(-1)?.takenEdge).toBe('next')
     // …and the run reached the node after the shuffle.
     expect(stepRows.find((s) => s.stepId === 'tail')?.status).toBe('success')
+  })
+
+  test('a failing member ends the run when the shuffle was not told to keep going', async () => {
+    // The behaviour every document written before `continueOnMemberFailure`
+    // relies on, pinned so the new flag cannot change it by default.
+    const plan: StepPlan = new Map(ALL_OK)
+    plan.set('script-demo/b', { status: 'failed', error: 'b met a screen it could not read' })
+    const { runs, deps } = setUp(plan)
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, shuffleDoc())
+    const promise = orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    // A failed workflow is reported by throwing, not by a returned status.
+    await expect(promise).rejects.toThrow(/step "b" failed/)
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).orderBy(workflowSteps.seq).all()
+    expect(stepRows.find((s) => s.stepId === 'tail')?.status).not.toBe('success')
+  })
+
+  test('a shuffle told to keep going runs its other members and reaches `next`', async () => {
+    /*
+      The owner's warm-up, in miniature: five devices each ran a
+      multi-behaviour shuffle, seven of twelve scripts SUCCEEDED, and all five
+      runs were recorded failed with their six minutes of work discarded —
+      each for one member that met a screen it could not read (2026-09-07).
+    */
+    const plan: StepPlan = new Map(ALL_OK)
+    plan.set('script-demo/b', { status: 'failed', error: 'b met a screen it could not read' })
+    const { runs, deps } = setUp(plan)
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, forgivingShuffleDoc())
+    // Resolving rather than throwing IS the run succeeding — the orchestrator
+    // reports a failed workflow by throwing.
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).orderBy(workflowSteps.seq).all()
+    // Every other member still ran, and the run left the shuffle by `next`.
+    for (const id of ['a', 'c']) {
+      expect(stepRows.filter((s) => s.stepId === id && s.status === 'success')).toHaveLength(1)
+    }
+    expect(stepRows.find((s) => s.stepId === 'tail')?.status).toBe('success')
+    // The failure is still on the record — surviving it must not erase it.
+    expect(stepRows.filter((s) => s.stepId === 'b' && s.status === 'failed')).toHaveLength(1)
   })
 
   test('the members run in a random order, and the seed alone decides which — two seeds, two orders', async () => {

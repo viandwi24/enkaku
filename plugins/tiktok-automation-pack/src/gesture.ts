@@ -69,11 +69,64 @@ export function jitteredPoint(node: UiNode): { x: number; y: number } {
   }
 }
 
-/** Force-stop, launch, plain settle — the same ladder `relaunch` in index.ts documents: on this device the inspector is not dependable enough to gate a run on. */
+/**
+ * The feed's own bottom-nav entry, in both languages TikTok ships here.
+ *
+ * Selectors match exactly (`{desc}`/`{text}`/`{id}` — no regex), so a
+ * bilingual anchor is a list to try in turn rather than one pattern. The
+ * resource id would be language-proof but rotates between TikTok builds,
+ * which is worse: a wrong id never matches on ANY phone.
+ */
+const HOME_TAB: { desc: string }[] = [{ desc: 'Beranda' }, { desc: 'Home' }]
+
+/** How long to keep looking for the feed after a cold launch before going ahead anyway. */
+const READY_TIMEOUT_MS = 25_000
+
+/**
+ * Force-stop, launch, and WAIT FOR THE FEED — not for a fixed six seconds.
+ *
+ * This used to be `sleep(6_000)`, on the reasoning that the inspector is not
+ * dependable enough on these phones to gate a run on. That reasoning is
+ * sound and is kept below; the six seconds was the problem. Read off the
+ * owner's farm (2026-09-07, SM-A075F, trace of a failed `search`):
+ *
+ *     0.9s  app.forceStop
+ *     1.0s  app.launch
+ *     7.5s  launch phase ends      ← the 6 s settle, spent
+ *     8.7s  dump
+ *    10.6s  tap (the search icon)  ← 9.6 s after a COLD start
+ *   11.5s→26.6s  waitFor           ← the tap never navigated; 15 s wasted
+ *
+ * TikTok on a budget phone is drawing its first feed at ten seconds, not
+ * done with it. The tap landed on an app that could not act on it yet, and
+ * every anchor after that was looked for on the wrong screen. The steps that
+ * PASSED in the same runs (`notification-activity`, `auto-scroll`) never
+ * navigate — they scroll what is already there, which is why the fixed
+ * settle held for years and only the navigating scripts failed.
+ *
+ * So: a short blind settle (the inspector cannot dump a window that does not
+ * exist yet), then poll for the feed itself, then give up and continue
+ * anyway. Giving up is deliberate — a phone whose inspector will not answer
+ * still gets its run, and the caller's own `waitForAnchor` reports what it
+ * actually found, which is a better error than one invented here.
+ */
 export async function relaunch(ctx: ScriptContext<unknown>): Promise<void> {
   await ctx.device.app.forceStop(TIKTOK_PACKAGE)
   await ctx.device.app.launch(TIKTOK_PACKAGE)
-  await sleep(6_000)
+  await sleep(3_000)
+
+  const deadline = Date.now() + READY_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    for (const sel of HOME_TAB) {
+      try {
+        await ctx.device.waitFor(sel, { timeout: 2_000 })
+        return
+      } catch {
+        // Not this label, or not yet — try the other, then go round again.
+      }
+    }
+  }
+  ctx.log.warn(`the feed did not appear within ${READY_TIMEOUT_MS / 1000}s of launching — continuing, and the next anchor will say where the device is`)
 }
 
 /** Save the current tree and a screenshot under one label — a failed run should carry its own bug report. */
