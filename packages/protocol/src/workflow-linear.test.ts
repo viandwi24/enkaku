@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { gapExpr, readGap, readLinear } from './workflow-linear'
+import { gapExpr, planSequence, readGap, readLinear } from './workflow-linear'
 import { WorkflowDocSchema, type WorkflowDoc } from './workflow'
 
 function startNode(overrides: Record<string, unknown> = {}) {
@@ -169,5 +169,83 @@ describe('the delay-between-actions gap (plan 313 §4.5)', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.view.steps.map((s) => s.node.id)).toEqual(['g0', 'a'])
+  })
+})
+
+describe('planSequence — reorder and removal without losing work (plan 313 §4.5)', () => {
+  const gap = (id: string, next: string) => ({ kind: 'delay', id, title: '', ui: { x: 0, y: 0 }, ms: gapExpr(1000, 10_000), maxMs: 10_000, next })
+
+  /** `start -> a -> w1 -> b -> w2 -> c`: three actions, a wait before b and before c. */
+  function gappedDoc(): WorkflowDoc {
+    return docOf([
+      startNode({ next: 'a' }),
+      scriptNode({ id: 'a', next: 'w1' }),
+      gap('w1', 'b'),
+      scriptNode({ id: 'b', next: 'w2' }),
+      gap('w2', 'c'),
+      scriptNode({ id: 'c' }),
+    ])
+  }
+
+  function viewOf(doc: WorkflowDoc) {
+    const r = readLinear(doc)
+    if (!r.ok) throw new Error(`expected a linear document: ${r.refusal.message}`)
+    return r.view
+  }
+
+  test('the unchanged order round-trips to the same chain, and strands nothing', () => {
+    const view = viewOf(gappedDoc())
+    expect(planSequence(view, view.steps.map((s) => s.node))).toEqual({ chain: ['a', 'w1', 'b', 'w2', 'c'], stranded: [] })
+  })
+
+  test('each action keeps its OWN wait when the order changes', () => {
+    const view = viewOf(gappedDoc())
+    const [a, b, c] = view.steps.map((s) => s.node)
+    // c and b swap: c's wait travels with it.
+    const { chain, stranded } = planSequence(view, [a!, c!, b!])
+    expect(chain).toEqual(['a', 'w2', 'c', 'w1', 'b'])
+    expect(stranded).toEqual([])
+  })
+
+  test('an action moved to first loses its wait, and that wait is reported as stranded', () => {
+    const view = viewOf(gappedDoc())
+    const [a, b, c] = view.steps.map((s) => s.node)
+    const { chain, stranded } = planSequence(view, [c!, a!, b!])
+    // `c` is first, so `w2` has no pair to sit between — and `a`, no longer
+    // first, has no wait of its own to gain.
+    expect(chain).toEqual(['c', 'a', 'w1', 'b'])
+    // Left in the document this would be an orphan, and an orphan makes
+    // `readLinear` refuse — ejecting the author from the editor by a reorder.
+    expect(stranded).toEqual(['w2'])
+  })
+
+  test('removing a middle action bridges the sequence and strands only its own wait', () => {
+    const view = viewOf(gappedDoc())
+    const [a, b, c] = view.steps.map((s) => s.node)
+    // Remove `b`. Its own wait (`w1`) goes; `c` keeps `w2` and follows `a`.
+    const { chain, stranded } = planSequence(view, [a!, c!])
+    expect(chain).toEqual(['a', 'w2', 'c'])
+    expect(stranded).toEqual(['w1'])
+  })
+
+  test('removing every action leaves an empty chain and strands every wait', () => {
+    const view = viewOf(gappedDoc())
+    expect(planSequence(view, [])).toEqual({ chain: [], stranded: ['w1', 'w2'] })
+  })
+
+  test("a shuffle's promoted members become ordinary steps in the chain", () => {
+    const doc = docOf([
+      startNode({ next: 'sh' }),
+      { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['m1', 'm2'], next: 'tail' },
+      scriptNode({ id: 'm1' }),
+      scriptNode({ id: 'm2' }),
+      scriptNode({ id: 'tail' }),
+    ])
+    const view = viewOf(doc)
+    const members = doc.nodes.filter((n) => n.id === 'm1' || n.id === 'm2')
+    const tail = doc.nodes.find((n) => n.id === 'tail')
+    // Dropping the shuffle promotes its members rather than deleting the
+    // actions the author configured inside it.
+    expect(planSequence(view, [...members, tail!]).chain).toEqual(['m1', 'm2', 'tail'])
   })
 })

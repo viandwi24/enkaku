@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { gapExpr, readLinear, type LinearView, type NodeType, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
+import { gapExpr, planSequence, readLinear, type LinearView, type NodeType, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
 import { ArrowDownIcon, ArrowUpIcon, Button, Input, Label, PlusIcon, ShuffleIcon, XIcon, cn } from '@enkaku/ui'
 import type { DocEdit, EdgeKind } from './doc-edit'
 import { freshNodeId, nodeIdsOf } from './doc-edit'
@@ -112,6 +112,32 @@ function ActionList({
     relink(doc, view, order, dispatch)
   }
 
+  /**
+   * Removing a row has to BRIDGE the sequence, not just delete a node.
+   * `remove-nodes` clears every edge that pointed at what it removed — right
+   * for the canvas, where deleting a node must not invent an edge between two
+   * nodes the author never connected, and wrong here: it would leave
+   * `start -> a` dangling with `c` orphaned, `readLinear` would refuse the
+   * document, and deleting one action would eject the author from the editor.
+   * So the removal is followed by a `relink` over what remains, which writes
+   * every edge explicitly and repairs the ones the delete cleared.
+   *
+   * A shuffle's members are PROMOTED into the sequence where the shuffle was,
+   * rather than deleted with it. They are actions the author configured, and
+   * they were only ever reachable through the shuffle — dropping the
+   * container should stop the shuffling, not silently throw away the work.
+   * `relink`'s own stranded-gap sweep removes the wait that preceded the row.
+   */
+  const remove = (index: number): void => {
+    const target = steps[index]
+    if (!target) return
+    const key = opKey('remove')
+    const promoted = target.node.kind === 'shuffle' ? target.node.members.flatMap((id) => doc.nodes.filter((n) => n.id === id)) : []
+    const order = steps.flatMap((s, i) => (i === index ? promoted : [s.node]))
+    dispatch({ t: 'remove-nodes', ids: [target.node.id] }, key)
+    relink(doc, view, order, dispatch, key)
+  }
+
   if (steps.length === 0) {
     return <p className="rounded-lg border border-dashed border-border-3 p-8 text-center text-body text-dim">No actions yet. Add the first one below.</p>
   }
@@ -168,13 +194,7 @@ function ActionList({
             <button
               type="button"
               aria-label={`Remove ${node.title || node.id}`}
-              onClick={() => {
-                // Removing the row removes the gap that preceded it too —
-                // leaving an orphan delay behind would break `readLinear` and
-                // eject the author from the editor they are standing in.
-                const ids = [node.id, ...(step.delayBefore ? [step.delayBefore.id] : [])]
-                dispatch({ t: 'remove-nodes', ids })
-              }}
+              onClick={() => remove(i)}
             >
               <XIcon className="size-4" />
             </button>
@@ -290,28 +310,12 @@ function DelayControl({ doc, view, dispatch }: { doc: WorkflowDoc; view: LinearV
  * step rather than the eight `set-edge`s it happens to be made of. The key is
  * unique per call (`opKey`), so two reorders in a row stay two undo steps.
  */
-function relink(doc: WorkflowDoc, view: LinearView, order: WorkflowNode[], dispatch: (edit: DocEdit, coalesceKey?: string) => void): void {
-  const key = opKey('relink')
-  const gapOf = new Map(view.steps.map((s) => [s.node.id, s.delayBefore]))
-  // The chain as node ids, gaps included, in the order they will run.
-  const chain: string[] = []
-  order.forEach((node, i) => {
-    const gap = gapOf.get(node.id)
-    // A gap only belongs between two actions — the first action never has one.
-    if (gap && i > 0) chain.push(gap.id)
-    chain.push(node.id)
-  })
-
-  // A gap that no longer sits between two actions has nowhere to go — the
-  // action it belonged to is now first. Left in the document it would be an
-  // orphan, `readLinear` would refuse the document, and the author would be
-  // ejected from the editor they are standing in by a reorder. So it is
-  // removed, before the rewiring that would otherwise strand it.
-  const inChain = new Set(chain)
-  const stranded = view.steps
-    .map((s) => s.delayBefore)
-    .filter((d): d is WorkflowNode => d !== null && !inChain.has(d.id))
-    .map((d) => d.id)
+function relink(doc: WorkflowDoc, view: LinearView, order: WorkflowNode[], dispatch: (edit: DocEdit, coalesceKey?: string) => void, sharedKey?: string): void {
+  const key = sharedKey ?? opKey('relink')
+  // The chain and the gaps it leaves behind are decided by `planSequence`
+  // (`@enkaku/protocol`), which is pure and tested — this file only turns its
+  // answer into dispatches.
+  const { chain, stranded } = planSequence(view, order)
   if (stranded.length > 0) dispatch({ t: 'remove-nodes', ids: stranded }, key)
 
   dispatch({ t: 'set-edge', from: view.start.id, kind: 'next', to: chain[0] }, key)

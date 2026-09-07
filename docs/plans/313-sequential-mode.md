@@ -442,18 +442,44 @@ Written after executing §6 in full on 2026-09-07.
    from `createWorkflowBatch` fails exactly the two tests that claim to cover
    it, and nothing else.
 
-### Two bugs the work surfaced
+### The sequence editor's pure half was extracted so it could be tested
+
+`planSequence` (`workflow-linear.ts`) decides the chain a reorder or a
+removal produces and which gap nodes it leaves behind. It started life inside
+`SequenceEditor.tsx` and was moved out on this repo's own `promote.ts`
+precedent — "the pure half of that, no React, so it is testable with no DOM".
+
+That was not tidying. It is the part of this plan most able to lose an
+author's work, Studio has no tests, and moving ~15 lines bought six of them.
+
+### Four bugs the work surfaced
 
 - **The script success path bypassed the shared successor lookup.** It
   advanced through `node.next` directly, so a shuffle ran its first member
   and stopped. Both paths now go through `advance`. Found by the new tests,
   not by review.
-- **`FlowCanvas.iconFor` returned an icon name that did not exist.** It is
-  typed `string` rather than `IconName`, so `'shuffle'` typechecked and would
-  have rendered nothing. `PLUGIN_ICONS` is an exhaustive
-  `Record<IconName, Icon>`, so adding the name to `ICON_NAMES` forced the
-  mapping — but `iconFor`'s own return type is still `string`, and a future
-  node kind can repeat this exact mistake.
+- **`FlowCanvas.iconFor` returned an icon name that did not exist.** Typed
+  `string` rather than `IconName`, `'shuffle'` typechecked and the node
+  rendered no icon. `iconFor` now returns `IconName`, so the next node kind
+  that gets this wrong is a compile error.
+
+- **The delay control could delete every wait in the workflow.** Both fields
+  derived their value from the document on each render; with mixed gaps the
+  document has no single answer, so both derived to `"0"`, and blurring the
+  minimum read the OTHER field from the document rather than from the screen —
+  `apply(min, 0)` took the "remove the gaps" branch. Local state now, and an
+  empty field is no longer the same as a zero one.
+
+- **Removing a middle action orphaned everything after it.** `remove-nodes`
+  CLEARS every edge that pointed at what it removed, which is right for the
+  canvas (deleting a node must not invent an edge between two nodes the author
+  never joined) and wrong for a list. The removal is followed by a `relink`
+  over what remains, and a shuffle's members are promoted into the sequence
+  rather than deleted with their container.
+
+  Both of these were found by reading, not by running — which is exactly the
+  argument for the owner smoke below, since a person would have hit the first
+  one within a minute.
 
 ### What I could not verify
 

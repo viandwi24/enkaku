@@ -217,3 +217,39 @@ export function readLinear(doc: WorkflowDoc): LinearResult {
 export function isLinear(doc: WorkflowDoc): boolean {
   return readLinear(doc).ok
 }
+
+/**
+ * Given a linear view and the order its actions should end up in, the chain
+ * of node ids to wire `start -> … -> finish` through, and the gap nodes that
+ * no longer belong anywhere (plan 313 §4.5).
+ *
+ * Pure, and here rather than in the editor, following this repo's own
+ * `promote.ts` precedent — "the pure half of that, no React, so it is
+ * testable with no DOM". It is the part of the sequence editor most able to
+ * lose an author's work, and Studio has no tests of its own, so this is where
+ * that logic can actually be held to something.
+ *
+ * Two rules it exists to get right:
+ *
+ * - A gap belongs BETWEEN two actions, so the action now in first place
+ *   loses the wait that used to precede it.
+ * - A gap dropped that way must be reported as `stranded`, because a delay
+ *   node left in the document with nothing pointing at it is an orphan, and
+ *   an orphan makes `readLinear` refuse the document — which would eject the
+ *   author from the editor by a reorder.
+ */
+export function planSequence(view: LinearView, order: readonly WorkflowNode[]): { chain: string[]; stranded: string[] } {
+  const gapOf = new Map(view.steps.map((s) => [s.node.id, s.delayBefore]))
+  const chain: string[] = []
+  order.forEach((node, i) => {
+    const gap = gapOf.get(node.id)
+    if (gap && i > 0) chain.push(gap.id)
+    chain.push(node.id)
+  })
+  const inChain = new Set(chain)
+  const stranded = view.steps
+    .map((s) => s.delayBefore)
+    .filter((d): d is WorkflowNode => d !== null && !inChain.has(d.id))
+    .map((d) => d.id)
+  return { chain, stranded }
+}
