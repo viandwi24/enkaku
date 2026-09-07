@@ -63,7 +63,8 @@ export type GroupInfo = z.infer<typeof GroupInfoSchema>
 
 export const ResolvedTargetSchema = z.object({
   deviceId: z.string(),
-  via: z.enum(['tag', 'explicit', 'group']),
+  /** `'tag'` is legacy — the value plan 225 renamed to `'label'`; kept in the enum so batch rows written before it still parse. */
+  via: z.enum(['label', 'explicit', 'group', 'tag']),
 })
 
 export const SkippedDeviceSchema = z.object({

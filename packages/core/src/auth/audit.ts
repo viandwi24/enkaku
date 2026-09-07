@@ -40,7 +40,7 @@ export type AuditAction =
   // Per-device disconnect/reconnect (plan 88 §3.7, §3.8, §4.6, §5 step 88.4)
   // — distinct from `device.forget`/`device.block`, which un-enrol a device:
   // these only drop or restore the adb transport and leave the device's
-  // record, tags, group, settings, job history and artifacts untouched.
+  // record, labels, group, settings, job history and artifacts untouched.
   | 'device.disconnect'
   | 'device.reconnect'
   // `PATCH /:id/connection`'s declared medium (plan 88 §3.1, §4.6, §5 step
@@ -115,6 +115,14 @@ export type AuditAction =
   | 'group.delete'
   | 'group.assign'
   | 'group.unassign'
+  // Plan 225 — labels. `label.assign` covers every op of the `set-labels`
+  // verb (add, remove, replace); its `meta` carries which one ran and on
+  // which devices, so "who put Smoke Pool on these twelve phones" is
+  // answerable the same way a group move is.
+  | 'label.create'
+  | 'label.update'
+  | 'label.delete'
+  | 'label.assign'
   // Plan 94 §3.9, §4.9, step 94.8 — `POST /:id/stop` REPLACES `/:id/cancel`
   // (00-overview §4.3), so this action name replaces `'batch.cancel'`
   // rather than sitting beside it.

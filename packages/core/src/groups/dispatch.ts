@@ -44,7 +44,7 @@ function overBatchCeilingError(clamps: RuntimeClamp[]): EnkakuError {
 export interface CreateBatchInput {
   scriptId: string
   params: unknown
-  target: { groupId: string } | { deviceIds: string[] }
+  target: { groupId: string } | { deviceIds: string[] } | { labelIds: string[] }
   concurrency: number
   order: 'as-listed' | 'random'
   priority?: number
@@ -114,8 +114,14 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
     if (!group) throw new EnkakuError('group_not_found', `no such group: ${input.target.groupId}`)
     groupId = group.id
     resolved = resolveGroup(db, group)
+  } else if ('labelIds' in input.target) {
+    // A label batch records no `groupId`, the same as an ad-hoc device list:
+    // `batches.groupId` names the ONE container a batch came from, and a
+    // label target can name several. The schedule row that dispatched it is
+    // where "why these devices" is answerable.
+    resolved = resolveTarget(db, { labelIds: input.target.labelIds, deviceIds: [] })
   } else {
-    resolved = resolveTarget(db, { tags: [], deviceIds: input.target.deviceIds })
+    resolved = resolveTarget(db, { labelIds: [], deviceIds: input.target.deviceIds })
   }
 
   if (resolved.usable.length === 0) {
@@ -212,7 +218,7 @@ export interface CreateWorkflowBatchInput {
   workflowName: string
   workflowDoc: unknown
   params: unknown
-  target: { groupId: string } | { deviceIds: string[] }
+  target: { groupId: string } | { deviceIds: string[] } | { labelIds: string[] }
   concurrency: number
   order: 'as-listed' | 'random'
   priority?: number
@@ -246,8 +252,12 @@ export function createWorkflowBatch(
     if (!group) throw new EnkakuError('group_not_found', `no such group: ${input.target.groupId}`)
     groupId = group.id
     resolved = resolveGroup(db, group)
+  } else if ('labelIds' in input.target) {
+    // Same reasoning as `createBatch` above: a label target names no single
+    // container, so `batches.groupId` stays null.
+    resolved = resolveTarget(db, { labelIds: input.target.labelIds, deviceIds: [] })
   } else {
-    resolved = resolveTarget(db, { tags: [], deviceIds: input.target.deviceIds })
+    resolved = resolveTarget(db, { labelIds: [], deviceIds: input.target.deviceIds })
   }
 
   if (resolved.usable.length === 0) {

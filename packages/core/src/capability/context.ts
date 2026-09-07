@@ -20,9 +20,9 @@ import type { ScriptRegistry } from '../scripts/registry'
 import { getScriptDetail, listActiveScripts, type ScriptDetail } from '../scripts/service'
 import type { PluginRuntime } from '../plugins/runtime'
 import type { JobService } from '../services/job-service'
-import { groupRefFor, listDevicesWithTags, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
+import { groupRefFor, listDevicesWithLabels, rowToDeviceInfo, type FarmNetwork } from '../registry/device-registry'
 import { lookupDeviceNumber } from '../registry/device-number'
-import { loadDeviceTags } from '../registry/device-tags'
+import { loadDeviceLabels } from '../registry/device-labels'
 import { EnkakuError } from '../util/errors'
 import type { WorkspaceStore } from '../workspace/store'
 import type { NotifyService } from '../notify/service'
@@ -559,14 +559,14 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
 
     listDevices() {
       const readiness = deps.readiness()
-      // `listDevicesWithTags` itself falls back to `staticReadinessFallback`
+      // `listDevicesWithLabels` itself falls back to `staticReadinessFallback`
       // per row when `readinessOf` is omitted — same as `getDevice` below.
       // The activity state (plan 205 §4.10) is always available —
       // `deps.activities` exists in every mode, unlike `readiness`.
       // `networks`/`declaredMedia` (plan 88 §5 step 88.5) are resolved ONCE
       // here, never per row — the same N+1 rule `device-registry.ts:171-175`
       // already states.
-      return listDevicesWithTags(
+      return listDevicesWithLabels(
         deps.db,
         readiness ? (deviceId) => readiness.get(deviceId) : undefined,
         (deviceId) => ({ activities: deps.activities.list(deviceId), lastControl: deps.activities.lastControl(deviceId) }),
@@ -581,7 +581,7 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
       const group = row.groupId ? groupRefFor(deps.db, row.groupId) : null
       return rowToDeviceInfo(
         row,
-        loadDeviceTags(deps.db, [deviceId]).get(deviceId) ?? [],
+        loadDeviceLabels(deps.db, [deviceId]).get(deviceId) ?? [],
         group,
         null,
         deps.readiness()?.get(deviceId) ?? null,

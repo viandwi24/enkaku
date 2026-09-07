@@ -9,16 +9,20 @@ import {
   DotsThreeVerticalIcon,
   FunnelIcon,
   Input,
+  LabelChip,
   MagnifyingGlassIcon,
   RowsIcon,
   SquaresFourIcon,
   StatusDot,
+  TagIcon,
   TrayArrowDownIcon,
   api,
   cn,
   matchesDeviceQuery,
 } from '@enkaku/ui'
 import { useOverlay } from '@/lib/overlays'
+import { LabelManager } from '@/components/labels/LabelManager'
+import type { LabelsState } from '@/lib/labels'
 import { GroupTabs } from './GroupTabs'
 import { dotStateOf, isDeviceState, reconnectingAttempt } from './device-state'
 
@@ -32,8 +36,9 @@ const RESCAN_SPIN_MS = 1400
 
 /**
  * `serial, label, model, task` (design handoff, Search popover). Matches
- * name, serial, model, group and task, so the search box and the match count
- * beside it can never disagree (plan 214 §4.6).
+ * name, serial, model, group, label and task, so the search box and the match
+ * count beside it can never disagree (plan 214 §4.6). Label names come in via
+ * `matchesDeviceQuery`, which reads `DeviceInfo.labels` itself.
  */
 export function matchesDevice(d: DeviceInfo, q: string, task: string): boolean {
   const needle = q.trim().toLowerCase()
@@ -65,6 +70,10 @@ export function DevicesToolbar({
   onCardWidthChange,
   filter,
   onFilterChange,
+  labelState,
+  activeLabelIds,
+  onToggleLabel,
+  onClearLabels,
   query,
   onQueryChange,
   matchCount,
@@ -87,6 +96,12 @@ export function DevicesToolbar({
   onCardWidthChange: (w: CardWidth) => void
   filter: DevicesFilter
   onFilterChange: (f: DevicesFilter) => void
+  /** Every label in the farm, plus the reload the manager needs after a mutation (plan 225 §4.7). */
+  labelState: LabelsState
+  /** The label ids the list is narrowed to right now — AND, so a device must carry every one. */
+  activeLabelIds: readonly string[]
+  onToggleLabel: (id: string) => void
+  onClearLabels: () => void
   query: string
   onQueryChange: (q: string) => void
   matchCount: number
@@ -99,12 +114,16 @@ export function DevicesToolbar({
   const [filterOpen, setFilterOpen] = useState(false)
   const [viewOpen, setViewOpen] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
+  const [labelsOpen, setLabelsOpen] = useState(false)
+  const [managerOpen, setManagerOpen] = useState(false)
   const [spinning, setSpinning] = useState(false)
 
   useOverlay('menu', searchOpen, () => setSearchOpen(false))
   useOverlay('menu', filterOpen, () => setFilterOpen(false))
   useOverlay('menu', viewOpen, () => setViewOpen(false))
   useOverlay('menu', moreOpen, () => setMoreOpen(false))
+  useOverlay('menu', labelsOpen, () => setLabelsOpen(false))
+  useOverlay('menu', managerOpen, () => setManagerOpen(false))
 
   const rescan = () => {
     setSpinning(true)
@@ -162,7 +181,7 @@ export function DevicesToolbar({
             <Input
               variant="search"
               autoFocus
-              placeholder="serial, label, model, task"
+              placeholder="serial, name, model, label, task"
               value={query}
               onChange={(e) => onQueryChange(e.target.value)}
             />
@@ -209,6 +228,78 @@ export function DevicesToolbar({
               </button>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/*
+        Labels get their OWN control beside the status filter rather than
+        rows inside it (plan 225 §4.3). Two reasons: the status filter is
+        single-choice and labels are not — narrowing to "Smoke Pool AND
+        Android 15" is the case that makes labels worth having — and the
+        number of labels is unbounded, so folding them into a menu that is
+        otherwise a fixed list of eight would make that menu grow with the
+        farm.
+      */}
+      <div className="relative flex flex-none items-center">
+        <button
+          type="button"
+          onClick={() => setLabelsOpen((v) => !v)}
+          className={cn(ICON_BTN, labelsOpen || activeLabelIds.length > 0 ? ICON_ACTIVE : ICON_IDLE)}
+          aria-label="Filter by label"
+        >
+          <TagIcon className="size-4" aria-hidden />
+        </button>
+        {activeLabelIds.length > 0 && (
+          <span className="pointer-events-none absolute -top-0.5 -right-0.5 flex size-[15px] items-center justify-center rounded-full bg-accent text-[9px] font-semibold text-on-accent">
+            {activeLabelIds.length}
+          </span>
+        )}
+        {labelsOpen && (
+          <div data-menu-root="1" className="absolute top-[40px] right-0 z-30 w-[248px] rounded-card border border-border bg-panel p-1 shadow-panel-2">
+            {labelState.labels.length === 0 ? (
+              <p className="px-[10px] py-3 text-center text-body text-faint">
+                No labels yet. Make one to group devices without moving them between groups.
+              </p>
+            ) : (
+              <div className="max-h-[280px] overflow-y-auto">
+                {labelState.labels.map((l) => {
+                  const active = activeLabelIds.includes(l.id)
+                  // The count is the whole farm's, not this view's: it says
+                  // how many devices the label is ON, which is what makes it
+                  // worth clicking. The match count beside the search box is
+                  // what says how many rows survive the filters.
+                  return (
+                    <button key={l.id} type="button" className={ROW} onClick={() => onToggleLabel(l.id)}>
+                      <LabelChip name={l.name} color={l.color} className="min-w-0 flex-1 justify-start" />
+                      <span className="text-label text-faint">{l.deviceCount}</span>
+                      {active && <CheckIcon className="size-3.5 text-accent" aria-hidden />}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            <div className="my-1 border-t border-line" />
+            {activeLabelIds.length > 0 && (
+              <button type="button" className={cn(ROW, 'text-accent')} onClick={onClearLabels}>
+                Clear label filter
+              </button>
+            )}
+            <button
+              type="button"
+              className={ROW}
+              onClick={() => {
+                setLabelsOpen(false)
+                setManagerOpen(true)
+              }}
+            >
+              Manage labels…
+            </button>
+          </div>
+        )}
+        {managerOpen && (
+          <div className="absolute top-[40px] right-0 z-30">
+            <LabelManager state={labelState} onClose={() => setManagerOpen(false)} />
           </div>
         )}
       </div>

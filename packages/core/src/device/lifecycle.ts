@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../db'
-import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceTags, devices, discoveredDevices, jobRuns, jobs, type DeviceRow } from '../db/schema'
+import { artifacts, blockedDevices, deletedDevices, deviceEvents, deviceLabels, devices, discoveredDevices, jobRuns, jobs, type DeviceRow } from '../db/schema'
 import type { EventRecorder } from '../events/recorder'
 import { deleteJobsWithHistory } from '../jobs/purge'
 import type { ActivityRegistry } from '../activity/registry'
@@ -340,7 +340,7 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
           counts = { jobs: jobIds.length, artifacts: deviceScopedArtifacts.length + purged.artifacts, events }
         }
         tx.insert(deletedDevices).values({ id: row.id, stableId: row.stableId, label: row.label, deletedAt: new Date() }).run()
-        tx.delete(deviceTags).where(eq(deviceTags.deviceId, row.id)).run()
+        tx.delete(deviceLabels).where(eq(deviceLabels.deviceId, row.id)).run()
         // Group membership is a single column on `devices` (plan 22.0
         // §3.2) — deleting the row itself is the whole of "clear group
         // membership"; there is no separate membership table to also clean.
@@ -416,7 +416,7 @@ export function createDeviceLifecycle(deps: DeviceLifecycleDeps): DeviceLifecycl
           })
           .run()
         tx.insert(deletedDevices).values({ id: row.id, stableId: row.stableId, label: row.label, deletedAt: blockedAt }).run()
-        tx.delete(deviceTags).where(eq(deviceTags.deviceId, row.id)).run()
+        tx.delete(deviceLabels).where(eq(deviceLabels.deviceId, row.id)).run()
         tx.delete(devices).where(eq(devices.id, row.id)).run()
       })
 

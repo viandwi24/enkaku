@@ -86,7 +86,7 @@ export function PhysicalLabellingPanel({
     setActionBusy('apply')
     setActionError(null)
     try {
-      const r = await runOnDevice('set-label', device.id, {})
+      const r = await runOnDevice('apply-screen-label', device.id, {})
       const state = DeviceLabelStateSchema.parse(r.detail)
       onLabelStateChange(state)
       if (state.state === 'applied') toast.success('Label applied')
@@ -103,7 +103,7 @@ export function PhysicalLabellingPanel({
     setActionBusy('clear')
     setActionError(null)
     try {
-      const r = await runOnDevice('clear-label', device.id, { restoreOriginal })
+      const r = await runOnDevice('clear-screen-label', device.id, { restoreOriginal })
       const state = DeviceLabelStateSchema.parse(r.detail)
       onLabelStateChange(state)
       toast.success(restoreOriginal ? 'Restored the original' : 'Cleared to the system default')

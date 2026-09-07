@@ -97,6 +97,26 @@
   --color-tooltip-fg: var(--tooltip-fg);
   --color-scrim: var(--scrim);
 
+  /* Label chips (plan 225 §3.2) — `bg-label-blue-bg text-label-blue-fg`.
+     One pair per name in `LABEL_COLORS` (`@enkaku/protocol`); the palette
+     swaps with the theme, the class never does (docs/design.md). */
+  --color-label-slate-bg: var(--label-slate-bg);
+  --color-label-slate-fg: var(--label-slate-fg);
+  --color-label-blue-bg: var(--label-blue-bg);
+  --color-label-blue-fg: var(--label-blue-fg);
+  --color-label-green-bg: var(--label-green-bg);
+  --color-label-green-fg: var(--label-green-fg);
+  --color-label-amber-bg: var(--label-amber-bg);
+  --color-label-amber-fg: var(--label-amber-fg);
+  --color-label-red-bg: var(--label-red-bg);
+  --color-label-red-fg: var(--label-red-fg);
+  --color-label-purple-bg: var(--label-purple-bg);
+  --color-label-purple-fg: var(--label-purple-fg);
+  --color-label-pink-bg: var(--label-pink-bg);
+  --color-label-pink-fg: var(--label-pink-fg);
+  --color-label-teal-bg: var(--label-teal-bg);
+  --color-label-teal-fg: var(--label-teal-fg);
+
   --font-sans: var(--font-ui);
   --font-mono: var(--font-code);
 

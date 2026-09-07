@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { groups, deviceTags, devices, type GroupRow } from '../db/schema'
+import { groups, deviceLabels, devices, labels, type GroupRow } from '../db/schema'
 import { resolveGroup, resolveTarget } from './resolve'
 
 function setUp() {
@@ -16,12 +16,22 @@ function seedDevice(db: Db, id: string, status: 'idle' | 'busy' | 'offline' | 'q
     .run()
 }
 
-function tag(db: Db, deviceId: string, t: string) {
-  db.insert(deviceTags).values({ deviceId, tag: t, at: new Date() }).run()
+/** Create the label if it is new, then put it on the device. Returns its id, which is what a target names. */
+function tag(db: Db, deviceId: string, name: string): string {
+  const existing = db.select().from(labels).where(eq(labels.name, name)).get()
+  const id = existing?.id ?? crypto.randomUUID()
+  if (!existing) db.insert(labels).values({ id, name, color: 'slate', description: null, createdAt: new Date() }).run()
+  db.insert(deviceLabels).values({ deviceId, labelId: id, at: new Date() }).run()
+  return id
 }
 
-describe('resolveTarget — tags AND semantics (plan 19 §4.3, plan 20 §4.3)', () => {
-  test('a device must carry every listed tag', () => {
+/** The id of a label by name — a target names ids, the tests read better in names. */
+function labelId(db: Db, name: string): string {
+  return db.select().from(labels).where(eq(labels.name, name)).get()!.id
+}
+
+describe('resolveTarget — labels AND semantics (plan 225 §3.4, plan 20 §4.3)', () => {
+  test('a device must carry every listed label', () => {
     const db = setUp()
     seedDevice(db, 'd1')
     seedDevice(db, 'd2')
@@ -31,21 +41,21 @@ describe('resolveTarget — tags AND semantics (plan 19 §4.3, plan 20 §4.3)', 
     tag(db, 'd2', 'pool:smoke')
     tag(db, 'd3', 'android:15')
 
-    const result = resolveTarget(db, { tags: ['pool:smoke', 'android:15'], deviceIds: [] })
+    const result = resolveTarget(db, { labelIds: [labelId(db, 'pool:smoke'), labelId(db, 'android:15')], deviceIds: [] })
     expect(result.usable.map((r) => r.deviceId)).toEqual(['d1'])
   })
 
-  test('explicit ids are always included regardless of tags', () => {
+  test('explicit ids are always included regardless of labels', () => {
     const db = setUp()
     seedDevice(db, 'd1')
     seedDevice(db, 'd2')
     tag(db, 'd1', 'pool:smoke')
 
-    const result = resolveTarget(db, { tags: ['pool:smoke'], deviceIds: ['d2'] })
+    const result = resolveTarget(db, { labelIds: [labelId(db, 'pool:smoke')], deviceIds: ['d2'] })
     const ids = result.usable.map((r) => r.deviceId).sort()
     expect(ids).toEqual(['d1', 'd2'])
     expect(result.usable.find((r) => r.deviceId === 'd2')?.via).toBe('explicit')
-    expect(result.usable.find((r) => r.deviceId === 'd1')?.via).toBe('tag')
+    expect(result.usable.find((r) => r.deviceId === 'd1')?.via).toBe('label')
   })
 
   test('a device is never listed twice when it matches both a tag and the explicit list', () => {
@@ -53,7 +63,7 @@ describe('resolveTarget — tags AND semantics (plan 19 §4.3, plan 20 §4.3)', 
     seedDevice(db, 'd1')
     tag(db, 'd1', 'pool:smoke')
 
-    const result = resolveTarget(db, { tags: ['pool:smoke'], deviceIds: ['d1'] })
+    const result = resolveTarget(db, { labelIds: [labelId(db, 'pool:smoke')], deviceIds: ['d1'] })
     expect(result.usable.length).toBe(1)
   })
 
@@ -66,7 +76,7 @@ describe('resolveTarget — tags AND semantics (plan 19 §4.3, plan 20 §4.3)', 
     tag(db, 'd2', 'pool:smoke')
     tag(db, 'd3', 'pool:smoke')
 
-    const result = resolveTarget(db, { tags: ['pool:smoke'], deviceIds: [] })
+    const result = resolveTarget(db, { labelIds: [labelId(db, 'pool:smoke')], deviceIds: [] })
     expect(result.usable.map((r) => r.deviceId)).toEqual(['d3'])
     expect(result.skipped).toEqual(
       expect.arrayContaining([
@@ -78,7 +88,7 @@ describe('resolveTarget — tags AND semantics (plan 19 §4.3, plan 20 §4.3)', 
 
   test('an explicit id for a device that no longer exists is reported skipped', () => {
     const db = setUp()
-    const result = resolveTarget(db, { tags: [], deviceIds: ['ghost'] })
+    const result = resolveTarget(db, { labelIds: [], deviceIds: ['ghost'] })
     expect(result.usable).toEqual([])
     expect(result.skipped).toEqual([{ deviceId: 'ghost', reason: 'no longer exists' }])
   })
@@ -86,7 +96,7 @@ describe('resolveTarget — tags AND semantics (plan 19 §4.3, plan 20 §4.3)', 
   test('no tags and no explicit ids resolves to nothing, cleanly', () => {
     const db = setUp()
     seedDevice(db, 'd1')
-    const result = resolveTarget(db, { tags: [], deviceIds: [] })
+    const result = resolveTarget(db, { labelIds: [], deviceIds: [] })
     expect(result.usable).toEqual([])
     expect(result.skipped).toEqual([])
   })

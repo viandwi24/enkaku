@@ -84,14 +84,14 @@ describe('actionsRun handler (plan 207 §4.10)', () => {
     const actor: CapabilityActor = { id: 'agent-1', role: 'operator' }
     const ctx = fakeContext({ actions, actor })
     const response = await actionsRun.handler(ctx, {
-      verb: 'set-tags',
+      verb: 'set-labels',
       target: { deviceIds: ['d1', 'd2'] },
-      params: { tags: ['a', 'b'] },
+      params: { op: 'add', labelIds: ['l1', 'l2'] },
       force: true,
     })
     expect(calls).toHaveLength(1)
     expect(calls[0]?.actor).toEqual(actor)
-    expect(calls[0]?.request).toMatchObject({ verb: 'set-tags', target: { deviceIds: ['d1', 'd2'] }, force: true, tags: ['a', 'b'] })
+    expect(calls[0]?.request).toMatchObject({ verb: 'set-labels', target: { deviceIds: ['d1', 'd2'] }, force: true, op: 'add', labelIds: ['l1', 'l2'] })
     expect(response.operationId).toBe('op-1')
   })
 

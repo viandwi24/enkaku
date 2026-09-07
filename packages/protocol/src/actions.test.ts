@@ -26,10 +26,10 @@ const MINIMAL_PARAMS: Record<(typeof ACTION_VERBS)[number], Record<string, unkno
   block: {},
   unquarantine: {},
   'set-network': { route: { engine: 'none' } },
-  'set-label': {},
-  'clear-label': {},
+  'apply-screen-label': {},
+  'clear-screen-label': {},
   'set-group': { groupId: 'g1' },
-  'set-tags': { tags: ['a'] },
+  'set-labels': { labelIds: ['l1'] },
   prepare: {},
   'retry-prepare': { component: 'guest-agent' },
   'install-agent': {},
@@ -44,8 +44,8 @@ describe('ActionVerbSchema', () => {
   // The plan's §0 goal checklist says 26; its own §4.1 verb list and MVP
   // 07 §1.1's source list both name 25 (run-script, run-workflow, install,
   // push, pull, adb, wake, sleep, reconnect, disconnect, cutover, forget,
-  // block, unquarantine, set-network, set-label, clear-label, set-group,
-  // set-tags, prepare, retry-prepare, reprofile, screenshot, clear-cache,
+  // block, unquarantine, set-network, apply-screen-label,
+  // clear-screen-label, set-group, set-labels, prepare, retry-prepare, reprofile, screenshot, clear-cache,
   // settings). Recorded as a plan/plan discrepancy in §11; the verb table
   // is the fact this test pins.
   test('has exactly 27 verbs', () => {

@@ -1,0 +1,1 @@
+ALTER TABLE `schedules` ADD `label_ids` text;

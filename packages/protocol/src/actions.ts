@@ -15,6 +15,26 @@ import { DeviceSettingsSchema } from './settings'
 export const TargetSchema = z.union([
   z.object({ deviceIds: z.array(z.string().min(1)).min(1) }),
   z.object({ groupId: z.string().min(1) }),
+  /**
+   * Every device carrying ALL of these labels (plan 225 §3.4) — an AND, the
+   * same intersection the `tags` member it replaces resolved.
+   *
+   * Label IDS, not names: a label can be renamed, and a stored target that
+   * named a label by its text would silently resolve to nothing the first
+   * time an operator fixed a typo. That is exactly what the free-form tags
+   * this member replaces could not avoid, because a tag WAS its text.
+   */
+  z.object({ labelIds: z.array(z.string().min(1)).min(1) }),
+  /**
+   * LEGACY, read-only: a target stored before plan 225, naming free-form
+   * tags by text. Nothing writes this shape any more — Studio, the SDK and
+   * the plugin surface all send `labelIds` — but batch rows, operations and
+   * workflow documents persisted under the old shape are still on disk, and
+   * a union that dropped this member would fail to parse them rather than
+   * run them. Migration 0080 gave every old tag a label of the SAME name, so
+   * `resolveTargetSet` resolves this member by label name and lands on the
+   * devices it always meant.
+   */
   z.object({ tags: z.array(z.string().min(1)).min(1) }),
 ])
 export type Target = z.infer<typeof TargetSchema>
@@ -35,10 +55,17 @@ export const ACTION_VERBS = [
   'block',
   'unquarantine',
   'set-network',
-  'set-label',
-  'clear-label',
+  // The device's PHYSICAL label — the number written onto its lock screen or
+  // wallpaper (plan 89, `device/labelling.ts`, the guest agent's own
+  // `screen-label` capability). Renamed from `set-label`/`clear-label` by
+  // plan 225, which introduced `set-labels` a single keystroke away with an
+  // entirely different meaning: putting an operator's coloured labels ON a
+  // device row. Two verbs that differ by one character and share no
+  // behaviour is a mistake waiting to be typed.
+  'apply-screen-label',
+  'clear-screen-label',
   'set-group',
-  'set-tags',
+  'set-labels',
   'prepare',
   'retry-prepare',
   // The guest agent, reachable by hand (CEO, 2026-09-04). Detecting an
@@ -193,10 +220,21 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
     /** Unparsed on purpose, exactly as `DeviceNetworkApplyBodySchema.route` was (its doc comment): the door re-parses and refuses credentials. */
     route: z.record(z.string(), z.unknown()).optional(),
   }).refine((b) => b.op !== 'set' || b.route !== undefined, 'route is required for op: set'),
-  CommonSchema.extend({ verb: z.literal('set-label') }),
-  CommonSchema.extend({ verb: z.literal('clear-label'), restoreOriginal: z.boolean().default(false) }),
+  CommonSchema.extend({ verb: z.literal('apply-screen-label') }),
+  CommonSchema.extend({ verb: z.literal('clear-screen-label'), restoreOriginal: z.boolean().default(false) }),
   CommonSchema.extend({ verb: z.literal('set-group'), groupId: z.string().min(1).nullable() }),
-  CommonSchema.extend({ verb: z.literal('set-tags'), tags: z.array(z.string()) }),
+  /**
+   * Put labels on, or take them off, every device in the target (plan 225
+   * §4.5). Three ops rather than the whole-set PUT `set-tags` was, because
+   * the surface that needs this most is a multi-device context menu: "add
+   * Smoke Pool to these twelve phones" must not erase whatever else each of
+   * the twelve already carries, which a replace would.
+   */
+  CommonSchema.extend({
+    verb: z.literal('set-labels'),
+    op: z.enum(['add', 'remove', 'replace']).default('add'),
+    labelIds: z.array(z.string().min(1)),
+  }),
   CommonSchema.extend({ verb: z.literal('prepare'), forceRecheck: z.boolean().default(false) }),
   CommonSchema.extend({ verb: z.literal('retry-prepare'), component: z.string().min(1) }),
   CommonSchema.extend({ verb: z.literal('install-agent') }),

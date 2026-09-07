@@ -53,7 +53,7 @@ function buildDeps(overrides: Partial<HttpDeps> = {}): HttpDeps {
     deviceIdentityRoutes: emptyAuthEnvApp(),
     devicePreparationRoutes: emptyAuthEnvApp(),
     vmRoutes: emptyAuthEnvApp(),
-    tagRoutes: emptyApp(),
+    labelRoutes: emptyAuthEnvApp(),
     groupRoutes: emptyAuthEnvApp(),
     batchRoutes: emptyAuthEnvApp(),
     actionRoutes: emptyAuthEnvApp(),

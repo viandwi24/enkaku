@@ -2,7 +2,6 @@ import { eq, sql } from 'drizzle-orm'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Logger } from '../../util/logger'
-import { loadDeviceTags } from '../../registry/device-tags'
 import type { Db } from '../index'
 import { devices, migrationMarkers } from '../schema'
 
@@ -46,6 +45,27 @@ export interface Materialise0014Report {
 }
 
 /**
+ * `device_tags` as it stood at this point in history, read in raw SQL.
+ *
+ * This step runs long before migration `0080`, which turns every distinct tag
+ * into a `labels` row and drops this table — so the table is still here, but
+ * the typed `deviceTags` schema object that used to describe it is not, for
+ * the same reason every other identifier in this file keeps its pre-`0014`
+ * spelling: a migration step reads the schema of ITS OWN moment, never
+ * today's.
+ */
+function loadLegacyDeviceTags(db: Db): Map<string, string[]> {
+  const rows = db.all<{ device_id: string; tag: string }>(sql`SELECT device_id, tag FROM device_tags`)
+  const map = new Map<string, string[]>()
+  for (const r of rows) {
+    const list = map.get(r.device_id)
+    if (list) list.push(r.tag)
+    else map.set(r.device_id, [r.tag])
+  }
+  return map
+}
+
+/**
  * Plan 20's old resolution logic (tags AND semantics plus an explicit id
  * list), reimplemented here rather than reused: `resolveGroup`/
  * `resolveTarget` in `groups/resolve.ts` have already become a membership
@@ -61,7 +81,7 @@ function resolveLegacyMembers(db: Db, tags: string[], deviceIds: string[]): stri
 
   let taggedIds: string[] = []
   if (tags.length > 0) {
-    const tagMap = loadDeviceTags(db)
+    const tagMap = loadLegacyDeviceTags(db)
     taggedIds = allDeviceIds.filter((id) => tags.every((t) => (tagMap.get(id) ?? []).includes(t)))
   }
 

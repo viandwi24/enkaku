@@ -983,7 +983,7 @@ const uninstallAgent: VerbDialogSpec<Record<string, never>> = {
 // 14. Label (overflow)
 // ---------------------------------------------------------------------------
 const setLabel: VerbDialogSpec<Record<string, never>> = {
-  verb: 'set-label',
+  verb: 'apply-screen-label',
   title: (c) => `Label ${n(c)}`,
   submitLabel: (c) => `Label ${n(c)}`,
   initial: {},
@@ -1149,7 +1149,7 @@ export type ActionDialogVerb =
   | 'settings'
   | 'forget'
   | 'prepare'
-  | 'set-label'
+  | 'apply-screen-label'
   | 'set-network'
   | 'install-agent'
   | 'uninstall-agent'
@@ -1171,7 +1171,7 @@ export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   settings,
   forget,
   prepare,
-  'set-label': setLabel,
+  'apply-screen-label': setLabel,
   'install-agent': installAgent,
   'uninstall-agent': uninstallAgent,
   'set-network': setNetwork,

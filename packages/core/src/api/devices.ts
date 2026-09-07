@@ -21,7 +21,6 @@ import {
   SweepReportSchema,
   SweepRequestSchema,
   defaultDeviceSettings,
-  normaliseTag,
   validateEngineSelection,
   type DeviceSettings,
   type Readiness,
@@ -55,7 +54,7 @@ import { admitDevice } from '../registry/admission'
 import type { CutoverManager } from '../registry/cutover'
 import { groupRefFor, deriveConnection, loadGroupNames, loadDeclaredMedia, rowToDeviceInfo, type DeviceActivityState, type FarmNetwork } from '../registry/device-registry'
 import { compactDeviceNumbers, loadDeviceNumbers, lookupDeviceNumber, releaseDeviceNumber, setDeviceNumber } from '../registry/device-number'
-import { loadDeviceTags } from '../registry/device-tags'
+import { loadDeviceLabels } from '../registry/device-labels'
 import type { EndpointStore } from '../registry/endpoints'
 import type { DeviceReconnector } from '../registry/reconnect'
 import { saveForDevice } from '../runner/artifact-store'
@@ -448,7 +447,7 @@ export function createDeviceRoutes(deps: {
    * permission does not exist in this codebase's ACL
    * (`packages/core/src/auth/acl.ts`, out of scope for this change) — every
    * other admin-style device mutation in this exact router (block, forget,
-   * tags, group, discovered/admit) already gates on `device.settings`, so
+   * labels, group, discovered/admit) already gates on `device.settings`, so
    * this uses the same one rather than inventing a permission nothing else
    * recognises.
    */
@@ -564,8 +563,8 @@ export function createDeviceRoutes(deps: {
   })
 
   // POST /labels/apply and POST /prep/apply (the fleet-wide label and
-  // prep-settings switches) are removed by plan 207 (MVP 07): set-label
-  // and settings are actions API verbs now (POST /api/actions/set-label,
+  // prep-settings switches) are removed by plan 207 (MVP 07): apply-screen-label
+  // and settings are actions API verbs now (POST /api/actions/apply-screen-label,
   // POST /api/actions/settings), each answering per device.
 
 
@@ -652,7 +651,7 @@ export function createDeviceRoutes(deps: {
   /**
    * The address book's declared media (plan 88 §3.1, §3.2, §4.3, §5 step
    * 88.5) — resolved fresh on every call (same "no caching, DB is the
-   * source of truth" discipline `tagMap`/`groupNames` already follow
+   * source of truth" discipline `labelMap`/`groupNames` already follow
    * below), never once at router-construction time, so a declaration made a
    * moment ago is visible on the very next request. `undefined` (no
    * endpoint store wired — orchestrator mode, or before the adb subsystem
@@ -668,7 +667,7 @@ export function createDeviceRoutes(deps: {
     return {
       ...rowToDeviceInfo(
         row,
-        loadDeviceTags(db, [row.id]).get(row.id) ?? [],
+        loadDeviceLabels(db, [row.id]).get(row.id) ?? [],
         groupRefFor(db, row.groupId),
         null,
         readinessOf(row),
@@ -688,12 +687,16 @@ export function createDeviceRoutes(deps: {
    */
   const NUMBER_SORT_FLOOR = Number.MAX_SAFE_INTEGER
 
-  // `?tag=a&tag=b` narrows to devices carrying ALL of them (plan 19 §4.3) — one
-  // tags query total, so a 50-device farm does not issue 50 (acceptance #7).
+  // `?label=<id>&label=<id>` narrows to devices carrying ALL of them (plan
+  // 225 §4.3) — one labels query total, so a 50-device farm does not issue 50
+  // (acceptance #7). Label IDS, not names: a label can be renamed, and a
+  // filter that named one by its text would go silently empty the first time
+  // an operator fixed a typo — the very failure the free-form tags this
+  // replaces could not avoid.
   // `?groupId=<id>` narrows to that group's members; `?groupId=none`
   // narrows to devices with no group (plan 22.0 §4.4, acceptance #4).
   app.get('/', (c) => {
-    const wanted = (c.req.queries('tag') ?? []).map(normaliseTag).filter(Boolean)
+    const wanted = (c.req.queries('label') ?? []).filter(Boolean)
     const groupIdParam = c.req.query('groupId') ?? null
     // `?sort=number|label` (plan 89 §4.3) — `number` is the default, the
     // rack's own order; `label` remains available so nothing depending on
@@ -704,19 +707,24 @@ export function createDeviceRoutes(deps: {
       throw new EnkakuError('E_BAD_REQUEST', "'sort' must be 'number' or 'label'")
     }
     const rows = db.select().from(devices).all()
-    const tagMap = loadDeviceTags(db)
+    const labelMap = loadDeviceLabels(db)
     const groupNames = loadGroupNames(db)
     const media = declaredMedia()
     const networks = farmNetworks()
     const numbers = loadDeviceNumbers(db)
     let filtered =
-      wanted.length === 0 ? rows : rows.filter((r) => wanted.every((t) => (tagMap.get(r.id) ?? []).includes(t)))
+      wanted.length === 0
+        ? rows
+        : rows.filter((r) => {
+            const carried = new Set((labelMap.get(r.id) ?? []).map((l) => l.id))
+            return wanted.every((id) => carried.has(id))
+          })
     if (groupIdParam === 'none') filtered = filtered.filter((r) => r.groupId === null)
     else if (groupIdParam) filtered = filtered.filter((r) => r.groupId === groupIdParam)
     const infos = filtered.map((r) => ({
       ...rowToDeviceInfo(
         r,
-        tagMap.get(r.id) ?? [],
+        labelMap.get(r.id) ?? [],
         r.groupId ? { id: r.groupId, name: groupNames.get(r.groupId) ?? r.groupId } : null,
         null,
         readinessOf(r),
@@ -729,7 +737,7 @@ export function createDeviceRoutes(deps: {
     }))
 
     // `/api/devices` is the odd one (plan 30 §4.2): sorted in memory, not
-    // SQL — tags already forced a full in-memory pass above (they live in a
+    // SQL — labels already forced a full in-memory pass above (they live in a
     // separate table), so the sort and the cursor window are applied here
     // too.
     const { cursor: cursorParam, limit } = parsePageQuery(c)
@@ -787,7 +795,7 @@ export function createDeviceRoutes(deps: {
     const device = {
       ...rowToDeviceInfo(
         row,
-        loadDeviceTags(db, [row.id]).get(row.id) ?? [],
+        loadDeviceLabels(db, [row.id]).get(row.id) ?? [],
         groupRefFor(db, row.groupId),
         null,
         readinessOf(row),
@@ -1078,14 +1086,14 @@ export function createDeviceRoutes(deps: {
   })
 
   // `POST /:id/label/apply` and `POST /:id/label/clear` are removed by plan
-  // 207 (MVP 07): `set-label` and `clear-label` are actions API verbs now
-  // (POST /api/actions/set-label, POST /api/actions/clear-label), calling
+  // 207 (MVP 07): `apply-screen-label` and `clear-screen-label` are actions API verbs now
+  // (POST /api/actions/apply-screen-label, POST /api/actions/clear-screen-label), calling
   // the same `LabellingService.apply`/`.clear` doors.
 
   /**
    * Per-device engine choice — validated server-side (capabilities and locks,
    * spec §8). `device.settings` (plan 34 §4.4, §4.5) — the same permission
-   * `set-tags`/`set-group` (actions API verbs) gate on: this route had
+   * `set-labels`/`set-group` (actions API verbs) gate on: this route had
    * NO `requirePermission` at all until this fix (a security-sweep finding,
    * not part of the original plan 09/34 work), so any authenticated operator
    * could silently change a device's transport/display/input/inspector
@@ -1181,12 +1189,11 @@ export function createDeviceRoutes(deps: {
   })
 
   /**
-   * Replace a device's whole tag set (plan 19 §4.3) — simpler to reason about
-   * than add/remove endpoints, and it makes the Studio editor a plain form.
+   * A device's labels (free-form tags before plan 225 retired them).
    *
-   * Removed by plan 207 (MVP 07): `PUT /:id/tags` is the `set-tags` actions
-   * API verb now (POST /api/actions/set-tags), calling the same
-   * `replaceDeviceTags` door; `PUT /:id/group` is the `set-group` verb
+   * Removed by plan 207 (MVP 07): `PUT /:id/tags` is an actions API verb
+   * now — `set-labels` since plan 225 (POST /api/actions/set-labels),
+   * calling the same `applyDeviceLabels` door; `PUT /:id/group` is the `set-group` verb
    * (POST /api/actions/set-group), calling the same `assignDevices`/
    * `unassignDevices` doors (`groups/membership.ts`).
    */

@@ -53,6 +53,28 @@
   --tooltip-fg: #fafafa;
   --scrim: #18181b33;
 
+
+  /* Label chips (plan 225 §3.2): one background/text pair per palette name.
+     A closed set rather than an operator-picked hex, because a chip has to
+     stay legible in BOTH themes and a free colour cannot promise that — see
+     `LABEL_COLORS` in `@enkaku/protocol`, the list these must match exactly. */
+  --label-slate-bg: #eceef1;
+  --label-slate-fg: #4a5361;
+  --label-blue-bg: #e7f0fd;
+  --label-blue-fg: #1d4ed8;
+  --label-green-bg: #e6f6ec;
+  --label-green-fg: #15803d;
+  --label-amber-bg: #fdf3e0;
+  --label-amber-fg: #a35a08;
+  --label-red-bg: #fdecec;
+  --label-red-fg: #c62828;
+  --label-purple-bg: #f1ecfd;
+  --label-purple-fg: #6d28d9;
+  --label-pink-bg: #fdecf3;
+  --label-pink-fg: #be1e63;
+  --label-teal-bg: #e2f5f3;
+  --label-teal-fg: #0f766e;
+
   /* Theme-independent. The families are the ones @fontsource-variable/geist
      and @fontsource-variable/geist-mono declare (plan 204 §3.8). */
   --font-ui: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
@@ -97,6 +119,27 @@
     --tooltip-bg: #f4f4f5;
     --tooltip-fg: #18181b;
     --scrim: #00000080;
+
+    /* Label chips (plan 225 §3.2): one background/text pair per palette name.
+       A closed set rather than an operator-picked hex, because a chip has to
+       stay legible in BOTH themes and a free colour cannot promise that — see
+       `LABEL_COLORS` in `@enkaku/protocol`, the list these must match exactly. */
+    --label-slate-bg: #26272c;
+    --label-slate-fg: #b6bcc6;
+    --label-blue-bg: #16233c;
+    --label-blue-fg: #93bbfb;
+    --label-green-bg: #152a1d;
+    --label-green-fg: #86efac;
+    --label-amber-bg: #2c2210;
+    --label-amber-fg: #fcd34d;
+    --label-red-bg: #2e1717;
+    --label-red-fg: #fca5a5;
+    --label-purple-bg: #241a3b;
+    --label-purple-fg: #c4b5fd;
+    --label-pink-bg: #301722;
+    --label-pink-fg: #f9a8d4;
+    --label-teal-bg: #12292a;
+    --label-teal-fg: #5eead4;
   }
 }
 
@@ -137,4 +180,25 @@
   --tooltip-bg: #f4f4f5;
   --tooltip-fg: #18181b;
   --scrim: #00000080;
+
+  /* Label chips (plan 225 §3.2): one background/text pair per palette name.
+     A closed set rather than an operator-picked hex, because a chip has to
+     stay legible in BOTH themes and a free colour cannot promise that — see
+     `LABEL_COLORS` in `@enkaku/protocol`, the list these must match exactly. */
+  --label-slate-bg: #26272c;
+  --label-slate-fg: #b6bcc6;
+  --label-blue-bg: #16233c;
+  --label-blue-fg: #93bbfb;
+  --label-green-bg: #152a1d;
+  --label-green-fg: #86efac;
+  --label-amber-bg: #2c2210;
+  --label-amber-fg: #fcd34d;
+  --label-red-bg: #2e1717;
+  --label-red-fg: #fca5a5;
+  --label-purple-bg: #241a3b;
+  --label-purple-fg: #c4b5fd;
+  --label-pink-bg: #301722;
+  --label-pink-fg: #f9a8d4;
+  --label-teal-bg: #12292a;
+  --label-teal-fg: #5eead4;
 }

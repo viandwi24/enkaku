@@ -172,27 +172,70 @@ export type DeviceRow = typeof devices.$inferSelect
 export type DeviceInsert = typeof devices.$inferInsert
 
 /**
- * Device tags (plan 19 §4.1): many-to-many, so a device can be in the smoke
- * pool AND on Android 15 without duplicating the device or the column.
- * No foreign key to `devices` — a device delete must remove these rows itself,
- * in the same transaction, matching how the rest of the schema handles cleanup.
+ * A label an operator created (plan 225 §3.1) — a row with its own identity,
+ * name and colour, which exists whether or not any device carries it.
+ *
+ * This is what the free-form `device_tags` table became. A tag was a bare
+ * string on a join row and nothing else: it came into being the moment
+ * someone typed it onto a device and vanished when the last device dropped
+ * it, so there was nothing to create empty, rename, recolour or delete
+ * farm-wide, and `smoke-pool` and `smokepool` were two unrelated tags with
+ * no way to notice. Migration 0080 turns every distinct tag into one label of
+ * the same name and rewrites the memberships, then drops `device_tags`.
+ *
+ * A label is deliberately NOT a group: `devices.group_id` holds a device in
+ * exactly one container, while a device carries as many labels as an operator
+ * likes (`device_labels` below).
  */
-export const deviceTags = sqliteTable(
-  'device_tags',
+export const labels = sqliteTable(
+  'labels',
   {
-    deviceId: text('device_id').notNull(),
-    /** Normalised on write (plan 19 §3.4): lowercase, trimmed, [a-z0-9:._-]. */
-    tag: text('tag').notNull(),
-    at: integer('at', { mode: 'timestamp' }).notNull(),
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    /** One of `LABEL_COLORS` (`@enkaku/protocol`), validated on write — never a raw hex string (see that schema's own comment). */
+    color: text('color').notNull(),
+    description: text('description'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   },
   (t) => [
-    primaryKey({ columns: [t.deviceId, t.tag] }),
-    // Plan 20 resolves groups with this one.
-    index('idx_device_tags_tag').on(t.tag),
+    // Exact duplicates are refused here; `assertNameFree`
+    // (`registry/device-labels.ts`) refuses case variants too, so `Smoke Pool`
+    // and `smoke pool` cannot both exist — the near-duplicate problem
+    // free-form tags had no way to prevent. Two layers because only one of
+    // them can name the label you already have in the error.
+    uniqueIndex('idx_labels_name').on(t.name),
+    index('idx_labels_created').on(t.createdAt, t.id),
   ],
 )
 
-export type DeviceTagRow = typeof deviceTags.$inferSelect
+export type LabelRow = typeof labels.$inferSelect
+
+/**
+ * Which devices carry which labels (plan 225 §3.1): many-to-many, so a device
+ * can be in the smoke pool AND on Android 15 without duplicating the device
+ * or the column.
+ *
+ * No foreign key to `devices` — a device delete must remove these rows itself,
+ * in the same transaction, matching how the rest of the schema handles
+ * cleanup (`deleteDeviceLabels`). Deleting a LABEL removes its rows here in
+ * the same transaction too (`deleteLabel`), which is what makes "delete the
+ * label" leave every device standing, exactly as deleting a group does.
+ */
+export const deviceLabels = sqliteTable(
+  'device_labels',
+  {
+    deviceId: text('device_id').notNull(),
+    labelId: text('label_id').notNull(),
+    at: integer('at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.deviceId, t.labelId] }),
+    // `resolveTargetSet` resolves a label target with this one.
+    index('idx_device_labels_label').on(t.labelId),
+  ],
+)
+
+export type DeviceLabelRow = typeof deviceLabels.$inferSelect
 
 /**
  * A device deliberately excluded from the farm (plan 47 §3.2, §3.3), keyed
@@ -1172,9 +1215,20 @@ export const schedules = sqliteTable(
      */
     scriptRef: text('script_ref').notNull(),
     params: text('params', { mode: 'json' }),
-    /** Exactly one of groupId / deviceIds is populated (plan 21 §9 open question #3 — no "all devices"). */
+    /**
+     * Exactly one of groupId / deviceIds / labelIds is populated (plan 21 §9
+     * open question #3 — no "all devices").
+     *
+     * `labelIds` (plan 225) is the one target that can change between two
+     * firings without anyone editing the schedule: a device given the label
+     * on Tuesday is in Wednesday's run. That is the point of scheduling
+     * against one — a group has the same property, but a device can only be
+     * in one group, so "every phone on the smoke pool" was not expressible
+     * as a schedule target at all before this.
+     */
     groupId: text('group_id'),
     deviceIds: text('device_ids', { mode: 'json' }), // string[]
+    labelIds: text('label_ids', { mode: 'json' }), // string[]
 
     // Batch shape, passed straight through to plan 20's dispatcher (script targets only).
     concurrency: integer('concurrency').notNull().default(0),

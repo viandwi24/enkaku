@@ -518,7 +518,7 @@ describe('createCapabilityContext — connection.medium reaches listDevices/getD
 /**
  * Plan 89 §3.1, §3.2, §4.2, §4.3 — `ctx.getDevice()` is a direct
  * `rowToDeviceInfo` call site (unlike `listDevices()`, which goes through
- * `listDevicesWithTags` and picks up the number automatically). Without this
+ * `listDevicesWithLabels` and picks up the number automatically). Without this
  * threaded through, a script's own view of a device would read `number:
  * null` for a device `GET /api/devices` shows numbered — the exact "field
  * exists, one call site never threaded it" defect class this plan is

@@ -1,8 +1,9 @@
 import { inArray } from 'drizzle-orm'
+import type { DeviceLabelRef } from '@enkaku/protocol'
 import type { Db } from '../../db'
 import { devices } from '../../db/schema'
 import { assignDevices, unassignDevices, type GroupMove } from '../../groups/membership'
-import { replaceDeviceTags } from '../../registry/device-tags'
+import { applyDeviceLabels, type LabelDiff } from '../../registry/device-labels'
 
 /**
  * `set-group` (plan 207 §4.2) — one call for every accepted device
@@ -21,6 +22,16 @@ export function setGroup(db: Db, deviceIds: string[], groupId: string | null): M
   return new Map(deviceIds.map((deviceId) => [deviceId, { deviceId, from: fromById.get(deviceId) ?? null }]))
 }
 
-export function setTags(db: Db, deviceId: string, tags: string[]): { tags: string[]; diff: unknown } {
-  return replaceDeviceTags(db, deviceId, tags)
+/**
+ * `set-labels` (plan 225 §4.5) — one device at a time, because unlike
+ * `setGroup` above each device's result depends on what it already carries:
+ * `add` is a union with its current set, not an assignment.
+ */
+export function setLabels(
+  db: Db,
+  deviceId: string,
+  op: 'add' | 'remove' | 'replace',
+  labelIds: string[],
+): { labels: DeviceLabelRef[]; diff: LabelDiff } {
+  return applyDeviceLabels(db, deviceId, op, labelIds)
 }

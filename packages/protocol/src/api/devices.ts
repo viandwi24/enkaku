@@ -346,9 +346,6 @@ export const HistoryCountsSchema = z.object({
 })
 export const DeviceHistoryCountsResponseSchema = z.object({ counts: HistoryCountsSchema })
 
-/** `PUT /api/devices/:id/tags`. */
-export const DeviceTagsResponseSchema = z.object({ tags: z.array(z.string()) })
-
 /**
  * `GET /api/devices/:id/events` — the keyset envelope, plus legacy
  * `events`/`nextBefore` keys the route still sends alongside it (kept "for

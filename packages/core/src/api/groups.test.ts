@@ -156,7 +156,7 @@ describe('GET /api/groups/:id/devices', () => {
 /**
  * Plan 89 §3.1, §3.2, §4.2, §4.3 — this route builds `DeviceInfo` through its
  * own direct `rowToDeviceInfo` call (`api/groups.ts`), not through
- * `listDevicesWithTags`, so the number has to be threaded here explicitly —
+ * `listDevicesWithLabels`, so the number has to be threaded here explicitly —
  * the same class of gap plan 88 §5 step 88.5 already found and fixed for
  * `connection.medium` on this exact route (see the describe block above).
  */

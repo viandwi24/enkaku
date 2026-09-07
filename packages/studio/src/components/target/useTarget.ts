@@ -5,9 +5,10 @@ import type { ActionResult, DeviceInfo, GroupInfo, Target } from '@enkaku/protoc
 
 /**
  * MVP 07 §2.1: "Three modes, one control: devices (chips with search over
- * label, number, tag, group), group (one select), tags (multi-select)."
+ * label, number, tag, group), group (one select), tags (multi-select)." The
+ * third mode is labels since plan 225 retired free-form tags for them.
  */
-export type TargetMode = 'devices' | 'group' | 'tags'
+export type TargetMode = 'devices' | 'group' | 'labels'
 
 /**
  * What the entry point knows (MVP 07 §2.1): "Pre-filled from context. Opened
@@ -20,7 +21,8 @@ export type TargetMode = 'devices' | 'group' | 'tags'
 export interface TargetContext {
   deviceIds?: readonly string[]
   groupId?: string | null
-  tags?: readonly string[]
+  /** Label IDS, never names — a renamed label must keep resolving (see `TargetSchema`). */
+  labelIds?: readonly string[]
 }
 
 export interface TargetChip {
@@ -39,15 +41,15 @@ export interface TargetState {
   toggleDevice: (id: string) => void
   groupId: string | null
   setGroupId: (id: string | null) => void
-  tags: string[]
-  toggleTag: (tag: string) => void
+  labelIds: string[]
+  toggleLabel: (labelId: string) => void
   /** MVP 07 §1.1's body, or null when nothing is chosen. */
   target: Target | null
   /** The ids this target resolves to right now, by §3.11's two rules. */
   resolvedIds: string[]
   /** The count of `resolvedIds` that are usable (not offline, not quarantined). */
   count: number
-  /** The collapsed line: `3 devices`, `Team A · 12 devices`, `tag:warm · 7 devices`, `No devices chosen`. */
+  /** The collapsed line: `3 devices`, `Team A · 12 devices`, `Smoke Pool · 7 devices`, `No devices chosen`. */
   summary: string
   /** One chip per resolved device, with its last result. */
   chips: TargetChip[]
@@ -87,14 +89,14 @@ export function useTarget(opts: {
     ? 'devices'
     : opts.initial.groupId
       ? 'group'
-      : opts.initial.tags?.length
-        ? 'tags'
+      : opts.initial.labelIds?.length
+        ? 'labels'
         : 'devices'
 
   const [mode, setModeRaw] = useState<TargetMode>(initialMode)
   const [deviceIds, setDeviceIds] = useState<string[]>([...(opts.initial.deviceIds ?? [])])
   const [groupId, setGroupIdRaw] = useState<string | null>(opts.initial.groupId ?? null)
-  const [tags, setTags] = useState<string[]>([...(opts.initial.tags ?? [])])
+  const [labelIds, setLabelIds] = useState<string[]>([...(opts.initial.labelIds ?? [])])
   const [resultsByDevice, setResultsByDevice] = useState<Record<string, ActionResult>>({})
 
   const locked = maxTargets === 1
@@ -128,10 +130,10 @@ export function useTarget(opts: {
     [clearResults],
   )
 
-  const toggleTag = useCallback(
-    (tag: string) => {
+  const toggleLabel = useCallback(
+    (labelId: string) => {
       clearResults()
-      setTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]))
+      setLabelIds((prev) => (prev.includes(labelId) ? prev.filter((t) => t !== labelId) : [...prev, labelId]))
     },
     [clearResults],
   )
@@ -141,8 +143,8 @@ export function useTarget(opts: {
       clearResults()
       setDeviceIds([...(ctx.deviceIds ?? [])])
       setGroupIdRaw(ctx.groupId ?? null)
-      setTags([...(ctx.tags ?? [])])
-      setModeRaw(ctx.deviceIds?.length ? 'devices' : ctx.groupId ? 'group' : ctx.tags?.length ? 'tags' : 'devices')
+      setLabelIds([...(ctx.labelIds ?? [])])
+      setModeRaw(ctx.deviceIds?.length ? 'devices' : ctx.groupId ? 'group' : ctx.labelIds?.length ? 'labels' : 'devices')
     },
     [clearResults],
   )
@@ -155,8 +157,15 @@ export function useTarget(opts: {
     if (mode === 'group') {
       return devices.filter((d) => d.group?.id === groupId).map((d) => d.id)
     }
-    return devices.filter((d) => tags.every((t) => d.tags.includes(t))).map((d) => d.id)
-  }, [mode, devices, deviceIds, groupId, tags])
+    // AND, the same intersection `resolveTarget` applies server-side: a
+    // device must carry EVERY chosen label.
+    return devices
+      .filter((d) => {
+        const carried = new Set(d.labels.map((l) => l.id))
+        return labelIds.every((id) => carried.has(id))
+      })
+      .map((d) => d.id)
+  }, [mode, devices, deviceIds, groupId, labelIds])
 
   const resolvedDevices = useMemo(() => {
     const byId = new Map(devices.map((d) => [d.id, d] as const))
@@ -176,15 +185,17 @@ export function useTarget(opts: {
       if (!group) return 'No devices chosen'
       return `${group.name} · ${usableCount} device${usableCount === 1 ? '' : 's'}`
     }
-    if (tags.length === 0) return 'No devices chosen'
-    return `${tags.join(' + ')} · ${usableCount} device${usableCount === 1 ? '' : 's'}`
-  }, [mode, resolvedIds.length, usableCount, unavailableCount, groups, groupId, tags])
+    if (labelIds.length === 0) return 'No devices chosen'
+    // Named, not id'd: an id in a summary line tells an operator nothing.
+    const names = labelIds.map((id) => devices.flatMap((d) => d.labels).find((l) => l.id === id)?.name ?? id)
+    return `${names.join(' + ')} · ${usableCount} device${usableCount === 1 ? '' : 's'}`
+  }, [mode, resolvedIds.length, usableCount, unavailableCount, groups, groupId, labelIds, devices])
 
   const target: Target | null = useMemo(() => {
     if (mode === 'devices') return resolvedIds.length > 0 ? { deviceIds: resolvedIds } : null
     if (mode === 'group') return groupId ? { groupId } : null
-    return tags.length > 0 ? { tags } : null
-  }, [mode, resolvedIds, groupId, tags])
+    return labelIds.length > 0 ? { labelIds } : null
+  }, [mode, resolvedIds, groupId, labelIds])
 
   const chips: TargetChip[] = useMemo(
     () => resolvedDevices.map((device) => ({ device, result: resultsByDevice[device.id] ?? null })),
@@ -214,8 +225,8 @@ export function useTarget(opts: {
     toggleDevice,
     groupId,
     setGroupId,
-    tags,
-    toggleTag,
+    labelIds,
+    toggleLabel,
     target,
     resolvedIds,
     count: usableCount,

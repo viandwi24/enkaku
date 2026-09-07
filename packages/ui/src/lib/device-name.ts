@@ -48,13 +48,14 @@ export type NamedDevice = {
 }
 
 /**
- * The minimum a device has to carry to be *found*. `tags` is optional because
- * the projections described above mostly do not carry tags; a device without
- * them simply has fewer ways to match, never an error.
+ * The minimum a device has to carry to be *found*. `labels` is optional
+ * because the projections described above mostly do not carry them; a device
+ * without them simply has fewer ways to match, never an error. Only the name
+ * is read here — a chip's colour is not something anyone types.
  */
 export type SearchableDevice = NamedDevice & {
   stableId: string
-  tags?: readonly string[]
+  labels?: readonly { name: string }[]
 }
 
 /**
@@ -86,7 +87,7 @@ export function formatDeviceName(number: number | null | undefined, label: strin
 
 /**
  * Every string by which a device can legitimately be recognised: its number
- * both bare and `#`-prefixed, its label, its stableId, and its tags.
+ * both bare and `#`-prefixed, its label, its stableId, and its label names.
  *
  * This is a *search index*, not a name. It exists because `cmdk` (the filter
  * behind `<Combobox>`) matches an item against its `value` plus a `keywords`
@@ -108,7 +109,7 @@ export function deviceSearchTerms(d: SearchableDevice): string[] {
   const terms: string[] = []
   if (d.number != null) terms.push(String(d.number), `#${d.number}`)
   terms.push(d.label, d.stableId)
-  for (const t of d.tags ?? []) terms.push(t)
+  for (const l of d.labels ?? []) terms.push(l.name)
   // A device whose label is an empty string is not impossible (the enrolment
   // path defaults it, but a plugin's projection may not), and an empty keyword
   // makes `cmdk` score every row identically — so drop the empties rather than
@@ -155,12 +156,12 @@ export function matchesDeviceQuery(d: SearchableDevice, query: string): boolean 
     numberMatch ||
     d.label.toLowerCase().includes(q) ||
     d.stableId.toLowerCase().includes(q) ||
-    // `DevicePicker` compared the tag WITHOUT lowercasing it while `q` was
-    // already lowercased, so `pool:Smoke` was unfindable by typing `smoke`.
-    // Tags are lowercase by convention, which is why nobody hit it. Fixed
-    // here rather than reproduced, because this is now the single definition
-    // and a case-insensitive tag match is a strict superset of the old
-    // behaviour — no query that used to match stops matching.
-    (d.tags ?? []).some((t) => t.toLowerCase().includes(q))
+    // Lowercased on both sides. `DevicePicker` used to compare the tag
+    // WITHOUT lowercasing it while `q` already was, so `pool:Smoke` was
+    // unfindable by typing `smoke`; tags were lowercase by convention, which
+    // is why nobody hit it. Labels are NOT lowercase by convention — they are
+    // written as a human types them — so that latent bug would have become a
+    // daily one here.
+    (d.labels ?? []).some((l) => l.name.toLowerCase().includes(q))
   )
 }
