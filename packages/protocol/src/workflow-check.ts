@@ -178,9 +178,30 @@ function addEdge(edges: Map<string, Set<string>>, from: string, to: string | und
 }
 
 /** Resolves one edge field, reporting `E_WORKFLOW_UNKNOWN_NODE` for an id that names no node, and `W_WORKFLOW_EDGE_DANGLING` for one left unwired. Returns the target id, or `undefined` when the edge is not usable for graph-walking purposes (unknown OR dangling). */
-function resolveEdge(nodeIds: ReadonlySet<string>, target: string | undefined, ownerPath: string, endsAs: 'succeeded' | 'failed', findings: WorkflowFinding[]): string | undefined {
+function resolveEdge(
+  nodeIds: ReadonlySet<string>,
+  target: string | undefined,
+  ownerPath: string,
+  endsAs: 'succeeded' | 'failed',
+  findings: WorkflowFinding[],
+  /**
+   * Suppress the dangling warning, for an edge that is SUPPOSED to be absent.
+   *
+   * Only a shuffle member's `next` uses this, and it exists because two rules
+   * in this same file disagreed: `E_WORKFLOW_SHUFFLE_MEMBER_*` makes a member
+   * that declares `next` an ERROR (its successor is the shuffle, decided at
+   * run time), while the walk below warned precisely because it had none. An
+   * author could satisfy neither, so a nine-member document opened with
+   * eighteen warnings nobody could ever clear — and a warnings chip nobody
+   * can clear is a warnings chip nobody reads (owner's `tiktok-warmup`,
+   * 2026-09-07).
+   */
+  expectedUnwired = false,
+): string | undefined {
   if (target === undefined) {
-    push(findings, ownerPath, 'W_WORKFLOW_EDGE_DANGLING', `this edge is not wired to a node yet — reaching it at run time ends the run ${endsAs}`, 'warning')
+    if (!expectedUnwired) {
+      push(findings, ownerPath, 'W_WORKFLOW_EDGE_DANGLING', `this edge is not wired to a node yet — reaching it at run time ends the run ${endsAs}`, 'warning')
+    }
     return undefined
   }
   if (!nodeIds.has(target)) {
@@ -193,11 +214,20 @@ function resolveEdge(nodeIds: ReadonlySet<string>, target: string | undefined, o
 function buildGraph(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, findings: WorkflowFinding[]): Graph {
   const edges = new Map<string, Set<string>>()
 
+  /** Nodes a shuffle owns — their `next` is meant to be absent, so it is not reported as unwired. */
+  const shuffleMembers = new Set<string>()
+  for (const node of doc.nodes) {
+    if (node.kind !== 'shuffle') continue
+    for (const memberId of node.members) shuffleMembers.add(memberId)
+  }
+
   doc.nodes.forEach((node, i) => {
     if (node.kind === 'start') {
       addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
     } else if (node.kind === 'script') {
-      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
+      // `onFailure` is NOT exempt even for a member: an unwired failure edge
+      // really does end the run, which is worth saying about any script.
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings, shuffleMembers.has(node.id)))
       addEdge(edges, node.id, resolveEdge(nodeIds, node.onFailure, `nodes[${i}].onFailure`, 'failed', findings))
     } else if (node.kind === 'gate') {
       addEdge(edges, node.id, resolveEdge(nodeIds, node.then, `nodes[${i}].then`, 'succeeded', findings))
@@ -211,9 +241,9 @@ function buildGraph(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, findings: Wo
       })
       addEdge(edges, node.id, resolveEdge(nodeIds, node.default, `nodes[${i}].default`, 'succeeded', findings))
     } else if (node.kind === 'delay') {
-      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings, shuffleMembers.has(node.id)))
     } else if (node.kind === 'set') {
-      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings, shuffleMembers.has(node.id)))
     } else if (node.kind === 'shuffle') {
       // Plan 313 §3.5 — every member is a successor, and so is `next`. The
       // member's RETURN to this node is deliberately NOT an edge: it is
