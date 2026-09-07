@@ -224,9 +224,27 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
 
       /** Which `shuffle` owns each member, so a member knows where to return. */
       const shuffleOwner = new Map<string, string>()
+      /** The owners that asked for a failing member to be survived rather than fatal. */
+      const shuffleKeepsGoing = new Set<string>()
       for (const n of doc.nodes) {
         if (n.kind !== 'shuffle') continue
         for (const m of n.members) shuffleOwner.set(m, n.id)
+        if (n.continueOnMemberFailure) shuffleKeepsGoing.add(n.id)
+      }
+      /**
+       * The shuffle to hand a FAILING member back to, or `null` when the
+       * failure is the run's to carry.
+       *
+       * A member declares no `next` — the shuffle picks the order at run time
+       * — so there is no node id an author could aim `onFailure` at to say
+       * "carry on with the others". Without this the only expressible
+       * policies were "end the run" and "go to the finish", and a warm-up
+       * that browsed four things lost all four because one met a screen it
+       * could not read.
+       */
+      const survivesFailure = (nodeId: string): string | null => {
+        const owner = shuffleOwner.get(nodeId)
+        return owner !== undefined && shuffleKeepsGoing.has(owner) ? owner : null
       }
 
       /**
@@ -793,8 +811,16 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             continue
           }
 
-          // Absent = dangling; reaching it ends the run FAILED (plan 301 §3.2).
-          if (node.onFailure === undefined) {
+          // Absent = dangling; reaching it ends the run FAILED (plan 301 §3.2)
+          // — unless a shuffle owns this node and was told to keep going, in
+          // which case control returns to it and the remaining members still
+          // run. The STEP stays recorded as failed either way: `failedSteps`
+          // is what says how much of the work actually landed, and a run that
+          // survived a member must not claim it did everything.
+          const keepGoing = node.onFailure === undefined ? survivesFailure(node.id) : null
+          if (keepGoing !== null) {
+            cursor = keepGoing
+          } else if (node.onFailure === undefined) {
             cursor = null
             finalStatus = 'failed'
             finalErrorCode = outcome.code

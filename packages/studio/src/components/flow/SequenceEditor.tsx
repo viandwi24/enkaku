@@ -521,6 +521,10 @@ function ShuffleToggle({ doc, slot, dispatch }: { doc: WorkflowDoc; slot: ChainS
           kind: 'shuffle',
           id,
           title: 'Shuffle order',
+          // Wrapping a sequence keeps the failure policy it already had: its
+          // actions aborted the run when one failed, and they still do until
+          // the author turns "keep going" on.
+          continueOnMemberFailure: false,
           ui: { x: COLUMN_X, y: ROW_GAP },
           enabled: true,
           members: members.map((m) => m.id),
@@ -541,7 +545,8 @@ function ShuffleToggle({ doc, slot, dispatch }: { doc: WorkflowDoc; slot: ChainS
   }
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-border-3 p-3">
+    <div className="space-y-2 rounded-lg border border-border-3 p-3">
+      <div className="flex items-center gap-3">
       <input type="checkbox" id="seq-shuffle" checked={on} onChange={toggle} disabled={!on && slot.steps.length < 2} />
       <Label htmlFor="seq-shuffle" className="flex-1">
         <span className="flex items-center gap-1.5">
@@ -555,6 +560,40 @@ function ShuffleToggle({ doc, slot, dispatch }: { doc: WorkflowDoc; slot: ChainS
               : 'Each device runs the actions in a random order instead of top to bottom. The delay between actions is kept.'}
         </span>
       </Label>
+      </div>
+      {/*
+        The failure policy, offered only once there IS a shuffle to hold it.
+
+        Without it the only expressible policies were "end the run" and "go to
+        the finish": a member declares no `next` — the shuffle picks the order
+        at run time — so there is no node an author could point `onFailure` at
+        to mean "carry on with the others". On the owner's farm five devices
+        each lost a whole six-minute warm-up, and seven already-successful
+        scripts with it, to one action that met a screen it could not read.
+      */}
+      {on && shuffle && (
+        <div className="flex items-center gap-3 border-t border-border-3 pt-2">
+          <input
+            type="checkbox"
+            id="seq-shuffle-keep-going"
+            checked={shuffle.continueOnMemberFailure}
+            onChange={(e) =>
+              dispatch(
+                { t: 'update-node', id: shuffle.id, patch: { continueOnMemberFailure: e.target.checked } as Partial<WorkflowNode> },
+                `shuffle-keep-going:${shuffle.id}`,
+              )
+            }
+          />
+          <Label htmlFor="seq-shuffle-keep-going" className="flex-1">
+            Keep going if one action fails
+            <span className="mt-0.5 block text-meta font-normal text-faint">
+              {shuffle.continueOnMemberFailure
+                ? 'A failed action is recorded and the rest still run.'
+                : 'One failed action ends the whole run, and the actions that already succeeded are recorded as a failed run.'}
+            </span>
+          </Label>
+        </div>
+      )}
     </div>
   )
 }
