@@ -115,6 +115,34 @@ export function readStagger(node: WorkflowNode): { minMs: number; maxMs: number 
   return range
 }
 
+/**
+ * The `cases` array a G-way split is written as — the one shape `readGrouped`
+ * reads back, and the only place that shape is spelled out.
+ *
+ * The editor needs it in three places (creating a split, changing the group
+ * count, renaming a group) and the reader needs to recognise it. Four
+ * hand-rolled copies of the same predicate is exactly how a writer and its
+ * reader stop agreeing, so both sides call this and a round-trip test holds
+ * them together.
+ *
+ * Note every case is rebuilt whenever `groupCount` changes: the divisor is
+ * part of each predicate, so going from three shares to four rewrites all of
+ * them, not just the new one.
+ */
+export function groupSplitCases(
+  groupCount: number,
+  shares: readonly { to?: string | undefined; label?: string }[],
+): { when: { left: { expr: string }; op: 'eq'; right: { const: number } }; to?: string; label: string }[] {
+  return Array.from({ length: groupCount }, (_, i) => {
+    const share = shares[i]
+    return {
+      when: { left: { expr: groupSplitExpr(groupCount) }, op: 'eq' as const, right: { const: i } },
+      ...(share?.to === undefined ? {} : { to: share.to }),
+      label: share?.label || `Group ${i + 1}`,
+    }
+  })
+}
+
 /** `true` when this case is exactly the `index`-th share of a `groupCount`-way split. */
 function isShareCase(when: unknown, index: number, groupCount: number): boolean {
   if (when === null || typeof when !== 'object') return false

@@ -31,7 +31,7 @@ import { CanvasContextMenu, type CanvasMenuRequest } from './CanvasContextMenu'
 import { HistoryPanel } from './HistoryPanel'
 import { NodePalette } from './NodePalette'
 import { ActionSettings } from './ActionSettings'
-import { SequenceEditor, canUseSequence } from './SequenceEditor'
+import { SequenceEditor, canUseEasy } from './SequenceEditor'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
 import { SimulateDialog } from './SimulateDialog'
@@ -113,7 +113,7 @@ export function FlowEditor({
    * The preference alone never puts an author in a list that cannot draw
    * what they are looking at.
    */
-  const [editorMode, setEditorMode] = useState<'sequence' | 'canvas'>(initialDoc.ui?.editor === 'sequence' && canUseSequence(initialDoc) ? 'sequence' : 'canvas')
+  const [editorMode, setEditorMode] = useState<'sequence' | 'canvas'>(initialDoc.ui?.editor === 'sequence' && canUseEasy(initialDoc) ? 'sequence' : 'canvas')
   const { doc, dispatch, undo, redo, canUndo, canRedo } = history
   const validation = useValidation(doc)
   const clipboard = useClipboard(history)
@@ -504,7 +504,7 @@ export function FlowEditor({
             so it follows the workflow to another browser, but it is never
             believed on its own: `canUseSequence` decides.
           */}
-          {(editorMode === 'sequence' || canUseSequence(doc)) && (
+          {(editorMode === 'sequence' || canUseEasy(doc)) && (
             <Button
               type="button"
               variant="ghost"
@@ -642,7 +642,7 @@ export function FlowEditor({
       */}
       {editorMode === 'sequence' && (
         <div className="absolute inset-0 overflow-auto bg-bg">
-          <SequenceEditor doc={doc} dispatch={dispatch} onOpenNode={setOpenNodeId} onAddAction={(afterNodeId) => openEdgePalette(afterNodeId, 'next')} selectedId={openNodeId} />
+          <SequenceEditor doc={doc} dispatch={dispatch} onOpenNode={setOpenNodeId} onAddAction={(from, edge) => openEdgePalette(from, edge)} selectedId={openNodeId} />
         </div>
       )}
 

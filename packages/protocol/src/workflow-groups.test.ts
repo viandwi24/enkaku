@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { groupSplitExpr, readGrouped, readStagger } from './workflow-groups'
+import { groupSplitCases, groupSplitExpr, readGrouped, readStagger } from './workflow-groups'
 import { WorkflowDocSchema, type WorkflowDoc } from './workflow'
 
 function startNode(overrides: Record<string, unknown> = {}) {
@@ -136,6 +136,32 @@ describe('readGrouped — what Grouped Mode can open', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.refusal.code).toBe('not-grouped')
+  })
+
+  test('round trip — the cases the editor writes are the cases the lens reads', () => {
+    // The writer and the reader are the same shape or they are nothing: the
+    // editor builds its `cases` with `groupSplitCases`, so a document assembled
+    // that way must read back with the same group count, targets and labels.
+    const doc = docOf([
+      startNode({ next: 'split' }),
+      {
+        kind: 'switch',
+        id: 'split',
+        title: 'Split 3 ways',
+        ui: { x: 0, y: 0 },
+        mode: 'predicate',
+        cases: groupSplitCases(3, [{ to: 'a', label: 'Scrollers' }, { to: 'b' }, {}]),
+      },
+      scriptNode({ id: 'a', next: 'done' }),
+      scriptNode({ id: 'b', next: 'done' }),
+      finishNode(),
+    ])
+    const result = readGrouped(doc)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.view.groupCount).toBe(3)
+    expect(result.view.groups.map((g) => g.headId)).toEqual(['a', 'b', undefined])
+    expect(result.view.groups.map((g) => g.label)).toEqual(['Scrollers', 'Group 2', 'Group 3'])
   })
 
   test('the refusal is not one-way — a plain sequence is simply not grouped', () => {

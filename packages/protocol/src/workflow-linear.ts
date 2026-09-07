@@ -286,7 +286,7 @@ export function isLinear(doc: WorkflowDoc): boolean {
  *   an orphan makes `readLinear` refuse the document — which would eject the
  *   author from the editor by a reorder.
  */
-export function planSequence(view: LinearView, order: readonly WorkflowNode[]): { chain: string[]; stranded: string[] } {
+export function planSequence(view: { steps: readonly LinearStep[] }, order: readonly WorkflowNode[]): { chain: string[]; stranded: string[] } {
   const gapOf = new Map(view.steps.map((s) => [s.node.id, s.delayBefore]))
   const chain: string[] = []
   order.forEach((node, i) => {
