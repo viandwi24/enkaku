@@ -6,12 +6,16 @@ import {
   VmCreateBodySchema,
   VmListResponseSchema,
   VmResponseSchema,
+  VmSpecSchema,
+  type VmCreateBody,
   type VmRecord,
+  type VmSpec,
 } from '@enkaku/protocol'
 import { can } from '../auth/acl'
 import type { AuthEnv } from '../auth/middleware'
 import { EnkakuError } from '../util/errors'
 import type { VmManager } from '../vm/manager'
+import { deriveAbi } from '../vm/provider-avd'
 import { appendInstallLine, installSdkPackages, readSdkInventory } from '../vm/sdk-install'
 import type { Logger } from '../util/logger'
 import type { VmRecord as CoreVmRecord } from '../vm/types'
@@ -53,6 +57,56 @@ function toWire(record: CoreVmRecord): VmRecord {
  * embeds, or looks up a `devices` row. The `serial` field is observational
  * only.
  */
+/**
+ * Fill in the parts of a spec the operator did not choose, from what the host
+ * actually has — and refuse early, by name, when what they DID choose is not
+ * installed.
+ *
+ * Both halves exist because of the same failure: creating a virtual device on
+ * a host whose only system image was android-35 died with `avdmanager`'s own
+ * "Package path is not valid", after the button was pressed, quoting a list
+ * of valid paths in raw tool output (owner, 2026-09-07). The api level came
+ * from a schema default of 36 that had never looked at the machine.
+ *
+ * This is the same shape as the JDK fix: find what the host has before
+ * running the tool, rather than translating the tool's complaint afterwards.
+ */
+export async function resolveSpec(body: VmCreateBody, sdk: { systemImages: string[] }): Promise<VmSpec> {
+  const abi = body.abi ?? deriveAbi()
+  const variant = body.variant
+  const imageFor = (apiLevel: number) => `system-images;android-${apiLevel};${variant};${abi}`
+
+  // Newest first, so an unspecified api level gets the most recent image the
+  // host can actually boot rather than the oldest one lying around.
+  const installed = sdk.systemImages
+    .map((image) => {
+      const match = /^system-images;android-(\d+);([^;]+);(.+)$/.exec(image)
+      return match ? { apiLevel: Number(match[1]), variant: match[2], abi: match[3] } : null
+    })
+    .filter((x): x is { apiLevel: number; variant: string; abi: string } => x !== null)
+    .filter((x) => x.variant === variant && x.abi === abi)
+    .sort((a, b) => b.apiLevel - a.apiLevel)
+
+  if (body.apiLevel === undefined) {
+    const newest = installed[0]?.apiLevel
+    if (newest === undefined) {
+      throw new EnkakuError(
+        'E_ANDROID_SDK_MISSING',
+        `no system image is installed for ${variant} on ${abi}. Install one from the SDK section of this page, or pick a variant you already have: ${sdk.systemImages.join(', ') || 'none at all'}`,
+      )
+    }
+    return VmSpecSchema.parse({ ...body, apiLevel: newest, abi })
+  }
+
+  if (!sdk.systemImages.includes(imageFor(body.apiLevel))) {
+    throw new EnkakuError(
+      'E_ANDROID_SDK_MISSING',
+      `${imageFor(body.apiLevel)} is not installed. Installed: ${sdk.systemImages.join(', ') || 'none at all'}`,
+    )
+  }
+  return VmSpecSchema.parse({ ...body, abi })
+}
+
 export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log: Logger; toolchainSdkmanager?: () => Promise<string | null>; installCmdlineTools?: () => Promise<void> }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
@@ -172,7 +226,7 @@ export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log:
     authorizeManage(c.get('user'))
     const body = VmCreateBodySchema.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a valid virtual device spec is required')
-    const record = await deps.manager.create(body.data)
+    const record = await deps.manager.create(await resolveSpec(body.data, await readSdkInventory(deps.dataDir, deps.toolchainSdkmanager)))
     return typedJson(c, VmResponseSchema, { vm: toWire(record) }, 201)
   })
 

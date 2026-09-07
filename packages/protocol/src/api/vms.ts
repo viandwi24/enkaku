@@ -48,7 +48,17 @@ export const VmResponseSchema = z.object({ vm: VmRecordSchema })
 export type VmResponse = z.infer<typeof VmResponseSchema>
 
 /** `POST /api/vms` body. */
-export const VmCreateBodySchema = VmSpecSchema
+/**
+ * `POST /api/vms` — the spec, with `apiLevel` optional.
+ *
+ * The stored spec always carries a number; a REQUEST need not. Defaulting it
+ * to a fixed 36 in the schema meant a host whose only installed system image
+ * was android-35 got `avdmanager`'s raw "Package path is not valid" after
+ * pressing Create — a default chosen without looking at the machine it runs
+ * on. Left out, the route picks the newest api level actually installed for
+ * the requested variant and ABI.
+ */
+export const VmCreateBodySchema = VmSpecSchema.extend({ apiLevel: z.number().int().min(24).max(40).optional() })
 export type VmCreateBody = z.infer<typeof VmCreateBodySchema>
 
 /**

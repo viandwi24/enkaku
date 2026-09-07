@@ -7,7 +7,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { EnkakuError } from '../util/errors'
 import type { VmManager } from '../vm/manager'
 import type { VmRecord, VmSpec } from '../vm/types'
-import { createVmRoutes } from './vms'
+import { createVmRoutes, resolveSpec } from './vms'
 
 /** Mirrors `authMiddleware` well enough for a route test: sets `c.get('user')` before dispatch. */
 function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
@@ -272,5 +272,39 @@ describe('an operator may look but not touch', () => {
     })
     expect(res.status).toBe(403)
     expect(JSON.stringify(await res.json())).toContain('vm.manage')
+  })
+})
+
+describe('resolveSpec — the api level comes from the host, not a constant', () => {
+  const images = ['system-images;android-34;google_apis;arm64-v8a', 'system-images;android-35;google_apis;arm64-v8a']
+
+  test('an unspecified api level takes the newest image installed for that variant and abi', async () => {
+    const spec = await resolveSpec({ name: 'vm', variant: 'google_apis', abi: 'arm64-v8a', memoryMb: 2048, deviceProfile: 'pixel_7' }, { systemImages: images })
+    expect(spec.apiLevel).toBe(35)
+  })
+
+  test('an api level the host does not have is refused BEFORE avdmanager runs, and says what it has', async () => {
+    // The whole point: the old path reached `avdmanager`, which failed with
+    // "Package path is not valid" and a raw list, after the operator had
+    // already pressed Create.
+    const promise = resolveSpec(
+      { name: 'vm', apiLevel: 36, variant: 'google_apis', abi: 'arm64-v8a', memoryMb: 2048, deviceProfile: 'pixel_7' },
+      { systemImages: images },
+    )
+    await expect(promise).rejects.toThrow(/not installed/)
+    await expect(promise).rejects.toThrow(/android-35/)
+  })
+
+  test('a host with no image for the requested variant says so, rather than picking a wrong one', async () => {
+    const promise = resolveSpec({ name: 'vm', variant: 'google_apis_playstore', abi: 'arm64-v8a', memoryMb: 2048, deviceProfile: 'pixel_7' }, { systemImages: images })
+    await expect(promise).rejects.toThrow(/no system image is installed/)
+  })
+
+  test('an explicitly chosen api level the host DOES have is kept', async () => {
+    const spec = await resolveSpec(
+      { name: 'vm', apiLevel: 34, variant: 'google_apis', abi: 'arm64-v8a', memoryMb: 2048, deviceProfile: 'pixel_7' },
+      { systemImages: images },
+    )
+    expect(spec.apiLevel).toBe(34)
   })
 })

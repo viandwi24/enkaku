@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { VmCreateBodySchema, VmListResponseSchema, VmRecordSchema, VmResponseSchema } from './vms'
+import { VmCreateBodySchema, VmListResponseSchema, VmRecordSchema, VmResponseSchema, VmSpecSchema } from './vms'
 
 function baseSpec() {
   return {
@@ -55,13 +55,22 @@ describe('VmRecordSchema (plan 402 §4.1)', () => {
 })
 
 describe('VmSpecSchema defaults (plan 402 §4.1)', () => {
-  test('apiLevel, variant, memoryMb, deviceProfile default when omitted', () => {
+  test('variant, memoryMb, deviceProfile default when omitted', () => {
     const parsed = VmCreateBodySchema.parse({ name: 'enkaku-test' })
-    expect(parsed.apiLevel).toBe(36)
     expect(parsed.variant).toBe('google_apis')
     expect(parsed.memoryMb).toBe(2048)
     expect(parsed.deviceProfile).toBe('pixel_7')
     expect(parsed.abi).toBeUndefined()
+  })
+
+  test('a REQUEST may omit apiLevel; a STORED spec always has one', () => {
+    // Defaulting the request to a fixed api level picked a system image
+    // without looking at the host, and a machine with only android-35 failed
+    // on `avdmanager` after the button was pressed. The route resolves it
+    // from what is installed instead (`resolveSpec`), and what it stores is
+    // still a complete spec.
+    expect(VmCreateBodySchema.parse({ name: 'enkaku-test' }).apiLevel).toBeUndefined()
+    expect(VmSpecSchema.parse({ name: 'enkaku-test' }).apiLevel).toBe(36)
   })
 
   test('name is required — an empty body rejects', () => {
