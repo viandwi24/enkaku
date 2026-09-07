@@ -30,7 +30,7 @@ import { EnkakuError } from '../util/errors'
 import { resolveActionTarget } from '../groups/resolve'
 import type { BatchDispatchDeps } from '../groups/dispatch'
 import type { OperationRegistry } from './operations'
-import { VERBS, ACTION_FANOUT_CONCURRENCY } from './verbs'
+import { VERBS, ACTION_FANOUT_CONCURRENCY, ACTION_SYNC_FANOUT_CONCURRENCY } from './verbs'
 import { setReadiness } from './impl/readiness'
 import { reconnectDevice, disconnectDevice, cutoverStart, cutoverCancel } from './impl/connection'
 import { forgetDevice, blockDevice, unquarantineDevice } from './impl/lifecycle'
@@ -307,14 +307,26 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
   }
 
   if (spec.mode === 'sync') {
-    for (const deviceId of candidates) {
+    /*
+      Bounded parallelism, and still awaited — the contract is unchanged.
+
+      `sync` means the caller gets the finished operation back in the response
+      rather than an id to poll, and that is preserved exactly: this awaits
+      every device before returning, and each one settles into the same
+      operation through the same `settle`. What is gone is the accidental
+      serialisation. The devices in one action are independent by definition
+      (the fan-out is over a selection, and no verb here reads another
+      device's state), so the `for await` was ordering work that had no order
+      to keep, and charging an operator the sum of it.
+    */
+    await dispatchBounded(candidates, ACTION_SYNC_FANOUT_CONCURRENCY, async (deviceId) => {
       try {
         const detail = await dispatchSyncVerb(deps, request, deviceId, actor)
         settle(deviceId, { status: 'done', detail })
       } catch (err) {
         settle(deviceId, failedStatusOf(err))
       }
-    }
+    })
   } else {
     void dispatchBounded(candidates, ACTION_FANOUT_CONCURRENCY, async (deviceId) => {
       try {

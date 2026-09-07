@@ -57,3 +57,30 @@ export const VERBS: Record<ActionVerb, VerbSpec> = {
  * constants"). Recorded as a known, intentional grep hit in plan 207 §11.
  */
 export const ACTION_FANOUT_CONCURRENCY = 4
+
+/**
+ * The same bounded dispatch, for the `sync` verbs — and it is wider on
+ * purpose.
+ *
+ * `ACTION_FANOUT_CONCURRENCY` above bounds the async verbs, which write to the
+ * device: an install pushes an APK, a push moves a file, a prepare rewrites
+ * settings. Four at once is the right ceiling for that, and it is not what
+ * this number is for.
+ *
+ * The sync verbs are control gestures and database rows — `wake`, `sleep`,
+ * `set-labels`, `block`, `forget`. Their per-device cost is one or two shell
+ * round trips at most, and after plan 226 a sleep on a device with a session
+ * open is one. They were nevertheless run STRICTLY ONE AT A TIME, in a plain
+ * `for await` loop, inside the request the browser is holding open: selecting
+ * a 66-device farm and pressing Sleep meant 66 sequential wakes of roughly two
+ * seconds each, so the operator watched a spinner for two and a half minutes
+ * while the competitor's farm went dark in one blink (owner, 2026-09-07). That
+ * loop, not the adb commands underneath it, was the larger half of the wait.
+ *
+ * Sixteen rather than unbounded because the real floor is still adb's own
+ * farm-wide semaphore (`adb.maxConcurrent`, 6 by default and pinnable to 2):
+ * past that width this number stops buying anything and only makes the queue
+ * behind it longer. It is deliberately a separate constant from the async one
+ * so a future change to either cannot silently move the other.
+ */
+export const ACTION_SYNC_FANOUT_CONCURRENCY = 16

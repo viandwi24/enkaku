@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
 import type { AdbClient } from '@enkaku/adb'
 import { AdbTcpTransport, AdbUsbTransport } from '@enkaku/drivers'
-import { readPowerState, satisfiesStayOn, wakeDevice, type SessionManager } from '@enkaku/session'
+import { applyStayOn, wakeDevice, type SessionManager } from '@enkaku/session'
 import {
   DeviceReadinessSchema,
   DeviceSettingsSchema,
@@ -138,6 +138,20 @@ export interface ReadinessManagerDeps {
 const RANK: Record<Readiness, number> = { asleep: 0, awake: 1, hot: 2 }
 
 /**
+ * The actor every key this module presses is attributed to.
+ *
+ * `user` rather than a system kind because the arbiter's priority table
+ * (`packages/session/src/input-arbiter.ts`) only knows `user`/`job`/`agent`,
+ * and a wake or a sleep is a person pressing a button in Studio — it should
+ * jump a queued job action the same way any other operator gesture does. It
+ * still never preempts one already running.
+ */
+const READINESS_INPUT_SOURCE = { kind: 'user', id: 'readiness', userId: null } as const
+
+/** `KEYCODE_SLEEP`. A number because `INJECT_KEYCODE` carries an int, and `input keyevent` takes either. */
+const KEYCODE_SLEEP = 223
+
+/**
  * How stale a screen observation may be before `reconcile` pays for a fresh
  * one (plan 125 §3.6: *"cached with a timestamp"*).
  *
@@ -158,15 +172,21 @@ const OBSERVE_MAX_AGE_SEC = 15
  * The upper bound on how many devices the boot sweep wakes at once (plan 125
  * §4.4's *"bounded by the existing build-lane discipline"*).
  *
- * Lower than the 8 `battery.ts`/`health.ts` use for their polls, on purpose: a
- * poll is one `dumpsys`, whereas a wake opens a transport and issues several
- * shell calls including `svc power stayon`, measured at 1422 ms on the owner's
- * hardware (plan 96 §22). The real fleet-wide bound is still the shared adb
- * lane (`adb.maxConcurrent`, taken into account below) — this is the second,
- * tighter ceiling that stops a twelve-phone farm arriving at boot from
- * becoming a twelve-way fan-out of the most expensive call in the product.
+ * It was 4, and 4 was right while a wake contained `svc power stayon` — an
+ * `app_process` JVM start measured at 1422 ms (plan 96 §22), which made a
+ * wide boot sweep a fan-out of the most expensive call in the product. Plan
+ * 226 replaced that call with a `settings` write, so a wake is now a handful
+ * of ordinary shell round trips and the old ceiling stopped protecting
+ * anything: it only meant a 66-device farm woke sixteen phones at a time it
+ * could have woken in three.
+ *
+ * The real fleet-wide bound is still the shared adb lane
+ * (`adb.maxConcurrent`, which auto-scales to 24 on a farm this size and is
+ * taken into account below) — this is the second, tighter ceiling, and it is
+ * deliberately still tighter than the lane so a farm arriving at boot leaves
+ * room for everything else the core is doing at that moment.
  */
-const BOOT_SWEEP_MAX_CONCURRENCY = 4
+const BOOT_SWEEP_MAX_CONCURRENCY = 12
 
 /**
  * A pure, manager-free fallback (Plan 43 §4.1): `offline` always reads
@@ -313,6 +333,36 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
   }
 
   /**
+   * An injector for `deviceId`'s open session, or null when it has none.
+   *
+   * This is the whole of plan 226's transport change on the key path. A
+   * `KEYCODE_SLEEP` used to cost an `input keyevent`, which is a shell wrapper
+   * around `app_process` — a fresh JVM on the phone per press, several hundred
+   * milliseconds each, paid per device and therefore 66 times over on a farm
+   * this size. Every device already carries a scrcpy session (sessions are
+   * always on, plan 206), that session already holds a control socket, and
+   * `InputSink.key` on a scrcpy-backed engine is one `INJECT_KEYCODE` message
+   * written to it. Same key, same effect, none of the process start.
+   *
+   * Deliberately routed through `session.arbiter`, not `session.input`: the
+   * raw sink has no serialisation, and a readiness sleep landing between a
+   * job's own down and up on the one shared virtual pointer is exactly what
+   * plan 91 §3.3 built the arbiter to stop.
+   *
+   * Returns null — never throws — when there is no session. That case is
+   * common and correct: a device genuinely asleep has nothing open, and
+   * `wakeDevice`'s shell path is the floor it falls back to.
+   */
+  function keyInjectorFor(deviceId: string): ((keycode: number) => Promise<boolean>) | null {
+    const session = deps.sessions()?.get(deviceId) ?? null
+    if (!session) return null
+    return async (keycode: number) => {
+      await session.arbiter.for(READINESS_INPUT_SOURCE).key(keycode)
+      return true
+    }
+  }
+
+  /**
    * The fallback tracks `DeviceSettingsSchema`'s own default, which plan 125
    * §3.3 moved to `'always'`: `'while-charging'` maps to `svc power stayon
    * usb`, a documented no-op on a device attached over `adb-tcp`, so leaving
@@ -454,10 +504,12 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // travel together on purpose: no policy wired means no capture sink,
       // and no capture sink means no persisted timeout write (§0.2 rule 1).
       const policy = deps.awakePolicy?.() ?? null
+      const injectKey = keyInjectorFor(deviceId)
       await wakeDevice(transport, {
         keepAwake: keepAwakeModeFor(row),
         screenOffTimeoutMs: policy ? screenOffTimeoutFor(row) : null,
         ...(policy ? { capture: policy.captureSink(deviceId) } : {}),
+        ...(injectKey ? { injectKey } : {}),
         log,
       })
     } catch (err) {
@@ -473,6 +525,29 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     // switches always-on off, and waking switches it back on.
     forcedAsleep.delete(deviceId)
     broadcast(deviceId)
+  }
+
+  /**
+   * `KEYCODE_SLEEP`, over the session when there is one and the shell when
+   * there is not.
+   *
+   * The keycode choice is unchanged and load-bearing: `SLEEP` (223) rather
+   * than `POWER` (26) because sleep is idempotent and power is a toggle, and
+   * `reconcile` can run more than once for one transition — a toggle would
+   * turn the screen back ON the second time.
+   *
+   * What changed is only how it travels. Best-effort in both directions,
+   * matching every other line in `releaseAwake`: the stayon drop above is the
+   * part that must land, and a phone whose panel stays lit after it is a
+   * phone the next reconcile presses again.
+   */
+  async function pressSleep(deviceId: string, transport: AdbUsbTransport): Promise<void> {
+    const inject = keyInjectorFor(deviceId)
+    if (inject) {
+      const sent = await inject(KEYCODE_SLEEP).catch(() => false)
+      if (sent) return
+    }
+    await transport.exec(`input keyevent ${KEYCODE_SLEEP}`, { profile: 'probe' }).catch(() => undefined)
   }
 
   /**
@@ -526,14 +601,29 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // display on, the panel relights and that is the operator's own setting
       // winning, not ours failing quietly.
       if (keepAwakeModeFor(row) !== 'off') {
-        const state = await readPowerState(transport).catch(() => null)
-        // Unreadable counts as on: the write is cheap next to a Sleep that
-        // does nothing, and `svc power stayon false` is the phone's own default.
-        if (state === null || !satisfiesStayOn(state.stayOnWhilePluggedIn, 'off')) {
-          await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
-        }
+        // ONE round trip, not two, and no `readPowerState` ahead of it.
+        //
+        // The read used to be here to avoid `svc power stayon false`, which
+        // costs an `app_process` JVM on the phone (1422 ms, plan 96 §22) and
+        // was worth two `settings get` calls to skip. `applyStayOn` leads with
+        // a batched `settings put`+read-back now, so the write IS the cheap
+        // call: reading first to decide whether to make it costs more than
+        // making it. Passing `null` as the current value is what says "we did
+        // not look" — `satisfiesStayOn(null, ...)` is false, so the write
+        // always goes out, and the `svc` rung is still there underneath for a
+        // ROM that ignores the direct one.
+        //
+        // Unreadable therefore still counts as on, exactly as before: 0 is the
+        // phone's own default, and writing it to a device already at 0 is
+        // idempotent.
+        await applyStayOn(transport, 'off', null, log).catch(() => undefined)
       }
-      await transport.exec('input keyevent 223', { profile: 'probe' }).catch(() => undefined)
+      // The stayon drop has to land BEFORE this: a device still holding
+      // `stay_on_while_plugged_in` while plugged in is woken straight back up
+      // by PowerManager, which is the whole reason these two are in this
+      // order. `pressSleep` prefers the session's control socket, so on a
+      // device with a session open this costs no adb round trip at all.
+      await pressSleep(deviceId, transport)
     } finally {
       await transport.disconnect()
     }
@@ -887,13 +977,17 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
         Bounded parallelism, not a `for await` — the sweep's cost is the whole
         farm's, not one phone's.
 
-        Each release is about 1.4 s of adb round trips (connect, two `settings
-        get`, a keyevent, disconnect — plan 96 §22). Done one at a time that is
+        A release used to be about 1.4 s of adb round trips, nearly all of it
+        `svc power stayon false` (plan 96 §22). Done one at a time that was
         ~90 s on a 65-device farm, and the caller's deadline used to cut it off
         at 30 s, so two thirds of the farm stayed lit exactly the way an
-        operator would never notice until morning. Every device here is
-        independent, so they go together; adb's own global semaphore is the
-        real limiter underneath and the caller widens it for this sweep.
+        operator would never notice until morning. Plan 226 cut the release to
+        one batched `settings` write plus a keyevent that rides the device's
+        open session, so the per-device cost is now a fraction of that — but
+        the parallelism is what makes the whole sweep bounded rather than
+        proportional to the farm, and that argument is unchanged. Every device
+        here is independent, so they go together; adb's own global semaphore is
+        the real limiter underneath and the caller widens it for this sweep.
       */
       const queue = [...keepAwakeApplied]
       const workers = Math.min(RELEASE_SWEEP_WORKERS, queue.length)

@@ -21,6 +21,7 @@ import { applyRotation, type RotationLock } from './orientation'
 import { applyTextInput, type TextInputSetup } from './text-input'
 import { resolveVideoProfile, type VideoProfile } from './video-profile'
 import { wakeDevice } from './wake'
+import { applyStayOn } from './power'
 import { refuseUiServer } from './inspector-factory'
 
 /**
@@ -418,7 +419,11 @@ export interface CreateSessionOpts {
    * the narrow "a `control` build beside an already-open `wall` entry" case.
    * Plan 96 §22 measured `svc power stayon` alone at **1422 ms** on the
    * owner's hardware, so the duplicate cost ≈3.2 s — burned before
-   * `starting-video` was even entered (plan 125 §0.7).
+   * `starting-video` was even entered (plan 125 §0.7). That figure is the
+   * HISTORY this flag was added for; plan 226 has since replaced `svc` with a
+   * batched `settings` write, so the duplicate a farm would pay today is much
+   * smaller. The flag still earns its place — the cheapest wake is the one
+   * that does not run — but do not read 3.2 s as a current number.
    *
    * **What sets it.** `SessionManagerDeps.deviceIsAwake` (`./manager.ts`),
    * read fresh at build time and wired in `daemon.ts` to the readiness
@@ -657,9 +662,11 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
    * `skipWake` says "the readiness manager already has this screen on".
    *
    * `wakeDevice` itself is not free even when it changes nothing: it is a
-   * `settings get` pair, `svc power stayon` (1422 ms measured — plan 96 §22),
-   * a `KEYCODE_WAKEUP`, and a `dumpsys window` keyguard probe. Skipping it is
-   * the single largest saving on the cold cast path.
+   * `settings get` pair, a stayon write, a `KEYCODE_WAKEUP`, and a
+   * `dumpsys window` keyguard probe. Skipping it is still a saving on the
+   * cold cast path — a smaller one than it was, since plan 226 took
+   * `svc power stayon` (1422 ms measured, plan 96 §22) off that path and put
+   * a batched `settings` write in its place.
    */
   const skipWake = skipDevicePrep || (opts.skipWake ?? false)
   if (!skipWake) await wakeDevice(transport, { keepAwake, log })
@@ -830,7 +837,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // here would hand the screen back to the device's own timeout out from
     // under whoever IS holding it (the readiness manager, or the open wall
     // entry). Same rule, same reason, as `close()`'s own release below.
-    if (keepAwake !== 'off' && !skipWake) await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
+    if (keepAwake !== 'off' && !skipWake) await applyStayOn(transport, 'off', null, log).catch(() => undefined)
     await revertRotation()
     await revertTextInput()
     await revertFarmTag()
@@ -1081,8 +1088,16 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // while `readiness.keepAwakeApplied` still believed it held the device
       // awake, so `ensureAwake`'s early-out declined to put it back. A phone
       // in a sealed box then went dark with nothing left to notice (§0.2).
-      if (keepAwake !== 'off' && !skipWake)
-        await transport.exec('svc power stayon false', { profile: 'probe' }).catch(() => undefined)
+      //
+      // Through `applyStayOn` rather than a raw `svc power stayon false`: that
+      // command starts an `app_process` JVM on the phone (1422 ms, plan 96
+      // §22) and this line runs once per session, so a farm shutdown paid it
+      // once per device before the release sweep had even begun. `applyStayOn`
+      // writes the setting directly and keeps `svc` underneath as its
+      // fallback, so nothing is lost but the wait. `null` as the current value
+      // means "we did not look" — the write always goes out, which is what
+      // this line always did.
+      if (keepAwake !== 'off' && !skipWake) await applyStayOn(transport, 'off', null, log).catch(() => undefined)
       // Hand rotation back the same way — stateless and idempotent (see
       // `orientation.ts`): `close()` can run more than once (a timeout kill
       // followed by a normal close, for instance), and calling this twice

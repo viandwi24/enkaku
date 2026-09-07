@@ -12,6 +12,14 @@ import { createAwakePolicy } from './awake-policy'
 import { createDeviceStateMachine } from './state-machine'
 import { createReadinessManager, type ReadinessManager } from './readiness'
 
+/**
+ * `applyStayOn`'s cheap rung (plan 226): the bitmask write and its read-back in
+ * ONE shell command. `7` is AC|USB|WIRELESS ("always"), `0` is the release.
+ */
+const PUT_STAYON = (mask: string) => `settings put global stay_on_while_plugged_in '${mask}'; settings get global stay_on_while_plugged_in`
+/** The wake nudge, as the number both `INJECT_KEYCODE` and `input keyevent` take. */
+const WAKEUP = 'input keyevent 224'
+
 const D1 = 'd1'
 
 function seedDevice(db: ReturnType<typeof openDb>['db'], overrides: Partial<{ status: 'online' | 'offline' | 'quarantined'; desiredReadiness: string | null }> = {}) {
@@ -67,9 +75,16 @@ function fakeAdbClient(execCalls: string[], opts: FakeAdbOpts = {}): AdbClient {
       if (cmd.startsWith('settings get system screen_off_timeout')) return ok(s.timeout)
       if (cmd.startsWith('settings get global stay_on_while_plugged_in')) return ok(s.stayOn)
       if (cmd.startsWith('settings put system screen_off_timeout')) {
-        // `shellQuote`d on the wire; a real device shell strips the quotes.
-        s.timeout = (cmd.split(' ').pop() ?? '').replace(/'/g, '') || s.timeout
-        return ok()
+        // The combined put+get (plan 226); `shellQuote`d on the wire, and a
+        // real device shell strips the quotes before `settings` sees them.
+        s.timeout = (cmd.split(';')[0]?.split(' ').pop() ?? '').replace(/'/g, '') || s.timeout
+        return ok(s.timeout)
+      }
+      if (cmd.startsWith('settings put global stay_on_while_plugged_in')) {
+        // `applyStayOn`'s cheap rung (plan 226): the write and its read-back in
+        // one command, which is what lets it skip the `app_process` JVM below.
+        s.stayOn = (cmd.split(';')[0]?.split(' ').pop() ?? '').replace(/'/g, '') || s.stayOn
+        return ok(s.stayOn)
       }
       if (cmd.startsWith('svc power stayon')) {
         const token = cmd.split(' ').pop()
@@ -113,6 +128,8 @@ function flush(): Promise<void> {
 function fakeSessionManager() {
   const subs = new Map<string, Set<unknown>>()
   const acquireCalls: { deviceId: string }[] = []
+  /** Every keycode pressed over a session's control socket rather than the shell (plan 226). */
+  const injectedKeys: { deviceId: string; code: number }[] = []
   const sessions: SessionManager = {
     // Plan 206 §4.3 — `acquire` no longer takes a quality: it always serves
     // the one base (`wall`) entry.
@@ -145,7 +162,22 @@ function fakeSessionManager() {
     },
     get(deviceId) {
       const set = subs.get(deviceId)
-      return set && set.size > 0 ? ({ deviceId } as never) : null
+      // Plan 226: a readiness wake/sleep presses its key over THIS, not over
+      // `input keyevent`, whenever a session exists. The fixture has to carry
+      // an arbiter, or the production path would fall back to the shell here
+      // and these tests would pin a behaviour no real device has.
+      return set && set.size > 0
+        ? ({
+            deviceId,
+            arbiter: {
+              for: () => ({
+                key: async (code: number) => {
+                  injectedKeys.push({ deviceId, code })
+                },
+              }),
+            },
+          } as never)
+        : null
     },
     getByQuality(deviceId) {
       const set = subs.get(deviceId)
@@ -162,7 +194,7 @@ function fakeSessionManager() {
       return []
     },
   }
-  return { sessions, acquireCalls, isLive: (deviceId: string) => subs.get(deviceId)?.size !== 0 && subs.has(deviceId) }
+  return { sessions, acquireCalls, injectedKeys, isLive: (deviceId: string) => subs.get(deviceId)?.size !== 0 && subs.has(deviceId) }
 }
 
 function setUp(
@@ -198,7 +230,7 @@ function setUp(
   const activities: ActivityRegistry = createActivityRegistry({ log: createLogger('test'), controlIdleSec: () => 30, onChange: () => {} })
   const broadcasts: { deviceId: string; readiness: DeviceReadiness }[] = []
   const events: { deviceId: string; actor: string | null; from: string; to: string }[] = []
-  const { sessions, acquireCalls, isLive } = fakeSessionManager()
+  const { sessions, acquireCalls, injectedKeys, isLive } = fakeSessionManager()
   const maxHot = opts.maxHot ?? 8
   const awakePolicy = createAwakePolicy({ db, client: () => client, log: createLogger('test') })
   const readiness: ReadinessManager = createReadinessManager({
@@ -212,7 +244,7 @@ function setUp(
     record: (e) => events.push(e),
     log: createLogger('test'),
   })
-  return { db, states, activities, readiness, sessions, execCalls, broadcasts, events, acquireCalls, isLive }
+  return { db, states, activities, readiness, sessions, execCalls, broadcasts, events, acquireCalls, injectedKeys, isLive }
 }
 
 /** The observation a healthy fake device produces — spelled out once so the expectations below stay readable. */
@@ -291,12 +323,12 @@ describe('ReadinessManager.set — the §3.4 permission matrix', () => {
     const { db, readiness, execCalls } = setUp()
     seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
     await readiness.reconcile(D1)
-    expect(execCalls).toContain('svc power stayon true')
+    expect(execCalls).toContain(PUT_STAYON('7'))
 
     // A control stream is open — the exact condition that used to skip the
     // whole asleep branch, which is why Sleep did nothing from Device Control.
     await readiness.set(D1, 'asleep', { userId: 'u1', clientId: 'me' })
-    expect(execCalls).toContain('svc power stayon false')
+    expect(execCalls).toContain(PUT_STAYON('0'))
     expect(execCalls).toContain('input keyevent 223')
   })
 
@@ -420,7 +452,7 @@ describe('ReadinessManager.hold — never mutates desired (plan 43 §3.6, accept
     // Nothing has reconciled this device yet, so `actual` still starts
     // `asleep` — `hold()` wakes on ACTUAL, never on `desired` (§3.6).
     expect(readiness.actual(D1)).toBe('awake')
-    expect(execCalls).toContain('input keyevent KEYCODE_WAKEUP')
+    expect(execCalls).toContain(WAKEUP)
 
     const rowMidHold = db.select({ d: devices.desiredReadiness }).from(devices).where(eq(devices.id, D1)).get()
     expect(rowMidHold?.d).toBeNull()
@@ -444,7 +476,7 @@ describe('ReadinessManager.hold — never mutates desired (plan 43 §3.6, accept
     const hold = await readiness.hold(D1, 'job')
     expect(readiness.actual(D1)).toBe('awake')
     expect(readiness.get(D1).desired).toBe('asleep')
-    expect(execCalls).toContain('input keyevent KEYCODE_WAKEUP')
+    expect(execCalls).toContain(WAKEUP)
 
     hold.release()
     await Promise.resolve()
@@ -552,11 +584,11 @@ describe('ReadinessManager — the awake policy is WIRED, so the persisted write
     // box, so what it had BEFORE we touched it is captured before the first
     // write, or the write does not happen at all.
     const readIdx = execCalls.indexOf('settings get system screen_off_timeout')
-    const writeIdx = execCalls.indexOf("settings put system screen_off_timeout '1800000'")
+    const writeIdx = execCalls.findIndex((c) => c.startsWith("settings put system screen_off_timeout '1800000'"))
     expect(readIdx).toBeGreaterThanOrEqual(0)
     expect(writeIdx).toBeGreaterThan(readIdx)
     // `svc power stayon` (the pre-125 runtime hold) still rides along.
-    expect(execCalls).toContain('svc power stayon true')
+    expect(execCalls).toContain(PUT_STAYON('7'))
 
     // And the capture landed in the column `restore` reads (plan 125 §4.2).
     const stored = db.select().from(devices).where(eq(devices.id, D1)).get()?.powerCapture
@@ -573,7 +605,7 @@ describe('ReadinessManager — the awake policy is WIRED, so the persisted write
     // value (`wakeDevice`'s own `refused` branch). The pre-125 behaviour —
     // the runtime nudge and `svc power stayon` — is untouched.
     expect(execCalls.some((c) => c.startsWith('settings put system screen_off_timeout'))).toBe(false)
-    expect(execCalls).toContain('svc power stayon true')
+    expect(execCalls).toContain(PUT_STAYON('7'))
     expect(db.select().from(devices).where(eq(devices.id, D1)).get()?.powerCapture ?? null).toBeNull()
   })
 })
@@ -686,7 +718,7 @@ describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §
 
     await readiness.reconcile(D1)
     expect(readiness.actual(D1)).toBe('awake')
-    const wakesAfterFirst = execCalls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length
+    const wakesAfterFirst = execCalls.filter((c) => c === WAKEUP).length
     expect(wakesAfterFirst).toBe(1)
 
     states.apply(D1, 'DEVICE_DISCONNECTED')
@@ -697,7 +729,7 @@ describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §
     await flush()
 
     expect(readiness.get(D1)).toMatchObject({ desired: 'awake', actual: 'awake', blocked: null })
-    expect(execCalls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length).toBe(2)
+    expect(execCalls.filter((c) => c === WAKEUP).length).toBe(2)
   })
 
   test('a device desired asleep is NOT woken when it reconnects', async () => {
@@ -710,7 +742,7 @@ describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §
     await flush()
 
     expect(readiness.actual(D1)).toBe('asleep')
-    expect(execCalls).not.toContain('input keyevent KEYCODE_WAKEUP')
+    expect(execCalls).not.toContain(WAKEUP)
   })
 })
 
@@ -748,7 +780,7 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
     expect(readiness.actual('d')).toBe('awake')
     // Two phones were physically nudged: `a` and `d` (its NULL row defaults
     // to awake). `b` reached `hot` through a session, and `c` was never touched.
-    expect(execCalls.filter((c) => c === 'input keyevent KEYCODE_WAKEUP').length).toBe(2)
+    expect(execCalls.filter((c) => c === WAKEUP).length).toBe(2)
   })
 
   test('an offline or quarantined device is SKIPPED with a reason, and no adb call is made against it', async () => {
@@ -772,7 +804,7 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
     expect(broadcasts.filter((b) => b.deviceId === 'off').length).toBe(1)
   })
 
-  test('it is bounded: never more than four devices in flight, however big the farm', async () => {
+  test('it is bounded: the farm never goes out all at once, however big it is', async () => {
     // A barrier every fake exec parks on, so "how many devices is the sweep
     // working on right now" is directly countable rather than inferred.
     let waiters: (() => void)[] = []
@@ -800,7 +832,12 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
 
     // Each parked exec is one device's reconcile mid-flight, so this IS the
     // concurrency. An unbounded `Promise.all` over ten devices would read 10.
-    expect(peak).toBeLessThanOrEqual(4)
+    //
+    // The bound asserted is the adb lane width the fixture reports (8), not
+    // `BOOT_SWEEP_MAX_CONCURRENCY` itself: the sweep takes the SMALLER of the
+    // two, and pinning the lane clamp is what proves the sweep still yields to
+    // the farm-wide budget after plan 226 widened its own ceiling to 12.
+    expect(peak).toBeLessThanOrEqual(8)
     expect(peak).toBeGreaterThan(1)
     expect(Array.from({ length: 10 }, (_, i) => readiness.actual(`p${i}`))).toEqual(Array(10).fill('awake'))
   })
@@ -843,9 +880,11 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
       if (waiters.length === 0) break
     }
 
-    // The four devices already in flight finish; the rest are abandoned.
+    // The devices already in flight finish; the rest are abandoned. The count
+    // is the lane clamp (8), for the same reason as the test above.
     const woken = Array.from({ length: 10 }, (_, i) => readiness.actual(`p${i}`)).filter((r) => r !== 'asleep').length
-    expect(woken).toBeLessThanOrEqual(4)
+    expect(woken).toBeLessThanOrEqual(8)
+    expect(woken).toBeLessThan(10)
   })
 })
 
@@ -919,8 +958,8 @@ describe('sleep overrides presentation holds, never work holds', () => {
  * ------------------------------------------------------------------------ */
 
 describe('ReadinessManager — explicit Sleep and Wake on a farm where every online device has a session', () => {
-  test('Wake works after a Sleep, even though the session is still open', async () => {
-    const { db, readiness, sessions, execCalls } = setUp()
+  test('Wake works after a Sleep, even though the session is still open — and both keys ride the session, not the shell', async () => {
+    const { db, readiness, sessions, execCalls, injectedKeys } = setUp()
     seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
     // Plan 206: a session per online device, held by the always-on manager
     // and nothing to do with readiness. `rawActual` therefore reads `hot`
@@ -928,28 +967,41 @@ describe('ReadinessManager — explicit Sleep and Wake on a farm where every onl
     await sessions.acquire(D1, () => {})
 
     await readiness.set(D1, 'asleep', { userId: 'u1', clientId: null })
-    expect(execCalls).toContain('input keyevent 223')
+    // Plan 226: that session is also a control socket, so the sleep key is one
+    // message on it rather than an `input keyevent` — which is a fresh
+    // `app_process` JVM on the phone, per device, per press.
+    expect(injectedKeys).toContainEqual({ deviceId: D1, code: 223 })
+    expect(execCalls.some((c) => c.startsWith('input keyevent'))).toBe(false)
 
     execCalls.length = 0
+    injectedKeys.length = 0
     await readiness.set(D1, 'awake', { userId: 'u1', clientId: null })
-    expect(execCalls).toContain('input keyevent KEYCODE_WAKEUP')
+    expect(injectedKeys).toContainEqual({ deviceId: D1, code: 224 })
+    expect(execCalls.some((c) => c.startsWith('input keyevent'))).toBe(false)
     // ...and always-on comes back on with it, the second half of the model.
-    expect(execCalls.some((c) => c.startsWith('svc power stayon') && c.endsWith('true'))).toBe(true)
+    expect(execCalls).toContain(PUT_STAYON('7'))
   })
 
-  test('Sleep decides from the phone’s own stay_on_while_plugged_in, and skips the 1422 ms write when it is already off', async () => {
+  test('Sleep is ONE round trip: a batched stayon write, no read ahead of it, and never `svc`', async () => {
     const { db, readiness, execCalls } = setUp()
     seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
-    await readiness.reconcile(D1) // wakes: writes stayon true
+    await readiness.reconcile(D1) // wakes: writes the stayon bitmask
 
+    // This device has no session (nothing acquired one), so the sleep key
+    // falls back to the shell — the floor plan 226 deliberately keeps.
     execCalls.length = 0
     await readiness.set(D1, 'asleep', { userId: 'u1', clientId: null })
-    expect(execCalls).toContain('settings get global stay_on_while_plugged_in')
-    expect(execCalls.filter((c) => c.startsWith('svc power stayon'))).toEqual(['svc power stayon false'])
+    expect(execCalls).toContain(PUT_STAYON('0'))
+    expect(execCalls).toContain('input keyevent 223')
+    // No `readPowerState` ahead of the write. It existed to avoid `svc power
+    // stayon`, measured at 1422 ms — now that the write itself is a `settings`
+    // call, reading first to decide whether to make it costs MORE than making
+    // it, and the read-back rides along in the same command.
+    expect(execCalls.some((c) => c.startsWith('settings get global stay_on_while_plugged_in'))).toBe(false)
+    expect(execCalls.filter((c) => c.startsWith('svc power stayon'))).toEqual([])
 
-    // Second pass: the phone reads back 0, so the expensive call is skipped
-    // rather than repeated. The keyevent still goes — it is cheap and
-    // idempotent, and re-sending it is how a panel someone woke by hand
+    // Second pass: idempotent. Writing 0 to a device already at 0 changes
+    // nothing, and re-sending the keyevent is how a panel someone woke by hand
     // returns to the state the operator asked for.
     execCalls.length = 0
     await readiness.reconcile(D1)
@@ -957,11 +1009,12 @@ describe('ReadinessManager — explicit Sleep and Wake on a farm where every onl
     expect(execCalls).toContain('input keyevent 223')
   })
 
+
   test('opening a viewer does not relight a device someone deliberately slept', async () => {
     const { db, readiness, execCalls } = setUp()
     seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     const hold = await readiness.hold(D1, 'viewer')
-    expect(execCalls).not.toContain('input keyevent KEYCODE_WAKEUP')
+    expect(execCalls).not.toContain(WAKEUP)
     hold.release()
   })
 
@@ -969,7 +1022,7 @@ describe('ReadinessManager — explicit Sleep and Wake on a farm where every onl
     const { db, readiness, execCalls } = setUp()
     seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     const hold = await readiness.hold(D1, 'job')
-    expect(execCalls).toContain('input keyevent KEYCODE_WAKEUP')
+    expect(execCalls).toContain(WAKEUP)
     hold.release()
   })
 })

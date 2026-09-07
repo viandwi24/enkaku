@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Transport } from '@enkaku/protocol'
 import { wakeDevice } from './wake'
-import { STAYON } from './power'
 import type { Logger } from './logger'
 
 const silentLog: Logger = {
@@ -13,9 +12,16 @@ const silentLog: Logger = {
 }
 
 const GET_TIMEOUT = 'settings get system screen_off_timeout'
+/** `applyScreenOffTimeout`'s write, batched with its read-back into one shell command (plan 226). */
+const PUT_TIMEOUT = (ms: string) => `settings put system screen_off_timeout '${ms}'; ${GET_TIMEOUT}`
 const GET_STAYON = 'settings get global stay_on_while_plugged_in'
 /** `readPowerState` asks for both values in ONE `adb shell`; the answers come back a line each. */
 const READ_POWER = `${GET_TIMEOUT}; ${GET_STAYON}`
+/** `applyStayOn`'s cheap rung: the write and its read-back in ONE shell command (plan 226). */
+const PUT_STAYON = (mask: string) => `settings put global stay_on_while_plugged_in '${mask}'; ${GET_STAYON}`
+/** The keycodes `wake.ts` presses, as the numbers both `INJECT_KEYCODE` and `input keyevent` take. */
+const WAKEUP = 'input keyevent 224'
+const MENU = 'input keyevent 82'
 /** The cheap probe `wake.ts` tries first; the full `dumpsys window` is only reached when this prints nothing recognisable. */
 const KEYGUARD = 'dumpsys window policy | grep -m1 isKeyguardShowing'
 const KEYGUARD_FULL = 'dumpsys window | grep -m1 isKeyguardShowing'
@@ -41,9 +47,12 @@ function recordingTransport(responses: Record<string, string> = {}) {
  * `refuse` names the keys the device silently ignores — the ROM behaviour plan
  * 125 acceptance criterion 4 exists for.
  */
-function fakeDevice(initial: { timeout?: string; stayOn?: string; refuse?: Array<'timeout' | 'stayOn'> } = {}) {
+function fakeDevice(initial: { timeout?: string; stayOn?: string; refuse?: Array<'timeout' | 'stayOn'>; refuseDirectStayOn?: boolean } = {}) {
   const state = { timeout: initial.timeout ?? '60000', stayOn: initial.stayOn ?? '0' }
   const refuse = new Set(initial.refuse ?? [])
+  // The ROM that `applyStayOn`'s two rungs exist for: a direct write to the
+  // key does nothing, and only `svc power stayon` reaches the power service.
+  const refuseDirectStayOn = initial.refuseDirectStayOn ?? false
   const calls: string[] = []
   const transport = {
     exec: async (cmd: string) => {
@@ -56,10 +65,18 @@ function fakeDevice(initial: { timeout?: string; stayOn?: string; refuse?: Array
       if (cmd.startsWith(GET_TIMEOUT)) return { stdout: state.timeout, stderr: '', exitCode: 0 }
       if (cmd.startsWith(GET_STAYON)) return { stdout: state.stayOn, stderr: '', exitCode: 0 }
       if (cmd.startsWith('settings put system screen_off_timeout')) {
-        // The value arrives `shellQuote`d — a real device shell strips the
-        // quotes before `settings` ever sees them, so this fake does too.
-        if (!refuse.has('timeout')) state.timeout = (cmd.split(' ').pop() ?? '').replace(/'/g, '') || state.timeout
-        return { stdout: '', stderr: '', exitCode: 0 }
+        // The combined put+get (plan 226). The value arrives `shellQuote`d — a
+        // real device shell strips the quotes before `settings` ever sees
+        // them, so this fake does too — and the answer is the read-back.
+        if (!refuse.has('timeout')) state.timeout = (cmd.split(';')[0]?.split(' ').pop() ?? '').replace(/'/g, '') || state.timeout
+        return { stdout: state.timeout, stderr: '', exitCode: 0 }
+      }
+      if (cmd.startsWith('settings put global stay_on_while_plugged_in')) {
+        // The combined put+get: apply the write (unless this ROM refuses the
+        // key) and answer with what a read would now return, which is the
+        // read-back `applyStayOn` verifies before it decides to skip `svc`.
+        if (!refuse.has('stayOn') && !refuseDirectStayOn) state.stayOn = (cmd.split(';')[0]?.split(' ').pop() ?? '').replace(/'/g, '') || state.stayOn
+        return { stdout: state.stayOn, stderr: '', exitCode: 0 }
       }
       if (cmd.startsWith('svc power stayon')) {
         const token = cmd.split(' ').pop()
@@ -86,27 +103,28 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
     expect(calls).toEqual([
       READ_POWER,
-      `svc power stayon ${STAYON['while-charging']}`,
-      GET_STAYON,
-      'input keyevent KEYCODE_WAKEUP',
+      PUT_STAYON('2'),
+      WAKEUP,
       KEYGUARD,
     ])
   })
 
-  test('"always" maps to `svc power stayon true`', async () => {
+  test('"always" writes the AC|USB|WIRELESS bitmask, and never reaches `svc`', async () => {
     const { transport, calls } = fakeDevice()
     const result = await wakeDevice(transport, { keepAwake: 'always', log: silentLog })
-    expect(calls).toContain('svc power stayon true')
+    expect(calls).toContain(PUT_STAYON('7'))
+    expect(calls.some((c) => c.startsWith('svc power stayon'))).toBe(false)
     expect(result.stayOn).toBe('applied')
   })
 
-  test('a device that already holds the value skips `svc power stayon` entirely — plan 96 §22 measured it at 1422 ms', async () => {
+  test('a device that already holds the value writes nothing at all — neither rung of `applyStayOn` runs', async () => {
     const { transport, calls } = fakeDevice({ stayOn: '7' })
     const result = await wakeDevice(transport, { keepAwake: 'always', log: silentLog })
     expect(calls.some((c) => c.startsWith('svc power stayon'))).toBe(false)
+    expect(calls.some((c) => c.startsWith('settings put global stay_on_while_plugged_in'))).toBe(false)
     expect(result.stayOn).toBe('unchanged')
     // The wake itself still happens — the screen may be dark regardless.
-    expect(calls).toContain('input keyevent KEYCODE_WAKEUP')
+    expect(calls).toContain(WAKEUP)
   })
 
   test('a stayon write the device ignores is `refused`, never `applied` (acceptance criterion 4)', async () => {
@@ -116,10 +134,51 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
     expect(result.reason).toContain('did not accept')
   })
 
+  test('a ROM that ignores the direct write still gets `svc power stayon` — the cheap rung is a shortcut, not a replacement', async () => {
+    const { transport, calls } = fakeDevice({ stayOn: '0', refuseDirectStayOn: true })
+    const result = await wakeDevice(transport, { keepAwake: 'always', log: silentLog })
+    expect(calls).toContain(PUT_STAYON('7'))
+    expect(calls).toContain('svc power stayon true')
+    expect(result.stayOn).toBe('applied')
+  })
+
+  test('an injector takes the key presses, and the shell never sees them', async () => {
+    const { transport, calls } = fakeDevice({ stayOn: '7' })
+    const injected: number[] = []
+    await wakeDevice(transport, {
+      keepAwake: 'always',
+      injectKey: async (code) => {
+        injected.push(code)
+        return true
+      },
+      log: silentLog,
+    })
+    expect(injected).toEqual([224])
+    expect(calls.some((c) => c.startsWith('input keyevent'))).toBe(false)
+  })
+
+  test('an injector that cannot send falls back to the shell — a session is an optimisation, never a dependency', async () => {
+    const { transport, calls } = fakeDevice({ stayOn: '7' })
+    await wakeDevice(transport, { keepAwake: 'always', injectKey: async () => false, log: silentLog })
+    expect(calls).toContain(WAKEUP)
+  })
+
+  test('an injector that throws is tolerated the same way — the wake still lands over the shell', async () => {
+    const { transport, calls } = fakeDevice({ stayOn: '7' })
+    await wakeDevice(transport, {
+      keepAwake: 'always',
+      injectKey: async () => {
+        throw new Error('the control socket went away mid-press')
+      },
+      log: silentLog,
+    })
+    expect(calls).toContain(WAKEUP)
+  })
+
   test('nudges a swipe-only keyguard when dumpsys reports one showing', async () => {
     const { transport, calls } = recordingTransport({ 'dumpsys window': 'isKeyguardShowing=true', [GET_STAYON]: '2' })
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
-    expect(calls).toContain('input keyevent 82')
+    expect(calls).toContain(MENU)
   })
 
   test('a failing command is swallowed (best-effort) and the sequence continues', async () => {
@@ -127,7 +186,7 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
     const transport = {
       exec: async (cmd: string) => {
         calls.push(cmd)
-        if (cmd === 'input keyevent KEYCODE_WAKEUP') throw new Error('boom')
+        if (cmd === WAKEUP) throw new Error('boom')
         if (cmd === READ_POWER) return { stdout: '60000\n2', stderr: '', exitCode: 0 }
         if (cmd.startsWith(GET_STAYON)) return { stdout: '2', stderr: '', exitCode: 0 }
         if (cmd.startsWith('dumpsys window')) return { stdout: 'isKeyguardShowing=false', stderr: '', exitCode: 0 }
@@ -135,7 +194,7 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
       },
     } as unknown as Transport
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
-    expect(calls).toEqual([READ_POWER, 'input keyevent KEYCODE_WAKEUP', KEYGUARD])
+    expect(calls).toEqual([READ_POWER, WAKEUP, KEYGUARD])
   })
 })
 
@@ -186,7 +245,7 @@ describe('wakeDevice — the persisted screen timeout (plan 125 §3.3, step 125.
     expect(result.reason).toContain('no capture sink')
     // And the rest of the wake still happened — a dark phone is the worse outcome.
     expect(result.stayOn).toBe('applied')
-    expect(calls).toContain('input keyevent KEYCODE_WAKEUP')
+    expect(calls).toContain(WAKEUP)
   })
 
   test('a capture sink that throws is tolerated and does not stop the wake', async () => {
@@ -199,7 +258,7 @@ describe('wakeDevice — the persisted screen timeout (plan 125 §3.3, step 125.
       },
       log: silentLog,
     })
-    expect(calls).toContain('input keyevent KEYCODE_WAKEUP')
+    expect(calls).toContain(WAKEUP)
     expect(result.stayOn).toBe('applied')
   })
 })
@@ -233,14 +292,14 @@ describe('wakeDevice — the keyguard probe tries the cheap dump first (owner, 2
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
     expect(calls).toContain(KEYGUARD)
     expect(calls).not.toContain(KEYGUARD_FULL)
-    expect(calls).not.toContain('input keyevent 82')
+    expect(calls).not.toContain(MENU)
   })
 
   test('a locked device found through the policy section is still nudged', async () => {
     const { transport, calls } = keyguardTransport({ [KEYGUARD]: 'isKeyguardShowing=true' })
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
     expect(calls).not.toContain(KEYGUARD_FULL)
-    expect(calls).toContain('input keyevent 82')
+    expect(calls).toContain(MENU)
   })
 
   test('a policy section that prints nothing recognisable falls back to the full dump, and the fallback decides', async () => {
@@ -248,7 +307,7 @@ describe('wakeDevice — the keyguard probe tries the cheap dump first (owner, 2
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
     expect(calls).toContain(KEYGUARD)
     expect(calls).toContain(KEYGUARD_FULL)
-    expect(calls).toContain('input keyevent 82')
+    expect(calls).toContain(MENU)
   })
 
   test('both probes failing leaves the keyguard alone — never a blind KEYCODE_MENU into an unlocked launcher', async () => {
@@ -262,6 +321,6 @@ describe('wakeDevice — the keyguard probe tries the cheap dump first (owner, 2
       },
     } as unknown as Transport
     await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
-    expect(calls).not.toContain('input keyevent 82')
+    expect(calls).not.toContain(MENU)
   })
 })

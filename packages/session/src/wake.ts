@@ -45,6 +45,24 @@ export interface WakeDeviceOpts {
    * `releaseAwake`/`close()`, and is not this plan's to gate.
    */
   capture?: (state: PowerReadback) => void | Promise<void>
+  /**
+   * Send one Android keycode down an ALREADY-OPEN session control socket,
+   * resolving `false` when there is no session to send it down.
+   *
+   * `input keyevent` is a shell wrapper around `app_process`, so every nudge
+   * below starts a JVM on the phone — the same shape of cost as the
+   * `svc power stayon` `power.ts` now avoids, and paid two or three times per
+   * wake. A scrcpy-backed session already holds a control socket to a process
+   * that is running, and `InputSink.key` on that engine is one
+   * `INJECT_KEYCODE` message on it (`ScrcpySdkInput.key`), which is why this
+   * is a port rather than a rewrite: the caller decides whether a session
+   * exists, and this function keeps the shell as its floor.
+   *
+   * Absent, or resolving `false`, means the shell path runs exactly as it
+   * always has. A device with no session — the case `readiness.ts` calls this
+   * for most often, a phone genuinely asleep — is that floor, not a failure.
+   */
+  injectKey?: (keycode: number) => Promise<boolean>
   log: Logger
 }
 
@@ -114,7 +132,7 @@ export async function wakeDevice(transport: Transport, opts: WakeDeviceOpts): Pr
       : await applyScreenOffTimeout(transport, wantTimeout, current.screenOffTimeoutMs, log)
   const stayOn = await applyStayOn(transport, keepAwake, current.stayOnWhilePluggedIn, log)
 
-  await transport.exec('input keyevent KEYCODE_WAKEUP', { profile: 'probe' }).catch((err) => log.debug(`input keyevent KEYCODE_WAKEUP failed: ${String(err)}`))
+  await pressKey(transport, KEYCODE_WAKEUP, 'the wake nudge', opts)
 
   // Only nudge the lock screen when there is one. KEYCODE_MENU dismisses a
   // swipe-only keyguard, but on a phone that is already unlocked it opens the
@@ -122,10 +140,42 @@ export async function wakeDevice(transport: Transport, opts: WakeDeviceOpts): Pr
   // that menu instead of hitting the app they aimed at.
   const locked = await isKeyguardShowing(transport)
   if (locked) {
-    await transport.exec('input keyevent 82', { profile: 'probe' }).catch((err) => log.debug(`keyguard nudge failed: ${String(err)}`))
+    await pressKey(transport, KEYCODE_MENU, 'the keyguard nudge', opts)
   }
 
   return { screenOffTimeout: timeout.outcome, stayOn: stayOn.outcome, reason: firstPowerReason(timeout, stayOn) }
+}
+
+/**
+ * The two Android keycodes this module presses, as numbers.
+ *
+ * Numbers rather than the `KEYCODE_*` names `input keyevent` also accepts,
+ * because the fast path is `INJECT_KEYCODE` over scrcpy's control socket and
+ * that message carries an int. `input keyevent` takes either, so writing the
+ * number costs the shell path nothing and keeps ONE spelling for both rungs.
+ */
+const KEYCODE_WAKEUP = 224
+const KEYCODE_MENU = 82
+
+/**
+ * Press one key: the session's control socket when the caller gave us one,
+ * the shell otherwise.
+ *
+ * Best-effort in both directions and deliberately so — this is the runtime
+ * nudge, not the persisted state. A failure here leaves a phone that is
+ * already holding `stay_on_while_plugged_in` (the two writes above ran first,
+ * plan 125 §3.3), so the worst case is a dark panel an operator can relight
+ * from a browser tab, which is the trade-off that ordering was chosen for.
+ */
+async function pressKey(transport: Transport, keycode: number, what: string, opts: WakeDeviceOpts): Promise<void> {
+  if (opts.injectKey) {
+    const injected = await opts.injectKey(keycode).catch((err) => {
+      opts.log.debug(`${what} could not be injected over the session (falling back to the shell): ${String(err)}`)
+      return false
+    })
+    if (injected) return
+  }
+  await transport.exec(`input keyevent ${keycode}`, { profile: 'probe' }).catch((err) => opts.log.debug(`${what} failed: ${String(err)}`))
 }
 
 /**
