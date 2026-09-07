@@ -57,24 +57,31 @@ function isTypingTarget(el: EventTarget | null): boolean {
 function newNodeFromType(type: NodeType, id: string, x: number, y: number): WorkflowNode {
   const ui = { x, y }
   const title = ''
+  // A node is born switched on (plan 313 §3.4) — `enabled` is something an
+  // author turns OFF later, never a state anything starts in.
+  const enabled = true
   switch (type.kind) {
     case 'script':
-      return { kind: 'script', id, title, ui, script: type.script ?? '', params: {} }
+      return { kind: 'script', id, title, ui, enabled, script: type.script ?? '', params: {} }
     case 'gate':
-      return { kind: 'gate', id, title, ui, when: placeholderPredicate() }
+      return { kind: 'gate', id, title, ui, enabled, when: placeholderPredicate() }
     case 'switch':
-      return { kind: 'switch', id, title, ui, mode: 'predicate', cases: [{ when: placeholderPredicate(), label: '' }] }
+      return { kind: 'switch', id, title, ui, enabled, mode: 'predicate', cases: [{ when: placeholderPredicate(), label: '' }] }
     case 'delay':
-      return { kind: 'delay', id, title, ui, ms: { const: 1000 }, maxMs: 60_000 }
+      return { kind: 'delay', id, title, ui, enabled, ms: { const: 1000 }, maxMs: 60_000 }
     case 'finish':
-      return { kind: 'finish', id, title, ui, status: 'succeed', message: '' }
+      return { kind: 'finish', id, title, ui, enabled, status: 'succeed', message: '' }
     case 'set':
-      return { kind: 'set', id, title, ui, assignments: [], keepOnlySet: false }
+      return { kind: 'set', id, title, ui, enabled, assignments: [], keepOnlySet: false }
+    case 'shuffle':
+      // Placed empty: membership is assigned by selecting rows in the
+      // sequence editor or by dragging members onto it, never guessed here.
+      return { kind: 'shuffle', id, title, ui, enabled, members: [] }
     case 'start':
       // `start` cannot be placed a second time (plan 301 §3.4) — the
       // palette never lists it as pickable; kept only so the switch above
       // is exhaustive.
-      return { kind: 'script', id, title, ui, script: type.script ?? '', params: {} }
+      return { kind: 'script', id, title, ui, enabled, script: type.script ?? '', params: {} }
   }
 }
 

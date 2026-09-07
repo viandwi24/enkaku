@@ -556,8 +556,8 @@ export const workflowSteps = sqliteTable(
     seq: integer('seq').notNull(),
     /** The document's step id (`WorkflowDoc.nodes[].id`). `_on_fail` for the document's cleanup step. */
     stepId: text('step_id').notNull(),
-    /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds — `start`/`finish` are never logged (plan 301 §3.2, §3.4). `set` joins them by plan 312 §4.3 — a TS-only type widening, no migration: this is a `text()` column with no stored CHECK constraint. */
-    kind: text('kind').notNull().$type<'script' | 'gate' | 'switch' | 'delay' | 'set'>(),
+    /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds — `start`/`finish` are never logged (plan 301 §3.2, §3.4). `set` joins them by plan 312 §4.3 and `shuffle` by plan 313 §4.3 — both TS-only type widenings, no migration: this is a `text()` column with no stored CHECK constraint. */
+    kind: text('kind').notNull().$type<'script' | 'gate' | 'switch' | 'delay' | 'set' | 'shuffle'>(),
     /** The child script job and the run of it this step waited on. Both null for a gate and until the job is created. */
     jobId: text('job_id'),
     jobRunId: text('job_run_id'),
@@ -570,7 +570,7 @@ export const workflowSteps = sqliteTable(
     outputTruncated: text('output_truncated'),
     /** The value this step received as `$input` (plan 304 §3.1) — the previous step's output, size-capped the same way `output` is, truncation marked the same way. `null` for the first real step of a run, which has none. */
     input: text('input', { mode: 'json' }),
-    /** Which edge the step left by: `'next' | 'onFailure' | 'then' | 'else' | 'case:<i>' | 'default'`, or `null` when the run ended here (plan 304 §4.1). */
+    /** Which edge the step left by: `'next' | 'onFailure' | 'then' | 'else' | 'case:<i>' | 'default' | 'member:<nodeId>'` (the last is a `shuffle` dispatching one member, plan 313 §4.3), or `null` when the run ended here (plan 304 §4.1). */
     takenEdge: text('taken_edge'),
     /** True when the step was satisfied from a pin instead of executed (plan 304 §3.3) — no device or child process contact. */
     pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),

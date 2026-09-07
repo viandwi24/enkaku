@@ -34,7 +34,7 @@ export type DocEdit =
    */
   | { t: 'set-meta'; patch: Partial<Pick<WorkflowDoc, 'name' | 'title' | 'description' | 'maxSteps' | 'params'>> }
 
-/** The edge kinds a node actually owns — a `start`/`script`/`delay`/`set` node has `next` (script also `onFailure`), a `gate` has `then`/`else`, a `switch` has one `case:<i>` per declared case plus `default`, and `finish` is a sink with none. */
+/** The edge kinds a node actually owns — a `start`/`script`/`delay`/`set` node has `next` (script also `onFailure`), a `gate` has `then`/`else`, a `switch` has one `case:<i>` per declared case plus `default`, a `shuffle` has one `member:<id>` per member plus `next` (plan 313), and `finish` is a sink with none. */
 export function edgeKindsOf(node: WorkflowNode): EdgeKind[] {
   switch (node.kind) {
     case 'start':
@@ -47,6 +47,8 @@ export function edgeKindsOf(node: WorkflowNode): EdgeKind[] {
       return ['then', 'else']
     case 'switch':
       return [...node.cases.map((_, i) => `case:${i}` as const), 'default']
+    case 'shuffle':
+      return [...node.members.map((m) => `member:${m}` as EdgeKind), 'next']
     case 'finish':
       return []
   }

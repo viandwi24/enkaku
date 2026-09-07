@@ -41,6 +41,26 @@ export type WorkflowFindingCode =
   /** An edge field (`next`/`onFailure`/`then`/`else`) that is absent — not wired yet. Not an error: reaching the end of it at run time ends the run succeeded (`next`) or failed (`onFailure`) (plan 301 §3.2). */
   | 'W_WORKFLOW_EDGE_DANGLING'
   /**
+   * A `shuffle` member that cannot be one (plan 313 §3.5): it declares a
+   * `next` of its own (its successor is the shuffle, decided at run time),
+   * it is a `start`/`finish`/`shuffle` (neither of the first two is a step,
+   * and the third would make the budget walk non-flat), or it names a node
+   * that does not exist. An error, not a warning — every one of these makes
+   * "each member runs exactly once, then control returns" untrue, and there
+   * is no reading of the document under which it does what it says.
+   */
+  | 'E_WORKFLOW_SHUFFLE_MEMBER'
+  /**
+   * An ENABLED node binds `{ from }` a DISABLED one (plan 313 §3.4). A
+   * warning rather than an error: the document is one toggle away from
+   * correct, and refusing to save it would make the toggle unusable. But it
+   * is worth saying at publish time, because a disabled node records no
+   * output, so the binding does not degrade — it fails the run.
+   */
+  | 'W_WORKFLOW_DISABLED_BINDING'
+  /** A `shuffle` with fewer than two members — nothing to shuffle. A warning, not an error, so a node just placed on the canvas can still be saved (plan 313 §4.3, on plan 301 §4.3's rule). */
+  | 'W_WORKFLOW_SHUFFLE_EMPTY'
+  /**
    * Plan 99 §4.3 check 7, unblocked by plan 98 §4.4 step 98.4
    * (`scripts.runtime`, so `ResolvedNodeScript.timeoutMs` is now readable at
    * publish time). A reachable SCRIPT node whose resolved entry declares no
@@ -194,6 +214,17 @@ function buildGraph(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, findings: Wo
       addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
     } else if (node.kind === 'set') {
       addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
+    } else if (node.kind === 'shuffle') {
+      // Plan 313 §3.5 — every member is a successor, and so is `next`. The
+      // member's RETURN to this node is deliberately NOT an edge: it is
+      // implicit in the executor's cursor, and adding it here would put a
+      // cycle in the reachable graph, which would fire `W_WORKFLOW_LOOP` and
+      // make the budget walk give up on a document whose worst case is in
+      // fact exactly computable (see `worstCaseMs`).
+      node.members.forEach((memberId, mi) => {
+        addEdge(edges, node.id, resolveEdge(nodeIds, memberId, `nodes[${i}].members[${mi}]`, 'succeeded', findings))
+      })
+      addEdge(edges, node.id, resolveEdge(nodeIds, node.next, `nodes[${i}].next`, 'succeeded', findings))
     }
     // `finish` is a sink — no outgoing edge to resolve.
   })
@@ -338,7 +369,12 @@ function nodeCostMs(resolved: ReadonlyMap<ScriptRef, ResolvedNodeScript>, node: 
  * checked for unknown costs among the reachable set before calling this, so
  * in practice this only returns `null` defensively.
  */
-function longestPathMs(edges: ReadonlyMap<string, Set<string>>, costOf: ReadonlyMap<string, number | null>, start: string): number | null {
+function longestPathMs(
+  edges: ReadonlyMap<string, Set<string>>,
+  costOf: ReadonlyMap<string, number | null>,
+  start: string,
+  shuffles: ReadonlyMap<string, ShuffleSpan>,
+): number | null {
   const memo = new Map<string, number | null>()
   function visit(id: string): number | null {
     const cached = memo.get(id)
@@ -348,6 +384,43 @@ function longestPathMs(edges: ReadonlyMap<string, Set<string>>, costOf: Readonly
       memo.set(id, null)
       return null
     }
+
+    // A `shuffle` is the one node whose successors are not alternatives
+    // (plan 313 §3.5): EVERY member runs, exactly once, so its span is a SUM
+    // where every other node's is a MAX. Taking the max here would report a
+    // three-member shuffle as costing one member.
+    const span = shuffles.get(id)
+    if (span !== undefined) {
+      let members = 0
+      for (const memberId of span.members) {
+        const memberOwn = costOf.get(memberId) ?? 0
+        if (memberOwn === null) {
+          memo.set(id, null)
+          return null
+        }
+        members += memberOwn
+      }
+      // The exits are alternatives to each other: `next` is taken once every
+      // member has run, and a member's `onFailure` is taken INSTEAD of the
+      // rest of the sequence. Summing the members' own costs and then adding
+      // the longest exit is an upper bound in the failure case (the diverted
+      // run does not in fact pay for the members it never reached), which is
+      // the safe direction for a budget: it can warn where the truth would
+      // not, never pass where the truth would fail.
+      let exit = 0
+      for (const exitId of span.exits) {
+        const exitBest = visit(exitId)
+        if (exitBest === null) {
+          memo.set(id, null)
+          return null
+        }
+        if (exitBest > exit) exit = exitBest
+      }
+      const spanTotal = own + members + exit
+      memo.set(id, spanTotal)
+      return spanTotal
+    }
+
     let best = 0
     for (const next of edges.get(id) ?? []) {
       const childBest = visit(next)
@@ -362,6 +435,34 @@ function longestPathMs(edges: ReadonlyMap<string, Set<string>>, costOf: Readonly
     return total
   }
   return visit(start)
+}
+
+/**
+ * What a `shuffle` node spans, for the budget walk above (plan 313 §4.3):
+ * the members it runs (all of them, once each) and the edges by which
+ * control LEAVES it (`next`, plus any member's `onFailure`). A member's
+ * implicit return to the shuffle is not an exit and is not in either list.
+ */
+interface ShuffleSpan {
+  members: string[]
+  exits: string[]
+}
+
+/** The `ShuffleSpan` of every `shuffle` in the document, keyed by node id. */
+function shuffleSpans(doc: WorkflowDoc): Map<string, ShuffleSpan> {
+  const byId = new Map(doc.nodes.map((n) => [n.id, n]))
+  const spans = new Map<string, ShuffleSpan>()
+  for (const node of doc.nodes) {
+    if (node.kind !== 'shuffle') continue
+    const exits: string[] = []
+    if (node.next !== undefined) exits.push(node.next)
+    for (const memberId of node.members) {
+      const member = byId.get(memberId)
+      if (member?.kind === 'script' && member.onFailure !== undefined) exits.push(member.onFailure)
+    }
+    spans.set(node.id, { members: [...node.members], exits })
+  }
+  return spans
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +728,59 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
     }
   })
 
+  // --- E_WORKFLOW_SHUFFLE_MEMBER (plan 313 §3.5) ---------------------------
+  // The membership rules that need a lookup at OTHER nodes, so they cannot
+  // live in `WorkflowDocSchema`. ("A node belongs to at most one shuffle"
+  // does not need one and is enforced there.)
+  {
+    const byId = new Map(doc.nodes.map((n) => [n.id, n]))
+    doc.nodes.forEach((node, i) => {
+      if (node.kind !== 'shuffle') return
+      if (node.members.length < 2) {
+        push(
+          findings,
+          `nodes[${i}].members`,
+          'W_WORKFLOW_SHUFFLE_EMPTY',
+          node.members.length === 0
+            ? `shuffle "${node.id}" has no members — it will pass straight through to its next node`
+            : `shuffle "${node.id}" has one member — there is only one order for one action`,
+          'warning',
+        )
+      }
+      node.members.forEach((memberId, mi) => {
+        const path = `nodes[${i}].members[${mi}]`
+        const member = byId.get(memberId)
+        // A member naming nothing already produced E_WORKFLOW_UNKNOWN_NODE
+        // in `buildGraph`; saying it twice helps nobody.
+        if (member === undefined) return
+        if (member.kind === 'shuffle') {
+          push(findings, path, 'E_WORKFLOW_SHUFFLE_MEMBER', `"${memberId}" is a shuffle — a shuffle may not be a member of another shuffle`, 'error')
+          return
+        }
+        if (member.kind === 'start' || member.kind === 'finish') {
+          push(findings, path, 'E_WORKFLOW_SHUFFLE_MEMBER', `"${memberId}" is a "${member.kind}" node — it is not a step, so it cannot be shuffled`, 'error')
+          return
+        }
+        if ('next' in member && member.next !== undefined) {
+          push(
+            findings,
+            path,
+            'E_WORKFLOW_SHUFFLE_MEMBER',
+            `"${memberId}" is a member of shuffle "${node.id}" and also declares next -> "${member.next}" — a member's successor is the shuffle itself, chosen at run time, so its own next must be empty`,
+            'error',
+          )
+          return
+        }
+        // A gate or a switch inside a shuffle would have to return to the
+        // shuffle down EVERY branch, which is a control shape the cursor
+        // cannot express and the author almost certainly did not mean.
+        if (member.kind === 'gate' || member.kind === 'switch') {
+          push(findings, path, 'E_WORKFLOW_SHUFFLE_MEMBER', `"${memberId}" is a "${member.kind}" node — a shuffle member may not branch; put the branch after the shuffle`, 'error')
+        }
+      })
+    })
+  }
+
   // --- W_WORKFLOW_LOOP -----------------------------------------------------
   const cycleNode = entryNode ? findCycle(graph.edges, doc.entry) : null
   if (cycleNode !== null) {
@@ -662,7 +816,7 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
           'warning',
         )
       } else {
-        const longest = longestPathMs(graph.edges, costOf, start) ?? 0
+        const longest = longestPathMs(graph.edges, costOf, start, shuffleSpans(doc)) ?? 0
         const worstCaseMs = longest + (onFailCost ?? 0)
         if (worstCaseMs > budget.maxTotalMs) {
           push(
@@ -755,6 +909,27 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
       if (!nodeIds.has(expr.from)) {
         push(findings, site.path, 'E_WORKFLOW_UNKNOWN_NODE', `"${expr.from}" is not a node in this document`, 'error')
         continue
+      }
+      // W_WORKFLOW_DISABLED_BINDING (plan 313 §3.4) — an ENABLED node reading
+      // a node the author switched off. A warning, not an error: the document
+      // is one toggle away from correct, and refusing to save it would make
+      // the toggle unusable mid-edit. Worth saying at all because a disabled
+      // node records NO output, so this binding does not degrade to its
+      // `default` — it fails the run.
+      {
+        const reader = site.fromNodeId === null ? undefined : nodeById.get(site.fromNodeId)?.node
+        const read = nodeById.get(expr.from)?.node
+        // `reader === undefined` is the `onFail` cleanup site, which has no
+        // owning node — it is always live, so it always warns.
+        if (read !== undefined && !read.enabled && (reader === undefined || reader.enabled)) {
+          push(
+            findings,
+            site.path,
+            'W_WORKFLOW_DISABLED_BINDING',
+            `this reads "${expr.from}", which is switched off — a disabled node records no output, so this binding fails the run rather than falling back`,
+            'warning',
+          )
+        }
       }
       // Forward-ref check (item 2) — skipped for `onFail` (fromNodeId===null): the cleanup
       // node has no fixed position, it runs after whichever node's failure ended the

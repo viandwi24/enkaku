@@ -41,6 +41,7 @@ const KIND_LABEL: Record<WorkflowNode['kind'], string> = {
   delay: 'Delay',
   finish: 'Finish',
   set: 'Set',
+  shuffle: 'Shuffle',
 }
 
 /** One source `Handle` per edge kind the node owns, positioned so a `then`/`next`/`case:0` sits on the right and a secondary/failure edge sits lower — mirrors `WorkflowCanvas.tsx`'s pre-305 handle layout (plan 102 step 102.5), extended to `switch`'s N cases and `delay`'s single `next`. */
@@ -65,6 +66,16 @@ function outputHandles(node: WorkflowNode): { kind: EdgeKind; title: string; y: 
       return [
         ...node.cases.map((c, i) => ({ kind: `case:${i}` as const, title: c.label || `case ${i + 1}`, y: ((i + 1) * 100) / (n + 1) })),
         { kind: 'default' as const, title: 'default', y: (n * 100) / (n + 1) },
+      ]
+    }
+    case 'shuffle': {
+      // One handle per member plus `next` — the same "N cases plus default"
+      // layout a `switch` uses, for the same reason: every branch the node
+      // can take is visible on the canvas rather than hidden in its config.
+      const n = node.members.length + 1
+      return [
+        ...node.members.map((m, i) => ({ kind: `member:${m}` as EdgeKind, title: `member ${i + 1}: ${m}`, y: ((i + 1) * 100) / (n + 1) })),
+        { kind: 'next' as const, title: 'Drag to set what runs after every member', y: (n * 100) / (n + 1) },
       ]
     }
     case 'finish':

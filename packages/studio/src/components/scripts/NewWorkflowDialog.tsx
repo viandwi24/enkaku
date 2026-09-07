@@ -46,7 +46,7 @@ function docFor(name: string, title: string): WorkflowDoc {
     description: '',
     params: [],
     entry: 'start',
-    nodes: [{ kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 } }],
+    nodes: [{ kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, enabled: true }],
     maxSteps: 50,
   }
 }

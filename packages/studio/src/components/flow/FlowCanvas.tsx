@@ -367,6 +367,8 @@ function iconFor(node: FlowCanvasProps['doc']['nodes'][number]): string {
       return 'list'
     case 'delay':
       return 'pause'
+    case 'shuffle':
+      return 'shuffle'
     case 'finish':
       return 'check'
     case 'set':

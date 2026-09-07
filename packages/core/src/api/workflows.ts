@@ -595,7 +595,7 @@ export function createWorkflowRoutes(deps: {
       inputValue = last.value
     }
 
-    const startNode: WorkflowNode = { kind: 'start', id: 'run-node-start', title: '', ui: { x: 0, y: 0 }, next: nodeId }
+    const startNode: WorkflowNode = { kind: 'start', id: 'run-node-start', title: '', ui: { x: 0, y: 0 }, enabled: true, next: nodeId }
     const syntheticDoc = WorkflowDocSchema.parse({
       schema: 2,
       name,
