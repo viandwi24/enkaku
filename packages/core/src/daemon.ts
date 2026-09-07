@@ -110,6 +110,7 @@ import {
   WORKSPACE_MAX_FILES_PER_SCOPE,
   WORKSPACE_MAX_FILE_BYTES,
   PREPARATION_SWEEP_MS,
+  RELEASE_SWEEP_WORKERS,
 } from './config/constants'
 
 import { createNodeRoutes } from './api/nodes'
@@ -407,7 +408,8 @@ export interface Daemon {
    * cleaning up after ourselves. Bounded per device so one unreachable phone
    * cannot hold the farm.
    */
-  releaseDevices(): Promise<{ released: number; failed: number }>
+  /** Hand every forced-awake device back its own screen timeout. `onSettled` fires per device, so the caller can wait on progress rather than a fixed deadline. */
+  releaseDevices(onSettled?: () => void): Promise<{ released: number; failed: number }>
   port: number
   /**
    * Plan 120 §4 — closes ONLY the HTTP/WS listener (a GRACEFUL
@@ -5082,8 +5084,28 @@ let blobGc: BlobGc | null = null
       return aborted
     },
 
-    async releaseDevices() {
-      return (await readiness?.releaseAll()) ?? { released: 0, failed: 0 }
+    async releaseDevices(onSettled?: () => void) {
+      if (!readiness) return { released: 0, failed: 0 }
+      /*
+        Widen adb's global semaphore for the sweep, then put it back.
+
+        The sweep runs parallel by device, but every one of its commands still
+        queues behind the one farm-wide semaphore — and that semaphore is
+        pinnable down to 2 by the `adb.maxConcurrent` setting, which a farm
+        this size is exactly the kind to pin. At 2, a 65-device release is
+        still tens of seconds of pure queueing and the phones it never reaches
+        stay lit. Nothing else is competing by now: this runs after the jobs
+        are cancelled and the streams are closed, so the width costs no other
+        caller anything. The restore is for tests and for `stop()` being
+        callable without the process leaving.
+      */
+      const previous = adb?.stats().maxConcurrent ?? null
+      if (adb && previous !== null && previous < RELEASE_SWEEP_WORKERS) adb.setMaxConcurrent(RELEASE_SWEEP_WORKERS)
+      try {
+        return await readiness.releaseAll(onSettled)
+      } finally {
+        if (adb && previous !== null) adb.setMaxConcurrent(previous)
+      }
     },
 
     async stop() {

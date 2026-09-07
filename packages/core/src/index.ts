@@ -53,7 +53,8 @@ async function startDaemon(): Promise<void> {
     instead, so one phone that has stopped answering cannot hold the farm.
   */
   const WAIT_LIMIT_MS = 120_000
-  const RELEASE_LIMIT_MS = 30_000
+  /** How long the shutdown sweep may go without a single device finishing before we accept adb is wedged and leave. */
+  const RELEASE_STALL_MS = 30_000
   const TICK_MS = 2_000
 
   let phase: 'running' | 'draining' | 'cancelling' | 'leaving' = 'running'
@@ -83,18 +84,45 @@ async function startDaemon(): Promise<void> {
     /*
       The sweep is bounded HERE, not inside the readiness manager, which owns
       no timers by design (a test asserts that against its own source). Each
-      release is already bounded by adb's own command timeout; this is the
-      deadline for the whole thing, so a farm that has gone unreachable can
-      still let the process leave.
+      release is already bounded by adb's own command timeout; this bounds the
+      sweep as a whole, so a farm that has gone unreachable can still let the
+      process leave.
     */
+    let settled = 0
     const { released, failed } = await Promise.race([
-      daemon.releaseDevices(),
-      new Promise<{ released: number; failed: number }>((resolve) =>
-        setTimeout(() => resolve({ released: 0, failed: -1 }), RELEASE_LIMIT_MS),
-      ),
+      daemon.releaseDevices(() => {
+        settled++
+      }),
+      /*
+        A STALL deadline, not a total one.
+
+        A flat total is wrong here, and measurably so: each release is about
+        1.4 s of adb round trips, so a 65-device farm needs longer than any
+        fixed number an operator would accept, and the old flat 30 s simply
+        abandoned the rest of the farm — pinned lit, with no core left running
+        to undo it. This is the one step that must never be cut short while it
+        is still working, so the clock only runs while nothing is finishing:
+        every device that settles pushes it back. A farm of any size gets as
+        long as it needs; a farm whose adb has genuinely wedged still lets the
+        process leave.
+      */
+      new Promise<{ released: number; failed: number }>((resolve) => {
+        let seen = -1
+        const timer = setInterval(() => {
+          if (settled !== seen) {
+            seen = settled
+            return
+          }
+          clearInterval(timer)
+          resolve({ released: settled, failed: -1 })
+        }, RELEASE_STALL_MS)
+        timer.unref?.()
+      }),
     ])
     if (failed === -1) {
-      process.stderr.write(`\ndevices did not answer within ${RELEASE_LIMIT_MS / 1000}s — some may still be held awake\n`)
+      process.stderr.write(
+        `\nstopped hearing back from devices — ${settled} handed back, the rest may still be held awake\n`,
+      )
     } else if (released > 0 || failed > 0) {
       log.info(`handed ${released} device(s) back their own screen timeout${failed > 0 ? `, ${failed} did not answer` : ''}`)
     }

@@ -264,3 +264,21 @@ export const VM_BOOT_TIMEOUT_SEC = num('ENKAKU_VM_BOOT_TIMEOUT_SEC', 300, z.numb
  * emulator without its guest agent for longer than an operator will wait.
  */
 export const PREPARATION_SWEEP_MS = num('ENKAKU_PREPARATION_SWEEP_MS', 60_000, z.number().int().min(5_000).max(3_600_000))
+
+/**
+ * How many devices the shutdown wake-release sweep hands back at once
+ * (`readiness.releaseAll()`).
+ *
+ * The sweep is the last thing the process does and it is the one thing that
+ * must not be cut short: a device it misses stays pinned lit by the
+ * `stay_on_while_plugged_in` this core wrote, with no core left running to
+ * undo it. Each release costs about 1.4 s of adb round trips, so serially a
+ * 65-device farm needs ~90 s — longer than any shutdown deadline an operator
+ * would tolerate, which is how two thirds of a farm could be left awake.
+ *
+ * Eight is chosen against adb's own global semaphore rather than the phones:
+ * that semaphore (1..24, and pinnable down to 2 by `adb.maxConcurrent`) is the
+ * real limiter, and the shutdown widens it to at least this for the sweep.
+ * Higher stops buying anything once the server is the bottleneck.
+ */
+export const RELEASE_SWEEP_WORKERS = num('ENKAKU_RELEASE_SWEEP_WORKERS', 8, z.number().int().min(1).max(24))

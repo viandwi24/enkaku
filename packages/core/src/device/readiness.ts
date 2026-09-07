@@ -15,7 +15,7 @@ import {
 import type { Db } from '../db'
 import { devices, type DeviceRow } from '../db/schema'
 import type { AwakePolicy } from './awake-policy'
-import { DEVICE_SCREEN_OFF_TIMEOUT_MS } from '../config/constants'
+import { DEVICE_SCREEN_OFF_TIMEOUT_MS, RELEASE_SWEEP_WORKERS } from '../config/constants'
 import type { ActivityRegistry } from '../activity/registry'
 import { mapWithConcurrency } from '../util/concurrency'
 import { EnkakuError } from '../util/errors'
@@ -92,7 +92,12 @@ export interface ReadinessManager {
    * bounded by adb's own command timeout, and the CALLER bounds the whole
    * sweep, which is where a deadline for "the process is leaving" belongs.
    */
-  releaseAll(): Promise<{ released: number; failed: number }>
+  /**
+   * Hand every forced-awake device back its own screen timeout. `onSettled`
+   * fires once per device as it finishes, so a caller can tell "still working
+   * through a big farm" from "wedged" without guessing a total deadline.
+   */
+  releaseAll(onSettled?: () => void): Promise<{ released: number; failed: number }>
 }
 
 export interface ReadinessManagerDeps {
@@ -863,7 +868,7 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       stopped = true
     },
 
-    async releaseAll() {
+    async releaseAll(onSettled?: () => void) {
       let released = 0
       let failed = 0
       /*
@@ -878,16 +883,37 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
         so the release reported "1 did not answer" and the phone stayed
         forced awake for good (2026-09-07).
       */
-      for (const deviceId of [...keepAwakeApplied]) {
-        holdCounts.delete(deviceId)
-        holdReasons.delete(deviceId)
-        try {
-          if (await releaseAwake(deviceId, { overridePresentationHolds: true })) released++
-          else failed++
-        } catch {
-          failed++
-        }
-      }
+      /*
+        Bounded parallelism, not a `for await` — the sweep's cost is the whole
+        farm's, not one phone's.
+
+        Each release is about 1.4 s of adb round trips (connect, two `settings
+        get`, a keyevent, disconnect — plan 96 §22). Done one at a time that is
+        ~90 s on a 65-device farm, and the caller's deadline used to cut it off
+        at 30 s, so two thirds of the farm stayed lit exactly the way an
+        operator would never notice until morning. Every device here is
+        independent, so they go together; adb's own global semaphore is the
+        real limiter underneath and the caller widens it for this sweep.
+      */
+      const queue = [...keepAwakeApplied]
+      const workers = Math.min(RELEASE_SWEEP_WORKERS, queue.length)
+      await Promise.all(
+        Array.from({ length: workers }, async () => {
+          for (;;) {
+            const deviceId = queue.shift()
+            if (deviceId === undefined) return
+            holdCounts.delete(deviceId)
+            holdReasons.delete(deviceId)
+            try {
+              if (await releaseAwake(deviceId, { overridePresentationHolds: true })) released++
+              else failed++
+            } catch {
+              failed++
+            }
+            onSettled?.()
+          }
+        }),
+      )
       return { released, failed }
     },
   }
