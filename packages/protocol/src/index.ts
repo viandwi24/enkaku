@@ -1261,6 +1261,7 @@ export {
 // document be shown as a list", and both the editor and any future API caller
 // must reach the same answer.
 export { readLinear, isLinear, readGap, readBetween, gapExpr, planSequence, type LinearView, type LinearStep, type LinearResult, type LinearRefusal } from './workflow-linear'
+export { readGrouped, canUseGroups, groupSplitExpr, readStagger, type GroupedView, type GroupView, type GroupedResult, type GroupedRefusal } from './workflow-groups'
 
 // Plan 100 §3.1, §4.1, step 100.3.
 export { WallTransportSchema, type WallTransport } from './settings'

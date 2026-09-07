@@ -226,8 +226,20 @@ export function readLinear(doc: WorkflowDoc): LinearResult {
     return { ok: false, refusal: { code: 'unreachable', nodeId: orphan.id, message: `"${orphan.title || orphan.id}" is not connected to the sequence` } }
   }
 
-  // Fold the editor-authored gaps out of the run order and onto the step each
-  // one precedes.
+  const { steps, uniformDelay } = foldGaps(ordered)
+  return { ok: true, view: { start, steps, finish, uniformDelay } }
+}
+
+/**
+ * Fold the editor-authored gaps out of a run order and onto the step each one
+ * precedes, and report the range they all share when they agree.
+ *
+ * Exported because Grouped Mode reads the same shape once per branch
+ * (`workflow-groups.ts`) — the two lenses must agree about what counts as a
+ * gap and what counts as an action, or the same `delay` node would be a row
+ * in one editor and a number in the other.
+ */
+export function foldGaps(ordered: readonly WorkflowNode[]): { steps: LinearStep[]; uniformDelay: { minMs: number; maxMs: number } | null } {
   const steps: LinearStep[] = []
   let pendingGap: WorkflowNode | null = null
   for (const node of ordered) {
@@ -246,8 +258,7 @@ export function readLinear(doc: WorkflowDoc): LinearResult {
 
   const gaps = steps.map((s) => (s.delayBefore ? readGap(s.delayBefore) : null)).filter((g): g is { minMs: number; maxMs: number } => g !== null)
   const uniformDelay = gaps.length > 0 && gaps.every((g) => g.minMs === gaps[0]?.minMs && g.maxMs === gaps[0]?.maxMs) ? (gaps[0] ?? null) : null
-
-  return { ok: true, view: { start, steps, finish, uniformDelay } }
+  return { steps, uniformDelay }
 }
 
 /** Whether Sequential Mode can open this document at all. */
