@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -14,6 +14,7 @@ import {
   type Node,
   type OnConnectEnd,
   type OnNodeDrag,
+  type OnNodesChange,
   type OnSelectionChangeParams,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -111,10 +112,26 @@ function FlowCanvasInner({
   const fallbackLayout = useMemo(() => computeLayout(graph), [graph])
   const fallbackById = useMemo(() => new Map(fallbackLayout.nodes.map((n) => [n.id, n])), [fallbackLayout])
 
+  /*
+    Where a node is WHILE it is being dragged.
+
+    `flowNodes` is derived from `doc.nodes` on every render, so the graph is
+    fully controlled — and a controlled graph needs `onNodesChange` for the
+    library to have anywhere to put the position a drag is producing. There
+    was none, so the node sat still under the pointer and jumped to its new
+    home only when the button came up and `onNodeDragStop` wrote to the
+    document (owner, 2026-09-07).
+
+    The document stays the source of truth. This is the in-flight position,
+    laid over it for the length of the gesture and dropped the moment the
+    drag commits.
+  */
+  const [dragging, setDragging] = useState<Record<string, WorkflowPoint>>({})
+
   const flowNodes: Node<FlowNodeData>[] = useMemo(
     () =>
       doc.nodes.map((n, index) => {
-        const pos = n.ui ?? fallbackById.get(n.id) ?? { x: 0, y: 0 }
+        const pos = dragging[n.id] ?? n.ui ?? fallbackById.get(n.id) ?? { x: 0, y: 0 }
         const nodeFindings = findingsByNode.get(index) ?? []
         const notInstalled = n.kind === 'script' && notInstalledScriptRefs.has(n.script)
         return {
@@ -136,7 +153,7 @@ function FlowCanvasInner({
           },
         }
       }),
-    [doc.nodes, fallbackById, findingsByNode, notInstalledScriptRefs, pinnedIds, selectedIds, unreachableSet, readOnly, runState],
+    [doc.nodes, dragging, fallbackById, findingsByNode, notInstalledScriptRefs, pinnedIds, selectedIds, unreachableSet, readOnly, runState],
   )
 
   const flowEdges: Edge<FlowEdgeData>[] = useMemo(
@@ -223,11 +240,26 @@ function FlowCanvasInner({
     [onNodesRemoved],
   )
 
+
+  const handleNodesChange = useCallback<OnNodesChange<Node<FlowNodeData>>>((changes) => {
+    let next: Record<string, WorkflowPoint> | null = null
+    for (const c of changes) {
+      // Position only. Selection, dimensions and removal have their own
+      // handlers already, and routing them through here would give this
+      // canvas two owners for the same fact.
+      if (c.type !== 'position' || !c.position) continue
+      next ??= {}
+      next[c.id] = { x: c.position.x, y: c.position.y }
+    }
+    if (next) setDragging((prev) => ({ ...prev, ...next }))
+  }, [])
+
   const handleNodeDragStop = useCallback<OnNodeDrag>(
     (_event, _node, nodes) => {
       const positions: Record<string, WorkflowPoint> = {}
       for (const n of nodes) positions[n.id] = { x: Math.round(n.position.x), y: Math.round(n.position.y) }
       onNodesMoved(positions)
+      setDragging({})
     },
     [onNodesMoved],
   )
@@ -279,6 +311,7 @@ function FlowCanvasInner({
         onReconnect={handleReconnect}
         onEdgesDelete={handleEdgesDelete}
         onNodesDelete={handleNodesDelete}
+        onNodesChange={handleNodesChange}
         onNodeDragStop={handleNodeDragStop}
         onSelectionChange={handleSelectionChange}
         onNodeDoubleClick={handleNodeDoubleClick}
@@ -295,8 +328,20 @@ function FlowCanvasInner({
         nodesConnectable={!readOnly}
         elementsSelectable={!readOnly}
         multiSelectionKeyCode="Shift"
-        selectionOnDrag={!readOnly}
-        panOnDrag={[1, 2]}
+        /*
+          Left-drag on empty canvas PANS, the way a drawing tool does (owner,
+          2026-09-07). It used to marquee-select, and panning was on the
+          middle and right buttons only — so on a trackpad, which has neither,
+          the viewport could not be moved by dragging at all.
+
+          The marquee moves onto Shift+drag rather than disappearing:
+          `selectionKeyCode` is what starts one, and Shift is already the
+          modifier for adding a node to the selection, so the two readings of
+          "Shift means more than one" agree.
+        */
+        selectionOnDrag={false}
+        selectionKeyCode="Shift"
+        panOnDrag={[0, 1, 2]}
         snapToGrid
         snapGrid={[8, 8]}
         defaultEdgeOptions={{ type: 'flowEdge' }}
