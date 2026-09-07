@@ -326,6 +326,20 @@ function PluginRowView({ match, onChanged }: { match: PluginMatch; onChanged: ()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const p = versions.find((v) => v.id === selectedId) ?? live ?? (versions[0] as PluginListRow)
   const isNewest = versions[0]?.id === p.id
+  /*
+    The upgrade nobody applied.
+
+    A core upgrade seeds its bundled packs `staged`; only a click makes one
+    live. So the steady state of a long-lived farm is "running a version some
+    releases behind, with the new ones one collapsed `<select>` away", and the
+    row said nothing about it. The pill below is shown while the row is
+    pointed at the LIVE version — that is when the gap is news — and clicking
+    it points the row at the staged version instead, which is what turns the
+    Actions cell's primary button into Activate. One click to see it, one to
+    take it, and no new endpoint: everything here was already on the row.
+  */
+  const newerStaged = match.group.newerStaged
+  const showUpgrade = newerStaged !== null && live !== undefined && p.id === live.id
   const declared = p.declaredScripts
   const registered = p.scriptCount ?? 0
   const detailHref = `/plugins/detail?name=${encodeURIComponent(p.name)}${selectedId ? `&version=${encodeURIComponent(p.version)}` : ''}`
@@ -355,10 +369,26 @@ function PluginRowView({ match, onChanged }: { match: PluginMatch; onChanged: ()
             <span className="rounded-[6px] bg-muted px-1.5 py-0.5 font-mono text-meta text-text-2">{p.version} · {p.status}</span>
           )}
           {isNewest && <span className="rounded-pill bg-muted-2 px-1.5 py-0.5 text-meta text-faint">latest</span>}
+          {showUpgrade && newerStaged && (
+            <button
+              type="button"
+              onClick={() => setSelectedId(newerStaged.id)}
+              className="rounded-pill bg-warn-soft px-1.5 py-0.5 text-meta text-warn hover:underline"
+            >
+              {newerStaged.version} staged
+            </button>
+          )}
           {versions.length > 1 && <span className="rounded-pill bg-muted-2 px-1.5 py-0.5 text-meta text-faint">{versions.length} versions</span>}
           {p.hasService && <span className="rounded-pill bg-warn-soft px-1.5 py-0.5 text-meta text-warn">service</span>}
         </div>
         {p.description?.trim() && <p className="mt-1 max-w-[460px] text-meta leading-relaxed text-faint">{p.description}</p>}
+        {showUpgrade && newerStaged && (
+          <p className="mt-1.5 max-w-[460px] text-meta leading-relaxed text-warn">
+            This farm runs <span className="font-mono">{p.version}</span>. Version <span className="font-mono">{newerStaged.version}</span> is
+            on this farm already but staged, so nothing uses it yet — a plugin that ships inside the core arrives staged and goes live only
+            when you activate it here.
+          </p>
+        )}
         {p.status === 'failed' && (
           <div className="mt-1.5 max-w-[460px] rounded-inner border border-danger/30 bg-danger-soft px-2.5 py-1.5">
             <p className="font-mono text-meta text-danger">{p.verifyErrorCode ?? 'E_PLUGIN_VERIFY_FAILED'}</p>

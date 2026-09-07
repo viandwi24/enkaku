@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { compareSemver } from '@enkaku/protocol'
 import type { EmbeddedPack } from '../embedded'
 import type { Logger } from '../util/logger'
 import type { PluginRuntime } from './runtime'
@@ -70,6 +71,47 @@ export async function seedEmbeddedPacks(opts: {
   }
 
   await writeMarker(markerPath, [...seeded], log)
+  warnStaleActive({ runtime, packs, log })
+}
+
+/**
+ * Say out loud when the farm is RUNNING an older version of a pack than the
+ * one this binary ships.
+ *
+ * The two limits above are both deliberate and neither is going away, but
+ * together they have a consequence nothing used to state: seeding is keyed on
+ * `name@version`, so a core upgrade does bring the new version in — and it
+ * brings it in `staged`, so the farm keeps serving the OLD one until somebody
+ * clicks. That is correct for a fresh install and silent for an upgrade, and
+ * the silence is what cost the owner an afternoon: Studio moved
+ * `@enkaku/host`'s only export in plan 216, mikrotik-routing 0.14.0 followed
+ * the same day, and a farm still running 0.13.0 answered the routing screen
+ * with `does not provide an export named 'DeviceWallWithPicker'` — three
+ * staged versions later, with nothing anywhere saying so.
+ *
+ * A log line, and deliberately nothing more. Activating for the operator is
+ * the one thing this file must not do: activation writes `scripts` rows and
+ * decides what `@latest` resolves to for every queued job on the farm, which
+ * is the operator's call — the same call the "staged, never activated" limit
+ * exists to protect. What was missing was never the click, it was knowing the
+ * click was owed. Studio says the same thing where an operator is actually
+ * looking (`app/plugins/page.tsx`'s staged pill, and the failing view's own
+ * panel); this is the half a headless farm's logs can carry.
+ *
+ * `source === 'bundled'` only. A version an operator uploaded themselves is
+ * their build and their choice of when to move off it, and a farm pinned to a
+ * fork does not need a line every boot telling it so.
+ */
+function warnStaleActive(opts: { runtime: PluginRuntime; packs: EmbeddedPack[]; log: Logger }): void {
+  const { runtime, packs, log } = opts
+  for (const pack of packs) {
+    const active = runtime.active(pack.name)
+    if (!active || active.source !== 'bundled') continue
+    if (compareSemver(pack.version, active.version) <= 0) continue
+    log.warn(
+      `${pack.name} is ACTIVE at ${active.version}, but this build ships ${pack.version} — the newer version is staged, not active, so nothing is using it. Activate it on the Plugins page.`,
+    )
+  }
 }
 
 async function readMarker(path: string, log: Logger): Promise<string[]> {

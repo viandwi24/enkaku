@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DevSlotViewSchema, PluginListItemSchema, type DevSlotView, type PluginListItem } from '@enkaku/protocol'
+import { DevSlotViewSchema, PluginListItemSchema, compareSemver, type DevSlotView, type PluginListItem } from '@enkaku/protocol'
 
 /**
  * `GET /api/plugins`, plus the grouping and the search this screen and the
@@ -53,6 +53,31 @@ export interface PluginGroup {
   versions: PluginListRow[]
   /** The group is failed when its NEWEST version failed — that is the one a fresh install resolves to. */
   failed: boolean
+  /**
+   * The newest `staged` version that OUTRANKS the active one, or null when the
+   * farm is already running the newest thing it has.
+   *
+   * This exists because "the operator never activated it" is not a rare
+   * mistake, it is the default outcome of an upgrade. A bundled pack arrives
+   * `staged` and never `active` (`seed-embedded.ts` — activation is a click,
+   * deliberately), so every core upgrade that ships a new plugin version
+   * leaves the farm running the OLD one with the new one sitting one row away
+   * in a collapsed `<select>`. Nothing on this page used to say so.
+   *
+   * The cost of that silence was measured on the owner's farm: Studio moved
+   * `@enkaku/host`'s only export from `DeviceWallWithPicker` to
+   * `DevicePickerDialog` (plan 216), mikrotik-routing 0.14.0 followed the same
+   * day, and the farm — still running 0.13.0, with 0.14/0.15/0.16 all staged —
+   * answered the routing screen with an ES-module link error and a panel
+   * telling the operator it was the plugin author's problem. It was three
+   * versions old by then.
+   *
+   * `staged` only, on purpose: those are exactly the versions `activate`
+   * accepts. A `superseded` version is reachable through Rollback and a
+   * `failed` one is not reachable at all, so offering either here would name a
+   * version the row's own primary button cannot act on.
+   */
+  newerStaged: PluginListRow | null
 }
 
 export function groupPlugins(items: readonly PluginListRow[]): PluginGroup[] {
@@ -64,8 +89,23 @@ export function groupPlugins(items: readonly PluginListRow[]): PluginGroup[] {
   }
   return [...byName.entries()]
     .map(([name, versions]) => {
-      const sorted = [...versions].sort((a, b) => b.version.localeCompare(a.version))
-      return { name, versions: sorted, failed: sorted[0]?.status === 'failed' }
+      /*
+        Semver precedence, NOT `localeCompare`. The string sort this replaces
+        read "0.9.0" as newer than "0.16.0" — nine is after one — so a plugin
+        that had passed its ninth minor showed the wrong version as `latest`,
+        computed `failed` from the wrong row, and buried the genuinely newest
+        version in the middle of the dropdown. mikrotik-routing was at 0.16.0
+        with 0.9.0 sorted first when this was found. `compareSemver` is the
+        farm's own comparator (`@enkaku/protocol`, used to resolve `@latest`
+        server-side), so the page and the server now agree on "newest" by
+        construction rather than by coincidence.
+      */
+      const sorted = [...versions].sort((a, b) => compareSemver(b.version, a.version))
+      const active = sorted.find((v) => v.status === 'active') ?? null
+      const newerStaged = active
+        ? (sorted.find((v) => v.status === 'staged' && compareSemver(v.version, active.version) > 0) ?? null)
+        : null
+      return { name, versions: sorted, failed: sorted[0]?.status === 'failed', newerStaged }
     })
     .sort((a, b) => {
       // Failed first — the page's own job (plan 82 §4.6).

@@ -1,8 +1,10 @@
 'use client'
 
 import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
+import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
-import { Button, LoadingRows } from '@enkaku/ui'
+import { Button, LoadingRows, api } from '@enkaku/ui'
+import { PluginsListSchema, groupPlugins, type PluginListRow } from '@/app/plugins/plugin-list'
 import {
   pluginHost,
   type PluginHost,
@@ -76,8 +78,21 @@ export interface ReactViewProps {
 const NEXT_STEP: Record<PluginViewFailureKind, string> = {
   'module-load-failed':
     'Check that the plugin package really carries this file under its ui/ directory, and that the core is still reachable. Rebuild and push the plugin, then try again.',
+  /*
+    This used to end at “so this is a fix for its author”, full stop. It sent
+    the owner looking for a bug in a plugin whose author had already fixed it
+    three versions earlier: Studio renamed `@enkaku/host`'s only
+    export, mikrotik-routing followed the same day, and the farm went on
+    serving the old version's module because a bundled pack arrives `staged`
+    and only a click makes it live. The module threw exactly as this copy
+    said; the fix was one button on another page.
+
+    So the general copy now names the likelier cause first and keeps the
+    author's case as the fallback — and when the page can actually SEE a newer
+    staged version, `UpgradeRemedy` below says which one, by number.
+  */
   'module-threw':
-    'The plugin’s own code threw before it could register anything, so this is a fix for its author. The browser’s developer tools have the stack.',
+    'The plugin’s own code threw before it could register anything. If this farm was upgraded recently, check on the Plugins page that the newest version of the plugin is the one activated — an older version’s code can call into a Studio that has moved on. Otherwise this is a fix for its author, and the browser’s developer tools have the stack.',
   'view-not-registered':
     'The plugin’s module has to call window.__enkaku__.register() with this exact view id, at the top level of the module.',
 }
@@ -96,6 +111,13 @@ export function ReactView({ plugin, version, viewId, entry, params, setParams, h
    * without a request. `PluginViewRequest.attempt` carries the full reasoning.
    */
   const [attempt, setAttempt] = useState(0)
+  /**
+   * Only ever fetched once the view has already FAILED. A screen
+   * that loads pays nothing for this: `enabled` is false on every other path,
+   * and the request is one filtered list read on a page that is otherwise
+   * showing an error and waiting for a human.
+   */
+  const newerStaged = useNewerStaged(plugin, state.status === 'failed')
 
   useEffect(() => {
     const active = host ?? pluginHost()
@@ -133,6 +155,7 @@ export function ReactView({ plugin, version, viewId, entry, params, setParams, h
           message={failure.message}
           detail={failure.detail}
           hint={NEXT_STEP[failure.kind]}
+          remedy={newerStaged ? <UpgradeRemedy plugin={plugin} running={version} staged={newerStaged.version} /> : null}
           onRetry={() => setAttempt((n) => n + 1)}
         />
       </div>
@@ -168,12 +191,15 @@ function FailurePanel({
   message,
   detail,
   hint,
+  remedy = null,
   onRetry,
 }: {
   title: string
   message: string
   detail: string
   hint: string
+  /** A specific, actionable next step this page could establish for itself — rendered ABOVE the general hint, because it is the one the operator should try first. */
+  remedy?: ReactNode
   onRetry: () => void
 }) {
   return (
@@ -184,6 +210,7 @@ function FailurePanel({
           <p className="text-[13px] font-medium">{title}</p>
           <p className="break-words text-[12px] text-dim">{message}</p>
           <p className="readout break-all text-[11.5px] text-dim">{detail}</p>
+          {remedy}
           <p className="text-[11.5px] leading-relaxed text-dim">{hint}</p>
         </div>
         <Button variant="outline" size="sm" onClick={onRetry}>
@@ -191,6 +218,60 @@ function FailurePanel({
         </Button>
       </div>
     </div>
+  )
+}
+
+/**
+ * “This farm has a newer version of this plugin, and it is not the one
+ * running” — the fact that turns the panel above from a bug report into a
+ * button press.
+ *
+ * It is computed the same way the Plugins page computes it, through the same
+ * `groupPlugins`, so the two screens cannot disagree about which version is
+ * newest or which one is activatable. `enabled` gates the request rather than
+ * the hook: a hook cannot be called conditionally, and a view that loads must
+ * not pay for a list read it will never show.
+ *
+ * A failure to fetch resolves to `null`, never to an error of its own. This
+ * is a secondary explanation attached to a panel that is already explaining a
+ * failure; a second red box saying the explanation could not be fetched would
+ * be worse than the silence.
+ */
+function useNewerStaged(plugin: string, enabled: boolean): PluginListRow | null {
+  const [row, setRow] = useState<PluginListRow | null>(null)
+  useEffect(() => {
+    if (!enabled) {
+      setRow(null)
+      return
+    }
+    let alive = true
+    void api(`/api/plugins?name=${encodeURIComponent(plugin)}`, PluginsListSchema)
+      .then((b) => {
+        if (!alive) return
+        setRow(groupPlugins(b.items).find((g) => g.name === plugin)?.newerStaged ?? null)
+      })
+      .catch(() => {
+        if (alive) setRow(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [plugin, enabled])
+  return row
+}
+
+/** The remedy sentence, with the two version numbers in it — vague advice is what the static hint is for. */
+function UpgradeRemedy({ plugin, running, staged }: { plugin: string; running: string; staged: string }) {
+  return (
+    <p className="text-[11.5px] leading-relaxed text-warn">
+      This farm is running “{plugin}” {running}, and {staged} is already on it but staged — a plugin that ships inside the core arrives
+      staged and goes live only when someone activates it. If this screen worked before a core upgrade, that gap is the likelier cause than a
+      bug in the plugin: activate {staged} on the{' '}
+      <Link href="/plugins" className="underline">
+        Plugins page
+      </Link>
+      .
+    </p>
   )
 }
 

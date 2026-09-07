@@ -17,8 +17,25 @@ const silent: Logger = {
   },
 }
 
+/** A logger that keeps its `warn` lines, for the stale-active check — the whole of whose behaviour IS the line it writes. */
+function recordingLogger(): { log: Logger; warnings: string[] } {
+  const warnings: string[] = []
+  const log: Logger = {
+    debug() {},
+    info() {},
+    warn(msg: string) {
+      warnings.push(msg)
+    },
+    error() {},
+    child() {
+      return log
+    },
+  }
+  return { log, warnings }
+}
+
 /** Records what the seeder asked for; `rows` stands in for the `plugins` table. */
-function fakeRuntime(opts: { failVerify?: boolean } = {}) {
+function fakeRuntime(opts: { failVerify?: boolean; active?: Record<string, { version: string; source?: string }> } = {}) {
   const staged: string[] = []
   const verified: string[] = []
   /** Per staged key, the `ui/` payload the seeder handed over — `path` plus the bytes, decoded. */
@@ -26,6 +43,11 @@ function fakeRuntime(opts: { failVerify?: boolean } = {}) {
   const rows = new Map<string, { id: string }>()
   const runtime = {
     get: (name: string, version: string) => (rows.get(`${name}@${version}`) ?? null) as never,
+    /** Only `version` and `source` are read by the stale-active warning; the rest of `PluginRow` is not involved. */
+    active: (name: string) => {
+      const row = opts.active?.[name]
+      return (row ? { version: row.version, source: row.source ?? 'bundled' } : null) as never
+    },
     stage: async (input: { name: string; version: string; bundle: string; ui?: readonly { path: string; data: Uint8Array }[] }) => {
       const key = `${input.name}@${input.version}`
       if (rows.has(key)) throw new Error(`${key} already exists`)
@@ -180,6 +202,65 @@ describe('seedEmbeddedPacks', () => {
       expect(staged).toEqual(['alpha@1.0.0', 'beta@2.0.0'])
       // The failure is not recorded, so a fixed build retries it next boot.
       expect(await Bun.file(join(dir, 'seeded-packs.json')).json()).not.toContain('gone@0.1.0')
+    })
+  })
+
+  /*
+    The upgrade that arrives and does nothing.
+
+    Seeding is keyed on `name@version`, so a core upgrade DOES bring the new
+    pack in; it brings it in `staged`, so the farm goes on serving the old
+    one. That combination is correct and was also completely silent, which is
+    how a farm ran mikrotik-routing 0.13.0 against a Studio three versions
+    ahead of it and reported the resulting ES-module link error as a bug in
+    the plugin.
+  */
+  test('warns when the farm is ACTIVE on an older version than this build ships', async () => {
+    await withDataDir(async (dir) => {
+      const packs = await packsIn(dir)
+      const { runtime } = fakeRuntime({ active: { alpha: { version: '0.9.0' } } })
+      const { log, warnings } = recordingLogger()
+      await seedEmbeddedPacks({ runtime, packs, dataDir: dir, log })
+
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toContain('alpha is ACTIVE at 0.9.0')
+      expect(warnings[0]).toContain('this build ships 1.0.0')
+    })
+  })
+
+  /* `0.9.0` vs `1.0.0` above is the easy direction; `0.9.0` vs `0.16.0` is the one a string sort gets backwards, and it is the real case. */
+  test('the comparison is semver, not string order', async () => {
+    await withDataDir(async (dir) => {
+      const packs = (await packsIn(dir)).map((p) => (p.name === 'alpha' ? { ...p, version: '0.16.0' } : p))
+      const { runtime } = fakeRuntime({ active: { alpha: { version: '0.9.0' } } })
+      const { log, warnings } = recordingLogger()
+      await seedEmbeddedPacks({ runtime, packs, dataDir: dir, log })
+
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toContain('alpha is ACTIVE at 0.9.0')
+    })
+  })
+
+  test('says nothing when the active version is the one this build ships, or newer', async () => {
+    await withDataDir(async (dir) => {
+      const packs = await packsIn(dir)
+      const { runtime } = fakeRuntime({ active: { alpha: { version: '1.0.0' }, beta: { version: '2.1.0' } } })
+      const { log, warnings } = recordingLogger()
+      await seedEmbeddedPacks({ runtime, packs, dataDir: dir, log })
+
+      expect(warnings).toEqual([])
+    })
+  })
+
+  /** An operator running their own build of a pack chose that version; a line every boot telling them so is noise, not news. */
+  test('says nothing about a version the operator uploaded themselves', async () => {
+    await withDataDir(async (dir) => {
+      const packs = await packsIn(dir)
+      const { runtime } = fakeRuntime({ active: { alpha: { version: '0.9.0', source: 'upload' } } })
+      const { log, warnings } = recordingLogger()
+      await seedEmbeddedPacks({ runtime, packs, dataDir: dir, log })
+
+      expect(warnings).toEqual([])
     })
   })
 })
