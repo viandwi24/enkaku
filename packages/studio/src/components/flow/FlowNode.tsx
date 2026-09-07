@@ -98,6 +98,11 @@ export function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
         node.kind === 'gate' || node.kind === 'switch' ? 'border-warn' : node.kind === 'finish' ? 'border-border-3' : 'border-accent',
         selected && 'ring-2 ring-accent ring-offset-2 ring-offset-bg',
         unreachable && 'opacity-50',
+        // Plan 313 §3.4 — a node the author switched off. Dimmed and dashed
+        // so it is visibly still THERE (it keeps its parameters and its
+        // edges) but visibly not running, which is the whole difference
+        // between switching a node off and deleting it.
+        !node.enabled && 'opacity-40 border-dashed',
         notInstalled && 'border-dashed',
         errorCount > 0 && 'ring-2 ring-danger',
         errorCount === 0 && warningCount > 0 && 'ring-2 ring-warn',
@@ -128,7 +133,7 @@ export function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
           </span>
         )}
       </div>
-      <p className="truncate text-[11px] text-faint">{notInstalled ? 'not installed' : summaryText || KIND_LABEL[node.kind]}</p>
+      <p className="truncate text-[11px] text-faint">{!node.enabled ? 'off' : notInstalled ? 'not installed' : summaryText || KIND_LABEL[node.kind]}</p>
       {run && (run.status === 'ok' || run.status === 'failed' || run.status === 'running') && (
         <span
           title={`step #${run.seq + 1}${run.status === 'failed' && run.error ? ` — ${run.error}` : ''}`}

@@ -336,6 +336,55 @@ export function NodePanel({
                 </div>
               )}
 
+              {node.kind === 'shuffle' && (
+                <div className="space-y-2">
+                  <div className="space-y-1">
+                    <p className="text-[12px] font-medium">Members</p>
+                    <p className="text-meta text-faint">
+                      Each ticked node runs exactly once per run, in an order drawn fresh for every device. A member declares no next of its own — control comes back here after
+                      it, and only when every member has run does this node carry on.
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    {/*
+                      Only nodes that CAN be members are offered: not this
+                      shuffle, not the start/finish sinks, not a branch, not
+                      a node another shuffle already owns, and not one that
+                      already has a `next` of its own — every one of those is
+                      a checker error (plan 313 §3.5), so offering it here
+                      would be offering a document that will not publish.
+                    */}
+                    {doc.nodes
+                      .filter((n) => n.id !== node.id && n.kind !== 'start' && n.kind !== 'finish' && n.kind !== 'shuffle' && n.kind !== 'gate' && n.kind !== 'switch')
+                      .filter((n) => {
+                        const owner = doc.nodes.find((o) => o.kind === 'shuffle' && o.id !== node.id && o.members.includes(n.id))
+                        return owner === undefined
+                      })
+                      .map((n) => {
+                        const checked = node.members.includes(n.id)
+                        const hasOwnNext = 'next' in n && n.next !== undefined
+                        return (
+                          <label key={n.id} className="flex items-center gap-2 text-[12.5px]">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!checked && hasOwnNext}
+                              onChange={(e) =>
+                                onChange({
+                                  members: e.target.checked ? [...node.members, n.id] : node.members.filter((m) => m !== n.id),
+                                } as Partial<WorkflowNode>)
+                              }
+                            />
+                            <span className={checked ? '' : 'text-dim'}>{n.title || n.id}</span>
+                            {!checked && hasOwnNext && <span className="text-meta text-faint">— clear its next edge first</span>}
+                          </label>
+                        )
+                      })}
+                    {doc.nodes.length <= 2 && <p className="text-meta text-faint">Add the actions you want shuffled to the document first.</p>}
+                  </div>
+                </div>
+              )}
+
               {node.kind === 'set' && (
                 <AssignmentEditor
                   assignments={node.assignments}
@@ -398,6 +447,18 @@ export function NodePanel({
                 />
               )}
 
+              {/*
+                Plan 313 §3.4 — switching a node off instead of deleting it.
+                Offered beside Remove because that is the choice an author is
+                actually making: "not tonight" rather than "not ever".
+                `finish` is not a step, so there is nothing to skip. (`start`
+                is already excluded — it has its own panel.)
+              */}
+              {node.kind !== 'finish' && (
+                <Button type="button" variant="outline" size="sm" onClick={() => onChange({ enabled: !node.enabled } as Partial<WorkflowNode>)}>
+                  {node.enabled ? 'Switch off' : 'Switch on'}
+                </Button>
+              )}
               <Button type="button" variant="outline" size="sm" onClick={onRemove}>
                 Remove node
               </Button>

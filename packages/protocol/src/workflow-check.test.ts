@@ -870,3 +870,189 @@ describe('expression findings (plan 302 §4.7, G9)', () => {
     expect(codesOf(findings)).not.toContain('E_WORKFLOW_EXPR_UNKNOWN_NODE')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Plan 313 — the shuffle node's membership rules and the disabled binding
+// ---------------------------------------------------------------------------
+
+/** `start -> sh(a, b) -> tail`, with `overrides` merged onto the shuffle node. */
+function shuffleCheckDoc(overrides: Record<string, unknown> = {}, extraNodes: Record<string, unknown>[] = []): WorkflowDoc {
+  return WorkflowDocSchema.parse({
+    schema: 2,
+    name: 'sh',
+    title: '',
+    description: '',
+    params: [],
+    entry: 'start',
+    nodes: [
+      startNode({ next: 'sh' }),
+      { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b'], next: 'tail', ...overrides },
+      scriptNode({ id: 'a' }),
+      scriptNode({ id: 'b' }),
+      scriptNode({ id: 'tail' }),
+      ...extraNodes,
+    ],
+  })
+}
+
+describe('shuffle membership (plan 313 §3.5)', () => {
+  const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
+
+  test('an ordinary shuffle over two dangling members is clean', () => {
+    const codes = codesOf(checkWorkflow(shuffleCheckDoc(), resolved))
+    expect(codes).not.toContain('E_WORKFLOW_SHUFFLE_MEMBER')
+    expect(codes).not.toContain('W_WORKFLOW_SHUFFLE_EMPTY')
+    // The members are reachable THROUGH the shuffle, so none is an orphan.
+    expect(codes).not.toContain('W_WORKFLOW_NODE_UNREACHABLE')
+  })
+
+  test('a member that declares its own next is refused — its successor is the shuffle', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'sh',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b'], next: 'tail' },
+        scriptNode({ id: 'a', next: 'tail' }),
+        scriptNode({ id: 'b' }),
+        scriptNode({ id: 'tail' }),
+      ],
+    })
+    expect(codesOf(checkWorkflow(doc, resolved))).toContain('E_WORKFLOW_SHUFFLE_MEMBER')
+  })
+
+  test('a shuffle may not be a member of another shuffle — the budget walk stays flat', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'sh',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'inner'], next: 'tail' },
+        { kind: 'shuffle', id: 'inner', title: '', ui: { x: 0, y: 0 }, members: ['b'] },
+        scriptNode({ id: 'a' }),
+        scriptNode({ id: 'b' }),
+        scriptNode({ id: 'tail' }),
+      ],
+    })
+    expect(codesOf(checkWorkflow(doc, resolved))).toContain('E_WORKFLOW_SHUFFLE_MEMBER')
+  })
+
+  test('a gate may not be a member — a member may not branch', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'sh',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'g'], next: 'tail' },
+        scriptNode({ id: 'a' }),
+        { kind: 'gate', id: 'g', title: '', ui: { x: 0, y: 0 }, when: { left: { const: 1 }, op: 'eq', right: { const: 1 } } },
+        scriptNode({ id: 'tail' }),
+      ],
+    })
+    expect(codesOf(checkWorkflow(doc, resolved))).toContain('E_WORKFLOW_SHUFFLE_MEMBER')
+  })
+
+  test('two shuffles claiming the same node is refused by the document schema itself', () => {
+    const result = WorkflowDocSchema.safeParse({
+      schema: 2,
+      name: 'sh',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b'], next: 'sh2' },
+        { kind: 'shuffle', id: 'sh2', title: '', ui: { x: 0, y: 0 }, members: ['a'] },
+        scriptNode({ id: 'a' }),
+        scriptNode({ id: 'b' }),
+      ],
+    })
+    expect(result.success).toBe(false)
+  })
+
+  test('a shuffle with fewer than two members is a WARNING, so a node just placed on the canvas still saves', () => {
+    const empty = WorkflowDocSchema.safeParse({
+      schema: 2,
+      name: 'sh',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [startNode({ next: 'sh' }), { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: [] }],
+    })
+    expect(empty.success).toBe(true)
+    const findings = checkWorkflow(empty.data as WorkflowDoc, resolved)
+    expect(codesOf(findings)).toContain('W_WORKFLOW_SHUFFLE_EMPTY')
+    expect(findings.filter((f) => f.severity === 'error')).toHaveLength(0)
+  })
+
+  test('a shuffle puts NO cycle in the reachable graph, so the budget stays checkable', () => {
+    const withTimeouts = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry({ timeoutMs: 1000 })]])
+    const codes = codesOf(checkWorkflow(shuffleCheckDoc(), withTimeouts, { maxTotalMs: 60_000 }))
+    // This is the whole reason the return edge is implicit: a real cycle here
+    // would fire W_WORKFLOW_LOOP and make the budget walk give up entirely.
+    expect(codes).not.toContain('W_WORKFLOW_LOOP')
+    expect(codes).not.toContain('W_WORKFLOW_BUDGET_UNKNOWN')
+  })
+
+  test('the budget SUMS a shuffle’s members rather than taking the largest — three 1s members do not cost 1s', () => {
+    const withTimeouts = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry({ timeoutMs: 1000 })]])
+    // Members a, b + tail = 3 scripts at 1000ms. A budget of 2500ms cannot
+    // hold them; a max-based walk would have thought 1000ms was enough.
+    const codes = codesOf(checkWorkflow(shuffleCheckDoc(), withTimeouts, { maxTotalMs: 2500 }))
+    expect(codes).toContain('E_WORKFLOW_BUDGET_IMPOSSIBLE')
+  })
+})
+
+describe('W_WORKFLOW_DISABLED_BINDING (plan 313 §3.4)', () => {
+  const resolved = new Map<string, ResolvedNodeScript>([['tiktok/auto-scroll@1.4.0', scriptEntry()]])
+
+  test('an enabled node reading a switched-off one is warned about, not refused', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'd',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'a' }),
+        scriptNode({ id: 'a', enabled: false, next: 'b' }),
+        scriptNode({ id: 'b', params: { x: { from: 'a', path: 'n', optional: false } } }),
+      ],
+    })
+    const findings = checkWorkflow(doc, resolved)
+    expect(codesOf(findings)).toContain('W_WORKFLOW_DISABLED_BINDING')
+    expect(findings.find((f) => f.code === 'W_WORKFLOW_DISABLED_BINDING')?.severity).toBe('warning')
+  })
+
+  test('a DISABLED node reading another disabled one says nothing — neither will run', () => {
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'd',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'a' }),
+        scriptNode({ id: 'a', enabled: false, next: 'b' }),
+        scriptNode({ id: 'b', enabled: false, params: { x: { from: 'a', path: 'n', optional: false } } }),
+      ],
+    })
+    expect(codesOf(checkWorkflow(doc, resolved))).not.toContain('W_WORKFLOW_DISABLED_BINDING')
+  })
+})
