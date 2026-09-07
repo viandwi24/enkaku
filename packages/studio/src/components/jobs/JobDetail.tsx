@@ -20,6 +20,7 @@ import { toast } from 'sonner'
 import { useNow } from '@/lib/useNow'
 import { useJobDetail } from '@/lib/use-job-detail'
 import { deviceRefLabel } from '@/lib/api'
+import { coreBase } from '@/lib/ws'
 import { ActionRefusedError, runOnDevice } from '@/lib/actions'
 import { clockTime, jobHref } from './job-view'
 import { DetailHeader, type HeaderAction } from './DetailHeader'
@@ -108,16 +109,41 @@ export function JobDetail({ jobId }: { jobId: string }) {
     }
   }
 
-  function exportJson(): void {
-    if (!job) return
-    const doc = { job, run, runs, logs, artifacts }
-    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
+  /**
+   * The run's debug bundle — `GET /api/jobs/:id/runs/:runId/export.zip`, one
+   * zip holding the timeline as prose and as data, the logs, the input and
+   * output, every captured frame and UI tree, and every artifact the run
+   * saved, with a README that explains the layout.
+   *
+   * This replaced a client-side `JSON.stringify({ job, run, runs, logs,
+   * artifacts })`, whose whole content is now `manifest.json` plus
+   * `timeline.json` plus `logs.txt` inside the bundle — nothing that export
+   * produced was lost, and the captures it could never reach (frames and UI
+   * trees live behind authenticated URLs, artifacts on the server's disk)
+   * are in it now. That is the point: the old file described a run to
+   * somebody who already had the farm open.
+   *
+   * A top-level navigation rather than `fetch` + `URL.createObjectURL`: the
+   * server STREAMS the archive (`zip-stream.ts`), so a browser download
+   * writes it to disk as it arrives, while a blob round-trip would buffer
+   * an entire bundle — capped at the farm's `maxArchiveBytes` — in the tab's
+   * memory first. `_blank` so the download never replaces the page: a
+   * `content-disposition: attachment` response closes the new tab by itself,
+   * and a refusal (413 over the archive cap, 403) stays visible in it
+   * instead of being swallowed.
+   *
+   * A plain anchor, deliberately not `next/link` and not `HeaderAction.href`
+   * (which renders one): this leaves the app for the core's own origin, and
+   * routing it through Next's client router would be exactly the remount the
+   * repo's static-export rule warns about.
+   */
+  function exportBundle(): void {
+    if (!job || !run) return
     const a = document.createElement('a')
-    a.href = url
-    a.download = `${job.scriptName ?? 'job'}-${job.jobId.slice(0, 8)}-run${run?.seq ?? 0}.json`
+    a.href = `${coreBase()}/api/jobs/${encodeURIComponent(job.jobId)}/runs/${encodeURIComponent(run.runId)}/export.zip`
+    a.target = '_blank'
+    a.rel = 'noreferrer'
     a.click()
-    URL.revokeObjectURL(url)
   }
 
   const runInFlight = run.status === 'running' || run.status === 'queued'
@@ -139,7 +165,12 @@ export function JobDetail({ jobId }: { jobId: string }) {
       disabledReason: deviceRef?.deleted ? 'This device was forgotten' : undefined,
       href: `/?device=${encodeURIComponent(job.deviceId)}`,
     },
-    { key: 'export', label: 'Export', icon: <ExportIcon className="size-[13px]" />, onClick: exportJson },
+    {
+      key: 'export',
+      label: 'Export',
+      icon: <ExportIcon className="size-[13px]" />,
+      onClick: () => exportBundle(),
+    },
   ]
 
   const tabs: SubTab[] = [

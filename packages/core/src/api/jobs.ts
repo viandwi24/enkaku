@@ -1,6 +1,8 @@
+import { join, normalize } from 'node:path'
 import { Hono, type Context } from 'hono'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import {
+  defaultFarmSettings,
   JobCancelResponseSchema,
   JobDeleteResponseSchema,
   JobHistoryClearRequestSchema,
@@ -23,8 +25,9 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import type { Db } from '../db'
-import { artifacts, jobEvents, jobRuns, jobs } from '../db/schema'
+import { artifacts, devices, jobEvents, jobRuns, jobs } from '../db/schema'
 import { deleteJobsWithHistory } from '../jobs/purge'
+import { buildRunExportEntries, exportFileName, MAX_EXPORT_EVENTS, type ExportArtifact } from '../jobs/trace/export'
 import { rowToJobRunInfo } from '../queue/job-store'
 import type { RunStore } from '../jobs/runs/store'
 import type { TraceFrameStore } from '../jobs/trace/frame-store'
@@ -33,6 +36,7 @@ import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
 import { typedJson } from './typed-json'
+import { createZipStream, ZipTooLargeError } from './zip-stream'
 
 const ERROR_STATUS: Record<string, number> = {
   device_not_found: 404,
@@ -55,6 +59,7 @@ const ERROR_STATUS: Record<string, number> = {
   job_not_settled: 409,
   E_UNSUPPORTED: 501,
   E_TRACE_CORRUPT: 500,
+  E_TRANSFER_TOO_LARGE: 413,
 }
 
 export interface JobRoutesDeps {
@@ -67,7 +72,18 @@ export interface JobRoutesDeps {
   db?: Db
   traceStore?: TraceFrameStore
   dataDir?: string
+  /**
+   * The archive ceiling `GET /:id/runs/:runId/export.zip` refuses above,
+   * read live so a settings change applies to the next download. The SAME
+   * `transfer.maxArchiveBytes` the batch bulk-pull archive already uses —
+   * one farm-wide answer to "how big may a zip this server builds get",
+   * not a second knob meaning almost the same thing.
+   */
+  archiveSettings?: () => { maxArchiveBytes: number }
 }
+
+/** A trace content address as it appears in a filename: 64 lowercase hex digits, the same shape `frame-store.ts` enforces on its own side. */
+const TRACE_HASH_RE = /^[0-9a-f]{64}$/
 
 /** Whether a run may be deleted — everything except `queued`/`running` (plan 128 §4.3, plan 211). */
 function isSettled(status: string): boolean {
@@ -251,6 +267,152 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
       createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
     }))
     return typedJson(c, RunArtifactsResponseSchema, { items })
+  })
+
+  /**
+   * `GET /:id/runs/:runId/export.zip` — one run's whole debug story as a zip
+   * somebody outside this farm can open: the timeline as prose and as data,
+   * the logs, the input and output, every captured frame and UI tree, and
+   * every artifact the run saved. `jobs/trace/export.ts` decides the layout
+   * and writes the README that explains it; this handler's job is only to
+   * gather the four sources and hand them over.
+   *
+   * `job.view`, the same gate the trace and artifact reads beside it already
+   * use: a bundle is a read of data those routes already serve one piece at
+   * a time, never a new door onto it.
+   *
+   * Two orderings here are load-bearing:
+   *
+   * 1. **The size refusal happens inside `createZipStream`, before this
+   *    handler writes a byte** — `zip-stream.ts`'s own module doc explains
+   *    why (once a status line is sent there is no turning it into a 413).
+   * 2. **Every capture is opened lazily, one at a time, by the zip writer.**
+   *    A run with two hundred frames streams in ~one frame of memory. Nothing
+   *    below may read a frame, a UI tree or an artifact eagerly to "check" it.
+   */
+  app.get('/:id/runs/:runId/export.zip', requirePermission('job.view'), (c) => {
+    const { job, run } = mustGetRun(c)
+    const db = deps.db
+    if (!db) throw new EnkakuError('E_UNSUPPORTED', 'exporting a run is not available on this host')
+
+    // One page past the ceiling, so "there were more" is known rather than
+    // guessed from a full page (the same +1 trick every keyset route here uses).
+    const rows = db
+      .select()
+      .from(jobEvents)
+      .where(eq(jobEvents.runId, run.id))
+      .orderBy(asc(jobEvents.seq), asc(jobEvents.id))
+      .limit(MAX_EXPORT_EVENTS + 1)
+      .all()
+    const eventsTruncated = rows.length > MAX_EXPORT_EVENTS
+    const events = (eventsTruncated ? rows.slice(0, MAX_EXPORT_EVENTS) : rows).map(toTraceEvent)
+
+    const dataDir = deps.dataDir
+    const exported: ExportArtifact[] = db
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.runId, run.id))
+      .all()
+      .map((r) => {
+        const info: ArtifactInfo = {
+          id: r.id,
+          runId: r.runId,
+          deviceId: r.deviceId,
+          kind: r.kind as ArtifactInfo['kind'],
+          label: r.label,
+          path: r.path,
+          sizeBytes: r.sizeBytes,
+          createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
+        }
+        // Defence in depth against a stored path escaping app-data, mirroring
+        // `api/artifacts.ts`'s `/:id/content` and `api/batches.ts`'s archive:
+        // a download route is where a future regression in whoever writes
+        // these rows would first become exploitable. A refused or vanished
+        // file is recorded as missing (the manifest and README both say so),
+        // never silently dropped.
+        const rel = normalize(r.path)
+        if (!dataDir || rel.startsWith('..')) return { info, abs: null, sizeBytes: 0 }
+        const file = Bun.file(join(dataDir, rel))
+        return file.size > 0 ? { info, abs: join(dataDir, rel), sizeBytes: file.size } : { info, abs: null, sizeBytes: 0 }
+      })
+
+    // The trace is the PERSISTED log record and the one a settled run always
+    // has. The live buffer is the fallback for a run whose trace holds no log
+    // events at all — a workflow job, or a host with no tee wired. Which one
+    // was used is written into the bundle rather than left for the reader to
+    // infer from a suspiciously short file.
+    const traceLogs = events
+      .filter((e) => e.kind === 'log')
+      .map((e) => ({
+        ts: e.atMs,
+        level: e.name,
+        source: typeof e.meta?.source === 'string' ? e.meta.source : 'script',
+        msg: typeof e.meta?.msg === 'string' ? e.meta.msg : '',
+        ...(e.meta?.fields !== undefined ? { fields: e.meta.fields } : {}),
+      }))
+    const buffered = traceLogs.length === 0 ? (deps.logBuffer?.get(run.id) ?? []) : []
+    const logs =
+      traceLogs.length > 0
+        ? { lines: traceLogs, source: 'trace' as const }
+        : buffered.length > 0
+          ? { lines: buffered.map((l) => ({ ts: l.ts, level: l.level, source: l.source, msg: l.msg, ...(l.fields ? { fields: l.fields } : {}) })), source: 'buffer' as const }
+          : { lines: [], source: 'none' as const }
+
+    const device = db.select({ label: devices.label }).from(devices).where(eq(devices.id, run.deviceId)).get()
+    const traceStore = deps.traceStore
+    // `runDir` validates the run id; the hash comes off a `job_events` row and
+    // is re-checked here anyway, because this is the one place a path is built
+    // from it without `frame-store.ts`'s own guards in the way.
+    const traceDir = traceStore ? traceStore.runDir(run.id) : null
+    const capturePath = (hash: string, ext: string): string | null =>
+      traceDir && TRACE_HASH_RE.test(hash) ? join(traceDir, `${hash}.${ext}`) : null
+
+    const runInfo = rowToJobRunInfo(run)
+    const entries = buildRunExportEntries({
+      job,
+      run: runInfo,
+      result: { value: run.result, bytes: run.resultBytes, status: run.resultStatus ?? null, issues: run.resultIssues },
+      events,
+      eventsTruncated,
+      artifacts: exported,
+      logs,
+      deviceLabel: device?.label ?? null,
+      openFrame: (hash) => {
+        const abs = capturePath(hash, 'png')
+        if (!abs) return null
+        const file = Bun.file(abs)
+        return file.size > 0 ? { size: file.size, stream: () => file.stream() } : null
+      },
+      readUiTree: async (hash) => (traceStore ? await traceStore.readUiTree(run.id, hash) : null),
+      uiTreeSize: (hash) => {
+        const abs = capturePath(hash, 'json.gz')
+        return abs ? Bun.file(abs).size : 0
+      },
+    })
+
+    // Falls back to the SCHEMA's default rather than to no cap at all, the
+    // same way `api/batches.ts`'s archive route does: a host that has not
+    // wired `archiveSettings` should build a bounded zip, not an unbounded one.
+    const maxTotalBytes = deps.archiveSettings?.().maxArchiveBytes ?? defaultFarmSettings().advanced.transferCaps.maxArchiveBytes
+    let stream: ReadableStream<Uint8Array>
+    try {
+      stream = createZipStream(entries, { maxTotalBytes })
+    } catch (err) {
+      if (err instanceof ZipTooLargeError) throw new EnkakuError('E_TRANSFER_TOO_LARGE', err.message)
+      throw err
+    }
+    deps.audit?.record({
+      userId: c.get('user')?.id ?? null,
+      action: 'job.run.export',
+      target: run.id,
+      meta: { jobId: job.jobId, runSeq: run.seq, events: events.length, artifacts: exported.length, truncated: eventsTruncated },
+    })
+    return new Response(stream, {
+      headers: {
+        'content-type': 'application/zip',
+        'content-disposition': `attachment; filename="${exportFileName(job, runInfo)}"`,
+      },
+    })
   })
 
   app.delete('/:id', requirePermission('job.run'), (c) => {
