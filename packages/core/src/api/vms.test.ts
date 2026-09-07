@@ -8,6 +8,8 @@ import { EnkakuError } from '../util/errors'
 import type { VmManager } from '../vm/manager'
 import type { VmRecord, VmSpec } from '../vm/types'
 import { createVmRoutes, resolveSpec } from './vms'
+import { deriveAbi } from '../vm/provider-avd'
+import type { SdkInventory } from '../vm/sdk-install'
 
 /** Mirrors `authMiddleware` well enough for a route test: sets `c.get('user')` before dispatch. */
 function withUser(role: 'admin' | 'operator' | null, inner: Hono<AuthEnv>): Hono<AuthEnv> {
@@ -83,8 +85,44 @@ function fakeManager(overrides: Partial<VmManager> = {}): VmManager {
   }
 }
 
-function makeApp(opts: { role: 'admin' | 'operator' | null; manager?: VmManager }): Hono<AuthEnv> {
-  const inner = createVmRoutes({ dataDir: '/tmp/enkaku-vms-test', log: silentLog(), manager: opts.manager ?? fakeManager() })
+/**
+ * The SDK inventory these route tests run against.
+ *
+ * It has to be supplied, not read off the machine. `POST /` resolves the spec
+ * against the real host inventory before it reaches the manager, so on a
+ * machine with no Android SDK — every CI runner this repo uses — `resolveSpec`
+ * threw `E_ANDROID_SDK_MISSING` and EVERY create-shaped test here got a 503,
+ * whatever it was actually asserting. The ACL and error-mapping tests below
+ * never meant to touch the SDK; they were failing on the absence of one.
+ *
+ * It lists the image `baseSpec()` asks for (`apiLevel: 36`, `google_apis`) so
+ * the happy paths resolve, and `deriveAbi()` rather than a hardcoded ABI so
+ * the fixture is right on an arm64 runner as well as x86_64.
+ */
+function fakeSdkInventory(overrides: Partial<SdkInventory> = {}): SdkInventory {
+  return {
+    root: '/tmp/enkaku-vms-test/sdk',
+    javaHome: '/tmp/enkaku-vms-test/jdk',
+    source: 'default',
+    emulator: true,
+    sdkmanager: true,
+    avdmanager: true,
+    platforms: ['platforms;android-36'],
+    systemImages: [`system-images;android-36;google_apis;${deriveAbi()}`],
+    remedy: null,
+    managedRoot: '/tmp/enkaku-vms-test/managed',
+    managedRootInstalled: false,
+    ...overrides,
+  }
+}
+
+function makeApp(opts: { role: 'admin' | 'operator' | null; manager?: VmManager; sdk?: SdkInventory }): Hono<AuthEnv> {
+  const inner = createVmRoutes({
+    dataDir: '/tmp/enkaku-vms-test',
+    log: silentLog(),
+    manager: opts.manager ?? fakeManager(),
+    readSdkInventory: async () => opts.sdk ?? fakeSdkInventory(),
+  })
   return withUser(opts.role, inner)
 }
 

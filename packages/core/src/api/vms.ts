@@ -16,7 +16,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { EnkakuError } from '../util/errors'
 import type { VmManager } from '../vm/manager'
 import { deriveAbi } from '../vm/provider-avd'
-import { appendInstallLine, installSdkPackages, readSdkInventory } from '../vm/sdk-install'
+import { appendInstallLine, installSdkPackages, readSdkInventory, type SdkInventory } from '../vm/sdk-install'
 import type { Logger } from '../util/logger'
 import type { VmRecord as CoreVmRecord } from '../vm/types'
 import { typedJson } from './typed-json'
@@ -107,8 +107,35 @@ export async function resolveSpec(body: VmCreateBody, sdk: { systemImages: strin
   return VmSpecSchema.parse({ ...body, abi })
 }
 
-export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log: Logger; toolchainSdkmanager?: () => Promise<string | null>; installCmdlineTools?: () => Promise<void> }): Hono<AuthEnv> {
+/**
+ * What `createVmRoutes` needs. `readSdkInventory` is the only optional-for-
+ * production entry: it exists so a ROUTE test can say what the host has
+ * without the host having to have it.
+ *
+ * Without it these routes were untestable anywhere an Android SDK is not
+ * installed, which includes every CI runner this repo uses. `POST /` reads
+ * the real inventory before it reaches the manager, so on a bare machine
+ * `resolveSpec` threw `E_ANDROID_SDK_MISSING` and every create-shaped test
+ * got a 503 no matter what it was actually asserting — including the ACL and
+ * error-mapping tests, which never meant to touch the SDK at all. The fake
+ * `VmManager` those tests already build could not help: the throw happens
+ * before `manager.create` is called.
+ */
+export interface VmRoutesDeps {
+  manager: VmManager
+  dataDir: string
+  log: Logger
+  toolchainSdkmanager?: () => Promise<string | null>
+  installCmdlineTools?: () => Promise<void>
+  /** Injectable for tests; production leaves it unset and the real host read is used. */
+  readSdkInventory?: () => Promise<SdkInventory>
+}
+
+export function createVmRoutes(deps: VmRoutesDeps): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
+
+  /** One accessor for the three places that need the inventory, so a test substitutes it once. */
+  const sdkInventory = (): Promise<SdkInventory> => deps.readSdkInventory?.() ?? readSdkInventory(deps.dataDir, deps.toolchainSdkmanager)
 
   function authorizeView(user: { role: 'admin' | 'operator' } | undefined): void {
     if (!user || !can(user.role, 'vm.view')) {
@@ -164,12 +191,12 @@ export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log:
     authorizeManage(c.get('user'))
     if (!deps.installCmdlineTools) throw new EnkakuError('E_NOT_SUPPORTED', 'this core has no toolchain manager wired')
     await deps.installCmdlineTools()
-    return typedJson(c, AndroidSdkStatusResponseSchema, { sdk: await readSdkInventory(deps.dataDir, deps.toolchainSdkmanager) })
+    return typedJson(c, AndroidSdkStatusResponseSchema, { sdk: await sdkInventory() })
   })
 
   app.get('/sdk', async (c) => {
     authorizeView(c.get('user'))
-    return typedJson(c, AndroidSdkStatusResponseSchema, { sdk: await readSdkInventory(deps.dataDir, deps.toolchainSdkmanager) })
+    return typedJson(c, AndroidSdkStatusResponseSchema, { sdk: await sdkInventory() })
   })
 
   app.get('/sdk/install/:id', (c) => {
@@ -226,7 +253,7 @@ export function createVmRoutes(deps: { manager: VmManager; dataDir: string; log:
     authorizeManage(c.get('user'))
     const body = VmCreateBodySchema.safeParse(await c.req.json().catch(() => null))
     if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a valid virtual device spec is required')
-    const record = await deps.manager.create(await resolveSpec(body.data, await readSdkInventory(deps.dataDir, deps.toolchainSdkmanager)))
+    const record = await deps.manager.create(await resolveSpec(body.data, await sdkInventory()))
     return typedJson(c, VmResponseSchema, { vm: toWire(record) }, 201)
   })
 
