@@ -134,19 +134,19 @@
       "format": "raw",
       "versions": [
         {
-          "version": "0.2.15",
+          "version": "0.2.16",
           "releasedAt": "unknown",
           "compatibleCoreRange": ">=0.1.8",
           "deviceArtifact": {
             "packageName": "dev.enkaku.guestagent",
-            "versionCode": 2015,
+            "versionCode": 2016,
             "signatureSha256": "420222E0C1BD95A6EA11C0F735B0F7CEEF48C05877F487308F80FCF5895048B6"
           },
           "platforms": {
             "*": {
-              "url": "https://github.com/viandwi24/enkaku/releases/download/v0.2.15/guest-agent.apk",
-              "sha256": "ee93d55e6bb7ddf544b5c6ef47a3c21fc36847f51ce7587c0f3b6320807d167c",
-              "sizeBytes": 1240589
+              "url": "https://github.com/viandwi24/enkaku/releases/download/v0.2.16/guest-agent.apk",
+              "sha256": "8e85e70b38f217ce321f14d93f4910a3cb062986f34a40a6f3d5c1b4836e5b5c",
+              "sizeBytes": 1240585
             }
           }
         }
