@@ -19,6 +19,7 @@ import {
   Input,
   Label,
   PlayIcon,
+  RocketIcon,
   SquaresFourIcon,
   PlusIcon,
   Textarea,
@@ -34,6 +35,7 @@ import { ActionSettings } from './ActionSettings'
 import { SequenceEditor, canUseEasy } from './SequenceEditor'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
+import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { SimulateDialog } from './SimulateDialog'
 import { useHistory, type UseHistoryResult } from './useHistory'
 import { useValidation, nodeIndexOf } from './useValidation'
@@ -232,6 +234,7 @@ export function FlowEditor({
   // for the workflow's own history the moment either changes.
   const [lastRunRef, setLastRunRef] = useState<{ jobId: string; runId: string } | null>(null)
   const [simulated, setSimulated] = useState(false)
+  const { open: openAction } = useActionDialogs()
   const [simulateOpen, setSimulateOpen] = useState(false)
   /** Author-written mocks from the node panel's "Use as mock" (plan 309 §4.5, §9 Q2) — session-only, merged over stored pins by `simulateWorkflow` itself; never persisted unless the author separately pins the node. */
   const [mocks, setMocks] = useState<Record<string, unknown>>({})
@@ -603,6 +606,30 @@ export function FlowEditor({
           </Button>
           <Button type="button" variant="ghost" size="icon" aria-label="Simulate" onClick={() => setSimulateOpen(true)} disabled={doc.nodes.length === 0}>
             <PlayIcon className="size-4" aria-hidden />
+          </Button>
+          {/*
+            Run, on the page where the workflow is.
+
+            It was only ever on the workflow's CARD in the grid, so an author
+            who had just finished editing had to go back a screen to run the
+            thing in front of them — the owner looked for it here twice and
+            did not find it (2026-09-07). Same dialog the card opens, so the
+            device picker, the group tab and the batch pacing are unchanged.
+
+            Disabled while there are unsaved changes on purpose: a run reads
+            the SAVED document, so offering it here would run something other
+            than what is on screen.
+          */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={dirty || mode === 'create' ? 'Save before running' : 'Run on devices'}
+            title={dirty || mode === 'create' ? 'Save first — a run uses the saved workflow' : 'Run on devices'}
+            disabled={dirty || mode === 'create' || doc.nodes.length === 0}
+            onClick={() => openAction('run-workflow', {}, { workflowName: doc.name })}
+          >
+            <RocketIcon className="size-4" aria-hidden />
           </Button>
           <Button
             type="button"
