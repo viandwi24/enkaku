@@ -14,7 +14,8 @@
  * `Ships:` artefact.
  *
  * What it checks, in order:
- *   1. `packages/ui/src/palette.css` — the handoff's 36 tokens, exact hex,
+ *   1. `packages/ui/src/palette.css` — the handoff's 36 tokens plus the
+ *      sanctioned post-handoff additions (`POST_HANDOFF_TOKENS`), exact hex,
  *      under all three selectors (`:root`, the system-dark media block, and
  *      `:root[data-theme="dark"]`), and that the two dark blocks agree.
  *   2. `packages/ui/src/theme.css` — every token mapped through `@theme
@@ -113,6 +114,43 @@ const TOKENS: Record<string, [light: string, dark: string]> = {
 }
 const NAMES = Object.keys(TOKENS)
 
+/**
+ * Colour tokens added AFTER the handoff was drawn, each with its reason —
+ * the palette's counterpart to `GROUP_3` in the icon check below, and pinned
+ * by exact hex in all three selectors exactly as the handoff's 36 are. A new
+ * token belongs here only when a screen the handoff does not draw needs a
+ * colour the 36 cannot express.
+ *
+ * - The eight label-chip pairs (plan 225): a label is a coloured chip an
+ *   operator picks a hue for, which is a thing the handoff has no vocabulary
+ *   for at all — its palette carries one accent and three status colours, and
+ *   every one of them already means something ("this is selected", "this is
+ *   failing"). A closed palette rather than a free hex, so a chip stays
+ *   legible in both themes; see `LABEL_COLORS` in `@enkaku/protocol`, the
+ *   list these must match name for name.
+ */
+const POST_HANDOFF_TOKENS: Record<string, [light: string, dark: string]> = {
+  'label-slate-bg': ['#eceef1', '#26272c'],
+  'label-slate-fg': ['#4a5361', '#b6bcc6'],
+  'label-blue-bg': ['#e7f0fd', '#16233c'],
+  'label-blue-fg': ['#1d4ed8', '#93bbfb'],
+  'label-green-bg': ['#e6f6ec', '#152a1d'],
+  'label-green-fg': ['#15803d', '#86efac'],
+  'label-amber-bg': ['#fdf3e0', '#2c2210'],
+  'label-amber-fg': ['#a35a08', '#fcd34d'],
+  'label-red-bg': ['#fdecec', '#2e1717'],
+  'label-red-fg': ['#c62828', '#fca5a5'],
+  'label-purple-bg': ['#f1ecfd', '#241a3b'],
+  'label-purple-fg': ['#6d28d9', '#c4b5fd'],
+  'label-pink-bg': ['#fdecf3', '#301722'],
+  'label-pink-fg': ['#be1e63', '#f9a8d4'],
+  'label-teal-bg': ['#e2f5f3', '#12292a'],
+  'label-teal-fg': ['#0f766e', '#5eead4'],
+}
+const POST_HANDOFF_NAMES = Object.keys(POST_HANDOFF_TOKENS)
+/** Every colour token palette.css is allowed to declare: the handoff's, plus the sanctioned additions above. */
+const ALL_TOKEN_NAMES = [...NAMES, ...POST_HANDOFF_NAMES]
+
 /** The body of the first `<selector> {` block, matching braces so a nested block is one unit. */
 function block(css: string, selector: string): string {
   const start = css.indexOf(selector)
@@ -146,15 +184,20 @@ function checkPaletteAndTheme(): void {
   }
 
   const declared = [...light.matchAll(/--([a-z0-9-]+):/g)].map((m) => m[1]!).filter((n) => !n.startsWith('font-'))
-  if (JSON.stringify([...declared].sort()) !== JSON.stringify([...NAMES].sort())) {
-    fail(`palette.css :root does not declare exactly the 36 handoff tokens (got ${declared.length}: ${declared.sort().join(', ')})`)
+  if (JSON.stringify([...declared].sort()) !== JSON.stringify([...ALL_TOKEN_NAMES].sort())) {
+    fail(
+      `palette.css :root does not declare exactly the ${NAMES.length} handoff tokens plus the ${POST_HANDOFF_NAMES.length} sanctioned additions (got ${declared.length}: ${declared.sort().join(', ')})`,
+    )
   } else {
-    ok('palette.css :root declares exactly the 36 handoff tokens')
+    ok(`palette.css :root declares exactly the ${NAMES.length} handoff tokens plus ${POST_HANDOFF_NAMES.length} sanctioned additions`)
   }
 
   let mismatches = 0
-  for (const name of NAMES) {
-    const [l, d] = TOKENS[name]!
+  // The additions are pinned by exact hex in all three selectors too, so a
+  // label chip cannot lose its colour in one theme and keep it in the other.
+  const allTokens = { ...TOKENS, ...POST_HANDOFF_TOKENS }
+  for (const name of ALL_TOKEN_NAMES) {
+    const [l, d] = allTokens[name]!
     if (!light.includes(`--${name}: ${l};`)) {
       fail(`palette.css :root --${name} is not ${l}`)
       mismatches++
@@ -168,7 +211,7 @@ function checkPaletteAndTheme(): void {
       mismatches++
     }
   }
-  if (mismatches === 0) ok('all 36 tokens match the handoff table in light and both dark selectors')
+  if (mismatches === 0) ok(`all ${ALL_TOKEN_NAMES.length} tokens match their pinned values in light and both dark selectors`)
 
   if (systemDark.trim().replace(/\s+/g, ' ') !== explicitDark.trim().replace(/\s+/g, ' ')) {
     fail('palette.css: the system-dark and explicit-dark blocks are not byte-identical')
@@ -194,13 +237,13 @@ function checkPaletteAndTheme(): void {
     return
   }
   let colorMapMismatches = 0
-  for (const name of NAMES) {
+  for (const name of ALL_TOKEN_NAMES) {
     if (!inline.includes(`--color-${name}: var(--${name});`)) {
       fail(`theme.css @theme inline does not map --color-${name} onto var(--${name})`)
       colorMapMismatches++
     }
   }
-  if (colorMapMismatches === 0) ok('theme.css maps all 36 --color-* names onto palette.css values')
+  if (colorMapMismatches === 0) ok(`theme.css maps all ${ALL_TOKEN_NAMES.length} --color-* names onto palette.css values`)
 
   if (!inline.includes('--font-sans: var(--font-ui);')) fail('theme.css: missing --font-sans: var(--font-ui)')
   if (!inline.includes('--font-mono: var(--font-code);')) fail('theme.css: missing --font-mono: var(--font-code)')
@@ -320,6 +363,11 @@ const GROUP_3 = [
   'PictureInPictureIcon',
   // Plan 501 (the rail's right-click menu) — the "Open in side panel" row.
   'SidebarSimpleIcon',
+  // Plan 225 (device labels) — the Devices toolbar's label filter and the
+  // context menu's Labels row. Not a second `FunnelIcon` beside the status
+  // filter: two identical glyphs would say the two controls do the same
+  // thing, which is the confusion a separate control exists to avoid.
+  'TagIcon',
   // Plan 313 (Sequential Mode) — the list's reorder control needs an UP to
   // pair with the `ArrowDownIcon` the barrel already had, and `ShuffleIcon`
   // is the `shuffle` node's own icon in both the catalog and the list row.

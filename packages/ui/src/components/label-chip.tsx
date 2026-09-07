@@ -7,10 +7,10 @@ import { cn } from '../lib/utils'
  * Written out in full rather than composed as `bg-label-${color}-bg`: a
  * Tailwind v4 class assembled from a template literal is invisible to the
  * compiler and emits nothing, silently — the same failure mode the v3
- * bracket form has in v4 (`docs/design.md`, and CLAUDE.md's own rule about
- * `bg-panel` vs `bg-[--color-panel]`). A chip that renders with no colour is
- * exactly the bug that would ship unnoticed, because every OTHER part of the
- * chip still looks right.
+ * bracket colour form has in v4 (`docs/design.md`, and CLAUDE.md's own rule
+ * that a colour utility is written as a plain name). A chip that renders
+ * with no colour is exactly the bug that would ship unnoticed, because every
+ * OTHER part of the chip still looks right.
  */
 const CHIP_COLORS: Record<LabelColor, string> = {
   slate: 'bg-label-slate-bg text-label-slate-fg',
