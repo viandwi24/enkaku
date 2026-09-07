@@ -314,8 +314,10 @@ const paramsSchema = z.object({
           .min(0)
           .max(1)
           .default(0.85)
-          .describe('Chance of opening the comment sheet to read it on a video that matched your keywords. Skipped entirely on a video that did not.')
-          .meta(ui({ title: 'Open comments on a match', kind: 'chance', group: 'Interaction' })),
+          .describe(
+            'Chance of opening the comment sheet to READ it on a video that matched your keywords, then closing it. It never writes, sends or likes a comment. Skipped entirely on a video that did not match.',
+          )
+          .meta(ui({ title: 'Open comments to read them', kind: 'chance', group: 'Interaction' })),
         idlePauseSeconds: z
           .tuple([z.number().int().min(0), z.number().int().min(0)])
           .default([25, 75])
@@ -793,12 +795,20 @@ export default definePlugin({
   // params, keywords) so the flow editor's palette can present them —
   // presentation only, nothing about how any member EXECUTES changes (plan
   // 300 D6, D7).
+  // 1.19.0 — `commentChance` says what it does. Its name reads like "chance
+  // of commenting", and the owner read it that way and asked for the default
+  // to be 0 on the grounds that posting comments by default is dangerous
+  // (2026-09-07) — a correct instinct aimed at the wrong parameter. It has
+  // only ever opened the sheet to READ, and nothing in this pack types into
+  // a comment box at all. The behaviour is unchanged; the label and the
+  // description now say so, so nobody disables human-shaped browsing again
+  // believing they are disabling posting.
   // 1.18.0 — icons, plugin and member (plan 310 §3.3): the pack declares
   // `icon: 'activity'`; every one of the 11 members that already had a
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
-  version: '1.18.0',
+  version: '1.19.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
