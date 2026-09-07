@@ -3,6 +3,7 @@
 > Status: implemented (software). Executed 2026-09-07. The three device-side timings this plan reasons from are plan 96 §22's own measurement and upstream scrcpy's source; **none of them has been re-measured on this farm's hardware by this executor** — G8 is the owner row that closes that, and `bun run bench:wake` is the instrument.
 > Depends on: plan 125 (the awake policy: `power.ts`, `wake.ts`, `awake-policy.ts`, the capture-before-write rule and the read-back-or-`refused` rule this plan does not relax), plan 206 (always-on sessions — the reason every online device already holds a scrcpy control socket, which is what the key path now uses), plan 207 (the actions API: `VERBS`, `runAction`, `dispatchBounded`), plan 91 (the input arbiter, the only sanctioned way into a session's input).
 > Spec references: `docs/spec.md` line 199 (a device put to sleep "stays asleep with its session up; its tile shows a dark screen") — unchanged by this plan, only made fast.
+> Ships: packages/session/src/power.ts
 
 ---
 
