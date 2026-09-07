@@ -1,12 +1,9 @@
 'use client'
 
 import { Suspense, useEffect, useState } from 'react'
-import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ArrowLeft } from 'lucide-react'
 import { ScriptListItemSchema, type ScriptListItem, type WorkflowDoc } from '@enkaku/protocol'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { ErrorState, LoadingRows, Button, describeApiError } from '@enkaku/ui'
+import { ErrorState, LoadingRows, describeApiError } from '@enkaku/ui'
 import { FlowEditor } from '@/components/flow/FlowEditor'
 import { fetchAllPages, fetchWorkflow } from '@/lib/api'
 
@@ -61,20 +58,6 @@ function WorkflowEditorView() {
       .catch((e) => setDocError(describeApiError(e)))
   }, [name, router])
 
-  const backAction = (
-    <Button asChild variant="ghost" size="sm">
-      <Link
-        href="/scripts?tab=workflows"
-        onClick={(e) => {
-          if (dirty && !window.confirm('This workflow has unsaved changes. Leave and lose them?')) e.preventDefault()
-        }}
-      >
-        <ArrowLeft className="size-4" aria-hidden />
-        All workflows
-      </Link>
-    </Button>
-  )
-
   if (scriptsError) {
     return (
       <div className="px-5 py-4">
@@ -85,7 +68,12 @@ function WorkflowEditorView() {
 
   return (
     <>
-      <PageHeader title={name ?? 'New workflow'} description="A pipeline of scripts on one device" actions={backAction} />
+      {/*
+        No page header (CEO's redesign, 2026-09-07). It cost the canvas a band
+        of height to repeat a name the panel already shows, and its "All
+        workflows" link is the back arrow in the editor's own toolbar now —
+        which carries the same unsaved-changes confirm.
+      */}
 
       {docError ? (
         <div className="px-5 py-4">

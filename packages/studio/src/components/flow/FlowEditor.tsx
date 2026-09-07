@@ -1,17 +1,21 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import type { NodeType, ScriptListItem, WorkflowDoc, WorkflowNode } from '@enkaku/protocol'
 import { fetchWorkflowLastRun, listWorkflowPins, saveWorkflow, type WorkflowInfo } from '@/lib/api'
 import { Sheet, SheetContent } from '@enkaku/ui'
 import {
   ArrowsClockwiseIcon,
   ArrowCounterClockwiseIcon,
+  CaretLeftIcon,
+  WarningIcon,
   Badge,
   ClipboardIcon,
   CopyIcon,
   ClockCounterClockwiseIcon,
   Button,
+  cn,
   Input,
   Label,
   PlayIcon,
@@ -32,6 +36,8 @@ import { SimulateDialog } from './SimulateDialog'
 import { useHistory, type UseHistoryResult } from './useHistory'
 import { useValidation, nodeIndexOf } from './useValidation'
 import { docToJson, useClipboard } from './useClipboard'
+import { WorkflowPanel, type PanelTab } from './WorkflowPanel'
+import { JsonMenu } from './JsonMenu'
 import { toast } from 'sonner'
 import { placeholderPredicate, edgeKindsOf, freshNodeId, nodeIdsOf, type EdgeKind } from './doc-edit'
 import { autoArrangePositions } from './layout'
@@ -105,7 +111,15 @@ export function FlowEditor({
    * to the last real run rather than to nothing, so closing the panel leaves
    * the canvas where the author expects it.
    */
-  const [historyOpen, setHistoryOpen] = useState(false)
+  /*
+    Which panel section is showing. Selecting a node moves it to `node` on
+    its own (below) — the panel follows the canvas rather than making the
+    author go and find the right tab.
+  */
+  const [panelTab, setPanelTab] = useState<PanelTab>('properties')
+  /* The sentence under the panel's title — composed by `RunOverlay`, which is the only thing that knows the step count. */
+  const [runStatus, setRunStatus] = useState<string | null>(null)
+  const router = useRouter()
   const [pinnedRun, setPinnedRun] = useState<{ jobId: string; runId: string } | null>(null)
   const { run, isPending } = useAction()
 
@@ -340,6 +354,22 @@ export function FlowEditor({
   const selectedIndex = openNodeId ? doc.nodes.findIndex((n) => n.id === openNodeId) : -1
   const selectedNode = selectedIndex === -1 ? undefined : doc.nodes[selectedIndex]
 
+  /*
+    What the Node tab shows: the single node selected on the canvas. The
+    `selectedNode` above is the SHEET's node (a double-click); this follows an
+    ordinary click, which is what an inspector panel is for.
+  */
+  const panelNode = useMemo(() => {
+    if (selectedIds.size !== 1) return null
+    const id = [...selectedIds][0]
+    return doc.nodes.find((n) => n.id === id) ?? null
+  }, [selectedIds, doc.nodes])
+
+  /* Selecting a node moves the panel to it, so the panel follows the canvas. */
+  useEffect(() => {
+    if (panelNode) setPanelTab('node')
+  }, [panelNode])
+
   const rootFindings = validation.findings.filter((f) => nodeIndexOf(f.path) === undefined)
   /**
    * Export the document as a file. A blob URL rather than a data URI so a
@@ -400,113 +430,123 @@ export function FlowEditor({
   const warningCount = validation.findings.length - errorCount
 
   return (
-    <div className="flex h-[calc(100vh-56px)] min-h-[520px] flex-col gap-3 px-5 py-4">
-      <WorkflowMetaForm doc={doc} dispatch={dispatch} />
+    /*
+      One container, not a stack (CEO's redesign, 2026-09-07).
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={openPlainPalette}>
-          <PlusIcon className="size-3.5" aria-hidden />
-          Add node
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={undo} disabled={!canUndo} aria-label="Undo">
-          <ArrowCounterClockwiseIcon className="size-3.5" aria-hidden />
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={redo} disabled={!canRedo} aria-label="Redo">
-          <ArrowsClockwiseIcon className="size-3.5" aria-hidden />
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={handleAutoArrange}>
-          <SquaresFourIcon className="size-3.5" aria-hidden />
-          Auto-arrange
-        </Button>
-        {/*
-          Export writes the document an operator sends someone else; Import
-          reads one back. Both go through the SAME payload path Ctrl+C/Ctrl+V
-          uses, so a pasted graph and an imported file land identically —
-          nodes appended with fresh ids, edges rewired, nothing overwritten
-          (owner, 2026-09-05).
-        */}
-        <Button type="button" variant="outline" size="sm" onClick={handleExport} disabled={doc.nodes.length === 0}>
-          <TrayArrowDownIcon className="size-3.5" aria-hidden />
-          Export
-        </Button>
-        {/*
-          The same document, without a file in the middle. Sending a workflow
-          to someone over chat is the common case and a download is the long
-          way round for it (CEO, 2026-09-06); the clipboard already carried
-          this exact JSON for Ctrl+C/Ctrl+V, it simply had no button.
-        */}
-        <Button type="button" variant="outline" size="sm" onClick={handleCopyJson} disabled={doc.nodes.length === 0}>
-          <CopyIcon className="size-3.5" aria-hidden />
-          Copy JSON
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={() => importInput.current?.click()}>
-          <UploadSimpleIcon className="size-3.5" aria-hidden />
-          Import
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={handlePasteJson}>
-          <ClipboardIcon className="size-3.5" aria-hidden />
-          Paste JSON
-        </Button>
-        <input
-          ref={importInput}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0]
-            // Cleared straight away so choosing the SAME file twice fires
-            // again — a browser input fires `change` only when the value
-            // differs, and re-importing the file you just edited is the
-            // ordinary case.
-            e.target.value = ''
-            if (file) void handleImport(file)
-          }}
-        />
-        <div className="flex-1" />
-        {validation.findings.length > 0 && (
-          <span className="readout text-[11.5px] text-dim">
-            {errorCount > 0 ? (
-              <span className="text-danger">
-                {errorCount} error{errorCount === 1 ? '' : 's'}
-              </span>
-            ) : null}
-            {errorCount > 0 && warningCount > 0 ? ', ' : ''}
-            {warningCount > 0 ? (
-              <span className="text-warn">
-                {warningCount} warning{warningCount === 1 ? '' : 's'}
-              </span>
-            ) : null}
-          </span>
-        )}
-        {dirty && <Badge variant="outline">Unsaved</Badge>}
-        {/*
-          The n8n split, in one screen rather than two: Editor is the graph you
-          are shaping, History is what it has actually done — and picking a run
-          there replays it over the SAME canvas, which is the whole reason the
-          panel sits beside it instead of on a page of its own.
-        */}
-        <Button type="button" variant="outline" active={historyOpen} onClick={() => setHistoryOpen((v) => !v)}>
-          <ClockCounterClockwiseIcon className="size-3.5" aria-hidden />
-          History
-        </Button>
-        <Button type="button" variant="outline" onClick={() => setSimulateOpen(true)} disabled={doc.nodes.length === 0}>
-          <PlayIcon className="size-3.5" aria-hidden />
-          Simulate
-        </Button>
-        <Button
-          type="button"
-          onClick={() => void handleSave()}
-          // The server refuses a document with an error, so offering Save
-          // here only produced a red toast an author could miss — and then
-          // the "All workflows" link took the unsaved graph with it. Reported
-          // by the owner on 2026-09-05: a workflow saved holding nothing but
-          // its `start` node while a script node they had added was gone.
-          // The error count beside this button already says how many.
-          disabled={isPending('publish') || doc.nodes.length === 0 || errorCount > 0}
-          title={errorCount > 0 ? `Fix ${errorCount} error${errorCount === 1 ? '' : 's'} before saving` : undefined}
-        >
-          {isPending('publish') ? 'Saving…' : 'Save'}
-        </Button>
+      This screen used to be four bands: a page header, a meta form, a
+      toolbar row, and whatever height was left over for the graph. The graph
+      IS the screen, so it fills the container now and everything else floats
+      over it. The container takes the canvas's own background so the two read
+      as one surface rather than a canvas sitting inside a page.
+    */
+    <div className="relative h-[calc(100vh-56px)] min-h-[520px] overflow-hidden bg-bg">
+
+      {/*
+        The actions, floating. Two clusters in one overlay bar that stops
+        before the panel — `space-between` so they sit at the two ends, and
+        wrapping rather than clipping on a narrow window. Nothing here takes
+        height from the canvas any more.
+      */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-wrap items-start justify-between gap-2 p-3 pr-[352px]">
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-card border border-border bg-panel/95 p-1 shadow-panel-2 backdrop-blur">
+          {/*
+            The confirm travels with the button. The page header's link had
+            it, and losing it here would restore the exact fault that comment
+            was written for: leaving with an unsaved graph and no warning.
+          */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="All workflows"
+            onClick={() => {
+              if (dirty && !window.confirm('This workflow has unsaved changes. Leave and lose them?')) return
+              router.push('/scripts?tab=workflows')
+            }}
+          >
+            <CaretLeftIcon className="size-4" aria-hidden />
+          </Button>
+          <Button type="button" size="icon" aria-label="Add node" onClick={openPlainPalette}>
+            <PlusIcon className="size-4" aria-hidden />
+          </Button>
+          <Button type="button" variant="ghost" size="icon" onClick={undo} disabled={!canUndo} aria-label="Undo">
+            <ArrowCounterClockwiseIcon className="size-4" aria-hidden />
+          </Button>
+          <Button type="button" variant="ghost" size="icon" onClick={redo} disabled={!canRedo} aria-label="Redo">
+            <ArrowsClockwiseIcon className="size-4" aria-hidden />
+          </Button>
+          <Button type="button" variant="ghost" size="icon" onClick={handleAutoArrange} aria-label="Auto-arrange">
+            <SquaresFourIcon className="size-4" aria-hidden />
+          </Button>
+          {/*
+            Four ways in and out of this document behind one icon: a file each
+            way, and the clipboard each way. They were four labelled buttons
+            taking a third of the toolbar for something used once a session.
+          */}
+          <JsonMenu
+            disabled={doc.nodes.length === 0}
+            onExport={handleExport}
+            onCopy={() => void handleCopyJson()}
+            onImport={() => importInput.current?.click()}
+            onPaste={() => void handlePasteJson()}
+          />
+          <input
+            ref={importInput}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              // Cleared straight away so choosing the SAME file twice fires
+              // again — a browser input fires `change` only when the value
+              // differs, and re-importing the file you just edited is the
+              // ordinary case.
+              e.target.value = ''
+              if (file) void handleImport(file)
+            }}
+          />
+        </div>
+
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-card border border-border bg-panel/95 p-1 shadow-panel-2 backdrop-blur">
+          {validation.findings.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setPanelTab('runs')}
+              className={cn(
+                'flex items-center gap-1.5 rounded-button px-2.5 py-1.5 text-[12px] font-medium',
+                errorCount > 0 ? 'bg-danger-soft text-danger' : 'bg-warn-soft text-warn',
+              )}
+              title="Show them in the Runs panel"
+            >
+              <WarningIcon className="size-3.5" aria-hidden />
+              {errorCount > 0 ? `${errorCount} error${errorCount === 1 ? '' : 's'}` : `${warningCount} warning${warningCount === 1 ? '' : 's'}`}
+            </button>
+          )}
+          {dirty && <Badge variant="outline">Unsaved</Badge>}
+          {/*
+            The n8n split, in one screen rather than two: the canvas is the
+            graph you are shaping, Runs is what it has actually done — and
+            picking a run there replays it over the SAME canvas, which is the
+            whole reason it is a tab beside it rather than a page of its own.
+          */}
+          <Button type="button" variant="ghost" size="icon" active={panelTab === 'runs'} aria-label="Run history" onClick={() => setPanelTab('runs')}>
+            <ClockCounterClockwiseIcon className="size-4" aria-hidden />
+          </Button>
+          <Button type="button" variant="ghost" size="icon" aria-label="Simulate" onClick={() => setSimulateOpen(true)} disabled={doc.nodes.length === 0}>
+            <PlayIcon className="size-4" aria-hidden />
+          </Button>
+          <Button
+            type="button"
+            onClick={() => void handleSave()}
+            // The server refuses a document with an error, so offering Save
+            // here only produced a red toast an author could miss. The error
+            // chip beside this button already says how many.
+            disabled={isPending('publish') || doc.nodes.length === 0 || errorCount > 0}
+            title={errorCount > 0 ? `Fix ${errorCount} error${errorCount === 1 ? '' : 's'} before saving` : undefined}
+          >
+            {isPending('publish') ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
       </div>
 
       {canvasMenu && (
@@ -554,12 +594,13 @@ export function FlowEditor({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 gap-3">
-        <div className="min-w-0 flex-1">
+      {/* The canvas is the container. Everything else sits on top of it. */}
+      <div className="absolute inset-0">
           <RunOverlay
             jobId={(pinnedRun ?? lastRunRef)?.jobId ?? null}
             runId={(pinnedRun ?? lastRunRef)?.runId ?? null}
             simulated={pinnedRun ? false : simulated}
+            onStatusChange={setRunStatus}
             doc={doc}
             findings={validation.findings}
             selectedIds={selectedIds}
@@ -585,13 +626,37 @@ export function FlowEditor({
             onInsertOnEdge={openEdgePalette}
             onConnectToEmpty={openConnectPalette}
           />
-        </div>
-        {historyOpen && (
-          <div className="flex w-[300px] flex-none flex-col overflow-hidden rounded-card border border-border bg-panel">
-            <HistoryPanel workflowName={doc.name} selectedRunId={pinnedRun?.runId ?? null} onSelect={setPinnedRun} />
-          </div>
-        )}
+      </div>
 
+      {/*
+        Floating, with a shadow, rather than a bordered column: the panel
+        belongs ON the canvas the way an inspector does in a drawing tool,
+        and the canvas runs underneath it instead of stopping at its edge.
+      */}
+      <div className="absolute inset-y-0 right-0 z-20 flex">
+        <WorkflowPanel
+          doc={doc}
+          dispatch={dispatch}
+          tab={panelTab}
+          onTabChange={setPanelTab}
+          selectedNode={panelNode}
+          onOpenNode={() => panelNode && setOpenNodeId(panelNode.id)}
+          onDuplicateNode={() => {
+            if (!panelNode) return
+            clipboard.copy(new Set([panelNode.id]))
+            void clipboard.paste()
+          }}
+          onRemoveNode={() => {
+            if (!panelNode) return
+            dispatch({ t: 'remove-nodes', ids: [panelNode.id] })
+            setSelectedIds(new Set())
+          }}
+          onPatchNode={(patch) => panelNode && dispatch({ t: 'update-node', id: panelNode.id, patch })}
+          findings={validation.findings}
+          runStatus={runStatus}
+          pinnedRunId={pinnedRun?.runId ?? null}
+          onPickRun={setPinnedRun}
+        />
       </div>
 
       <Sheet open={!!selectedNode} onOpenChange={(open) => !open && setOpenNodeId(null)}>
@@ -642,68 +707,3 @@ export function FlowEditor({
  * file's own comment) — added because nothing else can express "the
  * document's own name changed," and a workflow needs one to save at all.
  */
-function WorkflowMetaForm({ doc, dispatch }: { doc: WorkflowDoc; dispatch: UseHistoryResult['dispatch'] }) {
-  const [expanded, setExpanded] = useState(false)
-  return (
-    <section className="space-y-2 rounded-lg border bg-panel p-3">
-      <div className="flex flex-wrap items-center gap-3">
-        {/*
-          One editable name, not two (owner, 2026-09-05: "kenapa ada nama dan
-          judul kenapa ga jadi satu aja"). `title` is the one an author reads
-          and changes; `name` is the identity the URL, the API path and every
-          schedule pointing at this workflow use (spec §4.7), so it is set
-          once by `NewWorkflowDialog` and shown here as a fact, not a field.
-          Renaming it would break a schedule silently, which is exactly the
-          kind of edit a text input invites.
-        */}
-        <div className="min-w-40 flex-1 space-y-1">
-          <Label className="text-[11.5px] font-normal text-dim">Name</Label>
-          <Input
-            className="h-8 text-[12.5px]"
-            value={doc.title}
-            onChange={(e) => dispatch({ t: 'set-meta', patch: { title: e.target.value } }, 'meta-title')}
-            aria-label="Title"
-          />
-        </div>
-        <div className="min-w-40 flex-1 space-y-1">
-          <Label className="text-[11.5px] font-normal text-dim">Identifier</Label>
-          <p className="readout flex h-8 items-center truncate rounded-md border bg-panel px-2.5 text-[12.5px] text-dim" title={`${doc.name} — used by URLs, the API and schedules`}>
-            {doc.name}
-          </p>
-        </div>
-        <div className="w-28 space-y-1">
-          <Label className="text-[11.5px] font-normal text-dim">Step budget</Label>
-          <Input
-            type="number"
-            min={1}
-            max={500}
-            className="h-8 text-[12.5px]"
-            value={doc.maxSteps}
-            onChange={(e) => dispatch({ t: 'set-meta', patch: { maxSteps: Math.max(1, Math.min(500, e.target.valueAsNumber || 1)) } }, 'meta-maxSteps')}
-            aria-label="Maximum node executions"
-          />
-        </div>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setExpanded((v) => !v)}>
-          {expanded ? 'Less' : 'More'}
-        </Button>
-      </div>
-      {expanded && (
-        <div className="space-y-3 border-t pt-2.5">
-          <div className="space-y-1">
-            <Label className="text-[11.5px] font-normal text-dim">Description</Label>
-            <Textarea
-              className="min-h-14 text-[12.5px]"
-              value={doc.description}
-              onChange={(e) => dispatch({ t: 'set-meta', patch: { description: e.target.value } }, 'meta-description')}
-              aria-label="Description"
-            />
-          </div>
-          <div className="space-y-2">
-            <p className="rack-label">workflow parameters</p>
-            <ParamsEditor params={doc.params} onChange={(params) => dispatch({ t: 'set-meta', patch: { params } })} />
-          </div>
-        </div>
-      )}
-    </section>
-  )
-}

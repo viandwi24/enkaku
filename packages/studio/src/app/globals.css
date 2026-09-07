@@ -214,10 +214,26 @@
    (`docs/design.md`).
 --------------------------------------------------------------------------- */
 
-[data-testid='flow-canvas'] .react-flow__minimap {
+[data-testid='flow-canvas'] .react-flow__panel.react-flow__minimap {
+  /* Accent-bordered and shadowed, like every other thing floating on this
+     canvas (CEO's redesign, 2026-09-07) — a `--color-line` border made it
+     read as a hole cut in the canvas rather than a panel resting on it.
+
+     Cleared of the properties panel, which floats over the canvas' own
+     bottom-right corner: the library puts the minimap there and it sat
+     entirely behind the panel, measured at right:1573 against a panel
+     starting at 1261. 316px of panel, 12px of margin either side, 12px of
+     gap.
+
+     Selected as `.react-flow__panel.react-flow__minimap` rather than by the
+     minimap class alone: the element carries BOTH, and the library's own
+     `.react-flow__panel.right { right: 0 }` ties on specificity and wins on
+     source order. */
+  right: 352px;
   background-color: var(--color-panel);
-  border: 1px solid var(--color-line);
-  border-radius: 8px;
+  border: 1px solid var(--color-accent);
+  border-radius: 10px;
+  box-shadow: var(--shadow-panel-2);
   overflow: hidden;
 }
 

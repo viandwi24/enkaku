@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import {
   Background,
   BackgroundVariant,
-  Controls,
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
@@ -26,6 +25,7 @@ import { nodeIndexOf } from './useValidation'
 import { edgeTargetOf, type EdgeKind } from './doc-edit'
 import { FLOW_NODE_TYPES, type FlowNodeData } from './FlowNode'
 import { FLOW_EDGE_TYPES, type FlowEdgeData } from './FlowEdge'
+import { ZoomControls } from './ZoomControls'
 import type { RunState } from './useRunState'
 
 /**
@@ -303,7 +303,7 @@ function FlowCanvasInner({
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--color-line)" />
-        <Controls showInteractive={false} />
+        <ZoomControls />
         <MiniMap pannable zoomable nodeColor={(n) => (n.data?.node && (n.data.node as { kind: string }).kind === 'gate' ? 'var(--warn)' : 'var(--color-accent)')} />
       </ReactFlow>
     </div>
