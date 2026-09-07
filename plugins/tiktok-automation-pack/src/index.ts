@@ -795,6 +795,14 @@ export default definePlugin({
   // params, keywords) so the flow editor's palette can present them —
   // presentation only, nothing about how any member EXECUTES changes (plan
   // 300 D6, D7).
+  // 1.20.0 — wait for the app, do not guess at it. `relaunch` settled a fixed
+  // six seconds after a COLD start and every navigating script then acted on
+  // an app still drawing its first feed; `shop-browse` slept another 3-5 s
+  // after tapping Toko and judged the screen once. Read off the owner's farm:
+  // five devices, five runs lost, the failing dumps showing the FEED rather
+  // than the destination (2026-09-07). Both now poll for the surface they
+  // need, with the old blind sleep kept only as the opening settle. The
+  // readiness anchor is bilingual (Beranda / Home).
   // 1.19.0 — `commentChance` says what it does. Its name reads like "chance
   // of commenting", and the owner read it that way and asked for the default
   // to be 0 on the grounds that posting comments by default is dangerous
@@ -808,7 +816,7 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
-  version: '1.19.0',
+  version: '1.20.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
