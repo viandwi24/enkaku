@@ -1215,9 +1215,20 @@ export const schedules = sqliteTable(
      */
     scriptRef: text('script_ref').notNull(),
     params: text('params', { mode: 'json' }),
-    /** Exactly one of groupId / deviceIds is populated (plan 21 §9 open question #3 — no "all devices"). */
+    /**
+     * Exactly one of groupId / deviceIds / labelIds is populated (plan 21 §9
+     * open question #3 — no "all devices").
+     *
+     * `labelIds` (plan 225) is the one target that can change between two
+     * firings without anyone editing the schedule: a device given the label
+     * on Tuesday is in Wednesday's run. That is the point of scheduling
+     * against one — a group has the same property, but a device can only be
+     * in one group, so "every phone on the smoke pool" was not expressible
+     * as a schedule target at all before this.
+     */
     groupId: text('group_id'),
     deviceIds: text('device_ids', { mode: 'json' }), // string[]
+    labelIds: text('label_ids', { mode: 'json' }), // string[]
 
     // Batch shape, passed straight through to plan 20's dispatcher (script targets only).
     concurrency: integer('concurrency').notNull().default(0),

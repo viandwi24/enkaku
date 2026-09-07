@@ -568,6 +568,13 @@
       "when": 1788761867562,
       "tag": "0080_unusual_shadowcat",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "6",
+      "when": 1788763966061,
+      "tag": "0081_wild_mentor",
+      "breakpoints": true
     }
   ]
 }

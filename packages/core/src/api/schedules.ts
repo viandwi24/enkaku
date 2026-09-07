@@ -41,6 +41,7 @@ import { nextFires } from '../schedules/cron'
 import { fireOnce, type ScheduleAgentDispatch, type ScheduledAgentCeilings, type ScheduleRunner, type ScheduleRunnerDeps } from '../schedules/runner'
 import { resolveScriptRef } from '../scripts/resolve'
 import type { ScriptEntry, ScriptRegistry } from '../scripts/registry'
+import { assertLabelsExist } from '../registry/device-labels'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
@@ -50,6 +51,14 @@ const ScheduleTargetSchema = z.union([
   z.object({ groupId: z.string().min(1) }),
   // Plan 21 §9 open question #3 — "everything" is always something someone wrote down.
   z.object({ deviceIds: z.array(z.string()).min(1) }),
+  /**
+   * Every device carrying ALL of these labels (plan 225), re-resolved at
+   * each firing. The one target shape that can change between two runs
+   * without anyone editing the schedule — which is the reason to want it:
+   * a device belongs to one group, so "every phone on the smoke pool AND on
+   * Android 15" had no way to be a schedule target at all before this.
+   */
+  z.object({ labelIds: z.array(z.string().min(1)).min(1) }),
 ])
 
 const ScheduleBody = z.object({
@@ -97,6 +106,10 @@ const ValidateBody = z.object({ cron: z.string().min(1), timezone: z.string().mi
 const ERROR_STATUS: Record<string, number> = {
   schedule_not_found: 404,
   group_not_found: 404,
+  // Plan 225 — `assertLabelsExist` refuses a label id that does not exist.
+  // Without this row it fell through to the 500 default, which reads as "the
+  // farm broke" for what is plainly a bad request.
+  label_not_found: 404,
   E_BAD_REQUEST: 400,
   E_NOT_DISPATCHED: 409,
   E_NO_TARGETS: 409,
@@ -268,6 +281,7 @@ function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarg
     params: agentTarget ? null : row.params,
     groupId: row.groupId,
     deviceIds: (row.deviceIds as string[] | null) ?? [],
+    labelIds: (row.labelIds as string[] | null) ?? [],
     concurrency: row.concurrency,
     order: row.order as BatchOrder,
     onOverlap: row.onOverlap as OnOverlap,
@@ -360,6 +374,10 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     validateScriptForRun({ ...deps, actorRole: () => user?.role ?? null }, scriptId, params)
 
   const assertGroupExists = (target: z.infer<typeof ScheduleTargetSchema>): void => {
+    // A label id that does not exist is refused at write time, not silently
+    // stored to resolve to nothing at 3am — the same reasoning the group
+    // check below has always had.
+    if ('labelIds' in target) return assertLabelsExist(db, target.labelIds)
     if (!('groupId' in target)) return
     const row = db.select().from(groups).where(eq(groups.id, target.groupId)).get()
     if (!row) throw new EnkakuError('group_not_found', `no such group: ${target.groupId}`)
@@ -442,6 +460,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       params: workTarget.kind === 'script' ? (validatedParams ?? null) : null,
       groupId: 'groupId' in body.data.target ? body.data.target.groupId : null,
       deviceIds: 'deviceIds' in body.data.target ? body.data.target.deviceIds : null,
+      labelIds: 'labelIds' in body.data.target ? body.data.target.labelIds : null,
       concurrency: body.data.concurrency,
       order: body.data.order,
       onOverlap: body.data.onOverlap,
@@ -513,6 +532,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (body.data.target !== undefined) {
       patch.groupId = 'groupId' in body.data.target ? body.data.target.groupId : null
       patch.deviceIds = 'deviceIds' in body.data.target ? body.data.target.deviceIds : null
+      patch.labelIds = 'labelIds' in body.data.target ? body.data.target.labelIds : null
     }
 
     // Plan 68 §3.1, §4.2 — switching (or updating) the WORK target. `existingAgentTarget` tracks the

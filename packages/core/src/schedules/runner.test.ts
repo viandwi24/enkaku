@@ -7,7 +7,8 @@ import { createRunStore } from '../jobs/runs/store'
 import { createJobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { createLogger } from '../util/logger'
-import { fireOnce, type ScheduleRunnerDeps } from './runner'
+import { applyDeviceLabels, createLabel } from '../registry/device-labels'
+import { fireOnce, scheduleTarget, type ScheduleRunnerDeps } from './runner'
 
 /**
  * `schedules/runner.test.ts` (plan 211 §7.1, G10) — re-keyed from the
@@ -56,6 +57,7 @@ function seedSchedule(db: Db, overrides: Partial<ScheduleRow> & { id: string }):
     scriptRef: overrides.scriptRef ?? 'test-script@1.0.0',
     params: overrides.params ?? {},
     groupId: overrides.groupId ?? null,
+    labelIds: overrides.labelIds ?? null,
     deviceIds: overrides.deviceIds ?? ['d1', 'd2'],
     concurrency: overrides.concurrency ?? 0,
     order: overrides.order ?? 'as-listed',
@@ -234,5 +236,85 @@ describe('fireOnce — onOverlap (plan 211 §3.2 decision 4, G10)', () => {
     expect(deps.runs.getJob(job.id)?.runCount).toBe(2)
     const row = db.select().from(schedules).where(eq(schedules.id, 's1')).get()
     expect(row?.lastFireOutcome).toBe('dispatched')
+  })
+})
+
+
+describe('fireOnce — a label target (plan 225)', () => {
+  test('dispatches to every device carrying ALL the labels, and to no other', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedDevice(db, 'd2')
+    seedDevice(db, 'd3')
+    const smoke = createLabel(db, { name: 'Smoke Pool' })
+    const a15 = createLabel(db, { name: 'Android 15' })
+    applyDeviceLabels(db, 'd1', 'add', [smoke.id, a15.id])
+    applyDeviceLabels(db, 'd2', 'add', [smoke.id])
+    applyDeviceLabels(db, 'd3', 'add', [a15.id])
+
+    const schedule = seedSchedule(db, { id: 's1', deviceIds: null, labelIds: [smoke.id, a15.id] })
+    const deps = baseDeps(db)
+    await fireOnce(deps, schedule, new Date())
+
+    const row = db.select().from(schedules).where(eq(schedules.id, 's1')).get()
+    expect(row?.lastFireOutcome).toBe('dispatched')
+    const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, row!.batchId!)).all()
+    expect(memberJobs.map((j) => j.deviceId)).toEqual(['d1'])
+  })
+
+  test('a device labelled AFTER the schedule was written is in the next fire — the reason to schedule against a label at all', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedDevice(db, 'd2')
+    const smoke = createLabel(db, { name: 'Smoke Pool' })
+    applyDeviceLabels(db, 'd1', 'add', [smoke.id])
+
+    const schedule = seedSchedule(db, { id: 's1', deviceIds: null, labelIds: [smoke.id] })
+    const deps = baseDeps(db)
+    await fireOnce(deps, schedule, new Date())
+
+    const afterFirst = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
+    expect(db.select().from(jobs).where(eq(jobs.batchId, afterFirst.batchId!)).all()).toHaveLength(1)
+
+    // Settle the first fire's runs — `onOverlap` defaults to `skip`, so a
+    // second fire over a live batch would skip before it ever resolved the
+    // target, and this test would pass for the wrong reason.
+    for (const j of db.select().from(jobs).where(eq(jobs.batchId, afterFirst.batchId!)).all()) {
+      const run = deps.runs.latestRun(j.id)
+      if (run) db.update(jobRuns).set({ status: 'success', finishedAt: new Date() }).where(eq(jobRuns.id, run.id)).run()
+    }
+
+    // The operator labels a second phone between the two firings.
+    applyDeviceLabels(db, 'd2', 'add', [smoke.id])
+    await fireOnce(deps, afterFirst, new Date())
+
+    const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, afterFirst.batchId!)).all()
+    expect(new Set(memberJobs.map((j) => j.deviceId))).toEqual(new Set(['d1', 'd2']))
+  })
+
+  test('a label nothing carries any more reports no-targets rather than dispatching an empty batch', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const orphan = createLabel(db, { name: 'Nobody' })
+
+    const schedule = seedSchedule(db, { id: 's1', deviceIds: null, labelIds: [orphan.id] })
+    await fireOnce(baseDeps(db), schedule, new Date())
+
+    expect(db.select().from(schedules).where(eq(schedules.id, 's1')).get()?.lastFireOutcome).toBe('no-targets')
+  })
+})
+
+describe('scheduleTarget (plan 225)', () => {
+  test('reads a group, a label set, or an explicit list — in that order of specificity', () => {
+    const db = setUp()
+    const label = createLabel(db, { name: 'Smoke Pool' })
+    expect(scheduleTarget(seedSchedule(db, { id: 'g', groupId: 'grp-1' }))).toEqual({ groupId: 'grp-1' })
+    expect(scheduleTarget(seedSchedule(db, { id: 'l', deviceIds: null, labelIds: [label.id] }))).toEqual({ labelIds: [label.id] })
+    expect(scheduleTarget(seedSchedule(db, { id: 'd', deviceIds: ['d1'] }))).toEqual({ deviceIds: ['d1'] })
+  })
+
+  test('an empty stored label list is not a label target — it falls through to the device list', () => {
+    const db = setUp()
+    expect(scheduleTarget(seedSchedule(db, { id: 's', labelIds: [], deviceIds: ['d1'] }))).toEqual({ deviceIds: ['d1'] })
   })
 })

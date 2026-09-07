@@ -50,6 +50,7 @@ import { ScriptTrigger } from '@/components/scripts/ScriptPalette'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { fetchAllPages, fetchDevices } from '@/lib/api'
+import { useLabels } from '@/lib/labels'
 import { GroupOrDevicesField, type GroupOrDevicesValue } from './GroupOrDevicesField'
 
 export type ScheduleRow = ScheduleInfo
@@ -117,9 +118,12 @@ export function ScheduleDialog({
   const [scripts, setScripts] = useState<ScriptListItem[] | null>(null)
   const [scriptName, setScriptName] = useState('')
   const [params, setParams] = useState<unknown>(undefined)
-  const [target, setTarget] = useState<GroupOrDevicesValue>({ mode: 'group', groupId: null, deviceIds: [] })
+  const [target, setTarget] = useState<GroupOrDevicesValue>({ mode: 'group', groupId: null, deviceIds: [], labelIds: [] })
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [groups, setGroups] = useState<GroupInfo[]>([])
+  // Read the same way the Devices screen does — one fetch, no WS push: a
+  // label changes only when an operator changes it.
+  const { labels } = useLabels()
   const [concurrency, setConcurrency] = useState(0)
   const [order, setOrder] = useState<BatchOrder>('as-listed')
   const [onOverlap, setOnOverlap] = useState<OnOverlap>('skip')
@@ -170,7 +174,7 @@ export function ScheduleDialog({
       setOnApprovalRequired('deny')
       setScriptName('')
       setParams(undefined)
-      setTarget({ mode: 'group', groupId: null, deviceIds: [] })
+      setTarget({ mode: 'group', groupId: null, deviceIds: [], labelIds: [] })
       setConcurrency(0)
       setOrder('as-listed')
       setOnOverlap('skip')
@@ -203,8 +207,10 @@ export function ScheduleDialog({
       }
       setTarget(
         schedule.groupId
-          ? { mode: 'group', groupId: schedule.groupId, deviceIds: [] }
-          : { mode: 'devices', groupId: null, deviceIds: schedule.deviceIds },
+          ? { mode: 'group', groupId: schedule.groupId, deviceIds: [], labelIds: [] }
+          : schedule.labelIds.length > 0
+            ? { mode: 'labels', groupId: null, deviceIds: [], labelIds: schedule.labelIds }
+            : { mode: 'devices', groupId: null, deviceIds: schedule.deviceIds, labelIds: [] },
       )
       setConcurrency(schedule.concurrency)
       setOrder(schedule.order)
@@ -240,11 +246,21 @@ export function ScheduleDialog({
 
   if (!open) return null
 
-  const targetCount = target.mode === 'group' ? (groups.find((g) => g.id === target.groupId)?.usableCount ?? 0) : target.deviceIds.length
+  const targetCount =
+    target.mode === 'group'
+      ? (groups.find((g) => g.id === target.groupId)?.usableCount ?? 0)
+      : target.mode === 'labels'
+        ? // What the labels resolve to right now. A label schedule is
+          // re-resolved at every firing, so this is a reading, not a promise.
+          devices.filter((d) => {
+            const carried = new Set(d.labels.map((l) => l.id))
+            return target.labelIds.every((id) => carried.has(id))
+          }).length
+        : target.deviceIds.length
   const canSubmit =
     name.trim().length > 0 &&
     (preview?.valid ?? false) &&
-    (target.mode === 'group' ? !!target.groupId : target.deviceIds.length > 0) &&
+    (target.mode === 'group' ? !!target.groupId : target.mode === 'labels' ? target.labelIds.length > 0 : target.deviceIds.length > 0) &&
     (workKind === 'agent' ? !!agentId && prompt.trim().length > 0 : !!scriptName) &&
     intervalMinSec <= intervalMaxSec
 
@@ -260,7 +276,12 @@ export function ScheduleDialog({
     cron,
     timezone,
     workTarget,
-    target: target.mode === 'group' ? { groupId: target.groupId } : { deviceIds: target.deviceIds },
+    target:
+      target.mode === 'group'
+        ? { groupId: target.groupId }
+        : target.mode === 'labels'
+          ? { labelIds: target.labelIds }
+          : { deviceIds: target.deviceIds },
     concurrency,
     order,
     onOverlap,
@@ -500,7 +521,7 @@ export function ScheduleDialog({
 
           <div className="space-y-1.5">
             <Label className="text-row font-normal">Target</Label>
-            <GroupOrDevicesField value={target} onChange={setTarget} devices={devices} groups={groups} />
+            <GroupOrDevicesField value={target} onChange={setTarget} devices={devices} groups={groups} labels={labels} />
             {targetCount > 0 && (
               <p className="text-meta text-dim">
                 {targetCount} device{targetCount === 1 ? '' : 's'} match right now.

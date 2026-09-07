@@ -161,7 +161,7 @@ A workflow is a document (schema v2), owned by the farm, with no version of its 
 
 ### 4.7 Schedule
 
-A schedule names a script or a workflow (`target: { kind: 'script', ref } | { kind: 'workflow', name }`), a device target (§11), and a cron. It owns one job per target device; every fire adds a run with `trigger = 'schedule'`. `onOverlap` (skip, queue, cancel previous) applies to the job's running run. The prototype's `schedule_runs` table is deleted by plan 211; `schedule_agent_targets` stays for agent schedules. Schedules are listed on the third tab of Scripts & Workflows.
+A schedule names a script or a workflow (`target: { kind: 'script', ref } | { kind: 'workflow', name }`), a device target (`{ groupId }` | `{ labelIds }` | `{ deviceIds }`, columns `group_id`/`label_ids`/`device_ids`, exactly one populated), and a cron. The target is re-resolved at EVERY firing, never frozen at the first: a device that joins the group or gains the label between two runs is in the next one, and a batch's member jobs grow to match (a device that leaves keeps its existing job untouched). Labels (§4.2a) are the target shape that makes this worth stating — a device belongs to one group, so "every phone on the smoke pool AND on Android 15" had no expressible schedule target before plan 225. It owns one job per target device; every fire adds a run with `trigger = 'schedule'`. `onOverlap` (skip, queue, cancel previous) applies to the job's running run. The prototype's `schedule_runs` table is deleted by plan 211; `schedule_agent_targets` stays for agent schedules. Schedules are listed on the third tab of Scripts & Workflows.
 
 ### 4.8 Job, run, batch
 

@@ -60,6 +60,14 @@ export const ScheduleInfoSchema = z.object({
   params: z.unknown().nullable(),
   groupId: z.string().nullable(),
   deviceIds: z.array(z.string()),
+  /**
+   * The labels this schedule fires against (plan 225), AND semantics —
+   * resolved fresh at every firing, so a device labelled after the schedule
+   * was written is in the next run without anyone editing it. Empty for a
+   * group or explicit-device schedule; defaulted so a row written before
+   * this field existed still parses.
+   */
+  labelIds: z.array(z.string()).default([]),
   concurrency: z.number().int(),
   order: BatchOrderSchema,
   onOverlap: OnOverlapSchema,

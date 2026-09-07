@@ -149,8 +149,13 @@ export function pickJitterMs(jitterSec: number, random: () => number = Math.rand
 }
 
 /** Exactly one of groupId / deviceIds is populated on a schedule row (plan 21 §9 open question #3). */
-export function scheduleTarget(schedule: ScheduleRow): { groupId: string } | { deviceIds: string[] } {
+export function scheduleTarget(schedule: ScheduleRow): { groupId: string } | { deviceIds: string[] } | { labelIds: string[] } {
   if (schedule.groupId) return { groupId: schedule.groupId }
+  // Labels before the explicit list: a row carrying `label_ids` was written
+  // as a label schedule, and `device_ids` is null on it. Order matters only
+  // for a row that somehow has both, where the more specific intent wins.
+  const labelIds = (schedule.labelIds as string[] | null) ?? []
+  if (labelIds.length > 0) return { labelIds }
   return { deviceIds: (schedule.deviceIds as string[] | null) ?? [] }
 }
 
@@ -371,7 +376,12 @@ function resolveScheduleDeviceIds(db: Db, schedule: ScheduleRow): string[] {
           if (!group) throw new EnkakuError('group_not_found', `no such group: ${target.groupId}`)
           return resolveGroup(db, group)
         })()
-      : resolveTarget(db, { labelIds: [], deviceIds: target.deviceIds })
+      : 'labelIds' in target
+        ? // Resolved HERE, at fire time, never at write time — that is what
+          // makes a label schedule follow the label: a device labelled after
+          // the schedule was saved is in the next run.
+          resolveTarget(db, { labelIds: target.labelIds, deviceIds: [] })
+        : resolveTarget(db, { labelIds: [], deviceIds: target.deviceIds })
   if (resolved.usable.length === 0) {
     throw new EnkakuError(
       'E_NO_TARGETS',
