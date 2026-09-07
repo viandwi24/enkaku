@@ -795,6 +795,10 @@ export default definePlugin({
   // params, keywords) so the flow editor's palette can present them —
   // presentation only, nothing about how any member EXECUTES changes (plan
   // 300 D6, D7).
+  // 1.21.0 — `search` captures the screen immediately after tapping the search
+  // icon. A failure there used to carry only the page as it looked a minute
+  // later, after the anchor wait and the dialog sweep, which cannot tell "the
+  // tap did nothing" apart from "the tap worked and the anchor is wrong".
   // 1.20.0 — wait for the app, do not guess at it. `relaunch` settled a fixed
   // six seconds after a COLD start and every navigating script then acted on
   // an app still drawing its first feed; `shop-browse` slept another 3-5 s
@@ -816,7 +820,7 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
-  version: '1.20.0',
+  version: '1.22.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

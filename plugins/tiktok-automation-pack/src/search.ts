@@ -1,6 +1,7 @@
 import type { ScriptContext } from '@enkaku/sdk'
 import type { Selector, UiNode } from '@enkaku/protocol'
 import { sleep } from './human'
+import { bytesEqual, capture, snapshot } from './gesture'
 import { clearBlockingDialog, waitForAnchor } from './dialogs'
 import { all, centerOf } from './tree'
 
@@ -105,6 +106,16 @@ export async function searchFor(ctx: ScriptContext<unknown>, query: string, tab:
     }
   }
   await ctx.device.tap({ point: centerOf(icon.bounds) })
+  /*
+    The screen as it is immediately after the tap.
+    
+    Without it a failure here only ever carried the page as it looked a minute
+    later, after the anchor wait and the dialog sweep — long enough for the app
+    to have moved on, and no help at all in telling "the tap did nothing" apart
+    from "the tap worked and the anchor is wrong". Both were live hypotheses on
+    the owner's phones for a day (2026-09-08).
+  */
+  await capture(ctx, 'after-search-tap')
 
   // 2. Land on the search page — confirmed by its submit control, the one descriptive id in this app.
   await waitForAnchor(ctx, 'search page (submit control)', { id: SUBMIT_ID_SHORT }, { timeout: 15_000 })
