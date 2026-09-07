@@ -35,7 +35,7 @@ function request<T>(call: Omit<Extract<ChildToParent, { t: 'device.call' }>, 't'
   const callId = crypto.randomUUID()
   return new Promise<T>((resolve, reject) => {
     if (aborted) {
-      reject(new Error(`job di-abort (${aborted})`))
+      reject(new Error(`job aborted (${aborted})`))
       return
     }
     pendingDevice.set(callId, { resolve: resolve as (v: unknown) => void, reject })
@@ -47,7 +47,7 @@ function kvRequest<T>(call: KvCall): Promise<T> {
   const callId = crypto.randomUUID()
   return new Promise<T>((resolve, reject) => {
     if (aborted) {
-      reject(new Error(`job di-abort (${aborted})`))
+      reject(new Error(`job aborted (${aborted})`))
       return
     }
     pendingKv.set(callId, { resolve: resolve as (v: unknown) => void, reject })
@@ -63,7 +63,7 @@ function farmRequest(capability: string, input: unknown): Promise<unknown> {
   const callId = crypto.randomUUID()
   return new Promise<unknown>((resolve, reject) => {
     if (aborted) {
-      reject(new Error(`job di-abort (${aborted})`))
+      reject(new Error(`job aborted (${aborted})`))
       return
     }
     pendingFarm.set(callId, { resolve, reject })
@@ -75,7 +75,7 @@ function jobsRequest<T>(call: JobsCall): Promise<T> {
   const callId = crypto.randomUUID()
   return new Promise<T>((resolve, reject) => {
     if (aborted) {
-      reject(new Error(`job di-abort (${aborted})`))
+      reject(new Error(`job aborted (${aborted})`))
       return
     }
     pendingJobs.set(callId, { resolve: resolve as (v: unknown) => void, reject })
@@ -269,13 +269,13 @@ process.on('message', (raw: unknown) => {
     aborted = msg.reason
     abortController.abort()
     // Every pending device call is cancelled so the active phase stops quickly.
-    for (const [, waiter] of pendingDevice) waiter.reject(new Error(`job di-abort (${msg.reason})`))
+    for (const [, waiter] of pendingDevice) waiter.reject(new Error(`job aborted (${msg.reason})`))
     pendingDevice.clear()
-    for (const [, waiter] of pendingKv) waiter.reject(new Error(`job di-abort (${msg.reason})`))
+    for (const [, waiter] of pendingKv) waiter.reject(new Error(`job aborted (${msg.reason})`))
     pendingKv.clear()
-    for (const [, waiter] of pendingJobs) waiter.reject(new Error(`job di-abort (${msg.reason})`))
+    for (const [, waiter] of pendingJobs) waiter.reject(new Error(`job aborted (${msg.reason})`))
     pendingJobs.clear()
-    for (const [, waiter] of pendingFarm) waiter.reject(new Error(`job di-abort (${msg.reason})`))
+    for (const [, waiter] of pendingFarm) waiter.reject(new Error(`job aborted (${msg.reason})`))
     pendingFarm.clear()
   } else if (msg.t === 'init') {
     void runScript(msg)
@@ -292,11 +292,11 @@ function raceAbort<T>(promise: Promise<T>): Promise<T> {
     promise,
     new Promise<never>((_, reject) => {
       if (aborted) {
-        reject(Object.assign(new Error(`job di-abort (${aborted})`), { code: 'ABORTED' }))
+        reject(Object.assign(new Error(`job aborted (${aborted})`), { code: 'ABORTED' }))
         return
       }
       abortController.signal.addEventListener('abort', () =>
-        reject(Object.assign(new Error(`job di-abort (${aborted})`), { code: 'ABORTED' })),
+        reject(Object.assign(new Error(`job aborted (${aborted})`), { code: 'ABORTED' })),
       )
     }),
   ])
@@ -745,7 +745,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       value = await raceAbort(def.run(ctx))
     } catch (err) {
       failure = aborted
-        ? { code: aborted === 'crashed' ? 'APP_CRASHED' : 'TIMEOUT', message: `job di-abort (${aborted})`, phase: 'timeout' }
+        ? { code: aborted === 'crashed' ? 'APP_CRASHED' : 'TIMEOUT', message: `job aborted (${aborted})`, phase: 'timeout' }
         : toScriptError(err, currentPhase)
     }
 

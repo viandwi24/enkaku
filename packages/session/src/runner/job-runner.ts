@@ -413,6 +413,33 @@ export interface TraceStoreDeps {
  */
 export type AbortReason = 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout' | 'memory'
 
+/**
+ * What an abort reason means to the operator reading it on a job row.
+ *
+ * The raw reason used to be the whole message — a run that died because the
+ * phone lost its network said `attempt di-abort (hung)`, which names neither
+ * the cause nor anything to do about it, in two languages (owner's farm,
+ * 2026-09-07). The reason is still carried structurally in `code`; this is
+ * the sentence beside it.
+ */
+export function abortReasonSentence(reason: AbortReason): string {
+  switch (reason) {
+    case 'timeout':
+      return 'it ran past its time limit'
+    case 'cancelled':
+      return 'it was cancelled'
+    case 'hung':
+      return 'it stopped reporting progress — a device that lost its network, or an app stuck on one screen, both look like this'
+    case 'crashed':
+      return 'the app under test crashed'
+    case 'startup-timeout':
+      return 'it never finished starting up'
+    case 'memory':
+      return 'it went over its memory limit'
+  }
+}
+
+
 export interface RunningJob {
   /** `detail` is a human-readable cause, used only for `reason: 'crashed'` (plan 37 §4.4) — e.g. "com.example.app crashed: java.lang.NullPointerException". */
   abort(reason: AbortReason, detail?: string): void
@@ -671,7 +698,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       const resetSilenceTimer = () => {
         if (silenceTimer) clearTimeout(silenceTimer)
         silenceTimer = setTimeout(() => {
-          logger.append('error', 'runner', `child diam > ${effectiveSilenceLimitMs}ms — dianggap hang`)
+          logger.append('error', 'runner', `the child reported nothing for ${effectiveSilenceLimitMs}ms — treating it as hung`)
           doAbort('hung')
         }, effectiveSilenceLimitMs)
       }
@@ -1171,7 +1198,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               ok: false,
               error: {
                 code: abortErrorCode(abortReason),
-                message: abortDetail ?? `attempt di-abort (${abortReason})`,
+                message: abortDetail ?? `attempt aborted: ${abortReasonSentence(abortReason)}`,
                 phase: 'timeout',
               },
               finishRan: msg.finishRan || finishRan,
@@ -1202,7 +1229,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         finish({
           ok: false,
           error: abortReason
-            ? { code: abortErrorCode(abortReason), message: abortDetail ?? `child di-abort (${abortReason})`, phase: 'timeout' }
+            ? { code: abortErrorCode(abortReason), message: abortDetail ?? `child aborted: ${abortReasonSentence(abortReason)}`, phase: 'timeout' }
             : { code: 'CHILD_CRASHED', message: `child exited ${code} without sending a result`, phase: 'run' },
           finishRan,
           ...(peakRssBytes !== null ? { peakRssBytes } : {}),

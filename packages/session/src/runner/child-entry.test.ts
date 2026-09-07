@@ -524,7 +524,7 @@ describe('child-entry.ts — a failed run can still say something (plan 97 §3.5
               mode: 'finish-only',
               job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' },
               params: {},
-              priorError: opts.priorError ?? { code: 'TIMEOUT', message: 'job di-abort (timeout)', phase: 'timeout' },
+              priorError: opts.priorError ?? { code: 'TIMEOUT', message: 'job aborted (timeout)', phase: 'timeout' },
               rssSampleMs: 60_000,
               maxResultBytes: opts.maxResultBytes ?? 65_536,
             })

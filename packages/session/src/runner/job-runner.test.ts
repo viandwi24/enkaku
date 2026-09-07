@@ -707,7 +707,7 @@ describe('createJobRunner — the "crashed" abort reason (plan 37 §3.5, §4.4)'
 
     const outcome = await runner.execute(JOB)
     expect(outcome.error?.code).toBe('APP_CRASHED')
-    expect(outcome.error?.message).toBe('attempt di-abort (crashed)')
+    expect(outcome.error?.message).toBe('attempt aborted: the app under test crashed')
   })
 })
 
