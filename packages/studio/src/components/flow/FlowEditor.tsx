@@ -30,6 +30,7 @@ import { RunOverlay } from './RunOverlay'
 import { CanvasContextMenu, type CanvasMenuRequest } from './CanvasContextMenu'
 import { HistoryPanel } from './HistoryPanel'
 import { NodePalette } from './NodePalette'
+import { ActionSettings } from './ActionSettings'
 import { SequenceEditor, canUseSequence } from './SequenceEditor'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
@@ -368,6 +369,8 @@ export function FlowEditor({
 
   const selectedIndex = openNodeId ? doc.nodes.findIndex((n) => n.id === openNodeId) : -1
   const selectedNode = selectedIndex === -1 ? undefined : doc.nodes[selectedIndex]
+  /** In Sequential Mode a script node is configured as a plain form; everything else still opens the node inspector. */
+  const simpleAction = editorMode === 'sequence' && selectedNode?.kind === 'script' ? selectedNode : null
 
   /*
     What the Node tab shows: the single node selected on the canvas. The
@@ -708,9 +711,40 @@ export function FlowEditor({
         />
       </div>
 
+      {/*
+        Two panels behind one click, chosen by the mode the author is in.
+
+        Sequential Mode exists so a workflow can be built without meeting the
+        graph; opening a 1040px node inspector — identifier, script pin,
+        failure target, expression fields — the moment someone configures an
+        action put the graph straight back in front of them. `ActionSettings`
+        is the same node rendered as a plain settings form. Canvas mode is
+        untouched: a power user still gets everything, and "Open on the
+        canvas" is the one-click way through from the simple panel.
+      */}
       <Sheet open={!!selectedNode} onOpenChange={(open) => !open && setOpenNodeId(null)}>
-        <SheetContent side="right" showCloseButton={false} className="w-[1040px] max-w-[96vw] p-0">
-          {selectedNode && (
+        <SheetContent side="right" showCloseButton={false} className={cn('p-0', simpleAction ? 'w-[420px] max-w-[92vw]' : 'w-[1040px] max-w-[96vw]')}>
+          {simpleAction && (
+            <div className="flex h-full min-h-0 flex-col">
+              <header className="border-b px-4 py-3">
+                <p className="text-[13px] font-medium">{simpleAction.title || simpleAction.id}</p>
+                <p className="text-meta text-faint">Action settings</p>
+              </header>
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                <ActionSettings
+                  node={simpleAction}
+                  doc={doc}
+                  scripts={scripts}
+                  dispatch={dispatch}
+                  onOpenInCanvas={() => {
+                    setEditorMode('canvas')
+                    dispatch({ t: 'set-meta', patch: { ui: { editor: 'canvas' } } })
+                  }}
+                />
+              </div>
+            </div>
+          )}
+          {!simpleAction && selectedNode && (
             <NodePanel
               doc={doc}
               node={selectedNode}
