@@ -46,6 +46,11 @@ import searchPlay from './search-play'
  */
 export default definePlugin({
   id: 'youtube',
+  // 0.17.0 — `openSearchField` waited for "a field OR a bar", and the bar also
+  // exists on the home screen of an account with no watch history, so the poll
+  // returned instantly on HOME and the fallback tapped that card instead of
+  // the search screen. It waits for the field alone now; the bar is reached
+  // only after that wait comes back empty.
   // 0.16.0 — the search icon's own tap was still a guess. `openSearchField`
   // now polls for the search page instead of the caller sleeping 1.2-2 s and
   // capturing: that capture was catching the HOME FEED, and 0.15.0's
@@ -70,7 +75,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.16.0',
+  version: '0.17.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',

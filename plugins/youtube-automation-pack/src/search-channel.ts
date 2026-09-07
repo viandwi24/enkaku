@@ -212,14 +212,22 @@ export async function openSearchField(ctx: ScriptContext<unknown>): Promise<UiNo
     owner's phones that caught the HOME FEED still on screen, and everything
     after it was reasoning about the wrong page.
   */
-  const arrived = await waitForTree(
-    ctx,
-    (t) => firstMatch(t, SEARCH_FIELD) !== null || firstMatch(t, SEARCH_BAR_BUTTON) !== null,
-    { budgetMs: SEARCH_OPEN_TIMEOUT_MS },
-  )
+  /*
+    Wait for the FIELD, never for "field or bar".
+
+    The bar button also exists on the HOME screen — on an account with no
+    watch history YouTube draws a "Coba telusuri untuk memulai" card with its
+    own search bar. A poll that accepted either one therefore returned
+    instantly, on home, before the search screen had opened, and the fallback
+    below then tapped the home card instead of waiting. That was this
+    function's own bug, and it cost a run every time (2026-09-08).
+  */
+  const arrived = await waitForTree(ctx, (t) => firstMatch(t, SEARCH_FIELD) !== null, { budgetMs: SEARCH_OPEN_TIMEOUT_MS })
   const direct = firstMatch(arrived.tree, SEARCH_FIELD)
   if (direct) return direct.node
 
+  // Only now, with no input anywhere after a full wait, is the two-step build
+  // the likely shape: tap the bar and give the input its own budget.
   const bar = firstMatch(arrived.tree, SEARCH_BAR_BUTTON)
   if (!bar) return null
   ctx.log.info(`the search screen had no text field; tapping its search bar (${bar.via})`)
