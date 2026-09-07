@@ -110,6 +110,12 @@ export type AuditAction =
   // how much of it" is answerable afterwards rather than inferred from a gap.
   | 'job.delete'
   | 'job.history.clear'
+  // The run debug bundle (`GET /:id/runs/:runId/export.zip`). Read-only, and
+  // audited anyway: the bundle leaves the farm as one file carrying a run's
+  // frames, logs, parameters and result, so "who took a copy of this run out
+  // of here, and when" is a question an operator can be asked afterwards.
+  // `meta` carries the counts, so a truncated bundle is answerable too.
+  | 'job.run.export'
   | 'group.create'
   | 'group.update'
   | 'group.delete'

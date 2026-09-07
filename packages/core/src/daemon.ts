@@ -3190,6 +3190,12 @@ let blobGc: BlobGc | null = null
           db,
           dataDir: cfg.dataDir,
           traceStore: traceFrameStore,
+          // The run debug bundle (`GET /:id/runs/:runId/export.zip`) refuses
+          // above the SAME `transfer.maxArchiveBytes` the batch bulk-pull
+          // archive already uses — one farm-wide answer to how big a zip this
+          // server builds may get, read live so a settings change applies to
+          // the next download.
+          archiveSettings: () => transferConstants(settingsStore.get()),
         }),
         deviceRoutes: createDeviceRoutes({
           db,
