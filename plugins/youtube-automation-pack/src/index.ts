@@ -46,7 +46,31 @@ import searchPlay from './search-play'
  */
 export default definePlugin({
   id: 'youtube',
-  version: '0.13.0',
+  // 0.16.0 — the search icon's own tap was still a guess. `openSearchField`
+  // now polls for the search page instead of the caller sleeping 1.2-2 s and
+  // capturing: that capture was catching the HOME FEED, and 0.15.0's
+  // geometric fallback then tapped a VIDEO ROW because it was wide and near
+  // the top. The fallback is gone — an anchor that can match the wrong thing
+  // turns "I could not find it" into "I did something else".
+  // 0.15.0 — two more guesses replaced by waits, from the first two-device
+  // warm-up on the owner's phones (2026-09-08, both at 0/3 actions):
+  // `scroll-shorts` slept 4-6 s after tapping the Shorts tab and judged the
+  // screen once — Shorts loads video before it has a rail — and every
+  // search-based script expected an `EditText` that this YouTube build does
+  // not show: its search bar is a `Button` (`desc:"Telusuri YouTube"`) and the
+  // input appears only after that is tapped. `openSearchField` handles both
+  // shapes, matching the bar by description in three languages with a
+  // geometric fallback for a build whose wording we have not met.
+  // 0.14.0 — wait for the app, do not guess at it. Every launch site slept a
+  // flat 5 s after a `clearRecents` cold start and then acted; on the owner's
+  // phones all six actions of a two-device warm-up failed on 2026-09-08, each
+  // one a tap that landed before YouTube could act on it ("tapped the Shorts
+  // tab but the Shorts rail never appeared", "the search screen opened with no
+  // text field"). `relaunch` in `youtube.ts` now polls for the app's own
+  // bottom bar — the principle `waitForTree`'s comment already stated for
+  // search results, finally applied to the launch before them. The readiness
+  // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
+  version: '0.16.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',

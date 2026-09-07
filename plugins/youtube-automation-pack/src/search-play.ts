@@ -2,8 +2,8 @@ import type { PluginMemberScript } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
-import { capture, firstMatch, sleep, tapNode, waitForTree, YOUTUBE_PACKAGE } from './youtube'
-import { SEARCH_ENTRY, SEARCH_FIELD, adEvidence, clickableFor, hasResultRows, playerEvidence, resultRowsOf, skipControlOf, titleFromRow } from './search-channel'
+import { YOUTUBE_PACKAGE, capture, firstMatch, relaunch, sleep, tapNode, waitForTree } from './youtube'
+import { SEARCH_ENTRY, SEARCH_FIELD, openSearchField, adEvidence, clickableFor, hasResultRows, playerEvidence, resultRowsOf, skipControlOf, titleFromRow } from './search-channel'
 import { between, browseComments, keywordBoost, makeRng, pressLike, readableStrings } from './behavior'
 
 /**
@@ -87,9 +87,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   timeout: 10 * 60_000,
 
   async prepare(ctx) {
-    await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
-    await ctx.device.app.launch(YOUTUBE_PACKAGE)
-    await sleep(5_000)
+    await relaunch(ctx)
   },
 
   async run(ctx) {
@@ -105,11 +103,12 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const entry = firstMatch(home, SEARCH_ENTRY)
     if (!entry) fail('open-search', 'no search button on the YouTube home screen — see artifact 01-home')
     await tapNode(ctx, entry!.node)
-    await sleep(between(rng, 1_200, 2_000))
+    // No fixed wait here: `openSearchField` polls for the search screen itself.
+    // The capture stays, so a failure still carries the page it actually saw.
     const screen = await capture(ctx, '02-search-open')
-    const field = firstMatch(screen, SEARCH_FIELD)
+    const field = await openSearchField(ctx)
     if (!field) fail('type-query', 'the search screen opened with no text field — see artifact 02-search-open')
-    await tapNode(ctx, field!.node)
+    await tapNode(ctx, field!)
     await sleep(between(rng, 400, 800))
     await ctx.device.type(ctx.params.query)
     await ctx.device.key('ENTER')

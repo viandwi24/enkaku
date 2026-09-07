@@ -2,9 +2,12 @@ import type { PluginMemberScript } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
-import { sleep, tapNode, YOUTUBE_PACKAGE } from './youtube'
+import { YOUTUBE_PACKAGE, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { flatten } from './tree'
 import { advanceFeedVerified, browseComments, frameOf, makeRng, between, pickWatchMs, pressLike, keywordBoost, readableStrings } from './behavior'
+
+/** How long to wait for the Shorts rail after tapping its tab. */
+const SHORTS_ENTER_TIMEOUT_MS = 20_000
 
 /**
  * `scroll-shorts` — browse the Shorts feed like a person browsing it.
@@ -81,7 +84,6 @@ const resultSchema = z.object({
   steps: z.array(z.string()).describe('Each step reached, in order — where a failed run stopped.').meta(ui({ title: 'Steps' })),
 })
 
-const LAUNCH_SETTLE_MS = 5_000
 
 type LikeOutcome = 'liked' | 'already-liked' | 'not-signed-in' | 'no-button' | 'not-confirmed'
 type CommentOutcome = 'browsed' | 'no-button' | 'not-signed-in' | 'no-close'
@@ -121,9 +123,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   timeout: 30 * 60_000,
 
   async prepare(ctx) {
-    await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
-    await ctx.device.app.launch(YOUTUBE_PACKAGE)
-    await sleep(LAUNCH_SETTLE_MS)
+    await relaunch(ctx)
   },
 
   async run(ctx) {
@@ -138,9 +138,18 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const tab = shortsTabOf(tree)
     if (!tab) throw new Error('the Shorts tab was not on the bottom navigation — see the first artifact')
     await tapNode(ctx, tab)
-    await sleep(between(rng, 4_000, 6_000))
-    tree = await ctx.device.dump()
-    if (!inShorts(tree)) throw new Error('tapped the Shorts tab but the Shorts rail never appeared — see artifacts')
+    /*
+      Poll for the rail; do not sleep a guess at it.
+
+      This was `sleep(4_000..6_000)` and then ONE dump, so whatever the screen
+      held at that instant decided the run. Shorts loads video before it has a
+      rail to show, and on the owner's phones four to six seconds was not
+      enough: both devices failed here on 2026-09-08 with YouTube itself up and
+      responsive (`youtube ready 1s after launch` in the same log).
+    */
+    const entered = await waitForTree(ctx, inShorts, { budgetMs: SHORTS_ENTER_TIMEOUT_MS })
+    tree = entered.tree
+    if (!entered.ok) throw new Error('tapped the Shorts tab but the Shorts rail never appeared — see artifacts')
     ctx.log.info('youtube: inside the Shorts feed')
 
     const frame = await frameOf(ctx)

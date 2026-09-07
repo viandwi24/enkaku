@@ -1,8 +1,8 @@
-import type { PluginMemberScript } from '@enkaku/sdk'
+import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
-import { capture, firstMatch, hasId, isVisible, sleep, tapNode, waitForTree, YOUTUBE_PACKAGE } from './youtube'
+import { YOUTUBE_PACKAGE, capture, firstMatch, hasId, isVisible, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { flatten } from './tree'
 
 /**
@@ -101,7 +101,6 @@ const resultSchema = z.object({
 })
 
 /** Time for the app to draw after a cold launch. */
-const LAUNCH_SETTLE_MS = 5_000
 /** Time for a tap to take effect before the next dump. */
 const UI_SETTLE_MS = 1_500
 /** Budgets, not sleeps — see `waitForTree`. */
@@ -166,6 +165,71 @@ export const SEARCH_FIELD: readonly { via: string; test: (n: UiNode) => boolean 
   { via: 'id:search_edit_text', test: (n: UiNode) => hasId(n, 'search_edit_text') },
   { via: 'class:EditText', test: (n: UiNode) => n.className.endsWith('EditText') },
 ] as const
+
+/**
+ * The search BAR, on builds that open a landing screen before the input.
+ *
+ * Newer YouTube builds answer the search icon with a suggestions screen whose
+ * search bar is an `android.widget.Button`, not an `EditText` — the real input
+ * appears only after that button is tapped. Dumped from the owner's SM-A075F
+ * on 2026-09-08, where `SEARCH_FIELD` found nothing at all and every
+ * search-based script failed with "the search screen opened with no text
+ * field":
+ *
+ *     android.widget.Button  desc="Telusuri YouTube"  clickable  [133,377→587,452]
+ *     (no EditText anywhere on the screen)
+ *
+ * The button carries no resource id, so its only identifier is that
+ * description — which is localised, hence the language list.
+ *
+ * There is deliberately NO geometric fallback. One was tried ("a wide
+ * clickable Button in the top chrome") and it matched a VIDEO ROW on the home
+ * feed — `[0,154→720,657]`, `desc:"Gw Perlu Bicara … putar video"` — so a run
+ * that had not yet reached the search screen opened a video instead. An anchor
+ * that can match the wrong thing is worse than no anchor: it turns "I could
+ * not find it" into "I did something else".
+ */
+export const SEARCH_BAR_BUTTON: readonly { via: string; test: (n: UiNode) => boolean }[] = [
+  {
+    via: 'desc:Search YouTube',
+    test: (n: UiNode) => n.clickable && /^(search|telusuri|cari)\s+youtube$/i.test((n.desc || n.text).trim()),
+  },
+] as const
+
+/**
+ * Get to a usable search input, whichever of the two shapes this build has.
+ *
+ * Old shape: the search icon opens a screen that already holds an `EditText`.
+ * New shape: it opens a suggestions screen whose bar is a `Button`, and the
+ * `EditText` appears only after that is tapped. Returns the field, or `null`
+ * when neither shape produced one — the caller keeps its own artefact and
+ * message, since it knows which script it is.
+ */
+export async function openSearchField(ctx: ScriptContext<unknown>): Promise<UiNode | null> {
+  /*
+    Wait for the search screen, rather than assuming the tap that opened it has
+    landed. The callers used to `sleep(1_200..2_000)` and capture: on the
+    owner's phones that caught the HOME FEED still on screen, and everything
+    after it was reasoning about the wrong page.
+  */
+  const arrived = await waitForTree(
+    ctx,
+    (t) => firstMatch(t, SEARCH_FIELD) !== null || firstMatch(t, SEARCH_BAR_BUTTON) !== null,
+    { budgetMs: SEARCH_OPEN_TIMEOUT_MS },
+  )
+  const direct = firstMatch(arrived.tree, SEARCH_FIELD)
+  if (direct) return direct.node
+
+  const bar = firstMatch(arrived.tree, SEARCH_BAR_BUTTON)
+  if (!bar) return null
+  ctx.log.info(`the search screen had no text field; tapping its search bar (${bar.via})`)
+  await tapNode(ctx, bar.node)
+  const after = await waitForTree(ctx, (t) => firstMatch(t, SEARCH_FIELD) !== null, { budgetMs: SEARCH_OPEN_TIMEOUT_MS })
+  return after.ok ? (firstMatch(after.tree, SEARCH_FIELD)?.node ?? null) : null
+}
+
+/** How long to wait for the search screen after tapping the search icon, and for its input after tapping the bar. */
+const SEARCH_OPEN_TIMEOUT_MS = 15_000
 
 /**
  * The band of the screen that holds CONTENT.
@@ -603,9 +667,7 @@ const searchChannelScript: PluginMemberScript<typeof paramsSchema, typeof result
   async prepare(ctx) {
     // A cold start every time, so a run never inherits whatever screen the last
     // one left behind — the most common source of a "worked yesterday" failure.
-    await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
-    await ctx.device.app.launch(YOUTUBE_PACKAGE)
-    await sleep(LAUNCH_SETTLE_MS)
+    await relaunch(ctx)
   },
 
   async run(ctx) {

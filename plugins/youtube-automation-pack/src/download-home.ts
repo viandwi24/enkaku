@@ -2,7 +2,7 @@ import type { PluginMemberScript } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
-import { capture, hasId, isVisible, sleep, tapNode, YOUTUBE_PACKAGE } from './youtube'
+import { YOUTUBE_PACKAGE, capture, hasId, isVisible, relaunch, sleep, tapNode } from './youtube'
 import { flatten } from './tree'
 import { between, bytesEqual, makeRng, pick, snackbarText } from './behavior'
 
@@ -97,9 +97,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   timeout: 15 * 60_000,
 
   async prepare(ctx) {
-    await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
-    await ctx.device.app.launch(YOUTUBE_PACKAGE)
-    await sleep(5_000)
+    await relaunch(ctx)
   },
 
   async run(ctx) {

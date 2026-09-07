@@ -140,6 +140,53 @@ export function labelled(tree: UiNode, value: string): UiNode[] {
  * tree either way, so a caller that times out still has something to capture
  * and report instead of an exception with nothing attached.
  */
+/**
+ * The labels YouTube's bottom bar carries, in both languages it ships here.
+ *
+ * Any one of them means the app is past its splash and drawing its own chrome.
+ * Matching is on `text` OR `desc`, case-insensitively (`labelled`), so this is
+ * a list to try rather than one pattern — and it is deliberately not a
+ * resource id: those rotate between YouTube builds, and a wrong id matches on
+ * no phone at all, which is worse than a label in the wrong language.
+ */
+const READY_LABELS = ['Home', 'Beranda', 'Shorts', 'Subscriptions', 'Langganan'] as const
+
+/** How long to keep looking for that bar after a cold launch before going ahead anyway. */
+const READY_TIMEOUT_MS = 25_000
+
+/** True once YouTube is showing its own navigation rather than a splash. */
+export function isReady(tree: UiNode): boolean {
+  return READY_LABELS.some((label) => labelled(tree, label).length > 0)
+}
+
+/**
+ * Force-stop, launch, and WAIT FOR THE APP — not for a fixed five seconds.
+ *
+ * Every launch site in this pack slept `5_000` and then acted. On the owner's
+ * phones that is not enough after a `clearRecents` cold start: all six actions
+ * of a two-device warm-up failed on 2026-09-08, every one of them a tap that
+ * landed before YouTube could act on it ("tapped the Shorts tab but the Shorts
+ * rail never appeared", "the search screen opened with no text field").
+ *
+ * The principle is already in this file — `waitForTree`'s own comment says a
+ * fixed sleep after a submit is a guess about a network. It was applied to
+ * search results and never to the launch that precedes them.
+ *
+ * The short blind settle stays: the inspector cannot dump a window that does
+ * not exist yet, and polling into that costs a round trip per attempt. After
+ * the budget we continue anyway, so a phone whose inspector will not answer
+ * still gets its run and the caller's own anchor reports what it actually
+ * found.
+ */
+export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecents?: boolean }): Promise<void> {
+  await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: opts?.clearRecents ?? true })
+  await ctx.device.app.launch(YOUTUBE_PACKAGE)
+  await sleep(3_000)
+  const { ok, waitedMs } = await waitForTree(ctx, isReady, { budgetMs: READY_TIMEOUT_MS })
+  if (ok) ctx.log.info(`youtube ready ${Math.round(waitedMs / 1000)}s after launch`)
+  else ctx.log.warn(`youtube did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`)
+}
+
 export async function waitForTree(
   ctx: ScriptContext<unknown>,
   ready: (tree: UiNode) => boolean,
