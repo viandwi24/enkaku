@@ -193,6 +193,127 @@ const adb: VerbDialogSpec<AdbValue> = {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * The three batch controls — concurrency, device order, and the per-device
+ * start delay range — lifted out of the run-script dialog by plan 313 §4.4
+ * so `run-workflow` renders the SAME control rather than a second one that
+ * drifts. Generic over the owning value: a caller passes the four fields and
+ * gets them back patched.
+ *
+ * `idPrefix` keeps the label/input `htmlFor` pairs unique when two dialogs
+ * are ever mounted at once.
+ */
+interface BatchPacingValue {
+  concurrency: number
+  order: 'as-listed' | 'random'
+  /** Seconds, as typed. Kept as strings so a half-typed "1" is not read as a delay of one second the instant it is entered. */
+  delayMin: string
+  delayMax: string
+}
+
+function BatchPacingFields({
+  idPrefix,
+  value,
+  onChange,
+  deviceCount,
+}: {
+  idPrefix: string
+  value: BatchPacingValue
+  onChange: (patch: Partial<BatchPacingValue>) => void
+  deviceCount: number
+}) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-concurrency`}>Concurrency</Label>
+          <Select value={String(value.concurrency)} onValueChange={(v) => onChange({ concurrency: Number(v) })}>
+            <SelectTrigger id={`${idPrefix}-concurrency`} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[0, 1, 2, 4, 8].map((c) => (
+                <SelectItem key={c} value={String(c)}>
+                  {c === 0 ? 'Unlimited' : c}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-order`}>Order</Label>
+          <Select value={value.order} onValueChange={(v) => onChange({ order: v as BatchPacingValue['order'] })}>
+            <SelectTrigger id={`${idPrefix}-order`} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="as-listed">As listed</SelectItem>
+              <SelectItem value="random">Random</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      {/*
+        Both settings above only mean something for more than one device, and
+        neither said so — an operator running on one phone was choosing
+        between two answers that could not differ. The line says which is
+        which and stops asking when the target is one.
+      */}
+      <p className="text-meta text-faint">
+        {deviceCount > 1
+          ? `How many of the ${deviceCount} run at once, and in what order the queue reaches them. Random is drawn once, at dispatch, and is what each device's own position is recorded as.`
+          : 'Both only apply to more than one device.'}
+      </p>
+
+      {deviceCount > 1 && (
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-delay-min`}>Start delay per device</Label>
+          {/*
+            A draw per device, not a ladder. `deviceIntervalMs` (the batch
+            row's other field) spaces devices out by multiplying an interval
+            by position, which also FIXES the wall-clock order: the phone at
+            the end of the list is always last. An operator asking for
+            "10-30 seconds each" wants every device to wait a different amount
+            without being ranked (owner, 2026-09-06).
+          */}
+          <div className="flex items-center gap-2">
+            <Input
+              id={`${idPrefix}-delay-min`}
+              className="w-[92px]"
+              inputMode="numeric"
+              value={value.delayMin}
+              onChange={(e) => onChange({ delayMin: e.target.value })}
+              placeholder="0"
+              aria-label="Minimum start delay in seconds"
+            />
+            <span className="text-body text-faint">to</span>
+            <Input
+              className="w-[92px]"
+              inputMode="numeric"
+              value={value.delayMax}
+              onChange={(e) => onChange({ delayMax: e.target.value })}
+              placeholder="0"
+              aria-label="Maximum start delay in seconds"
+            />
+            <span className="text-body text-faint">seconds</span>
+          </div>
+          <p className="text-meta text-faint">
+            Each device waits its own random amount inside this range before it starts. Leave both at 0 to start everything at once.
+          </p>
+        </div>
+      )}
+    </>
+  )
+}
+
+/** The `pacing` block a `BatchPacingValue` becomes on the wire — omitted entirely when no delay was asked for, so an unpaced batch keeps the exact shape it took before the field existed. */
+function pacingOf(v: BatchPacingValue): { pacing: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs: [number, number] } } | Record<string, never> {
+  if (secondsOf(v.delayMax) <= 0) return {}
+  return { pacing: { count: 1, intervalMs: [0, 0], deviceIntervalMs: 0, deviceDelayMs: [secondsOf(v.delayMin) * 1000, secondsOf(v.delayMax) * 1000] } }
+}
+
+// ---------------------------------------------------------------------------
 // 5. Run script
 // ---------------------------------------------------------------------------
 interface RunScriptValue {
@@ -272,84 +393,12 @@ function RunScriptFields({ value, onChange, target }: { value: RunScriptValue; o
           onCanSubmitChange={(ok) => onChange((prev) => ({ ...prev, formOk: ok }))}
         />
       )}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1.5">
-          <Label htmlFor="run-script-concurrency">Concurrency</Label>
-          <Select value={String(value.concurrency)} onValueChange={(v) => onChange({ ...value, concurrency: Number(v) })}>
-            <SelectTrigger id="run-script-concurrency" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {[0, 1, 2, 4, 8].map((c) => (
-                <SelectItem key={c} value={String(c)}>
-                  {c === 0 ? 'Unlimited' : c}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="run-script-order">Order</Label>
-          <Select value={value.order} onValueChange={(v) => onChange({ ...value, order: v as RunScriptValue['order'] })}>
-            <SelectTrigger id="run-script-order" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="as-listed">As listed</SelectItem>
-              <SelectItem value="random">Random</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      {/*
-        Both settings above only mean something for more than one device, and
-        neither said so — an operator running on one phone was choosing
-        between two answers that could not differ. The line says which is
-        which and stops asking when the target is one.
-      */}
-      <p className="text-meta text-faint">
-        {target.count > 1
-          ? `How many of the ${target.count} run at once, and in what order the queue reaches them. Random is drawn once, at dispatch, and is what each device's own position is recorded as.`
-          : 'Both only apply to more than one device.'}
-      </p>
-
-      {target.count > 1 && (
-        <div className="space-y-1.5">
-          <Label htmlFor="run-script-delay-min">Start delay per device</Label>
-          {/*
-            A draw per device, not a ladder. `deviceIntervalMs` (the batch
-            row's other field) spaces devices out by multiplying an interval
-            by position, which also FIXES the wall-clock order: the phone at
-            the end of the list is always last. An operator asking for
-            "10-30 seconds each" wants every device to wait a different amount
-            without being ranked (owner, 2026-09-06).
-          */}
-          <div className="flex items-center gap-2">
-            <Input
-              id="run-script-delay-min"
-              className="w-[92px]"
-              inputMode="numeric"
-              value={value.delayMin}
-              onChange={(e) => onChange({ ...value, delayMin: e.target.value })}
-              placeholder="0"
-              aria-label="Minimum start delay in seconds"
-            />
-            <span className="text-body text-faint">to</span>
-            <Input
-              className="w-[92px]"
-              inputMode="numeric"
-              value={value.delayMax}
-              onChange={(e) => onChange({ ...value, delayMax: e.target.value })}
-              placeholder="0"
-              aria-label="Maximum start delay in seconds"
-            />
-            <span className="text-body text-faint">seconds</span>
-          </div>
-          <p className="text-meta text-faint">
-            Each device waits its own random amount inside this range before it starts. Leave both at 0 to start everything at once.
-          </p>
-        </div>
-      )}
+      <BatchPacingFields
+        idPrefix="run-script"
+        value={value}
+        onChange={(patch) => onChange({ ...value, ...patch })}
+        deviceCount={target.count}
+      />
     </div>
   )
 }
@@ -367,11 +416,7 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
     params: v.params,
     concurrency: v.concurrency,
     order: v.order,
-    // Omitted entirely when both are zero: an unpaced batch must keep taking
-    // exactly the shape it took before this field existed.
-    ...(secondsOf(v.delayMax) > 0
-      ? { pacing: { count: 1, intervalMs: [0, 0] as [number, number], deviceIntervalMs: 0, deviceDelayMs: [secondsOf(v.delayMin) * 1000, secondsOf(v.delayMax) * 1000] as [number, number] } }
-      : {}),
+    ...pacingOf(v),
     ...(v.explicit ? { explicit: true } : {}),
   }),
   onDone: (res, _grouped, v) => {
@@ -395,11 +440,11 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
 // one; `ActionDialog.tsx`, `useTarget` and `DevicePicker` are reused
 // unchanged, generic over `spec.verb`.)
 // ---------------------------------------------------------------------------
-interface RunWorkflowValue {
+interface RunWorkflowValue extends BatchPacingValue {
   workflowName: string
   params: unknown
 }
-function RunWorkflowFields({ value, onChange }: { value: RunWorkflowValue; onChange: (v: RunWorkflowValue) => void }) {
+function RunWorkflowFields({ value, onChange, target }: { value: RunWorkflowValue; onChange: (v: RunWorkflowValue) => void; target: { count: number } }) {
   const [workflows, setWorkflows] = useState<WorkflowInfo[]>([])
   useEffect(() => {
     void listWorkflows().then(setWorkflows)
@@ -419,7 +464,7 @@ function RunWorkflowFields({ value, onChange }: { value: RunWorkflowValue; onCha
           <Combobox
             ariaLabel="Workflow"
             value={value.workflowName}
-            onValueChange={(name) => onChange({ workflowName: name, params: undefined })}
+            onValueChange={(name) => onChange({ ...value, workflowName: name, params: undefined })}
             options={workflows.map((w) => ({ value: w.name, label: w.name }))}
             placeholder="Choose a workflow"
             searchPlaceholder="Filter workflows…"
@@ -439,11 +484,18 @@ function RunWorkflowFields({ value, onChange }: { value: RunWorkflowValue; onCha
             value={value.params}
             onApply={(params) => onChange({ ...value, params })}
           />
-          <SchemaForm schema={schema as JsonSchemaNode} value={value.params} onChange={(params) => onChange({ ...value, params })} />
+            <SchemaForm schema={schema as JsonSchemaNode} value={value.params} onChange={(params) => onChange({ ...value, params })} />
         </>
       ) : (
         <p className="text-body text-dim">This workflow takes no parameters.</p>
       )}
+      {/*
+        Plan 313 §4.4 — the same control the run-script dialog has had since
+        plan 94. A workflow batch is a batch row, so "open the phones one by
+        one, 20-30 seconds apart, in a random order" was always supported by
+        the queue and simply had nowhere to be typed.
+      */}
+      <BatchPacingFields idPrefix="run-workflow" value={value} onChange={(patch) => onChange({ ...value, ...patch })} deviceCount={target.count} />
     </div>
   )
 }
@@ -451,10 +503,12 @@ const runWorkflow: VerbDialogSpec<RunWorkflowValue> = {
   verb: 'run-workflow',
   title: (c) => `Run a workflow on ${n(c)}`,
   submitLabel: (c) => `Run on ${n(c)}`,
-  initial: { workflowName: '', params: undefined },
+  initial: { workflowName: '', params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0' },
   Fields: RunWorkflowFields,
-  canSubmit: (v) => Boolean(v.workflowName),
-  toParams: async (v) => ({ workflowName: v.workflowName, params: v.params }),
+  // The inverted-range refusal run-script already makes, for the same reason:
+  // the operator sees it beside the field they typed it in.
+  canSubmit: (v) => Boolean(v.workflowName) && secondsOf(v.delayMin) <= secondsOf(v.delayMax),
+  toParams: async (v) => ({ workflowName: v.workflowName, params: v.params, concurrency: v.concurrency, order: v.order, ...pacingOf(v) }),
   onDone: (res) => {
     if (res.results.length === 1 && res.results[0]?.jobId) {
       window.location.assign(`/jobs/detail?id=${res.results[0].jobId}`)

@@ -891,3 +891,276 @@ describe('the skipped-node sweep never collides with a row the run already wrote
     expect(runs.getRun(run.id)?.error ?? '').not.toContain('UNIQUE')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Plan 313 — the disabled node and the shuffle node
+// ---------------------------------------------------------------------------
+
+/** `start -> a -> b -> c`, a plain chain of three scripts, with `overrides` merged onto each by id. */
+function chainDoc(overrides: Record<string, Record<string, unknown>> = {}): WorkflowDoc {
+  return WorkflowDocSchema.parse({
+    schema: 2,
+    name: 'chain-doc',
+    title: '',
+    description: '',
+    params: [],
+    entry: 'start',
+    nodes: [
+      startNode({ next: 'a' }),
+      scriptNode({ id: 'a', script: 'demo/a@1.0.0', next: 'b', ...(overrides.a ?? {}) }),
+      scriptNode({ id: 'b', script: 'demo/b@1.0.0', next: 'c', ...(overrides.b ?? {}) }),
+      scriptNode({ id: 'c', script: 'demo/c@1.0.0', ...(overrides.c ?? {}) }),
+    ],
+  })
+}
+
+/** `start -> sh(a, b, c) -> tail`; the three members declare no `next` of their own. */
+function shuffleDoc(): WorkflowDoc {
+  return WorkflowDocSchema.parse({
+    schema: 2,
+    name: 'shuffle-doc',
+    title: '',
+    description: '',
+    params: [],
+    entry: 'start',
+    nodes: [
+      startNode({ next: 'sh' }),
+      { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b', 'c'], next: 'tail' },
+      scriptNode({ id: 'a', script: 'demo/a@1.0.0' }),
+      scriptNode({ id: 'b', script: 'demo/b@1.0.0' }),
+      scriptNode({ id: 'c', script: 'demo/c@1.0.0' }),
+      scriptNode({ id: 'tail', script: 'demo/tail@1.0.0' }),
+    ],
+  })
+}
+
+type StepPlan = Map<string, { status: 'success' | 'failed' | 'cancelled'; result?: unknown; error?: string }>
+
+const ALL_OK: StepPlan = new Map([
+  ['script-demo/a', { status: 'success', result: { n: 'a' } }],
+  ['script-demo/b', { status: 'success', result: { n: 'b' } }],
+  ['script-demo/c', { status: 'success', result: { n: 'c' } }],
+  ['script-demo/tail', { status: 'success', result: { n: 'tail' } }],
+])
+
+describe('disabled node (plan 313 §3.4, G4)', () => {
+  test('a disabled node is skipped, its edge passes through, and it spawns no child job', async () => {
+    const { runs, deps } = setUp(new Map(ALL_OK))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, chainDoc({ b: { enabled: false } }))
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    const b = stepRows.find((s) => s.stepId === 'b')
+    expect(b?.status).toBe('skipped')
+    // The whole point: no child job, so no device was touched for it.
+    expect(b?.jobId).toBeNull()
+    expect(b?.takenEdge).toBe('next')
+    // …and the run carried on to `c` rather than ending at the gap.
+    expect(stepRows.find((s) => s.stepId === 'c')?.status).toBe('success')
+  })
+
+  test('a disabled node records NO output, so a downstream binding fails honestly instead of reading a stale one', async () => {
+    const { runs, deps } = setUp(new Map(ALL_OK))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = chainDoc({ b: { enabled: false }, c: { params: { from_b: { from: 'b', path: 'n', optional: false } } } })
+    const { job, run } = workflowJobFor(runs, doc)
+    await expect(orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })).rejects.toThrow()
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    expect(stepRows.find((s) => s.stepId === 'c')?.status).toBe('failed')
+  })
+})
+
+describe('shuffle node (plan 313 §3.5, G5)', () => {
+  test('every member runs exactly once, and then `next` is taken', async () => {
+    const { runs, deps } = setUp(new Map(ALL_OK))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, shuffleDoc())
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).orderBy(workflowSteps.seq).all()
+    for (const id of ['a', 'b', 'c']) {
+      expect(stepRows.filter((s) => s.stepId === id && s.status === 'success')).toHaveLength(1)
+    }
+    // The shuffle itself is visited once per member plus once to leave.
+    const visits = stepRows.filter((s) => s.stepId === 'sh')
+    expect(visits).toHaveLength(4)
+    expect(visits.at(-1)?.takenEdge).toBe('next')
+    // …and the run reached the node after the shuffle.
+    expect(stepRows.find((s) => s.stepId === 'tail')?.status).toBe('success')
+  })
+
+  test('the members run in a random order, and the seed alone decides which — two seeds, two orders', async () => {
+    const orderFor = async (seed: number): Promise<string[]> => {
+      const { runs, deps } = setUp(new Map(ALL_OK))
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const { job, run } = workflowJobFor(runs, shuffleDoc())
+      deps.db.update(jobRuns).set({ seed }).where(eq(jobRuns.id, run.id)).run()
+      const seeded = deps.db.select().from(jobRuns).where(eq(jobRuns.id, run.id)).get()
+      await orchestrator.run(job, { runId: run.id, run: seeded ?? run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+      return deps.db
+        .select()
+        .from(workflowSteps)
+        .where(eq(workflowSteps.runId, run.id))
+        .orderBy(workflowSteps.seq)
+        .all()
+        .filter((s) => s.stepId === 'sh' && s.takenEdge?.startsWith('member:'))
+        .map((s) => (s.takenEdge as string).slice('member:'.length))
+    }
+
+    // Every order is a permutation of the members, whatever the seed.
+    const first = await orderFor(1)
+    const second = await orderFor(999_331)
+    expect([...first].sort()).toEqual(['a', 'b', 'c'])
+    expect([...second].sort()).toEqual(['a', 'b', 'c'])
+    // The same seed is the same order — this is what makes a replay honest.
+    expect(await orderFor(1)).toEqual(first)
+    // Two different seeds disagree somewhere. (These two are picked because
+    // they do; the guarantee under test is determinism, not that any
+    // arbitrary pair of seeds differs.)
+    expect(second).not.toEqual(first)
+  })
+
+  test('a disabled member is dropped from the draw entirely — never chosen, never skipped mid-sequence', async () => {
+    const { runs, deps } = setUp(new Map(ALL_OK))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'shuffle-doc',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b', 'c'], next: 'tail' },
+        scriptNode({ id: 'a', script: 'demo/a@1.0.0' }),
+        scriptNode({ id: 'b', script: 'demo/b@1.0.0', enabled: false }),
+        scriptNode({ id: 'c', script: 'demo/c@1.0.0' }),
+        scriptNode({ id: 'tail', script: 'demo/tail@1.0.0' }),
+      ],
+    })
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    // The draw never dispatched to `b`: no `member:b` edge was ever taken,
+    // and `b` never succeeded. (It still collects a `skipped` row from the
+    // end-of-run sweep every unreached node gets — that sweep predates this
+    // plan and is not what is under test here.)
+    expect(stepRows.filter((s) => s.takenEdge === 'member:b')).toHaveLength(0)
+    expect(stepRows.filter((s) => s.stepId === 'b' && s.status === 'success')).toHaveLength(0)
+    expect(stepRows.find((s) => s.stepId === 'a')?.status).toBe('success')
+    expect(stepRows.find((s) => s.stepId === 'c')?.status).toBe('success')
+    expect(stepRows.find((s) => s.stepId === 'tail')?.status).toBe('success')
+  })
+
+  test('a between-wait fires before every member after the first, and never before the first (plan 313)', async () => {
+    const { runs, deps } = setUp(new Map(ALL_OK))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'shuffle-doc',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        // 5 ms so the test is fast; what is under test is WHICH visits wait,
+        // not how long for.
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b', 'c'], between: { const: 5 }, betweenMaxMs: 5, next: 'tail' },
+        scriptNode({ id: 'a', script: 'demo/a@1.0.0' }),
+        scriptNode({ id: 'b', script: 'demo/b@1.0.0' }),
+        scriptNode({ id: 'c', script: 'demo/c@1.0.0' }),
+        scriptNode({ id: 'tail', script: 'demo/tail@1.0.0' }),
+      ],
+    })
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const visits = deps.db
+      .select()
+      .from(workflowSteps)
+      .where(eq(workflowSteps.runId, run.id))
+      .orderBy(workflowSteps.seq)
+      .all()
+      .filter((s) => s.stepId === 'sh')
+    // Four visits: three members plus the one that leaves. Only the 2nd and
+    // 3rd member dispatches wait — not the first (that would just be a delay
+    // in front of the group) and not the one that leaves.
+    expect(visits.map((v) => (v.output as { waitedMs?: number } | null)?.waitedMs ?? 0)).toEqual([0, 5, 5, 0])
+  })
+
+  test('the wait is clamped to betweenMaxMs, exactly as a delay node is clamped to its own maxMs', async () => {
+    const { runs, deps } = setUp(new Map(ALL_OK))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'shuffle-doc',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b'], between: { const: 999_999 }, betweenMaxMs: 5, next: 'tail' },
+        scriptNode({ id: 'a', script: 'demo/a@1.0.0' }),
+        scriptNode({ id: 'b', script: 'demo/b@1.0.0' }),
+        scriptNode({ id: 'tail', script: 'demo/tail@1.0.0' }),
+      ],
+    })
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const waits = deps.db
+      .select()
+      .from(workflowSteps)
+      .where(eq(workflowSteps.runId, run.id))
+      .all()
+      .filter((s) => s.stepId === 'sh')
+      .map((s) => (s.output as { waitedMs?: number } | null)?.waitedMs ?? 0)
+    // Without the clamp this test would take sixteen minutes.
+    expect(Math.max(...waits)).toBe(5)
+  })
+
+  test('a member that fails leaves the shuffle by its own onFailure — the remaining members do not run', async () => {
+    const { runs, deps } = setUp(
+      new Map<string, { status: 'success' | 'failed' | 'cancelled'; result?: unknown; error?: string }>([
+        ['script-demo/a', { status: 'failed', error: 'boom' }],
+        ['script-demo/b', { status: 'success', result: { n: 'b' } }],
+        ['script-demo/c', { status: 'success', result: { n: 'c' } }],
+        ['script-demo/tail', { status: 'success', result: { n: 'tail' } }],
+        ['script-demo/rescue', { status: 'success', result: { n: 'rescue' } }],
+      ]),
+    )
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'shuffle-doc',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a'], next: 'tail' },
+        scriptNode({ id: 'a', script: 'demo/a@1.0.0', onFailure: 'rescue' }),
+        scriptNode({ id: 'rescue', script: 'demo/rescue@1.0.0' }),
+        scriptNode({ id: 'tail', script: 'demo/tail@1.0.0' }),
+      ],
+    })
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const stepRows = deps.db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all()
+    expect(stepRows.find((s) => s.stepId === 'a')?.status).toBe('failed')
+    expect(stepRows.find((s) => s.stepId === 'rescue')?.status).toBe('success')
+    // The failure diverted the run: the shuffle's own `next` was never taken,
+    // so `tail` never executed (it collects only the end-of-run sweep's
+    // `skipped` row, as every unreached node does).
+    expect(stepRows.filter((s) => s.stepId === 'sh' && s.takenEdge === 'next')).toHaveLength(0)
+    expect(stepRows.filter((s) => s.stepId === 'tail' && s.status === 'success')).toHaveLength(0)
+  })
+})

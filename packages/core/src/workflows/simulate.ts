@@ -4,7 +4,7 @@ import { EnkakuError } from '../util/errors'
 import type { ScriptEntry, ScriptRegistry } from '../scripts/registry'
 import type { PinStore } from './pins'
 import { sampleFromSchema } from './sample-from-schema'
-import { computeDelayMs, computeGateStep, computeSetStep, computeSwitchStep, successorOf } from './step-compute'
+import { computeBetweenMs, computeDelayMs, computeGateStep, computeSetStep, computeShuffleStep, computeSwitchStep, successorOf } from './step-compute'
 
 /**
  * Plan 309 — running a whole workflow with no device attached, ever. This
@@ -107,6 +107,24 @@ export function simulateWorkflow(req: SimulateRequest, deps: { pins: PinStore; r
   const steps: SimulatedStep[] = []
   const runCounts = new Map<string, number>()
 
+  // The shuffle cursor and the member-return rule, identical to the
+  // executor's (plan 313 §3.5) — a simulation that walked a shuffle
+  // differently from a real run would be worth nothing.
+  const shuffleDone = new Map<string, Set<string>>()
+  const isEnabled = (nodeId: string): boolean => nodesById.get(nodeId)?.enabled ?? true
+  const shuffleOwner = new Map<string, string>()
+  for (const n of doc.nodes) {
+    if (n.kind !== 'shuffle') continue
+    for (const m of n.members) shuffleOwner.set(m, n.id)
+  }
+  /** `successorOf`, plus: a shuffle member's dangling `next` returns to its shuffle. */
+  const advance = (node: WorkflowNode, edge: string): string | null => {
+    const direct = successorOf(node, edge)
+    if (direct !== null) return direct
+    if (edge === 'next' && node.kind !== 'shuffle') return shuffleOwner.get(node.id) ?? null
+    return null
+  }
+
   const currentInputValue = (): unknown => (summary.length > 0 ? (summary[summary.length - 1]?.output ?? null) : null)
 
   let cursor: string | null = doc.entry
@@ -131,6 +149,16 @@ export function simulateWorkflow(req: SimulateRequest, deps: { pins: PinStore; r
       cursor = node.next ?? null
       continue
     }
+
+    // A node the author switched off (plan 313 §3.4) — skipped whole, no
+    // value recorded, exactly as the real executor skips it, so a simulation
+    // shows the same shape of run a device would.
+    if (!node.enabled) {
+      steps.push({ seq, nodeId: node.id, kind: node.kind === 'finish' ? 'set' : node.kind, input: null, output: null, source: 'computed', takenEdge: 'next' })
+      seq += 1
+      cursor = advance(node, 'next')
+      continue
+    }
     if (node.kind === 'finish') {
       if (node.status === 'fail') {
         status = 'failed'
@@ -145,13 +173,32 @@ export function simulateWorkflow(req: SimulateRequest, deps: { pins: PinStore; r
     const scope: ResolveScope = { params, outputs, summary, now: stepStartMs, randomSeed: deriveRandom(seed, seq) }
     const inputValue = currentInputValue()
 
+    if (node.kind === 'shuffle') {
+      const done = shuffleDone.get(node.id) ?? new Set<string>()
+      const { takenEdge, output } = computeShuffleStep(node, done, scope, isEnabled)
+      // Reported, never honoured — the same rule the `delay` node follows
+      // here (plan 309 §3.3): a simulation that waits is a simulation nobody
+      // runs twice.
+      const waitedMs = takenEdge.startsWith('member:') ? computeBetweenMs(node, done.size === 0, scope) : 0
+      if (takenEdge.startsWith('member:')) {
+        const set = shuffleDone.get(node.id) ?? new Set<string>()
+        set.add(takenEdge.slice('member:'.length))
+        shuffleDone.set(node.id, set)
+      }
+      summary.push({ nodeId: node.id, script: null, status: 'success', startedAt: toSec(stepStartMs), finishedAt: toSec(stepStartMs), durationMs: 0, output: { ...output, waitedMs } })
+      steps.push({ seq, nodeId: node.id, kind: node.kind, input: inputValue, output: { ...output, waitedMs }, source: 'computed', takenEdge, ...(waitedMs > 0 ? { skippedMs: waitedMs } : {}) })
+      seq += 1
+      cursor = advance(node, takenEdge)
+      continue
+    }
+
     if (node.kind === 'gate') {
       const { takenEdge, output } = computeGateStep(node, scope)
       outputs.set(node.id, output)
       summary.push({ nodeId: node.id, script: null, status: 'success', startedAt: toSec(stepStartMs), finishedAt: toSec(stepStartMs), durationMs: 0, output })
       steps.push({ seq, nodeId: node.id, kind: node.kind, input: inputValue, output, source: 'computed', takenEdge })
       seq += 1
-      cursor = successorOf(node, takenEdge)
+      cursor = advance(node, takenEdge)
       continue
     }
 
@@ -161,7 +208,7 @@ export function simulateWorkflow(req: SimulateRequest, deps: { pins: PinStore; r
       summary.push({ nodeId: node.id, script: null, status: 'success', startedAt: toSec(stepStartMs), finishedAt: toSec(stepStartMs), durationMs: 0, output })
       steps.push({ seq, nodeId: node.id, kind: node.kind, input: inputValue, output, source: 'computed', takenEdge })
       seq += 1
-      cursor = successorOf(node, takenEdge)
+      cursor = advance(node, takenEdge)
       continue
     }
 
@@ -175,7 +222,7 @@ export function simulateWorkflow(req: SimulateRequest, deps: { pins: PinStore; r
       summary.push({ nodeId: node.id, script: null, status: 'success', startedAt: toSec(stepStartMs), finishedAt: toSec(stepStartMs), durationMs: 0, output })
       steps.push({ seq, nodeId: node.id, kind: node.kind, input: inputValue, output, source: 'computed', takenEdge: 'next', skippedMs: waitMs })
       seq += 1
-      cursor = successorOf(node, 'next')
+      cursor = advance(node, 'next')
       continue
     }
 
@@ -192,7 +239,7 @@ export function simulateWorkflow(req: SimulateRequest, deps: { pins: PinStore; r
       summary.push({ nodeId: node.id, script: null, status: 'success', startedAt: toSec(stepStartMs), finishedAt: toSec(stepStartMs), durationMs: 0, output: result.output })
       steps.push({ seq, nodeId: node.id, kind: node.kind, input: inputValue, output: result.output, source: 'computed', takenEdge: 'next' })
       seq += 1
-      cursor = successorOf(node, 'next')
+      cursor = advance(node, 'next')
       continue
     }
 
@@ -208,7 +255,7 @@ export function simulateWorkflow(req: SimulateRequest, deps: { pins: PinStore; r
     summary.push({ nodeId: node.id, script: `${node.script} (${resolved.source})`, status: 'success', startedAt: toSec(stepStartMs), finishedAt: toSec(stepStartMs), durationMs: 0, output: resolved.value })
     steps.push({ seq, nodeId: node.id, kind: node.kind, input: inputValue, output: resolved.value, source: resolved.source, takenEdge: 'next' })
     seq += 1
-    cursor = successorOf(node, 'next')
+    cursor = advance(node, 'next')
   }
 
   return { status, steps, error }

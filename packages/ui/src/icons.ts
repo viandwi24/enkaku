@@ -117,6 +117,8 @@ export {
   ArrowCounterClockwiseIcon,
   ArrowDownIcon,
   ArrowSquareOutIcon,
+  ArrowUpIcon,
+  ShuffleIcon,
   BrainIcon,
   EyeSlashIcon,
   FloppyDiskIcon,

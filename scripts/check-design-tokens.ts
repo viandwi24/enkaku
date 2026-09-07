@@ -320,6 +320,11 @@ const GROUP_3 = [
   'PictureInPictureIcon',
   // Plan 501 (the rail's right-click menu) — the "Open in side panel" row.
   'SidebarSimpleIcon',
+  // Plan 313 (Sequential Mode) — the list's reorder control needs an UP to
+  // pair with the `ArrowDownIcon` the barrel already had, and `ShuffleIcon`
+  // is the `shuffle` node's own icon in both the catalog and the list row.
+  'ArrowUpIcon',
+  'ShuffleIcon',
 ]
 
 async function checkIcons(): Promise<void> {

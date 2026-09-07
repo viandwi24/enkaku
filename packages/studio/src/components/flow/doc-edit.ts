@@ -11,8 +11,14 @@ import type { Predicate, WorkflowDoc, WorkflowNode, WorkflowPoint } from '@enkak
  * hand") is provable by reading this one file.
  */
 
-/** Which field on a node carries an edge, and — for `switch` — which case. A `switch` case is addressed as `case:<index>`; every other kind owns a fixed field name. */
-export type EdgeKind = 'next' | 'onFailure' | 'then' | 'else' | 'default' | `case:${number}`
+/**
+ * Which field on a node carries an edge, and — for `switch` and `shuffle` —
+ * which one. A `switch` case is addressed as `case:<index>`; a `shuffle`
+ * member as `member:<nodeId>` (plan 313, addressed by ID rather than index
+ * because reordering the member list must not silently repoint an edge);
+ * every other kind owns a fixed field name.
+ */
+export type EdgeKind = 'next' | 'onFailure' | 'then' | 'else' | 'default' | `case:${number}` | `member:${string}`
 
 export type DocEdit =
   | { t: 'add-node'; node: WorkflowNode; connectFrom?: { id: string; edge: EdgeKind } }
@@ -32,9 +38,9 @@ export type DocEdit =
    * reducer, so G4's "no `setDraft(` that builds a document by hand"
    * criterion holds.
    */
-  | { t: 'set-meta'; patch: Partial<Pick<WorkflowDoc, 'name' | 'title' | 'description' | 'maxSteps' | 'params'>> }
+  | { t: 'set-meta'; patch: Partial<Pick<WorkflowDoc, 'name' | 'title' | 'description' | 'maxSteps' | 'params' | 'ui'>> }
 
-/** The edge kinds a node actually owns — a `start`/`script`/`delay`/`set` node has `next` (script also `onFailure`), a `gate` has `then`/`else`, a `switch` has one `case:<i>` per declared case plus `default`, and `finish` is a sink with none. */
+/** The edge kinds a node actually owns — a `start`/`script`/`delay`/`set` node has `next` (script also `onFailure`), a `gate` has `then`/`else`, a `switch` has one `case:<i>` per declared case plus `default`, a `shuffle` has one `member:<id>` per member plus `next` (plan 313), and `finish` is a sink with none. */
 export function edgeKindsOf(node: WorkflowNode): EdgeKind[] {
   switch (node.kind) {
     case 'start':
@@ -47,6 +53,8 @@ export function edgeKindsOf(node: WorkflowNode): EdgeKind[] {
       return ['then', 'else']
     case 'switch':
       return [...node.cases.map((_, i) => `case:${i}` as const), 'default']
+    case 'shuffle':
+      return [...node.members.map((m) => `member:${m}` as const), 'next']
     case 'finish':
       return []
   }
@@ -59,6 +67,18 @@ export function edgeTargetOf(node: WorkflowNode, kind: EdgeKind): string | undef
     const m = /^case:(\d+)$/.exec(kind)
     if (!m) return undefined
     return node.cases[Number(m[1])]?.to
+  }
+  if (node.kind === 'shuffle') {
+    // A member edge is not stored as a target: membership IS the edge, so it
+    // reads back as the member's own id, and `setEdgeField` below refuses to
+    // repoint it (dragging a member handle elsewhere would have to mean
+    // "make THAT node a member", which is the member picker's job).
+    if (kind.startsWith('member:')) {
+      const memberId = kind.slice('member:'.length)
+      return node.members.includes(memberId) ? memberId : undefined
+    }
+    if (kind === 'next') return node.next
+    return undefined
   }
   if (kind === 'next' && (node.kind === 'start' || node.kind === 'script' || node.kind === 'delay' || node.kind === 'set')) return node.next
   if (kind === 'onFailure' && node.kind === 'script') return node.onFailure
@@ -77,6 +97,13 @@ export function setEdgeField(node: WorkflowNode, kind: EdgeKind, to: string | un
     if (!node.cases[i]) return node
     const cases = node.cases.map((c, idx) => (idx === i ? { ...c, to } : c))
     return { ...node, cases }
+  }
+  if (node.kind === 'shuffle') {
+    if (kind === 'next') return { ...node, next: to }
+    // A member edge is membership, not a pointer — changing it is
+    // adding/removing a member, which goes through `update-node`'s `members`
+    // patch, never through an edge drag.
+    return node
   }
   if (kind === 'next' && (node.kind === 'start' || node.kind === 'script' || node.kind === 'delay' || node.kind === 'set')) return { ...node, next: to }
   if (kind === 'onFailure' && node.kind === 'script') return { ...node, onFailure: to }

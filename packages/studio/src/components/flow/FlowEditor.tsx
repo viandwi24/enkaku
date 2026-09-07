@@ -30,6 +30,7 @@ import { RunOverlay } from './RunOverlay'
 import { CanvasContextMenu, type CanvasMenuRequest } from './CanvasContextMenu'
 import { HistoryPanel } from './HistoryPanel'
 import { NodePalette } from './NodePalette'
+import { SequenceEditor, canUseSequence } from './SequenceEditor'
 import { NodePanel } from './NodePanel'
 import { ParamsEditor } from './ParamsEditor'
 import { SimulateDialog } from './SimulateDialog'
@@ -57,24 +58,31 @@ function isTypingTarget(el: EventTarget | null): boolean {
 function newNodeFromType(type: NodeType, id: string, x: number, y: number): WorkflowNode {
   const ui = { x, y }
   const title = ''
+  // A node is born switched on (plan 313 §3.4) — `enabled` is something an
+  // author turns OFF later, never a state anything starts in.
+  const enabled = true
   switch (type.kind) {
     case 'script':
-      return { kind: 'script', id, title, ui, script: type.script ?? '', params: {} }
+      return { kind: 'script', id, title, ui, enabled, script: type.script ?? '', params: {} }
     case 'gate':
-      return { kind: 'gate', id, title, ui, when: placeholderPredicate() }
+      return { kind: 'gate', id, title, ui, enabled, when: placeholderPredicate() }
     case 'switch':
-      return { kind: 'switch', id, title, ui, mode: 'predicate', cases: [{ when: placeholderPredicate(), label: '' }] }
+      return { kind: 'switch', id, title, ui, enabled, mode: 'predicate', cases: [{ when: placeholderPredicate(), label: '' }] }
     case 'delay':
-      return { kind: 'delay', id, title, ui, ms: { const: 1000 }, maxMs: 60_000 }
+      return { kind: 'delay', id, title, ui, enabled, ms: { const: 1000 }, maxMs: 60_000 }
     case 'finish':
-      return { kind: 'finish', id, title, ui, status: 'succeed', message: '' }
+      return { kind: 'finish', id, title, ui, enabled, status: 'succeed', message: '' }
     case 'set':
-      return { kind: 'set', id, title, ui, assignments: [], keepOnlySet: false }
+      return { kind: 'set', id, title, ui, enabled, assignments: [], keepOnlySet: false }
+    case 'shuffle':
+      // Placed empty: membership is assigned by selecting rows in the
+      // sequence editor or by dragging members onto it, never guessed here.
+      return { kind: 'shuffle', id, title, ui, enabled, members: [], between: { const: 0 }, betweenMaxMs: 0 }
     case 'start':
       // `start` cannot be placed a second time (plan 301 §3.4) — the
       // palette never lists it as pickable; kept only so the switch above
       // is exhaustive.
-      return { kind: 'script', id, title, ui, script: type.script ?? '', params: {} }
+      return { kind: 'script', id, title, ui, enabled, script: type.script ?? '', params: {} }
   }
 }
 
@@ -98,6 +106,13 @@ export function FlowEditor({
   onSaved(workflow: WorkflowInfo): void
 }) {
   const history = useHistory(initialDoc)
+  /**
+   * Which editor is showing (plan 313 §3.3). `doc.ui.editor` is a stored
+   * PREFERENCE; `canUseSequence` is the truth about the document's shape.
+   * The preference alone never puts an author in a list that cannot draw
+   * what they are looking at.
+   */
+  const [editorMode, setEditorMode] = useState<'sequence' | 'canvas'>(initialDoc.ui?.editor === 'sequence' && canUseSequence(initialDoc) ? 'sequence' : 'canvas')
   const { doc, dispatch, undo, redo, canUndo, canRedo } = history
   const validation = useValidation(doc)
   const clipboard = useClipboard(history)
@@ -479,6 +494,28 @@ export function FlowEditor({
             <SquaresFourIcon className="size-4" aria-hidden />
           </Button>
           {/*
+            Plan 313 §3.3 — the mode switch. Offered only while the document
+            can actually BE a list, and it re-evaluates on every edit, so
+            adding a gate takes the option away and deleting it gives the
+            option back. The choice is stored on the document (`ui.editor`)
+            so it follows the workflow to another browser, but it is never
+            believed on its own: `canUseSequence` decides.
+          */}
+          {(editorMode === 'sequence' || canUseSequence(doc)) && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const next = editorMode === 'sequence' ? 'canvas' : 'sequence'
+                setEditorMode(next)
+                dispatch({ t: 'set-meta', patch: { ui: { editor: next } } })
+              }}
+            >
+              {editorMode === 'sequence' ? 'Canvas' : 'Sequence'}
+            </Button>
+          )}
+          {/*
             Four ways in and out of this document behind one icon: a file each
             way, and the clipboard each way. They were four labelled buttons
             taking a third of the toolbar for something used once a session.
@@ -594,8 +631,20 @@ export function FlowEditor({
         </div>
       )}
 
+      {/*
+        Plan 313 §4.5 — Sequential Mode. The SAME document, the same
+        `dispatch`, the same `NodePanel` and `NodePalette`; only the layout
+        differs, which is what keeps undo, validation and the run view
+        working without knowing which editor is showing.
+      */}
+      {editorMode === 'sequence' && (
+        <div className="absolute inset-0 overflow-auto bg-bg">
+          <SequenceEditor doc={doc} dispatch={dispatch} onOpenNode={setOpenNodeId} onAddAction={(afterNodeId) => openEdgePalette(afterNodeId, 'next')} selectedId={openNodeId} />
+        </div>
+      )}
+
       {/* The canvas is the container. Everything else sits on top of it. */}
-      <div className="absolute inset-0">
+      <div className={cn('absolute inset-0', editorMode === 'sequence' && 'hidden')}>
           <RunOverlay
             jobId={(pinnedRun ?? lastRunRef)?.jobId ?? null}
             runId={(pinnedRun ?? lastRunRef)?.runId ?? null}

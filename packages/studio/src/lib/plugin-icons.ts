@@ -1,5 +1,6 @@
 import {
   ArrowsClockwiseIcon,
+  ShuffleIcon,
   BellIcon,
   CheckIcon,
   CloudIcon,
@@ -95,6 +96,7 @@ export const PLUGIN_ICONS: Record<IconName, Icon> = {
   play: PlayIcon,
   pause: PauseIcon,
   'refresh-cw': ArrowsClockwiseIcon,
+  shuffle: ShuffleIcon,
   plus: PlusIcon,
   minus: MinusIcon,
   check: CheckIcon,

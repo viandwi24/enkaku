@@ -128,6 +128,8 @@ export const ICON_NAMES = [
   'upload',
   'play',
   'pause',
+  /** Plan 313 — the `shuffle` node's own icon; nothing else in the set reads as "a random order". */
+  'shuffle',
   'refresh-cw',
   'plus',
   'minus',

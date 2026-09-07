@@ -216,6 +216,14 @@ export interface CreateWorkflowBatchInput {
   concurrency: number
   order: 'as-listed' | 'random'
   priority?: number
+  /**
+   * The same block `CreateBatchInput` takes (plan 313 §4.4). A workflow
+   * batch is an ordinary batch row, and `createBatchPacer` reads its
+   * columns without caring which kind of batch wrote them — so the stagger
+   * and the per-device delay draw need nothing here but the columns being
+   * filled in.
+   */
+  pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs?: [number, number] } | null
   createdBy?: string | null
 }
 
@@ -226,7 +234,7 @@ export interface CreateWorkflowBatchInput {
  * workflow job carries its own snapshot document, not a pinned script row.
  */
 export function createWorkflowBatch(
-  deps: Pick<BatchDispatchDeps, 'db' | 'runs' | 'scheduler' | 'audit' | 'onJobStatus' | 'assertDeviceAllowed'>,
+  deps: Pick<BatchDispatchDeps, 'db' | 'runs' | 'scheduler' | 'audit' | 'onJobStatus' | 'assertDeviceAllowed' | 'pacer'>,
   input: CreateWorkflowBatchInput,
 ): { batch: BatchRow; jobs: JobRow[] } {
   const { db } = deps
@@ -258,6 +266,7 @@ export function createWorkflowBatch(
   const batchId = crypto.randomUUID()
   const now = new Date()
   const priority = input.priority ?? 0
+  const pacing = input.pacing ?? null
   // The SAME line `createBatch` has, and its absence here was a plain bug:
   // this function took `order`, wrote it onto the batch row, and then walked
   // `resolved.usable` — so a workflow batch asked for a random order ran in
@@ -276,6 +285,12 @@ export function createWorkflowBatch(
         concurrency: input.concurrency,
         order: input.order,
         status: 'queued',
+        repeatCount: pacing?.count ?? 1,
+        intervalMinMs: pacing?.intervalMs[0] ?? 0,
+        intervalMaxMs: pacing?.intervalMs[1] ?? 0,
+        deviceIntervalMs: pacing?.deviceIntervalMs ?? 0,
+        deviceDelayMinMs: pacing?.deviceDelayMs?.[0] ?? 0,
+        deviceDelayMaxMs: pacing?.deviceDelayMs?.[1] ?? 0,
         createdBy: input.createdBy ?? null,
         createdAt: now,
         finishedAt: null,
@@ -301,6 +316,11 @@ export function createWorkflowBatch(
 
   const batch = db.select().from(batches).where(eq(batches.id, batchId)).get()
   if (!batch) throw new EnkakuError('E_DB', 'batch insert did not persist')
+
+  // The same line `createBatch` has (plan 313 §4.4). Without it a workflow
+  // batch stored its pacing columns and then started every member at once:
+  // `planFirst` is what turns them into each run's own `notBefore`.
+  deps.pacer?.planFirst(batchId)
 
   const finalJobRows = db.select().from(jobs).where(eq(jobs.batchId, batchId)).orderBy(asc(jobs.batchSeq)).all()
   const latestRuns = deps.runs.latestRuns(finalJobRows.map((r) => r.id))

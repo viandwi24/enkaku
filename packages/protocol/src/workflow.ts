@@ -195,6 +195,19 @@ const nodeBase = {
   id: WorkflowNodeIdSchema,
   title: z.string().max(80).default(''),
   ui: WorkflowPointSchema,
+  /**
+   * A node the author has switched OFF (plan 313 §3.4). It stays in the
+   * document, keeps its parameters, and is still checked at publish time —
+   * it is a real node again the moment it is switched back on. At run time
+   * the executor records a `skipped` step and follows `next` as if the node
+   * had succeeded, WITHOUT recording an output: a downstream `{ from }`
+   * binding then fails honestly ("no such node") instead of silently reading
+   * whatever this node returned on some earlier run.
+   *
+   * Defaulted rather than required, so every document written before this
+   * plan parses unchanged as fully enabled.
+   */
+  enabled: z.boolean().default(true),
 }
 
 /**
@@ -221,7 +234,7 @@ const nodeBase = {
  * device; `set` never does). Seven kinds total, and the list is closed (plan
  * 300 D8): a plugin may never define an eighth.
  */
-export const WORKFLOW_NODE_KINDS = ['start', 'script', 'gate', 'switch', 'delay', 'finish', 'set'] as const
+export const WORKFLOW_NODE_KINDS = ['start', 'script', 'gate', 'switch', 'delay', 'finish', 'set', 'shuffle'] as const
 export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -365,6 +378,71 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
       next: WorkflowNodeIdSchema.optional(),
     })
     .strict(),
+
+  /**
+   * `shuffle` (plan 313 §3.5, §4.3) — runs each of its `members` exactly
+   * once, in an order drawn from `$random`, then follows `next`. The one
+   * thing an explicit-edge graph cannot say on its own: N actions in a random
+   * order is N! distinct paths, and no set of `next` edges expresses that.
+   *
+   * It is a DISPATCHER, not a container. A member is an ordinary node listed
+   * here by id; it declares no `next` of its own, and control returns to this
+   * node after it. That is what keeps the whole feature flat:
+   *
+   * - **No static cycle.** The return edge is implicit, so the reachable
+   *   graph stays acyclic and `W_WORKFLOW_LOOP` — which makes the budget walk
+   *   give up entirely — never fires for a shuffle.
+   * - **An exact budget.** Each member runs exactly once, so the worst case
+   *   is `Σ cost(members) + cost(next)`, not a "might".
+   * - **Unambiguous membership.** A node belongs to a shuffle because that
+   *   shuffle lists it, never because of where an edge happens to point.
+   *
+   * Two devices in one batch draw different orders (each run has its own
+   * `job_runs.seed`), and a replay of either reproduces its own, because
+   * `$random` is `deriveRandom(seed, seq)` and a `resume` reuses its parent's
+   * seed. The remaining rules — a member declares no `next`, is listed by at
+   * most one shuffle, and is never itself a `shuffle`/`start`/`finish` — need
+   * a lookup across other nodes and so live in `checkWorkflow`, not here.
+   */
+  z
+    .object({
+      ...nodeBase,
+      kind: z.literal('shuffle'),
+      /**
+       * The ceiling is `maxSwitchCases` for the same reason a `switch` has
+       * one — past ten, this is a script.
+       *
+       * No `.min(2)`, deliberately: a node just dropped on the canvas has no
+       * members yet, and plan 301 §4.3's rule is that refusing to SAVE a
+       * half-built document makes the editor hostile. "Fewer than two members
+       * is not a shuffle" is real, so it is `checkWorkflow`'s
+       * W_WORKFLOW_SHUFFLE_EMPTY warning, where a mid-edit author can see it
+       * without losing their work.
+       */
+      members: z.array(WorkflowNodeIdSchema).max(WORKFLOW_LIMITS.maxSwitchCases),
+      /**
+       * How long to wait BETWEEN members — before each one after the first,
+       * never before the first and never after the last.
+       *
+       * It lives on the shuffle rather than being a `delay` node between
+       * members, because there is nowhere to put one: a member declares no
+       * `next` (§3.5), so there is no edge for a delay to sit on. Without
+       * this field "run these in a random order" and "wait 1-10 s between
+       * each action" — the two halves of the client brief — could not be
+       * asked for together.
+       *
+       * Same shape and same discipline as `delay`: `between` may be any
+       * `ValueExpr` (so `{ expr: '1000 + $random * 9000' }` gives a fresh
+       * draw per gap), and `betweenMaxMs` is the document's declared ceiling
+       * — what the checker sums into the budget and what the executor clamps
+       * the resolved value to.
+       */
+      between: ValueExprSchema.default({ const: 0 }),
+      betweenMaxMs: z.number().int().min(0).max(WORKFLOW_LIMITS.maxDelayMs).default(0),
+      /** Absent = dangling; reaching it ends the run succeeded (plan 301 §3.2). */
+      next: WorkflowNodeIdSchema.optional(),
+    })
+    .strict(),
 ])
 export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>
 
@@ -380,6 +458,25 @@ const WorkflowDocShapeSchema = z
     nodes: z.array(WorkflowNodeSchema).min(1).max(WORKFLOW_LIMITS.maxNodes),
     /** Node EXECUTIONS, not nodes (plan 99 §3.9) — a loop can make the step count exceed the node count. */
     maxSteps: z.number().int().min(1).max(500).default(50),
+    /**
+     * Editor-owned presentation (plan 313 §4.2). Which editor opens first,
+     * and nothing else — never read by the executor, the checker, or the
+     * simulator. It is a PREFERENCE, not a claim about the document's shape:
+     * `readLinear` (`workflow-linear.ts`) decides whether Sequential Mode can
+     * open a document at all, so a stored `'sequence'` on a document that has
+     * since grown a branch is simply ignored rather than believed. A flag
+     * that can disagree with the document is the drift plan 300 D1 removed
+     * from `nodes[]`, and it is not being reintroduced here.
+     *
+     * `.optional()` rather than `.default()`: absent already means "no
+     * preference recorded", which is exactly `'canvas'`, and defaulting it
+     * would force every document literal in the workspace to carry a field
+     * about editor chrome.
+     */
+    ui: z
+      .object({ editor: z.enum(['sequence', 'canvas']).default('canvas') })
+      .strict()
+      .optional(),
     /** Always run when the workflow ends FAILED. Stateless and idempotent, like `finish()` (§3.2, §4.1). */
     onFail: z
       .object({ script: ScriptRefSchema, params: z.record(WorkflowParamNameSchema, ValueExprSchema).default({}) })
@@ -437,6 +534,31 @@ export const WorkflowDocSchema = WorkflowDocShapeSchema.superRefine((doc, ctx) =
   if (startNodes.length !== 1) {
     ctx.addIssue({ code: 'custom', message: `a document must have exactly one "start" node (found ${startNodes.length})`, path: ['nodes'] })
   }
+
+  // A node may be claimed by at most ONE shuffle (plan 313 §3.5). Checked
+  // here rather than in `checkWorkflow` because it needs nothing but the
+  // document itself, and because "runs exactly once" is a lie the moment two
+  // shuffles both list the same member — a lie the budget walk would then
+  // sum twice.
+  const claimedBy = new Map<string, string>()
+  doc.nodes.forEach((node, i) => {
+    if (node.kind !== 'shuffle') return
+    node.members.forEach((memberId, mi) => {
+      const owner = claimedBy.get(memberId)
+      if (owner === undefined) {
+        claimedBy.set(memberId, node.id)
+        return
+      }
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          owner === node.id
+            ? `"${memberId}" is listed twice by shuffle "${node.id}" — a member runs exactly once, so listing it again does nothing`
+            : `"${memberId}" is already a member of shuffle "${owner}" — a node belongs to at most one shuffle`,
+        path: ['nodes', i, 'members', mi],
+      })
+    })
+  })
 
   // A `switch` case shape must match its OWN node's mode (plan 312 §4.2) —
   // enforced here, at the document level, rather than inside the

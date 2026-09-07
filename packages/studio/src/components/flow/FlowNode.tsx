@@ -41,6 +41,7 @@ const KIND_LABEL: Record<WorkflowNode['kind'], string> = {
   delay: 'Delay',
   finish: 'Finish',
   set: 'Set',
+  shuffle: 'Shuffle',
 }
 
 /** One source `Handle` per edge kind the node owns, positioned so a `then`/`next`/`case:0` sits on the right and a secondary/failure edge sits lower — mirrors `WorkflowCanvas.tsx`'s pre-305 handle layout (plan 102 step 102.5), extended to `switch`'s N cases and `delay`'s single `next`. */
@@ -67,6 +68,16 @@ function outputHandles(node: WorkflowNode): { kind: EdgeKind; title: string; y: 
         { kind: 'default' as const, title: 'default', y: (n * 100) / (n + 1) },
       ]
     }
+    case 'shuffle': {
+      // One handle per member plus `next` — the same "N cases plus default"
+      // layout a `switch` uses, for the same reason: every branch the node
+      // can take is visible on the canvas rather than hidden in its config.
+      const n = node.members.length + 1
+      return [
+        ...node.members.map((m, i) => ({ kind: `member:${m}` as const, title: `member ${i + 1}: ${m}`, y: ((i + 1) * 100) / (n + 1) })),
+        { kind: 'next' as const, title: 'Drag to set what runs after every member', y: (n * 100) / (n + 1) },
+      ]
+    }
     case 'finish':
       return []
   }
@@ -87,6 +98,11 @@ export function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
         node.kind === 'gate' || node.kind === 'switch' ? 'border-warn' : node.kind === 'finish' ? 'border-border-3' : 'border-accent',
         selected && 'ring-2 ring-accent ring-offset-2 ring-offset-bg',
         unreachable && 'opacity-50',
+        // Plan 313 §3.4 — a node the author switched off. Dimmed and dashed
+        // so it is visibly still THERE (it keeps its parameters and its
+        // edges) but visibly not running, which is the whole difference
+        // between switching a node off and deleting it.
+        !node.enabled && 'opacity-40 border-dashed',
         notInstalled && 'border-dashed',
         errorCount > 0 && 'ring-2 ring-danger',
         errorCount === 0 && warningCount > 0 && 'ring-2 ring-warn',
@@ -117,7 +133,7 @@ export function FlowNode({ data, selected }: NodeProps<Node<FlowNodeData>>) {
           </span>
         )}
       </div>
-      <p className="truncate text-[11px] text-faint">{notInstalled ? 'not installed' : summaryText || KIND_LABEL[node.kind]}</p>
+      <p className="truncate text-[11px] text-faint">{!node.enabled ? 'off' : notInstalled ? 'not installed' : summaryText || KIND_LABEL[node.kind]}</p>
       {run && (run.status === 'ok' || run.status === 'failed' || run.status === 'running') && (
         <span
           title={`step #${run.seq + 1}${run.status === 'failed' && run.error ? ` — ${run.error}` : ''}`}

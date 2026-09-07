@@ -159,3 +159,34 @@ describe('ActionResultStatusSchema', () => {
     expect(ActionResultStatusSchema.safeParse('running').success).toBe(false)
   })
 })
+
+describe('run-workflow takes the batch controls run-script takes (plan 313 §4.4)', () => {
+  const base = { verb: 'run-workflow' as const, target: { deviceIds: ['d1'] }, workflowName: 'w1' }
+
+  test('a body that names none of them still parses, and defaults to today’s behaviour', () => {
+    const parsed = ActionRequestSchema.parse(base)
+    expect(parsed).toMatchObject({ concurrency: 0, order: 'as-listed' })
+    // Absent, not defaulted to a zero block: an unpaced workflow batch must
+    // keep writing exactly the columns it wrote before this plan.
+    expect('pacing' in parsed ? parsed.pacing : undefined).toBeUndefined()
+  })
+
+  test('"open the phones one by one, 20-30 seconds apart, in a random order" round-trips', () => {
+    const parsed = ActionRequestSchema.parse({
+      ...base,
+      order: 'random',
+      concurrency: 1,
+      pacing: { count: 1, intervalMs: [0, 0], deviceIntervalMs: 0, deviceDelayMs: [20_000, 30_000] },
+    })
+    expect(parsed).toMatchObject({ order: 'random', concurrency: 1 })
+    expect('pacing' in parsed ? parsed.pacing?.deviceDelayMs : undefined).toEqual([20_000, 30_000])
+  })
+
+  test('an inverted per-device delay range is refused at the boundary, as it is for run-script', () => {
+    const result = ActionRequestSchema.safeParse({
+      ...base,
+      pacing: { count: 1, intervalMs: [0, 0], deviceIntervalMs: 0, deviceDelayMs: [30_000, 20_000] },
+    })
+    expect(result.success).toBe(false)
+  })
+})

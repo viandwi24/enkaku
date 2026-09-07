@@ -225,7 +225,7 @@ function convertV1(v1: z.infer<typeof WorkflowDocV1Schema>): WorkflowDoc {
 
   const convertedNodes: WorkflowNode[] = []
 
-  convertedNodes.push({ id: startId, title: '', ui: { x: 0, y: 0 }, kind: 'start', next: v1.nodes[0]?.id })
+  convertedNodes.push({ id: startId, title: '', ui: { x: 0, y: 0 }, enabled: true, kind: 'start', next: v1.nodes[0]?.id })
 
   v1.nodes.forEach((node, i) => {
     if (node.kind === 'script') {
@@ -237,6 +237,9 @@ function convertV1(v1: z.infer<typeof WorkflowDocV1Schema>): WorkflowDoc {
         id: node.id,
         title: node.title,
         ui: { x: 0, y: 0 },
+        // A v1 document had no way to switch a node off, so every node it
+        // carries upgrades as enabled (plan 313 §3.4).
+        enabled: true,
         kind: 'script',
         script: node.script,
         params: node.params,
@@ -252,6 +255,7 @@ function convertV1(v1: z.infer<typeof WorkflowDocV1Schema>): WorkflowDoc {
         id: node.id,
         title: node.title,
         ui: { x: 0, y: 0 },
+        enabled: true,
         kind: 'gate',
         when: node.when,
         then,
@@ -260,13 +264,13 @@ function convertV1(v1: z.infer<typeof WorkflowDocV1Schema>): WorkflowDoc {
     }
   })
 
-  if (finish.succeedId) convertedNodes.push({ id: finish.succeedId, title: '', ui: { x: 0, y: 0 }, kind: 'finish', status: 'succeed', message: '' })
+  if (finish.succeedId) convertedNodes.push({ id: finish.succeedId, title: '', ui: { x: 0, y: 0 }, enabled: true, kind: 'finish', status: 'succeed', message: '' })
   if (finish.failId) {
     // Rule 4 — the FIRST gate `{ go: 'fail' }`'s own `message` becomes the
     // shared fail-finish's message (a v1 document rarely declares more than
     // one, and the executor only ever showed one message per run anyway).
     const withMessage = v1.nodes.find((n) => n.kind === 'gate' && (n.then.go === 'fail' || n.else.go === 'fail')) as Extract<V1WorkflowNode, { kind: 'gate' }> | undefined
-    convertedNodes.push({ id: finish.failId, title: '', ui: { x: 0, y: 0 }, kind: 'finish', status: 'fail', message: withMessage?.message ?? '' })
+    convertedNodes.push({ id: finish.failId, title: '', ui: { x: 0, y: 0 }, enabled: true, kind: 'finish', status: 'fail', message: withMessage?.message ?? '' })
   }
 
   // Rule 6 — rank-and-row over the newly-explicit edges.

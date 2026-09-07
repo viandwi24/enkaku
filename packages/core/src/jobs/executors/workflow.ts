@@ -6,7 +6,7 @@ import { jobs, workflowSteps, type JobRow, type JobRunRow } from '../../db/schem
 import { parseWorkflowDoc } from '../../workflows/store'
 import type { PinStore } from '../../workflows/pins'
 import type { ScriptEntry, ScriptRegistry } from '../../scripts/registry'
-import { computeDelayMs, computeGateStep, computeSetStep, computeSwitchStep, defaultEdgeFor, successorOf } from '../../workflows/step-compute'
+import { computeBetweenMs, computeDelayMs, computeGateStep, computeSetStep, computeShuffleStep, computeSwitchStep, defaultEdgeFor, successorOf } from '../../workflows/step-compute'
 import { EnkakuError } from '../../util/errors'
 import type { Logger } from '../../util/logger'
 import type { ExecutorContext, JobExecutor } from '../executor'
@@ -207,6 +207,46 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
       let seqOffset = 0
       const carriedOverIds = new Set<string>()
 
+      /**
+       * Which members each `shuffle` node has already dispatched in THIS run
+       * (plan 313 §3.5). Held here rather than derived on each visit so the
+       * cursor is one obvious thing; a resume rebuilds it below from the
+       * recorded rows, never from memory that did not survive the crash.
+       */
+      const shuffleDone = new Map<string, Set<string>>()
+      const markShuffled = (shuffleId: string, takenEdge: string | null): void => {
+        if (takenEdge === null || !takenEdge.startsWith('member:')) return
+        const set = shuffleDone.get(shuffleId) ?? new Set<string>()
+        set.add(takenEdge.slice('member:'.length))
+        shuffleDone.set(shuffleId, set)
+      }
+      const isEnabled = (nodeId: string): boolean => nodesById.get(nodeId)?.enabled ?? true
+
+      /** Which `shuffle` owns each member, so a member knows where to return. */
+      const shuffleOwner = new Map<string, string>()
+      for (const n of doc.nodes) {
+        if (n.kind !== 'shuffle') continue
+        for (const m of n.members) shuffleOwner.set(m, n.id)
+      }
+
+      /**
+       * Where control goes after `node` took `edge` (plan 313 §3.5). This is
+       * `successorOf` plus the one rule that cannot live in a pure per-node
+       * lookup: a shuffle MEMBER declares no `next` of its own — the checker
+       * refuses one — so its success edge dangles, and a dangling `next` on a
+       * member means "back to the shuffle", not "end the run succeeded".
+       *
+       * Only `next` is redirected. A member's `onFailure` still leaves the
+       * shuffle, and a dangling one still ends the run failed, which is what
+       * makes "a failing action aborts the sequence" work unchanged.
+       */
+      const advance = (node: WorkflowNode, edge: string): string | null => {
+        const direct = successorOf(node, edge)
+        if (direct !== null) return direct
+        if (edge === 'next' && node.kind !== 'shuffle') return shuffleOwner.get(node.id) ?? null
+        return null
+      }
+
       let cursor: string | null = doc.entry
 
       // ---- resume (plan 211 §4.5 item 2) ----
@@ -219,6 +259,10 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           if (s.status !== 'success' && s.status !== 'carried-over') continue
           outputs.set(s.stepId, s.output)
           carriedOverIds.add(s.stepId)
+          // A resumed run must not re-run a member the prior run already
+          // dispatched, so the shuffle cursor is rebuilt from the rows rather
+          // than starting empty (plan 313 §4.3).
+          if (s.kind === 'shuffle') markShuffled(s.stepId, s.takenEdge)
           deps.db
             .insert(workflowSteps)
             .values({
@@ -403,6 +447,57 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             continue
           }
 
+          // A node the author switched OFF (plan 313 §3.4). Skipped whole:
+          // no child job, no device call, no output recorded — so a
+          // downstream `{ from }` naming it fails honestly instead of
+          // silently reading whatever it returned on some earlier run
+          // (`checkWorkflow`'s W_WORKFLOW_DISABLED_BINDING warns at publish
+          // time). It costs no step against `maxSteps` for the same reason
+          // `start` does not: nothing ran.
+          //
+          // A disabled node inside a shuffle never reaches here — the draw
+          // drops it (`computeShuffleStep`) — so this only ever fires on the
+          // ordinary walk, where `next` is the one edge that makes sense.
+          if (!node.enabled) {
+            const skipSeqRow = step + seqOffset
+            const skippedAt = new Date()
+            deps.db
+              .insert(workflowSteps)
+              .values({
+                id: crypto.randomUUID(),
+                runId: ctx.runId,
+                seq: skipSeqRow,
+                stepId: node.id,
+                kind: node.kind,
+                jobId: null,
+                jobRunId: null,
+                status: 'skipped',
+                startedAt: skippedAt,
+                finishedAt: skippedAt,
+                output: null,
+                outputTruncated: null,
+                input: null,
+                takenEdge: 'next',
+                pinned: false,
+                verdict: null,
+                error: null,
+                errorCode: null,
+              })
+              .run()
+            seqOffset += 1
+            summary.push({
+              nodeId: node.id,
+              script: node.kind === 'script' ? node.script : null,
+              status: 'skipped',
+              startedAt: toSec(skippedAt),
+              finishedAt: toSec(skippedAt),
+              durationMs: 0,
+              output: null,
+            })
+            cursor = advance(node, 'next')
+            continue
+          }
+
           const seq = step + seqOffset
           runCounts.set(node.id, (runCounts.get(node.id) ?? 0) + 1)
           const rowId = crypto.randomUUID()
@@ -457,7 +552,41 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
               output: pinnedOutput,
             })
             step += 1
-            cursor = successorOf(node, takenEdge)
+            cursor = advance(node, takenEdge)
+            continue
+          }
+
+          if (node.kind === 'shuffle') {
+            // One visit = one member dispatched (plan 313 §3.5). The node is
+            // revisited after each member returns, and the visit that finds
+            // nothing left takes `next` instead. In-process, no child, no
+            // device — the cost is the members', not the shuffle's.
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const done = shuffleDone.get(node.id) ?? new Set<string>()
+            const { takenEdge, output } = computeShuffleStep(node, done, scope, isEnabled)
+            // The wait BETWEEN members (plan 313) — before each member after
+            // the first, never before the first and never on the visit that
+            // leaves. Held here rather than in a `delay` node because a
+            // member declares no `next` for one to sit on.
+            const betweenMs = takenEdge.startsWith('member:') ? computeBetweenMs(node, done.size === 0, scope) : 0
+            if (betweenMs > 0) await cancellableDelay(betweenMs, ctx.signal)
+            markShuffled(node.id, takenEdge)
+            const finishedAt = new Date()
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output: { ...output, waitedMs: betweenMs }, takenEdge }).where(eq(workflowSteps.id, rowId)).run()
+            summary.push({
+              nodeId: node.id,
+              script: null,
+              status: 'success',
+              startedAt: toSec(rowStartedAt),
+              finishedAt: toSec(finishedAt),
+              durationMs: finishedAt.getTime() - rowStartedAt.getTime(),
+              output: { ...output, waitedMs: betweenMs },
+            })
+            // Deliberately NOT written to `outputs`: a shuffle is control
+            // flow, and a later node binding `{ from: '<shuffle>' }` would be
+            // reading a bookkeeping record, not a result.
+            step += 1
+            cursor = advance(node, takenEdge)
             continue
           }
 
@@ -480,7 +609,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // Both `then` and `else` end the run SUCCEEDED when dangling
             // (plan 301 §3.2) — a gate has no `fail`-shaped outcome any more;
             // ending a run failed is a `finish` node's own job.
-            cursor = successorOf(node, takenEdge)
+            cursor = advance(node, takenEdge)
             continue
           }
 
@@ -508,7 +637,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             step += 1
             // Every case target and `default` end the run SUCCEEDED when
             // dangling (plan 301 §3.2), same as a gate's `then`/`else`.
-            cursor = successorOf(node, takenEdge)
+            cursor = advance(node, takenEdge)
             continue
           }
 
@@ -535,7 +664,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
 
             step += 1
             // Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2).
-            cursor = successorOf(node, 'next')
+            cursor = advance(node, 'next')
             continue
           }
 
@@ -589,7 +718,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
 
             step += 1
             // Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2).
-            cursor = successorOf(node, 'next')
+            cursor = advance(node, 'next')
             continue
           }
 
@@ -620,8 +749,12 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             currentChildRunId = null
 
             step += 1
-            // Absent = dangling; reaching it ends the run SUCCEEDED (plan 301 §3.2).
-            cursor = node.next ?? null
+            // Absent = dangling; reaching it ends the run SUCCEEDED (plan 301
+            // §3.2) — UNLESS this node is a shuffle member, whose dangling
+            // `next` means "back to the shuffle" (plan 313 §3.5). That is
+            // what `advance` decides; going through `node.next` directly here
+            // was what made a shuffle run its first member and then stop.
+            cursor = advance(node, 'next')
             continue
           }
 

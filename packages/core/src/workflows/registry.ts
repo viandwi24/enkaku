@@ -3,8 +3,9 @@ import { IconNameSchema, WorkflowNodeDescriptorSchema, type IconName, type JsonS
 import type { PluginRuntime } from '../plugins/runtime'
 
 /**
- * The flow editor's node catalog (plan 300 D6, plan 303 §4.3) — the seven
- * core control kinds (`set` added by plan 312 §4.6), constant, plus every
+ * The flow editor's node catalog (plan 300 D6, plan 303 §4.3) — the eight
+ * core control kinds (`set` added by plan 312 §4.6, `shuffle` by plan 313),
+ * constant, plus every
  * ACTIVATED plugin's node members, read
  * fresh off `runtime.active(name)`'s manifest on every call (the same "never
  * caches" discipline `surface-registry.ts` already documents for exactly the
@@ -17,7 +18,7 @@ import type { PluginRuntime } from '../plugins/runtime'
  * newer version later never silently rewrites an existing document.
  */
 
-/** One entry per `WORKFLOW_NODE_KINDS` member, in that order, each id namespaced the same way (plan 303 §6's acceptance criterion counts these ids). */
+/** One entry per `WORKFLOW_NODE_KINDS` member, each id namespaced the same way (plan 303 §6's acceptance criterion counts these ids). */
 const CORE_NODE_TYPES: NodeType[] = [
   { id: 'core:start', source: 'core', kind: 'start', title: 'Start', description: 'Where a run begins — the one entry point of the document.', category: 'other', icon: 'play', summary: [], keywords: ['begin', 'entry'] },
   { id: 'core:script', source: 'core', kind: 'script', title: 'Script', description: 'Run a published script against the device.', category: 'other', icon: 'terminal', summary: [], keywords: ['run', 'device'] },
@@ -35,6 +36,17 @@ const CORE_NODE_TYPES: NodeType[] = [
   },
   { id: 'core:delay', source: 'core', kind: 'delay', title: 'Delay', description: 'A bounded, cancellable wait — costs a step, touches no device.', category: 'other', icon: 'pause', summary: [], keywords: ['wait', 'sleep', 'pause'] },
   { id: 'core:finish', source: 'core', kind: 'finish', title: 'Finish', description: 'Ends the run, succeeded or failed.', category: 'other', icon: 'check', summary: [], keywords: ['end', 'done'] },
+  {
+    id: 'core:shuffle',
+    source: 'core',
+    kind: 'shuffle',
+    title: 'Shuffle',
+    description: 'Runs its members once each, in a random order that differs per device, then carries on.',
+    category: 'other',
+    icon: 'shuffle',
+    summary: [],
+    keywords: ['random', 'order', 'randomise', 'randomize', 'vary', 'mix'],
+  },
   {
     id: 'core:set',
     source: 'core',

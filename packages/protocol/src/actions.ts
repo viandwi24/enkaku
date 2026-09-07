@@ -143,6 +143,18 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
     verb: z.literal('run-workflow'),
     workflowName: z.string().min(1),
     params: z.unknown().optional(),
+    /**
+     * The same three batch controls `run-script` above has taken since plan
+     * 94, added by plan 313 §4.4. A workflow batch IS a batch row, and
+     * `createBatchPacer` is generic over batch rows, so the stagger, the
+     * per-device delay draw and the random device order all already worked —
+     * they were simply never reachable, because this verb hardcoded
+     * `concurrency: 0, order: 'as-listed'` and sent no pacing at all.
+     */
+    concurrency: z.number().int().min(0).default(0),
+    order: z.enum(['as-listed', 'random']).default('as-listed'),
+    priority: z.number().int().optional(),
+    pacing: PacingSchema.optional(),
     /** Plan 211 §4.8 — re-run an existing workflow job: adds a run rather than creating a batch. */
     jobId: z.string().optional(),
   }),
@@ -195,7 +207,16 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
   CommonSchema.extend({ verb: z.literal('settings'), settings: DeviceSettingsPatchSchema }),
 ])
 export type ActionRequest = z.infer<typeof ActionRequestSchema>
-export type ActionParams<V extends ActionVerb> = Omit<Extract<ActionRequest, { verb: V }>, 'verb' | 'target' | 'force'>
+/**
+ * What a CALLER must supply for one verb — built from the schema's INPUT
+ * type, not its output, so a field the schema defaults is optional here
+ * (plan 313 §4.4). `ActionRequest` is the parsed, server-side shape where
+ * every default has been applied; a client is exactly the party that has
+ * not applied them yet. Before this, adding `concurrency`/`order` to
+ * `run-workflow` would have forced every re-run call site — which creates
+ * no batch at all — to name two batch controls it has no opinion about.
+ */
+export type ActionParams<V extends ActionVerb> = Omit<Extract<z.input<typeof ActionRequestSchema>, { verb: V }>, 'verb' | 'target' | 'force'>
 
 /** MVP 07 §1.2. `accepted`/`done`/`failed` are the life of an async verb; `done`/`failed` the whole life of a sync one. */
 export const ActionResultStatusSchema = z.enum(['accepted', 'skipped', 'forbidden', 'warned', 'done', 'failed'])

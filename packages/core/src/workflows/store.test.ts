@@ -20,8 +20,8 @@ function sampleDoc(name: string) {
     maxSteps: 50,
     entry: 'start',
     nodes: [
-      { kind: 'start' as const, id: 'start', title: '', ui: { x: 0, y: 0 }, next: 'n0' },
-      { kind: 'script' as const, id: 'n0', title: '', ui: { x: 240, y: 0 }, script: 'demo/checkout@1.0.0', params: {} },
+      { kind: 'start' as const, id: 'start', title: '', ui: { x: 0, y: 0 }, enabled: true, next: 'n0' },
+      { kind: 'script' as const, id: 'n0', title: '', ui: { x: 240, y: 0 }, enabled: true, script: 'demo/checkout@1.0.0', params: {} },
     ],
   }
 }

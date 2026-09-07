@@ -7,8 +7,8 @@ export const WorkflowStepInfoSchema = z.object({
   runId: z.string(),
   seq: z.number().int().min(0),
   stepId: z.string(),
-  /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds. */
-  kind: z.enum(['script', 'gate', 'switch', 'delay', 'set']),
+  /** Plan 303 §5 step 303.3: `switch`/`delay` join `script`/`gate` as recorded step kinds; `set` by plan 312, `shuffle` by plan 313 §4.3. */
+  kind: z.enum(['script', 'gate', 'switch', 'delay', 'set', 'shuffle']),
   /** The child script job and the run of it this step waited on; both null for a gate. */
   jobId: z.string().nullable(),
   jobRunId: z.string().nullable(),
@@ -19,7 +19,7 @@ export const WorkflowStepInfoSchema = z.object({
   input: z.unknown(),
   output: z.unknown(),
   outputTruncated: z.string().nullable(),
-  /** Which edge the step left by, or `null` when the run ended here (plan 304 §4.1). Added by plan 307 — the run overlay's edge highlight (P11) reads this. */
+  /** Which edge the step left by, or `null` when the run ended here (plan 304 §4.1). Added by plan 307 — the run overlay's edge highlight (P11) reads this. A `shuffle` step leaves by `member:<nodeId>` (plan 313 §4.3). */
   takenEdge: z.string().nullable(),
   /** True when the step was satisfied from a pin instead of executed (plan 304 §3.3). Added by plan 307 — the run overlay draws a pinned node without a halo, since it did not run. */
   pinned: z.boolean(),

@@ -31,6 +31,13 @@ export function defaultEdgeFor(node: WorkflowNode): string {
     case 'delay':
     case 'set':
       return 'next'
+    case 'shuffle':
+      // The FIRST member, for a pin substitution or any other caller that
+      // needs a plausible edge without evaluating the node (plan 313 §4.3).
+      // A pinned shuffle is a shuffle nobody wants to run, so handing back
+      // its first member is the same "one representative branch" answer
+      // `gate` and `switch` already give.
+      return node.members[0] !== undefined ? `member:${node.members[0]}` : 'next'
     default:
       return 'next'
   }
@@ -54,11 +61,21 @@ export function successorOf(node: WorkflowNode, edge: string): string | null {
     case 'delay':
     case 'set':
       return node.next ?? null
+    case 'shuffle':
+      // `member:<id>` jumps into a member; `next` is taken once every member
+      // has run. A member id that is not in `members` resolves to null
+      // rather than being trusted — the edge string comes off a stored row.
+      if (edge.startsWith('member:')) {
+        const memberId = edge.slice('member:'.length)
+        return node.members.includes(memberId) ? memberId : null
+      }
+      return node.next ?? null
     default:
       return null
   }
 }
 
+export type ShuffleNode = Extract<WorkflowNode, { kind: 'shuffle' }>
 export type GateNode = Extract<WorkflowNode, { kind: 'gate' }>
 export type SwitchNode = Extract<WorkflowNode, { kind: 'switch' }>
 export type SetNode = Extract<WorkflowNode, { kind: 'set' }>
@@ -162,4 +179,52 @@ export function computeDelayMs(node: DelayNode, scope: ResolveScope): number {
   const msOutcome = resolveValue(node.ms, scope)
   const rawMs = msOutcome.ok && typeof msOutcome.value === 'number' && Number.isFinite(msOutcome.value) ? msOutcome.value : 0
   return Math.max(0, Math.min(rawMs, node.maxMs))
+}
+
+/**
+ * The wait before one shuffled member (plan 313) — the same resolve-then-clamp
+ * `computeDelayMs` does, against the shuffle's own `between`/`betweenMaxMs`.
+ * Zero before the FIRST member and on the visit that leaves: a "between" that
+ * fired before the first action would just be a delay in front of the group,
+ * which the author can already write as a `delay` node.
+ */
+export function computeBetweenMs(node: ShuffleNode, isFirst: boolean, scope: ResolveScope): number {
+  if (isFirst) return 0
+  const outcome = resolveValue(node.between, scope)
+  const raw = outcome.ok && typeof outcome.value === 'number' && Number.isFinite(outcome.value) ? outcome.value : 0
+  return Math.max(0, Math.min(raw, node.betweenMaxMs))
+}
+
+export interface ShuffleStepResult {
+  takenEdge: string
+  /** The member this visit dispatched to, `null` on the visit that leaves. */
+  chosen: string | null
+  output: { chosen: string | null; done: string[]; remaining: number }
+}
+
+/**
+ * One visit to a `shuffle` node (plan 313 §3.5, §4.3). Given the members
+ * already run in THIS run, draws the next one from `scope.randomSeed` and
+ * returns the edge to take; once `done` covers every member, it returns
+ * `next` instead and the shuffle is finished.
+ *
+ * The draw is an index into the REMAINING members, in document order, so it
+ * is a function of `(randomSeed, done)` alone: the same run replayed with the
+ * same seed visits the same members in the same order, and two devices in one
+ * batch — different `job_runs.seed`, therefore a different `randomSeed` per
+ * visit — get different orders. `disabled` members are dropped from the draw
+ * entirely rather than being chosen and then skipped, so switching one off
+ * changes the order the others can appear in, not just what runs.
+ */
+export function computeShuffleStep(node: ShuffleNode, done: ReadonlySet<string>, scope: ResolveScope, isEnabled: (nodeId: string) => boolean): ShuffleStepResult {
+  const remaining = node.members.filter((m) => !done.has(m) && isEnabled(m))
+  const doneList = node.members.filter((m) => done.has(m))
+  if (remaining.length === 0) {
+    return { takenEdge: 'next', chosen: null, output: { chosen: null, done: doneList, remaining: 0 } }
+  }
+  // `Math.min(..., length - 1)` guards the `randomSeed === 1` boundary, which
+  // would otherwise index one past the end.
+  const index = Math.min(Math.floor((scope.randomSeed ?? 0) * remaining.length), remaining.length - 1)
+  const chosen = remaining[index] as string
+  return { takenEdge: `member:${chosen}`, chosen, output: { chosen, done: doneList, remaining: remaining.length - 1 } }
 }
