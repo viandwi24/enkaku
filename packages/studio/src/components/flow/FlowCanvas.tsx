@@ -18,7 +18,7 @@ import {
   type OnSelectionChangeParams,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { WorkflowDoc, WorkflowFinding, WorkflowPoint } from '@enkaku/protocol'
+import type { IconName, WorkflowDoc, WorkflowFinding, WorkflowPoint } from '@enkaku/protocol'
 import { connectionToEdgeChange, type EdgeChange } from './canvas-edit'
 import { deriveGraph } from './derive-graph'
 import { computeLayout } from './layout'
@@ -355,7 +355,13 @@ function FlowCanvasInner({
   )
 }
 
-function iconFor(node: FlowCanvasProps['doc']['nodes'][number]): string {
+/**
+ * `IconName`, not `string` (plan 313 §11): typed `string`, this function
+ * happily returned an icon name that did not exist in `ICON_NAMES`, the node
+ * simply rendered no icon, and nothing anywhere failed. `IconName` makes the
+ * next node kind that gets this wrong a compile error instead.
+ */
+function iconFor(node: FlowCanvasProps['doc']['nodes'][number]): IconName {
   switch (node.kind) {
     case 'start':
       return 'play'
