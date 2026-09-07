@@ -865,11 +865,10 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       deps.onInputDegraded?.(opts.preferredInputMode ?? 'uhid', selection.engine, selection.degradedReason)
     }
     const inputDeps = { session: scrcpy, screenSize, onLog: (l: 'debug' | 'warn', m: string) => log[l](m) }
-    // The UHID pointer is registered on first use, not here. Sending
-    // UHID_CREATE the instant the control socket opens is too early — the
-    // server is not reading control messages yet and the pointer never
-    // materialises, so taps land nowhere. Registering it at the first tap
-    // costs that tap about a second, once per session.
+    // The UHID pointer is not registered here. Sending UHID_CREATE the
+    // instant the control socket opens is too early — the server is not
+    // reading control messages yet and the pointer never materialises, so
+    // taps land nowhere.
     const engine =
       selection.engine === 'scrcpy-uhid'
         ? (uhidEngine = new ScrcpyUhidInput(inputDeps))
@@ -878,6 +877,27 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // over adb so the buttons in the UI actually move the volume.
     input = withAdbKeyFallback(engine, transport)
     inputEngineId = selection.engine
+    // Nor is it registered by the first touch any more, which is what it
+    // used to be. That cost a human about 1.6 s (`UHID_SETTLE_MS` plus
+    // the landing sleep) on their first tap or drag of EVERY session, and
+    // `SessionManager.get()` prefers the short-lived `control` entry, so it
+    // came back on every reopen of Device Control rather than once per
+    // device. The first video packet is the trigger instead: it proves the
+    // server accepted the sockets and its threads are running, which the
+    // bare control-socket connection above does not, and it lands well
+    // before a viewer can see a picture to touch. `prewarm()` is a
+    // background call to the same idempotent `init()` — a touch that still
+    // beats it registers the pointer itself, exactly as before, so this can
+    // only move the wait off the input path, never break it.
+    const toPrewarm = uhidEngine
+    if (toPrewarm) {
+      let armed = false
+      scrcpy.onPacket(() => {
+        if (armed) return
+        armed = true
+        toPrewarm.prewarm()
+      })
+    }
   } else {
     input = new AdbInput(transport)
     inputEngineId = 'adb-input'

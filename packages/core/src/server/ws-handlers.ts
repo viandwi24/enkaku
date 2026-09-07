@@ -249,6 +249,22 @@ interface ConnState {
 interface TouchStream {
   deviceId: string
   pointerId: number
+  /**
+   * The session this stream's `down` was delivered to, pinned for the life
+   * of the stream.
+   *
+   * `SessionManager.get()` resolves the CONTROL entry first and falls back
+   * to the `wall` one (`manager.ts:664`), and a control entry is inserted
+   * into the map as soon as it is built — before its first keyframe, which
+   * is exactly when a viewer who just opened Device Control starts touching
+   * the screen. Re-resolving per message therefore lets one drag move from
+   * one entry to the other mid-stream, and the two entries own SEPARATE
+   * virtual pointers: the `down` goes to one and the `up` to the other,
+   * leaving a finger held down on the device with nothing left to release
+   * it. A stream that finishes on the sink it started on is right even when
+   * the other entry has since become the better one.
+   */
+  session: DeviceSession
   startedAt: number
   /** Normalised samples, `atMs` relative to `startedAt`. Only meaningful for pointer 0 (the recorded stream). */
   samples: Array<{ x: number; y: number; atMs: number }>
@@ -820,8 +836,18 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       if (onlyDeviceId && stream.deviceId !== onlyDeviceId) continue
       connState.touches.delete(key)
       try {
-        const session = deps.sessions?.get(stream.deviceId) ?? null
-        if (session) {
+        // The stream's own session, not a fresh `sessions.get()`: the same
+        // reason `TouchStream.session` exists at all — an `up` released
+        // against the other entry's virtual pointer leaves this one's
+        // finger down, which is precisely what this function is here to
+        // prevent. `getByQuality` is the identity check that `get()` used to
+        // provide for free: release only while the entry this stream was
+        // pinned to is still the open one at its quality, so a session that
+        // has already closed is skipped rather than made to sit through a
+        // UHID settle writing into a dead socket.
+        const session = stream.session
+        const live = deps.sessions?.getByQuality(stream.deviceId, session.quality) ?? null
+        if (live === session) {
           const source: InputSource = { kind: 'user', id: connState.clientId, userId: connState.userId }
           const sink = session.arbiter.for(source)
           const last = stream.samples[stream.samples.length - 1]
@@ -1694,9 +1720,15 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               const { action, pos, pointerId } = msg.payload
               const key = `${deviceId}:${pointerId}`
               const t0 = performance.now()
-              const p = mapNormToDevice(pos, session.frameSize)
+              const open = state.touches.get(key)
+              // `TouchStream.session` says why a `move`/`up` follows the
+              // stream's own session instead of whatever `get()` resolves to
+              // now. A `down` opens a new stream, so it pins the current one.
+              const target = action === 'down' ? session : (open?.session ?? session)
+              const targetSink = target === session ? sink : target.arbiter.for(source)
+              const p = mapNormToDevice(pos, target.frameSize)
               const deliver = async (a: 'down' | 'move' | 'up', q: Point): Promise<void> => {
-                if (sink.touch) await sink.touch(a, q, pointerId)
+                if (targetSink.touch) await targetSink.touch(a, q, pointerId)
               }
               const markSettled = (): void => {
                 const s = state.touches.get(key)
@@ -1706,20 +1738,25 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                   const next = s.latestMove
                   s.latestMove = null
                   s.inFlight = true
-                  void deliver('move', mapNormToDevice(next, session.frameSize)).finally(markSettled)
+                  void deliver('move', mapNormToDevice(next, target.frameSize)).finally(markSettled)
                 }
               }
 
               if (action === 'down') {
                 // A lost `up` (tab switch mid-drag): close the prior stream first (MVP 08 §1.1 last row).
-                const prior = state.touches.get(key)
+                const prior = open
                 if (prior) {
                   const priorLast = prior.samples[prior.samples.length - 1] ?? pos
-                  if (sink.touch) await sink.touch('up', mapNormToDevice(priorLast, session.frameSize), pointerId)
+                  // On the prior stream's OWN session: it may have been
+                  // opened against the wall entry that this `down` no longer
+                  // resolves to, and releasing the wrong pointer would leave
+                  // the real one held.
+                  const priorSink = prior.session === session ? sink : prior.session.arbiter.for(source)
+                  if (priorSink.touch) await priorSink.touch('up', mapNormToDevice(priorLast, prior.session.frameSize), pointerId)
                   state.touches.delete(key)
                   if (pointerId === 0) observeStream(deviceId, prior, actor)
                 }
-                state.touches.set(key, { deviceId, pointerId, startedAt: Date.now(), samples: [{ x: pos.x, y: pos.y, atMs: 0 }], inFlight: true, latestMove: null })
+                state.touches.set(key, { deviceId, pointerId, session, startedAt: Date.now(), samples: [{ x: pos.x, y: pos.y, atMs: 0 }], inFlight: true, latestMove: null })
                 deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
                 try {
                   await deliver('down', p)
@@ -1755,12 +1792,12 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               pushSample(stream, pos)
               state.touches.delete(key)
               deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
-              if (sink.touch) {
-                await sink.touch('up', p, pointerId)
+              if (targetSink.touch) {
+                await targetSink.touch('up', p, pointerId)
               } else if (pointerId === 0 && stream.samples.length >= 2) {
                 // No touch(): adb-input. The stream is replayed as one swipe on up.
-                const firstPoint = mapNormToDevice(stream.samples[0]!, session.frameSize)
-                await sink.swipe(firstPoint, p, Math.max(50, Date.now() - stream.startedAt))
+                const firstPoint = mapNormToDevice(stream.samples[0]!, target.frameSize)
+                await targetSink.swipe(firstPoint, p, Math.max(50, Date.now() - stream.startedAt))
               }
               recordDispatch(deviceId, performance.now() - t0)
               if (pointerId === 0) observeStream(deviceId, stream, actor)
