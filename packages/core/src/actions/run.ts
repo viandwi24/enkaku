@@ -272,8 +272,13 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
       workflowDoc,
       params: request.params,
       target: { deviceIds: candidates },
-      concurrency: 0,
-      order: 'as-listed',
+      // These three used to be hardcoded to `0` / `'as-listed'` / nothing
+      // (plan 313 §3.1): the batch machinery supported all of them, and a
+      // workflow run could reach none of them.
+      concurrency: request.concurrency,
+      order: request.order,
+      ...(request.priority !== undefined ? { priority: request.priority } : {}),
+      ...(request.pacing ? { pacing: request.pacing } : {}),
       createdBy: actor.id,
     } satisfies CreateWorkflowBatchInput)
     const jobByDevice = new Map(memberJobs.map((j) => [j.deviceId, j]))

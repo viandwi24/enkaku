@@ -934,7 +934,9 @@ function shuffleDoc(): WorkflowDoc {
   })
 }
 
-const ALL_OK = new Map([
+type StepPlan = Map<string, { status: 'success' | 'failed' | 'cancelled'; result?: unknown; error?: string }>
+
+const ALL_OK: StepPlan = new Map([
   ['script-demo/a', { status: 'success', result: { n: 'a' } }],
   ['script-demo/b', { status: 'success', result: { n: 'b' } }],
   ['script-demo/c', { status: 'success', result: { n: 'c' } }],
@@ -1056,7 +1058,7 @@ describe('shuffle node (plan 313 §3.5, G5)', () => {
 
   test('a member that fails leaves the shuffle by its own onFailure — the remaining members do not run', async () => {
     const { runs, deps } = setUp(
-      new Map([
+      new Map<string, { status: 'success' | 'failed' | 'cancelled'; result?: unknown; error?: string }>([
         ['script-demo/a', { status: 'failed', error: 'boom' }],
         ['script-demo/b', { status: 'success', result: { n: 'b' } }],
         ['script-demo/c', { status: 'success', result: { n: 'c' } }],
