@@ -33,13 +33,133 @@ async function startDaemon(): Promise<void> {
 
   const daemon = createDaemon(cfg)
 
-  let shuttingDown = false
-  const shutdown = async (signal: string): Promise<void> => {
-    if (shuttingDown) return
-    shuttingDown = true
-    log.info(`received ${signal}, shutting down…`)
+  /*
+    Shutdown in three phases, and only the middle one can be skipped.
+
+    It used to be one: `stop()` then `exit(0)`. `stop()` tears the subsystems
+    down immediately, so a job running at that moment died with the process
+    and came back on the next boot as `core restarted` — which is exactly
+    what an operator pressing Ctrl+C found in their job list. A second Ctrl+C
+    did nothing at all, because the handler returned early.
+
+    Now: stop taking new work and WAIT, saying what is being waited for;
+    a second Ctrl+C cancels that work; and either way the devices get their
+    own screen behaviour back before the process leaves.
+
+    The release is not skippable, and that is deliberate (CEO, 2026-09-07).
+    Cancelling is a decision about WORK. Putting a phone back the way we
+    found it is cleaning up after ourselves, and a force stop is not a
+    licence to leave twenty screens burning. It is bounded per device
+    instead, so one phone that has stopped answering cannot hold the farm.
+  */
+  const WAIT_LIMIT_MS = 120_000
+  const RELEASE_LIMIT_MS = 30_000
+  const TICK_MS = 2_000
+
+  let phase: 'running' | 'draining' | 'cancelling' | 'leaving' = 'running'
+
+  const banner = (lines: string[]): void => {
+    const width = Math.max(...lines.map((l) => l.length)) + 4
+    const rule = '─'.repeat(width)
+    process.stderr.write(`\n┌${rule}┐\n`)
+    for (const l of lines) process.stderr.write(`│  ${l.padEnd(width - 4)}  │\n`)
+    process.stderr.write(`└${rule}┘\n\n`)
+  }
+
+  const describe = (w: { kind: string; jobId: string; deviceLabel: string | null; deviceId: string }): string =>
+    `${w.kind} ${w.jobId.slice(0, 8)} on ${w.deviceLabel ?? w.deviceId.slice(0, 8)}`
+
+  /** Wait, briefly, for cancelled runs to finish settling. */
+  const settleWithin = async (ms: number): Promise<void> => {
+    const until = Date.now() + ms
+    while (Date.now() < until && daemon.inFlight().length > 0) {
+      await new Promise((r) => setTimeout(r, 200))
+    }
+  }
+
+  const leave = async (): Promise<never> => {
+    phase = 'leaving'
+    // Always, on every path out of here.
+    /*
+      The sweep is bounded HERE, not inside the readiness manager, which owns
+      no timers by design (a test asserts that against its own source). Each
+      release is already bounded by adb's own command timeout; this is the
+      deadline for the whole thing, so a farm that has gone unreachable can
+      still let the process leave.
+    */
+    const { released, failed } = await Promise.race([
+      daemon.releaseDevices(),
+      new Promise<{ released: number; failed: number }>((resolve) =>
+        setTimeout(() => resolve({ released: 0, failed: -1 }), RELEASE_LIMIT_MS),
+      ),
+    ])
+    if (failed === -1) {
+      process.stderr.write(`\ndevices did not answer within ${RELEASE_LIMIT_MS / 1000}s — some may still be held awake\n`)
+    } else if (released > 0 || failed > 0) {
+      log.info(`handed ${released} device(s) back their own screen timeout${failed > 0 ? `, ${failed} did not answer` : ''}`)
+    }
     await daemon.stop()
     process.exit(0)
+  }
+
+  const shutdown = async (signal: string): Promise<void> => {
+    if (phase === 'cancelling' || phase === 'leaving') {
+      // A third one. Something is genuinely stuck; leave without ceremony.
+      process.stderr.write('\nforced exit — devices may still be held awake\n')
+      process.exit(130)
+    }
+
+    if (phase === 'draining') {
+      phase = 'cancelling'
+      const aborted = daemon.cancelWork()
+      banner([`Cancelling ${aborted} running job${aborted === 1 ? '' : 's'}.`, 'Devices are still handed back before exit.'])
+      // Cancelling is asynchronous: the run settles, and only then does it
+      // let go of the device it was holding. Leaving immediately meant the
+      // release ran ten milliseconds later, found the hold still live, and
+      // left the phone forced awake (owner, 2026-09-07). Bounded, because a
+      // run that will not settle must not become a hang.
+      await settleWithin(5_000)
+      await leave()
+      return
+    }
+
+    phase = 'draining'
+    log.info(`received ${signal}, shutting down…`)
+    const inFlight = daemon.quiesce()
+    if (inFlight.length === 0) {
+      await leave()
+      return
+    }
+
+    banner([
+      `WAITING FOR ${inFlight.length} RUNNING JOB${inFlight.length === 1 ? '' : 'S'}`,
+      '',
+      ...inFlight.slice(0, 6).map(describe),
+      ...(inFlight.length > 6 ? [`…and ${inFlight.length - 6} more`] : []),
+      '',
+      'No new work is being started.',
+      'Press Ctrl+C again to cancel them.',
+    ])
+
+    const deadline = Date.now() + WAIT_LIMIT_MS
+    for (;;) {
+      // `phase` moves under us when a second signal arrives — that path does
+      // its own cancelling and leaving, so this loop simply stops.
+      if (phase !== 'draining') return
+      const left = daemon.inFlight()
+      if (left.length === 0) {
+        log.info('every job finished')
+        break
+      }
+      if (Date.now() >= deadline) {
+        banner([`Still running after ${WAIT_LIMIT_MS / 1000}s — cancelling ${left.length}.`])
+        daemon.cancelWork()
+        break
+      }
+      log.info(`waiting for ${left.length} job(s): ${left.slice(0, 3).map(describe).join(', ')}`)
+      await new Promise((r) => setTimeout(r, TICK_MS))
+    }
+    await leave()
   }
 
   process.on('SIGINT', () => void shutdown('SIGINT'))

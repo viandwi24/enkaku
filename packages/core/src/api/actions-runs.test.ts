@@ -57,6 +57,7 @@ function setUp(): { db: Db; deps: ActionsDeps } {
     start: () => {},
     abort: () => false,
     isRunning: () => false,
+  listRunning: () => [],
     finishExternally: () => {},
     notifyCrash: () => false,
     progress: () => {},

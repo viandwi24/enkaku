@@ -256,7 +256,7 @@ import { createDeviceLifecycle } from './device/lifecycle'
 import { createPairingService, type PairingService } from './enroll/pairing'
 import { EnkakuError } from './util/errors'
 import { ExecutorRegistry } from './jobs/executor'
-import { createExecutorHost } from './jobs/executor-host'
+import { createExecutorHost, type ExecutorHost } from './jobs/executor-host'
 import { classifyFailure } from './jobs/failure-class'
 import { pickRebindDevice } from './groups/dispatch'
 import { createBatchPacer, replanAfterRestart, type BatchPacer } from './groups/pacer'
@@ -369,9 +369,45 @@ export function createAdbServerVersionAccessor(
   }
 }
 
+/** One piece of work a shutdown is waiting for, in words an operator can act on. */
+export interface InFlightWork {
+  runId: string
+  jobId: string
+  /** `script` | `workflow` — what the operator called it when they started it. */
+  kind: string
+  deviceId: string
+  deviceLabel: string | null
+}
+
 export interface Daemon {
   start(): Promise<void>
   stop(): Promise<void>
+  /**
+   * Stop taking new work, and say what is still in flight.
+   *
+   * The first half of a graceful shutdown. `stop()` on its own tears the
+   * subsystems down immediately, so a job running at that moment died with
+   * the process and came back on the next boot as `core restarted` — which
+   * is what an operator pressing Ctrl+C actually saw in their job list
+   * (owner, 2026-09-07). Idempotent.
+   */
+  quiesce(): InFlightWork[]
+  /** What `quiesce` reported, re-read. Empty means the farm is idle. */
+  inFlight(): InFlightWork[]
+  /**
+   * Abort everything in flight — the second Ctrl+C. Returns how many were
+   * aborted. They settle as `cancelled`, which is the truth: an operator
+   * stopped them. `failed` would blame the job for a decision the operator
+   * made.
+   */
+  cancelWork(): number
+  /**
+   * Hand every device back its own screen behaviour. NEVER skipped, not even
+   * by a force stop: cancelling work is a decision about work, and this is
+   * cleaning up after ourselves. Bounded per device so one unreachable phone
+   * cannot hold the farm.
+   */
+  releaseDevices(): Promise<{ released: number; failed: number }>
   port: number
   /**
    * Plan 120 §4 — closes ONLY the HTTP/WS listener (a GRACEFUL
@@ -669,6 +705,10 @@ let blobGc: BlobGc | null = null
   /** Device readiness (plan 43) — constructed once `activities` exists (below), used by every module below that reconciles or admits against it. */
   let readiness: ReadinessManager | null = null
   let stopScheduler: (() => void) | null = null
+  /** The executor host, so a shutdown can name what is still running and cancel it. */
+  let executorHostRef: ExecutorHost | null = null
+  /** A device's label, for the shutdown banner. `db` is scoped inside `start()`; this is the one fact the returned object needs from it. */
+  let deviceLabelRef: ((deviceId: string) => string | null) | null = null
   /** The batch pacer's dynamic timer (plan 94 §3.8, §4.8, step 94.7) — cleared in `stop()` like every other periodic timer here (`00-overview.md` §7 item 7). */
   let stopPacer: (() => void) | null = null
   let stopReaper: (() => void) | null = null
@@ -1828,6 +1868,8 @@ let blobGc: BlobGc | null = null
         // history).
         onProgress: (jobId, runId, deviceId, value) => hub.broadcast({ type: 'job.progress', payload: { jobId, runId, deviceId, value } }),
       })
+      executorHostRef = host
+      deviceLabelRef = (deviceId) => db.select({ label: devices.label }).from(devices).where(eq(devices.id, deviceId)).get()?.label ?? null
 
       // Resolves an actor id to a display label (plan 71 §3.3, kept and
       // renamed by plan 205 §5 step 205.9 — the manual-hold subsystem that
@@ -5015,6 +5057,33 @@ let blobGc: BlobGc | null = null
           `adb subsystem failed to start: ${String(err)} — the core stays up, retry from the Tools page (POST /api/tools/repair)`,
         )
       }
+    },
+
+    /** See `Daemon.quiesce`. */
+    quiesce() {
+      // The scheduler is what CLAIMS the next job. Stopping it is the whole
+      // of "take no new work" — nothing else needs to know a shutdown has
+      // begun, and a job already running is deliberately left alone.
+      stopScheduler?.()
+      return this.inFlight()
+    },
+
+    inFlight() {
+      const rows = executorHostRef?.listRunning() ?? []
+      return rows.map((r) => ({ ...r, deviceLabel: deviceLabelRef?.(r.deviceId) ?? null }))
+    },
+
+    cancelWork() {
+      const rows = executorHostRef?.listRunning() ?? []
+      let aborted = 0
+      for (const r of rows) {
+        if (executorHostRef?.abort(r.runId)) aborted++
+      }
+      return aborted
+    },
+
+    async releaseDevices() {
+      return (await readiness?.releaseAll()) ?? { released: 0, failed: 0 }
     },
 
     async stop() {

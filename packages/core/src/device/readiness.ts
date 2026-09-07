@@ -72,6 +72,27 @@ export interface ReadinessManager {
    */
   start(): void
   stop(): void
+  /**
+   * Hand every device this core forced awake back its own screen behaviour.
+   *
+   * `keepAwake` sets `stay_on_while_plugged_in` on the phone. That is a state
+   * the core IMPOSES, and until this existed nothing undid it: `stop()` only
+   * set a flag so the boot sweep stopped waking more phones, so every device
+   * the farm had touched stayed lit for ever after the process exited, with
+   * nothing left to manage it (owner, 2026-09-07).
+   *
+   * It RELEASES rather than sleeps. Dropping the setting lets the phone
+   * follow its own screen timeout; pressing power would be a new action
+   * nobody asked for. `desired` is untouched and lives in the database, so a
+   * device meant to be awake is woken again on the next boot — this gives
+   * control back, it does not change intent.
+   *
+   * No timeout of its own — this module owns no timers (§3.7, and a test
+   * asserts it against this file's own source). Each release is already
+   * bounded by adb's own command timeout, and the CALLER bounds the whole
+   * sweep, which is where a deadline for "the process is leaving" belongs.
+   */
+  releaseAll(): Promise<{ released: number; failed: number }>
 }
 
 export interface ReadinessManagerDeps {
@@ -840,6 +861,34 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // There is no timer to clear; this flag is what a shutdown mid-sweep
       // needs, so the core does not keep waking phones it is walking away from.
       stopped = true
+    },
+
+    async releaseAll() {
+      let released = 0
+      let failed = 0
+      /*
+        Every hold is ignored here, including a WORK hold — and this is the
+        one place in this module where that is right.
+
+        `releaseAwake` refuses under a work hold because sleeping underneath
+        a running job would break the job. At shutdown there is no job left
+        to break: the process is leaving, and a hold that outlives the work
+        it protected is bookkeeping, not a guarantee. Measured on the owner's
+        farm: a cancelled run's hold was still live ten milliseconds later,
+        so the release reported "1 did not answer" and the phone stayed
+        forced awake for good (2026-09-07).
+      */
+      for (const deviceId of [...keepAwakeApplied]) {
+        holdCounts.delete(deviceId)
+        holdReasons.delete(deviceId)
+        try {
+          if (await releaseAwake(deviceId, { overridePresentationHolds: true })) released++
+          else failed++
+        } catch {
+          failed++
+        }
+      }
+      return { released, failed }
     },
   }
 }

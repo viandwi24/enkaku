@@ -51,6 +51,12 @@ export interface ExecutorHost {
   /** Abort a running executor (cancel or force-release). */
   abort(runId: string): boolean
   isRunning(runId: string): boolean
+  /**
+   * What is in flight right now, so a shutdown can SAY what it is waiting
+   * for instead of just hanging. `running` was private, and the only thing
+   * a caller could learn was whether one known `runId` was alive.
+   */
+  listRunning(): Array<{ runId: string; jobId: string; kind: string; deviceId: string }>
   finishExternally(runId: string, status: 'failed' | 'cancelled', error: string, code?: string): void
   notifyCrash(runId: string, e: { package: string; exception: string; message: string }): boolean
   progress(runId: string, value: unknown): void
@@ -261,6 +267,15 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
 
     isRunning(runId) {
       return running.has(runId)
+    },
+
+    listRunning() {
+      return [...running.values()].map((e) => ({
+        runId: e.run.id,
+        jobId: e.job.id,
+        kind: e.job.kind ?? 'script',
+        deviceId: e.job.deviceId,
+      }))
     },
 
     finishExternally(runId, status, error, code) {

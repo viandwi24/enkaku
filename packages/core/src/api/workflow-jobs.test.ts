@@ -34,6 +34,7 @@ function setUp(): { db: Db; app: Hono<AuthEnv> } {
     start: () => {},
     abort: () => false,
     isRunning: () => false,
+  listRunning: () => [],
     finishExternally: () => {},
     notifyCrash: () => false,
     progress: () => {},
