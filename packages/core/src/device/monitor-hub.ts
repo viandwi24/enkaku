@@ -66,6 +66,33 @@ export const STREAM_CLOCK_OVERRIDES: Partial<Record<MonitorKind, { idleTimeoutMs
   crash: { idleTimeoutMs: 0, absoluteTimeoutMs: 0, maxBytes: 32 * 1024 * 1024 },
 }
 
+/**
+ * Monitor kinds whose slot comes off the COUNTED streaming lane (`pinned`,
+ * plan 208 §3.6) instead of competing on it.
+ *
+ * Only `crash`, and for the same reason its clock is already disabled above:
+ * it is not a bursty user of the lane, it is one stream held for the whole
+ * life of a session. The farm-wide budget is
+ * `min(64, ceil(devices * 2.5))` — 2.5 slots per device, of which the
+ * docstring reserves exactly one for this feed and one and a half for the
+ * genuinely bursty callers (a Monitor tab, a transfer, an install). That
+ * arithmetic only holds while the `min` does not bind. It binds at 26
+ * devices, and past there the crash feeds eat a bigger share of a budget
+ * that has stopped growing: 50 devices leave 14 slots for everything else,
+ * 64 devices leave none, and on the owner's 66-device farm two phones could
+ * never get a feed at all while every Monitor tab, transfer and install on
+ * the farm failed with `E_ADB_STREAM_LIMIT` (field report, 2026-09-07 — the
+ * log showed all 64 slots held, one per device, every one of them a crash
+ * feed).
+ *
+ * Pinning it restores the invariant the formula is written around: the
+ * counted budget is for bursty work, and a per-device session stream is
+ * bounded by the device count itself. It is the same call plan 208 made for
+ * the ui-server inspector, which is already pinned once per session — so
+ * this is that farm's existing pattern, not a new one.
+ */
+export const PINNED_MONITOR_KINDS: ReadonlySet<MonitorKind> = new Set<MonitorKind>(['crash'])
+
 export interface MonitorHub {
   /**
    * Subscribe `clientId` to `(deviceId, kind, options)`. Starts the adb
@@ -241,6 +268,7 @@ export function createMonitorHub(deps: MonitorHubDeps): MonitorHub {
         // for every kind but `crash`, so the spread adds nothing and the
         // lane's own defaults apply exactly as before.
         ...STREAM_CLOCK_OVERRIDES[entry.kind],
+        ...(PINNED_MONITOR_KINDS.has(entry.kind) ? { pinned: true } : {}),
       })
       if (entry.stopRequested) {
         void handle.stop().catch(() => {})

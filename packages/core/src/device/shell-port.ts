@@ -20,6 +20,15 @@ export interface ShellStreamOptions {
   idleTimeoutMs?: number
   absoluteTimeoutMs?: number
   maxBytes?: number
+  /**
+   * Take the slot off the counted streaming lane (`pinned` in
+   * `AdbClient.execStream`, plan 208 §3.6) — for a stream that is held for
+   * the life of a session and never competes with a bursty user.
+   *
+   * Node-owned devices ignore it: a remote stream is spent against that
+   * node's own budget, not this host's lane.
+   */
+  pinned?: boolean
 }
 
 export interface ShellStreamHandle {
@@ -83,6 +92,7 @@ export function createLocalShellPort(deps: { client: AdbClient; serial: string }
         ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
         ...(opts.absoluteTimeoutMs !== undefined ? { absoluteTimeoutMs: opts.absoluteTimeoutMs } : {}),
         ...(opts.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}),
+        ...(opts.pinned ? { pinned: true } : {}),
       })
       return {
         // No caller of `ShellPort.stream()` inspects `streamId` for a local
