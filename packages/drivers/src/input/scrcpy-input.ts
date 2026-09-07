@@ -15,6 +15,25 @@ const UHID_SETTLE_MS = 1500
 const UHID_KEYBOARD_SETTLE_MS = 1500
 /** Same landing quirk as `tap()`: position first, then the touch bit. */
 const UHID_LAND_MS = 100
+/**
+ * How long `prewarm()` waits after its trigger before writing UHID_CREATE.
+ *
+ * Not a margin picked by feel: it is scrcpy v3.3.1's own
+ * `Controller.control()` `SystemClock.sleep(500)` (verified against
+ * `server/src/main/java/com/genymobile/scrcpy/control/Controller.java` on
+ * 2026-09-07), the one window in which the server has accepted our control
+ * socket but its `control-recv` thread is not yet in `handleEvent()`. TCP
+ * buffers the create across it, so the message is never lost — but the
+ * kernel only starts building the input device when the server READS it,
+ * and `UHID_SETTLE_MS` is measured from the write. Waiting the server's own
+ * worst case first keeps the settle window honest.
+ *
+ * That branch needs `power_on=true` (scrcpy's default, which this codebase
+ * does not override) AND a screen that is off at server start, which a
+ * session that has run `wakeDevice` never has. So this normally costs
+ * nothing, and it is paid in the background either way.
+ */
+const UHID_PREWARM_DELAY_MS = 500
 
 /**
  * The smallest hold that registers on the UHID engine (one 60 Hz input
@@ -192,6 +211,8 @@ export class ScrcpyUhidInput extends ScrcpySdkInput {
   override readonly mode: InputSink['mode'] = 'uhid'
   private ready: Promise<void> | null = null
   private keyboardReady: Promise<void> | null = null
+  /** The pending `prewarm()` timer, so `destroy()` can cancel a create that has not been written yet. */
+  private prewarmTimer: ReturnType<typeof setTimeout> | null = null
   private readonly keyboard = new KeyboardState()
 
   /**
@@ -214,6 +235,51 @@ export class ScrcpyUhidInput extends ScrcpySdkInput {
       this.deps.onLog?.('debug', 'absolute UHID pointer registered')
     })()
     return this.ready
+  }
+
+  /**
+   * Start `init()` in the BACKGROUND, so the settle is paid while the viewer
+   * is still watching the stream come up rather than by their first touch.
+   *
+   * Why this exists: `init()` is awaited from `tap`/`swipe`/`gesture`/`touch`
+   * and nothing else, so before this method the very first pointer action of
+   * every session paid `UHID_SETTLE_MS + UHID_LAND_MS` — about 1.6 s of a
+   * drag that looks frozen and then jumps (the core coalesces the moves
+   * behind it newest-wins, plan 209 §3.2 D7). It is not once per device
+   * either: `SessionManager.get()` prefers the `control` entry over the
+   * `wall` one and that entry is closed `CONTROL_LINGER_MS` after its last
+   * viewer leaves, so every reopen of Device Control met a fresh, cold
+   * pointer. Upstream scrcpy has the same settle and never pays it on the
+   * input path — `sc_keyboard_uhid_init` writes UHID_CREATE at startup
+   * (verified against v3.3.1 `app/src/uhid/keyboard_uhid.c` on 2026-09-07);
+   * this is that behaviour, with the wait kept because we cannot observe the
+   * device coming up (see below).
+   *
+   * There is no readiness signal to wait for instead. scrcpy v3.3.1 has
+   * exactly three device→host message types (`CLIPBOARD`, `ACK_CLIPBOARD`,
+   * `UHID_OUTPUT` — `control/DeviceMessage.java`), no create ack; and the
+   * server's own `UhidManager.registerUhidListener` reads `/dev/uhid` but
+   * forwards ONLY `UHID_OUTPUT`, dropping the kernel's `UHID_START`/
+   * `UHID_OPEN`. So the settle stays a timer, and the only thing worth
+   * fixing is who waits on it.
+   *
+   * Safe by construction, and deliberately not a second code path: this only
+   * calls the same idempotent `init()` earlier. A touch that arrives first
+   * still calls it itself, exactly as before — `??=` means whoever gets
+   * there first owns the create, and the other awaits the same promise.
+   * Callers hand it a trigger that proves the scrcpy pipeline is live (the
+   * first video packet); `UHID_PREWARM_DELAY_MS` covers the server's own
+   * remaining control-loop delay.
+   */
+  prewarm(): void {
+    if (this.ready || this.prewarmTimer) return
+    this.prewarmTimer = setTimeout(() => {
+      this.prewarmTimer = null
+      // Attaches a handler to the SAME cached promise a later touch awaits:
+      // it prevents an unhandled rejection without changing what that touch
+      // sees (a failed create has always been the caller's error to see).
+      void this.init().catch(() => undefined)
+    }, UHID_PREWARM_DELAY_MS)
   }
 
   private norm(p: Point): { xNorm: number; yNorm: number } {
@@ -343,6 +409,13 @@ export class ScrcpyUhidInput extends ScrcpySdkInput {
 
   /** Session close: UHID_DESTROY both virtual devices, best-effort (the server's death would remove them anyway). */
   async destroy(): Promise<void> {
+    // A session that closed before its prewarm fired must not create a
+    // pointer on the way out — the create would land on a control socket
+    // this session is about to drop, and nothing would ever destroy it.
+    if (this.prewarmTimer) {
+      clearTimeout(this.prewarmTimer)
+      this.prewarmTimer = null
+    }
     if (this.keyboardReady) this.deps.session.control.uhidDestroy(UHID_KEYBOARD_ID)
     if (this.ready) this.deps.session.control.uhidDestroy(UHID_POINTER_ID)
   }

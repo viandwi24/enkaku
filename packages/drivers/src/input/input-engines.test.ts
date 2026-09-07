@@ -350,3 +350,64 @@ describe('the six new input verbs (plan 209 §4.7, §5 step 209.4)', () => {
     expect(facade2.releaseKeys).toBeDefined()
   })
 })
+
+/**
+ * `prewarm()` — the UHID pointer is registered off the input path.
+ *
+ * Before it, `init()` was reachable only from `tap`/`swipe`/`gesture`/`touch`,
+ * so the first pointer action of every session paid `UHID_SETTLE_MS` plus the
+ * landing sleep — about 1.6 s of a drag that looks frozen and then jumps. The
+ * three properties below are the ones that would silently undo that: a
+ * prewarm that never writes the create, a prewarm that writes a SECOND one
+ * behind a tap that got there first, and a create written by a session that
+ * has already gone away.
+ *
+ * These tests pay real settle time (there is no injectable clock on this
+ * engine) — deliberately kept to three, since the timings are the behaviour.
+ */
+describe('ScrcpyUhidInput.prewarm — the settle is paid off the input path', () => {
+  test('registers the pointer with no input call, so the next tap does not wait for it', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+
+    engine.prewarm()
+    // UHID_PREWARM_DELAY_MS (500) + UHID_SETTLE_MS (1500), plus slack.
+    await Bun.sleep(2_100)
+    expect(calls.filter((c) => c.fn === 'uhidCreate').length).toBe(1)
+
+    // The point of all of it: the tap now pays only its own landing sleep
+    // (UHID_LAND_MS = 100) and hold, not the 1500 ms settle.
+    const startedAt = performance.now()
+    await engine.tap({ x: 10, y: 10 })
+    expect(performance.now() - startedAt).toBeLessThan(500)
+  })
+
+  test('a tap that gets there first owns the create, and the prewarm never adds a second', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+
+    engine.prewarm()
+    // Beats the prewarm timer: `init()` is idempotent through `??=`, so this
+    // tap registers the pointer itself exactly as it did before prewarm existed.
+    await engine.tap({ x: 10, y: 10 })
+    expect(calls.filter((c) => c.fn === 'uhidCreate').length).toBe(1)
+
+    await Bun.sleep(600) // the prewarm timer's own deadline passes
+    expect(calls.filter((c) => c.fn === 'uhidCreate').length).toBe(1)
+  })
+
+  test('destroy() cancels a prewarm that has not written its create yet', async () => {
+    const { control, calls } = fakeControl()
+    const engine = new ScrcpyUhidInput({ session: fakeSession(control), screenSize: () => ({ width: 1000, height: 2000 }) })
+
+    engine.prewarm()
+    await engine.destroy()
+    await Bun.sleep(600)
+
+    // Nothing created, so nothing to destroy either: a create landing on a
+    // control socket this session is dropping would leave a pointer alive
+    // with nobody left to remove it.
+    expect(calls.filter((c) => c.fn === 'uhidCreate').length).toBe(0)
+    expect(calls.filter((c) => c.fn === 'uhidDestroy').length).toBe(0)
+  })
+})
