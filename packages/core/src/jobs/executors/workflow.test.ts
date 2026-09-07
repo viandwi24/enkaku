@@ -1056,6 +1056,75 @@ describe('shuffle node (plan 313 §3.5, G5)', () => {
     expect(stepRows.find((s) => s.stepId === 'tail')?.status).toBe('success')
   })
 
+  test('a between-wait fires before every member after the first, and never before the first (plan 313)', async () => {
+    const { runs, deps } = setUp(new Map(ALL_OK))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'shuffle-doc',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        // 5 ms so the test is fast; what is under test is WHICH visits wait,
+        // not how long for.
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b', 'c'], between: { const: 5 }, betweenMaxMs: 5, next: 'tail' },
+        scriptNode({ id: 'a', script: 'demo/a@1.0.0' }),
+        scriptNode({ id: 'b', script: 'demo/b@1.0.0' }),
+        scriptNode({ id: 'c', script: 'demo/c@1.0.0' }),
+        scriptNode({ id: 'tail', script: 'demo/tail@1.0.0' }),
+      ],
+    })
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const visits = deps.db
+      .select()
+      .from(workflowSteps)
+      .where(eq(workflowSteps.runId, run.id))
+      .orderBy(workflowSteps.seq)
+      .all()
+      .filter((s) => s.stepId === 'sh')
+    // Four visits: three members plus the one that leaves. Only the 2nd and
+    // 3rd member dispatches wait — not the first (that would just be a delay
+    // in front of the group) and not the one that leaves.
+    expect(visits.map((v) => (v.output as { waitedMs?: number } | null)?.waitedMs ?? 0)).toEqual([0, 5, 5, 0])
+  })
+
+  test('the wait is clamped to betweenMaxMs, exactly as a delay node is clamped to its own maxMs', async () => {
+    const { runs, deps } = setUp(new Map(ALL_OK))
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const doc = WorkflowDocSchema.parse({
+      schema: 2,
+      name: 'shuffle-doc',
+      title: '',
+      description: '',
+      params: [],
+      entry: 'start',
+      nodes: [
+        startNode({ next: 'sh' }),
+        { kind: 'shuffle', id: 'sh', title: '', ui: { x: 0, y: 0 }, members: ['a', 'b'], between: { const: 999_999 }, betweenMaxMs: 5, next: 'tail' },
+        scriptNode({ id: 'a', script: 'demo/a@1.0.0' }),
+        scriptNode({ id: 'b', script: 'demo/b@1.0.0' }),
+        scriptNode({ id: 'tail', script: 'demo/tail@1.0.0' }),
+      ],
+    })
+    const { job, run } = workflowJobFor(runs, doc)
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+
+    const waits = deps.db
+      .select()
+      .from(workflowSteps)
+      .where(eq(workflowSteps.runId, run.id))
+      .all()
+      .filter((s) => s.stepId === 'sh')
+      .map((s) => (s.output as { waitedMs?: number } | null)?.waitedMs ?? 0)
+    // Without the clamp this test would take sixteen minutes.
+    expect(Math.max(...waits)).toBe(5)
+  })
+
   test('a member that fails leaves the shuffle by its own onFailure — the remaining members do not run', async () => {
     const { runs, deps } = setUp(
       new Map<string, { status: 'success' | 'failed' | 'cancelled'; result?: unknown; error?: string }>([

@@ -342,7 +342,8 @@ export function NodePanel({
                     <p className="text-[12px] font-medium">Members</p>
                     <p className="text-meta text-faint">
                       Each ticked node runs exactly once per run, in an order drawn fresh for every device. A member declares no next of its own — control comes back here after
-                      it, and only when every member has run does this node carry on.
+                      it, and only when every member has run does this node carry on. A node already wired to something else has to be unwired first; in Sequential Mode the
+                      Shuffle order switch does all of this for you.
                     </p>
                   </div>
                   <div className="space-y-1">

@@ -4,7 +4,7 @@ import { EnkakuError } from '../util/errors'
 import type { ScriptEntry, ScriptRegistry } from '../scripts/registry'
 import type { PinStore } from './pins'
 import { sampleFromSchema } from './sample-from-schema'
-import { computeDelayMs, computeGateStep, computeSetStep, computeShuffleStep, computeSwitchStep, successorOf } from './step-compute'
+import { computeBetweenMs, computeDelayMs, computeGateStep, computeSetStep, computeShuffleStep, computeSwitchStep, successorOf } from './step-compute'
 
 /**
  * Plan 309 — running a whole workflow with no device attached, ever. This
@@ -176,13 +176,17 @@ export function simulateWorkflow(req: SimulateRequest, deps: { pins: PinStore; r
     if (node.kind === 'shuffle') {
       const done = shuffleDone.get(node.id) ?? new Set<string>()
       const { takenEdge, output } = computeShuffleStep(node, done, scope, isEnabled)
+      // Reported, never honoured — the same rule the `delay` node follows
+      // here (plan 309 §3.3): a simulation that waits is a simulation nobody
+      // runs twice.
+      const waitedMs = takenEdge.startsWith('member:') ? computeBetweenMs(node, done.size === 0, scope) : 0
       if (takenEdge.startsWith('member:')) {
         const set = shuffleDone.get(node.id) ?? new Set<string>()
         set.add(takenEdge.slice('member:'.length))
         shuffleDone.set(node.id, set)
       }
-      summary.push({ nodeId: node.id, script: null, status: 'success', startedAt: toSec(stepStartMs), finishedAt: toSec(stepStartMs), durationMs: 0, output })
-      steps.push({ seq, nodeId: node.id, kind: node.kind, input: inputValue, output, source: 'computed', takenEdge })
+      summary.push({ nodeId: node.id, script: null, status: 'success', startedAt: toSec(stepStartMs), finishedAt: toSec(stepStartMs), durationMs: 0, output: { ...output, waitedMs } })
+      steps.push({ seq, nodeId: node.id, kind: node.kind, input: inputValue, output: { ...output, waitedMs }, source: 'computed', takenEdge, ...(waitedMs > 0 ? { skippedMs: waitedMs } : {}) })
       seq += 1
       cursor = advance(node, takenEdge)
       continue

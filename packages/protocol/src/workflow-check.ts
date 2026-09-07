@@ -400,6 +400,10 @@ function longestPathMs(
         }
         members += memberOwn
       }
+      // The waits BETWEEN members (plan 313): one before each member after
+      // the first, each clamped to `betweenMaxMs`, exactly as a `delay`
+      // node's own `maxMs` is what the walk sums.
+      members += span.betweenMs
       // The exits are alternatives to each other: `next` is taken once every
       // member has run, and a member's `onFailure` is taken INSTEAD of the
       // rest of the sequence. Summing the members' own costs and then adding
@@ -446,6 +450,8 @@ function longestPathMs(
 interface ShuffleSpan {
   members: string[]
   exits: string[]
+  /** The total of the waits between members — `(members - 1) * betweenMaxMs`. */
+  betweenMs: number
 }
 
 /** The `ShuffleSpan` of every `shuffle` in the document, keyed by node id. */
@@ -460,7 +466,7 @@ function shuffleSpans(doc: WorkflowDoc): Map<string, ShuffleSpan> {
       const member = byId.get(memberId)
       if (member?.kind === 'script' && member.onFailure !== undefined) exits.push(member.onFailure)
     }
-    spans.set(node.id, { members: [...node.members], exits })
+    spans.set(node.id, { members: [...node.members], exits, betweenMs: Math.max(0, node.members.length - 1) * node.betweenMaxMs })
   }
   return spans
 }

@@ -452,6 +452,28 @@ precedent — "the pure half of that, no React, so it is testable with no DOM".
 That was not tidying. It is the part of this plan most able to lose an
 author's work, Studio has no tests, and moving ~15 lines bought six of them.
 
+### The gesture §4.5 promised and the first pass did not deliver
+
+§4.5 listed "shuffle these (select rows → wrap in a `shuffle` node)" as one of
+the sequence editor's four gestures. The first pass shipped a member picker in
+the node panel instead — and that picker offers only nodes with **no `next`**,
+because a member with one is a checker error. Every action in a linear chain
+has a `next`. So from the sequence editor, nothing was ever selectable: the
+brief's screen 2 could not be built at all.
+
+The fix is a **Shuffle order switch over the whole sequence**, which is the
+operation an author wants anyway, and is reversible — turning it off puts the
+members back in the list.
+
+That exposed a second thing the design could not express. A member declares no
+`next`, so there is nowhere for a `delay` node to sit between two shuffled
+actions — meaning "run these in a random order" and "wait 1-10 s between each
+action", the two halves of the brief, could not be asked for together. So the
+shuffle node grew `between`/`betweenMaxMs`, the same resolve-then-clamp pair
+`delay` already has, waited before each member after the first. The wrap
+carries the author's existing gaps into it and the unwrap turns them back into
+`delay` nodes, so the round trip keeps the range.
+
 ### Four bugs the work surfaced
 
 - **The script success path bypassed the shared successor lookup.** It

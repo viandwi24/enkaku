@@ -6,7 +6,7 @@ import { jobs, workflowSteps, type JobRow, type JobRunRow } from '../../db/schem
 import { parseWorkflowDoc } from '../../workflows/store'
 import type { PinStore } from '../../workflows/pins'
 import type { ScriptEntry, ScriptRegistry } from '../../scripts/registry'
-import { computeDelayMs, computeGateStep, computeSetStep, computeShuffleStep, computeSwitchStep, defaultEdgeFor, successorOf } from '../../workflows/step-compute'
+import { computeBetweenMs, computeDelayMs, computeGateStep, computeSetStep, computeShuffleStep, computeSwitchStep, defaultEdgeFor, successorOf } from '../../workflows/step-compute'
 import { EnkakuError } from '../../util/errors'
 import type { Logger } from '../../util/logger'
 import type { ExecutorContext, JobExecutor } from '../executor'
@@ -564,9 +564,15 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const done = shuffleDone.get(node.id) ?? new Set<string>()
             const { takenEdge, output } = computeShuffleStep(node, done, scope, isEnabled)
+            // The wait BETWEEN members (plan 313) — before each member after
+            // the first, never before the first and never on the visit that
+            // leaves. Held here rather than in a `delay` node because a
+            // member declares no `next` for one to sit on.
+            const betweenMs = takenEdge.startsWith('member:') ? computeBetweenMs(node, done.size === 0, scope) : 0
+            if (betweenMs > 0) await cancellableDelay(betweenMs, ctx.signal)
             markShuffled(node.id, takenEdge)
             const finishedAt = new Date()
-            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output, takenEdge }).where(eq(workflowSteps.id, rowId)).run()
+            deps.db.update(workflowSteps).set({ status: 'success', finishedAt, output: { ...output, waitedMs: betweenMs }, takenEdge }).where(eq(workflowSteps.id, rowId)).run()
             summary.push({
               nodeId: node.id,
               script: null,
@@ -574,7 +580,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
               startedAt: toSec(rowStartedAt),
               finishedAt: toSec(finishedAt),
               durationMs: finishedAt.getTime() - rowStartedAt.getTime(),
-              output,
+              output: { ...output, waitedMs: betweenMs },
             })
             // Deliberately NOT written to `outputs`: a shuffle is control
             // flow, and a later node binding `{ from: '<shuffle>' }` would be

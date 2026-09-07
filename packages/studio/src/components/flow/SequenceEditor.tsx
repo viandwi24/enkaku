@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { gapExpr, planSequence, readLinear, type LinearView, type NodeType, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
+import { gapExpr, planSequence, readGap, readLinear, type LinearView, type NodeType, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
 import { ArrowDownIcon, ArrowUpIcon, Button, Input, Label, PlusIcon, ShuffleIcon, XIcon, cn } from '@enkaku/ui'
 import type { DocEdit, EdgeKind } from './doc-edit'
 import { freshNodeId, nodeIdsOf } from './doc-edit'
@@ -75,6 +75,7 @@ export function SequenceEditor({
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-6">
       <ActionList doc={doc} view={view} dispatch={dispatch} onOpenNode={onOpenNode} selectedId={selectedId} />
+      <ShuffleToggle doc={doc} view={view} dispatch={dispatch} />
       <Button type="button" variant="outline" className="w-full" onClick={() => onAddAction(view.steps.at(-1)?.node.id ?? view.start.id)}>
         <PlusIcon className="size-4" /> Add action
       </Button>
@@ -366,3 +367,90 @@ export function canUseSequence(doc: WorkflowDoc): boolean {
 }
 
 export type { NodeType }
+
+/**
+ * The brief's screen 2: "Shuffle order — each device runs actions in a random
+ * order", as one switch over the whole sequence.
+ *
+ * This is the gesture §4.5 promised and the first implementation did not
+ * deliver: the node panel's member picker offers only nodes with no `next`,
+ * and every action in a linear chain has one — so from this editor nothing
+ * was ever selectable. Wrapping is the operation an author actually wants
+ * anyway ("run these in a random order"), and it is reversible: turning the
+ * switch off puts the members back in the list in their stored order.
+ *
+ * The gaps survive the round trip as the shuffle's own `between`, which is
+ * why that field exists — a member declares no `next`, so there is no edge
+ * for a `delay` node to sit on.
+ */
+function ShuffleToggle({ doc, view, dispatch }: { doc: WorkflowDoc; view: LinearView; dispatch(edit: DocEdit, coalesceKey?: string): void }) {
+  const only = view.steps.length === 1 ? view.steps[0]?.node : undefined
+  const shuffle = only?.kind === 'shuffle' ? only : undefined
+  const on = shuffle !== undefined
+  const actionCount = on ? (shuffle?.members.length ?? 0) : view.steps.length
+
+  const toggle = (): void => {
+    const key = opKey('shuffle')
+    if (shuffle) {
+      // Unwrap: the members become the sequence again, and the shuffle's own
+      // `between` becomes ordinary gaps between them.
+      const members = shuffle.members.flatMap((id) => doc.nodes.filter((n) => n.id === id))
+      dispatch({ t: 'remove-nodes', ids: [shuffle.id] }, key)
+      relink(doc, view, members, dispatch, key)
+      if (shuffle.betweenMaxMs > 0) {
+        const unwrapped: LinearView = { ...view, steps: members.map((node) => ({ node, delayBefore: null })) }
+        insertMissingGaps(doc, unwrapped, 0, shuffle.betweenMaxMs, dispatch, key)
+      }
+      return
+    }
+    const members = view.steps.map((s) => s.node)
+    if (members.length < 2) return
+    // The gaps between the actions become the shuffle's `between`, so the
+    // author's "1 to 10 seconds" survives being wrapped.
+    const gaps = view.steps.map((s) => (s.delayBefore ? readGap(s.delayBefore) : null)).filter((g): g is { minMs: number; maxMs: number } => g !== null)
+    const range = gaps[0] ?? { minMs: 0, maxMs: 0 }
+    const id = freshNodeId('shuffle', nodeIdsOf(doc))
+    dispatch(
+      {
+        t: 'add-node',
+        node: {
+          kind: 'shuffle',
+          id,
+          title: 'Shuffle order',
+          ui: { x: COLUMN_X, y: ROW_GAP },
+          enabled: true,
+          members: members.map((m) => m.id),
+          between: gapExpr(range.minMs, range.maxMs),
+          betweenMaxMs: range.maxMs,
+        },
+      },
+      key,
+    )
+    // The members lose their own `next` — the shuffle decides what follows
+    // each of them — and every gap node goes, since there is no edge left for
+    // one to sit on. `relink` over just the shuffle rewires start -> sh -> end.
+    for (const m of members) dispatch({ t: 'set-edge', from: m.id, kind: 'next', to: undefined }, key)
+    const gapIds = view.steps.map((s) => s.delayBefore).filter((d): d is WorkflowNode => d !== null).map((d) => d.id)
+    if (gapIds.length > 0) dispatch({ t: 'remove-nodes', ids: gapIds }, key)
+    dispatch({ t: 'set-edge', from: view.start.id, kind: 'next', to: id }, key)
+    dispatch({ t: 'set-edge', from: id, kind: 'next', to: view.finish?.id }, key)
+  }
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border-3 p-3">
+      <input type="checkbox" id="seq-shuffle" checked={on} onChange={toggle} disabled={!on && view.steps.length < 2} />
+      <Label htmlFor="seq-shuffle" className="flex-1">
+        <span className="flex items-center gap-1.5">
+          <ShuffleIcon className="size-3.5" /> Shuffle order
+        </span>
+        <span className="mt-0.5 block text-meta font-normal text-faint">
+          {on
+            ? `Each device runs these ${actionCount} actions in its own random order.`
+            : view.steps.length < 2
+              ? 'Add at least two actions to shuffle them.'
+              : 'Each device runs the actions in a random order instead of top to bottom. The delay between actions is kept.'}
+        </span>
+      </Label>
+    </div>
+  )
+}

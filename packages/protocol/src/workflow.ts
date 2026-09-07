@@ -420,6 +420,25 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
        * without losing their work.
        */
       members: z.array(WorkflowNodeIdSchema).max(WORKFLOW_LIMITS.maxSwitchCases),
+      /**
+       * How long to wait BETWEEN members — before each one after the first,
+       * never before the first and never after the last.
+       *
+       * It lives on the shuffle rather than being a `delay` node between
+       * members, because there is nowhere to put one: a member declares no
+       * `next` (§3.5), so there is no edge for a delay to sit on. Without
+       * this field "run these in a random order" and "wait 1-10 s between
+       * each action" — the two halves of the client brief — could not be
+       * asked for together.
+       *
+       * Same shape and same discipline as `delay`: `between` may be any
+       * `ValueExpr` (so `{ expr: '1000 + $random * 9000' }` gives a fresh
+       * draw per gap), and `betweenMaxMs` is the document's declared ceiling
+       * — what the checker sums into the budget and what the executor clamps
+       * the resolved value to.
+       */
+      between: ValueExprSchema.default({ const: 0 }),
+      betweenMaxMs: z.number().int().min(0).max(WORKFLOW_LIMITS.maxDelayMs).default(0),
       /** Absent = dangling; reaching it ends the run succeeded (plan 301 §3.2). */
       next: WorkflowNodeIdSchema.optional(),
     })

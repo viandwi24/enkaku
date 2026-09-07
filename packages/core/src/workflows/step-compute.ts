@@ -181,6 +181,20 @@ export function computeDelayMs(node: DelayNode, scope: ResolveScope): number {
   return Math.max(0, Math.min(rawMs, node.maxMs))
 }
 
+/**
+ * The wait before one shuffled member (plan 313) — the same resolve-then-clamp
+ * `computeDelayMs` does, against the shuffle's own `between`/`betweenMaxMs`.
+ * Zero before the FIRST member and on the visit that leaves: a "between" that
+ * fired before the first action would just be a delay in front of the group,
+ * which the author can already write as a `delay` node.
+ */
+export function computeBetweenMs(node: ShuffleNode, isFirst: boolean, scope: ResolveScope): number {
+  if (isFirst) return 0
+  const outcome = resolveValue(node.between, scope)
+  const raw = outcome.ok && typeof outcome.value === 'number' && Number.isFinite(outcome.value) ? outcome.value : 0
+  return Math.max(0, Math.min(raw, node.betweenMaxMs))
+}
+
 export interface ShuffleStepResult {
   takenEdge: string
   /** The member this visit dispatched to, `null` on the visit that leaves. */
