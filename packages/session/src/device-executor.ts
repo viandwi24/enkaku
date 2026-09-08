@@ -99,6 +99,59 @@ const SCROLL_DEFAULT_FRACTION = 0.6
 const SCROLL_DURATION_MS = 400
 
 /**
+ * A launch that launched nothing is a failure, and until now it was reported
+ * as a success.
+ *
+ * `app.launch` awaited `transport.exec` and threw the `ShellResult` away, so a
+ * package that is not installed produced no error anywhere: `monkey` printed
+ * `** No activities found to run, monkey aborted.` and exited 252, the script
+ * carried on, and its very next `dump()` read whatever happened to be on
+ * screen — the launcher. A script whose `run()` only *looks for* things (the
+ * Instagram pack's `check-activity` reads notification-shaped strings and
+ * returns however few it found) then finished green on a device that does not
+ * have the app at all. That is the worst failure mode this codebase has a rule
+ * about: `unverified` must never be worded as success.
+ *
+ * The check is deliberately narrow — it fires on a POSITIVE signal of failure,
+ * never on the absence of a success one. Three shapes were measured on real
+ * hardware (Android 15 moto g06, Android 15 SM-A075F, 2026-09-08):
+ *
+ *   monkey, installed       exitCode 0,   "Events injected: 1"
+ *   monkey, missing package exitCode 252, "** No activities found to run, monkey aborted."
+ *   am start, missing class exitCode 1,   "Error: Activity class {…} does not exist."
+ *
+ * so a non-zero exit or either error string is conclusive. `exitCode` is
+ * `null` on the legacy shell transport (`execLegacyShell` — plan 53 §3.4 keeps
+ * it honest rather than fabricating a 0), and a caller may hand us any shape
+ * at all; neither may be read as failure, which is why only `typeof === number`
+ * counts and the strings are matched independently.
+ */
+function assertLaunched(pkg: string, result: unknown): void {
+  const shell = (result ?? {}) as { stdout?: unknown; stderr?: unknown; exitCode?: unknown }
+  const output = [shell.stdout, shell.stderr].filter((s) => typeof s === 'string').join('\n')
+  const aborted = /No activities found to run|Activity class \{[^}]*\} does not exist|Error type \d/.test(output)
+  const exited = typeof shell.exitCode === 'number' && shell.exitCode !== 0
+  if (!aborted && !exited) return
+  /*
+    `am` prints a bare `Error type 3` line ABOVE the one that says what
+    actually went wrong, so taking the first matching line puts the least
+    useful half of the message in front of the operator. Named patterns are
+    tried in order of how much they explain, and the generic one is last.
+  */
+  const lines = output.split('\n').map((line) => line.trim())
+  const detail = [/No activities found to run/, /Activity class \{[^}]*\} does not exist/, /Error/]
+    .map((p) => lines.find((line) => p.test(line)))
+    .find((line) => line !== undefined)
+  throw Object.assign(
+    new Error(
+      `${pkg} did not start — ${detail ?? `the launch command exited ${String(shell.exitCode)}`}. ` +
+        'The app is most likely not installed on this device.',
+    ),
+    { code: 'E_APP_LAUNCH_FAILED' },
+  )
+}
+
+/**
  * Two points for a directional drag, symmetric around an explicit or
  * centred anchor, clamped to the viewport (plan 40 §4.4). `direction` names
  * where the CONTENT should appear to move — `down` means "scroll down the
@@ -612,7 +665,8 @@ export function createDeviceExecutor(deps: {
           : call.args.activity
             ? `am start -n ${shellQuote(`${call.args.pkg}/${call.args.activity}`)}`
             : `monkey -p ${shellQuote(call.args.pkg)} -c android.intent.category.LAUNCHER 1`
-        await deps.session.transport.exec(cmd, { profile: 'appLifecycle' })
+        const launched = await deps.session.transport.exec(cmd, { profile: 'appLifecycle' })
+        assertLaunched(call.args.pkg, launched)
         deps.onAppLaunch?.(call.args.pkg)
         return undefined
       }

@@ -85,6 +85,66 @@ describe('createDeviceExecutor — app.launch/app.forceStop quote every interpol
 })
 
 /**
+ * A launch that launched nothing must not be reported as a success.
+ *
+ * These four cases are the shell output measured on real hardware on
+ * 2026-09-08 — see `assertLaunched`'s comment for the table. The bug they
+ * pin down was found in the field, not in review: the Instagram pack's
+ * `check-activity` returned green on a phone with no Instagram installed,
+ * because `app.launch` discarded `monkey`'s exit 252 and the script's `run()`
+ * merely counted notification-shaped strings and legitimately found none.
+ */
+describe('createDeviceExecutor — app.launch fails when nothing launched', () => {
+  /** Unlike `fakeSession` above (which returns a bare string), this returns the real `ShellResult` shape. */
+  function shellSession(result: { stdout: string; stderr?: string; exitCode: number | null }): DeviceSession {
+    return {
+      deviceId: 'dev-1',
+      inspector: null,
+      transport: { exec: async () => ({ stderr: '', ...result }), execOut: async () => new Uint8Array() },
+    } as unknown as DeviceSession
+  }
+
+  test('monkey aborting on a missing package throws, and names the likely cause', async () => {
+    const execute = createDeviceExecutor({
+      session: shellSession({ stdout: '** No activities found to run, monkey aborted.', exitCode: 252 }),
+    })
+    const err = await execute(call('app.launch', { pkg: 'com.instagram.android' })).then(
+      () => null,
+      (e: unknown) => e as Error & { code?: string },
+    )
+    expect(err?.code).toBe('E_APP_LAUNCH_FAILED')
+    expect(err?.message).toContain('com.instagram.android')
+    expect(err?.message).toContain('not installed')
+  })
+
+  test('am start reporting a missing activity class throws too', async () => {
+    const execute = createDeviceExecutor({
+      session: shellSession({
+        stdout: 'Error type 3\nError: Activity class {com.x/com.x.Main} does not exist.',
+        exitCode: 1,
+      }),
+    })
+    expect(execute(call('app.launch', { pkg: 'com.x', activity: '.Main' }))).rejects.toThrow(/does not exist/)
+  })
+
+  test('a successful launch is left alone', async () => {
+    const execute = createDeviceExecutor({ session: shellSession({ stdout: 'Events injected: 1', exitCode: 0 }) })
+    expect(await execute(call('app.launch', { pkg: 'com.example.app' }))).toBeUndefined()
+  })
+
+  /*
+    The legacy shell transport cannot report an exit code and says so with
+    `null` rather than a fabricated 0 (plan 53 §3.4). A missing code is not
+    evidence of failure, so a launch over that transport still succeeds — the
+    error strings remain the signal there.
+  */
+  test('a null exit code is not read as a failure', async () => {
+    const execute = createDeviceExecutor({ session: shellSession({ stdout: 'Events injected: 1', exitCode: null }) })
+    expect(await execute(call('app.launch', { pkg: 'com.example.app' }))).toBeUndefined()
+  })
+})
+
+/**
  * Plan 40 — input realism. `fakeGestureSession` records every input call so
  * a test can assert which path (`gesture` vs plain `swipe`/`text`) was
  * taken, without a real scrcpy socket or adb transport.

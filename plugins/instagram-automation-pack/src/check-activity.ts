@@ -20,12 +20,22 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   async run(ctx) {
     // In modern IG, activity is merged into inbox. Tap the header dropdown to switch to Aktivitas.
     const home = await ctx.device.dump()
-    // Try direct_tab first (inbox), then look for activity segment
+    /*
+      The tab is a REQUIREMENT, not an attempt.
+
+      This lookup used to be `if (tab) { … }` with no else, so a run that never
+      found the tab fell through to the read below, matched none of the
+      notification words in whatever screen it was actually looking at, and
+      returned `items: []` — a green step meaning "this account has no
+      notifications" when the truth was "Instagram was never open". On a phone
+      with no Instagram installed at all it reported success four times over.
+      `check-inbox` and `check-profile` next door have always thrown here; the
+      odd one out was this file.
+    */
     const tab = flatten(home).find((n) => n.resourceId.endsWith('direct_tab') && n.clickable)
-    if (tab) {
-      await tapNodeJittered(ctx, tab)
-      await sleep(3_000)
-    }
+    if (!tab) throw new Error('direct_tab not found — Instagram is not on the screen it was launched to')
+    await tapNodeJittered(ctx, tab)
+    await sleep(3_000)
     // Activity may be under a segment/tab "Aktivitas" — read whatever notification-like text exists
     const tree = await ctx.device.dump()
     const all = readableStrings(tree, 200)

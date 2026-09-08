@@ -31,10 +31,20 @@ import searchKeyword from './search-keyword'
  * the repo, fully tested, and never reaches a browser. Bump `package.json`,
  * `version:` below, and `index.test.ts`'s assertion together, then
  * `bun run build:packs`.
+ *
+ * ## Changelog
+ *
+ * - **0.2.0** — `check-activity` demands the tab it navigates by instead of
+ *   shrugging when it is absent. It looked the tab up, tapped it only `if`
+ *   it existed, and then read notification-shaped strings out of whatever was
+ *   on screen; finding none, it returned an empty list and passed. On a
+ *   device with no Instagram installed that made it the one member of this
+ *   pack to report success while its three siblings correctly failed. It now
+ *   throws the way `check-inbox` and `check-profile` always have.
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.1.1',
+  version: '0.2.0',
   title: 'Instagram automation pack',
   description: 'Browse Reels, check inbox & notifications, read profile stats, and search — with keyword-tilted random behaviour.',
   scripts: [scrollReels, checkInbox, checkActivity, checkProfile, searchKeyword],
