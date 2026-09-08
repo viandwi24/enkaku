@@ -4,6 +4,7 @@ import {
   DiscoveredDevicesResponseSchema,
   GuestAgentStatusResponseSchema,
   NodeTypesResponseSchema,
+  WorkflowCoverageResponseSchema,
   WorkflowLastRunResponseSchema,
   AndroidSdkStatusResponseSchema,
   SdkInstallResponseSchema,
@@ -18,6 +19,7 @@ import {
   VmResponseSchema,
   type VideoLatencyResponse,
   VideoLatencyResponseSchema,
+  type WorkflowCoverageResponse,
   type WorkflowLastRunResponse,
   type WorkflowPinListItem,
   type WorkflowRunNodeRequest,
@@ -798,11 +800,29 @@ export async function estimateWorkflowDuration(
 }
 
 export type { WorkflowStepInfo }
-export type { WorkflowLastRunResponse } from '@enkaku/protocol'
+export type { WorkflowCoverageResponse, WorkflowLastRunResponse } from '@enkaku/protocol'
 
 // ---- The node panel (plan 306) ----
 
 /** `GET /api/workflows/:name/last-run` (plan 306 §3.1, §4.5) — `null` when the workflow has never run for real (`workflow_never_run`), never thrown as an error the panel has to explain. */
+/**
+ * `GET /api/workflows/:name/coverage` (plan 314 §7.5) — the rotation report.
+ *
+ * `null` for a workflow with no switch node: it expresses no rotation, so
+ * there is nothing to be left out of, and the caller renders nothing rather
+ * than an empty table that reads like "nobody covered anything".
+ */
+export async function fetchWorkflowCoverage(name: string, opts: { window?: number; node?: string } = {}): Promise<WorkflowCoverageResponse | null> {
+  const qs = new URLSearchParams()
+  if (opts.window !== undefined) qs.set('window', String(opts.window))
+  if (opts.node) qs.set('node', opts.node)
+  const suffix = qs.toString() ? `?${qs}` : ''
+  const res = await fetch(`${coreBase()}/api/workflows/${encodeURIComponent(name)}/coverage${suffix}`)
+  if (res.status === 400 || res.status === 404) return null
+  if (!res.ok) throw new Error(`GET /api/workflows/${name}/coverage → ${res.status}`)
+  return WorkflowCoverageResponseSchema.parse(await res.json())
+}
+
 export async function fetchWorkflowLastRun(name: string): Promise<WorkflowLastRunResponse | null> {
   try {
     return await api(`/api/workflows/${encodeURIComponent(name)}/last-run`, WorkflowLastRunResponseSchema)

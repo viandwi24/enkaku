@@ -4,7 +4,7 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { jobRuns, jobs, scripts, workflowSteps } from '../db/schema'
+import { deviceNumbers, devices, jobRuns, jobs, scripts, workflowSteps } from '../db/schema'
 import { createDevSlotStore } from '../plugins/dev-slots'
 import { createScriptRegistry, type ScriptRegistry } from '../scripts/registry'
 import { createWorkflowStore, type WorkflowStore } from '../workflows/store'
@@ -832,5 +832,167 @@ describe('POST /api/workflows/simulate (plan 309 §4.3)', () => {
     const app = withUser(null, createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
     const res = await app.request('/simulate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeV2Doc(), params: {} }) })
     expect(res.status).toBe(403)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GET /:name/coverage — the rotation report (plan 314 §7.5)
+// ---------------------------------------------------------------------------
+
+describe('GET /api/workflows/:name/coverage', () => {
+  /** `start -> switch(3 platforms) -> finish`, the rotation shape a warm-up has. */
+  function rotationDocInput() {
+    return {
+      schema: 2,
+      name: 'warmup',
+      title: 'Warmup',
+      description: '',
+      entry: 'start',
+      maxSteps: 20,
+      params: [],
+      nodes: [
+        { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, next: 'pick' },
+        {
+          kind: 'switch',
+          id: 'pick',
+          title: '',
+          ui: { x: 0, y: 0 },
+          cases: [
+            { when: { left: { const: 0 }, op: 'eq', right: { const: 0 } }, label: 'TikTok', to: 'finish' },
+            { when: { left: { const: 0 }, op: 'eq', right: { const: 1 } }, label: 'Instagram', to: 'finish' },
+            { when: { left: { const: 0 }, op: 'eq', right: { const: 2 } }, label: 'YouTube', to: 'finish' },
+          ],
+        },
+        { kind: 'finish', id: 'finish', title: '', ui: { x: 0, y: 0 }, status: 'succeed', message: '' },
+      ],
+    }
+  }
+
+  async function seedRotation() {
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
+    const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: rotationDocInput() }) })
+    expect(created.status).toBe(201)
+    return { db, app }
+  }
+
+  function seedPhone(db: Db, id: string, number: number | null) {
+    db.insert(devices).values({ id, stableId: `st-${id}`, serial: `sn-${id}`, label: `Phone ${id}`, status: 'online' }).run()
+    if (number !== null) db.insert(deviceNumbers).values({ stableId: `st-${id}`, number, assignedAt: new Date() }).run()
+  }
+
+  /** One real run of `warmup` on `deviceId` in which the switch took `edge`. */
+  function seedRun(db: Db, deviceId: string, edge: string | null, at: Date, trigger: 'manual' | 'schedule' | 'simulate' = 'schedule') {
+    const jobId = crypto.randomUUID()
+    const runId = crypto.randomUUID()
+    db.insert(jobs).values({ id: jobId, kind: 'workflow', workflowName: 'warmup', deviceId, scriptName: 'warmup', createdAt: at }).run()
+    db.insert(jobRuns).values({ id: runId, jobId, seq: 1, trigger, status: 'success', deviceId, createdAt: at, startedAt: at, seed: 0 }).run()
+    if (edge) {
+      db.insert(workflowSteps)
+        .values({ id: crypto.randomUUID(), runId, seq: 1, stepId: 'pick', kind: 'switch', status: 'success', startedAt: at, finishedAt: at, input: null, output: null, takenEdge: edge, pinned: false })
+        .run()
+    }
+    return runId
+  }
+
+  test('a workflow with no switch has no rotation to report, and says so', async () => {
+    const { db, registry, store, runs, pins, scheduler } = setUp()
+    publishScriptRow(db, 'node-a', '1.0.0')
+    publishScriptRow(db, 'node-b', '1.0.0')
+    const app = withUser('operator', createWorkflowRoutes({ db, registry, store, runs, pins, scheduler }))
+    await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: twoNodeV2Doc() }) })
+    const res = await app.request('/run-node-doc/coverage')
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('E_NO_ROTATION')
+  })
+
+  test('the cases come from the document, in order, with their authored labels', async () => {
+    const { app } = await seedRotation()
+    const body = (await (await app.request('/warmup/coverage')).json()) as { nodeId: string; cases: { edge: string; label: string }[]; window: number }
+    expect(body.nodeId).toBe('pick')
+    expect(body.cases).toEqual([
+      { edge: 'case:0', label: 'TikTok' },
+      { edge: 'case:1', label: 'Instagram' },
+      { edge: 'case:2', label: 'YouTube' },
+    ])
+    // The window defaults to the number of cases — "did this phone cover all
+    // three platforms" is a question about its last three runs.
+    expect(body.window).toBe(3)
+  })
+
+  test('THE REPORT: a phone that ran three times and covered two platforms is named', async () => {
+    // This is the failure the client described and the Jobs screen cannot
+    // show: three runs, all `success`, no red batch anywhere — and one phone
+    // never opened Instagram.
+    const { db, app } = await seedRotation()
+    seedPhone(db, 'd1', 1)
+    seedPhone(db, 'd2', 2)
+    const t = (min: number) => new Date(Date.UTC(2026, 8, 8, 8, min))
+
+    for (const [i, edge] of ['case:0', 'case:1', 'case:2'].entries()) seedRun(db, 'd1', edge, t(i))
+    // d2 repeats TikTok and never reaches YouTube.
+    for (const [i, edge] of ['case:0', 'case:1', 'case:0'].entries()) seedRun(db, 'd2', edge, t(i))
+
+    const body = (await (await app.request('/warmup/coverage')).json()) as {
+      incompleteCount: number
+      devices: { deviceId: string; deviceLabel: string; deviceNumber: number | null; covered: string[]; missing: string[]; runs: number }[]
+    }
+    expect(body.incompleteCount).toBe(1)
+    // Worst first — the phone that was left out must not be on page two.
+    expect(body.devices[0]?.deviceId).toBe('d2')
+    expect(body.devices[0]?.missing).toEqual(['case:2'])
+    expect(body.devices[0]?.covered).toEqual(['case:0', 'case:1'])
+    expect(body.devices[0]?.runs).toBe(3)
+    expect(body.devices[0]?.deviceNumber).toBe(2)
+    expect(body.devices[0]?.deviceLabel).toBe('#2 Phone d2')
+    expect(body.devices[1]?.deviceId).toBe('d1')
+    expect(body.devices[1]?.missing).toEqual([])
+  })
+
+  test('a run in which the switch never ran counts as a run but covers nothing', async () => {
+    // "3 runs, 2 platforms" has to be readable as the problem it is — the
+    // device was offline, or a gate sent the cursor elsewhere.
+    const { db, app } = await seedRotation()
+    seedPhone(db, 'd1', 1)
+    const t = (min: number) => new Date(Date.UTC(2026, 8, 8, 8, min))
+    seedRun(db, 'd1', 'case:0', t(0))
+    seedRun(db, 'd1', null, t(1))
+    seedRun(db, 'd1', 'case:1', t(2))
+
+    const body = (await (await app.request('/warmup/coverage')).json()) as { devices: { covered: string[]; missing: string[]; runs: number }[] }
+    expect(body.devices[0]?.runs).toBe(3)
+    expect(body.devices[0]?.covered).toEqual(['case:0', 'case:1'])
+    expect(body.devices[0]?.missing).toEqual(['case:2'])
+  })
+
+  test('a simulate run is never coverage — it touched no device', async () => {
+    const { db, app } = await seedRotation()
+    seedPhone(db, 'd1', 1)
+    seedRun(db, 'd1', 'case:0', new Date(), 'simulate')
+    const body = (await (await app.request('/warmup/coverage')).json()) as { devices: unknown[] }
+    expect(body.devices).toHaveLength(0)
+  })
+
+  test('the window caps how far back it looks, so yesterday cannot hide today’s gap', async () => {
+    const { db, app } = await seedRotation()
+    seedPhone(db, 'd1', 1)
+    const t = (min: number) => new Date(Date.UTC(2026, 8, 8, 8, min))
+    // Older runs did cover everything; the last two did not.
+    seedRun(db, 'd1', 'case:2', t(0))
+    seedRun(db, 'd1', 'case:0', t(1))
+    seedRun(db, 'd1', 'case:0', t(2))
+
+    const body = (await (await app.request('/warmup/coverage?window=2')).json()) as { window: number; devices: { covered: string[]; missing: string[] }[] }
+    expect(body.window).toBe(2)
+    expect(body.devices[0]?.covered).toEqual(['case:0'])
+    expect(body.devices[0]?.missing).toEqual(['case:1', 'case:2'])
+  })
+
+  test('an unknown workflow is a 404, and an unknown node a named refusal', async () => {
+    const { app } = await seedRotation()
+    expect((await app.request('/nope/coverage')).status).toBe(404)
+    const res = await app.request('/warmup/coverage?node=ghost')
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('E_NO_ROTATION')
   })
 })
