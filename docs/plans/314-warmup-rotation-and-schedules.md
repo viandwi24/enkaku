@@ -1,8 +1,8 @@
 # Plan 314 — Warmup : the daily platform rotation, the coverage guarantee, and the one thing it must not be built on
 
-> Status: draft — a decision document answering the client brief of 2026-09-08. Nothing here is executed; §9 names what the owner must decide first.
+> Status: implemented (software) — the owner approved the whole build on 2026-09-08 ("saya ingin anda kerjakan semuanya… hasil akhirnya semua fiturnya lengkap sesuai yang dimau user"). All six items of §10.13 shipped; §12 is the handoff.
+> Ships: packages/core/src/registry/device-facts.ts
 > Owner decisions so far (2026-09-08): **Q1 yes** — build the workflow work target. **Q5 deferred** — accounts are out of scope; the working assumption is *one device owns all three platforms, whatever the account*. A second brief the same day added **multiple warmup sessions per day at different hours**, which supersedes §3's single-run shape; the amendment is §10, and §3 must be read through it.
-> Ships: none — this is a decision document, not a milestone plan.
 > Depends on: plans 210, 211, 217 (implemented), 300–307 and 309–313 (implemented), 700 (review; F1 and E10 are load-bearing here)
 > Spec references: §4.6 (workflow document), §4.7 (schedule), §4.8 (job, run, batch), §11 (Actions API targets)
 
@@ -565,4 +565,111 @@ covered two platforms.
 
 ## 11. Handoff report
 
-_Not applicable: this plan is a decision document and is not executed._
+See §12 — this plan stopped being a decision document when the owner approved the build.
+
+## 12. Handoff report
+
+Executed 2026-09-08 on `claude/device-warmup-scheduling-ipmusm`, in the order
+§10.13 ranks them. Every item shipped; nothing was descoped.
+
+### 12.1 What shipped
+
+| # | Item | Where |
+|---|---|---|
+| 7.6 | `$device` expression root (`number`, `stableId`, `label`, `group`, `labels`) | `packages/expr/src/{ast,eval}.ts`, `packages/protocol/src/workflow-resolve.ts`, `packages/core/src/registry/device-facts.ts`, the executor's six scopes, Studio's preview |
+| 7.1 | A schedule may target a workflow | `schedule_workflow_targets` (migration `0083`), `ScheduleWorkTargetSchema`'s third member, `dispatchWorkflowFire` in `schedules/runner.ts`, `api/schedules.ts`, the dialog's third tab |
+| 7.4 | `deviceDelayMs` on a schedule | `schedules.device_delay_{min,max}_ms` (same migration), `schedulePacing()`, the dialog's per-device window |
+| 7.2 | `W_WORKFLOW_INDEX_AS_IDENTITY` | `packages/protocol/src/workflow-check.ts` |
+| 7.5 | Rotation coverage | `GET /api/workflows/:name/coverage`, `packages/protocol/src/api/workflow-coverage.ts`, `components/scripts/CoverageDialog.tsx` |
+| 7.7 | Rotation template + duplicate warning | `findRedundantSchedules` (protocol), `components/schedules/RotationDialog.tsx`, the badge in `SchedulesList.tsx` |
+
+### 12.2 Deviations from the plan as written
+
+1. **§10.11 said `$device` was needed for correctness; it also turned out to be
+   needed for honesty.** A device whose number reservation was released reads
+   `null`, and arithmetic on `null` throws `E_EXPR_TYPE`. The plan did not say
+   what should happen there. Failing the step by name is the choice made,
+   because the alternative — treating it as `0` — hands every numberless phone
+   the same branch on every slot, forever, with nothing red to notice. That is
+   the same failure class the whole plan exists to remove, so it would have
+   been a strange thing to introduce while removing it.
+
+2. **`ScheduleRow` had to be edited after all.** `db/schema.ts`'s
+   `scheduleAgentTargets` comment records plan 68's acceptance criterion that
+   two fully-typed `ScheduleRow` literals must keep compiling untouched. The
+   workflow target honours it (a companion table). `deviceDelayMs` cannot: it
+   is a pacing property of the schedule itself, and a companion table for two
+   integers would be worse than the edit. Both literals were updated. That
+   constraint was plan 68's own acceptance criterion, not a standing rule, and
+   this is the first plan to need it relaxed — worth stating plainly rather
+   than leaving the comment to imply it still holds absolutely.
+
+3. **§10.12's duplicate warning is not keyed on a "slot".** The plan described
+   it as "two enabled schedules with the same `slot`". Building that would put
+   a warm-up-specific concept in the core, where a slot is really just a
+   workflow's own parameter named by whoever authored it. `findRedundantSchedules`
+   instead flags identical WORK — same workflow or script, same params, same
+   devices, both enabled — which catches the slot case and every other
+   copy-paste of the same shape, without the core learning a vocabulary that
+   belongs to one workflow.
+
+4. **A later fire re-snapshots the document.** Not specified either way in the
+   plan. Without it, an operator edits a warm-up, sees it saved, and the farm
+   keeps running the version from the schedule's first fire forever. Guarded on
+   a settled latest run, because a run reads its document once at start.
+
+5. **One unrelated fix rode along**: `webhook-service.test.ts` built its decoy
+   as `` `x${secret.slice(1)}` `` and collided with the real secret on 1 run in
+   64 (measured: 3 210 in 200 000). It turned this branch's CI red on a
+   docs-only commit. Fixed rather than re-run, so the next person does not
+   inherit it.
+
+### 12.3 What is NOT built, and is the honest gap
+
+- **No automatic catch-up for a device that failed a session** (§8 K4). The
+  recovery is still an operator pressing "re-run failed", or the rotation
+  turning again and handing the device the missed branch within one cycle. The
+  coverage view (7.5) is what makes the gap visible; closing it is a feature
+  nobody has asked for yet.
+- **Accounts remain out of scope** (Q5, deferred by the owner). 7.2's warning
+  shipped precisely because of that deferral, not despite it.
+- **Selector fragility is untouched** and still dominates real-world success
+  (plan 700 E7/E8, K6). Nothing here improves it.
+- **No Studio tests**, per plan 200 §8.3. The three new components are covered
+  only by `bun run typecheck` and the owner smoke.
+
+### 12.4 Verification
+
+| Suite | Result |
+|---|---|
+| `bun test packages/expr/src/` | 188 pass |
+| `bun test packages/protocol/src/` | 1 187 pass |
+| `bun test packages/core/src/api/` | 587 pass |
+| `bun test packages/core/src/jobs/` | 224 pass |
+| `bun test packages/core/src/schedules/` | 24 pass |
+| `bun test packages/core/src/groups/` | 46 pass |
+| `bun test packages/core/src/workflows/` | 59 pass |
+| `bun test packages/core/src/db/` | 69 pass |
+| `bun test packages/core/src/queue/` | 34 pass |
+| `bun run typecheck` | clean |
+| `check-plan-status`, `check-agent-docs`, `check-routes`, `check-design-tokens`, `check-dead-code` | pass |
+
+The full suite was not run — CLAUDE.md forbids it for an agent, and every
+directory touched is listed above.
+
+### 12.5 The owner smoke this still needs
+
+Nothing here has met a phone. Before the client sees it:
+
+1. Author a warm-up with a `slot` integer param and a `switch` on
+   `($device.number + $params.slot) % 3`.
+2. **New rotation** → three sessions → confirm three schedules appear, slots
+   0/1/2, no `duplicate` badge.
+3. Duplicate one by hand without changing its slot → the badge appears.
+4. Let all three fire on a real group; confirm each phone's three runs took
+   three different branches.
+5. Open **Coverage** and confirm it says every device covered every branch.
+6. Take one phone offline for the middle session and confirm the report names
+   it — and that no OTHER phone's coverage moved, which is the property
+   `$device.number` was introduced for.
+
