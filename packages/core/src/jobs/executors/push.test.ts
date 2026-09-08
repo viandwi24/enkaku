@@ -78,10 +78,13 @@ describe('createPushExecutor', () => {
       async installFromLocalApk() {
         throw new Error('not exercised by this test')
       },
+      async listMedia() {
+        throw new Error('not exercised by this test')
+      },
       async push(deviceId, artifactId, remotePath, opts) {
         pushCalledWith = { deviceId, artifactId, remotePath }
         opts.onProgress?.(10, 10)
-        return { mediaScan: { ran: false, method: null, ms: 0 } }
+        return { mediaScan: { ran: false, method: null, ms: 0, mediaId: null } }
       },
       async pull() {
         return { artifactId: 'x', bytes: 0 }
@@ -97,7 +100,7 @@ describe('createPushExecutor', () => {
     })
     const job = { id: 'job1', deviceId: 'dev1', params: { artifactId: 'a1', remotePath: '/sdcard/x' } } as unknown as JobRow
     const result = await executor.run(job, fakeCtx())
-    expect(result).toEqual({ mediaScan: { ran: false, method: null, ms: 0 } })
+    expect(result).toEqual({ mediaScan: { ran: false, method: null, ms: 0, mediaId: null } })
     expect(pushCalledWith).toEqual({ deviceId: 'dev1', artifactId: 'a1', remotePath: '/sdcard/x' })
     expect(progressCalls.length).toBe(1)
     expect(doneCalls.length).toBe(1)
@@ -111,6 +114,9 @@ describe('createPushExecutor', () => {
         return { package: null, durationMs: 0, output: '' }
       },
       async installFromLocalApk() {
+        throw new Error('not exercised by this test')
+      },
+      async listMedia() {
         throw new Error('not exercised by this test')
       },
       async push() {

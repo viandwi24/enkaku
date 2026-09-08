@@ -73,6 +73,9 @@ export function createArtifactStore(deps: {
         path: join('artifacts', deps.runId, filename),
         sizeBytes: size,
         createdAt: Math.floor(Date.now() / 1000),
+        // Run output, swept by `storage.artifacts` — the pin is for a file an
+        // operator or a script deliberately keeps (plan 700 D3), never a default.
+        pinned: false,
       }
       deps.db
         .insert(artifacts)
@@ -124,6 +127,7 @@ export async function saveForDevice(
     path: join(relDir, filename),
     sizeBytes: size,
     createdAt: Math.floor(Date.now() / 1000),
+    pinned: false,
   }
   deps.db
     .insert(artifacts)
@@ -191,6 +195,7 @@ export function registerDeviceArtifact(
     path: opts.relPath,
     sizeBytes: opts.sizeBytes,
     createdAt: Math.floor(Date.now() / 1000),
+    pinned: false,
   }
   deps.db
     .insert(artifacts)

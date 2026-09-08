@@ -79,8 +79,11 @@ describe('createInstallExecutor', () => {
       async installFromLocalApk() {
         throw new Error('not exercised by this test')
       },
+      async listMedia() {
+        throw new Error('not exercised by this test')
+      },
       async push() {
-        return { mediaScan: { ran: false, method: null, ms: 0 } }
+        return { mediaScan: { ran: false, method: null, ms: 0, mediaId: null } }
       },
       async pull() {
         return { artifactId: 'x', bytes: 0 }
@@ -114,8 +117,11 @@ describe('createInstallExecutor', () => {
       async installFromLocalApk() {
         throw new Error('not exercised by this test')
       },
+      async listMedia() {
+        throw new Error('not exercised by this test')
+      },
       async push() {
-        return { mediaScan: { ran: false, method: null, ms: 0 } }
+        return { mediaScan: { ran: false, method: null, ms: 0, mediaId: null } }
       },
       async pull() {
         return { artifactId: 'x', bytes: 0 }

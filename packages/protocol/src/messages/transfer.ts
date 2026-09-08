@@ -96,6 +96,19 @@ export const MediaScanResultSchema = z.object({
   method: z.enum(['scan_file', 'scan_volume']).nullable(),
   ms: z.number(),
   error: z.string().optional(),
+  /**
+   * The MediaStore `_id` the scan produced for THIS file, looked up by its
+   * `_data` path once the scan returned — the fact that turns "the gallery was
+   * told" into "the gallery has this exact row".
+   *
+   * Null whenever it cannot be known rather than guessed: the scan did not
+   * run, it failed, the lookup found no row (an OEM build that withholds
+   * `_data`, or a volume that indexed the file under a different path), or the
+   * push predates this field. A caller MUST treat null as "unknown", never as
+   * "not there" — `.default(null)` keeps every producer written before this
+   * field validating unchanged.
+   */
+  mediaId: z.string().nullable().default(null),
 })
 export type MediaScanResult = z.infer<typeof MediaScanResultSchema>
 

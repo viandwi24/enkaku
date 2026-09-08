@@ -332,8 +332,44 @@ export const FarmSettingsSchema = z.object({
         .default({ maxAgeDays: 30, maxTotalGb: 20 })
         .describe('Screenshots, recordings and downloads a job produced. Whichever limit is reached first applies.')
         .meta(ui({ title: 'Keep artifacts' })),
+      /**
+       * Files an OPERATOR uploaded, swept separately from the run output above
+       * (plan 700 D3).
+       *
+       * They shared one policy until this section existed, and the sweep took
+       * the setting above literally enough to delete them at 30 days — while
+       * that setting's own description says "a job produced", which an upload
+       * never was. A media library that silently loses the operator's videos is
+       * not a media library, so the default here is **keep forever**.
+       *
+       * `0` means exactly that, and is the default. It is a real value rather
+       * than a null or a missing key because a retention policy has to be
+       * readable as one number on one screen: "0 days" reads as off, an absent
+       * field reads as unknown.
+       */
+      uploads: z
+        .object({
+          maxAgeDays: z
+            .number()
+            .int()
+            .min(0)
+            .max(3_650)
+            .default(0)
+            .describe('Uploaded files older than this are deleted. 0 keeps them forever, which is the default — an upload is the operator\'s own file, not a run\'s output.')
+            .meta({ title: 'Maximum age (days), 0 to keep forever' }),
+          maxTotalGb: z
+            .number()
+            .min(0)
+            .max(10_000)
+            .default(0)
+            .describe('Once uploads pass this total, the oldest are deleted first. 0 means no size limit.')
+            .meta({ title: 'Maximum size (GB), 0 for no limit' }),
+        })
+        .default({ maxAgeDays: 0, maxTotalGb: 0 })
+        .describe('Files you uploaded yourself. A pinned file is never deleted, whatever these say.')
+        .meta(ui({ title: 'Keep uploads' })),
     })
-    .default({ historyDays: 30, traceDays: 7, artifacts: { maxAgeDays: 30, maxTotalGb: 20 } })
+    .default({ historyDays: 30, traceDays: 7, artifacts: { maxAgeDays: 30, maxTotalGb: 20 }, uploads: { maxAgeDays: 0, maxTotalGb: 0 } })
     .meta({ title: 'Retention', 'x-enkaku': { group: 'Storage' } }),
 
   devices: z

@@ -961,6 +961,17 @@ export const artifacts = sqliteTable(
     path: text('path').notNull(),
     sizeBytes: integer('size_bytes'),
     createdAt: integer('created_at', { mode: 'timestamp' }),
+    /**
+     * Exempt from EVERY sweep, at every level (plan 700 D3) — the per-file
+     * escape hatch, and the only one that outranks a policy. A script pins what
+     * it means to keep (`ctx.artifact.file(..., { pin: true })`); an operator
+     * pins from the files screen.
+     *
+     * Deliberately a property of the FILE, not of a retention policy: "keep
+     * this one" is a fact about the thing, and expressing it as a policy
+     * exception would mean every future policy has to remember to honour it.
+     */
+    pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
   },
   (t) => [
     index('idx_artifacts_run').on(t.runId, t.createdAt),

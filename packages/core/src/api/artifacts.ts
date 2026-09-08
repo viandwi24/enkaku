@@ -84,6 +84,7 @@ export function createArtifactRoutes(deps: {
     path: r.path,
     sizeBytes: r.sizeBytes,
     createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
+    pinned: r.pinned,
   })
 
   app.get('/', (c) => {
@@ -187,6 +188,10 @@ export function createArtifactRoutes(deps: {
       path: relPath,
       sizeBytes: bytes.length,
       createdAt: Math.floor(Date.now() / 1000),
+      // Not auto-pinned: `storage.uploads` already defaults to keeping uploads
+      // forever, so pinning every one would leave that setting with nothing to
+      // act on. The pin is the operator's own override of whatever they set.
+      pinned: false,
     }
     deps.db
       .insert(artifacts)
@@ -199,6 +204,7 @@ export function createArtifactRoutes(deps: {
         path: info.path,
         sizeBytes: info.sizeBytes,
         createdAt: new Date(),
+        pinned: info.pinned,
       })
       .run()
 
