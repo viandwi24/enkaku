@@ -185,7 +185,7 @@ describe('buildRunExportEntries — a gap is written down, never left blank (rul
   })
 
   test('an artifact whose file is gone is recorded as missing rather than dropped from the record', async () => {
-    const info = { id: 'a1', runId: run.runId, deviceId: null, kind: 'screenshot' as const, label: 'shot', path: 'artifacts/job/0001-shot.png', sizeBytes: 10, createdAt: 1, pinned: false }
+    const info = { id: 'a1', runId: run.runId, deviceId: null, kind: 'screenshot' as const, label: 'shot', path: 'artifacts/job/0001-shot.png', sizeBytes: 10, createdAt: 1, pinned: false, mimeType: null, width: null, height: null, durationMs: null }
     const entries = buildRunExportEntries(sources({ artifacts: [{ info, abs: null, sizeBytes: 0 }] }))
     expect(entries.some((e) => e.name.startsWith('artifacts/'))).toBe(false)
     const manifest = JSON.parse(await readEntry(entries, 'manifest.json'))

@@ -8,6 +8,7 @@ import { canUseFiles } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { Db } from '../db'
 import { artifacts, type ArtifactRow } from '../db/schema'
+import { artifactKindFor, probeMedia } from '../media/probe'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
 import { typedJson } from './typed-json'
@@ -85,6 +86,10 @@ export function createArtifactRoutes(deps: {
     sizeBytes: r.sizeBytes,
     createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
     pinned: r.pinned,
+    mimeType: r.mimeType,
+    width: r.width,
+    height: r.height,
+    durationMs: r.durationMs,
   })
 
   app.get('/', (c) => {
@@ -179,11 +184,23 @@ export function createArtifactRoutes(deps: {
     const bytes = new Uint8Array(await file.arrayBuffer())
     await Bun.write(join(dir, filename), bytes)
 
+    /*
+     * What the file IS, from its own bytes (plan 800 wave 4). Until this, every
+     * upload landed as `kind: 'file'` with no media type — so an MP4 an
+     * operator uploaded was indistinguishable from a `.bin`, and nothing could
+     * offer "videos only" or draw a grid.
+     *
+     * Never throws and never fails the upload: the bytes are already stored and
+     * the file is perfectly usable as an opaque one, so a probe that cannot
+     * read a container degrades to nulls rather than rejecting the file.
+     */
+    const probe = probeMedia(bytes)
+
     const info: ArtifactInfo = {
       id: crypto.randomUUID(),
       runId: null,
       deviceId: null,
-      kind: 'file',
+      kind: artifactKindFor(probe),
       label,
       path: relPath,
       sizeBytes: bytes.length,
@@ -192,6 +209,10 @@ export function createArtifactRoutes(deps: {
       // forever, so pinning every one would leave that setting with nothing to
       // act on. The pin is the operator's own override of whatever they set.
       pinned: false,
+      mimeType: probe.mimeType,
+      width: probe.width,
+      height: probe.height,
+      durationMs: probe.durationMs,
     }
     deps.db
       .insert(artifacts)
@@ -205,10 +226,19 @@ export function createArtifactRoutes(deps: {
         sizeBytes: info.sizeBytes,
         createdAt: new Date(),
         pinned: info.pinned,
+        mimeType: info.mimeType,
+        width: info.width,
+        height: info.height,
+        durationMs: info.durationMs,
       })
       .run()
 
-    deps.upload.audit.record({ userId: user.id, action: 'artifact.upload', target: info.id, meta: { label, sizeBytes: bytes.length, ext } })
+    deps.upload.audit.record({
+      userId: user.id,
+      action: 'artifact.upload',
+      target: info.id,
+      meta: { label, sizeBytes: bytes.length, ext, mimeType: info.mimeType, kind: info.kind },
+    })
 
     return c.json({ artifact: info }, 201)
   })

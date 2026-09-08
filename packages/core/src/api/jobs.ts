@@ -266,6 +266,10 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
       sizeBytes: r.sizeBytes,
       createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
       pinned: r.pinned,
+      mimeType: r.mimeType,
+      width: r.width,
+      height: r.height,
+      durationMs: r.durationMs,
     }))
     return typedJson(c, RunArtifactsResponseSchema, { items })
   })
@@ -325,6 +329,10 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
           sizeBytes: r.sizeBytes,
           createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
           pinned: r.pinned,
+          mimeType: r.mimeType,
+          width: r.width,
+          height: r.height,
+          durationMs: r.durationMs,
         }
         // Defence in depth against a stored path escaping app-data, mirroring
         // `api/artifacts.ts`'s `/:id/content` and `api/batches.ts`'s archive:

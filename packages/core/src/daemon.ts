@@ -2454,6 +2454,13 @@ let blobGc: BlobGc | null = null
             // Run output from a node-owned device — same population, same
             // policy, as the local runner's own artifacts (plan 800 D3).
             pinned: false,
+            // The bytes were probed by the sink above, which is where they are;
+            // this literal only reports what it was given. Null is honest: this
+            // relay never sees the file itself.
+            mimeType: null,
+            width: null,
+            height: null,
+            durationMs: null,
           }
         },
       })

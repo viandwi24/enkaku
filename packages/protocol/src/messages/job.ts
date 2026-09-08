@@ -366,6 +366,22 @@ export const ArtifactInfoSchema = z.object({
    * that cannot tell must not assume a file is protected.
    */
   pinned: z.boolean().default(false),
+  /**
+   * What the file is, read from its own bytes at upload (plan 800 wave 4).
+   * `.default(null)` on all four so every producer written before this keeps
+   * validating, and null always means "not known" — never zero, which for a
+   * duration would render as a zero-length video.
+   *
+   * There is deliberately no thumbnail field. A poster frame needs a decoder,
+   * this repo ships no ffmpeg, and the browser already has one — so a client
+   * draws its own from the artifact's content rather than the farm storing,
+   * serving and sweeping a second file per video.
+   */
+  mimeType: z.string().nullable().default(null),
+  width: z.number().int().positive().nullable().default(null),
+  height: z.number().int().positive().nullable().default(null),
+  /** Milliseconds, the same unit `DeviceMediaItem.durationMs` uses for the same fact. */
+  durationMs: z.number().int().nonnegative().nullable().default(null),
 })
 export type ArtifactInfo = z.infer<typeof ArtifactInfoSchema>
 

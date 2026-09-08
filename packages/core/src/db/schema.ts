@@ -972,6 +972,21 @@ export const artifacts = sqliteTable(
      * exception would mean every future policy has to remember to honour it.
      */
     pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
+    /**
+     * What the file IS, read from its own bytes at upload (plan 800 wave 4,
+     * `media/probe.ts`) — never from a declared Content-Type or a filename,
+     * which are only an assertion by whoever uploaded it.
+     *
+     * All four are nullable and stay null for every row written before this,
+     * and for anything the probe cannot read: a container it does not parse, a
+     * truncated file, a non-media file. Null means "not known", never "zero" —
+     * a `durationMs` of 0 would render as a zero-length video.
+     */
+    mimeType: text('mime_type'),
+    width: integer('width'),
+    height: integer('height'),
+    /** Milliseconds, matching MediaStore's own unit for the same fact (`DeviceMediaItem.durationMs`). */
+    durationMs: integer('duration_ms'),
   },
   (t) => [
     index('idx_artifacts_run').on(t.runId, t.createdAt),
