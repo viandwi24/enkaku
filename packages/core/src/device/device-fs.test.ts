@@ -104,7 +104,7 @@ describe('listDeviceFs', () => {
   /** An empty directory exits 0 with no output; an unreadable one exits non-zero. The two must never be reported alike. */
   test('an empty directory is an empty list, not a failure', async () => {
     const { backend } = backendOf(() => ok(''))
-    expect(await listDeviceFs(backend, { path: '/sdcard/Empty', limit: 10 })).toEqual({ entries: [], truncated: false })
+    expect(await listDeviceFs(backend, { path: '/sdcard/Empty', limit: 10 })).toEqual({ entries: [], truncated: false, usage: null })
   })
 
   test('an unreadable directory throws with the shell reason', async () => {
@@ -121,6 +121,29 @@ describe('listDeviceFs', () => {
     const { seen, backend } = backendOf(() => ok(''))
     expect(listDeviceFs(backend, { path: 'sdcard/DCIM', limit: 10 })).rejects.toThrow(/absolute/)
     expect(seen).toHaveLength(0)
+  })
+})
+
+describe('free space rides along with the listing', () => {
+  test("`df`'s last line is read from the END, so a filesystem name with spaces still parses", async () => {
+    const stdout = ['10|30|regular file|/sdcard/a.mp4', '@@enkaku-df@@', 'my volume 1000000 400000 500000 45% /storage/emulated'].join('\n')
+    const { backend } = backendOf(() => ok(stdout))
+    const res = await listDeviceFs(backend, { path: '/sdcard', limit: 10 })
+    // Columns counted back from the mountpoint: total, used, available, use%, mount.
+    expect(res.usage).toEqual({ totalBytes: 1_000_000 * 1024, freeBytes: 500_000 * 1024 })
+  })
+
+  test('an unreadable df is null, and never costs the listing', async () => {
+    const { backend } = backendOf(() => ok(['4096|1|directory|/sdcard/DCIM', '@@enkaku-df@@', 'df: not found'].join('\n')))
+    const res = await listDeviceFs(backend, { path: '/sdcard', limit: 10 })
+    expect(res.usage).toBeNull()
+    expect(res.entries).toHaveLength(1)
+  })
+
+  test('the df output is never mistaken for a file', async () => {
+    const stdout = ['10|30|regular file|/sdcard/a.mp4', '@@enkaku-df@@', '/dev/x 100 10 90 10% /sdcard'].join('\n')
+    const { backend } = backendOf(() => ok(stdout))
+    expect((await listDeviceFs(backend, { path: '/sdcard', limit: 10 })).entries.map((e) => e.name)).toEqual(['a.mp4'])
   })
 })
 

@@ -45,11 +45,30 @@ export const DeviceFsListArgsSchema = z.object({
 })
 export type DeviceFsListArgs = z.infer<typeof DeviceFsListArgsSchema>
 
+/**
+ * Free space on the filesystem holding the listed directory.
+ *
+ * Carried on the LISTING rather than a capability of its own because it comes
+ * from the same round trip — `df` runs beside `find`, in one shell command, the
+ * way the screen that shows both already asked for both. A second capability
+ * would mean a second adb round trip per navigation for one number.
+ *
+ * Null when `df` was unavailable or unparseable. A file manager that cannot
+ * read free space still lists files, so this never fails the listing.
+ */
+export const DeviceFsUsageSchema = z.object({
+  freeBytes: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+})
+export type DeviceFsUsage = z.infer<typeof DeviceFsUsageSchema>
+
 export const DeviceFsListResultSchema = z.object({
   /** Directories first, then files, each alphabetical — a file manager's ordering, decided once on the server so every client agrees. */
   entries: z.array(DeviceFsEntrySchema),
   /** True when the directory held more than `limit`. A client showing a count must say so rather than implying the list is complete. */
   truncated: z.boolean(),
+  /** `.default(null)` so a producer written before this field keeps validating. */
+  usage: DeviceFsUsageSchema.nullable().default(null),
 })
 export type DeviceFsListResult = z.infer<typeof DeviceFsListResultSchema>
 

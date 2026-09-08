@@ -125,12 +125,49 @@ difference shown first.
 
 | Wave | Plan | What lands | State |
 |---|---|---|---|
-| 1 | — (landed with this document) | Read MediaStore: `TransferService.listMedia`, `MediaScanResult.mediaId`, the `content query` parser and its tests | **implemented** |
-| 2 | 802 | Retention: `pinned` on artifacts, uploads pinned by default, workspace age policy, the three override levels (D3) | next |
-| 3 | 803 | `device.fs.*` — list/stat/move/delete/mkdir on the phone, plus SDK and capability surface (D1) | |
-| 4 | 804 | Media metadata: mime, dimensions, duration, thumbnails on both stores | |
-| 5 | 805 | Studio `/files` — the gallery grid, filters, rename, and the gallery mode of the picker (D2) | |
-| 6 | 806 | The device file/media browser in Device Control, and the difference view (D4) | |
+| 1 | — | Read MediaStore: `TransferService.listMedia`, `MediaScanResult.mediaId`, the `content query` parser | **implemented** |
+| 2 | — | Retention split: `artifacts.pinned`, `storage.uploads` (keep-forever default), the three override levels (D3) | **implemented** |
+| 3 | — | `device.fs.*` — list/stat/move/delete/mkdir, plus SDK (`ctx.device.fs`) and six capabilities (D1) | **implemented** |
+| 4 | — | Media metadata: mime, dimensions, duration from the bytes. **No thumbnails** — see below | **implemented** |
+| 5 | — | Studio `/files` — the gallery grid, type filter, search, rename, pin, delete (D2) | **implemented** |
+| 6 | — | Device Control's Files section moved onto `device.fs.*`; `ls -lA` parsing deleted | **implemented** |
+
+None of the waves needed a plan number of its own: each is one coherent change
+with its own tests, and a plan document per wave would have restated this table.
+
+### What changed from the plan as written
+
+**Thumbnails were dropped from wave 4, on evidence.** There is no ffmpeg or
+ffprobe anywhere in this repo and `LICENSES.md` is deliberate about what may be
+redistributed, so a poster frame cannot be generated host-side without a new
+dependency. It does not need to be: the browser already has a decoder, so
+`/files` renders a `<video>` seeked to its first tenth of a second. Storing one
+would add a dependency, a file to write, and a file for retention to sweep, to
+duplicate what a client does for free.
+
+**Wave 6 turned out to be a REPLACEMENT, not a new screen.** Device Control
+already had a Files section (plan 215 §4.12) — and it ran `ls -lA` through the
+generic `adb` action and parsed the output in the browser. That parser guessed
+at a column layout that differs between toybox and BusyBox and a date format
+that varies by locale, and the `adb` action is gated on running arbitrary
+shell, which an operator may legitimately have turned off on a network-exposed
+farm (`privacy.adbCommand`) — at which point browsing files failed for a reason
+that had nothing to do with files. It now calls `device.fs.list`, over the
+`device.files` permission push and pull already use, and `files-parse.ts` is
+deleted.
+
+**D4's difference view is NOT built.** Wave 1 made the phone's gallery readable
+and wave 5 made the farm's library visible, so the comparison is now possible —
+but nothing yet renders it, and no user has asked for it. Building a screen on
+the strength of "we could" is how the workspace became a file manager nobody
+found (§1.1). It stays a decision, not a backlog item.
+
+**A sixth rail entry.** `/files` needed one: a top-level page is unreachable
+without it (`scripts/check-routes.ts`), and folding an uploads library into
+another screen would have put two different things called "Files" on two
+screens, since the workspace already lives under Agents. `ImagesIcon` is one of
+the 62 already pinned by the design-token check, so the handoff's icon set is
+unchanged.
 
 Wave 1 carries no plan number of its own: it is the one piece that had to exist
 before the programme could be written at all — without a readable MediaStore,

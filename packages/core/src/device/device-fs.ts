@@ -5,6 +5,7 @@ import type {
   DeviceFsListResult,
   DeviceFsOkResult,
   DeviceFsStatResult,
+  DeviceFsUsage,
 } from '@enkaku/protocol'
 import { EnkakuError } from '../util/errors'
 import { validateDevicePath, validateWritableDevicePath } from './fs-path'
@@ -25,6 +26,26 @@ import { validateDevicePath, validateWritableDevicePath } from './fs-path'
 
 /** Chosen so `%n` is last: everything after the third `|` is the name, whatever it holds. */
 const STAT_FORMAT = '%s|%Y|%F|%n'
+
+/** Separates the listing from `df`'s one line in a single round trip. Chosen to be something no path or filename would contain. */
+const DF_MARKER = '@@enkaku-df@@'
+
+/**
+ * `df -k`'s last line, in 1K blocks: `Filesystem 1K-blocks Used Available Use% Mounted`.
+ *
+ * Read from the END rather than by column index — the filesystem name in
+ * column one can contain spaces, and on some builds a long name wraps the row
+ * entirely. Counting back from `Mounted on` is stable against both.
+ */
+export function parseDfLine(line: string): DeviceFsUsage | null {
+  const parts = line.trim().split(/\s+/)
+  if (parts.length < 6) return null
+  // …, total, used, available, use%, mountpoint
+  const total = Number.parseInt(parts[parts.length - 5] ?? '', 10)
+  const available = Number.parseInt(parts[parts.length - 3] ?? '', 10)
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(available) || total <= 0 || available < 0) return null
+  return { totalBytes: total * 1024, freeBytes: available * 1024 }
+}
 
 export interface DeviceFsBackend {
   /** Returns null when the command could not be run at all — never throws. */
@@ -114,11 +135,15 @@ export async function listDeviceFs(
   // `-mindepth 1 -maxdepth 1` is one level, excluding the directory itself.
   // One extra row is fetched so `truncated` reflects the device's real count
   // rather than "we happened to fill the window".
-  const cmd = `find ${quoted} -mindepth 1 -maxdepth 1 -exec stat -c ${shellQuote(STAT_FORMAT)} {} + 2>/dev/null | head -n ${args.limit + 1}`
+  const cmd =
+    `find ${quoted} -mindepth 1 -maxdepth 1 -exec stat -c ${shellQuote(STAT_FORMAT)} {} + 2>/dev/null | head -n ${args.limit + 1}` +
+    `; echo ${shellQuote(DF_MARKER)}; df -k ${quoted} 2>/dev/null | tail -n 1`
   const res = await backend.exec(cmd)
   if (!res) throw new EnkakuError('E_DEVICE_FS_FAILED', `could not list ${path} — the shell command did not run`)
 
-  const entries = parseStatOutput(res.stdout)
+  const [listPart = '', dfPart = ''] = res.stdout.split(DF_MARKER)
+  const usage = parseDfLine(dfPart)
+  const entries = parseStatOutput(listPart)
   if (entries.length === 0 && res.exitCode !== 0) {
     // Nothing parsed AND a non-zero exit: the directory is genuinely
     // unreadable. An empty directory exits 0 with no output, so the two cases
@@ -127,7 +152,7 @@ export async function listDeviceFs(
   }
 
   const truncated = entries.length > args.limit
-  return { entries: sortEntries(truncated ? entries.slice(0, args.limit) : entries), truncated }
+  return { entries: sortEntries(truncated ? entries.slice(0, args.limit) : entries), truncated, usage }
 }
 
 /** One path. A missing path is `{ entry: null }`, never an error — "not there" is an answer. */
