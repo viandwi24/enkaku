@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b64518f5-34bc-4704-8ac9-c142c9c81f09",
-  "prevId": "27b27c3e-a7cd-4b66-84da-85f013df15a2",
+  "id": "8059ca31-1251-40be-92e2-e7ced17a050c",
+  "prevId": "b64518f5-34bc-4704-8ac9-c142c9c81f09",
   "tables": {
     "agent_approvals": {
       "name": "agent_approvals",
@@ -3412,6 +3412,52 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "schedule_workflow_targets": {
+      "name": "schedule_workflow_targets",
+      "columns": {
+        "schedule_id": {
+          "name": "schedule_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "workflow_name": {
+          "name": "workflow_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "params": {
+          "name": "params",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_schedule_workflow_targets_schedule": {
+          "name": "idx_schedule_workflow_targets_schedule",
+          "columns": [
+            "schedule_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "schedules": {
       "name": "schedules",
       "columns": {
@@ -3567,6 +3613,22 @@
         },
         "device_interval_ms": {
           "name": "device_interval_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "device_delay_min_ms": {
+          "name": "device_delay_min_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "device_delay_max_ms": {
+          "name": "device_delay_max_ms",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,

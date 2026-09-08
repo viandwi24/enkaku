@@ -1,7 +1,7 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
-import { QueueItemSchema, queueKeyFor, type QueueItem } from './queue'
+import { queueKeyFor, tiktokQueue } from './queue'
 
 /**
  * Writes ONE entry to the post queue (plan 113 §3.3, §4.4) — the write half of the "content" surface
@@ -77,7 +77,8 @@ const enqueueVideo: PluginMemberScript<typeof params, typeof result> = {
     // let two devices believe they may post the same video (queue.ts §3.3's whole reason to exist).
     // Read through `QueueItemSchema`, which throws on a shape this code cannot understand — the same
     // fail-loud posture `queue.ts` itself takes, rather than guessing at an entry a newer version wrote.
-    const existing = await ctx.storage.global.get(key, QueueItemSchema)
+    const queue = tiktokQueue(ctx)
+    const existing = await queue.get(artifactId)
     if (existing && existing.status === 'claimed') {
       throw Object.assign(
         new Error(`"${artifactId}" is already queued and currently claimed by a device — wait for it to settle before re-adding it`),
@@ -85,20 +86,10 @@ const enqueueVideo: PluginMemberScript<typeof params, typeof result> = {
       )
     }
 
-    // A fresh item, or a re-add: history (`postedAt`/`attempts`) survives a re-add, everything else
-    // resets to a clean `pending` claim so the item is immediately eligible again.
-    const item: QueueItem = {
-      version: 1,
-      artifactId,
-      caption: nextCaption,
-      status: 'pending',
-      claimedBy: null,
-      claimedAt: null,
-      postedAt: existing?.postedAt ?? null,
-      attempts: existing?.attempts ?? 0,
-      lastError: null,
-    }
-    await ctx.storage.global.set(key, item)
+    // A fresh item, or a re-add: history (`settledAt`/`attempts`) survives a re-add — `keepHistory`
+    // is what carries that, and it is why an operator can still see an item that keeps failing —
+    // while the claim and the last error reset so the item is immediately eligible again.
+    await queue.put(artifactId, { caption: nextCaption }, { keepHistory: true })
     ctx.log.info(`queued "${artifactId}"`, { key, hasCaption: nextCaption !== null })
 
     return { key, artifactId, caption: nextCaption }

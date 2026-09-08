@@ -1,4 +1,4 @@
-import { CodeIcon, DevicesIcon, LightningIcon, PuzzlePieceIcon, RobotIcon, type Icon } from '@enkaku/ui'
+import { CodeIcon, DevicesIcon, ImagesIcon, LightningIcon, PuzzlePieceIcon, RobotIcon, type Icon } from '@enkaku/ui'
 import { z } from 'zod'
 
 /**
@@ -29,7 +29,8 @@ export interface NavItem {
 
 /**
  * The static rail, in the handoff's order (README "Global shell", rows 1-4)
- * with Agents inserted at MVP 03 §1's position: between Jobs and Plugins.
+ * with Agents inserted at MVP 03 §1's position: between Jobs and Plugins, and
+ * Files added by plan 800 wave 5 (its own comment below gives the reason).
  * Settings is NOT here: the handoff puts it in the footer group below the
  * spacer, beside the theme toggle and the avatar (`Rail.tsx`).
  *
@@ -43,6 +44,21 @@ export const NAV: readonly NavItem[] = [
   { href: '/scripts', label: 'Scripts & workflows', icon: CodeIcon, pip: true },
   { href: '/jobs', label: 'Jobs', icon: LightningIcon, pip: true },
   ...(AGENTS_IN_RAIL ? [{ href: '/agents', label: 'Agents', icon: RobotIcon, pip: true }] : []),
+  /**
+   * Files (plan 800 wave 5) — a sixth entry, and the handoff drew five, so it
+   * is worth saying why rather than letting the count drift.
+   *
+   * A top-level page must be in this rail or it is unreachable
+   * (`scripts/check-routes.ts`), and the alternative — folding an uploads
+   * library into another screen — would put two different things called
+   * "Files" on two screens: the workspace already lives under Agents. Plan 800
+   * §1.1's whole finding is that a file library nobody can find is why the
+   * workspace went unused as one.
+   *
+   * `ImagesIcon` is one of the 62 already pinned by the design-token check, so
+   * the handoff's icon set is unchanged.
+   */
+  { href: '/files', label: 'Files', icon: ImagesIcon, pip: true },
   { href: '/plugins', label: 'Plugins', icon: PuzzlePieceIcon, pip: true },
 ]
 

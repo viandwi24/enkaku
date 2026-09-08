@@ -81,6 +81,21 @@ describe('createPushExecutor', () => {
       async listMedia() {
         throw new Error('not exercised by this test')
       },
+      async fsList() {
+        throw new Error('not exercised by this test')
+      },
+      async fsStat() {
+        throw new Error('not exercised by this test')
+      },
+      async fsMove() {
+        throw new Error('not exercised by this test')
+      },
+      async fsDelete() {
+        throw new Error('not exercised by this test')
+      },
+      async fsMkdir() {
+        throw new Error('not exercised by this test')
+      },
       async push(deviceId, artifactId, remotePath, opts) {
         pushCalledWith = { deviceId, artifactId, remotePath }
         opts.onProgress?.(10, 10)
@@ -117,6 +132,21 @@ describe('createPushExecutor', () => {
         throw new Error('not exercised by this test')
       },
       async listMedia() {
+        throw new Error('not exercised by this test')
+      },
+      async fsList() {
+        throw new Error('not exercised by this test')
+      },
+      async fsStat() {
+        throw new Error('not exercised by this test')
+      },
+      async fsMove() {
+        throw new Error('not exercised by this test')
+      },
+      async fsDelete() {
+        throw new Error('not exercised by this test')
+      },
+      async fsMkdir() {
         throw new Error('not exercised by this test')
       },
       async push() {

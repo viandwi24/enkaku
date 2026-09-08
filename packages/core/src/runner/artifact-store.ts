@@ -3,9 +3,16 @@ import { join } from 'node:path'
 import type { ArtifactInfo } from '@enkaku/protocol'
 import type { Db } from '../db'
 import { artifacts } from '../db/schema'
+import { probeMedia } from '../media/probe'
 import { EnkakuError } from '../util/errors'
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024
+
+/** The four media fields a probe fills, spread into an `ArtifactInfo` literal. */
+const probeFields = (data: Uint8Array) => {
+  const p = probeMedia(data)
+  return { mimeType: p.mimeType, width: p.width, height: p.height, durationMs: p.durationMs }
+}
 
 const slug = (label: string): string =>
   label
@@ -64,6 +71,15 @@ export function createArtifactStore(deps: {
       const abs = join(dir, filename)
       await Bun.write(abs, data)
       const size = statSync(abs).size
+      /*
+       * Metadata only (plan 800 wave 4) — the declared `kind` is NEVER
+       * overridden here. A caller saying `kind: 'log'` means it, and a probe
+       * that recognised the bytes as something else would be second-guessing
+       * the one party that actually knows. Only the media facts are filled in,
+       * so a video a script minted through `ctx.artifact.file()` carries its
+       * duration and size like any upload.
+       */
+      const probe = probeMedia(data)
       const info: ArtifactInfo = {
         id: crypto.randomUUID(),
         runId: deps.runId,
@@ -74,8 +90,12 @@ export function createArtifactStore(deps: {
         sizeBytes: size,
         createdAt: Math.floor(Date.now() / 1000),
         // Run output, swept by `storage.artifacts` — the pin is for a file an
-        // operator or a script deliberately keeps (plan 700 D3), never a default.
+        // operator or a script deliberately keeps (plan 800 D3), never a default.
         pinned: false,
+        mimeType: probe.mimeType,
+        width: probe.width,
+        height: probe.height,
+        durationMs: probe.durationMs,
       }
       deps.db
         .insert(artifacts)
@@ -128,6 +148,7 @@ export async function saveForDevice(
     sizeBytes: size,
     createdAt: Math.floor(Date.now() / 1000),
     pinned: false,
+    ...probeFields(data),
   }
   deps.db
     .insert(artifacts)
@@ -196,6 +217,17 @@ export function registerDeviceArtifact(
     sizeBytes: opts.sizeBytes,
     createdAt: Math.floor(Date.now() / 1000),
     pinned: false,
+    /*
+     * Left null on purpose: this registers a file that is ALREADY on disk
+     * (a pull), and this function never holds its bytes. Reading a pulled file
+     * back purely to probe it would double the I/O of every pull, including
+     * multi-hundred-megabyte ones, for metadata nothing yet asks of a pulled
+     * file. Null here means "not known", which is exactly true.
+     */
+    mimeType: null,
+    width: null,
+    height: null,
+    durationMs: null,
   }
   deps.db
     .insert(artifacts)

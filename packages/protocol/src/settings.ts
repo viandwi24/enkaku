@@ -334,7 +334,7 @@ export const FarmSettingsSchema = z.object({
         .meta(ui({ title: 'Keep artifacts' })),
       /**
        * Files an OPERATOR uploaded, swept separately from the run output above
-       * (plan 700 D3).
+       * (plan 800 D3).
        *
        * They shared one policy until this section existed, and the sweep took
        * the setting above literally enough to delete them at 30 days — while

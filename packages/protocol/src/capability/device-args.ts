@@ -195,6 +195,15 @@ export const PullArgsSchema = z.object({ remotePath: z.string().min(1) })
 /** Every device.call method's `args` shape, keyed by its IPC method name —
  * `ipc.ts` and the `device.*` capability files both iterate/reference this
  * so the twenty-one operations stay declared exactly once. */
+import {
+  DeviceFsDeleteArgsSchema,
+  DeviceFsListArgsSchema,
+  DeviceFsMkdirArgsSchema,
+  DeviceFsMoveArgsSchema,
+  DeviceFsStatArgsSchema,
+} from '../device-fs'
+import { DeviceMediaListArgsSchema } from '../device-media'
+
 export const DEVICE_CALL_ARGS = {
   tap: TapArgsSchema,
   swipe: SwipeArgsSchema,
@@ -218,6 +227,15 @@ export const DEVICE_CALL_ARGS = {
   longPress: LongPressArgsSchema,
   tapNorm: TapNormArgsSchema,
   swipeNorm: SwipeNormArgsSchema,
+  // Plan 700 — reading the phone's MediaStore, and managing its files. Both
+  // families read state a script previously had to guess at: what the gallery
+  // holds, and what is actually on disk beside the file it just pushed.
+  'media.list': DeviceMediaListArgsSchema,
+  'fs.list': DeviceFsListArgsSchema,
+  'fs.stat': DeviceFsStatArgsSchema,
+  'fs.move': DeviceFsMoveArgsSchema,
+  'fs.delete': DeviceFsDeleteArgsSchema,
+  'fs.mkdir': DeviceFsMkdirArgsSchema,
 } as const
 
 export type DeviceCallMethod = keyof typeof DEVICE_CALL_ARGS

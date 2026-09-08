@@ -127,6 +127,26 @@ export const ARG_REDACTION: Record<DeviceCallMethod, ArgRedaction> = {
   longPress: 'plain',
   tapNorm: 'plain',
   swipeNorm: 'plain',
+  /*
+   * Plan 700's two read families and the file manager. All `plain`, and the
+   * reason is worth stating because the default here is caution: `'length'`
+   * exists for a value a script TYPES — a password, a pasted secret — where
+   * the content is the risk and the timeline needs none of it.
+   *
+   * A path is the opposite. It is the entire evidential value of the entry:
+   * a trace showing that a run deleted something, without saying what, is
+   * worse than no entry at all, and "which directory did it actually read"
+   * is the first question anyone debugging one of these asks. Paths are also
+   * chosen by the operator or the script author, never captured from a
+   * screen, so nothing secret arrives here that was not already written in
+   * the script's own source.
+   */
+  'media.list': 'plain',
+  'fs.list': 'plain',
+  'fs.stat': 'plain',
+  'fs.move': 'plain',
+  'fs.delete': 'plain',
+  'fs.mkdir': 'plain',
 }
 
 /** §4.4 — any single arg value whose JSON is larger than this is replaced by an explicit truncation marker. */

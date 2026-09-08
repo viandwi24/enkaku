@@ -105,3 +105,22 @@ export type { ParamKind, DurationUnit, ParamSource, ShowWhen, ParamHints, UiSpec
 // canonical types (`./types.ts`) — see `define-recording.ts`'s header
 // comment — so there is no more file-scoped `RecordingDevice` type to export.
 export { defineRecording, type DefineRecordingDeps } from './define-recording'
+/**
+ * Plan 800 — a claimable work queue over the KV a plugin already has. Not a
+ * farm concept and not a core primitive: a library over `ctx.storage`, so a
+ * plugin can adopt it without the farm changing at all. Generalised from the
+ * one `plugins/tiktok-automation-pack` invented, so a second pack shares the
+ * protocol instead of copying it.
+ */
+export {
+  createQueue,
+  orderCandidates,
+  queueItemSchema,
+  QUEUE_STATUSES,
+  DEFAULT_STALE_CLAIM_SEC,
+  type Queue,
+  type QueueItem,
+  type QueueClaim,
+  type QueuePick,
+  type QueueStatus,
+} from './queue'
