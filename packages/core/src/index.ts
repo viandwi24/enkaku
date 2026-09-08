@@ -59,6 +59,34 @@ async function startDaemon(): Promise<void> {
 
   let phase: 'running' | 'draining' | 'cancelling' | 'leaving' = 'running'
 
+  /*
+    Per-phase wall clock for the exit (plan 227 §3.4).
+
+    A shutdown printed two lines — `stopping...` and `stopped` — so an operator
+    reporting that leaving a 73-device farm "takes forever" could not say which
+    part took it, and neither could anyone reading the log afterwards. The
+    three phases have entirely different causes and entirely different fixes:
+    DRAINING is jobs finishing and is bounded by the work, RELEASE is one adb
+    write per device and is bounded by the sweep's own width, and STOP is every
+    session's teardown chain — six-ish serialised adb round trips per device,
+    which is the one nobody has measured.
+
+    Written to stderr beside the banners rather than through `log`, because it
+    is the last thing an operator sees and it is for them, not for a log
+    scrape. Costs two `Date.now()` calls per phase.
+  */
+  const phases: Array<[name: string, ms: number]> = []
+  /** When the first signal arrived, so `leave()` can report how long draining took without restructuring the loop that does it. */
+  let signalledAt: number | null = null
+  const timed = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    const started = Date.now()
+    try {
+      return await fn()
+    } finally {
+      phases.push([name, Date.now() - started])
+    }
+  }
+
   const banner = (lines: string[]): void => {
     const width = Math.max(...lines.map((l) => l.length)) + 4
     const rule = '─'.repeat(width)
@@ -80,6 +108,15 @@ async function startDaemon(): Promise<void> {
 
   const leave = async (): Promise<never> => {
     phase = 'leaving'
+    /*
+      Everything before this point, in one number: waiting for jobs, and — on
+      a second Ctrl+C — cancelling them and letting them settle. Recorded here
+      rather than around the drain loop itself because that loop returns early
+      when a second signal moves `phase` under it, and a wrapper that turned
+      that `return` into a return from a closure would change what the second
+      signal does. A timestamp cannot get that wrong.
+    */
+    if (signalledAt !== null) phases.push(['drain', Date.now() - signalledAt])
     // Always, on every path out of here.
     /*
       The sweep is bounded HERE, not inside the readiness manager, which owns
@@ -89,36 +126,38 @@ async function startDaemon(): Promise<void> {
       process leave.
     */
     let settled = 0
-    const { released, failed } = await Promise.race([
-      daemon.releaseDevices(() => {
-        settled++
-      }),
-      /*
-        A STALL deadline, not a total one.
+    const { released, failed } = await timed('release', () =>
+      Promise.race([
+        daemon.releaseDevices(() => {
+          settled++
+        }),
+        /*
+          A STALL deadline, not a total one.
 
-        A flat total is wrong here, and measurably so: each release is about
-        1.4 s of adb round trips, so a 65-device farm needs longer than any
-        fixed number an operator would accept, and the old flat 30 s simply
-        abandoned the rest of the farm — pinned lit, with no core left running
-        to undo it. This is the one step that must never be cut short while it
-        is still working, so the clock only runs while nothing is finishing:
-        every device that settles pushes it back. A farm of any size gets as
-        long as it needs; a farm whose adb has genuinely wedged still lets the
-        process leave.
-      */
-      new Promise<{ released: number; failed: number }>((resolve) => {
-        let seen = -1
-        const timer = setInterval(() => {
-          if (settled !== seen) {
-            seen = settled
-            return
-          }
-          clearInterval(timer)
-          resolve({ released: settled, failed: -1 })
-        }, RELEASE_STALL_MS)
-        timer.unref?.()
-      }),
-    ])
+          A flat total is wrong here, and measurably so: each release is about
+          1.4 s of adb round trips, so a 65-device farm needs longer than any
+          fixed number an operator would accept, and the old flat 30 s simply
+          abandoned the rest of the farm — pinned lit, with no core left running
+          to undo it. This is the one step that must never be cut short while it
+          is still working, so the clock only runs while nothing is finishing:
+          every device that settles pushes it back. A farm of any size gets as
+          long as it needs; a farm whose adb has genuinely wedged still lets the
+          process leave.
+        */
+        new Promise<{ released: number; failed: number }>((resolve) => {
+          let seen = -1
+          const timer = setInterval(() => {
+            if (settled !== seen) {
+              seen = settled
+              return
+            }
+            clearInterval(timer)
+            resolve({ released: settled, failed: -1 })
+          }, RELEASE_STALL_MS)
+          timer.unref?.()
+        }),
+      ]),
+    )
     if (failed === -1) {
       process.stderr.write(
         `\nstopped hearing back from devices — ${settled} handed back, the rest may still be held awake\n`,
@@ -126,11 +165,13 @@ async function startDaemon(): Promise<void> {
     } else if (released > 0 || failed > 0) {
       log.info(`handed ${released} device(s) back their own screen timeout${failed > 0 ? `, ${failed} did not answer` : ''}`)
     }
-    await daemon.stop()
+    await timed('stop', () => daemon.stop())
+    process.stderr.write(`shutdown took ${phases.map(([name, ms]) => `${name} ${(ms / 1000).toFixed(1)}s`).join(', ')}\n`)
     process.exit(0)
   }
 
   const shutdown = async (signal: string): Promise<void> => {
+    signalledAt ??= Date.now()
     /*
       Once the devices are being handed back, no further Ctrl+C skips it.
 

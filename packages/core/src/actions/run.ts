@@ -30,7 +30,7 @@ import { EnkakuError } from '../util/errors'
 import { resolveActionTarget } from '../groups/resolve'
 import type { BatchDispatchDeps } from '../groups/dispatch'
 import type { OperationRegistry } from './operations'
-import { VERBS, ACTION_FANOUT_CONCURRENCY, ACTION_SYNC_FANOUT_CONCURRENCY } from './verbs'
+import { VERBS, actionFanout } from './verbs'
 import { setReadiness } from './impl/readiness'
 import { reconnectDevice, disconnectDevice, cutoverStart, cutoverCancel } from './impl/connection'
 import { forgetDevice, blockDevice, unquarantineDevice } from './impl/lifecycle'
@@ -105,6 +105,22 @@ export interface ActionsDeps {
    * same `listDevicesWithLabels` accessor every other list route uses.
    */
   listDevices: () => DeviceInfo[]
+  /**
+   * adb's live global-semaphore width (plan 227 §3.2) — `AdbClient.stats().maxConcurrent`,
+   * wired in `daemon.ts`.
+   *
+   * Read per call rather than captured, because the width is not fixed: the
+   * autoscaler moves it as devices arrive and leave (`computeAutoConcurrency`),
+   * an operator can pin it through `adb.maxConcurrent`, and the shutdown
+   * release sweep widens it and puts it back. A fan-out derived from a value
+   * read once at wiring time would be derived from a number that was true at
+   * boot.
+   *
+   * Optional so the many hand-built `ActionsDeps` fixtures do not all need a
+   * stub for a field none of them is about; absent, `actionFanout` falls back
+   * to its floors, which are the widths this repo shipped before plan 227.
+   */
+  adbConcurrency?: () => number
   now?: () => number
 }
 
@@ -319,7 +335,7 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
       device's state), so the `for await` was ordering work that had no order
       to keep, and charging an operator the sum of it.
     */
-    await dispatchBounded(candidates, ACTION_SYNC_FANOUT_CONCURRENCY, async (deviceId) => {
+    await dispatchBounded(candidates, actionFanout(spec, deps.adbConcurrency?.() ?? 0), async (deviceId) => {
       try {
         const detail = await dispatchSyncVerb(deps, request, deviceId, actor)
         settle(deviceId, { status: 'done', detail })
@@ -328,7 +344,7 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
       }
     })
   } else {
-    void dispatchBounded(candidates, ACTION_FANOUT_CONCURRENCY, async (deviceId) => {
+    void dispatchBounded(candidates, actionFanout(spec, deps.adbConcurrency?.() ?? 0), async (deviceId) => {
       try {
         const { detail, activityId } = await dispatchAsyncVerb(deps, request, deviceId, op.operationId, activityActor)
         settle(deviceId, { status: 'done', detail, ...(activityId ? { activityId } : {}) })
@@ -341,12 +357,44 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
   return deps.operations.get(op.operationId)!
 }
 
+/**
+ * `screen-off` / `screen-on` (plan 227 §3.3) — the device's panel, over the
+ * session's own scrcpy control socket.
+ *
+ * No adb, no round trip, no activity row: this writes two bytes to a socket
+ * this process already holds open, which is the entire reason the verb exists
+ * separately from `sleep`. A farm-wide screen-off is therefore N socket
+ * writes and costs the same whether N is 3 or 73.
+ *
+ * A device with no session, or one running the screencap-loop fallback with
+ * no scrcpy behind it, is reported per device rather than passed over: the
+ * operator asked for a panel to change, and reporting `done` for a phone
+ * whose panel did not is the same "unverified is not success" this repo
+ * refuses of a network route.
+ *
+ * `device_unavailable` rather than a new code, because `failedStatusOf` already
+ * maps it to **skipped** — which is what this is. A phone whose session has
+ * not finished building is not a failed action, and a farm-wide screen-off
+ * that reports two skips and 71 dones is telling the truth about both.
+ */
+function setScreenPower(deps: ActionsDeps, deviceId: string, on: boolean): { on: boolean } {
+  const session = deps.sessions()?.get(deviceId)
+  if (!session) throw new EnkakuError('device_unavailable', 'no session is open on this device, so its panel cannot be changed')
+  if (!session.setDisplayPower?.(on)) {
+    throw new EnkakuError('device_unavailable', 'this device is mirroring without scrcpy, which has no display-power control')
+  }
+  return { on }
+}
+
 async function dispatchSyncVerb(deps: ActionsDeps, request: ActionRequest, deviceId: string, actor: ActionActor): Promise<unknown> {
   switch (request.verb) {
     case 'wake':
       return setReadiness(requireDep(deps.readiness, 'wake'), deviceId, 'awake', { userId: actor.id })
     case 'sleep':
       return setReadiness(requireDep(deps.readiness, 'sleep'), deviceId, 'asleep', { userId: actor.id })
+    case 'screen-off':
+    case 'screen-on':
+      return setScreenPower(deps, deviceId, request.verb === 'screen-on')
     case 'reconnect':
       return reconnectDevice(requireDep(deps.reconnector(), 'reconnect'), deviceId, { ...(request.allowSweep !== undefined ? { allowSweep: request.allowSweep } : {}) })
     case 'disconnect': {

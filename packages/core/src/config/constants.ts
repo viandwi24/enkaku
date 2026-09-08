@@ -282,3 +282,33 @@ export const PREPARATION_SWEEP_MS = num('ENKAKU_PREPARATION_SWEEP_MS', 60_000, z
  * Higher stops buying anything once the server is the bottleneck.
  */
 export const RELEASE_SWEEP_WORKERS = num('ENKAKU_RELEASE_SWEEP_WORKERS', 8, z.number().int().min(1).max(24))
+
+/**
+ * The ceilings on how wide one action fans out over its selection (plan 227
+ * §3.2). The WIDTH itself is derived per call from adb's live semaphore
+ * (`computeSyncFanout`/`computeAsyncFanout`, `device/adb-scaling.ts`); these
+ * two bound it from above.
+ *
+ * They exist as overrides because the constants they replace did not, which
+ * is the rule this file is for: a value expected to keep being tuned ships
+ * with the binary and moves without a build. `ACTION_FANOUT_CONCURRENCY = 4`
+ * and `ACTION_SYNC_FANOUT_CONCURRENCY = 16` were bare `export const`s in
+ * `actions/verbs.ts`, so a 73-device farm running a bulk screenshot four at a
+ * time had no way to widen it at all.
+ *
+ * Neither default is measured. `bun run bench:wake` is the instrument.
+ */
+export const ACTION_FANOUT_MAX = num('ENKAKU_ACTION_FANOUT_MAX', 12, z.number().int().min(1).max(64))
+export const ACTION_SYNC_FANOUT_MAX = num('ENKAKU_ACTION_SYNC_FANOUT_MAX', 32, z.number().int().min(1).max(128))
+
+/**
+ * The width for a verb that touches no adb at all — `screen-off`/`screen-on`
+ * write two bytes to a control socket this process already holds open (plan
+ * 227 §3.3). adb's semaphore is not in that path, so bounding these by it
+ * would be bounding them by a queue they never join.
+ *
+ * Bounded at all only because a farm-wide action still allocates a promise
+ * per device; 64 is comfortably past any farm this product targets and is
+ * here to be a number rather than `Infinity`.
+ */
+export const ACTION_SOCKET_FANOUT = num('ENKAKU_ACTION_SOCKET_FANOUT', 64, z.number().int().min(1).max(256))

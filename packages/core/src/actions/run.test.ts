@@ -243,3 +243,78 @@ describe('set-group broadcasts device.updated (owner report, 2026-09-04)', () =>
     expect(listings).toBe(1)
   })
 })
+
+describe('screen-off / screen-on (plan 227 §3.3)', () => {
+  function sessionsWith(calls: Array<{ deviceId: string; on: boolean }>, opts?: { scrcpy?: boolean }) {
+    return () =>
+      ({
+        get: (deviceId: string) =>
+          ({
+            deviceId,
+            ...(opts?.scrcpy === false
+              ? {}
+              : {
+                  setDisplayPower: (on: boolean) => {
+                    calls.push({ deviceId, on })
+                    return true
+                  },
+                }),
+          }) as never,
+      }) as never
+  }
+
+  test('the panel is changed over the session, and no adb command is issued', async () => {
+    const { deps } = setUp()
+    const calls: Array<{ deviceId: string; on: boolean }> = []
+    let shellCalls = 0
+    const spied: ActionsDeps = {
+      ...deps,
+      sessions: sessionsWith(calls),
+      shellPortFor: () => ({
+        exec: async () => {
+          shellCalls += 1
+          return { exitCode: 0, stdout: '', stderr: '', truncated: false }
+        },
+        stream: () => unused('stream'),
+      }),
+    }
+
+    const res = await runAction(spied, { verb: 'screen-off', target: { deviceIds: ['d-online'] } } as never, actor)
+
+    expect(calls).toEqual([{ deviceId: 'd-online', on: false }])
+    // The whole reason this verb exists beside `sleep` — it never joins adb's queue.
+    expect(shellCalls).toBe(0)
+    expect(res.results[0]?.status).toBe('done')
+  })
+
+  test('screen-on is the same verb with the other value, never a second mechanism', async () => {
+    const { deps } = setUp()
+    const calls: Array<{ deviceId: string; on: boolean }> = []
+    await runAction({ ...deps, sessions: sessionsWith(calls) }, { verb: 'screen-on', target: { deviceIds: ['d-online'] } } as never, actor)
+    expect(calls).toEqual([{ deviceId: 'd-online', on: true }])
+  })
+
+  test('a device with no session is SKIPPED, not failed — its panel simply was not ours to change', async () => {
+    const { deps } = setUp()
+    const res = await runAction({ ...deps, sessions: () => null }, { verb: 'screen-off', target: { deviceIds: ['d-online'] } } as never, actor)
+    expect(res.results[0]?.status).toBe('skipped')
+  })
+
+  test('a session mirroring without scrcpy is skipped too, rather than reporting a change it did not make', async () => {
+    const { deps } = setUp()
+    const res = await runAction({ ...deps, sessions: sessionsWith([], { scrcpy: false }) }, { verb: 'screen-off', target: { deviceIds: ['d-online'] } } as never, actor)
+    expect(res.results[0]?.status).toBe('skipped')
+  })
+
+  test('an offline device is skipped before dispatch, like every other `offline: skip` verb', async () => {
+    const { deps } = setUp()
+    const calls: Array<{ deviceId: string; on: boolean }> = []
+    const res = await runAction(
+      { ...deps, sessions: sessionsWith(calls) },
+      { verb: 'screen-off', target: { deviceIds: ['d-online', 'd-offline'] } } as never,
+      actor,
+    )
+    expect(calls.map((c) => c.deviceId)).toEqual(['d-online'])
+    expect(res.results.find((r) => r.deviceId === 'd-offline')?.status).toBe('skipped')
+  })
+})

@@ -135,6 +135,15 @@ export {
 } from '@phosphor-icons/react'
 
 /**
+ * Plan 227 §3.3 — the `screen-off` action. Its twin `screen-on` reuses
+ * `DeviceMobileIcon` from the plan 215 group above: the pair is one phone
+ * glyph with and without a slash, because the thing being turned off is the
+ * PHONE's own panel, not the mirror and not the device's sleep (which are
+ * `EyeSlashIcon` and `MoonIcon`, and are different operations).
+ */
+export { DeviceMobileSlashIcon } from '@phosphor-icons/react'
+
+/**
  * The Devices toolbar's fleet menu (owner, 2026-09-04). `DotsThreeIcon` in
  * group 1 is the HORIZONTAL glyph, which is what that toolbar's button first
  * shipped with — but every other overflow control in the product is the
