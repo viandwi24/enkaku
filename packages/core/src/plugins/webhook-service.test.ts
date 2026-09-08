@@ -612,7 +612,14 @@ describe('containment and audit', () => {
 describe('the webhook secret never reaches a log line (steps 109.7 + 109.8)', () => {
   test('a plugin that logs its own secret verbatim gets it redacted; a decoy in the same call does not', async () => {
     const { h, secret } = await ready()
-    const decoy = `x${secret.slice(1)}`
+    // The first character is REPLACED, never assumed to differ: the secret is
+    // 32 random bytes in base64url (`webhook-secrets.ts`), so its first
+    // character is uniform over a 64-symbol alphabet and a hardcoded `x` prefix
+    // collided with it on 1 run in 64 — leaving `decoy === secret`, which fails
+    // this test's own first assertion and then every control below it. That is
+    // a ~1.6% red build on a test about redaction, for a reason that has
+    // nothing to do with redaction.
+    const decoy = `${secret[0] === 'x' ? 'y' : 'x'}${secret.slice(1)}`
     expect(decoy).not.toBe(secret)
     expect(decoy.length).toBe(secret.length)
 
