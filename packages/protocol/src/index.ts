@@ -520,6 +520,7 @@ export {
   OnOverlapSchema,
   CatchUpSchema,
   ScheduleRunOutcomeSchema,
+  findRedundantSchedules,
   ScheduleWorkTargetSchema,
   ScheduleThreadModeSchema,
   OnApprovalRequiredSchema,

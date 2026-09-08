@@ -147,3 +147,80 @@ export const ScheduleFiredMessage = z.object({
   }),
 })
 export type ScheduleFiredEvent = z.infer<typeof ScheduleFiredMessage>
+
+/**
+ * Schedules that would do exactly the same work (plan 314 §10.12).
+ *
+ * ## The mistake this catches
+ *
+ * A rotation split across three sessions a day is three schedule rows, and
+ * the obvious way an operator makes three rows is to build one and duplicate
+ * it twice. If the thing that distinguishes them — the slot the workflow
+ * rotates on — is a parameter they must remember to change, the duplicate
+ * carries slot 0 three times. The farm then runs the first platform three
+ * times a day, forever, covering nothing else, with three green batches and
+ * no error anywhere.
+ *
+ * That is the client's own stated fear reintroduced by a form being too
+ * generic, so it is worth catching in the product rather than in a habit.
+ *
+ * ## Why identical PARAMS rather than a "slot" field
+ *
+ * The core has no concept of a rotation slot and should not grow one — a slot
+ * is a workflow's own parameter, named by whoever authored it. What is
+ * genuinely suspicious without knowing any of that is two ENABLED schedules
+ * that run the same work with the same arguments against the same devices:
+ * whatever the parameter is called, those two rows are the same instruction
+ * twice, and the second one is almost always a duplicate someone forgot to
+ * edit.
+ *
+ * A firing time is deliberately NOT part of the identity. Two schedules
+ * differing only in cron is exactly the shape being flagged: the operator
+ * changed the time and nothing else.
+ *
+ * Disabled schedules are excluded — an operator keeping a paused copy around
+ * is not making this mistake.
+ *
+ * Returns groups of two or more schedule ids, never singletons.
+ */
+export function findRedundantSchedules(items: readonly ScheduleInfo[]): string[][] {
+  const key = (s: ScheduleInfo): string | null => {
+    // A stable, order-independent signature of the WORK plus the DEVICES.
+    const target =
+      s.groupId !== null
+        ? `g:${s.groupId}`
+        : s.labelIds.length > 0
+          ? `l:${[...s.labelIds].sort().join(',')}`
+          : `d:${[...s.deviceIds].sort().join(',')}`
+    if (s.target.kind === 'workflow') return `workflow:${s.target.workflowName}:${stableJson(s.target.params)}:${target}`
+    if (s.target.kind === 'script') return `script:${s.target.ref}:${stableJson(s.target.params)}:${target}`
+    // An agent target's prompt is free text an operator writes twice on
+    // purpose as often as by accident; flagging it would be noise.
+    return null
+  }
+
+  const groups = new Map<string, string[]>()
+  for (const s of items) {
+    if (!s.enabled) continue
+    const k = key(s)
+    if (k === null) continue
+    groups.set(k, [...(groups.get(k) ?? []), s.id])
+  }
+  return [...groups.values()].filter((ids) => ids.length > 1)
+}
+
+/** `JSON.stringify` with object keys sorted, so `{a,b}` and `{b,a}` compare equal. Depth-bounded by the params schemas themselves. */
+function stableJson(value: unknown): string {
+  const walk = (v: unknown): unknown => {
+    if (v === null || typeof v !== 'object') return v
+    if (Array.isArray(v)) return v.map(walk)
+    const out: Record<string, unknown> = {}
+    for (const k of Object.keys(v as Record<string, unknown>).sort()) out[k] = walk((v as Record<string, unknown>)[k])
+    return out
+  }
+  try {
+    return JSON.stringify(walk(value) ?? null)
+  } catch {
+    return '<unserialisable>'
+  }
+}

@@ -11,6 +11,7 @@ import { ScriptsTable } from '@/components/scripts/ScriptsTable'
 import { WorkflowsGrid } from '@/components/scripts/WorkflowsGrid'
 import { SchedulesList } from '@/components/schedules/SchedulesList'
 import { ScheduleDialog, type ScheduleRow } from '@/components/schedules/ScheduleDialog'
+import { RotationDialog } from '@/components/schedules/RotationDialog'
 import { listWorkflows, fetchAllPages, type WorkflowInfo } from '@/lib/api'
 import { matchesScript, matchesWorkflow, matchesSchedule } from './matchers'
 
@@ -20,7 +21,7 @@ const TAB_LABEL: Record<TabKey, string> = { scripts: 'Scripts', workflows: 'Work
 const TAB_SUBTITLE: Record<TabKey, string> = {
   scripts: 'Registered by your active plugins. Install a plugin to add scripts; there is no other way in.',
   workflows: 'Pipelines of scripts on one device.',
-  schedules: 'Recurring runs of a script or an agent, on a cron expression.',
+  schedules: 'Recurring runs of a script, a workflow or an agent, on a cron expression.',
 }
 const SEARCH_PLACEHOLDER: Record<TabKey, string> = {
   scripts: 'Search scripts…',
@@ -39,6 +40,7 @@ function ScriptsWorkflowsScreen() {
   const [query, setQuery] = useState(params.get('q') ?? '')
   const [creatingSchedule, setCreatingSchedule] = useState(false)
   const [editingSchedule, setEditingSchedule] = useState<ScheduleRow | null>(null)
+  const [creatingRotation, setCreatingRotation] = useState(false)
 
   const loadScripts = () => void api('/api/scripts', ScriptsListResponseSchema).then((b) => setScripts(b.items))
   const loadWorkflows = () => void listWorkflows().then(setWorkflows)
@@ -123,10 +125,18 @@ function ScriptsWorkflowsScreen() {
           />
         )}
         {tab === 'schedules' && (
-          <Button className="rounded-button bg-accent text-on-accent hover:bg-accent-2" onClick={() => setCreatingSchedule(true)}>
-            <ClockIcon className="size-4" aria-hidden />
-            New schedule
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Plan 314 §10.12 — a rotation is created as a unit, so the slot
+                that distinguishes its sessions is filled in by the product
+                rather than remembered by the operator duplicating a row. */}
+            <Button variant="secondary" className="rounded-button" onClick={() => setCreatingRotation(true)}>
+              New rotation
+            </Button>
+            <Button className="rounded-button bg-accent text-on-accent hover:bg-accent-2" onClick={() => setCreatingSchedule(true)}>
+              <ClockIcon className="size-4" aria-hidden />
+              New schedule
+            </Button>
+          </div>
         )}
       </div>
 
@@ -193,6 +203,7 @@ function ScriptsWorkflowsScreen() {
         )}
       </div>
 
+      <RotationDialog open={creatingRotation} onOpenChange={setCreatingRotation} onCreated={loadSchedules} />
       <ScheduleDialog
         schedule={creatingSchedule ? 'new' : editingSchedule}
         onClose={() => {
