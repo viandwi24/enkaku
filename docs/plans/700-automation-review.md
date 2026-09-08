@@ -470,6 +470,182 @@ Naming these keeps them from being re-proposed in a month.
 | Q4 | Fund R1 and R2 now? They are days, not weeks, and R1 can overturn D-C | The sequencing of the whole next programme |
 | Q5 | Is account loss a business risk worth a written threat model (R6)? | R6 only |
 
+---
+
+## 8. Addendum — bulk power and the cost of leaving (owner report, 2026-09-08)
+
+The owner's report, in the owner's words: power on / off / wake on 73 devices is
+slow, a competitor does the same in 1–2 seconds, and `Ctrl+C` "gila lama sekali"
+because the core releases everything first.
+
+Plan 226 already fixed the biggest multiplier — the serial dispatch — and this
+addendum does not re-litigate it. What follows is what is **still** there,
+read off the tree at `5c92266`. It is a separate finding set from F1–F5, and on
+present evidence it outranks all of them for a farm this size: an operator meets
+it every single day, and F1's failure mode is rare and quiet by comparison.
+
+### P1 — Nobody has measured this farm
+
+Plan 226's own status line says it: G8 is still an open **owner** row, and every
+number the plan reasons from — 1422 ms for `svc power stayon` above all — is
+plan 96 §22's single measurement plus upstream scrcpy's source. `bun run
+bench:wake` exists (`scripts/bench-wake.ts`) and has never been run here.
+
+Everything below is structure I can prove by reading. How much each part costs
+in seconds is not, and I will not guess it. **Run the bench first** — it is
+hours of work and it decides which of P2–P5 is actually the dominant term.
+
+### P2 — The fan-out widths are compiled-in constants that do not scale, and they bind hard at 73
+
+| Constant | Value | Applies to | Waves at 73 devices |
+|---|---|---|---|
+| `ACTION_FANOUT_CONCURRENCY` (`actions/verbs.ts:59`) | **4** | every `async` verb: `install`, `push`, `pull`, `adb` shell, `screenshot`, `clear-cache`, `set-network`, `prepare`, `install-agent`, `uninstall-agent` | **19** |
+| `ACTION_SYNC_FANOUT_CONCURRENCY` (`actions/verbs.ts:86`) | **16** | `wake`, `sleep`, and every other `sync` verb | 5 |
+| `RELEASE_SWEEP_WORKERS` (`config/constants.ts:284`) | **8** | the shutdown release sweep | 10 |
+| `computeAutoConcurrency(73)` (`device/adb-scaling.ts:15`) | **24** | adb's own global semaphore | — |
+
+Three observations, in order of how much they cost:
+
+1. **The adb lane is not the constraint; these three numbers are.** The
+   semaphore is at 24 for a farm this size and every one of the three sits
+   below it. A bulk screenshot or a bulk `adb` command across 73 phones runs
+   **four at a time**.
+2. **`ACTION_SYNC_FANOUT_CONCURRENCY`'s own written justification is false at
+   this farm size.** Its comment reads: *"the real floor is still adb's own
+   farm-wide semaphore (`adb.maxConcurrent`, 6 by default and pinnable to 2):
+   past that width this number stops buying anything"*. At 73 devices that
+   floor is 24, not 6. The number was chosen against a 10–20 device farm and
+   the premise was never revisited.
+3. **Two of the three are not knobs.** `ACTION_FANOUT_CONCURRENCY` and
+   `ACTION_SYNC_FANOUT_CONCURRENCY` are bare `export const`s in `verbs.ts`,
+   with no `ENKAKU_*` override — a direct breach of CLAUDE.md's own rule that a
+   value expected to keep being tuned belongs in `constants.ts` with an
+   override. This is the `WALL_RAMP_CONCURRENCY` failure that same file already
+   records, repeated: a farm operator cannot widen these without a rebuild.
+
+**All three should be derived from the farm's own device count, the way
+`computeAutoConcurrency` and `computeAutoStreams` already are, and all three
+should carry an `ENKAKU_*` override.** A fixed 4 is not a farm-independent
+constant; it is a farm-size assumption compiled in.
+
+### P3 — The exit cost is a revert ledger, and part of it is paid twice
+
+`ScrcpySession.close()` (`packages/session/src/session.ts:1056-1136`) is a
+strictly sequential chain of awaits, most of them a separate adb round trip:
+
+| Step | Command | Round trips |
+|---|---|---|
+| `uhidEngine.destroy()` | control socket | 0 (socket) |
+| `session.display.stop()` | scrcpy teardown + forward removal | ≥1 |
+| `applyStayOn(off)` | `settings put global …; settings get …` | 1 |
+| `revertRotation()` | `settings put system <key> <value>` (`orientation.ts:224`) | 1 |
+| `revertTextInput()` | `ime set <previous>` (`text-input.ts:214`) | 1 — see P4 |
+| `revertFarmTag()` | `setprop …` (`farm-tag.ts:98`) | 1 |
+| `inspectorHandle.release()` | inspector teardown | ≥1 |
+
+Six-ish serialised round trips per device, × 73, through a semaphore of 24 —
+and then `readiness.releaseAll()` writes `stay_on_while_plugged_in = 0`
+**again**. `session.ts:1095`'s own comment admits the overlap in the other
+direction ("a farm shutdown paid it once per device before the release sweep
+had even begun"); plan 226 made that write cheap but did not remove the
+duplicate.
+
+Two things follow.
+
+- **The per-device revert chain should be ONE batched shell command, not six.**
+  `putStayOn` (`power.ts:309`) already proves the technique in this repo —
+  `settings put …; settings get …` in a single exec, because `adb shell` runs a
+  real shell. Rotation, IME, farm tag and stay-on are mutually independent;
+  there is no ordering constraint between them, only between the stay-on drop
+  and the sleep key, which is a different pair. Six round trips → one. The cost
+  is failure attribution: a batched command tells you less about which part
+  failed, which is worth stating in the change, not worth six round trips.
+- **The competitor's 1–2 seconds is not a faster adb. It is not having a revert
+  ledger at all.** Enkaku's exit is proportional to how much per-device state it
+  mutated and is honour-bound to restore. That honour is correct — plan 125 §0.2
+  exists for good reasons — but the price is currently paid serially, per
+  device, at exit, on the operator's clock. P5 is how you keep the honour and
+  stop paying for it.
+
+### P4 — `ime set` is the JVM plan 226 did not remove
+
+Plan 226 §3.2's whole insight is that `/system/bin/svc`, `/system/bin/input`
+and friends are shell wrappers around `app_process`, so each call starts an ART
+runtime on the phone — that is what the 1422 ms is. The plan took `svc` off the
+wake/sleep path and left `revertTextInput`'s `ime set` on the **close** path,
+where it runs once per device on every shutdown.
+
+On AOSP, `cmds/ime/ime` has historically been exactly that shape of
+`app_process` wrapper. **I have not verified it on this farm's hardware and it
+is build-dependent** — newer builds route it through `cmd input_method`. It is
+the second thing the bench should time, right after `settings put`, and if it
+measures like `svc` did, it is the single largest term in the shutdown.
+
+### P5 — Plan 226 Q1 is the real fix, and it is still open
+
+`packages/scrcpy/src/session.ts:229-235` passes `control=true` and
+`cleanup=true`, and does **not** pass `stay_awake`. The pinned v3.3.1 server
+accepts `stay_awake` and `screen_off_timeout` as options, applies them itself,
+and spawns an independent on-device process that restores both when the
+server's stdin closes — for any reason, this core being `SIGKILL`ed included.
+
+Adopting it does not make the release sweep faster. It **deletes** it. And it
+closes a real hole plan 226 named and did not fix: today a `kill -9` leaves
+every phone the farm touched pinned lit for ever, with nothing left running to
+notice.
+
+The two objections plan 226 recorded are both answerable rather than blocking:
+ownership of a persisted setting moves out of this codebase (true, and it moves
+to the upstream project this repo already pins and already trusts with
+`cleanup=true`), and `screen_off_timeout`'s unit must be read off v3.3.1's own
+`Server.java` before anything is sent (an afternoon).
+
+**This is the owner decision with the largest performance payoff in the
+repository, and it has been sitting as an open question since 2026-09-07.**
+
+### P6 — With P5, a farm-wide Sleep becomes socket-only
+
+`pressSleep` already prefers the session's control socket and only falls back to
+`input keyevent` when there is no session (`readiness.ts:544`). On an always-on
+farm every online device has a session, so the keycode already costs no adb.
+What still costs adb on a Sleep is the stay-on write — the one thing P5 removes.
+After P5, a farm-wide Sleep is 73 socket writes with no adb round trip at all,
+which is the shape that produces the competitor's 1–2 seconds.
+
+### P7 — `SET_DISPLAY_POWER` was refused for a reason P5 also dissolves
+
+Plan 226 §3.4 refused `SET_DISPLAY_POWER` (two bytes over the open socket, every
+panel black in the same frame) because a core killed with `SIGKILL` would leave
+66 dark panels with nothing left to restore them. scrcpy's own on-device
+`CleanUp` — the exact mechanism P5 adopts — is what makes that objection
+survivable. The refusal should be re-read after P5, not treated as settled.
+
+### Recommended order
+
+| # | Action | Size | Why here |
+|---|---|---|---|
+| **N1** | Run `bun run bench:wake` on one device and record it (plan 226 G8) | hours | Every number below is currently reasoned, not measured. This is also what decides whether P4 is real |
+| **N2** | Instrument the exit: log the three phases separately (drain / release sweep / `closeAll`) with per-phase wall clock | hours | Today the shutdown is one log line, so "gila lama sekali" cannot be attributed to a phase. Nothing else should be tuned before this exists |
+| **N3** | Scale the three fan-out widths from device count and give each an `ENKAKU_*` override | small | P2. The cheapest real speed-up, and it fixes a CLAUDE.md rule breach at the same time |
+| **N4** | Batch the per-device revert chain into one shell command; drop the duplicate stay-on write | small | P3. Six round trips → one, on every device, on every close |
+| **N5** | Decide plan 226 Q1 — hand `stay_awake` (and `screen_off_timeout`) to the scrcpy server | medium, owner | P5. Deletes the release sweep instead of speeding it up, and fixes the `kill -9` leak |
+| **N6** | Re-read the `SET_DISPLAY_POWER` refusal | small | P7, only after N5 |
+
+N1 and N2 are diagnostics and should land before any of N3–N5, for the reason
+this whole document keeps repeating: this repository has a strong habit of
+reasoning carefully from numbers it has not taken.
+
+### What this changes about §0 and §3
+
+The verdict in §0 stands for the *automation* concept. It is now explicitly
+subordinate to this: **a farm of 73 phones whose every bulk operation is slow is
+a worse product than a farm that cannot express which account is on which
+phone.** If the owner funds one thing next, it is N1–N4, not D-B.
+
+R1's failure taxonomy (§3) should therefore be widened by one question: how much
+of a run's wall clock is spent in the farm's own dispatch and teardown, rather
+than on the phone. Nobody has that number either.
+
 ## 11. Handoff report
 
 _Not applicable: this document is a review, not an executed plan._
