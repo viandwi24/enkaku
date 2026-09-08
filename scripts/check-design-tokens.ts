@@ -373,6 +373,11 @@ const GROUP_3 = [
   // is the `shuffle` node's own icon in both the catalog and the list row.
   'ArrowUpIcon',
   'ShuffleIcon',
+  // Plan 227 §3.3 — the `screen-off` action. Its twin `screen-on` reuses
+  // `DeviceMobileIcon`, already in this list: one phone glyph with and
+  // without a slash, because what is turned off is the PHONE's own panel,
+  // not the mirror (`EyeSlashIcon`) and not the device's sleep (`MoonIcon`).
+  'DeviceMobileSlashIcon',
 ]
 
 async function checkIcons(): Promise<void> {
