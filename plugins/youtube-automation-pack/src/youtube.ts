@@ -182,9 +182,49 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: opts?.clearRecents ?? true })
   await ctx.device.app.launch(YOUTUBE_PACKAGE)
   await sleep(3_000)
-  const { ok, waitedMs } = await waitForTree(ctx, isReady, { budgetMs: READY_TIMEOUT_MS })
-  if (ok) ctx.log.info(`youtube ready ${Math.round(waitedMs / 1000)}s after launch`)
-  else ctx.log.warn(`youtube did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`)
+  const nav = await waitForTree(ctx, isReady, { budgetMs: READY_TIMEOUT_MS })
+  if (!nav.ok) {
+    ctx.log.warn(`youtube did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`)
+    return
+  }
+
+  /*
+    The navigation is not readiness. It is drawn early — measured at one second
+    after the settle on the owner's SM-A075F — and a tap sent then does nothing
+    at all, while the identical tap twelve seconds after launch opens the
+    screen it names. (Both measured directly, 2026-09-08: the same
+    `input.tap` through the same session, once at each moment.)
+
+    So wait for the tree to stop changing. Two consecutive dumps of the same
+    size mean the app has finished drawing whatever it was drawing, which is
+    the closest thing to "ready" this side of the app telling us — and it costs
+    nothing on a phone that was already settled.
+  */
+  let previous = -1
+  const deadline = Date.now() + SETTLE_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const size = countNodes(await ctx.device.dump())
+    if (size === previous) {
+      ctx.log.info(`youtube settled at ${size} nodes, ${Math.round((Date.now() - (deadline - SETTLE_TIMEOUT_MS)) / 1000)}s after its navigation appeared`)
+      return
+    }
+    previous = size
+    await sleep(1_500)
+  }
+  ctx.log.warn(`youtube was still redrawing after ${SETTLE_TIMEOUT_MS / 1000}s — continuing anyway`)
+}
+
+/** How long to wait for the tree to stop changing once the navigation is up. */
+const SETTLE_TIMEOUT_MS = 20_000
+
+function countNodes(tree: UiNode): number {
+  let n = 0
+  const walk = (node: UiNode): void => {
+    n += 1
+    for (const child of node.children ?? []) walk(child)
+  }
+  walk(tree)
+  return n
 }
 
 export async function waitForTree(

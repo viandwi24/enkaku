@@ -46,6 +46,12 @@ import searchPlay from './search-play'
  */
 export default definePlugin({
   id: 'youtube',
+  // 0.18.0 — the navigation is not readiness. It draws about a second after
+  // the settle, and a tap sent then does nothing, while the identical tap
+  // twelve seconds after launch opens the screen it names — both measured
+  // directly through the same session (2026-09-08). `relaunch` now waits for
+  // the tree to stop changing as well: two dumps of the same size mean the app
+  // has finished drawing.
   // 0.17.0 — `openSearchField` waited for "a field OR a bar", and the bar also
   // exists on the home screen of an account with no watch history, so the poll
   // returned instantly on HOME and the fallback tapped that card instead of
@@ -75,7 +81,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.17.0',
+  version: '0.18.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
