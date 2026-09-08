@@ -47,19 +47,28 @@ describe('FarmSettingsSchema — the 27-field model (plan 212, plus `capture.tim
   })
 
   /**
-   * Sixteen, not plan 212's fifteen. `capture.timelineFrames` was added on
-   * 2026-09-05 because a job timeline on the `ui-tree` engine held no
-   * screenshots at all and the engine table that decided so is a default,
-   * not a law — the owner asked for the choice. Plan 212 capped this model on
-   * purpose, so the count stays pinned here: the next field is a decision
-   * someone has to make on purpose too, not a drift.
+   * Seventeen, not plan 212's fifteen.
+   *
+   * `capture.timelineFrames` was added on 2026-09-05 because a job timeline on
+   * the `ui-tree` engine held no screenshots at all and the engine table that
+   * decided so is a default, not a law — the owner asked for the choice.
+   *
+   * `storage.uploads` was added on 2026-09-08 (plan 700 D3) to fix data loss,
+   * not to add a knob: uploads and run output shared `storage.artifacts`, so an
+   * operator's own file was deleted at 30 days by a setting whose description
+   * reads "a job produced". Two populations with genuinely different lifetimes
+   * cannot share one policy, and the alternative — silently exempting uploads
+   * — would have left an operator no way to bound them at all.
+   *
+   * Plan 212 capped this model on purpose, so the count stays pinned here: the
+   * next field is a decision someone has to make on purpose too, not a drift.
    */
-  test('every field of the sixteen visible settings carries a description', () => {
+  test('every field of the seventeen visible settings carries a description', () => {
     type JsonNode = { properties?: Record<string, JsonNode>; description?: string }
     const json = z.toJSONSchema(FarmSettingsSchema) as unknown as { properties: Record<string, JsonNode> }
     const visibleSectionKeys = ['general', 'hostDaemon', 'networkScan', 'jobRunner', 'capture', 'storage', 'devices', 'privacy']
     const fields = visibleSectionKeys.flatMap((key) => Object.values(json.properties[key]?.properties ?? {}))
-    expect(fields.length).toBe(16)
+    expect(fields.length).toBe(17)
     for (const field of fields) {
       expect(field.description, JSON.stringify(field)).toBeTruthy()
     }

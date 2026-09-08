@@ -575,6 +575,13 @@
       "when": 1788763966061,
       "tag": "0081_wild_mentor",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "6",
+      "when": 1788842951506,
+      "tag": "0082_gray_karma",
+      "breakpoints": true
     }
   ]
 }

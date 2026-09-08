@@ -45,12 +45,27 @@ function ageRun(db: Db, runId: string, daysAgo: number, status: 'success' | 'fai
   db.update(jobRuns).set({ status, finishedAt: new Date(Date.now() - daysAgo * 86_400_000) }).where(eq(jobRuns.id, runId)).run()
 }
 
-function seedArtifact(db: Db, opts: { id: string; daysAgo: number; sizeBytes: number; runId?: string | null; deviceId?: string | null }) {
+/**
+ * Seeds a RUN artifact by default (plan 700 D3).
+ *
+ * `runId` used to default to null, which — now that uploads are swept by their
+ * own policy — would make every one of these an UPLOAD and exempt it from the
+ * `storage.artifacts` age and quota rules these tests are about. An artifact
+ * with no owner is a real thing (that is exactly what an upload is), so the
+ * owner has to be stated rather than left to a default that silently changes
+ * which population a row belongs to. Pass `runId: null` explicitly to seed an
+ * upload.
+ */
+function seedArtifact(
+  db: Db,
+  opts: { id: string; daysAgo: number; sizeBytes: number; runId?: string | null; deviceId?: string | null; pinned?: boolean },
+) {
   db.insert(artifacts)
     .values({
       id: opts.id,
-      runId: opts.runId ?? null,
+      runId: 'runId' in opts || opts.deviceId ? (opts.runId ?? null) : 'run-seed',
       deviceId: opts.deviceId ?? null,
+      pinned: opts.pinned ?? false,
       kind: 'screenshot',
       label: null,
       path: `${opts.id}.png`,
@@ -270,5 +285,65 @@ describe('a trace directory is removed only for a run that was actually swept', 
     expect(result.tracesDeleted).toBe(1)
     expect(existsSync(oldDir)).toBe(false)
     expect(existsSync(latestDir)).toBe(true)
+  })
+})
+
+/**
+ * Plan 700 D3. Uploads and run output shared one policy, and the sweep took
+ * `storage.artifacts` literally enough to delete an operator's own file at 30
+ * days — while that setting's own description reads "a job produced", which an
+ * upload never was.
+ */
+describe("an operator's upload is not run output, and is not swept with it", () => {
+  test('an upload far past storage.artifacts.maxAgeDays survives, because uploads default to keeping forever', () => {
+    const { db, settings, sweeper } = harness()
+    settings.update({ storage: { artifacts: { maxAgeDays: 30, maxTotalGb: 20 } } })
+    // Both owner columns null — the same rule `GET /api/artifacts?kind=upload` uses.
+    seedArtifact(db, { id: 'upload-old', daysAgo: 400, sizeBytes: 1000, runId: null })
+    seedArtifact(db, { id: 'run-old', daysAgo: 400, sizeBytes: 1000 })
+
+    expect(sweeper.sweepOnce().artifactsDeleted).toBe(1)
+    expect(db.select({ id: artifacts.id }).from(artifacts).all().map((r) => r.id)).toEqual(['upload-old'])
+  })
+
+  test('an operator who sets an upload age gets it — the default is keep-forever, not never-sweep', () => {
+    const { db, settings, sweeper } = harness()
+    settings.update({ storage: { uploads: { maxAgeDays: 7, maxTotalGb: 0 } } })
+    seedArtifact(db, { id: 'upload-old', daysAgo: 30, sizeBytes: 1000, runId: null })
+    seedArtifact(db, { id: 'upload-fresh', daysAgo: 1, sizeBytes: 1000, runId: null })
+
+    expect(sweeper.sweepOnce().artifactsDeleted).toBe(1)
+    expect(db.select({ id: artifacts.id }).from(artifacts).all().map((r) => r.id)).toEqual(['upload-fresh'])
+  })
+
+  test('a quota of 0 is no limit, never a quota of zero bytes', () => {
+    const { db, settings, sweeper } = harness()
+    settings.update({ storage: { uploads: { maxAgeDays: 0, maxTotalGb: 0 } } })
+    seedArtifact(db, { id: 'upload-big', daysAgo: 1, sizeBytes: 5_000_000_000, runId: null })
+
+    expect(sweeper.sweepOnce().artifactsDeleted).toBe(0)
+    expect(db.select({ id: artifacts.id }).from(artifacts).all()).toHaveLength(1)
+  })
+})
+
+describe('a pinned artifact outranks every policy', () => {
+  test('pinned run output survives both the age sweep and the quota sweep', () => {
+    const { db, settings, sweeper } = harness()
+    settings.update({ storage: { artifacts: { maxAgeDays: 1, maxTotalGb: 0.1 } } })
+    seedArtifact(db, { id: 'kept', daysAgo: 400, sizeBytes: 50_000_000, pinned: true })
+    seedArtifact(db, { id: 'swept', daysAgo: 400, sizeBytes: 50_000_000 })
+
+    expect(sweeper.sweepOnce().artifactsDeleted).toBe(1)
+    expect(db.select({ id: artifacts.id }).from(artifacts).all().map((r) => r.id)).toEqual(['kept'])
+  })
+
+  test('a pinned upload survives an upload policy the operator set themselves', () => {
+    const { db, settings, sweeper } = harness()
+    settings.update({ storage: { uploads: { maxAgeDays: 1, maxTotalGb: 0 } } })
+    seedArtifact(db, { id: 'kept', daysAgo: 400, sizeBytes: 10, runId: null, pinned: true })
+    seedArtifact(db, { id: 'swept', daysAgo: 400, sizeBytes: 10, runId: null })
+
+    expect(sweeper.sweepOnce().artifactsDeleted).toBe(1)
+    expect(db.select({ id: artifacts.id }).from(artifacts).all().map((r) => r.id)).toEqual(['kept'])
   })
 })

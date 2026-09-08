@@ -359,6 +359,13 @@ export const ArtifactInfoSchema = z.object({
   path: z.string(),
   sizeBytes: z.number().nullable(),
   createdAt: z.number(),
+  /**
+   * Exempt from every retention sweep (plan 700 D3). `.default(false)` keeps
+   * every producer written before this field validating unchanged, and false
+   * is the honest default: an unpinned file is the normal case, and a reader
+   * that cannot tell must not assume a file is protected.
+   */
+  pinned: z.boolean().default(false),
 })
 export type ArtifactInfo = z.infer<typeof ArtifactInfoSchema>
 

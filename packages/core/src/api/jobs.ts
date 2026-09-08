@@ -265,6 +265,7 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
       path: r.path,
       sizeBytes: r.sizeBytes,
       createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
+      pinned: r.pinned,
     }))
     return typedJson(c, RunArtifactsResponseSchema, { items })
   })
@@ -323,6 +324,7 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
           path: r.path,
           sizeBytes: r.sizeBytes,
           createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
+          pinned: r.pinned,
         }
         // Defence in depth against a stored path escaping app-data, mirroring
         // `api/artifacts.ts`'s `/:id/content` and `api/batches.ts`'s archive:

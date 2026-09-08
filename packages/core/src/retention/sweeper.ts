@@ -201,32 +201,33 @@ export function createRetentionSweeper(deps: {
     return deleted
   }
 
-  /** Age- then quota-based artifact sweep — no longer gated by `enabled` (plan 212). */
+  /**
+   * Age- then quota-based artifact sweep — no longer gated by `enabled` (plan 212).
+   *
+   * TWO populations, two policies (plan 700 D3). Run and device artifacts keep
+   * `storage.artifacts` exactly as before. An operator's UPLOAD — `runId` and
+   * `deviceId` both null, the same rule `GET /api/artifacts?kind=upload` uses —
+   * is swept by `storage.uploads`, which defaults to keeping it forever.
+   *
+   * They shared one policy until now, and it deleted uploads at 30 days while
+   * its own description read "a job produced". A file the operator put there by
+   * hand is not a run's output, and losing it silently is data loss, not
+   * housekeeping.
+   *
+   * A `pinned` row is dropped from BOTH passes before either runs: the pin
+   * outranks every policy, which is the whole point of it.
+   */
   function sweepArtifactQuota(): { deleted: number; bytesFreed: number } {
-    const policy = deps.settings.get().storage.artifacts
-    const rows = deps.db.select().from(artifacts).orderBy(asc(artifacts.createdAt)).all()
-    const cutoff = Date.now() - policy.maxAgeDays * 86_400_000
-    const expired = rows.filter((r) => (r.createdAt?.getTime() ?? 0) < cutoff)
-    let bytesFreed = 0
-    for (const row of expired) {
-      try {
-        rmSync(join(deps.dataDir, row.path), { force: true })
-        bytesFreed += row.sizeBytes ?? 0
-      } catch (err) {
-        deps.log.warn(`failed to delete artifact ${row.path}: ${String(err)}`)
-      }
-    }
-    let deleted = expired.length
-    if (expired.length > 0) deps.db.delete(artifacts).where(inArray(artifacts.id, expired.map((r) => r.id))).run()
+    const storage = deps.settings.get().storage
+    const all = deps.db.select().from(artifacts).orderBy(asc(artifacts.createdAt)).all()
+    // Never a candidate, at any level — see the `pinned` column's own comment.
+    const sweepable = all.filter((r) => !r.pinned)
+    const isUpload = (r: (typeof sweepable)[number]): boolean => r.runId === null && r.deviceId === null
 
-    const remaining = rows.filter((r) => !expired.includes(r))
-    const quotaBytes = policy.maxTotalGb * 1024 ** 3
-    let total = remaining.reduce((sum, r) => sum + (r.sizeBytes ?? 0), 0)
-    const overflow: string[] = []
-    for (const row of remaining) {
-      if (total <= quotaBytes) break
-      overflow.push(row.id)
-      total -= row.sizeBytes ?? 0
+    let deleted = 0
+    let bytesFreed = 0
+
+    const unlink = (row: (typeof sweepable)[number]): void => {
       try {
         rmSync(join(deps.dataDir, row.path), { force: true })
         bytesFreed += row.sizeBytes ?? 0
@@ -234,8 +235,40 @@ export function createRetentionSweeper(deps: {
         deps.log.warn(`failed to delete artifact ${row.path}: ${String(err)}`)
       }
     }
-    if (overflow.length > 0) deps.db.delete(artifacts).where(inArray(artifacts.id, overflow)).run()
-    deleted += overflow.length
+
+    /** One population against one policy. `maxAgeDays`/`maxTotalGb` of 0 mean "no limit", never "delete everything". */
+    const sweep = (rows: typeof sweepable, policy: { maxAgeDays: number; maxTotalGb: number }): void => {
+      const expired =
+        policy.maxAgeDays > 0
+          ? rows.filter((r) => (r.createdAt?.getTime() ?? 0) < Date.now() - policy.maxAgeDays * 86_400_000)
+          : []
+      for (const row of expired) unlink(row)
+      if (expired.length > 0) {
+        deps.db.delete(artifacts).where(inArray(artifacts.id, expired.map((r) => r.id))).run()
+        deleted += expired.length
+      }
+
+      if (policy.maxTotalGb <= 0) return
+      const expiredIds = new Set(expired.map((r) => r.id))
+      const remaining = rows.filter((r) => !expiredIds.has(r.id))
+      const quotaBytes = policy.maxTotalGb * 1024 ** 3
+      let total = remaining.reduce((sum, r) => sum + (r.sizeBytes ?? 0), 0)
+      const overflow: string[] = []
+      for (const row of remaining) {
+        if (total <= quotaBytes) break
+        overflow.push(row.id)
+        total -= row.sizeBytes ?? 0
+        unlink(row)
+      }
+      if (overflow.length > 0) {
+        deps.db.delete(artifacts).where(inArray(artifacts.id, overflow)).run()
+        deleted += overflow.length
+      }
+    }
+
+    sweep(sweepable.filter((r) => !isUpload(r)), storage.artifacts)
+    sweep(sweepable.filter(isUpload), storage.uploads)
+
     return { deleted, bytesFreed }
   }
 

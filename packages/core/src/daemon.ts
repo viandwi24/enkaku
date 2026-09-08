@@ -2435,6 +2435,9 @@ let blobGc: BlobGc | null = null
             path: saved.path,
             sizeBytes: saved.sizeBytes,
             createdAt: Math.floor(Date.now() / 1000),
+            // Run output from a node-owned device — same population, same
+            // policy, as the local runner's own artifacts (plan 700 D3).
+            pinned: false,
           }
         },
       })
