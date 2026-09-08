@@ -766,7 +766,7 @@ describe('createDeviceExecutor — push (plan 90 §4.6): the mediaScan result re
       install: async () => ({ package: null, durationMs: 0, output: '' }),
       push: async (deviceId, opts) => {
         calls.push({ deviceId, opts })
-        return { mediaScan: { ran: true, method: 'scan_file', ms: 5 } }
+        return { mediaScan: { ran: true, method: 'scan_file', ms: 5, mediaId: null } }
       },
       pull: async () => ({ artifactId: 'a', bytes: 0 }),
       ...impl,
@@ -778,7 +778,7 @@ describe('createDeviceExecutor — push (plan 90 §4.6): the mediaScan result re
     const { transfer } = fakeTransfer()
     const execute = createDeviceExecutor({ session: fakeSession(async () => ''), transfer })
     const result = await execute(call('push', { artifactId: 'art1', remotePath: '/sdcard/Pictures/x.jpg', mediaScan: 'auto' }))
-    expect(result).toEqual({ mediaScan: { ran: true, method: 'scan_file', ms: 5 } })
+    expect(result).toEqual({ mediaScan: { ran: true, method: 'scan_file', ms: 5, mediaId: null } })
   })
 
   test('mediaScan is forwarded to the TransferPort exactly as the script set it', async () => {

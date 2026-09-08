@@ -168,7 +168,7 @@ describe('artifact.save -> artifact.result (plan 115 §3.6, criterion 7 — the 
     const pushCalls: Array<Parameters<DeviceApi['push']>[0]> = []
     const push: DeviceApi['push'] = async (opts) => {
       pushCalls.push(opts)
-      return { mediaScan: { ran: false, method: null, ms: 0 } }
+      return { mediaScan: { ran: false, method: null, ms: 0, mediaId: null } }
     }
     await push({ artifactId: resolved.artifactId, remotePath: '/sdcard/Movies/post-video-folder.mp4' })
     expect(pushCalls).toHaveLength(1)

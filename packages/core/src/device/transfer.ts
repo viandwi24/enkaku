@@ -13,11 +13,20 @@ import {
   type ShellResult,
 } from '@enkaku/adb'
 import { grantRuntimePermissions, isGrantAllPermissionsRejection } from '@enkaku/drivers'
-import type { InstallResult, MediaScanMode, MediaScanResult, PushResult } from '@enkaku/protocol'
+import type {
+  DeviceMediaKind,
+  DeviceMediaListArgs,
+  DeviceMediaListResult,
+  InstallResult,
+  MediaScanMode,
+  MediaScanResult,
+  PushResult,
+} from '@enkaku/protocol'
 import type { Db } from '../db'
 import { artifacts, devices } from '../db/schema'
 import { devicePullArtifactPath, registerDeviceArtifact } from '../runner/artifact-store'
 import { EnkakuError } from '../util/errors'
+import { findMediaIdForPath, queryDeviceMedia, type MediaQueryBackend } from './media-query'
 import { validateRemotePath } from './path-validate'
 
 /**
@@ -107,6 +116,13 @@ export interface TransferService {
   installFromLocalApk(deviceId: string, absPath: string, opts: InstallOpts & TransferOpts): Promise<InstallResult>
   /** Idempotent — cancelling an unknown or already-finished transferId is a no-op. */
   cancel(transferId: string): void
+  /**
+   * What MediaStore holds on the device, newest first — the READ counterpart
+   * to `push`'s `mediaScan`. Lives on this port because MediaStore is a view
+   * of the same on-device files push and pull already move; it moves no bytes
+   * and takes no `transferId`, so it never enters the transfer registry.
+   */
+  listMedia(deviceId: string, args: DeviceMediaListArgs): Promise<DeviceMediaListResult>
 }
 
 export interface TransferServiceDeps {
@@ -237,16 +253,28 @@ async function runMediaScan(backend: Backend, remotePath: string): Promise<Media
   const attempt = (cmd: string): Promise<ShellResult | null> =>
     backend.adb.exec(backend.serial, cmd, { profile: 'appLifecycle' }).catch(() => null)
 
+  /**
+   * The `_id` MediaStore now holds for this exact path. Never allowed to fail
+   * the scan it annotates: the scan itself already succeeded, and a lookup
+   * that could not answer is reported as `mediaId: null` — "unknown" — rather
+   * than downgrading a scan that genuinely ran.
+   */
+  const lookupId = async (): Promise<string | null> => {
+    const kind = mediaKindForPath(remotePath)
+    if (kind === null) return null
+    return findMediaIdForPath(mediaQueryBackend(backend), kind, remotePath).catch(() => null)
+  }
+
   const scanFileCmd = `content call --uri content://media --method scan_file --arg ${shellQuote(remotePath)}`
   const scanFile = await attempt(scanFileCmd)
   if (scanFile && scanFile.exitCode === 0) {
-    return { ran: true, method: 'scan_file', ms: Date.now() - startedAt }
+    return { ran: true, method: 'scan_file', ms: Date.now() - startedAt, mediaId: await lookupId() }
   }
 
   const scanVolumeCmd = 'content call --uri content://media --method scan_volume --arg external_primary'
   const scanVolume = await attempt(scanVolumeCmd)
   if (scanVolume && scanVolume.exitCode === 0) {
-    return { ran: true, method: 'scan_volume', ms: Date.now() - startedAt }
+    return { ran: true, method: 'scan_volume', ms: Date.now() - startedAt, mediaId: await lookupId() }
   }
 
   // Both failed — degrade visibly rather than silently claiming success.
@@ -255,7 +283,37 @@ async function runMediaScan(backend: Backend, remotePath: string): Promise<Media
   const parts: string[] = []
   parts.push(scanFile ? `scan_file exited ${scanFile.exitCode ?? 'unknown'}` : 'scan_file threw')
   parts.push(scanVolume ? `scan_volume exited ${scanVolume.exitCode ?? 'unknown'}` : 'scan_volume threw')
-  return { ran: false, method: null, ms: Date.now() - startedAt, error: parts.join('; ') }
+  return { ran: false, method: null, ms: Date.now() - startedAt, error: parts.join('; '), mediaId: null }
+}
+
+/**
+ * MediaStore keeps three separate volumes, so reading a row back means knowing
+ * which one to ask. Decided from the file EXTENSION, which is the only thing
+ * known host-side without another round trip — and the extension is what
+ * `post-video.ts` already preserves precisely so a container and its name
+ * agree.
+ *
+ * Null for anything not obviously media (an APK, a log, a `.bin`): no volume
+ * would hold it, and asking anyway would cost a shell round trip to learn
+ * nothing. A caller reads null as "not a media file", never as a failure.
+ */
+function mediaKindForPath(remotePath: string): DeviceMediaKind | null {
+  const ext = remotePath.split('/').pop()?.split('.').pop()?.toLowerCase() ?? ''
+  if (['mp4', 'mov', 'm4v', 'webm', 'mkv', '3gp', 'avi'].includes(ext)) return 'video'
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'bmp'].includes(ext)) return 'image'
+  if (['mp3', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'opus'].includes(ext)) return 'audio'
+  return null
+}
+
+/** Adapts the adb backend to `media-query.ts`'s narrow port — one `exec`, never throwing. */
+function mediaQueryBackend(backend: Backend): MediaQueryBackend {
+  return {
+    exec: (cmd) =>
+      backend.adb
+        .exec(backend.serial, cmd, { profile: 'appLifecycle' })
+        .then((r) => ({ exitCode: r.exitCode, stdout: r.stdout }))
+        .catch(() => null),
+  }
 }
 
 interface LocalApk {
@@ -377,6 +435,12 @@ export function createTransferService(deps: TransferServiceDeps): TransferServic
       controllers.get(transferId)?.abort()
     },
 
+    listMedia(deviceId, args) {
+      // No `begin`/`end`: this is a shell read, not a byte transfer, so it
+      // must never appear in `GET /api/transfers` beside a running push.
+      return queryDeviceMedia(mediaQueryBackend(resolveBackend(deps, deviceId)), args)
+    },
+
     async push(deviceId, artifactId, remotePath, opts) {
       const path = validateRemotePath(remotePath)
       const artifact = await resolveArtifact(deps, artifactId)
@@ -405,7 +469,7 @@ export function createTransferService(deps: TransferServiceDeps): TransferServic
         // the device by this point regardless of what happens next.
         const mode = opts.mediaScan ?? 'auto'
         const shouldScan = mode === 'always' || (mode === 'auto' && isMediaPath(path))
-        const mediaScan: MediaScanResult = shouldScan ? await runMediaScan(backend, path) : { ran: false, method: null, ms: 0 }
+        const mediaScan: MediaScanResult = shouldScan ? await runMediaScan(backend, path) : { ran: false, method: null, ms: 0, mediaId: null }
         return { mediaScan }
       } finally {
         end(opts.transferId)

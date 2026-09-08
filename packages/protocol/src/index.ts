@@ -268,6 +268,16 @@ export {
   type DevicePreparation,
 } from './device-preparation'
 export {
+  DeviceMediaKindSchema,
+  DeviceMediaItemSchema,
+  DeviceMediaListArgsSchema,
+  DeviceMediaListResultSchema,
+  type DeviceMediaKind,
+  type DeviceMediaItem,
+  type DeviceMediaListArgs,
+  type DeviceMediaListResult,
+} from './device-media'
+export {
   ReadinessSchema,
   ReadinessBlockedReasonSchema,
   DeviceReadinessSchema,
