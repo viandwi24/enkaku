@@ -662,6 +662,32 @@ here has still met a phone. Four defects found by reading, in a diff whose tests
 and gates were all green, is the argument for §12.5's owner smoke rather than
 against it.
 
+### 12.7 A CI flake this plan did not cause and did not fix
+
+`packages/core/src/agent/tree.integration.test.ts` — "two detached children
+keep running until the parent hits its own wall-clock budget, then both are
+cancelled" — went red on this branch's `check` job at 15 098 ms on 2026-09-08,
+on a commit whose diff touches no file under `packages/core/src/agent/` or
+`packages/harness/`. The file passes locally in 5.8 s.
+
+It is worth recording here because it is the **third** recurrence, and the
+test carries its own history: the inner waits went 4 s → 6 s → 15 s, each time
+after a CI failure, each time by raising a number. The test drives a real wall
+clock (`maxRunSeconds: 1`, crossed by a deliberate 1.2 s call) and then waits
+for that deadline to be *noticed* at the agent loop's next iteration, competing
+with 400 other test files for CPU.
+
+Not fixed here, deliberately. A fourth bump would be the same patch that
+already failed twice, applied by a warm-up plan to a subsystem it does not
+touch. The durable fix removes the dependency on real time — an injectable
+clock in the agent runner, or a budget that does not need a real 1.2 s to cross
+— and belongs in its own plan with its own review.
+
+Two facts for whoever picks it up: this token cannot re-run a failed job
+(`403 Resource not accessible by integration`), so a flake here blocks an
+otherwise-green PR until a human intervenes; and the failure is a `waitUntil`
+budget, never an assertion, so it says nothing about the behaviour under test.
+
 ### 12.4 Verification
 
 | Suite | Result |
