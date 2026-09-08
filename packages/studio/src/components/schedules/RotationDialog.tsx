@@ -82,7 +82,13 @@ export function RotationDialog({ open, onOpenChange, onCreated }: { open: boolea
   const slotCandidates = useMemo(() => (chosen?.doc.params ?? []).filter((p) => p.type === 'integer' || p.type === 'number'), [chosen])
 
   useEffect(() => {
-    if (slotCandidates.length === 0) return setSlotParam('')
+    // An early `return setSlotParam('')` would hand React a value where it
+    // looks for a cleanup function. It happens to be `undefined` and works —
+    // which is exactly why it is worth not writing.
+    if (slotCandidates.length === 0) {
+      setSlotParam('')
+      return
+    }
     const preferred = slotCandidates.find((p) => p.name === 'slot') ?? slotCandidates[0]
     setSlotParam(preferred?.name ?? '')
   }, [slotCandidates])

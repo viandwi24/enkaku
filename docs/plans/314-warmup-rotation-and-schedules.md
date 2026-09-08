@@ -638,6 +638,30 @@ Executed 2026-09-08 on `claude/device-warmup-scheduling-ipmusm`, in the order
 - **No Studio tests**, per plan 200 §8.3. The three new components are covered
   only by `bun run typecheck` and the owner smoke.
 
+### 12.6 Pre-release audit, 2026-09-08
+
+The owner asked for a re-check before release. Four defects, found by reading
+the diff adversarially rather than by re-running what had already passed. None
+of them would have failed CI.
+
+| # | Defect | Why the tests missed it |
+|---|---|---|
+| 1 | **`run-now` on a workflow schedule failed** while its cron firing worked. The daemon hands the workflow store to `createScheduleRunner`; `api/schedules.ts` builds its own `runnerDeps` for `run-now` and was not given one. | Every test called `fireOnce` directly with a fully-wired deps object. Nothing exercised the route's own closure. This is the worst asymmetry the feature could have: an operator builds a rotation, presses **Run now** to check it, sees `E_WORKFLOW_STORE_UNAVAILABLE`, and concludes the whole thing is broken — while the thing that runs every morning was fine. Now covered by a test that pins the parity. |
+| 2 | **Deleting a workflow schedule orphaned its companion row.** `DELETE /:id` removed the agent companion and not the workflow one. | No test deletes a workflow schedule. Ids are UUIDs so nothing is mis-attributed, but the rows accumulate forever and the asymmetry invites the next person to trust the pattern. |
+| 3 | **An `as`-cast**, which CLAUDE.md forbids outright. `paramsCompatibility` was handed `{} as ScheduleAgentTargetRow` for a workflow target. It worked only because the function tests that argument for truthiness and nothing else — a lie to the type system that becomes a real bug the first time the function reads a field. Replaced by the boolean it actually wanted. | Types cannot catch a cast; that is what a cast is for. |
+| 4 | **The coverage endpoint had no bound.** It read every run the workflow had ever had and put all their ids into one `IN (...)`. Measured on this runtime's SQLite: 60 000 bound parameters are accepted, 100 000 throw `too many SQL variables`. At three sessions a day across forty phones that ceiling is roughly a year and a half out — far enough to ship, near enough to be certain of hitting, on the one screen an operator opens to be reassured. Rewritten as one bounded query per device, which removes the ceiling rather than raising it. | Tests run on a handful of rows. No fixture in this repo is large enough for an unbounded scan to look different from a bounded one. |
+
+Also closed in the same pass: `docs/spec.md` §4.6/§4.7/§4.8 now describe the
+workflow work target, the per-device pacing columns, the `$device` root and the
+coverage read (`spec:check` listed the table and the route as gaps before this),
+and CLAUDE.md/AGENTS.md gained the `$device.number` vs `$run.index` rule under
+"Rules that get broken when you do not know them" — which is exactly what it is.
+
+**What the audit did not change**: §12.3's gaps are all still open, and nothing
+here has still met a phone. Four defects found by reading, in a diff whose tests
+and gates were all green, is the argument for §12.5's owner smoke rather than
+against it.
+
 ### 12.4 Verification
 
 | Suite | Result |

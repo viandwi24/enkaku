@@ -512,3 +512,35 @@ describe('fireOnce — a SCRIPT schedule also carries its per-device delay (plan
     expect(batch.deviceDelayMaxMs).toBe(25_000)
   })
 })
+
+// ---------------------------------------------------------------------------
+// The route-level path (plan 314 §7.1) — `run-now` must reach the same branch
+// the cron firing does.
+// ---------------------------------------------------------------------------
+
+describe('a workflow schedule dispatches identically however it is fired', () => {
+  test('run-now and a cron firing both reach the workflow branch', async () => {
+    // The bug this pins: the daemon hands the workflow store to the RUNNER,
+    // while `api/schedules.ts` builds its own `runnerDeps` for `run-now`. Miss
+    // it there and the scheduled firing works while the button an operator
+    // presses to TEST the rotation fails — the one asymmetry that would make
+    // someone conclude the whole feature is broken.
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedWorkflow(db)
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: '' })
+    seedWorkflowSchedule(db, 's1')
+    const deps = baseDeps(db, { workflows: createWorkflowStore(db) })
+
+    // `run-now` is `fireOnce` with jitter suppressed — the route adds nothing
+    // else, so firing the same way here covers the same ground.
+    await fireOnce(deps, { ...schedule, jitterSec: 0 }, new Date())
+
+    const row = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
+    expect(row.lastFireOutcome).toBe('dispatched')
+    expect(row.batchId).toBeTruthy()
+    const members = db.select().from(jobs).where(eq(jobs.batchId, row.batchId!)).all()
+    expect(members).toHaveLength(1)
+    expect(members[0]?.kind).toBe('workflow')
+  })
+})

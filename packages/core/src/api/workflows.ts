@@ -754,44 +754,56 @@ export function createWorkflowRoutes(deps: {
     const allEdges = cases.map((cs) => cs.edge)
     const window = Math.min(Math.max(Number(c.req.query('window') ?? allEdges.length) || allEdges.length, 1), 100)
 
-    // Two statements, not a three-table join: the second is an `inArray` over
-    // the first's ids, which is the same shape `/:name/runs` already uses to
-    // avoid one round trip per run.
-    const runRows = deps.db
-      .select({ runId: jobRuns.id, deviceId: jobs.deviceId, createdAt: jobRuns.createdAt })
+    /*
+     * One query for the devices, then one bounded query PER DEVICE — rather
+     * than reading every run this workflow has ever had and filtering in
+     * memory.
+     *
+     * The obvious shape (select all runs, then `inArray` their ids) is what
+     * `/:name/runs` uses, and it is safe THERE because that route caps its
+     * limit at 100. Here there is no natural limit: the report is about a
+     * warm-up that runs several times a day forever, so the id list grows
+     * without bound and eventually becomes the query itself. Measured on this
+     * runtime's SQLite: 60 000 bound parameters are accepted, 100 000 are not
+     * ("too many SQL variables"). At three sessions a day across forty phones
+     * that ceiling is roughly a year and a half away — far enough to ship and
+     * near enough to be certain of hitting, on the one screen an operator
+     * opens specifically to be reassured.
+     *
+     * Looping over devices removes the ceiling instead of raising it. The
+     * loop is bounded by the size of the FARM, which is tens, and each query
+     * returns at most `window` rows on an indexed lookup. No cap, no constant
+     * to tune, and the answer stays exact however long the history grows.
+     */
+    const deviceIds = deps.db
+      .selectDistinct({ deviceId: jobs.deviceId })
       .from(jobRuns)
       .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
       .where(and(eq(jobs.workflowName, name), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
-      .orderBy(desc(jobRuns.createdAt))
       .all()
+      .map((r) => r.deviceId)
+      .filter((id): id is string => id !== null)
 
-    const runIds = runRows.map((r) => r.runId)
-    const stepRows =
-      runIds.length === 0
-        ? []
-        : deps.db
-            .select({ runId: workflowSteps.runId, takenEdge: workflowSteps.takenEdge })
-            .from(workflowSteps)
-            .where(and(inArray(workflowSteps.runId, runIds), eq(workflowSteps.stepId, node.id)))
-            .all()
-    const edgeOf = new Map(stepRows.map((r) => [r.runId, r.takenEdge]))
-
-    // Newest-first per device, capped at the window. A run in which this node
-    // never ran — the device was offline, or a gate sent the cursor elsewhere
-    // — contributes NO edge but still counts as a run, which is what makes
-    // "3 runs, 2 platforms" readable as the problem it is.
+    // A run in which this node never ran — the device was offline, or a gate
+    // sent the cursor elsewhere — contributes NO edge but still counts as a
+    // run, which is what makes "3 runs, 2 platforms" readable as the problem
+    // it is. That is why the join is LEFT and the edge may be null.
     const perDevice = new Map<string, { covered: Set<string>; runs: number }>()
-    for (const r of runRows) {
-      if (!r.deviceId) continue
-      const acc = perDevice.get(r.deviceId) ?? { covered: new Set<string>(), runs: 0 }
-      if (acc.runs >= window) continue
-      acc.runs += 1
-      const edge = edgeOf.get(r.runId)
-      if (edge && allEdges.includes(edge)) acc.covered.add(edge)
-      perDevice.set(r.deviceId, acc)
+    for (const deviceId of deviceIds) {
+      const rows = deps.db
+        .select({ takenEdge: workflowSteps.takenEdge })
+        .from(jobRuns)
+        .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+        .leftJoin(workflowSteps, and(eq(workflowSteps.runId, jobRuns.id), eq(workflowSteps.stepId, node.id)))
+        .where(and(eq(jobs.workflowName, name), eq(jobs.deviceId, deviceId), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
+        .orderBy(desc(jobRuns.createdAt))
+        .limit(window)
+        .all()
+      const covered = new Set<string>()
+      for (const r of rows) if (r.takenEdge && allEdges.includes(r.takenEdge)) covered.add(r.takenEdge)
+      perDevice.set(deviceId, { covered, runs: rows.length })
     }
 
-    const deviceIds = [...perDevice.keys()]
     const deviceRows = deviceIds.length === 0 ? [] : deps.db.select({ id: devices.id, label: devices.label, stableId: devices.stableId }).from(devices).where(inArray(devices.id, deviceIds)).all()
     const numberRows = deviceIds.length === 0 ? [] : deps.db.select({ stableId: deviceNumbers.stableId, number: deviceNumbers.number }).from(deviceNumbers).all()
     const numberOf = new Map(numberRows.map((n) => [n.stableId, n.number]))

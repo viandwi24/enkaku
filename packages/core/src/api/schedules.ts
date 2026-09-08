@@ -185,13 +185,25 @@ function tryResolve(db: Db, scriptRef: string, registry?: ScriptRegistry): Resol
  * badge would answer a different question than the one it asks ("are the
  * stored PARAMETERS still valid") with a misleading yes/no.
  */
+/**
+ * `paramsCompatible` answers one question: does `schedules.scriptRef` still
+ * accept `schedules.params`?
+ *
+ * It takes the FACT it needs — "this schedule has no script reference to
+ * reconcile" — rather than a companion row it only ever tested for
+ * truthiness. Plan 314 briefly passed `{} as ScheduleAgentTargetRow` here for
+ * a workflow target: it worked, and it was a lie to the type system that
+ * would have become a real bug the first time this function read a field off
+ * that argument. `as`-casts are forbidden in this repo for exactly that
+ * reason (CLAUDE.md), and a boolean says what is meant.
+ */
 function paramsCompatibility(
   db: Db,
   row: ScheduleRow,
-  agentTarget: ScheduleAgentTargetRow | null,
+  nonScriptTarget: boolean,
   registry?: ScriptRegistry,
 ): { paramsCompatible: boolean; paramsFindingCount: number } {
-  if (agentTarget) return { paramsCompatible: true, paramsFindingCount: 0 }
+  if (nonScriptTarget) return { paramsCompatible: true, paramsFindingCount: 0 }
   const entry = tryResolveEntry(db, row.scriptRef, registry)
   if (!entry) return { paramsCompatible: true, paramsFindingCount: 0 }
   const { findings, blocking } = reconcileParams(entry.paramsSchema as JsonSchemaNode | null, row.params)
@@ -309,7 +321,7 @@ function rowToScheduleInfo(
   // A workflow target has no script reference to reconcile against, exactly
   // as an agent one has none — its params are checked at dispatch against the
   // document's own declared params instead.
-  const { paramsCompatible, paramsFindingCount } = paramsCompatibility(deps.db, row, agentTarget ?? (workflowTarget ? ({} as ScheduleAgentTargetRow) : null), deps.scriptRegistry)
+  const { paramsCompatible, paramsFindingCount } = paramsCompatibility(deps.db, row, agentTarget !== null || workflowTarget !== null, deps.scriptRegistry)
   return {
     id: row.id,
     name: row.name,
@@ -387,6 +399,19 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     // `transferEnabled` still bind, so a farm-wide switch is still honoured
     // either way.
     validateScript: (scriptId, params) => validateScriptForRun(deps, scriptId, params),
+    /*
+     * Plan 314 §7.1 — WITHOUT this, `run-now` on a workflow schedule fails
+     * with `E_WORKFLOW_STORE_UNAVAILABLE` while its cron firing works, because
+     * the daemon passes the store to `createScheduleRunner` and this closure
+     * is built separately.
+     *
+     * That asymmetry is the worst shape a bug can take here: an operator
+     * builds a rotation, presses Run now to check it, sees it fail, and
+     * concludes the feature is broken — when the thing that actually runs
+     * every morning was fine all along. Both paths funnel through `fireOnce`,
+     * so both must be handed the same dependencies.
+     */
+    ...(deps.workflows ? { workflows: deps.workflows } : {}),
     ...(deps.agentDispatch ? { agentDispatch: deps.agentDispatch } : {}),
     ...(deps.scheduledAgentCeilings ? { scheduledAgentCeilings: deps.scheduledAgentCeilings } : {}),
     ...(deps.notifySystem ? { notifySystem: deps.notifySystem } : {}),
@@ -714,6 +739,12 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
   app.delete('/:id', requirePermission('job.run'), (c) => {
     const row = mustGet(c.req.param('id'))
     db.delete(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, row.id)).run()
+    // The workflow companion row goes with it, exactly as the agent one does
+    // (plan 314 §7.1). Neither table has a foreign key — this schema cleans up
+    // in the same transaction as the delete rather than relying on the
+    // database, the way `deleteDeviceLabels` already does — so a row missed
+    // here is simply never collected.
+    db.delete(scheduleWorkflowTargets).where(eq(scheduleWorkflowTargets.scheduleId, row.id)).run()
     db.delete(schedules).where(eq(schedules.id, row.id)).run()
     deps.runner.reload()
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'schedule.delete', target: row.id, meta: { name: row.name } })
