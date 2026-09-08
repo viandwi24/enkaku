@@ -1,4 +1,4 @@
-# Plan 700 — Files and media: the program — what already exists, the four decisions, the waves
+# Plan 800 — Files and media: the program — what already exists, the four decisions, the waves
 
 > Status: draft
 > Ships: none — a program document creates no artefact of its own.
@@ -126,11 +126,11 @@ difference shown first.
 | Wave | Plan | What lands | State |
 |---|---|---|---|
 | 1 | — (landed with this document) | Read MediaStore: `TransferService.listMedia`, `MediaScanResult.mediaId`, the `content query` parser and its tests | **implemented** |
-| 2 | 702 | Retention: `pinned` on artifacts, uploads pinned by default, workspace age policy, the three override levels (D3) | next |
-| 3 | 703 | `device.fs.*` — list/stat/move/delete/mkdir on the phone, plus SDK and capability surface (D1) | |
-| 4 | 704 | Media metadata: mime, dimensions, duration, thumbnails on both stores | |
-| 5 | 705 | Studio `/files` — the gallery grid, filters, rename, and the gallery mode of the picker (D2) | |
-| 6 | 706 | The device file/media browser in Device Control, and the difference view (D4) | |
+| 2 | 802 | Retention: `pinned` on artifacts, uploads pinned by default, workspace age policy, the three override levels (D3) | next |
+| 3 | 803 | `device.fs.*` — list/stat/move/delete/mkdir on the phone, plus SDK and capability surface (D1) | |
+| 4 | 804 | Media metadata: mime, dimensions, duration, thumbnails on both stores | |
+| 5 | 805 | Studio `/files` — the gallery grid, filters, rename, and the gallery mode of the picker (D2) | |
+| 6 | 806 | The device file/media browser in Device Control, and the difference view (D4) | |
 
 Wave 1 carries no plan number of its own: it is the one piece that had to exist
 before the programme could be written at all — without a readable MediaStore,

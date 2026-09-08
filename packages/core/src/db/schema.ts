@@ -962,7 +962,7 @@ export const artifacts = sqliteTable(
     sizeBytes: integer('size_bytes'),
     createdAt: integer('created_at', { mode: 'timestamp' }),
     /**
-     * Exempt from EVERY sweep, at every level (plan 700 D3) — the per-file
+     * Exempt from EVERY sweep, at every level (plan 800 D3) — the per-file
      * escape hatch, and the only one that outranks a policy. A script pins what
      * it means to keep (`ctx.artifact.file(..., { pin: true })`); an operator
      * pins from the files screen.

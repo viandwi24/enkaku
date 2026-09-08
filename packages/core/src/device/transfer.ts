@@ -140,7 +140,7 @@ export interface TransferService {
    */
   listMedia(deviceId: string, args: DeviceMediaListArgs): Promise<DeviceMediaListResult>
   /**
-   * The device file manager (plan 700 D1) — browse and manage files ON the
+   * The device file manager (plan 800 D1) — browse and manage files ON the
    * phone, the half `push`/`pull` never had. Like `listMedia`, these move no
    * bytes and take no `transferId`, so none of them enters the transfer
    * registry.

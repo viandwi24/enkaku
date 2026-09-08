@@ -53,7 +53,7 @@ describe('FarmSettingsSchema — the 27-field model (plan 212, plus `capture.tim
    * the `ui-tree` engine held no screenshots at all and the engine table that
    * decided so is a default, not a law — the owner asked for the choice.
    *
-   * `storage.uploads` was added on 2026-09-08 (plan 700 D3) to fix data loss,
+   * `storage.uploads` was added on 2026-09-08 (plan 800 D3) to fix data loss,
    * not to add a knob: uploads and run output shared `storage.artifacts`, so an
    * operator's own file was deleted at 30 days by a setting whose description
    * reads "a job produced". Two populations with genuinely different lifetimes

@@ -1,7 +1,7 @@
 import { EnkakuError } from '../util/errors'
 
 /**
- * Path rules for the DEVICE file manager (plan 700 D1) — deliberately NOT
+ * Path rules for the DEVICE file manager (plan 800 D1) — deliberately NOT
  * `validateRemotePath` (`./path-validate.ts`), and the difference is the point.
  *
  * That validator restricts a path to `[A-Za-z0-9_.-/]`, which is right for

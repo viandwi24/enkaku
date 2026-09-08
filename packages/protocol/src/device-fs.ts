@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 /**
- * Browsing and managing files ON THE PHONE (plan 700 D1) — the half `push`
+ * Browsing and managing files ON THE PHONE (plan 800 D1) — the half `push`
  * and `pull` never had. Those two move bytes between the farm and a device;
  * nothing could list a directory, rename a file, or delete one.
  *

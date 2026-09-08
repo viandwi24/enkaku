@@ -74,7 +74,7 @@ export function createArtifactStore(deps: {
         sizeBytes: size,
         createdAt: Math.floor(Date.now() / 1000),
         // Run output, swept by `storage.artifacts` — the pin is for a file an
-        // operator or a script deliberately keeps (plan 700 D3), never a default.
+        // operator or a script deliberately keeps (plan 800 D3), never a default.
         pinned: false,
       }
       deps.db

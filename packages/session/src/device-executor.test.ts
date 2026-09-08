@@ -769,6 +769,12 @@ describe('createDeviceExecutor — push (plan 90 §4.6): the mediaScan result re
         return { mediaScan: { ran: true, method: 'scan_file', ms: 5, mediaId: null } }
       },
       pull: async () => ({ artifactId: 'a', bytes: 0 }),
+      listMedia: async () => ({ items: [], truncated: false }),
+      fsList: async () => ({ entries: [], truncated: false }),
+      fsStat: async () => ({ entry: null }),
+      fsMove: async () => ({ ok: true, path: '/sdcard/b' }),
+      fsDelete: async () => ({ ok: true, path: '/sdcard/a' }),
+      fsMkdir: async () => ({ ok: true, path: '/sdcard/a' }),
       ...impl,
     }
     return { transfer, calls }

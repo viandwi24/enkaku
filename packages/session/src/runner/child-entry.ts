@@ -8,7 +8,18 @@
  * parent. This is crash containment (spec §11.3) — NOT a security sandbox:
  * the bundle has full fs and network access as the core's OS user.
  */
-import { DANGEROUS_FIELD_NAMES, FindOutcomeSchema, RESULT_LIMITS, type ResultOutcome, type RuntimeEnvelope } from '@enkaku/protocol'
+import {
+  DANGEROUS_FIELD_NAMES,
+  FindOutcomeSchema,
+  RESULT_LIMITS,
+  type DeviceFsListResult,
+  type DeviceFsOkResult,
+  type DeviceFsStatResult,
+  type DeviceMediaKind,
+  type DeviceMediaListResult,
+  type ResultOutcome,
+  type RuntimeEnvelope,
+} from '@enkaku/protocol'
 import { ChildToParentSchema, ParentToChildSchema, type ChildToParent, type JobsCall, type KvCall, type ParentToChild } from './ipc'
 import { createJobsApiFor } from './jobs-client'
 import { createChildPluginContext } from '../plugin-context'
@@ -206,12 +217,34 @@ const deviceApi = {
   install: (opts: { artifactId: string; reinstall?: boolean; grantPermissions?: boolean; allowDowngrade?: boolean }) =>
     request<{ package: string | null; durationMs: number; output: string }>({ method: 'install', args: opts } as never),
   push: (opts: { artifactId: string; remotePath: string; mediaScan?: 'auto' | 'always' | 'never' }) =>
-    request<{ mediaScan: { ran: boolean; method: 'scan_file' | 'scan_volume' | null; ms: number; error?: string } }>({
+    request<{
+      mediaScan: { ran: boolean; method: 'scan_file' | 'scan_volume' | null; ms: number; error?: string; mediaId: string | null }
+    }>({
       method: 'push',
       args: opts,
     } as never),
   pull: (opts: { remotePath: string }) =>
     request<{ artifactId: string; bytes: number }>({ method: 'pull', args: opts } as never),
+  // Plan 700 — what the phone's gallery holds, and what is on its filesystem.
+  // Grouped under `media`/`fs` rather than flattened so a reader can tell at a
+  // glance which questions are about MediaStore and which are about disk;
+  // the two disagree more often than anyone expects (a file that exists but was
+  // never scanned is invisible to every gallery app).
+  media: {
+    list: (opts?: { kind?: DeviceMediaKind; limit?: number; underPath?: string }) =>
+      request<DeviceMediaListResult>({ method: 'media.list', args: opts ?? {} } as never),
+  },
+  fs: {
+    list: (opts: { path: string; limit?: number }) =>
+      request<DeviceFsListResult>({ method: 'fs.list', args: opts } as never),
+    stat: (opts: { path: string }) => request<DeviceFsStatResult>({ method: 'fs.stat', args: opts } as never),
+    move: (opts: { from: string; to: string; overwrite?: boolean }) =>
+      request<DeviceFsOkResult>({ method: 'fs.move', args: opts } as never),
+    delete: (opts: { path: string; recursive?: boolean }) =>
+      request<DeviceFsOkResult>({ method: 'fs.delete', args: opts } as never),
+    mkdir: (opts: { path: string; parents?: boolean }) =>
+      request<DeviceFsOkResult>({ method: 'fs.mkdir', args: opts } as never),
+  },
 }
 
 const artifactApi = {

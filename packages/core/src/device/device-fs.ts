@@ -10,7 +10,7 @@ import { EnkakuError } from '../util/errors'
 import { validateDevicePath, validateWritableDevicePath } from './fs-path'
 
 /**
- * The device file manager's shell layer (plan 700 D1), built the same way
+ * The device file manager's shell layer (plan 800 D1), built the same way
  * `media-query.ts` is: a pure parser over command output, and a thin transport
  * around it holding no parsing logic at all.
  *
