@@ -142,6 +142,18 @@ export type AuditAction =
   // now), which is not a schedule malfunction and is not audited.
   | 'schedule.failed'
   | 'artifact.upload'
+  // Plan 800 wave 5 — an operator renaming a file, or pinning it against
+  // retention. Audited beside the upload because a pin CHANGES WHAT THE SWEEP
+  // DOES to a file, which is exactly the kind of decision someone later needs
+  // to be able to trace back to a person.
+  | 'artifact.update'
+  // A manual delete. Distinct from the retention sweep, which deletes on
+  // policy and is not an operator's act.
+  | 'artifact.delete'
+  // The row was removed but its file could not be unlinked. Its own action
+  // rather than a flag on `artifact.delete`: this is the case that leaks disk,
+  // and it must be findable without reading every delete's meta.
+  | 'artifact.delete.file-failed'
   // A browser upload into the workspace (plan 115 §4.3) — the ONE way bytes
   // enter the workspace from outside `fs.write`, gated and audited exactly
   // like `artifact.upload` above; `meta` carries the size and content type,

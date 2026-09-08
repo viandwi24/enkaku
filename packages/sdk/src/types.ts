@@ -1,5 +1,10 @@
 import type { z } from 'zod'
 import type {
+  DeviceFsListResult,
+  DeviceFsOkResult,
+  DeviceFsStatResult,
+  DeviceMediaKind,
+  DeviceMediaListResult,
   FindOutcome,
   JobStatus,
   JobSummary,
@@ -253,6 +258,43 @@ export interface DeviceApi {
   push(opts: { artifactId: string; remotePath: string; mediaScan?: MediaScanMode }): Promise<PushResult>
   /** Pull a file from the device into a new artifact, capped by the farm's `transfer.maxPullBytes`. */
   pull(opts: { remotePath: string }): Promise<{ artifactId: string; bytes: number }>
+  /**
+   * What the phone's MediaStore holds (plan 800) — the READ counterpart to
+   * `push`'s `mediaScan`.
+   *
+   * The reason this exists: a script that pushes a video and then drives an
+   * app's gallery picker previously had to assume the newest cell was its own.
+   * Now `push` returns `mediaScan.mediaId`, and this lists what MediaStore
+   * actually holds, so the assumption can be checked instead.
+   */
+  media: {
+    /** Newest first, capped. `truncated` says the phone had more than the window shows — a caller reasoning about "the newest" must not ignore it. */
+    list(opts?: { kind?: DeviceMediaKind; limit?: number; underPath?: string }): Promise<DeviceMediaListResult>
+  }
+  /**
+   * The phone's filesystem (plan 800 D1) — browse and manage, the half
+   * `push`/`pull` never had.
+   *
+   * Reads go anywhere the shell can read. WRITES (`move`, `delete`, `mkdir`)
+   * are confined to user storage — `/sdcard`, `/storage/emulated/0`,
+   * `/storage/self/primary`, `/data/local/tmp` — and a storage root itself can
+   * never be moved or removed. That asymmetry is deliberate: reading the wrong
+   * directory costs nothing, and `rm -r` on it is unrecoverable.
+   *
+   * Not to be confused with `ctx.farm.call('fs.*')`, which is the FARM's own
+   * workspace. A file there and a file on a phone have different lifetimes.
+   */
+  fs: {
+    /** One level, directories first then files, each alphabetical. */
+    list(opts: { path: string; limit?: number }): Promise<DeviceFsListResult>
+    /** `{ entry: null }` when nothing is there — "not found" is an answer, not a throw. */
+    stat(opts: { path: string }): Promise<DeviceFsStatResult>
+    /** Rename or move. Refuses to clobber an existing destination unless `overwrite`. */
+    move(opts: { from: string; to: string; overwrite?: boolean }): Promise<DeviceFsOkResult>
+    /** A non-empty directory needs `recursive`, refused before anything runs otherwise. */
+    delete(opts: { path: string; recursive?: boolean }): Promise<DeviceFsOkResult>
+    mkdir(opts: { path: string; parents?: boolean }): Promise<DeviceFsOkResult>
+  }
 }
 
 export interface ArtifactApi {

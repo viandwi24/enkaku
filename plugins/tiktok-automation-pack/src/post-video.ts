@@ -5,7 +5,7 @@ import { sleep } from './human'
 import { all } from './tree'
 import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, type ScreenId } from './screens'
 import { sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
-import { claimNext, settleClaim } from './queue'
+import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
 import { resolveVideoFromFolder, recordVideoPosted } from './folder'
 import { TIKTOK_PACKAGE, PROFIL_TAB, MENU_PROFIL } from './sheet'
@@ -557,18 +557,25 @@ type Params = z.infer<typeof params>
 interface AttemptState {
   videoArtifactId: string | null
   caption: string | null
-  queueKey: string | null
+  /**
+   * The CLAIM, not just its key (plan 800). `settle` has to prove the claim is
+   * still held — same `claimedBy`, same `claimedAt` — because re-reading the
+   * version immediately before writing cannot detect that a stale claim was
+   * reclaimed mid-run, and stomping the reclaiming device's write would be
+   * silent. The key is still what the result reports; it is read off this.
+   */
+  queueClaim: TikTokQueueClaim | null
   remotePath: string | null
   screens: string[]
   modalsHandled: string[]
   /** Set only when `source === 'folder'` — the picked file's own content hash and workspace path,
    * carried from `resolveFromFolder` to the post-Post `recordVideoPosted` call (§3.8) the same way
-   * `queueKey` is carried to `settleClaim` for the queue source. */
+   * the queue claim is carried to `settle` for the queue source. */
   folderVideo: { hash: string; path: string } | null
 }
 
 function freshAttemptState(): AttemptState {
-  return { videoArtifactId: null, caption: null, queueKey: null, remotePath: null, screens: [], modalsHandled: [], folderVideo: null }
+  return { videoArtifactId: null, caption: null, queueClaim: null, remotePath: null, screens: [], modalsHandled: [], folderVideo: null }
 }
 
 /**
@@ -643,12 +650,12 @@ async function resolveDirect(ctx: ScriptContext<Params>): Promise<{ artifactId: 
  * Q6 — the entry is authoritative); the captions file is consulted ONLY when it is `null`.
  */
 async function resolveFromQueue(ctx: ScriptContext<Params>): Promise<{ skipped: true } | { skipped: false; artifactId: string; caption: string }> {
-  const claim = await claimNext(ctx, { pick: ctx.params.pick, claimedBy: ctx.job.deviceId })
+  const claim = await tiktokQueue(ctx).claimNext({ pick: ctx.params.pick, claimedBy: ctx.job.deviceId })
   if (!claim) return { skipped: true }
-  attempt.queueKey = claim.key
+  attempt.queueClaim = claim
 
-  if (claim.item.caption !== null) {
-    return { skipped: false, artifactId: claim.item.artifactId, caption: claim.item.caption }
+  if (claim.item.payload.caption !== null) {
+    return { skipped: false, artifactId: claim.item.id, caption: claim.item.payload.caption }
   }
   if (!ctx.params.captionsFile) {
     throw Object.assign(
@@ -660,7 +667,7 @@ async function resolveFromQueue(ctx: ScriptContext<Params>): Promise<{ skipped: 
   const index = await nextCaptionIndex(ctx, ctx.params.captionsFile)
   const picked = pickCaption(source, ctx.params.pick, index)
   ctx.log.info('picked a caption from the captions file', { path: ctx.params.captionsFile, index, nextCursor: picked.nextCursor })
-  return { skipped: false, artifactId: claim.item.artifactId, caption: picked.caption }
+  return { skipped: false, artifactId: claim.item.id, caption: picked.caption }
 }
 
 /**
@@ -916,7 +923,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
         outcome: 'unverified',
         videoArtifactId: attempt.videoArtifactId,
         caption: attempt.caption,
-        queueKey: attempt.queueKey,
+        queueKey: attempt.queueClaim?.key ?? null,
         videoPath: attempt.folderVideo?.path ?? null,
         remotePath: attempt.remotePath,
         screens: attempt.screens,
@@ -940,12 +947,12 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     recordCleared(postedSweep.cleared)
 
     const confirmation = await confirmPosted(ctx, frame.width)
-    if (attempt.queueKey) {
-      // Post was tapped either way — settle the queue as 'posted' regardless of confirmation
-      // strength. QueueItemSchema has no 'unverified' state, and re-claiming an item whose Post
+    if (attempt.queueClaim) {
+      // Post was tapped either way — settle the queue as done regardless of confirmation
+      // strength. The queue envelope has no 'unverified' state, and re-claiming an item whose Post
       // button was already tapped risks a DUPLICATE submission, which is worse than an optimistic
       // mark; the run's own `outcome` is where the unverified nuance survives.
-      await settleClaim(ctx, attempt.queueKey, { status: 'posted' })
+      await tiktokQueue(ctx).settle(attempt.queueClaim, { status: 'done' })
     }
     if (attempt.folderVideo) {
       // §3.8's memory, recorded the moment Post was tapped — same "either way" reasoning as the
@@ -958,7 +965,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       outcome: confirmation.confirmed ? 'posted' : 'unverified',
       videoArtifactId: attempt.videoArtifactId,
       caption: attempt.caption,
-      queueKey: attempt.queueKey,
+      queueKey: attempt.queueClaim?.key ?? null,
       videoPath: attempt.folderVideo?.path ?? null,
       remotePath: attempt.remotePath,
       screens: attempt.screens,
@@ -992,10 +999,15 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     if (ctx.error) {
       await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-failed`).catch(() => {})
 
-      if (attempt.queueKey) {
+      if (attempt.queueClaim) {
         try {
-          await settleClaim(ctx, attempt.queueKey, { status: 'failed', error: ctx.error.message.slice(0, 400) })
+          await tiktokQueue(ctx).settle(attempt.queueClaim, { status: 'failed', error: ctx.error.message.slice(0, 400) })
         } catch (err) {
+          // Includes the case where this run took longer than the stale-claim
+          // window and another device already reclaimed the item: `settle` now
+          // refuses rather than stomping that device's write (plan 800). A
+          // warning is the right outcome — the item is being worked by someone
+          // else, which is the mechanism doing its job, not this run's failure.
           ctx.log.warn('could not settle the queue claim after a failed run', { error: String(err) })
         }
       }
@@ -1017,7 +1029,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
         outcome: 'failed' as const,
         videoArtifactId: attempt.videoArtifactId,
         caption: attempt.caption,
-        queueKey: attempt.queueKey,
+        queueKey: attempt.queueClaim?.key ?? null,
         videoPath: attempt.folderVideo?.path ?? null,
         remotePath: attempt.remotePath,
         screens: attempt.screens,

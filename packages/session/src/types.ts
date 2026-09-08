@@ -1,4 +1,22 @@
-import type { DeviceSettings, DeviceStatus, KeepAwakeMode, MediaScanMode, PushResult, RotationMode, TextInputMode } from '@enkaku/protocol'
+import type {
+  DeviceFsDeleteArgs,
+  DeviceFsListArgs,
+  DeviceFsListResult,
+  DeviceFsMkdirArgs,
+  DeviceFsMoveArgs,
+  DeviceFsOkResult,
+  DeviceFsStatArgs,
+  DeviceFsStatResult,
+  DeviceMediaListArgs,
+  DeviceMediaListResult,
+  DeviceSettings,
+  DeviceStatus,
+  KeepAwakeMode,
+  MediaScanMode,
+  PushResult,
+  RotationMode,
+  TextInputMode,
+} from '@enkaku/protocol'
 
 /**
  * The data contract the session needs, **with no knowledge of any database**.
@@ -114,4 +132,15 @@ export interface TransferPort {
   /** `mediaScan` (plan 90 §4.6) defaults to `'auto'` at the executor when omitted. */
   push(deviceId: string, opts: { artifactId: string; remotePath: string; mediaScan?: MediaScanMode }): Promise<PushResult>
   pull(deviceId: string, opts: { remotePath: string }): Promise<{ artifactId: string; bytes: number }>
+  /**
+   * Plan 700 — reading the device, rather than writing to it. `listMedia`
+   * answers what MediaStore holds; the `fs*` five browse and manage the
+   * filesystem itself. None moves bytes, so none takes a `transferId`.
+   */
+  listMedia(deviceId: string, args: DeviceMediaListArgs): Promise<DeviceMediaListResult>
+  fsList(deviceId: string, args: DeviceFsListArgs): Promise<DeviceFsListResult>
+  fsStat(deviceId: string, args: DeviceFsStatArgs): Promise<DeviceFsStatResult>
+  fsMove(deviceId: string, args: DeviceFsMoveArgs): Promise<DeviceFsOkResult>
+  fsDelete(deviceId: string, args: DeviceFsDeleteArgs): Promise<DeviceFsOkResult>
+  fsMkdir(deviceId: string, args: DeviceFsMkdirArgs): Promise<DeviceFsOkResult>
 }

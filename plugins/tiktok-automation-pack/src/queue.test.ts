@@ -1,210 +1,115 @@
 import { describe, expect, test } from 'bun:test'
-import type { ArtifactApi, DeviceApi, FarmApi, JobsApi, KvApi, KvListItem, PluginStorage, ScriptContext, ScriptLogger } from '@enkaku/sdk'
-import { QueueItemSchema, claimNext, orderCandidates, queueKeyFor, settleClaim, type QueueItem } from './queue'
+import { queueItemSchema } from '@enkaku/sdk'
+import { QUEUE_PREFIX, QueuePayloadSchema, queueKeyFor, readLegacyQueueEntry } from './queue'
 
 /**
- * The work queue (plan 113 §5 step 113.7, §6 criteria 7–8). `orderCandidates` is pure — no `ctx`,
- * no clock but the caller's own `nowSec` — so the CAS collision (criterion 7) is forced with a fake
- * store rather than merely hoped for, exactly as the plan's own test plan (§7) asks.
+ * The claim protocol itself moved to `@enkaku/sdk` (plan 800) and is tested
+ * there — candidate ordering, stale reclaim, losing a CAS race, the
+ * reclaimed-claim refusal. Duplicating those here would test the SDK twice and
+ * this pack not at all.
+ *
+ * What IS this pack's, and what this file covers, is the migration: entries
+ * written by every version of this plugin before plan 800 are sitting in real
+ * farms in a flat shape, and the new envelope is `.strict()`. If
+ * `readLegacyQueueEntry` is wrong, an operator's queue fails hard on data they
+ * cannot get back.
  */
 
-function item(overrides: Partial<QueueItem> = {}): QueueItem {
-  return {
-    version: 1,
-    artifactId: 'art-1',
-    caption: null,
-    status: 'pending',
-    claimedBy: null,
-    claimedAt: null,
-    postedAt: null,
-    attempts: 0,
-    lastError: null,
-    ...overrides,
-  }
-}
+const ItemSchema = queueItemSchema(QueuePayloadSchema)
 
-function listed(key: string, value: QueueItem, version = 1): KvListItem {
-  return { key, value, secret: false, hint: null, version, expiresAt: null, updatedAt: 0 }
-}
-
-describe('queueKeyFor', () => {
-  test('prefixes with QUEUE_PREFIX so a writer and a reader never drift', () => {
-    expect(queueKeyFor('artifact-123')).toBe('queue:artifact-123')
-  })
+/** Exactly the shape this pack shipped from plan 113 until plan 800. */
+const legacyEntry = (over: Record<string, unknown> = {}) => ({
+  version: 1,
+  artifactId: 'vid-1',
+  caption: 'hello world',
+  status: 'pending',
+  claimedBy: null,
+  claimedAt: null,
+  postedAt: null,
+  attempts: 0,
+  lastError: null,
+  ...over,
 })
 
-describe('QueueItemSchema — .strict() and a literal version, for the same reason accounts.ts uses them', () => {
-  test('parses a well-formed entry', () => {
-    expect(QueueItemSchema.safeParse(item()).success).toBe(true)
-  })
-
-  test('refuses an unknown field', () => {
-    const withExtra = { ...item(), extra: 'nope' }
-    expect(QueueItemSchema.safeParse(withExtra).success).toBe(false)
-  })
-
-  test('refuses a version other than the literal 1', () => {
-    expect(QueueItemSchema.safeParse({ ...item(), version: 2 }).success).toBe(false)
-  })
-})
-
-describe('orderCandidates — the claim protocol\'s pure half', () => {
-  test('pending candidates are always preferred over a stale claimed one', () => {
-    const now = 1_000_000
-    const items = [listed('queue:a', item({ status: 'claimed', claimedAt: now - 10_000, claimedBy: 'dev-x' })), listed('queue:b', item({ status: 'pending' }))]
-    expect(orderCandidates(items, 'in-order', now, 1_800).map((c) => c.key)).toEqual(['queue:b'])
-  })
-
-  test('a stale claimed entry becomes eligible only when NO pending item exists', () => {
-    const now = 1_000_000
-    const stale = listed('queue:a', item({ status: 'claimed', claimedAt: now - 2_000, claimedBy: 'dev-x' }))
-    expect(orderCandidates([stale], 'in-order', now, 1_800).map((c) => c.key)).toEqual(['queue:a'])
-  })
-
-  test('a claimed entry YOUNGER than staleClaimSec is not eligible at all', () => {
-    const now = 1_000_000
-    const fresh = listed('queue:a', item({ status: 'claimed', claimedAt: now - 100, claimedBy: 'dev-x' }))
-    expect(orderCandidates([fresh], 'in-order', now, 1_800)).toEqual([])
-  })
-
-  test('a posted or failed entry is never a candidate, stale or not', () => {
-    const now = 1_000_000
-    const items = [listed('queue:a', item({ status: 'posted', claimedAt: now - 10_000 })), listed('queue:b', item({ status: 'failed', claimedAt: now - 10_000 }))]
-    expect(orderCandidates(items, 'in-order', now, 1_800)).toEqual([])
-  })
-
-  test('"in-order" is stable, ascending by key — independent of the order list() happened to return', () => {
-    const now = 1_000_000
-    const items = [listed('queue:c', item()), listed('queue:a', item()), listed('queue:b', item())]
-    expect(orderCandidates(items, 'in-order', now, 1_800).map((c) => c.key)).toEqual(['queue:a', 'queue:b', 'queue:c'])
-    // The reversed input produces the IDENTICAL order — proving this is an explicit sort, not an
-    // assumption riding on list()'s own order.
-    expect(
-      orderCandidates([...items].reverse(), 'in-order', now, 1_800).map((c) => c.key),
-    ).toEqual(['queue:a', 'queue:b', 'queue:c'])
-  })
-
-  test('"random" reaches every candidate over enough draws', () => {
-    const now = 1_000_000
-    const items = ['queue:a', 'queue:b', 'queue:c'].map((k) => listed(k, item()))
-    const firstPicks = new Set<string>()
-    for (let i = 0; i < 200; i++) {
-      firstPicks.add(orderCandidates(items, 'random', now, 1_800)[0]?.key as string)
-    }
-    expect(firstPicks).toEqual(new Set(['queue:a', 'queue:b', 'queue:c']))
-  })
-
-  test('throws when a stored entry no longer matches QueueItemSchema — the same fail-loud posture as ctx.kv.get(key, schema)', () => {
-    const bad = listed('queue:a', { version: 1, artifactId: 'x' } as unknown as QueueItem)
-    expect(() => orderCandidates([bad], 'in-order', 1_000_000, 1_800)).toThrow()
-  })
-})
-
-/** A minimal `KvApi` fake — every method not exercised here throws, so an accidental extra call fails loudly instead of silently reading nothing. */
-function fakeKv(opts: {
-  listItems?: KvListItem[]
-  setIfVersion?: (key: string, value: unknown, expectedVersion: number) => Promise<{ version: number } | null>
-} = {}): { kv: KvApi; calls: { setIfVersion: Array<{ key: string; value: unknown; expectedVersion: number }> } } {
-  const calls = { setIfVersion: [] as Array<{ key: string; value: unknown; expectedVersion: number }> }
-  const kv: KvApi = {
-    get: async () => {
-      throw new Error('unused: get')
-    },
-    getRaw: async () => {
-      throw new Error('unused: getRaw')
-    },
-    set: async () => {
-      throw new Error('unused: set')
-    },
-    setIfVersion: async (key, value, expectedVersion) => {
-      calls.setIfVersion.push({ key, value, expectedVersion })
-      return opts.setIfVersion ? opts.setIfVersion(key, value, expectedVersion) : { version: expectedVersion + 1 }
-    },
-    increment: async () => {
-      throw new Error('unused: increment')
-    },
-    delete: async () => {
-      throw new Error('unused: delete')
-    },
-    list: async () => ({ items: opts.listItems ?? [], nextCursor: null }),
-  }
-  return { kv, calls }
-}
-
-const unused = new Proxy(
-  {},
-  {
-    get(_t, prop) {
-      throw new Error(`queue.ts should not touch ctx.${String(prop)} in this test`)
-    },
-  },
-)
-
-function fakeCtx(kv: KvApi): ScriptContext<unknown> {
-  return {
-    device: unused as DeviceApi,
-    params: undefined,
-    artifact: unused as ArtifactApi,
-    log: unused as ScriptLogger,
-    job: { id: 'job-1', attempt: 1, deviceId: 'device-1' },
-    kv: { device: unused as KvApi, global: unused as KvApi },
-    storage: { global: kv, device: unused as KvApi, forDevice: () => unused as KvApi } as PluginStorage,
-    farm: unused as FarmApi,
-    jobs: unused as JobsApi,
-    progress: () => {},
-  }
-}
-
-describe('claimNext — criterion 7: the CAS collision, forced, not merely observed', () => {
-  test('a lost race on the first candidate moves the claim to the NEXT candidate, never to failure', async () => {
-    const items = [listed('queue:a', item({ artifactId: 'a' }), 5), listed('queue:b', item({ artifactId: 'b' }), 7)]
-    const { kv, calls } = fakeKv({
-      listItems: items,
-      setIfVersion: async (key) => (key === 'queue:a' ? null : { version: 8 }), // "a" is already claimed by another device by the time we write
+describe('readLegacyQueueEntry — the pre-plan-800 shape still reads', () => {
+  test('a flat pending entry becomes a valid envelope with the caption nested', () => {
+    const parsed = ItemSchema.safeParse(readLegacyQueueEntry(legacyEntry()))
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data).toMatchObject({
+      version: 1,
+      id: 'vid-1',
+      payload: { caption: 'hello world' },
+      status: 'pending',
+      attempts: 0,
     })
-    const ctx = fakeCtx(kv)
-    const result = await claimNext(ctx, { pick: 'in-order', claimedBy: 'device-2' })
-    expect(result?.key).toBe('queue:b')
-    expect(result?.item.artifactId).toBe('b')
-    expect(result?.item.status).toBe('claimed')
-    expect(result?.item.claimedBy).toBe('device-2')
-    // Both candidates were tried, in order — the loss on "a" did not abort the run.
-    expect(calls.setIfVersion.map((c) => c.key)).toEqual(['queue:a', 'queue:b'])
   })
 
-  test('an empty queue returns null — reported by the caller as "skipped", never a failure', async () => {
-    const { kv } = fakeKv({ listItems: [] })
-    expect(await claimNext(fakeCtx(kv), { pick: 'in-order', claimedBy: 'device-1' })).toBeNull()
+  /** `posted` was this pack's word for the SDK's terminal `done`. */
+  test("status 'posted' reads as done", () => {
+    const parsed = ItemSchema.safeParse(readLegacyQueueEntry(legacyEntry({ status: 'posted', postedAt: 1_725_000_000 })))
+    expect(parsed.success && parsed.data.status).toBe('done')
   })
 
-  test('every candidate losing its race also returns null, not a throw — a fully-contested queue is still "skipped"', async () => {
-    const items = [listed('queue:a', item())]
-    const { kv } = fakeKv({ listItems: items, setIfVersion: async () => null })
-    expect(await claimNext(fakeCtx(kv), { pick: 'in-order', claimedBy: 'device-1' })).toBeNull()
+  /** `postedAt` was this pack's word for `settledAt` — losing it would lose when an item was posted. */
+  test('postedAt becomes settledAt, keeping the timestamp', () => {
+    const parsed = ItemSchema.safeParse(readLegacyQueueEntry(legacyEntry({ status: 'posted', postedAt: 1_725_000_000 })))
+    expect(parsed.success && parsed.data.settledAt).toBe(1_725_000_000)
+  })
+
+  test('a claim in flight survives the translation intact', () => {
+    const parsed = ItemSchema.safeParse(
+      readLegacyQueueEntry(legacyEntry({ status: 'claimed', claimedBy: 'device-7', claimedAt: 1_725_000_000 })),
+    )
+    expect(parsed.success && parsed.data).toMatchObject({ status: 'claimed', claimedBy: 'device-7', claimedAt: 1_725_000_000 })
+  })
+
+  test('a failed entry keeps its attempts and its error', () => {
+    const parsed = ItemSchema.safeParse(readLegacyQueueEntry(legacyEntry({ status: 'failed', attempts: 3, lastError: 'app crashed' })))
+    expect(parsed.success && parsed.data).toMatchObject({ status: 'failed', attempts: 3, lastError: 'app crashed' })
+  })
+
+  test('a null caption stays null — it means "use the captions file", not "no caption"', () => {
+    const parsed = ItemSchema.safeParse(readLegacyQueueEntry(legacyEntry({ caption: null })))
+    expect(parsed.success && parsed.data.payload.caption).toBeNull()
+  })
+
+  /**
+   * The translation must be idempotent: every read goes through it, including
+   * reads of entries this version wrote. Treating an already-migrated row as
+   * legacy would read `id` as undefined and fail.
+   */
+  test('an already-migrated entry passes through untouched', () => {
+    const modern = {
+      version: 1,
+      id: 'vid-2',
+      payload: { caption: 'new' },
+      status: 'done',
+      claimedBy: 'device-1',
+      claimedAt: 1,
+      settledAt: 2,
+      attempts: 1,
+      lastError: null,
+    }
+    expect(readLegacyQueueEntry(modern)).toEqual(modern)
+    expect(readLegacyQueueEntry(readLegacyQueueEntry(legacyEntry()))).toEqual(readLegacyQueueEntry(legacyEntry()))
+  })
+
+  test('a non-object is handed back unchanged, for the schema to reject by itself', () => {
+    expect(readLegacyQueueEntry(null)).toBeNull()
+    expect(readLegacyQueueEntry('nonsense')).toBe('nonsense')
+    expect(readLegacyQueueEntry([1, 2])).toEqual([1, 2])
+  })
+
+  /** A shape from neither era must still fail loudly rather than be half-understood. */
+  test('an unrecognisable entry still fails the schema', () => {
+    expect(ItemSchema.safeParse(readLegacyQueueEntry({ version: 9, nonsense: true })).success).toBe(false)
   })
 })
 
-describe('settleClaim', () => {
-  test('re-reads the version through list() (get() reports none) and settles under CAS', async () => {
-    const items = [listed('queue:a', item({ status: 'claimed', claimedBy: 'device-1', claimedAt: 900 }), 3)]
-    const { kv, calls } = fakeKv({ listItems: items })
-    await settleClaim(fakeCtx(kv), 'queue:a', { status: 'posted' })
-    expect(calls.setIfVersion).toHaveLength(1)
-    expect(calls.setIfVersion[0]?.expectedVersion).toBe(3)
-    const written = calls.setIfVersion[0]?.value as QueueItem
-    expect(written.status).toBe('posted')
-    expect(written.attempts).toBe(1)
-    expect(written.postedAt).not.toBeNull()
-  })
-
-  test('throws when the key no longer exists — a deleted entry must never look like a settled success', async () => {
-    const { kv } = fakeKv({ listItems: [] })
-    await expect(settleClaim(fakeCtx(kv), 'queue:missing', { status: 'posted' })).rejects.toThrow()
-  })
-
-  test('throws when settling loses its own CAS race — reclaimed or modified mid-run', async () => {
-    const items = [listed('queue:a', item({ status: 'claimed' }), 3)]
-    const { kv } = fakeKv({ listItems: items, setIfVersion: async () => null })
-    await expect(settleClaim(fakeCtx(kv), 'queue:a', { status: 'failed', error: 'boom' })).rejects.toThrow()
+describe('keys', () => {
+  /** The prefix is UNCHANGED by the migration — the entries on real farms are under it, and so is the plugin's own surface. */
+  test('the prefix is still "queue:"', () => {
+    expect(QUEUE_PREFIX).toBe('queue:')
+    expect(queueKeyFor('vid-1')).toBe('queue:vid-1')
   })
 })

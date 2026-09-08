@@ -1,13 +1,21 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { join, normalize } from 'node:path'
 import { Hono } from 'hono'
 import { and, asc, eq, isNull, type SQL } from 'drizzle-orm'
-import { ArtifactsPageResponseSchema, type ArtifactInfo, type ShellMode } from '@enkaku/protocol'
+import {
+  ArtifactDeleteResponseSchema,
+  ArtifactResponseSchema,
+  ArtifactUpdateInputSchema,
+  ArtifactsPageResponseSchema,
+  type ArtifactInfo,
+  type ShellMode,
+} from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import { canUseFiles } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { Db } from '../db'
 import { artifacts, type ArtifactRow } from '../db/schema'
+import { artifactKindFor, probeMedia } from '../media/probe'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
 import { typedJson } from './typed-json'
@@ -85,6 +93,10 @@ export function createArtifactRoutes(deps: {
     sizeBytes: r.sizeBytes,
     createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
     pinned: r.pinned,
+    mimeType: r.mimeType,
+    width: r.width,
+    height: r.height,
+    durationMs: r.durationMs,
   })
 
   app.get('/', (c) => {
@@ -179,11 +191,23 @@ export function createArtifactRoutes(deps: {
     const bytes = new Uint8Array(await file.arrayBuffer())
     await Bun.write(join(dir, filename), bytes)
 
+    /*
+     * What the file IS, from its own bytes (plan 800 wave 4). Until this, every
+     * upload landed as `kind: 'file'` with no media type — so an MP4 an
+     * operator uploaded was indistinguishable from a `.bin`, and nothing could
+     * offer "videos only" or draw a grid.
+     *
+     * Never throws and never fails the upload: the bytes are already stored and
+     * the file is perfectly usable as an opaque one, so a probe that cannot
+     * read a container degrades to nulls rather than rejecting the file.
+     */
+    const probe = probeMedia(bytes)
+
     const info: ArtifactInfo = {
       id: crypto.randomUUID(),
       runId: null,
       deviceId: null,
-      kind: 'file',
+      kind: artifactKindFor(probe),
       label,
       path: relPath,
       sizeBytes: bytes.length,
@@ -192,6 +216,10 @@ export function createArtifactRoutes(deps: {
       // forever, so pinning every one would leave that setting with nothing to
       // act on. The pin is the operator's own override of whatever they set.
       pinned: false,
+      mimeType: probe.mimeType,
+      width: probe.width,
+      height: probe.height,
+      durationMs: probe.durationMs,
     }
     deps.db
       .insert(artifacts)
@@ -205,12 +233,99 @@ export function createArtifactRoutes(deps: {
         sizeBytes: info.sizeBytes,
         createdAt: new Date(),
         pinned: info.pinned,
+        mimeType: info.mimeType,
+        width: info.width,
+        height: info.height,
+        durationMs: info.durationMs,
       })
       .run()
 
-    deps.upload.audit.record({ userId: user.id, action: 'artifact.upload', target: info.id, meta: { label, sizeBytes: bytes.length, ext } })
+    deps.upload.audit.record({
+      userId: user.id,
+      action: 'artifact.upload',
+      target: info.id,
+      meta: { label, sizeBytes: bytes.length, ext, mimeType: info.mimeType, kind: info.kind },
+    })
 
     return c.json({ artifact: info }, 201)
+  })
+
+  /**
+   * The same gate the upload uses (`device.files`, widened by `shell.mode`),
+   * spelled once — an operator who may not put a file into the store must not
+   * be able to rename or delete one out of it either.
+   */
+  function requireFiles(c: { get: (k: 'user') => { id: string; role: Parameters<typeof canUseFiles>[0] } | undefined }): { id: string } {
+    if (!deps.upload) throw new EnkakuError('E_BAD_REQUEST', 'artifact management is not enabled')
+    const user = c.get('user')
+    if (!user || !canUseFiles(user.role, deps.upload.shellSettings().mode)) {
+      throw new EnkakuError('auth.forbidden', 'you do not have permission to manage artifacts')
+    }
+    return user
+  }
+
+  /**
+   * `PATCH /api/artifacts/:id` — rename, or pin against retention (plan 800
+   * wave 5).
+   *
+   * A rename changes `label` ONLY, never `path`. The stored path is how every
+   * reference resolves — a workflow's saved artifact id, a queue entry, a
+   * pinned batch — so moving the bytes to match a new name would break saved
+   * references for a cosmetic change, and there would be no way back.
+   */
+  app.patch('/:id', async (c) => {
+    const user = requireFiles(c)
+    const parsed = ArtifactUpdateInputSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) {
+      throw new EnkakuError('E_BAD_REQUEST', parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
+    }
+    const row = deps.db.select().from(artifacts).where(eq(artifacts.id, c.req.param('id'))).get()
+    if (!row) throw new EnkakuError('artifact_not_found', 'no such artifact')
+
+    const patch: Partial<ArtifactRow> = {}
+    if (parsed.data.label !== undefined) patch.label = parsed.data.label.trim()
+    if (parsed.data.pinned !== undefined) patch.pinned = parsed.data.pinned
+    deps.db.update(artifacts).set(patch).where(eq(artifacts.id, row.id)).run()
+
+    deps.upload?.audit.record({ userId: user.id, action: 'artifact.update', target: row.id, meta: { ...parsed.data } })
+    const updated = deps.db.select().from(artifacts).where(eq(artifacts.id, row.id)).get()
+    return typedJson(c, ArtifactResponseSchema, { artifact: rowToItem(updated ?? row) })
+  })
+
+  /**
+   * `DELETE /api/artifacts/:id` — the row AND the bytes.
+   *
+   * A PINNED artifact is refused. The pin means "never delete this
+   * automatically" (plan 800 D3), and an operator who set it should have to
+   * clear it before a single click can undo that intent — the retention sweep
+   * honours the pin, and a manual delete that ignored it would make the pin a
+   * half-truth.
+   *
+   * The file is unlinked BEFORE the row: a row with no file is a visible,
+   * recoverable inconsistency (the content route says so), while a file with no
+   * row is invisible and leaks disk forever.
+   */
+  app.delete('/:id', async (c) => {
+    const user = requireFiles(c)
+    const row = deps.db.select().from(artifacts).where(eq(artifacts.id, c.req.param('id'))).get()
+    if (!row) throw new EnkakuError('artifact_not_found', 'no such artifact')
+    if (row.pinned) {
+      throw new EnkakuError('E_ARTIFACT_PINNED', 'this artifact is pinned — unpin it first if you really mean to delete it')
+    }
+
+    const rel = normalize(row.path)
+    if (!rel.startsWith('..')) {
+      try {
+        rmSync(join(deps.dataDir, rel), { force: true })
+      } catch (err) {
+        // The row is still removed: a file already gone, or one this process
+        // cannot unlink, must not leave an entry pointing at nothing forever.
+        deps.upload?.audit.record({ userId: user.id, action: 'artifact.delete.file-failed', target: row.id, meta: { error: String(err) } })
+      }
+    }
+    deps.db.delete(artifacts).where(eq(artifacts.id, row.id)).run()
+    deps.upload?.audit.record({ userId: user.id, action: 'artifact.delete', target: row.id, meta: { label: row.label, sizeBytes: row.sizeBytes } })
+    return typedJson(c, ArtifactDeleteResponseSchema, { ok: true, id: row.id })
   })
 
   app.get('/:id/content', async (c) => {
@@ -232,6 +347,7 @@ export function createArtifactRoutes(deps: {
     artifact_not_found: 404,
     'auth.forbidden': 403,
     E_TRANSFER_TOO_LARGE: 413,
+    E_ARTIFACT_PINNED: 409,
   }
 
   app.onError((err, c) => {

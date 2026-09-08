@@ -14,7 +14,7 @@ import liveBrowse from './live-browse'
 import shopBrowse from './shop-browse'
 import notificationActivity from './notification-activity'
 import { ACCOUNTS_KEY } from './accounts'
-import { QUEUE_PREFIX } from './queue'
+import { QUEUE_PREFIX, migrateLegacyQueueEntries } from './queue'
 
 /**
  * TikTok automation pack.
@@ -820,7 +820,24 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
-  version: '1.22.0',
+  // 1.23.0 — the post queue moves to `@enkaku/sdk`'s shared queue (plan 800).
+  // The claim protocol is unchanged; what changes is that this pack no longer
+  // owns a private copy of it, so Instagram and YouTube can share one instead
+  // of growing two more that differ subtly. THREE operator-visible
+  // consequences, none cosmetic:
+  //   1. Stored entries move from a flat shape to `{ id, payload: { caption } }`,
+  //      with `posted` -> `done` and `postedAt` -> `settledAt`. The service
+  //      rewrites every pre-800 entry once at start, idempotently and through
+  //      `setIfVersion` so a live claim is never overwritten; readers also
+  //      translate on the fly, so nothing breaks in the window before it runs.
+  //   2. Settling a claim now REFUSES when the claim is no longer held — the
+  //      old code compare-and-swapped on a version it had just re-read, which
+  //      could not detect a stale claim being reclaimed mid-run and would
+  //      silently stomp the reclaiming device's write. A run slower than the
+  //      30-minute stale window now logs a warning instead of overwriting.
+  //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
+  //      Retry writes the new shape.
+  version: '1.23.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
@@ -848,6 +865,16 @@ export default definePlugin({
     permissions: ['fs.read', 'fs.list', 'job.run', 'device.list', 'device.get'],
 
     setup(ctx) {
+      // Plan 800 — one-time, idempotent translation of every pre-800 queue entry
+      // into the shared shape. Deliberately NOT awaited: `setup` must not block
+      // the plugin from starting on a KV scan, and every reader already copes
+      // with an unmigrated entry (`readLegacyQueueEntry`). A failure is logged
+      // and nothing else — the scripts keep working either way, and the next
+      // start tries again.
+      void migrateLegacyQueueEntries(ctx).catch((err: unknown) => {
+        ctx.log.warn('could not migrate legacy queue entries', { error: String(err) })
+      })
+
       // Registered BEFORE the timer starts, so a `setup` that somehow throws between these two lines
       // still leaves a disposer for whatever did get created — the same ordering `proxy-manager`'s own
       // service takes with its listeners. `timer` is `null` only in that impossible window.
@@ -944,19 +971,21 @@ export default definePlugin({
         // farm-wide list, not a per-device scan, because the queue is not a fact about any one phone.
         data: { kind: 'kv.list', scope: 'global', prefix: QUEUE_PREFIX },
         table: {
-          // The entry's OWN artifactId, not `$entry.key` (which carries the `queue:` prefix too) —
-          // this is what an operator actually recognises the video by.
-          rowKey: 'artifactId',
+          // The entry's OWN id, not `$entry.key` (which carries the `queue:` prefix too) — this is
+          // what an operator actually recognises the video by. `id`/`payload.caption` since plan
+          // 800: the stored entry nests this pack's own fields under `payload`, and the service's
+          // `migrateLegacyQueueEntries` rewrites pre-800 rows so this table never shows a mix.
+          rowKey: 'id',
           columns: [
-            { field: 'artifactId', header: 'Video', width: 'wide' },
-            { field: 'caption', header: 'Caption', width: 'wide' },
+            { field: 'id', header: 'Video', width: 'wide' },
+            { field: 'payload.caption', header: 'Caption', width: 'wide' },
             { field: 'status', header: 'Status', width: 'narrow' },
             { field: 'attempts', header: 'Attempts', schema: { type: 'number', 'x-enkaku': { kind: 'count' } }, width: 'narrow' },
             { field: 'claimedBy', header: 'Claimed by' },
             // `claimedAt`/`postedAt` are unix seconds or `null` — `planColumn` renders a missing value
             // as `'—'` under any declared plan (§4.2, `plan.ts`'s own C-cases), so `null` is safe here.
             { field: 'claimedAt', header: 'Claimed', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
-            { field: 'postedAt', header: 'Posted', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
+            { field: 'settledAt', header: 'Posted', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
             { field: 'lastError', header: 'Last error', width: 'wide' },
           ],
         },
@@ -1079,7 +1108,14 @@ export default definePlugin({
 
       // `$entry.key` is the exact stored key (`queue:<artifactId>`, echoed back by `kv.list` — see
       // this file's own `surface` doc comment) — which is what lets this stay a plain `kv.set` with no
-      // script behind it. History (`postedAt`/`attempts`) is preserved; the claim and any error clear.
+      // script behind it. History (`settledAt`/`attempts`) is preserved; the claim and any error clear
+      // — the same choice `enqueue-video`'s `keepHistory: true` makes, for the same reason: an
+      // operator needs to see that an item keeps failing rather than looking newly added.
+      //
+      // The value is written in the plan-800 shape (`id`, `payload`), matching what every other
+      // writer stores. A row still in the pre-800 shape reads `$row: 'id'` as undefined, so Retry is
+      // only correct once the service's migration has run — which it does at every plugin start,
+      // before an operator can reach this screen.
       retryItem: {
         kind: 'kv.set',
         label: 'Retry',
@@ -1087,12 +1123,12 @@ export default definePlugin({
         key: { $entry: 'key' },
         value: {
           version: { $literal: 1 },
-          artifactId: { $row: 'artifactId' },
-          caption: { $row: 'caption' },
+          id: { $row: 'id' },
+          payload: { caption: { $row: 'payload.caption' } },
           status: { $literal: 'pending' },
           claimedBy: { $literal: null },
           claimedAt: { $literal: null },
-          postedAt: { $row: 'postedAt' },
+          settledAt: { $row: 'settledAt' },
           attempts: { $row: 'attempts' },
           lastError: { $literal: null },
         },

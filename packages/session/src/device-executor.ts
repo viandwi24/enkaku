@@ -721,6 +721,49 @@ export function createDeviceExecutor(deps: {
         }
         return deps.transfer.pull(deps.session.deviceId, call.args)
       }
+      /*
+       * Plan 700 — the read half. Gated on the SAME `deps.transfer` as
+       * push/pull rather than a port of their own: all six reach the device
+       * through the same adb lane and the same local-device restriction, so a
+       * host that cannot transfer cannot list either, and pretending otherwise
+       * would fail later with a worse message.
+       */
+      case 'media.list': {
+        if (!deps.transfer) {
+          throw Object.assign(new Error('file transfer is not available on this host'), { code: 'E_TRANSFER_UNAVAILABLE' })
+        }
+        return deps.transfer.listMedia(deps.session.deviceId, call.args)
+      }
+      case 'fs.list': {
+        if (!deps.transfer) {
+          throw Object.assign(new Error('file transfer is not available on this host'), { code: 'E_TRANSFER_UNAVAILABLE' })
+        }
+        return deps.transfer.fsList(deps.session.deviceId, call.args)
+      }
+      case 'fs.stat': {
+        if (!deps.transfer) {
+          throw Object.assign(new Error('file transfer is not available on this host'), { code: 'E_TRANSFER_UNAVAILABLE' })
+        }
+        return deps.transfer.fsStat(deps.session.deviceId, call.args)
+      }
+      case 'fs.move': {
+        if (!deps.transfer) {
+          throw Object.assign(new Error('file transfer is not available on this host'), { code: 'E_TRANSFER_UNAVAILABLE' })
+        }
+        return deps.transfer.fsMove(deps.session.deviceId, call.args)
+      }
+      case 'fs.delete': {
+        if (!deps.transfer) {
+          throw Object.assign(new Error('file transfer is not available on this host'), { code: 'E_TRANSFER_UNAVAILABLE' })
+        }
+        return deps.transfer.fsDelete(deps.session.deviceId, call.args)
+      }
+      case 'fs.mkdir': {
+        if (!deps.transfer) {
+          throw Object.assign(new Error('file transfer is not available on this host'), { code: 'E_TRANSFER_UNAVAILABLE' })
+        }
+        return deps.transfer.fsMkdir(deps.session.deviceId, call.args)
+      }
     }
   }
 }

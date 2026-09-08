@@ -50,6 +50,17 @@ export const DeviceCallSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('install'), args: DEVICE_CALL_ARGS.install }),
   z.object({ method: z.literal('push'), args: DEVICE_CALL_ARGS.push }),
   z.object({ method: z.literal('pull'), args: DEVICE_CALL_ARGS.pull }),
+  // Plan 700 — the READ half of the same story. `push` tells the phone's
+  // gallery a file exists; these ask what the gallery and the filesystem
+  // actually hold, so a script can verify rather than assume. Same
+  // `TransferPort`, same parent-side implementation, for the same reason:
+  // the child never touches adb.
+  z.object({ method: z.literal('media.list'), args: DEVICE_CALL_ARGS['media.list'] }),
+  z.object({ method: z.literal('fs.list'), args: DEVICE_CALL_ARGS['fs.list'] }),
+  z.object({ method: z.literal('fs.stat'), args: DEVICE_CALL_ARGS['fs.stat'] }),
+  z.object({ method: z.literal('fs.move'), args: DEVICE_CALL_ARGS['fs.move'] }),
+  z.object({ method: z.literal('fs.delete'), args: DEVICE_CALL_ARGS['fs.delete'] }),
+  z.object({ method: z.literal('fs.mkdir'), args: DEVICE_CALL_ARGS['fs.mkdir'] }),
   // Plan 94 §4.4, step 94.2 (F6, F7) — the replay's own four verbs. `gesture`
   // and `tapNorm`/`swipeNorm` carry NORMALISED coordinates on purpose (see
   // `device-args.ts`'s own comment on `TapNormArgsSchema` for the full rule)

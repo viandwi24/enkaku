@@ -204,7 +204,7 @@ export function createRetentionSweeper(deps: {
   /**
    * Age- then quota-based artifact sweep — no longer gated by `enabled` (plan 212).
    *
-   * TWO populations, two policies (plan 700 D3). Run and device artifacts keep
+   * TWO populations, two policies (plan 800 D3). Run and device artifacts keep
    * `storage.artifacts` exactly as before. An operator's UPLOAD — `runId` and
    * `deviceId` both null, the same rule `GET /api/artifacts?kind=upload` uses —
    * is swept by `storage.uploads`, which defaults to keeping it forever.

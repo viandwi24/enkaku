@@ -46,7 +46,7 @@ function ageRun(db: Db, runId: string, daysAgo: number, status: 'success' | 'fai
 }
 
 /**
- * Seeds a RUN artifact by default (plan 700 D3).
+ * Seeds a RUN artifact by default (plan 800 D3).
  *
  * `runId` used to default to null, which — now that uploads are swept by their
  * own policy — would make every one of these an UPLOAD and exempt it from the

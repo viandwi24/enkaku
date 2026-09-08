@@ -1732,6 +1732,22 @@ let blobGc: BlobGc | null = null
             holdFor: readinessHoldForTransfer,
             op: (transferId, onProgress) => transferService.pull(deviceId, opts.remotePath, { transferId, onProgress }),
           }),
+        /*
+         * Plan 700's read half — straight delegations, deliberately NOT wrapped
+         * in `runTransfer`. That helper mints a `transferId`, takes a readiness
+         * hold and broadcasts `transfer.progress`/`transfer.done`, which is
+         * right for an operation that moves bytes over seconds and that a
+         * second viewer should see. A directory listing moves nothing and is
+         * over in one round trip; putting it through the same machinery would
+         * post a start-and-finish pair to every viewer of the device for what
+         * amounts to a read, and leave phantom rows in `GET /api/transfers`.
+         */
+        listMedia: (deviceId, args) => transferService.listMedia(deviceId, args),
+        fsList: (deviceId, args) => transferService.fsList(deviceId, args),
+        fsStat: (deviceId, args) => transferService.fsStat(deviceId, args),
+        fsMove: (deviceId, args) => transferService.fsMove(deviceId, args),
+        fsDelete: (deviceId, args) => transferService.fsDelete(deviceId, args),
+        fsMkdir: (deviceId, args) => transferService.fsMkdir(deviceId, args),
       }
 
       const executors = new ExecutorRegistry()
@@ -2436,8 +2452,15 @@ let blobGc: BlobGc | null = null
             sizeBytes: saved.sizeBytes,
             createdAt: Math.floor(Date.now() / 1000),
             // Run output from a node-owned device — same population, same
-            // policy, as the local runner's own artifacts (plan 700 D3).
+            // policy, as the local runner's own artifacts (plan 800 D3).
             pinned: false,
+            // The bytes were probed by the sink above, which is where they are;
+            // this literal only reports what it was given. Null is honest: this
+            // relay never sees the file itself.
+            mimeType: null,
+            width: null,
+            height: null,
+            durationMs: null,
           }
         },
       })
