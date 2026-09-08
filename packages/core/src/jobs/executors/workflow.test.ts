@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { WorkflowDocSchema, type WorkflowDoc } from '@enkaku/protocol'
 import { openDb, runMigrations } from '../../db'
-import { jobRuns, jobs, workflowSteps } from '../../db/schema'
+import { deviceLabels, deviceNumbers, devices, groups, jobRuns, jobs, labels, workflowSteps } from '../../db/schema'
 import { createRunStore } from '../runs/store'
 import { createRunWatcher } from '../runs/watcher'
 import { createWorkflowOrchestrator, type WorkflowOrchestratorDeps } from './workflow'
@@ -1224,5 +1224,96 @@ describe('shuffle node (plan 313 §3.5, G5)', () => {
     // `skipped` row, as every unreached node does).
     expect(stepRows.filter((s) => s.stepId === 'sh' && s.takenEdge === 'next')).toHaveLength(0)
     expect(stepRows.filter((s) => s.stepId === 'tail' && s.status === 'success')).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// `$device` — the rotation key a multi-session warm-up needs (plan 314 §10.11)
+// ---------------------------------------------------------------------------
+
+/** Gives `dev-1` a real row, a number, a group and a label, so `$device` has something to read. */
+function seedDevice(db: ReturnType<typeof openDb>['db'], opts: { number: number | null; label?: string }) {
+  const now = new Date()
+  db.insert(groups).values({ id: 'g1', name: 'rack-a', description: null, createdAt: now }).run()
+  db.insert(devices)
+    .values({ id: 'dev-1', stableId: 'STABLE-1', serial: 'serial-1', label: opts.label ?? 'Pixel 5', status: 'online', groupId: 'g1', lastSeen: now })
+    .run()
+  if (opts.number !== null) db.insert(deviceNumbers).values({ stableId: 'STABLE-1', number: opts.number, assignedAt: now, assignedBy: null }).run()
+  db.insert(labels).values({ id: 'l1', name: 'smoke-pool', color: 'blue', createdAt: now }).run()
+  db.insert(deviceLabels).values({ deviceId: 'dev-1', labelId: 'l1', at: now }).run()
+}
+
+/** `start -> set(platform = ($device.number + slot) % 3) -> finish`. */
+function rotationDoc(slot: number): WorkflowDoc {
+  return WorkflowDocSchema.parse({
+    schema: 2,
+    name: 'warmup',
+    title: '',
+    entry: 'start',
+    maxSteps: 10,
+    params: [],
+    nodes: [
+      startNode({ next: 'pick' }),
+      {
+        kind: 'set',
+        id: 'pick',
+        title: '',
+        ui: { x: 0, y: 0 },
+        assignments: [
+          { name: { const: 'platform' }, value: { expr: `($device.number + ${slot}) % 3` } },
+          { name: { const: 'phone' }, value: { expr: '$device.label' } },
+          { name: { const: 'rack' }, value: { expr: '$device.group' } },
+        ],
+        next: 'finish',
+      },
+      { kind: 'finish', id: 'finish', title: '', ui: { x: 0, y: 0 }, status: 'succeed', message: '' },
+    ],
+  })
+}
+
+describe('$device in a real run (plan 314 §10.11)', () => {
+  async function platformFor(slot: number, number: number | null): Promise<unknown> {
+    const { db, runs, deps } = setUp(new Map())
+    seedDevice(db, { number })
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, rotationDoc(slot))
+    const controller = new AbortController()
+    await orchestrator.run(job, { runId: run.id, run, signal: controller.signal, heartbeat: () => {}, log: deps.log })
+    const step = db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all().find((r) => r.stepId === 'pick')
+    return (step?.output as Record<string, unknown> | null)?.platform
+  }
+
+  test('the executor reads the phone’s own number, group and label', async () => {
+    const { db, runs, deps } = setUp(new Map())
+    seedDevice(db, { number: 7, label: 'Moto G06' })
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, rotationDoc(0))
+    await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+    const step = db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all().find((r) => r.stepId === 'pick')
+    expect(step?.output).toMatchObject({ platform: 1, phone: 'Moto G06', rack: 'rack-a' })
+  })
+
+  test('three slots give one phone all three platforms — the coverage guarantee', async () => {
+    // The property the whole warm-up rests on: whatever the number, the three
+    // sessions of one day visit three DIFFERENT platforms. `$run.index` cannot
+    // promise this across three separate batches; this can.
+    for (const number of [1, 2, 3, 7, 40]) {
+      const seen = [await platformFor(0, number), await platformFor(1, number), await platformFor(2, number)]
+      expect([...seen].sort()).toEqual([0, 1, 2])
+    }
+  })
+
+  test('a phone with no number fails the run by name rather than rotating as platform 0', async () => {
+    // The alternative — treating a released reservation as 0 — would give
+    // every numberless phone the same platform on every slot, forever, with
+    // nothing red to notice. A named failure is the cheaper outcome.
+    const { db, runs, deps } = setUp(new Map())
+    seedDevice(db, { number: null })
+    const orchestrator = createWorkflowOrchestrator(deps)
+    const { job, run } = workflowJobFor(runs, rotationDoc(0))
+    const promise = orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+    await expect(promise).rejects.toThrow(/E_WORKFLOW_SET_FAILED|\$device/)
+    const step = db.select().from(workflowSteps).where(eq(workflowSteps.runId, run.id)).all().find((r) => r.stepId === 'pick')
+    expect(step?.status).not.toBe('success')
   })
 })

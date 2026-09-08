@@ -1,4 +1,4 @@
-import { evaluate, ExprEvalError, ExprParseError, parse, toScopeValue, type ExprScope } from '@enkaku/expr'
+import { evaluate, ExprEvalError, ExprParseError, parse, toScopeValue, type ExprDevice, type ExprScope } from '@enkaku/expr'
 import type { GateOp, Predicate, ValueExpr } from './workflow'
 import { WORKFLOW_LIMITS } from './workflow'
 
@@ -64,6 +64,26 @@ export interface ResolveScope {
    */
   runIndex?: number
   runCount?: number
+  /**
+   * The device this run is acting on — `$device` (plan 314 §10.11).
+   *
+   * Separate from `runIndex` above, and deliberately so: `runIndex` is a
+   * position INSIDE one batch, and every fact that makes it useful for
+   * splitting a fleet into equal shares also makes it unusable as a
+   * rotation key across several batches. `order: 'random'` reshuffles it by
+   * design, and `createBatch` numbers only the devices that resolved as
+   * usable, so a single offline phone shifts every device after it for that
+   * one dispatch. A warm-up that runs three times a day is three dispatches;
+   * read `$run.index` there and a phone silently repeats one platform and
+   * never meets another, with three green runs and nothing to see.
+   *
+   * Absent for an evaluation with no device — a `simulate` run, or a bare
+   * `resolveValue` in a test. `buildExprScope` fills the empty shape rather
+   * than omitting the root, so `$device.number` reads as `null` instead of
+   * throwing on member access, and arithmetic on that `null` then fails the
+   * step by name.
+   */
+  device?: ExprDevice
 }
 
 /**
@@ -159,6 +179,16 @@ function buildExprScope(scope: ResolveScope): ExprScope {
     $nodes: toScopeValue(Object.fromEntries(scope.outputs)) as Readonly<Record<string, unknown>>,
     $input: toScopeValue(lastOutput),
     $run: { summary: toScopeValue(scope.summary), index: scope.runIndex ?? 0, count: scope.runCount ?? 1 },
+    // Copied field by field rather than spread, so a caller that hands over a
+    // live Drizzle row cannot leak anything past the five facts `$device`
+    // names — the same discipline `toScopeValue` applies to every other root.
+    $device: {
+      number: scope.device?.number ?? null,
+      stableId: scope.device?.stableId ?? null,
+      label: scope.device?.label ?? null,
+      group: scope.device?.group ?? null,
+      labels: scope.device?.labels ? [...scope.device.labels] : [],
+    },
     $now: scope.now ?? Date.now(),
     $random: scope.randomSeed ?? 0,
     // One counter per STEP, not per expression: `buildExprScope` caches one

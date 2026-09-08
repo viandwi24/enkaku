@@ -11,9 +11,9 @@ export type BinOp =
   | '==' | '!=' | '<' | '<=' | '>' | '>='
   | '&&' | '||'
 
-export type RootName = '$params' | '$nodes' | '$input' | '$run' | '$now' | '$random'
+export type RootName = '$params' | '$nodes' | '$input' | '$run' | '$now' | '$random' | '$device'
 
-export const ROOT_NAMES: readonly RootName[] = ['$params', '$nodes', '$input', '$run', '$now', '$random']
+export const ROOT_NAMES: readonly RootName[] = ['$params', '$nodes', '$input', '$run', '$now', '$random', '$device']
 
 export type Expr =
   | { t: 'lit'; v: string | number | boolean | null }

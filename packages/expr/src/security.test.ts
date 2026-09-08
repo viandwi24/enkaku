@@ -17,6 +17,7 @@ function scope(overrides: Partial<ExprScope> = {}): ExprScope {
     $nodes: toScopeValue({ a: { x: 1 } }) as Record<string, unknown>,
     $input: undefined,
     $run: { summary: undefined },
+    $device: { number: null, stableId: null, label: null, group: null, labels: [] },
     $now: 0,
     $random: 0,
     ...overrides,
