@@ -437,6 +437,132 @@ reshuffling that index six ways. A guard rail is cheapest before the road opens.
 | Q9 | Build 7.4 (`deviceDelayMs` on a schedule)? Without it, "random jam per device" is not expressible on a schedule at all | §10.5 |
 | Q10 | Is the coverage view (7.5) in the first delivery, or does the client accept the self-healing rotation of §10.3 without a report? | scope of the first release |
 
+### 10.9 Owner decision, 2026-09-08: Q7 = three sessions, via three schedules
+
+Recorded: *"warmup itu dijalankan 3 kali… berarti nanti pakai fitur schedule aja."*
+
+Q7 is answered **3**, and Q8 follows it: the sessions are three ordinary
+schedule rows, not a new concept. This is the right call and it simplifies the
+design — with three sessions and three platforms, the day-component of §10.4 is
+**not needed**, and `platform = ($run.index + $params.slot) % 3` gives coverage
+every calendar day.
+
+It also surfaces two defects that only exist *because* the rotation is now split
+across three dispatches. Neither is a reason to change the decision; both must be
+built with it.
+
+### 10.10 The defect: `$run.index` cannot carry a rotation across three batches
+
+§4 was safe because all three phases lived in **one** run, where `$run.index` is
+read once and cannot move. Split across three firings, it moves — and when it
+moves, coverage breaks silently, which is the exact outcome the client called
+*bahaya*.
+
+Two independent causes, both already documented in this repository:
+
+1. **`order: 'random'` reshuffles the numbering on purpose** — the very control
+   §10.5 recommends for looking human. Under it, a device is index 5 in the
+   morning and index 8 at noon, so its three platforms are three independent
+   draws. Coverage is not merely unguaranteed; TikTok three times in one day is
+   an ordinary outcome.
+2. **Only `resolved.usable` devices are numbered** (`dispatch.ts:189`), so **one
+   offline phone shifts every device after it by one**, for that session only.
+
+Worked, with four phones A B C D at indices 0–3, `as-listed`, and C offline at
+the noon session only:
+
+| | slot 0 (all up) | slot 1 (C down) | slot 2 (all up) | covered |
+|---|---|---|---|---|
+| A | `(0+0)%3` = TikTok | `(0+1)%3` = Instagram | `(0+2)%3` = YouTube | ✅ all three |
+| B | `(1+0)%3` = Instagram | `(1+1)%3` = YouTube | `(1+2)%3` = TikTok | ✅ all three |
+| C | `(2+0)%3` = YouTube | — offline — | `(2+2)%3` = Instagram | ⚠️ missed one, recovers next cycle |
+| D | `(3+0)%3` = TikTok | `(2+1)%3` = **TikTok** | `(3+2)%3` = YouTube | ❌ **never opened Instagram** |
+
+D is the finding. D was **online all day**, every one of its three runs
+**succeeded**, no job is red, no batch is red — and D did not open Instagram.
+Nothing in the product can currently tell anyone that. C, which actually was
+offline, is the *harmless* case: it missed one slot and the rotation hands it
+back next cycle.
+
+So the collateral damage of one offline phone lands on a **different, healthy**
+phone, and is invisible. This is plan 700 E10's warning arriving one category
+early: it was written about identity, and it turns out to bite **coverage** the
+moment the rotation spans more than one batch.
+
+### 10.11 The fix: rotate on the device's own number, not its batch position
+
+The offset must be a property **of the device**, stable across firings. The farm
+already has exactly one: `device_numbers.number` — a unique integer keyed on
+`stableId`, durable, operator-visible, and *literally the `#` written on the
+phone's physical label* (spec §4.1, `schema.ts:364`).
+
+```
+platform = ($device.number + $params.slot) % 3
+```
+
+Every failure of §10.10 disappears:
+
+| Property | `$run.index` | `$device.number` |
+|---|---|---|
+| Survives `order: 'random'` | ❌ that is what it shuffles | ✅ unaffected |
+| Survives an offline phone | ❌ shifts everyone after it | ✅ nobody else moves |
+| Stable across the day's three sessions | ❌ | ✅ |
+| Stable across days | ❌ | ✅ |
+| An operator can verify it by looking at the phone | ❌ | ✅ it is the label |
+| Fleet split at one slot | exact 14/13/13 | **approximate** — see below |
+
+**The one thing it costs**, stated plainly: device numbers are allocated
+monotonically and deleted devices leave gaps, so `number % 3` over a real farm
+is near-equal rather than exactly equal — 15/12/13 instead of 14/13/13 on an
+unlucky numbering. That is the whole trade, and it goes the client's way: they
+called the coverage failure *bahaya* and never asked for the split to be exact to
+the device. **Guaranteed coverage with an approximate split beats an exact split
+with silent gaps.**
+
+This needs `$device` in the expression scope, which does not exist today
+(plan 700 E11). It is **one read-only root, no grammar change** — plan 700 D-B
+already lists it, and this is the use case that makes it urgent rather than
+nice-to-have. Ship it with 7.1.
+
+Note what this does *not* license: `$device.number` is safe as a **rotation
+offset** because a wrong offset costs one mistimed platform. It is **not** an
+account key — a stable number is necessary for identity but nowhere near
+sufficient, and §5 and plan 700 D-B still own that question. 7.2's warning stands
+unchanged.
+
+### 10.12 The second defect: three schedules is a copy-paste trap
+
+"Pakai fitur schedule aja" is right, and the obvious way an operator does it is
+to create one schedule and duplicate it twice. If `slot` is a free-text parameter
+they must remember to change, the duplicate carries `slot: 0` three times — and
+the farm runs **TikTok three times a day, forever, covering nothing else**, with
+three green batches and no error anywhere.
+
+That is the client's stated fear, reintroduced by a UI being too generic. Two
+guards, both small:
+
+1. **A "Warmup" template that creates the three schedules together**, slots
+   pre-filled 0/1/2, named *pagi / siang / malam*. One action, three rows. The
+   operator edits times and targets, never the slot.
+2. **A warning when two enabled schedules run the same workflow with the same
+   `slot`** — the same class of guard as `checkWorkflow`'s existing warnings, on
+   the Schedules tab rather than in the document.
+
+### 10.13 Build list after Q7
+
+| # | Item | Size | Why it cannot be dropped |
+|---|---|---|---|
+| 7.1 | Schedule → workflow work target | small | nothing runs daily without it |
+| **7.6** | **`$device` root in the expression scope** (`number`, `stableId`, `label`) | **small — one root, no grammar change** | **without it the three-session rotation is provably wrong (§10.10), not merely imprecise** |
+| 7.4 | `deviceDelayMs` on a schedule | small | "jam acak per device" is otherwise inexpressible |
+| 7.2 | `$run.index`-as-identity warning | small | §5; unaffected by Q5's deferral |
+| 7.7 | Warmup schedule template + duplicate-slot warning | small | §10.12 |
+| 7.5 | Coverage view | medium | the client's proof; §10.3 |
+
+7.6 is new and it outranks everything except 7.1. §10.10's table is the argument:
+without it, we would ship a system that reports three green runs for a phone that
+covered two platforms.
+
 ## 11. Handoff report
 
 _Not applicable: this plan is a decision document and is not executed._
