@@ -2,6 +2,8 @@ import {
   ArrowsClockwiseIcon,
   BroomIcon,
   CameraIcon,
+  DeviceMobileIcon,
+  DeviceMobileSlashIcon,
   DownloadSimpleIcon,
   ExportIcon,
   FlowArrowIcon,
@@ -101,6 +103,13 @@ export const GENERIC_ACTIONS: readonly GenericAction[] = [
   { id: 'adb', label: 'Adb command', icon: TerminalIcon, group: 'device' },
   { id: 'wake', label: 'Wake', icon: SunIcon, group: 'device' },
   { id: 'sleep', label: 'Sleep', icon: MoonIcon, group: 'device' },
+  // Beside Sleep, and deliberately NOT merged with it (plan 227 §3.3). Sleep
+  // puts Android itself to sleep and the tile goes dark with it; these two
+  // darken the phone's own panel and leave the mirror running, which is the
+  // pair a competitor's quick-action menu offers separately and which this
+  // product had only as a per-device provisioning flag.
+  { id: 'screen-off', label: 'Screen off', icon: DeviceMobileSlashIcon, group: 'device' },
+  { id: 'screen-on', label: 'Screen on', icon: DeviceMobileIcon, group: 'device' },
 
   // Things you run ON it.
   { id: 'run-script', label: 'Run script', icon: PlayIcon, group: 'run' },

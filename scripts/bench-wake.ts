@@ -67,6 +67,7 @@ function usage(): string {
   --adb <path>        adb binary (default: the toolchain's, else 'adb' on PATH)
   --keep-awake <mode> off | while-charging | always (default: always — the mode that actually writes)
   --passes <N>        how many times to run the sequence (default 3: cold, warm, repeat)
+  --cost-rounds <N>   samples per command in the cost profile (default 5; read-only probes)
   --help              print this and exit, without touching adb or any device
 
 Env:
@@ -130,6 +131,72 @@ function table(rows: Array<Record<string, string>>): void {
   console.log(line(cols))
   console.log('  ' + cols.map((c) => '─'.repeat(width[c]!)).join('  '))
   for (const r of rows) console.log(line(cols.map((c) => r[c] ?? '')))
+}
+
+
+/**
+ * The cost of each COMMAND SHAPE still on a hot path, separated from the cost
+ * of adb itself (plan 227 §3.5).
+ *
+ * Plan 226 §3.2's insight was that `/system/bin/svc`, `/system/bin/input` and
+ * friends are shell wrappers around `app_process`, so each call starts an ART
+ * runtime on the phone — that is what plan 96 §22's 1422 ms is, and it is why
+ * moving `svc power stayon` off the wake path mattered. The same question was
+ * never asked of the SESSION CLOSE path, which still issues `ime set`,
+ * `settings put system` and `setprop` once per device on every shutdown.
+ *
+ * Every probe below is read-only or a usage banner: nothing here changes a
+ * setting, presses a key, or writes a property. `input` and `svc` with no
+ * arguments print their usage and exit — which starts the same runtime a real
+ * call would, which is the whole quantity being measured.
+ *
+ * `echo` is the floor and the most important row: it is one adb round trip
+ * with no on-device binary behind it. Everything above it, minus that, is
+ * what the binary costs. If `ime` measures like `svc` and not like `echo`,
+ * plan 227 §3.5's suspicion is confirmed and the close path has a JVM on it.
+ */
+const COST_PROBES: Array<{ label: string; cmd: string; note: string }> = [
+  { label: 'adb round trip', cmd: 'echo enkaku', note: 'the floor — no on-device binary at all' },
+  { label: 'getprop', cmd: 'getprop ro.build.version.sdk', note: 'native binary, for comparison' },
+  { label: 'settings (get)', cmd: 'settings get system screen_off_timeout', note: 'the close path’s rotation revert uses `settings put system`' },
+  { label: 'cmd settings', cmd: 'cmd settings get system screen_off_timeout', note: 'the binder path `settings` uses on Android 8+' },
+  { label: 'ime', cmd: 'ime list -s', note: 'the close path runs `ime set <previous>` once per device' },
+  { label: 'input', cmd: 'input', note: 'usage banner only; the sleep fallback runs `input keyevent`' },
+  { label: 'svc', cmd: 'svc', note: 'usage banner only; the known app_process wrapper, 1422 ms in plan 96 §22' },
+  { label: 'dumpsys window policy', cmd: 'dumpsys window policy', note: 'the keyguard probe' },
+]
+
+async function commandCostProfile(client: AdbClient, serial: string, rounds: number): Promise<void> {
+  console.log('\n  ── command cost profile (read-only; plan 227 §3.5)\n')
+  const rows: Array<Record<string, string>> = []
+  for (const probe of COST_PROBES) {
+    const samples: Sample[] = []
+    const t = recordingTransport(client, serial, samples)
+    const times: number[] = []
+    for (let i = 0; i < rounds; i++) {
+      const started = performance.now()
+      await t.exec(probe.cmd, { profile: 'probe' }).catch(() => undefined)
+      times.push(performance.now() - started)
+    }
+    // The MEDIAN, not the mean: one scheduling hiccup on a phone under load
+    // would otherwise decide the answer, and this is a comparison between
+    // command shapes rather than a latency budget.
+    const sorted = [...times].sort((a, b) => a - b)
+    const median = sorted[Math.floor(sorted.length / 2)] ?? 0
+    rows.push({
+      command: probe.label.padEnd(22),
+      'median ms': median.toFixed(0).padStart(9),
+      'min ms': (sorted[0] ?? 0).toFixed(0).padStart(6),
+      'max ms': (sorted[sorted.length - 1] ?? 0).toFixed(0).padStart(6),
+      note: probe.note,
+    })
+  }
+  table(rows)
+  console.log(
+    '\n  Read it as a comparison, not a budget: subtract the `adb round trip` row from each\n' +
+      '  other row and what is left is what the on-device binary costs. A row that lands near\n' +
+      '  `svc` is an app_process start; one that lands near `getprop` is not.\n',
+  )
 }
 
 async function main(): Promise<void> {
@@ -206,6 +273,8 @@ async function main(): Promise<void> {
       })(),
     })),
   )
+  await commandCostProfile(client, serial, Number(flag(args, 'cost-rounds') ?? 5))
+
   if (totals.length >= 2) {
     const saved = totals[0]! - totals[1]!
     console.log(

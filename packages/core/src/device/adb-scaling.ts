@@ -31,3 +31,59 @@ export function computeAutoConcurrency(nonOfflineDeviceCount: number): number {
 export function computeAutoStreams(nonOfflineDeviceCount: number): number {
   return Math.min(64, Math.max(8, Math.ceil(nonOfflineDeviceCount * 2.5)))
 }
+
+/**
+ * How wide one `POST /api/actions/:verb` fans out over its selection (plan
+ * 227 §3.2).
+ *
+ * Both widths used to be compiled-in numbers — `ACTION_FANOUT_CONCURRENCY = 4`
+ * and `ACTION_SYNC_FANOUT_CONCURRENCY = 16` in `actions/verbs.ts`, neither
+ * with an override, neither aware of how many phones the farm has. On a farm
+ * of 73 that made a bulk screenshot nineteen waves of four, and the second
+ * constant's own comment justified 16 by "adb's own farm-wide semaphore,
+ * `adb.maxConcurrent`, 6 by default" — a floor that is 24 at this size
+ * (`computeAutoConcurrency` above), so the stated reason had stopped being
+ * true of the farm it was bounding.
+ *
+ * So the width is derived from the lane it will actually queue behind rather
+ * than asserted. The adb semaphore already scales with the farm; these follow
+ * it.
+ *
+ * **The ratios below are reasoned, not measured.** `bun run bench:wake` is the
+ * instrument, and `ENKAKU_ACTION_FANOUT_MAX` / `ENKAKU_ACTION_SYNC_FANOUT_MAX`
+ * exist so a farm can move them without a build — which is the rule
+ * CLAUDE.md already states for a value expected to keep being tuned, and
+ * which the two constants this replaces both broke.
+ */
+
+/**
+ * The `sync` verbs (wake, sleep, set-group, settings…): each is one or two
+ * short adb round trips, or none at all. They queue on the counted semaphore,
+ * so its live width is the honest bound.
+ *
+ * The floor is the width this repo shipped before, so no farm gets narrower
+ * than it was: at 10 devices the semaphore is 8 and the floor still gives 16,
+ * which the semaphore then limits anyway — the floor costs nothing and only
+ * protects a farm whose `adb.maxConcurrent` an operator has pinned low.
+ */
+export function computeSyncFanout(adbConcurrency: number, max: number): number {
+  return Math.max(SYNC_FANOUT_FLOOR, Math.min(max, adbConcurrency))
+}
+
+/**
+ * The `async` verbs (install, push, pull, adb shell, screenshot…): long, and
+ * several of them move megabytes. Half the adb lane, so a farm-wide install
+ * still leaves room for the session builds, the readiness sweep and every
+ * other caller sharing the same semaphore.
+ *
+ * The floor is 4 — the value this replaces — so a small farm behaves exactly
+ * as it did.
+ */
+export function computeAsyncFanout(adbConcurrency: number, max: number): number {
+  return Math.max(ASYNC_FANOUT_FLOOR, Math.min(max, Math.ceil(adbConcurrency / 2)))
+}
+
+/** The width `ACTION_SYNC_FANOUT_CONCURRENCY` was, kept as a floor so nothing narrows. */
+const SYNC_FANOUT_FLOOR = 16
+/** The width `ACTION_FANOUT_CONCURRENCY` was, kept as a floor for the same reason. */
+const ASYNC_FANOUT_FLOOR = 4

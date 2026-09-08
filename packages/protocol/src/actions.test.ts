@@ -19,6 +19,8 @@ const MINIMAL_PARAMS: Record<(typeof ACTION_VERBS)[number], Record<string, unkno
   adb: { cmd: 'echo hi' },
   wake: {},
   sleep: {},
+  'screen-off': {},
+  'screen-on': {},
   reconnect: {},
   disconnect: {},
   cutover: { medium: 'wired' },
@@ -41,15 +43,13 @@ const MINIMAL_PARAMS: Record<(typeof ACTION_VERBS)[number], Record<string, unkno
 }
 
 describe('ActionVerbSchema', () => {
-  // The plan's §0 goal checklist says 26; its own §4.1 verb list and MVP
-  // 07 §1.1's source list both name 25 (run-script, run-workflow, install,
-  // push, pull, adb, wake, sleep, reconnect, disconnect, cutover, forget,
-  // block, unquarantine, set-network, apply-screen-label,
-  // clear-screen-label, set-group, set-labels, prepare, retry-prepare, reprofile, screenshot, clear-cache,
-  // settings). Recorded as a plan/plan discrepancy in §11; the verb table
-  // is the fact this test pins.
-  test('has exactly 27 verbs', () => {
-    expect(ACTION_VERBS.length).toBe(27)
+  // The verb table is the fact this test pins, and it has never agreed with
+  // any plan's prose: plan 207's §0 goal checklist said 26 while its own §4.1
+  // list and MVP 07 §1.1 both named 25, and the table itself has been 27 since
+  // `install-agent`/`uninstall-agent` landed. Plan 227 §3.3 adds
+  // `screen-off`/`screen-on`, so 29.
+  test('has exactly 29 verbs', () => {
+    expect(ACTION_VERBS.length).toBe(29)
   })
 
   test('an unknown verb fails', () => {

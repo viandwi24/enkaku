@@ -126,6 +126,30 @@ export interface DeviceSession {
    * engine; the screencap-loop fallback has no such concept.
    */
   requestKeyframe?(): void
+  /**
+   * Turn the device's own panel off or on, leaving the session and its
+   * encoder exactly as they are (plan 227 §3.3).
+   *
+   * This is scrcpy's `SET_DISPLAY_POWER` — two bytes on the control socket
+   * this session already holds, no adb round trip at all — and it is a
+   * DIFFERENT operation from readiness `sleep`, not a faster one. Sleep puts
+   * Android itself to sleep, which is state Android owns and which therefore
+   * survives this core dying; a display power mode does not. Verified against
+   * scrcpy v3.3.1's own source (plan 227 §3.1): the moment a client sends
+   * this with `on: false`, `Controller.setDisplayPower` arms
+   * `CleanUp.setRestoreDisplayPower(true)`, and the on-device cleanup process
+   * powers the panel back on when the server dies for ANY reason — an
+   * unplugged phone included. So a panel darkened this way lights up again as
+   * soon as the session ends, which is exactly why it cannot replace sleep.
+   *
+   * Returns false when this session has no scrcpy backing it (the
+   * screencap-loop fallback), so a caller can say "not supported here"
+   * instead of reporting a success nothing performed.
+   *
+   * Absent rather than a no-op on a session with no scrcpy, matching
+   * `requestKeyframe` directly above.
+   */
+  setDisplayPower?(on: boolean): boolean
   /** This session's inspector engine (ui-server / uiautomator-dump). Null until it is ready. */
   inspector: Inspector | null
   /**
@@ -994,6 +1018,22 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     forwardPort: scrcpy ? scrcpy.port : null,
     scrcpyScid: scrcpy ? scrcpy.scid : null,
     ...(scrcpy ? { requestKeyframe: () => scrcpy!.control.resetVideo() } : {}),
+    /*
+      `liveScrcpy`, not the outer `scrcpy` const — the same distinction
+      `close()` makes below and for the same reason: a session that recovered
+      from the screencap-loop fallback is backed by a DIFFERENT scrcpy
+      session, and writing to the dead one would report success down a socket
+      nobody is reading.
+    */
+    ...(scrcpy
+      ? {
+          setDisplayPower: (on: boolean) => {
+            if (!liveScrcpy) return false
+            liveScrcpy.control.setDisplayPower(on)
+            return true
+          },
+        }
+      : {}),
     inspector: null,
     inspectorEngineId: 'starting',
     inspectorPollIntervalMs: 500,

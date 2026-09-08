@@ -48,6 +48,20 @@ export const ACTION_VERBS = [
   'adb',
   'wake',
   'sleep',
+  // The device's PANEL, which is not the device's sleep (plan 227 §3.3).
+  //
+  // `sleep` puts Android itself to sleep: the phone is asleep, the tile goes
+  // dark, and the state survives this core dying because Android owns it.
+  // These two set a display POWER MODE over the session's existing scrcpy
+  // control socket — the panel goes dark, the encoder keeps producing frames,
+  // and the wall keeps showing the phone. Two bytes, no adb.
+  //
+  // They are deliberately not one verb with a boolean: every other verb in
+  // this list is a thing an operator does, named as they would name it, and a
+  // farm's action bar reads better with two buttons than with one that needs
+  // its argument read.
+  'screen-off',
+  'screen-on',
   'reconnect',
   'disconnect',
   'cutover',
@@ -202,6 +216,8 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
   CommonSchema.extend({ verb: z.literal('adb'), cmd: z.string().min(1).max(4096) }),
   CommonSchema.extend({ verb: z.literal('wake') }),
   CommonSchema.extend({ verb: z.literal('sleep') }),
+  CommonSchema.extend({ verb: z.literal('screen-off') }),
+  CommonSchema.extend({ verb: z.literal('screen-on') }),
   CommonSchema.extend({ verb: z.literal('reconnect'), allowSweep: z.boolean().optional() }),
   CommonSchema.extend({ verb: z.literal('disconnect') }),
   CommonSchema.extend({

@@ -3024,6 +3024,10 @@ let blobGc: BlobGc | null = null
         // The same accessor `listDevices` below is wired to — one read for a
         // whole `set-group`, never one per device.
         listDevices: () => listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
+        // Plan 227 §3.2 — the lane a fan-out queues behind, read fresh on
+        // every action. `adb` is reassigned by `stop()`, so this reads the
+        // live binding rather than capturing the client.
+        adbConcurrency: () => adb?.stats().maxConcurrent ?? 0,
       }
       const actionRoutesHandle = createActionRoutes(actionsDeps)
 
@@ -5172,7 +5176,17 @@ let blobGc: BlobGc | null = null
       // recorder must still be alive to receive. Stopping it first made a
       // clean Ctrl-C crash with `null is not an object (recorder.record)`
       // and exit 1, after the work was already done.
-      await sessions?.closeAll()
+      /*
+        Timed on its own (plan 227 §3.4), because this is the sub-phase nobody
+        has measured and the one most likely to dominate a large farm's exit:
+        every session's `close()` is a serialised chain of adb round trips —
+        the stay-on drop, the rotation revert, `ime set`, the farm tag, the
+        inspector — and there are as many chains as there are phones. The
+        outer `stop` number cannot tell that apart from a slow database close.
+      */
+      const closeAllStartedAt = Date.now()
+      const sessionsClosed = (await sessions?.closeAll()) ?? 0
+      if (sessionsClosed > 0) log.info(`closed ${sessionsClosed} session(s) in ${((Date.now() - closeAllStartedAt) / 1000).toFixed(1)}s`)
       sessions = null
       alwaysOn = null
       await recorder?.stop()

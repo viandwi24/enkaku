@@ -1,5 +1,7 @@
 import type { ActivityKind, ActionVerb } from '@enkaku/protocol'
 import type { Permission } from '../auth/acl'
+import { ACTION_FANOUT_MAX, ACTION_SOCKET_FANOUT, ACTION_SYNC_FANOUT_MAX } from '../config/constants'
+import { computeAsyncFanout, computeSyncFanout } from '../device/adb-scaling'
 
 /** `shell`: `canUseShell(role, shell.mode)`; `files`: `canUseFiles(role, shell.mode)` plus `transfer.enabled`. */
 export type VerbGate = { permission: Permission } | { gate: 'shell' } | { gate: 'files' }
@@ -12,6 +14,22 @@ export interface VerbSpec {
   offline: 'allow' | 'skip'
   /** `sync` answers `done` in the 202; `async` answers `accepted` and settles on the operation. */
   mode: 'sync' | 'async'
+  /**
+   * Which queue this verb's per-device work actually joins, and therefore
+   * what its fan-out width should follow (plan 227 §3.2).
+   *
+   * `'adb'` (the default, and every verb that does not say otherwise) means
+   * the work goes through adb's counted semaphore, so the width follows that
+   * semaphore's live value. `'socket'` means it does not touch adb at all —
+   * `screen-off`/`screen-on` write two bytes to a scrcpy control socket this
+   * process already holds open — so bounding it by the adb lane would be
+   * bounding it by a queue it never joins.
+   *
+   * This field exists so the answer is written on the verb rather than
+   * inferred. When plan 226 Q1 lands and `sleep` stops needing its
+   * `stay_on_while_plugged_in` write, `sleep` becomes a one-word change here.
+   */
+  lane?: 'adb' | 'socket'
 }
 
 export const VERBS: Record<ActionVerb, VerbSpec> = {
@@ -23,6 +41,13 @@ export const VERBS: Record<ActionVerb, VerbSpec> = {
   adb:            { gate: { gate: 'shell' },                    policyKind: 'command',       offline: 'skip',  mode: 'async' },
   wake:           { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'sync' },
   sleep:          { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'sync' },
+  // `device.view`, the same gate `wake`/`sleep` carry: darkening the panel a
+  // viewer is watching is a viewing gesture, and the mirror keeps working
+  // either way. `lane: 'socket'` because the whole operation is two bytes on
+  // a control socket this process already holds — it never joins adb's queue,
+  // so it must not be bounded by adb's width (plan 227 §3.2, §3.3).
+  'screen-off':   { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'sync', lane: 'socket' },
+  'screen-on':    { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'sync', lane: 'socket' },
   reconnect:      { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
   disconnect:     { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'skip',  mode: 'sync' },
   cutover:        { gate: { permission: 'device.enroll' },      policyKind: null,            offline: 'allow', mode: 'sync' },
@@ -50,37 +75,27 @@ export const VERBS: Record<ActionVerb, VerbSpec> = {
 }
 
 /**
- * Bounded async dispatch width per operation (plan 207 §3.2 item 6). This
- * constant's name is the one place `GREP_207_CONSOLE`'s `fanout` term
- * cannot be avoided: it replaces the console's five fan-out settings with a
- * single compiled-in number, exactly what MVP 12 §3 asks for ("such numbers
- * constants"). Recorded as a known, intentional grep hit in plan 207 §11.
+ * How wide one action fans out over its selection.
+ *
+ * This used to be two bare `export const`s here — `ACTION_FANOUT_CONCURRENCY
+ * = 4` and `ACTION_SYNC_FANOUT_CONCURRENCY = 16` — with no override and no
+ * awareness of how big the farm is. Plan 227 §3.2 records what that cost: on
+ * 73 devices a bulk screenshot ran four at a time, nineteen waves of it, and
+ * the sync constant's own comment justified 16 against "adb's own farm-wide
+ * semaphore, 6 by default" while `computeAutoConcurrency` was returning 24 for
+ * that farm. The number's stated reason had stopped describing the farm it was
+ * bounding, and nobody could have widened it without a build.
+ *
+ * The width is now derived per call from the lane the work joins
+ * (`device/adb-scaling.ts`), bounded by an `ENKAKU_*` override
+ * (`config/constants.ts`). Both floors are the old values, so no farm gets
+ * narrower than it was.
+ *
+ * Plan 207 §11's recorded `GREP_207_CONSOLE` `fanout` hit moves here with the
+ * concept; it is still the one place the term cannot be avoided, and it is
+ * still a compiled-in default rather than a console setting.
  */
-export const ACTION_FANOUT_CONCURRENCY = 4
-
-/**
- * The same bounded dispatch, for the `sync` verbs — and it is wider on
- * purpose.
- *
- * `ACTION_FANOUT_CONCURRENCY` above bounds the async verbs, which write to the
- * device: an install pushes an APK, a push moves a file, a prepare rewrites
- * settings. Four at once is the right ceiling for that, and it is not what
- * this number is for.
- *
- * The sync verbs are control gestures and database rows — `wake`, `sleep`,
- * `set-labels`, `block`, `forget`. Their per-device cost is one or two shell
- * round trips at most, and after plan 226 a sleep on a device with a session
- * open is one. They were nevertheless run STRICTLY ONE AT A TIME, in a plain
- * `for await` loop, inside the request the browser is holding open: selecting
- * a 66-device farm and pressing Sleep meant 66 sequential wakes of roughly two
- * seconds each, so the operator watched a spinner for two and a half minutes
- * while the competitor's farm went dark in one blink (owner, 2026-09-07). That
- * loop, not the adb commands underneath it, was the larger half of the wait.
- *
- * Sixteen rather than unbounded because the real floor is still adb's own
- * farm-wide semaphore (`adb.maxConcurrent`, 6 by default and pinnable to 2):
- * past that width this number stops buying anything and only makes the queue
- * behind it longer. It is deliberately a separate constant from the async one
- * so a future change to either cannot silently move the other.
- */
-export const ACTION_SYNC_FANOUT_CONCURRENCY = 16
+export function actionFanout(spec: VerbSpec, adbConcurrency: number): number {
+  if (spec.lane === 'socket') return ACTION_SOCKET_FANOUT
+  return spec.mode === 'sync' ? computeSyncFanout(adbConcurrency, ACTION_SYNC_FANOUT_MAX) : computeAsyncFanout(adbConcurrency, ACTION_FANOUT_MAX)
+}

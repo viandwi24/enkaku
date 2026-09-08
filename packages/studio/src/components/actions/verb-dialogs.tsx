@@ -567,6 +567,48 @@ const wake: VerbDialogSpec<Record<string, never>> = {
 }
 
 // ---------------------------------------------------------------------------
+// 7c. Screen off / Screen on
+// ---------------------------------------------------------------------------
+/**
+ * The phone's own panel, which is NOT the phone's sleep (plan 227 §3.3).
+ *
+ * `sleep` above puts Android to sleep: the tile goes dark with the phone, and
+ * the state survives this core dying because Android owns it. These two set a
+ * display power mode over the session's existing scrcpy control socket — two
+ * bytes, no adb — so the panel goes dark and the wall keeps showing the phone.
+ *
+ * The note says the part an operator cannot see and would otherwise be caught
+ * by: verified against scrcpy v3.3.1's own `CleanUp`, a panel darkened this
+ * way is powered back ON when the session ends for any reason, an unplugged
+ * cable included. So it is the wrong button for "darken everything, then
+ * unplug" — that is Sleep — and the right one for a rack nobody should see lit
+ * while the farm keeps watching it.
+ */
+const screenOff: VerbDialogSpec<Record<string, never>> = {
+  verb: 'screen-off',
+  immediate: true,
+  title: (c) => `Screen off on ${n(c)}`,
+  submitLabel: (c) => `Screen off on ${n(c)}`,
+  initial: {},
+  Fields: null,
+  note: 'The phone’s screen goes dark and mirroring keeps running. It comes back on when the session ends — use Sleep to darken a phone you are about to unplug.',
+  canSubmit: () => true,
+  toParams: async () => ({}),
+}
+
+const screenOn: VerbDialogSpec<Record<string, never>> = {
+  verb: 'screen-on',
+  immediate: true,
+  title: (c) => `Screen on for ${n(c)}`,
+  submitLabel: (c) => `Screen on for ${n(c)}`,
+  initial: {},
+  Fields: null,
+  note: 'Turns the phone’s own panel back on. A device that is asleep needs Wake, not this.',
+  canSubmit: () => true,
+  toParams: async () => ({}),
+}
+
+// ---------------------------------------------------------------------------
 // 8. Move group
 // ---------------------------------------------------------------------------
 interface SetGroupValue {
@@ -1142,6 +1184,8 @@ export type ActionDialogVerb =
   | 'screenshot'
   | 'sleep'
   | 'wake'
+  | 'screen-off'
+  | 'screen-on'
   | 'set-group'
   | 'push'
   | 'pull'
@@ -1164,6 +1208,8 @@ export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   screenshot,
   sleep,
   wake,
+  'screen-off': screenOff,
+  'screen-on': screenOn,
   'set-group': setGroup,
   push,
   pull,
