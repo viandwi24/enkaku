@@ -646,6 +646,126 @@ R1's failure taxonomy (§3) should therefore be widened by one question: how muc
 of a run's wall clock is spent in the farm's own dispatch and teardown, rather
 than on the phone. Nobody has that number either.
 
+---
+
+## 9. Addendum 2 — the competitor's quick-action menu, read as a spec (owner reference, 2026-09-08)
+
+The owner supplied a screenshot of PandaClassic 5.0.0.0's Quick actions menu and
+described the ritual it serves: before unplugging the phones, select the farm and
+press **Power off** to darken every screen. They also noted that Panda's
+**Screen off** appears to darken the real phone while the mirror keeps working.
+
+That menu is a competitive specification, and reading it against `VERBS`
+(`packages/core/src/actions/verbs.ts:17-50`) changes one of §8's conclusions.
+
+### P8 — Panda separates two operations this repo merges, and ships both
+
+| Panda quick action | What it must be | Enkaku |
+|---|---|---|
+| Screenshot | screencap | `screenshot` |
+| **Screen on / Screen off** | display power mode — panel dark, mirror alive | **no verb**; the mechanism exists, see P9 |
+| **Power on / Power off** | wake / sleep the device itself | `wake` / `sleep` |
+| Open / Close wireless adb | `tcpip` and disconnect | `cutover` / `disconnect` (not one click) |
+| **Open / Close airplane** | radio toggle | **none** — see P11 |
+| **Shutdown** | `reboot -p` | **none** |
+| **Reboot** | `reboot` | **none** |
+
+Enkaku has **one** pair where Panda has **two**, and the pair it kept is the
+expensive one. `sleep` writes `stay_on_while_plugged_in` over adb and then sends
+`KEYCODE_SLEEP`; the device genuinely sleeps and, per `docs/spec.md` line 199,
+"its tile shows a dark screen". Panda's Screen off leaves the tile live.
+
+They are not two speeds of one feature. They are two features:
+
+- **"screens dark, and they stay dark after I unplug"** — the owner's ritual.
+  Android must own the state, because the farm is about to stop existing. That
+  is `KEYCODE_SLEEP`, and `sleep` is semantically correct today.
+- **"screens dark while the farm keeps watching"** — a rack of phones nobody
+  should see lit, still being cast. That is display power mode, and Enkaku has
+  no action for it.
+
+### P9 — The mechanism for the second one is already in the tree, wired to the wrong thing
+
+`packages/session/src/session.ts:852` calls `scrcpy.control.setDisplayPower(false)`
+— two bytes on a control socket that is already open, no adb, instant. Its own
+declaration comment (`session.ts:361`) reads:
+
+> `DeviceSettings.prep.standbyScreenOff` — **dark panel, mirroring stays alive**
+
+which is, word for word, what the owner describes Panda doing.
+
+But it is gated on `prep.standbyScreenOff`, a **per-device provisioning setting**
+that defaults to `false` (`settings.ts:597`), is applied **once at session build**
+and reverted at close. It is a flag on a device, not an action an operator can
+take on a selection. Turning it on for the farm today means editing 73 device
+settings and rebuilding 73 sessions — to reach a capability that costs two bytes.
+
+**Recommendation: add `screen-off` / `screen-on` as ordinary `sync` verbs over
+`setDisplayPower`.** No adb, no new mechanism, no new control message —
+`encodeSetDisplayPower` is already in `packages/scrcpy/src/control/messages.ts`.
+This is the smallest item in this document and it closes a visible feature gap.
+
+### P10 — Plan 226 §3.4 answered a question nobody asked
+
+That section refused `SET_DISPLAY_POWER` **as the sleep mechanism**, because a
+core killed with `SIGKILL` would leave 66 panels dark with nothing left to
+restore them. As an answer to *"should `sleep` become `setDisplayPower`"* it is
+correct, and P8 now gives the reason in product terms rather than safety terms:
+sleep must survive the farm's death, and display power mode does not.
+
+It is not an answer to *"should screen-off exist as its own action"*, which is
+the question Panda's menu poses and which plan 226 never asked.
+
+The refusal is also internally inconsistent as written: `prep.standbyScreenOff`
+**ships that exact risk today** as an opt-in. A farm with it enabled and a core
+`kill -9`ed has the same 66 dark panels the section refuses to allow. The
+argument was applied to a new action and not to the setting already carrying it.
+
+What settles it is one fact nobody in this repo has checked: **does v3.3.1's
+`CleanUp` restore display power when the server's stdin closes?** It restores
+stay-awake and screen-off-timeout (plan 226 Q1). If it restores display power
+too, P10's objection is already handled by the `cleanup=true` this repo passes
+at `packages/scrcpy/src/session.ts:235`, and the ladder P9 asks for needs no
+restore logic of its own. It is the same file plan 226 Q1 already sends someone
+to read for `screen_off_timeout`'s unit — read both in one sitting.
+
+*(Note for whoever adds P9: if `CleanUp` DOES restore display power, then
+`screen-off` is the wrong verb for the owner's pre-unplug ritual — unplugging
+kills the session, CleanUp fires, and every panel lights back up. That is
+precisely why P8 insists these are two features and `sleep` must stay
+`KEYCODE_SLEEP`.)*
+
+### P11 — Airplane mode is the client brief's own request, shipped by the competitor
+
+Panda has **Open airplane / Close airplane** as one-click farm actions. Plan 313
+§3.6 met the same requirement — the client brief's *"Use SIM 4G (change IP)"* —
+and routed it to "plugin script parameters, never core workflow schema".
+
+That routing is defensible for a workflow *node*. It is not an answer for a
+*quick action*: an operator rotating IPs across 73 phones before a run should not
+have to author a workflow to do it. The same holds for **Shutdown** and
+**Reboot**, which have no expression anywhere in this codebase — not a verb, not
+a script, not a plugin.
+
+### What this changes about §8
+
+§8's ordering stands, with one correction and one addition.
+
+**The correction.** §8 P6 said a farm-wide Sleep becomes socket-only after N5,
+and that is still the fix for the owner's actual ritual — `pressSleep` already
+rides the control socket, so once N5 removes the stay-on write, `sleep` is 73
+socket writes and no adb at all. **N5 is the answer to the reported complaint.**
+P9 is a different feature and must not be sold as the fix for it.
+
+**The addition**, as a new first row:
+
+| # | Action | Size | Why first |
+|---|---|---|---|
+| **N0** | Add `screen-off` / `screen-on` verbs over `setDisplayPower`; while there, read v3.3.1's `CleanUp.java` and record whether it restores display power | small | P9. Existing mechanism, existing encoder, no adb. Also produces the fact N5 and N6 both need |
+
+N0 does not displace N1/N2 as the diagnostics that decide N3–N5. It is simply
+small enough, and visible enough, to land beside them.
+
 ## 11. Handoff report
 
 _Not applicable: this document is a review, not an executed plan._
