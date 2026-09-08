@@ -1,6 +1,7 @@
 # Plan 314 — Warmup : the daily platform rotation, the coverage guarantee, and the one thing it must not be built on
 
 > Status: draft — a decision document answering the client brief of 2026-09-08. Nothing here is executed; §9 names what the owner must decide first.
+> Owner decisions so far (2026-09-08): **Q1 yes** — build the workflow work target. **Q5 deferred** — accounts are out of scope; the working assumption is *one device owns all three platforms, whatever the account*. A second brief the same day added **multiple warmup sessions per day at different hours**, which supersedes §3's single-run shape; the amendment is §10, and §3 must be read through it.
 > Ships: none — this is a decision document, not a milestone plan.
 > Depends on: plans 210, 211, 217 (implemented), 300–307 and 309–313 (implemented), 700 (review; F1 and E10 are load-bearing here)
 > Spec references: §4.6 (workflow document), §4.7 (schedule), §4.8 (job, run, batch), §11 (Actions API targets)
@@ -74,6 +75,8 @@ organised around making that outcome *impossible by construction* rather than
 shipped.** What is missing is only E3.
 
 ## 3. The guarantee is a property of the document, not an outcome of the scheduler
+
+> **Amended by §10.** The reasoning below is intact and still decides the design; what changed is where the run boundary falls. The client's second brief (2–3 warmup sessions a day at different hours) makes a single run that walks all three platforms back-to-back both unwanted *and* unbuildable — `WORKFLOW_LIMITS.maxDelayMs` is **five minutes**, with the stated reason *"Longer waits are a schedule, not a workflow"* (plan 303 §3.4). §10 moves the phase boundary from a `delay` node to a schedule firing and shows what that costs.
 
 This is the whole design, and it is one sentence:
 
@@ -270,6 +273,169 @@ has already booted.
 | Q4 | Ship 7.2's warning with 7.1? Recommended **yes** — it is a day of work against a class of silent account loss | §5 |
 | Q5 | Is per-device *identity* (accounts/personas) in scope for this client? If yes, plan 700 D-B is a prerequisite, not a follow-up — and this plan should wait behind it | 7.3, and the honest answer to "keunikan tiap device" |
 | Q6 | K4: is operator-driven "re-run failed" acceptable recovery, or is an automatic catch-up fire required? | A feature that does not exist today |
+
+## 10. Amendment — sessions: several warmups a day, at different hours (client brief 2, 2026-09-08)
+
+> *"beberapa hal itu jalan di jam sekian sekian, berarti random dong? satu device atau satu grup device bisa jalan di jam tertentu. bisa aja di jam segini warmup, terus di jam berapa warmup lagi. jadi sehari bisa 2 kali atau 3 kali warmup per satu device."*
+
+### 10.1 This forces the phase boundary out of the document, and the repo already decided that
+
+§3–§4 put three platform phases inside **one run**, separated by `delay` nodes.
+That is not buildable, and the reason is a decision already on the record:
+
+| Fact | Where |
+|---|---|
+| `WORKFLOW_LIMITS.maxDelayMs` is **5 minutes**, documented as *"The largest a single `delay` node may declare. Longer waits are a schedule, not a workflow"* | `packages/protocol/src/workflow.ts:36`, plan 303 §3.4 |
+
+So a five-hour gap between TikTok and Instagram was never a `delay`. Good — the
+client's brief and the engine's own doctrine agree: **a gap measured in hours is
+a schedule firing, not a node.** The phase boundary moves out of the document.
+
+A run therefore becomes **one device, one session, one platform**. What §3
+warned about now applies to us, and §10.3 is how it is paid for rather than
+hand-waved.
+
+### 10.2 The session model
+
+One workflow document, `warmup`, whose single `switch` picks a platform. One
+**schedule per session**, each carrying its slot as an ordinary parameter:
+
+| Schedule | Cron (`Asia/Jakarta`) | `params` |
+|---|---|---|
+| Warmup pagi | `0 8 * * *` | `{ slot: 0 }` |
+| Warmup siang | `0 13 * * *` | `{ slot: 1 }` |
+| Warmup malam | `0 19 * * *` | `{ slot: 2 }` |
+
+and the same Latin square as §4, with the slot supplied by the schedule instead
+of by a loop counter:
+
+```
+platform = ($run.index + $params.slot) % 3
+```
+
+Three schedule rows rather than one is the right shape, not a cost. Each is
+visible on the Schedules tab, each can be disabled alone, each carries its own
+IANA timezone (`schedules.timezone`, never a UTC offset — offsets break on DST),
+and — the answer to *"satu grup device bisa jalan di jam tertentu"* — **each can
+target a different group or label**, because a schedule's device target is
+already `{groupId} | {labelIds} | {deviceIds}` and is re-resolved at every firing
+(E2). Group A at 08:00 and Group B at 10:00 is two schedule rows and no code.
+
+**Deriving the slot from the clock instead was considered and rejected.**
+`floor($now / 28800000) % 3` looks tempting and is stateless, but `$now` is
+epoch milliseconds, so its 8-hour buckets are UTC buckets: 08:00 and 13:00 WIB
+are 01:00 and 06:00 UTC, which land in the *same* bucket and would hand both
+sessions the same platform. A slot that is a schedule parameter is timezone-safe
+because the schedule already owns the timezone.
+
+### 10.3 The honest cost: coverage is emergent again, and it self-heals
+
+Under §3 a device either covered all three platforms or its run failed visibly.
+Under §10.2 a device that is offline at 13:00 simply misses Instagram, and
+nothing is in an error state — the exact failure the client named.
+
+What saves it is that the rotation **keeps turning**. If the slot advances across
+days (§10.4), a missed platform is *delayed, not lost*: the device meets it again
+within one cycle. That is a strictly better property than §3 had, where a failed
+run needed an operator to press "re-run failed".
+
+It is not a substitute for being able to see it. Two things are needed, and
+neither is large:
+
+1. **A coverage view** — per device, the platforms covered over the last cycle,
+   read from the runs that already exist. This is reporting over `workflow_steps`
+   and the `set` node's recorded output, not new scheduling machinery. It is the
+   thing that answers *"buktikan device #7 kebagian semua"*.
+2. **`continueOnMemberFailure: true`** on every warmup `shuffle` (K1) — otherwise
+   one unreadable screen still discards the whole session, as measured on
+   2026-09-07.
+
+### 10.4 Sessions per day vs platforms: the decision the client has not made
+
+With three platforms, **daily coverage requires three sessions**. The client said
+"2 kali atau 3 kali". Those are two different products:
+
+| Sessions/day | Slot source | Coverage window | Verdict |
+|---|---|---|---|
+| **3** | `slot` fixed per schedule, `0..2` | **every calendar day** | simplest; recommended if "kebagian rata" means *per hari* |
+| **2** | `slot` must advance across days, or the same two platforms repeat forever | **1.5 days** (any 3 consecutive sessions) | fine, but "rata" now means *per cycle*, not *per day* — the client must agree to that sentence |
+| **N, varying** | a running ordinal | N/A | do not build; the guarantee stops being statable |
+
+For the 2/day case the slot cannot stay a constant per schedule, or device #0
+does TikTok every morning and Instagram every afternoon **and never opens
+YouTube at all**. It needs a day component:
+
+```
+slot = ($params.slot + floor($now / 86400000)) % 3
+```
+
+`floor` is in the function table, and the UTC-bucket objection of §10.2 does not
+apply here: this bucket is a whole day, and any Jakarta session between 07:00 and
+23:59 WIB falls inside one UTC day. A session scheduled at 02:00 WIB would not,
+and is the one case to refuse or special-case.
+
+### 10.5 "Random jam" is two knobs, and one of them does not exist yet
+
+The client's *"berarti random dong?"* is two separate things:
+
+| Want | Mechanism | Status |
+|---|---|---|
+| The whole session drifts, so the farm never starts on the exact minute | `schedules.jitterSec` — a fresh draw per fire, shifts the WHOLE dispatch | **exists** (`runner.ts:146`) |
+| **Each device starts at its own random time** inside a window | `pacing.deviceDelayMs` — an independent draw per member, *"start them together but not at the same instant"* | **exists on a manual run, MISSING on a schedule** |
+| Devices start in a fixed ladder | `deviceIntervalMs` | exists on both |
+| Which device leads changes daily | `order: 'random'` — Fisher-Yates over `crypto.getRandomValues` | exists on both |
+
+**Gap 7.4 — `deviceDelayMs` on a schedule.** `schedules` carries `repeatCount`,
+`intervalMinMs`, `intervalMaxMs` and `deviceIntervalMs`, and the runner builds
+its `pacing` from exactly those four (`runner.ts:276-280`) — so `deviceDelayMs`
+falls to its `[0, 0]` default on **every scheduled run**. A manual *Run workflow*
+can stagger each phone by a random amount; a schedule cannot. This is the same
+class of defect CLAUDE.md already names ("a constant nobody sends is a knob that
+does not turn"), one level down: a column nobody has.
+
+It matters here more than anywhere else, because *"tiap device jalan di jam yang
+beda-beda"* is **exactly** `deviceDelayMs`, and the alternative reading — one
+schedule per device — is 40 schedule rows and is not a design.
+
+The mechanism behind it is sound at hour scale, which is what makes this worth
+doing rather than working around: the pacer bakes the stagger into the member
+run's own `notBefore` **column** (`pacer.ts:90`, plan 94 §3.8) rather than
+holding an in-memory timer, so a two-hour spread survives a core restart, and
+`rearm()` arms a single timer at the earliest future `notBefore` across the
+whole farm. Two new columns and one line in the runner's `pacing` literal.
+
+### 10.6 What NOT to use for this
+
+`schedules.repeatCount` + `intervalMinMs`/`intervalMaxMs` looks like it answers
+"2–3 warmups a day" in one row, and the interval is genuinely drawn per device
+per repetition (`pacer.ts:128`). It is still the wrong tool: a repetition is
+another **run of the same job with the same params** (plan 211 §3.2 decision 3),
+so `$params.slot` is identical across all of them and every repetition picks the
+**same platform**. It repeats a warmup; it does not rotate one. Use it if a
+device should do TikTok twice; never to express the rotation.
+
+### 10.7 Revised build list
+
+7.1 (schedule → workflow) is unchanged and remains the blocker. Add:
+
+- **7.4 — `deviceDelayMs` on a schedule** (§10.5). Two columns, one runner line,
+  one Studio field. Small, and the client's "random jam" is unbuildable without it.
+- **7.5 — the coverage view** (§10.3 item 1). Reporting only; no new scheduling.
+
+7.2 (the `$run.index`-as-identity warning) survives Q5's deferral **unchanged and
+still ships with 7.1**. Deferring accounts is precisely what makes the warning
+urgent: the moment someone does add accounts, `at($params.accounts, $run.index)`
+is the first thing they will write, and by then three schedules a day will be
+reshuffling that index six ways. A guard rail is cheapest before the road opens.
+
+### 10.8 Decisions this amendment adds
+
+| # | Decision | Blocks |
+|---|---|---|
+| Q7 | **Two sessions a day or three?** Three gives daily coverage; two moves "rata" to a 1.5-day cycle and needs the day component of §10.4 | the slot formula, and the sentence we promise the client |
+| Q8 | Do all devices share one session timetable, or do groups get their own hours? Groups cost nothing — one schedule row each | the number of schedule rows, not the design |
+| Q9 | Build 7.4 (`deviceDelayMs` on a schedule)? Without it, "random jam per device" is not expressible on a schedule at all | §10.5 |
+| Q10 | Is the coverage view (7.5) in the first delivery, or does the client accept the self-healing rotation of §10.3 without a report? | scope of the first release |
 
 ## 11. Handoff report
 
