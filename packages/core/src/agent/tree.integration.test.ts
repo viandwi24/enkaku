@@ -610,11 +610,11 @@ describe('tree — a parent killed by maxRunSeconds cancels its still-running ch
     const thread = runner.createThread({ agentId: parent.id })
     const parentRun = runner.postMessage(thread.id, 'go', 'user:u1')
 
-    await waitUntil(() => env.threads.mustGetRun(parentRun.id).status === 'failed' && env.threads.mustGetRun(parentRun.id).stopReason === 'max-seconds', 6000)
+    await waitUntil(() => env.threads.mustGetRun(parentRun.id).status === 'failed' && env.threads.mustGetRun(parentRun.id).stopReason === 'max-seconds', 15_000)
     // The cascade signals cancellation to both children, but each is blocked inside its OWN
     // in-flight `test.device.hold` call — release them so cancellation actually completes promptly
     // instead of waiting out the 60s deadline (plan 66 §3.7 step 3).
-    await waitUntil(() => releases.size === 2, 6000)
+    await waitUntil(() => releases.size === 2, 15_000)
     for (const release of releases.values()) release()
 
     // Both children are cancelled as a result (plan 67 §3.5, criterion 13) — polled to their
@@ -622,19 +622,24 @@ describe('tree — a parent killed by maxRunSeconds cancels its still-running ch
     await waitUntil(() => {
       const rows = env.threads.listRunsForRoot(parentRun.id).filter((r) => r.id !== parentRun.id)
       return rows.length === 2 && rows.every((r) => r.status === 'cancelled')
-    })
+    }, 15_000)
     expect(env.agentHolderOf('d1')).toBeNull()
     expect(env.agentHolderOf('d2')).toBeNull()
     // Same reason as the 12s above, and the arithmetic is worse here: this
     // test deliberately burns 1.2s inside `test_slow` to cross the 1s budget,
-    // then declares two `waitUntil(…, 6000)` and one more at the 4000
-    // default — up to ~17s of internal budget inside a test bun:test caps at
-    // 5s. It could never use what it asks for: on an unloaded machine it
-    // finishes in about a second and a half and passes, and on a loaded CI
-    // runner it hits the 5s cap and reports a timeout that looks like a
-    // cascade bug rather than a test that under-declared its own budget
-    // (observed on CI, 2026-09-06).
-  }, 20_000)
+    // and then has to wait for a wall-clock deadline to be NOTICED — which
+    // happens at the loop's next top-of-iteration check, after two child
+    // spawns, on whatever CPU share is left over from 397 other test files.
+    //
+    // The 2026-09-06 fix raised the outer timeout to 20s but left the three
+    // inner budgets at 6s + 6s + the 4s default, so the FIRST wait was still
+    // the tightest thing in the test: it timed out at 6.1s on CI while the
+    // whole file passes locally in about 8s (observed on CI, 2026-09-08).
+    // All three now get 15s inside a 60s test, so the internal budget fits
+    // the declared one with room to spare. Nothing here waits longer than it
+    // needs to — a `waitUntil` returns the moment its predicate holds, and on
+    // an unloaded machine this still finishes in about a second and a half.
+  }, 60_000)
 })
 
 describe('tree — one device holder, sibling contention refused naming the winner (plan 67 §3.7, criterion 14)', () => {
