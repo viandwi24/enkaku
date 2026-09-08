@@ -40,8 +40,9 @@ import type { KvApi, KvListItem } from './types'
  *
  * The vocabulary is deliberately domain-free — `done`, not `posted`. This
  * queue holds whatever a plugin puts in it, and a status naming one plugin's
- * verb would read as a mistake in every other. See `fromLegacyStatus` below for
- * the compatibility this costs and how it is paid.
+ * verb would read as a mistake in every other. A plugin adopting this from its
+ * own older shape pays for that with `readLegacy` (see `createQueue`), which is
+ * where its history belongs rather than here.
  */
 export const QUEUE_STATUSES = ['pending', 'claimed', 'done', 'failed'] as const
 export type QueueStatus = (typeof QUEUE_STATUSES)[number]
@@ -112,8 +113,16 @@ export type QueuePick = 'in-order' | 'random'
 
 export interface Queue<P> {
   keyFor(id: string): string
-  /** Adds or replaces an item, as `pending`. Replacing resets the claim and the error, deliberately: re-adding work is how a caller says "do this again". */
-  put(id: string, payload: P): Promise<void>
+  /**
+   * Adds or replaces an item, as `pending`. Re-adding is how a caller says "do
+   * this again", so the claim and the last error always reset.
+   *
+   * `keepHistory` decides what happens to `attempts` and `settledAt`. Default
+   * false — a clean slate, the simplest reading of "queue this". Pass true when
+   * the count of past attempts is itself information worth keeping, which is
+   * what tells an operator an item keeps failing rather than being new.
+   */
+  put(id: string, payload: P, opts?: { keepHistory?: boolean }): Promise<void>
   get(id: string): Promise<QueueItem<P> | null>
   list(opts?: { status?: QueueStatus }): Promise<QueueItem<P>[]>
   /** `null` when nothing is claimable. A caller reports that as "nothing to do", never as a failure. */
@@ -156,27 +165,6 @@ function shuffled<T>(items: T[]): T[] {
   return out
 }
 
-/**
- * Compatibility with the queue this generalises.
- *
- * `plugins/tiktok-automation-pack` shipped `status: 'posted'` and has been
- * writing it to real farms. Its schema is `.strict()` and throws on anything it
- * does not recognise — which is the right posture, and exactly why renaming the
- * value without handling it would greet an operator with a hard failure on a
- * queue that was working yesterday.
- *
- * So `posted` is read as `done` on the way in. It is never WRITTEN: an entry
- * settled after this lands stores `done`, and the legacy value disappears
- * naturally as items are re-settled. This is a read-side alias with a finite
- * life, not a second supported spelling.
- */
-function fromLegacyStatus(value: unknown): unknown {
-  if (value !== null && typeof value === 'object' && (value as { status?: unknown }).status === 'posted') {
-    return { ...(value as object), status: 'done' }
-  }
-  return value
-}
-
 /** Every entry under `prefix`, paging until the cursor runs out. */
 async function listAll(kv: KvApi, prefix: string): Promise<KvListItem[]> {
   const items: KvListItem[] = []
@@ -204,9 +192,10 @@ export function orderCandidates<P>(
   pick: QueuePick,
   nowSec: number,
   staleClaimSec: number,
+  readLegacy: (raw: unknown) => unknown = (raw) => raw,
 ): { key: string; item: QueueItem<P>; version: number }[] {
   const parsed = items.map((listed) => {
-    const result = schema.safeParse(fromLegacyStatus(listed.value))
+    const result = schema.safeParse(readLegacy(listed.value))
     if (!result.success) {
       throw new Error(`queue entry "${listed.key}" has an incompatible shape (expected version 1): ${result.error.message}`)
     }
@@ -232,10 +221,25 @@ export function createQueue<P>(opts: {
   /** The caller's payload schema. This module never interprets what it validates. */
   payload: z.ZodType<P>
   staleClaimSec?: number
+  /**
+   * Translates an entry written by an OLDER shape into this one, on read only.
+   *
+   * A plugin that kept its own queue before adopting this one has rows on real
+   * farms in its own shape, and the schema here is `.strict()` — so without
+   * this, adoption would greet an operator with a hard failure on a queue that
+   * worked yesterday.
+   *
+   * It belongs to the CALLER, not to this module: the envelope is generic, and
+   * baking one plugin's history into it would make every other plugin carry a
+   * translation for a shape it never wrote. Applied on every read and never on
+   * a write, so the legacy shape disappears as entries are re-settled.
+   */
+  readLegacy?: (raw: unknown) => unknown
 }): Queue<P> {
   const prefix = (opts.prefix ?? 'queue:').endsWith(':') ? (opts.prefix ?? 'queue:') : `${opts.prefix}:`
   const staleClaimSec = opts.staleClaimSec ?? DEFAULT_STALE_CLAIM_SEC
   const schema = queueItemSchema(opts.payload) as unknown as z.ZodType<QueueItem<P>>
+  const readLegacy = opts.readLegacy ?? ((raw: unknown) => raw)
   const kv = opts.kv
   const keyFor = (id: string): string => `${prefix}${id}`
   const nowSec = (): number => Math.floor(Date.now() / 1000)
@@ -258,7 +262,7 @@ export function createQueue<P>(opts: {
     const listed = await listAll(kv, key)
     const found = listed.find((entry) => entry.key === key)
     if (!found) return null
-    const result = schema.safeParse(fromLegacyStatus(found.value))
+    const result = schema.safeParse(readLegacy(found.value))
     if (!result.success) {
       throw new Error(`queue entry "${key}" has an incompatible shape (expected version 1): ${result.error.message}`)
     }
@@ -268,16 +272,20 @@ export function createQueue<P>(opts: {
   return {
     keyFor,
 
-    async put(id, payload) {
+    async put(id, payload, putOpts) {
+      const previous = putOpts?.keepHistory ? await readWithVersion(keyFor(id)) : null
       const item: QueueItem<P> = {
         version: 1,
         id,
         payload,
         status: 'pending',
+        // Always cleared, whatever `keepHistory` says: an item that is pending
+        // again is by definition not claimed, and carrying a stale claim marker
+        // would let `claimNext`'s stale check reason about a claim nobody holds.
         claimedBy: null,
         claimedAt: null,
-        settledAt: null,
-        attempts: 0,
+        settledAt: previous?.item.settledAt ?? null,
+        attempts: previous?.item.attempts ?? 0,
         lastError: null,
       }
       await kv.set(keyFor(id), item)
@@ -291,7 +299,7 @@ export function createQueue<P>(opts: {
     async list(listOpts) {
       const items = await listAll(kv, prefix)
       const parsed = items.map((listed) => {
-        const result = schema.safeParse(fromLegacyStatus(listed.value))
+        const result = schema.safeParse(readLegacy(listed.value))
         if (!result.success) {
           throw new Error(`queue entry "${listed.key}" has an incompatible shape (expected version 1): ${result.error.message}`)
         }
@@ -303,7 +311,7 @@ export function createQueue<P>(opts: {
 
     async claimNext({ claimedBy, pick = 'in-order' }) {
       const now = nowSec()
-      const candidates = orderCandidates(await listAll(kv, prefix), schema, pick, now, staleClaimSec)
+      const candidates = orderCandidates(await listAll(kv, prefix), schema, pick, now, staleClaimSec, readLegacy)
       for (const candidate of candidates) {
         const claimed: QueueItem<P> = { ...candidate.item, status: 'claimed', claimedBy, claimedAt: now }
         const written = await kv.setIfVersion(candidate.key, claimed, candidate.version)

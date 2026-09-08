@@ -123,25 +123,59 @@ describe('orderCandidates', () => {
   })
 })
 
-describe('legacy compatibility', () => {
+describe('readLegacy — the caller owns its own history', () => {
   /**
-   * The tiktok pack shipped `status: 'posted'` and has written it to real
-   * farms. Renaming it without handling this would greet an operator with a
-   * hard failure on a queue that worked yesterday.
+   * A plugin that kept its own queue before adopting this one has rows on real
+   * farms in its own shape, and the envelope here is `.strict()`. Without a
+   * translation, adoption would greet an operator with a hard failure on data
+   * they cannot get back — so the hook exists, and it belongs to the CALLER:
+   * baking one plugin's history into this module would make every other plugin
+   * carry a translation for a shape it never wrote.
    */
-  test("a stored 'posted' reads as done rather than throwing", () => {
-    const rows = [listed('q:a', { ...item({ id: 'a' }), status: 'posted' })]
-    // It parses (no throw) and is terminal, exactly as `done` is.
-    expect(orderCandidates(rows, ItemSchema, 'in-order', 10_000, 1_800)).toEqual([])
+  const legacy = { v: 1, key: 'a', text: 'hi', state: 'waiting' }
+  const translate = (raw: unknown): unknown => {
+    const row = raw as Record<string, unknown>
+    if (!row || typeof row !== 'object' || 'payload' in row) return raw
+    return {
+      version: 1,
+      id: row.key,
+      payload: { caption: row.text },
+      status: row.state === 'waiting' ? 'pending' : row.state,
+      claimedBy: null,
+      claimedAt: null,
+      settledAt: null,
+      attempts: 0,
+      lastError: null,
+    }
+  }
+
+  test('an entry in an older shape is readable through the hook', async () => {
+    const kv = fakeKv()
+    kv.seed('queue:a', legacy)
+    const queue = createQueue({ kv, payload: PayloadSchema, readLegacy: translate })
+    expect((await queue.get('a'))?.payload).toEqual({ caption: 'hi' })
   })
 
-  test("'posted' is never written back — settling stores done", async () => {
+  test('an older entry is claimable, so adoption does not strand queued work', async () => {
     const kv = fakeKv()
-    kv.seed('queue:a', { ...item({ id: 'a' }), status: 'claimed', claimedBy: 'd1', claimedAt: 0 })
-    const queue = createQueue({ kv, payload: PayloadSchema })
-    const claim = { key: 'queue:a', item: item({ id: 'a', status: 'claimed', claimedBy: 'd1', claimedAt: 0 }) }
-    await queue.settle(claim, { status: 'done' })
-    expect((kv.raw.get('queue:a')?.value as { status: string }).status).toBe('done')
+    kv.seed('queue:a', legacy)
+    const queue = createQueue({ kv, payload: PayloadSchema, readLegacy: translate })
+    expect((await queue.claimNext({ claimedBy: 'd1' }))?.item.id).toBe('a')
+  })
+
+  test('the translation is read-only — what gets written back is the new shape', async () => {
+    const kv = fakeKv()
+    kv.seed('queue:a', legacy)
+    const queue = createQueue({ kv, payload: PayloadSchema, readLegacy: translate })
+    const claim = await queue.claimNext({ claimedBy: 'd1' })
+    await queue.settle(claim!, { status: 'done' })
+    expect(kv.raw.get('queue:a')?.value).toMatchObject({ id: 'a', payload: { caption: 'hi' }, status: 'done' })
+  })
+
+  test('without the hook, an older entry fails loudly rather than being half-read', async () => {
+    const kv = fakeKv()
+    kv.seed('queue:a', legacy)
+    expect(createQueue({ kv, payload: PayloadSchema }).list()).rejects.toThrow(/queue:a/)
   })
 })
 
