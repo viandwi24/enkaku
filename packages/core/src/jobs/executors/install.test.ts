@@ -82,6 +82,21 @@ describe('createInstallExecutor', () => {
       async listMedia() {
         throw new Error('not exercised by this test')
       },
+      async fsList() {
+        throw new Error('not exercised by this test')
+      },
+      async fsStat() {
+        throw new Error('not exercised by this test')
+      },
+      async fsMove() {
+        throw new Error('not exercised by this test')
+      },
+      async fsDelete() {
+        throw new Error('not exercised by this test')
+      },
+      async fsMkdir() {
+        throw new Error('not exercised by this test')
+      },
       async push() {
         return { mediaScan: { ran: false, method: null, ms: 0, mediaId: null } }
       },
@@ -118,6 +133,21 @@ describe('createInstallExecutor', () => {
         throw new Error('not exercised by this test')
       },
       async listMedia() {
+        throw new Error('not exercised by this test')
+      },
+      async fsList() {
+        throw new Error('not exercised by this test')
+      },
+      async fsStat() {
+        throw new Error('not exercised by this test')
+      },
+      async fsMove() {
+        throw new Error('not exercised by this test')
+      },
+      async fsDelete() {
+        throw new Error('not exercised by this test')
+      },
+      async fsMkdir() {
         throw new Error('not exercised by this test')
       },
       async push() {

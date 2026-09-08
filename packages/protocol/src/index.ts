@@ -268,6 +268,28 @@ export {
   type DevicePreparation,
 } from './device-preparation'
 export {
+  DeviceFsKindSchema,
+  DeviceFsEntrySchema,
+  DeviceFsListArgsSchema,
+  DeviceFsListResultSchema,
+  DeviceFsStatArgsSchema,
+  DeviceFsStatResultSchema,
+  DeviceFsMoveArgsSchema,
+  DeviceFsDeleteArgsSchema,
+  DeviceFsMkdirArgsSchema,
+  DeviceFsOkResultSchema,
+  type DeviceFsKind,
+  type DeviceFsEntry,
+  type DeviceFsListArgs,
+  type DeviceFsListResult,
+  type DeviceFsStatArgs,
+  type DeviceFsStatResult,
+  type DeviceFsMoveArgs,
+  type DeviceFsDeleteArgs,
+  type DeviceFsMkdirArgs,
+  type DeviceFsOkResult,
+} from './device-fs'
+export {
   DeviceMediaKindSchema,
   DeviceMediaItemSchema,
   DeviceMediaListArgsSchema,

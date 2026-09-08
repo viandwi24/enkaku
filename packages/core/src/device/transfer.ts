@@ -14,6 +14,14 @@ import {
 } from '@enkaku/adb'
 import { grantRuntimePermissions, isGrantAllPermissionsRejection } from '@enkaku/drivers'
 import type {
+  DeviceFsDeleteArgs,
+  DeviceFsListArgs,
+  DeviceFsListResult,
+  DeviceFsMkdirArgs,
+  DeviceFsMoveArgs,
+  DeviceFsOkResult,
+  DeviceFsStatArgs,
+  DeviceFsStatResult,
   DeviceMediaKind,
   DeviceMediaListArgs,
   DeviceMediaListResult,
@@ -26,6 +34,14 @@ import type { Db } from '../db'
 import { artifacts, devices } from '../db/schema'
 import { devicePullArtifactPath, registerDeviceArtifact } from '../runner/artifact-store'
 import { EnkakuError } from '../util/errors'
+import {
+  deleteDeviceFs,
+  listDeviceFs,
+  mkdirDeviceFs,
+  moveDeviceFs,
+  statDeviceFs,
+  type DeviceFsBackend,
+} from './device-fs'
 import { findMediaIdForPath, queryDeviceMedia, type MediaQueryBackend } from './media-query'
 import { validateRemotePath } from './path-validate'
 
@@ -123,6 +139,17 @@ export interface TransferService {
    * and takes no `transferId`, so it never enters the transfer registry.
    */
   listMedia(deviceId: string, args: DeviceMediaListArgs): Promise<DeviceMediaListResult>
+  /**
+   * The device file manager (plan 700 D1) — browse and manage files ON the
+   * phone, the half `push`/`pull` never had. Like `listMedia`, these move no
+   * bytes and take no `transferId`, so none of them enters the transfer
+   * registry.
+   */
+  fsList(deviceId: string, args: DeviceFsListArgs): Promise<DeviceFsListResult>
+  fsStat(deviceId: string, args: DeviceFsStatArgs): Promise<DeviceFsStatResult>
+  fsMove(deviceId: string, args: DeviceFsMoveArgs): Promise<DeviceFsOkResult>
+  fsDelete(deviceId: string, args: DeviceFsDeleteArgs): Promise<DeviceFsOkResult>
+  fsMkdir(deviceId: string, args: DeviceFsMkdirArgs): Promise<DeviceFsOkResult>
 }
 
 export interface TransferServiceDeps {
@@ -305,6 +332,23 @@ function mediaKindForPath(remotePath: string): DeviceMediaKind | null {
   return null
 }
 
+/**
+ * Adapts the adb backend to `device-fs.ts`'s port. Separate from
+ * `mediaQueryBackend` below because these commands need `stderr` — a file
+ * manager's failures ("Permission denied", "Read-only file system") are the
+ * whole message an operator needs, and a media query has no such message to
+ * relay.
+ */
+function deviceFsBackend(backend: Backend): DeviceFsBackend {
+  return {
+    exec: (cmd) =>
+      backend.adb
+        .exec(backend.serial, cmd, { profile: 'appLifecycle' })
+        .then((r) => ({ exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr }))
+        .catch(() => null),
+  }
+}
+
 /** Adapts the adb backend to `media-query.ts`'s narrow port — one `exec`, never throwing. */
 function mediaQueryBackend(backend: Backend): MediaQueryBackend {
   return {
@@ -433,6 +477,26 @@ export function createTransferService(deps: TransferServiceDeps): TransferServic
   return {
     cancel(transferId) {
       controllers.get(transferId)?.abort()
+    },
+
+    fsList(deviceId, args) {
+      return listDeviceFs(deviceFsBackend(resolveBackend(deps, deviceId)), args)
+    },
+
+    fsStat(deviceId, args) {
+      return statDeviceFs(deviceFsBackend(resolveBackend(deps, deviceId)), args)
+    },
+
+    fsMove(deviceId, args) {
+      return moveDeviceFs(deviceFsBackend(resolveBackend(deps, deviceId)), args)
+    },
+
+    fsDelete(deviceId, args) {
+      return deleteDeviceFs(deviceFsBackend(resolveBackend(deps, deviceId)), args)
+    },
+
+    fsMkdir(deviceId, args) {
+      return mkdirDeviceFs(deviceFsBackend(resolveBackend(deps, deviceId)), args)
     },
 
     listMedia(deviceId, args) {
