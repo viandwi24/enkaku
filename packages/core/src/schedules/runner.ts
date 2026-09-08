@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm'
 import {
+  compileWorkflowParams,
   reconcileParams,
   ScriptRefSchema,
   type AgentRunStatus,
@@ -15,15 +16,16 @@ import {
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import { stopBatch } from '../api/batches'
-import { addRunsToBatch, createBatch, type BatchDispatchDeps } from '../groups/dispatch'
+import { addRunsToBatch, createBatch, createWorkflowBatch, type BatchDispatchDeps } from '../groups/dispatch'
 import { resolveGroup, resolveTarget } from '../groups/resolve'
 import type { Db } from '../db'
-import { batches, groups, jobs, schedules, scheduleAgentTargets, type ScheduleAgentTargetRow, type ScheduleRow } from '../db/schema'
+import { batches, groups, jobs, schedules, scheduleAgentTargets, scheduleWorkflowTargets, type ScheduleAgentTargetRow, type ScheduleRow, type ScheduleWorkflowTargetRow } from '../db/schema'
 import type { JobStore } from '../queue/job-store'
 import type { RunStore } from '../jobs/runs/store'
 import type { Scheduler } from '../queue/scheduler'
 import { resolveScriptRef } from '../scripts/resolve'
 import type { ScriptRegistry } from '../scripts/registry'
+import type { WorkflowStore } from '../workflows/store'
 import type { JobService } from '../services/job-service'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -111,6 +113,19 @@ export interface ScheduleRunnerDeps {
    */
   registry?: ScriptRegistry
   /**
+   * Plan 314 §7.1 — the workflow side of dispatch. A schedule only ever
+   * reaches this when a `scheduleWorkflowTargets` row exists for it, which
+   * no pre-plan-314 test creates, so every existing `ScheduleRunnerDeps`
+   * literal keeps compiling and passing untouched — the same reason plan
+   * 68's `agentDispatch` is optional.
+   *
+   * Omitted while a workflow schedule exists, the fire fails with a named
+   * error rather than silently doing nothing: a schedule that quietly never
+   * runs is the failure nobody notices, which is the whole subject of the
+   * feature this serves.
+   */
+  workflows?: WorkflowStore
+  /**
    * Plan 94 §3.9, §4.9, step 94.8 — `onOverlap: 'cancel-previous'`'s ONLY
    * abort path for a `running` member of the previous batch (see
    * `stopBatch`'s own doc in `api/batches.ts`, "no second abort path").
@@ -139,6 +154,28 @@ function resolveDeps(deps: ScheduleRunnerDeps): ResolvedDeps {
     random: deps.random ?? Math.random,
     sleep: deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
     fallbackIntervalMs: deps.fallbackIntervalMs ?? 15_000,
+  }
+}
+
+/**
+ * The batch pacing a schedule stores, in the shape `createBatch` and
+ * `createWorkflowBatch` both take (plan 94 §3.7, plan 314 §10.5).
+ *
+ * One function rather than an inline literal per branch, because the literal
+ * is exactly where this went wrong before: the runner built it from four of
+ * the schedule's pacing columns and `deviceDelayMs` — the fifth and sixth,
+ * and the only ones that mean "each device starts at its own time" — simply
+ * were not there, so a scheduled run silently started every phone together
+ * however the operator set it. A knob nobody sends is a knob that does not
+ * turn. With two branches that mistake could now be made twice; with one
+ * function it cannot be made at all.
+ */
+function schedulePacing(schedule: ScheduleRow): { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs: [number, number] } {
+  return {
+    count: schedule.repeatCount,
+    intervalMs: [schedule.intervalMinMs, schedule.intervalMaxMs],
+    deviceIntervalMs: schedule.deviceIntervalMs,
+    deviceDelayMs: [schedule.deviceDelayMinMs, schedule.deviceDelayMaxMs],
   }
 }
 
@@ -199,6 +236,11 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
     return fireAgentOnce(deps, schedule, agentTarget, dueAt, missedCount)
   }
 
+  // The workflow discriminator (plan 314 §7.1), read for the same reason and
+  // in the same place the agent one is: BEFORE `schedules.scriptRef` is
+  // touched, so the script branch below is byte-for-byte what it was.
+  const workflowTarget = deps.db.select().from(scheduleWorkflowTargets).where(eq(scheduleWorkflowTargets.scheduleId, schedule.id)).get() ?? null
+
   const active = isBatchActive(deps, schedule.batchId)
 
   // Claim this fire time first — see the doc comment above.
@@ -235,6 +277,24 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
       ...(deps.registry ? { scriptNameOf: (scriptId: string) => deps.registry!.get(scriptId) } : {}),
     }
     try {
+      // The queue timeout lives on the run, set from whatever created it
+      // (plan 21 §3.3). Hoisted above the branch so a workflow schedule
+      // honours it identically — plan 68 §3.2's rule that a change to the
+      // shared policy "cannot apply to one kind and not the other" is the
+      // same reason overlap and jitter sit outside this try at all.
+      const expiresAtShared =
+        schedule.queueTimeoutSec != null ? Math.floor(deps.clock().getTime() / 1000) + schedule.queueTimeoutSec : null
+
+      if (workflowTarget) {
+        // The workflow branch (plan 314 §7.1). It returns rather than
+        // duplicating anything: overlap, jitter, the queue timeout, the
+        // outcome row and the `schedule.fired` broadcast all stay in this
+        // one function, shared by all three work kinds.
+        const dispatched = dispatchWorkflowFire(deps, schedule, workflowTarget, batchDeps, batchId, expiresAtShared)
+        batchId = dispatched.batchId
+        runIds = dispatched.runIds
+        outcome = 'dispatched'
+      } else {
       // Resolved once, at the moment of dispatch — never per job (plan 62
       // §3.4): a batch of twenty devices from one firing must run exactly
       // one version, even if a publish lands mid-dispatch. `@latest` is
@@ -256,10 +316,7 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
         )
       }
 
-      // The queue timeout lives on the run, set from whatever created it
-      // (plan 21 §3.3) — a schedule is simply the first caller to set it.
-      const expiresAt =
-        schedule.queueTimeoutSec != null ? Math.floor(deps.clock().getTime() / 1000) + schedule.queueTimeoutSec : null
+      const expiresAt = expiresAtShared
 
       if (!batchId) {
         // First fire (plan 211 §3.2 decision 4): the schedule owns a NEW
@@ -273,11 +330,7 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
           priority: schedule.priority,
           createdBy: schedule.createdBy,
           expiresAt,
-          pacing: {
-            count: schedule.repeatCount,
-            intervalMs: [schedule.intervalMinMs, schedule.intervalMaxMs],
-            deviceIntervalMs: schedule.deviceIntervalMs,
-          },
+          pacing: schedulePacing(schedule),
           // G10's own parameter ("every run trigger = 'schedule'") and
           // `GET /api/schedules/:id/jobs` both need this stamped from the
           // FIRST fire, not only from a later one that goes through
@@ -329,6 +382,7 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
         runIds = addedRunIds
       }
       outcome = 'dispatched'
+      }
     } catch (err) {
       const code = err instanceof EnkakuError ? err.code : null
       outcome = code === 'E_NO_TARGETS' ? 'no-targets' : 'error'
@@ -355,6 +409,129 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
     type: 'schedule.fired',
     payload: { scheduleId: schedule.id, outcome, batchId, dueAt: Math.floor(dueAt.getTime() / 1000), runIds },
   })
+}
+
+/**
+ * The workflow branch of `fireOnce` (plan 314 §7.1) — the third work kind.
+ *
+ * It owns only the DISPATCH. Overlap, jitter, the queue timeout, the
+ * `lastFireOutcome` row and the `schedule.fired` broadcast all stay in
+ * `fireOnce`, for the reason plan 68 §3.2 gave when the agent branch was
+ * added: a change to any of those must not apply to one kind and not
+ * another.
+ *
+ * Two things are re-resolved on EVERY firing, never frozen at the first:
+ *
+ * - the **document**, by name. `snapshotForJob` returns a fresh parse, which
+ *   `createWorkflowBatch` copies onto each member job. Editing the workflow
+ *   therefore changes what tomorrow runs, which is the whole reason a
+ *   workflow is worth scheduling — the alternative, pinning the document at
+ *   the first fire, would mean an operator edits a warm-up, sees it saved,
+ *   and the farm runs last month's version forever.
+ * - the **device target**, by `resolveScheduleDeviceIds`, exactly as the
+ *   script branch does (spec §4.7).
+ *
+ * Params go through the SAME `reconcileParams` the script branch uses, against
+ * the document's own declared params — so a workflow whose params changed
+ * under a schedule fails with the same named `params_incompatible` error a
+ * script does, rather than dispatching with a shape the document cannot read.
+ */
+function dispatchWorkflowFire(
+  deps: ResolvedDeps,
+  schedule: ScheduleRow,
+  target: ScheduleWorkflowTargetRow,
+  batchDeps: BatchDispatchDeps,
+  existingBatchId: string | null,
+  expiresAt: number | null,
+): { batchId: string; runIds: string[] } {
+  if (!deps.workflows) {
+    // Named, not silent. A workflow schedule on a core wired without the
+    // store is a wiring bug, and the failure mode this whole feature exists
+    // to prevent is a schedule that quietly never runs.
+    throw new EnkakuError('E_WORKFLOW_STORE_UNAVAILABLE', 'this core has no workflow store wired; a workflow schedule cannot dispatch')
+  }
+  const doc = deps.workflows.snapshotForJob(target.workflowName)
+
+  const reconciliation = reconcileParams(compileWorkflowParams(doc.params), target.params)
+  if (reconciliation.blocking) {
+    const blocking = reconciliation.findings.filter((f) => f.kind === 'invalid' || f.kind === 'missing')
+    throw new EnkakuError(
+      'params_incompatible',
+      `workflow "${target.workflowName}"'s parameters no longer match this schedule's stored parameters: ${blocking.map((f) => `${f.path} (${f.detail})`).join('; ')}`,
+      undefined,
+      blocking.map((f) => ({ path: f.path, message: f.detail })),
+    )
+  }
+
+  if (!existingBatchId) {
+    // First fire (plan 211 §3.2 decision 4) — the schedule owns a new batch.
+    const { batch, jobs: memberJobs } = createWorkflowBatch(batchDeps, {
+      workflowName: target.workflowName,
+      workflowDoc: doc,
+      params: reconciliation.value,
+      target: scheduleTarget(schedule),
+      concurrency: schedule.concurrency,
+      order: schedule.order as BatchOrder,
+      priority: schedule.priority,
+      createdBy: schedule.createdBy,
+      pacing: schedulePacing(schedule),
+      scheduleId: schedule.id,
+      trigger: 'schedule',
+      expiresAt,
+    })
+    return { batchId: batch.id, runIds: memberJobs.map((j) => j.latestRunId).filter((id): id is string => id !== null) }
+  }
+
+  // A later fire — reuse the batch, exactly as the script branch does: a
+  // device newly in the target gets a member job, a device that left keeps
+  // its existing job untouched.
+  const deviceIds = resolveScheduleDeviceIds(deps.db, schedule)
+  const existingMembers = deps.db.select().from(jobs).where(eq(jobs.batchId, existingBatchId)).all()
+  const byDevice = new Map(existingMembers.map((j) => [j.deviceId, j]))
+  const nextSeqBase = existingMembers.length
+  const jobIdsToRun: string[] = []
+  let created = 0
+
+  for (const deviceId of deviceIds) {
+    const existing = byDevice.get(deviceId)
+    if (existing) {
+      // Re-snapshot the document onto a member that is not mid-flight, so
+      // this fire runs what the workflow says TODAY. Guarded on a terminal
+      // latest run rather than applied blindly: a run reads its document
+      // once at start, so rewriting the column under a queued or running
+      // member would hand the next reader a document its earlier steps were
+      // never planned against. A member skipped here picks the new document
+      // up on the following fire.
+      const latest = deps.runs.latestRun(existing.id)
+      const settled = !latest || (latest.status !== 'queued' && latest.status !== 'running')
+      if (settled) deps.db.update(jobs).set({ workflowDoc: doc, params: reconciliation.value }).where(eq(jobs.id, existing.id)).run()
+      jobIdsToRun.push(existing.id)
+      continue
+    }
+    const newJob = deps.runs.createJob({
+      kind: 'workflow',
+      workflowName: target.workflowName,
+      workflowDoc: doc,
+      deviceId,
+      params: reconciliation.value,
+      scriptName: target.workflowName,
+      scriptVersion: null,
+      batchId: existingBatchId,
+      batchSeq: nextSeqBase + created,
+      scheduleId: schedule.id,
+      createdBy: schedule.createdBy,
+    })
+    created += 1
+    jobIdsToRun.push(newJob.id)
+  }
+
+  const { runIds } = addRunsToBatch(batchDeps, existingBatchId, {
+    jobIds: jobIdsToRun,
+    trigger: 'schedule',
+    priority: schedule.priority,
+    expiresAt,
+  })
+  return { batchId: existingBatchId, runIds }
 }
 
 /**

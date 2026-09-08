@@ -31,6 +31,19 @@ export type ScheduleRunOutcome = z.infer<typeof ScheduleRunOutcomeSchema>
 export const ScheduleWorkTargetSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('script'), ref: ScriptRefSchema, params: z.unknown().optional() }),
   z.object({ kind: z.literal('agent'), agentId: z.string().min(1), prompt: z.string().min(1) }),
+  /**
+   * A workflow, by NAME (plan 314 §7.1) — the third kind, and the one spec
+   * §4.7 has described since it was written while no plan built it (plan 217
+   * §57 recorded the gap).
+   *
+   * A name, never a document: the dispatcher resolves it at every firing and
+   * `createWorkflowBatch` snapshots the result onto each member job, so
+   * editing a workflow changes what the NEXT firing runs and never what a
+   * queued or running one does. Pinning the document at the first fire would
+   * mean an operator edits a warm-up, sees it saved, and the farm keeps
+   * running last month's version with nothing to show for the edit.
+   */
+  z.object({ kind: z.literal('workflow'), workflowName: z.string().min(1), params: z.unknown().optional() }),
 ])
 export type ScheduleWorkTarget = z.infer<typeof ScheduleWorkTargetSchema>
 
@@ -87,6 +100,8 @@ export const ScheduleInfoSchema = z.object({
   intervalMinMs: z.number().int().default(0),
   intervalMaxMs: z.number().int().default(0),
   deviceIntervalMs: z.number().int().default(0),
+  /** Plan 314 §10.5 — the per-device random start delay, `[min, max]` ms. `[0, 0]` is "every device starts together", which is what every schedule did before this field existed. */
+  deviceDelayMs: z.tuple([z.number().int(), z.number().int()]).default([0, 0]),
   /** Plan 68 §3.2 — only meaningful for an agent target. */
   threadMode: ScheduleThreadModeSchema,
   /** The reused thread when `threadMode === 'continue'`; null otherwise, or before the first firing. */

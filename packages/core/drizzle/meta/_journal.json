@@ -582,6 +582,13 @@
       "when": 1788842951506,
       "tag": "0082_gray_karma",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "6",
+      "when": 1788857104931,
+      "tag": "0083_deep_joystick",
+      "breakpoints": true
     }
   ]
 }

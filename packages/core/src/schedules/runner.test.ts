@@ -2,12 +2,13 @@ import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
-import { devices, jobRuns, jobs, schedules, scripts, type ScheduleRow } from '../db/schema'
+import { batches, devices, jobRuns, jobs, schedules, scheduleWorkflowTargets, scripts, workflows, type ScheduleRow } from '../db/schema'
 import { createRunStore } from '../jobs/runs/store'
 import { createJobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
 import { createLogger } from '../util/logger'
 import { applyDeviceLabels, createLabel } from '../registry/device-labels'
+import { createWorkflowStore } from '../workflows/store'
 import { fireOnce, scheduleTarget, type ScheduleRunnerDeps } from './runner'
 
 /**
@@ -70,6 +71,8 @@ function seedSchedule(db: Db, overrides: Partial<ScheduleRow> & { id: string }):
     intervalMinMs: overrides.intervalMinMs ?? 0,
     intervalMaxMs: overrides.intervalMaxMs ?? 0,
     deviceIntervalMs: overrides.deviceIntervalMs ?? 0,
+    deviceDelayMinMs: overrides.deviceDelayMinMs ?? 0,
+    deviceDelayMaxMs: overrides.deviceDelayMaxMs ?? 0,
     lastFiredAt: overrides.lastFiredAt ?? null,
     batchId: overrides.batchId ?? null,
     lastFireOutcome: overrides.lastFireOutcome ?? null,
@@ -316,5 +319,196 @@ describe('scheduleTarget (plan 225)', () => {
   test('an empty stored label list is not a label target — it falls through to the device list', () => {
     const db = setUp()
     expect(scheduleTarget(seedSchedule(db, { id: 's', labelIds: [], deviceIds: ['d1'] }))).toEqual({ deviceIds: ['d1'] })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The workflow work target (plan 314 §7.1)
+// ---------------------------------------------------------------------------
+
+/** A one-node document that records which platform this device+slot lands on. */
+function warmupDoc(name = 'warmup') {
+  return {
+    schema: 2 as const,
+    name,
+    title: 'Warmup',
+    description: '',
+    entry: 'start',
+    maxSteps: 10,
+    params: [],
+    nodes: [
+      { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, next: 'pick' },
+      {
+        kind: 'set',
+        id: 'pick',
+        title: '',
+        ui: { x: 0, y: 0 },
+        assignments: [{ name: { const: 'platform' }, value: { expr: '($device.number + 0) % 3' } }],
+        keepOnlySet: false,
+        next: 'finish',
+      },
+      { kind: 'finish', id: 'finish', title: '', ui: { x: 0, y: 0 }, status: 'succeed', message: '' },
+    ],
+  }
+}
+
+function seedWorkflow(db: Db, name = 'warmup') {
+  db.insert(workflows).values({ id: `wf-${name}`, name, doc: warmupDoc(name), createdBy: null, createdAt: new Date(), updatedAt: new Date() }).run()
+}
+
+function seedWorkflowSchedule(db: Db, scheduleId: string, workflowName = 'warmup') {
+  db.insert(scheduleWorkflowTargets).values({ scheduleId, workflowName, params: null, createdAt: new Date() }).run()
+}
+
+describe('fireOnce — a schedule may target a WORKFLOW (plan 314 §7.1)', () => {
+  test('the first fire creates one workflow job per device, each carrying the document', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedDevice(db, 'd2')
+    seedWorkflow(db)
+    // `scriptRef` is unused for this kind — the dispatcher branches on the
+    // companion row before it ever reads that column.
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: '' })
+    seedWorkflowSchedule(db, 's1')
+    const deps = baseDeps(db, { workflows: createWorkflowStore(db) })
+
+    await fireOnce(deps, schedule, new Date())
+
+    const row = db.select().from(schedules).where(eq(schedules.id, 's1')).get()
+    expect(row?.lastFireOutcome).toBe('dispatched')
+    const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, row!.batchId!)).all()
+    expect(memberJobs).toHaveLength(2)
+    for (const j of memberJobs) {
+      expect(j.kind).toBe('workflow')
+      expect(j.workflowName).toBe('warmup')
+      // The snapshot is what makes editing a workflow safe mid-flight.
+      expect((j.workflowDoc as { name?: string } | null)?.name).toBe('warmup')
+      // Stamped, so `GET /api/schedules/:id/jobs` finds it from the FIRST
+      // fire — the screen built to prove a warm-up ran would otherwise be
+      // empty for exactly the schedules it was built for.
+      expect(j.scheduleId).toBe('s1')
+    }
+  })
+
+  test('the first fire’s runs carry trigger `schedule`, not `batch`', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedWorkflow(db)
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: '' })
+    seedWorkflowSchedule(db, 's1')
+    const deps = baseDeps(db, { workflows: createWorkflowStore(db) })
+
+    await fireOnce(deps, schedule, new Date())
+
+    const batchId = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId!
+    expect([...runsByDevice(db, batchId).values()].flat().map((r) => r.trigger)).toEqual(['schedule'])
+  })
+
+  test('a later fire reuses the batch, adds a run per member, and gives a NEW device its own job', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedWorkflow(db)
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: '' })
+    seedWorkflowSchedule(db, 's1')
+    const deps = baseDeps(db, { workflows: createWorkflowStore(db) })
+
+    await fireOnce(deps, schedule, new Date())
+    const batchId = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId!
+    for (const j of db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()) {
+      const run = deps.runs.latestRun(j.id)
+      if (run) db.update(jobRuns).set({ status: 'success' }).where(eq(jobRuns.id, run.id)).run()
+    }
+
+    // A phone joins the group between the two firings — the target is
+    // re-resolved at EVERY fire, so it must be in the next one.
+    seedDevice(db, 'd2')
+    const after = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
+    await fireOnce(deps, after, new Date())
+
+    expect(db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId).toBe(batchId)
+    const byDevice = runsByDevice(db, batchId)
+    expect(byDevice.get('d1')).toHaveLength(2)
+    expect(byDevice.get('d2')).toHaveLength(1)
+    expect(db.select().from(batches).where(eq(batches.id, batchId)).all()).toHaveLength(1)
+  })
+
+  test('a later fire re-snapshots the CURRENT document onto a settled member', async () => {
+    // Editing a warm-up must change what tomorrow runs. Pinning the document
+    // at the first fire would mean an operator edits it, sees it saved, and
+    // the farm keeps running last month's version with nothing to show.
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedWorkflow(db)
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: '' })
+    seedWorkflowSchedule(db, 's1')
+    const store = createWorkflowStore(db)
+    const deps = baseDeps(db, { workflows: store })
+
+    await fireOnce(deps, schedule, new Date())
+    const batchId = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId!
+    for (const j of db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()) {
+      const run = deps.runs.latestRun(j.id)
+      if (run) db.update(jobRuns).set({ status: 'success' }).where(eq(jobRuns.id, run.id)).run()
+    }
+
+    const edited = { ...warmupDoc(), title: 'Warmup, edited' }
+    db.update(workflows).set({ doc: edited, updatedAt: new Date() }).where(eq(workflows.name, 'warmup')).run()
+
+    const after = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
+    await fireOnce(deps, after, new Date())
+
+    const member = db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()[0]!
+    expect((member.workflowDoc as { title?: string }).title).toBe('Warmup, edited')
+  })
+
+  test('a workflow schedule on a core with no workflow store fails NAMED, never silently', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedWorkflow(db)
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: '' })
+    seedWorkflowSchedule(db, 's1')
+    const deps = baseDeps(db) // no `workflows`
+
+    await fireOnce(deps, schedule, new Date())
+
+    const row = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
+    expect(row.lastFireOutcome).toBe('error')
+    expect(row.lastFireDetail).toContain('E_WORKFLOW_STORE_UNAVAILABLE')
+  })
+
+  test('the per-device delay a schedule stores reaches the batch (plan 314 §10.5)', async () => {
+    // The regression this closes: the runner built its pacing from four
+    // columns and `deviceDelayMs` was not one of them, so "each device starts
+    // at its own time" was unsettable on a schedule however the operator set
+    // it.
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedWorkflow(db)
+    const schedule = seedSchedule(db, { id: 's1', scriptRef: '', deviceDelayMinMs: 60_000, deviceDelayMaxMs: 7_200_000 })
+    seedWorkflowSchedule(db, 's1')
+    const deps = baseDeps(db, { workflows: createWorkflowStore(db) })
+
+    await fireOnce(deps, schedule, new Date())
+
+    const batchId = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId!
+    const batch = db.select().from(batches).where(eq(batches.id, batchId)).get()!
+    expect(batch.deviceDelayMinMs).toBe(60_000)
+    expect(batch.deviceDelayMaxMs).toBe(7_200_000)
+  })
+})
+
+describe('fireOnce — a SCRIPT schedule also carries its per-device delay (plan 314 §10.5)', () => {
+  test('the same pacing block reaches a script batch', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    const schedule = seedSchedule(db, { id: 's1', deviceDelayMinMs: 5_000, deviceDelayMaxMs: 25_000 })
+    const deps = baseDeps(db)
+
+    await fireOnce(deps, schedule, new Date())
+
+    const batchId = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId!
+    const batch = db.select().from(batches).where(eq(batches.id, batchId)).get()!
+    expect(batch.deviceDelayMinMs).toBe(5_000)
+    expect(batch.deviceDelayMaxMs).toBe(25_000)
   })
 })

@@ -31,7 +31,7 @@ import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
 import { rowToBatchInfo, type BatchRoutesDeps } from './batches'
 import type { Db } from '../db'
-import { batches, groups, schedules, scheduleAgentTargets, type ScheduleAgentTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
+import { batches, groups, schedules, scheduleAgentTargets, scheduleWorkflowTargets, type ScheduleAgentTargetRow, type ScheduleWorkflowTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
 import type { ExecutorRegistry } from '../jobs/executor'
 import type { RunStore } from '../jobs/runs/store'
 import { validateScriptForRun } from '../jobs/validate-script'
@@ -41,6 +41,7 @@ import { nextFires } from '../schedules/cron'
 import { fireOnce, type ScheduleAgentDispatch, type ScheduledAgentCeilings, type ScheduleRunner, type ScheduleRunnerDeps } from '../schedules/runner'
 import { resolveScriptRef } from '../scripts/resolve'
 import type { ScriptEntry, ScriptRegistry } from '../scripts/registry'
+import type { WorkflowStore } from '../workflows/store'
 import { assertLabelsExist } from '../registry/device-labels'
 import { EnkakuError } from '../util/errors'
 import type { Logger } from '../util/logger'
@@ -91,6 +92,21 @@ const ScheduleBody = z.object({
   intervalMinMs: z.number().int().min(0).default(0),
   intervalMaxMs: z.number().int().min(0).default(0),
   deviceIntervalMs: z.number().int().min(0).max(3_600_000).default(0),
+  /**
+   * The per-device random start delay (plan 314 §10.5) — "start them
+   * together but not at the same instant", drawn independently per member.
+   *
+   * No `.max()`, deliberately, unlike `deviceIntervalMs` above: that one is
+   * a fixed ladder whose ceiling bounds the LAST device's wait at an hour,
+   * while this is a window an operator chooses. A warm-up that should look
+   * like forty people picking up their phones across a morning is a
+   * two-hour window, and refusing it would leave the operator back at one
+   * schedule per device.
+   */
+  deviceDelayMs: z
+    .tuple([z.number().int().min(0), z.number().int().min(0)])
+    .default([0, 0])
+    .refine((d) => d[0] <= d[1], 'the per-device delay range is inverted'),
   /** Plan 68 §3.2 — agent targets only. */
   threadMode: ScheduleThreadModeSchema.default('new'),
   /** Plan 68 §3.5 — agent targets only. */
@@ -235,6 +251,8 @@ export interface ScheduleRoutesDeps {
   notifySystem?: ScheduleRunnerDeps['notifySystem']
   /** Plan 82 §3.3, §3.5 — resolves through the registry so a schedule can target a plugin script and is refused (`script_is_dev`) for a dev-only one (criterion 18). `registry` above is the unrelated job EXECUTOR registry (`jobs/executor.ts`) — named `scriptRegistry` here to avoid colliding with it. Optional so every pre-plan-82 test keeps compiling unedited. */
   scriptRegistry?: ScriptRegistry
+  /** Plan 314 §7.1 — resolves a workflow-kind target's name at write time, so a schedule cannot be saved against a workflow that does not exist. Optional so every pre-plan-314 test keeps compiling unedited. */
+  workflows?: WorkflowStore
   /**
    * Plan 93 §3.12, §4.6, step 93.8 — live farm settings, threaded into
    * `validateScriptForRun` at both the CREATE/PATCH-time validation calls
@@ -262,23 +280,46 @@ function loadAgentTargets(db: Db, scheduleIds: string[]): Map<string, ScheduleAg
   return new Map(rows.map((r) => [r.scheduleId, r]))
 }
 
-function workTargetFor(row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | null): ScheduleWorkTarget {
+/** One `scheduleWorkflowTargets` row, or null (plan 314 §7.1) — the workflow twin of `getAgentTargetRow`. */
+function getWorkflowTargetRow(db: Db, scheduleId: string): ScheduleWorkflowTargetRow | null {
+  return db.select().from(scheduleWorkflowTargets).where(eq(scheduleWorkflowTargets.scheduleId, scheduleId)).get() ?? null
+}
+
+/** Batched, for the list endpoint — the workflow twin of `loadAgentTargets`. */
+function loadWorkflowTargets(db: Db, scheduleIds: string[]): Map<string, ScheduleWorkflowTargetRow> {
+  if (scheduleIds.length === 0) return new Map()
+  const rows = db.select().from(scheduleWorkflowTargets).where(inArray(scheduleWorkflowTargets.scheduleId, scheduleIds)).all()
+  return new Map(rows.map((r) => [r.scheduleId, r]))
+}
+
+function workTargetFor(row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | null, workflowTarget: ScheduleWorkflowTargetRow | null): ScheduleWorkTarget {
   if (agentTarget) return { kind: 'agent', agentId: agentTarget.agentId, prompt: agentTarget.prompt }
+  // Checked in the same order the dispatcher checks it, so the API and the
+  // runner can never disagree about what kind a schedule is.
+  if (workflowTarget) return { kind: 'workflow', workflowName: workflowTarget.workflowName, params: workflowTarget.params ?? undefined }
   return { kind: 'script', ref: row.scriptRef as ScriptRef, params: row.params ?? undefined }
 }
 
-function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | null): ScheduleInfo {
-  const { paramsCompatible, paramsFindingCount } = paramsCompatibility(deps.db, row, agentTarget, deps.scriptRegistry)
+function rowToScheduleInfo(
+  deps: ScheduleRoutesDeps,
+  row: ScheduleRow,
+  agentTarget: ScheduleAgentTargetRow | null,
+  workflowTarget: ScheduleWorkflowTargetRow | null = null,
+): ScheduleInfo {
+  // A workflow target has no script reference to reconcile against, exactly
+  // as an agent one has none — its params are checked at dispatch against the
+  // document's own declared params instead.
+  const { paramsCompatible, paramsFindingCount } = paramsCompatibility(deps.db, row, agentTarget ?? (workflowTarget ? ({} as ScheduleAgentTargetRow) : null), deps.scriptRegistry)
   return {
     id: row.id,
     name: row.name,
     enabled: row.enabled ?? true,
     cron: row.cron,
     timezone: row.timezone,
-    target: workTargetFor(row, agentTarget),
+    target: workTargetFor(row, agentTarget, workflowTarget),
     // Legacy fields (plan 62) — populated only for a script target; null for an agent one.
-    scriptRef: agentTarget ? null : row.scriptRef,
-    params: agentTarget ? null : row.params,
+    scriptRef: agentTarget || workflowTarget ? null : row.scriptRef,
+    params: agentTarget || workflowTarget ? null : row.params,
     groupId: row.groupId,
     deviceIds: (row.deviceIds as string[] | null) ?? [],
     labelIds: (row.labelIds as string[] | null) ?? [],
@@ -293,6 +334,7 @@ function rowToScheduleInfo(deps: ScheduleRoutesDeps, row: ScheduleRow, agentTarg
     intervalMinMs: row.intervalMinMs,
     intervalMaxMs: row.intervalMaxMs,
     deviceIntervalMs: row.deviceIntervalMs,
+    deviceDelayMs: [row.deviceDelayMinMs, row.deviceDelayMaxMs] as [number, number],
     threadMode: (agentTarget?.threadMode as ScheduleThreadMode | undefined) ?? 'new',
     threadId: agentTarget?.threadId ?? null,
     onApprovalRequired: (agentTarget?.onApprovalRequired as OnApprovalRequired | undefined) ?? 'deny',
@@ -405,7 +447,8 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     const { cursor, limit } = parsePageQuery(c)
     const { rows, nextCursor, total } = querySchedulesRows(db, { cursor, limit })
     const agentTargets = loadAgentTargets(db, rows.map((r) => r.id))
-    const items = rows.map((r) => rowToScheduleInfo(deps, r, agentTargets.get(r.id) ?? null))
+    const workflowTargets = loadWorkflowTargets(db, rows.map((r) => r.id))
+    const items = rows.map((r) => rowToScheduleInfo(deps, r, agentTargets.get(r.id) ?? null, workflowTargets.get(r.id) ?? null))
     return c.json({ items, nextCursor, total })
   })
 
@@ -420,6 +463,21 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (workTarget.kind !== 'agent') return
     if (!deps.agentExists || !deps.agentExists(workTarget.agentId)) {
       throw new EnkakuError('agent_not_found', `no such agent: ${workTarget.agentId}`)
+    }
+  }
+
+  /**
+   * Resolved BEFORE the row is written, for the same reason a script
+   * reference is (plan 62 §4.4): a schedule saved against a workflow that
+   * does not exist is indistinguishable from a correct one until its first
+   * silent firing failure — and "the schedule looked fine and never ran" is
+   * precisely the failure this whole feature exists to remove.
+   */
+  const assertWorkflowTargetValid = (workTarget: ScheduleWorkTarget): void => {
+    if (workTarget.kind !== 'workflow') return
+    if (!deps.workflows) throw new EnkakuError('E_WORKFLOW_STORE_UNAVAILABLE', 'this core has no workflow store wired')
+    if (!deps.workflows.get(workTarget.workflowName)) {
+      throw new EnkakuError('workflow_not_found', `no such workflow: ${workTarget.workflowName}`)
     }
   }
 
@@ -472,6 +530,8 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       intervalMinMs: body.data.intervalMinMs,
       intervalMaxMs: body.data.intervalMaxMs,
       deviceIntervalMs: body.data.deviceIntervalMs,
+      deviceDelayMinMs: body.data.deviceDelayMs[0],
+      deviceDelayMaxMs: body.data.deviceDelayMs[1],
       lastFiredAt: null,
       batchId: null,
       lastFireOutcome: null,
@@ -480,6 +540,17 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       createdAt: new Date(),
     }
     db.insert(schedules).values(row).run()
+
+    let workflowTargetRow: ScheduleWorkflowTargetRow | null = null
+    if (workTarget.kind === 'workflow') {
+      workflowTargetRow = {
+        scheduleId: row.id,
+        workflowName: workTarget.workflowName,
+        params: (workTarget.params as Record<string, unknown> | undefined) ?? null,
+        createdAt: new Date(),
+      }
+      db.insert(scheduleWorkflowTargets).values(workflowTargetRow).run()
+    }
 
     let agentTargetRow: ScheduleAgentTargetRow | null = null
     if (workTarget.kind === 'agent') {
@@ -501,13 +572,17 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     // Echoes what a script reference resolves to RIGHT NOW (plan 62 §4.4), so the UI can show
     // "→ 2.0.0" without a second call — null for an agent target, which has nothing to resolve.
     const resolvesTo: ResolvesTo | null = resolved ? { scriptId: resolved.id, name: resolved.name, version: resolved.version } : null
-    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, row, agentTargetRow), resolvesTo }, 201)
+    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, row, agentTargetRow, workflowTargetRow), resolvesTo }, 201)
   })
 
   app.get('/:id', (c) => {
     const row = mustGet(c.req.param('id'))
     const agentTarget = getAgentTargetRow(db, row.id)
-    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, row, agentTarget), resolvesTo: agentTarget ? null : tryResolve(db, row.scriptRef, deps.scriptRegistry) })
+    const workflowTarget = getWorkflowTargetRow(db, row.id)
+    return typedJson(c, ScheduleResponseSchema, {
+      schedule: rowToScheduleInfo(deps, row, agentTarget, workflowTarget),
+      resolvesTo: agentTarget || workflowTarget ? null : tryResolve(db, row.scriptRef, deps.scriptRegistry),
+    })
   })
 
   app.patch('/:id', requirePermission('job.run'), async (c) => {
@@ -550,6 +625,25 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
           db.delete(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, row.id)).run()
           existingAgentTarget = null
         }
+        // Switching AWAY from a workflow target drops its companion row, the
+        // same way switching away from an agent target drops that one —
+        // otherwise the dispatcher, which checks for a row before it reads
+        // `scriptRef`, would keep firing the old workflow forever.
+        db.delete(scheduleWorkflowTargets).where(eq(scheduleWorkflowTargets.scheduleId, row.id)).run()
+      } else if (wt.kind === 'workflow') {
+        assertWorkflowTargetValid(wt)
+        const wfParams = (wt.params as Record<string, unknown> | undefined) ?? null
+        if (getWorkflowTargetRow(db, row.id)) {
+          db.update(scheduleWorkflowTargets).set({ workflowName: wt.workflowName, params: wfParams }).where(eq(scheduleWorkflowTargets.scheduleId, row.id)).run()
+        } else {
+          patch.scriptRef = '' // no longer used — see `scheduleWorkflowTargets`'s doc comment
+          patch.params = null
+          db.insert(scheduleWorkflowTargets).values({ scheduleId: row.id, workflowName: wt.workflowName, params: wfParams, createdAt: new Date() }).run()
+        }
+        if (existingAgentTarget) {
+          db.delete(scheduleAgentTargets).where(eq(scheduleAgentTargets.scheduleId, row.id)).run()
+          existingAgentTarget = null
+        }
       } else {
         assertAgentTargetValid(wt)
         if (existingAgentTarget) {
@@ -570,6 +664,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
             })
             .run()
         }
+        db.delete(scheduleWorkflowTargets).where(eq(scheduleWorkflowTargets.scheduleId, row.id)).run()
         existingAgentTarget = getAgentTargetRow(db, row.id)
       }
     } else if ((body.data.scriptRef !== undefined || body.data.params !== undefined) && !existingAgentTarget) {
@@ -599,13 +694,21 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (body.data.intervalMinMs !== undefined) patch.intervalMinMs = body.data.intervalMinMs
     if (body.data.intervalMaxMs !== undefined) patch.intervalMaxMs = body.data.intervalMaxMs
     if (body.data.deviceIntervalMs !== undefined) patch.deviceIntervalMs = body.data.deviceIntervalMs
+    if (body.data.deviceDelayMs !== undefined) {
+      patch.deviceDelayMinMs = body.data.deviceDelayMs[0]
+      patch.deviceDelayMaxMs = body.data.deviceDelayMs[1]
+    }
 
     if (Object.keys(patch).length > 0) db.update(schedules).set(patch).where(eq(schedules.id, row.id)).run()
     deps.runner.reload()
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'schedule.update', target: row.id, meta: { patch: Object.keys(patch) } })
     const finalRow = mustGet(row.id)
     const finalAgentTarget = getAgentTargetRow(db, row.id)
-    return typedJson(c, ScheduleResponseSchema, { schedule: rowToScheduleInfo(deps, finalRow, finalAgentTarget), resolvesTo: finalAgentTarget ? null : tryResolve(db, finalRow.scriptRef, deps.scriptRegistry) })
+    const finalWorkflowTarget = getWorkflowTargetRow(db, finalRow.id)
+    return typedJson(c, ScheduleResponseSchema, {
+      schedule: rowToScheduleInfo(deps, finalRow, finalAgentTarget, finalWorkflowTarget),
+      resolvesTo: finalAgentTarget || finalWorkflowTarget ? null : tryResolve(db, finalRow.scriptRef, deps.scriptRegistry),
+    })
   })
 
   app.delete('/:id', requirePermission('job.run'), (c) => {
