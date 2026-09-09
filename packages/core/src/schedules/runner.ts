@@ -170,12 +170,13 @@ function resolveDeps(deps: ScheduleRunnerDeps): ResolvedDeps {
  * turn. With two branches that mistake could now be made twice; with one
  * function it cannot be made at all.
  */
-function schedulePacing(schedule: ScheduleRow): { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs: [number, number] } {
+function schedulePacing(schedule: ScheduleRow): { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs: [number, number]; waveSize: number } {
   return {
     count: schedule.repeatCount,
     intervalMs: [schedule.intervalMinMs, schedule.intervalMaxMs],
     deviceIntervalMs: schedule.deviceIntervalMs,
     deviceDelayMs: [schedule.deviceDelayMinMs, schedule.deviceDelayMaxMs],
+    waveSize: schedule.waveSize,
   }
 }
 

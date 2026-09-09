@@ -53,6 +53,9 @@ export function RotationDialog({ open, onOpenChange, onCreated }: { open: boolea
   const [timezone, setTimezone] = useState('Asia/Jakarta')
   const [target, setTarget] = useState<GroupOrDevicesValue>({ mode: 'group', groupId: null, deviceIds: [], labelIds: [] })
   const [windowMin, setWindowMin] = useState(0)
+  /* Sub-groups: how many phones share one rung of the start ladder, and how far apart the rungs are. */
+  const [waveSize, setWaveSize] = useState(1)
+  const [waveGapMin, setWaveGapMin] = useState(0)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [groups, setGroups] = useState<GroupInfo[]>([])
   const { labels } = useLabels()
@@ -129,6 +132,8 @@ export function RotationDialog({ open, onOpenChange, onCreated }: { open: boolea
               workTarget: { kind: 'workflow', workflowName, params: { [slotParam]: slot } },
               target: deviceTarget,
               deviceDelayMs: [0, windowMin * 60_000],
+              waveSize,
+              deviceIntervalMs: waveGapMin * 60_000,
             },
           })
           created += 1
@@ -234,6 +239,38 @@ export function RotationDialog({ open, onOpenChange, onCreated }: { open: boolea
           <div className="space-y-1.5">
             <Label className="text-row font-normal">Timezone</Label>
             <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} mono className="h-8 text-body" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-row font-normal">Sub-group size (devices)</Label>
+              <Input
+                type="number"
+                min={1}
+                value={waveSize}
+                onChange={(e) => setWaveSize(Math.max(1, Number.parseInt(e.target.value, 10) || 1))}
+                mono
+                className="h-8 w-28 text-body"
+              />
+              <p className="text-caption text-faint">
+                How many phones go out together. 1 sends the whole target in one wave.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-row font-normal">Wait between sub-groups (min)</Label>
+              <Input
+                type="number"
+                min={0}
+                value={waveGapMin}
+                onChange={(e) => setWaveGapMin(Math.max(0, Number.parseInt(e.target.value, 10) || 0))}
+                mono
+                className="h-8 w-28 text-body"
+              />
+              <p className="text-caption text-faint">
+                Sub-group 2 is offered this long after sub-group 1 was — a wait, not a wait-for-finish. Use the schedule's
+                concurrency to cap how many actually run at once.
+              </p>
+            </div>
           </div>
 
           <div className="space-y-1.5">

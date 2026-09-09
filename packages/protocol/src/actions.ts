@@ -116,6 +116,24 @@ const PacingSchema = z
      * which is what "10-30 seconds each" means. The two compose.
      */
     deviceDelayMs: z.tuple([z.number().int().min(0), z.number().int().min(0)]).default([0, 0]),
+    /**
+     * How many devices share one rung of the `deviceIntervalMs` ladder — the
+     * client's **sub-groups**.
+     *
+     * `1` (the default) is the ladder as it always was: every phone gets its
+     * own rung, so on a 70-device fleet at 30 s the last phone starts 35
+     * minutes in. `10` steps the ladder once per ten phones instead, so the
+     * fleet goes out in waves of ten.
+     *
+     * This is a wave in TIME, not a barrier: wave 2 starts one rung after
+     * wave 1 started, not when wave 1 finished. That is deliberate. A true
+     * "when the previous wave is done" gate has to hold jobs with no release
+     * date, and a core that restarts mid-batch would leave them held with
+     * nothing to release them. `concurrency` is the hard cap on how many run
+     * at once and already gives the guarantee the waves are wanted for; the
+     * ladder decides when each wave is *offered*, and the two compose.
+     */
+    waveSize: z.number().int().min(1).max(1000).default(1),
   })
   .refine((p) => p.intervalMs[0] <= p.intervalMs[1], 'the interval range is inverted')
   .refine((p) => p.deviceDelayMs[0] <= p.deviceDelayMs[1], 'the per-device delay range is inverted')

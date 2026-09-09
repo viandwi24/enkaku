@@ -102,6 +102,16 @@ export const ScheduleInfoSchema = z.object({
   deviceIntervalMs: z.number().int().default(0),
   /** Plan 314 §10.5 — the per-device random start delay, `[min, max]` ms. `[0, 0]` is "every device starts together", which is what every schedule did before this field existed. */
   deviceDelayMs: z.tuple([z.number().int(), z.number().int()]).default([0, 0]),
+  /**
+   * How many devices share one rung of the `deviceIntervalMs` ladder — the
+   * sub-groups a warm-up goes out in. `1` (every schedule before this field)
+   * is a rung per phone; `10` sends the fleet in waves of ten.
+   *
+   * A wave in TIME, not a barrier — see `batches.wave_size`. `concurrency` is
+   * still the hard cap on how many run at once; this decides when each wave
+   * is offered, and does nothing at all while `deviceIntervalMs` is 0.
+   */
+  waveSize: z.number().int().min(1).default(1),
   /** Plan 68 §3.2 — only meaningful for an agent target. */
   threadMode: ScheduleThreadModeSchema,
   /** The reused thread when `threadMode === 'continue'`; null otherwise, or before the first firing. */

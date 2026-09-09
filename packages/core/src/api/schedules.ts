@@ -107,6 +107,18 @@ const ScheduleBody = z.object({
     .tuple([z.number().int().min(0), z.number().int().min(0)])
     .default([0, 0])
     .refine((d) => d[0] <= d[1], 'the per-device delay range is inverted'),
+  /**
+   * Sub-groups: how many devices share one rung of the `deviceIntervalMs`
+   * ladder. `1` is a rung per phone, which is every schedule written before
+   * this field; `10` sends the fleet out in waves of ten.
+   *
+   * It does nothing on its own — with `deviceIntervalMs: 0` every rung is at
+   * zero and the whole fleet still starts together. That is deliberate rather
+   * than a validation error: the two are one control in the UI, and refusing
+   * the combination would turn a half-filled form into an error instead of a
+   * no-op.
+   */
+  waveSize: z.number().int().min(1).max(1000).default(1),
   /** Plan 68 §3.2 — agent targets only. */
   threadMode: ScheduleThreadModeSchema.default('new'),
   /** Plan 68 §3.5 — agent targets only. */
@@ -347,6 +359,7 @@ function rowToScheduleInfo(
     intervalMaxMs: row.intervalMaxMs,
     deviceIntervalMs: row.deviceIntervalMs,
     deviceDelayMs: [row.deviceDelayMinMs, row.deviceDelayMaxMs] as [number, number],
+    waveSize: row.waveSize,
     threadMode: (agentTarget?.threadMode as ScheduleThreadMode | undefined) ?? 'new',
     threadId: agentTarget?.threadId ?? null,
     onApprovalRequired: (agentTarget?.onApprovalRequired as OnApprovalRequired | undefined) ?? 'deny',
@@ -555,6 +568,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       intervalMinMs: body.data.intervalMinMs,
       intervalMaxMs: body.data.intervalMaxMs,
       deviceIntervalMs: body.data.deviceIntervalMs,
+      waveSize: body.data.waveSize,
       deviceDelayMinMs: body.data.deviceDelayMs[0],
       deviceDelayMaxMs: body.data.deviceDelayMs[1],
       lastFiredAt: null,
@@ -719,6 +733,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (body.data.intervalMinMs !== undefined) patch.intervalMinMs = body.data.intervalMinMs
     if (body.data.intervalMaxMs !== undefined) patch.intervalMaxMs = body.data.intervalMaxMs
     if (body.data.deviceIntervalMs !== undefined) patch.deviceIntervalMs = body.data.deviceIntervalMs
+    if (body.data.waveSize !== undefined) patch.waveSize = body.data.waveSize
     if (body.data.deviceDelayMs !== undefined) {
       patch.deviceDelayMinMs = body.data.deviceDelayMs[0]
       patch.deviceDelayMaxMs = body.data.deviceDelayMs[1]

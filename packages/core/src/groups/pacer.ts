@@ -44,6 +44,22 @@ function defaultRandomUint32(): number {
 }
 
 /**
+ * Which rung of the start ladder a member sits on — the sub-group arithmetic.
+ *
+ * `waveSize` of 1 is one rung per phone, which is what every batch did before
+ * sub-groups existed, so this returns `i` unchanged and nothing moves. `10`
+ * puts phones 0-9 on rung 0, 10-19 on rung 1, and so on: the fleet goes out in
+ * waves of ten instead of a 70-rung staircase where the last phone waits 35
+ * minutes.
+ *
+ * Total by construction — a row written before the column existed, or one
+ * holding a 0 from some other path, is read as 1 rather than dividing by zero.
+ */
+export function ladderRung(index: number, waveSize: number): number {
+  return Math.floor(index / Math.max(1, waveSize))
+}
+
+/**
  * A uniform draw in `[min, max]` (inclusive), from a uint32 source (F29).
  * `max <= min` (including the `intervalMs: [0, 0]` default) returns `min`
  * with no draw at all — there is nothing to randomise.
@@ -69,6 +85,7 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
     return deps.db.select().from(batches).where(eq(batches.id, batchId)).get() ?? null
   }
 
+
   function isPaced(batch: BatchRow): boolean {
     return batch.repeatCount > 1 || batch.deviceIntervalMs > 0 || batch.deviceDelayMaxMs > 0
   }
@@ -87,7 +104,9 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
       // into ONE `notBefore` here rather than applied in two passes, so a
       // member's own recorded `pacedDelayMs` is the whole truth about when it
       // was allowed to start — not half of it.
-      const staggerMs = i * batch.deviceIntervalMs + drawIntervalMs(batch.deviceDelayMinMs, batch.deviceDelayMaxMs, random)
+      const staggerMs =
+        ladderRung(i, batch.waveSize) * batch.deviceIntervalMs +
+        drawIntervalMs(batch.deviceDelayMinMs, batch.deviceDelayMaxMs, random)
       deps.db
         .update(jobRuns)
         .set({
@@ -100,6 +119,7 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
     }
     deps.log.info(
       `batch ${batchId}: planned repetition 0 for ${members.length} device(s), stagger ${batch.deviceIntervalMs}ms` +
+        (batch.waveSize > 1 ? ` in waves of ${batch.waveSize}` : '') +
         (batch.deviceDelayMaxMs > 0 ? `, per-device delay ${batch.deviceDelayMinMs}-${batch.deviceDelayMaxMs}ms` : ''),
     )
     rearm()

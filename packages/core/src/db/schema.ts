@@ -751,6 +751,19 @@ export const batches = sqliteTable(
     deviceDelayMinMs: integer('device_delay_min_ms').notNull().default(0),
     deviceDelayMaxMs: integer('device_delay_max_ms').notNull().default(0),
     /**
+     * How many devices share one rung of the `deviceIntervalMs` ladder — the
+     * sub-groups a warm-up is split into. `1` is the ladder as it always was
+     * (a rung per phone); `10` sends the fleet out in waves of ten.
+     *
+     * A wave in TIME, not a barrier: wave 2 is offered one rung after wave 1
+     * was, not when wave 1 finished. Holding a wave until its predecessor
+     * settles needs jobs parked with no release date, and a core restarting
+     * mid-batch would leave them parked with nothing to release them.
+     * `concurrency` is the hard cap on simultaneity; this decides when each
+     * wave is offered.
+     */
+    waveSize: integer('wave_size').notNull().default(1),
+    /**
      * The operator asked for a BATCH, in those words, rather than a batch
      * being the shape `run-script` happens to use.
      *
@@ -1305,6 +1318,19 @@ export const schedules = sqliteTable(
      */
     deviceDelayMinMs: integer('device_delay_min_ms').notNull().default(0),
     deviceDelayMaxMs: integer('device_delay_max_ms').notNull().default(0),
+    /**
+     * How many devices share one rung of the `deviceIntervalMs` ladder — the
+     * sub-groups a warm-up is split into. `1` is the ladder as it always was
+     * (a rung per phone); `10` sends the fleet out in waves of ten.
+     *
+     * A wave in TIME, not a barrier: wave 2 is offered one rung after wave 1
+     * was, not when wave 1 finished. Holding a wave until its predecessor
+     * settles needs jobs parked with no release date, and a core restarting
+     * mid-batch would leave them parked with nothing to release them.
+     * `concurrency` is the hard cap on simultaneity; this decides when each
+     * wave is offered.
+     */
+    waveSize: integer('wave_size').notNull().default(1),
 
     lastFiredAt: integer('last_fired_at', { mode: 'timestamp' }),
     /** The batch this schedule OWNS (plan 211 §3.2 decision 4); its member jobs are one per target device. */

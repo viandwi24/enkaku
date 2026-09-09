@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { drawIntervalMs } from './pacer'
+import { drawIntervalMs, ladderRung } from './pacer'
 
 /**
  * The per-device start delay (2026-09-06).
@@ -35,5 +35,40 @@ describe('drawIntervalMs — the draw behind a per-device start delay', () => {
     // The schema refuses this at the boundary; the arithmetic still has to be
     // total, because a batch row written before that check existed can hold one.
     expect(drawIntervalMs(30_000, 10_000, () => 42)).toBe(30_000)
+  })
+})
+
+/**
+ * Sub-groups (the client's "subgrup"): the same ladder, stepping once per
+ * WAVE instead of once per phone.
+ *
+ * Pinned here for the same reason `drawIntervalMs` is: it is the arithmetic
+ * that decides when a phone is allowed to start, and the rest of `planFirst`
+ * is a database walk a unit test would only restate.
+ */
+describe('ladderRung — how many devices share one rung', () => {
+  test('waveSize 1 is a rung per phone — every batch written before sub-groups existed', () => {
+    expect([0, 1, 2, 3].map((i) => ladderRung(i, 1))).toEqual([0, 1, 2, 3])
+  })
+
+  test('waveSize 10 sends 70 phones out in seven waves, not a 70-rung staircase', () => {
+    expect(ladderRung(0, 10)).toBe(0)
+    expect(ladderRung(9, 10)).toBe(0)
+    expect(ladderRung(10, 10)).toBe(1)
+    expect(ladderRung(69, 10)).toBe(6)
+    // The point of the whole feature: at a 30 s rung the last phone waits
+    // three minutes, not thirty-five.
+    expect(ladderRung(69, 10) * 30_000).toBe(180_000)
+  })
+
+  test('a wave larger than the fleet is one wave, not an error', () => {
+    expect([0, 5, 40].map((i) => ladderRung(i, 1000))).toEqual([0, 0, 0])
+  })
+
+  test('a zero or negative wave size reads as 1 rather than dividing by zero', () => {
+    // A row written before the column existed, or one that reached here from
+    // some other path, must still produce a number.
+    expect(ladderRung(7, 0)).toBe(7)
+    expect(ladderRung(7, -3)).toBe(7)
   })
 })
