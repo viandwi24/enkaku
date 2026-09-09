@@ -110,21 +110,36 @@ export function RotationDialog({ open, onOpenChange, onCreated }: { open: boolea
     run('create-rotation', async () => {
       const deviceTarget =
         target.mode === 'group' ? { groupId: target.groupId } : target.mode === 'labels' ? { labelIds: target.labelIds } : { deviceIds: target.deviceIds }
-      // Sequentially, not in parallel: a partial rotation is confusing, and
-      // the first failure should stop rather than leave a random subset.
+      // Sequentially, not in parallel, so a failure stops at a known point
+      // rather than leaving a random subset. It can still leave a PARTIAL
+      // rotation — sessions 0 and 1 created, 2 refused — so the error says
+      // how many landed. A rotation missing its last session is a real state
+      // an operator has to repair, and "could not create the rotation" alone
+      // would send them looking for nothing.
+      let created = 0
       for (const [slot, hhmm] of times.entries()) {
-        await api('/api/schedules', ScheduleResponseSchema, {
-          method: 'POST',
-          json: {
-            name: `${workflowName} · session ${slot + 1} (${hhmm.trim()})`,
-            enabled: true,
-            cron: cronFor(hhmm),
-            timezone,
-            workTarget: { kind: 'workflow', workflowName, params: { [slotParam]: slot } },
-            target: deviceTarget,
-            deviceDelayMs: [0, windowMin * 60_000],
-          },
-        })
+        try {
+          await api('/api/schedules', ScheduleResponseSchema, {
+            method: 'POST',
+            json: {
+              name: `${workflowName} · session ${slot + 1} (${hhmm.trim()})`,
+              enabled: true,
+              cron: cronFor(hhmm),
+              timezone,
+              workTarget: { kind: 'workflow', workflowName, params: { [slotParam]: slot } },
+              target: deviceTarget,
+              deviceDelayMs: [0, windowMin * 60_000],
+            },
+          })
+          created += 1
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err)
+          throw new Error(
+            created === 0
+              ? `No schedule was created: ${detail}`
+              : `Created ${created} of ${times.length} sessions, then session ${slot + 1} failed: ${detail}. The rotation is incomplete — the sessions that exist will run, but the platforms of the missing ones will not be covered.`,
+          )
+        }
       }
     }, {
       success: `${times.length} schedules created`,

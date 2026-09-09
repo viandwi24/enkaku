@@ -14,8 +14,34 @@ const RunNowResponseSchema = z.union([
   z.object({ run: z.object({ runId: z.string(), threadId: z.string().nullable() }) }),
 ])
 
+/**
+ * What this schedule runs, for the list's one narrow column.
+ *
+ * A workflow target needs its PARAMETERS in the summary, not just its name.
+ * A rotation is three rows that run the same workflow and differ only in a
+ * slot number, so three rows reading `workflow · warmup` are indistinguishable
+ * — and telling them apart is the whole point of the screen: it is where an
+ * operator notices that the copy they made still carries the original's slot.
+ * `workflow · warmup · slot 0` says it at a glance.
+ *
+ * Bounded on purpose: a handful of short scalars, then an ellipsis. This is a
+ * 1.2fr column, not a parameter viewer — the dialog is where the full set is
+ * read and edited.
+ */
 function workSummary(s: ScheduleInfo): string {
-  return s.target.kind === 'agent' ? `agent · ${s.target.prompt.slice(0, 40)}${s.target.prompt.length > 40 ? '…' : ''}` : (s.scriptRef ?? '—')
+  if (s.target.kind === 'agent') return `agent · ${s.target.prompt.slice(0, 40)}${s.target.prompt.length > 40 ? '…' : ''}`
+  if (s.target.kind === 'workflow') {
+    const params = s.target.params
+    const pairs =
+      params !== null && typeof params === 'object' && !Array.isArray(params)
+        ? Object.entries(params as Record<string, unknown>)
+            .filter(([, v]) => v === null || ['string', 'number', 'boolean'].includes(typeof v))
+            .slice(0, 3)
+            .map(([k, v]) => `${k} ${String(v)}`)
+        : []
+    return `workflow · ${s.target.workflowName}${pairs.length > 0 ? ` · ${pairs.join(', ')}` : ''}`
+  }
+  return s.scriptRef ?? '—'
 }
 function humanCron(cron: string, timezone: string): string {
   const parts = cron.trim().split(/\s+/)

@@ -31,5 +31,13 @@ export function matchesWorkflow(w: WorkflowInfo, q: string): boolean {
 
 export function matchesSchedule(s: ScheduleInfo, q: string): boolean {
   if (!q.trim()) return true
-  return s.name.toLowerCase().includes(q.toLowerCase())
+  const needle = q.toLowerCase()
+  // Also what it RUNS, not only what it is called. A rotation puts several
+  // near-identical rows on this screen that differ by a slot number, and the
+  // question an operator arrives with is "show me everything that runs the
+  // warm-up" — which the name alone cannot answer for a schedule someone
+  // named "Pagi".
+  const target =
+    s.target.kind === 'workflow' ? s.target.workflowName : s.target.kind === 'script' ? s.target.ref : s.target.prompt
+  return s.name.toLowerCase().includes(needle) || target.toLowerCase().includes(needle)
 }
