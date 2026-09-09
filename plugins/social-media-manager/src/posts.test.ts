@@ -242,3 +242,42 @@ describe('planDispatch — the router never retries a settled platform on its ow
     })
   }
 })
+
+describe('planDispatch — a chosen phone list narrows the label’s fleet, never widens it', () => {
+  const labelled = (id: string) => device({ id, labels: [{ name: 'tiktok' }] })
+  const unlabelled = (id: string) => device({ id, labels: [] })
+
+  test('empty means any — what every post written before the picker existed meant', () => {
+    const p = { ...post(), deviceIds: [] }
+    const plan = planDispatch({ post: p, devices: [labelled('d1'), labelled('d2')], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches.map((d) => d.deviceId).sort()).toEqual(['d1', 'd2'])
+  })
+
+  test('a chosen list keeps only those phones', () => {
+    const p = { ...post(), deviceIds: ['d2'] }
+    const plan = planDispatch({ post: p, devices: [labelled('d1'), labelled('d2'), labelled('d3')], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches.map((d) => d.deviceId)).toEqual(['d2'])
+  })
+
+  /*
+    The label is what says "this phone posts to TikTok". A device picker is a
+    way to send to FEWER phones, not a way to overrule that — otherwise an
+    operator could aim a post at a phone with no TikTok account on it.
+  */
+  test('choosing a phone that lacks the label does not make it eligible', () => {
+    const p = { ...post(), deviceIds: ['d9'] }
+    const plan = planDispatch({ post: p, devices: [labelled('d1'), unlabelled('d9')], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches).toEqual([])
+    expect(plan.states.tiktok?.state).toBe('pending')
+    // And it says which of the two problems this is, rather than the generic
+    // "everything is busy" that would send the operator looking at uptime.
+    expect(plan.states.tiktok?.note).toContain('None of the phones chosen for this post')
+  })
+
+  test('a chosen phone that is merely busy still reads as a normal wait', () => {
+    const busy = device({ id: 'd2', labels: [{ name: 'tiktok' }], activities: [{ kind: 'job' }] })
+    const p = { ...post(), deviceIds: ['d2'] }
+    const plan = planDispatch({ post: p, devices: [busy], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.states.tiktok?.note).toContain('offline or busy')
+  })
+})

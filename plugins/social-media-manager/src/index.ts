@@ -40,6 +40,20 @@ import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, t
  *
  * ## Changelog
  *
+ * - **0.3.0 — choose the phones, not just the label.** A post routed on the
+ *   platform's device label and nothing else, so "send this to these five
+ *   phones" had no expression at all. `deviceIds` on the post narrows the
+ *   label's fleet: empty (every post before this) still means any phone
+ *   carrying the label, and a chosen phone that does NOT carry it is still
+ *   skipped — the label is what says this phone posts to Instagram, and a
+ *   picker is not a way to overrule it. The stalled note distinguishes the
+ *   two cases, because "none of your chosen phones carries the label" and
+ *   "they are all busy" need different actions.
+ *
+ *   Drawn with the same `DevicePicker` every other screen uses, through a new
+ *   `kind: 'deviceIds'` in the parameter vocabulary — the alternative was a
+ *   free-text field holding UUIDs.
+ *
  * - **0.2.0 — a post learns what happened.** `dispatched` was the end of a
  *   post's life here: the router handed N jobs to the queue, wrote "sent to
  *   N", and never looked again. Ten failed uploads and ten successful ones
@@ -368,7 +382,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.2.0',
+  version: '0.3.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',
@@ -514,6 +528,16 @@ export default definePlugin({
               minItems: 1,
               items: { type: 'string', enum: [...PLATFORM_IDS], 'x-enkaku': { labels: PLATFORM_LABELS } },
             },
+            // NOT in `required`: empty means "any phone carrying the label",
+            // which is what every post written before this field meant, and
+            // is still the right default for a fleet that grows.
+            deviceIds: {
+              type: 'array',
+              title: 'Phones',
+              description: 'Leave empty for any phone carrying the platform’s label. Choosing here narrows that fleet — it never widens it, so a phone without the label is still skipped.',
+              items: { type: 'string' },
+              'x-enkaku': { kind: 'deviceIds' },
+            },
           },
         },
         submitLabel: 'Save post',
@@ -526,6 +550,7 @@ export default definePlugin({
             videoArtifactId: { $form: 'videoArtifactId' },
             caption: { $form: 'caption' },
             platforms: { $form: 'platforms' },
+            deviceIds: { $form: 'deviceIds' },
           },
         },
       },

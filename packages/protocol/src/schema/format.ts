@@ -1,4 +1,4 @@
-import type { DurationUnit, ParamKind, StringParamKind } from './vocabulary'
+import type { ArrayParamKind, DurationUnit, ParamKind, StringParamKind } from './vocabulary'
 
 /**
  * The numeric kinds, minus the string-only ones, plus `'plain'` — the
@@ -11,7 +11,7 @@ import type { DurationUnit, ParamKind, StringParamKind } from './vocabulary'
  * (plan 97 §4.1) alongside `formatValue`, since a `NumberKind` is meaning,
  * not a control — the same boundary that let `formatValue` itself move.
  */
-export type NumberKind = Exclude<ParamKind, StringParamKind> | 'plain'
+export type NumberKind = Exclude<ParamKind, StringParamKind | ArrayParamKind> | 'plain'
 
 /** `12` → `"12"`, `12.5` → `"12.5"`, `12.50000001` → `"12.5"` — the readout
  *  never shows more precision than the value actually carries, and never

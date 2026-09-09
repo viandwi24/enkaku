@@ -148,6 +148,21 @@ export const PostSchema = z
     caption: z.string().min(1).max(2_200),
     /** Which platforms this video is for. Empty is legal and simply never dispatches. */
     platforms: z.array(PlatformIdSchema),
+    /**
+     * Which phones this post may go to, or EMPTY for "any phone carrying the
+     * platform's label".
+     *
+     * Empty is the default and the original behaviour: the label decides, and
+     * a phone labelled later is picked up with no edit. A non-empty list
+     * narrows that — it never widens it. A device named here that does not
+     * carry the platform's label is still not eligible, because the label is
+     * what says "this phone posts to Instagram" and a device picker is not a
+     * way to overrule it.
+     *
+     * Defaulted so a row written before this field existed still parses, and
+     * parses as "any", which is what those posts meant.
+     */
+    deviceIds: z.array(z.string().min(1)).default([]),
     createdAt: z.number().int().nonnegative(),
     /**
      * Per-platform state, keyed by platform id. Seeded `pending` for every
@@ -369,9 +384,20 @@ export function planDispatch(input: {
       continue
     }
 
-    const eligible = devices.filter((d) => isDeviceFree(d) && deviceCarriesPlatform(d.labels, platform))
+    /*
+      The operator's chosen phones NARROW the label's fleet; they never widen
+      it. A device picked here that does not carry the platform's label is
+      still not eligible — the label is what says "this phone posts to
+      Instagram", and a picker is not a way to overrule it. An empty list
+      means "any", which is what every post written before the picker existed
+      meant.
+    */
+    const allowed = post.deviceIds.length === 0 ? devices : devices.filter((d) => post.deviceIds.includes(d.id))
+    const eligible = allowed.filter((d) => isDeviceFree(d) && deviceCarriesPlatform(d.labels, platform))
     if (eligible.length === 0) {
-      const note = devices.some((d) => deviceCarriesPlatform(d.labels, platform))
+      const note = post.deviceIds.length > 0 && !allowed.some((d) => deviceCarriesPlatform(d.labels, platform))
+        ? `None of the phones chosen for this post carries the "${platform.label}" label, so it can never send. Either label one of them or widen the choice.`
+        : allowed.some((d) => deviceCarriesPlatform(d.labels, platform))
         ? `Every phone labelled "${platform.label}" is offline or busy. Waiting.`
         : `No phone carries the "${platform.label}" label yet. Add it on the Devices screen and this will send itself.`
       // Only write when the WORDING changes — the two notes above distinguish
@@ -404,7 +430,7 @@ export function planDispatch(input: {
 }
 
 /** A fresh post, every targeted platform seeded `pending`. Used by the `add-post` member and by the tests. */
-export function newPost(input: { videoArtifactId: string; caption: string; platforms: PlatformId[]; now: number }): Post {
+export function newPost(input: { videoArtifactId: string; caption: string; platforms: PlatformId[]; deviceIds?: string[]; now: number }): Post {
   // Deduplicated and ordered by the canonical list rather than by whatever
   // order the form produced, so two identical posts compare equal and the
   // Posts table never shows the same fleet in two different orders.
@@ -419,6 +445,9 @@ export function newPost(input: { videoArtifactId: string; caption: string; platf
     videoArtifactId: input.videoArtifactId,
     caption: input.caption,
     platforms,
+    // Deduplicated for the same reason as `platforms`: a picker that let the
+    // same phone in twice would double its weight in `allowed`.
+    deviceIds: [...new Set(input.deviceIds ?? [])],
     createdAt: input.now,
     dispatch,
     lastNote: null,

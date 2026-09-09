@@ -215,6 +215,16 @@ export type FieldPlan =
        */
       control: 'artifact'
     }
+  | {
+      /**
+       * `kind: 'deviceIds'` — the value is an array of device ids, drawn by
+       * the same `DevicePicker` every other screen that chooses a phone uses
+       * (its own rule: never a bare `Select`). Without this a plugin wanting
+       * a fleet subset gets a free-text field holding UUIDs, which no
+       * operator can fill in correctly.
+       */
+      control: 'devices'
+    }
   | { control: 'list'; item: FieldPlan }
   | { control: 'table'; columns: { key: string; label: string; plan: FieldPlan }[] }
   | { control: 'group'; heading?: string; children: PlannedField[] }
@@ -284,6 +294,10 @@ function isArtifactKind(kind: ParamKind): kind is 'artifact' {
   return kind === 'artifact'
 }
 
+function isDeviceIdsKind(kind: ParamKind): kind is 'deviceIds' {
+  return kind === 'deviceIds'
+}
+
 /**
  * Every kind whose value is a STRING — the ones row 3 checks against
  * `type: 'string'` rather than against a numeric type. Restated here rather
@@ -295,6 +309,14 @@ function isArtifactKind(kind: ParamKind): kind is 'artifact' {
  * typechecking.
  */
 type StringKind = 'text' | 'packageName' | 'workspaceFolder' | 'workspaceFile' | 'artifact'
+
+/**
+ * Every kind whose value is an ARRAY — neither a string nor a number, and so
+ * excluded from `planKindNumber` for the same reason the string kinds are.
+ * Mirrors `ARRAY_PARAM_KINDS` in the protocol, and drifts from it the same
+ * way: forget an entry and the assignment to `NumberKind` stops typechecking.
+ */
+type ArrayKind = 'deviceIds'
 
 function isStringKind(kind: ParamKind): kind is StringKind {
   return isTextKind(kind) || isWorkspacePathKind(kind) || isArtifactKind(kind)
@@ -311,6 +333,12 @@ function isStringKind(kind: ParamKind): kind is StringKind {
 function kindStructurallyValid(kind: ParamKind, node: JsonSchemaNode): boolean {
   if (hasEnumOrConst(node)) return false
   if (isStringKind(kind)) return baseType(node) === 'string'
+  // The only kind whose value is an array, so it is the only one checked
+  // against `array` rather than against a string or a numeric type. Without
+  // this it falls through to the numeric test, fails it, and the field is
+  // drawn as a generic "+ Add" list of text boxes — which is exactly the
+  // UUID-typing this kind exists to replace.
+  if (isDeviceIdsKind(kind)) return baseType(node) === 'array'
   if (!isNumericType(baseType(node))) return false
   // `chance` additionally requires the domain the vocabulary promises
   // (plan 95 §3.2): "the resolver REQUIRES minimum: 0 and maximum: 1; a
@@ -364,7 +392,7 @@ function numberBounds(node: JsonSchemaNode): { min?: number; max?: number; step?
   }
 }
 
-function planKindNumber(node: JsonSchemaNode, kind: Exclude<ParamKind, StringKind>, hints: ParamHints): Extract<FieldPlan, { control: 'number' }> {
+function planKindNumber(node: JsonSchemaNode, kind: Exclude<ParamKind, StringKind | ArrayKind>, hints: ParamHints): Extract<FieldPlan, { control: 'number' }> {
   return { control: 'number', kind, unit: kind === 'duration' ? hints.unit : undefined, enforcement: hints.enforcement, ...numberBounds(node) }
 }
 
@@ -399,6 +427,10 @@ function planWorkspacePath(kind: 'workspaceFolder' | 'workspaceFile', hints: Par
 function planDeclaredKind(node: JsonSchemaNode, kind: ParamKind, hints: ParamHints): FieldPlan {
   if (isWorkspacePathKind(kind)) return planWorkspacePath(kind, hints)
   if (isArtifactKind(kind)) return { control: 'artifact' }
+  // Checked before the text and number branches: `deviceIds` is the only kind
+  // in the vocabulary whose value is an array, so falling through to either
+  // of them would draw a list of UUIDs as a single text box.
+  if (isDeviceIdsKind(kind)) return { control: 'devices' }
   if (isTextKind(kind)) return planTextPlain(node, hints)
   return planKindNumber(node, kind, hints)
 }
@@ -429,7 +461,12 @@ function isPairNode(node: JsonSchemaNode, root: JsonSchemaNode): boolean {
 function planPair(node: JsonSchemaNode, hints: ParamHints, root: JsonSchemaNode): FieldPlan {
   const half = deref((node.prefixItems as JsonSchemaNode[])[0]!, root)
   const item =
-    hints.kind && !isStringKind(hints.kind) && kindStructurallyValid(hints.kind, half) ? planKindNumber(half, hints.kind, hints) : planPlainNumber(half)
+    // A pair is two numbers. A string kind was already excluded; an ARRAY
+    // kind has to be too, or `deviceIds` on a tuple would be planned as a
+    // number and drawn as a stepper.
+    hints.kind && !isStringKind(hints.kind) && !isDeviceIdsKind(hints.kind) && kindStructurallyValid(hints.kind, half)
+      ? planKindNumber(half, hints.kind, hints)
+      : planPlainNumber(half)
   return { control: 'pair', ordered: hints.ordered ?? true, item }
 }
 

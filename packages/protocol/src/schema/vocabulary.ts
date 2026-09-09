@@ -59,6 +59,18 @@ export const PARAM_KINDS = [
   'workspaceFolder',
   'workspaceFile',
   'artifact',
+  /**
+   * An ARRAY of device ids — "which phones is this for", chosen from the
+   * fleet rather than typed.
+   *
+   * The odd one out in this list, and deliberately so: every other kind
+   * describes a scalar, and this one is only ever valid on an array of
+   * strings. It is here because the alternative for a plugin that needs a
+   * fleet subset is a free-text field holding UUIDs, which no operator can
+   * fill in correctly. It is NOT in `STRING_PARAM_KINDS` below — the value is
+   * an array, so `formatScalar` must never be handed one.
+   */
+  'deviceIds',
 ] as const
 export type ParamKind = (typeof PARAM_KINDS)[number]
 
@@ -72,6 +84,18 @@ export type ParamKind = (typeof PARAM_KINDS)[number]
  */
 export const STRING_PARAM_KINDS = ['text', 'packageName', 'workspaceFolder', 'workspaceFile', 'artifact'] as const
 export type StringParamKind = (typeof STRING_PARAM_KINDS)[number]
+
+/**
+ * The kinds whose value is an ARRAY, not a scalar at all.
+ *
+ * A third shape rather than a special case, because the comment above only
+ * held while every kind was one of two things. `NumberKind` is derived by
+ * excluding the string kinds, so a kind that is neither would have silently
+ * become a number and reached `formatScalar` — which would render a list of
+ * device ids as `NaN`. Naming the shape is what keeps that a compile error.
+ */
+export const ARRAY_PARAM_KINDS = ['deviceIds'] as const
+export type ArrayParamKind = (typeof ARRAY_PARAM_KINDS)[number]
 
 /** Required by, and valid only for, `kind: 'duration'` (plan 95 §3.2). */
 export const DURATION_UNITS = ['ms', 's', 'min', 'h'] as const

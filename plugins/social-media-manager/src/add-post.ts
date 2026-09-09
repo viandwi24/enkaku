@@ -45,6 +45,11 @@ const params = z.object({
     .min(1)
     .describe('Which platforms this video is for. Each one sends to the phones carrying that platform\'s label.')
     .meta(ui({ title: 'Platforms', group: 'Post' })),
+  deviceIds: z
+    .array(z.string().min(1))
+    .default([])
+    .describe('Which phones this post may go to. Leave empty for any phone carrying the platform’s label — a choice here narrows that fleet, it never widens it.')
+    .meta(ui({ title: 'Phones', kind: 'deviceIds', group: 'Post' })),
 })
 
 const result = z.object({
@@ -67,7 +72,7 @@ const addPost: PluginMemberScript<typeof params, typeof result> = {
   timeout: 15_000,
 
   async run(ctx: ScriptContext<z.infer<typeof params>>) {
-    const { videoArtifactId, caption, platforms } = ctx.params
+    const { videoArtifactId, caption, platforms, deviceIds } = ctx.params
     const key = postKeyFor(videoArtifactId)
     /*
      * Trimmed and refused when empty, rather than stored as whitespace.
@@ -94,7 +99,7 @@ const addPost: PluginMemberScript<typeof params, typeof result> = {
     // to lose a dispatch record that is already true on a phone.
     const existing = await ctx.storage.global.get(key, PostSchema)
 
-    const next = newPost({ videoArtifactId, caption: nextCaption, platforms, now: existing?.createdAt ?? now })
+    const next = newPost({ videoArtifactId, caption: nextCaption, platforms, deviceIds, now: existing?.createdAt ?? now })
 
     if (existing) {
       /*

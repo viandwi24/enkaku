@@ -1,5 +1,6 @@
 import type { FieldPlan } from '../plan'
 import { ArtifactControl } from './ArtifactControl'
+import { DevicesControl } from './DevicesControl'
 import { ChanceControl } from './ChanceControl'
 import { ChoiceControl } from './ChoiceControl'
 import { JsonControl } from './JsonControl'
@@ -67,6 +68,8 @@ function renderControlInner(plan: FieldPlan, props: BaseControlProps) {
       return <WorkspacePathControl {...props} plan={plan} />
     case 'artifact':
       return <ArtifactControl {...props} />
+    case 'devices':
+      return <DevicesControl {...props} />
     case 'list':
       return <ListControl {...props} plan={plan} />
     case 'table':
