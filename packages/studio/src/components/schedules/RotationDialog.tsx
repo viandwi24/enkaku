@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { ScheduleResponseSchema, type DeviceInfo, type GroupInfo, type WorkflowInfo } from '@enkaku/protocol'
+import { ScheduleResponseSchema, readRotation, type DeviceInfo, type GroupInfo, type WorkflowInfo } from '@enkaku/protocol'
 import {
   api,
   useAction,
@@ -97,9 +97,26 @@ export function RotationDialog({ open, onOpenChange, onCreated }: { open: boolea
   }, [slotCandidates])
 
   const validTimes = times.every((t) => /^\d{1,2}:\d{2}$/.test(t.trim()))
+
+  /*
+    The one question worth asking before writing these rows: if this document
+    is handed a different slot, does it do anything different?
+
+    Nothing used to ask it. Pick a single-platform warm-up — the shape every
+    farm has several of — and this dialog would create three schedules that
+    all ran TikTok, three times a day, with three green batches and phones
+    that never saw the other two platforms. That is the client's own stated
+    fear, reached through the feature built to prevent it.
+  */
+  const rotation = useMemo(() => {
+    const doc = workflows.find((w) => w.name === workflowName)?.doc
+    return doc ? readRotation(doc, slotParam) : null
+  }, [workflows, workflowName, slotParam])
+
   const canSubmit =
     !!workflowName &&
     !!slotParam &&
+    rotation?.refusal === null &&
     validTimes &&
     times.length >= 2 &&
     (target.mode === 'group' ? !!target.groupId : target.mode === 'labels' ? target.labelIds.length > 0 : target.deviceIds.length > 0)
@@ -186,6 +203,25 @@ export function RotationDialog({ open, onOpenChange, onCreated }: { open: boolea
             <p className="rounded-input border border-warn/30 bg-warn-soft px-2.5 py-2 text-meta text-warn">
               {chosen.doc.title || chosen.name} declares no whole-number parameter, so there is nothing for the sessions to differ on. Add one (a
               &ldquo;slot&rdquo;) to the workflow and branch on it — for example <code className="font-mono">($device.number + $params.slot) % 3</code>.
+            </p>
+          )}
+
+          {/*
+            Shown instead of a silently disabled button. A dialog that refuses
+            and does not say why sends an operator looking for a bug in their
+            times or their group, when what is wrong is the document.
+          */}
+          {chosen && slotCandidates.length > 0 && rotation?.refusal != null && (
+            <p className="rounded-input border border-warn/30 bg-warn-soft px-2.5 py-2 text-meta text-warn">
+              {rotation.refusal} A rotation needs a switch that reads the session number — for example{' '}
+              <code className="font-mono">($device.number + $params.{slotParam || 'slot'}) % 3</code>, with one case per platform.
+            </p>
+          )}
+
+          {chosen && rotation?.refusal === null && (
+            <p className="text-meta text-faint">
+              Rotates {rotation.caseCount} ways. Over {times.length} session{times.length === 1 ? '' : 's'} a device visits{' '}
+              {Math.min(rotation.caseCount, times.length)} of them; {times.length >= rotation.caseCount ? 'every branch is covered each day.' : 'add a session to cover them all.'}
             </p>
           )}
 
