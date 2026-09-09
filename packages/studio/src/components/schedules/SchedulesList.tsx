@@ -3,7 +3,7 @@
 import { useEffect } from 'react'
 import Link from 'next/link'
 import { z } from 'zod'
-import { BatchInfoSchema, type ScheduleInfo } from '@enkaku/protocol'
+import { BatchInfoSchema, findRedundantSchedules, type ScheduleInfo } from '@enkaku/protocol'
 import { api, useAction, Switch, Button, relativeTime } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 import { ws } from '@/lib/ws'
@@ -85,11 +85,28 @@ export function SchedulesList({
     return (
       <div className="flex flex-col items-center gap-2 py-16 text-center">
         <p className="text-row font-medium text-text">No schedules yet</p>
-        <p className="max-w-sm text-meta text-dim">A schedule runs a script or an agent against a group or device list on a cron expression.</p>
+        <p className="max-w-sm text-meta text-dim">A schedule runs a script, a workflow or an agent against a group or device list on a cron expression.</p>
       </div>
     )
   }
   if (filtered.length === 0) return <p className="py-10 text-center text-body text-dim">No schedule matches &ldquo;{query}&rdquo;.</p>
+
+  /*
+   * Plan 314 §10.12 — schedules that would do exactly the same work.
+   *
+   * Computed over ALL items, not the filtered view: a duplicate hidden by the
+   * search box is still a duplicate, and a warning that appears and disappears
+   * with a query is one nobody trusts.
+   *
+   * The mistake it catches is the ordinary one. Three warm-up sessions a day
+   * is three rows, and three rows get made by duplicating the first twice; if
+   * the slot that distinguishes them is a parameter someone must remember to
+   * change, the copies run the first platform three times a day, forever,
+   * with three green batches and nothing red to notice.
+   */
+  const redundant = findRedundantSchedules(items)
+  const duplicateOf = new Map<string, number>()
+  redundant.forEach((ids, groupIndex) => ids.forEach((id) => duplicateOf.set(id, groupIndex + 1)))
 
   const toggle = (s: ScheduleInfo) =>
     run(`toggle-${s.id}`, () => api(`/api/schedules/${s.id}`, z.object({ schedule: z.unknown() }), { method: 'PATCH', json: { enabled: !s.enabled } }), {
@@ -118,9 +135,19 @@ export function SchedulesList({
         </div>
         {filtered.map((s) => (
           <div key={s.id} className="grid h-[48px] grid-cols-[1.4fr_1.2fr_1fr_100px_140px_78px_140px] items-center border-b border-muted-2 px-2">
-            <Link href={`/scripts/schedule?id=${s.id}`} className="truncate text-body font-medium text-text hover:text-accent">
-              {s.name}
-            </Link>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Link href={`/scripts/schedule?id=${s.id}`} className="truncate text-body font-medium text-text hover:text-accent">
+                {s.name}
+              </Link>
+              {duplicateOf.has(s.id) && (
+                <span
+                  className="shrink-0 rounded-chip bg-warn-soft px-1.5 py-0.5 text-[10.5px] text-warn"
+                  title="Another enabled schedule runs the same thing, with the same parameters, on the same devices. If these are meant to be different sessions of one rotation, one of them still has the first one's parameters."
+                >
+                  duplicate
+                </span>
+              )}
+            </div>
             <div className="truncate font-mono text-[12px] text-dim">{workSummary(s)}</div>
             <div className="truncate text-body text-dim">{humanCron(s.cron, s.timezone)}</div>
             <div className="font-mono text-body">{s.enabled ? countdown(s.nextFireAt, now) : '—'}</div>

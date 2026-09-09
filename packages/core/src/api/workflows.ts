@@ -20,6 +20,7 @@ import {
   WorkflowSimulateRequestSchema,
   WorkflowSimulateResponseSchema,
   WorkflowLastRunResponseSchema,
+  WorkflowCoverageResponseSchema,
   WorkflowRunsResponseSchema,
   WORKFLOW_STEP_STATUSES,
   type ResolvedNodeScript,
@@ -89,6 +90,8 @@ const ERROR_STATUS: Record<string, number> = {
   E_WORKFLOW_SCHEMA_UNKNOWN: 400,
   E_WORKFLOW_UPGRADE_FAILED: 400,
   E_NODE_UNKNOWN: 400,
+  /** Plan 314 §7.5 — the workflow exists; it simply expresses no rotation (no switch), or the named node is not one. A request problem, not a server one. */
+  E_NO_ROTATION: 400,
   E_NODE_NO_INPUT: 400,
   E_PIN_TOO_LARGE: 400,
   E_PIN_NOT_PINNABLE: 400,
@@ -702,6 +705,133 @@ export function createWorkflowRoutes(deps: {
         error: r.error ?? null,
       })),
       total: rows.length,
+    })
+  })
+
+  /**
+   * `GET /:name/coverage` (plan 314 §7.5) — the rotation report.
+   *
+   * The client's fear, stated in their own words, is a phone that "ga
+   * kebagian" — left out of a platform without anything going red. A
+   * multi-session warm-up makes that possible by construction: three
+   * dispatches a day, coverage emergent across them, and every individual run
+   * green. The Jobs screen cannot answer it, because nothing there failed.
+   *
+   * So this answers it from the one durable record of what a run actually
+   * DECIDED: `workflow_steps.takenEdge` for a `switch` node — the `case:<i>`
+   * the executor wrote at the moment it chose. Never re-derived from the
+   * document (a re-derivation would reproduce today's numbering, not the one
+   * the run had) and never simulated.
+   *
+   * `?node=` picks the switch when a document has more than one; omitted, the
+   * first switch in document order is used, because a rotation workflow has
+   * exactly one. `?window=` is how many recent runs per device to consider —
+   * defaulting to the number of cases, since "did this phone cover all three
+   * platforms" is a question about its last three runs.
+   */
+  app.get('/:name/coverage', requirePermission('script.view'), (c) => {
+    const name = c.req.param('name')
+    const record = store.get(name)
+    if (!record) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+
+    const switches = record.doc.nodes.filter((n) => n.kind === 'switch')
+    const requested = c.req.query('node')
+    const node = requested ? switches.find((n) => n.id === requested) : switches[0]
+    if (!node || node.kind !== 'switch') {
+      throw new EnkakuError(
+        'E_NO_ROTATION',
+        requested
+          ? `"${requested}" is not a switch node in workflow "${name}"`
+          : `workflow "${name}" has no switch node, so it expresses no rotation to report coverage for`,
+      )
+    }
+
+    // Every edge the node can take, in document order. `default` counts only
+    // when the author wired one — an unwired default is not a platform a
+    // device could have been "left out of".
+    const cases = node.cases.map((cs, i) => ({ edge: `case:${i}`, label: cs.label || `Case ${i + 1}` }))
+    if (node.default) cases.push({ edge: 'default', label: 'Default' })
+    const allEdges = cases.map((cs) => cs.edge)
+    const window = Math.min(Math.max(Number(c.req.query('window') ?? allEdges.length) || allEdges.length, 1), 100)
+
+    /*
+     * One query for the devices, then one bounded query PER DEVICE — rather
+     * than reading every run this workflow has ever had and filtering in
+     * memory.
+     *
+     * The obvious shape (select all runs, then `inArray` their ids) is what
+     * `/:name/runs` uses, and it is safe THERE because that route caps its
+     * limit at 100. Here there is no natural limit: the report is about a
+     * warm-up that runs several times a day forever, so the id list grows
+     * without bound and eventually becomes the query itself. Measured on this
+     * runtime's SQLite: 60 000 bound parameters are accepted, 100 000 are not
+     * ("too many SQL variables"). At three sessions a day across forty phones
+     * that ceiling is roughly a year and a half away — far enough to ship and
+     * near enough to be certain of hitting, on the one screen an operator
+     * opens specifically to be reassured.
+     *
+     * Looping over devices removes the ceiling instead of raising it. The
+     * loop is bounded by the size of the FARM, which is tens, and each query
+     * returns at most `window` rows on an indexed lookup. No cap, no constant
+     * to tune, and the answer stays exact however long the history grows.
+     */
+    const deviceIds = deps.db
+      .selectDistinct({ deviceId: jobs.deviceId })
+      .from(jobRuns)
+      .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+      .where(and(eq(jobs.workflowName, name), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
+      .all()
+      .map((r) => r.deviceId)
+      .filter((id): id is string => id !== null)
+
+    // A run in which this node never ran — the device was offline, or a gate
+    // sent the cursor elsewhere — contributes NO edge but still counts as a
+    // run, which is what makes "3 runs, 2 platforms" readable as the problem
+    // it is. That is why the join is LEFT and the edge may be null.
+    const perDevice = new Map<string, { covered: Set<string>; runs: number }>()
+    for (const deviceId of deviceIds) {
+      const rows = deps.db
+        .select({ takenEdge: workflowSteps.takenEdge })
+        .from(jobRuns)
+        .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+        .leftJoin(workflowSteps, and(eq(workflowSteps.runId, jobRuns.id), eq(workflowSteps.stepId, node.id)))
+        .where(and(eq(jobs.workflowName, name), eq(jobs.deviceId, deviceId), notInArray(jobRuns.trigger, NON_REAL_RUN_TRIGGERS)))
+        .orderBy(desc(jobRuns.createdAt))
+        .limit(window)
+        .all()
+      const covered = new Set<string>()
+      for (const r of rows) if (r.takenEdge && allEdges.includes(r.takenEdge)) covered.add(r.takenEdge)
+      perDevice.set(deviceId, { covered, runs: rows.length })
+    }
+
+    const deviceRows = deviceIds.length === 0 ? [] : deps.db.select({ id: devices.id, label: devices.label, stableId: devices.stableId }).from(devices).where(inArray(devices.id, deviceIds)).all()
+    const numberRows = deviceIds.length === 0 ? [] : deps.db.select({ stableId: deviceNumbers.stableId, number: deviceNumbers.number }).from(deviceNumbers).all()
+    const numberOf = new Map(numberRows.map((n) => [n.stableId, n.number]))
+    const infoOf = new Map(deviceRows.map((d) => [d.id, { label: formatDeviceLabel(numberOf.get(d.stableId) ?? null, d.label), number: numberOf.get(d.stableId) ?? null }]))
+
+    const rows = deviceIds.map((deviceId) => {
+      const acc = perDevice.get(deviceId)!
+      const info = infoOf.get(deviceId)
+      const covered = allEdges.filter((e) => acc.covered.has(e))
+      return {
+        deviceId,
+        deviceLabel: info?.label ?? deviceId,
+        deviceNumber: info?.number ?? null,
+        covered,
+        missing: allEdges.filter((e) => !acc.covered.has(e)),
+        runs: acc.runs,
+      }
+    })
+    // Worst first — the report is read to find the phones that were left out,
+    // so they must not be on page two.
+    rows.sort((a, b) => b.missing.length - a.missing.length || (a.deviceNumber ?? 1e9) - (b.deviceNumber ?? 1e9))
+
+    return typedJson(c, WorkflowCoverageResponseSchema, {
+      nodeId: node.id,
+      cases,
+      window,
+      devices: rows,
+      incompleteCount: rows.filter((r) => r.missing.length > 0).length,
     })
   })
 

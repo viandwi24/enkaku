@@ -10,6 +10,7 @@ function scope(overrides: Partial<ExprScope> = {}): ExprScope {
     $nodes: toScopeValue({}) as Record<string, unknown>,
     $input: undefined,
     $run: { summary: undefined },
+    $device: { number: null, stableId: null, label: null, group: null, labels: [] },
     $now: 1_000,
     $random: 0.5,
     ...overrides,
@@ -170,5 +171,56 @@ describe('eval — EXPR_LIMITS.maxSteps is the default fuel', () => {
     const big = Array.from({ length: EXPR_LIMITS.maxArrayLength }, (_, i) => i % 100)
     const s = scope({ $nodes: toScopeValue({ a: big }) as Record<string, unknown> })
     expect(() => evaluate(parse('unique(sort($nodes.a))'), s)).toThrow(ExprEvalError)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// `$device` — the rotation root (plan 314 §10.11)
+// ---------------------------------------------------------------------------
+
+describe('eval — $device', () => {
+  const phone = (over: Partial<ExprScope['$device']> = {}) =>
+    scope({ $device: { number: 7, stableId: 'ABC123', label: 'Pixel 5', group: 'rack-a', labels: ['android-15', 'smoke-pool'], ...over } })
+
+  test('the five facts read back', () => {
+    const s = phone()
+    expect(evaluate(parse('$device.number'), s)).toBe(7)
+    expect(evaluate(parse('$device.stableId'), s)).toBe('ABC123')
+    expect(evaluate(parse('$device.label'), s)).toBe('Pixel 5')
+    expect(evaluate(parse('$device.group'), s)).toBe('rack-a')
+    expect(evaluate(parse('$device.labels[0]'), s)).toBe('android-15')
+    expect(evaluate(parse('count($device.labels)'), s)).toBe(2)
+  })
+
+  test('the rotation this root exists for: (number + slot) % 3', () => {
+    // The Latin square of plan 314 §4/§10.2. Every phone visits every
+    // platform over three slots, and the slot is the only thing that moves.
+    for (let number = 1; number <= 12; number++) {
+      const s = phone({ number })
+      const seen = [0, 1, 2].map((slot) =>
+        evaluate(parse(`($device.number + ${slot}) % 3`), s),
+      )
+      expect([...seen].sort()).toEqual([0, 1, 2])
+    }
+  })
+
+  test('a released reservation reads null and fails arithmetic BY NAME, never as platform 0', () => {
+    const s = phone({ number: null })
+    expect(evaluate(parse('$device.number'), s)).toBe(null)
+    // The whole point: a phone with no number must not silently rotate as if
+    // it were number 0, which would give it the same platform as every other
+    // numberless phone forever.
+    expect(() => evaluate(parse('($device.number + 1) % 3'), s)).toThrow(ExprEvalError)
+    try {
+      evaluate(parse('($device.number + 1) % 3'), s)
+    } catch (err) {
+      expect((err as ExprEvalError).code).toBe('E_EXPR_TYPE')
+    }
+  })
+
+  test('it is read-only data: no prototype reaches the evaluator', () => {
+    const s = phone()
+    expect(evaluate(parse('get($device, "constructor", null)'), s)).toBe(null)
+    expect(evaluate(parse('get($device, "labels.constructor", null)'), s)).toBe(null)
   })
 })

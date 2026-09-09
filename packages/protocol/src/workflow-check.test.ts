@@ -1056,3 +1056,67 @@ describe('W_WORKFLOW_DISABLED_BINDING (plan 313 §3.4)', () => {
     expect(codesOf(checkWorkflow(doc, resolved))).not.toContain('W_WORKFLOW_DISABLED_BINDING')
   })
 })
+
+// ---------------------------------------------------------------------------
+// W_WORKFLOW_INDEX_AS_IDENTITY (plan 314 §7.2, plan 700 D-B)
+// ---------------------------------------------------------------------------
+
+/** `start -> set(x = <source>) -> finish`, so any expression can be checked in one line. */
+function exprDoc(source: string): WorkflowDoc {
+  return WorkflowDocSchema.parse({
+    schema: 2,
+    name: 'w',
+    title: '',
+    entry: 'start',
+    maxSteps: 10,
+    params: [{ name: 'accounts', type: 'stringList', title: 'Accounts', required: false }],
+    nodes: [
+      { kind: 'start', id: 'start', title: '', ui: { x: 0, y: 0 }, next: 'n' },
+      { kind: 'set', id: 'n', title: '', ui: { x: 0, y: 0 }, assignments: [{ name: { const: 'x' }, value: { expr: source } }], next: 'finish' },
+      { kind: 'finish', id: 'finish', title: '', ui: { x: 0, y: 0 }, status: 'succeed', message: '' },
+    ],
+  })
+}
+
+function codesFor(source: string): string[] {
+  return checkWorkflow(exprDoc(source), new Map(), { maxTotalMs: 3_600_000 }).map((f) => f.code)
+}
+
+describe('W_WORKFLOW_INDEX_AS_IDENTITY — the account-loss footgun', () => {
+  test('the two spellings of "give each phone its own account" both warn', () => {
+    expect(codesFor('at($params.accounts, $run.index)')).toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+    expect(codesFor('$params.accounts[$run.index]')).toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+  })
+
+  test('it survives arithmetic around the index, which is how a second one gets written', () => {
+    expect(codesFor('$params.accounts[$run.index + 1]')).toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+    expect(codesFor('at($params.accounts, $run.index % 10)')).toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+  })
+
+  test('it is a WARNING, never a refusal — the document still publishes', () => {
+    const findings = checkWorkflow(exprDoc('at($params.accounts, $run.index)'), new Map(), { maxTotalMs: 3_600_000 })
+    const hit = findings.find((f) => f.code === 'W_WORKFLOW_INDEX_AS_IDENTITY')!
+    expect(hit.severity).toBe('warning')
+    expect(hit.message).toContain('$device.number')
+    expect(findings.filter((f) => f.severity === 'error')).toHaveLength(0)
+  })
+
+  test('the LEGITIMATE use of $run.index — dividing a fleet into equal shares — does not warn', () => {
+    // This is what the root was added for, and warning here would train
+    // authors to ignore the warning that matters.
+    expect(codesFor('$run.index % 3')).not.toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+    expect(codesFor('($run.index + 1) % 3')).not.toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+    expect(codesFor('$run.index < $run.count')).not.toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+  })
+
+  test('the recommended replacement does not warn', () => {
+    expect(codesFor('at($params.accounts, $device.number)')).not.toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+    expect(codesFor('($device.number + 1) % 3')).not.toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+  })
+
+  test('indexing something that is NOT a parameter does not warn', () => {
+    // A node's own output is per-run data, not a farm-wide list an identity
+    // would be drawn from — the failure mode does not apply.
+    expect(codesFor('$input[$run.index]')).not.toContain('W_WORKFLOW_INDEX_AS_IDENTITY')
+  })
+})

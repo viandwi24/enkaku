@@ -231,6 +231,20 @@ export interface CreateWorkflowBatchInput {
    */
   pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs?: [number, number] } | null
   createdBy?: string | null
+  /**
+   * The three fields a SCHEDULE needs, and that `CreateBatchInput` has taken
+   * since plan 211 (plan 314 §7.1). A workflow batch was only ever created by
+   * the `run-workflow` action, which has no schedule, no queue timeout and
+   * exactly one trigger — so these had nowhere to come from. A schedule has
+   * all three, and `GET /api/schedules/:id/jobs` finds its members by
+   * `jobs.scheduleId`, so a workflow schedule whose members were not stamped
+   * would show an empty job list on the very screen built to prove it ran.
+   */
+  scheduleId?: string | null
+  /** Defaults to `'batch'` — the schedule dispatcher overrides it to `'schedule'` so its first fire reads like every later one. */
+  trigger?: RunTrigger
+  /** Unix seconds, or null to wait forever. A schedule's `queueTimeoutSec`, resolved to an absolute time by the caller. */
+  expiresAt?: number | null
 }
 
 /**
@@ -318,9 +332,10 @@ export function createWorkflowBatch(
         scriptVersion: null,
         batchId,
         batchSeq: i,
+        scheduleId: input.scheduleId ?? null,
         createdBy: input.createdBy ?? null,
       })
-      deps.runs.addRun(job.id, { trigger: 'batch', priority })
+      deps.runs.addRun(job.id, { trigger: input.trigger ?? 'batch', priority, expiresAt: input.expiresAt ?? null })
     })
   })
 

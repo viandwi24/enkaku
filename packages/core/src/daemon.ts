@@ -2370,6 +2370,10 @@ let blobGc: BlobGc | null = null
         // Plan 82 §3.3, §3.5 — a schedule refuses a dev-only target (criterion 18) and resolves
         // a plugin's `@latest` to its ACTIVE version, not merely the highest published semver.
         registry: scriptRegistry,
+        // Plan 314 §7.1 — the workflow branch of dispatch. The SAME store the
+        // workflow routes and the run-workflow action use, so a schedule and
+        // a manual run can never disagree about what a workflow's name means.
+        workflows: workflowStore,
         // Plan 94 §3.9, §4.9, step 94.8 — `onOverlap: 'cancel-previous'`'s
         // abort path for a running member, the SAME instance `batchRoutes`
         // gets (no second one — `stopBatch`'s own "no second abort path").
@@ -3459,6 +3463,10 @@ let blobGc: BlobGc | null = null
           },
           // Plan 82 §3.3, §3.5 — see `scheduleRunner`'s own construction above for why.
           scriptRegistry,
+          // Plan 314 §7.1 — resolves a workflow-kind target's name at write
+          // time, so a schedule cannot be saved against a workflow that does
+          // not exist and then fail silently at its first firing.
+          workflows: workflowStore,
           // Plan 93 §3.12, §4.6, step 93.8 — the same pair `batchRoutes`
           // above and `scheduleRunner`'s own construction get, so a
           // schedule's `internal:install` is gated identically whether it

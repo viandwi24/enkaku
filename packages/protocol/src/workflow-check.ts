@@ -60,6 +60,7 @@ export type WorkflowFindingCode =
   | 'W_WORKFLOW_DISABLED_BINDING'
   /** A `shuffle` with fewer than two members — nothing to shuffle. A warning, not an error, so a node just placed on the canvas can still be saved (plan 313 §4.3, on plan 301 §4.3's rule). */
   | 'W_WORKFLOW_SHUFFLE_EMPTY'
+  | 'W_WORKFLOW_INDEX_AS_IDENTITY'
   /**
    * Plan 99 §4.3 check 7, unblocked by plan 98 §4.4 step 98.4
    * (`scripts.runtime`, so `ResolvedNodeScript.timeoutMs` is now readable at
@@ -291,6 +292,91 @@ function buildGraph(doc: WorkflowDoc, nodeIds: ReadonlySet<string>, findings: Wo
  * exactly as unchecked as `{ from }` would be for a dynamic reference, which
  * this repo's binding grammar has never been able to express either.
  */
+/** Is this expression rooted at `$params` — `$params`, `$params.accounts`, `$params.a.b`? */
+function isParamsRooted(ast: Expr): boolean {
+  if (ast.t === 'root') return ast.name === '$params'
+  if (ast.t === 'member') return isParamsRooted(ast.on)
+  return false
+}
+
+/** Does this expression mention `$run.index` anywhere? */
+function mentionsRunIndex(ast: Expr): boolean {
+  switch (ast.t) {
+    case 'lit':
+    case 'root':
+      return false
+    case 'member':
+      if (ast.on.t === 'root' && ast.on.name === '$run' && ast.key === 'index') return true
+      return mentionsRunIndex(ast.on)
+    case 'index':
+      return mentionsRunIndex(ast.on) || mentionsRunIndex(ast.idx)
+    case 'unary':
+      return mentionsRunIndex(ast.on)
+    case 'bin':
+      return mentionsRunIndex(ast.l) || mentionsRunIndex(ast.r)
+    case 'cond':
+      return mentionsRunIndex(ast.c) || mentionsRunIndex(ast.a) || mentionsRunIndex(ast.b)
+    case 'call':
+      return ast.args.some((a) => mentionsRunIndex(a))
+  }
+}
+
+/**
+ * `W_WORKFLOW_INDEX_AS_IDENTITY` (plan 314 §7.2, plan 700 D-B) — indexing a
+ * workflow PARAMETER by `$run.index`.
+ *
+ * This is the one expression shape in the language that looks correct, type
+ * checks, runs green, and silently hands a device the wrong row. It is how
+ * anyone would write "give each phone its own account" today:
+ *
+ *     at($params.accounts, $run.index)      $params.accounts[$run.index]
+ *
+ * `$run.index` is `jobs.batchSeq`, a position INSIDE one batch, and its own
+ * doc comment says what it is for: dividing a fleet into EQUAL SHARES.
+ * Three properties make it unusable as an identity, and two of them are
+ * deliberate features:
+ *
+ * - `order: 'random'` reshuffles the numbering on purpose;
+ * - `createBatch` numbers only the devices that resolved as USABLE, so one
+ *   offline phone shifts every device after it;
+ * - it is a batch position, so it is not stable across runs at all.
+ *
+ * On an account farm the consequence is specific: account A posts from phone
+ * 1 on Monday and phone 7 on Tuesday, which is the exact signal the
+ * platforms these scripts drive use to ban. Nothing else in the product, the
+ * schema or the checker warns about it.
+ *
+ * A warning, never an error: the same expression is legitimate for picking a
+ * SHARE (`$run.index % 3`, which is not an index into a parameter and does
+ * not match here), and refusing to save would block an author mid-edit.
+ */
+function usesRunIndexAsParamIndex(ast: Expr): boolean {
+  switch (ast.t) {
+    case 'lit':
+    case 'root':
+      return false
+    case 'index':
+      if (isParamsRooted(ast.on) && mentionsRunIndex(ast.idx)) return true
+      return usesRunIndexAsParamIndex(ast.on) || usesRunIndexAsParamIndex(ast.idx)
+    case 'member':
+      return usesRunIndexAsParamIndex(ast.on)
+    case 'unary':
+      return usesRunIndexAsParamIndex(ast.on)
+    case 'bin':
+      return usesRunIndexAsParamIndex(ast.l) || usesRunIndexAsParamIndex(ast.r)
+    case 'cond':
+      return usesRunIndexAsParamIndex(ast.c) || usesRunIndexAsParamIndex(ast.a) || usesRunIndexAsParamIndex(ast.b)
+    case 'call': {
+      // `at(list, i)` and `get(obj, path, default)` are the function-call
+      // spellings of the same access.
+      const first = ast.args[0]
+      const second = ast.args[1]
+      if ((ast.fn === 'at' || ast.fn === 'get') && first && second && isParamsRooted(first) && mentionsRunIndex(second)) return true
+      return ast.args.some((a) => usesRunIndexAsParamIndex(a))
+    }
+  }
+}
+
 function collectExprNodeRefs(ast: Expr, out = new Set<string>()): Set<string> {
   switch (ast.t) {
     case 'lit':
@@ -1013,6 +1099,16 @@ export function checkWorkflow(doc: WorkflowDoc, resolved: ReadonlyMap<ScriptRef,
         push(findings, site.path, 'E_WORKFLOW_EXPR_PARSE', message, 'error')
         continue
       }
+      if (usesRunIndexAsParamIndex(ast)) {
+        push(
+          findings,
+          site.path,
+          'W_WORKFLOW_INDEX_AS_IDENTITY',
+          'this indexes a workflow parameter by $run.index, which is a position inside ONE batch, not a property of the device: `order: "random"` reshuffles it deliberately, and one offline phone renumbers every device after it, so the same phone gets a different entry on the next run — use $device.number (the # on the phone itself) for anything that must stay with the device, and keep $run.index for dividing a fleet into equal shares',
+          'warning',
+        )
+      }
+
       for (const referencedNodeId of collectExprNodeRefs(ast)) {
         if (!nodeIds.has(referencedNodeId)) {
           push(findings, site.path, 'E_WORKFLOW_EXPR_UNKNOWN_NODE', `"$nodes.${referencedNodeId}" — "${referencedNodeId}" is not a node in this document`, 'error')

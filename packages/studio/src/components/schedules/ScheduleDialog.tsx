@@ -21,6 +21,7 @@ import type {
   ScheduleInfo,
   ScheduleThreadMode,
   ScriptListItem,
+  WorkflowInfo,
 } from '@enkaku/protocol'
 import {
   api,
@@ -49,13 +50,18 @@ import { PresetRow } from '@/components/presets/PresetRow'
 import { ScriptTrigger } from '@/components/scripts/ScriptPalette'
 import { SchemaForm } from '@/components/schema-form/SchemaForm'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
-import { fetchAllPages, fetchDevices } from '@/lib/api'
+import { fetchAllPages, fetchDevices, listWorkflows } from '@/lib/api'
 import { useLabels } from '@/lib/labels'
 import { GroupOrDevicesField, type GroupOrDevicesValue } from './GroupOrDevicesField'
 
 export type ScheduleRow = ScheduleInfo
 
-type WorkKind = 'script' | 'agent'
+/**
+ * Plan 314 §7.1 — `workflow` joins the two kinds plan 68 established. Spec
+ * §4.7 has named it since it was written; until now nothing built it, so
+ * "run this warm-up every morning" meant a person pressing Run.
+ */
+type WorkKind = 'script' | 'agent' | 'workflow'
 
 /** Plan 68 §3.2 — a fresh thread per firing, or one long-lived thread. */
 const THREAD_MODE_NOTE: Record<ScheduleThreadMode, string> = {
@@ -110,6 +116,8 @@ export function ScheduleDialog({
   const [cron, setCron] = useState('0 * * * *')
   const [timezone, setTimezone] = useState(defaultTimezone())
   const [workKind, setWorkKind] = useState<WorkKind>('script')
+  const [workflowName, setWorkflowName] = useState('')
+  const [workflows, setWorkflows] = useState<WorkflowInfo[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
   const [agentId, setAgentId] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -135,6 +143,12 @@ export function ScheduleDialog({
   const [intervalMinSec, setIntervalMinSec] = useState(0)
   const [intervalMaxSec, setIntervalMaxSec] = useState(0)
   const [deviceIntervalSec, setDeviceIntervalSec] = useState(0)
+  // Plan 314 §10.5 — minutes, not seconds: this window is the one an
+  // operator thinks about in hours ("everyone starts somewhere across the
+  // morning"), and a seconds box for 7 200 000 ms invites a typo nobody
+  // notices until a farm all starts at once.
+  const [deviceDelayMinMin, setDeviceDelayMinMin] = useState(0)
+  const [deviceDelayMaxMin, setDeviceDelayMaxMin] = useState(0)
   const [preview, setPreview] = useState<{ valid: boolean; nextFires: number[]; error?: string } | null>(null)
   const [serverIssues, setServerIssues] = useState<Record<string, string> | undefined>(undefined)
   const [formCanSubmit, setFormCanSubmit] = useState(true)
@@ -154,6 +168,9 @@ export function ScheduleDialog({
     void fetchDevices()
       .then(setDevices)
       .catch(() => setDevices([]))
+    void listWorkflows()
+      .then(setWorkflows)
+      .catch(() => setWorkflows([]))
     void api('/api/agents', ListAgentsResponseSchema)
       .then((res) => setAgents(res.agents.filter((a) => a.enabled)))
       .catch(() => setAgents([]))
@@ -168,6 +185,7 @@ export function ScheduleDialog({
       setCron('0 * * * *')
       setTimezone(defaultTimezone())
       setWorkKind('script')
+      setWorkflowName('')
       setAgentId('')
       setPrompt('')
       setThreadMode('new')
@@ -186,6 +204,8 @@ export function ScheduleDialog({
       setIntervalMinSec(0)
       setIntervalMaxSec(0)
       setDeviceIntervalSec(0)
+      setDeviceDelayMinMin(0)
+      setDeviceDelayMaxMin(0)
     } else if (schedule) {
       setName(schedule.name)
       setEnabled(schedule.enabled)
@@ -198,7 +218,12 @@ export function ScheduleDialog({
         setThreadMode(schedule.threadMode)
         setOnApprovalRequired(schedule.onApprovalRequired)
         setScriptName('')
+        setWorkflowName('')
         setParams(undefined)
+      } else if (schedule.target.kind === 'workflow') {
+        setWorkflowName(schedule.target.workflowName)
+        setParams(schedule.target.params)
+        setScriptName('')
       } else {
         // No version to parse out any more (§3.6 item 2): `scriptRef` is
         // always `<name>@latest`, so the picked NAME is everything before `@`.
@@ -223,6 +248,8 @@ export function ScheduleDialog({
       setIntervalMinSec(Math.round((schedule.intervalMinMs ?? 0) / 1000))
       setIntervalMaxSec(Math.round((schedule.intervalMaxMs ?? 0) / 1000))
       setDeviceIntervalSec(Math.round((schedule.deviceIntervalMs ?? 0) / 1000))
+      setDeviceDelayMinMin(Math.round((schedule.deviceDelayMs?.[0] ?? 0) / 60_000))
+      setDeviceDelayMaxMin(Math.round((schedule.deviceDelayMs?.[1] ?? 0) / 60_000))
     }
   }, [schedule])
 
@@ -261,14 +288,19 @@ export function ScheduleDialog({
     name.trim().length > 0 &&
     (preview?.valid ?? false) &&
     (target.mode === 'group' ? !!target.groupId : target.mode === 'labels' ? target.labelIds.length > 0 : target.deviceIds.length > 0) &&
-    (workKind === 'agent' ? !!agentId && prompt.trim().length > 0 : !!scriptName) &&
-    intervalMinSec <= intervalMaxSec
+    (workKind === 'agent' ? !!agentId && prompt.trim().length > 0 : workKind === 'workflow' ? !!workflowName : !!scriptName) &&
+    intervalMinSec <= intervalMaxSec &&
+    deviceDelayMinMin <= deviceDelayMaxMin
 
   // Always `@latest` — a schedule can no longer pin a specific plugin
   // version, matching MVP 03 §2.2's removal of script-level versioning.
   const scriptRef = `${scriptName}@latest`
   const workTarget =
-    workKind === 'agent' ? { kind: 'agent' as const, agentId, prompt } : { kind: 'script' as const, ref: scriptRef, params: params ?? {} }
+    workKind === 'agent'
+      ? { kind: 'agent' as const, agentId, prompt }
+      : workKind === 'workflow'
+        ? { kind: 'workflow' as const, workflowName, params: params ?? {} }
+        : { kind: 'script' as const, ref: scriptRef, params: params ?? {} }
 
   const body = () => ({
     name,
@@ -293,6 +325,7 @@ export function ScheduleDialog({
     intervalMinMs: intervalMinSec * 1000,
     intervalMaxMs: intervalMaxSec * 1000,
     deviceIntervalMs: deviceIntervalSec * 1000,
+    deviceDelayMs: [deviceDelayMinMin * 60_000, deviceDelayMaxMin * 60_000],
     threadMode,
     onApprovalRequired,
   })
@@ -377,12 +410,42 @@ export function ScheduleDialog({
                 setFormCanSubmit(true)
               }}
             >
-              <TabsList className="grid w-full grid-cols-2">
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="script">A script</TabsTrigger>
+                <TabsTrigger value="workflow">A workflow</TabsTrigger>
                 <TabsTrigger value="agent">An agent</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
+
+          {workKind === 'workflow' && (
+            <div className="space-y-1.5">
+              <Label className="text-row font-normal">Workflow</Label>
+              <Select
+                value={workflowName}
+                onValueChange={(v) => {
+                  setWorkflowName(v)
+                  setParams(undefined)
+                  setServerIssues(undefined)
+                  setFormCanSubmit(true)
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={workflows.length === 0 ? 'No workflows yet' : 'Pick a workflow'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {workflows.map((w) => (
+                    <SelectItem key={w.name} value={w.name}>
+                      {w.doc.title || w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-caption text-faint">
+                The workflow is resolved by name at every firing, so editing it changes what the next run does — a queued or running one keeps the document it started with.
+              </p>
+            </div>
+          )}
 
           {workKind === 'script' && (
             <>
@@ -676,6 +739,38 @@ export function ScheduleDialog({
                 </div>
               </div>
               {intervalMinSec > intervalMaxSec && <p className="text-meta text-danger">The interval's minimum is greater than its maximum.</p>}
+
+              {/* Plan 314 §10.5 — the knob that means "each device starts at
+                  its own time". Distinct from the stagger above, which is a
+                  fixed ladder and therefore ranks the devices; this draws
+                  independently per device and ranks nobody. */}
+              <div className="space-y-1.5">
+                <Label className="text-body font-normal">Each device starts somewhere in a window of (min)</Label>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    type="number"
+                    min={0}
+                    aria-label="Per-device start window minimum (minutes)"
+                    value={deviceDelayMinMin}
+                    onChange={(e) => setDeviceDelayMinMin(Math.max(0, Number.parseInt(e.target.value, 10) || 0))}
+                    mono
+                    className="h-8 text-body"
+                  />
+                  <Input
+                    type="number"
+                    min={0}
+                    aria-label="Per-device start window maximum (minutes)"
+                    value={deviceDelayMaxMin}
+                    onChange={(e) => setDeviceDelayMaxMin(Math.max(0, Number.parseInt(e.target.value, 10) || 0))}
+                    mono
+                    className="h-8 text-body"
+                  />
+                </div>
+                <p className="text-caption text-faint">
+                  Every device draws its own start time in this window. Leave both at 0 and the whole target starts together.
+                </p>
+                {deviceDelayMinMin > deviceDelayMaxMin && <p className="text-meta text-danger">The window's minimum is greater than its maximum.</p>}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">

@@ -1284,6 +1284,27 @@ export const schedules = sqliteTable(
     intervalMinMs: integer('interval_min_ms').notNull().default(0),
     intervalMaxMs: integer('interval_max_ms').notNull().default(0),
     deviceIntervalMs: integer('device_interval_ms').notNull().default(0),
+    /**
+     * The per-device random start delay (plan 314 §10.5) — the fifth and
+     * sixth pacing fields, added because the runner built its `pacing` from
+     * the four above and `deviceDelayMs` therefore fell to its `[0, 0]`
+     * default on EVERY scheduled run. A manual *Run workflow* could stagger
+     * each phone by a random amount; a schedule could not, which is the one
+     * thing "each device starts at its own time" actually means.
+     *
+     * Distinct from `deviceIntervalMs` above in the way `BatchPacingSchema`
+     * already states: that one is a fixed ladder and therefore fixes the
+     * wall-clock ORDER as a side effect (the last phone in the list is always
+     * last), while this draws independently per member and ranks nobody.
+     * Distinct from `jitterSec` too, which shifts the WHOLE firing before a
+     * batch exists at all. Three knobs, three columns, none substitutable.
+     *
+     * Hour-scale values are sound here: `createBatchPacer` bakes the draw
+     * into each member run's own `notBefore` COLUMN rather than an in-memory
+     * timer, so a two-hour spread survives a core restart.
+     */
+    deviceDelayMinMs: integer('device_delay_min_ms').notNull().default(0),
+    deviceDelayMaxMs: integer('device_delay_max_ms').notNull().default(0),
 
     lastFiredAt: integer('last_fired_at', { mode: 'timestamp' }),
     /** The batch this schedule OWNS (plan 211 §3.2 decision 4); its member jobs are one per target device. */
@@ -1342,6 +1363,48 @@ export const scheduleAgentTargets = sqliteTable(
 )
 export type ScheduleAgentTargetRow = typeof scheduleAgentTargets.$inferSelect
 export type ScheduleAgentTargetInsert = typeof scheduleAgentTargets.$inferInsert
+
+/**
+ * A schedule's WORKFLOW target (plan 314 §7.1) — the third work kind, after
+ * `script` (a bare `schedules.scriptRef`) and `agent` (the companion table
+ * above).
+ *
+ * A companion table for exactly the reason the agent one gives, and the
+ * reason has not weakened: `schedules/runner.test.ts` and
+ * `api/schedules.test.ts` both build a fully-typed `const row: ScheduleRow`
+ * literal, and TypeScript requires EVERY column of a `$inferSelect` type to
+ * be present in such a literal regardless of nullability or a SQL default.
+ * Any column added directly to `schedules` fails both files to compile. A
+ * row here adds the workflow fields with ZERO change to `ScheduleRow`'s
+ * shape.
+ *
+ * Presence of a row IS the discriminator, and the dispatcher checks for one
+ * — after the agent row, before `schedules.scriptRef` is ever read — so the
+ * script branch's behaviour is byte-for-byte what it was.
+ *
+ * `workflowName` is a name, never a stored document: `createWorkflowBatch`
+ * snapshots the document onto each member job at dispatch (`jobs.workflowDoc`),
+ * so editing a workflow changes what the NEXT firing runs and never what a
+ * queued or running one does — the same rule spec §4.6 already states for a
+ * manually dispatched workflow job.
+ *
+ * Spec §4.7 has described this target since it was written; plan 217 §57
+ * recorded that no plan had built it. This is that plan.
+ */
+export const scheduleWorkflowTargets = sqliteTable(
+  'schedule_workflow_targets',
+  {
+    scheduleId: text('schedule_id').primaryKey(),
+    /** `workflows.name` — resolved at every firing, never frozen at write time. */
+    workflowName: text('workflow_name').notNull(),
+    /** The workflow's own declared params, validated against the document at write time and again at each fire. */
+    params: text('params', { mode: 'json' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('idx_schedule_workflow_targets_schedule').on(t.scheduleId)],
+)
+export type ScheduleWorkflowTargetRow = typeof scheduleWorkflowTargets.$inferSelect
+export type ScheduleWorkflowTargetInsert = typeof scheduleWorkflowTargets.$inferInsert
 
 /**
  * The virtual, database-backed workspace (plan 64 §3.1, §4.1) — deliberately

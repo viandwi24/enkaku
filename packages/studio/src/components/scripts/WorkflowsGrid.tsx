@@ -1,11 +1,13 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { PlayIcon, TrashIcon, ConfirmDialog, relativeTime } from '@enkaku/ui'
 import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { matchesWorkflow } from '@/app/scripts/matchers'
 import { deleteWorkflow, type WorkflowInfo } from '@/lib/api'
+import { CoverageDialog } from './CoverageDialog'
 
 /**
  * The Workflows card grid (design handoff, "Screen: Scripts & workflows",
@@ -27,6 +29,8 @@ export function WorkflowsGrid({
   onReload: () => void
 }) {
   const { open } = useActionDialogs()
+  // Which workflow's coverage report is showing, if any (plan 314 §7.5).
+  const [coverageFor, setCoverageFor] = useState<string | null>(null)
 
   if (items === null) {
     return (
@@ -94,18 +98,32 @@ export function WorkflowsGrid({
               <span className="text-meta text-faint">
                 {w.doc.nodes.length} step{w.doc.nodes.length === 1 ? '' : 's'} · updated {relativeTime(w.updatedAt)}
               </span>
-              <button
-                type="button"
-                onClick={() => open('run-workflow', {}, { workflowName: w.name })}
-                className="flex items-center gap-1 text-meta text-accent hover:underline"
-              >
-                <PlayIcon className="size-3" aria-hidden />
-                Run
-              </button>
+              <div className="flex items-center gap-3">
+                {/* Only offered where there is a rotation to report on — a
+                    workflow with no switch has no branch a device could be
+                    left out of, and the dialog says so rather than showing an
+                    empty table. */}
+                {w.doc.nodes.some((n) => n.kind === 'switch') && (
+                  <button type="button" onClick={() => setCoverageFor(w.name)} className="text-meta text-dim hover:text-accent hover:underline">
+                    Coverage
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => open('run-workflow', {}, { workflowName: w.name })}
+                  className="flex items-center gap-1 text-meta text-accent hover:underline"
+                >
+                  <PlayIcon className="size-3" aria-hidden />
+                  Run
+                </button>
+              </div>
             </div>
           </div>
         )
       })}
+      {coverageFor !== null && (
+        <CoverageDialog workflowName={coverageFor} open onOpenChange={(v) => !v && setCoverageFor(null)} />
+      )}
     </div>
   )
 }

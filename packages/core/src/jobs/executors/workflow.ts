@@ -3,6 +3,7 @@ import { deriveRandom } from '@enkaku/expr'
 import { applySchemaDefaults, resolveValue, validateAgainstSchema, WORKFLOW_LIMITS, type ResolveScope, type RunSummaryEntry, type WorkflowDoc, type WorkflowNode } from '@enkaku/protocol'
 import type { Db } from '../../db'
 import { jobs, workflowSteps, type JobRow, type JobRunRow } from '../../db/schema'
+import { readDeviceFacts } from '../../registry/device-facts'
 import { parseWorkflowDoc } from '../../workflows/store'
 import type { PinStore } from '../../workflows/pins'
 import type { ScriptEntry, ScriptRegistry } from '../../scripts/registry'
@@ -156,6 +157,22 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
       const runCount = job.batchId
         ? (deps.db.select({ n: count() }).from(jobs).where(eq(jobs.batchId, job.batchId)).get()?.n ?? 1)
         : 1
+
+      /*
+       * `$device` — the phone's own facts, read once for the same reason
+       * `runIndex` is (plan 314 §10.11, `registry/device-facts.ts`).
+       *
+       * This is what a rotation spanning more than one batch must key on.
+       * `runIndex` above is a position INSIDE one batch: `order: 'random'`
+       * reshuffles it on purpose, and only usable devices are numbered, so
+       * one offline phone renumbers every device after it. Both are exactly
+       * right for splitting a single batch into equal shares, and both are
+       * wrong for a warm-up that fires three times a day — three dispatches,
+       * three different numberings, and a phone that quietly repeats one
+       * platform and never meets a third, with three green runs to show for
+       * it.
+       */
+      const device = readDeviceFacts(deps.db, job.deviceId)
 
       // `__nodeTest` (plan 304 §4.6) is a reserved key `POST
       // /:name/run-node` (`api/workflows.ts`) uses to hand this run its
@@ -336,7 +353,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         // §3.4) — the RUN's own seed, folded with this step's own workflow
         // step sequence number, so a replay or a resume evaluates the exact
         // same value.
-        const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: stepStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, rowSeq) }
+        const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, device, now: stepStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, rowSeq) }
         const resolvedParams: Record<string, unknown> = {}
         for (const [key, expr] of Object.entries(node.params)) {
           const outcome = resolveValue(expr, scope)
@@ -579,7 +596,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // revisited after each member returns, and the visit that finds
             // nothing left takes `next` instead. In-process, no child, no
             // device — the cost is the members', not the shuffle's.
-            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, device, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const done = shuffleDone.get(node.id) ?? new Set<string>()
             const { takenEdge, output } = computeShuffleStep(node, done, scope, isEnabled)
             // The wait BETWEEN members (plan 313) — before each member after
@@ -609,7 +626,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           }
 
           if (node.kind === 'gate') {
-            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, device, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const { trace, takenEdge, output } = computeGateStep(node, scope)
             const finishedAt = new Date()
             deps.db.update(workflowSteps).set({ status: 'success', finishedAt, verdict: trace, output, takenEdge }).where(eq(workflowSteps.id, rowId)).run()
@@ -632,7 +649,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
           }
 
           if (node.kind === 'switch') {
-            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, device, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             // Plan 312 §3.6, §4.3 — normalise the declared weights and draw
             // from `$random` (the SAME per-step `deriveRandom(seed, seq)` a
             // gate already uses), so the branch taken is reproducible for a
@@ -664,7 +681,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // resolved by `computeDelayMs`, clamped to the document's own
             // declared `maxMs` — a budget `checkWorkflow` could not have
             // computed statically from an unbounded `ms` is not a budget.
-            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, device, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const waitMs = computeDelayMs(node, scope)
             await cancellableDelay(waitMs, ctx.signal)
             const finishedAt = new Date()
@@ -694,7 +711,7 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
             // no fields to carry through) seeds the base that each
             // assignment writes into, in array order, so a LATER assignment
             // may overwrite an EARLIER one's path.
-            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
+            const scope: ResolveScope = { params, outputs, summary, runIndex, runCount, device, now: rowStartedAt.getTime(), randomSeed: deriveRandom(ctx.run.seed, seq) }
             const result = computeSetStep(node, scope, currentInputValue())
 
             const finishedAt = new Date()

@@ -10,6 +10,7 @@ function scope(params: Record<string, unknown> = {}): ExprScope {
     $nodes: toScopeValue({}) as Record<string, unknown>,
     $input: undefined,
     $run: { summary: undefined },
+    $device: { number: null, stableId: null, label: null, group: null, labels: [] },
     $now: 0,
     $random: 0,
   }

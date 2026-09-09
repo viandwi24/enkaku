@@ -22,6 +22,20 @@ import { FUNCTIONS, SCOPE_FUNCTIONS } from './functions'
 
 export { ExprEvalError, Fuel }
 
+/** The device facts `$device` exposes. Read-only, prototype-free, and never a live row. */
+export interface ExprDevice {
+  /** `device_numbers.number` — the `#` on the phone's physical label. `null` when no reservation exists. */
+  number: number | null
+  /** The device's stable identity (ro.serialno → ANDROID_ID), never the adb serial. */
+  stableId: string | null
+  /** `devices.label` — the device's NAME (spec §4.1 sense 1), not a chip and not the screen label. */
+  label: string | null
+  /** The name of the group this device belongs to, or `null`. A device is in at most one. */
+  group: string | null
+  /** The names of the labels this device carries (spec §4.2a), sorted. Empty when it carries none. */
+  labels: readonly string[]
+}
+
 export interface ExprScope {
   $params: Readonly<Record<string, unknown>>
   $nodes: Readonly<Record<string, unknown>>
@@ -30,6 +44,27 @@ export interface ExprScope {
   $run: Readonly<{ summary: unknown; index?: number; count?: number }>
   $now: number
   $random: number
+  /**
+   * The DEVICE this run is acting on — facts that belong to the phone and
+   * survive everything a batch does to it (plan 314 §10.11).
+   *
+   * This is the root a rotation reads. `$run.index` is a batch POSITION: it
+   * is reshuffled on purpose by `order: 'random'`, and only usable devices
+   * are numbered, so one offline phone renumbers every device after it. Both
+   * are correct for dividing one batch into equal shares, and both are wrong
+   * the moment a rotation has to mean the same thing across two batches — a
+   * warm-up split into a morning, an afternoon and an evening session is
+   * exactly that case, and reading `$run.index` there silently gives a phone
+   * the same platform twice and a third one never.
+   *
+   * `number` is `device_numbers.number`, the `#` written on the phone's own
+   * physical label — unique, durable, and the one identifier an operator can
+   * check by looking at the rack. It is `null` for a device whose
+   * reservation was released (plan 89 allows that state), which makes
+   * arithmetic on it throw `E_EXPR_TYPE` and fail the step by name rather
+   * than quietly rotating as if it were zero.
+   */
+  $device: Readonly<ExprDevice>
   /**
    * The step's draw counter for `rand()`, shared by every expression the step
    * evaluates so two `rand()` calls never collide (`SCOPE_FUNCTIONS`).

@@ -354,3 +354,45 @@ describe('$run.index and $run.count (the fleet-split case, 2026-09-05)', () => {
     expect(resolveValue({ expr: '$run.count' }, bare)).toEqual({ ok: true, value: 1 })
   })
 })
+
+// ---------------------------------------------------------------------------
+// `$device` reaches an expression through the scope (plan 314 §10.11)
+// ---------------------------------------------------------------------------
+
+describe('resolveValue — $device', () => {
+  const base = { params: {}, outputs: new Map(), summary: [] }
+
+  test('a scope with a device exposes its five facts', () => {
+    const scope: ResolveScope = {
+      ...base,
+      device: { number: 7, stableId: 'ABC', label: 'Pixel 5', group: 'rack-a', labels: ['smoke-pool'] },
+    }
+    expect(resolveValue({ expr: '$device.number' }, scope)).toEqual({ ok: true, value: 7 })
+    expect(resolveValue({ expr: '$device.label' }, scope)).toEqual({ ok: true, value: 'Pixel 5' })
+    expect(resolveValue({ expr: '$device.group' }, scope)).toEqual({ ok: true, value: 'rack-a' })
+    expect(resolveValue({ expr: '($device.number + 2) % 3' }, scope)).toEqual({ ok: true, value: 0 })
+  })
+
+  test('a scope with NO device still has the root, reading null — never a missing-root parse error', () => {
+    const scope: ResolveScope = { ...base }
+    expect(resolveValue({ expr: '$device.number' }, scope)).toEqual({ ok: true, value: null })
+    expect(resolveValue({ expr: '$device.labels' }, scope)).toEqual({ ok: true, value: [] })
+    // And arithmetic on the absent number is an unresolved outcome with a
+    // reason, not a silent 0 that would rotate every deviceless run alike.
+    expect(resolveValue({ expr: '($device.number + 1) % 3' }, scope).ok).toBe(false)
+  })
+
+  test('the scope copies the five facts and cannot carry anything else through', () => {
+    const leaky = {
+      number: 3,
+      stableId: 's',
+      label: 'l',
+      group: null,
+      labels: ['a'],
+      secret: 'do-not-leak',
+    } as unknown as ResolveScope['device']
+    const scope: ResolveScope = { ...base, device: leaky }
+    expect(resolveValue({ expr: '$device.number' }, scope)).toEqual({ ok: true, value: 3 })
+    expect(resolveValue({ expr: 'get($device, "secret", null)' }, scope)).toEqual({ ok: true, value: null })
+  })
+})

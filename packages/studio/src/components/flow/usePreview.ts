@@ -76,6 +76,12 @@ export function usePreview(source: string, scope: PreviewScope): PreviewResult {
           $run: { summary: toScopeValue(scope.summary ?? []), index: 0, count: 1 },
           $now: Date.now(),
           $random: deriveRandom(scope.seed, scope.seq),
+          // The preview has no device either, and says so rather than
+          // inventing one: `$device.number` previews as `null`, so an author
+          // writing a rotation sees `E_EXPR_TYPE` here — the same failure a
+          // real run gives for a phone whose number was released — instead of
+          // a plausible branch number that no device would ever produce.
+          $device: { number: null, stableId: null, label: null, group: null, labels: [] },
         }
         const value = evaluate(ast, exprScope)
         setResult({ value, hasValue: true, error: null, pending: false })
