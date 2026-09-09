@@ -109,6 +109,53 @@ selects every artifact row with no exemption. A media library that silently
 loses the operator's videos is not a media library. Uploads become pinned by
 default; run output keeps today's behaviour exactly.
 
+### D5 — Fan-out lives in a plugin, and the core gains nothing for it
+
+The programme's own reason to exist was an operator asking to upload a video
+once and have it posted on several phones across several apps. That is a
+feature, and the temptation is to give the core a `posts` table, a
+`device.platform` column and a scheduler — which is exactly how a device farm
+turns into one company's social-media tool.
+
+The owner's rule, stated 2026-09-08 and binding here: **the feature lives in
+the plugin; the core gains only generic primitives, the way `batches` was born
+from a plugin needing bulk.** Applied, that means the fan-out needed nothing
+new at all — every primitive already existed:
+
+| what fan-out needs | what it uses | whose it is |
+|---|---|---|
+| somewhere to keep a post | `kv_entries`, plugin-namespaced | the farm's generic KV |
+| "this phone posts to Instagram" | device **labels** (spec §4.2a) | the farm's generic many-to-many |
+| "run this on that phone" | the `job.run` capability | the farm's generic dispatch |
+| the app's upload flow | each platform pack's own member | that pack |
+
+So `plugins/social-media-manager` (`smm`) is policy over those four and
+contributes no core change whatsoever — no table, no column, no migration.
+`platforms.ts` is the whole extension point: a row per platform naming the
+device label it routes on and the member that posts. Adding a platform is that
+row plus the pack it names.
+
+**The honest half.** Only TikTok can post today. `tiktok/post-video` exists and
+every anchor in it traces to a real accessibility dump; Instagram and YouTube
+have packs and neither has an upload flow. Writing those selectors from memory
+would produce a member that typechecks, tests green against fixtures invented
+to match it, and reports success without posting — the exact failure this
+repo's fixture discipline exists to prevent. So both are declared with
+`script: null` and a reason the operator reads in the product, and the router
+records `unsupported` rather than skipping in silence. The day someone captures
+those dumps, it is a one-line change and every stored post starts routing.
+
+Two consequences worth stating, both found by building it:
+
+- **A caption is required.** It reads like it should be optional, but
+  `post-video` with `source: 'direct'` refuses an empty one — its captions-file
+  fallback belongs to the `queue` and `folder` sources, and there is nothing to
+  fall back to when the caller names the video itself. Storing a caption-less
+  post would dispatch and fail on every phone.
+- **A post is dispatched once per platform, never re-dispatched.** Re-posting
+  the same video to the same account is not a retry; it is a duplicate post,
+  and it is the one failure here nobody can undo from the farm.
+
 ### D4 — Sync SHOWS a difference; it never reconciles one silently
 
 Wave 1 made the phone's gallery readable, so Studio can now say "this video is
@@ -131,6 +178,7 @@ difference shown first.
 | 4 | — | Media metadata: mime, dimensions, duration from the bytes. **No thumbnails** — see below | **implemented** |
 | 5 | — | Studio `/files` — the gallery grid, type filter, search, rename, pin, delete (D2) | **implemented** |
 | 6 | — | Device Control's Files section moved onto `device.fs.*`; `ls -lA` parsing deleted | **implemented** |
+| 7 | — | `plugins/social-media-manager` — one uploaded video, routed to the phones labelled for each platform (D5) | **implemented** |
 
 None of the waves needed a plan number of its own: each is one coherent change
 with its own tests, and a plan document per wave would have restated this table.

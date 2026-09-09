@@ -81,6 +81,7 @@ jobs:
       - run: bun run --cwd plugins/google-automation-pack test
       - run: bun run --cwd plugins/youtube-automation-pack test
       - run: bun run --cwd plugins/instagram-automation-pack test
+      - run: bun run --cwd plugins/social-media-manager test
       - run: bun run --cwd examples test
       # A plan can typecheck and pass every test while its own `> Status:`
       # header is stale or self-contradicting (a shipped plan still marked
@@ -161,6 +162,7 @@ jobs:
       - run: bun run --cwd plugins/google-automation-pack test
       - run: bun run --cwd plugins/youtube-automation-pack test
       - run: bun run --cwd plugins/instagram-automation-pack test
+      - run: bun run --cwd plugins/social-media-manager test
       - run: bun run --cwd examples test
       # `scripts/spec-check.ts` parses filesystem paths into spec-divergence
       # keys (see its `[\\/]`-aware regex) — real path-separator logic, unlike
