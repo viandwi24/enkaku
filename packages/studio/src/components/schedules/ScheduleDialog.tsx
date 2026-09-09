@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   clampSchema,
+  compileWorkflowParams,
   reconcileParams,
   summarizeClamp,
   ListAgentsResponseSchema,
@@ -264,6 +265,22 @@ export function ScheduleDialog({
   }, [open, cron, timezone])
 
   const scriptOption = (scripts ?? []).find((s) => s.name === scriptName) ?? null
+  const workflowOption = workflows.find((w) => w.name === workflowName) ?? null
+  /**
+   * A workflow declares its parameters on its own document, so the form comes
+   * from `compileWorkflowParams` rather than from a script row.
+   *
+   * Without this the dialog could pick a workflow and never show its
+   * parameters — which for a rotation means the `slot` that distinguishes one
+   * session from the next is invisible and unchangeable. An operator opening
+   * a rotation schedule to move its time would have no way to see which slot
+   * it carries, and the duplicate badge on the list would be the only hint
+   * that two of them are the same.
+   */
+  const workflowParamsSchema = useMemo(
+    () => (workflowOption ? compileWorkflowParams(workflowOption.doc.params) : null),
+    [workflowOption],
+  )
   const { schema: clampedSchema, clamped } = useMemo(() => clampSchema(scriptOption?.paramsSchema ?? null), [scriptOption])
   const reconciliation = useMemo(() => reconcileParams(clampedSchema, params), [clampedSchema, params])
   const blockingReconcileErrors = Object.fromEntries(
@@ -444,6 +461,19 @@ export function ScheduleDialog({
               <p className="text-caption text-faint">
                 The workflow is resolved by name at every firing, so editing it changes what the next run does — a queued or running one keeps the document it started with.
               </p>
+
+              {workflowParamsSchema ? (
+                <SchemaForm
+                  key={workflowOption?.name}
+                  schema={workflowParamsSchema as JsonSchemaNode}
+                  value={params}
+                  onChange={setParams}
+                  serverErrors={serverIssues ?? {}}
+                  onCanSubmitChange={setFormCanSubmit}
+                />
+              ) : workflowOption ? (
+                <p className="text-meta text-dim">This workflow takes no parameters.</p>
+              ) : null}
             </div>
           )}
 
