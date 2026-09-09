@@ -309,6 +309,27 @@ export function createArtifactRoutes(deps: {
     const user = requireFiles(c)
     const row = deps.db.select().from(artifacts).where(eq(artifacts.id, c.req.param('id'))).get()
     if (!row) throw new EnkakuError('artifact_not_found', 'no such artifact')
+    /*
+     * UPLOADS ONLY — `runId` and `deviceId` both null, the same rule
+     * `?kind=upload` uses.
+     *
+     * A run's screenshots and a device's logs are artifacts too, and they are
+     * that run's evidence: a timeline, a failure shot, the thing someone opens
+     * to find out what happened. Deleting one by id would tear a hole in it
+     * silently, and the run would still claim to have produced it. Run output
+     * leaves only with its run, through the retention sweep, which is the one
+     * path that removes the row and the trace together.
+     *
+     * PATCH deliberately does NOT carry this restriction: pinning protects a
+     * run artifact from the sweep and renaming is cosmetic. Only destruction
+     * is confined.
+     */
+    if (row.runId !== null || row.deviceId !== null) {
+      throw new EnkakuError(
+        'E_ARTIFACT_NOT_DELETABLE',
+        'this artifact belongs to a run or a device — it is that run\'s own evidence, and leaves only with it through retention',
+      )
+    }
     if (row.pinned) {
       throw new EnkakuError('E_ARTIFACT_PINNED', 'this artifact is pinned — unpin it first if you really mean to delete it')
     }
@@ -348,6 +369,7 @@ export function createArtifactRoutes(deps: {
     'auth.forbidden': 403,
     E_TRANSFER_TOO_LARGE: 413,
     E_ARTIFACT_PINNED: 409,
+    E_ARTIFACT_NOT_DELETABLE: 409,
   }
 
   app.onError((err, c) => {

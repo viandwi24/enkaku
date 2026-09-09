@@ -50,6 +50,7 @@ const PACK_ENTRIES = [
   'plugins/google-automation-pack/src/index.ts',
   'plugins/youtube-automation-pack/src/index.ts',
   'plugins/instagram-automation-pack/src/index.ts',
+  'plugins/social-media-manager/src/index.ts',
 ]
 
 export interface PackIndexEntry {

@@ -61,11 +61,20 @@ export default function FilesPage() {
   const [filter, setFilter] = useState<FileFilter>('all')
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
+  /** 0..1 while an upload is in flight, null otherwise. Drives the bar below the header. */
+  const [uploadPct, setUploadPct] = useState<number | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const { run, pending } = useAction()
-  // `useAction` exposes `isPending(key)`; this screen only needs "is anything
-  // in flight", because every control here mutates the same list.
-  const busy = pending !== null
+  /*
+   * Deliberately NOT a screen-wide "anything in flight" flag.
+   *
+   * The cap on an upload is a gigabyte, so one can run for minutes — and
+   * disabling every tile for its duration made the whole page look frozen
+   * while a video copied. Only the control that is actually busy is disabled:
+   * the tile whose own action is running, and the Upload button while an
+   * upload holds the input.
+   */
+  const uploading = uploadPct !== null
 
   const reload = async () => {
     try {
@@ -91,11 +100,12 @@ export default function FilesPage() {
 
   const onPick = (file: File | undefined) => {
     if (!file) return
-    void run(`upload-${file.name}`, () => uploadFile(file), {
+    setUploadPct(0)
+    void run(`upload-${file.name}`, () => uploadFile(file, setUploadPct), {
       success: `${file.name} uploaded`,
       failure: 'Could not upload the file',
       onSuccess: () => void reload(),
-    })
+    }).finally(() => setUploadPct(null))
   }
 
   const commitRename = () => {
@@ -129,7 +139,7 @@ export default function FilesPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
         title="Files"
-        description="Videos, images and other files you uploaded — push them to a device, or use them as a script's input"
+        description="Videos, images and other files you uploaded. Pick one as a script's input, or push it to a device from Device Control."
         actions={
           <>
             <input
@@ -144,13 +154,21 @@ export default function FilesPage() {
                 e.target.value = ''
               }}
             />
-            <Button onClick={() => fileInput.current?.click()} disabled={busy}>
+            <Button onClick={() => fileInput.current?.click()} disabled={uploading}>
               <UploadSimpleIcon className="size-4" aria-hidden />
-              Upload
+              {uploading ? `Uploading ${Math.round((uploadPct ?? 0) * 100)}%` : 'Upload'}
             </Button>
           </>
         }
       />
+
+      {uploading && (
+        <div className="px-5 pt-2" role="status" aria-live="polite">
+          <div className="h-1 w-full overflow-hidden rounded bg-panel-2">
+            <div className="h-full bg-accent transition-[width]" style={{ width: `${Math.round((uploadPct ?? 0) * 100)}%` }} />
+          </div>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="space-y-4 px-5 py-4">
@@ -197,7 +215,7 @@ export default function FilesPage() {
                   onRenameCancel={() => setRenaming(null)}
                   onTogglePin={() => void togglePin(item)}
                   onDelete={() => void remove(item)}
-                  disabled={busy}
+                  disabled={pending === `pin-${item.id}` || pending === `del-${item.id}` || pending === `rename-${item.id}`}
                 />
               ))}
             </ul>
@@ -247,7 +265,14 @@ function FileTile({
            * what makes it paint a frame — `preload="metadata"` alone leaves
            * many browsers showing a blank element. No canvas, no stored poster.
            */
-          <video src={`${url}#t=0.1`} preload="metadata" muted playsInline className="size-full object-contain" />
+          /*
+           * `controls` matters more than it looks. This library exists so an
+           * operator can pick the RIGHT clip to post, and a poster frame alone
+           * cannot tell two similar videos apart — they often share a first
+           * frame. Being able to scrub is the difference between recognising a
+           * video and guessing at it.
+           */
+          <video src={`${url}#t=0.1`} preload="metadata" controls muted playsInline className="size-full object-contain" />
         ) : (
           <FileIcon className="size-8 text-faint" aria-hidden />
         )}

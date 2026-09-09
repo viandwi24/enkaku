@@ -15,6 +15,7 @@ for dir in packages/protocol packages/expr packages/ui packages/adb packages/too
            packages/session packages/harness packages/core packages/node packages/studio packages/probe-server \
            plugins/networking plugins/proxy-manager plugins/tiktok-automation-pack plugins/mikrotik-routing \
            plugins/google-automation-pack plugins/youtube-automation-pack plugins/instagram-automation-pack \
+           plugins/social-media-manager \
            examples; do
   p="${dir##*/}"
   printf '%-10s ' "$p"

@@ -1,0 +1,20 @@
+{
+  "name": "@enkaku/plugin-social-media-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Upload a video once, route it to the phones that carry each platform's label, and let every platform pack post it.",
+  "enkaku": {
+    "plugin": "smm",
+    "entry": "src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "publish:farm": "bun run ../../packages/sdk/src/cli/index.ts publish src/index.ts"
+  },
+  "dependencies": {
+    "@enkaku/protocol": "workspace:*",
+    "@enkaku/sdk": "workspace:*",
+    "zod": "^4.0.0"
+  }
+}
