@@ -96,40 +96,100 @@ describe('createDeviceExecutor — app.launch/app.forceStop quote every interpol
  */
 describe('createDeviceExecutor — app.launch fails when nothing launched', () => {
   /** Unlike `fakeSession` above (which returns a bare string), this returns the real `ShellResult` shape. */
-  function shellSession(result: { stdout: string; stderr?: string; exitCode: number | null }): DeviceSession {
+  function shellSession(
+    reply: (cmd: string) => { stdout: string; stderr?: string; exitCode: number | null },
+    cmds: string[] = [],
+  ): DeviceSession {
     return {
       deviceId: 'dev-1',
       inspector: null,
-      transport: { exec: async () => ({ stderr: '', ...result }), execOut: async () => new Uint8Array() },
+      transport: {
+        exec: async (cmd: string) => {
+          cmds.push(cmd)
+          return { stderr: '', ...reply(cmd) }
+        },
+        execOut: async () => new Uint8Array(),
+      },
     } as unknown as DeviceSession
   }
 
-  test('monkey aborting on a missing package throws, and names the likely cause', async () => {
-    const execute = createDeviceExecutor({
-      session: shellSession({ stdout: '** No activities found to run, monkey aborted.', exitCode: 252 }),
-    })
-    const err = await execute(call('app.launch', { pkg: 'com.instagram.android' })).then(
+  const MONKEY_MISSING = { stdout: '** No activities found to run, monkey aborted.', exitCode: 252 }
+  const MONKEY_NO_KEYS = { stdout: '** SYS_KEYS has no physical keys but with factor 2.0%.', exitCode: 251 }
+  const OK = { stdout: 'Events injected: 1', exitCode: 0 }
+
+  async function reject(execute: ReturnType<typeof createDeviceExecutor>, args: unknown) {
+    return execute(call('app.launch', args)).then(
       () => null,
       (e: unknown) => e as Error & { code?: string },
     )
+  }
+
+  test('a package with no launcher at all is reported as not installed', async () => {
+    const execute = createDeviceExecutor({
+      session: shellSession((cmd) =>
+        cmd.startsWith('monkey') ? MONKEY_MISSING : { stdout: 'No activity found', exitCode: 0 },
+      ),
+    })
+    const err = await reject(execute, { pkg: 'com.instagram.android' })
     expect(err?.code).toBe('E_APP_LAUNCH_FAILED')
     expect(err?.message).toContain('com.instagram.android')
     expect(err?.message).toContain('not installed')
   })
 
-  test('am start reporting a missing activity class throws too', async () => {
+  /*
+    The emulator case. `monkey` aborts on a device with no physical keys
+    whatever the app is, so an exit code alone would have called a perfectly
+    present YouTube "not installed" on every virtual device in the farm.
+  */
+  test('when monkey refuses but the app HAS a launcher, it starts via am and succeeds', async () => {
+    const cmds: string[] = []
     const execute = createDeviceExecutor({
-      session: shellSession({
-        stdout: 'Error type 3\nError: Activity class {com.x/com.x.Main} does not exist.',
-        exitCode: 1,
-      }),
+      session: shellSession((cmd) => {
+        if (cmd.startsWith('monkey')) return MONKEY_NO_KEYS
+        if (cmd.startsWith('cmd package resolve-activity')) {
+          return { stdout: 'priority=0 match=0x108000\ncom.google.android.youtube/.app.honeycomb.Shell$HomeActivity', exitCode: 0 }
+        }
+        return { stdout: 'Starting: Intent { … }', exitCode: 0 }
+      }, cmds),
     })
-    expect(execute(call('app.launch', { pkg: 'com.x', activity: '.Main' }))).rejects.toThrow(/does not exist/)
+    expect(await execute(call('app.launch', { pkg: 'com.google.android.youtube' }))).toBeUndefined()
+    expect(cmds[0]?.startsWith('monkey')).toBe(true)
+    expect(cmds[2]).toBe(`am start -n 'com.google.android.youtube/.app.honeycomb.Shell$HomeActivity'`)
   })
 
-  test('a successful launch is left alone', async () => {
-    const execute = createDeviceExecutor({ session: shellSession({ stdout: 'Events injected: 1', exitCode: 0 }) })
+  test('when the resolved activity also fails, the error carries both attempts', async () => {
+    const execute = createDeviceExecutor({
+      session: shellSession((cmd) => {
+        if (cmd.startsWith('monkey')) return MONKEY_NO_KEYS
+        if (cmd.startsWith('cmd package resolve-activity')) return { stdout: 'com.x/.Main', exitCode: 0 }
+        return { stdout: 'Error: Activity class {com.x/.Main} does not exist.', exitCode: 1 }
+      }),
+    })
+    const err = await reject(execute, { pkg: 'com.x' })
+    expect(err?.message).toContain('SYS_KEYS')
+    expect(err?.message).toContain('does not exist')
+    // It got as far as a launcher, so the one thing it must NOT claim is absence.
+    expect(err?.message).not.toContain('not installed')
+  })
+
+  test('an explicit activity is not second-guessed — no resolve, no fallback', async () => {
+    const cmds: string[] = []
+    const execute = createDeviceExecutor({
+      session: shellSession(
+        () => ({ stdout: 'Error type 3\nError: Activity class {com.x/.Main} does not exist.', exitCode: 1 }),
+        cmds,
+      ),
+    })
+    const err = await reject(execute, { pkg: 'com.x', activity: '.Main' })
+    expect(err?.message).toContain('does not exist')
+    expect(cmds).toEqual([`am start -n 'com.x/.Main'`])
+  })
+
+  test('a successful monkey launch is left alone', async () => {
+    const cmds: string[] = []
+    const execute = createDeviceExecutor({ session: shellSession(() => OK, cmds) })
     expect(await execute(call('app.launch', { pkg: 'com.example.app' }))).toBeUndefined()
+    expect(cmds).toHaveLength(1)
   })
 
   /*
@@ -139,7 +199,7 @@ describe('createDeviceExecutor — app.launch fails when nothing launched', () =
     error strings remain the signal there.
   */
   test('a null exit code is not read as a failure', async () => {
-    const execute = createDeviceExecutor({ session: shellSession({ stdout: 'Events injected: 1', exitCode: null }) })
+    const execute = createDeviceExecutor({ session: shellSession(() => ({ stdout: 'Events injected: 1', exitCode: null })) })
     expect(await execute(call('app.launch', { pkg: 'com.example.app' }))).toBeUndefined()
   })
 })

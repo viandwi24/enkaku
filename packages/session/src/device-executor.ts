@@ -99,39 +99,51 @@ const SCROLL_DEFAULT_FRACTION = 0.6
 const SCROLL_DURATION_MS = 400
 
 /**
- * A launch that launched nothing is a failure, and until now it was reported
- * as a success.
+ * Launching an app, and the two different ways it can fail to happen.
  *
- * `app.launch` awaited `transport.exec` and threw the `ShellResult` away, so a
- * package that is not installed produced no error anywhere: `monkey` printed
- * `** No activities found to run, monkey aborted.` and exited 252, the script
- * carried on, and its very next `dump()` read whatever happened to be on
- * screen — the launcher. A script whose `run()` only *looks for* things (the
- * Instagram pack's `check-activity` reads notification-shaped strings and
- * returns however few it found) then finished green on a device that does not
- * have the app at all. That is the worst failure mode this codebase has a rule
- * about: `unverified` must never be worded as success.
+ * `app.launch` used to await `transport.exec` and throw the `ShellResult`
+ * away, so a package that is not installed produced no error anywhere:
+ * `monkey` printed `** No activities found to run, monkey aborted.` and
+ * exited 252, the script carried on, and its very next `dump()` read whatever
+ * happened to be on screen — the launcher. A script whose `run()` only *looks
+ * for* things (the Instagram pack's `check-activity` reads notification-shaped
+ * strings and returns however few it found) then finished green on a device
+ * that does not have the app at all. `unverified` must never be worded as
+ * success.
  *
- * The check is deliberately narrow — it fires on a POSITIVE signal of failure,
- * never on the absence of a success one. Three shapes were measured on real
- * hardware (Android 15 moto g06, Android 15 SM-A075F, 2026-09-08):
+ * Reading the result is only half of it, because `monkey` failing does NOT
+ * mean the app is missing. Measured (2026-09-08/09):
  *
- *   monkey, installed       exitCode 0,   "Events injected: 1"
- *   monkey, missing package exitCode 252, "** No activities found to run, monkey aborted."
- *   am start, missing class exitCode 1,   "Error: Activity class {…} does not exist."
+ *   monkey, real phone, installed     exit 0    Events injected: 1
+ *   monkey, package absent            exit 252  ** No activities found to run, monkey aborted.
+ *   monkey, API-35 emulator, PRESENT  exit 251  ** SYS_KEYS has no physical keys but with factor 2.0%.
+ *   am start, missing class           exit 1    Error: Activity class {…} does not exist.
  *
- * so a non-zero exit or either error string is conclusive. `exitCode` is
- * `null` on the legacy shell transport (`execLegacyShell` — plan 53 §3.4 keeps
- * it honest rather than fabricating a 0), and a caller may hand us any shape
- * at all; neither may be read as failure, which is why only `typeof === number`
- * counts and the strings are matched independently.
+ * That third row is a whole class of device this farm is expected to run:
+ * `monkey` refuses on an emulator with no physical keys, and it refuses
+ * whatever the app is. Treating its exit code as "the app is missing" would
+ * have told an operator with a perfectly good virtual device that none of
+ * their apps were installed — so a failed `monkey` falls back to resolving
+ * the launcher activity and starting it with `am`, and only
+ * `resolve-activity` — which answers the actual question — is allowed to say
+ * "not installed".
  */
-function assertLaunched(pkg: string, result: unknown): void {
+
+/**
+ * Why a launch failed, in the app's own words — or `null` when it worked.
+ *
+ * Only a POSITIVE signal of failure counts, never the absence of a success
+ * one. `exitCode` is `null` on the legacy shell transport (`execLegacyShell` —
+ * plan 53 §3.4 keeps that honest rather than fabricating a 0), and a caller
+ * may hand us any shape at all, so only `typeof === number` is read and the
+ * error strings are matched independently.
+ */
+function launchFailure(result: unknown): string | null {
   const shell = (result ?? {}) as { stdout?: unknown; stderr?: unknown; exitCode?: unknown }
   const output = [shell.stdout, shell.stderr].filter((s) => typeof s === 'string').join('\n')
-  const aborted = /No activities found to run|Activity class \{[^}]*\} does not exist|Error type \d/.test(output)
+  const aborted = /No activities found to run|Activity class \{[^}]*\} does not exist|Error type \d|monkey aborted/.test(output)
   const exited = typeof shell.exitCode === 'number' && shell.exitCode !== 0
-  if (!aborted && !exited) return
+  if (!aborted && !exited) return null
   /*
     `am` prints a bare `Error type 3` line ABOVE the one that says what
     actually went wrong, so taking the first matching line puts the least
@@ -139,17 +151,31 @@ function assertLaunched(pkg: string, result: unknown): void {
     tried in order of how much they explain, and the generic one is last.
   */
   const lines = output.split('\n').map((line) => line.trim())
-  const detail = [/No activities found to run/, /Activity class \{[^}]*\} does not exist/, /Error/]
+  const detail = [/No activities found to run/, /Activity class \{[^}]*\} does not exist/, /SYS_KEYS/, /Error/]
     .map((p) => lines.find((line) => p.test(line)))
     .find((line) => line !== undefined)
-  throw Object.assign(
-    new Error(
-      `${pkg} did not start — ${detail ?? `the launch command exited ${String(shell.exitCode)}`}. ` +
-        'The app is most likely not installed on this device.',
-    ),
+  return detail ?? `the launch command exited ${String(shell.exitCode)}`
+}
+
+function launchError(pkg: string, detail: string, installed: boolean): Error {
+  // `monkey`'s own lines already end in a full stop; appending another gives
+  // an operator "monkey aborted.." to read.
+  const said = detail.replace(/\.+$/, '')
+  return Object.assign(
+    new Error(`${pkg} did not start — ${said}.` + (installed ? '' : ' The app is not installed on this device.')),
     { code: 'E_APP_LAUNCH_FAILED' },
   )
 }
+
+/** The component `resolve-activity --brief` names, or `null` when the package has no launcher. */
+function resolvedComponent(pkg: string, result: unknown): string | null {
+  const shell = (result ?? {}) as { stdout?: unknown }
+  const lines = typeof shell.stdout === 'string' ? shell.stdout.split('\n').map((l) => l.trim()) : []
+  // `--brief` prints the component on its own last non-empty line; a package
+  // with no launcher prints `No activity found` instead.
+  return lines.reverse().find((l) => l.startsWith(`${pkg}/`)) ?? null
+}
+
 
 /**
  * Two points for a directional drag, symmetric around an explicit or
@@ -660,14 +686,40 @@ export function createDeviceExecutor(deps: {
         // braces — the quoting is what actually guarantees a value like
         // `com.x; touch /data/local/tmp/pwned` cannot run a second command.
         // A URL wins over an activity: the caller asked for a specific page, not a specific screen.
-        const cmd = call.args.url
-          ? `am start -a android.intent.action.VIEW -d ${shellQuote(call.args.url)} ${shellQuote(call.args.pkg)}`
+        const pkg = call.args.pkg
+        const exec = (cmd: string) => deps.session.transport.exec(cmd, { profile: 'appLifecycle' })
+        // An explicit target is the caller's own instruction: launch it, and
+        // report whatever the platform says. There is nothing to fall back to
+        // — a named activity that does not exist is the caller's mistake, not
+        // a launcher this code could go and look up.
+        const explicit = call.args.url
+          ? `am start -a android.intent.action.VIEW -d ${shellQuote(call.args.url)} ${shellQuote(pkg)}`
           : call.args.activity
-            ? `am start -n ${shellQuote(`${call.args.pkg}/${call.args.activity}`)}`
-            : `monkey -p ${shellQuote(call.args.pkg)} -c android.intent.category.LAUNCHER 1`
-        const launched = await deps.session.transport.exec(cmd, { profile: 'appLifecycle' })
-        assertLaunched(call.args.pkg, launched)
-        deps.onAppLaunch?.(call.args.pkg)
+            ? `am start -n ${shellQuote(`${pkg}/${call.args.activity}`)}`
+            : null
+        if (explicit !== null) {
+          const failure = launchFailure(await exec(explicit))
+          if (failure !== null) throw launchError(pkg, failure, true)
+        } else {
+          const monkeyFailure = launchFailure(
+            await exec(`monkey -p ${shellQuote(pkg)} -c android.intent.category.LAUNCHER 1`),
+          )
+          if (monkeyFailure !== null) {
+            // `monkey` is still tried first: it is the LAUNCHER-category path,
+            // and on a real phone it is the one that works. Only once it has
+            // failed do we ask the package manager what this app's launcher
+            // actually is — that answer, not an exit code, is what separates
+            // "not installed" from "monkey would not run here".
+            const component = resolvedComponent(
+              pkg,
+              await exec(`cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${shellQuote(pkg)}`),
+            )
+            if (component === null) throw launchError(pkg, monkeyFailure, false)
+            const fallback = launchFailure(await exec(`am start -n ${shellQuote(component)}`))
+            if (fallback !== null) throw launchError(pkg, `${monkeyFailure}; ${component} then failed: ${fallback}`, true)
+          }
+        }
+        deps.onAppLaunch?.(pkg)
         return undefined
       }
       case 'app.forceStop': {
