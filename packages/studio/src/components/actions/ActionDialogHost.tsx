@@ -75,10 +75,29 @@ export function useActionDialogs(): ActionDialogApi {
             trackOperation({ id: res.operationId, verb, title: VERB_DIALOGS[verb].title(count), results: res.results, visible: true })
             return
           }
+          /*
+            `skipped` is counted, and it used to be counted nowhere.
+
+            The toast summed `failed` and `forbidden` and said "done" for
+            everything else — so an action on 73 phones that reached 3 and
+            skipped 70 (offline, or no session yet) reported `done`, flatly.
+            The core had answered honestly, per device; this line threw that
+            answer away, which is the same "unverified is not success" the
+            farm refuses of a network route.
+
+            Skipped is its own word, not folded into "refused": a phone that
+            was offline was never asked, and telling an operator it refused
+            would send them looking for a refusal that never happened.
+          */
           const grouped = groupResults(res.results)
-          const failed = grouped.failed.length + grouped.forbidden.length
-          if (failed > 0) toast.warning(`${label}: ${grouped.done.length} done, ${failed} refused`)
-          else toast.success(`${label}: done`)
+          const refused = grouped.failed.length + grouped.forbidden.length
+          const skipped = grouped.skipped.length
+          if (refused > 0 || skipped > 0) {
+            const parts = [`${grouped.done.length} done`]
+            if (refused > 0) parts.push(`${refused} refused`)
+            if (skipped > 0) parts.push(`${skipped} skipped`)
+            toast.warning(`${label}: ${parts.join(', ')}`)
+          } else toast.success(`${label}: done`)
         })
         .catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
     },

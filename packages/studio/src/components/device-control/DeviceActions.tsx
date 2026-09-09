@@ -2,6 +2,7 @@
 
 import { cn } from '@enkaku/ui'
 import { ACTION_GROUPS, GENERIC_ACTIONS, type GenericActionId } from '@/lib/generic-actions'
+import { VERB_DIALOGS } from '@/components/actions/verb-dialogs'
 
 /**
  * The Actions tab (design handoff README.md:273; plan 215 §4.10): the same
@@ -37,6 +38,10 @@ export function DeviceActions({ onAction }: { onAction: (id: GenericActionId) =>
                   key={a.id}
                   type="button"
                   className={cn('flex w-full items-center gap-2.5 rounded-button px-2.5 py-[9px] text-row hover:bg-muted', a.danger && 'text-danger')}
+                  // The verb's own `note` — see `ActionMenu.tsx`'s row for why
+                  // an immediate verb's note had nowhere to appear, and why
+                  // the Sleep / Screen off pair is what made that matter.
+                  title={VERB_DIALOGS[a.id]?.note}
                   onClick={() => onAction(a.id)}
                 >
                   <Icon className="size-4" aria-hidden />
