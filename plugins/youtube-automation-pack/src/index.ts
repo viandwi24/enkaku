@@ -4,6 +4,7 @@ import scrollShorts from './scroll-shorts'
 import scrollLive from './scroll-live'
 import downloadHome from './download-home'
 import searchPlay from './search-play'
+import watchVideo from './watch-video'
 
 /**
  * YouTube automation pack.
@@ -81,15 +82,19 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.18.0',
+  version: '0.19.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments and download in the YouTube app on a farm device.',
-  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay],
+  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo],
 
   /**
    * ## Changelog
+   *
+   * **0.19.0 — added watch-video script.** New script that searches for videos
+   * and watches them with human-like behavior patterns, including varied watch
+   * times, random interactions, and natural scrolling patterns.
    *
    * **0.13.0 — icons, plugin and member (plan 310 §3.3).** The pack declares
    * `icon: 'play'`; each of the five members now carries the SAME icon it
