@@ -47,8 +47,57 @@ export function postKeyFor(videoArtifactId: string): string {
  *   Retrying changes nothing, and the row says so by name rather than sitting
  *   at `pending` forever looking like a transient problem.
  */
-export const DISPATCH_STATES = ['pending', 'dispatched', 'unsupported'] as const
+/**
+ * `dispatched` is not an outcome, and treating it as one was this plugin's
+ * worst bug.
+ *
+ * The first three states stopped at the moment the jobs were handed to the
+ * queue. A post whose ten upload jobs all failed still read **"sent to 10"**,
+ * forever, with nothing anywhere to say otherwise: no job id was stored, so
+ * there was no way back from a post to what happened on the phones. The
+ * client asked for exactly the missing half — *"kecatat berhasil atau tidak
+ * dan bisa di rerun"* — and this is it.
+ *
+ * - `pending` — nothing is wrong; there was simply no eligible phone at the
+ *   last tick (all busy, all offline, or none labelled yet). The router will
+ *   try again on the next tick, so labelling a phone an hour from now picks
+ *   this post up with no operator action at all.
+ * - `dispatched` — the jobs are queued or running. A waypoint now, not a
+ *   destination: the reconciler moves it on as the jobs settle.
+ * - `succeeded` — every dispatched job finished successfully.
+ * - `partial` — some phones posted, some did not. Its own state rather than a
+ *   flavour of `failed`, because the operator's next move differs: retry the
+ *   stragglers, not the lot.
+ * - `failed` — every dispatched job failed.
+ * - `unsupported` — this platform has no verified upload flow in this build.
+ *   Retrying changes nothing, and the row says so by name rather than sitting
+ *   at `pending` forever looking like a transient problem.
+ */
+export const DISPATCH_STATES = ['pending', 'dispatched', 'succeeded', 'partial', 'failed', 'unsupported'] as const
 export type DispatchState = (typeof DISPATCH_STATES)[number]
+
+/** What one phone's upload job did. `queued` covers queued AND running — both mean "not yet an answer". */
+export const ATTEMPT_STATES = ['queued', 'success', 'failed'] as const
+export type AttemptState = (typeof ATTEMPT_STATES)[number]
+
+/**
+ * One phone's attempt at one post, on one platform.
+ *
+ * The `jobId` is the whole point: it is the only link from a post back to what
+ * the farm actually did, and without it "re-run the ones that failed" cannot
+ * be answered at all. `deviceId` is stored beside it so a retry can target the
+ * same phones without re-deriving them from a fleet that has moved on.
+ */
+export const AttemptSchema = z
+  .object({
+    jobId: z.string().min(1),
+    deviceId: z.string().min(1),
+    state: z.enum(ATTEMPT_STATES),
+    /** The job's own error, when it failed. Truncated — the full text is on the job itself. */
+    error: z.string().max(300).nullable(),
+  })
+  .strict()
+export type Attempt = z.infer<typeof AttemptSchema>
 
 export const PlatformStateSchema = z
   .object({
@@ -57,13 +106,21 @@ export const PlatformStateSchema = z
     at: z.number().int().nonnegative().nullable(),
     /** How many phones this post was dispatched to on this platform. */
     deviceCount: z.number().int().nonnegative(),
+    /**
+     * Every phone this platform was dispatched to, and what its job did.
+     *
+     * Defaulted rather than required so a row written by the build that had no
+     * attempts still parses: those posts simply have nothing to reconcile and
+     * no failures to retry, which is the truth about them.
+     */
+    attempts: z.array(AttemptSchema).default([]),
     /** Why it is in this state, shown verbatim in the Posts table. Null when there is nothing to explain. */
     note: z.string().max(500).nullable(),
   })
   .strict()
 export type PlatformState = z.infer<typeof PlatformStateSchema>
 
-export const PENDING_STATE: PlatformState = { state: 'pending', at: null, deviceCount: 0, note: null }
+export const PENDING_STATE: PlatformState = { state: 'pending', at: null, deviceCount: 0, attempts: [], note: null }
 
 /**
  * A stored post. `.strict()` and an explicit `version`, so a row written by a
@@ -119,8 +176,20 @@ export const PostSchema = z
   .strict()
 export type Post = z.infer<typeof PostSchema>
 
+/**
+ * A platform's state, always with an `attempts` array.
+ *
+ * `attempts` was added after rows already existed, and `PlatformStateSchema`
+ * defaults it — so a row that has been through the parser always has one. This
+ * still normalises, because `stateFor` is the single door every reader goes
+ * through and a `Post` reaches it from more than one place: a KV row parsed by
+ * the schema, and an object assembled in code. Making the door safe is one
+ * line; making every caller defensive is a rule someone eventually forgets.
+ */
 export function stateFor(post: Post, platform: PlatformId): PlatformState {
-  return post.dispatch[platform] ?? PENDING_STATE
+  const stored = post.dispatch[platform]
+  if (!stored) return PENDING_STATE
+  return stored.attempts ? stored : { ...stored, attempts: [] }
 }
 
 /**
@@ -134,11 +203,53 @@ export function postSummary(post: Post): string {
   const parts = post.platforms.map((id) => {
     const s = stateFor(post, id)
     const title = platformById(id)?.title ?? id
-    if (s.state === 'dispatched') return `${title}: sent to ${s.deviceCount}`
-    if (s.state === 'unsupported') return `${title}: unsupported`
-    return `${title}: waiting`
+    const ok = s.attempts.filter((a) => a.state === 'success').length
+    const bad = s.attempts.filter((a) => a.state === 'failed').length
+    switch (s.state) {
+      case 'dispatched':
+        return `${title}: running on ${s.deviceCount}`
+      case 'succeeded':
+        return `${title}: posted on ${ok}`
+      case 'partial':
+        return `${title}: ${ok} posted, ${bad} failed`
+      case 'failed':
+        return `${title}: failed on ${bad}`
+      case 'unsupported':
+        return `${title}: unsupported`
+      default:
+        return `${title}: waiting`
+    }
   })
   return parts.join(' · ')
+}
+
+/**
+ * Roll a platform's per-phone attempts up into the one word the table shows.
+ *
+ * Pure, and the only place that mapping lives. While any attempt is still
+ * `queued` the platform stays `dispatched` — an answer is not owed until every
+ * phone has given one, and calling a half-finished fan-out `partial` would
+ * make a normal in-flight post look like a problem.
+ */
+export function rollUp(attempts: readonly Attempt[]): DispatchState {
+  if (attempts.length === 0) return 'pending'
+  if (attempts.some((a) => a.state === 'queued')) return 'dispatched'
+  const ok = attempts.filter((a) => a.state === 'success').length
+  if (ok === attempts.length) return 'succeeded'
+  if (ok === 0) return 'failed'
+  return 'partial'
+}
+
+/**
+ * The phones whose attempt failed — what a retry re-targets, and nothing else.
+ *
+ * A retry that re-sent to everyone would post the same video twice on every
+ * phone that already succeeded. That is not a tidiness argument: it is a
+ * duplicate post on a real account, which is the kind of mistake this farm
+ * cannot take back.
+ */
+export function failedDevices(state: PlatformState): string[] {
+  return state.attempts.filter((a) => a.state === 'failed').map((a) => a.deviceId)
 }
 
 /** A device as the router needs it — the subset of `device.list`'s output this module reads, nothing more. */
@@ -219,17 +330,27 @@ export function planDispatch(input: {
 
   for (const platformId of post.platforms) {
     const current = stateFor(post, platformId)
-    // Already sent. A post is dispatched once per platform and never
-    // re-dispatched by the router: re-posting the same video to the same
-    // accounts is not a retry, it is a duplicate post, and it is the one
-    // failure mode nobody can undo from here.
-    if (current.state === 'dispatched') continue
+    /*
+      Anything that has already been handed to phones is left alone by the
+      ROUTER, whatever its outcome.
+
+      `dispatched` is still in flight. But `succeeded`, `partial` and `failed`
+      are equally final here, and `failed` deliberately so: re-posting the same
+      video to the same accounts is not a retry, it is a duplicate post, and it
+      is the one failure mode nobody can undo from here. A retry is a decision,
+      so it belongs to an operator pressing "Re-run failed" — which re-targets
+      only the phones that failed (`failedDevices`) — and never to a timer that
+      finds a red row and tries again on its own.
+    */
+    if (current.state === 'dispatched' || current.state === 'succeeded' || current.state === 'partial' || current.state === 'failed') {
+      continue
+    }
 
     const platform = platformById(platformId)
     if (!platform) {
       // A platform id stored by some other build. Recorded, never guessed at.
       const note = `This build does not know a platform called "${platformId}".`
-      plan.states[platformId] = { state: 'unsupported', at: now, deviceCount: 0, note }
+      plan.states[platformId] = { state: 'unsupported', at: now, deviceCount: 0, attempts: [], note }
       noteOnce(note)
       continue
     }
@@ -239,7 +360,7 @@ export function planDispatch(input: {
       // tick would bump `updatedAt` on the row forever and make the Posts table
       // look permanently busy.
       if (current.state !== 'unsupported') {
-        plan.states[platformId] = { state: 'unsupported', at: now, deviceCount: 0, note: platform.unsupportedReason }
+        plan.states[platformId] = { state: 'unsupported', at: now, deviceCount: 0, attempts: [], note: platform.unsupportedReason }
       }
       // Noted every tick even when the STATE is unchanged: the state is
       // written once and the note is what the operator actually reads, so a
@@ -257,7 +378,7 @@ export function planDispatch(input: {
       // "you have not labelled anything" from "they are all busy", which is the
       // difference between a setup mistake and a normal, self-resolving wait.
       if (current.state !== 'pending' || current.note !== note) {
-        plan.states[platformId] = { state: 'pending', at: null, deviceCount: 0, note }
+        plan.states[platformId] = { state: 'pending', at: null, deviceCount: 0, attempts: [], note }
       }
       noteOnce(note)
       continue
@@ -268,7 +389,14 @@ export function planDispatch(input: {
       plan.dispatches.push({ platform: platformId, script: platform.script, deviceId: device.id, stableId: device.stableId })
     }
     const capped = chosen.length < eligible.length ? `Sent to ${chosen.length} of ${eligible.length} eligible phones (per-tick cap).` : null
-    plan.states[platformId] = { state: 'dispatched', at: now, deviceCount: chosen.length, note: capped }
+    /*
+      `attempts` is empty HERE and filled by the caller, because this function
+      is pure and a job id does not exist until the job is enqueued. The
+      service writes the state once, after the fan-out, with one attempt per
+      job it actually got an id for — so a phone whose enqueue threw never
+      appears as an attempt that silently never resolves.
+    */
+    plan.states[platformId] = { state: 'dispatched', at: now, deviceCount: chosen.length, attempts: [], note: capped }
     if (capped !== null) noteOnce(capped)
   }
 

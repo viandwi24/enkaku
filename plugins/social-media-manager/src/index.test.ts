@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import plugin from './index'
 import addPost from './add-post'
+import retryFailed from './retry-failed'
 import { PLATFORMS } from './platforms'
 import { POST_PREFIX } from './posts'
 
@@ -22,14 +23,20 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.1.0')
+    expect(plugin.version).toBe('0.2.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
-  test('its one member is presentable in Studio', () => {
-    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post'])
-    expect(addPost.title?.length).toBeGreaterThan(0)
-    expect(addPost.description?.length).toBeGreaterThan(0)
+  test('both members are presentable in Studio', () => {
+    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed'])
+    // Typed against the members themselves rather than the manifest's erased
+    // `ScriptDefinition`, which drops `title`/`description` from the type.
+    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed]
+    expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
+    for (const member of members) {
+      expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })
+      expect({ id: member.id, described: (member.description ?? '').length > 0 }).toEqual({ id: member.id, described: true })
+    }
   })
 })
 
@@ -38,7 +45,7 @@ describe('the service declaration', () => {
     // Exhaustive by design: this list is what the operator is shown and
     // consents to at install, so a permission asked for and never used is one
     // they granted for nothing.
-    expect(plugin.service?.permissions).toEqual(['device.list', 'job.run'])
+    expect(plugin.service?.permissions).toEqual(['device.list', 'job.run', 'job.get'])
   })
 
   test('a service exists — the Platforms view is a handler source and cannot render without one', () => {

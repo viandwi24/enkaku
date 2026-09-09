@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { PostSchema, newPost, planDispatch, postKeyFor, postSummary, stateFor, type Post, type RouterDevice } from './posts'
+import { PENDING_STATE, PostSchema, failedDevices, newPost, planDispatch, postKeyFor, postSummary, rollUp, stateFor, type Post, type RouterDevice } from './posts'
 
 const NOW = 1_770_000_000
 
@@ -32,7 +32,7 @@ describe('the stored shape', () => {
 
   test('every targeted platform is seeded pending — "not targeted" and "waiting" must not look alike in the table', () => {
     const fresh = newPost({ videoArtifactId: 'v', caption: 'c', platforms: ['tiktok'], now: NOW })
-    expect(fresh.dispatch.tiktok).toEqual({ state: 'pending', at: null, deviceCount: 0, note: null })
+    expect(fresh.dispatch.tiktok).toEqual({ state: 'pending', at: null, deviceCount: 0, attempts: [], note: null })
     expect(fresh.dispatch.instagram).toBeUndefined()
   })
 
@@ -60,7 +60,9 @@ describe('planDispatch — the routing rules', () => {
   test('one idle labelled phone gets the job, and the state records it', () => {
     const plan = planDispatch({ post: post(), devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.dispatches).toEqual([{ platform: 'tiktok', script: 'tiktok/post-video@latest', deviceId: 'd1', stableId: 'stable-d1' }])
-    expect(plan.states.tiktok).toEqual({ state: 'dispatched', at: NOW, deviceCount: 1, note: null })
+    // `attempts` is empty here on purpose: the ids do not exist until the
+    // service enqueues, and it writes them back in the same state.
+    expect(plan.states.tiktok).toEqual({ state: 'dispatched', at: NOW, deviceCount: 1, attempts: [], note: null })
   })
 
   test('a phone WITHOUT the label is never used, however idle it is', () => {
@@ -87,14 +89,14 @@ describe('planDispatch — the routing rules', () => {
   })
 
   test('a post already dispatched is NEVER dispatched again — a duplicate post cannot be undone', () => {
-    const already = post({ dispatch: { tiktok: { state: 'dispatched', at: NOW - 100, deviceCount: 2, note: null } } })
+    const already = post({ dispatch: { tiktok: { state: 'dispatched', at: NOW - 100, deviceCount: 2, attempts: [], note: null } } })
     const plan = planDispatch({ post: already, devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.dispatches).toEqual([])
     expect(plan.states.tiktok).toBeUndefined()
   })
 
   test('a platform with no verified flow is marked unsupported once, with its own reason', () => {
-    const p = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'pending', at: null, deviceCount: 0, note: null } } })
+    const p = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'pending', at: null, deviceCount: 0, attempts: [], note: null } } })
     const plan = planDispatch({ post: p, devices: [device({ id: 'd1', labels: [{ name: 'instagram' }] })], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.dispatches).toEqual([])
     expect(plan.states.instagram?.state).toBe('unsupported')
@@ -105,7 +107,7 @@ describe('planDispatch — the routing rules', () => {
   })
 
   test('an unsupported platform is not REWRITTEN every tick, but still keeps saying why', () => {
-    const settled = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'unsupported', at: NOW - 999, deviceCount: 0, note: 'x' } } })
+    const settled = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'unsupported', at: NOW - 999, deviceCount: 0, attempts: [], note: 'x' } } })
     const plan = planDispatch({ post: settled, devices: [], now: NOW, maxDevicesPerPlatform: 5 })
     // No state write — an unchanged row must not bump `updatedAt` forever and
     // make the table look permanently busy.
@@ -159,9 +161,9 @@ describe('postSummary', () => {
   test('reads as a sentence per platform', () => {
     const p = post({
       platforms: ['tiktok', 'instagram'],
-      dispatch: { tiktok: { state: 'dispatched', at: NOW, deviceCount: 3, note: null }, instagram: { state: 'unsupported', at: NOW, deviceCount: 0, note: 'x' } },
+      dispatch: { tiktok: { state: 'dispatched', at: NOW, deviceCount: 3, attempts: [], note: null }, instagram: { state: 'unsupported', at: NOW, deviceCount: 0, attempts: [], note: 'x' } },
     })
-    expect(postSummary(p)).toBe('TikTok: sent to 3 · Instagram: unsupported')
+    expect(postSummary(p)).toBe('TikTok: running on 3 · Instagram: unsupported')
   })
 
   test('says so plainly when a post targets nothing', () => {
@@ -173,4 +175,70 @@ describe('stateFor', () => {
   test('a platform with no stored state reads pending, so a newly added one needs no migration', () => {
     expect(stateFor(post({ dispatch: {} }), 'youtube').state).toBe('pending')
   })
+})
+
+/**
+ * The half of a post's life this plugin used not to have.
+ *
+ * Before these, a fan-out ended at `dispatched` and stayed there: ten failed
+ * uploads and ten successful ones were the same row, reading "sent to 10".
+ */
+describe('rollUp — dispatched is a waypoint, not an outcome', () => {
+  const attempt = (state: 'queued' | 'success' | 'failed', n: number) => ({
+    jobId: `j${n}`,
+    deviceId: `d${n}`,
+    state,
+    error: state === 'failed' ? 'boom' : null,
+  })
+
+  test('nothing dispatched yet is pending, not a verdict', () => {
+    expect(rollUp([])).toBe('pending')
+  })
+
+  test('one phone still queued holds the whole platform at dispatched', () => {
+    // Not `partial`: an answer is not owed until every phone has given one,
+    // and a normal in-flight post must not read like a problem.
+    expect(rollUp([attempt('success', 1), attempt('failed', 2), attempt('queued', 3)])).toBe('dispatched')
+  })
+
+  test('all succeeded, all failed, and the mixed case each get their own word', () => {
+    expect(rollUp([attempt('success', 1), attempt('success', 2)])).toBe('succeeded')
+    expect(rollUp([attempt('failed', 1), attempt('failed', 2)])).toBe('failed')
+    expect(rollUp([attempt('success', 1), attempt('failed', 2)])).toBe('partial')
+  })
+})
+
+describe('failedDevices — a retry re-targets the failures and nobody else', () => {
+  test('only the failed phones come back', () => {
+    const state = {
+      state: 'partial' as const,
+      at: 100,
+      deviceCount: 3,
+      attempts: [
+        { jobId: 'j1', deviceId: 'd1', state: 'success' as const, error: null },
+        { jobId: 'j2', deviceId: 'd2', state: 'failed' as const, error: 'no upload button' },
+        { jobId: 'j3', deviceId: 'd3', state: 'failed' as const, error: 'timed out' },
+      ],
+      note: null,
+    }
+    // d1 posted. Re-sending to it would put the same video on that account
+    // twice, which is the one mistake this farm cannot take back.
+    expect(failedDevices(state)).toEqual(['d2', 'd3'])
+  })
+
+  test('a platform that never dispatched has nothing to retry', () => {
+    expect(failedDevices(PENDING_STATE)).toEqual([])
+  })
+})
+
+describe('planDispatch — the router never retries a settled platform on its own', () => {
+  for (const state of ['succeeded', 'partial', 'failed'] as const) {
+    test(`${state} is left alone by the tick`, () => {
+      const post = { ...newPost({ videoArtifactId: 'v1', caption: 'c', platforms: ['tiktok'], now: 1 }) }
+      post.dispatch.tiktok = { state, at: 1, deviceCount: 1, attempts: [], note: null }
+      const plan = planDispatch({ post, devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
+      expect(plan.dispatches).toEqual([])
+      expect(plan.states.tiktok).toBeUndefined()
+    })
+  }
 })

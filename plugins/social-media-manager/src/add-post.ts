@@ -109,7 +109,13 @@ const addPost: PluginMemberScript<typeof params, typeof result> = {
        */
       for (const id of next.platforms) {
         const carried = stateFor(existing, id)
-        if (carried.state === 'dispatched') next.dispatch[id] = carried
+        // Every state that means "phones have already been given this video"
+        // is carried, not just `dispatched`. When outcomes were added,
+        // `succeeded`/`partial`/`failed` became reachable here, and carrying
+        // only `dispatched` would have reset a finished platform to `pending`
+        // — handing the router a post it believes has never been sent, and
+        // publishing the same video to the same account a second time.
+        if (carried.state !== 'pending') next.dispatch[id] = carried
       }
     }
 

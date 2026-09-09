@@ -1,8 +1,9 @@
 import { definePlugin, defineService, type PluginServiceContext } from '@enkaku/sdk'
 import { z } from 'zod'
 import addPost from './add-post'
+import retryFailed from './retry-failed'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
-import { POST_PREFIX, PostSchema, planDispatch, postSummary, type Post, type RouterDevice } from './posts'
+import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, type Attempt, type Post, type RouterDevice } from './posts'
 
 /**
  * # Social Media Manager
@@ -36,6 +37,27 @@ import { POST_PREFIX, PostSchema, planDispatch, postSummary, type Post, type Rou
  * each post's row, and in the router's log — rather than routing to them and
  * reporting a success nothing performed. See `platforms.ts` for why writing
  * those selectors from memory would be worse than not having them.
+ *
+ * ## Changelog
+ *
+ * - **0.2.0 — a post learns what happened.** `dispatched` was the end of a
+ *   post's life here: the router handed N jobs to the queue, wrote "sent to
+ *   N", and never looked again. Ten failed uploads and ten successful ones
+ *   were the same row. No job id was stored, so there was no way back from a
+ *   post to the phones, and "re-run the ones that failed" could not be asked
+ *   at all — which is half of what the client asked this screen for.
+ *
+ *   Each dispatch now records one `Attempt` per phone (`jobId`, `deviceId`,
+ *   state, error). The router reconciles them through `job.get` on its next
+ *   tick and rolls them up into `succeeded`, `partial` or `failed`; the
+ *   `retry-failed` member re-queues **only** the phones that failed, because
+ *   re-sending to one that succeeded publishes the same video to that account
+ *   twice. `job.get` joins the declared permissions for it.
+ *
+ *   `add-post`'s carry-over was widened in the same change: it preserved only
+ *   `dispatched`, and with outcomes reachable it would have reset a finished
+ *   platform to `pending` — handing the router a post it believed had never
+ *   been sent.
  *
  * ## Auto-post is OFF until an operator turns it on
  *
@@ -100,6 +122,61 @@ const DeviceListOutput = z.object({
 })
 
 const JobRunOutput = z.object({ jobId: z.string() })
+/** Only the two fields the reconciler reads. Validated at this boundary because the farm's own shape may move under a published plugin. */
+const JobGetOutput = z.object({ status: z.string(), error: z.string().nullable().optional() })
+
+/** The farm's job statuses that mean "this phone has given its answer". */
+const SETTLED: Record<string, Attempt['state']> = { success: 'success', failed: 'failed', cancelled: 'failed', expired: 'failed' }
+
+/**
+ * Turn queued attempts into answers, for ONE post.
+ *
+ * Returns the post to store, or `null` when nothing moved — the caller must
+ * not write in that case, because rewriting an unchanged row every tick makes
+ * the Posts table look permanently busy for no reason.
+ *
+ * A job the farm no longer knows about (pruned, or a farm restored from a
+ * backup taken before it ran) resolves to `failed` with that stated as the
+ * reason. The alternative is an attempt that stays `queued` forever, which
+ * pins its platform at `dispatched` and quietly removes the row from both the
+ * success and the failure column — the same disappearing act this whole change
+ * exists to end.
+ */
+async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Post | null> {
+  let any = false
+  const dispatch: Post['dispatch'] = { ...post.dispatch }
+  for (const platformId of post.platforms) {
+    const state = stateFor(post, platformId)
+    if (!state.attempts.some((a) => a.state === 'queued')) continue
+    // Per platform, NOT per post: a shared flag would rewrite an untouched
+    // platform's state merely because a different one moved.
+    let moved = false
+    const settled: Attempt[] = []
+    for (const attempt of state.attempts) {
+      if (attempt.state !== 'queued') {
+        settled.push(attempt)
+        continue
+      }
+      try {
+        const job = await ctx.farm.call('job.get', { jobId: attempt.jobId }, JobGetOutput)
+        const next = SETTLED[job.status]
+        if (!next) {
+          settled.push(attempt)
+          continue
+        }
+        settled.push({ ...attempt, state: next, error: next === 'failed' ? (job.error ?? `job ${job.status}`).slice(0, 300) : null })
+        moved = true
+      } catch (err) {
+        settled.push({ ...attempt, state: 'failed', error: `the farm no longer has this job: ${messageOf(err)}`.slice(0, 300) })
+        moved = true
+      }
+    }
+    if (!moved) continue
+    dispatch[platformId] = { ...state, attempts: settled, state: rollUp(settled) }
+    any = true
+  }
+  return any ? { ...post, dispatch } : null
+}
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -153,6 +230,28 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings): P
       continue
     }
 
+    /*
+      Settle what is already in flight before planning anything new.
+
+      Order matters: reconciling first means a platform whose jobs have all
+      finished leaves `dispatched` in the same tick it stopped being true, so
+      the operator never sees "running on 10" for a fan-out that ended
+      an hour ago. It is also written back on its own, because a post with
+      nothing new to dispatch would otherwise never be stored at all.
+    */
+    const reconciled = await reconcilePost(ctx, post)
+    if (reconciled !== null) {
+      const written = await ctx.storage.global.setIfVersion(entry.key, reconciled, entry.version)
+      if (!written) {
+        // Someone else wrote this row between the read and here. Leave it; the
+        // next tick re-reads and reconciles from whatever they stored.
+        continue
+      }
+      post = reconciled
+      entry.version += 1
+      ctx.log.info('post outcomes settled', { key: entry.key, subject: entry.key, summary: postSummary(post) })
+    }
+
     const devices: RouterDevice[] = fleet.items.filter((d) => !claimed.has(d.id))
     const plan = planDispatch({ post, devices, now: Math.floor(Date.now() / 1000), maxDevicesPerPlatform: settings.maxDevicesPerPlatform })
     if (plan.dispatches.length === 0 && Object.keys(plan.states).length === 0 && plan.note === post.lastNote) continue
@@ -165,12 +264,21 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings): P
      * cannot detect from this screen.
      */
     const sent: string[] = []
+    /*
+      The job id is kept, per platform, because it is the ONLY link back from
+      a post to what the farm actually did on the phones. Without it this row
+      could say "sent to 10" and never learn that ten uploads failed — which
+      is exactly what it used to do — and "re-run the ones that failed" could
+      not be answered at all.
+    */
+    const attempts: Record<string, Attempt[]> = {}
     for (const dispatch of plan.dispatches) {
       try {
         const params = { source: 'direct', videoArtifactId: post.videoArtifactId, caption: post.caption }
-        await ctx.farm.call('job.run', { scriptRef: dispatch.script, deviceId: dispatch.deviceId, params }, JobRunOutput)
+        const job = await ctx.farm.call('job.run', { scriptRef: dispatch.script, deviceId: dispatch.deviceId, params }, JobRunOutput)
         claimed.add(dispatch.deviceId)
         sent.push(dispatch.platform)
+        ;(attempts[dispatch.platform] ??= []).push({ jobId: job.jobId, deviceId: dispatch.deviceId, state: 'queued', error: null })
       } catch (err) {
         // One phone's refusal never stops the rest — the same posture the
         // TikTok pack's own auto-post tick takes with its fleet.
@@ -189,7 +297,10 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings): P
       // was, so the next tick tries again. `sent` is what actually happened;
       // `plan.states` is only what was intended.
       if (state.state === 'dispatched' && !sent.includes(platformId)) continue
-      next.dispatch[platformId] = state
+      const fired = attempts[platformId]
+      // `deviceCount` is corrected to what was enqueued, not what was planned:
+      // a phone whose `job.run` threw is not a phone this post was sent to.
+      next.dispatch[platformId] = fired ? { ...state, attempts: fired, deviceCount: fired.length } : state
     }
 
     try {
@@ -257,11 +368,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.1.0',
+  version: '0.2.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',
-  scripts: [addPost],
+  scripts: [addPost, retryFailed],
 
   service: defineService({
     /**
@@ -269,11 +380,13 @@ export default definePlugin({
      * is what the operator is shown and consents to at install.
      *
      * `device.list` is the fleet read (status, activities, labels); `job.run`
-     * is the dispatch. `job.list` is deliberately absent: `activities` already
-     * answers "is this phone busy", and a permission asked for and not needed
-     * is one an operator granted for nothing.
+     * is the dispatch; `job.get` is how a dispatched post learns what actually
+     * happened on each phone. `job.list` is still deliberately absent:
+     * `activities` already answers "is this phone busy", and the reconciler
+     * asks about jobs it holds ids for, one at a time — a permission asked for
+     * and not needed is one an operator granted for nothing.
      */
-    permissions: ['device.list', 'job.run'],
+    permissions: ['device.list', 'job.run', 'job.get'],
     setup: (ctx) => {
       // The Platforms view's rows. Constant for the life of the build — there
       // is nothing to read and nothing that can fail, so it takes no error
@@ -308,6 +421,11 @@ export default definePlugin({
             // A platform this post does not target has no key at all and
             // renders `—`, which is why `newPost` seeds the targeted ones:
             // without that, "not targeted" and "waiting" would look identical.
+            // The per-platform state words are the OUTCOME now, not the
+            // hand-off: `succeeded`, `partial` and `failed` join `pending`,
+            // `dispatched` and `unsupported`. A column that said `dispatched`
+            // for a fan-out that had long since failed on every phone is the
+            // bug this pack's 0.2.0 exists to end.
             { field: 'dispatch.tiktok.state', header: 'TikTok', width: 'narrow' },
             { field: 'dispatch.instagram.state', header: 'Instagram', width: 'narrow' },
             { field: 'dispatch.youtube.state', header: 'YouTube', width: 'narrow' },
@@ -316,7 +434,7 @@ export default definePlugin({
           ],
         },
         toolbar: ['addPost', 'autoPostSettings'],
-        rowActions: ['postToTikTokNow', 'removePost'],
+        rowActions: ['retryFailedNow', 'postToTikTokNow', 'removePost'],
         empty: {
           title: 'No posts yet',
           hint: 'Upload a video on the Files screen, then use “New post” to say which platforms it is for.',
@@ -489,6 +607,27 @@ export default definePlugin({
        * `kv.list` carries its own exact key as `$entry.key`, so the create
        * path's binding problem does not exist here.
        */
+      /*
+        A `job`, not a `batch`: the phones are not the operator's to choose.
+        A `batch` action opens a device picker, and a picker here invites the
+        one mistake a retry must never make — ticking a phone that already
+        posted, and publishing the video to that account twice. The member
+        reads the failed set off the post's own attempts instead.
+
+        `device: 'picker'` still asks for a phone because every job runs
+        somewhere; this member does no device work on it, exactly as
+        `add-post` does not.
+      */
+      retryFailedNow: {
+        kind: 'job',
+        label: 'Re-run failed',
+        script: 'smm/retry-failed@latest',
+        device: 'picker',
+        params: { videoArtifactId: { $row: 'videoArtifactId' } },
+        confirm:
+          'Send this video again to the phones whose upload failed? Phones that already posted are left alone — only the failures are re-queued.',
+      },
+
       removePost: {
         kind: 'kv.delete',
         label: 'Remove',
