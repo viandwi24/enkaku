@@ -4,6 +4,7 @@ import { useState } from 'react'
 import type { Target } from '@enkaku/protocol'
 import { CaretRightIcon, ConfirmDialog, cn } from '@enkaku/ui'
 import { useActionDialogs, type ActionDialogVerb } from '@/components/actions/ActionDialogHost'
+import { VERB_DIALOGS } from '@/components/actions/verb-dialogs'
 import { ACTION_GROUPS, GENERIC_ACTIONS, type ActionGroup } from '@/lib/generic-actions'
 
 const ROW = 'flex w-full items-center gap-2.5 rounded-button px-[10px] py-[9px] text-row transition-colors'
@@ -69,6 +70,23 @@ export function ActionMenu({
 
   const row = (item: (typeof GENERIC_ACTIONS)[number]) => {
     const Icon = item.icon
+    /*
+      The verb's own `note`, as the row's tooltip.
+
+      `note` renders inside `ActionDialog`, and a verb marked `immediate`
+      never opens one — so every note on an immediate verb was copy nobody
+      could read. That was harmless while the immediate verbs were Reconnect,
+      Disconnect, Sleep and Wake, whose labels say the whole story. It stopped
+      being harmless when `screen-off`/`screen-on` landed one row under Sleep:
+      four adjacent rows that all sound like "turn the screen off", where
+      picking the wrong one has a consequence an operator cannot see (a panel
+      darkened by Screen off lights up again when the session ends, so it is
+      the wrong button before unplugging).
+
+      Read from `VERB_DIALOGS` rather than copied onto `GenericAction`, so
+      there is one sentence per verb and the dialog and the menu cannot drift.
+    */
+    const hint = VERB_DIALOGS[item.id]?.note
     if (item.id === 'forget') {
       return (
         <ConfirmDialog
@@ -78,7 +96,7 @@ export function ActionMenu({
           confirmLabel="Forget"
           onConfirm={() => openDialog(item.id)}
           trigger={
-            <button type="button" className={cn(ROW, ROW_DANGER)}>
+            <button type="button" className={cn(ROW, ROW_DANGER)} title={hint}>
               <Icon className="size-4" aria-hidden />
               {item.label}
             </button>
@@ -87,7 +105,7 @@ export function ActionMenu({
       )
     }
     return (
-      <button key={item.id} type="button" className={cn(ROW, item.danger ? ROW_DANGER : ROW_IDLE)} onClick={() => openDialog(item.id)}>
+      <button key={item.id} type="button" className={cn(ROW, item.danger ? ROW_DANGER : ROW_IDLE)} title={hint} onClick={() => openDialog(item.id)}>
         <Icon className="size-4" aria-hidden />
         {item.label}
       </button>

@@ -288,6 +288,83 @@ Nothing else. Every behaviour reachable before this plan is reachable after it:
 `prep.standbyScreenOff` still applies at session build, `sleep`/`wake` are
 untouched, and no verb changed its gate, its policy row or its offline rule.
 
+---
+
+## 12. Post-merge UI audit (2026-09-09)
+
+Plan 227 merged with `typecheck`, `build:studio`, the scoped tests and all
+eleven CI gates green. None of those looks at a screen. Asked afterwards
+whether an operator could actually use what shipped, this audit walked the two
+menus by hand and found three things. All three are fixed on the follow-up
+branch; two of them are this plan's own.
+
+### A1 — `docs/spec.md` §11 did not list the two new verbs
+
+This plan's own header says "§11's verb list grows by two" and the change never
+reached the file. CLAUDE.md's rule is that the spec is the single source of
+truth and wins where the code disagrees, so for a day the spec would have lost
+against shipped code.
+
+It is worth naming plainly: `docs/plans/700-automation-review.md` §2 F0 is a
+criticism of exactly this drift (the spec said "six node kinds" while the code
+had eight), written by the same author, four hours before repeating it.
+`spec:check` is warning-only, so nothing caught it.
+
+Fixed, and §11 now also carries the `sleep` vs `screen-off` distinction and the
+`skipped`-never-`done` rule, rather than leaving both only in this plan.
+
+### A2 — the note that disambiguates Sleep from Screen off could not be read
+
+`VerbDialogSpec.note` renders in exactly one place, `ActionDialog.tsx`'s body,
+and a verb marked `immediate: true` never opens a dialog. Every note on an
+immediate verb was therefore copy nobody could reach — true for `reconnect`,
+`disconnect`, `sleep` and `wake` since they were written.
+
+Harmless for those four, whose labels say the whole story. Not harmless once
+`screen-off`/`screen-on` landed one row under Sleep: four adjacent rows that
+all sound like "turn the screen off", where the wrong choice has a consequence
+an operator cannot see — a panel darkened by Screen off is powered back on when
+the session dies (§3.1 S5/S6), so it is the wrong button before unplugging.
+That sentence was written into the note and then made unreachable by the same
+commit.
+
+Both menus now carry the verb's own `note` as the row's tooltip, read from
+`VERB_DIALOGS` rather than copied onto `GenericAction`, so one sentence per verb
+serves the dialog and the menu and the two cannot drift.
+
+### A3 — the immediate-verb toast reported `done` for devices it had skipped
+
+Not this plan's code, and this plan's verbs are what make it bite. The toast
+summed `failed` and `forbidden` and called everything else `done`:
+
+```
+const failed = grouped.failed.length + grouped.forbidden.length
+if (failed > 0) toast.warning(...)
+else toast.success(`${label}: done`)
+```
+
+`skipped` was counted in neither branch. An action on 73 phones that reached 3
+and skipped 70 reported `done`, flatly. `screen-off` skips any device without a
+scrcpy session, so on a farm mid-boot that is most of them — and §3.3's whole
+reason for answering `device_unavailable` per device was to tell the truth,
+which this line then discarded. It is the same "unverified is not success" the
+farm refuses of a network route.
+
+The toast now names all three counts, with `skipped` its own word rather than
+folded into "refused": a phone that was offline was never asked, and calling
+that a refusal sends an operator looking for one that never happened.
+
+### What this says about the plan's own verification
+
+§7's command list is a real list and every row in it passed. It contains
+nothing that opens a menu, and `bun run build:studio` exiting 0 says a page
+compiles, not that a person can use it. Studio has no tests by decision (plan
+200 §8.3) and this plan does not propose changing that — but the §7 block of a
+plan that adds an operator-facing control should carry a **walk**, not only a
+build: open both menus, read every row that changed, and click the new one.
+Written here rather than as a rule elsewhere, because the next plan to add a
+verb is the one that needs it.
+
 ## 11. Handoff
 
 Software rows G1–G6, G10 and G11 are done and proven by the commands in §7.
