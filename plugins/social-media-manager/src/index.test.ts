@@ -23,7 +23,7 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.3.0')
+    expect(plugin.version).toBe('0.3.2')
     expect(plugin.version).toBe(pkg.version)
   })
 

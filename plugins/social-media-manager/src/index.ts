@@ -40,6 +40,14 @@ import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, t
  *
  * ## Changelog
  *
+ * - **0.3.2 — `partial` says how partial.** The state word alone told an
+ *   operator something had failed and nothing about how much, so the next
+ *   move was a guess. The reconciler now writes the counts into `note`,
+ *   which the Posts table already renders — "3 posted, 2 failed" — beside a
+ *   reminder that a retry re-sends to those two only. In `note` rather than
+ *   a new stored field because it is computed from the same array at the
+ *   same instant as the state it describes, so the two cannot drift.
+ *
  * - **0.3.0 — choose the phones, not just the label.** A post routed on the
  *   platform's device label and nothing else, so "send this to these five
  *   phones" had no expression at all. `deviceIds` on the post narrows the
@@ -186,7 +194,25 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
       }
     }
     if (!moved) continue
-    dispatch[platformId] = { ...state, attempts: settled, state: rollUp(settled) }
+    /*
+      The counts go in `note`, which the Posts table already renders, because
+      `partial` on its own tells an operator something went wrong and nothing
+      about how much. Written here rather than stored as a separate field and
+      kept in step: it is computed at the same instant as the state it
+      describes, from the same array, so the two cannot drift.
+    */
+    const next = rollUp(settled)
+    const ok = settled.filter((a) => a.state === 'success').length
+    const bad = settled.filter((a) => a.state === 'failed').length
+    const note =
+      next === 'succeeded'
+        ? null
+        : next === 'failed'
+          ? `Failed on all ${bad} phone${bad === 1 ? '' : 's'}. "Re-run failed" sends it to them again.`
+          : next === 'partial'
+            ? `${ok} posted, ${bad} failed. "Re-run failed" re-sends to those ${bad} only — the ones that posted are left alone.`
+            : state.note
+    dispatch[platformId] = { ...state, attempts: settled, state: next, note }
     any = true
   }
   return any ? { ...post, dispatch } : null
@@ -382,7 +408,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.3.0',
+  version: '0.3.2',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',
