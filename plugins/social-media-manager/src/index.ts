@@ -41,6 +41,14 @@ import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, t
  *
  * ## Changelog
  *
+ * - **0.4.1 — the optional phone list was not optional.** Both post members
+ *   wrote `deviceIds` as `.default([])`, and a Zod default still lands in the
+ *   generated JSON Schema's `required` list — so submitting either form
+ *   without choosing phones was refused with "deviceIds: required", on the
+ *   one field whose whole point is that empty means "any phone carrying the
+ *   label". `.optional()` instead, with the empty case handled in the body.
+ *   It took a real form submission to find; a test now pins it.
+ *
  * - **0.4.0 — twenty videos, one action.** `add-post` takes one video, so an
  *   operator holding twenty walked the same dialog twenty times, choosing the
  *   same platforms and phones each time — on a farm meant for a hundred
@@ -424,7 +432,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.4.0',
+  version: '0.4.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',

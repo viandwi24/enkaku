@@ -54,9 +54,18 @@ const params = z.object({
     .min(1)
     .describe('Which platforms these videos are for. Each one sends to the phones carrying that platform\'s label.')
     .meta(ui({ title: 'Platforms', group: 'Post' })),
+  /*
+    `.optional()`, NOT `.default([])`.
+
+    A Zod default still lands in the generated JSON Schema's `required` list,
+    so a form that legitimately leaves this empty is refused before the member
+    ever runs — "deviceIds: required" on a field whose whole point is that
+    empty means "any phone carrying the label". Found by submitting the real
+    form, not in review.
+  */
   deviceIds: z
     .array(z.string().min(1))
-    .default([])
+    .optional()
     .describe('Which phones these posts may go to. Leave empty for any phone carrying the platform’s label — a choice here narrows that fleet, it never widens it.')
     .meta(ui({ title: 'Phones', kind: 'deviceIds', group: 'Post' })),
 })
@@ -140,7 +149,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       updated,
       videos: videos.length,
       platforms: platforms.join(','),
-      phones: deviceIds.length === 0 ? 'any labelled' : String(deviceIds.length),
+      phones: !deviceIds || deviceIds.length === 0 ? 'any labelled' : String(deviceIds.length),
     })
     return { created, updated, keys }
   },

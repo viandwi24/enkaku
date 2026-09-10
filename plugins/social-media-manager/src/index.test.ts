@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { z } from 'zod'
 import plugin from './index'
 import addPost from './add-post'
 import retryFailed from './retry-failed'
@@ -24,7 +25,7 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.4.0')
+    expect(plugin.version).toBe('0.4.1')
     expect(plugin.version).toBe(pkg.version)
   })
 
@@ -172,4 +173,26 @@ describe('the bulk builder', () => {
     expect(action.then.script).toBe('smm/add-posts@latest')
     expect(Object.keys(action.then.params).sort()).toEqual(['captions', 'deviceIds', 'platforms', 'videoArtifactIds'])
   })
+})
+
+/**
+ * The "deviceIds: required" bug, pinned.
+ *
+ * Both post members declare `deviceIds` as the field an operator may leave
+ * empty — empty means "any phone carrying the label". Written as
+ * `.default([])` it still landed in the generated JSON Schema's `required`
+ * list, so the job was refused before the member ever ran, on a field whose
+ * whole point is being optional. It cost a real form submission to find, and
+ * nothing in the type system would have caught it.
+ */
+describe('the optional fields are actually optional in the generated schema', () => {
+  for (const member of [addPost, addPosts]) {
+    test(`${member.id} does not demand deviceIds`, () => {
+      const json = z.toJSONSchema(member.params, { io: 'input' }) as { required?: string[]; properties?: Record<string, unknown> }
+      // Present as a field...
+      expect(Object.keys(json.properties ?? {})).toContain('deviceIds')
+      // ...and never demanded.
+      expect(json.required ?? []).not.toContain('deviceIds')
+    })
+  }
 })
