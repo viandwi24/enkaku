@@ -71,6 +71,16 @@ export const PARAM_KINDS = [
    * an array, so `formatScalar` must never be handed one.
    */
   'deviceIds',
+  /**
+   * An ARRAY of artifact ids — "which uploaded files is this for".
+   *
+   * The bulk sibling of `artifact`. A form that can only take one file makes
+   * an operator with twenty videos walk the same dialog twenty times, which
+   * is the shape the Social Media Manager's own bulk builder exists to
+   * remove. Like `deviceIds`, the value is an array, so it belongs in
+   * `ARRAY_PARAM_KINDS` and never in `STRING_PARAM_KINDS`.
+   */
+  'artifactIds',
 ] as const
 export type ParamKind = (typeof PARAM_KINDS)[number]
 
@@ -94,7 +104,7 @@ export type StringParamKind = (typeof STRING_PARAM_KINDS)[number]
  * become a number and reached `formatScalar` — which would render a list of
  * device ids as `NaN`. Naming the shape is what keeps that a compile error.
  */
-export const ARRAY_PARAM_KINDS = ['deviceIds'] as const
+export const ARRAY_PARAM_KINDS = ['deviceIds', 'artifactIds'] as const
 export type ArrayParamKind = (typeof ARRAY_PARAM_KINDS)[number]
 
 /** Required by, and valid only for, `kind: 'duration'` (plan 95 §3.2). */

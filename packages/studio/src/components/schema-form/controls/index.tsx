@@ -1,6 +1,7 @@
 import type { FieldPlan } from '../plan'
 import { ArtifactControl } from './ArtifactControl'
 import { DevicesControl } from './DevicesControl'
+import { ArtifactsControl } from './ArtifactsControl'
 import { ChanceControl } from './ChanceControl'
 import { ChoiceControl } from './ChoiceControl'
 import { JsonControl } from './JsonControl'
@@ -70,6 +71,8 @@ function renderControlInner(plan: FieldPlan, props: BaseControlProps) {
       return <ArtifactControl {...props} />
     case 'devices':
       return <DevicesControl {...props} />
+    case 'artifacts':
+      return <ArtifactsControl {...props} />
     case 'list':
       return <ListControl {...props} plan={plan} />
     case 'table':

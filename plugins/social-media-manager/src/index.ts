@@ -1,6 +1,7 @@
 import { definePlugin, defineService, type PluginServiceContext } from '@enkaku/sdk'
 import { z } from 'zod'
 import addPost from './add-post'
+import addPosts from './add-posts'
 import retryFailed from './retry-failed'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, type Attempt, type Post, type RouterDevice } from './posts'
@@ -39,6 +40,21 @@ import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, t
  * those selectors from memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.4.0 — twenty videos, one action.** `add-post` takes one video, so an
+ *   operator holding twenty walked the same dialog twenty times, choosing the
+ *   same platforms and phones each time — on a farm meant for a hundred
+ *   devices. `add-posts` writes one row per ticked upload. The fan-out to
+ *   devices was never the missing half: the router already spreads posts
+ *   across free labelled phones, claiming each so two posts never land on one
+ *   phone in a tick.
+ *
+ *   Captions are one per line — a single line for every video, or exactly one
+ *   line per video. Anything else is refused, naming both counts, because
+ *   cycling five captions over twenty videos would put the same text on four
+ *   accounts each without saying so, and looking different per device is the
+ *   whole point of the farm. Re-running over the same videos updates rows and
+ *   re-posts nothing, by the same carry-over rule `add-post` follows.
  *
  * - **0.3.2 — `partial` says how partial.** The state word alone told an
  *   operator something had failed and nothing about how much, so the next
@@ -408,11 +424,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.3.2',
+  version: '0.4.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',
-  scripts: [addPost, retryFailed],
+  scripts: [addPost, retryFailed, addPosts],
 
   service: defineService({
     /**
@@ -473,7 +489,7 @@ export default definePlugin({
             { field: 'createdAt', header: 'Added', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
           ],
         },
-        toolbar: ['addPost', 'autoPostSettings'],
+        toolbar: ['addPost', 'addManyPosts', 'autoPostSettings'],
         rowActions: ['retryFailedNow', 'postToTikTokNow', 'removePost'],
         empty: {
           title: 'No posts yet',
@@ -575,6 +591,65 @@ export default definePlugin({
           params: {
             videoArtifactId: { $form: 'videoArtifactId' },
             caption: { $form: 'caption' },
+            platforms: { $form: 'platforms' },
+            deviceIds: { $form: 'deviceIds' },
+          },
+        },
+      },
+
+      /*
+        The bulk builder. Same shape as `addPost` next door, with the two
+        fields that make it bulk: a tickable list of uploads instead of one
+        picker, and captions one per line.
+      */
+      addManyPosts: {
+        kind: 'form',
+        label: 'Add many',
+        schema: {
+          type: 'object',
+          required: ['videoArtifactIds', 'captions', 'platforms'],
+          properties: {
+            videoArtifactIds: {
+              type: 'array',
+              title: 'Videos',
+              description: 'Tick the uploaded videos to post. Upload them on the Files screen first — this only chooses.',
+              minItems: 1,
+              items: { type: 'string' },
+              'x-enkaku': { kind: 'artifactIds' },
+            },
+            captions: {
+              type: 'string',
+              title: 'Captions',
+              description:
+                'One per line. A single line is used for every video; otherwise give exactly one line per video, paired in the order you ticked them.',
+              maxLength: 110_000,
+              'x-enkaku': { multiline: true },
+            },
+            platforms: {
+              type: 'array',
+              title: 'Platforms',
+              description: 'Each one sends to the phones carrying that platform’s label. Only TikTok can post in this build — see the Platforms screen.',
+              minItems: 1,
+              items: { type: 'string', enum: [...PLATFORM_IDS], 'x-enkaku': { labels: PLATFORM_LABELS } },
+            },
+            deviceIds: {
+              type: 'array',
+              title: 'Phones',
+              description: 'Leave empty for any phone carrying the platform’s label. Choosing here narrows that fleet — it never widens it.',
+              items: { type: 'string' },
+              'x-enkaku': { kind: 'deviceIds' },
+            },
+          },
+        },
+        submitLabel: 'Create posts',
+        then: {
+          kind: 'job',
+          label: 'Add many posts',
+          script: 'smm/add-posts@latest',
+          device: 'picker',
+          params: {
+            videoArtifactIds: { $form: 'videoArtifactIds' },
+            captions: { $form: 'captions' },
             platforms: { $form: 'platforms' },
             deviceIds: { $form: 'deviceIds' },
           },

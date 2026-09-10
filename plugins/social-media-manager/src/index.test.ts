@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import plugin from './index'
 import addPost from './add-post'
 import retryFailed from './retry-failed'
+import addPosts from './add-posts'
 import { PLATFORMS } from './platforms'
 import { POST_PREFIX } from './posts'
 
@@ -23,15 +24,15 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.3.2')
+    expect(plugin.version).toBe('0.4.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
-  test('both members are presentable in Studio', () => {
-    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed'])
+  test('every member is presentable in Studio', () => {
+    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts'])
     // Typed against the members themselves rather than the manifest's erased
     // `ScriptDefinition`, which drops `title`/`description` from the type.
-    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed]
+    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })
@@ -130,5 +131,45 @@ describe('the surface', () => {
     const action = surface.actions.autoPostSettings
     const value = action?.kind === 'form' && action.then.kind === 'kv.set' ? (action.then.value as Record<string, unknown>) : null
     expect(Object.keys(value ?? {}).sort()).toEqual(['enabled', 'intervalMinutes', 'maxDevicesPerPlatform', 'version'])
+  })
+})
+
+/**
+ * The bulk builder (0.4.0). Its whole reason is the hundred-device farm:
+ * `add-post` takes one video, and twenty videos meant twenty trips through
+ * the same dialog.
+ */
+describe('the bulk builder', () => {
+  const surface = plugin.surface!
+  // Through `unknown`: `ActionSpec` is a union whose `schema` is the whole
+  // `JsonSchemaNode`, and asserting the two fields this test reads is not a
+  // narrowing the compiler can check.
+  const action = surface.actions.addManyPosts as unknown as {
+    kind: string
+    schema: { required: string[]; properties: Record<string, { 'x-enkaku'?: { kind?: string } }> }
+    then: { script: string; params: Record<string, unknown> }
+  }
+
+  test('it is offered on the Posts toolbar beside the single-video form', () => {
+    expect(surface.views.posts?.toolbar).toContain('addManyPosts')
+    expect(surface.views.posts?.toolbar).toContain('addPost')
+  })
+
+  test('the videos field is an artifact MULTI-picker, not a text box of ids', () => {
+    expect(action.schema.properties.videoArtifactIds?.['x-enkaku']?.kind).toBe('artifactIds')
+    expect(action.schema.properties.deviceIds?.['x-enkaku']?.kind).toBe('deviceIds')
+  })
+
+  /*
+    Phones are deliberately NOT required: empty means "any phone carrying the
+    platform's label", which is the whole point on a fleet that grows.
+  */
+  test('videos, captions and platforms are required; phones are not', () => {
+    expect(action.schema.required.sort()).toEqual(['captions', 'platforms', 'videoArtifactIds'])
+  })
+
+  test('every form field reaches the member it submits to', () => {
+    expect(action.then.script).toBe('smm/add-posts@latest')
+    expect(Object.keys(action.then.params).sort()).toEqual(['captions', 'deviceIds', 'platforms', 'videoArtifactIds'])
   })
 })

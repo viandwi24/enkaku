@@ -14,7 +14,7 @@ import {
 } from './vocabulary'
 
 describe('PARAM_KINDS / DURATION_UNITS / PARAM_SOURCES (plan 95 §4.1)', () => {
-  test('the kind list is exactly the fourteen entries the vocabulary names — no more, no fewer', () => {
+  test('the kind list is exactly the fifteen entries the vocabulary names — no more, no fewer', () => {
     expect(PARAM_KINDS).toEqual([
       'count',
       'chance',
@@ -30,6 +30,7 @@ describe('PARAM_KINDS / DURATION_UNITS / PARAM_SOURCES (plan 95 §4.1)', () => {
       'workspaceFile',
       'artifact',
       'deviceIds',
+      'artifactIds',
     ])
   })
 

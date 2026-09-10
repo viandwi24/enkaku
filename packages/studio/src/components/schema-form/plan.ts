@@ -225,6 +225,14 @@ export type FieldPlan =
        */
       control: 'devices'
     }
+  | {
+      /**
+       * `kind: 'artifactIds'` — the value is an array of artifact ids, drawn
+       * as a tickable list of what has already been uploaded. Uploading stays
+       * on the Files screen; this only chooses.
+       */
+      control: 'artifacts'
+    }
   | { control: 'list'; item: FieldPlan }
   | { control: 'table'; columns: { key: string; label: string; plan: FieldPlan }[] }
   | { control: 'group'; heading?: string; children: PlannedField[] }
@@ -298,6 +306,15 @@ function isDeviceIdsKind(kind: ParamKind): kind is 'deviceIds' {
   return kind === 'deviceIds'
 }
 
+function isArtifactIdsKind(kind: ParamKind): kind is 'artifactIds' {
+  return kind === 'artifactIds'
+}
+
+/** Every kind whose value is an array — the two checked against `array` rather than a scalar type. */
+function isArrayKind(kind: ParamKind): kind is ArrayKind {
+  return isDeviceIdsKind(kind) || isArtifactIdsKind(kind)
+}
+
 /**
  * Every kind whose value is a STRING — the ones row 3 checks against
  * `type: 'string'` rather than against a numeric type. Restated here rather
@@ -316,7 +333,7 @@ type StringKind = 'text' | 'packageName' | 'workspaceFolder' | 'workspaceFile' |
  * Mirrors `ARRAY_PARAM_KINDS` in the protocol, and drifts from it the same
  * way: forget an entry and the assignment to `NumberKind` stops typechecking.
  */
-type ArrayKind = 'deviceIds'
+type ArrayKind = 'deviceIds' | 'artifactIds'
 
 function isStringKind(kind: ParamKind): kind is StringKind {
   return isTextKind(kind) || isWorkspacePathKind(kind) || isArtifactKind(kind)
@@ -338,7 +355,7 @@ function kindStructurallyValid(kind: ParamKind, node: JsonSchemaNode): boolean {
   // this it falls through to the numeric test, fails it, and the field is
   // drawn as a generic "+ Add" list of text boxes — which is exactly the
   // UUID-typing this kind exists to replace.
-  if (isDeviceIdsKind(kind)) return baseType(node) === 'array'
+  if (isArrayKind(kind)) return baseType(node) === 'array'
   if (!isNumericType(baseType(node))) return false
   // `chance` additionally requires the domain the vocabulary promises
   // (plan 95 §3.2): "the resolver REQUIRES minimum: 0 and maximum: 1; a
@@ -431,6 +448,7 @@ function planDeclaredKind(node: JsonSchemaNode, kind: ParamKind, hints: ParamHin
   // in the vocabulary whose value is an array, so falling through to either
   // of them would draw a list of UUIDs as a single text box.
   if (isDeviceIdsKind(kind)) return { control: 'devices' }
+  if (isArtifactIdsKind(kind)) return { control: 'artifacts' }
   if (isTextKind(kind)) return planTextPlain(node, hints)
   return planKindNumber(node, kind, hints)
 }
@@ -464,7 +482,7 @@ function planPair(node: JsonSchemaNode, hints: ParamHints, root: JsonSchemaNode)
     // A pair is two numbers. A string kind was already excluded; an ARRAY
     // kind has to be too, or `deviceIds` on a tuple would be planned as a
     // number and drawn as a stepper.
-    hints.kind && !isStringKind(hints.kind) && !isDeviceIdsKind(hints.kind) && kindStructurallyValid(hints.kind, half)
+    hints.kind && !isStringKind(hints.kind) && !isArrayKind(hints.kind) && kindStructurallyValid(hints.kind, half)
       ? planKindNumber(half, hints.kind, hints)
       : planPlainNumber(half)
   return { control: 'pair', ordered: hints.ordered ?? true, item }
