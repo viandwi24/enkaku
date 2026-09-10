@@ -820,6 +820,22 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.25.0 — two honest improvements to `post-video`, neither yet proven to
+  // change an outcome on hardware, because the phone under test turned out to
+  // have no network at all.
+  //   1. It waits for the app like every other navigating member has since
+  //      1.20.0. It kept `sleep(4_000)` — less than the six seconds this pack
+  //      already knew was too short — and was simply missed by that change.
+  //   2. A failure now says when TIKTOK could not load, instead of blaming
+  //      the screen it was looking for. Measured 2026-09-10 (moto g06): the
+  //      phone's saved Wi-Fi was out of range and cellular was out of service,
+  //      so TikTok drew "Ada masalah / Coba lagi nanti" over the feed, every
+  //      tap went nowhere, and the run failed with "expected the camera screen
+  //      but the dump reads unknown" — true, useless, and pointing at the
+  //      camera, which was never the problem. `E_APP_OFFLINE` names it, in
+  //      both languages this farm has seen.
+  //   (1.24.0 was this same change staged mid-session with only the first
+  //   half of it; nothing else shipped under that number.)
   // 1.23.0 — the post queue moves to `@enkaku/sdk`'s shared queue (plan 800).
   // The claim protocol is unchanged; what changes is that this pack no longer
   // owns a private copy of it, so Instagram and YouTube can share one instead
@@ -837,7 +853,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.23.0',
+  version: '1.25.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

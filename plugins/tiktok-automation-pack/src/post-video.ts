@@ -2,6 +2,7 @@ import { ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { sleep } from './human'
+import { relaunch } from './gesture'
 import { all } from './tree'
 import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, type ScreenId } from './screens'
 import { sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
@@ -362,10 +363,51 @@ async function enterScreen(
   }
 
   await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-unexpected-screen-${screen}`)
+
+  /*
+    Before blaming the screen we were looking for, say whether the app could
+    load anything at all.
+
+    Measured 2026-09-10 (moto g06): the phone's saved Wi-Fi networks were out
+    of range and it had no cellular service, so TikTok drew its "Ada masalah /
+    Coba lagi nanti" panel over the feed. Every tap after that went nowhere,
+    and this threw *"expected the camera screen but the dump reads unknown"* —
+    true, useless, and pointing at the camera, which was never the problem. An
+    operator reading that goes looking for a selector bug in a flow that could
+    not have run.
+  */
+  const offline = feedErrorText(tree)
+  if (offline !== null) {
+    throw Object.assign(
+      new Error(
+        `TikTok could not load — the app is showing "${offline}" instead of its feed, so nothing could be tapped. Check this phone's network: a phone with no route out cannot post.`,
+      ),
+      { code: 'E_APP_OFFLINE' },
+    )
+  }
+
   throw Object.assign(
     new Error(`expected the "${expected}" screen but the dump reads "${screen}" after ${rounds} settle rounds${cleared.length > 0 ? ` (cleared: ${cleared.join(', ')})` : ' (no modal matched)'}`),
     { code: 'E_UNEXPECTED_SCREEN' },
   )
+}
+
+/**
+ * TikTok's own "I could not load anything" panel, in both languages this farm
+ * has seen, or `null` when the tree carries no such thing.
+ *
+ * Matched on the app's own words rather than a resource id: this panel is
+ * drawn by several surfaces (feed, inbox, profile) and its ids differ between
+ * them, while the sentence is the same one a person would read off the screen.
+ */
+function feedErrorText(tree: UiNode | null): string | null {
+  if (!tree) return null
+  const NEEDLES = ['Ada masalah', 'Coba lagi nanti', 'Something went wrong', 'No internet connection', 'Tidak ada koneksi internet']
+  const hit = all(tree, (n) => {
+    const label = (n.text || n.desc).trim()
+    return label !== '' && NEEDLES.some((needle) => label.toLowerCase() === needle.toLowerCase())
+  })[0]
+  return hit ? (hit.text || hit.desc).trim() : null
 }
 
 /**
@@ -725,9 +767,27 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
 
   async prepare(ctx) {
     attempt = freshAttemptState()
-    await ctx.device.app.forceStop(TIKTOK_PACKAGE)
-    await ctx.device.app.launch(TIKTOK_PACKAGE)
-    await sleep(4_000) // let the launch storm settle before the feed tap below (E3: the feed cannot be dumped to check itself)
+    /*
+      `relaunch` — the pack's own launch, not a blind sleep.
+
+      1.20.0 moved every navigating member off fixed settles after five runs
+      were lost on the owner's farm, and recorded the measurement: TikTok on a
+      budget phone is drawing its first feed at ten seconds, not done with it.
+      This member kept `sleep(4_000)` and was missed — and it is the member
+      that navigates most.
+
+      **This is a consistency fix, not a proven repair.** It was made while
+      chasing a failure that turned out to be the phone having no network at
+      all, so no run has yet demonstrated it changing an outcome. It is still
+      correct: four seconds was less than the six this pack already knew was
+      too short, and waiting for the nav to exist is strictly better than
+      hoping.
+
+      E3 is not contradicted: the FEED is still never inspected, because an
+      autoplaying video churns the tree. The bottom nav `relaunch` waits on is
+      the stable chrome around it.
+    */
+    await relaunch(ctx)
   },
 
   async run(ctx) {
