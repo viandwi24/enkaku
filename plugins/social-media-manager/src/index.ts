@@ -41,6 +41,16 @@ import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, t
  *
  * ## Changelog
  *
+ * - **0.5.0 — a green job is not a post.** The reconciler read the job's
+ *   status and nothing else, so a TikTok run whose script returned
+ *   `outcome: "unverified"` (the post was tapped, then TikTok's security
+ *   check covered the profile and nothing could be confirmed) was written as
+ *   "1 posted" on the owner's farm, 2026-09-11. It now reads the script's own
+ *   `outcome`: `posted` is a success, `failed`/`skipped` is a retryable
+ *   failure, and `unverified` is a new attempt state of its own — shown in
+ *   the row's note and deliberately NOT re-sent by "Re-run failed", because a
+ *   post that did land would become a duplicate on a real account.
+ *
  * - **0.4.1 — the optional phone list was not optional.** Both post members
  *   wrote `deviceIds` as `.default([])`, and a Zod default still lands in the
  *   generated JSON Schema's `required` list — so submitting either form
@@ -168,11 +178,52 @@ const DeviceListOutput = z.object({
 })
 
 const JobRunOutput = z.object({ jobId: z.string() })
-/** Only the two fields the reconciler reads. Validated at this boundary because the farm's own shape may move under a published plugin. */
-const JobGetOutput = z.object({ status: z.string(), error: z.string().nullable().optional() })
+/** Only the fields the reconciler reads. Validated at this boundary because the farm's own shape may move under a published plugin. */
+const JobGetOutput = z.object({ status: z.string(), error: z.string().nullable().optional(), result: z.unknown().optional() })
+
+/**
+ * The upload script's own verdict, when it gives one. Every platform pack's
+ * post script returns `outcome` (`tiktok/post-video` §4.1: posted, unverified,
+ * skipped, failed) and a `reason`; a script that returns neither is judged by
+ * its job status alone, as before.
+ */
+const ScriptVerdict = z.object({ outcome: z.string(), reason: z.string().nullable().optional() })
 
 /** The farm's job statuses that mean "this phone has given its answer". */
 const SETTLED: Record<string, Attempt['state']> = { success: 'success', failed: 'failed', cancelled: 'failed', expired: 'failed' }
+
+/**
+ * Settle one finished job into an attempt state.
+ *
+ * A job that SUCCEEDED is only a post when the script says so. The measured
+ * case (2026-09-11, the owner's moto g06): the job went green, the script
+ * returned `outcome: "unverified"` because TikTok's security check covered
+ * the profile, and this reconciler — reading `status` alone — wrote "1
+ * posted" for a video that never appeared. `unverified` is kept apart from
+ * `failed` on purpose: "Re-run failed" must not re-send something that may
+ * already be live on that account.
+ */
+export function settleJob(job: z.infer<typeof JobGetOutput>): { state: Attempt['state']; error: string | null } | null {
+  const next = SETTLED[job.status]
+  if (!next) return null
+  if (next === 'failed') return { state: 'failed', error: (job.error ?? `job ${job.status}`).slice(0, 300) }
+  const verdict = ScriptVerdict.safeParse(job.result)
+  if (!verdict.success) return { state: 'success', error: null }
+  const reason = verdict.data.reason ?? null
+  switch (verdict.data.outcome) {
+    case 'posted':
+      return { state: 'success', error: null }
+    case 'unverified':
+      return { state: 'unverified', error: (reason ?? 'the upload script could not confirm the post landed').slice(0, 300) }
+    // The script walked away without posting (nothing to post, or its own
+    // cleanup path): nothing is live, so a retry is safe.
+    case 'skipped':
+    case 'failed':
+      return { state: 'failed', error: (reason ?? `the upload script reported ${verdict.data.outcome}`).slice(0, 300) }
+    default:
+      return { state: 'success', error: null }
+  }
+}
 
 /**
  * Turn queued attempts into answers, for ONE post.
@@ -205,12 +256,12 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
       }
       try {
         const job = await ctx.farm.call('job.get', { jobId: attempt.jobId }, JobGetOutput)
-        const next = SETTLED[job.status]
+        const next = settleJob(job)
         if (!next) {
           settled.push(attempt)
           continue
         }
-        settled.push({ ...attempt, state: next, error: next === 'failed' ? (job.error ?? `job ${job.status}`).slice(0, 300) : null })
+        settled.push({ ...attempt, ...next })
         moved = true
       } catch (err) {
         settled.push({ ...attempt, state: 'failed', error: `the farm no longer has this job: ${messageOf(err)}`.slice(0, 300) })
@@ -228,18 +279,32 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
     const next = rollUp(settled)
     const ok = settled.filter((a) => a.state === 'success').length
     const bad = settled.filter((a) => a.state === 'failed').length
+    const unsure = settled.filter((a) => a.state === 'unverified').length
     const note =
       next === 'succeeded'
         ? null
         : next === 'failed'
           ? `Failed on all ${bad} phone${bad === 1 ? '' : 's'}. "Re-run failed" sends it to them again.`
           : next === 'partial'
-            ? `${ok} posted, ${bad} failed. "Re-run failed" re-sends to those ${bad} only — the ones that posted are left alone.`
+            ? partialNote(ok, bad, unsure)
             : state.note
     dispatch[platformId] = { ...state, attempts: settled, state: next, note }
     any = true
   }
   return any ? { ...post, dispatch } : null
+}
+
+/**
+ * `partial` in words. Unverified phones are named separately and deliberately
+ * left out of "Re-run failed": the operator checks those accounts by eye,
+ * because re-sending a post that did land is a duplicate on a real account.
+ */
+export function partialNote(ok: number, bad: number, unsure: number): string {
+  const parts = [`${ok} posted`, `${bad} failed`]
+  if (unsure > 0) parts.push(`${unsure} unverified`)
+  const retry = bad > 0 ? ` "Re-run failed" re-sends to those ${bad} only — the ones that posted are left alone.` : ''
+  const check = unsure > 0 ? ` Check the ${unsure} unverified account${unsure === 1 ? '' : 's'} on the phone before re-sending; they are not retried automatically.` : ''
+  return `${parts.join(', ')}.${retry}${check}`
 }
 
 function messageOf(err: unknown): string {
@@ -432,7 +497,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.4.1',
+  version: '0.5.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',

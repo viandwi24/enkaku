@@ -76,8 +76,19 @@ export function postKeyFor(videoArtifactId: string): string {
 export const DISPATCH_STATES = ['pending', 'dispatched', 'succeeded', 'partial', 'failed', 'unsupported'] as const
 export type DispatchState = (typeof DISPATCH_STATES)[number]
 
-/** What one phone's upload job did. `queued` covers queued AND running — both mean "not yet an answer". */
-export const ATTEMPT_STATES = ['queued', 'success', 'failed'] as const
+/**
+ * What one phone's upload job did. `queued` covers queued AND running — both
+ * mean "not yet an answer".
+ *
+ * `unverified` is the job SUCCEEDING while the platform script says it could
+ * not confirm the post landed (`tiktok/post-video`'s `outcome: "unverified"`).
+ * It is its own word because both neighbours are lies: calling it `success`
+ * reported "1 posted" on the owner's farm for an upload that never appeared
+ * (2026-09-11), and calling it `failed` would hand it to "Re-run failed", which
+ * re-sends — and if the post DID land, that is the same video on the same
+ * account twice.
+ */
+export const ATTEMPT_STATES = ['queued', 'success', 'failed', 'unverified'] as const
 export type AttemptState = (typeof ATTEMPT_STATES)[number]
 
 /**
@@ -220,13 +231,14 @@ export function postSummary(post: Post): string {
     const title = platformById(id)?.title ?? id
     const ok = s.attempts.filter((a) => a.state === 'success').length
     const bad = s.attempts.filter((a) => a.state === 'failed').length
+    const unsure = s.attempts.filter((a) => a.state === 'unverified').length
     switch (s.state) {
       case 'dispatched':
         return `${title}: running on ${s.deviceCount}`
       case 'succeeded':
         return `${title}: posted on ${ok}`
       case 'partial':
-        return `${title}: ${ok} posted, ${bad} failed`
+        return `${title}: ${ok} posted, ${bad} failed${unsure > 0 ? `, ${unsure} unverified` : ''}`
       case 'failed':
         return `${title}: failed on ${bad}`
       case 'unsupported':
@@ -250,8 +262,11 @@ export function rollUp(attempts: readonly Attempt[]): DispatchState {
   if (attempts.length === 0) return 'pending'
   if (attempts.some((a) => a.state === 'queued')) return 'dispatched'
   const ok = attempts.filter((a) => a.state === 'success').length
+  const bad = attempts.filter((a) => a.state === 'failed').length
   if (ok === attempts.length) return 'succeeded'
-  if (ok === 0) return 'failed'
+  if (bad === attempts.length) return 'failed'
+  // Anything unverified lands here too: it is not a success, and it is not a
+  // failure an operator should blindly retry.
   return 'partial'
 }
 

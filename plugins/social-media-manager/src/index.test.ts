@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
-import plugin from './index'
+import plugin, { partialNote, settleJob } from './index'
 import addPost from './add-post'
 import retryFailed from './retry-failed'
 import addPosts from './add-posts'
@@ -25,7 +25,7 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.4.1')
+    expect(plugin.version).toBe('0.5.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
@@ -195,4 +195,39 @@ describe('the optional fields are actually optional in the generated schema', ()
       expect(json.required ?? []).not.toContain('deviceIds')
     })
   }
+})
+
+describe('settleJob — a green job is a post only when the script says so', () => {
+  test('the measured false positive: success + unverified is unverified', () => {
+    const settled = settleJob({ status: 'success', result: { outcome: 'unverified', reason: 'after 30s no readable video grid was found' } })
+    expect(settled).toEqual({ state: 'unverified', error: 'after 30s no readable video grid was found' })
+  })
+
+  test('posted is a success', () => {
+    expect(settleJob({ status: 'success', result: { outcome: 'posted', reason: null } })).toEqual({ state: 'success', error: null })
+  })
+
+  test('a script that walked away without posting is a retryable failure', () => {
+    expect(settleJob({ status: 'success', result: { outcome: 'failed', reason: 'E_UPLOAD_BUTTON' } })).toEqual({ state: 'failed', error: 'E_UPLOAD_BUTTON' })
+    expect(settleJob({ status: 'success', result: { outcome: 'skipped' } })?.state).toBe('failed')
+  })
+
+  test('a script with no verdict is judged by its job status, as before', () => {
+    expect(settleJob({ status: 'success', result: null })).toEqual({ state: 'success', error: null })
+    expect(settleJob({ status: 'failed', error: 'timed out' })).toEqual({ state: 'failed', error: 'timed out' })
+    expect(settleJob({ status: 'running' })).toBeNull()
+  })
+})
+
+describe('partialNote', () => {
+  test('unverified phones are named and kept out of the retry', () => {
+    const note = partialNote(0, 1, 1)
+    expect(note).toContain('1 unverified')
+    expect(note).toContain('re-sends to those 1 only')
+    expect(note).toContain('not retried automatically')
+  })
+
+  test('without unverified phones it reads as before', () => {
+    expect(partialNote(1, 1, 0)).toBe('1 posted, 1 failed. "Re-run failed" re-sends to those 1 only — the ones that posted are left alone.')
+  })
 })

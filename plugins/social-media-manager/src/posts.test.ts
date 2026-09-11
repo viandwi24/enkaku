@@ -184,7 +184,7 @@ describe('stateFor', () => {
  * uploads and ten successful ones were the same row, reading "sent to 10".
  */
 describe('rollUp — dispatched is a waypoint, not an outcome', () => {
-  const attempt = (state: 'queued' | 'success' | 'failed', n: number) => ({
+  const attempt = (state: 'queued' | 'success' | 'failed' | 'unverified', n: number) => ({
     jobId: `j${n}`,
     deviceId: `d${n}`,
     state,
@@ -206,6 +206,13 @@ describe('rollUp — dispatched is a waypoint, not an outcome', () => {
     expect(rollUp([attempt('failed', 1), attempt('failed', 2)])).toBe('failed')
     expect(rollUp([attempt('success', 1), attempt('failed', 2)])).toBe('partial')
   })
+
+  test('an unverified phone is never counted as posted, nor as failed', () => {
+    // The 2026-09-11 run: a green job whose script could not confirm the post.
+    expect(rollUp([attempt('unverified', 1)])).toBe('partial')
+    expect(rollUp([attempt('success', 1), attempt('unverified', 2)])).toBe('partial')
+    expect(rollUp([attempt('unverified', 1), attempt('failed', 2)])).toBe('partial')
+  })
 })
 
 describe('failedDevices — a retry re-targets the failures and nobody else', () => {
@@ -224,6 +231,20 @@ describe('failedDevices — a retry re-targets the failures and nobody else', ()
     // d1 posted. Re-sending to it would put the same video on that account
     // twice, which is the one mistake this farm cannot take back.
     expect(failedDevices(state)).toEqual(['d2', 'd3'])
+  })
+
+  test('an unverified phone is not retried — its post may already be live', () => {
+    const state = {
+      state: 'partial' as const,
+      at: 100,
+      deviceCount: 2,
+      attempts: [
+        { jobId: 'j1', deviceId: 'd1', state: 'unverified' as const, error: 'no readable grid' },
+        { jobId: 'j2', deviceId: 'd2', state: 'failed' as const, error: 'app missing' },
+      ],
+      note: null,
+    }
+    expect(failedDevices(state)).toEqual(['d2'])
   })
 
   test('a platform that never dispatched has nothing to retry', () => {
