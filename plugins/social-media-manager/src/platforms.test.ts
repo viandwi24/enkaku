@@ -19,10 +19,15 @@ describe('the platform registry', () => {
     expect(platformById('tiktok')?.script).toBe('tiktok/post-video@latest')
   })
 
-  test('Instagram and YouTube declare themselves unpostable rather than routing nowhere', () => {
-    // Not a wish: no verified upload flow exists for either app in this repo.
+  test('YouTube is postable, through the member its hardware walk produced', () => {
+    expect(platformById('youtube')?.script).toBe('youtube/post-video@latest')
+    expect(platformById('youtube')?.unsupportedReason).toBeNull()
+  })
+
+  test('Instagram declares itself unpostable rather than routing nowhere', () => {
+    // Not a wish: no verified upload flow exists for it in this repo.
     // If someone adds one, this test is the reminder to update it here too.
-    for (const id of ['instagram', 'youtube'] as const) {
+    for (const id of ['instagram'] as const) {
       const platform = platformById(id)
       expect(platform?.script).toBeNull()
       expect(platform?.unsupportedReason).toContain('No verified upload flow')
@@ -30,7 +35,7 @@ describe('the platform registry', () => {
   })
 
   test('postablePlatforms is exactly the rows with a script', () => {
-    expect(postablePlatforms().map((p) => p.id)).toEqual(['tiktok'])
+    expect(postablePlatforms().map((p) => p.id)).toEqual(['tiktok', 'youtube'])
   })
 
   test('an unknown id resolves to null rather than throwing', () => {

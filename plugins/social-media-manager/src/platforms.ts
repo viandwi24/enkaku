@@ -14,8 +14,8 @@ import { z } from 'zod'
  *
  * ## `script: null` is a fact, not a placeholder
  *
- * Instagram and YouTube have packs in this repo, and neither has a post flow.
- * That is not an oversight to be filled in with plausible selectors: every
+ * Instagram has a pack in this repo and no post flow (YouTube's arrived on
+ * 2026-09-11, from a hardware walk). That is not an oversight to be filled in with plausible selectors: every
  * anchor in `tiktok-automation-pack/post-video` traces to a real accessibility
  * dump taken on real hardware (see its `__fixtures__/`), and the pack's own
  * comments are explicit that a selector nobody has observed is a selector that
@@ -92,8 +92,11 @@ export const PLATFORMS: readonly Platform[] = [
     id: 'youtube',
     title: 'YouTube',
     label: 'youtube',
-    script: null,
-    unsupportedReason: HARDWARE_WALK_NEEDED,
+    // Walked by hand on the owner's moto on 2026-09-11, every screen in the
+    // youtube pack's `__fixtures__/`. It posts a Short with the caption as its
+    // title and confirms it on the channel page before saying `posted`.
+    script: 'youtube/post-video@latest',
+    unsupportedReason: null,
   },
 ]
 

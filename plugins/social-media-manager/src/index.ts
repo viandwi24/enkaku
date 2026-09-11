@@ -41,6 +41,12 @@ import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, t
  *
  * ## Changelog
  *
+ * - **0.6.0 — YouTube posts.** The YouTube row of the platform table now names
+ *   `youtube/post-video@latest` (youtube pack 0.20.0, walked on the owner's
+ *   moto on 2026-09-11), so a post with YouTube ticked routes to phones
+ *   labelled `youtube` exactly as TikTok does, and the row gains a
+ *   "Post to YouTube now" action. Instagram still says why it cannot.
+ *
  * - **0.5.0 — a green job is not a post.** The reconciler read the job's
  *   status and nothing else, so a TikTok run whose script returned
  *   `outcome: "unverified"` (the post was tapped, then TikTok's security
@@ -497,7 +503,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.5.0',
+  version: '0.6.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',
@@ -563,7 +569,7 @@ export default definePlugin({
           ],
         },
         toolbar: ['addPost', 'addManyPosts', 'autoPostSettings'],
-        rowActions: ['retryFailedNow', 'postToTikTokNow', 'removePost'],
+        rowActions: ['retryFailedNow', 'postToTikTokNow', 'postToYouTubeNow', 'removePost'],
         empty: {
           title: 'No posts yet',
           hint: 'Upload a video on the Files screen, then use “New post” to say which platforms it is for.',
@@ -637,7 +643,7 @@ export default definePlugin({
             platforms: {
               type: 'array',
               title: 'Platforms',
-              description: 'Each one sends to the phones carrying that platform’s label. Only TikTok can post in this build — see the Platforms screen.',
+              description: 'Each one sends to the phones carrying that platform’s label. TikTok and YouTube can post in this build; Instagram cannot yet.',
               // Caught in the dialog rather than by the member: an empty list
               // stores a post that targets nothing and silently never sends.
               minItems: 1,
@@ -701,7 +707,7 @@ export default definePlugin({
             platforms: {
               type: 'array',
               title: 'Platforms',
-              description: 'Each one sends to the phones carrying that platform’s label. Only TikTok can post in this build — see the Platforms screen.',
+              description: 'Each one sends to the phones carrying that platform’s label. TikTok and YouTube can post in this build; Instagram cannot yet.',
               minItems: 1,
               items: { type: 'string', enum: [...PLATFORM_IDS], 'x-enkaku': { labels: PLATFORM_LABELS } },
             },
@@ -779,7 +785,7 @@ export default definePlugin({
       /**
        * The manual path, and the reason the screen is usable before an
        * operator ever turns the timer on: pick a row, pick the phones, post it
-       * now. Only TikTok has one because only TikTok has a verified flow —
+       * now. TikTok and YouTube have one each because they have verified flows —
        * offering an Instagram button that cannot work would be an affordance
        * that always fails, which is worse than none.
        *
@@ -799,6 +805,20 @@ export default definePlugin({
           caption: { $row: 'caption' },
         },
         confirm: 'Post this video to TikTok on the phones you pick? This publishes to whatever account is signed in on each one.',
+      },
+
+      /** The same manual path for YouTube — a Short, with the caption as its title. */
+      postToYouTubeNow: {
+        kind: 'batch',
+        label: 'Post to YouTube now',
+        script: 'youtube/post-video@latest',
+        target: 'picker',
+        params: {
+          source: { $literal: 'direct' },
+          videoArtifactId: { $row: 'videoArtifactId' },
+          caption: { $row: 'caption' },
+        },
+        confirm: 'Post this video as a YouTube Short on the phones you pick? This publishes to whatever channel is signed in on each one.',
       },
 
       /**
