@@ -264,7 +264,17 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
             live.failures++
             live.attempt++
             deps.log.warn(`always-on: device ${deviceId} produced no first frame within ${FIRST_FRAME_TIMEOUT_MS}ms — rebuilding`)
-            scheduleRebuild(deviceId, new Error(`no first frame within ${FIRST_FRAME_TIMEOUT_MS}ms`))
+            // `SessionManager.build()` resolves immediately once its entry
+            // already exists (session.ts) — without closing it first, the
+            // next `build()` reuses this same frameless entry, never runs a
+            // fresh build, never emits step 5 again, and this deadline fires
+            // forever against a scrcpy server nobody ever told to stop
+            // (owner's moto g06, 2026-09-11: "Recovering, attempt N" looping
+            // for 15 minutes with the same device-side process still alive).
+            void deps.sessions
+              .closeDevice(deviceId)
+              .catch((err) => deps.log.warn(`always-on: failed to close the stuck session for ${deviceId} before rebuilding: ${String(err)}`))
+              .finally(() => scheduleRebuild(deviceId, new Error(`no first frame within ${FIRST_FRAME_TIMEOUT_MS}ms`)))
           }, FIRST_FRAME_TIMEOUT_MS)
         }
       } catch (err) {

@@ -542,6 +542,55 @@ describe('a session that never produces a first frame', () => {
     expect(activities.lastLabel('d1')).toBe(recoveringLabel(1))
   })
 
+  test('closes the stuck entry before rebuilding, so the rebuild is not a no-op against the same session', async () => {
+    // `SessionManager.build()` resolves immediately, with no `onStep` at all,
+    // when the device's entry is still in the map (manager.ts's `build()`:
+    // `if (entries.has(key)) return`). This fake mirrors exactly that —
+    // proving the always-on builder must close the stuck entry itself
+    // before the next `build()` can ever run a fresh attempt (owner's moto
+    // g06, 2026-09-11: "Recovering, attempt N" looping for 15 minutes with
+    // the same device-side scrcpy process still alive, because nothing ever
+    // closed it).
+    const { timers, advance } = fakeTimers()
+    const activities = recordingActivities()
+    let builds = 0
+    let closes = 0
+    const built = new Set<string>()
+    const sessions: Pick<SessionManager, 'build' | 'closeDevice' | 'get'> = {
+      build: async (deviceId, opts) => {
+        if (built.has(deviceId)) return
+        built.add(deviceId)
+        builds++
+        opts.onStep?.(1)
+        opts.onStep?.(4) // stuck: the encoder never produces a frame
+      },
+      closeDevice: async (deviceId) => {
+        closes++
+        built.delete(deviceId)
+      },
+      get: () => null,
+    }
+    const alwaysOn = createAlwaysOn(baseDeps({ timers, activities, sessions }))
+    alwaysOn.start()
+    alwaysOn.deviceOnline('d1')
+    await Promise.resolve()
+    advance(0)
+    await flush()
+    expect(builds).toBe(1)
+
+    // The deadline passes with no frame.
+    advance(FIRST_FRAME_TIMEOUT_MS)
+    await flush()
+    expect(closes).toBe(1) // the stuck entry was torn down before the rebuild was scheduled
+    expect(activities.lastLabel('d1')).toBe(recoveringLabel(1))
+
+    // The backoff elapses and the rebuild actually calls `build()` again —
+    // proof it is a fresh attempt, not the same frameless entry reused.
+    advance(1_000)
+    await flush()
+    expect(builds).toBe(2)
+  })
+
   test('a frame that does arrive disarms the deadline and ends the activity', async () => {
     const { timers, advance } = fakeTimers()
     const activities = recordingActivities()
