@@ -5,6 +5,7 @@ import scrollLive from './scroll-live'
 import downloadHome from './download-home'
 import searchPlay from './search-play'
 import watchVideo from './watch-video'
+import postVideo from './post-video'
 
 /**
  * YouTube automation pack.
@@ -82,15 +83,32 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.19.0',
+  version: '0.20.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
-  description: 'Search, browse, watch, like, read comments and download in the YouTube app on a farm device.',
-  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo],
+  description: 'Search, browse, watch, like, read comments, download, and post Shorts in the YouTube app on a farm device.',
+  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo],
 
   /**
    * ## Changelog
+   *
+   * **0.20.1 — post-video refuses a landscape screen.** Its details-screen
+   * taps are measured in portrait; the owner's moto, lying on its side,
+   * re-enabled auto-rotate on every YouTube launch over the farm's lock. The
+   * run now stops with `E_SCREEN_LANDSCAPE` before touching anything.
+   *
+   * **0.20.0 — post-video: upload a Short.** The member the Social Media
+   * Manager routes YouTube posts to, walked by hand on the owner's moto g06
+   * (2026-09-11) with every screen checked into `__fixtures__/`. The gallery
+   * names each cell by file name, so the video tapped is provably the one
+   * pushed. Two kinds of screen are hidden from the farm's reader by Android's
+   * "accessibility data sensitive" flag — the runtime-permission dialogs and
+   * YouTube's own details screen — and the member does not pretend to be an
+   * assistive tool to get past that: a permission dialog stops the run with
+   * `E_PERMISSION_DIALOG_HIDDEN` and the answer to give once on the phone, and
+   * the details screen is driven by taps measured on hardware, with the
+   * outcome then proven on the channel page (before and after), never assumed.
    *
    * **0.19.0 — added watch-video script.** New script that searches for videos
    * and watches them with human-like behavior patterns, including varied watch
