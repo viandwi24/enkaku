@@ -100,7 +100,20 @@ export function detectScreen(root: UiNode): ScreenId {
   // screen-exit-modal.json, which carries the identical pair — and there is no seventh `ScreenId`
   // for that modal (clearing it is `modals.ts`'s job, plan 113.1); an editor with a dialog over it
   // is still, correctly, `'editor'`.
-  if (has('tv_quick_publish') || has('tv_top_text')) return 'editor'
+  //
+  // `tv_top_text` ALONE is no longer enough, and the camera is the reason. A TikTok update moved
+  // that id onto the camera's own "Tambah suara" pill: `screen-camera-2026-09.json` (read
+  // 2026-09-11 on the same moto g06 the 2026-08-17 fixtures came from) carries `tv_top_text`
+  // beside `upload_hot_area`, where `screen-camera-wall.json` carried neither. Because this rule
+  // runs first, every camera read as the editor, and `post-video` failed at its very first screen
+  // with "expected the camera screen but the dump reads editor" — the tap had worked, the screen
+  // was right, and the classifier called it wrong.
+  //
+  // The discriminator is the gallery button. No editor fixture has ever carried `upload_hot_area`,
+  // and every camera does: it is the one thing a camera screen exists to offer this flow. So
+  // `tv_quick_publish` stays sufficient on its own, and `tv_top_text` counts only where the
+  // gallery button is absent.
+  if (has('tv_quick_publish') || (has('tv_top_text') && !has('upload_hot_area'))) return 'editor'
 
   // `viewpager_choose_media` (confirmed in screen-picker.json and screen-preview.json) marks the
   // picker's own gallery grid — but E9 means its PRESENCE alone cannot tell `'picker'` and

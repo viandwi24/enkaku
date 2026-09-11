@@ -121,3 +121,26 @@ describe('pickerSortLabel, pickerCells, captionField — the remaining screen-sp
     expect(captionField(loadFixture('screen-picker.json'))).toBeNull()
   })
 })
+
+/**
+ * A TikTok update, read off the same moto g06 on 2026-09-11.
+ *
+ * The camera now carries `tv_top_text` on its "Tambah suara" pill. `detectScreen` checked the
+ * editor first, keyed on `tv_top_text`, and so read every camera as the editor — `post-video`
+ * failed at its first screen with "expected the camera screen but the dump reads editor" on a
+ * run whose tap had worked and whose screen was correct.
+ */
+describe('detectScreen — the 2026-09 camera', () => {
+  test('screen-camera-2026-09.json -> camera, not editor, although it carries tv_top_text', () => {
+    const tree = loadFixture('screen-camera-2026-09.json')
+    // The fixture really does carry the id that used to misfire — this test is not vacuous.
+    expect(findAll(tree, (n) => n.resourceId.endsWith('tv_top_text')).length).toBeGreaterThan(0)
+    expect(detectScreen(tree)).toBe('camera')
+  })
+
+  test('the older camera and the editor are read exactly as before', () => {
+    expect(detectScreen(loadFixture('screen-camera-wall.json'))).toBe('camera')
+    expect(detectScreen(loadFixture('screen-editor.json'))).toBe('editor')
+    expect(detectScreen(loadFixture('screen-exit-modal.json'))).toBe('editor')
+  })
+})
