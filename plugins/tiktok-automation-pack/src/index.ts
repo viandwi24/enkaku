@@ -820,6 +820,17 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.28.0 — posted means THIS post. The same day 1.27.0 shipped, the owner's
+  // account showed why "the newest cell reads 0 views" was not enough: the
+  // previous test post was itself still at 0 views, so it was true before the
+  // run did anything. `post-video` now reads the own-profile grid BEFORE the
+  // walk and confirms only when the grid has shifted by one — every earlier
+  // cell pushed one place along, which nothing but a new post does. TikTok's
+  // security-check sheet ("pemeriksaan keamanan"), met right after a duplicate
+  // post on the same account, is a new register entry that is never tapped:
+  // before the walk it stops the run as `E_SECURITY_CHECK` (nothing posted,
+  // TikTok left open on the sheet for the operator); after Post it is reported
+  // by name as `unverified`, so the Social Media Manager does not re-send.
   // 1.27.0 — `posted` means posted. `confirmPosted` accepted ANY grid-shaped
   // cell on the own profile as proof, and on an account that has posted
   // before there always is one. Measured 2026-09-11 (moto g06): six existing
@@ -873,7 +884,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.27.0',
+  version: '1.28.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

@@ -105,6 +105,19 @@ describe('TIKTOK_MODALS — matched against the real device dumps they were writ
   })
 })
 
+describe('tt.security-check — recognised, and never answered by a run', () => {
+  test('matches TikTok\'s security-check sheet by its own words', () => {
+    const node = mkNode({ text: 'Mari kita lakukan pemeriksaan keamanan dengan cepat' })
+    expect(matchModals(node).map((e) => e.id)).toContain('tt.security-check')
+  })
+
+  test('has no action to tap, and the upload flow aborts on it', () => {
+    const entry = TIKTOK_MODALS.find((e) => e.id === 'tt.security-check')
+    expect(entry?.actions).toEqual({})
+    expect(UPLOAD_MODAL_POLICIES['tt.security-check']).toBe('abort')
+  })
+})
+
 describe('sys.media — the one entry allowed to grant (plan 113 §4.2, E6)', () => {
   test('its allow action targets permission_allow_all_button', () => {
     const entry = TIKTOK_MODALS.find((e) => e.id === 'sys.media')

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
-import { readNewestCell } from './post-video'
+import { judgeGrid, parseViews, readGrid, readNewestCell } from './post-video'
 
 /**
  * `readNewestCell` — what the own-profile grid says about THIS post.
@@ -97,5 +97,68 @@ describe('readNewestCell', () => {
   */
   test('a profile with no videos is none — the bottom nav is not a grid cell', () => {
     expect(readNewestCell(profile([]), MENU_BOTTOM, W)).toEqual({ kind: 'none' })
+  })
+})
+
+describe('parseViews', () => {
+  test('reads the id-ID and English labels TikTok draws', () => {
+    expect(parseViews('0')).toBe(0)
+    expect(parseViews('1.559')).toBe(1559)
+    expect(parseViews('118,6\u00a0rb')).toBe(118_600)
+    expect(parseViews('2,1 jt')).toBe(2_100_000)
+    expect(parseViews('3.5K')).toBe(3_500)
+    expect(parseViews('Beranda')).toBeNull()
+  })
+})
+
+describe('readGrid', () => {
+  test('lists every cell newest first, and leaves a pinned cell out', () => {
+    const pinned = cell(0, 0, '9.999')
+    pinned.children.push(node({ text: 'Disematkan', bounds: { left: 10, top: 556, right: 120, bottom: 590 } }))
+    const tree = profile([cell(1, 0, '0'), pinned, cell(2, 0, '1.559'), cell(0, 1, '118,6 rb')])
+    expect(readGrid(tree, MENU_BOTTOM, W)).toEqual(['0', '1.559', '118,6 rb'])
+  })
+})
+
+/*
+  The second 2026-09-11 hole: the account's newest video was an earlier test
+  post still at 0 views, so "the newest cell shows 0" was already true before
+  the run posted anything. Only a grid shifted by one proves a new cell.
+*/
+describe('judgeGrid — a new post pushes every earlier cell one place along', () => {
+  const before = ['0', '1.559', '118,6 rb', '1.130', '8.198', '1.075']
+
+  test('the measured case: an old 0-view post on top, nothing new, is not posted', () => {
+    expect(judgeGrid(before, [...before])).toEqual({ kind: 'same' })
+  })
+
+  test('the same account after a real post: shifted by one, the old 0 now second', () => {
+    expect(judgeGrid(before, ['0', '0', '1.559', '118,6 rb', '1.130', '8.198'])).toEqual({ kind: 'new' })
+  })
+
+  test('views that grew a little while the run was busy still line up', () => {
+    expect(judgeGrid(['12', '1.559'], ['0', '14', '1.561'])).toEqual({ kind: 'new' })
+    expect(judgeGrid(['12', '1.559'], ['14', '1.561'])).toEqual({ kind: 'same' })
+  })
+
+  test('the newest going from a real count to 0 is new — views never fall to 0', () => {
+    expect(judgeGrid(['12', '1.559'], ['0', '12'])).toEqual({ kind: 'new' })
+  })
+
+  test('an empty profile that now has one video is new', () => {
+    expect(judgeGrid([], ['0'])).toEqual({ kind: 'new' })
+  })
+
+  test('an upload in flight is uploading, whatever the baseline', () => {
+    expect(judgeGrid(before, ['4%', ...before])).toEqual({ kind: 'uploading', percent: '4%' })
+  })
+
+  test('with no baseline it falls back to the newest-cell reading', () => {
+    expect(judgeGrid(null, ['0', '1.559'])).toEqual({ kind: 'new' })
+    expect(judgeGrid(null, ['1.559'])).toEqual({ kind: 'old', views: '1.559' })
+  })
+
+  test('every cell at 0 before and after is not enough to call it posted', () => {
+    expect(judgeGrid(['0', '0'], ['0', '0'])).toEqual({ kind: 'same' })
   })
 })

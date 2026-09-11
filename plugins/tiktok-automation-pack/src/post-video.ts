@@ -5,7 +5,7 @@ import { sleep } from './human'
 import { relaunch } from './gesture'
 import { all } from './tree'
 import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, type ScreenId } from './screens'
-import { sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
+import { matchModals, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
 import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
 import { resolveVideoFromFolder, recordVideoPosted } from './folder'
@@ -429,35 +429,22 @@ export type NewestCell =
   | { kind: 'new' }
   | { kind: 'uploading'; percent: string }
   | { kind: 'old'; views: string }
+  | { kind: 'same' }
   | { kind: 'none' }
 
+/** Labels TikTok draws on a pinned cell. A pinned video sits first regardless of age, so it says nothing about what is newest. */
+const PINNED_LABELS = ['Disematkan', 'Pinned']
+
 /**
- * What the NEWEST cell on the own-profile grid says about this post.
- *
- * `confirmPosted` used to ask whether the grid had any cell at all, and on an
- * account that has posted before it always does. Measured 2026-09-11 on the
- * owner's moto g06: the account already carried six videos, the upload was
- * stuck at "Mengunggah... 4%" in the notification shade, the profile showed
- * only those six — and the run reported `outcome: "posted"`. The check was
- * satisfied by videos that existed before the run started, and (its geometry
- * being loose enough) by the bottom nav's own tabs.
- *
- * The grid is newest-first, so the top-left cell is the one that can say
- * something about THIS post, and only in three ways a person reading the
- * screen would also accept:
- *
- * - `0` views — a video that went live seconds ago. The one reading that means
- *   posted.
- * - a percentage — TikTok drawing the upload's progress over its own cell.
- *   Submitted, not live; worded as such.
- * - any other count — the newest video on the profile is an older one, so this
- *   post has not appeared. Never "posted".
+ * The own-profile grid as a person reads it: each video cell's view-count (or
+ * upload-percent) label, newest first — top row left to right, then the next.
  *
  * A cell is recognised by carrying a view-count or percent label, not by its
  * shape alone — the shape test also matched the bottom nav, whose tabs are
- * labelled "Beranda" and "Toko".
+ * labelled "Beranda" and "Toko". Pinned cells are left out: they lead the grid
+ * whatever their age.
  */
-export function readNewestCell(tree: UiNode, belowY: number, frameWidth: number): NewestCell {
+export function readGrid(tree: UiNode, belowY: number, frameWidth: number): string[] {
   const labelOf = (n: UiNode): string | null => {
     for (const m of all(n, () => true)) {
       const v = (m.text || m.desc).trim()
@@ -465,21 +452,135 @@ export function readNewestCell(tree: UiNode, belowY: number, frameWidth: number)
     }
     return null
   }
+  const pinned = (n: UiNode): boolean => all(n, (m) => PINNED_LABELS.includes((m.text || m.desc).trim())).length > 0
   const cells = all(tree, (n) => {
     if (!n.clickable || n.bounds.top < belowY) return false
     const w = n.bounds.right - n.bounds.left
     const h = n.bounds.bottom - n.bounds.top
     if (w <= 0 || h <= 0) return false
     const widthFraction = w / frameWidth
-    return widthFraction >= 0.18 && widthFraction <= 0.5 && h / w > 0.5 && h / w < 2.5 && labelOf(n) !== null
+    return widthFraction >= 0.18 && widthFraction <= 0.5 && h / w > 0.5 && h / w < 2.5 && labelOf(n) !== null && !pinned(n)
   })
-  if (cells.length === 0) return { kind: 'none' }
-  const newest = [...cells].sort((a, b) => a.bounds.top - b.bounds.top || a.bounds.left - b.bounds.left)[0] as UiNode
-  const label = labelOf(newest) as string
+  return [...cells]
+    .sort((a, b) => a.bounds.top - b.bounds.top || a.bounds.left - b.bounds.left)
+    .map((n) => labelOf(n) as string)
+}
+
+/**
+ * What the NEWEST cell says, with no earlier reading to compare against — the
+ * fallback when the pre-post baseline could not be read.
+ *
+ * `0` views reads as new, a percentage as still uploading, any other count as
+ * an older video. The weakness is stated rather than hidden: an account whose
+ * previous post also sits at 0 views reads as new here, which is why
+ * `judgeGrid` below compares against a baseline whenever one exists.
+ */
+export function readNewestCell(tree: UiNode, belowY: number, frameWidth: number): NewestCell {
+  const grid = readGrid(tree, belowY, frameWidth)
+  const label = grid[0]
+  if (label === undefined) return { kind: 'none' }
   if (UPLOAD_PERCENT.test(label)) return { kind: 'uploading', percent: label }
   if (label === '0') return { kind: 'new' }
   return { kind: 'old', views: label }
 }
+
+/** `1.559` → 1559, `118,6 rb` → 118600, `2,1 jt` → 2100000, `3.5K` → 3500. `null` for anything else. */
+export function parseViews(label: string): number | null {
+  const m = label.trim().match(/^([\d.,]+)[\s\u00a0]*(rb|jt|k|K|m|M|B)?$/)
+  if (!m) return null
+  const [, digits, unit] = m as unknown as [string, string, string | undefined]
+  if (!unit) {
+    const n = Number(digits.replace(/[.,]/g, ''))
+    return Number.isFinite(n) ? n : null
+  }
+  const n = Number(digits.replace(',', '.'))
+  if (!Number.isFinite(n)) return null
+  const scale = unit === 'rb' || unit === 'k' || unit === 'K' ? 1e3 : unit === 'B' ? 1e9 : 1e6
+  return Math.round(n * scale)
+}
+
+/** A cell read twice a few minutes apart: views never go down, and a rounded label grows by a little, not by much. */
+function sameCell(before: string, after: string): boolean {
+  const b = parseViews(before)
+  const a = parseViews(after)
+  if (b === null || a === null) return before === after
+  return a >= b && a <= b * 1.25 + 25
+}
+
+/**
+ * Did THIS post appear? Judged from the grid read before Post was tapped
+ * (`before`) and the grid now (`after`).
+ *
+ * The newest-cell reading alone has a hole the owner's farm fell into on
+ * 2026-09-11: the account's newest video was an earlier test post still at 0
+ * views, so "the newest cell shows 0" was true before this run did anything. A
+ * new post does something no other change does — it pushes every existing
+ * cell one place along. So:
+ *
+ * - `after` is `before` shifted by one (each old cell one place later,
+ *   views unchanged or a little higher) and NOT still `before` in place → new.
+ * - the newest cell went from a real count to `0` → new (views never fall to 0).
+ * - `after` still lines up with `before` in place → `same`: nothing appeared.
+ * - anything else → the newest label, worded as an older video; the caller
+ *   reports `unverified`, never `posted`.
+ *
+ * `before === null` means the baseline could not be read; the newest-cell
+ * reading is used and its weakness is the caller's to word.
+ */
+export function judgeGrid(before: string[] | null, after: string[]): NewestCell {
+  const newest = after[0]
+  if (newest === undefined) return { kind: 'none' }
+  if (UPLOAD_PERCENT.test(newest)) return { kind: 'uploading', percent: newest }
+  if (before === null) return newest === '0' ? { kind: 'new' } : { kind: 'old', views: newest }
+  // The profile had no videos, and now it has one.
+  if (before.length === 0) return { kind: 'new' }
+  if (newest === '0' && before[0] !== '0') return { kind: 'new' }
+
+  const inPlace = Math.min(before.length, after.length)
+  const stillInPlace = Array.from({ length: inPlace }, (_, i) => sameCell(before[i] as string, after[i] as string)).every(Boolean)
+  const shiftLen = Math.min(before.length, after.length - 1)
+  const shifted = shiftLen > 0 && Array.from({ length: shiftLen }, (_, i) => sameCell(before[i] as string, after[i + 1] as string)).every(Boolean)
+  if (shifted && !stillInPlace) return { kind: 'new' }
+  if (stillInPlace) return { kind: 'same' }
+  return { kind: 'old', views: newest }
+}
+
+/**
+ * Open the own profile and read its grid. Used twice: before the upload walk,
+ * for the baseline `judgeGrid` compares against, and after Post, to confirm.
+ * Returns `null` when the profile could not be reached or read — never throws,
+ * because a failed reading is not evidence about the post either way.
+ */
+async function readOwnGrid(ctx: ScriptContext<unknown>, frameWidth: number): Promise<string[] | null> {
+  try {
+    const profilNode = await ctx.device.waitFor(PROFIL_TAB, { timeout: 10_000 })
+    await ctx.device.tap({ point: centreOf(profilNode) })
+    const menuNode = await ctx.device.waitFor(MENU_PROFIL, { timeout: 10_000 })
+    // Swept AFTER arriving: `tt.contacts` is raised BY the profile screen (observed 2026-08-18).
+    try {
+      await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
+    } catch {
+      // Reported by the caller's own sweep if it matters; a reading is still worth attempting.
+    }
+    await sleep(1_500) // the grid's labels arrive after the header
+    return readGrid(await ctx.device.dump(), menuNode.bounds.bottom, frameWidth)
+  } catch (err) {
+    ctx.log.warn('could not read the own-profile grid', { error: String(err) })
+    return null
+  }
+}
+
+/** True when TikTok's security-check sheet is on screen (`tt.security-check` in the register). */
+async function securityCheckShowing(ctx: ScriptContext<unknown>): Promise<boolean> {
+  try {
+    return matchModals(await ctx.device.dump()).some((e) => e.id === 'tt.security-check')
+  } catch {
+    return false
+  }
+}
+
+const SECURITY_CHECK_DETAIL =
+  'TikTok raised its security check on this account ("pemeriksaan keamanan") after Post was tapped. The run did not touch it — completing it is the account owner\'s job, on the phone. Whether the post landed cannot be read until it is done, so check the profile before re-sending.'
 
 /**
  * The confirmation §3.6 exists for (step 113.6, §9 Q1's recommendation): after Post is tapped, open
@@ -494,42 +595,47 @@ export function readNewestCell(tree: UiNode, belowY: number, frameWidth: number)
  * "either prove this right or give the next reader a real dump to replace it with". The run came on
  * 2026-09-11 and proved it wrong: on an account that already had six videos, with the upload stuck
  * at 4%, the grid was full of cells that existed before the run began, and the run reported
- * `posted`. `readNewestCell` above is the replacement — it asks what the newest cell SAYS, and only
- * `0` views means live. A run that cannot confirm still reports `unverified`, never `posted`.
+ * `posted`. `readNewestCell` replaced it — what the newest cell SAYS, `0` views meaning live — and
+ * the same day showed that was not enough either: the account's previous post was itself still at 0
+ * views. So the grid is now read BEFORE the walk too, and `judgeGrid` asks for the one change only a
+ * new post makes: every earlier cell pushed one place along. TikTok's security check
+ * (`tt.security-check`) is reported by name rather than as an unreadable grid. A run that cannot
+ * confirm still reports `unverified`, never `posted`.
  */
-async function confirmPosted(ctx: ScriptContext<unknown>, frameWidth: number): Promise<{ confirmed: boolean; detail: string }> {
+async function confirmPosted(
+  ctx: ScriptContext<unknown>,
+  frameWidth: number,
+  before: string[] | null,
+): Promise<{ confirmed: boolean; detail: string }> {
   const attempts = 6
   const intervalMs = 5_000
-  // The profile raises TikTok's contacts pitch on arrival (observed 2026-08-18) — swept here so the
-  // verification step is not defeated by a dialog that has nothing to do with whether a post landed.
-  const sweepProfileModals = async (): Promise<void> => {
-    try {
-      await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
-    } catch {
-      // A sweep failure must never turn a SUCCESSFUL post into a failed run: this function only
-      // decides how confidently the outcome is worded, and its own errors are not evidence either way.
-    }
-  }
 
   let lastSeen: NewestCell = { kind: 'none' }
   for (let round = 0; round < attempts; round++) {
+    // Checked before the sweep, because the sweep's `abort` would only say "unhandled".
+    if (await securityCheckShowing(ctx)) {
+      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-security-check`)
+      return { confirmed: false, detail: SECURITY_CHECK_DETAIL }
+    }
     try {
       await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
-      const profilNode = await ctx.device.waitFor(PROFIL_TAB, { timeout: 10_000 })
-      await ctx.device.tap({ point: centreOf(profilNode) })
-      const menuNode = await ctx.device.waitFor(MENU_PROFIL, { timeout: 10_000 })
-      // Swept AFTER arriving, not only before leaving: `tt.contacts` is raised BY the profile
-      // screen, so a sweep that ran before the tap cannot have seen it (observed 2026-08-18).
-      await sweepProfileModals()
-      const tree = await ctx.device.dump()
-      const newest = readNewestCell(tree, menuNode.bounds.bottom, frameWidth)
-      if (newest.kind === 'new') {
-        return { confirmed: true, detail: 'the newest cell on the own-profile grid shows 0 views — a video that went live after this run tapped Post' }
-      }
-      lastSeen = newest
-      ctx.log.warn(`confirmPosted: the newest cell does not show this post yet (attempt ${round + 1}/${attempts})`, { newest: JSON.stringify(newest) })
     } catch (err) {
-      ctx.log.warn('confirmPosted: could not reach or read the own-profile screen this attempt', { round, error: String(err) })
+      ctx.log.warn('confirmPosted: modal sweep did not settle this attempt', { round, error: String(err) })
+    }
+    const after = await readOwnGrid(ctx, frameWidth)
+    if (after !== null) {
+      const judged = judgeGrid(before, after)
+      if (judged.kind === 'new') {
+        return {
+          confirmed: true,
+          detail:
+            before === null
+              ? 'the newest cell on the own-profile grid shows 0 views (no pre-post reading was available to compare against)'
+              : 'a new cell appeared at the head of the own-profile grid, pushing every earlier video one place along',
+        }
+      }
+      lastSeen = judged
+      ctx.log.warn(`confirmPosted: the grid does not show this post yet (attempt ${round + 1}/${attempts})`, { judged: JSON.stringify(judged) })
     }
     if (round < attempts - 1) await sleep(intervalMs)
   }
@@ -539,9 +645,11 @@ async function confirmPosted(ctx: ScriptContext<unknown>, frameWidth: number): P
   const saw =
     lastSeen.kind === 'uploading'
       ? `it was still uploading (${lastSeen.percent}) — submitted, not yet live. A phone whose network cannot carry the upload stays here.`
-      : lastSeen.kind === 'old'
-        ? `the newest video on the profile was an older one (${lastSeen.views} views), so this post had not appeared.`
-        : 'no readable video grid was found.'
+      : lastSeen.kind === 'same'
+        ? 'the profile grid was exactly as it was before Post was tapped, so this post had not appeared.'
+        : lastSeen.kind === 'old'
+          ? `the newest video on the profile was an older one (${lastSeen.views} views), so this post had not appeared.`
+          : 'no readable video grid was found.'
   return { confirmed: false, detail: `Post was tapped, but after ${waited}s ${saw} Reporting "unverified" rather than assuming the tap succeeded (§3.6).` }
 }
 
@@ -910,6 +1018,22 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     // `measureSurface` walks the tree for the widest/tallest bounds rather than trusting the root
     // node's own, because a root arriving as `0,0,0,0` was observed in this pack's own fixtures.
     const frame = await measureFrame(ctx)
+
+    // The baseline `judgeGrid` compares against after Post — read now, before anything is posted.
+    // The profile carries the same bottom nav as the feed, so the "Buat" tap below lands the same
+    // from either. A dry run posts nothing and has nothing to confirm, so it skips the detour.
+    const gridBefore = ctx.params.dryRun ? null : await readOwnGrid(ctx, frame.width)
+    if (!ctx.params.dryRun) {
+      ctx.log.info('read the own-profile grid before posting', { cells: gridBefore === null ? 'unreadable' : String(gridBefore.length) })
+      if (await securityCheckShowing(ctx)) {
+        await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-security-check`)
+        throw Object.assign(
+          new Error('TikTok is asking this account for a security check ("pemeriksaan keamanan"). Nothing was posted. Complete it on the phone, then re-run.'),
+          { code: 'E_SECURITY_CHECK' },
+        )
+      }
+    }
+
     await ctx.device.tap({ point: { x: Math.round(frame.width * 0.5), y: Math.round(frame.height * 0.922) } })
     attempt.screens.push('feed')
     await sleep(700)
@@ -1058,7 +1182,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     const postedSweep = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
     recordCleared(postedSweep.cleared)
 
-    const confirmation = await confirmPosted(ctx, frame.width)
+    const confirmation = await confirmPosted(ctx, frame.width, gridBefore)
     if (attempt.queueClaim) {
       // Post was tapped either way — settle the queue as done regardless of confirmation
       // strength. The queue envelope has no 'unverified' state, and re-claiming an item whose Post
@@ -1124,18 +1248,23 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
         }
       }
 
-      try {
-        for (let i = 0; i < 3; i++) {
+      // A security check is left exactly where it is: TikTok open, the sheet showing, for the
+      // operator to complete by hand. BACK would dismiss it and a force-stop would hide it — and the
+      // register's whole stance on `tt.security-check` is that a run never answers it.
+      if (ctx.error.code !== 'E_SECURITY_CHECK') {
+        try {
+          for (let i = 0; i < 3; i++) {
+            await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
+            await ctx.device.key('BACK')
+            await sleep(600)
+          }
           await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
-          await ctx.device.key('BACK')
-          await sleep(600)
+        } catch (err) {
+          ctx.log.warn('abandon walk did not fully settle — force-stopping anyway', { error: String(err) })
         }
-        await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
-      } catch (err) {
-        ctx.log.warn('abandon walk did not fully settle — force-stopping anyway', { error: String(err) })
-      }
 
-      await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
+        await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
+      }
 
       const failed = {
         outcome: 'failed' as const,

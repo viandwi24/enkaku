@@ -157,6 +157,22 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     seen: SEEN_POST,
   },
   {
+    id: 'tt.security-check',
+    // Observed 2026-09-11 on the owner's moto, right after a real Post tap on an account that had
+    // just been sent the same video twice: a bottom sheet over the feed reading "Mari kita lakukan
+    // pemeriksaan keamanan dengan cepat", offering "Lanjut" and a close icon. It covered the bottom
+    // nav, so the post confirmation could not open the profile and reported `unverified`.
+    //
+    // `actions: {}` — nothing here is ever tapped, and that is the decision, not a gap. "Lanjut"
+    // leads into TikTok's own verification, which is the account owner's to complete and never an
+    // unattended run's; and quietly closing a platform's security check on every phone of a farm is
+    // exactly the kind of evasion this register must not automate. The upload policy is `abort`, so
+    // a run that meets it stops and says so by name, and the operator handles that account by hand.
+    match: { textIncludes: ['pemeriksaan keamanan', 'security check'] },
+    actions: {},
+    seen: { device: 'moto g06 power (ZP2222RMBS)', app: 'com.ss.android.ugc.trill', locale: 'id-ID', at: '2026-09-11' },
+  },
+  {
     id: 'tt.discard-draft',
     // E14: raised when leaving the editor. Two buttons, always shown together, no id (E10) — a
     // "text pair" per §4.2. `deny` maps to "Buang" (abandon the draft, a refusal to keep it) and
@@ -220,6 +236,8 @@ export const UPLOAD_MODAL_POLICIES: Record<string, ModalPolicy> = {
   // would have stalled on the very first screen it reached after succeeding.
   'tt.widget-prompt': 'deny',
   'tt.contacts': 'deny',
+  // Never answered by a run — see the entry. `abort` is what turns it into a named stop.
+  'tt.security-check': 'abort',
 }
 
 /** `com.app:id/name` or a bare short id — the same rule `matches()` (`@enkaku/protocol`) and `tree.ts`'s `rowsById` use, kept in step with them. */
