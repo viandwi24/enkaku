@@ -1,5 +1,5 @@
 import { shellQuote } from '@enkaku/adb'
-import { buildGesturePath, supportsElementActions } from '@enkaku/drivers'
+import { AdbInput, buildGesturePath, supportsElementActions } from '@enkaku/drivers'
 import {
   centerOf,
   matchSelector,
@@ -440,6 +440,12 @@ export function createDeviceExecutor(deps: {
       case 'tap': {
         await pause(timing)
         lastTarget = 'point' in call.args.target ? null : call.args.target
+        if (call.args.via === 'adb') {
+          // Android's own injection, in DEVICE pixels — `input tap` never sees
+          // the video frame, so this skips `toFrame` (see `InputViaSchema`).
+          await new AdbInput(deps.session.transport).tap(jitterPoint(await resolveTarget(call.args.target), timing))
+          return undefined
+        }
         const point = toFrame(jitterPoint(await resolveTarget(call.args.target), timing))
         // tapJitterMs (spec §9.3, §17): the hold duration is sampled per tap
         // from a range, not fixed — test realism, not evasion. The engine
@@ -558,6 +564,19 @@ export function createDeviceExecutor(deps: {
       case 'type': {
         await pause(timing)
         const instant = call.args.instant ?? timing.gestureCurvature === 0
+        if (call.args.via === 'adb') {
+          // `input text` carries printable ASCII and nothing else; refuse the rest by name
+          // rather than let adb mangle it (the same promise the text ladder below keeps).
+          if (!/^[\x20-\x7e]*$/.test(call.args.text)) {
+            throw Object.assign(new Error('type(…, { via: "adb" }) carries printable ASCII only — this text has other characters'), {
+              code: 'E_INPUT_TEXT_UNSUPPORTED',
+            })
+          }
+          const adb = new AdbInput(deps.session.transport)
+          if (instant) await adb.text(call.args.text)
+          else await adb.typeText(call.args.text, { perCharMs: call.args.perCharMs ?? timing.perCharMs })
+          return { via: 'adb-ascii', clobberedClipboard: false }
+        }
         // `instant` — including the pre-plan-40 default of always-instant
         // when the caller supplies no timing settings at all — reproduces
         // the pre-plan-40 order exactly: setText when the inspector supports

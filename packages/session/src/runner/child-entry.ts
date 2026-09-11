@@ -114,7 +114,7 @@ const log = (level: Level) => (msg: string, fields?: Record<string, unknown>) =>
   send({ t: 'log', level, msg, ...(fields ? { fields } : {}) })
 
 const deviceApi = {
-  tap: (target: unknown) => request<void>({ method: 'tap', args: { target } } as never),
+  tap: (target: unknown, opts?: { via?: 'adb' }) => request<void>({ method: 'tap', args: { target, ...(opts?.via ? { via: opts.via } : {}) } } as never),
   /*
    * Plan 94 step 94.2's four replay verbs, forwarded HERE — the line they were
    * missing from until 2026-08-27.
@@ -157,13 +157,14 @@ const deviceApi = {
   scroll: (opts: { direction: string; distance?: number; from?: unknown }) =>
     request<void>({ method: 'scroll', args: opts } as never),
   fling: (opts: { direction: string; strength?: string }) => request<void>({ method: 'fling', args: opts } as never),
-  type: (text: string, opts?: { perCharMs?: [number, number]; instant?: boolean }) =>
+  type: (text: string, opts?: { perCharMs?: [number, number]; instant?: boolean; via?: 'adb' }) =>
     request<void>({
       method: 'type',
       args: {
         text,
         ...(opts?.perCharMs !== undefined ? { perCharMs: opts.perCharMs } : {}),
         ...(opts?.instant !== undefined ? { instant: opts.instant } : {}),
+        ...(opts?.via ? { via: opts.via } : {}),
       },
     } as never),
   key: (code: unknown) => request<void>({ method: 'key', args: { code } } as never),

@@ -6,6 +6,7 @@ export {
   ScrollDirectionSchema,
   PackageNameSchema,
   TapArgsSchema,
+  InputViaSchema,
   SwipeArgsSchema,
   ScrollArgsSchema,
   FlingArgsSchema,

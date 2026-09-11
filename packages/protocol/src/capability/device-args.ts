@@ -43,7 +43,17 @@ export const ScrollDirectionSchema = z.enum(['up', 'down', 'left', 'right'])
  * guarantees injection safety, this is belt only. */
 export const PackageNameSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/)
 
-export const TapArgsSchema = z.object({ target: SelectorSchema })
+/**
+ * `via: 'adb'` sends this one call through Android's own input injection (`adb shell input`) instead of
+ * the session's input engine. Some app screens do not respond to the farm's engine — measured
+ * 2026-09-11: YouTube's upload "details" screen never focused its title field for a scrcpy-UHID tap,
+ * nor took text from the guest agent's keyboard, while `input tap`/`input text` did both. It is a
+ * per-call escape hatch for such a screen, not a mode: slower (~100 ms a call), no hold duration, and
+ * text is printable ASCII only.
+ */
+export const InputViaSchema = z.enum(['adb'])
+
+export const TapArgsSchema = z.object({ target: SelectorSchema, via: InputViaSchema.optional() })
 
 /**
  * Plan 94 §3.3, §4.4 — the recorder's coordinate-space rule, resolved in step
@@ -123,6 +133,8 @@ export const TypeArgsSchema = z.object({
   perCharMs: z.tuple([z.number().int().min(0), z.number().int().min(0)]).optional(),
   /** Forces the pre-plan-40 bulk delivery for this call regardless of the timing profile. */
   instant: z.boolean().optional(),
+  /** See `InputViaSchema`. With `'adb'` the text must be printable ASCII. */
+  via: InputViaSchema.optional(),
 })
 
 export const KeyArgsSchema = z.object({ code: z.union([z.number().int(), z.string()]) })

@@ -1157,3 +1157,57 @@ describe('the three device-pixel verbs reach the sink in frame space', () => {
     expect(calls.tap[0]?.p).toEqual({ x: 360, y: 1512 })
   })
 })
+
+/*
+  `via: 'adb'` — one call through Android's own input injection. Measured
+  2026-09-11: YouTube's upload details screen ignored the farm's UHID tap on
+  its title field and the guest agent's keyboard, and took `input tap` /
+  `input text` at once. The escape hatch must stay in DEVICE pixels (adb
+  never sees the video frame) and must never touch the session's engine.
+*/
+describe('via: "adb" — the per-call escape hatch', () => {
+  const noJitter: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0 }
+  const downscaled = { frameSize: { width: 208, height: 480 }, deviceSize: { width: 720, height: 1640 } }
+
+  function withShell(): { session: DeviceSession; calls: RecordedCalls; cmds: string[] } {
+    const { session, calls } = fakeGestureSession(downscaled)
+    const cmds: string[] = []
+    ;(session as unknown as { transport: unknown }).transport = {
+      exec: async (cmd: string) => {
+        cmds.push(cmd)
+        return ''
+      },
+      execOut: async () => new Uint8Array(),
+    }
+    return { session, calls, cmds }
+  }
+
+  test('a tap goes to `input tap` in device pixels, and the engine is not touched', async () => {
+    const { session, calls, cmds } = withShell()
+    await createDeviceExecutor({ session, timing: noJitter })(call('tap', { target: { point: { x: 445, y: 224 } }, via: 'adb' }))
+    expect(cmds).toEqual(['input tap 445 224'])
+    expect(calls.tap).toHaveLength(0)
+  })
+
+  test('without via the same tap still goes to the engine, in frame space', async () => {
+    const { session, calls, cmds } = withShell()
+    await createDeviceExecutor({ session, timing: noJitter })(call('tap', { target: { point: { x: 360, y: 1512 } } }))
+    expect(cmds).toEqual([])
+    expect(calls.tap[0]?.p).toEqual({ x: 104, y: 443 })
+  })
+
+  test('text goes to `input text`, escaped — a space, a hashtag, a quote', async () => {
+    const { session, calls, cmds } = withShell()
+    const result = await createDeviceExecutor({ session, timing: noJitter })(call('type', { text: "it's #test 2", instant: true, via: 'adb' }))
+    expect(cmds).toEqual([`input text 'it'\\''s%s#test%s2'`])
+    expect(result).toEqual({ via: 'adb-ascii', clobberedClipboard: false })
+    expect(calls.text).toHaveLength(0)
+  })
+
+  test('non-ASCII is refused by name, before anything is typed', async () => {
+    const { session, cmds } = withShell()
+    const execute = createDeviceExecutor({ session, timing: noJitter })
+    await expect(execute(call('type', { text: 'kopi ☕', instant: true, via: 'adb' }))).rejects.toMatchObject({ code: 'E_INPUT_TEXT_UNSUPPORTED' })
+    expect(cmds).toEqual([])
+  })
+})

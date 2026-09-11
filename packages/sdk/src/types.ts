@@ -87,8 +87,15 @@ export interface ScriptTypeResult {
  * stale anchor produces, self-inflicted here by a schema/verb mismatch.
  */
 export interface DeviceApi {
-  /** Selector → find → tap its centre point; { point } → tap directly. */
-  tap(target: Selector): Promise<void>
+  /**
+   * Selector → find → tap its centre point; { point } → tap directly.
+   *
+   * `opts.via: 'adb'` sends this one tap through Android's own input injection (`input tap`)
+   * instead of the session's engine — for a screen that ignores the farm's taps (YouTube's
+   * upload details screen never focused its title field for one, 2026-09-11). Slower, no hold
+   * duration; reach for it only where a real run showed the default does not work.
+   */
+  tap(target: Selector, opts?: { via?: 'adb' }): Promise<void>
   /**
    * The replay interpreter's own verb (plan 94 §3.4, §4.4, F6, F7) — a
    * literal RECORDED point, normalised 0..1 (see the coordinate-space rule
@@ -161,8 +168,12 @@ export interface DeviceApi {
    * guest agent's keyboard, then scrcpy's unicode-clean `INJECT_TEXT`, then plain ASCII — and
    * rejects (never silently drops a keystroke) when no rung can carry the string.
    * `ScriptTypeResult.via` says which rung actually ran.
+   *
+   * `opts.via: 'adb'` skips the ladder and types through `input text` — the companion of
+   * `tap(…, { via: 'adb' })` for the same kind of screen. Printable ASCII only; anything else is
+   * refused with `E_INPUT_TEXT_UNSUPPORTED` rather than mangled.
    */
-  type(text: string, opts?: { perCharMs?: [number, number]; instant?: boolean }): Promise<ScriptTypeResult>
+  type(text: string, opts?: { perCharMs?: [number, number]; instant?: boolean; via?: 'adb' }): Promise<ScriptTypeResult>
   key(code: KeyCode): Promise<void>
   /**
    * `null` for both a genuine miss AND a selector refused as a viewport-sized
