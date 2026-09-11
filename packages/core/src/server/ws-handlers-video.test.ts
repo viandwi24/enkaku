@@ -76,6 +76,7 @@ function fakeSession(
     inspectorEngineId: 'ui-server',
     inspectorPollIntervalMs: 200,
     frameSize: { width: 1080, height: 2400 },
+    deviceSize: { width: 1080, height: 2400 },
     clipboard: null,
     textInput: {
       mode: 'device',

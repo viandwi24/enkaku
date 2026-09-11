@@ -228,6 +228,19 @@ export interface DeviceSession {
   /** Always overwritten by the latest frame metadata (this is how rotation works). */
   frameSize: { width: number; height: number }
   /**
+   * The screen's REAL pixel size, from the device record — the space a
+   * `dump()`'s node bounds and a script's `{ point }` are in.
+   *
+   * Not the same thing as `frameSize`, and the difference is not a rounding
+   * error. `frameSize` is the size of the VIDEO scrcpy is sending, which is
+   * whatever the active profile downscaled it to: a wall tile streams this
+   * farm's moto g06 at 208x480 against a 720x1640 screen. The input sink
+   * normalises by `frameSize`, so a device-pixel point handed to it unscaled
+   * lands 3.4x too far out and clamps to a corner. Stored in the device's
+   * natural orientation; the executor orients it against `frameSize`.
+   */
+  readonly deviceSize: { width: number; height: number }
+  /**
    * Device clipboard get/set (plan 38 §3.5, §4.4). `null` only when no engine
    * could even be attempted for this session, which does not happen today
    * (every session has EITHER scrcpy's real control-socket implementation OR
@@ -1070,6 +1083,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     },
     whenTextInputReady: startTextInput,
     frameSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
+    deviceSize: { width: opts.screenW ?? 0, height: opts.screenH ?? 0 },
     clipboard,
     textInput: {
       mode: textInputMode,

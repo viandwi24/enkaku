@@ -223,6 +223,51 @@ function directionalSwipe(
  * Timing realism (spec §9.3): jittered pauses between actions plus coordinate offsets,
  * so tests exercise the real application path.
  */
+/**
+ * A DEVICE-pixel point → the FRAME space the input sink injects in.
+ *
+ * The sink normalises every point by `frameSize` — the size of the video
+ * scrcpy is sending (`session.ts`'s own comment: "keep the size the core maps
+ * taps against identical to the size the input engine declares"). `tapNorm`,
+ * `gesture`, `swipeNorm`, `scroll` and `fling` all honour that and build their
+ * points from `frameSize`. `tap`, `longPress` and `swipe` did not: they take a
+ * point in device pixels — a script's `{ point }`, or a node's bounds straight
+ * out of `dump()` — and handed it to the sink unscaled.
+ *
+ * That was survivable while the video was nearly full-size: the history in
+ * `session.ts` records 720x1640 against 704x1600, a tap "a few percent off"
+ * that looked intermittent rather than broken. It is not survivable against a
+ * wall tile. Measured 2026-09-11 on this farm's moto g06: `frameSize` 208x480
+ * against a 720x1640 screen, so TikTok's "+" at (360, 1512) normalised to
+ * (1.73, 3.15), clamped to the bottom-right corner, and the upload flow failed
+ * four screens later at a camera screen that never opened. Every device-pixel
+ * tap on a farm nobody is watching lands there — the wall stream is exactly
+ * what is running when no one has Device Control open.
+ *
+ * The device record is stored in its natural orientation and the frame
+ * tracks rotation, so the device size is oriented against the frame before
+ * scaling; otherwise a landscape phone has its axes crossed. Each axis scales
+ * on its own because the encoder rounds the frame to a multiple of 8 (208 is
+ * not quite 720 x 480/1640), and a single factor would drift along one axis.
+ *
+ * Total, and a no-op whenever it cannot know better: an unknown device size, a
+ * zero frame, or a frame already at device size returns the point unchanged —
+ * which is exactly what every caller got before this existed.
+ */
+export function deviceToFrame(
+  point: Point,
+  frame: { width: number; height: number },
+  device: { width: number; height: number } | undefined,
+): Point {
+  if (!device || device.width <= 0 || device.height <= 0 || frame.width <= 0 || frame.height <= 0) return point
+  const oriented = frame.width > frame.height === device.width > device.height ? device : { width: device.height, height: device.width }
+  if (oriented.width === frame.width && oriented.height === frame.height) return point
+  return {
+    x: Math.round((point.x * frame.width) / oriented.width),
+    y: Math.round((point.y * frame.height) / oriented.height),
+  }
+}
+
 export function createDeviceExecutor(deps: {
   session: DeviceSession
   /**
@@ -326,6 +371,9 @@ export function createDeviceExecutor(deps: {
     }
   }
 
+  /** Device pixels → the frame the sink injects in. See `deviceToFrame`. */
+  const toFrame = (p: Point): Point => deviceToFrame(p, deps.session.frameSize, deps.session.deviceSize)
+
   async function resolveTarget(sel: Selector): Promise<Point> {
     if ('point' in sel) return sel.point
     const node = await inspectorOrThrow().find(sel)
@@ -392,7 +440,7 @@ export function createDeviceExecutor(deps: {
       case 'tap': {
         await pause(timing)
         lastTarget = 'point' in call.args.target ? null : call.args.target
-        const point = jitterPoint(await resolveTarget(call.args.target), timing)
+        const point = toFrame(jitterPoint(await resolveTarget(call.args.target), timing))
         // tapJitterMs (spec §9.3, §17): the hold duration is sampled per tap
         // from a range, not fixed — test realism, not evasion. The engine
         // does the actual sampling (so it can stay deterministic under an
@@ -428,7 +476,7 @@ export function createDeviceExecutor(deps: {
         // `tapJitterMs` itself, which would ignore the caller's `ms` entirely.
         await pause(timing)
         lastTarget = 'point' in call.args.target ? null : call.args.target
-        const point = jitterPoint(await resolveTarget(call.args.target), timing)
+        const point = toFrame(jitterPoint(await resolveTarget(call.args.target), timing))
         const halfWidth = Math.max(0, timing.tapJitterMs[1] - timing.tapJitterMs[0]) / 2
         const holdRange: [number, number] = [Math.max(0, call.args.ms - halfWidth), call.args.ms + halfWidth]
         await sink().tap(point, { holdMs: holdRange })
@@ -476,8 +524,12 @@ export function createDeviceExecutor(deps: {
       }
       case 'swipe': {
         await pause(timing)
-        const from = jitterPoint(call.args.from, timing)
-        const to = jitterPoint(call.args.to, timing)
+        // Device pixels in, like `tap` — jittered in DEVICE pixels (so
+        // `coordJitterPx` means what it says on a downscaled stream too), then
+        // converted to the frame `runSwipe` shares with `scroll`/`fling`, which
+        // build their points from `frameSize` already. See `deviceToFrame`.
+        const from = toFrame(jitterPoint(call.args.from, timing))
+        const to = toFrame(jitterPoint(call.args.to, timing))
         await runSwipe(from, to, call.args.ms, timing, { curvature: call.args.curvature, easing: call.args.easing })
         return undefined
       }

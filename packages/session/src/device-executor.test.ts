@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { GestureSample, InputSink, Point, TimingSettings } from '@enkaku/protocol'
-import { createDeviceExecutor, DEFAULT_TIMING, needsInspector } from './device-executor'
+import { createDeviceExecutor, DEFAULT_TIMING, deviceToFrame, needsInspector } from './device-executor'
 import { createInputArbiter } from './input-arbiter'
 import type { Logger } from './logger'
 import type { DeviceCall } from './runner/ipc'
@@ -219,6 +219,8 @@ interface RecordedCalls {
 
 function fakeGestureSession(opts: {
   frameSize?: { width: number; height: number }
+  /** The device's real pixel size. Omitted = unknown, which makes `deviceToFrame` a no-op — every test written before it existed. */
+  deviceSize?: { width: number; height: number }
   withGesture?: boolean
   withTypeText?: boolean
 }): { session: DeviceSession; calls: RecordedCalls } {
@@ -259,6 +261,7 @@ function fakeGestureSession(opts: {
     inspector: null,
     transport: { exec: async () => '', execOut: async () => new Uint8Array() },
     frameSize: opts.frameSize ?? { width: 1080, height: 1920 },
+    ...(opts.deviceSize ? { deviceSize: opts.deviceSize } : {}),
     input,
     arbiter,
     // A scrcpy-family engine — `withTypeText: false` only removes the `typeText` METHOD (Plan
@@ -1078,5 +1081,79 @@ describe('createDeviceExecutor — E_INSPECTOR_STARTING while the session has no
     expect(needsInspector({ method: 'tap' })).toBe(false)
     expect(needsInspector({ method: 'type' })).toBe(false)
     expect(needsInspector({ method: 'app.launch' })).toBe(false)
+  })
+})
+
+/**
+ * Device pixels are not frame pixels, and the difference is not a rounding
+ * error.
+ *
+ * Measured 2026-09-11 on the owner's moto g06: the wall stream's `frameSize`
+ * was 208x480 against a 720x1640 screen. The sink normalises by `frameSize`,
+ * so `tap({ point: { x: 360, y: 1512 } })` — TikTok's "+" — reached it as
+ * (1.73, 3.15), clamped to the bottom-right corner, and the upload flow never
+ * opened the camera. These pin the conversion that fixes it.
+ */
+describe('deviceToFrame — the arithmetic', () => {
+  const device = { width: 720, height: 1640 }
+
+  test('the measured case: TikTok\'s "+" lands on the "+" of a 208x480 wall stream', () => {
+    const p = deviceToFrame({ x: 360, y: 1512 }, { width: 208, height: 480 }, device)
+    expect(p).toEqual({ x: 104, y: 443 })
+    // Normalised the way the UHID sink does it — back on the button, not off the edge.
+    expect(p.x / 208).toBeCloseTo(0.5, 2)
+    expect(p.y / 480).toBeCloseTo(0.922, 2)
+  })
+
+  test('a frame already at device size is left exactly alone', () => {
+    expect(deviceToFrame({ x: 360, y: 1512 }, device, device)).toEqual({ x: 360, y: 1512 })
+  })
+
+  test('an unknown device size is a no-op — what every caller got before this existed', () => {
+    expect(deviceToFrame({ x: 360, y: 1512 }, { width: 208, height: 480 }, undefined)).toEqual({ x: 360, y: 1512 })
+    expect(deviceToFrame({ x: 360, y: 1512 }, { width: 208, height: 480 }, { width: 0, height: 0 })).toEqual({ x: 360, y: 1512 })
+  })
+
+  /*
+    The device record is stored portrait; the frame tracks rotation. Without
+    orienting first, a landscape phone would scale x by the height ratio and
+    y by the width ratio — its axes crossed.
+  */
+  test('a landscape frame orients the portrait device record before scaling', () => {
+    // Landscape: the device is 1640 wide, 720 tall; the stream is 480x208.
+    const p = deviceToFrame({ x: 1640, y: 720 }, { width: 480, height: 208 }, device)
+    expect(p).toEqual({ x: 480, y: 208 })
+  })
+
+  test('each axis scales on its own — the encoder rounds 211 down to 208', () => {
+    // 720 * 480/1640 = 210.7; the stream is 208. One shared factor would put
+    // the right edge 3 pixels off; per-axis puts it exactly on the frame edge.
+    expect(deviceToFrame({ x: 720, y: 1640 }, { width: 208, height: 480 }, device)).toEqual({ x: 208, y: 480 })
+  })
+})
+
+describe('the three device-pixel verbs reach the sink in frame space', () => {
+  const noJitter: TimingSettings = { ...DEFAULT_TIMING, betweenActionMs: [0, 0], coordJitterPx: 0 }
+  const downscaled = { frameSize: { width: 208, height: 480 }, deviceSize: { width: 720, height: 1640 } }
+
+  test('tap with a point', async () => {
+    const { session, calls } = fakeGestureSession(downscaled)
+    const execute = createDeviceExecutor({ session, timing: noJitter })
+    await execute(call('tap', { target: { point: { x: 360, y: 1512 } } }))
+    expect(calls.tap[0]?.p).toEqual({ x: 104, y: 443 })
+  })
+
+  test('longPress with a point', async () => {
+    const { session, calls } = fakeGestureSession(downscaled)
+    const execute = createDeviceExecutor({ session, timing: noJitter })
+    await execute(call('longPress', { target: { point: { x: 360, y: 1512 } }, ms: 600 }))
+    expect(calls.tap[0]?.p).toEqual({ x: 104, y: 443 })
+  })
+
+  test('a device already streaming at full size is unchanged', async () => {
+    const { session, calls } = fakeGestureSession({ frameSize: { width: 720, height: 1640 }, deviceSize: { width: 720, height: 1640 } })
+    const execute = createDeviceExecutor({ session, timing: noJitter })
+    await execute(call('tap', { target: { point: { x: 360, y: 1512 } } }))
+    expect(calls.tap[0]?.p).toEqual({ x: 360, y: 1512 })
   })
 })
