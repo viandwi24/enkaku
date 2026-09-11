@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
-import { judgeGrid, parseViews, readGrid, readNewestCell } from './post-video'
+import { endsInTagToken, judgeGrid, parseViews, readGrid, readNewestCell } from './post-video'
 
 /**
  * `readNewestCell` — what the own-profile grid says about THIS post.
@@ -160,5 +160,20 @@ describe('judgeGrid — a new post pushes every earlier cell one place along', (
 
   test('every cell at 0 before and after is not enough to call it posted', () => {
     expect(judgeGrid(['0', '0'], ['0', '0'])).toEqual({ kind: 'same' })
+  })
+})
+
+describe('endsInTagToken — when the suggestion list would cover the Post button', () => {
+  test('a caption ending in a hashtag or mention', () => {
+    expect(endsInTagToken('test upload enkaku 2 #test')).toBe(true)
+    expect(endsInTagToken('hi @someone')).toBe(true)
+    expect(endsInTagToken('#solo')).toBe(true)
+  })
+
+  test('a caption that ends in plain text, or already ends the tag', () => {
+    expect(endsInTagToken('#test upload enkaku')).toBe(false)
+    expect(endsInTagToken('test upload #test ')).toBe(false)
+    expect(endsInTagToken('price#1')).toBe(false)
+    expect(endsInTagToken('')).toBe(false)
   })
 })

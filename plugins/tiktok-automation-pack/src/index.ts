@@ -820,6 +820,11 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.29.0 — a caption ending in a hashtag no longer strands the run. TikTok's
+  // tag-suggestion list replaces the post screen while a `#tag`/`@name` is the
+  // last thing typed, so the Post button was not in the tree and the run failed
+  // with nothing posted (the router's first real two-phone run, 2026-09-11,
+  // caption "… #test"). One trailing space closes the list, as a person would.
   // 1.28.0 — posted means THIS post. The same day 1.27.0 shipped, the owner's
   // account showed why "the newest cell reads 0 views" was not enough: the
   // previous test post was itself still at 0 views, so it was true before the
@@ -884,7 +889,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.28.0',
+  version: '1.29.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

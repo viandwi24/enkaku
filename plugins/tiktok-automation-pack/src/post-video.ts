@@ -484,6 +484,11 @@ export function readNewestCell(tree: UiNode, belowY: number, frameWidth: number)
   return { kind: 'old', views: label }
 }
 
+/** True when the caption's last token is a hashtag or mention — the case that leaves TikTok's suggestion list open. */
+export function endsInTagToken(caption: string): boolean {
+  return /(^|\s)[#@][^\s#@]+$/.test(caption)
+}
+
 /** `1.559` → 1559, `118,6 rb` → 118600, `2,1 jt` → 2100000, `3.5K` → 3500. `null` for anything else. */
 export function parseViews(label: string): number | null {
   const m = label.trim().match(/^([\d.,]+)[\s\u00a0]*(rb|jt|k|K|m|M|B)?$/)
@@ -1136,6 +1141,14 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     attempt.caption = capped.caption
     const typed = await ctx.device.type(capped.caption)
     ctx.log.info('typed the caption', { via: typed.via, hashtags: (capped.caption.match(/#[^\s#]+/g) ?? []).length })
+    if (endsInTagToken(capped.caption)) {
+      // A caption ending in `#tag` or `@name` leaves TikTok's suggestion list open, and that list
+      // REPLACES the post screen — no Post button anywhere in the tree (observed 2026-09-11 with
+      // "… #test": `E_ANCHOR_NOT_FOUND`, nothing posted). One space ends the token and closes the
+      // list, which is what a person does; TikTok trims trailing whitespace from the caption.
+      await ctx.device.type(' ')
+      ctx.log.info('closed the tag suggestions with a trailing space')
+    }
 
     // NO `BACK` here, and that is a correction the hardware forced. Typing a hashtag opens TikTok's
     // own tag-suggestion panel, which covers the bottom bar — and `BACK`, which was supposed to
