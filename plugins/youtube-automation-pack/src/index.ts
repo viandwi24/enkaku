@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.20.1',
+  version: '0.21.2',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,33 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.21.2 — post-video proves the title field has focus before typing.**
+   * A tap that missed the field let the typed keys reach the focused
+   * thumbnail, and a space in the title opened the thumbnail editor. Focusing
+   * the field visibly changes the screen, so the member now requires that
+   * change (one retry) before typing, and stops with nothing posted otherwise.
+   *
+   * **0.21.1 — post-video waits for the details screen to finish loading.**
+   * It opens as a header over a spinner, invisible to the reader either way;
+   * the third routed run aimed its title tap during the spinner, opened the
+   * thumbnail editor, and (rightly) reported `unverified` for an upload that
+   * never happened. The member now waits for two identical screenshots before
+   * any blind tap, re-checks it is still on the details screen before Upload,
+   * and names the thumbnail editor as `E_DETAILS_LAYOUT` — nothing uploaded.
+   *
+   * **0.21.0 — post-video: an unfinished Shorts edit.** After a run fails
+   * inside the editor, YouTube keeps that edit and asks "Lanjutkan video draf
+   * Anda?" on the next Create. The new `unfinishedDraft` setting answers it:
+   * `start-over` (default — YouTube discards the leftover, which on a farm
+   * phone is an aborted run's, and continuing it would post the wrong video)
+   * or `stop` (`E_UNFINISHED_DRAFT`, leaving it for a person).
+   *
+   * **0.20.2 — post-video: the trim screen is optional.** The first routed
+   * run went from the gallery straight to the Shorts editor, where the hand
+   * walk had met a trim screen first; the member now accepts either. A
+   * signed-out older English build (bar: Home, Shorts, Subscriptions,
+   * Library) is probed through its Library tab too.
    *
    * **0.20.1 — post-video refuses a landscape screen.** Its details-screen
    * taps are measured in portrait; the owner's moto, lying on its side,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
-import { createButton, endsInTagToken, galleryCellFor, hiddenWindow, isSelectedCell, isSignedOut, judgeChannel, readChannelCells } from './post-video'
+import { createButton, endsInTagToken, onThumbnailEditor, resumeDraftPrompt, galleryCellFor, hiddenWindow, isSelectedCell, isSignedOut, judgeChannel, readChannelCells } from './post-video'
 import { rowsById } from './tree'
 
 /**
@@ -45,6 +45,12 @@ describe('the screens the farm can read', () => {
     expect(rowsById(tree, 'multi_select_next_button')[0]?.text).toBe('Berikutnya')
   })
 
+  test('the unfinished-edit prompt is recognised, and its start-over button found', async () => {
+    const prompt = resumeDraftPrompt(await fixture('screen-resume-draft.json'))
+    expect(prompt?.startOver?.text).toBe('Mulai dari awal')
+    expect(resumeDraftPrompt(await fixture('screen-create-no-camera.json'))).toBeNull()
+  })
+
   test('trim and editor carry their own next buttons', async () => {
     expect(rowsById(await fixture('screen-trim.json'), 'creation_next_button')[0]?.text).toBe('Selesai')
     expect(rowsById(await fixture('screen-shorts-editor.json'), 'shorts_post_bottom_button')[0]?.text).toBe('Berikutnya')
@@ -63,6 +69,13 @@ describe('hiddenWindow — the two screens Android hides from the reader', () =>
   test('an ordinary readable screen is neither', async () => {
     expect(hiddenWindow(await fixture('screen-shorts-editor.json'))).toBe('none')
     expect(hiddenWindow(await fixture('screen-channel-draft.json'))).toBe('none')
+  })
+})
+
+describe('onThumbnailEditor — where a mis-aimed details tap lands', () => {
+  test('the thumbnail editor under its processing overlay is recognised', async () => {
+    expect(onThumbnailEditor(await fixture('screen-thumbnail-editor.json'))).toBe(true)
+    expect(onThumbnailEditor(await fixture('screen-shorts-editor.json'))).toBe(false)
   })
 })
 

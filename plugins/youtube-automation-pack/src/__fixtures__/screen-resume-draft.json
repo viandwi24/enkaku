@@ -1,0 +1,318 @@
+{
+ "resourceId": "",
+ "text": "",
+ "desc": "",
+ "className": "hierarchy",
+ "packageName": "",
+ "bounds": {
+  "left": 0,
+  "top": 0,
+  "right": 0,
+  "bottom": 0
+ },
+ "clickable": false,
+ "enabled": true,
+ "focused": false,
+ "index": 0,
+ "children": [
+  {
+   "resourceId": "",
+   "text": "",
+   "desc": "",
+   "className": "android.widget.FrameLayout",
+   "packageName": "com.google.android.youtube",
+   "bounds": {
+    "left": 18,
+    "top": 625,
+    "right": 701,
+    "bottom": 1001
+   },
+   "clickable": false,
+   "enabled": true,
+   "focused": false,
+   "index": 0,
+   "children": [
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "",
+     "className": "android.widget.LinearLayout",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 46,
+      "top": 653,
+      "right": 673,
+      "bottom": 973
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "android:id/content",
+       "text": "",
+       "desc": "",
+       "className": "android.widget.FrameLayout",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 46,
+        "top": 653,
+        "right": 673,
+        "bottom": 973
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "android:id/parentPanel",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.LinearLayout",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 46,
+          "top": 653,
+          "right": 673,
+          "bottom": 973
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": [
+          {
+           "resourceId": "android:id/topPanel",
+           "text": "",
+           "desc": "",
+           "className": "android.widget.LinearLayout",
+           "packageName": "com.google.android.youtube",
+           "bounds": {
+            "left": 46,
+            "top": 653,
+            "right": 673,
+            "bottom": 742
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 0,
+           "children": [
+            {
+             "resourceId": "android:id/title_template",
+             "text": "",
+             "desc": "",
+             "className": "android.widget.LinearLayout",
+             "packageName": "com.google.android.youtube",
+             "bounds": {
+              "left": 46,
+              "top": 653,
+              "right": 673,
+              "bottom": 728
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 0,
+             "children": [
+              {
+               "resourceId": "android:id/alertTitle",
+               "text": "Lanjutkan video draf Anda?",
+               "desc": "",
+               "className": "android.widget.TextView",
+               "packageName": "com.google.android.youtube",
+               "bounds": {
+                "left": 88,
+                "top": 685,
+                "right": 631,
+                "bottom": 728
+               },
+               "clickable": false,
+               "enabled": true,
+               "focused": false,
+               "index": 0,
+               "children": []
+              }
+             ]
+            },
+            {
+             "resourceId": "android:id/titleDividerNoCustom",
+             "text": "",
+             "desc": "",
+             "className": "android.view.View",
+             "packageName": "com.google.android.youtube",
+             "bounds": {
+              "left": 46,
+              "top": 728,
+              "right": 673,
+              "bottom": 742
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 1,
+             "children": []
+            }
+           ]
+          },
+          {
+           "resourceId": "android:id/contentPanel",
+           "text": "",
+           "desc": "",
+           "className": "android.widget.FrameLayout",
+           "packageName": "com.google.android.youtube",
+           "bounds": {
+            "left": 46,
+            "top": 742,
+            "right": 673,
+            "bottom": 826
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 1,
+           "children": [
+            {
+             "resourceId": "android:id/scrollView",
+             "text": "",
+             "desc": "",
+             "className": "android.widget.ScrollView",
+             "packageName": "com.google.android.youtube",
+             "bounds": {
+              "left": 46,
+              "top": 742,
+              "right": 673,
+              "bottom": 814
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 0,
+             "children": [
+              {
+               "resourceId": "",
+               "text": "",
+               "desc": "",
+               "className": "android.widget.LinearLayout",
+               "packageName": "com.google.android.youtube",
+               "bounds": {
+                "left": 46,
+                "top": 742,
+                "right": 673,
+                "bottom": 814
+               },
+               "clickable": false,
+               "enabled": true,
+               "focused": false,
+               "index": 0,
+               "children": [
+                {
+                 "resourceId": "android:id/message",
+                 "text": "Video draf terakhir Anda akan dihapus jika dimulai ulang dari awal.",
+                 "desc": "",
+                 "className": "android.widget.TextView",
+                 "packageName": "com.google.android.youtube",
+                 "bounds": {
+                  "left": 46,
+                  "top": 742,
+                  "right": 673,
+                  "bottom": 814
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 0,
+                 "children": []
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "resourceId": "android:id/buttonPanel",
+           "text": "",
+           "desc": "",
+           "className": "android.widget.ScrollView",
+           "packageName": "com.google.android.youtube",
+           "bounds": {
+            "left": 46,
+            "top": 826,
+            "right": 673,
+            "bottom": 935
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 2,
+           "children": [
+            {
+             "resourceId": "",
+             "text": "",
+             "desc": "",
+             "className": "android.widget.LinearLayout",
+             "packageName": "com.google.android.youtube",
+             "bounds": {
+              "left": 46,
+              "top": 826,
+              "right": 673,
+              "bottom": 935
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 0,
+             "children": [
+              {
+               "resourceId": "android:id/button2",
+               "text": "Mulai dari awal",
+               "desc": "",
+               "className": "android.widget.Button",
+               "packageName": "com.google.android.youtube",
+               "bounds": {
+                "left": 174,
+                "top": 833,
+                "right": 385,
+                "bottom": 928
+               },
+               "clickable": true,
+               "enabled": true,
+               "focused": false,
+               "index": 0,
+               "children": []
+              },
+              {
+               "resourceId": "android:id/button1",
+               "text": "Lanjutkan ke editor",
+               "desc": "",
+               "className": "android.widget.Button",
+               "packageName": "com.google.android.youtube",
+               "bounds": {
+                "left": 385,
+                "top": 833,
+                "right": 652,
+                "bottom": 928
+               },
+               "clickable": true,
+               "enabled": true,
+               "focused": false,
+               "index": 1,
+               "children": []
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

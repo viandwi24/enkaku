@@ -21,9 +21,10 @@ import { YOUTUBE_PACKAGE, capture, centre, labelled, relaunch, sleep, waitForTre
  * | home              | bottom-bar `Buat` (desc)                         | screen-home.json                 |
  * | signed out        | "Login untuk mengakses…" + `Login` on Anda      | screen-signed-out.json           |
  * | create, no camera | `unified_permissions_primary_button`             | screen-create-no-camera.json     |
+ * | unfinished edit   | `alertTitle` "…draf…", "Mulai dari awal"         | screen-resume-draft.json         |
  * | gallery           | `thumb_image_view` desc = the FILE NAME          | screen-gallery.json              |
  * | gallery, picked   | `selected_state` inside the cell, `multi_select_next_button` | screen-gallery-selected.json |
- * | trim              | `creation_next_button` ("Selesai")               | screen-trim.json                 |
+ * | trim (optional)   | `creation_next_button` ("Selesai")               | screen-trim.json                 |
  * | Shorts editor     | `shorts_post_bottom_button` ("Berikutnya")       | screen-shorts-editor.json        |
  * | details           | NONE — see below                                 | screen-details-hidden.json       |
  * | You tab           | `Lihat channel` (desc)                           | screen-you.json                  |
@@ -95,6 +96,11 @@ const params = z.object({
     .meta(ui({ title: 'Source' })),
   videoArtifactId: z.string().min(1).describe('The uploaded video to post as a Short.').meta(ui({ title: 'Video', kind: 'artifact' })),
   caption: z.string().min(1).describe('Used as the Short\'s title (YouTube keeps the first 100 characters).').meta(ui({ title: 'Title' })),
+  unfinishedDraft: z
+    .enum(['start-over', 'stop'])
+    .default('start-over')
+    .describe('When YouTube asks "Continue your draft video?" on Create: start over (YouTube deletes that unfinished edit) or stop the run and leave it. On a farm phone the unfinished edit is almost always one an aborted run left behind, and continuing it would post the wrong video.')
+    .meta(ui({ title: 'Unfinished draft', labels: { 'start-over': 'Start over (delete it)', stop: 'Stop and leave it' } })),
   dryRun: z
     .boolean()
     .default(false)
@@ -147,6 +153,19 @@ export function isSignedOut(tree: UiNode): boolean {
 /** The bottom-bar Create button — `Buat` in id-ID, `Create` in English. */
 export function createButton(tree: UiNode): UiNode | null {
   return all(tree, (n) => fromYouTube(n) && n.clickable && (n.desc === 'Buat' || n.desc === 'Create'))[0] ?? null
+}
+
+/**
+ * YouTube's "Lanjutkan video draf Anda?" prompt on Create, and its start-over
+ * button. Met on the second routed run (2026-09-11): the run before it had
+ * failed inside the editor, and YouTube kept that unfinished edit. The button
+ * is found by its label first and by the dialog's negative-button id second.
+ */
+export function resumeDraftPrompt(tree: UiNode): { startOver: UiNode | null } | null {
+  const title = rowsById(tree, 'alertTitle').find((n) => /draf|draft/i.test(n.text))
+  if (!title) return null
+  const byLabel = all(tree, (n) => fromYouTube(n) && n.clickable && (n.text === 'Mulai dari awal' || n.text === 'Start over'))[0]
+  return { startOver: byLabel ?? rowsById(tree, 'button2')[0] ?? null }
 }
 
 /** The gallery cell for exactly this file, found by the name YouTube writes on its thumbnail. */
@@ -282,6 +301,41 @@ async function readOwnChannel(ctx: ScriptContext<unknown>, label: string): Promi
 const PERMISSION_HELP =
   'answer it once on the phone — camera: "Jangan izinkan" (uploads never need it; a second refusal makes it permanent), photos and videos: "Izinkan semua" — then re-run. Android hides these dialogs from the farm\'s reader, so a run cannot answer them.'
 
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
+/**
+ * Wait until two screenshots a second apart are byte-identical — the screen
+ * has stopped changing.
+ *
+ * The details screen needs this because the reader cannot see it at all: it
+ * opens as a header over a spinner, and the third routed run (2026-09-11)
+ * aimed its title tap during that spinner, hit the thumbnail instead and
+ * opened YouTube's thumbnail editor. A spinner animates, so its frames
+ * differ; the finished screen is still. No pixel is decoded — the same
+ * byte-compare `instagram-automation-pack` already uses to tell whether a
+ * swipe moved anything.
+ */
+async function waitForStillScreen(ctx: ScriptContext<unknown>, budgetMs: number): Promise<boolean> {
+  const deadline = Date.now() + budgetMs
+  let previous = await ctx.device.screenshot()
+  while (Date.now() < deadline) {
+    await sleep(1_000)
+    const next = await ctx.device.screenshot()
+    if (bytesEqual(previous, next)) return true
+    previous = next
+  }
+  return false
+}
+
+/** YouTube's thumbnail editor — where a mis-aimed tap on the details screen lands. It is readable, unlike the details screen. */
+export function onThumbnailEditor(tree: UiNode): boolean {
+  return all(tree, (n) => fromYouTube(n) && /editor thumbnail|thumbnail editor/i.test(n.desc)).length > 0
+}
+
 const script: PluginMemberScript<typeof params, typeof result> = {
   id: 'post-video',
   icon: 'upload',
@@ -316,13 +370,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
     if (!createButton(home)) {
       // The signed-out app has no Create button at all; say which, rather than "anchor not found".
-      const you = labelled(home, 'Anda').find((n) => n.clickable)
+      // The account tab is "Anda"/"You" on current builds and "Library" on the older English one the
+      // farm's emulator runs (its signed-out bar: Home, Shorts, Subscriptions, Library).
+      const you = ['Anda', 'You', 'Library', 'Koleksi'].map((l) => labelled(home, l).find((n) => n.clickable)).find(Boolean)
       if (you) {
         await tapCentre(ctx, you)
         const page = await waitForTree(ctx, isSignedOut, { budgetMs: 8_000 })
+        await capture(ctx, 'yt-01-account-tab', page.tree)
         if (page.ok) fail('E_NOT_SIGNED_IN', 'YouTube on this phone is signed out. Sign in to the account that should post (and create its channel), then re-run.')
       }
-      fail('E_ANCHOR_NOT_FOUND', 'YouTube\'s bottom bar has no Create ("Buat") button — see artifact yt-01-home.')
+      fail(
+        'E_ANCHOR_NOT_FOUND',
+        'YouTube\'s bottom bar has no Create ("Buat") button. That is usually a signed-out YouTube or a build too old to upload from — see artifacts yt-01-home and yt-01-account-tab.',
+      )
     }
     screens.push('home')
 
@@ -341,11 +401,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await tapCentre(ctx, create)
     screens.push('create')
 
-    const opened = await waitForTree(
-      ctx,
-      (t) => rowsById(t, 'unified_permissions_primary_button').length > 0 || rowsById(t, 'gallery_header_create_title').length > 0 || hiddenWindow(t) === 'dialog',
-      { budgetMs: 12_000 },
-    )
+    const createReady = (t: UiNode): boolean =>
+      rowsById(t, 'unified_permissions_primary_button').length > 0 || rowsById(t, 'gallery_header_create_title').length > 0 || hiddenWindow(t) === 'dialog'
+    let opened = await waitForTree(ctx, (t) => createReady(t) || resumeDraftPrompt(t) !== null, { budgetMs: 12_000 })
+    const draftPrompt = resumeDraftPrompt(opened.tree)
+    if (draftPrompt) {
+      await capture(ctx, 'yt-03-unfinished-draft', opened.tree)
+      if (ctx.params.unfinishedDraft === 'stop' || !draftPrompt.startOver) {
+        fail('E_UNFINISHED_DRAFT', 'YouTube has an unfinished Shorts edit on this phone and asked whether to continue it. The run was set to stop rather than discard it — see artifact yt-03-unfinished-draft.')
+      }
+      ctx.log.warn('YouTube had an unfinished Shorts edit — starting over, which discards it', { setting: ctx.params.unfinishedDraft })
+      await tapCentre(ctx, draftPrompt.startOver as UiNode)
+      opened = await waitForTree(ctx, createReady, { budgetMs: 12_000 })
+    }
     await capture(ctx, 'yt-03-create', opened.tree)
     if (hiddenWindow(opened.tree) === 'dialog') fail('E_PERMISSION_DIALOG_HIDDEN', `YouTube is asking for a permission (the camera, on Create) — ${PERMISSION_HELP}`)
     const fromGallery = rowsById(opened.tree, 'unified_permissions_primary_button')[0]
@@ -382,14 +450,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await tapCentre(ctx, rowsById(picked.tree, 'multi_select_next_button')[0] as UiNode)
     screens.push('gallery')
 
-    // --- trim -> editor -> details --------------------------------------------
-    const trim = await waitForId(ctx, 'creation_next_button', 20_000)
-    if (!trim.node) {
-      await capture(ctx, 'yt-06-trim', trim.tree)
-      fail('E_ANCHOR_NOT_FOUND', 'the trim screen ("Selesai") did not appear — see artifact yt-06-trim.')
+    // --- (trim) -> editor -> details ------------------------------------------
+    // The trim screen is OPTIONAL: the hand walk met it, and the first routed
+    // run on the same phone, same video length, went straight to the editor
+    // (2026-09-11). So wait for either, and trim only when it is there.
+    const next = await waitForTree(ctx, (t) => rowsById(t, 'creation_next_button').length > 0 || rowsById(t, 'shorts_post_bottom_button').length > 0, { budgetMs: 20_000 })
+    const trimButton = rowsById(next.tree, 'creation_next_button')[0]
+    if (trimButton && rowsById(next.tree, 'shorts_post_bottom_button').length === 0) {
+      await tapCentre(ctx, trimButton)
+      screens.push('trim')
+    } else if (!next.ok) {
+      await capture(ctx, 'yt-06-trim', next.tree)
+      fail('E_ANCHOR_NOT_FOUND', 'neither the trim screen ("Selesai") nor the Shorts editor appeared after the gallery — see artifact yt-06-trim.')
     }
-    await tapCentre(ctx, trim.node)
-    screens.push('trim')
 
     const editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
     if (!editor.node) {
@@ -399,19 +472,66 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await tapCentre(ctx, editor.node)
     screens.push('editor')
 
-    const details = await waitForTree(ctx, (t) => hiddenWindow(t) === 'details', { budgetMs: 15_000 })
+    const details = await waitForTree(ctx, (t) => hiddenWindow(t) === 'details', { budgetMs: 30_000 })
+    if (!details.ok) {
+      await ctx.artifact.screenshot('yt-08-details')
+      fail('E_ANCHOR_NOT_FOUND', 'the details screen did not open after the editor — see artifact yt-08-details.')
+    }
+    // It opens as a header over a spinner; aim nothing until it has finished drawing.
+    const still = await waitForStillScreen(ctx, 45_000)
     await ctx.artifact.screenshot('yt-08-details')
-    if (!details.ok) fail('E_ANCHOR_NOT_FOUND', 'the details screen did not open after the editor — see artifact yt-08-details.')
+    if (!still) fail('E_DETAILS_NOT_READY', 'the details screen never stopped loading within 45s, so no tap was aimed at it — nothing was uploaded. See artifact yt-08-details.')
+    const settled = await ctx.device.dump()
+    if (hiddenWindow(settled) !== 'details') fail('E_ANCHOR_NOT_FOUND', 'the details screen closed while it loaded — nothing was uploaded. See artifact yt-08-details.')
     screens.push('details')
 
     // --- the blind part (see the header) ---------------------------------------
+    /*
+      Focus is PROVEN before a single character is typed. On the fourth routed
+      run (2026-09-11) the title tap did not focus the field, the typed keys
+      went to whatever held focus — the thumbnail — and a space in the title
+      "clicked" it open. Focusing the field visibly changes the screen (a
+      "Judul" label appears above it and it moves down, measured on the same
+      phone), so: a still screenshot, the tap, and the screen must differ.
+      One more try after a pause; then stop, with nothing posted.
+    */
     const frame = frameOf(details.tree)
-    await ctx.device.tap({ point: { x: Math.round(frame.width * DETAILS_TITLE.x), y: Math.round(frame.height * DETAILS_TITLE.y) } })
-    await sleep(800)
-    await ctx.device.type(title)
+    const titlePoint = { x: Math.round(frame.width * DETAILS_TITLE.x), y: Math.round(frame.height * DETAILS_TITLE.y) }
+    let focused = false
+    for (let attempt = 0; attempt < 2 && !focused; attempt++) {
+      if (attempt > 0) await sleep(2_000)
+      const before = await ctx.device.screenshot()
+      await ctx.device.tap({ point: titlePoint })
+      await sleep(1_200)
+      focused = !bytesEqual(before, await ctx.device.screenshot())
+      const now = await ctx.device.dump()
+      if (hiddenWindow(now) !== 'details') {
+        await capture(ctx, 'yt-09-not-details', now)
+        fail('E_DETAILS_LAYOUT', `the title tap left the details screen${onThumbnailEditor(now) ? ' for YouTube\'s thumbnail editor' : ''} — nothing was uploaded. See artifact yt-09-not-details.`)
+      }
+    }
+    if (!focused) {
+      await ctx.artifact.screenshot('yt-09-not-focused')
+      fail('E_DETAILS_LAYOUT', 'two taps on the title field changed nothing on screen, so the field never took focus and nothing was typed or uploaded. See artifact yt-09-not-focused.')
+    }
+    const typed = await ctx.device.type(title)
+    ctx.log.info('typed the title', { via: typed.via })
     if (endsInTagToken(title)) await ctx.device.type(' ')
     await sleep(1_000)
     await ctx.artifact.screenshot('yt-09-titled')
+    // Every tap from here is blind, so prove the screen is still the details screen before the one
+    // that uploads. A title tap that landed elsewhere opens a READABLE screen (the thumbnail editor,
+    // on 2026-09-11), which is exactly what this catches.
+    const titled = await ctx.device.dump()
+    if (hiddenWindow(titled) !== 'details') {
+      await capture(ctx, 'yt-09-not-details', titled)
+      fail(
+        'E_DETAILS_LAYOUT',
+        onThumbnailEditor(titled)
+          ? 'the title tap opened YouTube\'s thumbnail editor instead of the title field — this phone\'s details layout differs from the measured one. Nothing was uploaded; see artifact yt-09-not-details.'
+          : 'after the title tap the screen was no longer the details screen. Nothing was uploaded; see artifact yt-09-not-details.',
+      )
+    }
 
     if (ctx.params.dryRun) {
       return {
@@ -430,6 +550,10 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     // A tap that took leaves the details screen. One that did not leaves it in
     // place, and then nothing was uploaded — a failure a retry may safely repeat.
     const left = await waitForTree(ctx, (t) => hiddenWindow(t) !== 'details', { budgetMs: 20_000 })
+    if (left.ok && onThumbnailEditor(left.tree)) {
+      await capture(ctx, 'yt-10-thumbnail-editor', left.tree)
+      fail('E_DETAILS_LAYOUT', 'the Upload tap opened YouTube\'s thumbnail editor instead — nothing was uploaded. See artifact yt-10-thumbnail-editor.')
+    }
     if (!left.ok) {
       await ctx.artifact.screenshot('yt-10-still-details')
       fail('E_UPLOAD_TAP_NOT_TAKEN', 'Upload was tapped but YouTube stayed on the details screen, so nothing was uploaded. See artifact yt-10-still-details.')
