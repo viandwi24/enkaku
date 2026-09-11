@@ -820,6 +820,26 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.27.0 — `posted` means posted. `confirmPosted` accepted ANY grid-shaped
+  // cell on the own profile as proof, and on an account that has posted
+  // before there always is one. Measured 2026-09-11 (moto g06): six existing
+  // videos, the upload stuck at "Mengunggah... 4%", the profile unchanged —
+  // and the run reported `outcome: "posted"`. The shape test also matched the
+  // bottom nav's tabs. `readNewestCell` reads the NEWEST cell's own label
+  // instead: `0` views is live and the only reading worded `posted`; a
+  // percentage is an upload still in flight; any other count means the newest
+  // video is an older one. Everything but `0` is `unverified`, with the
+  // reading in the sentence — "still uploading (4%)" is an answer an operator
+  // can act on, "posted" was not.
+  // 1.26.0 — the camera is the camera again. A TikTok update put
+  // `tv_top_text` on the camera's "Tambah suara" pill, and `detectScreen`
+  // tested for the editor first, keyed on that id — so every camera read as
+  // the editor and `post-video` failed at its first screen with "expected the
+  // camera screen but the dump reads editor", on a run whose tap had landed
+  // and whose screen was right. The editor now needs `tv_quick_publish`, or
+  // `tv_top_text` WITHOUT the gallery button (`upload_hot_area`), which no
+  // editor has ever carried and every camera does. Pinned by a new fixture,
+  // `screen-camera-2026-09.json`, read off the same moto g06 on 2026-09-11.
   // 1.25.0 — two honest improvements to `post-video`, neither yet proven to
   // change an outcome on hardware, because the phone under test turned out to
   // have no network at all.
@@ -853,7 +873,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.25.0',
+  version: '1.27.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

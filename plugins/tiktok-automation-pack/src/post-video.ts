@@ -420,21 +420,82 @@ function feedErrorText(tree: UiNode | null): string | null {
  */
 const NEXT_BUTTON_FRACTION = { x: 0.735, y: 0.903 }
 
+/** A grid cell's view-count label: `0`, `1.559`, `118,6 rb`, `2,1 jt`, `3K` — digits, TikTok's separators, an optional magnitude. */
+const VIEW_COUNT = /^[\d.,]+(?:[\s\u00a0]*(?:rb|jt|m|k|K|M|B))?$/
+/** An upload still in flight, drawn over its own cell: `4%`, `57 %`. */
+const UPLOAD_PERCENT = /^\d{1,3}\s?%$/
+
+export type NewestCell =
+  | { kind: 'new' }
+  | { kind: 'uploading'; percent: string }
+  | { kind: 'old'; views: string }
+  | { kind: 'none' }
+
+/**
+ * What the NEWEST cell on the own-profile grid says about this post.
+ *
+ * `confirmPosted` used to ask whether the grid had any cell at all, and on an
+ * account that has posted before it always does. Measured 2026-09-11 on the
+ * owner's moto g06: the account already carried six videos, the upload was
+ * stuck at "Mengunggah... 4%" in the notification shade, the profile showed
+ * only those six — and the run reported `outcome: "posted"`. The check was
+ * satisfied by videos that existed before the run started, and (its geometry
+ * being loose enough) by the bottom nav's own tabs.
+ *
+ * The grid is newest-first, so the top-left cell is the one that can say
+ * something about THIS post, and only in three ways a person reading the
+ * screen would also accept:
+ *
+ * - `0` views — a video that went live seconds ago. The one reading that means
+ *   posted.
+ * - a percentage — TikTok drawing the upload's progress over its own cell.
+ *   Submitted, not live; worded as such.
+ * - any other count — the newest video on the profile is an older one, so this
+ *   post has not appeared. Never "posted".
+ *
+ * A cell is recognised by carrying a view-count or percent label, not by its
+ * shape alone — the shape test also matched the bottom nav, whose tabs are
+ * labelled "Beranda" and "Toko".
+ */
+export function readNewestCell(tree: UiNode, belowY: number, frameWidth: number): NewestCell {
+  const labelOf = (n: UiNode): string | null => {
+    for (const m of all(n, () => true)) {
+      const v = (m.text || m.desc).trim()
+      if (VIEW_COUNT.test(v) || UPLOAD_PERCENT.test(v)) return v
+    }
+    return null
+  }
+  const cells = all(tree, (n) => {
+    if (!n.clickable || n.bounds.top < belowY) return false
+    const w = n.bounds.right - n.bounds.left
+    const h = n.bounds.bottom - n.bounds.top
+    if (w <= 0 || h <= 0) return false
+    const widthFraction = w / frameWidth
+    return widthFraction >= 0.18 && widthFraction <= 0.5 && h / w > 0.5 && h / w < 2.5 && labelOf(n) !== null
+  })
+  if (cells.length === 0) return { kind: 'none' }
+  const newest = [...cells].sort((a, b) => a.bounds.top - b.bounds.top || a.bounds.left - b.bounds.left)[0] as UiNode
+  const label = labelOf(newest) as string
+  if (UPLOAD_PERCENT.test(label)) return { kind: 'uploading', percent: label }
+  if (label === '0') return { kind: 'new' }
+  return { kind: 'old', views: label }
+}
+
 /**
  * The confirmation §3.6 exists for (step 113.6, §9 Q1's recommendation): after Post is tapped, open
- * the account's own profile and look for the new video in the first grid cell, with a bounded wait
- * (upload/publish is not instant — E1 measured the media SCAN alone at ~1.6s, and TikTok's own
- * remote publish step is unmeasured and almost certainly slower).
+ * the account's own profile and read the NEWEST grid cell, with a bounded wait (upload/publish is
+ * not instant — E1 measured the media SCAN alone at ~1.6s, and TikTok's own remote publish step is
+ * slower still).
  *
  * `PROFIL_TAB`/`MENU_PROFIL` are the two confirmed-unique selectors `sheet.ts` already verified for
- * this exact navigation (its own header: "safe to find/waitFor directly"). What is NOT confirmed is
- * the shape of the profile's own video grid — the 2026-08-17 walk never reached it (§0.2: it stopped
- * at Post and discarded the draft), so there is no fixture and no id/className to anchor on here.
- * `looksLikeGridCell` below is therefore a GEOMETRIC heuristic (roughly square, thumbnail-sized,
- * below the profile header) rather than an invented id — the least-fabricated thing that can still
- * be called "a grid cell" without hardware to confirm it. A hardware run (113.4) either proves this
- * right or gives the next reader a real dump to replace it with; until then every call here logs
- * that it is unverified, and a run that cannot confirm reports `unverified`, never `posted`.
+ * this exact navigation (its own header: "safe to find/waitFor directly").
+ *
+ * This used to accept ANY grid-shaped cell as proof, and its own comment said a hardware run would
+ * "either prove this right or give the next reader a real dump to replace it with". The run came on
+ * 2026-09-11 and proved it wrong: on an account that already had six videos, with the upload stuck
+ * at 4%, the grid was full of cells that existed before the run began, and the run reported
+ * `posted`. `readNewestCell` above is the replacement — it asks what the newest cell SAYS, and only
+ * `0` views means live. A run that cannot confirm still reports `unverified`, never `posted`.
  */
 async function confirmPosted(ctx: ScriptContext<unknown>, frameWidth: number): Promise<{ confirmed: boolean; detail: string }> {
   const attempts = 6
@@ -450,18 +511,7 @@ async function confirmPosted(ctx: ScriptContext<unknown>, frameWidth: number): P
     }
   }
 
-  const looksLikeGridCell = (n: UiNode, belowY: number): boolean => {
-    if (!n.clickable) return false
-    if (n.bounds.top < belowY) return false // stay below the profile header/menu row
-    const w = n.bounds.right - n.bounds.left
-    const h = n.bounds.bottom - n.bounds.top
-    if (w <= 0 || h <= 0) return false
-    const widthFraction = w / frameWidth
-    if (widthFraction < 0.18 || widthFraction > 0.5) return false // a 2–4 column grid, roughly
-    const aspect = h / w
-    return aspect > 0.5 && aspect < 2.5 // squarish to portrait-ish thumbnail, not a full-width row
-  }
-
+  let lastSeen: NewestCell = { kind: 'none' }
   for (let round = 0; round < attempts; round++) {
     try {
       await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
@@ -472,14 +522,12 @@ async function confirmPosted(ctx: ScriptContext<unknown>, frameWidth: number): P
       // screen, so a sweep that ran before the tap cannot have seen it (observed 2026-08-18).
       await sweepProfileModals()
       const tree = await ctx.device.dump()
-      const cell = all(tree, (n) => looksLikeGridCell(n, menuNode.bounds.bottom))[0]
-      if (cell) {
-        return {
-          confirmed: true,
-          detail: `the own-profile screen showed a grid-shaped cell after posting (a geometric heuristic — no hardware dump of this screen exists yet, plan 113 §9 Q1; see confirmPosted()'s own comment)`,
-        }
+      const newest = readNewestCell(tree, menuNode.bounds.bottom, frameWidth)
+      if (newest.kind === 'new') {
+        return { confirmed: true, detail: 'the newest cell on the own-profile grid shows 0 views — a video that went live after this run tapped Post' }
       }
-      ctx.log.warn(`confirmPosted: reached the own-profile screen but no grid cell was found yet (attempt ${round + 1}/${attempts})`)
+      lastSeen = newest
+      ctx.log.warn(`confirmPosted: the newest cell does not show this post yet (attempt ${round + 1}/${attempts})`, { newest: JSON.stringify(newest) })
     } catch (err) {
       ctx.log.warn('confirmPosted: could not reach or read the own-profile screen this attempt', { round, error: String(err) })
     }
@@ -487,10 +535,14 @@ async function confirmPosted(ctx: ScriptContext<unknown>, frameWidth: number): P
   }
 
   await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-unverified`)
-  return {
-    confirmed: false,
-    detail: `Post was tapped, but the own-profile grid never showed a matching cell within ${Math.round((attempts * intervalMs) / 1000)}s — reporting "unverified" rather than assuming the tap succeeded (§3.6)`,
-  }
+  const waited = Math.round((attempts * intervalMs) / 1000)
+  const saw =
+    lastSeen.kind === 'uploading'
+      ? `it was still uploading (${lastSeen.percent}) — submitted, not yet live. A phone whose network cannot carry the upload stays here.`
+      : lastSeen.kind === 'old'
+        ? `the newest video on the profile was an older one (${lastSeen.views} views), so this post had not appeared.`
+        : 'no readable video grid was found.'
+  return { confirmed: false, detail: `Post was tapped, but after ${waited}s ${saw} Reporting "unverified" rather than assuming the tap succeeded (§3.6).` }
 }
 
 /**
