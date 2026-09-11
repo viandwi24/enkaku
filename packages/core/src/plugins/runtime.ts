@@ -575,7 +575,27 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
     for (const s of m.scripts) {
       const scriptId = `${p.id}:${s.id}`
       const existing = db.select().from(scripts).where(eq(scripts.id, scriptId)).get()
-      if (existing) continue
+      if (existing) {
+        /*
+          Refresh what the verify child DERIVES, and nothing else.
+
+          This used to be a bare `continue`, so re-verifying a version rewrote
+          its manifest and left every script row holding the schema from its
+          first install. That turned a core fix into one no installed plugin
+          could ever receive: when params started being emitted as the INPUT
+          schema (`verify-child-entry.ts` — a defaulted param is not required),
+          re-verifying `tiktok@1.27.0` produced the corrected schema and the
+          row went on refusing the Social Media Manager's router with "pick:
+          required…" regardless. The row's identity, owner, enabled flag and
+          bundle are untouched — same version, same id; only the three fields
+          computed FROM that bundle follow the latest computation.
+        */
+        db.update(scripts)
+          .set({ paramsSchema: s.paramsSchema, resultSchema: s.resultSchema ?? null, runtime: s.runtime ?? null })
+          .where(eq(scripts.id, scriptId))
+          .run()
+        continue
+      }
       db.insert(scripts)
         .values({
           id: scriptId,

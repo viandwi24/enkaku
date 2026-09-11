@@ -298,6 +298,28 @@ export default {
 `
 }
 
+/**
+ * A member whose params mostly carry defaults — the shape `tiktok/post-video`
+ * has, and the one the Social Media Manager's router could never dispatch to.
+ */
+const DEFAULTED_PARAMS = `
+import { z } from 'zod'
+export default {
+  id: 'poster',
+  version: '1.0.0',
+  scripts: [{
+    id: 'post',
+    params: z.object({
+      videoArtifactId: z.string(),
+      pick: z.enum(['in-order', 'random']).default('in-order'),
+      privacy: z.enum(['leave', 'public']).default('leave'),
+      dryRun: z.boolean().default(false),
+    }),
+    run: async () => {},
+  }],
+}
+`
+
 describe('verifyPluginBundle', () => {
   test('a healthy bundle reports the plugin id, version, every script id, and JSON-Schema params', async () => {
     const path = writeBundle(HEALTHY)
@@ -695,3 +717,30 @@ export default {
     expect(report.scripts[0]?.icon).toBeUndefined()
   }, 10_000)
 })
+
+/**
+ * A param schema describes what a caller SENDS. A field with a `.default()` is
+ * one the caller may leave out and the member will fill in — so it must not be
+ * in `required`.
+ *
+ * Emitted in Zod's default output mode it was, and `job.run` validates against
+ * this schema before the member runs, so it refused the call outright. That is
+ * why the Social Media Manager posted nothing: its router sent
+ * `tiktok/post-video` three fields and was refused every minute with "pick:
+ * required; videoPick: required; captionPick: required; privacy: required;
+ * maxHashtags: required; dryRun: required" — six fields, every one defaulted.
+ */
+describe('verifyPluginBundle — params are the INPUT schema', () => {
+  test('a defaulted param is not required, and its default is still published', async () => {
+    const report = await verifyPluginBundle(writeBundle(DEFAULTED_PARAMS))
+    expect(report.ok).toBe(true)
+    const schema = report.scripts[0]?.paramsSchema as { required?: string[]; properties: Record<string, { default?: unknown }> }
+    // The one field with no default is still demanded...
+    expect(schema.required).toEqual(['videoArtifactId'])
+    // ...and the defaults still reach a form, which pre-fills from them.
+    expect(schema.properties.pick?.default).toBe('in-order')
+    expect(schema.properties.privacy?.default).toBe('leave')
+    expect(schema.properties.dryRun?.default).toBe(false)
+  }, 10_000)
+})
+

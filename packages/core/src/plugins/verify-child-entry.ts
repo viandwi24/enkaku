@@ -121,7 +121,20 @@ async function main(): Promise<void> {
     // is the non-consecutive-group WARNING (plan 95 §3.5) and does not
     // fail verification on its own — every other finding does.
     const scripts = def.scripts.map((s) => {
-      const paramsSchema = z.toJSONSchema(s.params as z.ZodTypeAny)
+      // `io: 'input'`, and the result schema below says why in its own
+      // comment: "a defaulted result field is already applied by the time
+      // `run()` resolves, UNLIKE A PARAM". A param is what a caller SENDS, so a
+      // field with a `.default()` is one the caller may leave out. Emitted in
+      // Zod's default output mode, every such field lands in `required`, and
+      // `job.run` refuses the call before the member ever gets to apply the
+      // default. That is exactly what stopped the Social Media Manager's router
+      // posting anything: it sent `tiktok/post-video` the three fields it
+      // cared about and was refused, every minute, with "pick: required;
+      // videoPick: required; captionPick: required; privacy: required;
+      // maxHashtags: required; dryRun: required" — six fields that all have
+      // defaults. The SDK's own publish path (`packages/sdk/src/cli/publish.ts`)
+      // has always emitted params with `io: 'input'`; this one never did.
+      const paramsSchema = z.toJSONSchema(s.params as z.ZodTypeAny, { io: 'input' })
       const findings = checkDeclaredSchema(paramsSchema).filter((f) => f.limit !== 'group')
       if (findings.length > 0) {
         throw new Error(
