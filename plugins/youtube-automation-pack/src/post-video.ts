@@ -85,6 +85,23 @@ import { YOUTUBE_PACKAGE, capture, centre, labelled, relaunch, sleep, waitForTre
 const DETAILS_TITLE = { x: 445 / 720, y: 224 / 1640 }
 const DETAILS_UPLOAD = { x: 534 / 720, y: 1480 / 1640 }
 
+/**
+ * ADB_ONLY — the details screen takes input only through Android's own injection.
+ *
+ * Measured on the owner's moto, 2026-09-11, five routed runs and a bench
+ * session: a farm tap (scrcpy UHID) on the title field never focused it, and
+ * even once focused the guest agent's keyboard committed nothing — the typed
+ * keys then reached the focused thumbnail and a space opened the thumbnail
+ * editor. `input tap` focused the field at once and `input text` typed into
+ * it. So the three details-screen inputs (title tap, title text, Upload) go
+ * `via: 'adb'`, and nowhere else in this member does.
+ */
+
+/** The title as `input text` can carry it: printable ASCII, whitespace collapsed. */
+export function asciiTitle(s: string): string {
+  return s.replace(/[^\x20-\x7e]/g, '').replace(/\s+/g, ' ').trim()
+}
+
 /** YouTube's title limit. A longer caption is cut, and the cut is logged. */
 const TITLE_MAX = 100
 
@@ -353,6 +370,13 @@ const script: PluginMemberScript<typeof params, typeof result> = {
   async run(ctx) {
     const screens: Screen[] = []
     let title = ctx.params.caption.replace(/\s+/g, ' ').trim()
+    // The title is typed through `input text` (ADB_ONLY), which carries printable ASCII only.
+    const ascii = asciiTitle(title)
+    if (ascii !== title) {
+      ctx.log.warn('the caption has characters adb cannot type (emoji, accents) — they were left out of the YouTube title', { before: title.length, after: ascii.length })
+      title = ascii
+    }
+    if (title.length === 0) fail('E_PARAMS_INVALID', 'the caption has no characters that can be typed as a YouTube title (printable ASCII) — give it some text.')
     if (title.length > TITLE_MAX) {
       ctx.log.warn(`caption is longer than YouTube's ${TITLE_MAX}-character title — the rest was cut`, { length: title.length })
       title = title.slice(0, TITLE_MAX).trim()
@@ -501,7 +525,8 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     for (let attempt = 0; attempt < 2 && !focused; attempt++) {
       if (attempt > 0) await sleep(2_000)
       const before = await ctx.device.screenshot()
-      await ctx.device.tap({ point: titlePoint })
+      // `via: 'adb'` — this screen ignores the farm's own taps and keyboard (see ADB_ONLY).
+      await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
       await sleep(1_200)
       focused = !bytesEqual(before, await ctx.device.screenshot())
       const now = await ctx.device.dump()
@@ -514,9 +539,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       await ctx.artifact.screenshot('yt-09-not-focused')
       fail('E_DETAILS_LAYOUT', 'two taps on the title field changed nothing on screen, so the field never took focus and nothing was typed or uploaded. See artifact yt-09-not-focused.')
     }
-    const typed = await ctx.device.type(title)
+    const typed = await ctx.device.type(title, { via: 'adb' })
     ctx.log.info('typed the title', { via: typed.via })
-    if (endsInTagToken(title)) await ctx.device.type(' ')
+    if (endsInTagToken(title)) await ctx.device.type(' ', { via: 'adb' })
     await sleep(1_000)
     await ctx.artifact.screenshot('yt-09-titled')
     // Every tap from here is blind, so prove the screen is still the details screen before the one
@@ -544,7 +569,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       }
     }
 
-    await ctx.device.tap({ point: { x: Math.round(frame.width * DETAILS_UPLOAD.x), y: Math.round(frame.height * DETAILS_UPLOAD.y) } })
+    await ctx.device.tap({ point: { x: Math.round(frame.width * DETAILS_UPLOAD.x), y: Math.round(frame.height * DETAILS_UPLOAD.y) } }, { via: 'adb' })
     ctx.log.info('tapped Upload — confirming on the channel rather than trusting the tap')
 
     // A tap that took leaves the details screen. One that did not leaves it in

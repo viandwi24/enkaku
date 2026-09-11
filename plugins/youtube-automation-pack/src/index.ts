@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.21.2',
+  version: '0.22.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.22.0 — post-video types the title through adb.** YouTube's details
+   * screen ignores the farm's own input: a scrcpy-UHID tap never focuses its
+   * title field and the guest agent's keyboard commits nothing into it, while
+   * `input tap`/`input text` do both (measured on the owner's moto). The
+   * title tap, the title and the Upload tap now go `via: 'adb'` — the new
+   * per-call SDK option — and only there. The title is printable ASCII (what
+   * `input text` carries); other characters are left out and logged.
+   * **Needs a core with `via: 'adb'`** — an older core ignores the option and
+   * the run stops at the focus check with nothing posted.
    *
    * **0.21.2 — post-video proves the title field has focus before typing.**
    * A tap that missed the field let the typed keys reach the focused

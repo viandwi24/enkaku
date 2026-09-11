@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
-import { createButton, endsInTagToken, onThumbnailEditor, resumeDraftPrompt, galleryCellFor, hiddenWindow, isSelectedCell, isSignedOut, judgeChannel, readChannelCells } from './post-video'
+import { asciiTitle, createButton, endsInTagToken, onThumbnailEditor, resumeDraftPrompt, galleryCellFor, hiddenWindow, isSelectedCell, isSignedOut, judgeChannel, readChannelCells } from './post-video'
 import { rowsById } from './tree'
 
 /**
@@ -114,5 +114,13 @@ describe('endsInTagToken', () => {
   test('matches a trailing hashtag or mention only', () => {
     expect(endsInTagToken('test upload enkaku 2 #test')).toBe(true)
     expect(endsInTagToken('#test upload')).toBe(false)
+  })
+})
+
+describe('asciiTitle — what adb can type', () => {
+  test('keeps printable ASCII and drops the rest', () => {
+    expect(asciiTitle('test upload enkaku 2 #test')).toBe('test upload enkaku 2 #test')
+    expect(asciiTitle('kopi ☕ pagi  🌅 #ngopi')).toBe('kopi pagi #ngopi')
+    expect(asciiTitle('🔥🔥')).toBe('')
   })
 })
