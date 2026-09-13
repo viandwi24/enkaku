@@ -17,7 +17,6 @@ import { InfoPopover } from './InfoPopover'
 import { DeviceActions } from './DeviceActions'
 import { Inspector } from './Inspector'
 import { DeviceTab } from './DeviceTab'
-import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
 import { stateTooltip } from './state-tooltip'
 
 /**
@@ -58,7 +57,7 @@ export function DeviceControl({
    */
   const [height, setHeight] = useState(DEFAULT_WINDOW_HEIGHT_PX)
   const resizeStart = useRef({ my: 0, h: 0 })
-  const [tab, setTab] = useState<'actions' | 'inspector' | 'device' | 'network'>('actions')
+  const [tab, setTab] = useState<'actions' | 'inspector' | 'device'>('actions')
 
   /**
    * Refetch on retarget, and drop everything scoped to the device we are
@@ -361,18 +360,18 @@ export function DeviceControl({
           <TabsList variant="compact" className="mx-3 mt-2">
             <TabsTrigger value="actions">Actions</TabsTrigger>
             <TabsTrigger value="inspector">Inspector</TabsTrigger>
-            <TabsTrigger value="device">Device</TabsTrigger>
             {/*
-              Restored, not written. `NetworkPanel` and everything under it
-              survived the Studio rewrite intact — already migrated to the
-              `set-network` verb for writes and `GET /:id/network` for reads,
-              both of which work — and simply stopped being mounted by
-              anything. Nothing imported it, so a device's proxy mode had no
-              screen at all while the routes behind it kept running: the
-              owner's own phone was carrying an enabled `vpn-helper` route
-              they could not see (2026-09-06).
+              Network lives inside this tab as a third chip section, next to
+              Jobs and Files (`DeviceTab.tsx`) — the same "generic container
+              tab, not one tab per feature" reasoning the handoff already
+              applies to Jobs/Files, and the reason a four-item top-level row
+              no longer fits the 274px column at the popup's narrower widths
+              (owner report, 2026-09-13). `NetworkPanel` and everything under
+              it survived the Studio rewrite intact and is restored here, not
+              rewritten: already migrated to the `set-network` verb for
+              writes and `GET /:id/network` for reads.
             */}
-            <TabsTrigger value="network">Network</TabsTrigger>
+            <TabsTrigger value="device">Device</TabsTrigger>
           </TabsList>
           <TabsContent value="actions" className="min-h-0 flex-1 overflow-y-auto">
             <DeviceActions onAction={onAction} />
@@ -382,13 +381,6 @@ export function DeviceControl({
           </TabsContent>
           <TabsContent value="device" className="min-h-0 flex-1 overflow-y-auto">
             <DeviceTab deviceId={deviceId} onAction={onAction} nodeOwned={nodeOwned} />
-          </TabsContent>
-          <TabsContent value="network" className="min-h-0 flex-1 overflow-y-auto">
-            {/* `canUse` is a convenience only — the server checks the control
-                activity on every network request regardless (NetworkPanel's
-                own note). This window IS the control surface, so it passes
-                true rather than inventing a second gate. */}
-            <NetworkPanel deviceId={deviceId} canUse />
           </TabsContent>
         </Tabs>
       </div>

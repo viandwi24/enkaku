@@ -5,26 +5,55 @@ import { cn } from '@enkaku/ui'
 import type { GenericActionId } from '@/lib/generic-actions'
 import { DeviceJobs } from './DeviceJobs'
 import { DeviceFiles } from './DeviceFiles'
+import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
 
 /**
  * The Device tab (design handoff README.md:279-280; plan 215 §4.12): "a
  * generic container tab, not one tab per feature." A chip switch selects
- * Jobs or Files; a third section touches only this file.
+ * Jobs, Files, or Network.
+ *
+ * Network moved in here (owner report, 2026-09-13): the top-level tab row
+ * (`DeviceControl.tsx`) held four entries — Actions, Inspector, Device,
+ * Network — and clipped the last one at the popup's narrower widths. Network
+ * is exactly the kind of section this tab already exists for, so it joins
+ * Jobs/Files as a third chip rather than growing a fifth mechanism (a
+ * scrolling tab row, an overflow menu) the design has no precedent for.
+ * `NetworkPanel` renders its own padding (`@container` + `py-4`), so it sits
+ * outside the chip row's `p-3` wrapper to avoid doubling it.
  */
 export function DeviceTab({ deviceId, onAction, nodeOwned }: { deviceId: string; onAction: (id: GenericActionId, params?: Record<string, unknown>) => void; nodeOwned: boolean }) {
-  const [section, setSection] = useState<'jobs' | 'files'>('jobs')
+  const [section, setSection] = useState<'jobs' | 'files' | 'network'>('jobs')
 
   return (
-    <div className="flex flex-col gap-2 p-3">
-      <div className="flex gap-1">
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-1 p-3 pb-0">
         <Chip active={section === 'jobs'} onClick={() => setSection('jobs')}>
           Jobs
         </Chip>
         <Chip active={section === 'files'} onClick={() => setSection('files')}>
           Files
         </Chip>
+        <Chip active={section === 'network'} onClick={() => setSection('network')}>
+          Network
+        </Chip>
       </div>
-      {section === 'jobs' ? <DeviceJobs deviceId={deviceId} /> : <DeviceFiles deviceId={deviceId} onAction={onAction} nodeOwned={nodeOwned} />}
+      {section === 'jobs' && (
+        <div className="p-3 pt-0">
+          <DeviceJobs deviceId={deviceId} />
+        </div>
+      )}
+      {section === 'files' && (
+        <div className="p-3 pt-0">
+          <DeviceFiles deviceId={deviceId} onAction={onAction} nodeOwned={nodeOwned} />
+        </div>
+      )}
+      {section === 'network' && (
+        // `canUse` is a convenience only — the server checks the control
+        // activity on every network request regardless (NetworkPanel's own
+        // note). This window IS the control surface, so it passes true
+        // rather than inventing a second gate.
+        <NetworkPanel deviceId={deviceId} canUse />
+      )}
     </div>
   )
 }
