@@ -16,5 +16,12 @@
     "@enkaku/protocol": "workspace:*",
     "@enkaku/sdk": "workspace:*",
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@enkaku/ui": "workspace:*",
+    "@tailwindcss/cli": "^4.3.3",
+    "@types/react": "^19",
+    "react": "^19.0.0",
+    "tailwindcss": "^4.3.3"
   }
 }
