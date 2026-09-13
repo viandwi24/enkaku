@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.22.0',
+  version: '0.26.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,51 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.26.1 — no BACK before Upload.** The keyboard closes itself with the
+   * focus, so the BACK meant to close it navigated off the details screen and
+   * lost a title that had just been typed correctly (2026-09-14). It waits
+   * instead, and gives Upload a second tap if the first does not take.
+   *
+   * **0.26.0 — type the title inside the two seconds it stays focused.** Why
+   * every earlier attempt typed into an unfocused field: the title field
+   * loses focus about two seconds after the tap, and only while the farm's
+   * own scrcpy session is attached — with that session killed, focus holds
+   * indefinitely. The farm is interrupting the app it is driving. Until the
+   * session layer stops doing that, the member types immediately after the
+   * tap (400ms) instead of settling for six seconds first.
+   *
+   * **0.25.0 — stop claiming to prove focus; prove the consequence.** The
+   * keyboard's window never reaches the reader on the details screen (Android
+   * withholds the whole window set there), so 0.24's keyboard check failed
+   * every run even while the keyboard was up. The member now taps, waits for
+   * the field to settle, types in one call, and checks where it ended up: the
+   * thumbnail editor means the tap missed and nothing was uploaded, said in
+   * those words. Whether the title landed is settled by the channel page, as
+   * before.
+   *
+   * **0.24.1 — give the keyboard time to appear.** 0.24.0 waited 4s for it and
+   * tapped again; the phone's own keyboard took about 8s on a cold start, and
+   * the second tap removed the focus the first had won. 15s now.
+   *
+   * **0.24.0 — post-video proves focus by the keyboard, not by pixels.** The
+   * old check ("the screen changed after the tap") was satisfied by the
+   * thumbnail rendering, so a run typed into a field that never had focus.
+   * The details screen is invisible to the reader but the KEYBOARD is an
+   * ordinary window in the same dump, so the member now taps until a keyboard
+   * appears (three tries), and waits for it to go away after BACK before
+   * aiming at Upload.
+   *
+   * **0.23.0 — post-video: one bulk title, and close the keyboard first.**
+   * Two findings from the 2026-09-13 runs. Typing the title character by
+   * character let YouTube's tag completion swallow everything before the
+   * hashtag (the field ended up holding "#test " alone), so it goes in one
+   * `input text` call. And the phone's own keyboard covers the whole button
+   * bar, so the Upload tap hit the keyboard — BACK closes it first, and the
+   * run stops if that leaves the details screen. The member also now states
+   * that a phone posting to YouTube must keep its own keyboard
+   * (`prep.textInput: 'device'`): with the farm's IME as default, the title
+   * field never takes focus at all.
    *
    * **0.22.0 — post-video types the title through adb.** YouTube's details
    * screen ignores the farm's own input: a scrcpy-UHID tap never focuses its

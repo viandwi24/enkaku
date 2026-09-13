@@ -55,6 +55,12 @@ import { YOUTUBE_PACKAGE, capture, centre, labelled, relaunch, sleep, waitForTre
  *   camera "Jangan izinkan" (twice makes it permanent — uploads never need
  *   it), photos "Izinkan semua". A run that meets one stops with
  *   `E_PERMISSION_DIALOG_HIDDEN` and says which answer to give.
+ * - **The phone keeps its OWN keyboard.** With the farm's guest-agent IME set
+ *   as the device default (`prep.textInput: 'auto'`, the farm's default), a
+ *   tap on the title field never focuses it at all — measured on the owner's
+ *   moto, 2026-09-13, and fixed by nothing but switching the phone back to its
+ *   own keyboard. Set the phone's **Text input** to `device` before routing
+ *   YouTube posts to it. `E_DETAILS_LAYOUT` says so when focus never arrives.
  * - **The details screen** is driven blind, the way `tiktok-automation-pack`
  *   already drives its two unreadable video screens: taps aimed from a layout
  *   measured on hardware, then the outcome proven on a screen that CAN be
@@ -83,6 +89,19 @@ import { YOUTUBE_PACKAGE, capture, centre, labelled, relaunch, sleep, waitForTre
  * bar covers the button below ~1515. y = 1480 is inside the button either way.
  */
 const DETAILS_TITLE = { x: 445 / 720, y: 224 / 1640 }
+
+/**
+ * How long the title tap gets before the text is typed.
+ *
+ * Short on purpose: the field keeps focus for only about two seconds while the
+ * farm's scrcpy session is attached (measured 2026-09-14 — with the session
+ * killed it holds forever), so the text has to go in inside that window. Long
+ * enough for the tap to register, far short of the two seconds.
+ */
+const FOCUS_SETTLE_MS = 400
+
+/** How long after typing the keyboard is gone on its own (measured ~2s; this is that with room). */
+const KEYBOARD_GONE_MS = 3_500
 const DETAILS_UPLOAD = { x: 534 / 720, y: 1480 / 1640 }
 
 /**
@@ -253,11 +272,6 @@ export function judgeChannel(before: string[] | null, after: string[] | null, ti
   if (titled) return { kind: 'processing', words: titled }
   if (before !== null && after.length > before.length) return { kind: 'new', via: 'count' }
   return { kind: 'same' }
-}
-
-/** True when the caption's last token is a hashtag or mention — the case that can leave a suggestion list open. */
-export function endsInTagToken(caption: string): boolean {
-  return /(^|\s)[#@][^\s#@]+$/.test(caption)
 }
 
 /** The frame the tree describes — the widest/tallest bounds in it, since a root can arrive as 0,0,0,0. */
@@ -521,42 +535,58 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     */
     const frame = frameOf(details.tree)
     const titlePoint = { x: Math.round(frame.width * DETAILS_TITLE.x), y: Math.round(frame.height * DETAILS_TITLE.y) }
-    let focused = false
-    for (let attempt = 0; attempt < 2 && !focused; attempt++) {
-      if (attempt > 0) await sleep(2_000)
-      const before = await ctx.device.screenshot()
-      // `via: 'adb'` — this screen ignores the farm's own taps and keyboard (see ADB_ONLY).
-      await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
-      await sleep(1_200)
-      focused = !bytesEqual(before, await ctx.device.screenshot())
-      const now = await ctx.device.dump()
-      if (hiddenWindow(now) !== 'details') {
-        await capture(ctx, 'yt-09-not-details', now)
-        fail('E_DETAILS_LAYOUT', `the title tap left the details screen${onThumbnailEditor(now) ? ' for YouTube\'s thumbnail editor' : ''} — nothing was uploaded. See artifact yt-09-not-details.`)
-      }
-    }
-    if (!focused) {
-      await ctx.artifact.screenshot('yt-09-not-focused')
-      fail('E_DETAILS_LAYOUT', 'two taps on the title field changed nothing on screen, so the field never took focus and nothing was typed or uploaded. See artifact yt-09-not-focused.')
-    }
-    const typed = await ctx.device.type(title, { via: 'adb' })
+    /*
+      Focus cannot be PROVEN on this screen, so it is not claimed.
+
+      Three readings tried and discarded on the owner's moto (2026-09-13/14):
+      "the screen changed after the tap" is satisfied by the thumbnail
+      rendering; the keyboard's own window never reaches the reader here
+      (Android withholds the whole window set for this screen, the keyboard
+      with it — `mInputShown` said true while the dump showed nothing); and
+      `mInputShown` itself is not something a script can read.
+
+      What IS reliable is the consequence: a tap that missed the field leaves
+      focus on the thumbnail, and the first space in the title then opens the
+      thumbnail editor — a readable screen, checked right after typing.
+
+      And the field does not KEEP focus. Measured 2026-09-14: the keyboard
+      comes up about a second after the tap and is gone two seconds later,
+      leaving the field unfocused — but only while the farm's own scrcpy
+      session is attached to the phone. Kill that session and focus holds
+      indefinitely; that is the farm interrupting the app, not YouTube. Until
+      that is fixed in the session layer, the title is typed INSIDE that
+      window: tap, a short settle, type, and only then look at where we are.
+    */
+    await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
+    await sleep(FOCUS_SETTLE_MS)
+    const typed = await ctx.device.type(title, { via: 'adb', instant: true })
     ctx.log.info('typed the title', { via: typed.via })
-    if (endsInTagToken(title)) await ctx.device.type(' ', { via: 'adb' })
-    await sleep(1_000)
+    await sleep(1_500)
     await ctx.artifact.screenshot('yt-09-titled')
-    // Every tap from here is blind, so prove the screen is still the details screen before the one
-    // that uploads. A title tap that landed elsewhere opens a READABLE screen (the thumbnail editor,
-    // on 2026-09-11), which is exactly what this catches.
-    const titled = await ctx.device.dump()
-    if (hiddenWindow(titled) !== 'details') {
-      await capture(ctx, 'yt-09-not-details', titled)
+    // A tap that missed the field left focus on the thumbnail; the space in the title then opened
+    // the thumbnail editor. That is what this catches — and it means nothing was uploaded.
+    const afterTyping = await ctx.device.dump()
+    if (hiddenWindow(afterTyping) !== 'details') {
+      await capture(ctx, 'yt-09-not-details', afterTyping)
       fail(
         'E_DETAILS_LAYOUT',
-        onThumbnailEditor(titled)
-          ? 'the title tap opened YouTube\'s thumbnail editor instead of the title field — this phone\'s details layout differs from the measured one. Nothing was uploaded; see artifact yt-09-not-details.'
-          : 'after the title tap the screen was no longer the details screen. Nothing was uploaded; see artifact yt-09-not-details.',
+        onThumbnailEditor(afterTyping)
+          ? 'the title never reached the field: the typed text opened YouTube\'s thumbnail editor instead, which means the tap before it did not focus the title. Nothing was uploaded. If this repeats, check that this phone keeps its own keyboard (Text input: "device"). See artifact yt-09-not-details.'
+          : 'typing the title left the details screen — nothing was uploaded. See artifact yt-09-not-details.',
       )
     }
+
+    /*
+      No BACK to close the keyboard: it closes itself.
+
+      The same interruption that steals the field's focus takes the keyboard
+      with it about two seconds after the tap, so by the time a BACK arrives
+      there is no keyboard left to close and it navigates OFF the details
+      screen instead — which is exactly how the 2026-09-14 run lost a title it
+      had just typed correctly. Waiting is both simpler and what actually
+      happens.
+    */
+    await sleep(KEYBOARD_GONE_MS)
 
     if (ctx.params.dryRun) {
       return {
@@ -569,12 +599,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       }
     }
 
-    await ctx.device.tap({ point: { x: Math.round(frame.width * DETAILS_UPLOAD.x), y: Math.round(frame.height * DETAILS_UPLOAD.y) } }, { via: 'adb' })
+    const uploadPoint = { x: Math.round(frame.width * DETAILS_UPLOAD.x), y: Math.round(frame.height * DETAILS_UPLOAD.y) }
+    await ctx.device.tap({ point: uploadPoint }, { via: 'adb' })
     ctx.log.info('tapped Upload — confirming on the channel rather than trusting the tap')
 
     // A tap that took leaves the details screen. One that did not leaves it in
     // place, and then nothing was uploaded — a failure a retry may safely repeat.
-    const left = await waitForTree(ctx, (t) => hiddenWindow(t) !== 'details', { budgetMs: 20_000 })
+    // One second try first: a keyboard that had not yet gone would have eaten the first.
+    let left = await waitForTree(ctx, (t) => hiddenWindow(t) !== 'details', { budgetMs: 12_000 })
+    if (!left.ok) {
+      ctx.log.warn('Upload did not take the first time — tapping once more')
+      await ctx.device.tap({ point: uploadPoint }, { via: 'adb' })
+      left = await waitForTree(ctx, (t) => hiddenWindow(t) !== 'details', { budgetMs: 15_000 })
+    }
     if (left.ok && onThumbnailEditor(left.tree)) {
       await capture(ctx, 'yt-10-thumbnail-editor', left.tree)
       fail('E_DETAILS_LAYOUT', 'the Upload tap opened YouTube\'s thumbnail editor instead — nothing was uploaded. See artifact yt-10-thumbnail-editor.')
