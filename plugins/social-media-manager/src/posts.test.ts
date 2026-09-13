@@ -402,6 +402,27 @@ describe('failedDevices — a retry re-targets the failures and nobody else', ()
   })
 })
 
+describe('planDispatch — a row may cap its own fan-out (what a session spread stores)', () => {
+  test('maxDevices 1 takes ONE phone even when five are free and the farm allows five', () => {
+    const p = post({ platforms: ['tiktok'], dispatch: {}, maxDevices: 1 })
+    const devices = [device({ id: 'd1' }), device({ id: 'd2' }), device({ id: 'd3' }), device({ id: 'd4' }), device({ id: 'd5' })]
+    const plan = planDispatch({ post: p, devices, now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches.map((d) => d.deviceId)).toEqual(['d1'])
+  })
+
+  test('without a cap the farm setting still decides — the older behaviour is untouched', () => {
+    const p = post({ platforms: ['tiktok'], dispatch: {} })
+    const devices = [device({ id: 'd1' }), device({ id: 'd2' }), device({ id: 'd3' })]
+    expect(planDispatch({ post: p, devices, now: NOW, maxDevicesPerPlatform: 2 }).dispatches).toHaveLength(2)
+  })
+
+  test('the row cap cannot widen the farm setting past what is free', () => {
+    const p = post({ platforms: ['tiktok'], dispatch: {}, maxDevices: 10 })
+    const devices = [device({ id: 'd1' })]
+    expect(planDispatch({ post: p, devices, now: NOW, maxDevicesPerPlatform: 1 }).dispatches).toHaveLength(1)
+  })
+})
+
 describe('planDispatch — the router never retries a settled platform on its own', () => {
   for (const state of ['succeeded', 'partial', 'failed'] as const) {
     test(`${state} is left alone by the tick`, () => {

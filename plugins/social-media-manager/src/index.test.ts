@@ -4,6 +4,9 @@ import plugin, { partialNote, settleJob } from './index'
 import addPost from './add-post'
 import retryFailed from './retry-failed'
 import addPosts from './add-posts'
+import addGroup from './add-group'
+import startGroup from './start-group'
+import retryGroup from './retry-group'
 import { PLATFORMS } from './platforms'
 import { POST_PREFIX } from './posts'
 
@@ -25,15 +28,15 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.7.0')
+    expect(plugin.version).toBe('0.8.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
   test('every member is presentable in Studio', () => {
-    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts'])
+    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group'])
     // Typed against the members themselves rather than the manifest's erased
     // `ScriptDefinition`, which drops `title`/`description` from the type.
-    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts]
+    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })

@@ -330,6 +330,38 @@ export const PostSchema = z
     deviceIds: z.array(z.string().min(1)).default([]),
     createdAt: z.number().int().nonnegative(),
     /**
+     * The upload session this row belongs to, or `null` for a row posted on
+     * its own (every row written before groups existed, and every row the
+     * single-video path still writes).
+     *
+     * Membership lives HERE rather than as a list on the group, because the
+     * router walks rows and needs the answer per row, and because a list on
+     * the group would be a second place for the truth to live. `groups.ts`
+     * explains the rest of that trade.
+     */
+    groupId: z.string().min(1).nullable().default(null),
+    /**
+     * Unix seconds: the router leaves this row alone until then — how a group
+     * of forty is spread over an hour instead of firing at once.
+     *
+     * `null` means two different things, and which one is decided by
+     * `groupId` (`groups.ts`'s `isRowDue`): a row IN a group has not been
+     * started yet, so it waits for the operator; a row outside one was never
+     * paced and is due immediately, which is exactly what it meant before this
+     * field existed.
+     */
+    notBeforeAt: z.number().int().nonnegative().nullable().default(null),
+    /**
+     * How many phones ONE tick may hand this row to, overriding the farm-wide
+     * `maxDevicesPerPlatform`. `1` is what "one video per phone" means: the
+     * router claims a phone for this row and the next row takes the next free
+     * phone, which is what spreads forty videos over forty phones.
+     *
+     * `null` keeps the farm setting, which is what every row written before
+     * groups existed meant.
+     */
+    maxDevices: z.number().int().positive().max(500).nullable().default(null),
+    /**
      * Per-platform state, keyed by platform id. Seeded `pending` for every
      * targeted platform by `newPost`, so the Posts table can tell "not
      * targeted" (no key, rendered `—`) apart from "targeted and waiting"
@@ -605,7 +637,14 @@ export function planDispatch(input: {
       continue
     }
 
-    const chosen = eligible.slice(0, Math.max(1, maxDevicesPerPlatform))
+    /*
+      The row's own cap wins over the farm's. `maxDevices: 1` is what a group
+      spread "one video per phone" stores, and it is the whole mechanism: this
+      row takes one free phone, the router's `claimed` set removes that phone
+      from the pool, and the next row takes the next one.
+    */
+    const cap = post.maxDevices ?? maxDevicesPerPlatform
+    const chosen = eligible.slice(0, Math.max(1, cap))
     for (const device of chosen) {
       plan.dispatches.push({ platform: platformId, script: platform.script, deviceId: device.id, stableId: device.stableId })
     }
@@ -652,6 +691,9 @@ export function newPost(input: { videoArtifactId: string; caption: string; platf
     deviceIds: [...new Set(input.deviceIds ?? [])],
     createdAt: input.now,
     dispatch,
+    groupId: null,
+    notBeforeAt: null,
+    maxDevices: null,
     lastNote: null,
   }
 }
