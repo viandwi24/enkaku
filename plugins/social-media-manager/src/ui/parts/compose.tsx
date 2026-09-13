@@ -207,7 +207,7 @@ type PhoneMode = 'labelled' | 'labels' | 'devices'
 const EMPTY_DEVICES: Device[] = []
 const EMPTY_VIDEOS: Artifact[] = []
 
-export function ComposePanel({ onCreated }: { onCreated: () => void }): React.ReactElement {
+export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null) => void }): React.ReactElement {
   // --- the farm's two lists -------------------------------------------------
   const videosLoad = useCallback(() => listVideos(), [])
   const devicesLoad = useCallback(() => listDevices(), [])
@@ -376,7 +376,7 @@ export function ComposePanel({ onCreated }: { onCreated: () => void }): React.Re
     if (uploading) out.push('Videos are still uploading. The session can be created the moment the last one lands.')
     if (chosenIds.length === 0) out.push('No video is picked. A session needs at least one.')
     if (chosenPlatforms.length === 0) out.push('No platform is picked. Nothing would know where to post.')
-    if (title.trim() === '') out.push('The session has no name. It is how you will find it on the list below.')
+    if (title.trim() === '') out.push('The session has no name. It is how you will find it on the Sessions tab.')
     if (phoneMode === 'labels' && chosenLabels.size === 0) {
       out.push('“Only these labels” is chosen and no label is ticked — an empty choice would quietly mean every labelled phone, which is not what it says.')
     }
@@ -456,15 +456,16 @@ export function ComposePanel({ onCreated }: { onCreated: () => void }): React.Re
           } catch (e: unknown) {
             throw new Error(`Nothing was created: ${reason(e)}`)
           }
-          // The list below is told as soon as the session exists, whatever
-          // happens to the start half — a session that was written is a
-          // session the operator must be able to see.
-          onCreated()
+          // The page is told as soon as the session exists, whatever happens to
+          // the start half — a session that was written is a session the
+          // operator must be able to see, and it carries its own id so they
+          // land on it rather than on a list to search.
+          onCreated(created?.groupId ?? null)
           if (mode === 'create') return
 
           if (created === null) {
             throw new Error(
-              `“${wanted}” was created and is still held: the farm did not say which session it wrote, so nothing was started. Press Start on it below.`,
+              `“${wanted}” was created and is still held: the farm did not say which session it wrote, so nothing was started. Press Start on it.`,
             )
           }
           try {
@@ -472,7 +473,7 @@ export function ComposePanel({ onCreated }: { onCreated: () => void }): React.Re
           } catch (e: unknown) {
             throw new Error(`“${wanted}” was created and is still held — it did not start: ${reason(e)}`)
           }
-          onCreated()
+          onCreated(created.groupId)
         },
         {
           success:
@@ -860,7 +861,7 @@ export function ComposePanel({ onCreated }: { onCreated: () => void }): React.Re
           )}
         </Step>
 
-        <Step n={7} title="Name this session" hint="It is how you will find it on the list below.">
+        <Step n={7} title="Name this session" hint="It is how you will find it on the Sessions tab.">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={defaultSessionTitle()} />
         </Step>
 

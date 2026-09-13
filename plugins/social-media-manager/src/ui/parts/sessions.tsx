@@ -3,7 +3,7 @@ import {
   ArrowsClockwiseIcon,
   Badge,
   Button,
-  CaretDownIcon,
+  CaretLeftIcon,
   CaretRightIcon,
   Card,
   ConfirmDialog,
@@ -36,16 +36,21 @@ import {
 } from '../shared'
 
 /**
- * The watching half of the one screen: every upload session, newest first, and
- * inside each one every video it is made of.
+ * The watching half of the screen, in two places: the **Sessions** tab (every
+ * upload session, newest first) and a **session's own page** (every video in
+ * one of them, with every phone under it).
  *
- * ## What this panel is for
+ * ## What these are for
  *
- * The compose panel above makes a session out of a folder of videos. This is
- * where an operator stands afterwards — forty videos crossing forty phones over
- * the best part of an hour — and the two questions they have are always the
- * same: **is it out yet**, and **what broke**. Everything below answers one of
- * those two, and anything that answered neither was left out.
+ * The compose tab makes a session out of a folder of videos. This is where an
+ * operator stands afterwards — forty videos crossing forty phones over the best
+ * part of an hour — and the two questions they have are always the same: **is
+ * it out yet**, and **what broke**. Everything here answers one of those two,
+ * and anything that answered neither was left out.
+ *
+ * The split between the two is that same pair of questions: the list answers
+ * the first for every batch at a glance, and the page answers the second for
+ * one batch in full. Forty videos expanded inside a list is neither.
  *
  * ## The vocabulary is the service's, not this file's
  *
@@ -62,7 +67,7 @@ import {
  *   differs: retry the stragglers, not the lot.
  *
  * So nothing here ever rounds a mixed outcome up into a clean one: a session
- * with failures shows the number, on the card, before anything is expanded.
+ * with failures shows the number, on the card, before anything is opened.
  */
 
 /** How often a moving session is re-read. Slow on purpose — a batch moves in minutes, not frames. */
@@ -82,9 +87,9 @@ interface Loaded {
  * One snapshot of everything this panel draws.
  *
  * The three reads are deliberately one load: a session's card is a group row
- * and its expansion is the post rows, and showing a fresh group beside stale
- * posts would let the card's counts disagree with the list under it for a
- * whole poll interval.
+ * and its page is the post rows, and showing a fresh group beside stale posts
+ * would let a header's counts disagree with the rows under it for a whole poll
+ * interval.
  *
  * `listVideos` is allowed to fail on its own — a name is a nicety and the id's
  * first eight characters are the fallback the rest of this file already uses,
@@ -226,17 +231,25 @@ function StateWord({ state }: { state: string }): ReactElement {
 }
 
 /**
- * The sessions panel.
+ * One reading of the farm, polled while anything is moving.
  *
- * `refreshKey` is the compose panel's way of saying *I have just made one* —
- * it changes, this reloads, and the new session is on screen without the
- * operator pressing anything.
+ * A hook rather than a component's own state because BOTH screens need exactly
+ * this — the list of sessions and one session's own page — and two copies of a
+ * poll loop is two places for a stale answer to win.
+ *
+ * `refreshKey` is the compose panel's way of saying *I have just made one*: it
+ * changes, this reloads, and the new session is there without anyone pressing
+ * anything.
  */
-export function SessionsPanel({ refreshKey }: { refreshKey: number }): ReactElement {
+function useSessionsData(refreshKey: number): {
+  data: Loaded | null
+  error: string | null
+  loading: boolean
+  reload: () => void
+} {
   const [data, setData] = useState<Loaded | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set<string>())
 
   /**
    * The two counters that make a stale answer harmless.
@@ -310,28 +323,28 @@ export function SessionsPanel({ refreshKey }: { refreshKey: number }): ReactElem
     return () => clearInterval(timer)
   }, [moving, reload])
 
-  /**
-   * This session's videos, in the order they go out.
-   *
-   * Sorted by `notBeforeAt` — the instant the row's turn comes — and not by
-   * creation, because a shuffled session's whole point is that those two orders
-   * differ. A row with no turn yet (a session never started) falls back to when
-   * it was made, which is the order it was chosen in.
-   */
-  const byGroup = useMemo(() => {
-    const map = new Map<string, Post[]>()
-    for (const post of data?.posts ?? []) {
-      if (post.groupId === null) continue
-      const list = map.get(post.groupId)
-      if (list) list.push(post)
-      else map.set(post.groupId, [post])
-    }
-    for (const list of map.values()) {
-      list.sort((a, b) => (a.notBeforeAt ?? a.createdAt) - (b.notBeforeAt ?? b.createdAt))
-    }
-    return map
-  }, [data])
+  return { data, error, loading, reload }
+}
 
+/**
+ * The videos of one session, in the order they go out.
+ *
+ * Sorted by `notBeforeAt` — the instant a row's turn comes — and not by
+ * creation, because a shuffled session's whole point is that those two orders
+ * differ. A row with no turn yet (a session never started) falls back to when
+ * it was made, which is the order it was chosen in.
+ */
+function postsOf(data: Loaded | null, groupId: string): Post[] {
+  const list = (data?.posts ?? []).filter((post) => post.groupId === groupId)
+  list.sort((a, b) => (a.notBeforeAt ?? a.createdAt) - (b.notBeforeAt ?? b.createdAt))
+  return list
+}
+
+/**
+ * Start, Retry and Remove — the three writes, in one place because both screens
+ * offer all three and neither may word them differently.
+ */
+function useSessionActions(reload: () => void, onRemoved?: (group: Group) => void) {
   const { run, isPending } = useAction()
 
   /**
@@ -403,10 +416,36 @@ export function SessionsPanel({ refreshKey }: { refreshKey: number }): ReactElem
       {
         success: `“${group.title}” removed — anything it had not sent yet is stopped`,
         failure: `Could not remove “${group.title}”`,
-        onSuccess: () => reload(),
+        onSuccess: () => {
+          reload()
+          onRemoved?.(group)
+        },
       },
     )
   }
+
+  const busy = (group: Group): boolean =>
+    isPending(`start:${group.id}`) || isPending(`retry:${group.id}`) || isPending(`remove:${group.id}`)
+
+  return { startSession, retrySession, removeSession, busy }
+}
+
+/** One shared empty map, so a render before the first load does not allocate one per card. */
+const EMPTY_VIDEOS: ReadonlyMap<string, string> = new Map<string, string>()
+
+/**
+ * The front page: every session, newest first, and nothing about any one of
+ * them that does not fit on a card.
+ *
+ * What is deliberately NOT here is the videos. A session of forty carries forty
+ * names, forty captions, up to eighty platform lines and every phone under
+ * them — expanded inline, two open sessions made a page nobody could scan. So a
+ * card answers the two questions a list is for, *is it out yet* and *what
+ * broke*, and opening it goes to the session's own page for the rest.
+ */
+export function SessionsPanel({ refreshKey, onOpen }: { refreshKey: number; onOpen: (groupId: string) => void }): ReactElement {
+  const { data, error, loading, reload } = useSessionsData(refreshKey)
+  const { startSession, retrySession, removeSession, busy } = useSessionActions(reload)
 
   const groups = data?.groups ?? []
 
@@ -416,9 +455,8 @@ export function SessionsPanel({ refreshKey }: { refreshKey: number }): ReactElem
      * wide the box it is in happens to be, and a `lg:` here would be a claim
      * about the window instead.
      */
-    <div className="@container space-y-2.5">
+    <div className="@container space-y-2.5 pt-1">
       <div className="flex items-center gap-2">
-        <h2 className="text-row font-medium text-text">Sessions</h2>
         {/* The spinner is for a REFRESH, and only while rows are already on
             screen — the first load draws skeletons instead. A panel whose rows
             vanish every ten seconds looks broken while working perfectly. */}
@@ -447,25 +485,15 @@ export function SessionsPanel({ refreshKey }: { refreshKey: number }): ReactElem
         <EmptyState
           icon={<FilmStripIcon className="size-4" aria-hidden />}
           title="No sessions yet"
-          description="Upload your videos above, choose where they go and how fast, and the session appears here — with every video, every phone and every failure in it."
+          description="Open “New session”, drop in your videos, choose where they go and how fast — the session appears here, with every video, every phone and every failure in it."
         />
       ) : (
         groups.map((group) => (
           <SessionCard
             key={group.id}
             group={group}
-            posts={byGroup.get(group.id) ?? []}
-            videos={data?.videos ?? EMPTY_VIDEOS}
-            expanded={open.has(group.id)}
-            onToggle={() =>
-              setOpen((current) => {
-                const next = new Set(current)
-                if (next.has(group.id)) next.delete(group.id)
-                else next.add(group.id)
-                return next
-              })
-            }
-            busy={isPending(`start:${group.id}`) || isPending(`retry:${group.id}`) || isPending(`remove:${group.id}`)}
+            onOpen={() => onOpen(group.id)}
+            busy={busy(group)}
             onStart={() => startSession(group)}
             onRetry={() => retrySession(group)}
             onRemove={() => removeSession(group)}
@@ -476,29 +504,134 @@ export function SessionsPanel({ refreshKey }: { refreshKey: number }): ReactElem
   )
 }
 
-/** One shared empty map, so a render before the first load does not allocate one per card. */
-const EMPTY_VIDEOS: ReadonlyMap<string, string> = new Map<string, string>()
+/**
+ * One session's own page: the same header the card carries, then every video in
+ * it with every phone under it.
+ *
+ * It reads the same single load the list does, so a session opened while its
+ * batch is moving keeps updating on the same ten-second poll — and the counts
+ * in the header cannot disagree with the rows below them, because both came out
+ * of one answer.
+ */
+export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string; refreshKey: number; onBack: () => void }): ReactElement {
+  const { data, error, loading, reload } = useSessionsData(refreshKey)
+  // Removing the session removes the page it is on: there is nothing left to
+  // watch, so the operator is put back on the list rather than left looking at
+  // a header for a thing that no longer exists.
+  const { startSession, retrySession, removeSession, busy } = useSessionActions(reload, onBack)
+
+  const group = (data?.groups ?? []).find((g) => g.id === groupId) ?? null
+  const posts = postsOf(data, groupId)
+  const videos = data?.videos ?? EMPTY_VIDEOS
+
+  return (
+    <div className="@container space-y-3 py-4">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <CaretLeftIcon aria-hidden />
+          All sessions
+        </Button>
+        {loading && data !== null ? <Spinner className="size-3.5 text-faint" /> : null}
+        <div className="grow" />
+        <Button variant="outline" size="sm" onClick={reload}>
+          <ArrowsClockwiseIcon aria-hidden />
+          Refresh
+        </Button>
+      </div>
+
+      {error !== null && data !== null ? (
+        <p className="rounded-inner border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
+          The last refresh did not get through, so what is below is from a moment ago. {error}
+        </p>
+      ) : null}
+
+      {loading && data === null ? (
+        <LoadingRows rows={3} />
+      ) : error !== null && data === null ? (
+        <ErrorState message={error} onRetry={reload} />
+      ) : group === null ? (
+        <EmptyState
+          icon={<FilmStripIcon className="size-4" aria-hidden />}
+          title="This session is gone"
+          description="Nothing on this farm carries that session id any more — it was removed, or the link is from another farm. Anything it had already posted stays posted."
+        />
+      ) : (
+        <>
+          <Card className="gap-0 rounded-card px-3.5 py-3">
+            <SessionHead
+              group={group}
+              busy={busy(group)}
+              onStart={() => startSession(group)}
+              onRetry={() => retrySession(group)}
+              onRemove={() => removeSession(group)}
+            />
+          </Card>
+
+          <div className="space-y-2">
+            <h3 className="text-[12px] font-medium text-dim">
+              {posts.length} video{posts.length === 1 ? '' : 's'} in this session
+            </h3>
+            {posts.length === 0 ? (
+              <p className="text-[11.5px] leading-relaxed text-dim">
+                No video rows carry this session’s id. They may have been removed, or this session was made by a build that stored them differently.
+              </p>
+            ) : (
+              posts.map((post) => <VideoRow key={post.videoArtifactId} post={post} videos={videos} />)
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 /**
- * One session: what it is, how far it has got, and — when opened — every video
- * in it.
+ * One session on the list: what it is, how far it has got, and the way in.
  */
 function SessionCard({
   group,
-  posts,
-  videos,
-  expanded,
-  onToggle,
+  onOpen,
   busy,
   onStart,
   onRetry,
   onRemove,
 }: {
   group: Group
-  posts: readonly Post[]
-  videos: ReadonlyMap<string, string>
-  expanded: boolean
-  onToggle: () => void
+  onOpen: () => void
+  busy: boolean
+  onStart: () => void
+  onRetry: () => void
+  onRemove: () => void
+}): ReactElement {
+  return (
+    <Card className="gap-0 rounded-card px-3.5 py-3">
+      <SessionHead group={group} onOpen={onOpen} busy={busy} onStart={onStart} onRetry={onRetry} onRemove={onRemove} />
+    </Card>
+  )
+}
+
+/**
+ * The header both screens share: title, the farm's own summary line, the three
+ * actions, the progress bar and the pacing.
+ *
+ * One component rather than two similar ones, because the wording of Start,
+ * Retry and Remove is the most consequential text in this plugin — each one
+ * publishes to, or stops publishing to, somebody's real account — and two
+ * copies of it would drift apart on the first edit.
+ *
+ * `onOpen` is what tells the two apart: on the list the title is the way into
+ * the session, and on the session's own page there is nowhere left to go.
+ */
+function SessionHead({
+  group,
+  onOpen,
+  busy,
+  onStart,
+  onRetry,
+  onRemove,
+}: {
+  group: Group
+  onOpen?: () => void
   busy: boolean
   onStart: () => void
   onRetry: () => void
@@ -508,29 +641,29 @@ function SessionCard({
   const total = p?.total ?? group.videoArtifactIds.length
   const summary = summaryLine(group)
 
+  const heading = (
+    <span className="min-w-0">
+      <span className="block text-row font-medium wrap-anywhere text-text">{group.title}</span>
+      <span className="mt-0.5 block text-[11.5px] leading-relaxed text-dim">
+        {summary ?? 'Nothing reported yet — the farm has not looked at this session since it was made.'}
+      </span>
+    </span>
+  )
+
   return (
-    <Card className="gap-0 rounded-card px-3.5 py-3">
+    <>
       <div className="flex flex-wrap items-start gap-2">
-        {/* The whole heading is the toggle — a caret alone is a 16px target
-            for the most common thing anyone does on this card. */}
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          className="flex min-w-0 grow items-start gap-1.5 text-left"
-        >
-          {expanded ? (
-            <CaretDownIcon className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden />
-          ) : (
+        {onOpen ? (
+          // The whole heading is the target, not a caret: opening the session is
+          // the most common thing anyone does on this card, and a 16px chevron
+          // is the smallest possible way to offer it.
+          <button type="button" onClick={onOpen} className="flex min-w-0 grow items-start gap-1.5 text-left hover:underline">
             <CaretRightIcon className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden />
-          )}
-          <span className="min-w-0">
-            <span className="block text-row font-medium wrap-anywhere text-text">{group.title}</span>
-            <span className="mt-0.5 block text-[11.5px] leading-relaxed text-dim">
-              {summary ?? 'Nothing reported yet — the farm has not looked at this session since it was made.'}
-            </span>
-          </span>
-        </button>
+            {heading}
+          </button>
+        ) : (
+          <div className="flex min-w-0 grow items-start gap-1.5">{heading}</div>
+        )}
 
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
           <ConfirmDialog
@@ -623,19 +756,7 @@ function SessionCard({
         <span aria-hidden>·</span>
         <span>{pacingLine(group)}</span>
       </div>
-
-      {expanded ? (
-        <div className="mt-3 space-y-2 border-t border-line-2 pt-3">
-          {posts.length === 0 ? (
-            <p className="text-[11.5px] leading-relaxed text-dim">
-              No video rows carry this session’s id. They may have been removed, or this session was made by a build that stored them differently.
-            </p>
-          ) : (
-            posts.map((post) => <VideoRow key={post.videoArtifactId} post={post} videos={videos} />)
-          )}
-        </div>
-      ) : null}
-    </Card>
+    </>
   )
 }
 

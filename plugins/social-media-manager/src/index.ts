@@ -58,6 +58,25 @@ import {
  *
  * ## Changelog
  *
+ * - **0.9.1 — tabs, and a page per session.** 0.9.0 put the whole job on one
+ *   flat page: compose at the top, sessions underneath, each one expanding
+ *   inline. With two sessions open that page could not be scanned, and the
+ *   owner said so: *"ga bisa dibuat tabs aja kah biar rapih... dihalaman depan
+ *   itu nampilin semua sesi atau grup, baru kalau di-details masing-masing sesi
+ *   baru ada sub page nampilin list item"*. Still one sidebar entry — that part
+ *   of 0.9.0 was right — now with two tabs (**Sessions**, **New session**) and
+ *   a session that opens onto its own page: header, actions, then every video
+ *   with every phone under it. Where you are lives in the URL (`?tab=`,
+ *   `?session=`), so a reload lands where you were and one session is a link
+ *   somebody can send.
+ *
+ *   It also ships the view's first stylesheet, and that is not cosmetic
+ *   book-keeping: a plugin view inherits Studio's CSS, so any class Studio
+ *   itself never writes was never GENERATED, and an ungenerated Tailwind class
+ *   is silently nothing. `gap-x-1` resolved to `column-gap: normal` and a
+ *   phone's name ran into its result — `#1 moto g06 powerpostedrun` — with no
+ *   error anywhere. `src/ui/index.css` makes this pack's own classes real.
+ *
  * - **0.9.0 — one screen for the whole job.** The plugin declared three views —
  *   a table of post rows, a table of sessions, a page listing platforms — and
  *   the owner's verdict after using them was that three menus for one job is
@@ -764,7 +783,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.9.0',
+  version: '0.9.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok and YouTube post today; Instagram is declared and has no verified upload flow yet.',

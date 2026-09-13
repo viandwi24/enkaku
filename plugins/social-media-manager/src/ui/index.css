@@ -1,0 +1,40 @@
+/*
+ * This screen's own Tailwind classes.
+ *
+ * Studio renders a plugin view inside its own page, so every class Studio
+ * itself uses is already available — which is exactly what makes the missing
+ * ones so hard to see. A class Studio never wrote was never generated, and an
+ * ungenerated class is not an error: it is simply nothing, applied silently.
+ *
+ * Measured on this pack, 2026-09-14: without this file `gap-x-1` on the
+ * attempt line resolved to `column-gap: normal`, and a phone's name ran
+ * straight into its result — `#1 moto g06 powerpostedrun`. Nothing anywhere
+ * said so. This page writes a dozen classes in that same family (`gap-x-1`,
+ * the `text-[11.5px]` scale, `max-w-prose`, `@container`), so it needs its own
+ * stylesheet rather than a borrowed one.
+ *
+ * `enkaku publish` (and `bun run build:packs`) runs this project's own
+ * Tailwind over it and ships the result as the view's `ui/index.css`. Do NOT
+ * import this file from `index.tsx`: it is compiled and linked for you, and
+ * importing it would hand the raw source to a bundler that does not know what
+ * Tailwind is.
+ */
+
+/*
+ * Utilities only, and a theme that RESOLVES but does not emit.
+ *
+ * Never `@import 'tailwindcss'` here. That pulls in preflight — a GLOBAL reset
+ * — and Studio's document already has one, so a second copy would restyle
+ * every other screen in the farm rather than this view. Publishing refuses a
+ * stylesheet that contains it.
+ *
+ * `theme(reference)` is the other half: it registers the tokens so
+ * `bg-muted` compiles, without writing a `:root` block. Studio's live values
+ * keep winning, and this plugin can never repaint the farm with a palette
+ * frozen on the day it was built.
+ */
+@import 'tailwindcss/theme.css' theme(reference);
+@import 'tailwindcss/utilities.css' layer(plugin);
+
+/* The farm's design tokens — bg-muted, text-dim, border-line-2. One definition, shared with Studio. */
+@import '@enkaku/ui/theme.css' theme(reference);
