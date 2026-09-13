@@ -2,7 +2,7 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { PLATFORM_IDS } from './platforms'
-import { PostSchema, newPost, postKeyFor, stateFor } from './posts'
+import { PostSchema, newPost, postKeyFor, stateFor, withSummary } from './posts'
 
 /**
  * Twenty videos, one action.
@@ -133,7 +133,10 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         // action over the same twenty videos re-posts nothing.
         for (const id of next.platforms) {
           const carried = stateFor(existing, id)
-          if (carried.state !== 'pending') next.dispatch[id] = carried
+          // `withSummary` on the way through: a row carried over from an older
+          // build has no summary line, and this is the one write that touches
+          // it before the router next walks it.
+          if (carried.state !== 'pending') next.dispatch[id] = withSummary(carried)
         }
         updated += 1
       } else {

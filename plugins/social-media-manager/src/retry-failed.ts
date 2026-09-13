@@ -2,7 +2,7 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { platformById } from './platforms'
-import { PostSchema, failedDevices, postKeyFor, rollUp, stateFor, type Attempt } from './posts'
+import { PostSchema, failedDevices, postKeyFor, rollUp, stateFor, withSummary, type Attempt } from './posts'
 
 /**
  * Re-run the phones whose upload failed — and only those.
@@ -87,6 +87,14 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         makes `rollUp` count one phone twice.
       */
       const kept: Attempt[] = state.attempts.filter((a) => a.state !== 'failed')
+      /*
+        The phone's name comes off the attempt being replaced rather than from
+        a fresh `device.list`: this member re-sends to the SAME phones, so the
+        name already recorded is the right one, and a phone that has gone
+        offline since would otherwise lose the only name the row ever had. The
+        router refreshes it on its next pass either way.
+      */
+      const namedBefore = new Map(state.attempts.map((a) => [a.deviceId, a.deviceName]))
       for (const deviceId of failed) {
         try {
           const job = await ctx.farm.call(
@@ -98,18 +106,24 @@ const script: PluginMemberScript<typeof params, typeof result> = {
             },
             JobRunOutput,
           )
-          kept.push({ jobId: job.jobId, deviceId, state: 'queued', error: null })
+          kept.push({ jobId: job.jobId, deviceId, deviceName: namedBefore.get(deviceId) ?? null, state: 'queued', error: null })
           requeued += 1
         } catch (err) {
           // The phone keeps its failed attempt, so the next retry finds it
           // again rather than losing it to a refusal that may be temporary.
           const message = err instanceof Error ? err.message : String(err)
-          kept.push({ jobId: `unqueued:${deviceId}`, deviceId, state: 'failed', error: message.slice(0, 300) })
+          kept.push({
+            jobId: `unqueued:${deviceId}`,
+            deviceId,
+            deviceName: namedBefore.get(deviceId) ?? null,
+            state: 'failed',
+            error: message.slice(0, 300),
+          })
           skipped.push(`${deviceId}: ${message}`.slice(0, 200))
         }
       }
 
-      dispatch[platformId] = { ...state, attempts: kept, state: rollUp(kept), deviceCount: kept.length }
+      dispatch[platformId] = withSummary({ ...state, attempts: kept, state: rollUp(kept), deviceCount: kept.length })
       platforms.push(platformId)
     }
 

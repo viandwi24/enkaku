@@ -25,7 +25,7 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.6.0')
+    expect(plugin.version).toBe('0.7.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
@@ -71,11 +71,22 @@ describe('the surface', () => {
     expect(surface.views.posts?.data).toEqual({ kind: 'kv.list', scope: 'global', prefix: POST_PREFIX })
   })
 
-  test('every platform has its own column in the Posts table', () => {
+  test('every platform has its own column in the Posts table, reading the line that names the phones', () => {
     const fields = (surface.views.posts?.table?.columns ?? []).map((c) => c.field)
     for (const platform of PLATFORMS) {
-      expect(fields).toContain(`dispatch.${platform.id}.state`)
+      // `summary`, not `state`: the cell has to answer "which phone" as well
+      // as "how did it go", and only the composed line does.
+      expect(fields).toContain(`dispatch.${platform.id}.summary`)
     }
+  })
+
+  test('every platform has a section in the row detail, and each line links to its job', () => {
+    const detail = surface.views.posts?.table?.detail
+    expect((detail?.sections ?? []).map((s) => s.field)).toEqual(PLATFORMS.map((p) => `dispatch.${p.id}.attempts`))
+    // The whole reason the panel is worth opening: an attempt names the job the
+    // farm ran, and Studio turns that into a link to it.
+    expect(detail?.job).toBe('jobId')
+    expect((detail?.columns ?? []).map((c) => c.field)).toEqual(['deviceName', 'state', 'error'])
   })
 
   test('the manual post action targets the same member the platform table names', () => {

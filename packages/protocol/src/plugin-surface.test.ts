@@ -266,6 +266,72 @@ describe('ViewSpecSchema', () => {
 })
 
 /**
+ * `table.detail` — what one row expands into.
+ *
+ * The first test is the one that matters most for anything already published:
+ * a table that declares no detail must parse EXACTLY as it did before, with
+ * `detail` absent rather than defaulted into existence, because every surface
+ * in the field today is one of those and a renderer keys its whole disclosure
+ * column off that absence.
+ */
+describe('ViewSpecSchema — `table.detail` (a row that expands)', () => {
+  const detail = {
+    sections: [{ title: 'TikTok', field: 'dispatch.tiktok.attempts' }],
+    columns: [
+      { field: 'deviceName', header: 'Phone' },
+      { field: 'state', header: 'Result', width: 'narrow' as const },
+    ],
+    job: 'jobId',
+  }
+
+  test('a table with no detail parses as it always did, with `detail` absent', () => {
+    const parsed = ViewSpecSchema.parse({
+      title: 'Accounts',
+      data: { kind: 'kv.list', scope: 'global' },
+      table: { rowKey: 'key', columns: [{ field: 'key', header: 'Key' }] },
+    })
+    expect(parsed.table?.detail).toBeUndefined()
+  })
+
+  test('a declared detail keeps its sections and defaults `job` and `empty`', () => {
+    const parsed = ViewSpecSchema.parse({
+      title: 'Posts',
+      data: { kind: 'kv.list', scope: 'global' },
+      table: { rowKey: 'key', columns: [{ field: 'key', header: 'Key' }], detail: { ...detail, job: undefined } },
+    })
+    expect(parsed.table?.detail?.sections).toEqual([{ title: 'TikTok', field: 'dispatch.tiktok.attempts' }])
+    // Empty, never undefined: "these items are not about jobs" is a value a
+    // renderer can test, and the same one every older surface would have had.
+    expect(parsed.table?.detail?.job).toBe('')
+    expect(parsed.table?.detail?.empty).toBe('')
+    // A detail column is an ordinary column — same vocabulary, same defaults.
+    expect(parsed.table?.detail?.columns[0]?.width).toBe('auto')
+  })
+
+  test('the job path survives verbatim — it is a dot path, never a route', () => {
+    const parsed = ViewSpecSchema.parse({
+      title: 'Posts',
+      data: { kind: 'kv.list', scope: 'global' },
+      table: { rowKey: 'key', columns: [{ field: 'key', header: 'Key' }], detail },
+    })
+    expect(parsed.table?.detail?.job).toBe('jobId')
+  })
+
+  test('refuses no sections, no columns, an unknown key, and more sections than the cap', () => {
+    const table = { rowKey: 'key', columns: [{ field: 'key', header: 'Key' }] }
+    expect(ViewSpecSchema.safeParse({ title: 'x', table: { ...table, detail: { ...detail, sections: [] } } }).success).toBe(false)
+    expect(ViewSpecSchema.safeParse({ title: 'x', table: { ...table, detail: { ...detail, columns: [] } } }).success).toBe(false)
+    expect(ViewSpecSchema.safeParse({ title: 'x', table: { ...table, detail: { ...detail, device: 'deviceId' } } }).success).toBe(false)
+
+    const tooMany = Array.from({ length: SURFACE_LIMITS.maxDetailSections + 1 }, (_, i) => ({ title: `S${i}`, field: `a${i}` }))
+    const refused = ViewSpecSchema.safeParse({ title: 'x', table: { ...table, detail: { ...detail, sections: tooMany } } })
+    expect(refused.success).toBe(false)
+    // The limit names itself, exactly as every other cap in `SURFACE_LIMITS` does.
+    expect(refused.success ? '' : refused.error.issues.map((i) => i.message).join(' ')).toContain('maxDetailSections')
+  })
+})
+
+/**
  * Tier C (plan 111 §4.1, §5 step 111.4). `react` replaced plan 108's `frame`
  * outright — 00-overview §4.3, removed and not deprecated — so the last test
  * here is as load-bearing as the others: it is what would fail if a

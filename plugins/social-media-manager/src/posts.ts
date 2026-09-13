@@ -103,6 +103,24 @@ export const AttemptSchema = z
   .object({
     jobId: z.string().min(1),
     deviceId: z.string().min(1),
+    /**
+     * The phone's NAME as the farm gave it at the moment of the attempt —
+     * `#3 moto g06 power`, never a uuid.
+     *
+     * Stored rather than resolved at render, because this is the one place an
+     * id cannot answer the question. The Posts table reads the stored row
+     * straight out of `kv.list`; a device id in a cell is unreadable, and a
+     * device that has since been removed from the farm has no name left to
+     * look up at all — while what actually happened ("it posted from the phone
+     * on the shelf labelled #3") stays true forever. The router refreshes it
+     * each tick from the live fleet, so a renamed phone catches up within a
+     * minute and only a phone that has left the farm keeps its old name.
+     *
+     * `null` on an attempt recorded before this field existed; `attemptPhone`
+     * below is the single reader, and it falls back to the short id rather
+     * than to a blank.
+     */
+    deviceName: z.string().max(120).nullable().default(null),
     state: z.enum(ATTEMPT_STATES),
     /** The job's own error, when it failed. Truncated — the full text is on the job itself. */
     error: z.string().max(300).nullable(),
@@ -127,11 +145,147 @@ export const PlatformStateSchema = z
     attempts: z.array(AttemptSchema).default([]),
     /** Why it is in this state, shown verbatim in the Posts table. Null when there is nothing to explain. */
     note: z.string().max(500).nullable(),
+    /**
+     * WHERE it ran and HOW it went, in one line — `#3 moto g06 power · posted`,
+     * `2 phones · 1 posted, 1 failed`.
+     *
+     * This is what the platform's column in the Posts table actually renders,
+     * and it exists because the state word alone could not answer the first
+     * question an operator asks about a fan-out: which phone was that? A
+     * tier-A column reads ONE dot path out of the stored row and renders it as
+     * text, so the sentence has to be stored — there is nowhere else for it to
+     * be composed.
+     *
+     * Derived, never authoritative: `describePlatform` computes it from
+     * `state` and `attempts`, and `withSummary` is the only writer. A row whose
+     * summary somehow disagreed with its attempts is a display bug, never a
+     * dispatch one.
+     *
+     * `null` on a row written before this field existed. The router refreshes
+     * every row it walks, so those catch up on the next tick.
+     */
+    summary: z.string().max(300).nullable().default(null),
   })
   .strict()
 export type PlatformState = z.infer<typeof PlatformStateSchema>
 
-export const PENDING_STATE: PlatformState = { state: 'pending', at: null, deviceCount: 0, attempts: [], note: null }
+/**
+ * The phone an attempt ran on, named for a human.
+ *
+ * Never blank and never bare: an attempt with no stored name reads
+ * `device 4f3a91c2`, which says out loud that this is an id — the phone was
+ * removed from the farm, or the attempt predates the stored name. An empty
+ * cell would read as "nowhere", which is the one thing it is not.
+ */
+export function attemptPhone(attempt: Pick<Attempt, 'deviceId' | 'deviceName'>): string {
+  const name = attempt.deviceName?.trim()
+  return name ? name : shortDeviceId(attempt.deviceId)
+}
+
+/** A device id, short enough to read and long enough to match against the Devices screen. */
+export function shortDeviceId(deviceId: string): string {
+  return `device ${deviceId.slice(0, 8)}`
+}
+
+/**
+ * A phone's display name, from the fields `device.list` gives back.
+ *
+ * Mirrors `formatDeviceName` (`@enkaku/ui`, plan 124 §4.1) — `#7 Galaxy A15`,
+ * or the bare label when the device has no number — deliberately and with the
+ * rule named, because a plugin service cannot import it: `@enkaku/ui` is a
+ * React component package, and pulling it into a bundled service to compose
+ * two fields would drag React into a pack that never renders anything.
+ */
+export function deviceDisplayName(device: { id: string; label?: string | null; number?: number | null }): string {
+  const label = (device.label ?? '').trim()
+  if (label.length === 0) return shortDeviceId(device.id)
+  return device.number == null ? label : `#${device.number} ${label}`
+}
+
+/** One attempt's outcome as a word an operator reads, never the stored enum. */
+const ATTEMPT_WORDS: Record<AttemptState, string> = {
+  queued: 'running',
+  success: 'posted',
+  failed: 'failed',
+  // Kept apart from both neighbours on purpose (see `ATTEMPT_STATES`): it is
+  // not a success, and it must not be worded as one.
+  unverified: 'unverified',
+}
+
+/**
+ * One platform's whole state in one line — the string the Posts table shows.
+ *
+ * Pure, and the only place this wording lives. The shape is deliberately
+ * "where · what": a single phone names itself, a fan-out counts itself, and
+ * neither ever renders as a bare status word, because "partial" on its own was
+ * exactly the cell that sent the operator hunting through the Jobs screen.
+ */
+export function describePlatform(state: PlatformState): string {
+  if (state.state === 'unsupported') return 'Not supported in this build'
+  const attempts = state.attempts ?? []
+  if (attempts.length === 0) {
+    // `dispatched` with no attempts is a row written before attempts were
+    // recorded at all: the count is the only thing it knows, so it is the only
+    // thing this claims.
+    if (state.state === 'dispatched') return `Sent to ${state.deviceCount} phone${state.deviceCount === 1 ? '' : 's'}`
+    return 'Waiting for a phone'
+  }
+
+  const first = attempts[0]
+  if (attempts.length === 1 && first) return `${attemptPhone(first)} · ${ATTEMPT_WORDS[first.state]}`
+
+  const count = (s: AttemptState) => attempts.filter((a) => a.state === s).length
+  const running = count('queued')
+  const ok = count('success')
+  const bad = count('failed')
+  const unsure = count('unverified')
+  const phones = `${attempts.length} phones`
+  if (running === attempts.length) return `${phones} · running`
+  if (ok === attempts.length) return `${phones} · all posted`
+  const parts: string[] = []
+  if (ok > 0) parts.push(`${ok} posted`)
+  if (bad > 0) parts.push(`${bad} failed`)
+  if (unsure > 0) parts.push(`${unsure} unverified`)
+  if (running > 0) parts.push(`${running} running`)
+  return `${phones} · ${parts.join(', ')}`
+}
+
+/**
+ * The same state with its summary line brought up to date.
+ *
+ * Returns the state UNCHANGED (same reference) when the line already agrees,
+ * so a caller can use identity to decide whether a row needs writing at all —
+ * rewriting an unchanged row every tick is what makes a table look permanently
+ * busy for no reason.
+ */
+export function withSummary(state: PlatformState): PlatformState {
+  const summary = describePlatform(state)
+  return state.summary === summary ? state : { ...state, summary }
+}
+
+/**
+ * The same state with every attempt's phone name refreshed from the live fleet.
+ *
+ * Three cases, in order: the fleet knows the phone and the name follows it
+ * (including a rename); the fleet does not and the recorded name STAYS, which
+ * is the whole reason the name is stored at all; neither, and the short id is
+ * written in so the panel can never draw a blank where a phone should be.
+ *
+ * An unchanged state comes back by identity, as above.
+ */
+export function withDeviceNames(state: PlatformState, names: ReadonlyMap<string, string>): PlatformState {
+  const attempts = state.attempts ?? []
+  let changed = false
+  const next = attempts.map((attempt) => {
+    const name = names.get(attempt.deviceId) ?? attempt.deviceName ?? shortDeviceId(attempt.deviceId)
+    if (name === attempt.deviceName) return attempt
+    changed = true
+    return { ...attempt, deviceName: name }
+  })
+  return changed ? { ...state, attempts: next } : state
+}
+
+export const PENDING_STATE: PlatformState = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], note: null, summary: null })
 
 /**
  * A stored post. `.strict()` and an explicit `version`, so a row written by a
@@ -282,6 +436,32 @@ export function failedDevices(state: PlatformState): string[] {
   return state.attempts.filter((a) => a.state === 'failed').map((a) => a.deviceId)
 }
 
+/**
+ * The same post with every platform's phone names and summary line brought up
+ * to date — or `null` when nothing moved.
+ *
+ * Pure, and the router's whole "keep the screen honest" pass. It is what
+ * back-fills a row written by an older build (no names, no summary) and what
+ * follows a phone that has since been renamed, without touching a single
+ * dispatch decision: states, attempts, counts and notes come through
+ * untouched, and only the two display fields can change.
+ *
+ * Walks `dispatch`'s own keys rather than `post.platforms`, so a platform
+ * dropped from the post's list still gets a readable cell — it has already run
+ * somewhere, and the row still shows it.
+ */
+export function refreshPost(post: Post, names: ReadonlyMap<string, string>): Post | null {
+  const dispatch: Post['dispatch'] = { ...post.dispatch }
+  let changed = false
+  for (const [platformId, stored] of Object.entries(post.dispatch)) {
+    const next = withSummary(withDeviceNames(stored, names))
+    if (next === stored) continue
+    dispatch[platformId] = next
+    changed = true
+  }
+  return changed ? { ...post, dispatch } : null
+}
+
 /** A device as the router needs it — the subset of `device.list`'s output this module reads, nothing more. */
 export interface RouterDevice {
   id: string
@@ -380,7 +560,7 @@ export function planDispatch(input: {
     if (!platform) {
       // A platform id stored by some other build. Recorded, never guessed at.
       const note = `This build does not know a platform called "${platformId}".`
-      plan.states[platformId] = { state: 'unsupported', at: now, deviceCount: 0, attempts: [], note }
+      plan.states[platformId] = withSummary({ state: 'unsupported', at: now, deviceCount: 0, attempts: [], note, summary: null })
       noteOnce(note)
       continue
     }
@@ -390,7 +570,7 @@ export function planDispatch(input: {
       // tick would bump `updatedAt` on the row forever and make the Posts table
       // look permanently busy.
       if (current.state !== 'unsupported') {
-        plan.states[platformId] = { state: 'unsupported', at: now, deviceCount: 0, attempts: [], note: platform.unsupportedReason }
+        plan.states[platformId] = withSummary({ state: 'unsupported', at: now, deviceCount: 0, attempts: [], note: platform.unsupportedReason, summary: null })
       }
       // Noted every tick even when the STATE is unchanged: the state is
       // written once and the note is what the operator actually reads, so a
@@ -419,7 +599,7 @@ export function planDispatch(input: {
       // "you have not labelled anything" from "they are all busy", which is the
       // difference between a setup mistake and a normal, self-resolving wait.
       if (current.state !== 'pending' || current.note !== note) {
-        plan.states[platformId] = { state: 'pending', at: null, deviceCount: 0, attempts: [], note }
+        plan.states[platformId] = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], note, summary: null })
       }
       noteOnce(note)
       continue
@@ -436,8 +616,12 @@ export function planDispatch(input: {
       service writes the state once, after the fan-out, with one attempt per
       job it actually got an id for — so a phone whose enqueue threw never
       appears as an attempt that silently never resolves.
+
+      `summary` is null here for the same reason and is filled by the same
+      caller (`withSummary`, once the attempts are in): a line naming the
+      phones cannot be written before it is known which phones took the job.
     */
-    plan.states[platformId] = { state: 'dispatched', at: now, deviceCount: chosen.length, attempts: [], note: capped }
+    plan.states[platformId] = { state: 'dispatched', at: now, deviceCount: chosen.length, attempts: [], note: capped, summary: null }
     if (capped !== null) noteOnce(capped)
   }
 
@@ -455,6 +639,9 @@ export function newPost(input: { videoArtifactId: string; caption: string; platf
   // platform must be visibly waiting from the moment the post is created,
   // not from the first router tick.
   for (const id of platforms) dispatch[id] = { ...PENDING_STATE }
+  // `PENDING_STATE` already carries its own summary line, so a brand new post
+  // reads "Waiting for a phone" the moment it is stored — before the router
+  // has ever looked at it, and whether or not the service is even running.
   return {
     version: 1,
     videoArtifactId: input.videoArtifactId,

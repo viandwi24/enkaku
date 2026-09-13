@@ -1,12 +1,30 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { PluginServiceRestartResponseSchema, type ActionSpec, type ViewSpec } from '@enkaku/protocol'
 import { ActionRunner, type ActionInvocation } from '@/components/plugin-view/ActionRunner'
 import { fetchPluginRows } from '@/components/plugin-view/data'
 import { planColumn } from '@/components/plugin-view/planColumn'
 import { readRowField, type PluginViewRow } from '@/components/plugin-view/rows'
-import { EmptyState, ErrorState, Input, LoadingRows, Button, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, api, deviceSearchTerms } from '@enkaku/ui'
+import { getAtPath } from '@/components/schema-form/resolve'
+import {
+  EmptyState,
+  ErrorState,
+  Input,
+  LoadingRows,
+  Button,
+  CaretDownIcon,
+  CaretRightIcon,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  api,
+  deviceSearchTerms,
+} from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 
 /**
@@ -109,6 +127,116 @@ function errorCode(err: unknown): string | null {
  *  exports `ViewSpec` but not the column shape inside it. */
 type TableColumns = NonNullable<ViewSpec['table']>['columns']
 
+/** The declared detail block, named locally for the same reason. */
+type RowDetail = NonNullable<NonNullable<ViewSpec['table']>['detail']>
+
+/**
+ * One expandable row's sections, already read out of the row (plan 108's
+ * `table.detail`).
+ *
+ * A section whose path holds nothing — missing, empty, or not an array —
+ * is DROPPED here rather than drawn empty: the Social posts screen declares one
+ * section per platform, and a post that only ever went to TikTok must not open
+ * onto two empty headings telling the operator about platforms it was never for.
+ */
+function detailSections(row: PluginViewRow, detail: RowDetail): { title: string; items: unknown[] }[] {
+  const sections: { title: string; items: unknown[] }[] = []
+  for (const section of detail.sections) {
+    const value = readRowField(row, section.field)
+    if (!Array.isArray(value) || value.length === 0) continue
+    sections.push({ title: section.title, items: value })
+  }
+  return sections
+}
+
+/**
+ * The job an item names, or `null`.
+ *
+ * `detail.job` is empty on every surface that predates it and on every detail
+ * list that is not about jobs, so the absence is the normal case and is checked
+ * first — a renderer must never assume a newer field is there (plan 108 §3.9's
+ * own posture toward older manifests).
+ */
+function jobIdOf(item: unknown, detail: RowDetail): string | null {
+  if (detail.job === '') return null
+  const value = getAtPath(item, detail.job)
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+/**
+ * What one row expands into: a heading and a small table per section, each
+ * line optionally linking to the job the farm ran for it.
+ *
+ * The link is `next/link` and not an `<a>` — a plain anchor remounts React and
+ * kills the WebSocket and any live video on the page (CLAUDE.md's own rule for
+ * Studio's static export).
+ */
+function RowDetailPanel({ row, detail, now }: { row: PluginViewRow; detail: RowDetail; now: number }) {
+  const sections = detailSections(row, detail)
+  if (sections.length === 0) {
+    return (
+      <p className="text-[12.5px] text-dim">
+        {detail.empty === '' ? 'Nothing to show for this row yet.' : detail.empty}
+      </p>
+    )
+  }
+  return (
+    <div className="space-y-3">
+      {sections.map((section) => (
+        <div key={section.title} className="space-y-1">
+          <div className="readout text-[11px] uppercase tracking-wide text-faint">{section.title}</div>
+          {/* Its own scroller: a wide detail line must scroll inside the panel
+              rather than pushing the page sideways (`docs/design.md`). */}
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-[12.5px]">
+              <thead>
+                <tr>
+                  {detail.columns.map((column) => (
+                    <th key={column.field} className={`pb-1 pr-3 text-left font-medium text-faint ${WIDTH_CLASS[column.width]}`}>
+                      {column.header}
+                    </th>
+                  ))}
+                  {detail.job !== '' && <th className="pb-1 text-right font-medium text-faint">Job</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {section.items.map((item, index) => {
+                  const jobId = jobIdOf(item, detail)
+                  return (
+                    <tr key={index} className="align-top">
+                      {detail.columns.map((column) => {
+                        const cell = planColumn(column.schema, getAtPath(item, column.field), now)
+                        return (
+                          <td key={column.field} className={`py-0.5 pr-3 ${cell.raw ? 'readout text-[11.5px] text-dim' : ''}`}>
+                            {cell.text}
+                          </td>
+                        )
+                      })}
+                      {detail.job !== '' && (
+                        <td className="py-0.5 text-right">
+                          {jobId === null ? (
+                            // An item with no job id is not an error — it never
+                            // reached the queue. Saying so beats a dead link.
+                            <span className="text-faint">—</span>
+                          ) : (
+                            <Link href={`/jobs?job=${encodeURIComponent(jobId)}`} className="text-accent hover:underline">
+                              Open job
+                            </Link>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /**
  * Plan 124 §4.5 — **when this renderer draws its filter box, and why it is not
  * something a plugin author opts into.**
@@ -180,6 +308,11 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
    * nothing: a reload keeps it, because the operator was mid-hunt.
    */
   const [query, setQuery] = useState('')
+  /**
+   * Which rows are open, by row id. Never persisted and never more than one
+   * click away from either state — a disclosure is a glance, not a mode.
+   */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   // One interval for the whole table, so every `kind: 'timestamp'` cell ticks
   // together instead of each freezing at its own first render (plan 17 §4.6).
   const now = useNow(30_000)
@@ -278,6 +411,15 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
       </div>
     )
   }
+
+  const detail = table.detail
+  const toggleDetail = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
   const named = (ids: readonly string[]) =>
     ids.map((id) => ({ id, action: actions[id] })).filter((entry): entry is { id: string; action: ActionSpec } => entry.action !== undefined)
@@ -404,6 +546,11 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
+                    {detail && (
+                      <TableHead className="w-8">
+                        <span className="sr-only">Details</span>
+                      </TableHead>
+                    )}
                     {table.selectable && (
                       <TableHead className="w-10">
                         <input
@@ -424,43 +571,68 @@ export function ViewRenderer({ plugin, view, actions }: ViewRendererProps) {
                 </TableHeader>
                 <TableBody>
                   {shownRows.map((row) => (
-                    <TableRow key={row.id} data-state={selected.has(row.id) ? 'selected' : undefined}>
-                      {table.selectable && (
-                        <TableCell>
-                          <input
-                            type="checkbox"
-                            checked={selected.has(row.id)}
-                            onChange={() => toggleRow(row.id)}
-                            aria-label={`Select ${String(readRowField(row, table.rowKey) ?? row.id)}`}
-                          />
-                        </TableCell>
-                      )}
-                      {table.columns.map((column) => {
-                        const cell = planColumn(column.schema, readRowField(row, column.field), now)
-                        return (
-                          <TableCell key={column.field} className={cell.raw ? 'readout text-[11.5px] text-dim' : 'text-[12.5px]'}>
-                            {cell.text}
+                    <Fragment key={row.id}>
+                      <TableRow data-state={selected.has(row.id) ? 'selected' : undefined}>
+                        {detail && (
+                          <TableCell>
+                            <button
+                              type="button"
+                              onClick={() => toggleDetail(row.id)}
+                              aria-expanded={expanded.has(row.id)}
+                              aria-label={`${expanded.has(row.id) ? 'Hide' : 'Show'} the detail of ${String(readRowField(row, table.rowKey) ?? row.id)}`}
+                              className="flex size-5 items-center justify-center rounded text-dim hover:bg-muted-2 hover:text-text"
+                            >
+                              {expanded.has(row.id) ? <CaretDownIcon className="size-[13px]" /> : <CaretRightIcon className="size-[13px]" />}
+                            </button>
                           </TableCell>
-                        )
-                      })}
-                      {rowActions.length > 0 && (
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1.5">
-                            {rowActions.map(({ id, action }) => (
-                              <Button
-                                key={id}
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-[12px]"
-                                onClick={() => setInvocation({ actionId: id, action, row, selectedDeviceIds })}
-                              >
-                                {action.label}
-                              </Button>
-                            ))}
-                          </div>
-                        </TableCell>
+                        )}
+                        {table.selectable && (
+                          <TableCell>
+                            <input
+                              type="checkbox"
+                              checked={selected.has(row.id)}
+                              onChange={() => toggleRow(row.id)}
+                              aria-label={`Select ${String(readRowField(row, table.rowKey) ?? row.id)}`}
+                            />
+                          </TableCell>
+                        )}
+                        {table.columns.map((column) => {
+                          const cell = planColumn(column.schema, readRowField(row, column.field), now)
+                          return (
+                            <TableCell key={column.field} className={cell.raw ? 'readout text-[11.5px] text-dim' : 'text-[12.5px]'}>
+                              {cell.text}
+                            </TableCell>
+                          )
+                        })}
+                        {rowActions.length > 0 && (
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1.5">
+                              {rowActions.map(({ id, action }) => (
+                                <Button
+                                  key={id}
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 text-[12px]"
+                                  onClick={() => setInvocation({ actionId: id, action, row, selectedDeviceIds })}
+                                >
+                                  {action.label}
+                                </Button>
+                              ))}
+                            </div>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                      {detail && expanded.has(row.id) && (
+                        <TableRow className="hover:bg-transparent">
+                          {/* One cell spanning everything, so the panel is read as
+                              belonging to the row above rather than as a row of
+                              its own with mismatched columns. */}
+                          <TableCell colSpan={table.columns.length + 1 + (table.selectable ? 1 : 0) + (rowActions.length > 0 ? 1 : 0)} className="bg-panel-2 px-4 py-3">
+                            <RowDetailPanel row={row} detail={detail} now={now} />
+                          </TableCell>
+                        </TableRow>
                       )}
-                    </TableRow>
+                    </Fragment>
                   ))}
                 </TableBody>
               </Table>

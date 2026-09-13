@@ -1,7 +1,7 @@
 import { ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
 import { z } from 'zod'
 import { PLATFORM_IDS } from './platforms'
-import { PostSchema, newPost, postKeyFor, stateFor } from './posts'
+import { PostSchema, newPost, postKeyFor, stateFor, withSummary } from './posts'
 
 /**
  * Writes ONE post row: a video, a caption, and the platforms it is for.
@@ -129,7 +129,10 @@ const addPost: PluginMemberScript<typeof params, typeof result> = {
         // only `dispatched` would have reset a finished platform to `pending`
         // — handing the router a post it believes has never been sent, and
         // publishing the same video to the same account a second time.
-        if (carried.state !== 'pending') next.dispatch[id] = carried
+        // `withSummary` on the way through: a row carried over from a build
+        // older than the summary line has none, and this is the one write that
+        // touches it before the router next walks it.
+        if (carried.state !== 'pending') next.dispatch[id] = withSummary(carried)
       }
     }
 

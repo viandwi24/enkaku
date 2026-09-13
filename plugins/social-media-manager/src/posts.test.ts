@@ -1,5 +1,22 @@
 import { describe, expect, test } from 'bun:test'
-import { PENDING_STATE, PostSchema, failedDevices, newPost, planDispatch, postKeyFor, postSummary, rollUp, stateFor, type Post, type RouterDevice } from './posts'
+import {
+  PENDING_STATE,
+  PostSchema,
+  describePlatform,
+  deviceDisplayName,
+  failedDevices,
+  newPost,
+  planDispatch,
+  postKeyFor,
+  postSummary,
+  refreshPost,
+  rollUp,
+  stateFor,
+  type Attempt,
+  type PlatformState,
+  type Post,
+  type RouterDevice,
+} from './posts'
 
 const NOW = 1_770_000_000
 
@@ -32,7 +49,10 @@ describe('the stored shape', () => {
 
   test('every targeted platform is seeded pending — "not targeted" and "waiting" must not look alike in the table', () => {
     const fresh = newPost({ videoArtifactId: 'v', caption: 'c', platforms: ['tiktok'], now: NOW })
-    expect(fresh.dispatch.tiktok).toEqual({ state: 'pending', at: null, deviceCount: 0, attempts: [], note: null })
+    // The summary line is seeded with it, so a brand new post reads as waiting
+    // before the router has ever looked at it — and whether or not the
+    // plugin's service is running at all.
+    expect(fresh.dispatch.tiktok).toEqual({ state: 'pending', at: null, deviceCount: 0, attempts: [], note: null, summary: 'Waiting for a phone' })
     expect(fresh.dispatch.instagram).toBeUndefined()
   })
 
@@ -62,7 +82,10 @@ describe('planDispatch — the routing rules', () => {
     expect(plan.dispatches).toEqual([{ platform: 'tiktok', script: 'tiktok/post-video@latest', deviceId: 'd1', stableId: 'stable-d1' }])
     // `attempts` is empty here on purpose: the ids do not exist until the
     // service enqueues, and it writes them back in the same state.
-    expect(plan.states.tiktok).toEqual({ state: 'dispatched', at: NOW, deviceCount: 1, attempts: [], note: null })
+    // `summary` is null here for the same reason `attempts` is empty: the line
+    // names the phones, and which phones took the job is not known until the
+    // service has the job ids back.
+    expect(plan.states.tiktok).toEqual({ state: 'dispatched', at: NOW, deviceCount: 1, attempts: [], note: null, summary: null })
   })
 
   test('a phone WITHOUT the label is never used, however idle it is', () => {
@@ -89,14 +112,14 @@ describe('planDispatch — the routing rules', () => {
   })
 
   test('a post already dispatched is NEVER dispatched again — a duplicate post cannot be undone', () => {
-    const already = post({ dispatch: { tiktok: { state: 'dispatched', at: NOW - 100, deviceCount: 2, attempts: [], note: null } } })
+    const already = post({ dispatch: { tiktok: { state: 'dispatched', at: NOW - 100, deviceCount: 2, attempts: [], note: null, summary: null } } })
     const plan = planDispatch({ post: already, devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.dispatches).toEqual([])
     expect(plan.states.tiktok).toBeUndefined()
   })
 
   test('a platform with no verified flow is marked unsupported once, with its own reason', () => {
-    const p = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'pending', at: null, deviceCount: 0, attempts: [], note: null } } })
+    const p = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'pending', at: null, deviceCount: 0, attempts: [], note: null, summary: null } } })
     const plan = planDispatch({ post: p, devices: [device({ id: 'd1', labels: [{ name: 'instagram' }] })], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.dispatches).toEqual([])
     expect(plan.states.instagram?.state).toBe('unsupported')
@@ -107,7 +130,10 @@ describe('planDispatch — the routing rules', () => {
   })
 
   test('an unsupported platform is not REWRITTEN every tick, but still keeps saying why', () => {
-    const settled = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'unsupported', at: NOW - 999, deviceCount: 0, attempts: [], note: 'x' } } })
+    const settled = post({
+      platforms: ['instagram'],
+      dispatch: { instagram: { state: 'unsupported', at: NOW - 999, deviceCount: 0, attempts: [], note: 'x', summary: null } },
+    })
     const plan = planDispatch({ post: settled, devices: [], now: NOW, maxDevicesPerPlatform: 5 })
     // No state write — an unchanged row must not bump `updatedAt` forever and
     // make the table look permanently busy.
@@ -161,7 +187,10 @@ describe('postSummary', () => {
   test('reads as a sentence per platform', () => {
     const p = post({
       platforms: ['tiktok', 'instagram'],
-      dispatch: { tiktok: { state: 'dispatched', at: NOW, deviceCount: 3, attempts: [], note: null }, instagram: { state: 'unsupported', at: NOW, deviceCount: 0, attempts: [], note: 'x' } },
+      dispatch: {
+        tiktok: { state: 'dispatched', at: NOW, deviceCount: 3, attempts: [], note: null, summary: null },
+        instagram: { state: 'unsupported', at: NOW, deviceCount: 0, attempts: [], note: 'x', summary: null },
+      },
     })
     expect(postSummary(p)).toBe('TikTok: running on 3 · Instagram: unsupported')
   })
@@ -178,6 +207,124 @@ describe('stateFor', () => {
 })
 
 /**
+ * The line the Posts table actually renders (0.7.0).
+ *
+ * The state word alone — `succeeded`, `partial` — could not answer the first
+ * question an operator asks about a fan-out, which is *which phone was that?*
+ * These pin the wording, because the wording is the feature.
+ */
+describe('describePlatform — where it ran and how it went', () => {
+  const state = (over: Partial<PlatformState> = {}): PlatformState => ({
+    state: 'pending',
+    at: null,
+    deviceCount: 0,
+    attempts: [],
+    note: null,
+    summary: null,
+    ...over,
+  })
+  const attempt = (over: Partial<Attempt> & { deviceId: string }): Attempt => ({
+    jobId: `job-${over.deviceId}`,
+    deviceName: null,
+    state: 'success',
+    error: null,
+    ...over,
+  })
+
+  test('one phone names itself', () => {
+    const one = state({ state: 'succeeded', attempts: [attempt({ deviceId: 'd1', deviceName: '#3 moto g06 power' })] })
+    expect(describePlatform(one)).toBe('#3 moto g06 power · posted')
+  })
+
+  test('a fan-out counts itself', () => {
+    const many = state({
+      state: 'partial',
+      attempts: [
+        attempt({ deviceId: 'd1', deviceName: '#1 moto' }),
+        attempt({ deviceId: 'd2', deviceName: '#2 moto', state: 'failed', error: 'no upload button' }),
+      ],
+    })
+    expect(describePlatform(many)).toBe('2 phones · 1 posted, 1 failed')
+  })
+
+  test('unverified is worded as itself — never as a success', () => {
+    const unsure = state({ state: 'partial', attempts: [attempt({ deviceId: 'd1', deviceName: '#1 moto', state: 'unverified' })] })
+    expect(describePlatform(unsure)).toBe('#1 moto · unverified')
+  })
+
+  test('a phone with no recorded name reads as an id, never as a blank', () => {
+    const nameless = state({ state: 'failed', attempts: [attempt({ deviceId: '4f3a91c2-0000', state: 'failed', error: 'x' })] })
+    expect(describePlatform(nameless)).toBe('device 4f3a91c2 · failed')
+  })
+
+  test('waiting, all-posted, all-running and unsupported each get their own line', () => {
+    expect(describePlatform(state())).toBe('Waiting for a phone')
+    expect(describePlatform(state({ state: 'unsupported', note: 'x' }))).toBe('Not supported in this build')
+    expect(describePlatform(state({ state: 'dispatched', attempts: [attempt({ deviceId: 'd1' }), attempt({ deviceId: 'd2' })] }))).toBe('2 phones · all posted')
+    expect(
+      describePlatform(state({ state: 'dispatched', attempts: [attempt({ deviceId: 'd1', state: 'queued' }), attempt({ deviceId: 'd2', state: 'queued' })] })),
+    ).toBe('2 phones · running')
+  })
+
+  test('a row written before attempts were recorded still says how many it went to', () => {
+    // The 0.1.0 shape: a count and nothing else. It claims exactly that, and
+    // does not invent phones it cannot name.
+    expect(describePlatform(state({ state: 'dispatched', deviceCount: 4 }))).toBe('Sent to 4 phones')
+  })
+})
+
+describe('refreshPost — the display fields follow the fleet, the dispatch record never moves', () => {
+  const names = new Map([['d1', '#3 moto g06 power']])
+
+  function dispatched(): Post {
+    return post({
+      dispatch: {
+        tiktok: {
+          state: 'succeeded',
+          at: NOW,
+          deviceCount: 1,
+          attempts: [{ jobId: 'j1', deviceId: 'd1', deviceName: null, state: 'success', error: null }],
+          note: null,
+          summary: null,
+        },
+      },
+    })
+  }
+
+  test('a row from an older build gains the phone name and the summary line', () => {
+    const next = refreshPost(dispatched(), names)
+    expect(next?.dispatch.tiktok?.attempts[0]?.deviceName).toBe('#3 moto g06 power')
+    expect(next?.dispatch.tiktok?.summary).toBe('#3 moto g06 power · posted')
+    // Nothing about what happened may change: this pass is display only.
+    expect(next?.dispatch.tiktok?.state).toBe('succeeded')
+    expect(next?.dispatch.tiktok?.attempts[0]?.jobId).toBe('j1')
+  })
+
+  test('nothing to do returns null, so the router never rewrites an unchanged row', () => {
+    const refreshed = refreshPost(dispatched(), names)
+    expect(refreshed).not.toBeNull()
+    expect(refreshPost(refreshed as Post, names)).toBeNull()
+  })
+
+  test('a phone the farm no longer has keeps the name it was recorded with', () => {
+    const gone = refreshPost(dispatched(), names) as Post
+    const after = refreshPost(gone, new Map())
+    // The attempt is a historical fact; the phone leaving the farm does not
+    // make it untrue, and the row must not fall back to a uuid.
+    expect(after).toBeNull()
+    expect(gone.dispatch.tiktok?.attempts[0]?.deviceName).toBe('#3 moto g06 power')
+  })
+})
+
+describe('deviceDisplayName — the same rule Studio names a phone by', () => {
+  test('numbered, unnumbered, and unnamed', () => {
+    expect(deviceDisplayName({ id: 'abcdef123456', label: 'moto g06 power', number: 3 })).toBe('#3 moto g06 power')
+    expect(deviceDisplayName({ id: 'abcdef123456', label: 'moto g06 power', number: null })).toBe('moto g06 power')
+    expect(deviceDisplayName({ id: 'abcdef123456', label: '', number: null })).toBe('device abcdef12')
+  })
+})
+
+/**
  * The half of a post's life this plugin used not to have.
  *
  * Before these, a fan-out ended at `dispatched` and stayed there: ten failed
@@ -187,6 +334,7 @@ describe('rollUp — dispatched is a waypoint, not an outcome', () => {
   const attempt = (state: 'queued' | 'success' | 'failed' | 'unverified', n: number) => ({
     jobId: `j${n}`,
     deviceId: `d${n}`,
+    deviceName: `#${n} phone ${n}`,
     state,
     error: state === 'failed' ? 'boom' : null,
   })
@@ -222,11 +370,12 @@ describe('failedDevices — a retry re-targets the failures and nobody else', ()
       at: 100,
       deviceCount: 3,
       attempts: [
-        { jobId: 'j1', deviceId: 'd1', state: 'success' as const, error: null },
-        { jobId: 'j2', deviceId: 'd2', state: 'failed' as const, error: 'no upload button' },
-        { jobId: 'j3', deviceId: 'd3', state: 'failed' as const, error: 'timed out' },
+        { jobId: 'j1', deviceId: 'd1', deviceName: '#1 moto g06 power', state: 'success' as const, error: null },
+        { jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06 power', state: 'failed' as const, error: 'no upload button' },
+        { jobId: 'j3', deviceId: 'd3', deviceName: null, state: 'failed' as const, error: 'timed out' },
       ],
       note: null,
+      summary: null,
     }
     // d1 posted. Re-sending to it would put the same video on that account
     // twice, which is the one mistake this farm cannot take back.
@@ -239,10 +388,11 @@ describe('failedDevices — a retry re-targets the failures and nobody else', ()
       at: 100,
       deviceCount: 2,
       attempts: [
-        { jobId: 'j1', deviceId: 'd1', state: 'unverified' as const, error: 'no readable grid' },
-        { jobId: 'j2', deviceId: 'd2', state: 'failed' as const, error: 'app missing' },
+        { jobId: 'j1', deviceId: 'd1', deviceName: '#1 moto g06 power', state: 'unverified' as const, error: 'no readable grid' },
+        { jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06 power', state: 'failed' as const, error: 'app missing' },
       ],
       note: null,
+      summary: null,
     }
     expect(failedDevices(state)).toEqual(['d2'])
   })
@@ -256,7 +406,7 @@ describe('planDispatch — the router never retries a settled platform on its ow
   for (const state of ['succeeded', 'partial', 'failed'] as const) {
     test(`${state} is left alone by the tick`, () => {
       const post = { ...newPost({ videoArtifactId: 'v1', caption: 'c', platforms: ['tiktok'], now: 1 }) }
-      post.dispatch.tiktok = { state, at: 1, deviceCount: 1, attempts: [], note: null }
+      post.dispatch.tiktok = { state, at: 1, deviceCount: 1, attempts: [], note: null, summary: null }
       const plan = planDispatch({ post, devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
       expect(plan.dispatches).toEqual([])
       expect(plan.states.tiktok).toBeUndefined()

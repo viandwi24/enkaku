@@ -47,6 +47,12 @@ export const SURFACE_LIMITS = {
   maxActions: 32,
   /** Columns in one table — a table wider than this is unreadable at any window size. */
   maxColumns: 12,
+  /**
+   * Sections inside one row's expanded detail (`table.detail`). A row that
+   * expands into more than this many lists is a screen of its own, not a
+   * disclosure — and the operator has lost the row they opened.
+   */
+  maxDetailSections: 8,
   /** The whole `surface` block, serialised. It is stored in `plugins.manifest` and shipped to every browser that opens the page. */
   maxSurfaceBytes: 256 * 1024,
   /** The `ui/` directory inside a `.enkaku` package (plan 108 §3.8, enforced by step 108.2's reader — named here so both halves quote one number). */
@@ -446,6 +452,83 @@ export const ActionSpecSchema: z.ZodType<ActionSpec, ActionSpecInput> = z.discri
  * that rule forbids. There is no compatibility alias; a manifest still
  * naming `frame` fails the `.strict()` parse.
  */
+/**
+ * One column, of a table or of a row's detail list. Extracted so the two
+ * declare columns with the SAME vocabulary rather than with two copies of it
+ * that could drift — a detail list is a table with fewer rows, not a second
+ * kind of thing.
+ */
+const TableColumnSchema = z
+  .object({
+    field: z.string().min(1).max(200),
+    header: z.string().min(1).max(80),
+    /** Rendered by `planField`/`formatValue`. Absent = plain text. No new field vocabulary (plan 108 §3.3). */
+    schema: JsonSchemaNodeSchema.optional(),
+    width: z.enum(['auto', 'narrow', 'wide']).default('auto'),
+  })
+  .strict()
+
+/**
+ * **What one row expands into** — the layout half of "and what happened
+ * underneath this row".
+ *
+ * A tier-A table draws one line per row and has no second dimension at all, so
+ * a plugin whose row IS a fan-out (one video, N phones, N jobs) had nowhere to
+ * put the fan-out: the Social Media Manager's Posts screen could say
+ * `partial` and never which phone, and the job the farm actually ran was
+ * unreachable from the row that caused it. The alternatives were both worse
+ * than a disclosure — a second screen the row cannot link to, or the whole
+ * list crammed into one cell as JSON.
+ *
+ * It stays LAYOUT, which is the only vocabulary this module carries. A section
+ * names an array already in the row and a set of columns to draw it with; every
+ * cell still goes through `planColumn`/`planField`, so no appearance is
+ * declared here and no field type is invented.
+ *
+ * `job` is the one RELATIONSHIP key, and it is the reason the list is worth
+ * opening: an item that names a job id becomes a link to that job's page, so
+ * "which phone, and what did it do" is one click rather than a hunt through
+ * the Jobs screen by timestamp. It names a FACT about the value ("this string
+ * is a job id"), never a route — where a job's page lives is Studio's to
+ * decide, exactly as an icon name is.
+ */
+const RowDetailSchema = z
+  .object({
+    sections: z
+      .array(
+        z
+          .object({
+            title: z.string().min(1).max(80),
+            /**
+             * Dot path into the row to an ARRAY of objects — one item per
+             * detail line. A path that is missing, empty or not an array draws
+             * nothing, which is what makes a section per platform (or per
+             * anything a row only sometimes has) legible: the sections that
+             * have nothing simply are not there.
+             */
+            field: z.string().min(1).max(200),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(SURFACE_LIMITS.maxDetailSections, {
+        error: `a row detail declares at most ${SURFACE_LIMITS.maxDetailSections} sections (maxDetailSections)`,
+      }),
+    columns: z
+      .array(TableColumnSchema)
+      .min(1)
+      .max(SURFACE_LIMITS.maxColumns, { error: `a row detail declares at most ${SURFACE_LIMITS.maxColumns} columns (maxColumns)` }),
+    /**
+     * Dot path INSIDE one item holding a job id. Empty (the default) means the
+     * items are not about jobs, and nothing is linked — which is what every
+     * detail list that predates a job-shaped one will say.
+     */
+    job: z.string().max(200).default(''),
+    /** What an expanded row with nothing in any section says. Empty = Studio's own wording. */
+    empty: z.string().max(200).default(''),
+  })
+  .strict()
+
 export const ViewSpecSchema = z
   .object({
     title: z.string().min(1).max(80),
@@ -455,22 +538,18 @@ export const ViewSpecSchema = z
       .object({
         rowKey: z.string().min(1).max(200),
         columns: z
-          .array(
-            z
-              .object({
-                field: z.string().min(1).max(200),
-                header: z.string().min(1).max(80),
-                /** Rendered by `planField`/`formatValue`. Absent = plain text. No new field vocabulary (plan 108 §3.3). */
-                schema: JsonSchemaNodeSchema.optional(),
-                width: z.enum(['auto', 'narrow', 'wide']).default('auto'),
-              })
-              .strict(),
-          )
+          .array(TableColumnSchema)
           .min(1)
           .max(SURFACE_LIMITS.maxColumns, {
             error: `a table declares at most ${SURFACE_LIMITS.maxColumns} columns (maxColumns)`,
           }),
         selectable: z.boolean().default(false),
+        /**
+         * Optional, and absent from every surface published before it existed —
+         * so a renderer must treat "no detail" as the normal case and draw the
+         * table exactly as it always did.
+         */
+        detail: RowDetailSchema.optional(),
       })
       .strict()
       .optional(),

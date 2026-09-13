@@ -4,7 +4,20 @@ import addPost from './add-post'
 import addPosts from './add-posts'
 import retryFailed from './retry-failed'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
-import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, type Attempt, type Post, type RouterDevice } from './posts'
+import {
+  POST_PREFIX,
+  PostSchema,
+  deviceDisplayName,
+  planDispatch,
+  postSummary,
+  refreshPost,
+  rollUp,
+  stateFor,
+  withSummary,
+  type Attempt,
+  type Post,
+  type RouterDevice,
+} from './posts'
 
 /**
  * # Social Media Manager
@@ -40,6 +53,29 @@ import { POST_PREFIX, PostSchema, planDispatch, postSummary, rollUp, stateFor, t
  * those selectors from memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.7.0 — which phone, and the jobs behind the row.** The Posts table said
+ *   `succeeded` and never WHERE, and a post's own jobs were unreachable from
+ *   the row that caused them — the operator matched runs by timestamp on the
+ *   Jobs screen. Three changes, all reading data the row already held:
+ *
+ *   1. Each platform cell is a sentence now, not a status word:
+ *      `#3 moto g06 power · posted`, `2 phones · 1 posted, 1 failed`. Composed
+ *      by `describePlatform` and stored as `dispatch.<platform>.summary`,
+ *      because a tier-A column renders one stored path as text and has nowhere
+ *      else to compose one. Every attempt records the phone's NAME as the farm
+ *      gave it (`Attempt.deviceName`), so a phone since renamed, unplugged or
+ *      removed still names itself.
+ *   2. The row expands onto its jobs — one line per phone per platform, with
+ *      the result, the error, and a link to the job the farm actually ran.
+ *      This is the protocol's new `table.detail` (`@enkaku/protocol`), the
+ *      smallest vocabulary that gives a tier-A row a real, clickable list;
+ *      the alternative was a second screen the row could not link to.
+ *   3. The timer settles on every poll, dispatches only when `enabled`. The
+ *      two halves used to be one: with auto-posting off, a "Re-run failed"
+ *      dispatched from the screen left its attempts `queued` forever and the
+ *      platform pinned at `dispatched`, which is the disappearing act 0.2.0
+ *      exists to end. Nothing is enqueued by the settling half.
  *
  * - **0.6.0 — YouTube posts.** The YouTube row of the platform table now names
  *   `youtube/post-video@latest` (youtube pack 0.20.0, walked on the owner's
@@ -179,9 +215,22 @@ const DeviceListOutput = z.object({
       status: z.string(),
       activities: z.array(z.object({ kind: z.string() })),
       labels: z.array(z.object({ name: z.string() })).default([]),
+      /**
+       * The two naming fields, read so a post row can say WHICH phone it ran
+       * on rather than a uuid. Both are defaulted rather than required: a farm
+       * older than `number` (plan 89) still answers this call, and a name is
+       * never worth failing a router tick over.
+       */
+      label: z.string().default(''),
+      number: z.number().int().nullable().default(null),
     }),
   ),
 })
+
+/** Every phone's display name, by device id — what an attempt records and the Posts table reads. */
+function fleetNames(fleet: z.infer<typeof DeviceListOutput>): Map<string, string> {
+  return new Map(fleet.items.map((d) => [d.id, deviceDisplayName(d)]))
+}
 
 const JobRunOutput = z.object({ jobId: z.string() })
 /** Only the fields the reconciler reads. Validated at this boundary because the farm's own shape may move under a published plugin. */
@@ -294,7 +343,10 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
           : next === 'partial'
             ? partialNote(ok, bad, unsure)
             : state.note
-    dispatch[platformId] = { ...state, attempts: settled, state: next, note }
+    // `withSummary` last, so the line the Posts table shows is computed from
+    // the attempts this very pass settled — the state word and the sentence
+    // beside it can never describe two different moments.
+    dispatch[platformId] = withSummary({ ...state, attempts: settled, state: next, note })
     any = true
   }
   return any ? { ...post, dispatch } : null
@@ -326,15 +378,36 @@ function messageOf(err: unknown): string {
  * phone, and the farm would then run two upload jobs back to back on it. One
  * reading, and `claimed` below removes a phone from the pool as soon as any
  * post takes it.
+ *
+ * ## `dispatch: false` — the settle-only pass
+ *
+ * A tick does two quite different things, and only one of them is "post to a
+ * real account". Settling what is already in flight (`job.get` on the queued
+ * attempts) and keeping each row's phone names and summary line current are
+ * pure bookkeeping about work the farm has ALREADY done, so they run on every
+ * poll whether or not auto-posting is on. Planning and firing new jobs is the
+ * half `enabled` gates, and it is the only half `dispatch: false` skips.
+ *
+ * That split is a fix, not a tidy-up: "Re-run failed" enqueues jobs from the
+ * Posts screen with auto-posting off, and before this those attempts stayed
+ * `queued` forever — the platform pinned at `dispatched`, the retry's outcome
+ * invisible on the very screen that offered the button.
  */
-async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings): Promise<void> {
+async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, options: { dispatch: boolean }): Promise<void> {
   let fleet: z.infer<typeof DeviceListOutput>
   try {
     fleet = await ctx.farm.call('device.list', {}, DeviceListOutput)
   } catch (err) {
-    ctx.log.warn('router tick could not list devices — skipping this tick', { error: messageOf(err) })
-    return
+    // Fatal for a dispatching tick — there is no fleet to route to. Not fatal
+    // for a settle-only one: names simply stay as they were, which is what a
+    // removed phone's attempt shows anyway.
+    if (options.dispatch) {
+      ctx.log.warn('router tick could not list devices — skipping this tick', { error: messageOf(err) })
+      return
+    }
+    fleet = { items: [] }
   }
+  const names = fleetNames(fleet)
 
   let listed: Awaited<ReturnType<typeof ctx.storage.global.list>>
   try {
@@ -375,17 +448,31 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings): P
       nothing new to dispatch would otherwise never be stored at all.
     */
     const reconciled = await reconcilePost(ctx, post)
-    if (reconciled !== null) {
-      const written = await ctx.storage.global.setIfVersion(entry.key, reconciled, entry.version)
+    /*
+      Then bring the two DISPLAY fields up to date — the phone names and the
+      summary line — on whatever the reconciler left behind. Folded into the
+      same write rather than given one of its own: a row that settled and a row
+      whose phone was renamed are one `setIfVersion` either way, and two writes
+      would race each other for the version.
+    */
+    const settled = reconciled ?? post
+    const refreshed = refreshPost(settled, names) ?? (reconciled !== null ? settled : null)
+    if (refreshed !== null) {
+      const written = await ctx.storage.global.setIfVersion(entry.key, refreshed, entry.version)
       if (!written) {
         // Someone else wrote this row between the read and here. Leave it; the
         // next tick re-reads and reconciles from whatever they stored.
         continue
       }
-      post = reconciled
+      post = refreshed
       entry.version += 1
-      ctx.log.info('post outcomes settled', { key: entry.key, subject: entry.key, summary: postSummary(post) })
+      if (reconciled !== null) ctx.log.info('post outcomes settled', { key: entry.key, subject: entry.key, summary: postSummary(post) })
     }
+
+    // Everything above is bookkeeping about work already done. Everything
+    // below posts to real accounts, and only a tick the operator's settings
+    // asked for gets to do it.
+    if (!options.dispatch) continue
 
     const devices: RouterDevice[] = fleet.items.filter((d) => !claimed.has(d.id))
     const plan = planDispatch({ post, devices, now: Math.floor(Date.now() / 1000), maxDevicesPerPlatform: settings.maxDevicesPerPlatform })
@@ -413,7 +500,16 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings): P
         const job = await ctx.farm.call('job.run', { scriptRef: dispatch.script, deviceId: dispatch.deviceId, params }, JobRunOutput)
         claimed.add(dispatch.deviceId)
         sent.push(dispatch.platform)
-        ;(attempts[dispatch.platform] ??= []).push({ jobId: job.jobId, deviceId: dispatch.deviceId, state: 'queued', error: null })
+        ;(attempts[dispatch.platform] ??= []).push({
+          jobId: job.jobId,
+          deviceId: dispatch.deviceId,
+          // Recorded at the moment of the dispatch, from the fleet reading
+          // this tick was planned against — so the row can name the phone even
+          // after it is unplugged, renamed or removed.
+          deviceName: names.get(dispatch.deviceId) ?? null,
+          state: 'queued',
+          error: null,
+        })
       } catch (err) {
         // One phone's refusal never stops the rest — the same posture the
         // TikTok pack's own auto-post tick takes with its fleet.
@@ -435,7 +531,9 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings): P
       const fired = attempts[platformId]
       // `deviceCount` is corrected to what was enqueued, not what was planned:
       // a phone whose `job.run` threw is not a phone this post was sent to.
-      next.dispatch[platformId] = fired ? { ...state, attempts: fired, deviceCount: fired.length } : state
+      // `withSummary` then writes the line naming those phones — it could not
+      // be written inside `planDispatch`, which is pure and had no job ids.
+      next.dispatch[platformId] = withSummary(fired ? { ...state, attempts: fired, deviceCount: fired.length } : state)
     }
 
     try {
@@ -460,28 +558,40 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings): P
 /**
  * The timer body — reads the settings fresh on every poll, so a changed
  * `enabled`/`intervalMinutes` takes effect without a republish, and only
- * actually runs a tick once `intervalMinutes` has genuinely elapsed.
+ * actually DISPATCHES once `intervalMinutes` has genuinely elapsed.
+ *
+ * Every poll still settles: `runTick(..., { dispatch: false })` reads back the
+ * jobs already in flight and refreshes what the Posts screen shows. That is
+ * not a weakening of "auto-post is off until an operator turns it on" — it
+ * enqueues nothing and can post nothing — it is what makes a manually
+ * triggered retry visible on a farm that never turns the timer on at all.
  */
 async function maybeRunTick(ctx: PluginServiceContext): Promise<void> {
   let settings: AutoPostSettings
+  let readable = true
   try {
     settings = (await ctx.storage.global.get(AUTO_POST_SETTINGS_KEY, AutoPostSettingsSchema)) ?? DEFAULT_AUTO_POST_SETTINGS
   } catch (err) {
     // A stored shape this build cannot read must never be misread as
     // "enabled" — fail closed. Posting to real accounts is not a default.
     ctx.log.warn('auto-post settings have an incompatible shape — leaving auto-posting off this tick', { error: messageOf(err) })
-    return
+    settings = { ...DEFAULT_AUTO_POST_SETTINGS, enabled: false }
+    readable = false
   }
-  if (!settings.enabled) return
 
-  const nowSec = Math.floor(Date.now() / 1000)
-  const lastRunSec = (await ctx.storage.global.get(AUTO_POST_LAST_RUN_KEY, z.number().int().nonnegative())) ?? 0
-  if (nowSec - lastRunSec < settings.intervalMinutes * 60) return
+  let dispatch = false
+  if (readable && settings.enabled) {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const lastRunSec = (await ctx.storage.global.get(AUTO_POST_LAST_RUN_KEY, z.number().int().nonnegative())) ?? 0
+    if (nowSec - lastRunSec >= settings.intervalMinutes * 60) {
+      // Stamped BEFORE the tick: a tick slow enough to still be running (many
+      // posts, many phones) must not be re-entered by the next 60 s poll.
+      await ctx.storage.global.set(AUTO_POST_LAST_RUN_KEY, nowSec)
+      dispatch = true
+    }
+  }
 
-  // Stamped BEFORE the tick: a tick slow enough to still be running (many
-  // posts, many phones) must not be re-entered by the next 60 s poll.
-  await ctx.storage.global.set(AUTO_POST_LAST_RUN_KEY, nowSec)
-  await runTick(ctx, settings)
+  await runTick(ctx, settings, { dispatch })
 }
 
 /** The Platforms screen's rows — a static table of what this build can and cannot post, read straight off `PLATFORMS`. */
@@ -503,7 +613,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.6.0',
+  version: '0.7.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',
@@ -552,21 +662,69 @@ export default definePlugin({
           columns: [
             { field: 'videoArtifactId', header: 'Video', width: 'wide' },
             { field: 'caption', header: 'Caption', width: 'wide' },
-            // One column per platform, reading the seeded per-platform state.
-            // A platform this post does not target has no key at all and
-            // renders `—`, which is why `newPost` seeds the targeted ones:
-            // without that, "not targeted" and "waiting" would look identical.
-            // The per-platform state words are the OUTCOME now, not the
-            // hand-off: `succeeded`, `partial` and `failed` join `pending`,
-            // `dispatched` and `unsupported`. A column that said `dispatched`
-            // for a fan-out that had long since failed on every phone is the
-            // bug this pack's 0.2.0 exists to end.
-            { field: 'dispatch.tiktok.state', header: 'TikTok', width: 'narrow' },
-            { field: 'dispatch.instagram.state', header: 'Instagram', width: 'narrow' },
-            { field: 'dispatch.youtube.state', header: 'YouTube', width: 'narrow' },
+            /*
+              One column per platform, reading the seeded per-platform state.
+              A platform this post does not target has no key at all and
+              renders `—`, which is why `newPost` seeds the targeted ones:
+              without that, "not targeted" and "waiting" would look identical.
+
+              `summary`, not `state`, since 0.7.0. The state word answered
+              "how did it go" and could not answer the question an operator
+              asks first — *which phone was that?* — so the cell now reads
+              `#3 moto g06 power · posted` or `2 phones · 1 posted, 1 failed`,
+              composed by `describePlatform` from the same attempts the state
+              word is rolled up from. Nothing is lost: every state has its own
+              wording there, `unverified` still reads as itself and never as a
+              success, and the sentence that says WHY is still the Note column.
+            */
+            { field: 'dispatch.tiktok.summary', header: 'TikTok' },
+            { field: 'dispatch.instagram.summary', header: 'Instagram' },
+            { field: 'dispatch.youtube.summary', header: 'YouTube' },
             { field: 'lastNote', header: 'Note', width: 'wide' },
             { field: 'createdAt', header: 'Added', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
           ],
+          /*
+            The row opens onto its jobs — one line per phone per platform, each
+            linking to the job the farm actually ran (plan 108's `table.detail`,
+            added for exactly this shape).
+
+            A post IS a fan-out, and the table above is one line per video, so
+            until this existed the link from "2 phones · 1 posted, 1 failed"
+            back to the failed run did not exist at all: the operator went to
+            the Jobs screen and matched runs by timestamp. Every section reads
+            an array already stored on the row — nothing new is written for the
+            panel, and a platform this post never targeted simply has no
+            section.
+          */
+          detail: {
+            sections: [
+              { title: 'TikTok', field: 'dispatch.tiktok.attempts' },
+              { title: 'Instagram', field: 'dispatch.instagram.attempts' },
+              { title: 'YouTube', field: 'dispatch.youtube.attempts' },
+            ],
+            columns: [
+              { field: 'deviceName', header: 'Phone' },
+              {
+                field: 'state',
+                header: 'Result',
+                width: 'narrow',
+                // The stored enum, labelled through the SAME `x-enkaku`
+                // vocabulary every other schema uses — no wording of this
+                // pack's own reaches Studio. `Unverified` is deliberately not
+                // worded as a success: the upload script could not confirm the
+                // post landed, and "Re-run failed" leaves it alone.
+                schema: {
+                  type: 'string',
+                  enum: ['queued', 'success', 'failed', 'unverified'],
+                  'x-enkaku': { labels: { queued: 'Running', success: 'Posted', failed: 'Failed', unverified: 'Unverified' } },
+                },
+              },
+              { field: 'error', header: 'Why', width: 'wide' },
+            ],
+            job: 'jobId',
+            empty:
+              'No job has been recorded for this post yet. The router records one per phone when it dispatches; “Post to … now” runs as a batch and appears on the Jobs screen instead.',
+          },
         },
         toolbar: ['addPost', 'addManyPosts', 'autoPostSettings'],
         rowActions: ['retryFailedNow', 'postToTikTokNow', 'postToYouTubeNow', 'removePost'],
