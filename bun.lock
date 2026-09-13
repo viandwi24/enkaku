@@ -37,7 +37,7 @@
     },
     "packages/core": {
       "name": "enkaku-core",
-      "version": "0.2.18",
+      "version": "0.2.20",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.33",
         "@enkaku/adb": "workspace:*",
@@ -274,16 +274,23 @@
     },
     "plugins/social-media-manager": {
       "name": "@enkaku/plugin-social-media-manager",
-      "version": "0.1.0",
+      "version": "0.8.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
         "zod": "^4.0.0",
       },
+      "devDependencies": {
+        "@enkaku/ui": "workspace:*",
+        "@tailwindcss/cli": "^4.3.3",
+        "@types/react": "^19",
+        "react": "^19.0.0",
+        "tailwindcss": "^4.3.3",
+      },
     },
     "plugins/tiktok-automation-pack": {
       "name": "@enkaku/plugin-tiktok",
-      "version": "1.23.0",
+      "version": "1.29.0",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",
@@ -292,7 +299,7 @@
     },
     "plugins/youtube-automation-pack": {
       "name": "@enkaku/plugin-youtube",
-      "version": "0.18.0",
+      "version": "0.26.1",
       "dependencies": {
         "@enkaku/protocol": "workspace:*",
         "@enkaku/sdk": "workspace:*",

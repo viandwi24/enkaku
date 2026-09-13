@@ -1,4 +1,5 @@
 import { definePlugin, defineService, type PluginServiceContext } from '@enkaku/sdk'
+import { PLUGIN_UI_API_VERSION } from '@enkaku/protocol'
 import { z } from 'zod'
 import addPost from './add-post'
 import addPosts from './add-posts'
@@ -48,15 +49,49 @@ import {
  *
  * ## The honest state of it
  *
- * The router works and is tested. **TikTok is the only platform that can
- * actually post today**: `tiktok/post-video` exists and every anchor in it was
- * measured on a real device. Instagram and YouTube have packs here, neither has
- * an upload flow, and this plugin says so by name — in the Platforms screen, in
- * each post's row, and in the router's log — rather than routing to them and
- * reporting a success nothing performed. See `platforms.ts` for why writing
- * those selectors from memory would be worse than not having them.
+ * The router works and is tested. **TikTok and YouTube can post today**: both
+ * packs' upload flows were walked on real hardware and every anchor in them was
+ * measured there. Instagram has a pack and no upload flow, and this plugin says
+ * so by name — the page offers it as "no upload flow yet" rather than routing to
+ * it and reporting a success nothing performed. See `platforms.ts` for why
+ * writing those selectors from memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.9.0 — one screen for the whole job.** The plugin declared three views —
+ *   a table of post rows, a table of sessions, a page listing platforms — and
+ *   the owner's verdict after using them was that three menus for one job is
+ *   three places to get lost: *"saya minta menunya sama aja jadi satu dong
+ *   jangan dibedakan ada menu view page khusus untuk item post, untuk sesi dll
+ *   jadi bingung user"*. They are now ONE React page (`src/ui/`), read top to
+ *   bottom in the order the work happens: drop in forty files, watch them
+ *   upload, pick the platforms, pick the phones (all labelled, by label, or by
+ *   name), set the spread and the gaps, accept or replace the auto-generated
+ *   title, Create or Create and start — then the sessions underneath, each
+ *   expandable onto every video, every phone and every failure. Captions are
+ *   written from the file names unless the operator types their own.
+ *
+ *   Three behavioural changes came with it, and each fixes something the old
+ *   surface hid:
+ *
+ *   1. **A started session no longer consults the auto-post switch.** Pressing
+ *      Start IS the consent, and the one screen has no such switch — a Start
+ *      that quietly did nothing because of a setting nobody can see is the
+ *      worst failure this plugin could have. Ungrouped rows (`add-post`,
+ *      `add-posts`, which nothing starts) still wait for the timer, off by
+ *      default, so a leftover row can never post itself on an upgrade.
+ *   2. **Removing a session stops it.** The router refuses to dispatch a row
+ *      whose session is gone. Before, an orphaned row read as unpaced and a
+ *      deleted forty-video session would have fired all forty on the next tick.
+ *   3. **The screen waits for what it asked for.** `run-script` answers when a
+ *      job is ENQUEUED, so a member that then refused — forty videos and seven
+ *      caption lines — left the screen saying "session created" with nothing
+ *      created. The page now waits for the job's own verdict and shows the
+ *      member's words, and reads the new session's id off its result rather
+ *      than hunting for a row with the title it just typed.
+ *
+ *   No declared actions remain: they were buttons on tables that no longer
+ *   exist, and the page calls the same members directly.
  *
  * - **0.8.0 — upload sessions: forty videos, forty phones, not all at once.**
  *   The farm this is built for loads a folder of videos, one per phone, and
@@ -71,8 +106,7 @@ import {
  *   schedule is data on the rows, a plugin restart or a core restart resumes
  *   it. Group rows are considered on every poll rather than waiting for
  *   `intervalMinutes`, which would have rounded a 30-second gap up to the
- *   whole interval; they still obey the auto-post switch, so there is one
- *   place to stop everything.
+ *   whole interval.
  *
  * - **0.7.0 — which phone, and the jobs behind the row.** The Posts table said
  *   `succeeded` and never WHERE, and a post's own jobs were unreachable from
@@ -556,14 +590,32 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       Everything above is bookkeeping about work already done. Everything
       below posts to real accounts.
 
-      A row in a GROUP carries its own turn (`notBeforeAt`), and that turn IS
-      its interval — so it is considered on every poll rather than waiting for
-      the farm-wide `intervalMinutes`, which would round a 30-second gap up to
-      the whole interval. It still obeys the auto-post switch: one place to
-      stop everything is worth more than a second way to start something.
+      Two kinds of row reach this line, and they are told apart by who said
+      "send it":
+
+      - A row in a SESSION was started by an operator pressing Start, which
+        stamped its turn (`notBeforeAt`). That press IS the consent, so the
+        row is considered on every poll and does not consult the auto-post
+        switch — the one screen has no such switch, and a Start that quietly
+        did nothing because of a setting nobody can see is the worst failure
+        this plugin could have.
+      - An UNGROUPED row (written by `add-post`/`add-posts`, which nothing
+        starts) has no such moment, so it still waits for the auto-post timer,
+        off by default. Fail closed: a leftover row from an old build must
+        never post itself because a new version was activated.
     */
-    if (!options.enabled) continue
-    if (!options.dispatch && post.groupId === null) continue
+    if (post.groupId === null) {
+      if (!options.enabled || !options.dispatch) continue
+    } else if (!groups.has(post.groupId)) {
+      /*
+        Its session was removed. Removing is therefore a STOP for whatever has
+        not gone out yet — which is what an operator means by removing a
+        running batch, and the only reading that is safe: the alternative,
+        treating an orphan as unpaced, would let a deleted forty-video session
+        dispatch all forty at once on the very next tick.
+      */
+      continue
+    }
 
     /*
       A group row waits for two things before it may send: its own turn
@@ -703,16 +755,6 @@ async function maybeRunTick(ctx: PluginServiceContext): Promise<void> {
   await runTick(ctx, settings, { dispatch, enabled })
 }
 
-/** The Platforms screen's rows — a static table of what this build can and cannot post, read straight off `PLATFORMS`. */
-const PLATFORM_ROWS = PLATFORMS.map((p) => ({
-  id: p.id,
-  title: p.title,
-  label: p.label,
-  status: p.script === null ? 'Not available' : 'Ready',
-  script: p.script ?? '—',
-  detail: p.unsupportedReason ?? 'Posts through this platform’s own pack.',
-}))
-
 /** The platform choice an operator sees in the New post form — `tiktok` → `TikTok`. */
 const PLATFORM_LABELS: Record<string, string> = Object.fromEntries(PLATFORMS.map((p) => [p.id, p.title]))
 
@@ -722,10 +764,10 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.8.0',
+  version: '0.9.0',
   icon: 'upload',
   title: 'Social Media Manager',
-  description: 'Upload a video once and send it to every phone labelled for each platform. TikTok posts today; Instagram and YouTube are declared but have no verified upload flow yet.',
+  description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok and YouTube post today; Instagram is declared and has no verified upload flow yet.',
   scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup],
 
   service: defineService({
@@ -742,13 +784,6 @@ export default definePlugin({
      */
     permissions: ['device.list', 'job.run', 'job.get'],
     setup: (ctx) => {
-      // The Platforms view's rows. Constant for the life of the build — there
-      // is nothing to read and nothing that can fail, so it takes no error
-      // path of its own.
-      ctx.onQuery('platforms', () => ({ rows: PLATFORM_ROWS.map((row) => ({ id: row.id, value: row })) }), {
-        description: 'What this build can post, and the device label each platform routes on.',
-      })
-
       const timer = setInterval(() => {
         void maybeRunTick(ctx).catch((err) => ctx.log.warn('router tick failed', { error: messageOf(err) }))
       }, POLL_MS)
@@ -757,540 +792,39 @@ export default definePlugin({
   }),
 
   surface: {
-    nav: [
-      { id: 'posts', label: 'Social posts', icon: 'upload', view: 'posts' },
-      { id: 'groups', label: 'Upload sessions', icon: 'layers', view: 'groups' },
-      { id: 'platforms', label: 'Platforms', icon: 'puzzle', view: 'platforms' },
-    ],
+    /*
+      ONE entry, for one screen. The plugin used to carry three — posts,
+      sessions, platforms — and the owner's verdict after using it was that
+      three menus for one job is three places to get lost. The work is a
+      single sequence (upload a folder, spread it over the phones, watch it),
+      so the screen is a single page; see `ui/index.tsx`.
+    */
+    nav: [{ id: 'posts', label: 'Social posts', icon: 'upload', view: 'posts' }],
     views: {
-      groups: {
-        title: 'Upload sessions',
-        description: 'A named batch of videos — one per phone, spread over time. Nothing is sent until you press Start.',
-        data: { kind: 'kv.list', scope: 'global', prefix: GROUP_PREFIX },
-        table: {
-          rowKey: 'id',
-          columns: [
-            { field: 'title', header: 'Session', width: 'wide' },
-            { field: 'summary', header: 'Progress', width: 'wide' },
-            { field: 'progress.total', header: 'Videos', width: 'narrow' },
-            { field: 'assignment', header: 'Spread' },
-            { field: 'pacing.concurrency', header: 'At once', width: 'narrow' },
-            { field: 'createdAt', header: 'Made', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
-          ],
-        },
-        toolbar: ['newGroup'],
-        rowActions: ['startGroupNow', 'retryGroupNow', 'removeGroup'],
-      },
-
       posts: {
         title: 'Social posts',
-        description: 'One row per video. Each platform sends to the phones carrying that platform’s label.',
-        data: { kind: 'kv.list', scope: 'global', prefix: POST_PREFIX },
-        table: {
-          rowKey: 'videoArtifactId',
-          columns: [
-            { field: 'videoArtifactId', header: 'Video', width: 'wide' },
-            { field: 'caption', header: 'Caption', width: 'wide' },
-            /*
-              One column per platform, reading the seeded per-platform state.
-              A platform this post does not target has no key at all and
-              renders `—`, which is why `newPost` seeds the targeted ones:
-              without that, "not targeted" and "waiting" would look identical.
-
-              `summary`, not `state`, since 0.7.0. The state word answered
-              "how did it go" and could not answer the question an operator
-              asks first — *which phone was that?* — so the cell now reads
-              `#3 moto g06 power · posted` or `2 phones · 1 posted, 1 failed`,
-              composed by `describePlatform` from the same attempts the state
-              word is rolled up from. Nothing is lost: every state has its own
-              wording there, `unverified` still reads as itself and never as a
-              success, and the sentence that says WHY is still the Note column.
-            */
-            { field: 'dispatch.tiktok.summary', header: 'TikTok' },
-            { field: 'dispatch.instagram.summary', header: 'Instagram' },
-            { field: 'dispatch.youtube.summary', header: 'YouTube' },
-            { field: 'lastNote', header: 'Note', width: 'wide' },
-            { field: 'createdAt', header: 'Added', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
-          ],
-          /*
-            The row opens onto its jobs — one line per phone per platform, each
-            linking to the job the farm actually ran (plan 108's `table.detail`,
-            added for exactly this shape).
-
-            A post IS a fan-out, and the table above is one line per video, so
-            until this existed the link from "2 phones · 1 posted, 1 failed"
-            back to the failed run did not exist at all: the operator went to
-            the Jobs screen and matched runs by timestamp. Every section reads
-            an array already stored on the row — nothing new is written for the
-            panel, and a platform this post never targeted simply has no
-            section.
-          */
-          detail: {
-            sections: [
-              { title: 'TikTok', field: 'dispatch.tiktok.attempts' },
-              { title: 'Instagram', field: 'dispatch.instagram.attempts' },
-              { title: 'YouTube', field: 'dispatch.youtube.attempts' },
-            ],
-            columns: [
-              { field: 'deviceName', header: 'Phone' },
-              {
-                field: 'state',
-                header: 'Result',
-                width: 'narrow',
-                // The stored enum, labelled through the SAME `x-enkaku`
-                // vocabulary every other schema uses — no wording of this
-                // pack's own reaches Studio. `Unverified` is deliberately not
-                // worded as a success: the upload script could not confirm the
-                // post landed, and "Re-run failed" leaves it alone.
-                schema: {
-                  type: 'string',
-                  enum: ['queued', 'success', 'failed', 'unverified'],
-                  'x-enkaku': { labels: { queued: 'Running', success: 'Posted', failed: 'Failed', unverified: 'Unverified' } },
-                },
-              },
-              { field: 'error', header: 'Why', width: 'wide' },
-            ],
-            job: 'jobId',
-            empty:
-              'No job has been recorded for this post yet. The router records one per phone when it dispatches; “Post to … now” runs as a batch and appears on the Jobs screen instead.',
-          },
-        },
-        toolbar: ['addPost', 'addManyPosts', 'autoPostSettings'],
-        rowActions: ['retryFailedNow', 'postToTikTokNow', 'postToYouTubeNow', 'removePost'],
-        empty: {
-          title: 'No posts yet',
-          hint: 'Upload a video on the Files screen, then use “New post” to say which platforms it is for.',
-        },
-      },
-      platforms: {
-        title: 'Platforms',
-        description: 'What this build can post, and the device label each platform routes on. Label a phone on the Devices screen to make it part of that platform’s fleet.',
+        description: 'Upload the videos, choose where they go and how fast, then start the session — all on this page.',
         /*
-         * A `handler` source: the rows are this build's own platform registry,
-         * assembled by code, not farm state anybody stored. The two `kv.*`
-         * sources read stored rows, and there are none to read here — seeding
-         * a KV entry just to describe constants would put a stale copy of the
-         * registry on every farm that ever installed an older build.
-         *
-         * A handler view is the one source that can be DOWN (it needs the
-         * service running). That is the right behaviour here rather than a
-         * drawback: the service IS the router, so a farm being told "the
-         * Social Media Manager service is not running" on this screen is being
-         * told the true and more important thing — nothing is going to post.
-         */
-        data: { kind: 'handler', name: 'platforms' },
-        table: {
-          rowKey: 'id',
-          columns: [
-            { field: 'title', header: 'Platform' },
-            { field: 'status', header: 'Status', width: 'narrow' },
-            { field: 'label', header: 'Device label', width: 'narrow' },
-            { field: 'script', header: 'Posts through' },
-            { field: 'detail', header: 'Detail', width: 'wide' },
-          ],
-        },
-        empty: { title: 'No platforms', hint: 'This build declares none.' },
+          Tier C. A declared table can render stored rows and fire an action
+          per row, which is right for a list and cannot express this flow:
+          files uploading one after another with progress, a fleet count that
+          answers back as labels are picked, a pacing sentence that recomputes
+          as the numbers move, captions generated from file names. Those are
+          answers the screen computes WHILE the operator decides.
+        */
+        react: { entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION },
       },
     },
-    actions: {
-      /**
-       * A `form` whose `videoArtifactId` field declares `kind: 'artifact'` —
-       * rendered by Studio's existing artifact picker, a real "upload a new
-       * file or browse one you already uploaded" control, with no bespoke UI
-       * written here at all.
-       *
-       * `then` is a JOB and not a `kv.set` because a binding cannot build
-       * `post:<artifactId>` from a freshly-picked id — see `add-post.ts`. The
-       * device it runs on does nothing; that trade-off is named there too.
-       */
-      addPost: {
-        kind: 'form',
-        label: 'New post',
-        schema: {
-          type: 'object',
-          required: ['videoArtifactId', 'caption', 'platforms'],
-          properties: {
-            videoArtifactId: {
-              type: 'string',
-              title: 'Video',
-              description: 'Upload a new video or pick one you already uploaded.',
-              'x-enkaku': { kind: 'artifact' },
-            },
-            caption: {
-              type: 'string',
-              title: 'Caption',
-              minLength: 1,
-              maxLength: 2_200,
-              // Required, not optional. `tiktok/post-video` refuses an empty
-              // caption when it is told which video to post — see
-              // `PostSchema.caption`. A dialog that lets one through would
-              // store a post that fails on every phone it reaches.
-              description: 'Typed into the app when the video is posted.',
-            },
-            platforms: {
-              type: 'array',
-              title: 'Platforms',
-              description: 'Each one sends to the phones carrying that platform’s label. TikTok and YouTube can post in this build; Instagram cannot yet.',
-              // Caught in the dialog rather than by the member: an empty list
-              // stores a post that targets nothing and silently never sends.
-              minItems: 1,
-              items: { type: 'string', enum: [...PLATFORM_IDS], 'x-enkaku': { labels: PLATFORM_LABELS } },
-            },
-            // NOT in `required`: empty means "any phone carrying the label",
-            // which is what every post written before this field meant, and
-            // is still the right default for a fleet that grows.
-            deviceIds: {
-              type: 'array',
-              title: 'Phones',
-              description: 'Leave empty for any phone carrying the platform’s label. Choosing here narrows that fleet — it never widens it, so a phone without the label is still skipped.',
-              items: { type: 'string' },
-              'x-enkaku': { kind: 'deviceIds' },
-            },
-          },
-        },
-        submitLabel: 'Save post',
-        then: {
-          kind: 'job',
-          label: 'New post',
-          script: 'smm/add-post@latest',
-          device: 'picker',
-          params: {
-            videoArtifactId: { $form: 'videoArtifactId' },
-            caption: { $form: 'caption' },
-            platforms: { $form: 'platforms' },
-            deviceIds: { $form: 'deviceIds' },
-          },
-        },
-      },
 
-      /*
-        The bulk builder. Same shape as `addPost` next door, with the two
-        fields that make it bulk: a tickable list of uploads instead of one
-        picker, and captions one per line.
-      */
-      addManyPosts: {
-        kind: 'form',
-        label: 'Add many',
-        schema: {
-          type: 'object',
-          required: ['videoArtifactIds', 'captions', 'platforms'],
-          properties: {
-            videoArtifactIds: {
-              type: 'array',
-              title: 'Videos',
-              description: 'Tick the uploaded videos to post. Upload them on the Files screen first — this only chooses.',
-              minItems: 1,
-              items: { type: 'string' },
-              'x-enkaku': { kind: 'artifactIds' },
-            },
-            captions: {
-              type: 'string',
-              title: 'Captions',
-              description:
-                'One per line. A single line is used for every video; otherwise give exactly one line per video, paired in the order you ticked them.',
-              maxLength: 110_000,
-              'x-enkaku': { multiline: true },
-            },
-            platforms: {
-              type: 'array',
-              title: 'Platforms',
-              description: 'Each one sends to the phones carrying that platform’s label. TikTok and YouTube can post in this build; Instagram cannot yet.',
-              minItems: 1,
-              items: { type: 'string', enum: [...PLATFORM_IDS], 'x-enkaku': { labels: PLATFORM_LABELS } },
-            },
-            deviceIds: {
-              type: 'array',
-              title: 'Phones',
-              description: 'Leave empty for any phone carrying the platform’s label. Choosing here narrows that fleet — it never widens it.',
-              items: { type: 'string' },
-              'x-enkaku': { kind: 'deviceIds' },
-            },
-          },
-        },
-        submitLabel: 'Create posts',
-        then: {
-          kind: 'job',
-          label: 'Add many posts',
-          script: 'smm/add-posts@latest',
-          device: 'picker',
-          params: {
-            videoArtifactIds: { $form: 'videoArtifactIds' },
-            captions: { $form: 'captions' },
-            platforms: { $form: 'platforms' },
-            deviceIds: { $form: 'deviceIds' },
-          },
-        },
-      },
+    /*
+      No declared actions, deliberately.
 
-      /**
-       * The folder-of-forty path. A form because the operator is deciding six
-       * things at once — which videos, what to call the batch, where it goes,
-       * how it spreads, how fast — and a form is the one surface that can ask
-       * for them together and refuse an incomplete answer.
-       */
-      newGroup: {
-        kind: 'form',
-        label: 'New session',
-        schema: {
-          type: 'object',
-          required: ['title', 'videoArtifactIds', 'captions', 'platforms'],
-          properties: {
-            title: {
-              type: 'string',
-              title: 'Session name',
-              description: 'What this batch is called, in your words — "post hari Senin 14 Sep 2026".',
-              maxLength: 120,
-            },
-            videoArtifactIds: {
-              type: 'array',
-              title: 'Videos',
-              description: 'Tick the uploaded videos in this batch. Upload them on the Files screen first — this only chooses.',
-              minItems: 1,
-              items: { type: 'string' },
-              'x-enkaku': { kind: 'artifactIds' },
-            },
-            captions: {
-              type: 'string',
-              title: 'Captions',
-              description: 'One per line. A single line is used for every video; otherwise exactly one line per video, paired in the order you ticked them.',
-              maxLength: 132_000,
-              'x-enkaku': { multiline: true },
-            },
-            platforms: {
-              type: 'array',
-              title: 'Platforms',
-              description: 'Each one sends to the phones carrying that platform’s label. TikTok and YouTube can post in this build; Instagram cannot yet.',
-              minItems: 1,
-              items: { type: 'string', enum: [...PLATFORM_IDS], 'x-enkaku': { labels: PLATFORM_LABELS } },
-            },
-            assignment: {
-              type: 'string',
-              title: 'How to spread it',
-              description: 'One video per phone is the folder-of-forty case. Every phone sends each video to every phone carrying the label.',
-              enum: ['one-per-phone', 'every-phone'],
-              default: 'one-per-phone',
-              'x-enkaku': { labels: { 'one-per-phone': 'One video per phone', 'every-phone': 'Every video to every phone' } },
-            },
-            order: {
-              type: 'string',
-              title: 'Order',
-              description: 'The order the videos take their turn. Shuffled is drawn once, when the session starts.',
-              enum: ['as-listed', 'random'],
-              default: 'random',
-              'x-enkaku': { labels: { 'as-listed': 'As listed', random: 'Shuffled' } },
-            },
-            concurrency: {
-              type: 'number',
-              title: 'At once',
-              description: 'How many of this session’s videos may be uploading at the same moment. Keep it well under your phone count — adb is the real limit, not this.',
-              minimum: 1,
-              maximum: 500,
-              default: 4,
-              'x-enkaku': { kind: 'count' },
-            },
-            gapMinSec: {
-              type: 'number',
-              title: 'Gap from (seconds)',
-              description: 'Shortest wait between one video’s turn and the next.',
-              minimum: 0,
-              maximum: 86_400,
-              default: 30,
-              'x-enkaku': { kind: 'duration', unit: 's' },
-            },
-            gapMaxSec: {
-              type: 'number',
-              title: 'Gap to (seconds)',
-              description: 'Longest wait between turns. Each gap is drawn between the two, so the phones never move in lockstep.',
-              minimum: 0,
-              maximum: 86_400,
-              default: 90,
-              'x-enkaku': { kind: 'duration', unit: 's' },
-            },
-            deviceIds: {
-              type: 'array',
-              title: 'Phones',
-              description: 'Leave empty for any phone carrying the platform’s label. Choosing here narrows that fleet — it never widens it.',
-              items: { type: 'string' },
-              'x-enkaku': { kind: 'deviceIds' },
-            },
-          },
-        },
-        submitLabel: 'Create session',
-        then: {
-          kind: 'job',
-          label: 'New session',
-          script: 'smm/add-group@latest',
-          device: 'picker',
-          params: {
-            title: { $form: 'title' },
-            videoArtifactIds: { $form: 'videoArtifactIds' },
-            captions: { $form: 'captions' },
-            platforms: { $form: 'platforms' },
-            assignment: { $form: 'assignment' },
-            order: { $form: 'order' },
-            concurrency: { $form: 'concurrency' },
-            gapMinSec: { $form: 'gapMinSec' },
-            gapMaxSec: { $form: 'gapMaxSec' },
-            deviceIds: { $form: 'deviceIds' },
-          },
-        },
-      },
-
-      /*
-        Start and Retry are `job`s, not `batch`es, for the reason `retryFailedNow`
-        already states: a batch opens a device picker, and the phones in a
-        session are not the operator's to choose — the session's own rows and
-        the platform labels decide. The picker these still show is only where
-        the bookkeeping job runs; neither touches a phone.
-      */
-      startGroupNow: {
-        kind: 'job',
-        label: 'Start',
-        script: 'smm/start-group@latest',
-        device: 'picker',
-        params: { groupId: { $row: 'id' } },
-        confirm:
-          'Start this session? Its videos begin taking their turns, spaced by the gap you chose, and each one posts to whatever account is signed in on the phone it lands on.',
-      },
-
-      retryGroupNow: {
-        kind: 'job',
-        label: 'Retry failed',
-        script: 'smm/retry-group@latest',
-        device: 'picker',
-        params: { groupId: { $row: 'id' } },
-        confirm:
-          'Re-queue every phone in this session whose upload failed? Phones that posted are left alone, and so is anything that could not be confirmed — those are for you to check first.',
-      },
-
-      removeGroup: {
-        kind: 'kv.delete',
-        label: 'Remove',
-        scope: 'global',
-        key: { $entry: 'key' },
-        confirm:
-          'Remove this session? Its post rows are left exactly as they are — this only forgets the grouping, and anything already posted stays posted.',
-      },
-
-      autoPostSettings: {
-        kind: 'form',
-        label: 'Auto-post settings',
-        schema: {
-          type: 'object',
-          required: ['version', 'enabled', 'intervalMinutes', 'maxDevicesPerPlatform'],
-          properties: {
-            // Written as part of the value so the stored row round-trips
-            // through `AutoPostSettingsSchema`, which is `.strict()` and
-            // requires it. `const` renders as a fixed, non-editable field.
-            version: { type: 'number', title: 'Settings version', const: 1 },
-            enabled: {
-              type: 'boolean',
-              title: 'Post automatically',
-              description: 'Off by default. While off, nothing is ever dispatched on its own and the row actions below are the only way anything posts.',
-            },
-            intervalMinutes: {
-              type: 'number',
-              title: 'Check every',
-              minimum: 1,
-              maximum: 1_440,
-              'x-enkaku': { kind: 'duration', unit: 'min' },
-            },
-            maxDevicesPerPlatform: {
-              type: 'number',
-              title: 'Phones per platform, per check',
-              minimum: 1,
-              maximum: 500,
-              description: 'Caps one check’s blast radius, so a new video does not launch the same app on the whole fleet inside one second.',
-            },
-          },
-        },
-        submitLabel: 'Save settings',
-        then: {
-          kind: 'kv.set',
-          label: 'Auto-post settings',
-          scope: 'global',
-          key: { $literal: AUTO_POST_SETTINGS_KEY },
-          value: {
-            version: { $form: 'version' },
-            enabled: { $form: 'enabled' },
-            intervalMinutes: { $form: 'intervalMinutes' },
-            maxDevicesPerPlatform: { $form: 'maxDevicesPerPlatform' },
-          },
-        },
-      },
-
-      /**
-       * The manual path, and the reason the screen is usable before an
-       * operator ever turns the timer on: pick a row, pick the phones, post it
-       * now. TikTok and YouTube have one each because they have verified flows —
-       * offering an Instagram button that cannot work would be an affordance
-       * that always fails, which is worse than none.
-       *
-       * A BATCH with `target: 'picker'`: the operator chooses the phones, and
-       * this deliberately does NOT consult the platform label. A manual post
-       * is an operator saying "these phones, this video", and second-guessing
-       * that with a label filter would refuse a phone they explicitly chose.
-       */
-      postToTikTokNow: {
-        kind: 'batch',
-        label: 'Post to TikTok now',
-        script: 'tiktok/post-video@latest',
-        target: 'picker',
-        params: {
-          source: { $literal: 'direct' },
-          videoArtifactId: { $row: 'videoArtifactId' },
-          caption: { $row: 'caption' },
-        },
-        confirm: 'Post this video to TikTok on the phones you pick? This publishes to whatever account is signed in on each one.',
-      },
-
-      /** The same manual path for YouTube — a Short, with the caption as its title. */
-      postToYouTubeNow: {
-        kind: 'batch',
-        label: 'Post to YouTube now',
-        script: 'youtube/post-video@latest',
-        target: 'picker',
-        params: {
-          source: { $literal: 'direct' },
-          videoArtifactId: { $row: 'videoArtifactId' },
-          caption: { $row: 'caption' },
-        },
-        confirm: 'Post this video as a YouTube Short on the phones you pick? This publishes to whatever channel is signed in on each one.',
-      },
-
-      /**
-       * A plain `kv.delete` with no script behind it — the row read out of
-       * `kv.list` carries its own exact key as `$entry.key`, so the create
-       * path's binding problem does not exist here.
-       */
-      /*
-        A `job`, not a `batch`: the phones are not the operator's to choose.
-        A `batch` action opens a device picker, and a picker here invites the
-        one mistake a retry must never make — ticking a phone that already
-        posted, and publishing the video to that account twice. The member
-        reads the failed set off the post's own attempts instead.
-
-        `device: 'picker'` still asks for a phone because every job runs
-        somewhere; this member does no device work on it, exactly as
-        `add-post` does not.
-      */
-      retryFailedNow: {
-        kind: 'job',
-        label: 'Re-run failed',
-        script: 'smm/retry-failed@latest',
-        device: 'picker',
-        params: { videoArtifactId: { $row: 'videoArtifactId' } },
-        confirm:
-          'Send this video again to the phones whose upload failed? Phones that already posted are left alone — only the failures are re-queued.',
-      },
-
-      removePost: {
-        kind: 'kv.delete',
-        label: 'Remove',
-        scope: 'global',
-        key: { $entry: 'key' },
-        confirm: 'Remove this post? The uploaded video itself is left alone on the Files screen, and anything already posted stays posted.',
-      },
-    },
+      Tier A's actions are buttons a declared TABLE puts on a row or a
+      toolbar, and this plugin no longer has a table: the one screen does the
+      creating, the starting, the retrying and the removing itself, through the
+      same members those buttons used to call. Keeping them declared would
+      leave a set of controls nothing can render and no one can press — the
+      exact kind of half-real surface this rewrite exists to remove.
+    */
   },
 })

@@ -28,7 +28,7 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.8.0')
+    expect(plugin.version).toBe('0.9.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
@@ -53,139 +53,60 @@ describe('the service declaration', () => {
     expect(plugin.service?.permissions).toEqual(['device.list', 'job.run', 'job.get'])
   })
 
-  test('a service exists — the Platforms view is a handler source and cannot render without one', () => {
+  test('a service exists — the router is a timer and cannot run without one', () => {
     expect(plugin.service).toBeDefined()
   })
 })
 
+/**
+ * The surface is ONE screen (0.9.0). The owner's verdict on the three it used
+ * to be — posts, sessions, platforms — was that three menus for one job is
+ * three places to get lost, and the job is a single sequence: upload a folder,
+ * spread it over the phones, watch it. These tests pin the shape of that
+ * decision, not the contents of the page (which is React and has no tests, by
+ * `docs/plans/200-mvp-program.md` §8.3).
+ */
 describe('the surface', () => {
   const surface = plugin.surface!
 
-  test('both nav entries name a view that exists', () => {
-    for (const entry of surface.nav) {
-      expect(Object.keys(surface.views)).toContain(entry.view)
-    }
+  test('one nav entry, one view, and the entry names it', () => {
+    expect(surface.nav).toHaveLength(1)
+    expect(Object.keys(surface.views)).toEqual(['posts'])
+    expect(surface.nav[0]?.view).toBe('posts')
   })
 
-  test('the Posts view reads the same prefix the router writes', () => {
-    // Two readers of one constant. A literal here instead would be the classic
-    // way a screen quietly goes empty: the router writes `post:` and the table
-    // lists `posts:`, and nothing anywhere fails.
-    expect(surface.views.posts?.data).toEqual({ kind: 'kv.list', scope: 'global', prefix: POST_PREFIX })
+  test('the view is drawn by this plugin, not declared as a table', () => {
+    const view = surface.views.posts
+    // Tier C. The page computes answers WHILE the operator decides — how many
+    // phones this choice reaches, how long the pacing will take, a caption per
+    // file name — and a declared table can render a stored row and nothing else.
+    expect(view?.react?.entry).toBe('index.js')
+    expect(view?.data).toBeUndefined()
+    expect(view?.table).toBeUndefined()
   })
 
-  test('every platform has its own column in the Posts table, reading the line that names the phones', () => {
-    const fields = (surface.views.posts?.table?.columns ?? []).map((c) => c.field)
+  test('no declared actions — the page owns every write', () => {
+    // A tier-A action is a button a declared table puts on a row or a toolbar.
+    // With no table there is nothing to put them on, and an action nothing can
+    // render is a control that does not exist pretending to.
+    expect(Object.keys(surface.actions)).toEqual([])
+  })
+
+  test('the page still reads the prefix the router writes', () => {
+    // Two readers of one constant, now across the UI boundary: `ui/shared.ts`
+    // lists `post:` rows and the router writes them. The literal is asserted
+    // here because the browser bundle cannot import this module.
+    expect(POST_PREFIX).toBe('post:')
+  })
+
+  test('every platform the page offers is one the router knows', async () => {
+    const shared = (await Bun.file(new URL('./ui/shared.ts', import.meta.url)).text()) as string
     for (const platform of PLATFORMS) {
-      // `summary`, not `state`: the cell has to answer "which phone" as well
-      // as "how did it go", and only the composed line does.
-      expect(fields).toContain(`dispatch.${platform.id}.summary`)
+      // The page's own list is a literal in the browser bundle; this is what
+      // stops it drifting from `platforms.ts` — a platform the page offers and
+      // the router cannot route is a post that silently never sends.
+      expect(shared).toContain(`id: '${platform.id}'`)
     }
-  })
-
-  test('every platform has a section in the row detail, and each line links to its job', () => {
-    const detail = surface.views.posts?.table?.detail
-    expect((detail?.sections ?? []).map((s) => s.field)).toEqual(PLATFORMS.map((p) => `dispatch.${p.id}.attempts`))
-    // The whole reason the panel is worth opening: an attempt names the job the
-    // farm ran, and Studio turns that into a link to it.
-    expect(detail?.job).toBe('jobId')
-    expect((detail?.columns ?? []).map((c) => c.field)).toEqual(['deviceName', 'state', 'error'])
-  })
-
-  test('the manual post action targets the same member the platform table names', () => {
-    const action = surface.actions.postToTikTokNow
-    expect(action?.kind).toBe('batch')
-    // The one place the manual path and the router could drift apart. Read
-    // through the registry rather than restated, so renaming the member in
-    // `platforms.ts` and forgetting the button is a failure here.
-    const script = PLATFORMS.find((p) => p.id === 'tiktok')?.script
-    expect(script).not.toBeNull()
-    expect(action?.kind === 'batch' && action.script).toBe(script as string)
-  })
-
-  test('the manual post action asks for confirmation — it publishes to a real account', () => {
-    const action = surface.actions.postToTikTokNow
-    expect(action?.kind === 'batch' && action.confirm).toBeTruthy()
-  })
-
-  test('there is NO manual action for a platform that cannot post', () => {
-    // An affordance that always fails is worse than none. If someone adds an
-    // Instagram button, this fails until Instagram genuinely has a flow.
-    const scripts = Object.values(surface.actions)
-      .map((a) => (a.kind === 'batch' || a.kind === 'job' ? a.script : null))
-      .filter((s): s is string => s !== null)
-    for (const platform of PLATFORMS) {
-      if (platform.script !== null) continue
-      expect(scripts.some((s) => s.startsWith(`${platform.id}/`))).toBe(false)
-    }
-  })
-
-  test('New post writes through the member, because a binding cannot build the key', () => {
-    const action = surface.actions.addPost
-    expect(action?.kind).toBe('form')
-    expect(action?.kind === 'form' && action.then.kind).toBe('job')
-    expect(action?.kind === 'form' && action.then.kind === 'job' && action.then.script).toBe('smm/add-post@latest')
-  })
-
-  test('the New post form offers exactly the declared platforms', () => {
-    const action = surface.actions.addPost
-    const schema = action?.kind === 'form' ? (action.schema as Record<string, any>) : null
-    expect(schema?.properties?.platforms?.items?.enum).toEqual(PLATFORMS.map((p) => p.id))
-  })
-
-  test('Remove deletes by the entry key, needing no script at all', () => {
-    const action = surface.actions.removePost
-    expect(action?.kind).toBe('kv.delete')
-    expect(action?.kind === 'kv.delete' && action.key).toEqual({ $entry: 'key' })
-  })
-
-  test('the auto-post form writes every field its stored schema requires', () => {
-    // `AutoPostSettingsSchema` is `.strict()`, so a form that omits `version`
-    // stores a row the service then refuses to read — and, failing closed,
-    // silently stops auto-posting. That is the defect this pins.
-    const action = surface.actions.autoPostSettings
-    const value = action?.kind === 'form' && action.then.kind === 'kv.set' ? (action.then.value as Record<string, unknown>) : null
-    expect(Object.keys(value ?? {}).sort()).toEqual(['enabled', 'intervalMinutes', 'maxDevicesPerPlatform', 'version'])
-  })
-})
-
-/**
- * The bulk builder (0.4.0). Its whole reason is the hundred-device farm:
- * `add-post` takes one video, and twenty videos meant twenty trips through
- * the same dialog.
- */
-describe('the bulk builder', () => {
-  const surface = plugin.surface!
-  // Through `unknown`: `ActionSpec` is a union whose `schema` is the whole
-  // `JsonSchemaNode`, and asserting the two fields this test reads is not a
-  // narrowing the compiler can check.
-  const action = surface.actions.addManyPosts as unknown as {
-    kind: string
-    schema: { required: string[]; properties: Record<string, { 'x-enkaku'?: { kind?: string } }> }
-    then: { script: string; params: Record<string, unknown> }
-  }
-
-  test('it is offered on the Posts toolbar beside the single-video form', () => {
-    expect(surface.views.posts?.toolbar).toContain('addManyPosts')
-    expect(surface.views.posts?.toolbar).toContain('addPost')
-  })
-
-  test('the videos field is an artifact MULTI-picker, not a text box of ids', () => {
-    expect(action.schema.properties.videoArtifactIds?.['x-enkaku']?.kind).toBe('artifactIds')
-    expect(action.schema.properties.deviceIds?.['x-enkaku']?.kind).toBe('deviceIds')
-  })
-
-  /*
-    Phones are deliberately NOT required: empty means "any phone carrying the
-    platform's label", which is the whole point on a fleet that grows.
-  */
-  test('videos, captions and platforms are required; phones are not', () => {
-    expect(action.schema.required.sort()).toEqual(['captions', 'platforms', 'videoArtifactIds'])
-  })
-
-  test('every form field reaches the member it submits to', () => {
-    expect(action.then.script).toBe('smm/add-posts@latest')
-    expect(Object.keys(action.then.params).sort()).toEqual(['captions', 'deviceIds', 'platforms', 'videoArtifactIds'])
   })
 })
 

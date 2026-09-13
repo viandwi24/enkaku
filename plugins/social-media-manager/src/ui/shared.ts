@@ -49,9 +49,8 @@ const ArtifactListSchema = z.object({ items: z.array(ArtifactSchema) })
  */
 export async function listVideos(): Promise<Artifact[]> {
   const res = await api(`${CORE}/api/artifacts?kind=upload`, ArtifactListSchema)
-  return res.items
-    .filter((a) => isVideo(a))
-    .sort((x, y) => y.createdAt - x.createdAt)
+  const items: Artifact[] = res.items
+  return items.filter((a) => isVideo(a)).sort((x, y) => y.createdAt - x.createdAt)
 }
 
 const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.3gp']
@@ -194,26 +193,83 @@ export async function listPosts(): Promise<Post[]> {
 }
 
 const RunScriptResult = z.object({
-  results: z.array(z.object({ deviceId: z.string(), status: z.string(), jobId: z.string().optional(), detail: z.unknown().optional() })),
+  results: z.array(z.object({ deviceId: z.string(), status: z.string(), jobId: z.string().nullable().default(null), message: z.string().nullable().default(null) })),
 })
 
+const JobStateSchema = z.object({
+  job: z.object({
+    jobId: z.string(),
+    status: z.enum(['queued', 'running', 'success', 'failed', 'cancelled', 'expired']),
+    error: z.string().nullable().default(null),
+    runId: z.string().nullable().default(null),
+  }),
+})
+
+const RunResultSchema = z.object({ run: z.object({ result: z.unknown().nullable().default(null) }) })
+
+/** How long a bookkeeping member may take before the screen stops waiting. They write KV rows; forty of them is seconds. */
+const MEMBER_TIMEOUT_MS = 120_000
+const MEMBER_POLL_MS = 500
+
 /**
- * Run one of this plugin's own members.
+ * Run one of this plugin's own members, and WAIT for what it did.
  *
  * `deviceId` is the phone the BOOKKEEPING job runs on, not where anything is
  * posted: `add-group`, `start-group` and `retry-group` only write rows. The
  * screen picks an online phone itself rather than asking the operator, because
  * "which phone should the paperwork run on" is not a question the operator has
  * an answer to — it was the most confusing thing about the old dialogs.
+ *
+ * ## Why it waits instead of returning at "accepted"
+ *
+ * `run-script` answers as soon as the job is ENQUEUED, so a member that then
+ * refuses — forty videos and seven caption lines, a group id that no longer
+ * exists — would leave the screen saying "session created" with nothing
+ * created. Waiting for the job's own terminal status is what lets the refusal
+ * reach the operator in the words the member wrote it in.
+ *
+ * With a schema, the member's own result is read off its run, so a caller that
+ * needs the new group's id has it as fact rather than by searching for a row
+ * that looks like the one it just asked for.
  */
-export async function runMember(scriptRef: string, params: Record<string, unknown>, hostDeviceId: string): Promise<void> {
+export async function runMember<S extends z.ZodType>(
+  scriptRef: string,
+  params: Record<string, unknown>,
+  hostDeviceId: string,
+  resultSchema?: S,
+): Promise<z.infer<S> | null> {
   const res = await api(`${CORE}/api/actions/run-script`, RunScriptResult, {
     method: 'POST',
-    body: { target: { deviceIds: [hostDeviceId] }, scriptRef, params },
+    // `json`, not `body`: the helper serialises and sets the content type. A
+    // plain `body` object is spread straight into `fetch` and arrives as
+    // "[object Object]" with no content type, which every member run refuses.
+    json: { target: { deviceIds: [hostDeviceId] }, scriptRef, params },
   })
   const first = res.results[0]
-  if (!first || (first.status !== 'done' && first.status !== 'accepted')) {
-    throw new Error(`the farm refused to run ${scriptRef}: ${first ? first.status : 'no device answered'}`)
+  if (!first || first.jobId === null) {
+    throw new Error(`The farm did not run ${scriptRef}: ${first?.message ?? first?.status ?? 'no phone answered'}. Nothing was written.`)
+  }
+
+  const deadline = Date.now() + MEMBER_TIMEOUT_MS
+  for (;;) {
+    const state = await api(`${CORE}/api/jobs/${encodeURIComponent(first.jobId)}`, JobStateSchema)
+    const job = state.job
+    if (job.status === 'success') {
+      if (!resultSchema || job.runId === null) return null
+      const run = await api(`${CORE}/api/jobs/${encodeURIComponent(job.jobId)}/runs/${encodeURIComponent(job.runId)}`, RunResultSchema)
+      const parsed = resultSchema.safeParse(run.run.result)
+      // A result this screen cannot read is not a failure of the RUN — the
+      // rows are written either way — so the caller is told "done, but I
+      // cannot tell you what it said" rather than "it failed".
+      return parsed.success ? parsed.data : null
+    }
+    if (job.status !== 'queued' && job.status !== 'running') {
+      throw new Error(job.error ?? `The job ${job.status === 'failed' ? 'failed' : `was ${job.status}`} without saying why.`)
+    }
+    if (Date.now() > deadline) {
+      throw new Error('The farm is still working on it. Nothing is lost — press Refresh in a moment to see whether it landed.')
+    }
+    await new Promise((resolve) => setTimeout(resolve, MEMBER_POLL_MS))
   }
 }
 
