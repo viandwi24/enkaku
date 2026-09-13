@@ -146,8 +146,8 @@ type SaveEdit = (post: Post, changes: PostChanges, name: string, onDone: (warnin
 /** The caption limit the member enforces, repeated so the form can say so before Save rather than after. */
 const CAPTION_MAX = 2200
 
-/** The router's own sentence for a one-per-phone row that found no phone to bind. Matched, not paraphrased. */
-const NO_PHONE_LEFT = 'No phone is left for this video'
+/** The start of the router's note on a held, unassigned row (`posts.ts` `NO_PHONE_ASSIGNED`). Matched, not paraphrased — the page may not import the service half. */
+const NO_PHONE_ASSIGNED = 'No phone is assigned to this video'
 
 type PlatformState = Post['dispatch'][string]
 type AttemptRow = PlatformState['attempts'][number]
@@ -1149,13 +1149,14 @@ function FilterChip({
 /**
  * The phone a video is bound to, as the table's Phone column says it.
  *
- * A one-per-phone session binds each video to ONE phone for every platform and
- * every retry, so this is the phone that posts it. An every-phone session has
- * no binding by design. A one-per-phone row with no binding says "no phone
- * left" in warn tone ONLY when the router has said so in its own sentence on
- * one of the row's platforms; otherwise the router simply has not bound it yet
- * (a row from before the binding existed is bound on its next tick), and it
- * reads "assigning…".
+ * A one-per-phone session binds each video to ONE phone for every platform and every retry, so this
+ * is the phone that posts it. An every-phone session has no binding by design.
+ *
+ * A one-per-phone row with NO phone is always shown as such, in warn tone, whatever its state: the
+ * router never guesses a phone for a row from an older build (whose history is the tangle pairing
+ * prevents) and holds it until an operator chooses one with Edit. When the router has written its
+ * note — it does so on the row's waiting platforms — the note, with its suggested phone, is the
+ * tooltip.
  */
 function AssignedPhone({ post, group, devices }: { post: Post; group: Group; devices: ReadonlyMap<string, string> }): ReactElement {
   if (post.assignedDeviceId !== null) {
@@ -1167,24 +1168,17 @@ function AssignedPhone({ post, group, devices }: { post: Post; group: Group; dev
     return <span className="text-[12px] text-text-2">{devices.get(id) ?? recorded ?? `device ${shortId(id)}`}</span>
   }
   if (group.assignment === 'every-phone' && post.maxDevices !== 1) return <span className="text-[12px] text-faint">any labelled phone</span>
-  const noPhone = noPhoneLeftNote(post)
-  if (noPhone !== null) {
-    return (
-      <span className="text-[12px] text-warn" title={noPhone}>
-        no phone left
-      </span>
-    )
-  }
+  const note = unassignedNoteOf(post)
   return (
-    <span className="text-[12px] text-dim" title="The router binds this video to one phone on its next check, about every 15 seconds.">
-      assigning…
+    <span className="text-[12px] text-warn" title={note ?? 'This video has no phone yet, so it is not sent. Open the row and choose one with Edit.'}>
+      no phone — Edit to choose
     </span>
   )
 }
 
-/** The router's "no phone left" sentence, when any of the row's platforms carries it. */
-function noPhoneLeftNote(post: Post): string | null {
-  for (const state of Object.values(post.dispatch)) if (state.note?.includes(NO_PHONE_LEFT)) return state.note
+/** The router's note on a held, unassigned row, when any of its platforms carries it (it names a suggested phone). */
+function unassignedNoteOf(post: Post): string | null {
+  for (const state of Object.values(post.dispatch)) if (state.note?.includes(NO_PHONE_ASSIGNED)) return state.note
   return null
 }
 

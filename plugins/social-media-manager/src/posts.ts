@@ -780,24 +780,24 @@ export interface AssignableDevice {
 }
 
 /**
- * Bind a one-video-per-phone row that has no phone yet to exactly one phone (0.12.0).
+ * SUGGEST a phone for a one-video-per-phone row that has none (0.12.0). It never binds one.
  *
- * New sessions are paired when they are created (`add-group`). This is the other half: a row
- * created before pairing existed — the owner's production session among them — gets its phone
- * ONCE, from the router, and keeps it. The rules, in order:
+ * New sessions are paired when they are created (`add-group`). A row created before pairing existed —
+ * the owner's production session among them — is NOT bound automatically: its history is exactly
+ * the tangle pairing exists to prevent (#21 carrying three videos, one video on two phones), and a
+ * guess over that data can be wrong in ways that post to a real account. The owner's own read of
+ * the upgrade was the right one: those rows show no phone, the operator chooses one with Edit, and
+ * until then the row is held and never sent. This function only writes the suggestion into the
+ * held row's note. Its rules, in order:
  *
- * 1. **Where it already ran.** A row that has attempts (current or replaced) goes back to the phone
- *    of its EARLIEST attempt, so a retry continues on the account it started on — unless another
- *    row of the session already owns that phone, which is exactly the "three videos on #21" case;
- *    then rule 2 applies.
- * 2. **A phone nobody in the session owns.** From the row's own chosen phones (or, when it named
- *    none, every phone carrying one of its platforms' labels), the first that no other row of the
- *    session owns. Sorted by id, so the answer is the same on every tick and every core.
- * 3. **None left.** No phone, and a sentence saying so. The row is not sent — never doubled up.
+ * 1. **Where it already landed.** The phone of the row's earliest attempt that did not fail — else
+ *    of its earliest attempt at all — unless another row of the session owns that phone.
+ * 2. **A phone nobody in the session owns**, from the row's chosen phones (or, when it named none,
+ *    every phone carrying one of its platforms' labels), sorted by id so the answer is stable.
+ * 3. **None left** — no suggestion, and a sentence saying so.
  *
- * "Owns" is decided by the CALLER from the whole session: a row's assigned phone, and the phones of
- * its attempts that posted, could not be confirmed, or are still running. A phone where another row
- * only FAILED is not owned by it — nothing landed on that account.
+ * "Owns" is `sessionOwner`: exactly ONE phone per row, so a legacy row that touched two phones does
+ * not use up two of the session's phones.
  */
 export function pickAssignment(input: {
   post: Pick<Post, 'deviceIds' | 'platforms' | 'dispatch'>
@@ -814,6 +814,8 @@ export function pickAssignment(input: {
       return state ? [...(state.history ?? []), ...(state.attempts ?? [])] : []
     })
     .sort((a, b) => (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER))
+  const landed = tried.find((a) => a.state !== 'failed')?.deviceId
+  if (landed !== undefined && !ownedByOthers.has(landed)) return { deviceId: landed, reason: null }
   const first = tried[0]?.deviceId
   if (first !== undefined && !ownedByOthers.has(first)) return { deviceId: first, reason: null }
 
@@ -915,4 +917,35 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
   }
 
   return { ok: true, post: next, changed, warnings }
+}
+
+/**
+ * The ONE phone a row of a session owns, for deciding what is free (0.12.0): its assigned phone;
+ * for a row with none, the phone of its earliest attempt that did not fail (where something may
+ * have landed on that account); otherwise none. One per row on purpose — see `pickAssignment`.
+ */
+export function sessionOwner(post: Pick<Post, 'assignedDeviceId' | 'platforms' | 'dispatch'>): string | null {
+  if (post.assignedDeviceId !== null) return post.assignedDeviceId
+  const landed = post.platforms
+    .flatMap((id) => [...(post.dispatch[id]?.history ?? []), ...(post.dispatch[id]?.attempts ?? [])])
+    .filter((a) => a.state !== 'failed')
+    .sort((a, b) => (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER))
+  return landed[0]?.deviceId ?? null
+}
+
+/** The start of the held row's note. The session page matches on it, so it is exported, never paraphrased. */
+export const NO_PHONE_ASSIGNED = 'No phone is assigned to this video'
+
+/**
+ * The sentence a held, unassigned one-per-phone row carries (0.12.0): that it is not sent until an
+ * operator chooses its phone, and — when there is one — which phone `pickAssignment` suggests.
+ * `names` turns a device id into the name the operator reads.
+ */
+export function unassignedNote(
+  pick: { deviceId: string | null; reason: string | null },
+  names: ReadonlyMap<string, string>,
+): string {
+  const head = `${NO_PHONE_ASSIGNED}, so it is not sent. Edit it to choose one.`
+  if (pick.deviceId !== null) return `${head} Suggested: ${names.get(pick.deviceId) ?? pick.deviceId} — where it ran before, and no other video of this session has it.`
+  return `${head} ${pick.reason ?? ''}`.trim()
 }

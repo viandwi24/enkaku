@@ -1,0 +1,287 @@
+{
+ "_comment": "A five-video, five-phone session exactly as smm 0.11.0 stored it \u2014 none of 0.12.0's fields exist anywhere (no assignedDeviceId, history, at/settledAt/round). Modelled on the owner's production session of 2026-09-14: three videos on #21, two on #22, failures and unverified results mixed.",
+ "rows": [
+  {
+   "version": 1,
+   "videoArtifactId": "v1-liquidity-9",
+   "caption": "#AkademiBitorex",
+   "platforms": [
+    "tiktok",
+    "youtube"
+   ],
+   "deviceIds": [
+    "d21",
+    "d22",
+    "d23",
+    "d24",
+    "d25"
+   ],
+   "createdAt": 1789336000,
+   "groupId": "g-1789336000-prod",
+   "notBeforeAt": 1789336700,
+   "maxDevices": 1,
+   "dispatch": {
+    "tiktok": {
+     "state": "failed",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "t1-d21",
+       "deviceId": "d21",
+       "deviceName": "#21 SM-A075F",
+       "state": "failed",
+       "error": "\"tt.widget-prompt\" matched with policy \"deny\" but no on-screen node satisfied its \"deny\" action"
+      }
+     ],
+     "note": null,
+     "summary": null
+    },
+    "youtube": {
+     "state": "failed",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "y1-d21",
+       "deviceId": "d21",
+       "deviceName": "#21 SM-A075F",
+       "state": "failed",
+       "error": "the gallery did not open"
+      }
+     ],
+     "note": null,
+     "summary": null
+    }
+   },
+   "lastNote": null
+  },
+  {
+   "version": 1,
+   "videoArtifactId": "v2-liquidity-18",
+   "caption": "#AkademiBitorex",
+   "platforms": [
+    "tiktok",
+    "youtube"
+   ],
+   "deviceIds": [
+    "d21",
+    "d22",
+    "d23",
+    "d24",
+    "d25"
+   ],
+   "createdAt": 1789336000,
+   "groupId": "g-1789336000-prod",
+   "notBeforeAt": 1789336700,
+   "maxDevices": 1,
+   "dispatch": {
+    "tiktok": {
+     "state": "failed",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "t2-d22",
+       "deviceId": "d22",
+       "deviceName": "#22 SM-A075F",
+       "state": "failed",
+       "error": "expected the camera screen"
+      }
+     ],
+     "note": null,
+     "summary": null
+    },
+    "youtube": {
+     "state": "failed",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "y2-d22",
+       "deviceId": "d22",
+       "deviceName": "#22 SM-A075F",
+       "state": "failed",
+       "error": "the details screen did not open"
+      }
+     ],
+     "note": null,
+     "summary": null
+    }
+   },
+   "lastNote": null
+  },
+  {
+   "version": 1,
+   "videoArtifactId": "v3-clip-oke",
+   "caption": "#AkademiBitorex",
+   "platforms": [
+    "tiktok",
+    "youtube"
+   ],
+   "deviceIds": [
+    "d21",
+    "d22",
+    "d23",
+    "d24",
+    "d25"
+   ],
+   "createdAt": 1789336000,
+   "groupId": "g-1789336000-prod",
+   "notBeforeAt": 1789336700,
+   "maxDevices": 1,
+   "dispatch": {
+    "tiktok": {
+     "state": "failed",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "t3-d23",
+       "deviceId": "d23",
+       "deviceName": "#23 SM-A075F",
+       "state": "failed",
+       "error": "\"tt.widget-prompt\" matched with policy \"deny\" but no on-screen node satisfied its \"deny\" action"
+      }
+     ],
+     "note": null,
+     "summary": null
+    },
+    "youtube": {
+     "state": "failed",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "y3-d23",
+       "deviceId": "d23",
+       "deviceName": "#23 SM-A075F",
+       "state": "failed",
+       "error": "the gallery did not open"
+      }
+     ],
+     "note": null,
+     "summary": null
+    }
+   },
+   "lastNote": null
+  },
+  {
+   "version": 1,
+   "videoArtifactId": "v4-clip-22-beh",
+   "caption": "#AkademiBitorex",
+   "platforms": [
+    "tiktok",
+    "youtube"
+   ],
+   "deviceIds": [
+    "d21",
+    "d22",
+    "d23",
+    "d24",
+    "d25"
+   ],
+   "createdAt": 1789336000,
+   "groupId": "g-1789336000-prod",
+   "notBeforeAt": 1789336700,
+   "maxDevices": 1,
+   "dispatch": {
+    "tiktok": {
+     "state": "partial",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "t4-d21",
+       "deviceId": "d21",
+       "deviceName": "#21 SM-A075F",
+       "state": "unverified",
+       "error": "Post was tapped, but the grid did not change"
+      }
+     ],
+     "note": null,
+     "summary": null
+    },
+    "youtube": {
+     "state": "failed",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "y4-d21",
+       "deviceId": "d21",
+       "deviceName": "#21 SM-A075F",
+       "state": "failed",
+       "error": "the gallery did not open"
+      }
+     ],
+     "note": null,
+     "summary": null
+    }
+   },
+   "lastNote": null
+  },
+  {
+   "version": 1,
+   "videoArtifactId": "v5-clip-kadang",
+   "caption": "#AkademiBitorex",
+   "platforms": [
+    "tiktok",
+    "youtube"
+   ],
+   "deviceIds": [
+    "d21",
+    "d22",
+    "d23",
+    "d24",
+    "d25"
+   ],
+   "createdAt": 1789336000,
+   "groupId": "g-1789336000-prod",
+   "notBeforeAt": 1789336700,
+   "maxDevices": 1,
+   "dispatch": {
+    "tiktok": {
+     "state": "failed",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "t5-d22",
+       "deviceId": "d22",
+       "deviceName": "#22 SM-A075F",
+       "state": "failed",
+       "error": "\"tt.widget-prompt\" matched with policy \"deny\" but no on-screen node satisfied its \"deny\" action"
+      }
+     ],
+     "note": null,
+     "summary": null
+    },
+    "youtube": {
+     "state": "partial",
+     "at": 1789337000,
+     "deviceCount": 1,
+     "attempts": [
+      {
+       "jobId": "y5-d22",
+       "deviceId": "d22",
+       "deviceName": "#22 SM-A075F",
+       "state": "unverified",
+       "error": "Upload was tapped, channel unreadable"
+      }
+     ],
+     "note": null,
+     "summary": null
+    }
+   },
+   "lastNote": null
+  }
+ ],
+ "names": {
+  "d21": "#21 SM-A075F",
+  "d22": "#22 SM-A075F",
+  "d23": "#23 SM-A075F",
+  "d24": "#24 SM-A075F",
+  "d25": "#25 SM-A075F"
+ }
+}

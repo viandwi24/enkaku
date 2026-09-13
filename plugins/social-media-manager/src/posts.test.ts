@@ -8,6 +8,9 @@ import {
   newPost,
   planDispatch,
   applyPostEdit,
+  NO_PHONE_ASSIGNED,
+  sessionOwner,
+  unassignedNote,
   HISTORY_LIMIT,
   nextRound,
   pickAssignment,
@@ -523,12 +526,17 @@ describe('one video, one phone', () => {
     expect(plan.states.tiktok?.note).toContain("this video's phone")
   })
 
-  test('a row that already ran goes back to the phone of its EARLIEST attempt, replaced ones included', () => {
+  test('the suggestion is where something LANDED before anything that only failed, replaced attempts included', () => {
     const p = post({
       deviceIds: ['d2', 'd3'],
       dispatch: { tiktok: { ...PENDING_STATE, attempts: [att('d3', 'queued', NOW - 10)], history: [att('d2', 'failed', NOW - 100)] } },
     })
-    expect(pickAssignment({ post: p, ownedByOthers: new Set(), fleet: [], sessionVideos: 5 })).toEqual({ deviceId: 'd2', reason: null })
+    expect(pickAssignment({ post: p, ownedByOthers: new Set(), fleet: [], sessionVideos: 5 })).toEqual({ deviceId: 'd3', reason: null })
+  })
+
+  test('with nothing that landed, the suggestion is the phone of its earliest attempt', () => {
+    const p = post({ deviceIds: ['d2', 'd3'], dispatch: { tiktok: { ...PENDING_STATE, attempts: [att('d3', 'failed', NOW - 10)], history: [att('d2', 'failed', NOW - 100)] } } })
+    expect(pickAssignment({ post: p, ownedByOthers: new Set(), fleet: [], sessionVideos: 5 }).deviceId).toBe('d2')
   })
 
   test('...unless another video owns that phone — the production "three videos on #21" case — then a phone nobody owns', () => {
@@ -633,5 +641,70 @@ describe('applyPostEdit', () => {
   test('an edit that matches what is stored changes nothing', () => {
     const out = applyPostEdit({ post: inSession(), edit: { assignedDeviceId: 'd1', caption: 'hello', platforms: ['tiktok'] }, sessionRows: [] })
     expect(out.ok && out.changed).toEqual([])
+  })
+})
+
+/**
+ * Upgrading a production farm (0.12.0). The owner's farm holds a session written by 0.11.0 and asked
+ * that the new version read it without error and without guessing. This is that session's shape:
+ * none of 0.12.0's fields exist in it.
+ */
+describe('a session written by 0.11.0, read by 0.12.0', () => {
+  async function legacy(): Promise<{ rows: unknown[]; names: Record<string, string> }> {
+    return (await Bun.file(new URL('./__fixtures__/legacy-session-0.11.0.json', import.meta.url)).json()) as { rows: unknown[]; names: Record<string, string> }
+  }
+
+  test('every row parses, with every new field defaulted — no phone, empty history, round 1', async () => {
+    const { rows } = await legacy()
+    for (const raw of rows) {
+      const p = PostSchema.parse(raw)
+      expect(p.assignedDeviceId).toBeNull()
+      for (const id of p.platforms) {
+        const s = p.dispatch[id]
+        expect(s?.history).toEqual([])
+        for (const a of s?.attempts ?? []) expect({ at: a.at, settledAt: a.settledAt, round: a.round }).toEqual({ at: null, settledAt: null, round: 1 })
+      }
+    }
+  })
+
+  test('the migrated shape round-trips — writing it back and reading it again changes nothing', async () => {
+    const { rows } = await legacy()
+    for (const raw of rows) {
+      const once = PostSchema.parse(raw)
+      expect(PostSchema.parse(JSON.parse(JSON.stringify(once)))).toEqual(once)
+    }
+  })
+
+  test('each row owns at most ONE phone, so a tangled row does not use up two', async () => {
+    const { rows } = await legacy()
+    const owners = rows.map((raw) => sessionOwner(PostSchema.parse(raw)))
+    // Only the two rows with an unverified attempt may have landed anything; everything else only failed.
+    expect(owners).toEqual([null, null, null, 'd21', 'd22'])
+  })
+
+  test('every unassigned row is held with a note, and no suggestion is a phone another video owns', async () => {
+    const { rows, names } = await legacy()
+    const posts = rows.map((raw) => PostSchema.parse(raw))
+    const owned = new Map<string, string>()
+    posts.forEach((p) => {
+      const phone = sessionOwner(p)
+      if (phone !== null && !owned.has(phone)) owned.set(phone, p.videoArtifactId)
+    })
+    for (const p of posts) {
+      const others = new Set([...owned].filter(([, vid]) => vid !== p.videoArtifactId).map(([d]) => d))
+      const pick = pickAssignment({ post: p, ownedByOthers: others, fleet: [], sessionVideos: posts.length })
+      if (pick.deviceId !== null) expect(others.has(pick.deviceId)).toBe(false)
+      const note = unassignedNote(pick, new Map(Object.entries(names)))
+      expect(note.startsWith(NO_PHONE_ASSIGNED)).toBe(true)
+      expect(note).toContain('not sent')
+    }
+  })
+
+  test('an assigned phone is only ever the one the operator chose — nothing binds a legacy row on its own', async () => {
+    const { rows } = await legacy()
+    // `pickAssignment` returns a suggestion and writes nothing; the row is unchanged by asking.
+    const p = PostSchema.parse(rows[0])
+    pickAssignment({ post: p, ownedByOthers: new Set(), fleet: [], sessionVideos: 5 })
+    expect(p.assignedDeviceId).toBeNull()
   })
 })

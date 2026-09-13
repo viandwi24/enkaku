@@ -21,7 +21,9 @@ import {
   rollUp,
   nextRound,
   pickAssignment,
+  sessionOwner,
   stateFor,
+  unassignedNote,
   withSummary,
   type Attempt,
   type Post,
@@ -69,13 +71,15 @@ import {
  *      phone was whoever was free when the video's turn came. A five-video,
  *      five-phone session put three videos on #21, and a retry sent a video to
  *      a phone that had already posted another. Now each video is bound to
- *      exactly one phone (`Post.assignedDeviceId`): paired randomly when the
- *      session is created (`add-group`), or once by the router for a row made
- *      before pairing existed (`pickAssignment` — back to where it first ran
- *      unless another video owns that phone, otherwise a phone nobody in the
- *      session owns). Every platform and every retry of that video goes to that
- *      phone. A video with no phone left is held with a sentence, never doubled
- *      up. The compose page says so up front instead of promising the extra
+ *      exactly one phone (`Post.assignedDeviceId`), paired randomly when the
+ *      session is created (`add-group`). Every platform and every retry of that
+ *      video goes to that phone. A row made before pairing existed is NOT
+ *      guessed at — its history is the very tangle pairing prevents — so it is
+ *      held, never sent, with a note suggesting a phone (`pickAssignment`,
+ *      one owner per row via `sessionOwner`), until the operator chooses one
+ *      with Edit. Nothing about such a row needs migrating: every new field
+ *      defaults (no phone, empty history, round 1), and the row is rewritten in
+ *      the new shape the first time the router touches it. The compose page says so up front instead of promising the extra
  *      videos would "wait for a phone to come free".
  *   2. The owner could not tell what was running, how far it had got, or
  *      whether an error was this run's or an earlier one. Attempts now record
@@ -600,13 +604,8 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       this so a row without a phone never takes one another row already has.
     */
     const owned = ownersByGroup.get(parsed.data.groupId) ?? new Map<string, string>()
-    const claim = (deviceId: string): void => {
-      if (!owned.has(deviceId)) owned.set(deviceId, entry.key)
-    }
-    if (parsed.data.assignedDeviceId !== null) claim(parsed.data.assignedDeviceId)
-    for (const id of parsed.data.platforms) {
-      for (const a of parsed.data.dispatch[id]?.attempts ?? []) if (a.state !== 'failed') claim(a.deviceId)
-    }
+    const phone = sessionOwner(parsed.data)
+    if (phone !== null && !owned.has(phone)) owned.set(phone, entry.key)
     ownersByGroup.set(parsed.data.groupId, owned)
     rowsByGroup.set(parsed.data.groupId, (rowsByGroup.get(parsed.data.groupId) ?? 0) + 1)
   }
@@ -708,39 +707,32 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     }
 
     /*
-      One video, one phone (0.12.0). A one-per-phone row without a phone gets one here, ONCE, and
-      is written straight back so every later tick — and every retry — goes to the same phone.
-      With none left it is held with a sentence, and never sent to a phone another video owns.
+      One video, one phone (0.12.0). A one-per-phone row WITHOUT a phone is held here and never sent.
+
+      Rows paired at creation always have one. A row that does not is from an older build — the
+      owner's production session among them — and its history is the very tangle pairing exists to
+      prevent, so it is not guessed at: the row carries a note with a suggested phone, and it waits
+      until an operator chooses with Edit. Without this hold the row would fall through to "any free
+      phone in its pool", which is exactly how one phone ended up with three videos.
     */
     if (post.groupId !== null && post.maxDevices === 1 && post.assignedDeviceId === null) {
       const owned = ownersByGroup.get(post.groupId) ?? new Map<string, string>()
       const ownedByOthers = new Set([...owned].filter(([, key]) => key !== entry.key).map(([deviceId]) => deviceId))
       const pick = pickAssignment({ post, ownedByOthers, fleet: fleet.items, sessionVideos: rowsByGroup.get(post.groupId) ?? 1 })
-      if (pick.deviceId !== null) {
-        const bound: Post = { ...post, assignedDeviceId: pick.deviceId }
-        const written = await ctx.storage.global.setIfVersion(entry.key, bound, entry.version)
-        if (!written) continue
-        entry.version += 1
-        post = bound
-        owned.set(pick.deviceId, entry.key)
-        ownersByGroup.set(post.groupId as string, owned)
-        ctx.log.info('bound a video to its phone', { key: entry.key, device: pick.deviceId })
-      } else {
-        const reason = pick.reason as string
-        const dispatch: Post['dispatch'] = { ...post.dispatch }
-        let changed = false
-        for (const id of post.platforms) {
-          const state = stateFor(post, id)
-          if (state.state !== 'pending' || state.note === reason) continue
-          dispatch[id] = withSummary({ ...state, note: reason })
-          changed = true
-        }
-        if (changed) {
-          const written = await ctx.storage.global.setIfVersion(entry.key, { ...post, dispatch }, entry.version)
-          if (written) entry.version += 1
-        }
-        continue
+      const note = unassignedNote(pick, names)
+      const dispatch: Post['dispatch'] = { ...post.dispatch }
+      let changed = false
+      for (const id of post.platforms) {
+        const state = stateFor(post, id)
+        if (state.state !== 'pending' || state.note === note) continue
+        dispatch[id] = withSummary({ ...state, note })
+        changed = true
       }
+      if (changed) {
+        const written = await ctx.storage.global.setIfVersion(entry.key, { ...post, dispatch }, entry.version)
+        if (written) entry.version += 1
+      }
+      continue
     }
 
     /*
