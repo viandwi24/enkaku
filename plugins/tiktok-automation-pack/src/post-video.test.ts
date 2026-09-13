@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
-import { endsInTagToken, judgeGrid, parseViews, readGrid, readNewestCell } from './post-video'
+import { captionTextToClear, endsInTagToken, judgeGrid, parseViews, readGrid, readNewestCell } from './post-video'
 
 /**
  * `readNewestCell` — what the own-profile grid says about THIS post.
@@ -175,5 +175,27 @@ describe('endsInTagToken — when the suggestion list would cover the Post butto
     expect(endsInTagToken('test upload #test ')).toBe(false)
     expect(endsInTagToken('price#1')).toBe(false)
     expect(endsInTagToken('')).toBe(false)
+  })
+})
+
+/**
+ * The caption field's placeholder is not content (1.31.0). The farm's tree has no hint field, so an
+ * empty field reports "Tambah deskripsi..." as its text; on the production SM-A075F (run 3f250632)
+ * clearing it sent ~60 DEL presses that backed TikTok out of the post screen.
+ */
+describe('captionTextToClear', () => {
+  test('the Indonesian and English placeholders read as an empty field', () => {
+    expect(captionTextToClear({ text: 'Tambah deskripsi...' })).toBe('')
+    expect(captionTextToClear({ text: 'Tambah deskripsi…' })).toBe('')
+    expect(captionTextToClear({ text: 'Add description' })).toBe('')
+  })
+
+  test('real text is still cleared — a restored draft must not be interleaved with the new caption', () => {
+    expect(captionTextToClear({ text: '#test #video #fyp' })).toBe('#test #video #fyp')
+    expect(captionTextToClear({ text: 'Tambah deskripsi video ini nanti' })).toBe('Tambah deskripsi video ini nanti')
+  })
+
+  test('an empty field is empty', () => {
+    expect(captionTextToClear({ text: '   ' })).toBe('')
   })
 })

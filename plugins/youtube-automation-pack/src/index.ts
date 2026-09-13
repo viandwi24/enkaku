@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.27.0',
+  version: '0.28.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,15 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.28.0 — the new gallery, and no "failed" after Upload.** Three runs on
+   * the owner's production SM-A075F fleet (2026-09-14) failed "the gallery did
+   * not open" with the gallery on screen: YouTube's newer "Galeri" bottom sheet
+   * has no `gallery_header_create_title`. `galleryOpen` recognises both
+   * pickers. And once Upload has been tapped and YouTube left the details
+   * screen, an error while confirming on the channel now reports "unverified"
+   * instead of throwing — a failed attempt is re-sent by Retry, and re-sending a
+   * Short that did upload is a duplicate on a real channel.
    *
    * **0.27.0 — permissions answered before YouTube opens.** On Android 14+ the
    * system permission dialog is hidden from the farm's reader; the owner's

@@ -820,6 +820,15 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.31.0 — nothing after Post is ever "failed", and the caption placeholder is not content. The
+  // owner's production farm (2026-09-14) reported uploads that landed while the run said failed:
+  // `tt.widget-prompt` — a prompt TikTok shows only AFTER accepting an upload — could not be
+  // answered, the post-Post sweep threw, and the job failed, so Retry re-sent a video TikTok already
+  // had. The post-Post sweep and the confirmation are now guarded: the outcome is "posted" when the
+  // grid proves it and "unverified" otherwise, never "failed". Separately, an empty caption field
+  // reports its placeholder ("Tambah deskripsi...") as text; clearing it sent ~60 DEL presses that
+  // backed TikTok out to the camera (run 3f250632). `captionTextToClear` ignores the placeholder,
+  // and the run checks it is still on the post screen before tapping anything.
   // 1.30.0 — permissions are answered before TikTok opens. On Android 14+ the system permission
   // dialog is hidden from the farm's reader, and TikTok behind it: the owner's production SM-A075F
   // fleet (2026-09-14) stopped every upload at "the dump reads unknown" under Samsung's camera
@@ -898,7 +907,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.30.0',
+  version: '1.31.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

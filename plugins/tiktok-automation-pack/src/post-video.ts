@@ -204,8 +204,27 @@ const KEY_DEL = 67
  * no select-all keycode, and long-press-to-select opens a menu that is one more surface to read.
  * Bounded, so a mis-read field length cannot become hundreds of key events.
  */
+/**
+ * What the caption field ACTUALLY holds — its placeholder is not content (1.31.0).
+ *
+ * The farm's UI tree has no hint field, so an empty EditText reports its placeholder as its text:
+ * "Tambah deskripsi..." on the owner's production SM-A075F (2026-09-14, run 3f250632). Read as
+ * content, it sent ~60 DEL presses at a field that had already lost focus, and the presses the
+ * field did not take went to TikTok — which backed out of the post screen to the camera. Nothing
+ * was posted, but the run then reported the missing Post button as its failure. A field whose text
+ * is only its placeholder is empty and is not cleared at all.
+ */
+export function captionTextToClear(field: Pick<UiNode, 'text'>): string {
+  const text = field.text.trim()
+  const normalised = text.replace(/[.…\s]+$/u, '').toLowerCase()
+  return CAPTION_PLACEHOLDERS.some((p) => normalised === p) ? '' : text
+}
+
+/** TikTok's caption placeholders, lowercased without trailing dots. Only seen text belongs here. */
+const CAPTION_PLACEHOLDERS = ['tambah deskripsi', 'add description']
+
 async function clearCaptionField(ctx: ScriptContext<unknown>, field: UiNode): Promise<void> {
-  const existing = field.text.trim()
+  const existing = captionTextToClear(field)
   if (existing.length === 0) return
   const strokes = Math.min(existing.length + 5, 120)
   await ctx.device.key(KEY_MOVE_END)
@@ -1150,6 +1169,19 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       ctx.log.info('closed the tag suggestions with a trailing space')
     }
 
+    /*
+      Still on the post screen? Checked BEFORE anything is tapped (1.31.0). Clearing and typing are
+      keystrokes, and a keystroke the field does not take goes to TikTok — which, on the production
+      fleet, backed out to the camera. Leaving here is a failure a retry may safely repeat: nothing
+      was posted. Saying so beats "the Post button was not found" on a screen that is not the post
+      screen at all.
+    */
+    const stillOnPost = detectScreen(await ctx.device.dump())
+    if (stillOnPost !== 'post' && stillOnPost !== 'unknown') {
+      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-left-post-screen`)
+      throw Object.assign(new Error(`typing the caption left the post screen (TikTok is now on "${stillOnPost}") — nothing was posted`), { code: 'E_LEFT_POST_SCREEN' })
+    }
+
     // NO `BACK` here, and that is a correction the hardware forced. Typing a hashtag opens TikTok's
     // own tag-suggestion panel, which covers the bottom bar — and `BACK`, which was supposed to
     // close the IME, instead LEFT THE POST SCREEN ENTIRELY and discarded the typed caption (observed
@@ -1191,11 +1223,39 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     // every modal that only appears after a real submission was invisible to it. An unattended run
     // that knew only the pre-post modals would sail through the whole flow and then stall on the
     // first screen it reached after actually succeeding.
-    await sleep(4_000)
-    const postedSweep = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
-    recordCleared(postedSweep.cleared)
+    /*
+      Past this line Post HAS been tapped, so nothing below may end the run as "failed" (1.31.0).
 
-    const confirmation = await confirmPosted(ctx, frame.width, gridBefore)
+      A failed attempt is one the session's Retry re-sends, and re-sending a video TikTok already
+      took is a duplicate post on a real account. The owner's production farm (2026-09-14) showed
+      exactly that shape: runs that failed on `tt.widget-prompt … no on-screen node satisfied its
+      "deny" action` — a prompt TikTok shows only AFTER accepting an upload — were recorded as
+      failures. So the post-Post sweep and the confirmation are guarded: an error here is logged,
+      the grid is still read if it can be, and the outcome is "posted" when the grid proves it and
+      "unverified" otherwise, with the error in the reason.
+    */
+    await sleep(4_000)
+    let afterPostError: string | null = null
+    try {
+      const postedSweep = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
+      recordCleared(postedSweep.cleared)
+    } catch (err) {
+      afterPostError = err instanceof Error ? err.message : String(err)
+      ctx.log.warn('a modal after Post could not be answered — confirming on the grid anyway, never reporting failed', { error: afterPostError })
+    }
+
+    let confirmation: { confirmed: boolean; detail: string }
+    try {
+      confirmation = await confirmPosted(ctx, frame.width, gridBefore)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      ctx.log.warn('confirming the post failed after Post was tapped — reporting unverified, never failed', { error: message })
+      confirmation = { confirmed: false, detail: `Post was tapped, but confirming it failed (${message.slice(0, 160)}). Reporting "unverified" — it may well have posted.` }
+    }
+    if (!confirmation.confirmed && afterPostError !== null) {
+      confirmation = { confirmed: false, detail: `${confirmation.detail} After Post, TikTok showed something this run could not answer: ${afterPostError.slice(0, 160)}` }
+    }
+    try {
     if (attempt.queueClaim) {
       // Post was tapped either way — settle the queue as done regardless of confirmation
       // strength. The queue envelope has no 'unverified' state, and re-claiming an item whose Post
@@ -1208,6 +1268,10 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       // queue settle above: this run genuinely acted on the file, confirmed or not, and the next
       // `videoPick: 'random'` run should prefer a different one over reposting it immediately.
       await recordVideoPosted(ctx, attempt.folderVideo.hash, attempt.folderVideo.path)
+    }
+    } catch (err) {
+      // Bookkeeping about a Post that already happened; its failure is not the post's.
+      ctx.log.warn('could not record the post in the queue or folder memory — the outcome below still stands', { error: err instanceof Error ? err.message : String(err) })
     }
 
     return {

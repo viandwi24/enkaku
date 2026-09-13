@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
-import { asciiTitle, createButton, onThumbnailEditor, resumeDraftPrompt, galleryCellFor, hiddenWindow, isSelectedCell, isSignedOut, judgeChannel, readChannelCells } from './post-video'
+import { asciiTitle, createButton, galleryOpen, onThumbnailEditor, resumeDraftPrompt, galleryCellFor, hiddenWindow, isSelectedCell, isSignedOut, judgeChannel, readChannelCells } from './post-video'
 import { rowsById } from './tree'
 
 /**
@@ -118,3 +118,25 @@ describe('asciiTitle — what adb can type', () => {
   })
 })
 
+
+/**
+ * YouTube's newer "Galeri" bottom sheet (0.28.0). Captured on the owner's production SM-A075F
+ * (2026-09-14, run 1c0b1d4c), status bar dropped. Three runs failed "the gallery did not open" with
+ * this sheet on screen, because the check only knew the older picker's header.
+ */
+describe('the gallery, in both of YouTube\'s pickers', () => {
+  test('the bottom-sheet picker is recognised as the gallery, and so is the older one', async () => {
+    expect(galleryOpen(await fixture('screen-gallery-sheet.json'))).toBe(true)
+    expect(galleryOpen(await fixture('screen-gallery-selected.json'))).toBe(true)
+  })
+
+  test('a screen that is not a gallery is not mistaken for one', async () => {
+    expect(galleryOpen(await fixture('screen-create-no-camera.json'))).toBe(false)
+  })
+
+  test('the pushed file is found by name in the bottom sheet, the same way as before', async () => {
+    const sheet = await fixture('screen-gallery-sheet.json')
+    expect(galleryCellFor(sheet, 'yt-1c0b1d4c-a3d8-440d-b410-249c6dc859c6-1.mp4')).not.toBeNull()
+    expect(rowsById(sheet, 'multi_select_next_button')[0]?.text).toBe('Berikutnya')
+  })
+})

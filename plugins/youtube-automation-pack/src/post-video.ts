@@ -329,6 +329,25 @@ async function readOwnChannel(ctx: ScriptContext<unknown>, label: string): Promi
   }
 }
 
+/**
+ * The upload gallery is on screen (0.28.0).
+ *
+ * YouTube ships two pickers. The one this flow was walked on carries `gallery_header_create_title`;
+ * the one on the owner's production SM-A075F fleet (2026-09-14, exported runs 1c0b1d4c, d1b3def2,
+ * d941eef7) is a bottom sheet titled "Galeri" with no such header — `select_album_button`,
+ * `media_grid_recycler_view`, and the same `multi_select_next_button` the rest of this flow
+ * already uses. All three runs had the gallery OPEN, with the pushed video as the first cell, and
+ * failed "the gallery did not open" only because this check knew the older header. Nothing past
+ * this point differs between the two: cells are named by file and selected the same way.
+ */
+export function galleryOpen(tree: UiNode): boolean {
+  return (
+    rowsById(tree, 'gallery_header_create_title').length > 0 ||
+    rowsById(tree, 'media_grid_recycler_view').length > 0 ||
+    rowsById(tree, 'select_album_button').length > 0
+  )
+}
+
 const PERMISSION_HELP =
   'the farm sets these before YouTube opens (photos and videos allowed, camera refused), so this means that step did not take on this phone — check the run log for "could not set YouTube permissions", or answer it once on the phone (camera: "Jangan izinkan", photos and videos: "Izinkan semua") and re-run. Android hides these dialogs from the farm\'s reader, so a run cannot answer them itself.'
 
@@ -467,7 +486,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       )
     }
 
-    const gallery = await waitForTree(ctx, (t) => rowsById(t, 'gallery_header_create_title').length > 0 || hiddenWindow(t) === 'dialog', { budgetMs: 12_000 })
+    const gallery = await waitForTree(ctx, (t) => galleryOpen(t) || hiddenWindow(t) === 'dialog', { budgetMs: 12_000 })
     if (hiddenWindow(gallery.tree) === 'dialog') fail('E_PERMISSION_DIALOG_HIDDEN', `YouTube is asking for access to photos and videos — ${PERMISSION_HELP}`)
     if (!gallery.ok) {
       await capture(ctx, 'yt-04-gallery', gallery.tree)
@@ -627,7 +646,16 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await capture(ctx, 'yt-10-after-upload', left.tree)
 
     // --- confirmation ------------------------------------------------------------
+    /*
+      Past this line Upload HAS been tapped and YouTube left the details screen, so nothing below may
+      end the run as "failed" (0.28.0). A failed attempt is one the session's Retry re-sends, and
+      re-sending a Short that did upload is a duplicate on a real channel — the exact report from the
+      owner's production farm. Any error while confirming (a relaunch, an unreadable channel, a
+      sign-in check) becomes "unverified", carrying the error, which is never retried on its own.
+    */
     let last: ChannelJudgement = { kind: 'unreadable' }
+    let confirmError: string | null = null
+    try {
     for (let round = 0; round < 6; round++) {
       if (round > 0) {
         await relaunch(ctx, { clearRecents: false })
@@ -647,12 +675,18 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       ctx.log.warn(`the channel does not show this Short yet (attempt ${round + 1}/6)`, { judged: JSON.stringify(last) })
       await sleep(10_000)
     }
+    } catch (err) {
+      confirmError = err instanceof Error ? err.message : String(err)
+      ctx.log.warn('confirming on the channel failed after Upload was tapped — reporting unverified, never failed', { error: confirmError })
+    }
     const saw =
       last.kind === 'processing'
         ? `it was still processing ("${last.words.slice(0, 80)}") — uploaded, not yet live.`
         : last.kind === 'same'
           ? 'the channel page was as it was before Upload was tapped.'
-          : 'the channel page could not be read.'
+          : confirmError !== null
+            ? `confirming it failed (${confirmError.slice(0, 160)}).`
+            : 'the channel page could not be read.'
     return {
       outcome: 'unverified' as const,
       videoArtifactId: ctx.params.videoArtifactId,
