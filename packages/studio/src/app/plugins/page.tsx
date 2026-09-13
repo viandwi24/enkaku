@@ -33,6 +33,7 @@ import {
   XIcon,
 } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { ActivateLatestButton, ActivateLatestReport, useActivateLatest } from '@/components/plugins/ActivateLatestPlugins'
 import { InstallPluginDialog } from '@/components/plugins/InstallPluginDialog'
 import { PluginActions } from '@/components/plugins/PluginActions'
 import { PluginStatusPill } from '@/components/plugins/PluginStatusPill'
@@ -41,6 +42,7 @@ import {
   PluginsListSchema,
   devSlotMatches,
   groupPlugins,
+  planLatestActivation,
   searchPlugins,
   type PluginMatch,
   type PluginListRow,
@@ -95,6 +97,9 @@ function PluginsScreen() {
   }
   useEffect(load, [])
 
+  // The bulk upgrade (owner request, 2026-09-13) — see `ActivateLatestPlugins`.
+  const { run: latestRun, start: startLatest, dismiss: dismissLatest, busy: latestBusy } = useActivateLatest(load)
+
   const reloadAll = () =>
     run('restart', () => api('/api/plugins/restart', PluginRestartResponseSchema, { method: 'POST' }), {
       failure: 'Could not restart the plugin registry',
@@ -105,6 +110,13 @@ function PluginsScreen() {
     })
 
   const groups = groupPlugins(items ?? [])
+  /*
+    Computed from the WHOLE list, never from `matches`: a search box is a way
+    of looking at the table, not a selection, and a button that quietly acted
+    on "the four plugins you can currently see" would mean something different
+    on every keystroke.
+  */
+  const latestPlan = planLatestActivation(groups)
   const matches = searchPlugins(groups, query)
   const shownDev = (dev ?? []).filter((s) => devSlotMatches(s, query))
   const failedCount = (items ?? []).filter((p) => p.status === 'failed').length
@@ -122,6 +134,9 @@ function PluginsScreen() {
         description="Everything this farm can run — the plugins installed on it, and the scripts they register"
         actions={
           <>
+            {view === 'plugins' && items !== null && (
+              <ActivateLatestButton plan={latestPlan} busy={latestBusy} onConfirm={() => startLatest(latestPlan)} />
+            )}
             <Button size="sm" variant="secondary" disabled={isPending('restart')} onClick={reloadAll}>
               <ArrowsClockwiseIcon className="size-3.5" aria-hidden />
               Reload all
@@ -163,6 +178,7 @@ function PluginsScreen() {
 
         {view === 'plugins' ? (
           <div className="px-5 py-4">
+            {latestRun && <ActivateLatestReport run={latestRun} onDismiss={dismissLatest} />}
             {failedCount > 0 && (
               <div className="mb-4 flex items-start gap-2.5 rounded-inner border border-danger/40 bg-danger-soft px-3.5 py-2.5 text-body text-danger">
                 <WarningIcon className="mt-0.5 size-4 shrink-0" aria-hidden />

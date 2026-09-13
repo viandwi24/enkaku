@@ -114,6 +114,101 @@ export function groupPlugins(items: readonly PluginListRow[]): PluginGroup[] {
     })
 }
 
+/** One plugin the "Activate newest" button will act on. */
+export interface LatestActivationTarget {
+  /** The plugin name — the group's identity, and what the report names. */
+  name: string
+  /** The version the farm runs right now. */
+  from: string
+  /** The newest staged version: what this activation moves to. */
+  to: PluginListRow
+  /**
+   * Staged but never verified, so `POST /:id/activate` would refuse it outright
+   * (`plugin_not_verified` — `runtime.activate` reads `verifiedAt` before it
+   * touches the status). Reachable through `POST /api/plugins?stageOnly=1`,
+   * which stages without the verify step every other publish path runs. The
+   * batch verifies such a version first rather than reporting a failure the
+   * operator has no button anywhere on this page to clear.
+   */
+  needsVerify: boolean
+}
+
+/** A plugin the button deliberately does NOT touch, and the reason, in the operator's words. */
+export interface LatestActivationBlock {
+  name: string
+  reason: string
+}
+
+export interface LatestActivationPlan {
+  /** Newest-staged-beats-active, in page order. */
+  upgrades: LatestActivationTarget[]
+  /** Names already running the newest version installed on this farm. */
+  alreadyLatest: string[]
+  /** Names the button will not act on — never hidden, always counted. */
+  blocked: LatestActivationBlock[]
+}
+
+/**
+ * What "Activate the newest installed version of every plugin" actually
+ * resolves to, computed from the same groups the table renders so the confirm
+ * dialog cannot promise something the rows contradict.
+ *
+ * The rule is exactly the row's own `newerStaged`: a plugin is upgraded when a
+ * version is live and a NEWER staged one is sitting behind it. Everything else
+ * lands in one of the other two buckets rather than being dropped — a plugin
+ * missing from all three would be a plugin the button silently skipped, and
+ * "it did nothing and said nothing" is the one outcome a bulk button must
+ * never have.
+ *
+ * Two deliberate non-actions, both because they are not upgrades:
+ *
+ *  - A plugin with NO active version (never activated, or disabled) is left
+ *    alone. Turning a plugin on for the first time changes what the farm runs
+ *    rather than which version of it, and this button's whole promise is the
+ *    latter.
+ *  - A plugin whose newest version is `failed` or `verifying` keeps running
+ *    what it runs. `activate` only accepts a `staged` row, so the next
+ *    activatable version down is what `newerStaged` already points at.
+ */
+export function planLatestActivation(groups: readonly PluginGroup[]): LatestActivationPlan {
+  const upgrades: LatestActivationTarget[] = []
+  const alreadyLatest: string[] = []
+  const blocked: LatestActivationBlock[] = []
+  for (const group of groups) {
+    const newest = group.versions[0]
+    if (!newest) continue
+    const active = group.versions.find((v) => v.status === 'active') ?? null
+    if (active && group.newerStaged) {
+      upgrades.push({
+        name: group.name,
+        from: active.version,
+        to: group.newerStaged,
+        needsVerify: group.newerStaged.verifiedAt === null,
+      })
+      continue
+    }
+    if (active) {
+      if (active.id === newest.id) {
+        alreadyLatest.push(group.name)
+      } else {
+        blocked.push({
+          name: group.name,
+          reason: `runs ${active.version}; the newer ${newest.version} is "${newest.status}", and only a staged version can be activated`,
+        })
+      }
+      continue
+    }
+    if (group.versions.some((v) => v.status === 'disabled')) {
+      blocked.push({ name: group.name, reason: 'disabled — use Enable on its own row; this button never turns a plugin back on' })
+    } else if (newest.status === 'failed') {
+      blocked.push({ name: group.name, reason: `no version is active and the newest, ${newest.version}, failed to register` })
+    } else {
+      blocked.push({ name: group.name, reason: `no version is active — activate ${newest.version} on its own row first` })
+    }
+  }
+  return { upgrades, alreadyLatest, blocked }
+}
+
 function norm(s: string): string {
   return s.trim().toLowerCase()
 }
