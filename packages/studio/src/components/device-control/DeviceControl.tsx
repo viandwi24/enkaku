@@ -18,6 +18,7 @@ import { DeviceActions } from './DeviceActions'
 import { Inspector } from './Inspector'
 import { DeviceTab } from './DeviceTab'
 import { stateTooltip } from './state-tooltip'
+import { QuarantineBanner } from './QuarantineBanner'
 
 /**
  * Device Control (MVP 08, design handoff README.md:230-293; plan 215).
@@ -344,6 +345,17 @@ export function DeviceControl({
             </span>
             <span className="text-faint">{device.androidVersion ?? '–'}</span>
           </div>
+        )}
+
+        {device && (
+          <QuarantineBanner
+            device={device}
+            onReleased={() =>
+              void api(`/api/devices/${encodeURIComponent(deviceId)}`, DeviceDetailResponseSchema)
+                .then((res) => setDevice(res.device))
+                .catch(() => {})
+            }
+          />
         )}
 
         {selectedIds.length > 1 && (

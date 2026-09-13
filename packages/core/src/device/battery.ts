@@ -10,6 +10,7 @@ import type { Logger } from '../util/logger'
 import { mapWithConcurrency } from '../util/concurrency'
 import { METRICS_PROBE, parseDeviceMetrics, type CpuSample } from './metrics'
 import { BATTERY_POLL_INTERVAL_SEC, DEVICE_AUTO_QUARANTINE } from '../config/constants'
+import type { QuarantineGrace } from './quarantine-grace'
 
 /** Parse output `dumpsys battery` (spec §15.2). */
 export function parseDumpsysBattery(raw: string): BatteryState | null {
@@ -78,6 +79,8 @@ export function createBatteryMonitor(deps: {
   onMetrics: (deviceId: string, metrics: DeviceMetrics) => void
   /** Main-stream device event: battery.warning (plan 18 §4.2). */
   record?: EventRecorder['record']
+  /** Granted by `unquarantine`, honoured by the thermal check — shared with `health.ts`. */
+  grace?: QuarantineGrace
 }): BatteryMonitor {
   let timer: ReturnType<typeof setInterval> | null = null
   /** Previous `/proc/stat` sample per device, so the next sample can difference it (plan 214 §4.3). */
@@ -112,7 +115,9 @@ export function createBatteryMonitor(deps: {
           kind: 'battery.warning',
           meta: { level: battery.level, temperatureC: battery.temperatureC },
         })
-        if (cfg.autoQuarantine) {
+        if (cfg.autoQuarantine && deps.grace?.active(row.id)) {
+          deps.log.warn(`device ${row.label} is hot (${battery.temperatureC}°C) but was released by hand — not re-quarantining inside the grace window`)
+        } else if (cfg.autoQuarantine) {
           const reason = `thermal:${battery.temperatureC.toFixed(1)}C`
           const applied = deps.states.apply(row.id, 'QUARANTINE')
           if (applied) {
@@ -171,6 +176,7 @@ export function createBatteryMonitor(deps: {
       const applied = deps.states.apply(deviceId, 'UNQUARANTINE')
       if (!applied) return false
       deps.db.update(devices).set({ quarantineReason: null }).where(eq(devices.id, deviceId)).run()
+      deps.grace?.grant(deviceId)
       return true
     },
     pollOnce,

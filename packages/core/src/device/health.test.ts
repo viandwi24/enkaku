@@ -7,6 +7,7 @@ import { devices } from '../db/schema'
 import type { FarmSettingsStore } from '../settings/farm-settings'
 import { createDeviceStateMachine } from './state-machine'
 import { createDeviceHealth } from './health'
+import { createQuarantineGrace, type QuarantineGrace } from './quarantine-grace'
 import { createLogger } from '../util/logger'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -17,7 +18,7 @@ function fakeSettingsStore(failuresBeforeQuarantine?: number): FarmSettingsStore
   return { get: () => cfg, update: () => cfg, resetSections: () => cfg, onChange: () => () => {} }
 }
 
-function setUp(opts?: { failuresBeforeQuarantine?: number; autoQuarantineOverride?: boolean }) {
+function setUp(opts?: { failuresBeforeQuarantine?: number; autoQuarantineOverride?: boolean; grace?: QuarantineGrace }) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
@@ -35,6 +36,7 @@ function setUp(opts?: { failuresBeforeQuarantine?: number; autoQuarantineOverrid
     log: createLogger('test'),
     record: (e) => events.push(e as unknown as DeviceEvent),
     ...(opts?.autoQuarantineOverride !== undefined ? { autoQuarantineOverride: opts.autoQuarantineOverride } : {}),
+    ...(opts?.grace ? { grace: opts.grace } : {}),
   })
   return { db, states, health, events }
 }
@@ -225,5 +227,31 @@ describe('DeviceHealth — the recovery prober (plan 23 §3.5, §4.4.4, §6.5, �
     await sleep(60)
     const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
     expect(row?.status).toBe('quarantined') // never probed because stop() fired before any interval elapsed
+  })
+})
+
+describe('DeviceHealth — a manual release holds for the grace window', () => {
+  test('failures inside the window neither count nor re-quarantine; the streak resumes after it', () => {
+    let now = 1_000_000
+    const grace = createQuarantineGrace({ graceSec: 600, now: () => now })
+    const { db, states, health } = setUp({ failuresBeforeQuarantine: 2, autoQuarantineOverride: true, grace })
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()?.status).toBe('quarantined')
+
+    // What `battery.unquarantine` does.
+    states.apply('d1', 'UNQUARANTINE')
+    grace.grant('d1')
+
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    expect(health.consecutiveFailures('d1')).toBe(0)
+    expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()?.status).toBe('online')
+
+    now += 601_000
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()?.status).toBe('quarantined')
   })
 })

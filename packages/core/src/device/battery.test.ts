@@ -5,6 +5,8 @@ import { devices } from '../db/schema'
 import { createFarmSettingsStore } from '../settings/farm-settings'
 import { createDeviceStateMachine } from './state-machine'
 import { createBatteryMonitor } from './battery'
+import { createQuarantineGrace } from './quarantine-grace'
+import { eq } from 'drizzle-orm'
 import { createLogger } from '../util/logger'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -130,5 +132,44 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
     // Two calls per online device (plan 214 §3.7, §4.3): `dumpsys battery`
     // then the metrics probe, both against the same serial, in the same poll.
     expect(called).toEqual(['SER-ON', 'SER-ON'])
+  })
+})
+
+describe('thermal quarantine — a manual release holds for the grace window', () => {
+  test('a still-hot device released by hand is not re-quarantined until the window ends', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'hot', 'SER-HOT', 'online')
+
+    const client = {
+      exec: async () => ({ stdout: dumpsysReply(80, 480), stderr: '', exitCode: 0 }),
+      stats: () => ({ maxConcurrent: 8, inFlight: 0, waiting: 0 }),
+    } as unknown as AdbClient
+
+    let now = 1_000_000
+    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
+    const monitor = createBatteryMonitor({
+      db,
+      client: () => client,
+      states,
+      settings: createFarmSettingsStore(db),
+      log: createLogger('test'),
+      onBattery: () => {},
+      onMetrics: () => {},
+      grace: createQuarantineGrace({ graceSec: 600, now: () => now }),
+    })
+    const status = () => db.select().from(devices).where(eq(devices.id, 'hot')).get()?.status
+
+    await monitor.pollOnce()
+    expect(status()).toBe('quarantined')
+
+    expect(monitor.unquarantine('hot')).toBe(true)
+    await monitor.pollOnce()
+    expect(status()).toBe('online')
+
+    now += 601_000
+    await monitor.pollOnce()
+    expect(status()).toBe('quarantined')
   })
 })

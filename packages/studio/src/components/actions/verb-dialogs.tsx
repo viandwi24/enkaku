@@ -1161,6 +1161,21 @@ const setNetwork: VerbDialogSpec<SetNetworkValue> = {
   },
 }
 
+// ---------------------------------------------------------------------------
+// Return from quarantine
+// ---------------------------------------------------------------------------
+const unquarantine: VerbDialogSpec<Record<string, never>> = {
+  verb: 'unquarantine',
+  immediate: true,
+  title: (c) => `Return ${n(c)} from quarantine`,
+  submitLabel: (c) => `Return ${n(c)} from quarantine`,
+  initial: {},
+  Fields: null,
+  note: 'Puts a quarantined device back to work now, whatever pulled it. Auto-quarantine then leaves it alone for a grace period, so a still-warm phone is not pulled straight back. A device that is not quarantined is skipped.',
+  canSubmit: () => true,
+  toParams: async () => ({}),
+}
+
 /**
  * The fifteen verb keys, named explicitly rather than derived with
  * `keyof typeof VERB_DIALOGS`: the registry below is typed
@@ -1197,6 +1212,7 @@ export type ActionDialogVerb =
   | 'set-network'
   | 'install-agent'
   | 'uninstall-agent'
+  | 'unquarantine'
 
 export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   reconnect,
@@ -1221,4 +1237,5 @@ export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   'install-agent': installAgent,
   'uninstall-agent': uninstallAgent,
   'set-network': setNetwork,
+  unquarantine,
 }

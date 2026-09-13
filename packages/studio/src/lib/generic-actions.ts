@@ -1,4 +1,5 @@
 import {
+  ArrowCounterClockwiseIcon,
   ArrowsClockwiseIcon,
   BroomIcon,
   CameraIcon,
@@ -97,6 +98,8 @@ export const GENERIC_ACTIONS: readonly GenericAction[] = [
   { id: 'reconnect', label: 'Reconnect', icon: ArrowsClockwiseIcon, group: 'connection' },
   { id: 'disconnect', label: 'Disconnect', icon: PlugsIcon, group: 'connection' },
   { id: 'set-network', label: 'Network', icon: NetworkIcon, group: 'connection' },
+  // The only way back from quarantine in Studio; skipped for a device that is not quarantined.
+  { id: 'unquarantine', label: 'Return from quarantine', icon: ArrowCounterClockwiseIcon, group: 'connection' },
 
   // Things you do TO the phone.
   { id: 'install', label: 'Install apk', icon: DownloadSimpleIcon, group: 'device' },

@@ -8,6 +8,7 @@ import type { EventRecorder } from '../events/recorder'
 import type { Logger } from '../util/logger'
 import { mapWithConcurrency } from '../util/concurrency'
 import { DEVICE_AUTO_QUARANTINE, DEVICE_RECOVERY_PROBE_INTERVAL_SEC } from '../config/constants'
+import type { QuarantineGrace } from './quarantine-grace'
 
 export type AdbMetricOutcome = 'ok' | 'timeout' | 'busy' | 'error'
 
@@ -54,6 +55,8 @@ export function createDeviceHealth(deps: {
   probeIntervalSecOverride?: number
   /** Test-only override for `DEVICE_AUTO_QUARANTINE` (plan 212 §4.1 F4/F38 — the same constant, kept injectable for the "never quarantines" test case). */
   autoQuarantineOverride?: boolean
+  /** A device an operator just released (`battery.ts`'s `unquarantine`) neither counts failures nor is quarantined inside this window. */
+  grace?: QuarantineGrace
 }): DeviceHealth {
   const { db, log } = deps
   /** In memory only — a core restart re-probes everything anyway (plan 23 §3.6). */
@@ -123,6 +126,13 @@ export function createDeviceHealth(deps: {
         return
       }
       if (!countsAsFailure(outcome, code)) return
+      // The streak that got it quarantined survives a manual release, so one
+      // more timeout would pull it straight back. Inside the window the
+      // streak starts over instead.
+      if (deps.grace?.active(deviceId)) {
+        counters.set(deviceId, 0)
+        return
+      }
       const next = (counters.get(deviceId) ?? 0) + 1
       counters.set(deviceId, next)
       if (next >= deps.settings.get().advanced.failuresBeforeQuarantine && (deps.autoQuarantineOverride ?? DEVICE_AUTO_QUARANTINE)) {

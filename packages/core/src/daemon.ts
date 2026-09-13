@@ -52,6 +52,7 @@ import {
   DEVICE_RECOVERY_PROBE_INTERVAL_SEC,
   DEVICE_RESCAN_INTERVAL_SEC,
   DEVICE_SCREEN_OFF_TIMEOUT_MS,
+  DEVICE_UNQUARANTINE_GRACE_SEC,
   DISPLAY_FALLBACK_RETRIES,
   EVENT_MAX_ROWS_PER_DEVICE,
   GEO_PROVIDER_URL,
@@ -146,6 +147,7 @@ import { recomputeBatchStatus } from './groups/status'
 import { createJobRoutes } from './api/jobs'
 import { createSettingsRoutes } from './api/settings'
 import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
+import { createQuarantineGrace } from './device/quarantine-grace'
 import { computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling'
 import { createAdbMetricsStore } from './device/adb-metrics'
 import { createHostAdb, type HostAdb } from './device/host-adb'
@@ -4805,6 +4807,10 @@ let blobGc: BlobGc | null = null
         pairingService = createPairingService({ client: adb, log: log.child('pairing') })
         attachWsRouter(sessions)
 
+        // One window shared by both auto-quarantine paths, so a manual
+        // `unquarantine` holds against the thermal check and the adb streak.
+        const quarantineGrace = createQuarantineGrace({ graceSec: DEVICE_UNQUARANTINE_GRACE_SEC })
+
         // Battery/thermal poll + auto-quarantine (M5, spec §15.2).
         battery = createBatteryMonitor({
           db,
@@ -4816,6 +4822,7 @@ let blobGc: BlobGc | null = null
             hub.broadcast({ type: 'device.battery', payload: { deviceId, battery: state } }),
           onMetrics: (deviceId, metrics) => hub.broadcast({ type: 'device.metrics', payload: { deviceId, metrics } }),
           record: recorder!.record,
+          grace: quarantineGrace,
         })
         battery.start()
 
@@ -4829,6 +4836,7 @@ let blobGc: BlobGc | null = null
           settings: settingsStore,
           log: log.child('health'),
           record: recorder!.record,
+          grace: quarantineGrace,
         })
         health.start()
 
