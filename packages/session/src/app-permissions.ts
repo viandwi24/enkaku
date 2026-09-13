@@ -60,8 +60,21 @@ function quote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/**
+ * The package read, filtered ON THE DEVICE to the three kinds of line this module uses.
+ *
+ * The whole `dumpsys package` text is not bounded: Instagram 446.0's is 296 KB on the owner's moto
+ * (2026-09-14), over the transport's 256 KB output cap, so every `grantPermissions` for it failed
+ * with "adb output exceeded 262144 bytes" before a single permission was read (YouTube's is 57 KB,
+ * which is why the first caller never met it). Filtered it is under 5 KB. `grep` exits 1 when
+ * nothing matches, and nothing here reads the exit code — the text decides, exactly as before.
+ */
+export function readPackageCommand(pkg: string): string {
+  return `dumpsys package ${quote(pkg)} | grep -E '^ *Package \\[|Unable to find package|android\\.permission\\.[A-Z0-9_]+: granted='`
+}
+
 async function readPackage(exec: Exec, pkg: string): Promise<Map<string, RuntimePermissionState>> {
-  const r = await exec(`dumpsys package ${quote(pkg)}`)
+  const r = await exec(readPackageCommand(pkg))
   const text = `${r.stdout}\n${r.stderr}`
   // `dumpsys package` for an unknown package prints this and exits 0; an installed one always
   // prints its `Package [name]` block. Refused by name rather than reported as a list of

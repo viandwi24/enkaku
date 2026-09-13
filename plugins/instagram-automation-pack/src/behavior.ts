@@ -126,18 +126,3 @@ export function readableStrings(tree: UiNode, minTop = 0): string[] {
   }
   return out
 }
-
-export const IG = 'com.instagram.android'
-
-/* ── Sign-in / consent sweep (ACK_SELECTORS from TikTok, reused) ────────── */
-
-export const ACK_TEXT = ['Mengerti','Saya mengerti','Got it','I understand','OK','Oke','Nanti saja','Lewati','Skip','Not now','Tutup','Close','Tidak sekarang']
-
-export async function sweepAck(ctx: ScriptContext<unknown>): Promise<boolean> {
-  const tree = await ctx.device.dump()
-  for (const t of ACK_TEXT) {
-    const hit = flatten(tree).find((n) => n.clickable && n.text.trim().toLowerCase() === t.toLowerCase())
-    if (hit) { await tapNodeJittered(ctx, hit); await sleep(800); return true }
-  }
-  return false
-}

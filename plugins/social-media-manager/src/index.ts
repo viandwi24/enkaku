@@ -55,14 +55,26 @@ import {
  *
  * ## The honest state of it
  *
- * The router works and is tested. **TikTok and YouTube can post today**: both
- * packs' upload flows were walked on real hardware and every anchor in them was
- * measured there. Instagram has a pack and no upload flow, and this plugin says
- * so by name — the page offers it as "no upload flow yet" rather than routing to
- * it and reporting a success nothing performed. See `platforms.ts` for why
- * writing those selectors from memory would be worse than not having them.
+ * The router works and is tested. **TikTok, YouTube and Instagram can post
+ * today**: all three packs' upload flows were walked on real hardware and every
+ * anchor in them was measured there (Instagram's on 2026-09-14, 0.13.0). A
+ * platform added without such a walk is declared with no upload flow, and this
+ * plugin says so by name rather than routing to it and reporting a success
+ * nothing performed. See `platforms.ts` for why writing those selectors from
+ * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.13.0 — Instagram posts.** `instagram/post-video` exists now, walked by
+ *   hand on the owner's moto g06 power (Instagram 446.0, 2026-09-14) with every
+ *   screen in that pack's `__fixtures__/`, so the Instagram row in
+ *   `platforms.ts` routes to it and a post targeting Instagram is sent instead
+ *   of recorded as unsupported. `unsupported` is not a settled state, so a post
+ *   already stored with Instagram `unsupported` starts routing on the next tick
+ *   once auto-post is on — remove it first if that video should not reach
+ *   Instagram now. The warm-up rotation's Instagram
+ *   branch also shuffles the pack's three new warm-ups: `scroll-feed`,
+ *   `watch-stories` and `explore-reels`. Needs instagram pack 0.3.0 activated.
  *
  * - **0.12.0 — one video, one phone; and a session page that says what is
  *   happening now.** Two production findings (2026-09-14):
@@ -885,10 +897,10 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.12.0',
+  version: '0.13.0',
   icon: 'upload',
   title: 'Social Media Manager',
-  description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok and YouTube post today; Instagram is declared and has no verified upload flow yet.',
+  description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
   scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as

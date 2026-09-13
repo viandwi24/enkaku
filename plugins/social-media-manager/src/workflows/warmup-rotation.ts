@@ -105,6 +105,9 @@ export const warmupRotation: WorkflowDocInput = {
       "kind": "shuffle",
       "members": [
         "ig-reels",
+        "ig-feed",
+        "ig-stories",
+        "ig-explore",
         "ig-activity",
         "ig-inbox",
         "ig-profile"
@@ -150,6 +153,42 @@ export const warmupRotation: WorkflowDocInput = {
       "enabled": true,
       "kind": "script",
       "script": "instagram/check-inbox@latest",
+      "params": {}
+    },
+    {
+      "id": "ig-feed",
+      "title": "scroll-feed@0.3.0",
+      "ui": {
+        "x": 120,
+        "y": 380
+      },
+      "enabled": true,
+      "kind": "script",
+      "script": "instagram/scroll-feed@latest",
+      "params": {}
+    },
+    {
+      "id": "ig-stories",
+      "title": "watch-stories@0.3.0",
+      "ui": {
+        "x": 120,
+        "y": 450
+      },
+      "enabled": true,
+      "kind": "script",
+      "script": "instagram/watch-stories@latest",
+      "params": {}
+    },
+    {
+      "id": "ig-explore",
+      "title": "explore-reels@0.3.0",
+      "ui": {
+        "x": 120,
+        "y": 520
+      },
+      "enabled": true,
+      "kind": "script",
+      "script": "instagram/explore-reels@latest",
       "params": {}
     },
     {

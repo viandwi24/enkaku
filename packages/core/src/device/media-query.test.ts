@@ -115,6 +115,37 @@ describe('queryDeviceMedia', () => {
     expect(res.truncated).toBe(false)
   })
 
+  test('falls back when the provider THROWS on LIMIT but `content` still exits 0', async () => {
+    // A build that prints the provider exception on stdout, still exiting 0. (The owner's moto prints
+    // it on stderr — the next test — and both must reach the no-LIMIT fallback.)
+    const refused = 'Error while accessing provider:media\njava.lang.IllegalArgumentException: Invalid token LIMIT\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:185)'
+    const { seen, backend } = backendOf((cmd) => (cmd.includes('LIMIT') ? { exitCode: 0, stdout: refused } : { exitCode: 0, stdout: DUMP }))
+    const res = await queryDeviceMedia(backend, { kind: 'video', limit: 10 })
+    expect(seen).toHaveLength(2)
+    expect(res.items).toHaveLength(2)
+  })
+
+  test('falls back when LIMIT is refused on stderr — empty stdout, exit 0 (the moto\'s real shape)', async () => {
+    const { seen, backend } = backendOf((cmd) => (cmd.includes('LIMIT') ? { exitCode: 0, stdout: '' } : { exitCode: 0, stdout: DUMP }))
+    const res = await queryDeviceMedia(backend, { kind: 'video', limit: 10 })
+    expect(seen).toHaveLength(2)
+    expect(res.items).toHaveLength(2)
+  })
+
+  test('an explicit "No result found." is an answer, not a refusal — no second query', async () => {
+    const { seen, backend } = backendOf(() => ({ exitCode: 0, stdout: 'No result found.' }))
+    expect(await queryDeviceMedia(backend, { kind: 'video', limit: 10 })).toEqual({ items: [], truncated: false })
+    expect(seen).toHaveLength(1)
+  })
+
+  test('a row whose file name contains "Exception" is not mistaken for a provider error', async () => {
+    const stdout = 'Row: 0 _id=7, _display_name=Exception.mp4, _data=/sdcard/DCIM/java.lang.FooException.mp4, date_added=9, _size=1, mime_type=video/mp4, duration=1'
+    const { seen, backend } = backendOf(() => ({ exitCode: 0, stdout }))
+    const res = await queryDeviceMedia(backend, { kind: 'video', limit: 10 })
+    expect(seen).toHaveLength(1)
+    expect(res.items.map((i) => i.id)).toEqual(['7'])
+  })
+
   test('a shell failure on both attempts is an empty list, never a throw', async () => {
     const { backend } = backendOf(() => null)
     expect(await queryDeviceMedia(backend, { kind: 'video', limit: 10 })).toEqual({ items: [], truncated: false })

@@ -14,22 +14,17 @@ import { z } from 'zod'
  *
  * ## `script: null` is a fact, not a placeholder
  *
- * Instagram has a pack in this repo and no post flow (YouTube's arrived on
- * 2026-09-11, from a hardware walk). That is not an oversight to be filled in with plausible selectors: every
- * anchor in `tiktok-automation-pack/post-video` traces to a real accessibility
- * dump taken on real hardware (see its `__fixtures__/`), and the pack's own
- * comments are explicit that a selector nobody has observed is a selector that
- * fails silently on the one run that mattered. Writing `instagram/post-video`
- * from memory would produce a script that typechecks, tests green against
- * fixtures invented to match it, and does the wrong thing on a phone.
- *
- * So a platform with no verified flow says so, in the product, by name. The
- * router skips it and RECORDS why; the Posts table shows the reason in the row.
- * An operator learns "Instagram posting needs a hardware walk" from the farm
- * instead of from a run that quietly did nothing.
+ * Every platform here posts today: TikTok's flow, YouTube's (2026-09-11) and
+ * Instagram's (2026-09-14) each came from a hand walk on real hardware, with
+ * the screens checked into that pack's `__fixtures__/`. A selector nobody has
+ * observed is a selector that fails silently on the one run that mattered, so
+ * a platform added WITHOUT such a walk gets `script: null` and says so, in the
+ * product, by name. The router skips it and RECORDS why; the Posts table shows
+ * the reason in the row, instead of a run that quietly did nothing.
  *
  * The day someone captures those dumps and writes the member, this becomes a
- * one-line change and every post already stored starts routing to it.
+ * one-line change and every post already stored starts routing to it — which
+ * is exactly what happened to Instagram in 0.13.0.
  */
 
 export const PLATFORM_IDS = ['tiktok', 'instagram', 'youtube'] as const
@@ -67,7 +62,8 @@ export interface Platform {
   unsupportedReason: string | null
 }
 
-const HARDWARE_WALK_NEEDED =
+/** The reason a platform added without a hardware walk gives the operator. */
+export const HARDWARE_WALK_NEEDED =
   'No verified upload flow yet. The selectors for this app have never been captured on hardware, and inventing them would produce a run that reports success without posting.'
 
 export const PLATFORMS: readonly Platform[] = [
@@ -85,8 +81,11 @@ export const PLATFORMS: readonly Platform[] = [
     id: 'instagram',
     title: 'Instagram',
     label: 'instagram',
-    script: null,
-    unsupportedReason: HARDWARE_WALK_NEEDED,
+    // Walked by hand on the owner's moto on 2026-09-14, every screen in the
+    // instagram pack's `__fixtures__/`. It posts a Reel with the caption and
+    // confirms it by the profile's post count before saying `posted`.
+    script: 'instagram/post-video@latest',
+    unsupportedReason: null,
   },
   {
     id: 'youtube',

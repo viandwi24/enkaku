@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { denyAppPermissions, grantAppPermissions, parseRuntimePermissions } from './app-permissions'
+import { denyAppPermissions, grantAppPermissions, parseRuntimePermissions, readPackageCommand } from './app-permissions'
 
 /**
  * `app.grantPermissions` / `app.denyPermissions` against a fake package manager that STORES what
@@ -87,7 +87,7 @@ describe('grantAppPermissions', () => {
   test('nothing to write means no second read', async () => {
     const pm = fakePm({ perms: { 'android.permission.CAMERA': { granted: true, flags: [] } } })
     await grantAppPermissions(pm.exec, 'com.example.app', ['CAMERA'])
-    expect(pm.calls).toEqual(["dumpsys package 'com.example.app'"])
+    expect(pm.calls).toEqual([readPackageCommand('com.example.app')])
   })
 
   test('a grant the platform refuses is reported as failed with its own words, not as granted', async () => {
@@ -132,5 +132,16 @@ describe('denyAppPermissions', () => {
     const pm = fakePm({ perms: { 'android.permission.CAMERA': { granted: false, flags: [] } }, ignoreFlags: true })
     const [result] = await denyAppPermissions(pm.exec, 'com.example.app', ['CAMERA'])
     expect(result?.outcome).toBe('failed')
+  })
+})
+
+describe('readPackageCommand', () => {
+  test('filters on the device, so a package whose dumpsys exceeds the output cap still reads', () => {
+    // Instagram 446.0's full dumpsys is 296 KB on the owner's moto — over the 256 KB cap.
+    const cmd = readPackageCommand('com.instagram.android')
+    expect(cmd.startsWith("dumpsys package 'com.instagram.android' | grep -E ")).toBe(true)
+    expect(cmd).toContain('Package \\[')
+    expect(cmd).toContain('Unable to find package')
+    expect(cmd).toContain('granted=')
   })
 })

@@ -64,6 +64,23 @@ export function parseContentRow(line: string, columns: readonly string[]): Recor
   return out
 }
 
+/**
+ * `content` reports a refused query with EXIT 0 — so an exit code alone cannot tell a refused query
+ * from an empty one. Measured on the owner's moto g06 power (Android 15, 2026-09-14):
+ * `--sort 'date_added DESC LIMIT 6'` wrote "Error while accessing provider:media /
+ * java.lang.IllegalArgumentException: Invalid token LIMIT" to STDERR (which this backend does not
+ * keep), left stdout empty, and exited 0 — so `media.list` answered "no videos" for a phone holding
+ * a hundred and the no-LIMIT fallback below never ran. A real answer always carries either `Row:`
+ * lines or `No result found.`; anything else is a refusal. The exception text is also matched, for
+ * a build that prints it to stdout, anchored to line starts so a file name cannot trip it.
+ */
+export const PROVIDER_ERROR = /^(Error while accessing provider|java\.lang\.[A-Za-z.]*Exception)/m
+
+/** A `content query` output that is an answer: rows, or the explicit empty result — and no exception. */
+export function isQueryAnswer(stdout: string): boolean {
+  return !PROVIDER_ERROR.test(stdout) && (/^Row:/m.test(stdout) || NO_RESULT.test(stdout))
+}
+
 /** `content` prints this, not an empty string, when a query matches nothing. */
 const NO_RESULT = /^\s*No result found\.?\s*$/im
 
@@ -130,10 +147,10 @@ export async function queryDeviceMedia(
   const probe = args.limit + 1
 
   let res = await backend.exec(`${base} --sort ${shellQuote(`date_added DESC LIMIT ${probe}`)}`)
-  if (!res || res.exitCode !== 0) {
+  if (!res || res.exitCode !== 0 || !isQueryAnswer(res.stdout)) {
     res = await backend.exec(`${base} --sort ${shellQuote('date_added DESC')}`)
   }
-  if (!res || res.exitCode !== 0) return { items: [], truncated: false }
+  if (!res || res.exitCode !== 0 || !isQueryAnswer(res.stdout)) return { items: [], truncated: false }
 
   let items = parseContentQuery(res.stdout, columns)
     .map((r) => rowToMediaItem(r, args.kind))

@@ -1,0 +1,1151 @@
+{
+ "resourceId": "",
+ "text": "",
+ "desc": "",
+ "className": "hierarchy",
+ "packageName": "",
+ "bounds": {
+  "left": 0,
+  "top": 0,
+  "right": 0,
+  "bottom": 0
+ },
+ "clickable": false,
+ "enabled": true,
+ "focused": false,
+ "index": 0,
+ "children": [
+  {
+   "resourceId": "",
+   "text": "",
+   "desc": "",
+   "className": "android.widget.FrameLayout",
+   "packageName": "com.instagram.android",
+   "bounds": {
+    "left": 0,
+    "top": 0,
+    "right": 720,
+    "bottom": 1640
+   },
+   "clickable": false,
+   "enabled": true,
+   "focused": false,
+   "index": 0,
+   "children": [
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "",
+     "className": "android.widget.LinearLayout",
+     "packageName": "com.instagram.android",
+     "bounds": {
+      "left": 0,
+      "top": 0,
+      "right": 720,
+      "bottom": 1640
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "",
+       "className": "android.widget.FrameLayout",
+       "packageName": "com.instagram.android",
+       "bounds": {
+        "left": 0,
+        "top": 0,
+        "right": 720,
+        "bottom": 1640
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "com.instagram.android:id/action_bar_root",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.LinearLayout",
+         "packageName": "com.instagram.android",
+         "bounds": {
+          "left": 0,
+          "top": 0,
+          "right": 720,
+          "bottom": 1640
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": [
+          {
+           "resourceId": "android:id/content",
+           "text": "",
+           "desc": "",
+           "className": "android.widget.FrameLayout",
+           "packageName": "com.instagram.android",
+           "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 1640
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 0,
+           "children": [
+            {
+             "resourceId": "com.instagram.android:id/layout_container_parent",
+             "text": "",
+             "desc": "",
+             "className": "android.view.ViewGroup",
+             "packageName": "com.instagram.android",
+             "bounds": {
+              "left": 0,
+              "top": 0,
+              "right": 720,
+              "bottom": 1640
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 0,
+             "children": [
+              {
+               "resourceId": "com.instagram.android:id/layout_container_main",
+               "text": "",
+               "desc": "",
+               "className": "android.widget.FrameLayout",
+               "packageName": "com.instagram.android",
+               "bounds": {
+                "left": 0,
+                "top": 70,
+                "right": 720,
+                "bottom": 1556
+               },
+               "clickable": false,
+               "enabled": true,
+               "focused": false,
+               "index": 0,
+               "children": [
+                {
+                 "resourceId": "",
+                 "text": "",
+                 "desc": "",
+                 "className": "android.view.ViewGroup",
+                 "packageName": "com.instagram.android",
+                 "bounds": {
+                  "left": 0,
+                  "top": 168,
+                  "right": 720,
+                  "bottom": 1556
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 0,
+                 "children": [
+                  {
+                   "resourceId": "com.instagram.android:id/scroll_view",
+                   "text": "",
+                   "desc": "",
+                   "className": "android.widget.ScrollView",
+                   "packageName": "com.instagram.android",
+                   "bounds": {
+                    "left": 0,
+                    "top": 168,
+                    "right": 720,
+                    "bottom": 1418
+                   },
+                   "clickable": false,
+                   "enabled": true,
+                   "focused": false,
+                   "index": 0,
+                   "children": [
+                    {
+                     "resourceId": "com.instagram.android:id/content_view",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.widget.LinearLayout",
+                     "packageName": "com.instagram.android",
+                     "bounds": {
+                      "left": 0,
+                      "top": 168,
+                      "right": 720,
+                      "bottom": 1418
+                     },
+                     "clickable": true,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 0,
+                     "children": [
+                      {
+                       "resourceId": "",
+                       "text": "",
+                       "desc": "",
+                       "className": "androidx.compose.ui.platform.ComposeView",
+                       "packageName": "com.instagram.android",
+                       "bounds": {
+                        "left": 0,
+                        "top": 168,
+                        "right": 720,
+                        "bottom": 1418
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 0,
+                       "children": [
+                        {
+                         "resourceId": "",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.view.View",
+                         "packageName": "com.instagram.android",
+                         "bounds": {
+                          "left": 0,
+                          "top": 0,
+                          "right": 720,
+                          "bottom": 1425
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": [
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.view.View",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 28,
+                            "top": 705,
+                            "right": 692,
+                            "bottom": 839
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 5,
+                           "children": [
+                            {
+                             "resourceId": "",
+                             "text": "Tambahkan Label AI",
+                             "desc": "",
+                             "className": "android.widget.TextView",
+                             "packageName": "com.instagram.android",
+                             "bounds": {
+                              "left": 91,
+                              "top": 705,
+                              "right": 601,
+                              "bottom": 739
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": []
+                            },
+                            {
+                             "resourceId": "",
+                             "text": "Kami mewajibkan Anda melabeli konten realistis tertentu yang dibuat dengan AI. Pelajari selengkapnya",
+                             "desc": "",
+                             "className": "android.widget.TextView",
+                             "packageName": "com.instagram.android",
+                             "bounds": {
+                              "left": 91,
+                              "top": 746,
+                              "right": 573,
+                              "bottom": 839
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 1,
+                             "children": []
+                            },
+                            {
+                             "resourceId": "",
+                             "text": "",
+                             "desc": "Pelajari selengkapnya",
+                             "className": "android.widget.Button",
+                             "packageName": "com.instagram.android",
+                             "bounds": {
+                              "left": 91,
+                              "top": 782,
+                              "right": 335,
+                              "bottom": 866
+                             },
+                             "clickable": true,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 2,
+                             "children": []
+                            },
+                            {
+                             "resourceId": "",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.view.View",
+                             "packageName": "com.instagram.android",
+                             "bounds": {
+                              "left": 601,
+                              "top": 697,
+                              "right": 692,
+                              "bottom": 781
+                             },
+                             "clickable": true,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 3,
+                             "children": [
+                              {
+                               "resourceId": "",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.view.View",
+                               "packageName": "com.instagram.android",
+                               "bounds": {
+                                "left": 601,
+                                "top": 697,
+                                "right": 692,
+                                "bottom": 781
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": [
+                                {
+                                 "resourceId": "",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.view.View",
+                                 "packageName": "com.instagram.android",
+                                 "bounds": {
+                                  "left": 601,
+                                  "top": 711,
+                                  "right": 657,
+                                  "bottom": 767
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 0,
+                                 "children": []
+                                }
+                               ]
+                              },
+                              {
+                               "resourceId": "",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.view.View",
+                               "packageName": "com.instagram.android",
+                               "bounds": {
+                                "left": 601,
+                                "top": 711,
+                                "right": 692,
+                                "bottom": 767
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 1,
+                               "children": []
+                              }
+                             ]
+                            }
+                           ]
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.view.View",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 0,
+                            "top": 824,
+                            "right": 720,
+                            "bottom": 871
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 7,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.view.View",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 0,
+                            "top": 1294,
+                            "right": 720,
+                            "bottom": 1341
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 12,
+                           "children": []
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  },
+                  {
+                   "resourceId": "com.instagram.android:id/share_button_container",
+                   "text": "",
+                   "desc": "",
+                   "className": "android.widget.LinearLayout",
+                   "packageName": "com.instagram.android",
+                   "bounds": {
+                    "left": 0,
+                    "top": 1418,
+                    "right": 720,
+                    "bottom": 1556
+                   },
+                   "clickable": true,
+                   "enabled": true,
+                   "focused": false,
+                   "index": 1,
+                   "children": [
+                    {
+                     "resourceId": "com.instagram.android:id/footer_button_container",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.view.ViewGroup",
+                     "packageName": "com.instagram.android",
+                     "bounds": {
+                      "left": 0,
+                      "top": 1418,
+                      "right": 720,
+                      "bottom": 1556
+                     },
+                     "clickable": false,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 0,
+                     "children": [
+                      {
+                       "resourceId": "com.instagram.android:id/footer_button_divider",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.view.View",
+                       "packageName": "com.instagram.android",
+                       "bounds": {
+                        "left": 0,
+                        "top": 1418,
+                        "right": 720,
+                        "bottom": 1419
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 0,
+                       "children": []
+                      },
+                      {
+                       "resourceId": "com.instagram.android:id/save_draft_button",
+                       "text": "",
+                       "desc": "Simpan draf",
+                       "className": "android.widget.Button",
+                       "packageName": "com.instagram.android",
+                       "bounds": {
+                        "left": 28,
+                        "top": 1444,
+                        "right": 346,
+                        "bottom": 1521
+                       },
+                       "clickable": true,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 1,
+                       "children": [
+                        {
+                         "resourceId": "",
+                         "text": "Simpan draf",
+                         "desc": "",
+                         "className": "android.widget.TextView",
+                         "packageName": "com.instagram.android",
+                         "bounds": {
+                          "left": 116,
+                          "top": 1466,
+                          "right": 258,
+                          "bottom": 1498
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": []
+                        }
+                       ]
+                      },
+                      {
+                       "resourceId": "com.instagram.android:id/share_button",
+                       "text": "",
+                       "desc": "Selanjutnya",
+                       "className": "android.widget.Button",
+                       "packageName": "com.instagram.android",
+                       "bounds": {
+                        "left": 374,
+                        "top": 1444,
+                        "right": 692,
+                        "bottom": 1521
+                       },
+                       "clickable": true,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 2,
+                       "children": [
+                        {
+                         "resourceId": "",
+                         "text": "Selanjutnya",
+                         "desc": "",
+                         "className": "android.widget.TextView",
+                         "packageName": "com.instagram.android",
+                         "bounds": {
+                          "left": 462,
+                          "top": 1466,
+                          "right": 603,
+                          "bottom": 1498
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": []
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              },
+              {
+               "resourceId": "com.instagram.android:id/bottom_sheet_container",
+               "text": "",
+               "desc": "",
+               "className": "android.widget.FrameLayout",
+               "packageName": "com.instagram.android",
+               "bounds": {
+                "left": 0,
+                "top": 70,
+                "right": 720,
+                "bottom": 1556
+               },
+               "clickable": false,
+               "enabled": true,
+               "focused": false,
+               "index": 1,
+               "children": [
+                {
+                 "resourceId": "com.instagram.android:id/background_dimmer",
+                 "text": "",
+                 "desc": "@2131955684",
+                 "className": "android.widget.Button",
+                 "packageName": "com.instagram.android",
+                 "bounds": {
+                  "left": 0,
+                  "top": 70,
+                  "right": 720,
+                  "bottom": 1556
+                 },
+                 "clickable": true,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 0,
+                 "children": []
+                },
+                {
+                 "resourceId": "com.instagram.android:id/layout_container_bottom_sheet",
+                 "text": "",
+                 "desc": "",
+                 "className": "android.widget.FrameLayout",
+                 "packageName": "com.instagram.android",
+                 "bounds": {
+                  "left": 0,
+                  "top": 469,
+                  "right": 720,
+                  "bottom": 1556
+                 },
+                 "clickable": true,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 1,
+                 "children": [
+                  {
+                   "resourceId": "com.instagram.android:id/bottom_sheet_container",
+                   "text": "",
+                   "desc": "",
+                   "className": "android.view.ViewGroup",
+                   "packageName": "com.instagram.android",
+                   "bounds": {
+                    "left": 0,
+                    "top": 469,
+                    "right": 720,
+                    "bottom": 1556
+                   },
+                   "clickable": false,
+                   "enabled": true,
+                   "focused": false,
+                   "index": 0,
+                   "children": [
+                    {
+                     "resourceId": "com.instagram.android:id/bottom_sheet_drag_handle_frame",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.widget.FrameLayout",
+                     "packageName": "com.instagram.android",
+                     "bounds": {
+                      "left": 0,
+                      "top": 469,
+                      "right": 720,
+                      "bottom": 512
+                     },
+                     "clickable": false,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 0,
+                     "children": [
+                      {
+                       "resourceId": "com.instagram.android:id/bottom_sheet_drag_handle_prism",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.widget.ImageView",
+                       "packageName": "com.instagram.android",
+                       "bounds": {
+                        "left": 332,
+                        "top": 469,
+                        "right": 388,
+                        "bottom": 512
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 0,
+                       "children": []
+                      }
+                     ]
+                    },
+                    {
+                     "resourceId": "com.instagram.android:id/bottom_sheet_container_view",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.widget.FrameLayout",
+                     "packageName": "com.instagram.android",
+                     "bounds": {
+                      "left": 0,
+                      "top": 524,
+                      "right": 720,
+                      "bottom": 1556
+                     },
+                     "clickable": false,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 2,
+                     "children": [
+                      {
+                       "resourceId": "com.instagram.android:id/clips_nux_sheet_scroll_view",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.widget.ScrollView",
+                       "packageName": "com.instagram.android",
+                       "bounds": {
+                        "left": 0,
+                        "top": 524,
+                        "right": 720,
+                        "bottom": 1556
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 0,
+                       "children": [
+                        {
+                         "resourceId": "com.instagram.android:id/clips_nux_sheet_container",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.view.ViewGroup",
+                         "packageName": "com.instagram.android",
+                         "bounds": {
+                          "left": 0,
+                          "top": 524,
+                          "right": 720,
+                          "bottom": 1556
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": [
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_title",
+                           "text": "Tentang Reels",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 56,
+                            "top": 538,
+                            "right": 664,
+                            "bottom": 597
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_icon1",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 56,
+                            "top": 653,
+                            "right": 98,
+                            "bottom": 695
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 1,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_text1",
+                           "text": "Reel Anda akan dibagikan secara publik sehingga siapa pun bisa menemukan dan melihatnya.",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 140,
+                            "top": 639,
+                            "right": 664,
+                            "bottom": 729
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 2,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_icon2",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 56,
+                            "top": 785,
+                            "right": 98,
+                            "bottom": 827
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 3,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_text2",
+                           "text": "Karena akun Anda publik, siapa saja bisa membuat konten dengan audio asli Anda di Instagram, Facebook, dan aplikasi serta situs web Meta AI. Pelajari selengkapnya",
+                           "desc": "Karena akun Anda publik, siapa saja bisa membuat konten dengan audio asli Anda di Instagram, Facebook, dan aplikasi serta situs web Meta AI. Pelajari selengkapnya",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 140,
+                            "top": 771,
+                            "right": 664,
+                            "bottom": 889
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 4,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_icon3",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 56,
+                            "top": 945,
+                            "right": 98,
+                            "bottom": 987
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 5,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_text3",
+                           "text": "Siapa saja bisa menggunakan semua atau sebagian reel Anda dalam fitur, seperti remix, rangkaian, template, iklan dan stiker, serta mengunduh media Anda sebagai bagian dari reel atau cerita mereka.",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 140,
+                            "top": 931,
+                            "right": 664,
+                            "bottom": 1077
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 6,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_icon4",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 56,
+                            "top": 1133,
+                            "right": 98,
+                            "bottom": 1175
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 7,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_text4",
+                           "text": "Anda bisa menonaktifkan penggunaan ulang untuk setiap reel atau mengubah default untuk penggunaan ulang dan audio asli di pengaturan Anda.",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 140,
+                            "top": 1119,
+                            "right": 664,
+                            "bottom": 1237
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 8,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_learn_more",
+                           "text": "Pelajari selengkapnya tentang Reels.",
+                           "desc": "Pelajari selengkapnya tentang Reels di Pusat Bantuan",
+                           "className": "android.widget.Button",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 56,
+                            "top": 1279,
+                            "right": 664,
+                            "bottom": 1311
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 9,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_share_button",
+                           "text": "",
+                           "desc": "Bagikan",
+                           "className": "android.widget.Button",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 56,
+                            "top": 1367,
+                            "right": 664,
+                            "bottom": 1444
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 10,
+                           "children": [
+                            {
+                             "resourceId": "",
+                             "text": "Bagikan",
+                             "desc": "",
+                             "className": "android.widget.TextView",
+                             "packageName": "com.instagram.android",
+                             "bounds": {
+                              "left": 312,
+                              "top": 1389,
+                              "right": 408,
+                              "bottom": 1421
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": []
+                            }
+                           ]
+                          },
+                          {
+                           "resourceId": "com.instagram.android:id/clips_nux_sheet_cancel_button",
+                           "text": "",
+                           "desc": "Batal",
+                           "className": "android.widget.FrameLayout",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 56,
+                            "top": 1451,
+                            "right": 664,
+                            "bottom": 1528
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 11,
+                           "children": [
+                            {
+                             "resourceId": "",
+                             "text": "Batal",
+                             "desc": "",
+                             "className": "android.widget.TextView",
+                             "packageName": "com.instagram.android",
+                             "bounds": {
+                              "left": 329,
+                              "top": 1473,
+                              "right": 390,
+                              "bottom": 1505
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": []
+                            }
+                           ]
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              },
+              {
+               "resourceId": "com.instagram.android:id/action_bar_container",
+               "text": "",
+               "desc": "",
+               "className": "android.widget.FrameLayout",
+               "packageName": "com.instagram.android",
+               "bounds": {
+                "left": 0,
+                "top": 70,
+                "right": 720,
+                "bottom": 168
+               },
+               "clickable": false,
+               "enabled": true,
+               "focused": false,
+               "index": 2,
+               "children": [
+                {
+                 "resourceId": "com.instagram.android:id/action_bar_wrapper",
+                 "text": "",
+                 "desc": "",
+                 "className": "android.widget.FrameLayout",
+                 "packageName": "com.instagram.android",
+                 "bounds": {
+                  "left": 0,
+                  "top": 70,
+                  "right": 720,
+                  "bottom": 168
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 0,
+                 "children": [
+                  {
+                   "resourceId": "com.instagram.android:id/action_bar",
+                   "text": "",
+                   "desc": "",
+                   "className": "android.widget.LinearLayout",
+                   "packageName": "com.instagram.android",
+                   "bounds": {
+                    "left": 0,
+                    "top": 70,
+                    "right": 720,
+                    "bottom": 168
+                   },
+                   "clickable": true,
+                   "enabled": true,
+                   "focused": false,
+                   "index": 0,
+                   "children": [
+                    {
+                     "resourceId": "com.instagram.android:id/action_bar_new_title_container",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.widget.LinearLayout",
+                     "packageName": "com.instagram.android",
+                     "bounds": {
+                      "left": 0,
+                      "top": 70,
+                      "right": 671,
+                      "bottom": 168
+                     },
+                     "clickable": true,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 0,
+                     "children": [
+                      {
+                       "resourceId": "com.instagram.android:id/action_bar_button_back",
+                       "text": "",
+                       "desc": "Kembali",
+                       "className": "android.widget.ImageView",
+                       "packageName": "com.instagram.android",
+                       "bounds": {
+                        "left": 0,
+                        "top": 70,
+                        "right": 98,
+                        "bottom": 168
+                       },
+                       "clickable": true,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 0,
+                       "children": []
+                      },
+                      {
+                       "resourceId": "",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.widget.LinearLayout",
+                       "packageName": "com.instagram.android",
+                       "bounds": {
+                        "left": 98,
+                        "top": 98,
+                        "right": 304,
+                        "bottom": 139
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 1,
+                       "children": [
+                        {
+                         "resourceId": "com.instagram.android:id/action_bar_title_and_icons",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.widget.LinearLayout",
+                         "packageName": "com.instagram.android",
+                         "bounds": {
+                          "left": 98,
+                          "top": 98,
+                          "right": 304,
+                          "bottom": 139
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": [
+                          {
+                           "resourceId": "com.instagram.android:id/action_bar_title",
+                           "text": "Reel baru",
+                           "desc": "Reel baru",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.instagram.android",
+                           "bounds": {
+                            "left": 126,
+                            "top": 98,
+                            "right": 283,
+                            "bottom": 139
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": []
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            },
+            {
+             "resourceId": "",
+             "text": "",
+             "desc": "",
+             "className": "android.view.View",
+             "packageName": "com.instagram.android",
+             "bounds": {
+              "left": 0,
+              "top": 0,
+              "right": 720,
+              "bottom": 70
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 1,
+             "children": []
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

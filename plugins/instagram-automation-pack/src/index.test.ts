@@ -5,6 +5,10 @@ import checkInbox from './check-inbox'
 import checkActivity from './check-activity'
 import checkProfile from './check-profile'
 import searchKeyword from './search-keyword'
+import scrollFeed from './scroll-feed'
+import watchStories from './watch-stories'
+import exploreReels from './explore-reels'
+import postVideo from './post-video'
 import { keywordBoost } from './behavior'
 
 describe('instagram-automation-pack manifest', () => {
@@ -16,13 +20,13 @@ describe('instagram-automation-pack manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.2.0')
+    expect(plugin.version).toBe('0.3.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
   test('every script has a unique id and declares params and result schemas', () => {
     const ids = plugin.scripts.map((s) => s.id)
-    expect(ids).toEqual(['scroll-reels', 'check-inbox', 'check-activity', 'check-profile', 'search-keyword'])
+    expect(ids).toEqual(['scroll-reels', 'check-inbox', 'check-activity', 'check-profile', 'search-keyword', 'scroll-feed', 'watch-stories', 'explore-reels', 'post-video'])
     expect(new Set(ids).size).toBe(ids.length)
     for (const script of plugin.scripts) {
       expect(script.params).toBeDefined()
@@ -31,12 +35,18 @@ describe('instagram-automation-pack manifest', () => {
   })
 
   test('every member is presentable in Studio', () => {
-    const members = [scrollReels, checkInbox, checkActivity, checkProfile, searchKeyword]
+    const members = [scrollReels, checkInbox, checkActivity, checkProfile, searchKeyword, scrollFeed, watchStories, exploreReels, postVideo]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect((member.title ?? '').length).toBeGreaterThan(0)
       expect((member.description ?? '').length).toBeGreaterThan(0)
+      expect(member.icon).toBeDefined()
     }
+  })
+
+  test('post-video accepts exactly what the Social Media Manager sends', () => {
+    const parsed = postVideo.params.parse({ source: 'direct', videoArtifactId: 'a1', caption: 'hello #test' })
+    expect(parsed).toEqual({ source: 'direct', videoArtifactId: 'a1', caption: 'hello #test', dryRun: false })
   })
 })
 

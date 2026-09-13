@@ -126,27 +126,22 @@ describe('planDispatch — the routing rules', () => {
     expect(plan.states.tiktok).toBeUndefined()
   })
 
-  test('a platform with no verified flow is marked unsupported once, with its own reason', () => {
+  test('Instagram routes to its own post member, to the phones carrying its label', () => {
     const p = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'pending', at: null, deviceCount: 0, attempts: [], history: [], note: null, summary: null } } })
     const plan = planDispatch({ post: p, devices: [device({ id: 'd1', labels: [{ name: 'instagram' }] })], now: NOW, maxDevicesPerPlatform: 5 })
-    expect(plan.dispatches).toEqual([])
-    expect(plan.states.instagram?.state).toBe('unsupported')
-    expect(plan.states.instagram?.note).toContain('No verified upload flow')
-    // Named at post level too, so the operator reads it in the table without
-    // opening anything.
-    expect(plan.note).toContain('Instagram')
+    expect(plan.dispatches).toEqual([{ platform: 'instagram', script: 'instagram/post-video@latest', deviceId: 'd1', stableId: 'stable-d1' }])
+    expect(plan.states.instagram?.state).toBe('dispatched')
   })
 
-  test('an unsupported platform is not REWRITTEN every tick, but still keeps saying why', () => {
-    const settled = post({
+  test('a post an older build stored as Instagram "unsupported" is not settled — it routes once Instagram can post', () => {
+    // 0.13.0's changelog says so to the operator; this is what makes it true.
+    const stored = post({
       platforms: ['instagram'],
       dispatch: { instagram: { state: 'unsupported', at: NOW - 999, deviceCount: 0, attempts: [], history: [], note: 'x', summary: null } },
     })
-    const plan = planDispatch({ post: settled, devices: [], now: NOW, maxDevicesPerPlatform: 5 })
-    // No state write — an unchanged row must not bump `updatedAt` forever and
-    // make the table look permanently busy.
-    expect(plan.states.instagram).toBeUndefined()
-    expect(plan.note).toContain('No verified upload flow')
+    expect(planDispatch({ post: stored, devices: [], now: NOW, maxDevicesPerPlatform: 5 }).states.instagram?.state).toBe('pending')
+    const plan = planDispatch({ post: stored, devices: [device({ id: 'd1', labels: [{ name: 'instagram' }] })], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches.map((d) => d.script)).toEqual(['instagram/post-video@latest'])
   })
 
   test('the per-tick cap bounds the blast radius, and says that it did', () => {
@@ -186,8 +181,9 @@ describe('planDispatch — the routing rules', () => {
     const p = post({ platforms: ['tiktok', 'instagram'], dispatch: {} })
     const devices = [device({ id: 'd1' }), device({ id: 'd2', labels: [{ name: 'instagram' }] })]
     const plan = planDispatch({ post: p, devices, now: NOW, maxDevicesPerPlatform: 5 })
-    expect(plan.dispatches.map((d) => d.platform)).toEqual(['tiktok'])
-    expect(plan.states.instagram?.state).toBe('unsupported')
+    expect(plan.dispatches.map((d) => `${d.platform}:${d.deviceId}`)).toEqual(['tiktok:d1', 'instagram:d2'])
+    expect(plan.states.tiktok?.state).toBe('dispatched')
+    expect(plan.states.instagram?.state).toBe('dispatched')
   })
 })
 
