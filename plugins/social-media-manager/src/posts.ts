@@ -99,6 +99,24 @@ export type AttemptState = (typeof ATTEMPT_STATES)[number]
  * be answered at all. `deviceId` is stored beside it so a retry can target the
  * same phones without re-deriving them from a fleet that has moved on.
  */
+/** How many replaced attempts a platform keeps. Enough to see a pattern of failures; not a log. */
+export const HISTORY_LIMIT = 20
+
+/**
+ * Move replaced attempts into history, keeping the newest `HISTORY_LIMIT`. The one writer of
+ * `history`, used by both retry members so they cannot disagree about order or cap.
+ */
+export function withRetired(history: readonly Attempt[], retired: readonly Attempt[]): Attempt[] {
+  return [...history, ...retired].slice(-HISTORY_LIMIT)
+}
+
+/** The round the next attempt on this platform is: one past everything it has already tried. */
+export function nextRound(state: { attempts: readonly Attempt[]; history: readonly Attempt[] }): number {
+  let max = 0
+  for (const a of [...state.history, ...state.attempts]) if (a.round > max) max = a.round
+  return max + 1
+}
+
 export const AttemptSchema = z
   .object({
     jobId: z.string().min(1),
@@ -124,6 +142,17 @@ export const AttemptSchema = z
     state: z.enum(ATTEMPT_STATES),
     /** The job's own error, when it failed. Truncated — the full text is on the job itself. */
     error: z.string().max(300).nullable(),
+    /**
+     * Unix seconds the job was enqueued (0.12.0). With `settledAt` and `round` this is what lets
+     * the session page answer the owner's three questions from the production farm: which ones are
+     * running NOW, how far along it is, and whether an error on screen is from this run or an
+     * earlier one. `null` on an attempt recorded before these fields existed.
+     */
+    at: z.number().int().nonnegative().nullable().default(null),
+    /** Unix seconds the job reached an outcome; `null` while it is queued or running. */
+    settledAt: z.number().int().nonnegative().nullable().default(null),
+    /** 1 for the first send on this platform, 2 for the first retry, and so on. */
+    round: z.number().int().positive().default(1),
   })
   .strict()
 export type Attempt = z.infer<typeof AttemptSchema>
@@ -143,6 +172,16 @@ export const PlatformStateSchema = z
      * no failures to retry, which is the truth about them.
      */
     attempts: z.array(AttemptSchema).default([]),
+    /**
+     * Earlier attempts a retry REPLACED, oldest first (0.12.0).
+     *
+     * A retry used to delete the failed attempts it replaced, so the page could not say whether a
+     * red line was this run's or the last one's — and after a second failure nobody could see the
+     * first. They are kept here instead, OUTSIDE `attempts`, so nothing that decides dispatch reads
+     * them: `rollUp`, `failedDevices` and the router still see only the current attempts, exactly as
+     * before. Capped, because a row retried every hour would otherwise grow without bound.
+     */
+    history: z.array(AttemptSchema).max(HISTORY_LIMIT).default([]),
     /** Why it is in this state, shown verbatim in the Posts table. Null when there is nothing to explain. */
     note: z.string().max(500).nullable(),
     /**
@@ -285,7 +324,7 @@ export function withDeviceNames(state: PlatformState, names: ReadonlyMap<string,
   return changed ? { ...state, attempts: next } : state
 }
 
-export const PENDING_STATE: PlatformState = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], note: null, summary: null })
+export const PENDING_STATE: PlatformState = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], history: [], note: null, summary: null })
 
 /**
  * A stored post. `.strict()` and an explicit `version`, so a row written by a
@@ -360,6 +399,21 @@ export const PostSchema = z
      * groups existed meant.
      */
     maxDevices: z.number().int().positive().max(500).nullable().default(null),
+  /**
+   * The ONE phone this video belongs to, for every platform, for the life of its session (0.12.0).
+   *
+   * "One video per phone" used to mean only that each video went to one phone — the phone was
+   * whichever labelled phone happened to be free when the video's turn came. So a phone that had
+   * already posted one video took the next, and a retried video landed on a phone that had posted
+   * a different one: on the owner's production farm (2026-09-14) #21 SM-A075F ended up with three
+   * videos of a five-video session. The owner's expectation is the right rule — the pairing is
+   * decided once, when the spread is drawn, and a retry goes back to the same phone.
+   *
+   * Written by `add-group` when the session is created over a known phone pool, or once by the
+   * router for a row created before this field existed (`groups.ts` `pickAssignment`). `null` for
+   * ungrouped posts and for `every-phone` sessions, which keep their fan-out.
+   */
+  assignedDeviceId: z.string().min(1).nullable().default(null),
     /**
      * Per-platform state, keyed by platform id. Seeded `pending` for every
      * targeted platform by `newPost`, so the Posts table can tell "not
@@ -591,7 +645,7 @@ export function planDispatch(input: {
     if (!platform) {
       // A platform id stored by some other build. Recorded, never guessed at.
       const note = `This build does not know a platform called "${platformId}".`
-      plan.states[platformId] = withSummary({ state: 'unsupported', at: now, deviceCount: 0, attempts: [], note, summary: null })
+      plan.states[platformId] = withSummary({ state: 'unsupported', at: now, deviceCount: 0, attempts: [], history: current.history, note, summary: null })
       noteOnce(note)
       continue
     }
@@ -601,7 +655,7 @@ export function planDispatch(input: {
       // tick would bump `updatedAt` on the row forever and make the Posts table
       // look permanently busy.
       if (current.state !== 'unsupported') {
-        plan.states[platformId] = withSummary({ state: 'unsupported', at: now, deviceCount: 0, attempts: [], note: platform.unsupportedReason, summary: null })
+        plan.states[platformId] = withSummary({ state: 'unsupported', at: now, deviceCount: 0, attempts: [], history: current.history, note: platform.unsupportedReason, summary: null })
       }
       // Noted every tick even when the STATE is unchanged: the state is
       // written once and the note is what the operator actually reads, so a
@@ -631,11 +685,16 @@ export function planDispatch(input: {
       it" (0.4.x). It is widened here on purpose, and only for rows that name
       their phones.
     */
-    const explicit = post.deviceIds.length > 0
-    const allowed = explicit ? devices.filter((d) => post.deviceIds.includes(d.id)) : devices
+    const assigned = post.assignedDeviceId
+    const explicit = assigned !== null || post.deviceIds.length > 0
+    const allowed = assigned !== null ? devices.filter((d) => d.id === assigned) : explicit ? devices.filter((d) => post.deviceIds.includes(d.id)) : devices
     const eligible = allowed.filter((d) => isDeviceFree(d) && (explicit || deviceCarriesPlatform(d.labels, platform)))
     if (eligible.length === 0) {
-      const note = explicit
+      const note = assigned !== null
+        ? allowed.length === 0
+          ? `This video's phone is not connected to the farm any more. It waits for that phone — it is never sent to another one.`
+          : `Waiting for this video's phone, which is offline or busy.`
+        : explicit
         ? allowed.length === 0
           ? `None of the phones chosen for this post is connected to the farm any more. Reconnect one, or choose other phones.`
           : `Every phone chosen for this post is offline or busy. Waiting.`
@@ -646,7 +705,7 @@ export function planDispatch(input: {
       // "you have not labelled anything" from "they are all busy", which is the
       // difference between a setup mistake and a normal, self-resolving wait.
       if (current.state !== 'pending' || current.note !== note) {
-        plan.states[platformId] = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], note, summary: null })
+        plan.states[platformId] = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], history: current.history, note, summary: null })
       }
       noteOnce(note)
       continue
@@ -675,7 +734,7 @@ export function planDispatch(input: {
       caller (`withSummary`, once the attempts are in): a line naming the
       phones cannot be written before it is known which phones took the job.
     */
-    plan.states[platformId] = { state: 'dispatched', at: now, deviceCount: chosen.length, attempts: [], note: capped, summary: null }
+    plan.states[platformId] = { state: 'dispatched', at: now, deviceCount: chosen.length, attempts: [], history: current.history, note: capped, summary: null }
     if (capped !== null) noteOnce(capped)
   }
 
@@ -709,6 +768,151 @@ export function newPost(input: { videoArtifactId: string; caption: string; platf
     groupId: null,
     notBeforeAt: null,
     maxDevices: null,
+    assignedDeviceId: null,
     lastNote: null,
   }
+}
+
+/** What `pickAssignment` needs to know about the fleet. */
+export interface AssignableDevice {
+  id: string
+  labels: readonly { name: string }[]
+}
+
+/**
+ * Bind a one-video-per-phone row that has no phone yet to exactly one phone (0.12.0).
+ *
+ * New sessions are paired when they are created (`add-group`). This is the other half: a row
+ * created before pairing existed — the owner's production session among them — gets its phone
+ * ONCE, from the router, and keeps it. The rules, in order:
+ *
+ * 1. **Where it already ran.** A row that has attempts (current or replaced) goes back to the phone
+ *    of its EARLIEST attempt, so a retry continues on the account it started on — unless another
+ *    row of the session already owns that phone, which is exactly the "three videos on #21" case;
+ *    then rule 2 applies.
+ * 2. **A phone nobody in the session owns.** From the row's own chosen phones (or, when it named
+ *    none, every phone carrying one of its platforms' labels), the first that no other row of the
+ *    session owns. Sorted by id, so the answer is the same on every tick and every core.
+ * 3. **None left.** No phone, and a sentence saying so. The row is not sent — never doubled up.
+ *
+ * "Owns" is decided by the CALLER from the whole session: a row's assigned phone, and the phones of
+ * its attempts that posted, could not be confirmed, or are still running. A phone where another row
+ * only FAILED is not owned by it — nothing landed on that account.
+ */
+export function pickAssignment(input: {
+  post: Pick<Post, 'deviceIds' | 'platforms' | 'dispatch'>
+  /** Phones owned by OTHER rows of the same session. */
+  ownedByOthers: ReadonlySet<string>
+  fleet: readonly AssignableDevice[]
+  /** How many rows and phones the session has, for the sentence when none is left. */
+  sessionVideos: number
+}): { deviceId: string | null; reason: string | null } {
+  const { post, ownedByOthers, fleet } = input
+  const tried = post.platforms
+    .flatMap((id) => {
+      const state = post.dispatch[id]
+      return state ? [...(state.history ?? []), ...(state.attempts ?? [])] : []
+    })
+    .sort((a, b) => (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER))
+  const first = tried[0]?.deviceId
+  if (first !== undefined && !ownedByOthers.has(first)) return { deviceId: first, reason: null }
+
+  const pool =
+    post.deviceIds.length > 0
+      ? [...new Set(post.deviceIds)]
+      : fleet
+          .filter((d) => post.platforms.some((id) => {
+            const platform = platformById(id)
+            return platform !== null && deviceCarriesPlatform(d.labels, platform)
+          }))
+          .map((d) => d.id)
+  const free = pool.filter((id) => !ownedByOthers.has(id)).sort()
+  if (free.length > 0) return { deviceId: free[0] as string, reason: null }
+  return {
+    deviceId: null,
+    reason: `No phone is left for this video: this session has ${input.sessionVideos} videos and ${pool.length} phone${pool.length === 1 ? '' : 's'}, and every phone already has a video. It is not sent to a phone that has one — add a phone to the session, or remove a video.`,
+  }
+}
+
+/** What an operator may change about a video after its session was created (0.12.0). */
+export interface PostEdit {
+  assignedDeviceId?: string
+  platforms?: PlatformId[]
+  caption?: string
+}
+
+export type PostEditOutcome = { ok: true; post: Post; changed: string[]; warnings: string[] } | { ok: false; code: 'E_PARAMS_INVALID'; message: string }
+
+/**
+ * Apply an operator's edit to one video of a session — or refuse it, by name.
+ *
+ * The owner's words: a video that has gone into a session must still be editable — its phone, its
+ * platforms — so that a retry uses the new choice. Pure, so the rules below are pinned by tests and
+ * the member that stores the result (`update-post`) has nothing to decide.
+ *
+ * Two situations WARN rather than refuse — the owner's call: an operator may genuinely mean to
+ * re-upload, or to put a second video on a phone, and a hard block would stop a deliberate choice.
+ *
+ * - **While it is uploading.** A current attempt still `queued` means a phone is mid-upload. The
+ *   running job keeps the parameters it started with; the edit applies to the next attempt. Said.
+ * - **A phone another video has.** The new phone is owned by another video of the same session —
+ *   its assigned phone, or the phone of an attempt of it that did not fail. Allowed, and the warning
+ *   names that video, because both will now post from that phone.
+ * - **What posted stays posted.** Nothing about an existing platform's record is rewritten. A new
+ *   platform is seeded waiting, and goes out at the video's next turn; a removed platform keeps its
+ *   record and is simply no longer sent. Failed attempts are NOT re-sent by an edit — that is still
+ *   the operator's explicit Retry, which now goes to the new phone.
+ */
+export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: readonly Post[] }): PostEditOutcome {
+  const { post, edit } = input
+  const warnings: string[] = []
+  const running = post.platforms.flatMap((id) => (post.dispatch[id]?.attempts ?? []).filter((a) => a.state === 'queued'))
+  if (running.length > 0) {
+    const phone = attemptPhone(running[0] as Attempt)
+    warnings.push(`This video is uploading on ${phone} right now. That upload continues as it started; this change applies to the next attempt.`)
+  }
+
+  let next: Post = post
+  const changed: string[] = []
+
+  if (edit.assignedDeviceId !== undefined && edit.assignedDeviceId !== post.assignedDeviceId) {
+    if (post.groupId === null || post.maxDevices !== 1) {
+      return { ok: false, code: 'E_PARAMS_INVALID', message: 'Only a video in a one-video-per-phone session has a phone of its own to change.' }
+    }
+    const wanted = edit.assignedDeviceId
+    const owner = input.sessionRows.find(
+      (row) =>
+        row.videoArtifactId !== post.videoArtifactId &&
+        row.groupId === post.groupId &&
+        (row.assignedDeviceId === wanted || row.platforms.some((id) => (row.dispatch[id]?.attempts ?? []).some((a) => a.deviceId === wanted && a.state !== 'failed'))),
+    )
+    if (owner) {
+      const label = owner.caption.length > 40 ? `${owner.caption.slice(0, 40)}…` : owner.caption
+      warnings.push(`That phone already has another video of this session ("${label}"). Both videos will post from it.`)
+    }
+    next = { ...next, assignedDeviceId: wanted }
+    changed.push('phone')
+  }
+
+  if (edit.platforms !== undefined) {
+    const platforms = PLATFORM_IDS.filter((id) => edit.platforms?.includes(id))
+    if (platforms.length === 0) return { ok: false, code: 'E_PARAMS_INVALID', message: 'A video needs at least one platform.' }
+    if (platforms.join(',') !== post.platforms.join(',')) {
+      const dispatch: Post['dispatch'] = { ...next.dispatch }
+      for (const id of platforms) if (!dispatch[id]) dispatch[id] = { ...PENDING_STATE }
+      next = { ...next, platforms, dispatch }
+      changed.push('platforms')
+    }
+  }
+
+  if (edit.caption !== undefined) {
+    const caption = edit.caption.trim()
+    if (caption.length === 0 || caption.length > 2_200) return { ok: false, code: 'E_PARAMS_INVALID', message: 'A caption must be between 1 and 2200 characters.' }
+    if (caption !== post.caption) {
+      next = { ...next, caption }
+      changed.push('caption')
+    }
+  }
+
+  return { ok: true, post: next, changed, warnings }
 }

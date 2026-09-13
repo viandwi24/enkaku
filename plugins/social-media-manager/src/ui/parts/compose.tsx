@@ -326,7 +326,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
   }, [phoneMode, fleet, chosenLabels, chosenDevices])
 
   /*
-    The router's own rule (\`posts.ts\` \`planDispatch\`): phones the operator
+    The router's own rule (`posts.ts` `planDispatch`): phones the operator
     CHOSE are eligible for the chosen platforms as they are; only the default
     mode, where nothing is chosen, lets the platform label pick the fleet. A
     count that applied the label to a chosen pool would promise nothing and
@@ -349,7 +349,16 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
    * silently drop a phone the operator labels an hour from now, and this list
    * is stored on the row for as long as the session lives.
    */
-  const deviceIds = useMemo(() => (phoneMode === 'labelled' ? [] : pool.map((d) => d.id)), [phoneMode, pool])
+  /*
+    One video per phone sends the RESOLVED phones in every mode (0.12.0), so `add-group` can pair
+    each video with a phone when the session is created — the pairing the owner expects to be fixed
+    from the moment the spread is drawn. Every-phone sessions keep the older meaning: empty = any
+    phone carrying the platform's label.
+  */
+  const deviceIds = useMemo(
+    () => (assignment === 'one-per-phone' ? resolved.map((d) => d.id) : phoneMode === 'labelled' ? [] : pool.map((d) => d.id)),
+    [assignment, resolved, phoneMode, pool],
+  )
 
   // --- videos ---------------------------------------------------------------
   const chosenVideos = useMemo(() => allVideos.filter((v) => selected.has(v.id)), [allVideos, selected])
@@ -429,8 +438,9 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
       )
     }
     if (assignment === 'one-per-phone' && resolved.length > 0 && chosenIds.length > resolved.length) {
+      const extra = chosenIds.length - resolved.length
       out.push(
-        `${chosenIds.length} videos over ${resolved.length} phone${resolved.length === 1 ? '' : 's'}: with one video per phone the extra turns wait for a phone to come free rather than doubling up.`,
+        `${chosenIds.length} videos but ${resolved.length} phone${resolved.length === 1 ? '' : 's'}: each phone gets exactly one video, so ${extra} video${extra === 1 ? ' gets' : 's get'} no phone and will not be sent. Add phones or pick fewer videos.`,
       )
     }
     return out

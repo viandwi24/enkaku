@@ -6,6 +6,7 @@ import addPosts from './add-posts'
 import addGroup from './add-group'
 import startGroup from './start-group'
 import retryGroup from './retry-group'
+import updatePost from './update-post'
 import { warmupRotation } from './workflows/warmup-rotation'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
 import retryFailed from './retry-failed'
@@ -18,6 +19,8 @@ import {
   postSummary,
   refreshPost,
   rollUp,
+  nextRound,
+  pickAssignment,
   stateFor,
   withSummary,
   type Attempt,
@@ -58,6 +61,32 @@ import {
  * writing those selectors from memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.12.0 — one video, one phone; and a session page that says what is
+ *   happening now.** Two production findings (2026-09-14):
+ *
+ *   1. "One video per phone" only meant each video went to one phone — WHICH
+ *      phone was whoever was free when the video's turn came. A five-video,
+ *      five-phone session put three videos on #21, and a retry sent a video to
+ *      a phone that had already posted another. Now each video is bound to
+ *      exactly one phone (`Post.assignedDeviceId`): paired randomly when the
+ *      session is created (`add-group`), or once by the router for a row made
+ *      before pairing existed (`pickAssignment` — back to where it first ran
+ *      unless another video owns that phone, otherwise a phone nobody in the
+ *      session owns). Every platform and every retry of that video goes to that
+ *      phone. A video with no phone left is held with a sentence, never doubled
+ *      up. The compose page says so up front instead of promising the extra
+ *      videos would "wait for a phone to come free".
+ *   2. The owner could not tell what was running, how far it had got, or
+ *      whether an error was this run's or an earlier one. Attempts now record
+ *      when they were sent and settled and which round they are, and a retry
+ *      moves the failures it replaces into `history` instead of deleting them.
+ *      The session page is a table built on those facts.
+ *   3. A video already in a session can be edited — its phone, platforms and
+ *      caption — through the new `update-post` member (rules in `posts.ts`
+ *      `applyPostEdit`): refused while it is uploading or when the phone
+ *      belongs to another video; what posted stays posted; the next attempt,
+ *      or the operator's Retry failed, uses the new choice.
  *
  * - **0.11.0 — phones you choose are phones that post.** A session over phones
  *   chosen on the Social posts page (by name, or by a label such as "test 5")
@@ -413,10 +442,10 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
           settled.push(attempt)
           continue
         }
-        settled.push({ ...attempt, ...next })
+        settled.push({ ...attempt, ...next, settledAt: Math.floor(Date.now() / 1000) })
         moved = true
       } catch (err) {
-        settled.push({ ...attempt, state: 'failed', error: `the farm no longer has this job: ${messageOf(err)}`.slice(0, 300) })
+        settled.push({ ...attempt, state: 'failed', error: `the farm no longer has this job: ${messageOf(err)}`.slice(0, 300), settledAt: Math.floor(Date.now() / 1000) })
         moved = true
       }
     }
@@ -556,12 +585,30 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   */
   const groups = await readGroups(ctx)
   const groupStates = new Map<string, RowState[]>()
+  /** groupId → deviceId → the row key that owns that phone. */
+  const ownersByGroup = new Map<string, Map<string, string>>()
+  const rowsByGroup = new Map<string, number>()
   for (const entry of listed.items) {
     const parsed = PostSchema.safeParse(entry.value)
     if (!parsed.success || parsed.data.groupId === null) continue
     const states = groupStates.get(parsed.data.groupId) ?? []
     for (const id of parsed.data.platforms) states.push((parsed.data.dispatch[id]?.state ?? 'pending') as RowState)
     groupStates.set(parsed.data.groupId, states)
+    /*
+      Which phone each row of the session OWNS (0.12.0): its assigned phone, and the phones of its
+      attempts that posted, could not be confirmed, or are still running. `pickAssignment` reads
+      this so a row without a phone never takes one another row already has.
+    */
+    const owned = ownersByGroup.get(parsed.data.groupId) ?? new Map<string, string>()
+    const claim = (deviceId: string): void => {
+      if (!owned.has(deviceId)) owned.set(deviceId, entry.key)
+    }
+    if (parsed.data.assignedDeviceId !== null) claim(parsed.data.assignedDeviceId)
+    for (const id of parsed.data.platforms) {
+      for (const a of parsed.data.dispatch[id]?.attempts ?? []) if (a.state !== 'failed') claim(a.deviceId)
+    }
+    ownersByGroup.set(parsed.data.groupId, owned)
+    rowsByGroup.set(parsed.data.groupId, (rowsByGroup.get(parsed.data.groupId) ?? 0) + 1)
   }
   /** Room left per group this tick, decremented as rows are sent so one tick cannot exceed the cap. */
   const room = new Map<string, number>()
@@ -661,6 +708,42 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     }
 
     /*
+      One video, one phone (0.12.0). A one-per-phone row without a phone gets one here, ONCE, and
+      is written straight back so every later tick — and every retry — goes to the same phone.
+      With none left it is held with a sentence, and never sent to a phone another video owns.
+    */
+    if (post.groupId !== null && post.maxDevices === 1 && post.assignedDeviceId === null) {
+      const owned = ownersByGroup.get(post.groupId) ?? new Map<string, string>()
+      const ownedByOthers = new Set([...owned].filter(([, key]) => key !== entry.key).map(([deviceId]) => deviceId))
+      const pick = pickAssignment({ post, ownedByOthers, fleet: fleet.items, sessionVideos: rowsByGroup.get(post.groupId) ?? 1 })
+      if (pick.deviceId !== null) {
+        const bound: Post = { ...post, assignedDeviceId: pick.deviceId }
+        const written = await ctx.storage.global.setIfVersion(entry.key, bound, entry.version)
+        if (!written) continue
+        entry.version += 1
+        post = bound
+        owned.set(pick.deviceId, entry.key)
+        ownersByGroup.set(post.groupId as string, owned)
+        ctx.log.info('bound a video to its phone', { key: entry.key, device: pick.deviceId })
+      } else {
+        const reason = pick.reason as string
+        const dispatch: Post['dispatch'] = { ...post.dispatch }
+        let changed = false
+        for (const id of post.platforms) {
+          const state = stateFor(post, id)
+          if (state.state !== 'pending' || state.note === reason) continue
+          dispatch[id] = withSummary({ ...state, note: reason })
+          changed = true
+        }
+        if (changed) {
+          const written = await ctx.storage.global.setIfVersion(entry.key, { ...post, dispatch }, entry.version)
+          if (written) entry.version += 1
+        }
+        continue
+      }
+    }
+
+    /*
       A group row waits for two things before it may send: its own turn
       (`notBeforeAt`, stamped by Start) and room under the group's "how many
       at once". Both are skips, not states — a row whose turn has not come is
@@ -712,6 +795,9 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
           deviceName: names.get(dispatch.deviceId) ?? null,
           state: 'queued',
           error: null,
+          at: nowSec,
+          settledAt: null,
+          round: nextRound(stateFor(post, dispatch.platform)),
         })
       } catch (err) {
         // One phone's refusal never stops the rest — the same posture the
@@ -807,11 +893,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.11.0',
+  version: '0.12.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok and YouTube post today; Instagram is declared and has no verified upload flow yet.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator

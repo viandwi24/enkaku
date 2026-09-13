@@ -1,7 +1,7 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
-import { ASSIGNMENTS, GroupSchema, groupKeyFor, maxDevicesFor, newGroupId } from './groups'
+import { ASSIGNMENTS, GroupSchema, groupKeyFor, maxDevicesFor, newGroupId, shuffled } from './groups'
 import { PLATFORM_IDS } from './platforms'
 import { PostSchema, newPost, postKeyFor, stateFor } from './posts'
 
@@ -169,6 +169,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     let created = 0
     let updated = 0
 
+    /*
+      One video, one phone, decided HERE and kept (0.12.0).
+
+      With a known phone pool and "one video per phone", each video is paired with a phone now: the
+      pool is shuffled once and walked in video order, so the pairing is random but fixed, visible
+      on the session's page before Start, and the phone every retry goes back to. It used to be
+      decided at each turn by "whichever labelled phone is free", which on the owner's production
+      farm put three videos of one session on the same phone and sent a retried video to a phone
+      that had already posted another. Videos beyond the pool get no phone and are not sent — the
+      router says so on the row — rather than doubling up on a phone that already has one.
+    */
+    const pairing = assignment === 'one-per-phone' && deviceIds && deviceIds.length > 0 ? shuffled([...new Set(deviceIds)], Math.random) : []
+
     for (const [index, videoArtifactId] of videos.entries()) {
       const caption = lines.length === 1 ? (lines[0] as string) : (lines[index] as string)
       const key = postKeyFor(videoArtifactId)
@@ -182,6 +195,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       // Held: no turn until `start-group` stamps one.
       next.notBeforeAt = null
       next.maxDevices = maxDevicesFor(assignment)
+      next.assignedDeviceId = pairing[index] ?? null
 
       if (existing) {
         for (const id of next.platforms) {

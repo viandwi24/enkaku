@@ -130,6 +130,12 @@ export const AttemptSchema = z.object({
   deviceName: z.string().nullable().default(null),
   state: z.string(),
   error: z.string().nullable().default(null),
+  /** Unix seconds the job was enqueued. Defaulted: rows written before 0.12.0 carry none. */
+  at: z.number().nullable().default(null),
+  /** Unix seconds the job reached an outcome; `null` while it is queued or running, and on older rows. */
+  settledAt: z.number().nullable().default(null),
+  /** 1 = the first send on this platform, 2 = the first retry, … Older rows are all first sends. */
+  round: z.number().default(1),
 })
 
 export const PostSchema = z.object({
@@ -139,12 +145,26 @@ export const PostSchema = z.object({
   platforms: z.array(z.string()),
   groupId: z.string().nullable().default(null),
   notBeforeAt: z.number().nullable().default(null),
+  /**
+   * The ONE phone this video goes out from in a one-per-phone session, for every platform and
+   * every retry. `null` in an every-phone session, when no phone was left to bind, and on rows
+   * written before the binding existed.
+   */
+  assignedDeviceId: z.string().nullable().default(null),
+  /** Phones per platform this row may go to. `1` is a one-per-phone row — the only kind whose phone can be edited. */
+  maxDevices: z.number().nullable().default(null),
   createdAt: z.number(),
   dispatch: z.record(
     z.string(),
     z.object({
       state: z.string(),
+      /** When this platform was last dispatched. */
+      at: z.number().nullable().default(null),
+      deviceCount: z.number().default(0),
+      /** The CURRENT attempts — what `state` is computed from. */
       attempts: z.array(AttemptSchema).default([]),
+      /** Earlier attempts a retry replaced, oldest first. Never the current state; older rows have none. */
+      history: z.array(AttemptSchema).default([]),
       note: z.string().nullable().default(null),
       summary: z.string().nullable().default(null),
     }),

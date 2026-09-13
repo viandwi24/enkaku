@@ -7,6 +7,11 @@ import {
   failedDevices,
   newPost,
   planDispatch,
+  applyPostEdit,
+  HISTORY_LIMIT,
+  nextRound,
+  pickAssignment,
+  withRetired,
   postKeyFor,
   postSummary,
   refreshPost,
@@ -52,7 +57,7 @@ describe('the stored shape', () => {
     // The summary line is seeded with it, so a brand new post reads as waiting
     // before the router has ever looked at it — and whether or not the
     // plugin's service is running at all.
-    expect(fresh.dispatch.tiktok).toEqual({ state: 'pending', at: null, deviceCount: 0, attempts: [], note: null, summary: 'Waiting for a phone' })
+    expect(fresh.dispatch.tiktok).toEqual({ state: 'pending', at: null, deviceCount: 0, attempts: [], history: [], note: null, summary: 'Waiting for a phone' })
     expect(fresh.dispatch.instagram).toBeUndefined()
   })
 
@@ -85,7 +90,7 @@ describe('planDispatch — the routing rules', () => {
     // `summary` is null here for the same reason `attempts` is empty: the line
     // names the phones, and which phones took the job is not known until the
     // service has the job ids back.
-    expect(plan.states.tiktok).toEqual({ state: 'dispatched', at: NOW, deviceCount: 1, attempts: [], note: null, summary: null })
+    expect(plan.states.tiktok).toEqual({ state: 'dispatched', at: NOW, deviceCount: 1, attempts: [], history: [], note: null, summary: null })
   })
 
   test('a phone WITHOUT the label is never used, however idle it is', () => {
@@ -112,14 +117,14 @@ describe('planDispatch — the routing rules', () => {
   })
 
   test('a post already dispatched is NEVER dispatched again — a duplicate post cannot be undone', () => {
-    const already = post({ dispatch: { tiktok: { state: 'dispatched', at: NOW - 100, deviceCount: 2, attempts: [], note: null, summary: null } } })
+    const already = post({ dispatch: { tiktok: { state: 'dispatched', at: NOW - 100, deviceCount: 2, attempts: [], history: [], note: null, summary: null } } })
     const plan = planDispatch({ post: already, devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.dispatches).toEqual([])
     expect(plan.states.tiktok).toBeUndefined()
   })
 
   test('a platform with no verified flow is marked unsupported once, with its own reason', () => {
-    const p = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'pending', at: null, deviceCount: 0, attempts: [], note: null, summary: null } } })
+    const p = post({ platforms: ['instagram'], dispatch: { instagram: { state: 'pending', at: null, deviceCount: 0, attempts: [], history: [], note: null, summary: null } } })
     const plan = planDispatch({ post: p, devices: [device({ id: 'd1', labels: [{ name: 'instagram' }] })], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.dispatches).toEqual([])
     expect(plan.states.instagram?.state).toBe('unsupported')
@@ -132,7 +137,7 @@ describe('planDispatch — the routing rules', () => {
   test('an unsupported platform is not REWRITTEN every tick, but still keeps saying why', () => {
     const settled = post({
       platforms: ['instagram'],
-      dispatch: { instagram: { state: 'unsupported', at: NOW - 999, deviceCount: 0, attempts: [], note: 'x', summary: null } },
+      dispatch: { instagram: { state: 'unsupported', at: NOW - 999, deviceCount: 0, attempts: [], history: [], note: 'x', summary: null } },
     })
     const plan = planDispatch({ post: settled, devices: [], now: NOW, maxDevicesPerPlatform: 5 })
     // No state write — an unchanged row must not bump `updatedAt` forever and
@@ -188,8 +193,8 @@ describe('postSummary', () => {
     const p = post({
       platforms: ['tiktok', 'instagram'],
       dispatch: {
-        tiktok: { state: 'dispatched', at: NOW, deviceCount: 3, attempts: [], note: null, summary: null },
-        instagram: { state: 'unsupported', at: NOW, deviceCount: 0, attempts: [], note: 'x', summary: null },
+        tiktok: { state: 'dispatched', at: NOW, deviceCount: 3, attempts: [], history: [], note: null, summary: null },
+        instagram: { state: 'unsupported', at: NOW, deviceCount: 0, attempts: [], history: [], note: 'x', summary: null },
       },
     })
     expect(postSummary(p)).toBe('TikTok: running on 3 · Instagram: unsupported')
@@ -219,11 +224,15 @@ describe('describePlatform — where it ran and how it went', () => {
     at: null,
     deviceCount: 0,
     attempts: [],
+    history: [],
     note: null,
     summary: null,
     ...over,
   })
   const attempt = (over: Partial<Attempt> & { deviceId: string }): Attempt => ({
+    at: null,
+    settledAt: null,
+    round: 1,
     jobId: `job-${over.deviceId}`,
     deviceName: null,
     state: 'success',
@@ -283,7 +292,8 @@ describe('refreshPost — the display fields follow the fleet, the dispatch reco
           state: 'succeeded',
           at: NOW,
           deviceCount: 1,
-          attempts: [{ jobId: 'j1', deviceId: 'd1', deviceName: null, state: 'success', error: null }],
+          attempts: [{ jobId: 'j1', deviceId: 'd1', deviceName: null, state: 'success', error: null, at: NOW, settledAt: NOW, round: 1 }],
+          history: [],
           note: null,
           summary: null,
         },
@@ -332,6 +342,9 @@ describe('deviceDisplayName — the same rule Studio names a phone by', () => {
  */
 describe('rollUp — dispatched is a waypoint, not an outcome', () => {
   const attempt = (state: 'queued' | 'success' | 'failed' | 'unverified', n: number) => ({
+    at: null,
+    settledAt: null,
+    round: 1,
     jobId: `j${n}`,
     deviceId: `d${n}`,
     deviceName: `#${n} phone ${n}`,
@@ -370,10 +383,11 @@ describe('failedDevices — a retry re-targets the failures and nobody else', ()
       at: 100,
       deviceCount: 3,
       attempts: [
-        { jobId: 'j1', deviceId: 'd1', deviceName: '#1 moto g06 power', state: 'success' as const, error: null },
-        { jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06 power', state: 'failed' as const, error: 'no upload button' },
-        { jobId: 'j3', deviceId: 'd3', deviceName: null, state: 'failed' as const, error: 'timed out' },
+        { jobId: 'j1', deviceId: 'd1', deviceName: '#1 moto g06 power', state: 'success' as const, error: null, at: null, settledAt: null, round: 1 },
+        { jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06 power', state: 'failed' as const, error: 'no upload button', at: null, settledAt: null, round: 1 },
+        { jobId: 'j3', deviceId: 'd3', deviceName: null, state: 'failed' as const, error: 'timed out', at: null, settledAt: null, round: 1 },
       ],
+      history: [],
       note: null,
       summary: null,
     }
@@ -388,9 +402,10 @@ describe('failedDevices — a retry re-targets the failures and nobody else', ()
       at: 100,
       deviceCount: 2,
       attempts: [
-        { jobId: 'j1', deviceId: 'd1', deviceName: '#1 moto g06 power', state: 'unverified' as const, error: 'no readable grid' },
-        { jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06 power', state: 'failed' as const, error: 'app missing' },
+        { jobId: 'j1', deviceId: 'd1', deviceName: '#1 moto g06 power', state: 'unverified' as const, error: 'no readable grid', at: null, settledAt: null, round: 1 },
+        { jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06 power', state: 'failed' as const, error: 'app missing', at: null, settledAt: null, round: 1 },
       ],
+      history: [],
       note: null,
       summary: null,
     }
@@ -427,7 +442,7 @@ describe('planDispatch — the router never retries a settled platform on its ow
   for (const state of ['succeeded', 'partial', 'failed'] as const) {
     test(`${state} is left alone by the tick`, () => {
       const post = { ...newPost({ videoArtifactId: 'v1', caption: 'c', platforms: ['tiktok'], now: 1 }) }
-      post.dispatch.tiktok = { state, at: 1, deviceCount: 1, attempts: [], note: null, summary: null }
+      post.dispatch.tiktok = { state, at: 1, deviceCount: 1, attempts: [], history: [], note: null, summary: null }
       const plan = planDispatch({ post, devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
       expect(plan.dispatches).toEqual([])
       expect(plan.states.tiktok).toBeUndefined()
@@ -485,5 +500,138 @@ describe('planDispatch — who may post is decided by who chose', () => {
     const p = { ...post(), deviceIds: [] }
     const plan = planDispatch({ post: p, devices: [unlabelled('d1')], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.states.tiktok?.note).toContain('No phone carries the "tiktok" label')
+  })
+})
+
+/**
+ * One video, one phone (0.12.0). The owner's production session of five videos over five phones put
+ * three videos on #21 and sent a retried video to a phone that had posted another: the phone was
+ * whoever was free at each turn. These pin the rule that replaced it.
+ */
+describe('one video, one phone', () => {
+  const att = (deviceId: string, state: Attempt['state'], at: number): Attempt => ({ jobId: `j-${deviceId}-${at}`, deviceId, deviceName: null, state, error: null, at, settledAt: at, round: 1 })
+
+  test('an assigned phone is the ONLY phone the row may use — labelled or not, however many others are free', () => {
+    const plan = planDispatch({ post: post({ assignedDeviceId: 'd9' }), devices: [device({ id: 'd1' }), device({ id: 'd9', labels: [] })], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches.map((d) => d.deviceId)).toEqual(['d9'])
+  })
+
+  test('while its phone is busy the row waits, and is never sent to a free phone instead', () => {
+    const busy = device({ id: 'd9', activities: [{ kind: 'job' }] })
+    const plan = planDispatch({ post: post({ assignedDeviceId: 'd9' }), devices: [device({ id: 'd1' }), busy], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches).toEqual([])
+    expect(plan.states.tiktok?.note).toContain("this video's phone")
+  })
+
+  test('a row that already ran goes back to the phone of its EARLIEST attempt, replaced ones included', () => {
+    const p = post({
+      deviceIds: ['d2', 'd3'],
+      dispatch: { tiktok: { ...PENDING_STATE, attempts: [att('d3', 'queued', NOW - 10)], history: [att('d2', 'failed', NOW - 100)] } },
+    })
+    expect(pickAssignment({ post: p, ownedByOthers: new Set(), fleet: [], sessionVideos: 5 })).toEqual({ deviceId: 'd2', reason: null })
+  })
+
+  test('...unless another video owns that phone — the production "three videos on #21" case — then a phone nobody owns', () => {
+    const p = post({ deviceIds: ['d21', 'd22', 'd23'], dispatch: { tiktok: { ...PENDING_STATE, history: [att('d21', 'failed', NOW - 100)] } } })
+    expect(pickAssignment({ post: p, ownedByOthers: new Set(['d21']), fleet: [], sessionVideos: 5 }).deviceId).toBe('d22')
+  })
+
+  test('with no phone left the row gets none and a sentence — never a phone that already has a video', () => {
+    const p = post({ deviceIds: ['d1', 'd2'] })
+    const pick = pickAssignment({ post: p, ownedByOthers: new Set(['d1', 'd2']), fleet: [], sessionVideos: 3 })
+    expect(pick.deviceId).toBeNull()
+    expect(pick.reason).toContain('No phone is left for this video')
+    expect(pick.reason).toContain('3 videos and 2 phones')
+  })
+
+  test('with no phones chosen, the pool is the phones carrying one of the row\'s platform labels', () => {
+    const fleet = [
+      { id: 'b-youtube-only', labels: [{ name: 'youtube' }] },
+      { id: 'a-tiktok', labels: [{ name: 'TikTok' }] },
+    ]
+    expect(pickAssignment({ post: post({ deviceIds: [] }), ownedByOthers: new Set(), fleet, sessionVideos: 1 }).deviceId).toBe('a-tiktok')
+  })
+})
+
+describe('attempt history (0.12.0)', () => {
+  const att = (round: number): Attempt => ({ jobId: `j${round}`, deviceId: 'd1', deviceName: null, state: 'failed', error: 'x', at: round, settledAt: round, round })
+
+  test('replaced attempts are kept oldest first, capped at the newest HISTORY_LIMIT', () => {
+    const many = Array.from({ length: HISTORY_LIMIT + 5 }, (_, i) => att(i + 1))
+    const kept = withRetired(many.slice(0, 10), many.slice(10))
+    expect(kept).toHaveLength(HISTORY_LIMIT)
+    expect(kept[0]?.round).toBe(6)
+    expect(kept.at(-1)?.round).toBe(HISTORY_LIMIT + 5)
+  })
+
+  test('the next round is one past everything tried, current and replaced', () => {
+    expect(nextRound({ attempts: [], history: [] })).toBe(1)
+    expect(nextRound({ attempts: [att(3)], history: [att(1), att(2)] })).toBe(4)
+  })
+
+  test('history is outside the roll-up: a platform whose current attempt posted reads succeeded, whatever failed before', () => {
+    expect(rollUp([{ ...att(2), state: 'success', error: null }])).toBe('succeeded')
+  })
+})
+
+/**
+ * Editing a video after its session was made (0.12.0) — the owner: "harusnya bisa di edit juga …
+ * ganti assign devicesnya atau platformnya sehingga pas di rerun/retry yah bisa".
+ */
+describe('applyPostEdit', () => {
+  const inSession = (over: Partial<Post> = {}): Post => post({ groupId: 'g1', maxDevices: 1, assignedDeviceId: 'd1', ...over })
+  const queued: Attempt = { jobId: 'j', deviceId: 'd1', deviceName: '#1 moto', state: 'queued', error: null, at: NOW, settledAt: null, round: 1 }
+
+  test('moves the video to a phone nobody in the session has', () => {
+    const out = applyPostEdit({ post: inSession(), edit: { assignedDeviceId: 'd5' }, sessionRows: [inSession({ videoArtifactId: 'other', assignedDeviceId: 'd2' })] })
+    expect(out.ok && out.post.assignedDeviceId).toBe('d5')
+    expect(out.ok && out.changed).toEqual(['phone'])
+  })
+
+  test('a phone another video of the session owns is ALLOWED, with a warning naming that video', () => {
+    const other = inSession({ videoArtifactId: 'other', caption: 'kenapa stop loss selalu kena', assignedDeviceId: 'd2' })
+    const out = applyPostEdit({ post: inSession(), edit: { assignedDeviceId: 'd2' }, sessionRows: [other] })
+    expect(out.ok && out.post.assignedDeviceId).toBe('d2')
+    expect(out.ok && out.warnings.join(' ')).toContain('kenapa stop loss')
+  })
+
+  test('a phone where another video only FAILED is free to take', () => {
+    const other = inSession({
+      videoArtifactId: 'other',
+      assignedDeviceId: 'd3',
+      dispatch: { tiktok: { ...PENDING_STATE, state: 'failed', attempts: [{ ...queued, deviceId: 'd2', state: 'failed', settledAt: NOW }] } },
+    })
+    const out = applyPostEdit({ post: inSession(), edit: { assignedDeviceId: 'd2' }, sessionRows: [other] })
+    expect(out.ok && out.warnings).toEqual([])
+  })
+
+  test('an edit while the video is uploading is applied, and warns that the running upload is unchanged', () => {
+    const busy = inSession({ dispatch: { tiktok: { ...PENDING_STATE, state: 'dispatched', attempts: [queued] } } })
+    const out = applyPostEdit({ post: busy, edit: { caption: 'new' }, sessionRows: [] })
+    expect(out.ok && out.post.caption).toBe('new')
+    expect(out.ok && out.warnings.join(' ')).toContain('uploading on #1 moto')
+  })
+
+  test('adding a platform seeds it waiting; what already posted keeps its record', () => {
+    const posted = inSession({ dispatch: { tiktok: { ...PENDING_STATE, state: 'succeeded', attempts: [{ ...queued, state: 'success', settledAt: NOW }] } } })
+    const out = applyPostEdit({ post: posted, edit: { platforms: ['youtube', 'tiktok'] }, sessionRows: [] })
+    expect(out.ok && out.post.platforms).toEqual(['tiktok', 'youtube'])
+    expect(out.ok && out.post.dispatch.youtube?.state).toBe('pending')
+    expect(out.ok && out.post.dispatch.tiktok?.state).toBe('succeeded')
+  })
+
+  test('a platform list that empties the video, or an empty caption, is refused', () => {
+    expect(applyPostEdit({ post: inSession(), edit: { platforms: [] }, sessionRows: [] }).ok).toBe(false)
+    expect(applyPostEdit({ post: inSession(), edit: { caption: '   ' }, sessionRows: [] }).ok).toBe(false)
+  })
+
+  test('an ungrouped post has no phone of its own to change', () => {
+    const out = applyPostEdit({ post: post(), edit: { assignedDeviceId: 'd2' }, sessionRows: [] })
+    expect(!out.ok && out.code).toBe('E_PARAMS_INVALID')
+  })
+
+  test('an edit that matches what is stored changes nothing', () => {
+    const out = applyPostEdit({ post: inSession(), edit: { assignedDeviceId: 'd1', caption: 'hello', platforms: ['tiktok'] }, sessionRows: [] })
+    expect(out.ok && out.changed).toEqual([])
   })
 })

@@ -2,7 +2,7 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { platformById } from './platforms'
-import { PostSchema, failedDevices, postKeyFor, rollUp, stateFor, withSummary, type Attempt } from './posts'
+import { PostSchema, failedDevices, nextRound, postKeyFor, rollUp, stateFor, withRetired, withSummary, type Attempt } from './posts'
 
 /**
  * Re-run the phones whose upload failed — and only those.
@@ -69,8 +69,22 @@ const script: PluginMemberScript<typeof params, typeof result> = {
 
     for (const platformId of post.platforms) {
       const state = stateFor(post, platformId)
-      const failed = failedDevices(state)
-      if (failed.length === 0) continue
+      const failedHere = failedDevices(state)
+      if (failedHere.length === 0) continue
+
+      /*
+        One video, one phone (0.12.0). A row of a one-per-phone session is re-sent to ITS phone and no
+        other — never back to wherever an earlier attempt happened to fail. On the owner's production
+        farm a retry sent a video to a phone that had already posted a different one; a phone that
+        another video owns is exactly where this member used to go. A session row that has no phone
+        yet is left for the session's own Retry, which binds it to one first (`pickAssignment`).
+      */
+      const sessionRow = post.groupId !== null && post.maxDevices === 1
+      if (sessionRow && post.assignedDeviceId === null) {
+        skipped.push(`${platformId}: this video has no phone of its own yet — use the session's "Retry failed", which gives it one before re-sending`)
+        continue
+      }
+      const failed = sessionRow ? [post.assignedDeviceId as string] : failedHere
 
       const platform = platformById(platformId)
       if (!platform || platform.script === null) {
@@ -87,6 +101,12 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         makes `rollUp` count one phone twice.
       */
       const kept: Attempt[] = state.attempts.filter((a) => a.state !== 'failed')
+      // The failures being replaced are KEPT, as history (0.12.0), so the page can say "this red line
+      // is from an earlier attempt" instead of losing it — and so a second failure does not erase the
+      // first. Nothing that decides dispatch reads `history`.
+      const retired: Attempt[] = state.attempts.filter((a) => a.state === 'failed')
+      const round = nextRound(state)
+      const now = Math.floor(Date.now() / 1000)
       /*
         The phone's name comes off the attempt being replaced rather than from
         a fresh `device.list`: this member re-sends to the SAME phones, so the
@@ -106,7 +126,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
             },
             JobRunOutput,
           )
-          kept.push({ jobId: job.jobId, deviceId, deviceName: namedBefore.get(deviceId) ?? null, state: 'queued', error: null })
+          kept.push({ jobId: job.jobId, deviceId, deviceName: namedBefore.get(deviceId) ?? null, state: 'queued', error: null, at: now, settledAt: null, round })
           requeued += 1
         } catch (err) {
           // The phone keeps its failed attempt, so the next retry finds it
@@ -118,12 +138,15 @@ const script: PluginMemberScript<typeof params, typeof result> = {
             deviceName: namedBefore.get(deviceId) ?? null,
             state: 'failed',
             error: message.slice(0, 300),
+            at: now,
+            settledAt: now,
+            round,
           })
           skipped.push(`${deviceId}: ${message}`.slice(0, 200))
         }
       }
 
-      dispatch[platformId] = withSummary({ ...state, attempts: kept, state: rollUp(kept), deviceCount: kept.length })
+      dispatch[platformId] = withSummary({ ...state, attempts: kept, history: withRetired(state.history, retired), state: rollUp(kept), deviceCount: kept.length })
       platforms.push(platformId)
     }
 

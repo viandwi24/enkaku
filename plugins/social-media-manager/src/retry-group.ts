@@ -2,7 +2,7 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { GroupSchema, groupKeyFor, planSchedule } from './groups'
-import { POST_PREFIX, PostSchema, failedDevices, rollUp, type Attempt, type Post } from './posts'
+import { POST_PREFIX, PostSchema, failedDevices, rollUp, withRetired, type Attempt, type Post } from './posts'
 
 /**
  * Try the whole batch again — but only the parts that failed.
@@ -89,9 +89,12 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           continue
         }
         const kept: Attempt[] = state.attempts.filter((a) => a.state !== 'failed')
+        // Replaced, not erased (0.12.0): the failures move to `history`, and the router's next
+        // attempt on this row goes back to the row's own assigned phone.
+        const retired: Attempt[] = state.attempts.filter((a) => a.state === 'failed')
         leftAlone += kept.filter((a) => a.state === 'success' || a.state === 'unverified').length
         phones += failed.length
-        dispatch[platformId] = { ...state, attempts: kept, state: rollUp(kept), deviceCount: kept.length, note: null }
+        dispatch[platformId] = { ...state, attempts: kept, history: withRetired(state.history, retired), state: rollUp(kept), deviceCount: kept.length, note: null }
         touched = true
       }
 
