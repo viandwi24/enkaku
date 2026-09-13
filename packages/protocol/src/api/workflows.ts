@@ -8,6 +8,17 @@ export const WorkflowInfoSchema = z.object({
   createdBy: z.string().nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
+  /**
+   * Plan 315 — the plugin that ships this workflow, or `null` for one an
+   * operator wrote. A plugin's workflow is registered when that plugin's
+   * version is activated and is READ-ONLY: `PUT`/`DELETE` refuse it with
+   * `E_WORKFLOW_MANAGED`, and the way to change one is to duplicate it into a
+   * workflow of your own. Its name always carries the plugin's prefix
+   * (`smm/warmup-rotation`), which an operator's workflow can never have.
+   *
+   * `.default(null)` so a core that predates plan 315 still parses.
+   */
+  pluginName: z.string().nullable().default(null),
 })
 export type WorkflowInfo = z.infer<typeof WorkflowInfoSchema>
 

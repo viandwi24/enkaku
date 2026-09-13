@@ -77,6 +77,15 @@ export type VerifyChildMessage =
        * criterion 1 turns on.
        */
       service?: unknown
+      /**
+       * Plan 315 — the workflow documents the plugin ships, RAW (JSON
+       * round-tripped), local names unprefixed. `unknown` for the reason every
+       * field above is: the PARENT re-validates each through
+       * `WorkflowDocSchema` and prefixes its name, since a hand-crafted bundle
+       * need never have gone through `definePlugin()`. Absent when the plugin
+       * ships none — byte-identical to before.
+       */
+      workflows?: unknown
       resetPackages: string[]
     }
   | { ok: false; error: string; errorCode?: string }
@@ -282,6 +291,9 @@ async function main(): Promise<void> {
       scripts,
       ...(surface !== undefined ? { surface } : {}),
       ...(service !== undefined ? { service } : {}),
+      // Plan 315 — JSON round-tripped so nothing that cannot cross IPC
+      // reaches `send`; the parent validates and prefixes.
+      ...(Array.isArray((def as { workflows?: unknown }).workflows) ? { workflows: JSON.parse(JSON.stringify((def as { workflows: unknown[] }).workflows)) as unknown } : {}),
       resetPackages: def.reset?.packages ?? [],
     })
   } catch (err) {

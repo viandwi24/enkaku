@@ -2,10 +2,11 @@
 
 import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ScriptListItemSchema, type ScriptListItem, type WorkflowDoc } from '@enkaku/protocol'
+import { ScriptListItemSchema, type ScriptListItem } from '@enkaku/protocol'
 import { ErrorState, LoadingRows, describeApiError } from '@enkaku/ui'
 import { FlowEditor } from '@/components/flow/FlowEditor'
-import { fetchAllPages, fetchWorkflow } from '@/lib/api'
+import { PluginWorkflowView } from '@/components/flow/PluginWorkflowView'
+import { fetchAllPages, fetchWorkflow, type WorkflowInfo } from '@/lib/api'
 
 /**
  * The workflow editor screen (plan 210 §4.9, moved to `/scripts/editor` by
@@ -25,7 +26,7 @@ function WorkflowEditorView() {
 
   const [scripts, setScripts] = useState<ScriptListItem[] | null>(null)
   const [scriptsError, setScriptsError] = useState<string | null>(null)
-  const [initialDoc, setInitialDoc] = useState<WorkflowDoc | null>(null)
+  const [workflow, setWorkflow] = useState<WorkflowInfo | null>(null)
   /**
    * The editor's `beforeunload` guard cannot see a `next/link` — client-side
    * navigation never fires it. The back link below is the one way out of this
@@ -51,10 +52,10 @@ function WorkflowEditorView() {
       router.replace('/scripts?tab=workflows')
       return
     }
-    setInitialDoc(null)
+    setWorkflow(null)
     setDocError(null)
     void fetchWorkflow(name)
-      .then((w) => setInitialDoc(w.doc))
+      .then(setWorkflow)
       .catch((e) => setDocError(describeApiError(e)))
   }, [name, router])
 
@@ -79,14 +80,16 @@ function WorkflowEditorView() {
         <div className="px-5 py-4">
           <ErrorState message={docError} />
         </div>
-      ) : !scripts || !initialDoc ? (
+      ) : !scripts || !workflow ? (
         <div className="px-5 py-4">
           <LoadingRows rows={4} />
         </div>
+      ) : workflow.pluginName !== null ? (
+        <PluginWorkflowView workflow={workflow} scripts={scripts} />
       ) : (
         <FlowEditor
           key={name ?? 'new'}
-          initialDoc={initialDoc}
+          initialDoc={workflow.doc}
           scripts={scripts}
           mode={name ? 'update' : 'create'}
           onDirtyChange={setDirty}

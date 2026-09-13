@@ -995,6 +995,9 @@ export {
   type WorkflowPoint,
   type WorkflowNode,
   type WorkflowDoc,
+  PLUGIN_WORKFLOW_LIMIT,
+  workflowScriptRefs,
+  type WorkflowDocInput,
 } from './workflow'
 export {
   WorkflowParamNameSchema,

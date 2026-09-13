@@ -13,6 +13,8 @@ export interface WorkflowRecord {
   /** Unix seconds. */
   createdAt: number
   updatedAt: number
+  /** Plan 315 — the plugin that ships this workflow (read-only), or `null` for an operator's own. */
+  pluginName: string | null
 }
 
 export interface WorkflowStore {
@@ -57,7 +59,7 @@ const toSec = (d: Date): number => Math.floor(d.getTime() / 1000)
 function toRecord(row: WorkflowRow): WorkflowRecord | null {
   const doc = parseWorkflowDoc(row.doc)
   if (!doc) return null
-  return { id: row.id, name: row.name, doc, createdBy: row.createdBy, createdAt: toSec(row.createdAt), updatedAt: toSec(row.updatedAt) }
+  return { id: row.id, name: row.name, doc, createdBy: row.createdBy, createdAt: toSec(row.createdAt), updatedAt: toSec(row.updatedAt), pluginName: row.pluginName }
 }
 
 export function createWorkflowStore(db: Db): WorkflowStore {
@@ -86,7 +88,9 @@ export function createWorkflowStore(db: Db): WorkflowStore {
     create({ doc, createdBy }) {
       if (rowByName(doc.name)) throw new EnkakuError('workflow_name_exists', `a workflow named "${doc.name}" already exists; edit it with PUT /api/workflows/${doc.name}`)
       const now = new Date()
-      const row: WorkflowRow = { id: crypto.randomUUID(), name: doc.name, doc, createdBy, createdAt: now, updatedAt: now }
+      // `pluginName: null` — this path is an operator's. A plugin's rows are
+      // written only by `workflows/managed.ts`, never through the API.
+      const row: WorkflowRow = { id: crypto.randomUUID(), name: doc.name, doc, createdBy, createdAt: now, updatedAt: now, pluginName: null }
       db.insert(workflows).values(row).run()
       return getOrThrow(doc.name)
     },

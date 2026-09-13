@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
-import { PlayIcon, TrashIcon, ConfirmDialog, relativeTime } from '@enkaku/ui'
+import { PlayIcon, TrashIcon, ConfirmDialog, relativeTime, Badge } from '@enkaku/ui'
 import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { matchesWorkflow } from '@/app/scripts/matchers'
 import { deleteWorkflow, type WorkflowInfo } from '@/lib/api'
@@ -66,22 +66,33 @@ export function WorkflowsGrid({
               <Link href={`/scripts/editor?name=${encodeURIComponent(w.name)}`} className="text-row font-semibold text-text hover:text-accent">
                 {w.doc.title || w.name}
               </Link>
-              <ConfirmDialog
-                trigger={
-                  <button type="button" aria-label={`Delete ${w.name}`} className="text-faint hover:text-danger">
-                    <TrashIcon className="size-3.5" aria-hidden />
-                  </button>
-                }
-                title={`Delete ${w.name}?`}
-                description="This cannot be undone. Any schedule that names it will start failing its next fire."
-                onConfirm={() =>
-                  void deleteWorkflow(w.name).then(() => {
-                    toast.success(`${w.name} deleted`)
-                    onReload()
-                  })
-                }
-              />
+              {/* Read-only per plan 315: a workflow a plugin shipped has
+                  nothing here to delete. */}
+              {w.pluginName === null && (
+                <ConfirmDialog
+                  trigger={
+                    <button type="button" aria-label={`Delete ${w.name}`} className="text-faint hover:text-danger">
+                      <TrashIcon className="size-3.5" aria-hidden />
+                    </button>
+                  }
+                  title={`Delete ${w.name}?`}
+                  description="This cannot be undone. Any schedule that names it will start failing its next fire."
+                  onConfirm={() =>
+                    void deleteWorkflow(w.name)
+                      .then(() => {
+                        toast.success(`${w.name} deleted`)
+                        onReload()
+                      })
+                      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
+                  }
+                />
+              )}
             </div>
+            {w.pluginName !== null && (
+              <Badge variant="secondary" className="w-fit">
+                From plugin {w.pluginName}
+              </Badge>
+            )}
             {w.doc.description && (
               <p className="text-meta text-dim" style={{ lineHeight: 1.55 }}>
                 {w.doc.description}

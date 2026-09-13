@@ -1,9 +1,14 @@
 import type { z } from 'zod'
 import {
   IconNameSchema,
+  PLUGIN_WORKFLOW_LIMIT,
   validatePluginSurface,
+  WorkflowDocSchema,
   WorkflowNodeDescriptorSchema,
+  workflowScriptRefs,
   type IconName,
+  type WorkflowDoc,
+  type WorkflowDocInput,
   type PluginSurface,
   type PluginSurfaceInput,
   type WorkflowNodeDescriptor,
@@ -143,6 +148,17 @@ export interface PluginDefinition {
    * `try`/`catch` catches.
    */
   service?: PluginService
+  /**
+   * Plan 315 — workflow documents this plugin ships. Each is registered on the
+   * farm as `<id>/<name>` when this version is activated, is READ-ONLY there
+   * (an operator changes one by duplicating it), and follows this plugin
+   * through every upgrade, rollback, disable and removal.
+   *
+   * Write each `name` WITHOUT the plugin prefix — the farm adds it. A document
+   * is static data: it is validated here and again at verify, exactly as an
+   * operator's save is. A plugin ships documents; it never generates one.
+   */
+  workflows?: WorkflowDocInput[]
 }
 
 /**
@@ -216,6 +232,7 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
   if (!Array.isArray(def.scripts) || def.scripts.length === 0) {
     throw new Error('definePlugin: `scripts` must be a non-empty array')
   }
+  const workflows = checkWorkflows(def.id, def.workflows, new Set(def.scripts.map((s) => s.id)))
   // Plan 310 §3.3, §4.1 — the plugin's own icon, validated on the author's
   // machine through the SAME `IconNameSchema` a nav entry's icon already
   // goes through inside `validatePluginSurface`. No second icon vocabulary.
@@ -319,9 +336,47 @@ export function definePlugin<const S extends readonly z.ZodTypeAny[]>(
   // key at all (rather than one holding `undefined`, which would show up in
   // `Object.keys` and in anything that walks the definition) — and one that
   // did carries the PARSED value, never the shorthand it was written as.
-  const { surface: authoredSurface, ...rest } = def
+  const { surface: authoredSurface, workflows: authoredWorkflows, ...rest } = def
   void authoredSurface
-  return Object.freeze({ ...rest, scripts, ...(surface !== undefined ? { surface } : {}) })
+  void authoredWorkflows
+  return Object.freeze({ ...rest, scripts, ...(surface !== undefined ? { surface } : {}), ...(workflows !== undefined ? { workflows } : {}) })
+}
+
+/**
+ * Plan 315 — the author-time half of the check `verify-child.ts`'s
+ * `finalizeReport` repeats on the farm, rule for rule: the ordinary
+ * `WorkflowDocSchema`, a name without `/` (the farm prefixes it), no two with
+ * one name, the shared limit, and every ref to one of THIS plugin's scripts
+ * naming a script this plugin declares. Refs to other plugins are not checked
+ * here — whether they resolve depends on the farm, not on this bundle.
+ */
+function checkWorkflows(pluginId: string, declared: WorkflowDocInput[] | undefined, scriptIds: ReadonlySet<string>): WorkflowDoc[] | undefined {
+  if (declared === undefined) return undefined
+  if (!Array.isArray(declared)) throw new Error('definePlugin: `workflows` must be an array of workflow documents')
+  if (declared.length > PLUGIN_WORKFLOW_LIMIT) {
+    throw new Error(`definePlugin: \`workflows\` declares ${declared.length} documents, over the limit of ${PLUGIN_WORKFLOW_LIMIT}`)
+  }
+  const names = new Set<string>()
+  return declared.map((raw, index) => {
+    const parsed = WorkflowDocSchema.safeParse(raw)
+    if (!parsed.success) {
+      throw new Error(
+        `definePlugin: workflow #${index + 1} — ${parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
+      )
+    }
+    const doc = parsed.data
+    if (doc.name.includes('/')) {
+      throw new Error(`definePlugin: workflow "${doc.name}" — write the name without "/"; the farm registers it as "${pluginId}/${doc.name.split('/').pop() ?? doc.name}"`)
+    }
+    if (names.has(doc.name)) throw new Error(`definePlugin: two workflows are both named "${doc.name}"`)
+    names.add(doc.name)
+    for (const ref of workflowScriptRefs(doc)) {
+      if (!ref.startsWith(`${pluginId}/`)) continue
+      const scriptId = ref.slice(pluginId.length + 1).split('@')[0] ?? ''
+      if (!scriptIds.has(scriptId)) throw new Error(`definePlugin: workflow "${doc.name}" calls "${ref}", but this plugin has no script "${scriptId}"`)
+    }
+    return doc
+  })
 }
 
 /**

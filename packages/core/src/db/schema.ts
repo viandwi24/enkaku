@@ -947,8 +947,20 @@ export const workflows = sqliteTable(
     createdBy: text('created_by'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+    /**
+     * Plan 315 — the plugin (by `plugins.name`, not a version id) that ships
+     * this workflow, or `null` for one an operator wrote. Plan 210 §9 Q1 left
+     * exactly this column open as "one additive migration later".
+     *
+     * By NAME, not by version id, because a workflow has no version (MVP 03
+     * §2.2 rule 4) and exists once per `name`: the row belongs to "whichever
+     * version of `smm` is active", and `workflows/managed.ts` rewrites it on
+     * every activation, rollback, enable, disable and removal so that stays
+     * true.
+     */
+    pluginName: text('plugin_name'),
   },
-  (t) => [uniqueIndex('idx_workflows_name').on(t.name)],
+  (t) => [uniqueIndex('idx_workflows_name').on(t.name), index('idx_workflows_plugin_name').on(t.pluginName)],
 )
 
 export type WorkflowRow = typeof workflows.$inferSelect

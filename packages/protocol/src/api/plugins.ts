@@ -73,6 +73,19 @@ export const PluginManifestSchema = z
      * to at install. That local re-admit can be deleted now.
      */
     service: PluginServiceDeclarationSchema.optional(),
+    /**
+     * Plan 315 — the workflow documents this version ships, already validated
+     * and prefixed (`<plugin>/<name>`) at verify. Declared for the silent-strip
+     * reason `service` states above.
+     *
+     * `z.unknown()` per item, deliberately NOT `WorkflowDocSchema`: this schema
+     * parses every plugin row the Plugins page lists, including versions
+     * verified by older builds, and a document that an evolved workflow schema
+     * no longer accepts must not make a whole plugin row unreadable. The
+     * documents are read — and parsed — where they are used
+     * (`workflows/managed.ts`, `GET /api/workflows`).
+     */
+    workflows: z.array(z.unknown()).optional(),
   })
   .nullable()
 

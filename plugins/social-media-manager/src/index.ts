@@ -6,6 +6,7 @@ import addPosts from './add-posts'
 import addGroup from './add-group'
 import startGroup from './start-group'
 import retryGroup from './retry-group'
+import { warmupRotation } from './workflows/warmup-rotation'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
 import retryFailed from './retry-failed'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
@@ -57,6 +58,14 @@ import {
  * writing those selectors from memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.10.0 — ships the warm-up rotation as a workflow.** The three-platform
+ *   warm-up the owner built in Studio (plan 314: `($device.number + slot) % 3`
+ *   chooses TikTok, Instagram or YouTube per session, each branch shuffling
+ *   that platform's activities) now ships with this plugin as
+ *   `smm/warmup-rotation` (plan 315). Activating this version registers it on
+ *   the farm, read-only; duplicate it to change it. Script refs are `@latest`
+ *   because the platform packs version on their own.
  *
  * - **0.9.1 — tabs, and a page per session.** 0.9.0 put the whole job on one
  *   flat page: compose at the top, sessions underneath, each one expanding
@@ -783,11 +792,17 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.9.1',
+  version: '0.10.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok and YouTube post today; Instagram is declared and has no verified upload flow yet.',
   scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup],
+  /*
+    Plan 315 — workflows this plugin ships. Registered on the farm as
+    `smm/<name>` when this version is activated, read-only there; an operator
+    who wants a different rotation duplicates it.
+  */
+  workflows: [warmupRotation],
 
   service: defineService({
     /**

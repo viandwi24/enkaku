@@ -617,3 +617,25 @@ export const WorkflowDocSchema = WorkflowDocShapeSchema.superRefine((doc, ctx) =
   })
 })
 export type WorkflowDoc = z.infer<typeof WorkflowDocSchema>
+
+/**
+ * Plan 315 — how many workflow documents one plugin version may ship. One
+ * number, read by `definePlugin` on the author's machine and by the farm's
+ * independent re-check at verify, so the two can never disagree.
+ */
+export const PLUGIN_WORKFLOW_LIMIT = 20
+
+/**
+ * Every script ref a document can call: each `script` node's, plus `onFail`'s.
+ * Plan 315 checks a shipped workflow's refs to its OWN plugin's scripts at
+ * verify, and this is the one place that knows where refs live in a document.
+ */
+export function workflowScriptRefs(doc: WorkflowDoc): string[] {
+  const refs: string[] = []
+  for (const node of doc.nodes) if (node.kind === 'script') refs.push(node.script)
+  if (doc.onFail) refs.push(doc.onFail.script)
+  return refs
+}
+
+/** An author's document as written — every defaulted field optional (`definePlugin({ workflows })`). */
+export type WorkflowDocInput = z.input<typeof WorkflowDocSchema>

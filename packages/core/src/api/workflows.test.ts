@@ -4,7 +4,7 @@ import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { deviceNumbers, devices, jobRuns, jobs, scripts, workflowSteps } from '../db/schema'
+import { deviceNumbers, devices, jobRuns, jobs, scripts, workflowSteps, workflows as workflowsTable } from '../db/schema'
 import { createDevSlotStore } from '../plugins/dev-slots'
 import { createScriptRegistry, type ScriptRegistry } from '../scripts/registry'
 import { createWorkflowStore, type WorkflowStore } from '../workflows/store'
@@ -994,5 +994,93 @@ describe('GET /api/workflows/:name/coverage', () => {
     const res = await app.request('/warmup/coverage?node=ghost')
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('E_NO_ROTATION')
+  })
+})
+
+/**
+ * Plan 315 — a workflow a plugin ships is read-only in the core, not merely in
+ * Studio: the plugin rewrites the row on its next activation, so an accepted
+ * edit would be silently lost. And an operator may not take a `/` name, which
+ * is what makes a collision with a plugin's workflow impossible.
+ */
+describe('plugin-provided workflows are read-only (plan 315)', () => {
+  function minimalDoc(name: string, title = 'Warm-up') {
+    return {
+      schema: 2,
+      name,
+      title,
+      description: '',
+      params: [],
+      entry: 'start',
+      maxSteps: 50,
+      nodes: [
+        { id: 'start', kind: 'start', title: 'Start', enabled: true, ui: { x: 0, y: 0 }, next: 'done' },
+        { id: 'done', kind: 'finish', title: 'Done', enabled: true, ui: { x: 0, y: 100 }, status: 'succeed', message: '' },
+      ],
+    }
+  }
+
+  function withManagedRow() {
+    const h = setUp()
+    const now = new Date()
+    h.db
+      .insert(workflowsTable)
+      .values({ id: 'wf-smm', name: 'smm/warmup-rotation', doc: minimalDoc('smm/warmup-rotation'), createdBy: null, createdAt: now, updatedAt: now, pluginName: 'smm' })
+      .run()
+    const app = withUser('operator', createWorkflowRoutes({ db: h.db, registry: h.registry, store: h.store, runs: h.runs, pins: h.pins, scheduler: h.scheduler }))
+    return { ...h, app }
+  }
+
+  test('GET says who provides it', async () => {
+    const { app } = withManagedRow()
+    const res = await app.request(`/${encodeURIComponent('smm/warmup-rotation')}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { workflow: { pluginName: string | null } }
+    expect(body.workflow.pluginName).toBe('smm')
+  })
+
+  test('PUT is refused with E_WORKFLOW_MANAGED and the document is unchanged', async () => {
+    const { app, store } = withManagedRow()
+    const res = await app.request(`/${encodeURIComponent('smm/warmup-rotation')}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ doc: minimalDoc('smm/warmup-rotation', 'Edited') }),
+    })
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('E_WORKFLOW_MANAGED')
+    expect(body.error.message).toContain('duplicate it')
+    expect(store.get('smm/warmup-rotation')?.doc.title).toBe('Warm-up')
+  })
+
+  test('DELETE is refused with E_WORKFLOW_MANAGED and the row survives', async () => {
+    const { app, store } = withManagedRow()
+    const res = await app.request(`/${encodeURIComponent('smm/warmup-rotation')}`, { method: 'DELETE' })
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('E_WORKFLOW_MANAGED')
+    expect(store.get('smm/warmup-rotation')).not.toBeNull()
+  })
+
+  test('an operator cannot create a name containing "/"', async () => {
+    const { app, store } = withManagedRow()
+    const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: minimalDoc('smm/my-own') }) })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('E_WORKFLOW_NAME_RESERVED')
+    expect(store.get('smm/my-own')).toBeNull()
+  })
+
+  test('an operator’s own workflow is still created, edited and deleted as before', async () => {
+    const { app, store } = withManagedRow()
+    const created = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ doc: minimalDoc('warmup-rotation-copy') }) })
+    expect(created.status).toBe(201)
+    expect(store.get('warmup-rotation-copy')?.pluginName).toBeNull()
+    const edited = await app.request('/warmup-rotation-copy', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ doc: minimalDoc('warmup-rotation-copy', 'Mine now') }),
+    })
+    expect(edited.status).toBe(200)
+    const deleted = await app.request('/warmup-rotation-copy', { method: 'DELETE' })
+    expect(deleted.status).toBe(200)
   })
 })

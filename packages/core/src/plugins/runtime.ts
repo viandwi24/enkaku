@@ -23,6 +23,7 @@ import { verifyPluginBundle, type VerifyReport } from './verify-child'
 import { createDevSlotStore, type DevSessionOwner, type DevSlot, type DevSlotStore } from './dev-slots'
 import { buildScriptFromWorkspace } from '../scripts/build'
 import type { WorkspaceStore } from '../workspace/store'
+import { syncAllPluginWorkflows, syncPluginWorkflows } from '../workflows/managed'
 
 const ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/
 
@@ -829,6 +830,8 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
           scripts: report.scripts,
           ...(report.surface !== undefined ? { surface: report.surface } : {}),
           ...(report.service !== undefined ? { service: report.service } : {}),
+          // Plan 315 — already validated and prefixed by `finalizeReport`.
+          ...(report.workflows !== undefined ? { workflows: report.workflows } : {}),
         },
         resetPackages: report.resetPackages.length > 0 ? { packages: report.resetPackages } : null,
         title: report.title ?? p.title,
@@ -896,6 +899,11 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       }
       writeScriptRows(p, p.manifest as NonNullable<PluginRow['manifest']>)
       registry.invalidate(p.name)
+      // Plan 315 — the active version changed, so the workflows this plugin
+      // ships must now be exactly that version's. After `writeScriptRows`, in
+      // the same transaction, so a failed activation leaves the previous
+      // version's workflows exactly as they were.
+      syncPluginWorkflows(db, p.name)
       // `p` is the full row on purpose — `writeScriptRows` above copies
       // `p.bundle` into each member — and the projection is what the caller
       // gets, so `POST /:id/activate` cannot echo it (step 126.6). The
@@ -919,6 +927,9 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       // No re-publish, no bundle upload (criterion 8) — the target's `scripts` rows were
       // already written when IT was first activated and were never deleted.
       registry.invalidate(name)
+      // Plan 315 — workflow rows are NOT kept per version the way script rows
+      // are (a workflow is unique by name), so a rollback has to rewrite them.
+      syncPluginWorkflows(db, name)
       return toPluginWire({ ...target, status: 'active' })
     })
   }
@@ -930,6 +941,10 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       tx.update(plugins).set({ status: 'disabled' }).where(eq(plugins.id, activeRow.id)).run()
       const rows = tx.select().from(scripts).where(eq(scripts.pluginId, activeRow.id)).all()
       for (const s of rows) tx.update(scripts).set({ enabled: false }).where(eq(scripts.id, s.id)).run()
+      // Plan 315 — no version is active now, so the declared set is empty and
+      // every workflow this plugin shipped goes: its scripts no longer resolve,
+      // and a workflow that cannot run is not offered.
+      syncPluginWorkflows(db, name)
     })
     registry.invalidate(name)
   }
@@ -977,6 +992,8 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       for (const s of tx.select().from(scripts).where(eq(scripts.pluginId, target.id)).all()) {
         tx.update(scripts).set({ enabled: true }).where(eq(scripts.id, s.id)).run()
       }
+      // Plan 315 — the reverse of disable: the re-activated version's workflows come back.
+      syncPluginWorkflows(db, name)
       return toPluginWire({ ...target, status: 'active' as const })
     })
     registry.invalidate(name)
@@ -1051,6 +1068,10 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       // other place stale asset directories are noticed.
     }
     registry.invalidate(name)
+    // Plan 315 — removing the ACTIVE version leaves none active, so its
+    // workflows go; removing a superseded one changes nothing, and the sync
+    // correctly does nothing.
+    syncPluginWorkflows(db, name)
 
     // One sweep, shared with `POST /:name/reset` — see `deleteDataImpl`.
     const kvDeleted = opts.deleteKv ? deleteDataImpl(name).entries : 0
@@ -1219,6 +1240,10 @@ export function createPluginRuntime(deps: PluginRuntimeDeps): PluginRuntime {
       else failed++
     }
     sweepDevSlotAssets()
+    // Plan 315 — one idempotent pass at boot, so the table matches every
+    // plugin's active version even after a build that predates the sync, or a
+    // crash between a lifecycle verb and its sync.
+    syncAllPluginWorkflows(db)
     return { ok, failed }
   }
 

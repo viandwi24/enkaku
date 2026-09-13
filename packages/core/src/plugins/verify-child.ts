@@ -9,12 +9,16 @@ import {
   unknownPluginEventTypesMessage,
   unsupportedIsolationMessage,
   validatePluginSurface,
+  PLUGIN_WORKFLOW_LIMIT,
+  WorkflowDocSchema,
   WorkflowNodeDescriptorSchema,
+  workflowScriptRefs,
   type ActionSpec,
   type IconName,
   type PluginServiceDeclaration,
   type PluginSurface,
   type RuntimeEnvelope,
+  type WorkflowDoc,
   type WorkflowNodeDescriptor,
 } from '@enkaku/protocol'
 import type { VerifyChildMessage } from './verify-child-entry'
@@ -105,6 +109,13 @@ export interface VerifyReport {
    * bundle into the core's own process, which is a separate, later decision.
    */
   service?: PluginServiceDeclaration
+  /**
+   * Plan 315 — the workflow documents this version ships, parsed and with each
+   * name PREFIXED (`<plugin>/<local name>`), present only when the bundle
+   * declared some and every one passed `finalizeReport`. What the manifest
+   * stores and `workflows/managed.ts` registers.
+   */
+  workflows?: WorkflowDoc[]
   resetPackages: string[]
   error?: string
   errorCode?: string
@@ -358,6 +369,49 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
     if (missing) return failure(missing, 'E_PLUGIN_HANDLER_NO_SERVICE')
   }
 
+  // Plan 315 — shipped workflow documents. Refused, not dropped: unlike an
+  // icon, a workflow is something an operator will run, and a plugin whose
+  // declared workflow silently failed to appear would be a plugin whose
+  // author never finds out. Each is re-parsed through the same
+  // `WorkflowDocSchema` every operator's save goes through, and its refs to
+  // THIS plugin's scripts must name a script this bundle actually has — the
+  // one kind of ref that can be proven right or wrong here, where the answer
+  // cannot change later. Refs to OTHER plugins' scripts are left to the farm's
+  // `/validate` (`workflows/managed.ts` says why).
+  let workflows: WorkflowDoc[] | undefined
+  if (msg.workflows !== undefined) {
+    if (!Array.isArray(msg.workflows)) return failure('`workflows` must be an array of workflow documents', 'E_PLUGIN_WORKFLOW_INVALID')
+    if (msg.workflows.length > PLUGIN_WORKFLOW_LIMIT) {
+      return failure(`declares ${msg.workflows.length} workflows, over the limit of ${PLUGIN_WORKFLOW_LIMIT}`, 'E_PLUGIN_WORKFLOW_INVALID')
+    }
+    workflows = []
+    const localNames = new Set<string>()
+    for (const [index, raw] of msg.workflows.entries()) {
+      const parsed = WorkflowDocSchema.safeParse(raw)
+      if (!parsed.success) {
+        const hint = raw && typeof raw === 'object' && typeof (raw as { name?: unknown }).name === 'string' ? ` "${(raw as { name: string }).name}"` : ''
+        return failure(
+          `workflow #${index + 1}${hint} is invalid — ${parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
+          'E_PLUGIN_WORKFLOW_INVALID',
+        )
+      }
+      const local = parsed.data.name
+      if (local.includes('/')) {
+        return failure(`workflow "${local}": write its name without "/" — the farm registers it as "${msg.pluginId}/<name>"`, 'E_PLUGIN_WORKFLOW_INVALID')
+      }
+      if (localNames.has(local)) return failure(`two workflows are both named "${local}"`, 'E_PLUGIN_WORKFLOW_INVALID')
+      localNames.add(local)
+      for (const ref of workflowScriptRefs(parsed.data)) {
+        if (!ref.startsWith(`${msg.pluginId}/`)) continue
+        const scriptId = ref.slice(msg.pluginId.length + 1).split('@')[0] ?? ''
+        if (!seen.has(scriptId)) {
+          return failure(`workflow "${local}" calls "${ref}", but this plugin has no script "${scriptId}"`, 'E_PLUGIN_WORKFLOW_INVALID')
+        }
+      }
+      workflows.push({ ...parsed.data, name: `${msg.pluginId}/${local}` })
+    }
+  }
+
   // Same cosmetic drop as a member's own icon, just above.
   const pluginIconCheck = msg.icon !== undefined ? IconNameSchema.safeParse(msg.icon) : undefined
 
@@ -371,6 +425,7 @@ function finalizeReport(msg: VerifyChildMessage, expectedVersion?: string): Veri
     scripts,
     ...(surface !== undefined ? { surface } : {}),
     ...(service !== undefined ? { service } : {}),
+    ...(workflows !== undefined && workflows.length > 0 ? { workflows } : {}),
     resetPackages: msg.resetPackages,
   }
 }

@@ -667,6 +667,8 @@ export interface WorkflowInfo {
   createdBy: string | null
   createdAt: number
   updatedAt: number
+  /** Plan 315 — the plugin that shipped this workflow, or `null` for an operator's own. Non-null means read-only: only `PUT`/`DELETE` are refused (409 `E_WORKFLOW_MANAGED`); running it, its presets, its pins, `/validate`, `/simulate`, `/coverage`, `/runs` all still work. */
+  pluginName: string | null
 }
 
 /** `GET /api/workflows` (plan 210 §4.3) — every workflow, sorted by name; small enough to carry the documents. */

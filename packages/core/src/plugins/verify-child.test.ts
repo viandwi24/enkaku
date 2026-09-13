@@ -744,3 +744,94 @@ describe('verifyPluginBundle — params are the INPUT schema', () => {
   }, 10_000)
 })
 
+
+/**
+ * Plan 315 — shipped workflow documents are re-validated by the parent, not
+ * trusted from the child: prefixed, parsed through the ordinary
+ * `WorkflowDocSchema`, and a ref to the plugin's OWN scripts must name a
+ * script the bundle has. Refs to other plugins are allowed through (the farm's
+ * `/validate` judges those, against what is installed).
+ */
+describe('shipped workflows (plan 315)', () => {
+  /*
+    Bundles for THIS block are written inside the package, not under the OS
+    tmpdir. A bundle in tmpdir resolves \`zod\` from nowhere on a machine
+    without Bun auto-install, and every verify in this file then fails with
+    E_PLUGIN_VERIFY_FAILED before reaching the check under test (observed on
+    the owner's Mac, 2026-09-14: 32 of 36 pre-existing tests fail that way,
+    identically before and after plan 315). Written here, resolution walks up
+    to the workspace's own node_modules, so these assertions test what they
+    name. Removed after each test.
+  */
+  const repoDirs: string[] = []
+  afterEach(() => {
+    for (const d of repoDirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  })
+  const writeRepoBundle = (source: string): string => {
+    const dir = mkdtempSync(join(import.meta.dir, '.verify-315-'))
+    repoDirs.push(dir)
+    const path = join(dir, 'bundle.mjs')
+    writeFileSync(path, source)
+    return path
+  }
+  const workflowBundle = (workflows: string) => `
+import { z } from 'zod'
+export default {
+  id: 'smm',
+  version: '1.0.0',
+  scripts: [{ id: 'add-group', params: z.object({}), run: async () => 'ok' }],
+  workflows: ${workflows},
+}
+`
+  const wf = (name: string, script: string) => `{
+    schema: 2, name: '${name}', title: 'Warm-up', description: '', params: [], entry: 'start', maxSteps: 50,
+    nodes: [
+      { id: 'start', kind: 'start', title: 'Start', enabled: true, ui: { x: 0, y: 0 }, next: 'run' },
+      { id: 'run', kind: 'script', title: 'Run', enabled: true, ui: { x: 0, y: 100 }, script: '${script}', params: {}, next: 'done' },
+      { id: 'done', kind: 'finish', title: 'Done', enabled: true, ui: { x: 0, y: 200 }, status: 'succeed', message: '' },
+    ],
+  }`
+
+  test('valid documents come back prefixed; a ref to another plugin is allowed through', async () => {
+    const path = writeRepoBundle(workflowBundle(`[${wf('warmup-rotation', 'tiktok/auto-scroll@latest')}, ${wf('upload-day', 'smm/add-group@latest')}]`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(true)
+    expect(report.workflows?.map((w) => w.name)).toEqual(['smm/warmup-rotation', 'smm/upload-day'])
+  })
+
+  test('a ref to a script THIS plugin does not have is refused by name', async () => {
+    const path = writeRepoBundle(workflowBundle(`[${wf('warmup-rotation', 'smm/no-such-script@latest')}]`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_WORKFLOW_INVALID')
+    expect(report.error).toContain('no script "no-such-script"')
+  })
+
+  test('a name written with the prefix is refused — the farm adds it', async () => {
+    const path = writeRepoBundle(workflowBundle(`[${wf('smm/warmup-rotation', 'smm/add-group@latest')}]`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_WORKFLOW_INVALID')
+  })
+
+  test('two documents with one name are refused', async () => {
+    const path = writeRepoBundle(workflowBundle(`[${wf('warmup', 'smm/add-group@latest')}, ${wf('warmup', 'smm/add-group@latest')}]`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.error).toContain('both named "warmup"')
+  })
+
+  test('a document the workflow schema rejects is refused, not dropped', async () => {
+    const path = writeRepoBundle(workflowBundle(`[{ schema: 2, name: 'broken', title: 'x', params: [], entry: 'start', nodes: [] }]`))
+    const report = await verifyPluginBundle(path)
+    expect(report.ok).toBe(false)
+    expect(report.errorCode).toBe('E_PLUGIN_WORKFLOW_INVALID')
+    expect(report.error).toContain('"broken"')
+  })
+
+  test('a plugin that ships none reports no workflows key at all', async () => {
+    const report = await verifyPluginBundle(writeRepoBundle(HEALTHY))
+    expect(report.ok).toBe(true)
+    expect('workflows' in report).toBe(false)
+  })
+})

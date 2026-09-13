@@ -337,6 +337,24 @@ function inputData(step: WorkflowStepRow | undefined, predecessorStep: WorkflowS
   return { state: 'value', value: step.input }
 }
 
+/**
+ * Plan 315 — the refusal body for a write to a workflow a plugin ships, or
+ * `null` when the row is an operator's (or absent, which the route reports
+ * itself). Enforced HERE, in the core, and not only by Studio hiding the
+ * buttons: the plugin rewrites this row on its next activation, so an edit
+ * accepted now would be silently lost later — refusing it is the honest
+ * answer, and naming the way forward (duplicate it) is the useful one.
+ */
+function managedRefusal(workflow: { name: string; pluginName: string | null } | null): { error: { code: string; message: string } } | null {
+  if (!workflow || workflow.pluginName === null) return null
+  return {
+    error: {
+      code: 'E_WORKFLOW_MANAGED',
+      message: `"${workflow.name}" is provided by the ${workflow.pluginName} plugin and changes only when that plugin does — duplicate it to make a workflow of your own`,
+    },
+  }
+}
+
 export function createWorkflowRoutes(deps: {
   db: Db
   registry: ScriptRegistry
@@ -411,6 +429,15 @@ export function createWorkflowRoutes(deps: {
     if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
     const validated = validateForWrite(registry, deps, body.data.doc)
     if (!validated.ok) return c.json(validated.body, validated.status)
+    // Plan 315 — a `/` is how a plugin's workflow is named (`smm/warmup-rotation`),
+    // so an operator's may not contain one. That is what makes a collision
+    // between the two impossible rather than merely unlikely.
+    if (validated.doc.name.includes('/')) {
+      return c.json(
+        { error: { code: 'E_WORKFLOW_NAME_RESERVED', message: `"${validated.doc.name}" contains "/", which is reserved for workflows a plugin ships — choose a name without it` } },
+        400,
+      )
+    }
     const workflow = store.create({ doc: validated.doc, createdBy: actorId(c) })
     deps.audit?.record({ userId: actorId(c), action: 'workflow.create', target: workflow.id, meta: { name: workflow.name } })
     return typedJson(c, WorkflowResponseSchema, { workflow }, 201)
@@ -418,6 +445,8 @@ export function createWorkflowRoutes(deps: {
 
   app.put('/:name', requirePermission('script.publish'), async (c) => {
     const name = c.req.param('name')
+    const managed = managedRefusal(store.get(name))
+    if (managed) return c.json(managed, 409)
     const body = DocBody.safeParse(await c.req.json().catch(() => null))
     if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: body.error.issues.map((i) => i.message).join('; ') } }, 400)
     const rawDoc = body.data.doc
@@ -438,6 +467,8 @@ export function createWorkflowRoutes(deps: {
     const name = c.req.param('name')
     const workflow = store.get(name)
     if (!workflow) throw new EnkakuError('workflow_not_found', `no workflow named "${name}"`)
+    const managed = managedRefusal(workflow)
+    if (managed) return c.json(managed, 409)
     store.remove(name)
     deps.pins.removeAll(name)
     deps.audit?.record({ userId: actorId(c), action: 'workflow.delete', target: workflow.id, meta: { name } })
