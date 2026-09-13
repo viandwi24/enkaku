@@ -318,11 +318,10 @@ export const PostSchema = z
      * platform's label".
      *
      * Empty is the default and the original behaviour: the label decides, and
-     * a phone labelled later is picked up with no edit. A non-empty list
-     * narrows that — it never widens it. A device named here that does not
-     * carry the platform's label is still not eligible, because the label is
-     * what says "this phone posts to Instagram" and a device picker is not a
-     * way to overrule it.
+     * a phone labelled later is picked up with no edit. A non-empty list is
+     * the operator naming the phones, and those phones are used as named,
+     * labelled or not (0.11.0 — `planDispatch` says why the older "narrows,
+     * never widens" rule was retired).
      *
      * Defaulted so a row written before this field existed still parses, and
      * parses as "any", which is what those posts meant.
@@ -612,19 +611,35 @@ export function planDispatch(input: {
     }
 
     /*
-      The operator's chosen phones NARROW the label's fleet; they never widen
-      it. A device picked here that does not carry the platform's label is
-      still not eligible — the label is what says "this phone posts to
-      Instagram", and a picker is not a way to overrule it. An empty list
-      means "any", which is what every post written before the picker existed
-      meant.
+      Who may post, decided by who chose.
+
+      - **No phones chosen** (`deviceIds` empty): the platform's LABEL is the
+        fleet. The label is the operator's standing statement "this phone
+        holds a TikTok account", and it is the only statement there is.
+      - **Phones chosen**: those phones ARE the statement. The Social posts
+        page asks for the platforms and the phones in one form, so choosing
+        both already says "these phones post to these platforms". Requiring a
+        separate label on top made that choice silently worthless — measured
+        on the owner's production farm, 2026-09-14: a started session of five
+        videos over hand-picked, unlabelled phones sat at "Waiting for a phone"
+        for twenty minutes with nothing sent and nothing anyone could see
+        fail. A chosen phone that is NOT signed in to the platform fails its
+        upload by name and can be retried, which is the honest outcome; a
+        post that can never send is not.
+
+      This used to read "chosen phones narrow the label's fleet, never widen
+      it" (0.4.x). It is widened here on purpose, and only for rows that name
+      their phones.
     */
-    const allowed = post.deviceIds.length === 0 ? devices : devices.filter((d) => post.deviceIds.includes(d.id))
-    const eligible = allowed.filter((d) => isDeviceFree(d) && deviceCarriesPlatform(d.labels, platform))
+    const explicit = post.deviceIds.length > 0
+    const allowed = explicit ? devices.filter((d) => post.deviceIds.includes(d.id)) : devices
+    const eligible = allowed.filter((d) => isDeviceFree(d) && (explicit || deviceCarriesPlatform(d.labels, platform)))
     if (eligible.length === 0) {
-      const note = post.deviceIds.length > 0 && !allowed.some((d) => deviceCarriesPlatform(d.labels, platform))
-        ? `None of the phones chosen for this post carries the "${platform.label}" label, so it can never send. Either label one of them or widen the choice.`
-        : allowed.some((d) => deviceCarriesPlatform(d.labels, platform))
+      const note = explicit
+        ? allowed.length === 0
+          ? `None of the phones chosen for this post is connected to the farm any more. Reconnect one, or choose other phones.`
+          : `Every phone chosen for this post is offline or busy. Waiting.`
+        : devices.some((d) => deviceCarriesPlatform(d.labels, platform))
         ? `Every phone labelled "${platform.label}" is offline or busy. Waiting.`
         : `No phone carries the "${platform.label}" label yet. Add it on the Devices screen and this will send itself.`
       // Only write when the WORDING changes — the two notes above distinguish

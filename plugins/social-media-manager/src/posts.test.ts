@@ -435,13 +435,13 @@ describe('planDispatch — the router never retries a settled platform on its ow
   }
 })
 
-describe('planDispatch — a chosen phone list narrows the label’s fleet, never widens it', () => {
+describe('planDispatch — who may post is decided by who chose', () => {
   const labelled = (id: string) => device({ id, labels: [{ name: 'tiktok' }] })
   const unlabelled = (id: string) => device({ id, labels: [] })
 
-  test('empty means any — what every post written before the picker existed meant', () => {
+  test('nothing chosen: the platform label is the fleet', () => {
     const p = { ...post(), deviceIds: [] }
-    const plan = planDispatch({ post: p, devices: [labelled('d1'), labelled('d2')], now: NOW, maxDevicesPerPlatform: 5 })
+    const plan = planDispatch({ post: p, devices: [labelled('d1'), labelled('d2'), unlabelled('d3')], now: NOW, maxDevicesPerPlatform: 5 })
     expect(plan.dispatches.map((d) => d.deviceId).sort()).toEqual(['d1', 'd2'])
   })
 
@@ -452,24 +452,38 @@ describe('planDispatch — a chosen phone list narrows the label’s fleet, neve
   })
 
   /*
-    The label is what says "this phone posts to TikTok". A device picker is a
-    way to send to FEWER phones, not a way to overrule that — otherwise an
-    operator could aim a post at a phone with no TikTok account on it.
+    The regression this pins, measured on the owner's production farm
+    (2026-09-14): a session made on the Social posts page over phones chosen by
+    the label "test 5" — none carrying "tiktok" or "youtube" — was started and
+    sent nothing, ever, with every row reading "Waiting for a phone". Choosing
+    the platforms and the phones in one form already says these phones post to
+    these platforms.
   */
-  test('choosing a phone that lacks the label does not make it eligible', () => {
+  test('a chosen phone is eligible WITHOUT the platform label', () => {
     const p = { ...post(), deviceIds: ['d9'] }
     const plan = planDispatch({ post: p, devices: [labelled('d1'), unlabelled('d9')], now: NOW, maxDevicesPerPlatform: 5 })
-    expect(plan.dispatches).toEqual([])
-    expect(plan.states.tiktok?.state).toBe('pending')
-    // And it says which of the two problems this is, rather than the generic
-    // "everything is busy" that would send the operator looking at uptime.
-    expect(plan.states.tiktok?.note).toContain('None of the phones chosen for this post')
+    expect(plan.dispatches.map((d) => d.deviceId)).toEqual(['d9'])
   })
 
-  test('a chosen phone that is merely busy still reads as a normal wait', () => {
-    const busy = device({ id: 'd2', labels: [{ name: 'tiktok' }], activities: [{ kind: 'job' }] })
+  test('a chosen phone that is busy reads as a normal wait', () => {
+    const busy = device({ id: 'd2', labels: [], activities: [{ kind: 'job' }] })
     const p = { ...post(), deviceIds: ['d2'] }
     const plan = planDispatch({ post: p, devices: [busy], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches).toEqual([])
+    expect(plan.states.tiktok?.state).toBe('pending')
     expect(plan.states.tiktok?.note).toContain('offline or busy')
+  })
+
+  test('chosen phones that are no longer on the farm say so, rather than waiting on nothing', () => {
+    const p = { ...post(), deviceIds: ['gone'] }
+    const plan = planDispatch({ post: p, devices: [labelled('d1')], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches).toEqual([])
+    expect(plan.states.tiktok?.note).toContain('is connected to the farm any more')
+  })
+
+  test('nothing chosen and nothing labelled still names the label to add', () => {
+    const p = { ...post(), deviceIds: [] }
+    const plan = planDispatch({ post: p, devices: [unlabelled('d1')], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.states.tiktok?.note).toContain('No phone carries the "tiktok" label')
   })
 })

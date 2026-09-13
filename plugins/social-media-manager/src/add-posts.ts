@@ -66,7 +66,7 @@ const params = z.object({
   deviceIds: z
     .array(z.string().min(1))
     .optional()
-    .describe('Which phones these posts may go to. Leave empty for any phone carrying the platform’s label — a choice here narrows that fleet, it never widens it.')
+    .describe('Which phones these posts may go to. Leave empty for any phone carrying the platform’s label; choose phones and those phones are used as chosen, labelled or not.')
     .meta(ui({ title: 'Phones', kind: 'deviceIds', group: 'Post' })),
 })
 

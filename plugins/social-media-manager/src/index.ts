@@ -59,6 +59,21 @@ import {
  *
  * ## Changelog
  *
+ * - **0.11.0 — phones you choose are phones that post.** A session over phones
+ *   chosen on the Social posts page (by name, or by a label such as "test 5")
+ *   also needed each phone to carry the PLATFORM label (`tiktok`, `youtube`)
+ *   before the router would send to it — the old "a choice narrows the
+ *   label's fleet, never widens it" rule. The page asks for platforms and
+ *   phones in one form, so that rule made the choice silently worthless: on
+ *   the owner's production farm (2026-09-14) a started session of five videos
+ *   over five "test 5" phones sent nothing and showed no failure, only
+ *   "Waiting for a phone" on every row. Now a row that names its phones sends
+ *   to those phones as they are; the platform label decides only when no
+ *   phone is named. A chosen phone not signed in to the platform fails its
+ *   upload by name and can be retried. And the page refuses to create a
+ *   session that resolves to no phone at all — that was a warning, and a
+ *   warning is not read by someone pressing Create and start.
+ *
  * - **0.10.0 — ships the warm-up rotation as a workflow.** The three-platform
  *   warm-up the owner built in Studio (plan 314: `($device.number + slot) % 3`
  *   chooses TikTok, Instagram or YouTube per session, each branch shuffling
@@ -792,7 +807,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.10.0',
+  version: '0.11.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok and YouTube post today; Instagram is declared and has no verified upload flow yet.',

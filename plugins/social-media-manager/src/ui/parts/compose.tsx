@@ -55,11 +55,10 @@ import {
  * ## The two sentences this screen exists to say
  *
  * - **"goes to 38 phones"** — the fleet the choice above resolves to, worked
- *   out the same way `routeTargets` works it out on the service side:
- *   `deviceIds` NARROWS, and the platform's own label is still required on top
- *   of it (`posts.ts`'s `allowed` ∩ `deviceCarriesPlatform`). A screen that
- *   counted only the ticked boxes would promise forty phones for a choice that
- *   resolves to none.
+ *   out the same way `planDispatch` works it out on the service side: with no
+ *   phones chosen, every phone carrying a chosen platform's label; with phones
+ *   chosen (by name or by label), exactly those phones. A screen whose count
+ *   disagreed with the router would promise phones and send to none.
  * - **"about 20 to 59 minutes from Start"** — the span `planSchedule` will
  *   actually produce: it draws a gap BETWEEN successive turns, so forty videos
  *   have thirty-nine gaps, not forty. Concurrency is a cap on how many may be
@@ -326,7 +325,18 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     return fleet.filter((d) => chosenDevices.has(d.id))
   }, [phoneMode, fleet, chosenLabels, chosenDevices])
 
-  const resolved = useMemo(() => resolveFleet(pool, chosenPlatforms), [pool, chosenPlatforms])
+  /*
+    The router's own rule (\`posts.ts\` \`planDispatch\`): phones the operator
+    CHOSE are eligible for the chosen platforms as they are; only the default
+    mode, where nothing is chosen, lets the platform label pick the fleet. A
+    count that applied the label to a chosen pool would promise nothing and
+    deliver nothing — the owner's production session of 2026-09-14 was
+    exactly that.
+  */
+  const resolved = useMemo(
+    () => (phoneMode === 'labelled' ? resolveFleet(pool, chosenPlatforms) : chosenPlatforms.length === 0 ? [] : pool),
+    [phoneMode, pool, chosenPlatforms],
+  )
   const onlineResolved = useMemo(() => resolved.filter((d) => d.status === 'online').length, [resolved])
 
   /**
@@ -390,11 +400,25 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
         `${chosenIds.length} video${chosenIds.length === 1 ? '' : 's'} but ${captionLines.length} caption line${captionLines.length === 1 ? '' : 's'}. Give one line (used for every video) or exactly one line per video.`,
       )
     }
+    /*
+      A refusal, not a warning. It used to be a warning, and a warning is not
+      read by someone about to press Create and start: the owner's production
+      farm started a session that resolved to no phone and it sat, sending
+      nothing, with no failure anywhere to find. A session that can never send
+      is not something this page may create.
+    */
+    if (chosenPlatforms.length > 0 && resolved.length === 0) {
+      out.push(
+        phoneMode === 'labelled'
+          ? `No phone carries the ${chosenPlatforms.map((p) => `“${platformLabel(p)}”`).join(' or ')} label, so nothing would ever be sent. Label the phones that post to it on the Devices screen, or choose phones by name below.`
+          : 'The phones you chose resolve to none, so nothing would ever be sent. Choose at least one phone.',
+      )
+    }
     if (host === null) {
       out.push('No phone is online. The farm runs this session’s bookkeeping as a job on a phone, so one has to be reachable — nothing is posted by that job.')
     }
     return out
-  }, [uploading, chosenIds.length, chosenPlatforms.length, title, phoneMode, chosenLabels.size, chosenDevices.size, captionLines.length, host])
+  }, [uploading, chosenIds.length, chosenPlatforms, title, phoneMode, chosenLabels.size, chosenDevices.size, captionLines.length, host, resolved.length])
 
   // --- what is worth saying without stopping anything ----------------------
   const warnings = useMemo(() => {
@@ -403,9 +427,6 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
       out.push(
         `${concurrency} at a time is more than this farm is likely to manage. On a laptop driving forty phones the real limit is adb, not this number — the extra turns queue behind it rather than going faster.`,
       )
-    }
-    if (chosenPlatforms.length > 0 && resolved.length === 0) {
-      out.push('This resolves to no phone, so the session would be created and hold everything. Label the phones that post to this platform, or widen the choice above.')
     }
     if (assignment === 'one-per-phone' && resolved.length > 0 && chosenIds.length > resolved.length) {
       out.push(
@@ -675,7 +696,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           ))}
         </Step>
 
-        <Step n={4} title="Which phones" hint="A choice here narrows the platform’s own label. It never widens it.">
+        <Step n={4} title="Which phones" hint="Phones you choose are used as chosen. Leave it on the first option to use every phone carrying the platform’s label.">
           <Select value={phoneMode} onValueChange={(next) => setPhoneMode(next as PhoneMode)}>
             <SelectTrigger className="w-full @md:w-80">
               <SelectValue />
