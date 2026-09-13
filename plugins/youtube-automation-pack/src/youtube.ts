@@ -160,6 +160,36 @@ export function isReady(tree: UiNode): boolean {
 }
 
 /**
+ * What YouTube may ask for on the screens this pack walks, answered before it opens (0.27.0).
+ *
+ * On Android 14+ the system permission dialog is hidden from the farm's reader; the production
+ * SM-A075F fleet (2026-09-14) stopped on "YouTube is asking for access to photos and videos" on
+ * phones where nobody had answered it. So, before launch:
+ *
+ * - **media and notifications are GRANTED** — the gallery is how a Short is uploaded;
+ * - **the camera is REFUSED, and fixed** — this flow was walked with the camera refused, and a
+ *   phone that granted it shows a different Create screen whose anchors are not there (see
+ *   `post-video.ts`). The owner's moto that walked it holds exactly `granted=false, USER_FIXED`,
+ *   and on that state the dialog never appears.
+ *
+ * The microphone is left as the phone has it: the walked Create screen never asks for it.
+ * Never fatal — an older core without these capabilities logs a warning and the run continues;
+ * `post-video`'s own hidden-dialog check still names a dialog that does appear.
+ */
+async function answerPermissionsBeforeLaunch(ctx: ScriptContext<unknown>): Promise<void> {
+  try {
+    const granted = await ctx.device.app.grantPermissions(YOUTUBE_PACKAGE, ['READ_MEDIA_VIDEO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VISUAL_USER_SELECTED', 'READ_EXTERNAL_STORAGE', 'POST_NOTIFICATIONS'])
+    const denied = await ctx.device.app.denyPermissions(YOUTUBE_PACKAGE, ['CAMERA'])
+    const changed = [...granted.filter((r) => r.outcome === 'granted').map((r) => `${r.permission} granted`), ...denied.filter((r) => r.outcome === 'denied').map((r) => `${r.permission} refused`)]
+    const failed = [...granted, ...denied].filter((r) => r.outcome === 'failed')
+    if (changed.length > 0) ctx.log.info('set YouTube permissions before launch, so their dialogs never show', { changed: changed.join(', ') })
+    if (failed.length > 0) ctx.log.warn('some YouTube permissions could not be set — their dialog may still appear, hidden from this run', { failed: failed.map((f) => `${f.permission}: ${f.detail ?? ''}`).join('; ') })
+  } catch (err) {
+    ctx.log.warn('could not set YouTube permissions before launch — continuing; a hidden permission dialog may stop the run', { error: String(err) })
+  }
+}
+
+/**
  * Force-stop, launch, and WAIT FOR THE APP — not for a fixed five seconds.
  *
  * Every launch site in this pack slept `5_000` and then acted. On the owner's
@@ -179,6 +209,7 @@ export function isReady(tree: UiNode): boolean {
  * found.
  */
 export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecents?: boolean }): Promise<void> {
+  await answerPermissionsBeforeLaunch(ctx)
   await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: opts?.clearRecents ?? true })
   await ctx.device.app.launch(YOUTUBE_PACKAGE)
   await sleep(3_000)

@@ -330,7 +330,7 @@ async function readOwnChannel(ctx: ScriptContext<unknown>, label: string): Promi
 }
 
 const PERMISSION_HELP =
-  'answer it once on the phone — camera: "Jangan izinkan" (uploads never need it; a second refusal makes it permanent), photos and videos: "Izinkan semua" — then re-run. Android hides these dialogs from the farm\'s reader, so a run cannot answer them.'
+  'the farm sets these before YouTube opens (photos and videos allowed, camera refused), so this means that step did not take on this phone — check the run log for "could not set YouTube permissions", or answer it once on the phone (camera: "Jangan izinkan", photos and videos: "Izinkan semua") and re-run. Android hides these dialogs from the farm\'s reader, so a run cannot answer them itself.'
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false
@@ -404,7 +404,10 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     // auto-rotate on every YouTube launch, over the farm's own portrait lock.
     const homeFrame = frameOf(home)
     if (homeFrame.width > homeFrame.height) {
-      fail('E_SCREEN_LANDSCAPE', `YouTube opened in landscape (${homeFrame.width}x${homeFrame.height}). Stand the phone upright or lock it to portrait, then re-run — this flow taps positions measured in portrait.`)
+      fail(
+        'E_SCREEN_LANDSCAPE',
+        `YouTube opened in landscape (${homeFrame.width}x${homeFrame.height}) even though the farm re-locks rotation when an app opens. Check the device's rotation setting is "lock-portrait" (Devices → the phone → Settings), then re-run — this flow taps positions measured in portrait.`,
+      )
     }
     if (!createButton(home)) {
       // The signed-out app has no Create button at all; say which, rather than "anchor not found".

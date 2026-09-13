@@ -111,6 +111,7 @@ const READY_TIMEOUT_MS = 25_000
  * actually found, which is a better error than one invented here.
  */
 export async function relaunch(ctx: ScriptContext<unknown>): Promise<void> {
+  await answerPermissionsBeforeLaunch(ctx)
   await ctx.device.app.forceStop(TIKTOK_PACKAGE)
   await ctx.device.app.launch(TIKTOK_PACKAGE)
   await sleep(3_000)
@@ -127,6 +128,39 @@ export async function relaunch(ctx: ScriptContext<unknown>): Promise<void> {
     }
   }
   ctx.log.warn(`the feed did not appear within ${READY_TIMEOUT_MS / 1000}s of launching — continuing, and the next anchor will say where the device is`)
+}
+
+/**
+ * The runtime permissions TikTok asks for on the screens this pack walks: camera and microphone on
+ * the create screen, media for the gallery, notifications at launch (Android 13+). Contacts is
+ * deliberately NOT here — TikTok's own "allow access to contacts" prompt is a visible TikTok modal
+ * that `tt.contacts` refuses, and the farm's allowlist would not grant it anyway.
+ */
+const TIKTOK_PERMISSIONS = ['CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_VIDEO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VISUAL_USER_SELECTED', 'READ_EXTERNAL_STORAGE', 'POST_NOTIFICATIONS'] as const
+
+/**
+ * Answer TikTok's permission dialogs before TikTok can show them (1.30.0).
+ *
+ * On Android 14+ the system permission dialog is hidden from the farm's reader, and so is TikTok
+ * behind it: on the owner's production SM-A075F fleet (2026-09-14) every upload stopped at
+ * "the dump reads unknown" with Samsung's "Izinkan TikTok mengambil gambar dan merekam video?" on
+ * screen, because nobody had ever answered it on those phones. The dev farm's moto worked only
+ * because its owner had answered the same dialogs by hand. Granting through the package manager
+ * before launch means the dialog is never shown, on any phone, first run or not.
+ *
+ * Never fatal. A core older than this capability refuses the call, and a phone where a grant does
+ * not take still gets its run — the settle loop names what it finds, exactly as before.
+ */
+async function answerPermissionsBeforeLaunch(ctx: ScriptContext<unknown>): Promise<void> {
+  try {
+    const results = await ctx.device.app.grantPermissions(TIKTOK_PACKAGE, TIKTOK_PERMISSIONS)
+    const granted = results.filter((r) => r.outcome === 'granted').map((r) => r.permission)
+    const failed = results.filter((r) => r.outcome === 'failed')
+    if (granted.length > 0) ctx.log.info('granted TikTok permissions before launch, so their dialogs never show', { granted: granted.join(', ') })
+    if (failed.length > 0) ctx.log.warn('some TikTok permissions could not be granted — their dialog may still appear, hidden from this run', { failed: failed.map((f) => `${f.permission}: ${f.detail ?? ''}`).join('; ') })
+  } catch (err) {
+    ctx.log.warn('could not set TikTok permissions before launch — continuing; a hidden permission dialog may stop the run', { error: String(err) })
+  }
 }
 
 /** Save the current tree and a screenshot under one label — a failed run should carry its own bug report. */

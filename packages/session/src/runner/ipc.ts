@@ -42,6 +42,10 @@ export const DeviceCallSchema = z.discriminatedUnion('method', [
   // (`device-executor.ts`) is what actually guarantees injection safety.
   z.object({ method: z.literal('app.launch'), args: DEVICE_CALL_ARGS['app.launch'] }),
   z.object({ method: z.literal('app.forceStop'), args: DEVICE_CALL_ARGS['app.forceStop'] }),
+  // A closed allowlist of runtime permissions (`GRANTABLE_APP_PERMISSIONS`), validated here as
+  // well as at the executor: the enum is what stops a script granting itself contacts or location.
+  z.object({ method: z.literal('app.grantPermissions'), args: DEVICE_CALL_ARGS['app.grantPermissions'] }),
+  z.object({ method: z.literal('app.denyPermissions'), args: DEVICE_CALL_ARGS['app.denyPermissions'] }),
   z.object({ method: z.literal('clipboard.get'), args: DEVICE_CALL_ARGS['clipboard.get'] }),
   z.object({ method: z.literal('clipboard.set'), args: DEVICE_CALL_ARGS['clipboard.set'] }),
   // File transfer and APK install (plan 39 §4.6) — the child never touches

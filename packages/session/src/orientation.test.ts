@@ -40,12 +40,18 @@ function fakeDevice(
     declineWrite?: string[]
     /** Commands whose prefix matches throw instead of answering. */
     throwOn?: string
+    /** What `wm fixed-to-user-rotation` reports before anything is written. Default `default`. */
+    fixed?: string
+    /** A build with no `wm fixed-to-user-rotation` at all (pre-Android 10, or an OEM that removed it). */
+    noWm?: boolean
   } = {},
 ) {
   const store: Record<string, string | undefined> = {
     accelerometer_rotation: opts.accel,
     user_rotation: opts.user,
   }
+  /** The display pin, separate from `store` (which models `settings` only). */
+  const display = { fixed: opts.fixed ?? 'default' }
   const calls: string[] = []
   const ok = (stdout: string) => ({ stdout, stderr: '', exitCode: 0 })
   const transport = {
@@ -69,10 +75,17 @@ function fakeDevice(
       if (cmd.includes('SurfaceOrientation')) {
         return ok(opts.legacySurfaceOrientation ? `  SurfaceOrientation: ${opts.legacySurfaceOrientation}\n` : '')
       }
+      const wm = /^wm fixed-to-user-rotation(?: (\w+))?$/.exec(cmd)
+      if (wm) {
+        if (opts.noWm) return { stdout: '', stderr: 'Unknown command: fixed-to-user-rotation', exitCode: 255 }
+        if (wm[1] === undefined) return ok(`${display.fixed}\n`)
+        display.fixed = wm[1] as string
+        return ok('')
+      }
       return ok('')
     },
   } as unknown as Transport
-  return { transport, calls, store }
+  return { transport, calls, store, display }
 }
 
 describe('applyRotation — plan 85 §3.7, §4.1, step 85.8, acceptance #16', () => {
@@ -93,8 +106,10 @@ describe('applyRotation — plan 85 §3.7, §4.1, step 85.8, acceptance #16', ()
     expect(calls).toEqual([
       'settings get system accelerometer_rotation',
       'settings get system user_rotation',
+      'wm fixed-to-user-rotation',
       'settings put system accelerometer_rotation 0',
       'settings put system user_rotation 0',
+      'wm fixed-to-user-rotation enabled',
       'settings get system accelerometer_rotation',
       'settings get system user_rotation',
     ])
@@ -180,7 +195,7 @@ describe('applyRotation — revert (acceptance #16)', () => {
     const lock = await applyRotation(transport, { rotation: 'lock-portrait', log })
     calls.length = 0
     await lock.revert()
-    expect(calls).toEqual(['settings put system accelerometer_rotation 0', 'settings put system user_rotation 1'])
+    expect(calls).toEqual(['settings put system accelerometer_rotation 0', 'settings put system user_rotation 1', 'wm fixed-to-user-rotation default'])
   })
 
   // The regression this exists to catch: a device already manually locked to
@@ -204,7 +219,7 @@ describe('applyRotation — revert (acceptance #16)', () => {
     const lock = await applyRotation(transport, { rotation: 'lock-portrait', log })
     calls.length = 0
     await lock.revert()
-    expect(calls).toEqual(['settings put system accelerometer_rotation 1'])
+    expect(calls).toEqual(['settings put system accelerometer_rotation 1', 'wm fixed-to-user-rotation default'])
   })
 
   test('an unreadable prior user_rotation is left untouched on revert (no guessed orientation is ever written) and is logged', async () => {
@@ -216,7 +231,7 @@ describe('applyRotation — revert (acceptance #16)', () => {
     ])
     calls.length = 0
     await lock.revert()
-    expect(calls).toEqual(['settings put system accelerometer_rotation 1'])
+    expect(calls).toEqual(['settings put system accelerometer_rotation 1', 'wm fixed-to-user-rotation default'])
   })
 
   test('revert is idempotent: calling it twice issues the same writes twice, and is safe', async () => {
@@ -229,8 +244,10 @@ describe('applyRotation — revert (acceptance #16)', () => {
     expect(calls).toEqual([
       'settings put system accelerometer_rotation 1',
       'settings put system user_rotation 0',
+      'wm fixed-to-user-rotation default',
       'settings put system accelerometer_rotation 1',
       'settings put system user_rotation 0',
+      'wm fixed-to-user-rotation default',
     ])
   })
 })
@@ -333,6 +350,7 @@ describe('applyRotation — owned: false (the fast-path control build)', () => {
     expect(calls).toEqual([
       'settings put system accelerometer_rotation 0',
       'settings put system user_rotation 1',
+      'wm fixed-to-user-rotation enabled',
       'settings get system accelerometer_rotation',
       'settings get system user_rotation',
     ])
@@ -361,5 +379,40 @@ describe('applyRotation — owned: false (the fast-path control build)', () => {
     expect(store).toEqual({ accelerometer_rotation: '0', user_rotation: '1' })
     await lock.revert()
     expect(store).toEqual({ accelerometer_rotation: '1', user_rotation: '0' })
+  })
+})
+
+/**
+ * The display pin (2026-09-14). `user_rotation` with auto-rotate off is honoured only by apps that
+ * follow the user's rotation; YouTube opened in landscape on the owner's production SM-A075F fleet,
+ * lying on its side, with the settings lock in place. `wm fixed-to-user-rotation enabled` makes the
+ * display follow the lock whatever the app asks for — and it must be put back on close, or the phone
+ * stays pinned after the farm lets go.
+ */
+describe('applyRotation — the display is pinned to the lock, and unpinned on close', () => {
+  test("pins the display, and restores the device's own prior pin on close", async () => {
+    const { transport, display } = fakeDevice({ accel: '1', user: '0', fixed: 'disabled' })
+    const { log } = silentLog()
+    const lock = await applyRotation(transport, { rotation: 'lock-portrait', log })
+    expect(display.fixed).toBe('enabled')
+    await lock.revert()
+    expect(display.fixed).toBe('disabled')
+  })
+
+  test('a build without the command still locks — applied stays true — and says the pin did not take', async () => {
+    const { transport } = fakeDevice({ accel: '1', user: '0', noWm: true })
+    const { log, warnings } = silentLog()
+    const lock = await applyRotation(transport, { rotation: 'lock-portrait', log })
+    expect(lock.outcome.applied).toBe(true)
+    expect(warnings.some((w) => w.includes('could not pin the display'))).toBe(true)
+  })
+
+  test('"device" never touches the pin', async () => {
+    const { transport, calls, display } = fakeDevice({ fixed: 'enabled' })
+    const { log } = silentLog()
+    const lock = await applyRotation(transport, { rotation: 'device', log })
+    await lock.revert()
+    expect(calls.some((c) => c.startsWith('wm '))).toBe(false)
+    expect(display.fixed).toBe('enabled')
   })
 })

@@ -116,6 +116,9 @@ export const ARG_REDACTION: Record<DeviceCallMethod, ArgRedaction> = {
   screenshot: 'plain',
   'app.launch': 'plain',
   'app.forceStop': 'plain',
+  // A package name and permission constants — nothing secret in either.
+  'app.grantPermissions': 'plain',
+  'app.denyPermissions': 'plain',
   'clipboard.get': 'plain',
   // The other half of the same rule — a clipboard write is how a script that
   // knows better than to `type` a secret pastes one instead.

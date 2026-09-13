@@ -1211,3 +1211,67 @@ describe('via: "adb" — the per-call escape hatch', () => {
     expect(cmds).toEqual([])
   })
 })
+
+/**
+ * The rotation lock is re-asserted at the moment an app opens (2026-09-14): the lock used to be
+ * written only when the always-on session started, and a phone lying on its side opened YouTube in
+ * landscape on the owner's production fleet. And the two permission verbs reach the package
+ * manager through the same session transport every other app verb uses.
+ */
+describe('createDeviceExecutor — app launch re-locks rotation; permission verbs', () => {
+  function sessionWithRotation(mode: 'device' | 'lock-portrait', cmds: string[]) {
+    const sets: string[] = []
+    const session = {
+      deviceId: 'dev-1',
+      inspector: null,
+      transport: {
+        exec: async (cmd: string) => {
+          cmds.push(cmd)
+          if (cmd.startsWith('dumpsys package')) {
+            return { stdout: 'Package [com.example.app] (x):\n  android.permission.CAMERA: granted=false, flags=[ ]\n', stderr: '', exitCode: 0 }
+          }
+          return { stdout: '', stderr: '', exitCode: 0 }
+        },
+        execOut: async () => new Uint8Array(),
+      },
+      rotation: {
+        mode,
+        outcome: { mode, target: mode === 'device' ? null : '0', applied: true },
+        set: async (next: string) => {
+          sets.push(next)
+          return { mode: next, target: '0', applied: true }
+        },
+        revert: async () => {},
+      },
+    } as unknown as DeviceSession
+    return { session, sets }
+  }
+
+  test('app.launch re-asserts a portrait lock BEFORE launching', async () => {
+    const cmds: string[] = []
+    const { session, sets } = sessionWithRotation('lock-portrait', cmds)
+    const execute = createDeviceExecutor({ session })
+    await execute(call('app.launch', { pkg: 'com.google.android.youtube' }))
+    expect(sets).toEqual(['lock-portrait'])
+    expect(cmds.some((c) => c.startsWith('monkey -p'))).toBe(true)
+  })
+
+  test('app.launch leaves rotation alone when the device is set to "device"', async () => {
+    const { session, sets } = sessionWithRotation('device', [])
+    const execute = createDeviceExecutor({ session })
+    await execute(call('app.launch', { pkg: 'com.google.android.youtube' }))
+    expect(sets).toEqual([])
+  })
+
+  test('app.grantPermissions and app.denyPermissions run through the session transport', async () => {
+    const cmds: string[] = []
+    const { session } = sessionWithRotation('device', cmds)
+    const execute = createDeviceExecutor({ session })
+    await execute(call('app.grantPermissions', { pkg: 'com.example.app', permissions: ['CAMERA'] }))
+    await execute(call('app.denyPermissions', { pkg: 'com.example.app', permissions: ['CAMERA'] }))
+    expect(cmds.filter((c) => c.startsWith('pm '))).toEqual([
+      "pm grant 'com.example.app' android.permission.CAMERA",
+      "pm set-permission-flags 'com.example.app' android.permission.CAMERA user-set user-fixed",
+    ])
+  })
+})

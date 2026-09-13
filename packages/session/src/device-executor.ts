@@ -25,6 +25,7 @@ import type { DeviceCall } from './runner/ipc'
 import type { DeviceSession } from './session'
 import { resolveTextRoute } from './text-input'
 import type { TransferPort } from './types'
+import { denyAppPermissions, grantAppPermissions } from './app-permissions'
 
 /**
  * Plan 91 §3.3, §4.1 — every executor whose caller has not yet been given a
@@ -759,6 +760,20 @@ export function createDeviceExecutor(deps: {
         // A URL wins over an activity: the caller asked for a specific page, not a specific screen.
         const pkg = call.args.pkg
         const exec = (cmd: string) => deps.session.transport.exec(cmd, { profile: 'appLifecycle' })
+        /*
+          Re-assert the session's rotation lock at the moment an app opens.
+
+          The lock is written when the device's always-on session starts, and nothing re-applied it
+          afterwards — so a phone lying on its side opened YouTube in landscape (1600x720) on the
+          owner's production SM-A075F fleet (2026-09-14) and on their moto before that, and every
+          flow that taps positions measured in portrait failed. An app launch is exactly when an
+          app's own orientation request meets the lock, so this is where it is re-asserted: four
+          settings calls plus the display pin (`orientation.ts`), and a no-op for 'device'.
+          Failure never blocks the launch — the lock reports its own outcome, and a launch that
+          should happen still happens.
+        */
+        const lock = deps.session.rotation
+        if (lock && lock.mode !== 'device') await lock.set(lock.mode).catch(() => undefined)
         // An explicit target is the caller's own instruction: launch it, and
         // report whatever the platform says. There is nothing to fall back to
         // — a named activity that does not exist is the caller's mistake, not
@@ -809,6 +824,14 @@ export function createDeviceExecutor(deps: {
           await deps.session.transport.exec(cmd, { profile: 'appLifecycle' }).catch(() => undefined)
         }
         return undefined
+      }
+      case 'app.grantPermissions': {
+        // `app-permissions.ts` says why: grant before the app opens, because Android 14+ hides the
+        // dialog it would otherwise show from everything this farm can read.
+        return grantAppPermissions((cmd) => deps.session.transport.exec(cmd, { profile: 'appLifecycle' }), call.args.pkg, call.args.permissions)
+      }
+      case 'app.denyPermissions': {
+        return denyAppPermissions((cmd) => deps.session.transport.exec(cmd, { profile: 'appLifecycle' }), call.args.pkg, call.args.permissions)
       }
       case 'clipboard.get': {
         if (!deps.session.clipboard) {

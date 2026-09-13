@@ -182,6 +182,80 @@ export const AppForceStopArgsSchema = z.object({
   clearRecents: z.boolean().optional(),
 })
 
+/**
+ * Runtime permissions a script may grant to an app it drives — these and no others.
+ *
+ * Why a script needs this at all: on Android 14+ the system permission dialog is an
+ * "accessibility data sensitive" window, hidden from the farm's UI reader, and it takes the app
+ * window behind it down with it. A run that meets one reads a screen with nothing on it but the
+ * status bar and cannot answer what it cannot see — measured on the owner's production SM-A075F
+ * fleet (2026-09-14): every TikTok upload stopped at "the dump reads unknown" with Samsung's
+ * "Izinkan TikTok mengambil gambar dan merekam video?" on screen. Granting through the package
+ * manager BEFORE the app opens means the dialog is never shown.
+ *
+ * Why a closed list: `pm grant` from a script is a real change to a real phone. These are the
+ * permissions an upload or a warm-up needs — camera and microphone (TikTok and YouTube ask for
+ * both on their create screens), media (the gallery), and notifications (asked at launch on
+ * Android 13+). Contacts, location, SMS, phone, calendar and body sensors are deliberately absent:
+ * nothing this farm automates needs them, and a script must not be able to hand them out.
+ * Names are the bare constant after `android.permission.`.
+ */
+export const GRANTABLE_APP_PERMISSIONS = [
+  'CAMERA',
+  'RECORD_AUDIO',
+  'READ_MEDIA_VIDEO',
+  'READ_MEDIA_IMAGES',
+  'READ_MEDIA_VISUAL_USER_SELECTED',
+  'READ_MEDIA_AUDIO',
+  'READ_EXTERNAL_STORAGE',
+  'POST_NOTIFICATIONS',
+] as const
+export type GrantableAppPermission = (typeof GRANTABLE_APP_PERMISSIONS)[number]
+
+export const AppGrantPermissionsArgsSchema = z.object({
+  pkg: PackageNameSchema,
+  permissions: z.array(z.enum(GRANTABLE_APP_PERMISSIONS)).min(1).max(GRANTABLE_APP_PERMISSIONS.length),
+})
+
+/**
+ * What happened to one requested permission, read back from the device rather than assumed from
+ * `pm grant`'s exit code.
+ *
+ * - `granted` — it was not granted, `pm grant` ran, and the package now reports it granted.
+ * - `already` — it was granted before this call; nothing was written.
+ * - `not-requested` — the app does not declare it (or this Android version has no such
+ *   permission, e.g. `READ_MEDIA_VIDEO` before Android 13). Not an error: a script asks for the
+ *   union its apps need across Android versions.
+ * - `failed` — it was requested, not granted, and still is not after `pm grant`; `detail` carries
+ *   the platform's own words.
+ */
+export interface AppPermissionGrant {
+  permission: GrantableAppPermission
+  outcome: 'granted' | 'already' | 'not-requested' | 'failed'
+  detail?: string
+}
+
+/**
+ * The same allowlist, the other way: refuse a permission and tell Android not to ask again
+ * (`pm revoke` + `pm set-permission-flags … user-set user-fixed` — the state "Jangan izinkan"
+ * pressed twice leaves behind).
+ *
+ * Exists because granting is not always the answer that keeps a flow on its walked path. YouTube's
+ * upload was walked with the CAMERA refused: a phone that granted it shows a different Create
+ * screen and the flow's anchors are not there. Its owner's moto held exactly the refused-and-fixed
+ * state (`granted=false, flags=[USER_SET|USER_FIXED]`), and the dialog never appeared. A fresh
+ * phone has never been asked, so the dialog appears — hidden — the first time. Refusing it before
+ * launch gives that phone the same state the walk was done in.
+ */
+export const AppDenyPermissionsArgsSchema = AppGrantPermissionsArgsSchema
+
+/** `denied` — was granted or never answered, and now reads refused AND user-fixed. The rest as `AppPermissionGrant`. */
+export interface AppPermissionDenial {
+  permission: GrantableAppPermission
+  outcome: 'denied' | 'already' | 'not-requested' | 'failed'
+  detail?: string
+}
+
 export const ClipboardGetArgsSchema = z.object({})
 
 export const ClipboardSetArgsSchema = z.object({ text: z.string(), paste: z.boolean().default(false) })
@@ -229,6 +303,8 @@ export const DEVICE_CALL_ARGS = {
   screenshot: ScreenshotArgsSchema,
   'app.launch': AppLaunchArgsSchema,
   'app.forceStop': AppForceStopArgsSchema,
+  'app.grantPermissions': AppGrantPermissionsArgsSchema,
+  'app.denyPermissions': AppDenyPermissionsArgsSchema,
   'clipboard.get': ClipboardGetArgsSchema,
   'clipboard.set': ClipboardSetArgsSchema,
   install: InstallArgsSchema,

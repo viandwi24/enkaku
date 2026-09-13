@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.26.1',
+  version: '0.27.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,18 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.27.0 — permissions answered before YouTube opens.** On Android 14+ the
+   * system permission dialog is hidden from the farm's reader; the owner's
+   * production SM-A075F fleet (2026-09-14) stopped on "YouTube is asking for
+   * access to photos and videos" on phones nobody had answered. `relaunch` now
+   * grants media and notifications and REFUSES the camera (fixed) through the
+   * farm's `app.grantPermissions`/`app.denyPermissions` before launching — the
+   * camera refused because this flow was walked that way and a phone that grants
+   * it shows a different Create screen. The landscape refusal also now points at
+   * the device's rotation setting: the farm re-locks rotation and pins the
+   * display on every app launch, so a landscape YouTube means the lock is off.
+   * Needs a core with those capabilities; an older core warns and runs as before.
    *
    * **0.26.1 — no BACK before Upload.** The keyboard closes itself with the
    * focus, so the BACK meant to close it navigated off the details screen and

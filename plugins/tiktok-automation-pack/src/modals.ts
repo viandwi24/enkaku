@@ -96,8 +96,11 @@ export const TIKTOK_MODALS: ModalEntry[] = [
       id: 'com.android.permissioncontroller:id/permission_message',
       textIncludes: ['mengambil gambar dan merekam video'],
     },
-    // No `allow`/`ack` — this plan denies the camera outright (§2 Non-goals), so nothing here can
-    // ever grant it, structurally, no matter what a caller's policy map says.
+    // No `allow`/`ack` here: this entry only ever answers a dialog the reader can SEE, and on
+    // Android 14+ it cannot see this one at all. Since 1.30.0 the camera is granted before launch
+    // instead (`gesture.ts`'s `answerPermissionsBeforeLaunch`, the owner's call after the
+    // production fleet stalled on it), so on a current phone this dialog never appears; the entry
+    // stays for an older Android whose dialog is readable.
     actions: { deny: { id: 'com.android.permissioncontroller:id/permission_deny_button' } },
     seen: SEEN,
   },

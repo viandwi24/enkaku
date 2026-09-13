@@ -14,6 +14,9 @@ const FIXED_TARGET: Record<'lock-portrait' | 'lock-landscape', string> = {
 
 const VALID_USER_ROTATION = new Set(['0', '1', '2', '3'])
 
+/** What `wm fixed-to-user-rotation` prints and accepts. */
+const FIXED_TO_USER_ROTATION_VALUES = new Set(['default', 'enabled', 'disabled'])
+
 /** `mCurrentRotation=ROTATION_<deg>` → the `user_rotation` value that means the same thing. */
 const DEGREES_TO_USER_ROTATION: Record<string, string> = { '0': '0', '90': '1', '180': '2', '270': '3' }
 
@@ -80,6 +83,11 @@ export interface RotationLock {
 
 /** What the device had before this session wrote anything. Captured at most once (see `RotationLock.set`). */
 interface CapturedRotation {
+  /**
+   * `wm fixed-to-user-rotation` before this session wrote it — `default`, `enabled` or `disabled`
+   * — or `null` when the build has no such command or its answer could not be read.
+   */
+  fixed: string | null
   /**
    * Android's own default is auto-rotate ON. An unreadable value (an adb
    * hiccup, a very early boot) restores to that default rather than to
@@ -218,6 +226,18 @@ export async function applyRotation(
       .then((r) => r.stdout.trim())
       .catch(() => '')
 
+  /** `wm <args>`, never throwing: `ok` is a zero exit with no `Unknown command`/error text. */
+  async function wm(args: string): Promise<{ ok: boolean; output: string }> {
+    try {
+      const r = await transport.exec(`wm ${args}`, { profile: 'probe' })
+      const output = `${r.stdout}${r.stderr}`.trim()
+      const ok = (r.exitCode === null || r.exitCode === 0) && !/unknown|error|exception|usage:/i.test(output)
+      return { ok, output }
+    } catch (err) {
+      return { ok: false, output: String(err) }
+    }
+  }
+
   /** The write, with its failure REPORTED rather than swallowed: `null` on success, a reason otherwise. */
   async function put(key: string, value: string): Promise<string | null> {
     try {
@@ -247,7 +267,9 @@ export async function applyRotation(
         'rotation: the prior user_rotation could not be read — accelerometer_rotation will be restored on close, but a fixed orientation the device was locked to before this session will not be written back',
       )
     }
-    captured = { accel: previousAccel === '0' || previousAccel === '1' ? previousAccel : '1', user }
+    const previousFixed = (await wm('fixed-to-user-rotation')).output
+    const fixed = FIXED_TO_USER_ROTATION_VALUES.has(previousFixed) ? previousFixed : null
+    captured = { accel: previousAccel === '0' || previousAccel === '1' ? previousAccel : '1', user, fixed }
   }
 
   /**
@@ -264,6 +286,20 @@ export async function applyRotation(
     if (accelErr) problems.push(`could not turn auto-rotate off (${accelErr})`)
     const userErr = await put('user_rotation', target)
     if (userErr) problems.push(`could not set the orientation (${userErr})`)
+    /*
+      Pin the display to that rotation, so an app's OWN orientation request cannot override it.
+
+      `user_rotation` with auto-rotate off is honoured only by apps that follow the user's
+      rotation; an activity that asks for a sensor-driven orientation still turns with the phone.
+      That is what the farm met: YouTube opened in landscape (1600x720) on the owner's production
+      SM-A075F fleet, lying on its side, with `accelerometer_rotation=0` — and on their moto
+      before that. `wm fixed-to-user-rotation enabled` (Android 10+) makes the display follow
+      `user_rotation` regardless of what the app asks for. Best effort, and deliberately not part
+      of `applied`: on a build without the command the settings lock above still holds for every
+      app that respects it, which is what `applied` has always meant.
+    */
+    const pin = await wm('fixed-to-user-rotation enabled')
+    if (!pin.ok) log.warn(`rotation: could not pin the display to the lock (${pin.output || 'no answer'}) — an app that requests its own orientation may still rotate`)
     const observedAccel = await get('accelerometer_rotation')
     const observedUser = await get('user_rotation')
     if (observedAccel !== '0') problems.push(`accelerometer_rotation reads back "${observedAccel || 'nothing'}", not "0"`)
@@ -286,6 +322,10 @@ export async function applyRotation(
       const userErr = await put('user_rotation', previous.user)
       if (userErr) log.warn(`rotation: could not restore user_rotation on close (${userErr})`)
     }
+    // `default` when the prior value could not be read: it is what every build ships with, and
+    // leaving the pin `enabled` after the farm lets go would keep the phone locked forever.
+    const unpin = await wm(`fixed-to-user-rotation ${previous.fixed ?? 'default'}`)
+    if (!unpin.ok) log.warn(`rotation: could not restore fixed-to-user-rotation on close (${unpin.output || 'no answer'})`)
   }
 
   let mode: RotationMode = opts.rotation

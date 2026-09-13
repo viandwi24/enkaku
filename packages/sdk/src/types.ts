@@ -241,6 +241,31 @@ export interface DeviceApi {
      * on its own leaves them, so an app a script "closed" still shows up in Android's recents.
      */
     forceStop(pkg: string, opts?: { clearRecents?: boolean }): Promise<void>
+    /**
+     * Grant runtime permissions to an app BEFORE opening it, so its permission dialogs never show.
+     *
+     * On Android 14+ the system permission dialog is hidden from the farm's UI reader, so a run
+     * that meets one cannot see it, let alone answer it. Call this before `launch` with every
+     * permission the flow will trigger. Only `GRANTABLE_APP_PERMISSIONS` are accepted (camera,
+     * microphone, media, notifications) — never contacts, location or SMS.
+     *
+     * Resolves with one entry per permission, read back from the device. A permission the app does
+     * not declare comes back `not-requested`, which is normal across Android versions; check for
+     * `failed`. Throws `E_APP_NOT_INSTALLED` when the package is not on the phone.
+     */
+    grantPermissions(
+      pkg: string,
+      permissions: readonly import('@enkaku/protocol').GrantableAppPermission[],
+    ): Promise<import('@enkaku/protocol').AppPermissionGrant[]>
+    /**
+     * Refuse runtime permissions and tell Android not to ask again — for a flow that was walked
+     * with a permission refused, so a fresh phone lands on the same screens. Same allowlist and
+     * the same read-back reporting as `grantPermissions`.
+     */
+    denyPermissions(
+      pkg: string,
+      permissions: readonly import('@enkaku/protocol').GrantableAppPermission[],
+    ): Promise<import('@enkaku/protocol').AppPermissionDenial[]>
   }
   /** Device clipboard get/set over the scrcpy control socket (plan 38 §4.6). */
   clipboard: {

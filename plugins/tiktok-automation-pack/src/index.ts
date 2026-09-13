@@ -820,6 +820,15 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.30.0 — permissions are answered before TikTok opens. On Android 14+ the system permission
+  // dialog is hidden from the farm's reader, and TikTok behind it: the owner's production SM-A075F
+  // fleet (2026-09-14) stopped every upload at "the dump reads unknown" under Samsung's camera
+  // dialog, because nobody had ever answered it on those phones (the dev moto had been answered by
+  // hand). `relaunch` now grants camera, microphone, media and notifications through the farm's
+  // new `app.grantPermissions` before force-stopping and launching, so the dialog never shows. The
+  // camera is GRANTED, not refused — the owner's call, and the state the moto that walked this
+  // flow is in. Contacts stays refused (TikTok's own prompt, `tt.contacts`). Needs a core with
+  // `app.grantPermissions`; an older core logs a warning and the run proceeds as before.
   // 1.29.0 — a caption ending in a hashtag no longer strands the run. TikTok's
   // tag-suggestion list replaces the post screen while a `#tag`/`@name` is the
   // last thing typed, so the Post button was not in the tree and the run failed
@@ -889,7 +898,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.29.0',
+  version: '1.30.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

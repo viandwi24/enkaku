@@ -209,6 +209,16 @@ const deviceApi = {
         method: 'app.forceStop',
         args: { pkg, ...(opts?.clearRecents ? { clearRecents: true } : {}) },
       } as never),
+    grantPermissions: (pkg: string, permissions: readonly import('@enkaku/protocol').GrantableAppPermission[]) =>
+      request<import('@enkaku/protocol').AppPermissionGrant[]>({
+        method: 'app.grantPermissions',
+        args: { pkg, permissions: [...permissions] },
+      } as never),
+    denyPermissions: (pkg: string, permissions: readonly import('@enkaku/protocol').GrantableAppPermission[]) =>
+      request<import('@enkaku/protocol').AppPermissionDenial[]>({
+        method: 'app.denyPermissions',
+        args: { pkg, permissions: [...permissions] },
+      } as never),
   },
   clipboard: {
     get: () => request<string>({ method: 'clipboard.get', args: {} } as never),
