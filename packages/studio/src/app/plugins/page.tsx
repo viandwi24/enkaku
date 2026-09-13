@@ -34,6 +34,7 @@ import {
 } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ActivateLatestButton, ActivateLatestReport, useActivateLatest } from '@/components/plugins/ActivateLatestPlugins'
+import { PruneOldVersionsButton, PruneOldVersionsReport, planPruneOldVersions, usePruneOldVersions } from '@/components/plugins/PruneOldVersions'
 import { InstallPluginDialog } from '@/components/plugins/InstallPluginDialog'
 import { PluginActions } from '@/components/plugins/PluginActions'
 import { PluginStatusPill } from '@/components/plugins/PluginStatusPill'
@@ -99,6 +100,8 @@ function PluginsScreen() {
 
   // The bulk upgrade (owner request, 2026-09-13) — see `ActivateLatestPlugins`.
   const { run: latestRun, start: startLatest, dismiss: dismissLatest, busy: latestBusy } = useActivateLatest(load)
+  // The history prune (owner request, 2026-09-14) — see `PruneOldVersions`.
+  const { run: pruneRun, start: startPrune, dismiss: dismissPrune, busy: pruneBusy } = usePruneOldVersions(load)
 
   const reloadAll = () =>
     run('restart', () => api('/api/plugins/restart', PluginRestartResponseSchema, { method: 'POST' }), {
@@ -117,6 +120,7 @@ function PluginsScreen() {
     on every keystroke.
   */
   const latestPlan = planLatestActivation(groups)
+  const prunePlan = planPruneOldVersions(groups)
   const matches = searchPlugins(groups, query)
   const shownDev = (dev ?? []).filter((s) => devSlotMatches(s, query))
   const failedCount = (items ?? []).filter((p) => p.status === 'failed').length
@@ -135,7 +139,11 @@ function PluginsScreen() {
         actions={
           <>
             {view === 'plugins' && items !== null && (
-              <ActivateLatestButton plan={latestPlan} busy={latestBusy} onConfirm={() => startLatest(latestPlan)} />
+              <ActivateLatestButton plan={latestPlan} busy={latestBusy || pruneBusy} onConfirm={() => startLatest(latestPlan)} />
+            )}
+            {view === 'plugins' && items !== null && (
+              // Disabled while "Activate newest" runs: pruning mid-upgrade would plan against versions that are changing status under it.
+              <PruneOldVersionsButton plan={prunePlan} busy={pruneBusy || latestBusy} onConfirm={() => startPrune(prunePlan)} />
             )}
             <Button size="sm" variant="secondary" disabled={isPending('restart')} onClick={reloadAll}>
               <ArrowsClockwiseIcon className="size-3.5" aria-hidden />
@@ -179,6 +187,7 @@ function PluginsScreen() {
         {view === 'plugins' ? (
           <div className="px-5 py-4">
             {latestRun && <ActivateLatestReport run={latestRun} onDismiss={dismissLatest} />}
+            {pruneRun && <PruneOldVersionsReport run={pruneRun} onDismiss={dismissPrune} />}
             {failedCount > 0 && (
               <div className="mb-4 flex items-start gap-2.5 rounded-inner border border-danger/40 bg-danger-soft px-3.5 py-2.5 text-body text-danger">
                 <WarningIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
