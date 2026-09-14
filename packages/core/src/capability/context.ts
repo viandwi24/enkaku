@@ -26,6 +26,8 @@ import { loadDeviceLabels } from '../registry/device-labels'
 import { EnkakuError } from '../util/errors'
 import type { WorkspaceStore } from '../workspace/store'
 import type { NotifyService } from '../notify/service'
+import type { AiService } from '../ai/service'
+import type { TranscribeService } from '../media/transcribe'
 import { keysetWhere } from '../api/pagination'
 import type { TraceFrameStore } from '../jobs/trace/frame-store'
 
@@ -188,6 +190,19 @@ export interface CapabilityContext {
    * (`E_NOT_SUPPORTED`) on a fixture that omits it.
    */
   actions?: { run(request: ActionRequest, actor: CapabilityActor): Promise<ActionResponse> }
+  /**
+   * `ai.status`/`ai.generate`'s one-line delegation (plan 317) — the SAME
+   * seam `notify`/`network` above use: optional so every pre-plan-317 test
+   * that hand-builds a `CapabilityContext` literal keeps compiling unedited;
+   * a real host (`daemon.ts`) always supplies it, and the capabilities
+   * refuse by name (`E_NOT_SUPPORTED`) on a fixture that omits it.
+   */
+  ai?: AiService
+  /**
+   * `media.transcribe`/`.transcribe.status`'s one-line delegation (plan
+   * 317) — same optionality reasoning as `ai` just above.
+   */
+  media?: TranscribeService
 }
 
 /** `job.trace`'s decoded cursor shape — the same `{ sortValue, id }` pair `decodeCursor` (`api/pagination.ts`) already returns; kept here rather than re-exported from there, since only this service consumes it. */
@@ -428,6 +443,20 @@ export interface CapabilityContextDeps {
    * refuses by name (`E_NOT_SUPPORTED`) rather than throwing.
    */
   plugins?: () => PluginStagePort | null
+  /**
+   * `ai.status`/`ai.generate`'s service (plan 317) — a thunk, matching
+   * `sessions`/`readiness`/`plugins` above, so it may be constructed after
+   * this literal (it depends on `connectorStore`, built in `daemon.ts`
+   * right before `capContextDeps`). Optional for the same reason `plugins`
+   * is: a pre-plan-317 test literal keeps compiling unedited, and the two
+   * capabilities refuse by name.
+   */
+  ai?: () => AiService | null
+  /**
+   * `media.transcribe`/`.transcribe.status`'s service (plan 317) — same
+   * shape and reasoning as `ai` just above.
+   */
+  media?: () => TranscribeService | null
 }
 
 /**
@@ -469,6 +498,8 @@ function activityActorOf(actor: CapabilityActor | null): ActivityActor {
 export function createCapabilityContext(deps: CapabilityContextDeps, actor: CapabilityActor | null): CapabilityContext {
   const getDeviceRow = (deviceId: string) => deps.db.select().from(devices).where(eq(devices.id, deviceId)).get()
   const scripts = buildScriptService(deps.db)
+  const aiService = deps.ai?.() ?? null
+  const mediaService = deps.media?.() ?? null
 
   return {
     actor,
@@ -488,6 +519,14 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     // router calls; `deps.actionsRun` is absent on an orchestrator-mode host
     // or a pre-plan-207 test literal, and the capability refuses by name.
     ...(deps.actionsRun ? { actions: { run: deps.actionsRun } } : {}),
+    // `ai.status`/`ai.generate` and `media.transcribe`/`.transcribe.status`
+    // (plan 317) — thunks, called here rather than stored as-is, so a host
+    // that constructs its service after this deps literal (as `daemon.ts`
+    // does, both depend on `connectorStore`/`toolchain`) still wires
+    // correctly; `null` (never constructed on this host) omits the key
+    // entirely, exactly like `plugins`'s own `?? (() => null)` default.
+    ...(aiService ? { ai: aiService } : {}),
+    ...(mediaService ? { media: mediaService } : {}),
     fileToolsSession: fileToolsSessionFor(actor, null),
     hasPermission: (permission) => (actor ? can(actor.role, permission) : false),
 

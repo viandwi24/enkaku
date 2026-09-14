@@ -17,6 +17,8 @@ Dokumen ini mencatat setiap komponen eksternal yang disentuh Enkaku, statusnya, 
 | **Bun** (runtime) | MIT | Ya (jika single-binary compile) | MIT — sertakan teks lisensi di distribusi biner. |
 | **gost** (go-gost) | MIT | Tidak (diunduh oleh `plugins/proxy-manager` sendiri, bukan Toolchain Manager) | Diunduh dari GitHub Releases resmi dan diverifikasi sha256 terhadap versi yang di-pin, hanya di Windows, hanya kalau operator mengaktifkan record `direct` dengan `bindAddress` terisi — lihat "gost, dan kenapa bukan Toolchain Manager" di bawah. |
 | **Dependency npm** | Beragam (mayoritas MIT/Apache-2.0) | Ya (ter-bundle) | Lihat bagian "Dependency npm" di bawah; regenerate tiap rilis. |
+| **whisper.cpp** (ggerganov/ggml-org) — `whisper-cli` | MIT | **TIDAK** (kami build sendiri) | Tidak ada binary macOS/Linux resmi dari upstream, jadi kami build `whisper-cli` sendiri dari source lewat GitHub Actions (`.github/workflows/whisper-cpp.yml`) dan mengunggahnya ke release kami sendiri, sha256-pinned di `packages/toolchain/manifest/enkaku-tools.json` — persis pola adb/scrcpy-server, hanya sumber binernya adalah build kami sendiri, bukan upstream. MIT mengizinkan ini. |
+| **whisper ggml model** (`ggml-small-q5_1.bin`, ggerganov/whisper.cpp on Hugging Face) | MIT | Tidak (diunduh saat first use dari `huggingface.co`) | Diunduh oleh Toolchain Manager, diverifikasi sha256 terhadap Hugging Face's own `x-linked-etag` (the LFS object's own checksum) — 190,085,487 bytes. Never provisioned at boot; only on the first `media.transcribe` call. |
 
 ## Kenapa adb tidak kami redistribusi
 
@@ -71,6 +73,8 @@ Produk ini memakai:
 - **Android platform-tools** (© Google) — https://developer.android.com/tools/releases/platform-tools
 - **android-uiautomator-server** (openatx) — https://github.com/openatx/android-uiautomator-server
 - **gost** (© go-gost, MIT) — https://github.com/go-gost/gost — diunduh oleh `plugins/proxy-manager`, Windows-only, hanya saat dipakai
+- **whisper.cpp** (© ggml-org / Georgi Gerganov, MIT) — https://github.com/ggml-org/whisper.cpp — built by our own release workflow, never the upstream binary (none is published for macOS/Linux)
+- **whisper ggml model, `ggml-small-q5_1.bin`** (© ggml-org / OpenAI Whisper weights, MIT) — https://huggingface.co/ggerganov/whisper.cpp — downloaded on first `media.transcribe` use, sha256-verified
 
 Teks lengkap Apache-2.0 disertakan di `licenses/Apache-2.0.txt` saat rilis.
 

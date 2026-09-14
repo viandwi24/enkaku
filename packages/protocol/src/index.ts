@@ -181,6 +181,26 @@ export {
   type ModelListResponse,
   type ConnectorTestResult,
 } from './agent'
+export {
+  AiStatusInputSchema,
+  AiStatusOutputSchema,
+  AiGenerateInputSchema,
+  AiGenerateOutputSchema,
+  MediaTranscribeStatusInputSchema,
+  MediaTranscribeStatusOutputSchema,
+  MediaTranscribeInputSchema,
+  TranscribeSegmentSchema,
+  MediaTranscribeOutputSchema,
+  type AiStatusInput,
+  type AiStatusOutput,
+  type AiGenerateInput,
+  type AiGenerateOutput,
+  type MediaTranscribeStatusInput,
+  type MediaTranscribeStatusOutput,
+  type MediaTranscribeInput,
+  type TranscribeSegment,
+  type MediaTranscribeOutput,
+} from './ai'
 export { DEFAULT_LABEL_COLOR, LABEL_COLORS, LabelColorSchema, LabelInfoSchema, LabelNameSchema, DeviceLabelRefSchema, normaliseLabelName } from './labels'
 export type { DeviceLabelRef, LabelColor, LabelInfo } from './labels'
 export { ScriptRefSchema, parseScriptRef, compareSemver, isPrereleaseVersion, type ScriptRef } from './script-ref'

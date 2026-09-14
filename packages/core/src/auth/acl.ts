@@ -178,6 +178,21 @@ export type Permission =
    * same `plugin:<name>` principal (§4.3).
    */
   | 'plugin.runtime'
+  /**
+   * `ai.generate` (plan 317) — text generation through the farm's own
+   * connectors (`agent/connector-store.ts`). In the `OPERATOR` set below:
+   * a plugin holding this reaches an already-configured connector and
+   * nothing else — no API key, no connector CRUD — the same "reach, not a
+   * new door" shape `plugin.runtime` already argues for itself.
+   */
+  | 'ai.generate'
+  /**
+   * `media.transcribe`/`.transcribe.status` (plan 317) — local whisper.cpp
+   * transcription of an already-uploaded WAV artifact. In the `OPERATOR`
+   * set below, for the same reason `ai.generate` is: it spends the farm's
+   * own CPU, not money or a device, and reads no secret.
+   */
+  | 'media.transcribe'
 
 const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'device.view',
@@ -203,6 +218,8 @@ const OPERATOR: ReadonlySet<Permission> = new Set<Permission>([
   'settings.view',
   'plugin.data',
   'plugin.runtime',
+  'ai.generate',
+  'media.transcribe',
 ])
 // 'kv.manage' is deliberately NOT in OPERATOR (see its comment) — admin only.
 // 'plugin.data' IS, and does not widen it: see its own comment for why the two are different.
@@ -243,6 +260,8 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   'kv.manage',
   'plugin.data',
   'plugin.runtime',
+  'ai.generate',
+  'media.transcribe',
 ]
 
 export function isPermission(value: string): value is Permission {

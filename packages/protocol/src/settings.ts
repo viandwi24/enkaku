@@ -589,6 +589,33 @@ export const FarmSettingsSchema = z.object({
       description: 'Values an engineer may need to move. Every one shows its default; changing one is your problem to undo.',
       'x-enkaku': { group: 'Farm' },
     }),
+
+  /**
+   * Plan 317 — which connector and model `ai.generate` uses. Both default to
+   * "figure it out": `connectorId: null` picks the first connector with a
+   * usable key, newest first (`ai/service.ts`'s `pickAiTarget`); `model: ''`
+   * picks that connector kind's own first pinned fallback
+   * (`pinnedModelFallbackFor`). An operator who wants a specific connector or
+   * model sets either explicitly; a default added later reaches an existing
+   * farm because this whole section round-trips through the same
+   * `defaultFarmSettings()` materialisation every other section does.
+   */
+  ai: z
+    .object({
+      connectorId: z
+        .string()
+        .nullable()
+        .default(null)
+        .describe('Which connector `ai.generate` uses. Empty picks the newest connector that has a usable key.')
+        .meta(ui({ title: 'Connector' })),
+      model: z
+        .string()
+        .default('')
+        .describe("Which model `ai.generate` uses. Empty picks the connector's own default model.")
+        .meta(ui({ title: 'Model' })),
+    })
+    .default({ connectorId: null, model: '' })
+    .meta({ title: 'AI', 'x-enkaku': { group: 'Automation' } }),
 })
 export type FarmSettings = z.infer<typeof FarmSettingsSchema>
 

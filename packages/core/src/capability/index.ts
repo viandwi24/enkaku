@@ -1,5 +1,7 @@
 import { AGENT_TREE_CAPABILITIES } from './agent'
 import { ACTIONS_CAPABILITIES } from './actions'
+import { AI_CAPABILITIES } from './ai'
+import { MEDIA_CAPABILITIES } from './media'
 import { NOTIFY_CAPABILITIES } from './notify'
 import { DEVICE_APP_CAPABILITIES } from './device-app'
 import { DEVICE_CLIPBOARD_CAPABILITIES } from './device-clipboard'
@@ -36,6 +38,8 @@ const SOURCES: { file: string; caps: AnyCoreCapability[] }[] = [
   { file: 'capability/agent.ts', caps: AGENT_TREE_CAPABILITIES },
   { file: 'capability/notify.ts', caps: NOTIFY_CAPABILITIES },
   { file: 'capability/actions.ts', caps: ACTIONS_CAPABILITIES },
+  { file: 'capability/ai.ts', caps: AI_CAPABILITIES },
+  { file: 'capability/media.ts', caps: MEDIA_CAPABILITIES },
 ]
 
 /** Every capability the farm declares, assembled into `{ cap, file }` pairs

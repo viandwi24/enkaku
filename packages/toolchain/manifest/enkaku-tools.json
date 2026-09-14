@@ -153,6 +153,65 @@
       ]
     },
     {
+      "id": "whisper-cpp",
+      "displayName": "whisper.cpp (whisper-cli, built by our own release workflow)",
+      "swappable": false,
+      "format": "zip",
+      "versions": [
+        {
+          "version": "1.9.4",
+          "releasedAt": "unknown",
+          "compatibleCoreRange": "TODO-M317",
+          "platforms": {
+            "darwin-arm64": {
+              "url": "https://github.com/viandwi24/enkaku/releases/download/whisper-cpp-v1.9.4/whisper-cli-darwin-arm64.zip",
+              "sha256": "TODO-verify",
+              "sizeBytes": 0
+            },
+            "darwin-x64": {
+              "url": "https://github.com/viandwi24/enkaku/releases/download/whisper-cpp-v1.9.4/whisper-cli-darwin-x64.zip",
+              "sha256": "TODO-verify",
+              "sizeBytes": 0
+            },
+            "linux-x64": {
+              "url": "https://github.com/viandwi24/enkaku/releases/download/whisper-cpp-v1.9.4/whisper-cli-linux-x64.zip",
+              "sha256": "TODO-verify",
+              "sizeBytes": 0
+            },
+            "linux-arm64": {
+              "url": "https://github.com/viandwi24/enkaku/releases/download/whisper-cpp-v1.9.4/whisper-cli-linux-arm64.zip",
+              "sha256": "TODO-verify",
+              "sizeBytes": 0
+            },
+            "win32-x64": {
+              "url": "https://github.com/viandwi24/enkaku/releases/download/whisper-cpp-v1.9.4/whisper-cli-win32-x64.zip",
+              "sha256": "TODO-verify",
+              "sizeBytes": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "whisper-model-small",
+      "displayName": "whisper ggml model — small, q5_1 (multilingual)",
+      "swappable": false,
+      "format": "raw",
+      "versions": [
+        {
+          "version": "1",
+          "releasedAt": "2026-09-14",
+          "platforms": {
+            "*": {
+              "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
+              "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "sizeBytes": 190085487
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": "cmdline-tools",
       "displayName": "Android SDK command-line tools (sdkmanager, avdmanager)",
       "swappable": false,

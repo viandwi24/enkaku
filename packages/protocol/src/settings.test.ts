@@ -3,11 +3,11 @@ import { z } from 'zod'
 import { readHints } from './schema/vocabulary'
 import { DeviceSettingsSchema, FarmSettingsSchema, defaultDeviceSettings, defaultFarmSettings, resolveDeviceSetting } from './settings'
 
-const NINE_SECTIONS = ['general', 'hostDaemon', 'networkScan', 'jobRunner', 'capture', 'storage', 'devices', 'privacy', 'advanced']
+const TEN_SECTIONS = ['general', 'hostDaemon', 'networkScan', 'jobRunner', 'capture', 'storage', 'devices', 'privacy', 'advanced', 'ai']
 
-describe('FarmSettingsSchema — the 27-field model (plan 212, plus `capture.timelineFrames`)', () => {
-  test('top-level keys are the nine sections, in order', () => {
-    expect(Object.keys(FarmSettingsSchema.shape)).toEqual(NINE_SECTIONS)
+describe('FarmSettingsSchema — the 27-field model (plan 212, plus `capture.timelineFrames`, plus `ai` (plan 317))', () => {
+  test('top-level keys are the ten sections, in order', () => {
+    expect(Object.keys(FarmSettingsSchema.shape)).toEqual(TEN_SECTIONS)
   })
 
   test('defaults round-trip', () => {
@@ -62,13 +62,16 @@ describe('FarmSettingsSchema — the 27-field model (plan 212, plus `capture.tim
    *
    * Plan 212 capped this model on purpose, so the count stays pinned here: the
    * next field is a decision someone has to make on purpose too, not a drift.
+   *
+   * Nineteen, not seventeen: `ai.connectorId`/`ai.model` (plan 317) added a
+   * tenth section, `ai`, for the farm-wide default `ai.generate` uses.
    */
-  test('every field of the seventeen visible settings carries a description', () => {
+  test('every field of the nineteen visible settings carries a description', () => {
     type JsonNode = { properties?: Record<string, JsonNode>; description?: string }
     const json = z.toJSONSchema(FarmSettingsSchema) as unknown as { properties: Record<string, JsonNode> }
-    const visibleSectionKeys = ['general', 'hostDaemon', 'networkScan', 'jobRunner', 'capture', 'storage', 'devices', 'privacy']
+    const visibleSectionKeys = ['general', 'hostDaemon', 'networkScan', 'jobRunner', 'capture', 'storage', 'devices', 'privacy', 'ai']
     const fields = visibleSectionKeys.flatMap((key) => Object.values(json.properties[key]?.properties ?? {}))
-    expect(fields.length).toBe(17)
+    expect(fields.length).toBe(19)
     for (const field of fields) {
       expect(field.description, JSON.stringify(field)).toBeTruthy()
     }

@@ -27,6 +27,12 @@ export function entrypointRelPath(toolId: string, platform: string): string {
      */
     case 'cmdline-tools':
       return platform.startsWith('win32') ? 'cmdline-tools/bin/sdkmanager.bat' : 'cmdline-tools/bin/sdkmanager'
+    /** Plan 317 — our own pinned build (a zip of `whisper-cli[.exe]` + LICENSE). */
+    case 'whisper-cpp':
+      return platform.startsWith('win32') ? 'whisper-cli.exe' : 'whisper-cli'
+    /** Plan 317 — the ggml model file itself, `format: 'raw'`, so the entrypoint IS the download. */
+    case 'whisper-model-small':
+      return 'ggml-small-q5_1.bin'
     default:
       throw new ToolchainError('E_TOOL_UNKNOWN_ENTRYPOINT', `unknown entrypoint for tool: ${toolId}`)
   }

@@ -62,6 +62,13 @@ const DOMAIN_STATUS: Record<string, number> = {
   E_OUT_OF_SCOPE: 403,
   E_BUILD_FAILED: 400,
   E_BUILD_TIMEOUT: 504,
+  // Plan 317 — AI captions. `E_AI_NOT_CONFIGURED` is the farm's setup, not the request; `E_TRANSCRIBE_UNAVAILABLE`
+  // is a tool not provisioned yet; `artifact_not_found` a WAV that is gone.
+  E_AI_NOT_CONFIGURED: 409,
+  E_AI_FAILED: 502,
+  E_TRANSCRIBE_UNAVAILABLE: 503,
+  E_TRANSCRIBE_FAILED: 500,
+  artifact_not_found: 404,
 }
 
 function statusFor(code: string): number {

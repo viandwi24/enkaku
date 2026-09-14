@@ -1,0 +1,123 @@
+name: whisper-cpp
+
+# Plan 317 — whisper.cpp publishes no macOS/Linux CLI binaries, so we build
+# our own pinned `whisper-cli` (MIT permits this) and pin the result in
+# `packages/toolchain/manifest/enkaku-tools.json`, exactly like adb and
+# scrcpy-server. Manual only: this is not part of every push, only run when
+# a new whisper.cpp tag needs a fresh build.
+#
+# After this workflow succeeds, download each asset's `.sha256` file from
+# the resulting release (`whisper-cpp-<tag>`) and paste the value into the
+# `whisper-cpp` entry's `sha256` fields in the manifest — see plan 317 §11
+# for the exact steps.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'whisper.cpp tag to build (e.g. v1.9.4)'
+        required: true
+        default: 'v1.9.4'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin-arm64
+          - os: macos-13
+            platform: darwin-x64
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+          - os: windows-latest
+            platform: win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: ${{ inputs.tag }}
+          path: whisper.cpp
+
+      - name: Configure (static, no shared libs, no GPU acceleration outside Metal)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd whisper.cpp
+          EXTRA_FLAGS=""
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # Metal is embedded into the binary on macOS (whisper.cpp's own default for this
+            # platform) — no separate .metallib to ship alongside whisper-cli.
+            EXTRA_FLAGS="-DGGML_METAL_EMBED_LIBRARY=ON"
+          fi
+          cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DCMAKE_BUILD_TYPE=Release $EXTRA_FLAGS
+
+      - name: Build whisper-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build whisper.cpp/build --config Release --target whisper-cli -j
+
+      - name: Package (whisper-cli[.exe] + LICENSE, zipped)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN=$(find whisper.cpp/build -iname 'whisper-cli.exe' | head -n1)
+            cp "$BIN" out/whisper-cli.exe
+          else
+            BIN=$(find whisper.cpp/build -iname 'whisper-cli' -type f | head -n1)
+            cp "$BIN" out/whisper-cli
+            chmod +x out/whisper-cli
+          fi
+          cp whisper.cpp/LICENSE out/LICENSE
+          cd out
+          ASSET="whisper-cli-${{ matrix.platform }}.zip"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$ASSET" whisper-cli.exe LICENSE
+          else
+            zip "$ASSET" whisper-cli LICENSE
+          fi
+          sha256sum "$ASSET" > "$ASSET.sha256" 2>/dev/null || shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-cli-${{ matrix.platform }}
+          path: |
+            out/*.zip
+            out/*.sha256
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: whisper-cli-*
+          merge-multiple: true
+          path: release
+
+      - name: Checksums over the full asset set
+        run: cd release && sha256sum *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: whisper-cpp-${{ inputs.tag }}
+          name: whisper-cpp ${{ inputs.tag }} (Enkaku build)
+          files: |
+            release/*.zip
+            release/*.sha256
+            release/SHA256SUMS.txt
+          body: |
+            Our own static build of whisper.cpp ${{ inputs.tag }}'s `whisper-cli`, MIT — upstream
+            publishes no macOS/Linux CLI binaries. Pin the sha256 from the matching `.sha256` file
+            into `packages/toolchain/manifest/enkaku-tools.json`'s `whisper-cpp` entry.

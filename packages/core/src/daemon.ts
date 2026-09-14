@@ -199,6 +199,8 @@ import { createKvRoutes } from './api/kv'
 import { createAgentStore, type AgentStore } from './agent/agent-store'
 import { createConnectorStore } from './agent/connector-store'
 import { createModelListCache } from './agent/provider'
+import { createAiService } from './ai/service'
+import { createTranscribeService } from './media/transcribe'
 import { createAgentRoutes } from './api/agents'
 import { createConnectorRoutes } from './api/connectors'
 import { createThreadRoutes } from './api/threads'
@@ -2818,6 +2820,15 @@ let blobGc: BlobGc | null = null
       agentStoreRef = agentStore // plan 68 §4.2 — resolves the schedule runner's `agentDispatch.agentExists` forward-ref, built well before this point.
       const connectorStore = createConnectorStore({ db, dataDir: cfg.dataDir })
       const modelListCache = createModelListCache()
+      // Plan 317 — `ai.generate`'s target picking reads `farm_settings.ai`
+      // fresh on every call, the same discipline every other
+      // settings-derived accessor in this function uses.
+      const aiService = createAiService({ connectors: connectorStore, settings: () => settingsStore.get().ai })
+      // Plan 317 — `media.transcribe` reads the SAME `toolchain` instance
+      // the Tools page and every other tool operation share; provisioning
+      // whisper-cpp/whisper-model-small on first use goes through it, never
+      // a second toolchain.
+      const transcribeService = createTranscribeService({ db, dataDir: cfg.dataDir, toolchain })
       const capContextDeps: CapabilityContextDeps = {
         db,
         activities,
@@ -2870,6 +2881,11 @@ let blobGc: BlobGc | null = null
         // `sessions`/`readiness` above, even though `pluginRuntime` is
         // already constructed by this point in this host.
         plugins: () => pluginRuntime,
+        // Plan 317 — `ai.status`/`ai.generate` and `media.transcribe*`'s
+        // one door, thunked exactly like `plugins` above even though both
+        // services already exist by this point in this host.
+        ai: () => aiService,
+        media: () => transcribeService,
       }
       const openApiDocument = buildOpenApiDocument(capabilityRegistry, CORE_VERSION)
 
