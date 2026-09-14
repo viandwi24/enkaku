@@ -829,6 +829,14 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.34.2 — the resume-edit banner over the feed is answered "Simpan draf".
+  // A dry run of 1.34.1 on the owner's moto (2026-09-14) stopped before the camera on
+  // "Lanjut mengedit postingan ini?" (Simpan draf / Edit), left by an earlier dry run —
+  // a failed production run leaves the same. It matched tt.discard-draft (same button)
+  // with policy abort. A new tt.resume-edit entry recognises the banner on screen and
+  // taps "Simpan draf" (the draft stays, nothing is posted); tt.discard-draft no longer
+  // matches while that banner is up (fixture screen-feed-resume-edit-banner.json).
+  //
   // 1.34.1 — post-video leaves evidence, and closes a sheet over the feed before it reads or taps the feed. A
   // production run on the SM-A065F/SM-A075F fleet (2026-09-14) failed "expected the camera screen but the dump reads
   // unknown (cleared: tt.phone-prompt)" with an ordinary feed in its only screenshot, and no tree to read.
@@ -974,7 +982,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.34.1',
+  version: '1.34.2',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

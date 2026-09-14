@@ -83,6 +83,13 @@ describe('TIKTOK_MODALS — matched against the real device dumps they were writ
     expect(matchModals(loadFixture('screen-preview.json')).map((e) => e.id)).toEqual(['tt.camera-wall'])
   })
 
+  test('tt.resume-edit matches the banner over the feed (2026-09-14), and tt.discard-draft does not, though both show "Simpan draf"', () => {
+    const banner = loadFixture('screen-feed-resume-edit-banner.json')
+    expect(matchModals(banner).map((e) => e.id)).toEqual(['tt.resume-edit'])
+    expect(UPLOAD_MODAL_POLICIES['tt.resume-edit']).toBe('ack')
+    expect(TIKTOK_MODALS.find((e) => e.id === 'tt.resume-edit')?.actions.ack).toEqual({ text: 'Simpan draf' })
+  })
+
   test('tt.discard-draft matches the exit-modal screen dump, and nothing else in the register does', () => {
     expect(matchModals(loadFixture('screen-exit-modal.json')).map((e) => e.id)).toEqual(['tt.discard-draft'])
   })

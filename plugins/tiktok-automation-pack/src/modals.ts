@@ -49,6 +49,13 @@ export interface ModalEntry {
      * any text on screen that contained it, the caption being typed included (1.34.0).
      */
     textEquals?: string[]
+    /**
+     * The entry does NOT match while any node's text contains one of these — for a pair of dialogs that
+     * share a button label ("Simpan draf" is on both the exit-editor dialog and the resume-edit banner).
+     */
+    notWith?: string[]
+    /** The identifying node must be drawn on screen, not kept in the tree off to the side. */
+    onScreen?: boolean
   }
   /**
    * When set, a match is never answered and `sweepModals` throws THIS code, whatever the caller's
@@ -214,13 +221,24 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     seen: { device: 'Samsung SM-A075F', app: 'com.ss.android.ugc.trill', locale: 'id-ID, en', at: '2026-09-14' },
   },
   {
+    id: 'tt.resume-edit',
+    // A banner over the For You feed, "Lanjut mengedit postingan ini?" with "Simpan draf" and "Edit", when an
+    // unfinished post was left in the editor (seen on the owner's moto, 2026-09-14, after a dry run backed out —
+    // a failed production run leaves the same). `ack` is "Simpan draf": the banner goes, the draft stays in the
+    // profile's drafts, nothing is posted and nothing is thrown away. "Edit" would reopen some other run's video.
+    match: { textIncludes: ['Lanjut mengedit postingan ini', 'Continue editing this post'], onScreen: true },
+    actions: { ack: { text: 'Simpan draf' } },
+    seen: { device: 'moto g06 power (ZP2222RMBS)', app: 'com.ss.android.ugc.trill', locale: 'id-ID', at: '2026-09-14' },
+  },
+  {
     id: 'tt.discard-draft',
     // E14: raised when leaving the editor. Two buttons, always shown together, no id (E10) — a
     // "text pair" per §4.2. `deny` maps to "Buang" (abandon the draft, a refusal to keep it) and
     // `ack` maps to "Simpan draf" (acknowledge and keep it for later); neither reading is dictated
     // by the plan's own wording ("caller's" — §4.2's table leaves the choice open), so this is a
     // judgment call made here and worth a caller double-checking before relying on it.
-    match: { textIncludes: ['Buang', 'Simpan draf'] },
+    // Not while the resume-edit banner is up: it carries the same "Simpan draf" button (1.34.2).
+    match: { textIncludes: ['Buang', 'Simpan draf'], notWith: ['Lanjut mengedit postingan ini', 'Continue editing this post'] },
     actions: { deny: { text: 'Buang' }, ack: { text: 'Simpan draf' } },
     seen: SEEN,
   },
@@ -276,6 +294,7 @@ export const UPLOAD_MODAL_POLICIES: Record<string, ModalPolicy> = {
   'sys.media': 'allow',
   'tt.camera-wall': 'ignore',
   'tt.discard-draft': 'abort',
+  'tt.resume-edit': 'ack',
   'tt.notice': 'ack',
   // Both observed on the 2026-08-18 posting run, both AFTER the Post tap — which is exactly why the
   // 2026-08-17 walk never met them, and why an unattended run that only knew the pre-post modals
@@ -338,7 +357,11 @@ function selectorMatchesNode(node: UiNode, sel: Selector): boolean {
  */
 export function matchModals(root: UiNode, register: ModalEntry[] = TIKTOK_MODALS): ModalEntry[] {
   const nodes = flatten(root)
-  return register.filter((entry) => nodes.some((n) => matchesIdentity(n, entry.match) && (!entry.closeNearIdentity || drawnOnScreen(n, root))))
+  return register.filter(
+    (entry) =>
+      nodes.some((n) => matchesIdentity(n, entry.match) && (!(entry.closeNearIdentity || entry.match.onScreen) || drawnOnScreen(n, root))) &&
+      !(entry.match.notWith ?? []).some((s) => nodes.some((n) => !isEditableNode(n) && nodeText(n).includes(s))),
+  )
 }
 
 /**
