@@ -98,7 +98,7 @@ export async function applySettings(
   if (rawPatch.prep && typeof rawPatch.prep === 'object' && 'rotation' in (rawPatch.prep as Record<string, unknown>)) {
     const mode = next.prep.rotation
     if (deps.runningJobOf(deviceId)) {
-      rotation = { mode, state: 'busy', reason: 'a job is running on this device — the new rotation applies to its next session' }
+      rotation = { mode, state: 'busy', reason: 'a job is running on this device — the new rotation applies the next time a job opens an app on it, or to its next session' }
     } else {
       const outcome = (await deps.sessions()?.setRotation?.(deviceId, mode)) ?? null
       if (!outcome) rotation = { mode, state: 'no-session' }

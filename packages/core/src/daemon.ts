@@ -4781,6 +4781,9 @@ let blobGc: BlobGc | null = null
               perCharMs: p.perCharMs,
             }
           },
+          // Read at every `app.launch`, so a rotation saved while a job held the device (the
+          // `busy` path) is applied at the next launch rather than waiting for a session rebuild.
+          rotationOf: (deviceId) => deviceSource.get(deviceId)?.rotation ?? null,
           // `ctx.kv` (plan 79 §4.4, §4.7) — the same store `deviceLifecycle` and
           // `kvRoutes` share; `call`/`redact` are the two things a job actually needs.
           kv: kvRunnerPort,

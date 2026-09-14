@@ -1028,7 +1028,7 @@ export function createDeviceRoutes(deps: {
     if (rotationChange) {
       const mode = rotationChange.to
       if (deps.runningJobOf(row.id)) {
-        rotationResult = { mode, state: 'busy', reason: 'a job is running on this device — the new rotation applies to its next session' }
+        rotationResult = { mode, state: 'busy', reason: 'a job is running on this device — the new rotation applies the next time a job opens an app on it, or to its next session' }
       } else {
         const outcome = (await deps.connection?.sessions?.()?.setRotation?.(row.id, mode)) ?? null
         if (!outcome) rotationResult = { mode, state: 'no-session' }

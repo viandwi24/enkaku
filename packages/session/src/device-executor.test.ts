@@ -1257,6 +1257,29 @@ describe('createDeviceExecutor — app launch re-locks rotation; permission verb
     expect(cmds.some((c) => c.startsWith('monkey -p'))).toBe(true)
   })
 
+  test('app.launch applies the STORED lock when the session still holds an older "device" mode', async () => {
+    // A setting saved while a job held the device skips the live re-lock ("busy"), and the
+    // always-on session keeps the mode it was built with.
+    const { session, sets } = sessionWithRotation('device', [])
+    const execute = createDeviceExecutor({ session, rotation: () => 'lock-portrait' })
+    await execute(call('app.launch', { pkg: 'com.google.android.youtube' }))
+    expect(sets).toEqual(['lock-portrait'])
+  })
+
+  test('app.launch never hands rotation back mid-job when the stored setting went back to "device"', async () => {
+    const { session, sets } = sessionWithRotation('lock-portrait', [])
+    const execute = createDeviceExecutor({ session, rotation: () => 'device' })
+    await execute(call('app.launch', { pkg: 'com.google.android.youtube' }))
+    expect(sets).toEqual([])
+  })
+
+  test('app.launch falls back to the session mode when the stored setting cannot be read', async () => {
+    const { session, sets } = sessionWithRotation('lock-portrait', [])
+    const execute = createDeviceExecutor({ session, rotation: () => null })
+    await execute(call('app.launch', { pkg: 'com.google.android.youtube' }))
+    expect(sets).toEqual(['lock-portrait'])
+  })
+
   test('app.launch leaves rotation alone when the device is set to "device"', async () => {
     const { session, sets } = sessionWithRotation('device', [])
     const execute = createDeviceExecutor({ session })

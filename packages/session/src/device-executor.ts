@@ -14,6 +14,7 @@ import {
   type NormGestureSample,
   type NormPoint,
   type Point,
+  type RotationMode,
   type Selector,
   type TimingSettings,
   type UiNode,
@@ -307,6 +308,18 @@ export function createDeviceExecutor(deps: {
    * every pre-plan-91 call site keeps working unchanged.
    */
   source?: InputSource
+  /**
+   * The device's rotation setting as it is stored NOW (`DeviceSettings.prep.rotation`), read at every
+   * `app.launch`. Optional: without it the launch re-asserts the session's own mode, as before.
+   *
+   * Why the session's mode is not enough: the mode is fixed when the always-on session is built, and
+   * a setting saved while a job holds the device skips the live re-lock (`state: 'busy'`, in
+   * `actions/impl/settings.ts` and `api/devices.ts`) — "applies to its next session". The always-on
+   * session can live for days, so that next session may never come: the phone keeps the old mode
+   * (`'device'`, auto-rotate on) under a setting that reads `lock-portrait`, and every launch re-asserts
+   * the old mode. A getter closes it at the first app launch after the save.
+   */
+  rotation?: () => RotationMode | null
 }) {
   /**
    * Resolved freshly on every call to the returned `execute` function below
@@ -772,8 +785,12 @@ export function createDeviceExecutor(deps: {
           Failure never blocks the launch — the lock reports its own outcome, and a launch that
           should happen still happens.
         */
+        // The STORED setting wins over the session's own mode when the host can read it (see
+        // `deps.rotation`). Only a lock is applied here: a setting changed back to 'device' is left
+        // to the session's close, since handing rotation back mid-job would turn the screen under it.
         const lock = deps.session.rotation
-        if (lock && lock.mode !== 'device') await lock.set(lock.mode).catch(() => undefined)
+        const wanted = deps.rotation?.() ?? lock?.mode ?? 'device'
+        if (lock && wanted !== 'device') await lock.set(wanted).catch(() => undefined)
         // An explicit target is the caller's own instruction: launch it, and
         // report whatever the platform says. There is nothing to fall back to
         // — a named activity that does not exist is the caller's mistake, not

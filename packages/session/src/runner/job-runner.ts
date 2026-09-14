@@ -7,6 +7,7 @@ import {
   type Inspector,
   type JobSettings,
   type ResultOutcome,
+  type RotationMode,
   type RuntimeEnvelope,
   type TimelineFramePolicy,
 } from '@enkaku/protocol'
@@ -305,6 +306,12 @@ export interface JobRunnerDeps {
    * falls back to `DEFAULT_TIMING`, matching pre-plan-34 behaviour exactly).
    */
   timing?: () => TimingSettings
+  /**
+   * The device's stored rotation setting, read at every `app.launch` (2026-09-14) — see
+   * `createDeviceExecutor`'s `rotation` for why the session's own mode can be stale. Undefined keeps
+   * the old behaviour: the launch re-asserts whatever mode the session was built with.
+   */
+  rotationOf?: (deviceId: string) => RotationMode | null
   /** `ctx.kv` (plan 79 §4.4) — undefined when the host has not wired a kv store (`kv.call` then
    * refuses cleanly with `E_KV_UNAVAILABLE`, the same pattern `transfer` above already uses). */
   kv?: KvRunnerDeps
@@ -630,6 +637,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       // never reached it — the same shape of bug this repo has shipped
       // before (an input-arbiter queue budget read once and never again).
       ...(deps.timing ? { timing: deps.timing } : {}),
+      ...(deps.rotationOf ? { rotation: () => deps.rotationOf?.(job.deviceId) ?? null } : {}),
     })
 
     return new Promise<AttemptOutcome>((resolve) => {
