@@ -65,6 +65,23 @@ import {
  *
  * ## Changelog
  *
+ * - **0.15.0 — the warm-up rotation is a trading-niche warm-up with sub-groups.**
+ *   The owner's use (2026-09-14): eighty phones warmed up daily at a fixed hour,
+ *   split across the three platforms and then into smaller groups, so phones on
+ *   the same platform at the same moment are not doing the same thing, and every
+ *   For You page leans toward trading and finance. `smm/warmup-rotation` now:
+ *   waits a random 0-2 min per phone; picks the platform by
+ *   `($device.number + slot + day) % 3`, so a single daily schedule moves each
+ *   phone to the next platform every day (80 phones → 27/27/26, checked); sends
+ *   each phone to one of three styles per platform by a weighted random switch
+ *   (e.g. TikTok: For You + inbox / keyword videos + For You / search + inbox +
+ *   videos); shuffles each style with 8-20 s random gaps and random counts; and
+ *   takes a new `keywords` parameter — ten Indonesian trading and finance terms
+ *   by default — searched as queries and passed to every script that tilts
+ *   attention toward matching content. A phone with no device number now fails
+ *   by name instead of finishing having done nothing. Needs the tiktok, youtube
+ *   and instagram packs activated (their keyword scripts are used).
+ *
  * - **0.14.0 — edit from the table.** The owner (2026-09-14): opening a row
  *   before Edit was too slow, and a phone dropdown over a hundred phones was a
  *   scroll hunt. The session table now always shows a Phone column, and on a
@@ -906,7 +923,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.14.0',
+  version: '0.15.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
