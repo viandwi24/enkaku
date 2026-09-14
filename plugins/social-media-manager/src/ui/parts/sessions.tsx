@@ -343,7 +343,7 @@ const ATTEMPT_WORDS: Record<string, string> = {
   queued: 'running',
   success: 'posted',
   failed: 'failed',
-  unverified: 'unverified',
+  unverified: 'not confirmed',
 }
 
 const ATTEMPT_TONES: Record<string, string> = {
@@ -355,7 +355,36 @@ const ATTEMPT_TONES: Record<string, string> = {
 
 /** Why `unverified` is not an error, on the word itself — the one state nobody guesses right. */
 const UNVERIFIED_MEANING =
-  'The job finished but the script could not confirm the post appeared. It is never retried on its own, because if it did land a retry would post the same video twice.'
+  'The upload finished but the script could not confirm the post appeared. Check the account on the phone, then mark it as posted or failed. It is never re-sent on its own, because if it did land a retry would post the same video twice.'
+
+/** What the member `smm/resolve-attempt` accepts: what the operator found on the account. */
+type Resolution = 'posted' | 'failed'
+
+/** Settle one not-confirmed attempt by hand. */
+type ResolveAttempt = (post: Post, platform: string, attempt: AttemptRow, resolution: Resolution, name: string) => void
+
+/** Re-send one video to the phones where it failed (`smm/retry-failed`). */
+type RetryVideo = (post: Post, name: string) => void
+
+/** The two row-level writes about outcomes, passed down the table together. */
+interface OutcomeActions {
+  onResolve: ResolveAttempt
+  onRetry: RetryVideo
+  /** Whether a resolve or a retry for this video is out right now. */
+  busy: (post: Post) => boolean
+}
+
+/** What `smm/retry-failed` answers. */
+const RetryFailedResultSchema = z.object({
+  requeued: z.number(),
+  platforms: z.array(z.string()).default([]),
+  skipped: z.array(z.string()).default([]),
+})
+
+/** Does any current attempt of this video, on any platform, stand failed? What a row's Retry failed would re-send. */
+function hasFailed(post: Post): boolean {
+  return Object.values(post.dispatch).some((s) => s.attempts.some((a) => a.state === 'failed'))
+}
 
 /**
  * A state word behind a coloured dot — never a colour alone, and never a bare
@@ -609,10 +638,67 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
 
   const saving = (post: Post): boolean => isPending(`update:${post.videoArtifactId}`)
 
+  /**
+   * Settle one not-confirmed attempt by hand, through `smm/resolve-attempt` (0.21.0).
+   *
+   * The job id is sent so the member refuses if the attempt on screen is no longer the attempt
+   * stored — a page open for an hour must not flip something that has since moved. The member's
+   * own refusal ("this one is posted now — refresh") reaches the failure toast verbatim.
+   */
+  const resolveAttempt: ResolveAttempt = (post, platform, attempt, resolution, name) => {
+    void run(
+      `resolve:${post.videoArtifactId}`,
+      async () => {
+        const host = await hostOrRefuse()
+        await runMember(
+          'smm/resolve-attempt@latest',
+          { videoArtifactId: post.videoArtifactId, platform, deviceId: attempt.deviceId, jobId: attempt.jobId, resolution },
+          host.id,
+        )
+      },
+      {
+        success:
+          resolution === 'posted'
+            ? `Marked “${name}” on ${platformTitle(platform)} as posted`
+            : `Marked “${name}” on ${platformTitle(platform)} as failed — Retry failed can send it again`,
+        failure: `Could not mark “${name}” on ${platformTitle(platform)}`,
+        onSuccess: () => reload(),
+      },
+    )
+  }
+
+  /**
+   * Re-send ONE video to where it failed, through `smm/retry-failed` — the row's own retry, beside
+   * the session's. A retry that re-queued nothing is not a success: the member's `skipped` reasons
+   * (no phone of its own yet, no caption) are thrown so the operator reads why.
+   */
+  const retryVideo: RetryVideo = (post, name) => {
+    void run(
+      `retry-video:${post.videoArtifactId}`,
+      async () => {
+        const host = await hostOrRefuse()
+        const result = await runMember('smm/retry-failed@latest', { videoArtifactId: post.videoArtifactId }, host.id, RetryFailedResultSchema)
+        if (result !== null && result.requeued === 0) {
+          throw new Error(result.skipped.length > 0 ? `Nothing was re-sent: ${result.skipped.join('; ')}` : 'Nothing was re-sent — no failed attempt was found. Refresh the page.')
+        }
+        return result
+      },
+      {
+        success: `Re-sent “${name}” to the phone where it failed — nothing that posted was touched`,
+        failure: `Could not retry “${name}”`,
+        onSuccess: () => reload(),
+      },
+    )
+  }
+
+  const outcomeBusy = (post: Post): boolean => isPending(`resolve:${post.videoArtifactId}`) || isPending(`retry-video:${post.videoArtifactId}`)
+
   const busy = (group: Group): boolean =>
     isPending(`start:${group.id}`) || isPending(`retry:${group.id}`) || isPending(`remove:${group.id}`)
 
-  return { startSession, retrySession, removeSession, updatePost, saving, busy }
+  const outcome: OutcomeActions = { onResolve: resolveAttempt, onRetry: retryVideo, busy: outcomeBusy }
+
+  return { startSession, retrySession, removeSession, updatePost, saving, busy, outcome }
 }
 
 /** One shared empty map, so a render before the first load does not allocate one per card. */
@@ -760,7 +846,7 @@ const BUCKETS: readonly { id: Bucket; word: string; dot: string; pill: string; m
     dot: 'bg-warn',
     pill: 'bg-warn-soft text-warn',
     meaning:
-      'Some phones posted and some did not, a result could not be confirmed, or the platform is not supported in this build. None of these is retried on its own.',
+      'Some phones posted and some did not, a post was not confirmed (check the account, then mark it as posted or failed), or the platform is not supported in this build. None of these is retried on its own.',
   },
 ]
 
@@ -871,7 +957,7 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
   // Removing the session removes the page it is on: there is nothing left to
   // watch, so the operator is put back on the list rather than left looking at
   // a header for a thing that no longer exists.
-  const { startSession, retrySession, removeSession, updatePost, saving, busy } = useSessionActions(reload, onBack)
+  const { startSession, retrySession, removeSession, updatePost, saving, busy, outcome } = useSessionActions(reload, onBack)
   const now = useNow(TICK_MS)
 
   const group = (data?.groups ?? []).find((g) => g.id === groupId) ?? null
@@ -938,6 +1024,7 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
               now={now}
               onSave={updatePost}
               saving={saving}
+              outcome={outcome}
             />
           )}
         </>
@@ -1006,6 +1093,7 @@ function SessionTable({
   now,
   onSave,
   saving,
+  outcome,
 }: {
   group: Group
   posts: readonly Post[]
@@ -1015,6 +1103,7 @@ function SessionTable({
   now: number
   onSave: SaveEdit
   saving: (post: Post) => boolean
+  outcome: OutcomeActions
 }): ReactElement {
   const [filter, setFilter] = useState<Filter>('all')
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set())
@@ -1231,6 +1320,7 @@ function SessionTable({
                   auto={autoStates.get(post.videoArtifactId)}
                   autoBlocked={autoBlocked}
                   onAuto={autoRow}
+                  outcome={outcome}
                 />
               ))}
             </TableBody>
@@ -1691,7 +1781,9 @@ function VideoRows({
   auto,
   autoBlocked,
   onAuto,
+  outcome,
 }: {
+  outcome: OutcomeActions
   post: Post
   turn: number
   group: Group
@@ -1791,14 +1883,23 @@ function VideoRows({
         {platforms.map((p) => (
           <TableCell key={p} className="align-top">
             {hasPlatform(post, p) ? (
-              <PlatformCell post={post} platform={p} devices={devices} now={now} dimmed={filter !== 'all' && bucketOf(post.dispatch[p]) !== filter} />
+              <PlatformCell
+                post={post}
+                platform={p}
+                name={name}
+                devices={devices}
+                now={now}
+                dimmed={filter !== 'all' && bucketOf(post.dispatch[p]) !== filter}
+                outcome={outcome}
+              />
             ) : (
               <span className="text-[11px] text-faint">not sent here</span>
             )}
           </TableCell>
         ))}
         <TableCell className="align-top">
-          <div data-row-action className="flex justify-end gap-1.5">
+          <div data-row-action className="flex flex-wrap justify-end gap-1.5">
+            {hasFailed(post) ? <RetryVideoButton post={post} name={name} outcome={outcome} /> : null}
             <Button
               variant={editing ? 'secondary' : 'outline'}
               size="sm"
@@ -1859,7 +1960,7 @@ function VideoRows({
                 onClose={() => onToggleEdit(post.videoArtifactId)}
               />
             ) : null}
-            {open ? <VideoDetail post={post} platforms={platforms} devices={devices} now={now} /> : null}
+            {open ? <VideoDetail post={post} name={name} platforms={platforms} devices={devices} now={now} outcome={outcome} /> : null}
           </TableCell>
         </TableRow>
       ) : null}
@@ -1879,20 +1980,32 @@ function VideoRows({
 function PlatformCell({
   post,
   platform,
+  name,
   devices,
   now,
   dimmed,
+  outcome,
 }: {
   post: Post
   platform: string
+  name: string
   devices: ReadonlyMap<string, string>
   now: number
   dimmed: boolean
+  outcome: OutcomeActions
 }): ReactElement {
   const state = post.dispatch[platform]
   const bucket = bucketOf(state)
-  const info = bucketInfo(bucket)
   const attempts = state?.attempts ?? []
+  /**
+   * The current attempts the script could not confirm (0.21.0). While anything is still running they
+   * wait — the cell is Running — and once it is not, a single one is resolved right here in the cell.
+   */
+  const unconfirmed = bucket === 'running' ? [] : attempts.filter((a) => a.state === 'unverified')
+  const failedNow = attempts.filter((a) => a.state === 'failed')
+  // "Not confirmed" is its own word on the pill when that is all that is wrong: nothing failed, and at
+  // least one phone could not be confirmed. "Needs a look" stays for a real mix and for unsupported.
+  const info = unconfirmed.length > 0 && failedNow.length === 0 ? { ...bucketInfo('look'), word: 'Not confirmed', meaning: UNVERIFIED_MEANING } : bucketInfo(bucket)
   const history = state?.history ?? []
   const round = roundOf(state)
   const nowSec = Math.floor(now / 1000)
@@ -1922,20 +2035,28 @@ function PlatformCell({
     else if (state?.at) when = `sent ${relativeTime(state.at, now)}`
   }
 
-  // Why, for the two buckets that need one.
+  // Why, for the two buckets that need one — ON the cell, not only in a tooltip (0.21.0): the tester
+  // reads the script's own words and decides from them.
   let why: string | null = null
   let whyTitle: string | undefined
+  let hint: string | null = null
+  const single = unconfirmed.length === 1 ? unconfirmed[0]! : null
   if (bucket === 'failed') {
-    why = attempts.find((a) => a.state === 'failed' && a.error)?.error ?? state?.note ?? null
-    whyTitle = why ?? undefined
+    why = failedNow.find((a) => a.error)?.error ?? state?.note ?? 'Failed without an error message — open the row for the run.'
+    whyTitle = why
+    hint = 'Retry failed on this row sends it again.'
   } else if (bucket === 'look') {
     if (state?.state === 'unsupported') why = 'Not supported in this build'
-    else if (attempts.length === 1 && attempts[0]!.state === 'unverified') {
-      why = 'Could not confirm it posted'
+    else if (single !== null && failedNow.length === 0) {
+      why = single.error ?? 'The script could not confirm the post appeared.'
+      whyTitle = UNVERIFIED_MEANING
+    } else if (unconfirmed.length > 1 && failedNow.length === 0) {
+      why = `${unconfirmed.length} phones not confirmed — open the row to check and mark each.`
       whyTitle = UNVERIFIED_MEANING
     } else {
       why = state?.summary ?? state?.note ?? 'Some posted, some did not'
       whyTitle = state?.note ?? why
+      if (failedNow.length > 0) hint = 'Retry failed on this row re-sends the failed phones only.'
     }
   }
 
@@ -1971,8 +2092,14 @@ function PlatformCell({
         </div>
       ) : null}
       {why !== null ? (
-        <div className={cn('max-w-[16rem] truncate text-[11px]', bucket === 'failed' ? 'text-danger' : 'text-warn')} title={whyTitle}>
+        <div className={cn('line-clamp-3 max-w-[16rem] text-[11px] leading-snug wrap-anywhere', bucket === 'failed' ? 'text-danger' : 'text-warn')} title={whyTitle}>
           {why}
+        </div>
+      ) : null}
+      {hint !== null ? <div className="max-w-[16rem] text-[10.5px] text-faint">{hint}</div> : null}
+      {single !== null && failedNow.length === 0 && !dimmed ? (
+        <div data-row-action className="pt-0.5">
+          <ResolveButtons post={post} platform={platform} attempt={single} name={name} phone={attemptPhone(single, devices)} outcome={outcome} />
         </div>
       ) : null}
     </div>
@@ -1986,14 +2113,18 @@ function PlatformCell({
  */
 function VideoDetail({
   post,
+  name,
   platforms,
   devices,
   now,
+  outcome,
 }: {
   post: Post
+  name: string
   platforms: readonly string[]
   devices: ReadonlyMap<string, string>
   now: number
+  outcome: OutcomeActions
 }): ReactElement {
   const shown = platforms.filter((p) => hasPlatform(post, p))
   return (
@@ -2028,7 +2159,13 @@ function VideoDetail({
                 ) : (
                   <ul className="mt-0.5 space-y-1">
                     {attempts.map((a) => (
-                      <AttemptDetail key={`${a.jobId}:${a.deviceId}`} attempt={a} devices={devices} now={now} />
+                      <AttemptDetail
+                        key={`${a.jobId}:${a.deviceId}`}
+                        attempt={a}
+                        devices={devices}
+                        now={now}
+                        actions={{ post, platform, name, outcome }}
+                      />
                     ))}
                   </ul>
                 )}
@@ -2251,16 +2388,161 @@ function AttemptDetail({
   devices,
   now,
   earlier = false,
+  actions,
 }: {
   attempt: AttemptRow
   devices: ReadonlyMap<string, string>
   now: number
   earlier?: boolean
+  /** Given for CURRENT attempts only: an earlier one a retry replaced is history, never acted on. */
+  actions?: { post: Post; platform: string; name: string; outcome: OutcomeActions }
 }): ReactElement {
   const word = ATTEMPT_WORDS[attempt.state] ?? attempt.state
   const nowSec = Math.floor(now / 1000)
+  const resolution = attempt.resolution
   return (
     <li className="text-[11px]">
+      <AttemptLine attempt={attempt} devices={devices} now={now} nowSec={nowSec} word={word} earlier={earlier} />
+      {attempt.error ? (
+        <p className={cn('mt-0.5 max-w-prose leading-relaxed wrap-anywhere', attempt.state === 'unverified' ? 'text-warn' : 'text-danger')}>{attempt.error}</p>
+      ) : null}
+      {resolution ? (
+        <p className="mt-0.5 max-w-prose leading-relaxed wrap-anywhere text-dim">
+          Marked as {resolution.to} by hand {relativeTime(resolution.at, now)} (it was {ATTEMPT_WORDS[resolution.from] ?? resolution.from})
+          {resolution.note ? ` — “${resolution.note}”` : ''}
+          {resolution.to === 'posted' && resolution.reason ? `. The script had said: ${resolution.reason}` : ''}
+          {resolution.byJobId ? (
+            <>
+              {' · '}
+              <JobLink jobId={resolution.byJobId} />
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {actions && !earlier && attempt.state === 'unverified' ? (
+        <div className="mt-1">
+          <ResolveButtons
+            post={actions.post}
+            platform={actions.platform}
+            attempt={attempt}
+            name={actions.name}
+            phone={attemptPhone(attempt, devices)}
+            outcome={actions.outcome}
+          />
+        </div>
+      ) : null}
+      {actions && !earlier && attempt.state === 'failed' ? (
+        <p className="mt-0.5 text-faint">Retry failed on this row sends it to this phone again.</p>
+      ) : null}
+    </li>
+  )
+}
+
+/**
+ * Mark as posted and Mark as failed, each behind a confirm that says what it does (0.21.0). Shared by
+ * the table cell and the row detail, so the two can never word the decision differently.
+ */
+function ResolveButtons({
+  post,
+  platform,
+  attempt,
+  name,
+  phone,
+  outcome,
+}: {
+  post: Post
+  platform: string
+  attempt: AttemptRow
+  name: string
+  phone: string
+  outcome: OutcomeActions
+}): ReactElement {
+  const busy = outcome.busy(post)
+  const where = `${platformTitle(platform)} on ${phone}`
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <ConfirmDialog
+        trigger={
+          <Button variant="outline" size="sm" disabled={busy} title={`You checked the ${platformTitle(platform)} account and the video is there`}>
+            Mark as posted
+          </Button>
+        }
+        title={`Mark “${name}” as posted on ${where}?`}
+        destructive={false}
+        confirmLabel="Mark as posted"
+        description={
+          <>
+            Do this only after checking the account on the phone and seeing the video there. The post counts as posted, it is never re-sent, and
+            the script’s note stays on the record.
+          </>
+        }
+        onConfirm={() => outcome.onResolve(post, platform, attempt, 'posted', name)}
+      />
+      <ConfirmDialog
+        trigger={
+          <Button variant="ghost" size="sm" disabled={busy} title={`You checked the ${platformTitle(platform)} account and the video is not there`}>
+            Mark as failed
+          </Button>
+        }
+        title={`Mark “${name}” as failed on ${where}?`}
+        destructive={false}
+        confirmLabel="Mark as failed"
+        description={
+          <>
+            Do this only after checking the account on the phone and NOT finding the video. The post counts as failed, and{' '}
+            <strong>Retry failed</strong> (on this row or for the session) will send it to this phone again. If the video is actually there, a
+            retry posts it twice.
+          </>
+        }
+        onConfirm={() => outcome.onResolve(post, platform, attempt, 'failed', name)}
+      />
+    </div>
+  )
+}
+
+/** A row's own Retry failed: this one video, to the phones where it failed, behind a confirm. */
+function RetryVideoButton({ post, name, outcome }: { post: Post; name: string; outcome: OutcomeActions }): ReactElement {
+  const busy = outcome.busy(post)
+  return (
+    <ConfirmDialog
+      trigger={
+        <Button variant="outline" size="sm" disabled={busy} title="Send this video again to the phones where it failed">
+          <ArrowsClockwiseIcon aria-hidden />
+          Retry failed
+        </Button>
+      }
+      title={`Retry “${name}” where it failed?`}
+      destructive={false}
+      confirmLabel="Retry failed"
+      description={
+        <>
+          This video is sent again, now, to the phone where its upload <strong>failed</strong>, on every platform that failed. A platform that
+          posted is left alone, and so is one that was not confirmed — mark that one first. It goes out straight away, not at a paced turn.
+        </>
+      }
+      onConfirm={() => outcome.onRetry(post, name)}
+    />
+  )
+}
+
+/** The first line of an attempt: round, phone, what it did, when, and the run. */
+function AttemptLine({
+  attempt,
+  devices,
+  now,
+  nowSec,
+  word,
+  earlier,
+}: {
+  attempt: AttemptRow
+  devices: ReadonlyMap<string, string>
+  now: number
+  nowSec: number
+  word: string
+  earlier: boolean
+}): ReactElement {
+  return (
+    <>
       <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
         <span className="rounded-inner bg-muted-2 px-1.5 py-px text-[10.5px] text-text-2">
           {earlier ? 'earlier · ' : ''}attempt {attempt.round}
@@ -2277,8 +2559,7 @@ function AttemptDetail({
         ) : null}
         <JobLink jobId={attempt.jobId} />
       </div>
-      {attempt.error ? <p className="mt-0.5 max-w-prose leading-relaxed wrap-anywhere text-danger">{attempt.error}</p> : null}
-    </li>
+    </>
   )
 }
 
@@ -2504,8 +2785,8 @@ function SessionActions({
           <>
             Only the phones whose upload <strong>failed</strong> are sent again, re-spaced by this session’s own gaps.
             <br />A phone that already posted is left alone — re-sending it would put the same video on that account twice, and that cannot be
-            undone. A phone whose result could not be confirmed (<span className="readout">unverified</span>) is left alone for the same reason: it
-            may well have posted, so it waits for a person to look rather than being re-sent.
+            undone. A post that was <strong>not confirmed</strong> is left alone for the same reason: it may well have posted. Check that account on
+            the phone and use Mark as posted or Mark as failed on its row — a post marked as failed is retried here.
           </>
         }
         onConfirm={onRetry}

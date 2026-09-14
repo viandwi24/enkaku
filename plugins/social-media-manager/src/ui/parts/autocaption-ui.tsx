@@ -27,6 +27,7 @@ import {
   type CaptionStyle,
   type Readiness,
 } from '../autocaption'
+import { SpeechLink } from './speech'
 
 /**
  * The React half of auto captions, shared by the compose page and a session's table: whether the farm can do it,
@@ -140,16 +141,14 @@ export function ReadinessNote({ setup }: { setup: AutoCaptionSetup }): ReactElem
 }
 
 /**
- * Where speech and AI are managed — the farm's own pages, not this plugin's: the Whisper tool, its model and the AI
- * choice are farm settings (core plan 318), and the connectors live on Agents. Plain links: a plugin view cannot use
- * Studio's router, and leaving for another page is a real navigation anyway.
+ * Where the two halves are managed. Speech (the Whisper CLI, its model, the doctor) is this page's own Speech tab
+ * (0.20.0), switched to in place; the AI connectors live on the farm's Agents page — a plain link, because a plugin view
+ * cannot use Studio's router and leaving for another page is a real navigation anyway.
  */
 function ManageLinks(): ReactElement {
   return (
     <span className="inline-flex items-center gap-2 text-[11px]">
-      <a href="/settings?tab=ai" className="text-accent underline-offset-2 hover:underline">
-        Manage speech &amp; AI
-      </a>
+      <SpeechLink className="text-accent underline-offset-2 hover:underline">Manage speech</SpeechLink>
       <a href="/agents" className="text-accent underline-offset-2 hover:underline">
         AI connectors
       </a>

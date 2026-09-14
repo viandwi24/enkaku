@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { ArrowsClockwiseIcon, Button, Spinner, Tabs, TabsContent, TabsList, TabsTrigger, type PluginViewProps } from '@enkaku/ui'
 import { ComposePanel } from './parts/compose'
 import { SessionDetail, SessionsPanel } from './parts/sessions'
+import { OpenSpeechContext, SpeechPanel } from './parts/speech'
 
 /**
  * One screen for the whole job: upload the videos, say where they go, name the
@@ -55,10 +56,16 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   const [refreshKey, setRefreshKey] = useState(0)
 
   const openSessionId = params.session ?? null
-  const tab = params.tab === 'new' ? 'new' : 'sessions'
+  const tab = params.tab === 'new' || params.tab === 'speech' ? params.tab : 'sessions'
 
   const openSession = useCallback((groupId: string) => setParams({ session: groupId }), [setParams])
   const backToList = useCallback(() => setParams({ session: null }), [setParams])
+  /*
+    Speech (0.20.0) is a tab, not a second sidebar entry, for the reason this whole page is one entry: Whisper exists
+    here for auto captions, and the operator reaches it from the note beside those buttons. That note switches the tab in
+    place through this context, from the compose tab or a session's own page alike.
+  */
+  const openSpeech = useCallback(() => setParams({ session: null, tab: 'speech' }), [setParams])
 
   /*
     A new session lands the operator ON it. They have just decided forty things
@@ -83,7 +90,11 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   const refresh = useCallback(() => setRefreshKey((n) => n + 1), [])
 
   if (openSessionId !== null) {
-    return <SessionDetail groupId={openSessionId} refreshKey={refreshKey} onBack={backToList} />
+    return (
+      <OpenSpeechContext.Provider value={openSpeech}>
+        <SessionDetail groupId={openSessionId} refreshKey={refreshKey} onBack={backToList} />
+      </OpenSpeechContext.Provider>
+    )
   }
 
   /*
@@ -91,31 +102,37 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
     the page header above it, so a `py-*` here is a second gap nobody asked for.
   */
   return (
-    <Tabs value={tab} onValueChange={(next) => setParams({ tab: next === 'new' ? 'new' : null })} className="gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <TabsList variant="line">
-          <TabsTrigger value="sessions">Sessions</TabsTrigger>
-          <TabsTrigger value="new">New session</TabsTrigger>
-        </TabsList>
-        <div className="grow" />
-        {tab === 'sessions' ? (
-          <>
-            {refreshing ? <Spinner className="size-3.5 text-faint" /> : null}
-            <Button variant="outline" size="sm" onClick={refresh}>
-              <ArrowsClockwiseIcon aria-hidden />
-              Refresh
-            </Button>
-          </>
-        ) : null}
-      </div>
+    <OpenSpeechContext.Provider value={openSpeech}>
+      <Tabs value={tab} onValueChange={(next) => setParams({ tab: next === 'new' || next === 'speech' ? next : null })} className="gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <TabsList variant="line">
+            <TabsTrigger value="sessions">Sessions</TabsTrigger>
+            <TabsTrigger value="new">New session</TabsTrigger>
+            <TabsTrigger value="speech">Speech</TabsTrigger>
+          </TabsList>
+          <div className="grow" />
+          {tab !== 'new' ? (
+            <>
+              {refreshing ? <Spinner className="size-3.5 text-faint" /> : null}
+              <Button variant="outline" size="sm" onClick={refresh}>
+                <ArrowsClockwiseIcon aria-hidden />
+                Refresh
+              </Button>
+            </>
+          ) : null}
+        </div>
 
-      <TabsContent value="sessions">
-        <SessionsPanel refreshKey={refreshKey} onOpen={openSession} onRefreshingChange={setRefreshing} />
-      </TabsContent>
-      <TabsContent value="new">
-        <ComposePanel onCreated={onCreated} />
-      </TabsContent>
-    </Tabs>
+        <TabsContent value="sessions">
+          <SessionsPanel refreshKey={refreshKey} onOpen={openSession} onRefreshingChange={setRefreshing} />
+        </TabsContent>
+        <TabsContent value="new">
+          <ComposePanel onCreated={onCreated} />
+        </TabsContent>
+        <TabsContent value="speech">
+          <SpeechPanel refreshKey={refreshKey} onRefreshingChange={setRefreshing} />
+        </TabsContent>
+      </Tabs>
+    </OpenSpeechContext.Provider>
   )
 }
 

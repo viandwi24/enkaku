@@ -5,6 +5,9 @@ import {
   describePlatform,
   deviceDisplayName,
   failedDevices,
+  isJobGone,
+  platformNote,
+  resolveAttempt,
   newPost,
   planDispatch,
   applyPostEdit,
@@ -254,9 +257,9 @@ describe('describePlatform — where it ran and how it went', () => {
     expect(describePlatform(many)).toBe('2 phones · 1 posted, 1 failed')
   })
 
-  test('unverified is worded as itself — never as a success', () => {
+  test('unverified is worded as "not confirmed" — never as a success', () => {
     const unsure = state({ state: 'partial', attempts: [attempt({ deviceId: 'd1', deviceName: '#1 moto', state: 'unverified' })] })
-    expect(describePlatform(unsure)).toBe('#1 moto · unverified')
+    expect(describePlatform(unsure)).toBe('#1 moto · not confirmed')
   })
 
   test('a phone with no recorded name reads as an id, never as a blank', () => {
@@ -412,6 +415,122 @@ describe('failedDevices — a retry re-targets the failures and nobody else', ()
 
   test('a platform that never dispatched has nothing to retry', () => {
     expect(failedDevices(PENDING_STATE)).toEqual([])
+  })
+})
+
+describe('isJobGone — only a job the farm no longer has is settled from a job.get error', () => {
+  test('not found, by code or by message', () => {
+    expect(isJobGone(Object.assign(new Error('no such job: j1'), { code: 'job_not_found' }))).toBe(true)
+    expect(isJobGone(new Error('job_not_found: no such job: j1'))).toBe(true)
+  })
+
+  test('a read that did not get through is not a verdict', () => {
+    expect(isJobGone(Object.assign(new Error('capability job.get timed out after 5000ms'), { code: 'deadline_exceeded' }))).toBe(false)
+    expect(isJobGone(new Error('fetch failed'))).toBe(false)
+  })
+})
+
+/**
+ * Settling a not-confirmed attempt by hand (0.21.0). The case: Instagram posted the Reel, the script
+ * reported `unverified`, and the tester had no way to act on it from the page.
+ */
+describe('resolveAttempt — an operator settles a not-confirmed post after checking the account', () => {
+  const unverified: Attempt = {
+    jobId: 'j1',
+    deviceId: 'd1',
+    deviceName: '#1 moto g06',
+    state: 'unverified',
+    error: 'after 30s no readable reel grid was found',
+    at: NOW - 300,
+    settledAt: NOW - 120,
+    round: 1,
+  }
+  const failed: Attempt = { ...unverified, jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06', state: 'failed', error: 'app missing' }
+  const posted: Attempt = { ...unverified, jobId: 'j3', deviceId: 'd3', deviceName: '#3 moto g06', state: 'success', error: null }
+
+  function withAttempts(attempts: Attempt[]): Post {
+    const base = newPost({ videoArtifactId: 'vid-1', caption: 'hello', platforms: ['instagram'], now: NOW })
+    return {
+      ...base,
+      dispatch: { instagram: { state: rollUp(attempts), at: NOW - 300, deviceCount: attempts.length, attempts, history: [], note: 'old note', summary: null } },
+    }
+  }
+
+  test('"posted" makes the attempt a success and the platform succeeded, keeping what the script said', () => {
+    const outcome = resolveAttempt({ post: withAttempts([unverified]), platform: 'instagram', deviceId: 'd1', resolution: 'posted', now: NOW, byJobId: 'op-job' })
+    if (!outcome.ok) throw new Error(outcome.message)
+    const state = stateFor(outcome.post, 'instagram')
+    expect(state.state).toBe('succeeded')
+    expect(state.note).toBeNull()
+    expect(state.summary).toBe('#1 moto g06 · posted')
+    expect(state.attempts[0]).toMatchObject({ state: 'success', error: null, settledAt: NOW - 120 })
+    // The history note: who (the job that wrote it), when, and the previous state and reason.
+    expect(state.attempts[0]?.resolution).toEqual({ from: 'unverified', to: 'posted', at: NOW, byJobId: 'op-job', note: null, reason: 'after 30s no readable reel grid was found' })
+    // The stored shape still parses.
+    expect(PostSchema.parse(outcome.post)).toEqual(outcome.post)
+  })
+
+  test('"failed" makes it failed with a readable error, and hands it to Retry failed', () => {
+    const outcome = resolveAttempt({ post: withAttempts([unverified]), platform: 'instagram', deviceId: 'd1', resolution: 'failed', note: 'not on the profile', now: NOW })
+    if (!outcome.ok) throw new Error(outcome.message)
+    const state = stateFor(outcome.post, 'instagram')
+    expect(state.state).toBe('failed')
+    expect(state.attempts[0]?.state).toBe('failed')
+    expect(state.attempts[0]?.error).toBe('Marked as failed by hand after checking the account (not on the profile). The script had said: after 30s no readable reel grid was found')
+    expect(state.attempts[0]?.resolution).toMatchObject({ from: 'unverified', to: 'failed', note: 'not on the profile', byJobId: null })
+    expect(failedDevices(state)).toEqual(['d1'])
+    expect(state.note).toContain('Retry failed')
+  })
+
+  test('only the named attempt moves; the platform rolls up from all of them', () => {
+    const outcome = resolveAttempt({ post: withAttempts([unverified, failed, posted]), platform: 'instagram', deviceId: 'd1', resolution: 'posted', now: NOW })
+    if (!outcome.ok) throw new Error(outcome.message)
+    const state = stateFor(outcome.post, 'instagram')
+    expect(state.attempts.map((a) => a.state)).toEqual(['success', 'failed', 'success'])
+    expect(state.state).toBe('partial')
+    expect(state.note).toBe('2 posted, 1 failed. "Retry failed" sends it again to the phone that failed only — the ones that posted are left alone.')
+  })
+
+  test('refuses anything that is not currently not confirmed — a stale page must not flip a settled attempt', () => {
+    for (const deviceId of ['d2', 'd3']) {
+      const outcome = resolveAttempt({ post: withAttempts([unverified, failed, posted]), platform: 'instagram', deviceId, resolution: 'posted', now: NOW })
+      expect(outcome.ok).toBe(false)
+      if (!outcome.ok) expect(outcome.code).toBe('E_CONFLICT')
+    }
+    const running = resolveAttempt({ post: withAttempts([{ ...unverified, state: 'queued', error: null }]), platform: 'instagram', deviceId: 'd1', resolution: 'failed', now: NOW })
+    expect(running.ok).toBe(false)
+  })
+
+  test('refuses an attempt that is not there: another phone, another job, or a platform never sent', () => {
+    const post = withAttempts([unverified])
+    const otherPhone = resolveAttempt({ post, platform: 'instagram', deviceId: 'd9', resolution: 'posted', now: NOW })
+    const otherJob = resolveAttempt({ post, platform: 'instagram', deviceId: 'd1', jobId: 'j-old', resolution: 'posted', now: NOW })
+    const neverSent = resolveAttempt({ post, platform: 'tiktok', deviceId: 'd1', resolution: 'posted', now: NOW })
+    for (const outcome of [otherPhone, otherJob, neverSent]) {
+      expect(outcome.ok).toBe(false)
+      if (!outcome.ok) expect(outcome.code).toBe('E_NOT_FOUND')
+    }
+    const sameJob = resolveAttempt({ post, platform: 'instagram', deviceId: 'd1', jobId: 'j1', resolution: 'posted', now: NOW })
+    expect(sameJob.ok).toBe(true)
+  })
+
+  test('never touches the input post', () => {
+    const post = withAttempts([unverified])
+    const before = JSON.stringify(post)
+    resolveAttempt({ post, platform: 'instagram', deviceId: 'd1', resolution: 'failed', now: NOW })
+    expect(JSON.stringify(post)).toBe(before)
+  })
+})
+
+describe('platformNote — the settled sentence follows the attempts', () => {
+  const a = (state: Attempt['state'], n: number): Attempt => ({ jobId: `j${n}`, deviceId: `d${n}`, deviceName: null, state, error: null, at: null, settledAt: null, round: 1 })
+
+  test('succeeded says nothing, failed names the retry, partial counts, in-flight keeps what it had', () => {
+    expect(platformNote('succeeded', [a('success', 1)], 'old')).toBeNull()
+    expect(platformNote('failed', [a('failed', 1)], 'old')).toBe('Failed on its phone. "Retry failed" sends it again.')
+    expect(platformNote('failed', [a('failed', 1), a('failed', 2)], 'old')).toBe('Failed on all 2 phones. "Retry failed" sends it again.')
+    expect(platformNote('partial', [a('unverified', 1)], 'old')).toContain('1 not confirmed')
+    expect(platformNote('dispatched', [a('queued', 1)], 'old')).toBe('old')
   })
 })
 

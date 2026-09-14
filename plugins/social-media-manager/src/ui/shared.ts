@@ -144,6 +144,21 @@ export const AttemptSchema = z.object({
   settledAt: z.number().nullable().default(null),
   /** 1 = the first send on this platform, 2 = the first retry, … Older rows are all first sends. */
   round: z.number().default(1),
+  /**
+   * Set when an operator marked a not-confirmed attempt by hand (0.21.0, `smm/resolve-attempt`): what it was, what it
+   * became, when, the job that wrote it, and what the script had said. `null` otherwise.
+   */
+  resolution: z
+    .object({
+      from: z.string(),
+      to: z.string(),
+      at: z.number(),
+      byJobId: z.string().nullable().default(null),
+      note: z.string().nullable().default(null),
+      reason: z.string().nullable().default(null),
+    })
+    .nullable()
+    .default(null),
 })
 
 export const PostSchema = z.object({

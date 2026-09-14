@@ -8,8 +8,9 @@ import addGroup from './add-group'
 import startGroup from './start-group'
 import retryGroup from './retry-group'
 import updatePost from './update-post'
+import resolveAttempt from './resolve-attempt'
 import { PLATFORMS } from './platforms'
-import { POST_PREFIX } from './posts'
+import { POST_PREFIX, RESULT_UNREADABLE } from './posts'
 
 /**
  * Importing `./index` at the top of this file is itself the most valuable
@@ -29,15 +30,15 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.19.1')
+    expect(plugin.version).toBe('0.21.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
   test('every member is presentable in Studio', () => {
-    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group', 'update-post'])
+    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group', 'update-post', 'resolve-attempt'])
     // Typed against the members themselves rather than the manifest's erased
     // `ScriptDefinition`, which drops `title`/`description` from the type.
-    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost]
+    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })
@@ -133,37 +134,103 @@ describe('the optional fields are actually optional in the generated schema', ()
   }
 })
 
-describe('settleJob — a green job is a post only when the script says so', () => {
-  test('the measured false positive: success + unverified is unverified', () => {
-    const settled = settleJob({ status: 'success', result: { outcome: 'unverified', reason: 'after 30s no readable video grid was found' } })
-    expect(settled).toEqual({ state: 'unverified', error: 'after 30s no readable video grid was found' })
+/**
+ * The mapping from a finished job to an attempt, one test per row of `settleJob`'s table (0.21.0).
+ * The owner's requirement: the report must be accurate — an error says error, with the text a tester
+ * needs to retry by themselves.
+ */
+describe('settleJob — the exact mapping from a finished job to an attempt', () => {
+  test('a failed (thrown) job is failed, with the job\'s error verbatim', () => {
+    const error = 'E_SECURITY_CHECK: TikTok is showing a security check on the profile — complete it by hand, then retry'
+    expect(settleJob({ status: 'failed', error })).toEqual({ state: 'failed', error })
   })
 
-  test('posted is a success', () => {
+  test('a failed job with no error of its own falls back to the result\'s reason, then to a sentence — never a blank', () => {
+    expect(settleJob({ status: 'failed', error: null, result: { outcome: 'failed', reason: 'no upload button' } })).toEqual({ state: 'failed', error: 'no upload button' })
+    const bare = settleJob({ status: 'failed', error: null })
+    expect(bare?.state).toBe('failed')
+    expect(bare?.error).toContain('without an error message')
+  })
+
+  test('a failed job keeps its own error even when finish() returned a failed outcome (the TikTok shape)', () => {
+    // `tiktok/post-video`'s finish() returns `{ outcome: 'failed', reason: ctx.error.message }` after run() threw;
+    // the core settles that job `failed` with the thrown message as `error` and the return as a partial result.
+    const settled = settleJob({ status: 'failed', error: 'E_UPLOAD_BUTTON: no Post button', result: { outcome: 'failed', reason: 'E_UPLOAD_BUTTON: no Post button' } })
+    expect(settled).toEqual({ state: 'failed', error: 'E_UPLOAD_BUTTON: no Post button' })
+  })
+
+  test('a failed job whose script had ALREADY said posted or unverified is not confirmed — a retry could post twice', () => {
+    const posted = settleJob({ status: 'failed', error: 'process exited during finish', result: { outcome: 'posted' } })
+    expect(posted?.state).toBe('unverified')
+    expect(posted?.error).toContain('already reported the post as done')
+    expect(posted?.error).toContain('process exited during finish')
+    const unsure = settleJob({ status: 'failed', error: null, result: { outcome: 'unverified', reason: 'profile unreadable' } })
+    expect(unsure?.state).toBe('unverified')
+    expect(unsure?.error).toContain('could not confirm')
+  })
+
+  test('a cancelled job is failed, and says it was cancelled', () => {
+    expect(settleJob({ status: 'cancelled', error: null })).toEqual({ state: 'failed', error: 'The job was cancelled before it finished.' })
+    expect(settleJob({ status: 'cancelled', error: 'cancelled (no executor was running)' })).toEqual({
+      state: 'failed',
+      error: 'The job was cancelled before it finished: cancelled (no executor was running)',
+    })
+  })
+
+  test('an expired job is failed, and says it expired', () => {
+    expect(settleJob({ status: 'expired', error: null })).toEqual({ state: 'failed', error: 'The job expired before a phone ran it.' })
+  })
+
+  test('a SUCCEEDED job whose result is outcome "failed" is failed, with the result\'s reason', () => {
+    expect(settleJob({ status: 'success', result: { outcome: 'failed', reason: 'E_UPLOAD_BUTTON' } })).toEqual({ state: 'failed', error: 'E_UPLOAD_BUTTON' })
+    expect(settleJob({ status: 'success', result: { outcome: 'skipped', reason: 'nothing pending' } })).toEqual({ state: 'failed', error: 'nothing pending' })
+    expect(settleJob({ status: 'success', result: { outcome: 'failed' } })?.error).toContain('without saying why')
+  })
+
+  test('outcome "posted" is a success', () => {
     expect(settleJob({ status: 'success', result: { outcome: 'posted', reason: null } })).toEqual({ state: 'success', error: null })
   })
 
-  test('a script that walked away without posting is a retryable failure', () => {
-    expect(settleJob({ status: 'success', result: { outcome: 'failed', reason: 'E_UPLOAD_BUTTON' } })).toEqual({ state: 'failed', error: 'E_UPLOAD_BUTTON' })
-    expect(settleJob({ status: 'success', result: { outcome: 'skipped' } })?.state).toBe('failed')
+  test('outcome "unverified" is unverified, keeping the reason — the measured Instagram and TikTok case', () => {
+    const settled = settleJob({ status: 'success', result: { outcome: 'unverified', reason: 'after 30s no readable video grid was found' } })
+    expect(settled).toEqual({ state: 'unverified', error: 'after 30s no readable video grid was found' })
+    expect(settleJob({ status: 'success', result: { outcome: 'unverified' } })?.error).toContain('could not confirm')
   })
 
-  test('a script with no verdict is judged by its job status, as before', () => {
-    expect(settleJob({ status: 'success', result: null })).toEqual({ state: 'success', error: null })
-    expect(settleJob({ status: 'failed', error: 'timed out' })).toEqual({ state: 'failed', error: 'timed out' })
+  test('a success with no readable outcome is unverified, saying the result could not be read — never a success', () => {
+    for (const result of [null, undefined, {}, 'done', { outcome: 3 }]) {
+      expect(settleJob({ status: 'success', result })).toEqual({ state: 'unverified', error: RESULT_UNREADABLE })
+    }
+    expect(RESULT_UNREADABLE).toContain('could not be read')
+  })
+
+  test('an outcome this build does not know is unverified, naming it', () => {
+    const settled = settleJob({ status: 'success', result: { outcome: 'scheduled', reason: 'posts at 18:00' } })
+    expect(settled?.state).toBe('unverified')
+    expect(settled?.error).toContain('"scheduled"')
+    expect(settled?.error).toContain('posts at 18:00')
+  })
+
+  test('a job still in flight has no answer yet', () => {
+    expect(settleJob({ status: 'queued' })).toBeNull()
     expect(settleJob({ status: 'running' })).toBeNull()
+  })
+
+  test('a long error is kept up to the attempt\'s limit, not cut at 300', () => {
+    const error = 'x'.repeat(700)
+    expect(settleJob({ status: 'failed', error })?.error).toBe(error)
   })
 })
 
 describe('partialNote', () => {
-  test('unverified phones are named and kept out of the retry', () => {
+  test('not-confirmed phones are named, kept out of the retry, and told how to settle', () => {
     const note = partialNote(0, 1, 1)
-    expect(note).toContain('1 unverified')
-    expect(note).toContain('re-sends to those 1 only')
-    expect(note).toContain('not retried automatically')
+    expect(note).toBe(
+      '1 failed, 1 not confirmed. "Retry failed" sends it again to the phone that failed only — the ones that posted are left alone. Check the account that was not confirmed on the phone, then mark it as posted or failed — it is never re-sent on its own.',
+    )
   })
 
-  test('without unverified phones it reads as before', () => {
-    expect(partialNote(1, 1, 0)).toBe('1 posted, 1 failed. "Re-run failed" re-sends to those 1 only — the ones that posted are left alone.')
+  test('without not-confirmed phones it names only the retry', () => {
+    expect(partialNote(1, 2, 0)).toBe('1 posted, 2 failed. "Retry failed" sends it again to those 2 only — the ones that posted are left alone.')
   })
 })

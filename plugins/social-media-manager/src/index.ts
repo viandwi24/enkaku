@@ -7,6 +7,7 @@ import addGroup from './add-group'
 import startGroup from './start-group'
 import retryGroup from './retry-group'
 import updatePost from './update-post'
+import resolveAttempt from './resolve-attempt'
 import { warmupRotation } from './workflows/warmup-rotation'
 import { NO_HASHTAG_RULE, composePostText, hashtagsFor } from './hashtags'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
@@ -27,6 +28,11 @@ import {
   unassignedNote,
   withSummary,
   NO_CAPTION_YET,
+  ATTEMPT_ERROR_MAX,
+  isJobGone,
+  partialNote,
+  platformNote,
+  settleJob,
   type Attempt,
   type Post,
   type RouterDevice,
@@ -66,6 +72,46 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.21.0 — an honest report per phone, and a way to settle "not confirmed".**
+ *   The owner (2026-09-14): every platform must post, and when one does not the
+ *   report must say so exactly, so a tester can retry by themselves. The case:
+ *   Instagram posted a Reel, its script reported `outcome: "unverified"`, and
+ *   the row sat at "Needs a look" with nothing to press. What changed:
+ *   the job → attempt mapping (`posts.ts` `settleJob`, one test per row) now
+ *   records a green job with no readable outcome, or an outcome this build does
+ *   not know, as **not confirmed** instead of posted; a cancelled or expired job
+ *   says so in its error; errors are kept to 1000 characters instead of 300; and
+ *   a `job.get` that merely did not get through leaves the attempt running
+ *   instead of marking it failed (only a job the farm no longer has is failed).
+ *   A job that FAILED after its script had already said `posted` or
+ *   `unverified` (killed while confirming, or dying in `finish`) is not
+ *   confirmed rather than failed, so Retry failed never posts it twice.
+ *   A new member, `resolve-attempt`, lets an operator who checked the account
+ *   **Mark as posted** (the attempt becomes a success) or **Mark as failed**
+ *   (it becomes failed, and so retryable through Retry failed) — only while the
+ *   attempt is still not confirmed, written with `setIfVersion`, and recorded on
+ *   the attempt (`resolution`: from, to, when, the job that wrote it, the
+ *   script's reason). The session page reads "Not confirmed" with the script's
+ *   reason on the cell and both buttons behind a confirm; a failed cell shows
+ *   its error, and a row with a failure has its own **Retry failed**
+ *   (`retry-failed`). Notes say "Retry failed", the button's real name.
+ *
+ * - **0.20.0 — a Speech tab: Whisper managed where auto captions need it.**
+ *   The owner (2026-09-14): Whisper exists for this plugin's auto captions, so
+ *   it should be managed here, not only under the farm's Settings. The page has
+ *   a third tab, **Speech** (`?tab=speech`), with the same controls as Studio's
+ *   Settings → AI → Speech (core plan 318), through the same doors: status and
+ *   why (`media.transcribe.status`), the whisper-cli path, source and managed
+ *   build, a path override with Save/Clear (`PATCH /api/settings`,
+ *   `ai.whisperCliPath`), installing or removing the whisper.cpp build when the
+ *   farm has one pinned for this host — or the `brew install whisper-cpp` hint
+ *   when it does not — the tiny/base/small/medium models with Use, Install and a
+ *   confirmed Uninstall (`ai.whisperModel`, `/api/tools/:id/…`), and Run check
+ *   (`media.transcribe.check`). It asks again every few seconds while the farm
+ *   is downloading. Changing anything needs an admin, and the buttons say so.
+ *   "Manage speech" beside the Auto caption buttons now opens this tab in place
+ *   instead of leaving for Settings. UI only; needs a core with plan 318.
  *
  * - **0.19.1 — the auto caption status says what it uses, and where to manage it.**
  *   The line under the buttons named the Whisper model by its full file path; it
@@ -456,49 +502,12 @@ const JobRunOutput = z.object({ jobId: z.string() })
 /** Only the fields the reconciler reads. Validated at this boundary because the farm's own shape may move under a published plugin. */
 const JobGetOutput = z.object({ status: z.string(), error: z.string().nullable().optional(), result: z.unknown().optional() })
 
-/**
- * The upload script's own verdict, when it gives one. Every platform pack's
- * post script returns `outcome` (`tiktok/post-video` §4.1: posted, unverified,
- * skipped, failed) and a `reason`; a script that returns neither is judged by
- * its job status alone, as before.
- */
-const ScriptVerdict = z.object({ outcome: z.string(), reason: z.string().nullable().optional() })
-
-/** The farm's job statuses that mean "this phone has given its answer". */
-const SETTLED: Record<string, Attempt['state']> = { success: 'success', failed: 'failed', cancelled: 'failed', expired: 'failed' }
-
-/**
- * Settle one finished job into an attempt state.
- *
- * A job that SUCCEEDED is only a post when the script says so. The measured
- * case (2026-09-11, the owner's moto g06): the job went green, the script
- * returned `outcome: "unverified"` because TikTok's security check covered
- * the profile, and this reconciler — reading `status` alone — wrote "1
- * posted" for a video that never appeared. `unverified` is kept apart from
- * `failed` on purpose: "Re-run failed" must not re-send something that may
- * already be live on that account.
- */
-export function settleJob(job: z.infer<typeof JobGetOutput>): { state: Attempt['state']; error: string | null } | null {
-  const next = SETTLED[job.status]
-  if (!next) return null
-  if (next === 'failed') return { state: 'failed', error: (job.error ?? `job ${job.status}`).slice(0, 300) }
-  const verdict = ScriptVerdict.safeParse(job.result)
-  if (!verdict.success) return { state: 'success', error: null }
-  const reason = verdict.data.reason ?? null
-  switch (verdict.data.outcome) {
-    case 'posted':
-      return { state: 'success', error: null }
-    case 'unverified':
-      return { state: 'unverified', error: (reason ?? 'the upload script could not confirm the post landed').slice(0, 300) }
-    // The script walked away without posting (nothing to post, or its own
-    // cleanup path): nothing is live, so a retry is safe.
-    case 'skipped':
-    case 'failed':
-      return { state: 'failed', error: (reason ?? `the upload script reported ${verdict.data.outcome}`).slice(0, 300) }
-    default:
-      return { state: 'success', error: null }
-  }
-}
+/*
+  Settling a finished job into an attempt state is `posts.ts`'s `settleJob` — pure, with the whole
+  mapping table written out there and pinned case by case in `index.test.ts`. Re-exported from this
+  module, with `partialNote`, because the tests and older notes name them from here.
+*/
+export { partialNote, settleJob }
 
 /**
  * Turn queued attempts into answers, for ONE post.
@@ -539,30 +548,34 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
         settled.push({ ...attempt, ...next, settledAt: Math.floor(Date.now() / 1000) })
         moved = true
       } catch (err) {
-        settled.push({ ...attempt, state: 'failed', error: `the farm no longer has this job: ${messageOf(err)}`.slice(0, 300), settledAt: Math.floor(Date.now() / 1000) })
+        /*
+          Only a job the farm no longer HAS is settled from an error (0.21.0). Any other failed read —
+          a deadline, a busy farm — says nothing about what the phone did; it used to be written as
+          `failed`, which handed a post that may be live to Retry failed. It is asked again next tick.
+        */
+        if (!isJobGone(err)) {
+          ctx.log.warn('could not read a post job — asking again next tick', { jobId: attempt.jobId, error: messageOf(err) })
+          settled.push(attempt)
+          continue
+        }
+        settled.push({
+          ...attempt,
+          state: 'failed',
+          error: `The farm no longer has this job, so what it did cannot be read: ${messageOf(err)}`.slice(0, ATTEMPT_ERROR_MAX),
+          settledAt: Math.floor(Date.now() / 1000),
+        })
         moved = true
       }
     }
     if (!moved) continue
     /*
-      The counts go in `note`, which the Posts table already renders, because
-      `partial` on its own tells an operator something went wrong and nothing
-      about how much. Written here rather than stored as a separate field and
-      kept in step: it is computed at the same instant as the state it
-      describes, from the same array, so the two cannot drift.
+      The counts go in `note`, which the page renders, because `partial` on its own tells an operator
+      something went wrong and nothing about how much. `platformNote` computes it from the same array
+      as the state, at the same instant — and `resolve-attempt` uses the same function, so a hand
+      resolution and a reconcile can never word one state two ways.
     */
     const next = rollUp(settled)
-    const ok = settled.filter((a) => a.state === 'success').length
-    const bad = settled.filter((a) => a.state === 'failed').length
-    const unsure = settled.filter((a) => a.state === 'unverified').length
-    const note =
-      next === 'succeeded'
-        ? null
-        : next === 'failed'
-          ? `Failed on all ${bad} phone${bad === 1 ? '' : 's'}. "Re-run failed" sends it to them again.`
-          : next === 'partial'
-            ? partialNote(ok, bad, unsure)
-            : state.note
+    const note = platformNote(next, settled, state.note)
     // `withSummary` last, so the line the Posts table shows is computed from
     // the attempts this very pass settled — the state word and the sentence
     // beside it can never describe two different moments.
@@ -570,19 +583,6 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
     any = true
   }
   return any ? { ...post, dispatch } : null
-}
-
-/**
- * `partial` in words. Unverified phones are named separately and deliberately
- * left out of "Re-run failed": the operator checks those accounts by eye,
- * because re-sending a post that did land is a duplicate on a real account.
- */
-export function partialNote(ok: number, bad: number, unsure: number): string {
-  const parts = [`${ok} posted`, `${bad} failed`]
-  if (unsure > 0) parts.push(`${unsure} unverified`)
-  const retry = bad > 0 ? ` "Re-run failed" re-sends to those ${bad} only — the ones that posted are left alone.` : ''
-  const check = unsure > 0 ? ` Check the ${unsure} unverified account${unsure === 1 ? '' : 's'} on the phone before re-sending; they are not retried automatically.` : ''
-  return `${parts.join(', ')}.${retry}${check}`
 }
 
 function messageOf(err: unknown): string {
@@ -1000,11 +1000,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.19.1',
+  version: '0.21.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator

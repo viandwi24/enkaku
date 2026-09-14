@@ -92,6 +92,37 @@ export type DispatchState = (typeof DISPATCH_STATES)[number]
 export const ATTEMPT_STATES = ['queued', 'success', 'failed', 'unverified'] as const
 export type AttemptState = (typeof ATTEMPT_STATES)[number]
 
+/** How much of a job's error or a script's reason an attempt keeps. The full text stays on the job. */
+export const ATTEMPT_ERROR_MAX = 1_000
+
+/**
+ * What an operator may decide about an attempt the script could not confirm (0.21.0): they checked
+ * the account on the phone, and the video is there (`posted`) or it is not (`failed`).
+ */
+export const RESOLUTIONS = ['posted', 'failed'] as const
+export type Resolution = (typeof RESOLUTIONS)[number]
+
+/**
+ * The record of a hand resolution, kept ON the attempt it changed so the page can always say "this
+ * was not confirmed by the script; a person marked it". A plugin member has no actor of its own, so
+ * "who" is the job that wrote it (`byJobId` — the Jobs screen names who ran that job) and "when" is
+ * `at`.
+ */
+export const AttemptResolutionSchema = z
+  .object({
+    /** The state the attempt was in before the operator decided. Always `unverified` today. */
+    from: z.enum(ATTEMPT_STATES),
+    to: z.enum(RESOLUTIONS),
+    at: z.number().int().nonnegative(),
+    byJobId: z.string().min(1).nullable(),
+    /** The operator's own words, when they gave any. */
+    note: z.string().max(300).nullable(),
+    /** What the upload script said at the time — the reason it could not confirm the post. */
+    reason: z.string().max(ATTEMPT_ERROR_MAX).nullable(),
+  })
+  .strict()
+export type AttemptResolution = z.infer<typeof AttemptResolutionSchema>
+
 /**
  * One phone's attempt at one post, on one platform.
  *
@@ -141,8 +172,18 @@ export const AttemptSchema = z
      */
     deviceName: z.string().max(120).nullable().default(null),
     state: z.enum(ATTEMPT_STATES),
-    /** The job's own error, when it failed. Truncated — the full text is on the job itself. */
-    error: z.string().max(300).nullable(),
+    /**
+     * Why it is in this state, verbatim: the job's own error when it failed, the script's `reason`
+     * when it reported `failed` or could not confirm the post (`unverified`). Truncated at
+     * `ATTEMPT_ERROR_MAX` — the full text is on the job itself. Raised from 300 in 0.21.0, so an
+     * error an operator must act on is not cut mid-sentence.
+     */
+    error: z.string().max(ATTEMPT_ERROR_MAX).nullable(),
+    /**
+     * Set when an operator resolved a not-confirmed attempt by hand (0.21.0); absent otherwise,
+     * including on every attempt recorded before this field existed.
+     */
+    resolution: AttemptResolutionSchema.optional(),
     /**
      * Unix seconds the job was enqueued (0.12.0). With `settledAt` and `round` this is what lets
      * the session page answer the owner's three questions from the production farm: which ones are
@@ -248,8 +289,9 @@ const ATTEMPT_WORDS: Record<AttemptState, string> = {
   success: 'posted',
   failed: 'failed',
   // Kept apart from both neighbours on purpose (see `ATTEMPT_STATES`): it is
-  // not a success, and it must not be worded as one.
-  unverified: 'unverified',
+  // not a success, and it must not be worded as one. "not confirmed" since
+  // 0.21.0 — the page's own word, so a summary line and the cell agree.
+  unverified: 'not confirmed',
 }
 
 /**
@@ -285,7 +327,7 @@ export function describePlatform(state: PlatformState): string {
   const parts: string[] = []
   if (ok > 0) parts.push(`${ok} posted`)
   if (bad > 0) parts.push(`${bad} failed`)
-  if (unsure > 0) parts.push(`${unsure} unverified`)
+  if (unsure > 0) parts.push(`${unsure} not confirmed`)
   if (running > 0) parts.push(`${running} running`)
   return `${phones} · ${parts.join(', ')}`
 }
@@ -484,7 +526,7 @@ export function postSummary(post: Post): string {
       case 'succeeded':
         return `${title}: posted on ${ok}`
       case 'partial':
-        return `${title}: ${ok} posted, ${bad} failed${unsure > 0 ? `, ${unsure} unverified` : ''}`
+        return `${title}: ${ok} posted, ${bad} failed${unsure > 0 ? `, ${unsure} not confirmed` : ''}`
       case 'failed':
         return `${title}: failed on ${bad}`
       case 'unsupported':
@@ -526,6 +568,234 @@ export function rollUp(attempts: readonly Attempt[]): DispatchState {
  */
 export function failedDevices(state: PlatformState): string[] {
   return state.attempts.filter((a) => a.state === 'failed').map((a) => a.deviceId)
+}
+
+/** As much of `job.get`'s answer as settling an attempt needs. */
+export interface SettleableJob {
+  status: string
+  error?: string | null | undefined
+  result?: unknown
+}
+
+/**
+ * The upload script's own verdict. Every platform pack's post script returns `outcome` (TikTok:
+ * posted, unverified, skipped, failed; YouTube and Instagram: posted, unverified, failed) and a
+ * `reason`.
+ */
+const ScriptVerdictSchema = z.object({ outcome: z.string(), reason: z.string().nullable().optional() })
+
+/** What a finished job with no readable verdict is recorded as saying. */
+export const RESULT_UNREADABLE =
+  'The job finished, but its result could not be read, so whether the video was posted is not known. Check the account on the phone, then mark it as posted or failed.'
+
+function clipError(text: string): string {
+  return text.slice(0, ATTEMPT_ERROR_MAX)
+}
+
+/**
+ * Settle one job into an attempt state — or `null` while it has not finished. Pure, and the only
+ * place this mapping lives (0.21.0; it was `index.ts`'s until then). The table, exactly:
+ *
+ * | the job | its result | the attempt | its text |
+ * |---|---|---|---|
+ * | `failed` | `outcome: 'posted'` or `'unverified'` | `unverified` | the job failed after the script's verdict — it may be live, so never retryable blind |
+ * | `failed` | anything else | `failed` | the job's error, verbatim (the result's `reason` if the job has none) |
+ * | `cancelled` | anything | `failed` | "The job was cancelled before it finished", plus the job's error |
+ * | `expired` | anything | `failed` | "The job expired before a phone ran it", plus the job's error |
+ * | `success` | `outcome: 'posted'` | `success` | none |
+ * | `success` | `outcome: 'failed'` or `'skipped'` | `failed` | the result's `reason`, verbatim |
+ * | `success` | `outcome: 'unverified'` | `unverified` | the result's `reason`, verbatim |
+ * | `success` | an outcome this build does not know | `unverified` | says so, with the outcome and reason |
+ * | `success` | no readable outcome at all | `unverified` | `RESULT_UNREADABLE` |
+ * | `queued`, `running`, anything else | — | stays `queued` | — |
+ *
+ * A job that SUCCEEDED is a post only when the script says so. The measured case (2026-09-11, the
+ * owner's moto g06): the job went green, the script said `unverified`, and a reconciler reading the
+ * status alone wrote "1 posted" for a video that never appeared. The same rule is why a green job
+ * with NO readable verdict is `unverified` rather than `success` (it was `success` until 0.21.0):
+ * every platform's post script returns an outcome, so a missing one means the answer was lost, not
+ * that the video posted. `unverified` is kept apart from `failed` on purpose — Retry failed must
+ * never re-send something that may already be live on that account; an operator settles it with
+ * `resolveAttempt` after looking.
+ */
+export function settleJob(job: SettleableJob): { state: AttemptState; error: string | null } | null {
+  const jobError = job.error?.trim() || null
+  switch (job.status) {
+    case 'failed': {
+      // A job can fail AFTER its script already had a verdict — the process died in `finish`, or the
+      // run was killed while confirming. If that verdict says the post went up (or may have), a retry
+      // could post the video twice to the same account, so it is not confirmed rather than failed.
+      const late = verdictOf(job.result)
+      if (late?.outcome === 'posted' || late?.outcome === 'unverified') {
+        const said = late.outcome === 'posted' ? 'had already reported the post as done' : 'had pressed upload but could not confirm it'
+        return {
+          state: 'unverified',
+          error: clipError(
+            `The job failed after the upload script ${said}${jobError !== null ? ` (${jobError})` : ''}. It may be live — check the account on the phone, then mark it as posted or failed.`,
+          ),
+        }
+      }
+      if (jobError !== null) return { state: 'failed', error: clipError(jobError) }
+      const reason = late?.reason?.trim() || null
+      return { state: 'failed', error: clipError(reason ?? 'The job failed without an error message. Open its run for the log.') }
+    }
+    case 'cancelled':
+      return { state: 'failed', error: clipError(jobError !== null ? `The job was cancelled before it finished: ${jobError}` : 'The job was cancelled before it finished.') }
+    case 'expired':
+      return { state: 'failed', error: clipError(jobError !== null ? `The job expired before a phone ran it: ${jobError}` : 'The job expired before a phone ran it.') }
+    case 'success':
+      break
+    default:
+      return null
+  }
+
+  const verdict = verdictOf(job.result)
+  if (verdict === null) return { state: 'unverified', error: RESULT_UNREADABLE }
+  const reason = verdict.reason?.trim() || null
+  switch (verdict.outcome) {
+    case 'posted':
+      return { state: 'success', error: null }
+    case 'unverified':
+      return {
+        state: 'unverified',
+        error: clipError(reason ?? 'The upload script finished but could not confirm the post appeared. Check the account on the phone, then mark it as posted or failed.'),
+      }
+    // The script walked away without posting (its own failure path, or nothing to post): nothing is
+    // live, so a retry is safe.
+    case 'failed':
+    case 'skipped':
+      return { state: 'failed', error: clipError(reason ?? `The upload script reported "${verdict.outcome}" without saying why.`) }
+    default:
+      return {
+        state: 'unverified',
+        error: clipError(
+          `The upload script returned an outcome this version does not know ("${verdict.outcome}")${reason !== null ? `: ${reason}` : ''}. Check the account on the phone, then mark it as posted or failed.`,
+        ),
+      }
+  }
+}
+
+function verdictOf(result: unknown): z.infer<typeof ScriptVerdictSchema> | null {
+  const parsed = ScriptVerdictSchema.safeParse(result)
+  return parsed.success ? parsed.data : null
+}
+
+/**
+ * Did `job.get` fail because the farm no longer HAS the job (pruned, or a farm restored from before
+ * it ran)? Only then is an attempt settled as failed from the error. A read that simply did not get
+ * through — a deadline, a busy farm — says nothing about what the phone did, and settling it as
+ * failed would hand a post that may be live to Retry failed; the reconciler asks again next tick.
+ */
+export function isJobGone(err: unknown): boolean {
+  const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code: unknown }).code) : ''
+  if (code === 'job_not_found') return true
+  const message = err instanceof Error ? err.message : String(err)
+  return /job_not_found|no such job/i.test(message)
+}
+
+/**
+ * The sentence a settled platform carries in `note`, computed from the same attempts as its state so
+ * the two cannot drift. `succeeded` needs none; anything not settled keeps `fallback`.
+ */
+export function platformNote(state: DispatchState, attempts: readonly Attempt[], fallback: string | null): string | null {
+  const ok = attempts.filter((a) => a.state === 'success').length
+  const bad = attempts.filter((a) => a.state === 'failed').length
+  const unsure = attempts.filter((a) => a.state === 'unverified').length
+  if (state === 'succeeded') return null
+  if (state === 'failed') return `Failed on ${bad === 1 ? 'its phone' : `all ${bad} phones`}. "Retry failed" sends it again.`
+  if (state === 'partial') return partialNote(ok, bad, unsure)
+  return fallback
+}
+
+/**
+ * `partial` in words. A not-confirmed phone is named separately and never re-sent on its own: the
+ * operator checks that account and marks it, because re-sending a post that did land is a duplicate
+ * on a real account.
+ */
+export function partialNote(ok: number, bad: number, unsure: number): string {
+  const parts: string[] = []
+  if (ok > 0) parts.push(`${ok} posted`)
+  if (bad > 0) parts.push(`${bad} failed`)
+  if (unsure > 0) parts.push(`${unsure} not confirmed`)
+  const retry = bad > 0 ? ` "Retry failed" sends it again to ${bad === 1 ? 'the phone that failed' : `those ${bad}`} only — the ones that posted are left alone.` : ''
+  const check =
+    unsure > 0
+      ? ` Check ${unsure === 1 ? 'the account that was' : `the ${unsure} accounts that were`} not confirmed on the phone, then mark ${unsure === 1 ? 'it' : 'each'} as posted or failed — ${unsure === 1 ? 'it is' : 'they are'} never re-sent on ${unsure === 1 ? 'its' : 'their'} own.`
+      : ''
+  return `${parts.join(', ')}.${retry}${check}`
+}
+
+export type ResolveOutcome =
+  | { ok: true; post: Post; attempt: Attempt }
+  | { ok: false; code: 'E_NOT_FOUND' | 'E_CONFLICT'; message: string }
+
+/**
+ * An operator's verdict on a not-confirmed attempt, after checking the account (0.21.0) — or a
+ * refusal, by name.
+ *
+ * - `posted` makes the attempt `success`; its `error` is cleared, and the script's reason survives in
+ *   `resolution.reason`.
+ * - `failed` makes it `failed`, with an error saying it was marked by hand and what the script had
+ *   said — which is what hands it to Retry failed (`failedDevices`). Nothing is re-sent HERE.
+ *
+ * Only an attempt that is `unverified` right now may be resolved: the page may be an hour old, and an
+ * attempt that has since settled, been retried or been replaced must not be flipped from under it.
+ * `jobId`, when given, pins the exact attempt for the same reason. The platform's state, note and
+ * summary are recomputed from the changed attempts, exactly as the reconciler computes them.
+ */
+export function resolveAttempt(input: {
+  post: Post
+  platform: PlatformId
+  deviceId: string
+  jobId?: string | null
+  resolution: Resolution
+  note?: string | null
+  now: number
+  byJobId?: string | null
+}): ResolveOutcome {
+  const { post, platform, deviceId } = input
+  const title = platformById(platform)?.title ?? platform
+  if (!post.dispatch[platform]) {
+    return { ok: false, code: 'E_NOT_FOUND', message: `This video has not been sent to ${title}, so there is nothing to mark.` }
+  }
+  const state = stateFor(post, platform)
+  const jobId = input.jobId ?? null
+  const index = state.attempts.findIndex((a) => a.deviceId === deviceId && (jobId === null || a.jobId === jobId))
+  const current = state.attempts[index]
+  if (index < 0 || current === undefined) {
+    return {
+      ok: false,
+      code: 'E_NOT_FOUND',
+      message: `This video has no current ${title} attempt on that phone any more — it may have been retried or edited since. Refresh the page.`,
+    }
+  }
+  if (current.state !== 'unverified') {
+    return {
+      ok: false,
+      code: 'E_CONFLICT',
+      message: `Only a ${title} post that was not confirmed can be marked by hand, and this one is ${ATTEMPT_WORDS[current.state]} now. Refresh the page to see it.`,
+    }
+  }
+
+  const note = input.note?.trim() ? input.note.trim().slice(0, 300) : null
+  const reason = current.error
+  const resolved: Attempt = {
+    ...current,
+    state: input.resolution === 'posted' ? 'success' : 'failed',
+    error:
+      input.resolution === 'posted'
+        ? null
+        : clipError(`Marked as failed by hand after checking the account${note !== null ? ` (${note})` : ''}. The script had said: ${reason ?? 'nothing'}`),
+    settledAt: current.settledAt ?? input.now,
+    resolution: { from: current.state, to: input.resolution, at: input.now, byJobId: input.byJobId ?? null, note, reason },
+  }
+  const attempts = state.attempts.map((a, i) => (i === index ? resolved : a))
+  const next = rollUp(attempts)
+  const dispatch: Post['dispatch'] = {
+    ...post.dispatch,
+    [platform]: withSummary({ ...state, attempts, state: next, note: platformNote(next, attempts, state.note) }),
+  }
+  return { ok: true, post: { ...post, dispatch }, attempt: resolved }
 }
 
 /**
