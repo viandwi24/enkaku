@@ -60,7 +60,18 @@ const TranscribeStatusSchema = z.object({
   available: z.boolean(),
   model: z.string().nullable(),
   reason: z.string().nullable(),
+  // Added by core plan 318; optional so a core without them still reads.
+  cli: z.object({ path: z.string().nullable(), source: z.string(), detail: z.string().nullable() }).optional(),
+  modelId: z.string().optional(),
+  provisioning: z.boolean().optional(),
 })
+
+/** `whisper-model-small` or `/…/ggml-small-q5_1.bin` → `small`; the full path is noise in a one-line status. */
+function whisperModelName(status: z.infer<typeof TranscribeStatusSchema>): string | null {
+  if (status.modelId) return status.modelId.replace(/^whisper-model-/, '')
+  const file = status.model?.split(/[\\/]/).pop() ?? null
+  return file ? (/ggml-([a-z]+)/.exec(file)?.[1] ?? file) : null
+}
 
 const TranscribeSchema = z.object({
   text: z.string(),
@@ -85,6 +96,8 @@ export interface Readiness {
   blockers: string[]
   /** `Claude (claude-…) · whisper base` — what will do the work, for the line under the buttons. */
   engines: string | null
+  /** The farm is downloading the speech model right now — worth asking again shortly rather than waiting for a click. */
+  provisioning: boolean
 }
 
 /**
@@ -110,10 +123,13 @@ export async function readReadiness(): Promise<Readiness> {
   } else if (!transcribe.value.available) {
     blockers.push(`Transcription is not available on this farm${transcribe.value.reason ? `: ${transcribe.value.reason}` : '.'}`)
   } else {
-    engines.push(transcribe.value.model ? `speech: ${transcribe.value.model}` : 'speech: local Whisper')
+    const name = whisperModelName(transcribe.value)
+    const source = transcribe.value.cli?.source
+    engines.push(`speech: Whisper ${name ?? 'local'}${source && source !== 'missing' ? ` (CLI from ${source})` : ''}`)
   }
 
-  return { ready: blockers.length === 0, blockers, engines: blockers.length === 0 ? engines.join(' · ') : null }
+  const provisioning = transcribe.status === 'fulfilled' && transcribe.value.provisioning === true
+  return { ready: blockers.length === 0, blockers, engines: blockers.length === 0 ? engines.join(' · ') : null, provisioning }
 }
 
 // ---------------------------------------------------------------------------

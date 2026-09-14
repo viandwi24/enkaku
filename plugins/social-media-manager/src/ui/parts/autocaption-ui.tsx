@@ -66,7 +66,7 @@ export function useAutoCaptionSetup(): AutoCaptionSetup {
         if (!cancelled) setReadiness(next)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setReadiness({ ready: false, blockers: [describeApiError(e)], engines: null })
+        if (!cancelled) setReadiness({ ready: false, blockers: [describeApiError(e)], engines: null, provisioning: false })
       })
       .finally(() => {
         if (!cancelled) setChecking(false)
@@ -92,6 +92,13 @@ export function useAutoCaptionSetup(): AutoCaptionSetup {
     }
   }, [])
 
+  // While the farm downloads the speech model, ask again every ten seconds, so the buttons come on by themselves.
+  useEffect(() => {
+    if (!readiness?.provisioning) return
+    const timer = setTimeout(() => setTick((n) => n + 1), 10_000)
+    return () => clearTimeout(timer)
+  }, [readiness])
+
   return { readiness, checking, recheck: useCallback(() => setTick((n) => n + 1), []), style, styleError, setStyle }
 }
 
@@ -107,7 +114,12 @@ export function ReadinessNote({ setup }: { setup: AutoCaptionSetup }): ReactElem
   }
   if (readiness === null) return null
   if (readiness.ready) {
-    return readiness.engines ? <p className="text-[11px] text-faint">Auto caption uses {readiness.engines}.</p> : null
+    return (
+      <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-faint">
+        {readiness.engines ? <span>Auto caption uses {readiness.engines}.</span> : null}
+        <ManageLinks />
+      </p>
+    )
   }
   return (
     <div className="flex flex-wrap items-start gap-2 rounded-inner border border-warn/35 px-3 py-2">
@@ -116,11 +128,32 @@ export function ReadinessNote({ setup }: { setup: AutoCaptionSetup }): ReactElem
           <li key={b}>{b}</li>
         ))}
       </ul>
-      <Button type="button" variant="ghost" size="sm" disabled={checking} onClick={recheck}>
-        {checking ? <Spinner className="size-3" /> : null}
-        Check again
-      </Button>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <ManageLinks />
+        <Button type="button" variant="ghost" size="sm" disabled={checking} onClick={recheck}>
+          {checking ? <Spinner className="size-3" /> : null}
+          Check again
+        </Button>
+      </div>
     </div>
+  )
+}
+
+/**
+ * Where speech and AI are managed — the farm's own pages, not this plugin's: the Whisper tool, its model and the AI
+ * choice are farm settings (core plan 318), and the connectors live on Agents. Plain links: a plugin view cannot use
+ * Studio's router, and leaving for another page is a real navigation anyway.
+ */
+function ManageLinks(): ReactElement {
+  return (
+    <span className="inline-flex items-center gap-2 text-[11px]">
+      <a href="/settings?tab=ai" className="text-accent underline-offset-2 hover:underline">
+        Manage speech &amp; AI
+      </a>
+      <a href="/agents" className="text-accent underline-offset-2 hover:underline">
+        AI connectors
+      </a>
+    </span>
   )
 }
 

@@ -67,6 +67,13 @@ import {
  *
  * ## Changelog
  *
+ * - **0.19.1 — the auto caption status says what it uses, and where to manage it.**
+ *   The line under the buttons named the Whisper model by its full file path; it
+ *   now reads "Whisper small (CLI from setting/env/managed)". It links to the
+ *   farm's speech & AI settings and to the AI connectors, and while the farm is
+ *   still downloading the speech model it checks again every ten seconds on its
+ *   own. UI only.
+ *
  * - **0.19.0 — auto captions, and hashtags kept apart from the caption.** The
  *   owner (2026-09-14): 73 videos with meaningless file names need captions, and
  *   hashtags are partly a session decision ("always #fyp", or one of these lines
@@ -993,7 +1000,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.19.0',
+  version: '0.19.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
