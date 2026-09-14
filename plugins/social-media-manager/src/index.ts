@@ -65,6 +65,15 @@ import {
  *
  * ## Changelog
  *
+ * - **0.14.0 — edit from the table.** The owner (2026-09-14): opening a row
+ *   before Edit was too slow, and a phone dropdown over a hundred phones was a
+ *   scroll hunt. The session table now always shows a Phone column, and on a
+ *   one-per-phone row that cell is a searchable picker (number, name, label,
+ *   group) that saves on choice; an Actions column carries Edit (the full form
+ *   under the row) and the attempts toggle. The New session phone list gains a
+ *   search box with "Select shown" and "Clear". UI only — no stored shape or
+ *   member changed.
+ *
  * - **0.13.0 — Instagram posts.** `instagram/post-video` exists now, walked by
  *   hand on the owner's moto g06 power (Instagram 446.0, 2026-09-14) with every
  *   screen in that pack's `__fixtures__/`, so the Instagram row in
@@ -897,7 +906,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.13.0',
+  version: '0.14.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

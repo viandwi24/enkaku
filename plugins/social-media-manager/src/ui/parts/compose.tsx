@@ -297,6 +297,10 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     [videos],
   )
 
+  /** The phone list's own search — with a hundred phones, ticking the right ones is a find, not a scroll. */
+  const [deviceQuery, setDeviceQuery] = useState('')
+  const shownDevices = useMemo(() => fleet.filter((d) => deviceMatches(d, deviceQuery)), [fleet, deviceQuery])
+
   // --- the fleet the choice resolves to ------------------------------------
   const chosenPlatforms = useMemo(
     () => PLATFORMS.filter((p) => p.postable && platforms.has(p.id)).map((p) => p.id),
@@ -754,8 +758,35 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
             ) : fleet.length === 0 ? (
               <p className="mt-2 text-[11.5px] text-dim">The farm listed no phone at all.</p>
             ) : (
-              <ul className="mt-2 max-h-56 space-y-1 overflow-y-auto rounded-lg border border-border p-1">
-                {fleet.map((device) => (
+              <div className="mt-2 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Input
+                    type="search"
+                    value={deviceQuery}
+                    onChange={(e) => setDeviceQuery(e.target.value)}
+                    placeholder="Search by #, name, label or group…"
+                    aria-label="Search phones"
+                    className="h-8 max-w-xs grow text-[12px]"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={shownDevices.length === 0}
+                    onClick={() => setChosenDevices((prev) => new Set([...prev, ...shownDevices.map((d) => d.id)]))}
+                  >
+                    Select {deviceQuery.trim() === '' ? 'all' : 'shown'} ({shownDevices.length})
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" disabled={chosenDevices.size === 0} onClick={() => setChosenDevices(new Set<string>())}>
+                    Clear
+                  </Button>
+                  <span className="text-[11px] text-faint">{chosenDevices.size} chosen</span>
+                </div>
+                {shownDevices.length === 0 ? (
+                  <p className="text-[11.5px] text-dim">No phone matches “{deviceQuery}”. Phones already chosen stay chosen.</p>
+                ) : (
+              <ul className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-border p-1">
+                {shownDevices.map((device) => (
                   <li key={device.id}>
                     <label className="flex cursor-pointer items-center gap-2 rounded-small px-2 py-1.5 text-[12px] hover:bg-hover">
                       <Checkbox
@@ -775,6 +806,8 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
                   </li>
                 ))}
               </ul>
+                )}
+              </div>
             )
           ) : null}
 
@@ -963,4 +996,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </div>
   )
+}
+
+/** A phone matches when the query is its number (`7` or `#7`), or appears in its name, a label or its group. Empty matches all. */
+function deviceMatches(d: Device, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (q === '') return true
+  const bare = q.startsWith('#') ? q.slice(1) : q
+  if (d.number !== null && String(d.number) === bare) return true
+  const haystack = [deviceName(d), d.label ?? '', d.group?.name ?? '', ...d.labels.map((l) => l.name)]
+  return haystack.some((h) => h.toLowerCase().includes(q))
 }

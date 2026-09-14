@@ -6,6 +6,7 @@ import {
   CaretLeftIcon,
   CaretRightIcon,
   Card,
+  Combobox,
   ConfirmDialog,
   EmptyState,
   ErrorState,
@@ -14,11 +15,6 @@ import {
   PencilSimpleIcon,
   PlayIcon,
   Progress,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   Spinner,
   Table,
   TableBody,
@@ -33,6 +29,7 @@ import {
   relativeTime,
   useAction,
   z,
+  type ComboboxOption,
 } from '@enkaku/ui'
 import {
   CORE,
@@ -88,8 +85,12 @@ import {
  *   "earlier", in the row's expansion — so an old failure can never be read
  *   as the current state.
  *
- * A row's expansion also carries **Edit** — the video's bound phone, its
- * platforms and its caption, written by the service's own `smm/update-post`
+ * Every row carries its own actions, so nothing needs opening first (owner,
+ * 2026-09-14: *"aksi seperti tombol edit dll juga di tabelnya dong jangan harus
+ * klik detail dulu"*): the **Phone** cell is a searchable picker that saves the
+ * moment a phone is chosen — a farm of a hundred phones is type-to-find, not a
+ * scroll — and **Edit** opens the full form (phone, platforms, caption) right
+ * under the row. Both are written by the service's own `smm/update-post`
  * member. An edit changes the NEXT attempt only: nothing already posted is
  * touched, and an upload already running carries on as it started. The form
  * warns rather than refuses — a phone another video already has, a row
@@ -978,6 +979,8 @@ function SessionTable({
 }): ReactElement {
   const [filter, setFilter] = useState<Filter>('all')
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set())
+  /** Rows whose Edit form is open — independent of `open`, so editing never needs the attempts unfolded first. */
+  const [editing, setEditing] = useState<ReadonlySet<string>>(() => new Set())
 
   /**
    * The warnings each video's last save answered with. Held here, above the
@@ -995,6 +998,7 @@ function SessionTable({
   }, [])
 
   const platforms = useMemo(() => platformsOf(group, posts), [group, posts])
+  const owners = useMemo(() => ownersOf(posts, videos), [posts, videos])
 
   const counts = useMemo(() => {
     const c: Record<Bucket, number> = { running: 0, waiting: 0, posted: 0, failed: 0, look: 0 }
@@ -1013,16 +1017,10 @@ function SessionTable({
     return numbered.filter(({ post }) => platforms.some((p) => hasPlatform(post, p) && bucketOf(post.dispatch[p]) === filter))
   }, [posts, platforms, filter])
 
-  const toggle = useCallback((id: string) => {
-    setOpen((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }, [])
+  const toggle = useCallback((id: string) => setOpen((prev) => flip(prev, id)), [])
+  const toggleEdit = useCallback((id: string) => setEditing((prev) => flip(prev, id)), [])
 
-  const columns = 4 + platforms.length
+  const columns = 5 + platforms.length
 
   return (
     <div className="space-y-2">
@@ -1071,12 +1069,13 @@ function SessionTable({
                 <TableHead className="w-12">#</TableHead>
                 <TableHead>Video</TableHead>
                 <TableHead className="hidden w-28 @xl:table-cell">Turn</TableHead>
-                <TableHead className="hidden w-40 @3xl:table-cell">Phone</TableHead>
+                <TableHead className="w-52">Phone</TableHead>
                 {platforms.map((p) => (
                   <TableHead key={p} className="@3xl:w-60">
                     {platformTitle(p)}
                   </TableHead>
                 ))}
+                <TableHead className="w-36 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1093,6 +1092,9 @@ function SessionTable({
                   filter={filter}
                   open={open.has(post.videoArtifactId)}
                   onToggle={toggle}
+                  editing={editing.has(post.videoArtifactId)}
+                  onToggleEdit={toggleEdit}
+                  owners={owners}
                   columns={columns}
                   posts={posts}
                   fleet={fleet}
@@ -1108,6 +1110,14 @@ function SessionTable({
       )}
     </div>
   )
+}
+
+/** A copy of `set` with `id` added or removed. */
+function flip(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(set)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  return next
 }
 
 function FilterChip({
@@ -1182,6 +1192,120 @@ function unassignedNoteOf(post: Post): string | null {
   return null
 }
 
+interface Owner {
+  videoArtifactId: string
+  name: string
+}
+
+/**
+ * Device id → the videos of this session that own it: a row's assigned phone,
+ * or the phone of its CURRENT attempt that did not fail — the way the service
+ * computes ownership. Built once for the table and read per row with
+ * `otherOwner`, rather than once per picker.
+ */
+function ownersOf(posts: readonly Post[], videos: ReadonlyMap<string, string>): Map<string, Owner[]> {
+  const map = new Map<string, Owner[]>()
+  for (const post of posts) {
+    const owner = { videoArtifactId: post.videoArtifactId, name: videos.get(post.videoArtifactId) ?? shortId(post.videoArtifactId) }
+    const claimed = new Set<string>()
+    if (post.assignedDeviceId !== null) claimed.add(post.assignedDeviceId)
+    for (const state of Object.values(post.dispatch)) {
+      for (const a of state.attempts) if (a.state !== 'failed') claimed.add(a.deviceId)
+    }
+    for (const id of claimed) map.set(id, [...(map.get(id) ?? []), owner])
+  }
+  return map
+}
+
+/** The name of a video OTHER than `self` that owns this phone, if any. */
+function otherOwner(owners: ReadonlyMap<string, readonly Owner[]>, deviceId: string, self: string): string | undefined {
+  return owners.get(deviceId)?.find((o) => o.videoArtifactId !== self)?.name
+}
+
+/**
+ * The phone picker's rows: the whole fleet, found by typing its number (`7` or
+ * `#7`), its name, a label or its group. A phone another video already has
+ * stays choosable (the owner's call: warn, never refuse) and says which video
+ * on its own row. The row's current phone is kept when it has left the farm,
+ * so the picker can still show its own value.
+ */
+function phoneOptions(
+  post: Post,
+  fleet: readonly Device[],
+  devices: ReadonlyMap<string, string>,
+  owners: ReadonlyMap<string, readonly Owner[]>,
+): ComboboxOption[] {
+  const options: ComboboxOption[] = fleet.map((d) => {
+    const owner = otherOwner(owners, d.id, post.videoArtifactId)
+    const hint = [d.status !== 'online' ? d.status : null, owner !== undefined ? `already has ${owner}` : null]
+      .filter((x): x is string => x !== null)
+      .join(' · ')
+    const keywords = [d.label ?? '', ...d.labels.map((l) => l.name), d.group?.name ?? '']
+    if (d.number !== null) keywords.push(String(d.number), `#${d.number}`)
+    return { value: d.id, label: deviceName(d), keywords: keywords.filter((k) => k !== ''), ...(hint !== '' ? { hint } : {}) }
+  })
+  const current = post.assignedDeviceId
+  if (current !== null && !fleet.some((d) => d.id === current)) {
+    options.unshift({ value: current, label: devices.get(current) ?? `device ${shortId(current)}`, hint: 'not on this farm any more' })
+  }
+  return options
+}
+
+/**
+ * The Phone cell. On a one-per-phone row it IS the editor: choosing a phone
+ * saves it, and the service's warnings (a phone another video has, an upload
+ * still running) land under the row. An every-phone row has no single phone,
+ * so it stays text.
+ */
+function PhoneCell({
+  post,
+  group,
+  name,
+  devices,
+  fleet,
+  owners,
+  saving,
+  onSave,
+  onWarnings,
+}: {
+  post: Post
+  group: Group
+  name: string
+  devices: ReadonlyMap<string, string>
+  fleet: readonly Device[]
+  owners: ReadonlyMap<string, readonly Owner[]>
+  saving: boolean
+  onSave: SaveEdit
+  onWarnings: (videoArtifactId: string, list: readonly string[]) => void
+}): ReactElement {
+  const options = useMemo(() => phoneOptions(post, fleet, devices, owners), [post, fleet, devices, owners])
+  if (post.maxDevices !== 1) return <AssignedPhone post={post} group={group} devices={devices} />
+  const unassigned = post.assignedDeviceId === null
+  return (
+    <div
+      data-row-action
+      className="flex min-w-0 items-center gap-1.5"
+      title={unassigned ? (unassignedNoteOf(post) ?? 'This video has no phone yet, so it is not sent. Choose one here.') : undefined}
+    >
+      <Combobox
+        value={post.assignedDeviceId ?? ''}
+        onValueChange={(id) => {
+          if (id !== post.assignedDeviceId) onSave(post, { assignedDeviceId: id }, name, (list) => onWarnings(post.videoArtifactId, list))
+        }}
+        options={options}
+        placeholder="No phone — choose one"
+        searchPlaceholder="Search by #, name, label or group…"
+        emptyText="No phone matches."
+        disabled={saving}
+        ariaLabel={`Phone for ${name}`}
+        className="w-80"
+        triggerClassName={cn('h-7 min-w-0 text-[12px]', unassigned && 'border-warn/60')}
+      />
+      {saving ? <Spinner className="size-3.5 shrink-0 text-faint" /> : null}
+    </div>
+  )
+}
+
 function turnText(post: Post, now: number): string {
   return post.notBeforeAt === null ? 'not started' : fromNow(post.notBeforeAt, now)
 }
@@ -1205,6 +1329,9 @@ function VideoRows({
   filter,
   open,
   onToggle,
+  editing,
+  onToggleEdit,
+  owners,
   columns,
   posts,
   fleet,
@@ -1223,6 +1350,9 @@ function VideoRows({
   filter: Filter
   open: boolean
   onToggle: (id: string) => void
+  editing: boolean
+  onToggleEdit: (id: string) => void
+  owners: ReadonlyMap<string, readonly Owner[]>
   columns: number
   posts: readonly Post[]
   fleet: readonly Device[]
@@ -1235,7 +1365,10 @@ function VideoRows({
   const detailId = `smm-video-${post.videoArtifactId}`
 
   function onRowClick(e: MouseEvent<HTMLTableRowElement>): void {
-    if ((e.target as HTMLElement).closest('a')) return
+    const target = e.target as HTMLElement
+    // The phone picker's list is a portal: its clicks bubble through React to this row without being inside it.
+    if (!e.currentTarget.contains(target)) return
+    if (target.closest('a, [data-row-action]')) return
     const selection = window.getSelection()
     if (selection && selection.toString().length > 0 && !(e.target as HTMLElement).closest('button')) return
     onToggle(post.videoArtifactId)
@@ -1263,11 +1396,8 @@ function VideoRows({
           <div className="max-w-[14rem] truncate text-[11px] text-dim @3xl:max-w-[20rem]" title={post.caption}>
             {post.caption}
           </div>
-          {/* Narrow boxes hide the Turn and Phone columns; their facts move under the name rather than vanish. */}
+          {/* Narrow boxes hide the Turn column; its fact moves under the name rather than vanish. */}
           <div className="mt-0.5 text-[11px] text-faint @xl:hidden">Turn {turnText(post, now)}</div>
-          <div className="text-[11px] @3xl:hidden">
-            <AssignedPhone post={post} group={group} devices={devices} />
-          </div>
         </TableCell>
         <TableCell
           className="readout hidden align-top text-[11.5px] whitespace-nowrap text-dim @xl:table-cell"
@@ -1275,8 +1405,18 @@ function VideoRows({
         >
           {turnText(post, now)}
         </TableCell>
-        <TableCell className="hidden align-top @3xl:table-cell">
-          <AssignedPhone post={post} group={group} devices={devices} />
+        <TableCell className="align-top">
+          <PhoneCell
+            post={post}
+            group={group}
+            name={name}
+            devices={devices}
+            fleet={fleet}
+            owners={owners}
+            saving={saving}
+            onSave={onSave}
+            onWarnings={onWarnings}
+          />
         </TableCell>
         {platforms.map((p) => (
           <TableCell key={p} className="align-top">
@@ -1287,24 +1427,68 @@ function VideoRows({
             )}
           </TableCell>
         ))}
+        <TableCell className="align-top">
+          <div data-row-action className="flex justify-end gap-1">
+            <Button
+              variant={editing ? 'secondary' : 'outline'}
+              size="sm"
+              aria-expanded={editing}
+              title="Change this video’s phone, platforms or caption for its next attempt"
+              onClick={() => onToggleEdit(post.videoArtifactId)}
+            >
+              <PencilSimpleIcon aria-hidden />
+              Edit
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-expanded={open}
+              aria-controls={detailId}
+              aria-label={`${open ? 'Hide' : 'Show'} every attempt for ${name}`}
+              title={open ? 'Hide the attempts' : 'Every attempt, current and earlier, with its full error and run'}
+              onClick={() => onToggle(post.videoArtifactId)}
+            >
+              <CaretRightIcon className={cn('transition-transform', open && 'rotate-90')} aria-hidden />
+            </Button>
+          </div>
+        </TableCell>
       </TableRow>
 
-      {open ? (
+      {open || editing || warnings.length > 0 ? (
         <TableRow id={detailId} className="bg-muted/50 hover:bg-muted/50">
-          <TableCell colSpan={columns} className="px-3 py-3">
-            <VideoDetail
-              post={post}
-              platforms={platforms}
-              devices={devices}
-              now={now}
-              posts={posts}
-              videos={videos}
-              fleet={fleet}
-              onSave={onSave}
-              saving={saving}
-              warnings={warnings}
-              onWarnings={onWarnings}
-            />
+          <TableCell colSpan={columns} className="space-y-3 px-3 py-3">
+            {warnings.length > 0 ? (
+              <div className="flex flex-wrap items-start gap-2 rounded-inner border border-warn/35 bg-warn-soft px-3 py-2" role="status">
+                <div className="min-w-0 grow space-y-0.5 text-[11.5px] leading-relaxed text-warn">
+                  <p className="font-medium">
+                    “{name}” saved, with {warnings.length === 1 ? 'a warning' : `${warnings.length} warnings`}:
+                  </p>
+                  {warnings.map((w, i) => (
+                    <p key={i}>{w}</p>
+                  ))}
+                </div>
+                <Button type="button" variant="ghost" size="sm" onClick={() => onWarnings(post.videoArtifactId, [])}>
+                  Dismiss
+                </Button>
+              </div>
+            ) : null}
+            {editing ? (
+              <EditPostForm
+                post={post}
+                name={name}
+                devices={devices}
+                fleet={fleet}
+                owners={owners}
+                saving={saving}
+                onSave={onSave}
+                onSaved={(list) => {
+                  onWarnings(post.videoArtifactId, list)
+                  onToggleEdit(post.videoArtifactId)
+                }}
+                onClose={() => onToggleEdit(post.videoArtifactId)}
+              />
+            ) : null}
+            {open ? <VideoDetail post={post} platforms={platforms} devices={devices} now={now} /> : null}
           </TableCell>
         </TableRow>
       ) : null}
@@ -1434,82 +1618,16 @@ function VideoDetail({
   platforms,
   devices,
   now,
-  posts,
-  videos,
-  fleet,
-  onSave,
-  saving,
-  warnings,
-  onWarnings,
 }: {
   post: Post
   platforms: readonly string[]
   devices: ReadonlyMap<string, string>
   now: number
-  posts: readonly Post[]
-  videos: ReadonlyMap<string, string>
-  fleet: readonly Device[]
-  onSave: SaveEdit
-  saving: boolean
-  warnings: readonly string[]
-  onWarnings: (videoArtifactId: string, list: readonly string[]) => void
 }): ReactElement {
-  const [editing, setEditing] = useState(false)
   const shown = platforms.filter((p) => hasPlatform(post, p))
-  const name = videos.get(post.videoArtifactId) ?? shortId(post.videoArtifactId)
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
-        {editing ? (
-          <div className="grow" />
-        ) : (
-          <p className="min-w-0 max-w-prose grow text-[11.5px] leading-relaxed whitespace-pre-wrap text-text-2">{post.caption}</p>
-        )}
-        {!editing ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0"
-            title="Change this video’s phone, platforms or caption for its next attempt"
-            onClick={() => setEditing(true)}
-          >
-            <PencilSimpleIcon aria-hidden />
-            Edit
-          </Button>
-        ) : null}
-      </div>
-
-      {warnings.length > 0 ? (
-        <div className="flex flex-wrap items-start gap-2 rounded-inner border border-warn/35 bg-warn-soft px-3 py-2" role="status">
-          <div className="min-w-0 grow space-y-0.5 text-[11.5px] leading-relaxed text-warn">
-            <p className="font-medium">Saved, with {warnings.length === 1 ? 'a warning' : `${warnings.length} warnings`}:</p>
-            {warnings.map((w, i) => (
-              <p key={i}>{w}</p>
-            ))}
-          </div>
-          <Button type="button" variant="ghost" size="sm" onClick={() => onWarnings(post.videoArtifactId, [])}>
-            Dismiss
-          </Button>
-        </div>
-      ) : null}
-
-      {editing ? (
-        <EditPostForm
-          post={post}
-          name={name}
-          posts={posts}
-          videos={videos}
-          devices={devices}
-          fleet={fleet}
-          saving={saving}
-          onSave={onSave}
-          onSaved={(list) => {
-            onWarnings(post.videoArtifactId, list)
-            setEditing(false)
-          }}
-          onClose={() => setEditing(false)}
-        />
-      ) : null}
+      <p className="max-w-prose text-[11.5px] leading-relaxed whitespace-pre-wrap text-text-2">{post.caption}</p>
       <div className="grid gap-3 @3xl:grid-cols-2">
         {shown.map((platform) => {
           const state = post.dispatch[platform]
@@ -1591,10 +1709,9 @@ function sameSet(a: readonly string[], b: readonly string[]): boolean {
 function EditPostForm({
   post,
   name,
-  posts,
-  videos,
   devices,
   fleet,
+  owners,
   saving,
   onSave,
   onSaved,
@@ -1602,10 +1719,9 @@ function EditPostForm({
 }: {
   post: Post
   name: string
-  posts: readonly Post[]
-  videos: ReadonlyMap<string, string>
   devices: ReadonlyMap<string, string>
   fleet: readonly Device[]
+  owners: ReadonlyMap<string, readonly Owner[]>
   saving: boolean
   onSave: SaveEdit
   onSaved: (warnings: string[]) => void
@@ -1623,32 +1739,7 @@ function EditPostForm({
   const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set(post.platforms))
   const [caption, setCaption] = useState(post.caption)
 
-  /** Device id → the file name of the OTHER video in this session that owns it. */
-  const owners = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const other of posts) {
-      if (other.videoArtifactId === post.videoArtifactId) continue
-      const otherName = videos.get(other.videoArtifactId) ?? shortId(other.videoArtifactId)
-      const claim = (deviceId: string): void => {
-        if (!map.has(deviceId)) map.set(deviceId, otherName)
-      }
-      if (other.assignedDeviceId !== null) claim(other.assignedDeviceId)
-      for (const state of Object.values(other.dispatch)) {
-        for (const a of state.attempts) if (a.state !== 'failed') claim(a.deviceId)
-      }
-    }
-    return map
-  }, [posts, post.videoArtifactId, videos])
-
-  /** The fleet, plus the row's current phone when it has since left the farm — a select must be able to show its own value. */
-  const options = useMemo(() => {
-    const list = fleet.map((d) => ({ id: d.id, name: deviceName(d), status: d.status as string | null }))
-    const current = post.assignedDeviceId
-    if (current !== null && !list.some((o) => o.id === current)) {
-      list.unshift({ id: current, name: devices.get(current) ?? `device ${shortId(current)}`, status: 'not on this farm' })
-    }
-    return list
-  }, [fleet, devices, post.assignedDeviceId])
+  const options = useMemo(() => phoneOptions(post, fleet, devices, owners), [post, fleet, devices, owners])
 
   const postable = PLATFORMS.filter((p) => p.postable)
   const nextPlatforms = [...chosen]
@@ -1668,8 +1759,8 @@ function EditPostForm({
         : null
   const canSave = dirty && platformProblem === null && captionProblem === null && !saving
 
-  const phoneOwner = onePerPhone && phone !== null ? owners.get(phone) : undefined
-  const phoneLabel = options.find((o) => o.id === phone)?.name ?? (phone !== null ? `device ${shortId(phone)}` : '')
+  const phoneOwner = onePerPhone && phone !== null ? otherOwner(owners, phone, post.videoArtifactId) : undefined
+  const phoneLabel = options.find((o) => o.value === phone)?.label ?? (phone !== null ? `device ${shortId(phone)}` : '')
 
   return (
     <form
@@ -1687,26 +1778,21 @@ function EditPostForm({
           <p id={`${ids}-phone`} className="text-[11.5px] font-medium text-text-2">
             Phone
           </p>
-          <Select value={phone ?? ''} onValueChange={setPhone} disabled={saving}>
-            <SelectTrigger className="w-full @md:w-96" aria-labelledby={`${ids}-phone`}>
-              <SelectValue placeholder="No phone assigned yet" />
-            </SelectTrigger>
-            <SelectContent>
-              {options.map((o) => {
-                const owner = owners.get(o.id)
-                return (
-                  <SelectItem key={o.id} value={o.id}>
-                    {o.name}
-                    {o.status !== null && o.status !== 'online' ? ` · ${o.status}` : ''}
-                    {owner !== undefined ? ` (has ${owner})` : ''}
-                  </SelectItem>
-                )
-              })}
-            </SelectContent>
-          </Select>
+          <div className="w-full @md:w-96">
+            <Combobox
+              value={phone ?? ''}
+              onValueChange={setPhone}
+              options={options}
+              placeholder="No phone assigned yet"
+              searchPlaceholder="Search by #, name, label or group…"
+              emptyText="No phone matches."
+              disabled={saving}
+              ariaLabel="Phone"
+            />
+          </div>
           <p className="text-[11px] leading-relaxed text-dim">
-            The one phone that posts this video, on every platform and every retry. A phone another video in this session already has is marked
-            with that video’s name.
+            The one phone that posts this video, on every platform and every retry. Type a number, name, label or group to find it. A phone
+            another video in this session already has is marked with that video’s name.
           </p>
         </div>
       ) : null}
