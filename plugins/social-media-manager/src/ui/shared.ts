@@ -155,6 +155,17 @@ export const GroupSchema = z.object({
 })
 export type Group = z.infer<typeof GroupSchema>
 
+/** One hand mark on an attempt — `posts.ts` `AttemptResolutionSchema`, read loosely. */
+const AttemptMarkSchema = z.object({
+  action: z.string().nullable().default(null),
+  from: z.string().nullable().default(null),
+  to: z.string(),
+  at: z.number(),
+  byJobId: z.string().nullable().default(null),
+  note: z.string().nullable().default(null),
+  reason: z.string().nullable().default(null),
+})
+
 export const AttemptSchema = z.object({
   jobId: z.string(),
   deviceId: z.string(),
@@ -168,21 +179,21 @@ export const AttemptSchema = z.object({
   /** 1 = the first send on this platform, 2 = the first retry, … Older rows are all first sends. */
   round: z.number().default(1),
   /**
-   * Set when an operator marked a not-confirmed attempt by hand (0.21.0, `smm/resolve-attempt`): what it was, what it
-   * became, when, the job that wrote it, and what the script had said. `null` otherwise.
+   * Every hand mark on this attempt, oldest first (`smm/resolve-attempt`): which action, what it was (`null` for a
+   * manual attempt), what it became, when, the job that wrote it, the note, and the error or reason it replaced. One
+   * object before 0.23.0, read as a list of one; empty when nobody marked it.
    */
   resolution: z
-    .object({
-      from: z.string(),
-      to: z.string(),
-      at: z.number(),
-      byJobId: z.string().nullable().default(null),
-      note: z.string().nullable().default(null),
-      reason: z.string().nullable().default(null),
-    })
+    .union([AttemptMarkSchema, z.array(AttemptMarkSchema)])
     .nullable()
-    .default(null),
+    .default(null)
+    .transform((value) => (value === null ? [] : Array.isArray(value) ? value : [value])),
+  /** `true` on an attempt no phone of the farm ran — an operator posted it by hand and marked it (0.23.0). */
+  manual: z.boolean().default(false),
 })
+
+/** The job id a manual attempt carries (`posts.ts` `MANUAL_JOB_PREFIX`): there is no run behind it to link to. */
+export const MANUAL_JOB_PREFIX = 'manual:'
 
 export const PostSchema = z.object({
   version: z.literal(1),
@@ -202,6 +213,8 @@ export const PostSchema = z.object({
    * written before the binding existed.
    */
   assignedDeviceId: z.string().nullable().default(null),
+  /** The phones chosen for this video, or empty for "any phone carrying the platform label". */
+  deviceIds: z.array(z.string()).default([]),
   /** Phones per platform this row may go to. `1` is a one-per-phone row — the only kind whose phone can be edited. */
   maxDevices: z.number().nullable().default(null),
   createdAt: z.number(),

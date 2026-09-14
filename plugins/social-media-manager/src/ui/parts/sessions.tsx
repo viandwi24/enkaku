@@ -35,6 +35,7 @@ import {
 import { autoCaption } from '../autocaption'
 import {
   CORE,
+  MANUAL_JOB_PREFIX,
   PLATFORMS,
   POST_TEXT_MAX,
   composedHashtags,
@@ -357,21 +358,39 @@ const ATTEMPT_TONES: Record<string, string> = {
 const UNVERIFIED_MEANING =
   'The upload finished but the script could not confirm the post appeared. Check the account on the phone, then mark it as posted or failed. It is never re-sent on its own, because if it did land a retry would post the same video twice.'
 
-/** What the member `smm/resolve-attempt` accepts: what the operator found on the account. */
-type Resolution = 'posted' | 'failed'
+/** What the member `smm/resolve-attempt` does (`posts.ts` `MARK_ACTIONS`). */
+type MarkAction = 'mark-posted' | 'unmark-posted' | 'mark-failed'
 
-/** Settle one not-confirmed attempt by hand. */
-type ResolveAttempt = (post: Post, platform: string, attempt: AttemptRow, resolution: Resolution, name: string) => void
+/**
+ * Force one platform of one video by hand. `attempt` is the attempt being marked, or `null` for a platform with
+ * nothing sent — the member then records a manual attempt on the video's own phone.
+ */
+type MarkPost = (post: Post, platform: string, attempt: AttemptRow | null, action: MarkAction, name: string) => void
 
 /** Re-send one video to the phones where it failed (`smm/retry-failed`). */
 type RetryVideo = (post: Post, name: string) => void
 
 /** The two row-level writes about outcomes, passed down the table together. */
 interface OutcomeActions {
-  onResolve: ResolveAttempt
+  onMark: MarkPost
   onRetry: RetryVideo
-  /** Whether a resolve or a retry for this video is out right now. */
+  /** Whether a mark or a retry for this video is out right now. */
   busy: (post: Post) => boolean
+}
+
+/** Was this attempt set by hand — no farm run behind it, or any mark on it? (`posts.ts` `markedByHand`) */
+function markedByHand(attempt: AttemptRow): boolean {
+  return attempt.manual || attempt.resolution.length > 0
+}
+
+/** The job id a manual (or never-enqueued) attempt carries has no run to open. */
+function hasRun(jobId: string): boolean {
+  return !jobId.startsWith(MANUAL_JOB_PREFIX) && !jobId.startsWith('unqueued:')
+}
+
+/** The phone a "done by hand" mark is recorded against: the video's own, or its single chosen one. */
+function ownPhoneOf(post: Post): string | null {
+  return post.assignedDeviceId ?? (post.deviceIds.length === 1 ? (post.deviceIds[0] as string) : null)
 }
 
 /** What `smm/retry-failed` answers. */
@@ -639,29 +658,29 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
   const saving = (post: Post): boolean => isPending(`update:${post.videoArtifactId}`)
 
   /**
-   * Settle one not-confirmed attempt by hand, through `smm/resolve-attempt` (0.21.0).
+   * Force one platform of one video by hand, through `smm/resolve-attempt` (0.21.0; every action since 0.23.0).
    *
    * The job id is sent so the member refuses if the attempt on screen is no longer the attempt
    * stored — a page open for an hour must not flip something that has since moved. The member's
-   * own refusal ("this one is posted now — refresh") reaches the failure toast verbatim.
+   * own refusal ("this one is posted now — refresh", "still running") reaches the failure toast verbatim.
    */
-  const resolveAttempt: ResolveAttempt = (post, platform, attempt, resolution, name) => {
+  const markPost: MarkPost = (post, platform, attempt, action, name) => {
+    const where = platformTitle(platform)
     void run(
       `resolve:${post.videoArtifactId}`,
       async () => {
         const host = await hostOrRefuse()
-        await runMember(
-          'smm/resolve-attempt@latest',
-          { videoArtifactId: post.videoArtifactId, platform, deviceId: attempt.deviceId, jobId: attempt.jobId, resolution },
-          host.id,
-        )
+        const target = attempt !== null ? { deviceId: attempt.deviceId, jobId: attempt.jobId } : {}
+        await runMember('smm/resolve-attempt@latest', { videoArtifactId: post.videoArtifactId, platform, action, ...target }, host.id)
       },
       {
         success:
-          resolution === 'posted'
-            ? `Marked “${name}” on ${platformTitle(platform)} as posted`
-            : `Marked “${name}” on ${platformTitle(platform)} as failed — Retry failed can send it again`,
-        failure: `Could not mark “${name}” on ${platformTitle(platform)}`,
+          action === 'mark-posted'
+            ? `Marked “${name}” as posted on ${where} — it is never sent there again`
+            : action === 'unmark-posted'
+              ? `Removed the posted mark from “${name}” on ${where} — Retry failed can send it again`
+              : `Marked “${name}” on ${where} as failed — Retry failed can send it again`,
+        failure: `Could not mark “${name}” on ${where}`,
         onSuccess: () => reload(),
       },
     )
@@ -696,7 +715,7 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
   const busy = (group: Group): boolean =>
     isPending(`start:${group.id}`) || isPending(`retry:${group.id}`) || isPending(`remove:${group.id}`)
 
-  const outcome: OutcomeActions = { onResolve: resolveAttempt, onRetry: retryVideo, busy: outcomeBusy }
+  const outcome: OutcomeActions = { onMark: markPost, onRetry: retryVideo, busy: outcomeBusy }
 
   return { startSession, retrySession, removeSession, updatePost, saving, busy, outcome }
 }
@@ -2062,6 +2081,21 @@ function PlatformCell({
 
   const line2 = [where, when].filter((s): s is string => s !== null && s !== '')
 
+  /**
+   * The one attempt this cell may be marked on (0.23.0): a lone not-confirmed one (posted or failed), or the
+   * platform's only attempt when it is failed (Mark as posted) or posted (Remove posted mark). Several phones, or
+   * anything still running, are marked per attempt in the row detail instead.
+   */
+  const only = attempts.length === 1 ? attempts[0]! : null
+  const markable =
+    bucket === 'running'
+      ? null
+      : single !== null && failedNow.length === 0
+        ? single
+        : only !== null && (only.state === 'failed' || only.state === 'success')
+          ? only
+          : null
+
   return (
     <div className={cn('min-w-0 space-y-0.5 transition-opacity', dimmed && 'opacity-40')}>
       <div className="flex flex-wrap items-center gap-1">
@@ -2097,9 +2131,9 @@ function PlatformCell({
         </div>
       ) : null}
       {hint !== null ? <div className="max-w-[16rem] text-[10.5px] text-faint">{hint}</div> : null}
-      {single !== null && failedNow.length === 0 && !dimmed ? (
+      {markable !== null && !dimmed ? (
         <div data-row-action className="pt-0.5">
-          <ResolveButtons post={post} platform={platform} attempt={single} name={name} phone={attemptPhone(single, devices)} outcome={outcome} />
+          <MarkButtons post={post} platform={platform} attempt={markable} name={name} phone={attemptPhone(markable, devices)} outcome={outcome} />
         </div>
       ) : null}
     </div>
@@ -2135,11 +2169,16 @@ function VideoDetail({
           const state = post.dispatch[platform]
           const attempts = state?.attempts ?? []
           const earlier = [...(state?.history ?? [])].reverse()
+          // A platform with nothing sent that is waiting or unsupported may be marked posted by hand (0.23.0) — here only,
+          // never on the cell, where forty waiting rows would each grow a button.
+          const unsent = attempts.length === 0 && (state === undefined || state.state === 'pending' || state.state === 'unsupported')
+          const ownPhone = ownPhoneOf(post)
           return (
             <section key={platform} className="min-w-0 space-y-1.5 rounded-inner border border-line bg-panel px-3 py-2">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                 <span className="text-[12px] font-medium text-text">{platformTitle(platform)}</span>
                 <StateWord state={state?.state ?? 'pending'} />
+                {attempts.some(markedByHand) ? <HandBadge /> : null}
               </div>
               {state?.note ? <p className="text-[11px] leading-relaxed text-dim">{state.note}</p> : null}
 
@@ -2169,6 +2208,17 @@ function VideoDetail({
                     ))}
                   </ul>
                 )}
+                {unsent ? (
+                  <div className="mt-1">
+                    {ownPhone !== null ? (
+                      <MarkByHandButton post={post} platform={platform} name={name} phone={devices.get(ownPhone) ?? `device ${shortId(ownPhone)}`} outcome={outcome} />
+                    ) : (
+                      <p className="text-[11px] text-faint">
+                        Posted it by hand? This video has no single phone of its own, so there is no account to record it against here.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
               </div>
 
               {earlier.length > 0 ? (
@@ -2399,29 +2449,31 @@ function AttemptDetail({
 }): ReactElement {
   const word = ATTEMPT_WORDS[attempt.state] ?? attempt.state
   const nowSec = Math.floor(now / 1000)
-  const resolution = attempt.resolution
   return (
     <li className="text-[11px]">
       <AttemptLine attempt={attempt} devices={devices} now={now} nowSec={nowSec} word={word} earlier={earlier} />
       {attempt.error ? (
         <p className={cn('mt-0.5 max-w-prose leading-relaxed wrap-anywhere', attempt.state === 'unverified' ? 'text-warn' : 'text-danger')}>{attempt.error}</p>
       ) : null}
-      {resolution ? (
-        <p className="mt-0.5 max-w-prose leading-relaxed wrap-anywhere text-dim">
-          Marked as {resolution.to} by hand {relativeTime(resolution.at, now)} (it was {ATTEMPT_WORDS[resolution.from] ?? resolution.from})
-          {resolution.note ? ` — “${resolution.note}”` : ''}
-          {resolution.to === 'posted' && resolution.reason ? `. The script had said: ${resolution.reason}` : ''}
-          {resolution.byJobId ? (
+      {attempt.manual ? <p className="mt-0.5 max-w-prose leading-relaxed text-dim">No phone of the farm uploaded this — it was recorded as posted by hand.</p> : null}
+      {attempt.resolution.map((mark, i) => (
+        <p key={`${mark.at}:${i}`} className="mt-0.5 max-w-prose leading-relaxed wrap-anywhere text-dim">
+          {mark.action === 'unmark-posted' ? 'Posted mark removed' : mark.to === 'posted' ? 'Marked as posted' : 'Marked as failed'} by hand{' '}
+          {relativeTime(mark.at, now)}
+          {mark.from !== null ? ` (it was ${ATTEMPT_WORDS[mark.from] ?? mark.from})` : ' (nothing had been sent)'}
+          {mark.note ? ` — “${mark.note}”` : ''}
+          {mark.reason && !(attempt.error ?? '').includes(mark.reason) ? `. Before: ${mark.reason}` : ''}
+          {mark.byJobId ? (
             <>
               {' · '}
-              <JobLink jobId={resolution.byJobId} />
+              <JobLink jobId={mark.byJobId} />
             </>
           ) : null}
         </p>
-      ) : null}
-      {actions && !earlier && attempt.state === 'unverified' ? (
+      ))}
+      {actions && !earlier ? (
         <div className="mt-1">
-          <ResolveButtons
+          <MarkButtons
             post={actions.post}
             platform={actions.platform}
             attempt={attempt}
@@ -2438,11 +2490,25 @@ function AttemptDetail({
   )
 }
 
+/** The small "set by hand" badge: a person decided this state, not the upload script. */
+function HandBadge(): ReactElement {
+  return (
+    <Badge variant="outline" className="px-1.5 py-0 text-[10px]" title="A person set this state by hand — it was not confirmed by the upload script">
+      set by hand
+    </Badge>
+  )
+}
+
 /**
- * Mark as posted and Mark as failed, each behind a confirm that says what it does (0.21.0). Shared by
- * the table cell and the row detail, so the two can never word the decision differently.
+ * The hand marks one attempt allows, each behind a confirm that says exactly what follows (0.21.0; every state since
+ * 0.23.0). Shared by the table cell and the row detail, so the two can never word the decision differently:
+ *
+ * - not confirmed → Mark as posted, Mark as failed
+ * - failed → Mark as posted
+ * - posted → Remove posted mark
+ * - running → Mark as posted (the member refuses while its job is still running)
  */
-function ResolveButtons({
+function MarkButtons({
   post,
   platform,
   attempt,
@@ -2456,31 +2522,69 @@ function ResolveButtons({
   name: string
   phone: string
   outcome: OutcomeActions
-}): ReactElement {
+}): ReactElement | null {
   const busy = outcome.busy(post)
-  const where = `${platformTitle(platform)} on ${phone}`
+  const title = platformTitle(platform)
+  const where = `${title} on ${phone}`
+  const markPosted = (
+    <ConfirmDialog
+      trigger={
+        <Button
+          variant={attempt.state === 'unverified' ? 'outline' : 'ghost'}
+          size="sm"
+          disabled={busy}
+          title={`The video is on the ${title} account, whatever the farm recorded`}
+        >
+          Mark as posted
+        </Button>
+      }
+      title={`Mark “${name}” as posted on ${where}?`}
+      destructive={false}
+      confirmLabel="Mark as posted"
+      description={
+        <>
+          Do this only after seeing the video on the {title} account. It counts as posted, and the farm will <strong>never send this video to{' '}
+          {title} again</strong> — Retry failed, on this row or for the session, leaves it alone.
+          {attempt.state === 'failed' || attempt.state === 'unverified' ? ' What the farm recorded stays on the record.' : ''}
+          {attempt.state === 'queued' ? ' Its upload must have finished first: while it is still running this is refused.' : ''} Remove posted
+          mark undoes it.
+        </>
+      }
+      onConfirm={() => outcome.onMark(post, platform, attempt, 'mark-posted', name)}
+    />
+  )
+
+  if (attempt.state === 'success') {
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        <ConfirmDialog
+          trigger={
+            <Button variant="ghost" size="sm" disabled={busy} title={`The video is NOT on the ${title} account — make it retryable`}>
+              Remove posted mark
+            </Button>
+          }
+          title={`Remove the posted mark from “${name}” on ${where}?`}
+          destructive={false}
+          confirmLabel="Remove posted mark"
+          description={
+            <>
+              Do this only after checking the {title} account and NOT finding the video. It counts as failed, and <strong>Retry failed</strong> (on
+              this row or for the session) will send it to {phone} again. If the video is actually there, that retry posts it twice.
+            </>
+          }
+          onConfirm={() => outcome.onMark(post, platform, attempt, 'unmark-posted', name)}
+        />
+      </div>
+    )
+  }
+  if (attempt.state === 'failed' || attempt.state === 'queued') return <div className="flex flex-wrap items-center gap-1">{markPosted}</div>
+  if (attempt.state !== 'unverified') return null
   return (
     <div className="flex flex-wrap items-center gap-1">
+      {markPosted}
       <ConfirmDialog
         trigger={
-          <Button variant="outline" size="sm" disabled={busy} title={`You checked the ${platformTitle(platform)} account and the video is there`}>
-            Mark as posted
-          </Button>
-        }
-        title={`Mark “${name}” as posted on ${where}?`}
-        destructive={false}
-        confirmLabel="Mark as posted"
-        description={
-          <>
-            Do this only after checking the account on the phone and seeing the video there. The post counts as posted, it is never re-sent, and
-            the script’s note stays on the record.
-          </>
-        }
-        onConfirm={() => outcome.onResolve(post, platform, attempt, 'posted', name)}
-      />
-      <ConfirmDialog
-        trigger={
-          <Button variant="ghost" size="sm" disabled={busy} title={`You checked the ${platformTitle(platform)} account and the video is not there`}>
+          <Button variant="ghost" size="sm" disabled={busy} title={`You checked the ${title} account and the video is not there`}>
             Mark as failed
           </Button>
         }
@@ -2494,9 +2598,33 @@ function ResolveButtons({
             retry posts it twice.
           </>
         }
-        onConfirm={() => outcome.onResolve(post, platform, attempt, 'failed', name)}
+        onConfirm={() => outcome.onMark(post, platform, attempt, 'mark-failed', name)}
       />
     </div>
+  )
+}
+
+/** Mark as posted for a platform nothing was sent to — the video was posted by hand outside the farm (0.23.0). */
+function MarkByHandButton({ post, platform, name, phone, outcome }: { post: Post; platform: string; name: string; phone: string; outcome: OutcomeActions }): ReactElement {
+  const title = platformTitle(platform)
+  return (
+    <ConfirmDialog
+      trigger={
+        <Button variant="ghost" size="sm" disabled={outcome.busy(post)} title={`You posted this video to ${title} yourself, outside the farm`}>
+          Mark as posted (done by hand)
+        </Button>
+      }
+      title={`Mark “${name}” as posted on ${title}, done by hand?`}
+      destructive={false}
+      confirmLabel="Mark as posted"
+      description={
+        <>
+          No phone of the farm sent this. It is recorded as posted by hand on {phone}’s account, and the farm will <strong>never send this video
+          to {title}</strong>. Remove posted mark undoes it, and Retry failed then sends it to {phone}.
+        </>
+      }
+      onConfirm={() => outcome.onMark(post, platform, null, 'mark-posted', name)}
+    />
   )
 }
 
@@ -2551,13 +2679,14 @@ function AttemptLine({
         <span className={cn(ATTEMPT_TONES[attempt.state] ?? 'text-dim')} title={attempt.state === 'unverified' ? UNVERIFIED_MEANING : undefined}>
           {word}
         </span>
-        {attempt.at !== null ? <span className="text-faint">sent {relativeTime(attempt.at, now)}</span> : null}
-        {attempt.settledAt !== null ? (
+        {markedByHand(attempt) ? <HandBadge /> : null}
+        {attempt.at !== null ? <span className="text-faint">{attempt.manual ? 'marked' : 'sent'} {relativeTime(attempt.at, now)}</span> : null}
+        {attempt.manual ? null : attempt.settledAt !== null ? (
           <span className="text-faint">finished {relativeTime(attempt.settledAt, now)}</span>
         ) : attempt.state === 'queued' && attempt.at !== null ? (
           <span className="text-faint">running for {span(nowSec - attempt.at)}</span>
         ) : null}
-        <JobLink jobId={attempt.jobId} />
+        {hasRun(attempt.jobId) ? <JobLink jobId={attempt.jobId} /> : null}
       </div>
     </>
   )

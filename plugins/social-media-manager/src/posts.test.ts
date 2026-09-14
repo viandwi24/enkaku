@@ -7,7 +7,11 @@ import {
   failedDevices,
   isJobGone,
   platformNote,
-  resolveAttempt,
+  markPost,
+  markTarget,
+  markedByHand,
+  MANUAL_JOB_PREFIX,
+  MARKS_LIMIT,
   newPost,
   planDispatch,
   applyPostEdit,
@@ -431,10 +435,11 @@ describe('isJobGone — only a job the farm no longer has is settled from a job.
 })
 
 /**
- * Settling a not-confirmed attempt by hand (0.21.0). The case: Instagram posted the Reel, the script
- * reported `unverified`, and the tester had no way to act on it from the page.
+ * Marking a post by hand (0.21.0's not-confirmed resolution, widened in 0.23.0). The cases: Instagram
+ * posted a Reel the script could not confirm; YouTube Shorts landed while the farm recorded `failed`;
+ * a video posted by hand outside the farm; and a "posted" that is not on the account.
  */
-describe('resolveAttempt — an operator settles a not-confirmed post after checking the account', () => {
+describe('markPost — an operator forces what the farm recorded, either way', () => {
   const unverified: Attempt = {
     jobId: 'j1',
     deviceId: 'd1',
@@ -445,8 +450,9 @@ describe('resolveAttempt — an operator settles a not-confirmed post after chec
     settledAt: NOW - 120,
     round: 1,
   }
-  const failed: Attempt = { ...unverified, jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06', state: 'failed', error: 'app missing' }
+  const failed: Attempt = { ...unverified, jobId: 'j2', deviceId: 'd2', deviceName: '#2 moto g06', state: 'failed', error: 'neither the trim screen nor the Shorts editor appeared' }
   const posted: Attempt = { ...unverified, jobId: 'j3', deviceId: 'd3', deviceName: '#3 moto g06', state: 'success', error: null }
+  const queued: Attempt = { ...unverified, jobId: 'j4', deviceId: 'd4', deviceName: '#4 moto g06', state: 'queued', error: null, settledAt: null }
 
   function withAttempts(attempts: Attempt[]): Post {
     const base = newPost({ videoArtifactId: 'vid-1', caption: 'hello', platforms: ['instagram'], now: NOW })
@@ -456,68 +462,247 @@ describe('resolveAttempt — an operator settles a not-confirmed post after chec
     }
   }
 
-  test('"posted" makes the attempt a success and the platform succeeded, keeping what the script said', () => {
-    const outcome = resolveAttempt({ post: withAttempts([unverified]), platform: 'instagram', deviceId: 'd1', resolution: 'posted', now: NOW, byJobId: 'op-job' })
-    if (!outcome.ok) throw new Error(outcome.message)
-    const state = stateFor(outcome.post, 'instagram')
-    expect(state.state).toBe('succeeded')
-    expect(state.note).toBeNull()
-    expect(state.summary).toBe('#1 moto g06 · posted')
-    expect(state.attempts[0]).toMatchObject({ state: 'success', error: null, settledAt: NOW - 120 })
-    // The history note: who (the job that wrote it), when, and the previous state and reason.
-    expect(state.attempts[0]?.resolution).toEqual({ from: 'unverified', to: 'posted', at: NOW, byJobId: 'op-job', note: null, reason: 'after 30s no readable reel grid was found' })
-    // The stored shape still parses.
-    expect(PostSchema.parse(outcome.post)).toEqual(outcome.post)
+  function ok(outcome: ReturnType<typeof markPost>): Extract<ReturnType<typeof markPost>, { ok: true }> {
+    if (!outcome.ok) throw new Error(`${outcome.code}: ${outcome.message}`)
+    return outcome
+  }
+
+  function refused(outcome: ReturnType<typeof markPost>): Extract<ReturnType<typeof markPost>, { ok: false }> {
+    if (outcome.ok) throw new Error('expected a refusal')
+    return outcome
+  }
+
+  describe('mark-posted', () => {
+    test('from unverified: a success, the platform succeeded, and what the script said is kept on the mark', () => {
+      const outcome = ok(markPost({ post: withAttempts([unverified]), platform: 'instagram', deviceId: 'd1', action: 'mark-posted', now: NOW, byJobId: 'op-job' }))
+      const state = stateFor(outcome.post, 'instagram')
+      expect(state.state).toBe('succeeded')
+      expect(state.note).toBeNull()
+      expect(state.summary).toBe('#1 moto g06 · posted')
+      expect(state.attempts[0]).toMatchObject({ state: 'success', error: null, settledAt: NOW - 120 })
+      expect(state.attempts[0]?.resolution).toEqual([
+        { action: 'mark-posted', from: 'unverified', to: 'posted', at: NOW, byJobId: 'op-job', note: null, reason: 'after 30s no readable reel grid was found' },
+      ])
+      expect(outcome.from).toBe('unverified')
+      expect(outcome.manual).toBe(false)
+      expect(PostSchema.parse(outcome.post)).toEqual(outcome.post)
+    })
+
+    test('from failed — the YouTube Short that landed anyway: a success, and nothing left for Retry failed', () => {
+      const outcome = ok(markPost({ post: withAttempts([failed]), platform: 'instagram', action: 'mark-posted', note: 'it is on the channel', now: NOW }))
+      const state = stateFor(outcome.post, 'instagram')
+      expect(state.state).toBe('succeeded')
+      expect(state.attempts[0]).toMatchObject({ state: 'success', error: null })
+      expect(state.attempts[0]?.resolution?.[0]).toMatchObject({ from: 'failed', to: 'posted', note: 'it is on the channel', reason: 'neither the trim screen nor the Shorts editor appeared' })
+      expect(failedDevices(state)).toEqual([])
+    })
+
+    test('from queued: only once the job has settled or is gone; "still running" otherwise', () => {
+      for (const job of ['settled', 'gone'] as const) {
+        const outcome = ok(markPost({ post: withAttempts([queued]), platform: 'instagram', action: 'mark-posted', now: NOW, job }))
+        const state = stateFor(outcome.post, 'instagram')
+        expect(state.state).toBe('succeeded')
+        expect(state.attempts[0]).toMatchObject({ state: 'success', settledAt: NOW })
+      }
+      for (const job of ['running', null, undefined] as const) {
+        const outcome = refused(markPost({ post: withAttempts([queued]), platform: 'instagram', action: 'mark-posted', now: NOW, job }))
+        expect(outcome.code).toBe('E_CONFLICT')
+        expect(outcome.message).toContain('still running')
+      }
+      const unknown = refused(markPost({ post: withAttempts([queued]), platform: 'instagram', action: 'mark-posted', now: NOW, job: 'unknown' }))
+      expect(unknown.code).toBe('E_CONFLICT')
+    })
+
+    test('from success: refused, already posted', () => {
+      const outcome = refused(markPost({ post: withAttempts([posted]), platform: 'instagram', action: 'mark-posted', now: NOW }))
+      expect(outcome.code).toBe('E_CONFLICT')
+      expect(outcome.message).toContain('already marked as posted')
+    })
+
+    test('only the named attempt moves; the platform rolls up from all of them', () => {
+      const outcome = ok(markPost({ post: withAttempts([unverified, failed, posted]), platform: 'instagram', deviceId: 'd1', action: 'mark-posted', now: NOW }))
+      const state = stateFor(outcome.post, 'instagram')
+      expect(state.attempts.map((a) => a.state)).toEqual(['success', 'failed', 'success'])
+      expect(state.state).toBe('partial')
+      expect(state.note).toBe('2 posted, 1 failed. "Retry failed" sends it again to the phone that failed only — the ones that posted are left alone.')
+      const all = ok(markPost({ post: outcome.post, platform: 'instagram', deviceId: 'd2', action: 'mark-posted', now: NOW }))
+      expect(stateFor(all.post, 'instagram').state).toBe('succeeded')
+      expect(stateFor(all.post, 'instagram').summary).toBe('3 phones · all posted')
+    })
   })
 
-  test('"failed" makes it failed with a readable error, and hands it to Retry failed', () => {
-    const outcome = resolveAttempt({ post: withAttempts([unverified]), platform: 'instagram', deviceId: 'd1', resolution: 'failed', note: 'not on the profile', now: NOW })
-    if (!outcome.ok) throw new Error(outcome.message)
-    const state = stateFor(outcome.post, 'instagram')
-    expect(state.state).toBe('failed')
-    expect(state.attempts[0]?.state).toBe('failed')
-    expect(state.attempts[0]?.error).toBe('Marked as failed by hand after checking the account (not on the profile). The script had said: after 30s no readable reel grid was found')
-    expect(state.attempts[0]?.resolution).toMatchObject({ from: 'unverified', to: 'failed', note: 'not on the profile', byJobId: null })
-    expect(failedDevices(state)).toEqual(['d1'])
-    expect(state.note).toContain('Retry failed')
-  })
-
-  test('only the named attempt moves; the platform rolls up from all of them', () => {
-    const outcome = resolveAttempt({ post: withAttempts([unverified, failed, posted]), platform: 'instagram', deviceId: 'd1', resolution: 'posted', now: NOW })
-    if (!outcome.ok) throw new Error(outcome.message)
-    const state = stateFor(outcome.post, 'instagram')
-    expect(state.attempts.map((a) => a.state)).toEqual(['success', 'failed', 'success'])
-    expect(state.state).toBe('partial')
-    expect(state.note).toBe('2 posted, 1 failed. "Retry failed" sends it again to the phone that failed only — the ones that posted are left alone.')
-  })
-
-  test('refuses anything that is not currently not confirmed — a stale page must not flip a settled attempt', () => {
-    for (const deviceId of ['d2', 'd3']) {
-      const outcome = resolveAttempt({ post: withAttempts([unverified, failed, posted]), platform: 'instagram', deviceId, resolution: 'posted', now: NOW })
-      expect(outcome.ok).toBe(false)
-      if (!outcome.ok) expect(outcome.code).toBe('E_CONFLICT')
+  describe('mark-posted with nothing sent — done by hand outside the farm', () => {
+    function waiting(overrides: Partial<Post> = {}): Post {
+      return { ...newPost({ videoArtifactId: 'vid-1', caption: 'hello', platforms: ['youtube'], now: NOW }), assignedDeviceId: 'd7', ...overrides }
     }
-    const running = resolveAttempt({ post: withAttempts([{ ...unverified, state: 'queued', error: null }]), platform: 'instagram', deviceId: 'd1', resolution: 'failed', now: NOW })
-    expect(running.ok).toBe(false)
+
+    test('a pending platform gets one manual success attempt on the video\'s phone, and reads succeeded', () => {
+      const post = waiting()
+      const outcome = ok(markPost({ post, platform: 'youtube', action: 'mark-posted', note: 'posted from the laptop', now: NOW, byJobId: 'op-job' }))
+      const state = stateFor(outcome.post, 'youtube')
+      expect(outcome.manual).toBe(true)
+      expect(outcome.from).toBeNull()
+      expect(state).toMatchObject({ state: 'succeeded', at: NOW, deviceCount: 1, note: null })
+      expect(state.attempts).toEqual([
+        {
+          jobId: `${MANUAL_JOB_PREFIX}op-job`,
+          deviceId: 'd7',
+          deviceName: null,
+          state: 'success',
+          error: null,
+          at: NOW,
+          settledAt: NOW,
+          round: 1,
+          manual: true,
+          resolution: [{ action: 'mark-posted', from: null, to: 'posted', at: NOW, byJobId: 'op-job', note: 'posted from the laptop', reason: null }],
+        },
+      ])
+      expect(markedByHand(state.attempts[0] as Attempt)).toBe(true)
+      expect(PostSchema.parse(outcome.post)).toEqual(outcome.post)
+    })
+
+    test('the router never dispatches it afterwards', () => {
+      const outcome = ok(markPost({ post: waiting({ groupId: null }), platform: 'youtube', action: 'mark-posted', now: NOW }))
+      const phone = device({ id: 'd7', labels: [{ name: 'youtube' }] })
+      const plan = planDispatch({ post: outcome.post, devices: [phone], now: NOW, maxDevicesPerPlatform: 5 })
+      expect(plan.dispatches).toEqual([])
+      expect(plan.states).toEqual({})
+    })
+
+    test('an unsupported platform may be marked too, keeping its reason on the mark', () => {
+      const base = waiting()
+      const post: Post = { ...base, dispatch: { youtube: { ...PENDING_STATE, state: 'unsupported', note: 'no upload flow' } } }
+      const outcome = ok(markPost({ post, platform: 'youtube', action: 'mark-posted', now: NOW }))
+      expect(stateFor(outcome.post, 'youtube').state).toBe('succeeded')
+      expect(outcome.attempt.resolution?.[0]?.reason).toBe('no upload flow')
+      // The manual jobId falls back to the time when no job wrote it.
+      expect(outcome.attempt.jobId).toBe(`${MANUAL_JOB_PREFIX}${NOW}`)
+    })
+
+    test('the phone: the one named, else the assigned one, else the single chosen one — or a refusal', () => {
+      expect(ok(markPost({ post: waiting(), platform: 'youtube', action: 'mark-posted', deviceId: 'd9', now: NOW })).attempt.deviceId).toBe('d9')
+      expect(ok(markPost({ post: waiting({ assignedDeviceId: null, deviceIds: ['d5'] }), platform: 'youtube', action: 'mark-posted', now: NOW })).attempt.deviceId).toBe('d5')
+      const none = refused(markPost({ post: waiting({ assignedDeviceId: null, deviceIds: ['d5', 'd6'] }), platform: 'youtube', action: 'mark-posted', now: NOW }))
+      expect(none.code).toBe('E_PARAMS_INVALID')
+    })
+
+    test('the round follows what the platform tried before', () => {
+      const earlier: Attempt = { ...failed, round: 2 }
+      const post = waiting({ dispatch: { youtube: { ...PENDING_STATE, history: [earlier] } } })
+      expect(ok(markPost({ post, platform: 'youtube', action: 'mark-posted', now: NOW })).attempt.round).toBe(3)
+    })
+
+    test('unmark-posted and mark-failed have nothing to act on; a platform the video is not for is not found', () => {
+      for (const action of ['unmark-posted', 'mark-failed'] as const) {
+        expect(refused(markPost({ post: waiting(), platform: 'youtube', action, now: NOW })).code).toBe('E_NOT_FOUND')
+      }
+      expect(refused(markPost({ post: waiting(), platform: 'tiktok', action: 'mark-posted', now: NOW })).code).toBe('E_NOT_FOUND')
+    })
+
+    test('a platform recorded as sent but with no attempts (an old row) is refused, not guessed at', () => {
+      const post = waiting({ dispatch: { youtube: { ...PENDING_STATE, state: 'dispatched', deviceCount: 2 } } })
+      expect(refused(markPost({ post, platform: 'youtube', action: 'mark-posted', now: NOW })).code).toBe('E_CONFLICT')
+    })
   })
 
-  test('refuses an attempt that is not there: another phone, another job, or a platform never sent', () => {
-    const post = withAttempts([unverified])
-    const otherPhone = resolveAttempt({ post, platform: 'instagram', deviceId: 'd9', resolution: 'posted', now: NOW })
-    const otherJob = resolveAttempt({ post, platform: 'instagram', deviceId: 'd1', jobId: 'j-old', resolution: 'posted', now: NOW })
-    const neverSent = resolveAttempt({ post, platform: 'tiktok', deviceId: 'd1', resolution: 'posted', now: NOW })
-    for (const outcome of [otherPhone, otherJob, neverSent]) {
-      expect(outcome.ok).toBe(false)
-      if (!outcome.ok) expect(outcome.code).toBe('E_NOT_FOUND')
-    }
-    const sameJob = resolveAttempt({ post, platform: 'instagram', deviceId: 'd1', jobId: 'j1', resolution: 'posted', now: NOW })
-    expect(sameJob.ok).toBe(true)
+  describe('unmark-posted', () => {
+    test('from success: failed, with an error naming Retry failed — which then picks it up', () => {
+      const outcome = ok(markPost({ post: withAttempts([posted]), platform: 'instagram', action: 'unmark-posted', now: NOW, byJobId: 'op-job' }))
+      const state = stateFor(outcome.post, 'instagram')
+      expect(state.state).toBe('failed')
+      expect(state.attempts[0]?.error).toBe('Marked as not posted by hand — Retry failed sends it again.')
+      expect(state.attempts[0]?.resolution).toEqual([{ action: 'unmark-posted', from: 'success', to: 'failed', at: NOW, byJobId: 'op-job', note: null, reason: null }])
+      expect(failedDevices(state)).toEqual(['d3'])
+      expect(state.note).toContain('Retry failed')
+    })
+
+    test('with a note, the note is in the error', () => {
+      const outcome = ok(markPost({ post: withAttempts([posted]), platform: 'instagram', action: 'unmark-posted', note: 'not on the profile', now: NOW }))
+      expect(outcome.attempt.error).toBe('Marked as not posted by hand (not on the profile) — Retry failed sends it again.')
+    })
+
+    test('a manual attempt can be unmarked too, and keeps its phone for the retry', () => {
+      const base: Post = { ...newPost({ videoArtifactId: 'vid-1', caption: 'hello', platforms: ['youtube'], now: NOW }), assignedDeviceId: 'd7' }
+      const marked = ok(markPost({ post: base, platform: 'youtube', action: 'mark-posted', now: NOW }))
+      const unmarked = ok(markPost({ post: marked.post, platform: 'youtube', action: 'unmark-posted', now: NOW + 60 }))
+      const state = stateFor(unmarked.post, 'youtube')
+      expect(state.state).toBe('failed')
+      expect(failedDevices(state)).toEqual(['d7'])
+      expect(unmarked.manual).toBe(true)
+      expect(state.attempts[0]?.resolution?.map((m) => m.action)).toEqual(['mark-posted', 'unmark-posted'])
+    })
+
+    test('from anything but success: refused', () => {
+      for (const attempt of [failed, unverified, queued]) {
+        expect(refused(markPost({ post: withAttempts([attempt]), platform: 'instagram', action: 'unmark-posted', now: NOW })).code).toBe('E_CONFLICT')
+      }
+    })
+  })
+
+  describe('mark-failed', () => {
+    test('from unverified: failed with a readable error, and handed to Retry failed', () => {
+      const outcome = ok(markPost({ post: withAttempts([unverified]), platform: 'instagram', deviceId: 'd1', action: 'mark-failed', note: 'not on the profile', now: NOW }))
+      const state = stateFor(outcome.post, 'instagram')
+      expect(state.state).toBe('failed')
+      expect(state.attempts[0]?.error).toBe('Marked as failed by hand after checking the account (not on the profile). The script had said: after 30s no readable reel grid was found')
+      expect(state.attempts[0]?.resolution?.[0]).toMatchObject({ action: 'mark-failed', from: 'unverified', to: 'failed', note: 'not on the profile', byJobId: null })
+      expect(failedDevices(state)).toEqual(['d1'])
+      expect(state.note).toContain('Retry failed')
+    })
+
+    test('from anything but unverified: refused — a stale page must not flip a settled attempt', () => {
+      for (const attempt of [failed, posted, queued]) {
+        expect(refused(markPost({ post: withAttempts([attempt]), platform: 'instagram', action: 'mark-failed', now: NOW })).code).toBe('E_CONFLICT')
+      }
+    })
+  })
+
+  describe('choosing the attempt', () => {
+    test('another phone or another job is not found; a jobId that still matches is fine', () => {
+      const post = withAttempts([unverified])
+      expect(refused(markPost({ post, platform: 'instagram', deviceId: 'd9', action: 'mark-posted', now: NOW })).code).toBe('E_NOT_FOUND')
+      expect(refused(markPost({ post, platform: 'instagram', deviceId: 'd1', jobId: 'j-old', action: 'mark-posted', now: NOW })).code).toBe('E_NOT_FOUND')
+      expect(ok(markPost({ post, platform: 'instagram', deviceId: 'd1', jobId: 'j1', action: 'mark-posted', now: NOW })).attempt.jobId).toBe('j1')
+    })
+
+    test('several attempts and no phone named is refused by name', () => {
+      const post = withAttempts([unverified, failed])
+      expect(refused(markPost({ post, platform: 'instagram', action: 'mark-posted', now: NOW })).code).toBe('E_PARAMS_INVALID')
+      expect(markTarget(post, 'instagram', { jobId: 'j2' })).toMatchObject({ ok: true, index: 1 })
+    })
+  })
+
+  describe('the mark history', () => {
+    test('a 0.21.0 single resolution object parses as a list of one', () => {
+      const legacy = { from: 'unverified', to: 'posted', at: NOW, byJobId: 'op', note: null, reason: 'grid unreadable' } as const
+      const row = withAttempts([{ ...posted }])
+      const stored = JSON.parse(JSON.stringify(row)) as { dispatch: { instagram: { attempts: Record<string, unknown>[] } } }
+      ;(stored.dispatch.instagram.attempts[0] as Record<string, unknown>).resolution = legacy
+      const parsed = PostSchema.parse(stored)
+      expect(parsed.dispatch.instagram?.attempts[0]?.resolution).toEqual([legacy])
+    })
+
+    test('flipping back and forth appends, capped at the newest MARKS_LIMIT', () => {
+      let post = withAttempts([posted])
+      for (let i = 0; i < MARKS_LIMIT + 3; i++) {
+        post = ok(markPost({ post, platform: 'instagram', action: i % 2 === 0 ? 'unmark-posted' : 'mark-posted', now: NOW + i })).post
+      }
+      const marks = stateFor(post, 'instagram').attempts[0]?.resolution ?? []
+      expect(marks).toHaveLength(MARKS_LIMIT)
+      expect(marks[marks.length - 1]?.at).toBe(NOW + MARKS_LIMIT + 2)
+      expect(PostSchema.parse(post)).toEqual(post)
+    })
+
+    test('an attempt nobody marked is not set by hand', () => {
+      expect(markedByHand(posted)).toBe(false)
+    })
   })
 
   test('never touches the input post', () => {
     const post = withAttempts([unverified])
     const before = JSON.stringify(post)
-    resolveAttempt({ post, platform: 'instagram', deviceId: 'd1', resolution: 'failed', now: NOW })
+    markPost({ post, platform: 'instagram', deviceId: 'd1', action: 'mark-failed', now: NOW })
+    markPost({ post, platform: 'instagram', deviceId: 'd1', action: 'mark-posted', now: NOW })
     expect(JSON.stringify(post)).toBe(before)
   })
 })

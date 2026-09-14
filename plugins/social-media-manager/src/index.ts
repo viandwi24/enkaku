@@ -73,6 +73,29 @@ import {
  *
  * ## Changelog
  *
+ * - **0.23.0 — force a post's status by hand, either way.** The owner
+ *   (2026-09-14): YouTube Shorts landed on the channel while the farm said
+ *   `failed` ("neither the trim screen nor the Shorts editor appeared", a run
+ *   force-stopped after its upload went through), and Retry failed would have
+ *   posted them twice; and something marked posted that is not on the account
+ *   must be retryable. `resolve-attempt` now takes an `action`
+ *   (`posts.ts` `markPost`, its transition table pinned by tests):
+ *   **mark-posted** turns a failed, not-confirmed or finished-but-unsettled
+ *   attempt into a success — refused while its job is still running — and, on a
+ *   platform still waiting or unsupported with nothing sent, records a MANUAL
+ *   attempt on the video's phone (`manual: true`, job id `manual:…`) so the
+ *   router never sends it; **unmark-posted** turns a success into a failure
+ *   that Retry failed re-sends; **mark-failed** is 0.21.0's. The old
+ *   `resolution` parameter is still accepted. Each change appends to the
+ *   attempt's `resolution`, now a list (a 0.21.0/0.22.0 single mark reads as a
+ *   list of one), and the platform state is rolled up again exactly as the
+ *   reconciler does; the session's progress is recounted at once. The session
+ *   page offers Mark as posted on failed and not-confirmed cells, Remove posted
+ *   mark on posted ones, Mark as posted (done by hand) in a waiting or
+ *   unsupported platform's row detail, each behind a confirm saying what
+ *   follows, and shows a "set by hand" badge with every mark in the row detail.
+ *   A row written by this version does not parse in 0.22.0 or older.
+ *
  * - **0.22.0 — every phone and every video, not the first 50.** The owner
  *   (2026-09-14), on a farm of more than 50 phones: the New session phone
  *   picker listed 50 and said "narrowed from 50". The page read one page of
@@ -1009,7 +1032,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.22.0',
+  version: '0.23.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

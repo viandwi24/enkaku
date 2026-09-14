@@ -96,28 +96,49 @@ export type AttemptState = (typeof ATTEMPT_STATES)[number]
 export const ATTEMPT_ERROR_MAX = 1_000
 
 /**
- * What an operator may decide about an attempt the script could not confirm (0.21.0): they checked
- * the account on the phone, and the video is there (`posted`) or it is not (`failed`).
+ * What a hand mark leaves an attempt as: `posted` (the attempt is `success`) or `failed`. The words of
+ * 0.21.0, kept, so a mark written then still parses.
  */
 export const RESOLUTIONS = ['posted', 'failed'] as const
 export type Resolution = (typeof RESOLUTIONS)[number]
 
 /**
- * The record of a hand resolution, kept ON the attempt it changed so the page can always say "this
- * was not confirmed by the script; a person marked it". A plugin member has no actor of its own, so
- * "who" is the job that wrote it (`byJobId` — the Jobs screen names who ran that job) and "when" is
- * `at`.
+ * What an operator may force on one platform of one video, by hand (0.23.0):
+ *
+ * - `mark-posted` — the video is on the account whatever the farm recorded. A `failed`, `unverified`
+ *   or settled `queued` attempt becomes `success`; a platform with no attempt at all (`pending`,
+ *   `unsupported`) gets a MANUAL attempt that no phone of the farm ran. Either way the router never
+ *   sends it there again.
+ * - `unmark-posted` — a `success` that is not actually on the account becomes `failed`, which is what
+ *   Retry failed re-sends.
+ * - `mark-failed` — a not-confirmed attempt the operator checked and did not find (0.21.0).
+ */
+export const MARK_ACTIONS = ['mark-posted', 'unmark-posted', 'mark-failed'] as const
+export type MarkAction = (typeof MARK_ACTIONS)[number]
+
+/** How many hand marks one attempt keeps. Enough to see someone flip it back and forth; not a log. */
+export const MARKS_LIMIT = 20
+
+/** The jobId of a manual attempt starts with this — there is no farm job behind it, so nothing links to one. */
+export const MANUAL_JOB_PREFIX = 'manual:'
+
+/**
+ * One hand mark, kept ON the attempt it changed so the page can always say "a person set this, not the
+ * script". A plugin member has no actor of its own, so "who" is the job that wrote it (`byJobId` — the
+ * Jobs screen names who ran that job) and "when" is `at`.
  */
 export const AttemptResolutionSchema = z
   .object({
-    /** The state the attempt was in before the operator decided. Always `unverified` today. */
-    from: z.enum(ATTEMPT_STATES),
+    /** Which hand action wrote it. Absent on a mark written by 0.21.0/0.22.0, which only knew "resolve". */
+    action: z.enum(MARK_ACTIONS).optional(),
+    /** The attempt's state before the mark; `null` for a manual attempt, which had no state before it existed. */
+    from: z.enum(ATTEMPT_STATES).nullable(),
     to: z.enum(RESOLUTIONS),
     at: z.number().int().nonnegative(),
     byJobId: z.string().min(1).nullable(),
     /** The operator's own words, when they gave any. */
     note: z.string().max(300).nullable(),
-    /** What the upload script said at the time — the reason it could not confirm the post. */
+    /** What the attempt said before the mark — its error or the script's reason; for a manual attempt, the platform's note. */
     reason: z.string().max(ATTEMPT_ERROR_MAX).nullable(),
   })
   .strict()
@@ -180,10 +201,18 @@ export const AttemptSchema = z
      */
     error: z.string().max(ATTEMPT_ERROR_MAX).nullable(),
     /**
-     * Set when an operator resolved a not-confirmed attempt by hand (0.21.0); absent otherwise,
-     * including on every attempt recorded before this field existed.
+     * Every hand mark on this attempt, oldest first (a list since 0.23.0); absent when nobody marked it.
+     * 0.21.0 and 0.22.0 stored ONE object here, and it is read as a list of one.
      */
-    resolution: AttemptResolutionSchema.optional(),
+    resolution: z
+      .union([AttemptResolutionSchema, z.array(AttemptResolutionSchema).max(MARKS_LIMIT)])
+      .transform((value) => (Array.isArray(value) ? value : [value]))
+      .optional(),
+    /**
+     * `true` on an attempt no phone of the farm ran (0.23.0): an operator posted the video by hand and
+     * marked the platform posted. Its `jobId` starts with `MANUAL_JOB_PREFIX`. Absent otherwise.
+     */
+    manual: z.literal(true).optional(),
     /**
      * Unix seconds the job was enqueued (0.12.0). With `settledAt` and `round` this is what lets
      * the session page answer the owner's three questions from the production farm: which ones are
@@ -725,77 +754,201 @@ export function partialNote(ok: number, bad: number, unsure: number): string {
   return `${parts.join(', ')}.${retry}${check}`
 }
 
-export type ResolveOutcome =
-  | { ok: true; post: Post; attempt: Attempt }
-  | { ok: false; code: 'E_NOT_FOUND' | 'E_CONFLICT'; message: string }
+/**
+ * What `job.get` said about a `queued` attempt's job, for `mark-posted` (0.23.0): still `running`,
+ * `settled` (any terminal status), `gone` (the farm no longer has it), or `unknown` (the read did not
+ * get through). Only `settled` and `gone` let a queued attempt be marked posted.
+ */
+export type JobCheck = 'running' | 'settled' | 'gone' | 'unknown'
+
+export type MarkOutcome =
+  | { ok: true; post: Post; attempt: Attempt; from: AttemptState | null; manual: boolean }
+  | { ok: false; code: 'E_NOT_FOUND' | 'E_CONFLICT' | 'E_PARAMS_INVALID'; message: string }
+
+/** The operator's note, trimmed to what a mark keeps — or null. */
+function markNote(note: string | null | undefined): string | null {
+  const trimmed = note?.trim() ?? ''
+  return trimmed === '' ? null : trimmed.slice(0, 300)
+}
 
 /**
- * An operator's verdict on a not-confirmed attempt, after checking the account (0.21.0) — or a
- * refusal, by name.
+ * The current attempt a mark names, or why there is none. Pure; `markPost` and the member share it,
+ * so the member can ask `job.get` about exactly the attempt `markPost` will then change.
  *
- * - `posted` makes the attempt `success`; its `error` is cleared, and the script's reason survives in
- *   `resolution.reason`.
- * - `failed` makes it `failed`, with an error saying it was marked by hand and what the script had
- *   said — which is what hands it to Retry failed (`failedDevices`). Nothing is re-sent HERE.
- *
- * Only an attempt that is `unverified` right now may be resolved: the page may be an hour old, and an
- * attempt that has since settled, been retried or been replaced must not be flipped from under it.
- * `jobId`, when given, pins the exact attempt for the same reason. The platform's state, note and
- * summary are recomputed from the changed attempts, exactly as the reconciler computes them.
+ * `deviceId` and `jobId` both narrow; either may be left out. With neither, a platform with exactly one
+ * current attempt means that one. A `jobId` that no longer matches is a refusal — the page may be an
+ * hour old, and an attempt a retry has since replaced must not be flipped from under it.
  */
-export function resolveAttempt(input: {
-  post: Post
-  platform: PlatformId
-  deviceId: string
-  jobId?: string | null
-  resolution: Resolution
-  note?: string | null
-  now: number
-  byJobId?: string | null
-}): ResolveOutcome {
-  const { post, platform, deviceId } = input
+export function markTarget(
+  post: Post,
+  platform: PlatformId,
+  select: { deviceId?: string | null; jobId?: string | null },
+): { ok: true; index: number; attempt: Attempt } | { ok: false; code: 'E_NOT_FOUND' | 'E_PARAMS_INVALID'; message: string } {
   const title = platformById(platform)?.title ?? platform
-  if (!post.dispatch[platform]) {
-    return { ok: false, code: 'E_NOT_FOUND', message: `This video has not been sent to ${title}, so there is nothing to mark.` }
-  }
   const state = stateFor(post, platform)
-  const jobId = input.jobId ?? null
-  const index = state.attempts.findIndex((a) => a.deviceId === deviceId && (jobId === null || a.jobId === jobId))
-  const current = state.attempts[index]
-  if (index < 0 || current === undefined) {
+  const deviceId = select.deviceId ?? null
+  const jobId = select.jobId ?? null
+  const matches = state.attempts.flatMap((a, index) =>
+    (deviceId === null || a.deviceId === deviceId) && (jobId === null || a.jobId === jobId) ? [{ index, attempt: a }] : [],
+  )
+  const only = matches[0]
+  if (matches.length === 1 && only !== undefined) return { ok: true, ...only }
+  if (matches.length === 0) {
     return {
       ok: false,
       code: 'E_NOT_FOUND',
       message: `This video has no current ${title} attempt on that phone any more — it may have been retried or edited since. Refresh the page.`,
     }
   }
-  if (current.state !== 'unverified') {
-    return {
-      ok: false,
-      code: 'E_CONFLICT',
-      message: `Only a ${title} post that was not confirmed can be marked by hand, and this one is ${ATTEMPT_WORDS[current.state]} now. Refresh the page to see it.`,
+  return { ok: false, code: 'E_PARAMS_INVALID', message: `This video went to ${matches.length} phones on ${title}. Say which phone's attempt to mark.` }
+}
+
+/**
+ * An operator's hand mark on one platform of one video (0.23.0; `resolveAttempt` in 0.21.0 was its
+ * `mark-failed` and not-confirmed `mark-posted` half) — or a refusal, by name. Nothing is sent or
+ * re-sent HERE. The transitions, exactly:
+ *
+ * | action | the attempt now | becomes | refused when |
+ * |---|---|---|---|
+ * | `mark-posted` | `failed`, `unverified` | `success`, error cleared | — |
+ * | `mark-posted` | `queued` | `success` | its job is still running, or could not be checked (`E_CONFLICT`) |
+ * | `mark-posted` | none; platform `pending`/`unsupported` | a MANUAL `success` attempt on the video's phone | no single phone to put it on (`E_PARAMS_INVALID`) |
+ * | `mark-posted` | `success` | — | already posted (`E_CONFLICT`) |
+ * | `unmark-posted` | `success` | `failed`, "Marked as not posted by hand — Retry failed sends it again" | any other state (`E_CONFLICT`) |
+ * | `mark-failed` | `unverified` | `failed`, with what the script had said | any other state (`E_CONFLICT`) |
+ *
+ * Every change appends one entry to the attempt's `resolution` list (from, to, when, the job that
+ * wrote it, the note, and the error or reason it replaced). The platform's state, note and summary are
+ * recomputed from the changed attempts exactly as the reconciler computes them (`rollUp`,
+ * `platformNote`, `withSummary`), so a row whose every attempt is marked posted reads `succeeded` —
+ * and the router, which never dispatches a `succeeded` platform, leaves it alone for good.
+ *
+ * A manual attempt's phone is `deviceId` when given, else the video's assigned phone, else its one
+ * chosen phone. The stored shape needs a real phone (`Attempt.deviceId`) and that is also the right
+ * rule: if the mark is later removed, Retry failed sends it to that phone.
+ */
+export function markPost(input: {
+  post: Post
+  platform: PlatformId
+  action: MarkAction
+  deviceId?: string | null
+  jobId?: string | null
+  note?: string | null
+  now: number
+  byJobId?: string | null
+  /** What `job.get` said about the target's job. Read only when the target is `queued`. */
+  job?: JobCheck | null
+}): MarkOutcome {
+  const { post, platform, action, now } = input
+  const title = platformById(platform)?.title ?? platform
+  if (!post.dispatch[platform] && !post.platforms.includes(platform)) {
+    return { ok: false, code: 'E_NOT_FOUND', message: `This video is not for ${title}, so there is nothing to mark.` }
+  }
+  const state = stateFor(post, platform)
+  const note = markNote(input.note)
+  const byJobId = input.byJobId ?? null
+
+  if (state.attempts.length === 0) {
+    if (action !== 'mark-posted') {
+      return { ok: false, code: 'E_NOT_FOUND', message: `This video has not been sent to ${title}, so there is nothing to mark.` }
+    }
+    if (state.state !== 'pending' && state.state !== 'unsupported') {
+      return {
+        ok: false,
+        code: 'E_CONFLICT',
+        message: `${title} for this video has no record of which phones it went to, so it cannot be marked by hand. Refresh the page.`,
+      }
+    }
+    const deviceId = input.deviceId ?? post.assignedDeviceId ?? (post.deviceIds.length === 1 ? (post.deviceIds[0] as string) : null)
+    if (deviceId === null) {
+      return {
+        ok: false,
+        code: 'E_PARAMS_INVALID',
+        message: `This video has no single phone of its own, so there is no account to record the ${title} post against. Say which phone posted it.`,
+      }
+    }
+    const attempt: Attempt = {
+      jobId: `${MANUAL_JOB_PREFIX}${byJobId ?? String(now)}`,
+      deviceId,
+      deviceName: null,
+      state: 'success',
+      error: null,
+      at: now,
+      settledAt: now,
+      round: nextRound(state),
+      manual: true,
+      resolution: [{ action, from: null, to: 'posted', at: now, byJobId, note, reason: state.note }],
+    }
+    const attempts = [attempt]
+    const next = rollUp(attempts)
+    const dispatch: Post['dispatch'] = {
+      ...post.dispatch,
+      [platform]: withSummary({ ...state, state: next, at: state.at ?? now, deviceCount: 1, attempts, note: platformNote(next, attempts, null) }),
+    }
+    return { ok: true, post: { ...post, dispatch }, attempt, from: null, manual: true }
+  }
+
+  const target = markTarget(post, platform, { deviceId: input.deviceId, jobId: input.jobId })
+  if (!target.ok) return target
+  const current = target.attempt
+  const refuse = (message: string): MarkOutcome => ({ ok: false, code: 'E_CONFLICT', message })
+
+  let changed: Pick<Attempt, 'state' | 'error'>
+  switch (action) {
+    case 'mark-posted': {
+      if (current.state === 'success') return refuse(`This ${title} post is already marked as posted. Refresh the page to see it.`)
+      if (current.state === 'queued') {
+        if (input.job === 'running' || input.job === undefined || input.job === null) {
+          return refuse(`This ${title} upload is still running on that phone. Wait for it to finish, then mark it.`)
+        }
+        if (input.job === 'unknown') {
+          return refuse(`Could not check whether this ${title} upload is still running. Nothing was changed — try again in a moment.`)
+        }
+      }
+      changed = { state: 'success', error: null }
+      break
+    }
+    case 'unmark-posted': {
+      if (current.state !== 'success') {
+        return refuse(`Only a ${title} post marked as posted can have that mark removed, and this one is ${ATTEMPT_WORDS[current.state]} now. Refresh the page to see it.`)
+      }
+      changed = {
+        state: 'failed',
+        error: clipError(`Marked as not posted by hand${note !== null ? ` (${note})` : ''} — Retry failed sends it again.`),
+      }
+      break
+    }
+    case 'mark-failed': {
+      if (current.state !== 'unverified') {
+        return refuse(`Only a ${title} post that was not confirmed can be marked as failed by hand, and this one is ${ATTEMPT_WORDS[current.state]} now. Refresh the page to see it.`)
+      }
+      changed = {
+        state: 'failed',
+        error: clipError(`Marked as failed by hand after checking the account${note !== null ? ` (${note})` : ''}. The script had said: ${current.error ?? 'nothing'}`),
+      }
+      break
     }
   }
 
-  const note = input.note?.trim() ? input.note.trim().slice(0, 300) : null
-  const reason = current.error
-  const resolved: Attempt = {
+  const entry: AttemptResolution = { action, from: current.state, to: changed.state === 'success' ? 'posted' : 'failed', at: now, byJobId, note, reason: current.error }
+  const marked: Attempt = {
     ...current,
-    state: input.resolution === 'posted' ? 'success' : 'failed',
-    error:
-      input.resolution === 'posted'
-        ? null
-        : clipError(`Marked as failed by hand after checking the account${note !== null ? ` (${note})` : ''}. The script had said: ${reason ?? 'nothing'}`),
-    settledAt: current.settledAt ?? input.now,
-    resolution: { from: current.state, to: input.resolution, at: input.now, byJobId: input.byJobId ?? null, note, reason },
+    ...changed,
+    settledAt: current.settledAt ?? now,
+    resolution: [...(current.resolution ?? []), entry].slice(-MARKS_LIMIT),
   }
-  const attempts = state.attempts.map((a, i) => (i === index ? resolved : a))
+  const attempts = state.attempts.map((a, i) => (i === target.index ? marked : a))
   const next = rollUp(attempts)
   const dispatch: Post['dispatch'] = {
     ...post.dispatch,
     [platform]: withSummary({ ...state, attempts, state: next, note: platformNote(next, attempts, state.note) }),
   }
-  return { ok: true, post: { ...post, dispatch }, attempt: resolved }
+  return { ok: true, post: { ...post, dispatch }, attempt: marked, from: current.state, manual: current.manual === true }
+}
+
+/** Was this attempt set by hand — a manual attempt, or one with any mark on it? */
+export function markedByHand(attempt: Pick<Attempt, 'manual' | 'resolution'>): boolean {
+  return attempt.manual === true || (attempt.resolution?.length ?? 0) > 0
 }
 
 /**

@@ -30,7 +30,7 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.22.0')
+    expect(plugin.version).toBe('0.23.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
@@ -44,6 +44,29 @@ describe('social-media-manager manifest', () => {
       expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })
       expect({ id: member.id, described: (member.description ?? '').length > 0 }).toEqual({ id: member.id, described: true })
     }
+  })
+
+  test('every member parameter description fits the farm\'s 300-character limit', () => {
+    // The farm refuses a longer one at install, which no typecheck can see.
+    for (const member of [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt]) {
+      const json = z.toJSONSchema(member.params, { io: 'input' }) as { properties?: Record<string, { description?: string }> }
+      for (const [name, property] of Object.entries(json.properties ?? {})) {
+        expect({ member: member.id, name, length: (property.description ?? '').length <= 300 }).toEqual({ member: member.id, name, length: true })
+      }
+    }
+  })
+})
+
+describe('resolve-attempt — the hand-mark member', () => {
+  test('takes the three actions, and every selector but the video and platform is optional', () => {
+    const json = z.toJSONSchema(resolveAttempt.params, { io: 'input' }) as { required?: string[]; properties?: Record<string, { enum?: string[] }> }
+    expect(json.properties?.action?.enum).toEqual(['mark-posted', 'unmark-posted', 'mark-failed'])
+    expect([...(json.required ?? [])].sort()).toEqual(['platform', 'videoArtifactId'])
+  })
+
+  test('still accepts the 0.21.0 call shape', () => {
+    const parsed = resolveAttempt.params.safeParse({ videoArtifactId: 'v', platform: 'instagram', deviceId: 'd1', jobId: 'j1', resolution: 'posted' })
+    expect(parsed.success).toBe(true)
   })
 })
 
