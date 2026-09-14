@@ -112,6 +112,8 @@ export const ScheduleInfoSchema = z.object({
    * is offered, and does nothing at all while `deviceIntervalMs` is 0.
    */
   waveSize: z.number().int().min(1).default(1),
+  /** Plan 316 — sub-groups and repetitions wait for the previous one to finish instead of starting on a timer. */
+  sequential: z.boolean().default(false),
   /** Plan 68 §3.2 — only meaningful for an agent target. */
   threadMode: ScheduleThreadModeSchema,
   /** The reused thread when `threadMode === 'continue'`; null otherwise, or before the first firing. */

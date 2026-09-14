@@ -19,6 +19,8 @@ function run(overrides: Partial<JobRunRow> = {}): JobRunRow {
     expiresAt: null,
     notBefore: null,
     batchRepeat: null,
+    batchWave: null,
+    held: false,
     pacedDelayMs: null,
     result: null,
     error: null,

@@ -65,6 +65,16 @@ import {
  *
  * ## Changelog
  *
+ * - **0.16.0 — the warm-up runs in phases, at the operator's pace.** The owner's
+ *   model (2026-09-14): one daily run, platform groups split into sub-groups
+ *   that run in turn, then the groups swap, so every phone warms up every
+ *   platform in one day. `smm/warmup-rotation` now reads the phase from
+ *   `$run.repeat` (core plan 316) and takes its pace as parameters — the gap
+ *   between activities (`gapMinSec`/`gapMaxSec`), how much each activity does
+ *   (`amount`) and the random start delay (`startDelayMaxSec`). Schedule it with
+ *   3 repetitions, sub-groups of 27, order by device number and "one after
+ *   another". Needs a core with plan 316.
+ *
  * - **0.15.0 — the warm-up rotation is a trading-niche warm-up with sub-groups.**
  *   The owner's use (2026-09-14): eighty phones warmed up daily at a fixed hour,
  *   split across the three platforms and then into smaller groups, so phones on
@@ -923,7 +933,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.15.0',
+  version: '0.16.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

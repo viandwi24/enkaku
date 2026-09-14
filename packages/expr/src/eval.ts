@@ -41,7 +41,8 @@ export interface ExprScope {
   $nodes: Readonly<Record<string, unknown>>
   $input: unknown
   /** `index`/`count` are this run's position in its batch and the batch's size (plan 211 + the fleet-split case, 2026-09-05). */
-  $run: Readonly<{ summary: unknown; index?: number; count?: number }>
+  /** `repeat` is which repetition (phase) of a paced batch this run is, 0-based (plan 316). */
+  $run: Readonly<{ summary: unknown; index?: number; count?: number; repeat?: number }>
   $now: number
   $random: number
   /**

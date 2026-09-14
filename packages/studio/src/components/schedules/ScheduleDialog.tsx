@@ -144,6 +144,9 @@ export function ScheduleDialog({
   const [intervalMinSec, setIntervalMinSec] = useState(0)
   const [intervalMaxSec, setIntervalMaxSec] = useState(0)
   const [deviceIntervalSec, setDeviceIntervalSec] = useState(0)
+  // Plan 316 — sub-groups, and whether they (and the repetitions) run one after another.
+  const [waveSize, setWaveSize] = useState(1)
+  const [sequential, setSequential] = useState(false)
   // Plan 314 §10.5 — minutes, not seconds: this window is the one an
   // operator thinks about in hours ("everyone starts somewhere across the
   // morning"), and a seconds box for 7 200 000 ms invites a typo nobody
@@ -205,6 +208,8 @@ export function ScheduleDialog({
       setIntervalMinSec(0)
       setIntervalMaxSec(0)
       setDeviceIntervalSec(0)
+      setWaveSize(1)
+      setSequential(false)
       setDeviceDelayMinMin(0)
       setDeviceDelayMaxMin(0)
     } else if (schedule) {
@@ -249,6 +254,8 @@ export function ScheduleDialog({
       setIntervalMinSec(Math.round((schedule.intervalMinMs ?? 0) / 1000))
       setIntervalMaxSec(Math.round((schedule.intervalMaxMs ?? 0) / 1000))
       setDeviceIntervalSec(Math.round((schedule.deviceIntervalMs ?? 0) / 1000))
+      setWaveSize(schedule.waveSize ?? 1)
+      setSequential(schedule.sequential ?? false)
       setDeviceDelayMinMin(Math.round((schedule.deviceDelayMs?.[0] ?? 0) / 60_000))
       setDeviceDelayMaxMin(Math.round((schedule.deviceDelayMs?.[1] ?? 0) / 60_000))
     }
@@ -342,6 +349,8 @@ export function ScheduleDialog({
     intervalMinMs: intervalMinSec * 1000,
     intervalMaxMs: intervalMaxSec * 1000,
     deviceIntervalMs: deviceIntervalSec * 1000,
+    waveSize,
+    sequential,
     deviceDelayMs: [deviceDelayMinMin * 60_000, deviceDelayMaxMin * 60_000],
     threadMode,
     onApprovalRequired,
@@ -647,6 +656,7 @@ export function ScheduleDialog({
                 <SelectContent>
                   <SelectItem value="as-listed">As listed</SelectItem>
                   <SelectItem value="random">Random</SelectItem>
+                  <SelectItem value="number">By device number</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -769,6 +779,40 @@ export function ScheduleDialog({
                 </div>
               </div>
               {intervalMinSec > intervalMaxSec && <p className="text-meta text-danger">The interval's minimum is greater than its maximum.</p>}
+
+              {/* Plan 316 — sub-groups and phases one after another (the owner's warm-up: every sub-group of a phase in
+                  turn, then the next phase). The same three knobs above change meaning in this mode, so it says so. */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="schedule-wave-size" className="text-body font-normal">
+                    Sub-group size (devices)
+                  </Label>
+                  <Input
+                    id="schedule-wave-size"
+                    type="number"
+                    min={1}
+                    value={waveSize}
+                    onChange={(e) => setWaveSize(Math.max(1, Number.parseInt(e.target.value, 10) || 1))}
+                    mono
+                    className="h-8 text-body"
+                  />
+                </div>
+                <div className="flex items-start justify-between gap-3 pt-5">
+                  <div>
+                    <p className="text-body">One after another</p>
+                    <p className="text-label text-dim">Each sub-group waits for the previous one to finish; each repetition waits for the whole previous one.</p>
+                  </div>
+                  <Switch checked={sequential} onCheckedChange={setSequential} aria-label="Run sub-groups and repetitions one after another" />
+                </div>
+              </div>
+              {sequential && (
+                <p className="text-label text-dim">
+                  In this mode <span className="font-medium">Interval</span> is the wait after a repetition finishes, and{' '}
+                  <span className="font-medium">Stagger across devices</span> is the wait after a sub-group finishes. With 80 devices, sub-groups of
+                  27 and 3 repetitions, a warm-up runs nine sub-groups in turn and every device takes part once per repetition. Order{' '}
+                  <span className="font-medium">By device number</span> keeps each sub-group an even mix of a number-based split.
+                </p>
+              )}
 
               {/* Plan 314 §10.5 — the knob that means "each device starts at
                   its own time". Distinct from the stagger above, which is a

@@ -65,6 +65,11 @@ export interface ResolveScope {
   runIndex?: number
   runCount?: number
   /**
+   * `$run.repeat` (plan 316): which repetition of a paced batch this run is, 0-based — the PHASE of a warm-up that runs
+   * the fleet several times over. 0 for a run outside a paced batch.
+   */
+  runRepeat?: number
+  /**
    * The device this run is acting on — `$device` (plan 314 §10.11).
    *
    * Separate from `runIndex` above, and deliberately so: `runIndex` is a
@@ -178,7 +183,7 @@ function buildExprScope(scope: ResolveScope): ExprScope {
     $params: toScopeValue(scope.params) as Readonly<Record<string, unknown>>,
     $nodes: toScopeValue(Object.fromEntries(scope.outputs)) as Readonly<Record<string, unknown>>,
     $input: toScopeValue(lastOutput),
-    $run: { summary: toScopeValue(scope.summary), index: scope.runIndex ?? 0, count: scope.runCount ?? 1 },
+    $run: { summary: toScopeValue(scope.summary), index: scope.runIndex ?? 0, count: scope.runCount ?? 1, repeat: scope.runRepeat ?? 0 },
     // Copied field by field rather than spread, so a caller that hands over a
     // live Drizzle row cannot leak anything past the five facts `$device`
     // names — the same discipline `toScopeValue` applies to every other root.

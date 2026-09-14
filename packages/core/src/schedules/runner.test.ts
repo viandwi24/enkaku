@@ -72,6 +72,7 @@ function seedSchedule(db: Db, overrides: Partial<ScheduleRow> & { id: string }):
     intervalMaxMs: overrides.intervalMaxMs ?? 0,
     deviceIntervalMs: overrides.deviceIntervalMs ?? 0,
     waveSize: overrides.waveSize ?? 1,
+    sequential: overrides.sequential ?? false,
     deviceDelayMinMs: overrides.deviceDelayMinMs ?? 0,
     deviceDelayMaxMs: overrides.deviceDelayMaxMs ?? 0,
     lastFiredAt: overrides.lastFiredAt ?? null,

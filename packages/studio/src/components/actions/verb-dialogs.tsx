@@ -206,7 +206,7 @@ const adb: VerbDialogSpec<AdbValue> = {
  */
 interface BatchPacingValue {
   concurrency: number
-  order: 'as-listed' | 'random'
+  order: 'as-listed' | 'random' | 'number'
   /** Seconds, as typed. Kept as strings so a half-typed "1" is not read as a delay of one second the instant it is entered. */
   delayMin: string
   delayMax: string
@@ -320,7 +320,7 @@ interface RunScriptValue {
   scriptId: string | null
   params: unknown
   concurrency: number
-  order: 'as-listed' | 'random'
+  order: 'as-listed' | 'random' | 'number'
   /** Seconds, as typed. Kept as strings so a half-typed "1" is not read as a delay of one second the instant it is entered. */
   delayMin: string
   delayMax: string

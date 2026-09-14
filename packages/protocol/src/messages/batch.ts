@@ -1,7 +1,8 @@
 import { z } from 'zod'
 
 /** Plan 20 §3.2 — two independent parameters cover every requested execution shape. */
-export const BatchOrderSchema = z.enum(['as-listed', 'random'])
+/** `number` sorts members by device number ascending (plan 316), so consecutive sub-groups mix a `$device.number % n` split evenly. */
+export const BatchOrderSchema = z.enum(['as-listed', 'random', 'number'])
 export type BatchOrder = z.infer<typeof BatchOrderSchema>
 
 /**

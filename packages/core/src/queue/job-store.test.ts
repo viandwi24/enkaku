@@ -110,6 +110,19 @@ describe('claimNext — claims one run at a time per device', () => {
     seedJobAndRun(db, { deviceId: 'd1' })
     expect(store.claimNext(60)).toBeNull()
   })
+
+  test('plan 316 — a held run (a sub-group waiting its turn) is never claimed until it is released', () => {
+    const db = setUp()
+    const store = createJobStore(db)
+    seedDevice(db, 'd1')
+    const { run } = seedJobAndRun(db, { deviceId: 'd1' })
+    db.update(jobRuns).set({ held: true }).where(eq(jobRuns.id, run.id)).run()
+
+    expect(store.claimNext(60)).toBeNull()
+
+    db.update(jobRuns).set({ held: false }).where(eq(jobRuns.id, run.id)).run()
+    expect(store.claimNext(60)?.run.id).toBe(run.id)
+  })
 })
 
 describe('claimNext — the workflow parent exemption (plan 211 §3.2 decision 8)', () => {

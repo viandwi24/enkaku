@@ -15,12 +15,25 @@ import type { Logger } from '../util/logger'
  * every interval field `0`) — the same math just produces a single,
  * unstaggered run, which is today's behaviour exactly (§4.9's `pacing`
  * default).
+ *
+ * ## Sequential batches (plan 316)
+ *
+ * With `batches.sequential` the sub-groups are barriers, not waves in time: a
+ * sub-group is released only when every member of the previous one has
+ * settled, and a repetition — a PHASE — starts only when the whole previous
+ * phase has. Held runs are ordinary queued runs with `held = 1`, which the
+ * claim skips. What to release next is decided by one pure function,
+ * `planSequentialStep`, called both when a member settles and by the boot
+ * sweep, so a core restarted mid-batch releases exactly what normal operation
+ * would have.
  */
 export interface BatchPacer {
   /** Repetition 0 for every device, with the stagger baked into the member job's own first run's `notBefore` (plan 94 §3.8). */
   planFirst(batchId: string): void
   /** Called from `recomputeBatchStatus` (F32) when a member settles — the ONE hook, never a second loop. */
   onMemberSettled(batchId: string, deviceId: string): void
+  /** Plan 316 — release whatever a sequential batch has due. Idempotent; the boot sweep calls it for every open sequential batch. */
+  advance(batchId: string): void
   /** Arms one timer at the earliest future `notBefore` across all runs. */
   rearm(): void
   /** Clears the timer — every process this thing starts is dead after this returns (00-overview §7). */
@@ -70,6 +83,44 @@ export function drawIntervalMs(min: number, max: number, randomUint32: () => num
   return min + (randomUint32() % span)
 }
 
+/** One member of a sequential batch as the planner sees it: its sub-group, and its runs that belong to a repetition. */
+export interface SequentialMember {
+  deviceId: string
+  wave: number
+  runs: readonly { batchRepeat: number; status: string; held: boolean }[]
+}
+
+export type SequentialStep =
+  | { kind: 'wait' }
+  | { kind: 'release'; repeat: number; wave: number }
+  | { kind: 'next-phase'; repeat: number }
+  | { kind: 'done' }
+
+/**
+ * What a sequential batch should do next — pure, so it is the thing the tests pin.
+ *
+ * The current phase is the highest repetition any member has a run for. Its sub-groups are walked in order: a
+ * sub-group with a run queued-and-released or running is still going (`wait`); one whose remaining runs are all held
+ * is next (`release`); one that has fully settled is passed. When every sub-group of the phase has settled, the next
+ * phase starts — or the batch is `done`.
+ */
+export function planSequentialStep(members: readonly SequentialMember[], repeatCount: number): SequentialStep {
+  let current = -1
+  for (const m of members) for (const r of m.runs) current = Math.max(current, r.batchRepeat)
+  if (current < 0) return { kind: 'wait' }
+
+  const waves = [...new Set(members.map((m) => m.wave))].sort((a, b) => a - b)
+  for (const wave of waves) {
+    const inWave = members
+      .filter((m) => m.wave === wave)
+      .map((m) => m.runs.filter((r) => r.batchRepeat === current).at(-1))
+      .filter((r): r is { batchRepeat: number; status: string; held: boolean } => r !== undefined)
+    if (inWave.some((r) => r.status === 'running' || (r.status === 'queued' && !r.held))) return { kind: 'wait' }
+    if (inWave.some((r) => r.status === 'queued' && r.held)) return { kind: 'release', repeat: current, wave }
+  }
+  return current + 1 < repeatCount ? { kind: 'next-phase', repeat: current + 1 } : { kind: 'done' }
+}
+
 const NON_PLANNING_STATUS = new Set(['stopping', 'success', 'failed', 'cancelled'])
 
 export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
@@ -85,9 +136,8 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
     return deps.db.select().from(batches).where(eq(batches.id, batchId)).get() ?? null
   }
 
-
   function isPaced(batch: BatchRow): boolean {
-    return batch.repeatCount > 1 || batch.deviceIntervalMs > 0 || batch.deviceDelayMaxMs > 0
+    return batch.sequential || batch.repeatCount > 1 || batch.deviceIntervalMs > 0 || batch.deviceDelayMaxMs > 0
   }
 
   function planFirst(batchId: string): void {
@@ -100,13 +150,27 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
       if (!member?.latestRunId) continue
       const run = deps.db.select().from(jobRuns).where(eq(jobRuns.id, member.latestRunId)).get()
       if (!run) continue
+      const wave = ladderRung(i, batch.waveSize)
+      if (batch.sequential) {
+        // Sub-group 0 goes now, each device at its own jittered instant; every later sub-group is held until the one
+        // before it has settled. A held run carries no expiry: its release time is not known yet.
+        const delayMs = drawIntervalMs(batch.deviceDelayMinMs, batch.deviceDelayMaxMs, random)
+        deps.db
+          .update(jobRuns)
+          .set(
+            wave === 0
+              ? { batchRepeat: 0, batchWave: 0, held: false, notBefore: delayMs > 0 ? now + Math.round(delayMs / 1000) : run.notBefore, pacedDelayMs: delayMs > 0 ? delayMs : run.pacedDelayMs }
+              : { batchRepeat: 0, batchWave: wave, held: true, notBefore: null, expiresAt: null },
+          )
+          .where(eq(jobRuns.id, run.id))
+          .run()
+        continue
+      }
       // The ladder positions a device; the draw jitters it. Both are baked
       // into ONE `notBefore` here rather than applied in two passes, so a
       // member's own recorded `pacedDelayMs` is the whole truth about when it
       // was allowed to start — not half of it.
-      const staggerMs =
-        ladderRung(i, batch.waveSize) * batch.deviceIntervalMs +
-        drawIntervalMs(batch.deviceDelayMinMs, batch.deviceDelayMaxMs, random)
+      const staggerMs = wave * batch.deviceIntervalMs + drawIntervalMs(batch.deviceDelayMinMs, batch.deviceDelayMaxMs, random)
       deps.db
         .update(jobRuns)
         .set({
@@ -118,11 +182,69 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
         .run()
     }
     deps.log.info(
-      `batch ${batchId}: planned repetition 0 for ${members.length} device(s), stagger ${batch.deviceIntervalMs}ms` +
-        (batch.waveSize > 1 ? ` in waves of ${batch.waveSize}` : '') +
+      `batch ${batchId}: planned repetition 0 for ${members.length} device(s)` +
+        (batch.sequential
+          ? `, sequential in sub-groups of ${batch.waveSize}`
+          : `, stagger ${batch.deviceIntervalMs}ms` + (batch.waveSize > 1 ? ` in waves of ${batch.waveSize}` : '')) +
         (batch.deviceDelayMaxMs > 0 ? `, per-device delay ${batch.deviceDelayMinMs}-${batch.deviceDelayMaxMs}ms` : ''),
     )
     rearm()
+  }
+
+  /** The planner's view of a sequential batch, read from its member jobs' repetition runs. */
+  function sequentialMembers(batchId: string): { member: typeof jobs.$inferSelect; wave: number; runs: (typeof jobRuns.$inferSelect)[] }[] {
+    const members = deps.db.select().from(jobs).where(eq(jobs.batchId, batchId)).orderBy(jobs.batchSeq).all()
+    return members.map((member) => {
+      // Oldest first, and only runs that belong to a repetition — a manual rerun carries no `batch_repeat`.
+      const runs = [...deps.runs.runs(member.id)].reverse().filter((r) => r.batchRepeat != null)
+      const wave = runs.find((r) => r.batchWave != null)?.batchWave ?? 0
+      return { member, wave, runs }
+    })
+  }
+
+  function advance(batchId: string): void {
+    const batch = loadBatch(batchId)
+    if (!batch || !batch.sequential || NON_PLANNING_STATUS.has(batch.status)) return
+    const view = sequentialMembers(batchId)
+    const step = planSequentialStep(
+      view.map((v) => ({ deviceId: v.member.deviceId, wave: v.wave, runs: v.runs.map((r) => ({ batchRepeat: r.batchRepeat ?? 0, status: r.status, held: r.held })) })),
+      batch.repeatCount,
+    )
+    const now = nowSec()
+
+    if (step.kind === 'release') {
+      let released = 0
+      for (const v of view) {
+        if (v.wave !== step.wave) continue
+        const run = v.runs.filter((r) => r.batchRepeat === step.repeat).at(-1)
+        if (!run || run.status !== 'queued' || !run.held) continue
+        // The wait after the previous sub-group, then each device's own jitter inside this one.
+        const delayMs = (step.wave > 0 ? batch.deviceIntervalMs : 0) + drawIntervalMs(batch.deviceDelayMinMs, batch.deviceDelayMaxMs, random)
+        deps.db
+          .update(jobRuns)
+          .set({ held: false, notBefore: delayMs > 0 ? now + Math.round(delayMs / 1000) : null, pacedDelayMs: delayMs })
+          .where(eq(jobRuns.id, run.id))
+          .run()
+        released += 1
+      }
+      deps.log.info(`batch ${batchId}: phase ${step.repeat + 1}/${batch.repeatCount} — released sub-group ${step.wave + 1} (${released} device(s))`)
+    } else if (step.kind === 'next-phase') {
+      const phaseGapMs = drawIntervalMs(batch.intervalMinMs, batch.intervalMaxMs, random)
+      for (const v of view) {
+        const delayMs = phaseGapMs + drawIntervalMs(batch.deviceDelayMinMs, batch.deviceDelayMaxMs, random)
+        deps.runs.addRun(
+          v.member.id,
+          v.wave === 0
+            ? { trigger: 'batch', batchRepeat: step.repeat, batchWave: 0, held: false, notBefore: now + Math.round(delayMs / 1000), pacedDelayMs: delayMs }
+            : { trigger: 'batch', batchRepeat: step.repeat, batchWave: v.wave, held: true },
+        )
+      }
+      deps.log.info(`batch ${batchId}: phase ${step.repeat + 1}/${batch.repeatCount} planned for ${view.length} device(s), starting in ${phaseGapMs}ms`)
+    } else {
+      return
+    }
+    rearm()
+    deps.scheduler.kick()
   }
 
   function onMemberSettled(batchId: string, deviceId: string): void {
@@ -130,6 +252,7 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
     if (!batch) return
     if (NON_PLANNING_STATUS.has(batch.status)) return
     if (!isPaced(batch)) return
+    if (batch.sequential) return advance(batchId)
 
     const member = deps.db
       .select()
@@ -177,6 +300,7 @@ export function createBatchPacer(deps: BatchPacerDeps): BatchPacer {
   return {
     planFirst,
     onMemberSettled,
+    advance,
     rearm,
     stop: () => {
       if (timer) clearTimeout(timer)
@@ -206,7 +330,7 @@ export function replanAfterRestart(deps: {
     .all()
     .concat(deps.db.select().from(batches).where(eq(batches.status, 'running')).all())
   for (const batch of nonTerminal) {
-    if (batch.repeatCount <= 1 && batch.deviceIntervalMs <= 0 && batch.deviceDelayMaxMs <= 0) continue
+    if (!batch.sequential && batch.repeatCount <= 1 && batch.deviceIntervalMs <= 0 && batch.deviceDelayMaxMs <= 0) continue
     const members = deps.db.select().from(jobs).where(eq(jobs.batchId, batch.id)).all()
 
     if (members.length === 0) {
@@ -219,10 +343,15 @@ export function replanAfterRestart(deps: {
       continue
     }
 
-    for (const member of members) {
-      const latest = member.latestRunId ? deps.db.select().from(jobRuns).where(eq(jobRuns.id, member.latestRunId)).get() : null
-      if (!latest || ACTIVE_RUN_STATUS.has(latest.status)) continue
-      deps.pacer.onMemberSettled(batch.id, member.deviceId)
+    if (batch.sequential) {
+      // Plan 316 — the same planner a settle calls: whatever became due while the core was down is released now.
+      deps.pacer.advance(batch.id)
+    } else {
+      for (const member of members) {
+        const latest = member.latestRunId ? deps.db.select().from(jobRuns).where(eq(jobRuns.id, member.latestRunId)).get() : null
+        if (!latest || ACTIVE_RUN_STATUS.has(latest.status)) continue
+        deps.pacer.onMemberSettled(batch.id, member.deviceId)
+      }
     }
 
     if (deps.jobStore && deps.broadcast) {

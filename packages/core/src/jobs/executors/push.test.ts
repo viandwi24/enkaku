@@ -27,6 +27,8 @@ const FAKE_RUN: import('../../db/schema').JobRunRow = {
   expiresAt: null,
   notBefore: null,
   batchRepeat: null,
+  batchWave: null,
+  held: false,
   pacedDelayMs: null,
   result: null,
   error: null,

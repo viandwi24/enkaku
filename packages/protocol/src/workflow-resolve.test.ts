@@ -353,6 +353,20 @@ describe('$run.index and $run.count (the fleet-split case, 2026-09-05)', () => {
     expect(resolveValue({ expr: '$run.index' }, bare)).toEqual({ ok: true, value: 0 })
     expect(resolveValue({ expr: '$run.count' }, bare)).toEqual({ ok: true, value: 1 })
   })
+
+  test('$run.repeat is the phase of a paced batch (plan 316), and 0 outside one', () => {
+    const bare: ResolveScope = { params: {}, outputs: new Map(), summary: [] }
+    expect(resolveValue({ expr: '$run.repeat' }, bare)).toEqual({ ok: true, value: 0 })
+    const phaseTwo: ResolveScope = { params: {}, outputs: new Map(), summary: [], runIndex: 4, runCount: 80, runRepeat: 2 }
+    expect(resolveValue({ expr: '$run.repeat' }, phaseTwo)).toEqual({ ok: true, value: 2 })
+    // The warm-up's own rotation: the same phone lands on a different platform in each phase.
+    const platforms = [0, 1, 2].map((runRepeat) => resolveValue({ expr: '(7 + $run.repeat) % 3' }, { ...phaseTwo, runRepeat }))
+    expect(platforms).toEqual([
+      { ok: true, value: 1 },
+      { ok: true, value: 2 },
+      { ok: true, value: 0 },
+    ])
+  })
 })
 
 // ---------------------------------------------------------------------------

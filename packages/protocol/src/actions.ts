@@ -134,6 +134,13 @@ const PacingSchema = z
      * ladder decides when each wave is *offered*, and the two compose.
      */
     waveSize: z.number().int().min(1).max(1000).default(1),
+    /**
+     * Plan 316 — sub-groups and repetitions one after another. When true a sub-group is released only once every member
+     * of the previous one has settled (`deviceIntervalMs` is then the wait after it), and a repetition — a phase —
+     * starts only once the whole previous phase has settled (`intervalMs` is the wait after it). Default false: the
+     * waves-in-time behaviour above, unchanged.
+     */
+    sequential: z.boolean().default(false),
   })
   .refine((p) => p.intervalMs[0] <= p.intervalMs[1], 'the interval range is inverted')
   .refine((p) => p.deviceDelayMs[0] <= p.deviceDelayMs[1], 'the per-device delay range is inverted')

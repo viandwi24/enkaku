@@ -8,7 +8,7 @@ export interface RunScriptInput {
   scriptRef?: string
   params?: unknown
   concurrency: number
-  order: 'as-listed' | 'random'
+  order: 'as-listed' | 'random' | 'number'
   priority?: number
   runtimeOverride?: unknown
   pacing?: CreateBatchInput['pacing']

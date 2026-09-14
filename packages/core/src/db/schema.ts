@@ -549,6 +549,10 @@ export const jobRuns = sqliteTable(
     /** Unix seconds; the claim will not take this run before this instant (the pacer's own column). */
     notBefore: integer('not_before'),
     batchRepeat: integer('batch_repeat'),
+    /** Plan 316 — which sub-group of a sequential batch this run belongs to (0-based); null outside one. */
+    batchWave: integer('batch_wave'),
+    /** Plan 316 — a sequential batch's run waiting for its sub-group or phase to be released. The claim never takes a held run. */
+    held: integer('held', { mode: 'boolean' }).notNull().default(false),
     pacedDelayMs: integer('paced_delay_ms'),
     result: text('result', { mode: 'json' }),
     error: text('error'),
@@ -684,7 +688,7 @@ export const batches = sqliteTable(
     params: text('params', { mode: 'json' }),
     /** 0 = unlimited, else the max jobs running at once (plan 20 §3.2). */
     concurrency: integer('concurrency').notNull().default(0),
-    order: text('order').notNull().default('as-listed'), // 'as-listed' | 'random'
+    order: text('order').notNull().default('as-listed'), // 'as-listed' | 'random' | 'number'
     /**
      * 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'stopping'
      * (plan 94 §3.9, §4.8, step 94.7). Every value but the last is a cached
@@ -763,6 +767,8 @@ export const batches = sqliteTable(
      * wave is offered.
      */
     waveSize: integer('wave_size').notNull().default(1),
+    /** Plan 316 — sub-groups and repetitions wait for the previous one to settle instead of starting on a timer. */
+    sequential: integer('sequential', { mode: 'boolean' }).notNull().default(false),
     /**
      * The operator asked for a BATCH, in those words, rather than a batch
      * being the shape `run-script` happens to use.
@@ -1283,7 +1289,7 @@ export const schedules = sqliteTable(
 
     // Batch shape, passed straight through to plan 20's dispatcher (script targets only).
     concurrency: integer('concurrency').notNull().default(0),
-    order: text('order').notNull().default('as-listed'), // 'as-listed' | 'random'
+    order: text('order').notNull().default('as-listed'), // 'as-listed' | 'random' | 'number'
 
     // Policy (plan 21 §3.2–§3.6)
     onOverlap: text('on_overlap').notNull().default('skip'), // 'skip' | 'queue' | 'cancel-previous'
@@ -1343,6 +1349,8 @@ export const schedules = sqliteTable(
      * wave is offered.
      */
     waveSize: integer('wave_size').notNull().default(1),
+    /** Plan 316 — sub-groups and repetitions wait for the previous one to settle instead of starting on a timer. */
+    sequential: integer('sequential', { mode: 'boolean' }).notNull().default(false),
 
     lastFiredAt: integer('last_fired_at', { mode: 'timestamp' }),
     /** The batch this schedule OWNS (plan 211 §3.2 decision 4); its member jobs are one per target device. */

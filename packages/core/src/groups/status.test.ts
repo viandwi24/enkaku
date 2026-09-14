@@ -183,6 +183,30 @@ describe('recomputeBatchStatus — writes finishedAt exactly once and always bro
     expect(counts?.failedInfra).toBe(2)
   })
 
+  test('plan 316 — a member settling at a phase boundary never marks the batch finished when the pacer plans another phase', () => {
+    const db = setUp()
+    const jobStore = createJobStore(db)
+    const runs = createRunStore(db)
+    seedBatch(db, 'b1', 'running')
+    const only = seedJob(db, 'b1', 'success')
+    const deviceId = runs.getJob(only.jobId)?.deviceId ?? ''
+
+    // A pacer that, like a sequential batch at the end of a phase, adds the next repetition's run when the member settles.
+    const pacer = {
+      planFirst: () => {},
+      advance: () => {},
+      rearm: () => {},
+      stop: () => {},
+      onMemberSettled: () => {
+        runs.addRun(only.jobId, { trigger: 'batch', batchRepeat: 1 })
+      },
+    }
+    const result = recomputeBatchStatus({ db, jobStore, runs, broadcast: () => {}, pacer }, 'b1', deviceId)
+    const row = db.select().from(batches).where(eq(batches.id, 'b1')).get()
+    expect(result?.status).toBe('queued')
+    expect(row?.finishedAt).toBeNull()
+  })
+
   test('plan 21 §4.3 — a batch with one expired job (the rest terminal) reaches "failed", not stuck at "queued"', () => {
     const db = setUp()
     const jobStore = createJobStore(db)

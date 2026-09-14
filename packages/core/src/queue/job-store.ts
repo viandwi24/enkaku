@@ -320,6 +320,7 @@ export function createJobStore(db: Db): JobStore {
                         WHERE r3.script_name = r.script_name AND r3.status = 'running') < r.max_concurrent
                   )
                   AND (r.not_before IS NULL OR r.not_before <= strftime('%s','now'))
+                  AND r.held = 0
                 ORDER BY r.priority DESC, r.created_at ASC, j.batch_seq ASC
                 LIMIT 1
               )

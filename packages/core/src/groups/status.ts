@@ -93,6 +93,15 @@ export function recomputeBatchStatus(
     return payload
   }
 
+  // The pacer runs FIRST (plan 316): at a phase boundary it adds the next repetition's runs, and the status below must
+  // be derived from those. Computing it before meant a batch with repetitions left was marked finished, and the pacer
+  // then refused to plan on a finished batch.
+  if (settledDeviceId && deps.pacer) {
+    deps.pacer.onMemberSettled(batchId, settledDeviceId)
+    const refreshed = deps.runs.latestRuns(memberJobs.map((j) => j.id))
+    latestRuns.splice(0, latestRuns.length, ...memberJobs.map((j) => refreshed.get(j.id) ?? null))
+  }
+
   const counts = countJobs(latestRuns)
   const status = computeBatchStatus(counts)
 
@@ -103,8 +112,6 @@ export function recomputeBatchStatus(
   if (Object.keys(patch).length > 0) {
     deps.db.update(batches).set(patch).where(eq(batches.id, batchId)).run()
   }
-
-  if (settledDeviceId) deps.pacer?.onMemberSettled(batchId, settledDeviceId)
 
   const payload = { batchId, status: patch.status ?? (batch.status as BatchStatusValue), counts }
   deps.broadcast({ type: 'batch.status', payload })

@@ -10,6 +10,7 @@ import type { Scheduler } from '../queue/scheduler'
 import { EnkakuError } from '../util/errors'
 import { resolveGroup, resolveTarget, type ResolvedGroup } from './resolve'
 import type { BatchPacer } from './pacer'
+import { loadDeviceNumbers } from '../registry/device-number'
 
 const DEFAULT_FARM_JOB_SETTINGS: JobSettings = JobSettingsSchema.parse({})
 
@@ -46,12 +47,12 @@ export interface CreateBatchInput {
   params: unknown
   target: { groupId: string } | { deviceIds: string[] } | { labelIds: string[] }
   concurrency: number
-  order: 'as-listed' | 'random'
+  order: 'as-listed' | 'random' | 'number'
   priority?: number
   createdBy?: string | null
   runtimeOverride?: unknown
   expiresAt?: number | null
-  pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs?: [number, number]; waveSize?: number } | null
+  pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs?: [number, number]; waveSize?: number; sequential?: boolean } | null
   /** A schedule's own batch (plan 211 §3.2 decision 4) — stamped onto every member job so `GET /api/schedules/:id/jobs` finds them from their very first fire, not only from a later one. Null/omitted for an ordinary (non-schedule) batch. */
   scheduleId?: string | null
   /** The first run's own trigger (MVP 14 §1). Defaults to `'batch'` — the schedule dispatcher is the one caller that overrides it to `'schedule'`, so its first fire's run reads the same as every later one. */
@@ -90,6 +91,27 @@ function shuffle<T>(items: T[]): T[] {
     arr[j] = tmp
   }
   return arr
+}
+
+/**
+ * The members in the order a batch runs them (plan 20 §4.4; plan 316 adds `number`).
+ *
+ * `number` sorts by device number ascending — the `#` on the phone — so consecutive sub-groups hold an even mix of a
+ * `$device.number % n` split (27 consecutive numbers are 9 of each of three platforms). A device with no number keeps
+ * its resolution order after the numbered ones.
+ */
+function orderMembers<T extends { deviceId: string }>(db: Db, usable: T[], order: 'as-listed' | 'random' | 'number'): T[] {
+  if (order === 'random') return shuffle(usable)
+  if (order !== 'number') return usable
+  const ids = usable.map((u) => u.deviceId)
+  const stable = new Map(db.select({ id: devices.id, stableId: devices.stableId }).from(devices).where(inArray(devices.id, ids)).all().map((r) => [r.id, r.stableId]))
+  const numbers = loadDeviceNumbers(db)
+  const numberOf = (deviceId: string): number => {
+    const sid = stable.get(deviceId)
+    const n = sid ? numbers.get(sid) : undefined
+    return n ?? Number.POSITIVE_INFINITY
+  }
+  return usable.map((u, i) => ({ u, i })).sort((a, b) => numberOf(a.u.deviceId) - numberOf(b.u.deviceId) || a.i - b.i).map((x) => x.u)
 }
 
 /**
@@ -137,7 +159,7 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
     for (const t of resolved.usable) deps.assertDeviceAllowed(t.deviceId)
   }
 
-  const ordered = input.order === 'random' ? shuffle(resolved.usable) : resolved.usable
+  const ordered = orderMembers(db, resolved.usable, input.order)
   const batchId = crypto.randomUUID()
   const now = new Date()
   const priority = input.priority ?? 0
@@ -171,6 +193,7 @@ export function createBatch(deps: BatchDispatchDeps, input: CreateBatchInput): {
         deviceDelayMinMs: pacing?.deviceDelayMs?.[0] ?? 0,
         deviceDelayMaxMs: pacing?.deviceDelayMs?.[1] ?? 0,
         waveSize: pacing?.waveSize ?? 1,
+        sequential: pacing?.sequential ?? false,
         explicit: input.explicit ?? false,
         createdBy: input.createdBy ?? null,
         createdAt: now,
@@ -221,7 +244,7 @@ export interface CreateWorkflowBatchInput {
   params: unknown
   target: { groupId: string } | { deviceIds: string[] } | { labelIds: string[] }
   concurrency: number
-  order: 'as-listed' | 'random'
+  order: 'as-listed' | 'random' | 'number'
   priority?: number
   /**
    * The same block `CreateBatchInput` takes (plan 313 §4.4). A workflow
@@ -230,7 +253,7 @@ export interface CreateWorkflowBatchInput {
    * and the per-device delay draw need nothing here but the columns being
    * filled in.
    */
-  pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs?: [number, number]; waveSize?: number } | null
+  pacing?: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs?: [number, number]; waveSize?: number; sequential?: boolean } | null
   createdBy?: string | null
   /**
    * The three fields a SCHEDULE needs, and that `CreateBatchInput` has taken
@@ -298,7 +321,7 @@ export function createWorkflowBatch(
   // resolution order while its own row claimed otherwise. It matters more
   // than presentation now that `$run.index` exists: that index IS this order,
   // and a stable one means device #1 draws the same branch every single run.
-  const ordered = input.order === 'random' ? shuffle(resolved.usable) : resolved.usable
+  const ordered = orderMembers(db, resolved.usable, input.order)
 
   db.transaction(() => {
     db.insert(batches)
@@ -317,6 +340,7 @@ export function createWorkflowBatch(
         deviceDelayMinMs: pacing?.deviceDelayMs?.[0] ?? 0,
         deviceDelayMaxMs: pacing?.deviceDelayMs?.[1] ?? 0,
         waveSize: pacing?.waveSize ?? 1,
+        sequential: pacing?.sequential ?? false,
         createdBy: input.createdBy ?? null,
         createdAt: now,
         finishedAt: null,

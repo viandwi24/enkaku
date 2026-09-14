@@ -119,6 +119,8 @@ const ScheduleBody = z.object({
    * no-op.
    */
   waveSize: z.number().int().min(1).max(1000).default(1),
+  /** Plan 316 — sub-groups and repetitions wait for the previous one to finish. */
+  sequential: z.boolean().default(false),
   /** Plan 68 §3.2 — agent targets only. */
   threadMode: ScheduleThreadModeSchema.default('new'),
   /** Plan 68 §3.5 — agent targets only. */
@@ -360,6 +362,7 @@ function rowToScheduleInfo(
     deviceIntervalMs: row.deviceIntervalMs,
     deviceDelayMs: [row.deviceDelayMinMs, row.deviceDelayMaxMs] as [number, number],
     waveSize: row.waveSize,
+    sequential: row.sequential,
     threadMode: (agentTarget?.threadMode as ScheduleThreadMode | undefined) ?? 'new',
     threadId: agentTarget?.threadId ?? null,
     onApprovalRequired: (agentTarget?.onApprovalRequired as OnApprovalRequired | undefined) ?? 'deny',
@@ -569,6 +572,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
       intervalMaxMs: body.data.intervalMaxMs,
       deviceIntervalMs: body.data.deviceIntervalMs,
       waveSize: body.data.waveSize,
+      sequential: body.data.sequential,
       deviceDelayMinMs: body.data.deviceDelayMs[0],
       deviceDelayMaxMs: body.data.deviceDelayMs[1],
       lastFiredAt: null,
@@ -734,6 +738,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     if (body.data.intervalMaxMs !== undefined) patch.intervalMaxMs = body.data.intervalMaxMs
     if (body.data.deviceIntervalMs !== undefined) patch.deviceIntervalMs = body.data.deviceIntervalMs
     if (body.data.waveSize !== undefined) patch.waveSize = body.data.waveSize
+    if (body.data.sequential !== undefined) patch.sequential = body.data.sequential
     if (body.data.deviceDelayMs !== undefined) {
       patch.deviceDelayMinMs = body.data.deviceDelayMs[0]
       patch.deviceDelayMaxMs = body.data.deviceDelayMs[1]

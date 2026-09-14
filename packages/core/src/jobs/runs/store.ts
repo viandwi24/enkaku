@@ -43,6 +43,9 @@ export interface AddRunInput {
   expiresAt?: number | null
   notBefore?: number | null
   batchRepeat?: number | null
+  /** Plan 316 — the run's sub-group in a sequential batch, and whether it waits to be released. */
+  batchWave?: number | null
+  held?: boolean
   pacedDelayMs?: number | null
   maxConcurrent?: number | null
   /** Omitted carries the previous run's value forward (plan 211 §3.2 decision 12 mirrors `job-service.ts`'s old `resume()`). */
@@ -190,6 +193,8 @@ export function createRunStore(db: Db): RunStore {
           expiresAt: input.expiresAt ?? null,
           notBefore: input.notBefore ?? null,
           batchRepeat: input.batchRepeat ?? null,
+          batchWave: input.batchWave ?? null,
+          held: input.held ?? false,
           pacedDelayMs: input.pacedDelayMs ?? null,
           maxConcurrent: input.maxConcurrent ?? null,
           runtimeOverride: runtimeOverride as typeof jobRuns.$inferInsert.runtimeOverride,

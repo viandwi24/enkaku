@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { batches, devices, jobRuns, jobs } from '../db/schema'
+import { batches, deviceNumbers, devices, jobRuns, jobs } from '../db/schema'
 import { createRunStore } from '../jobs/runs/store'
 import { createAuditLogger } from '../auth/audit'
 import { createLogger } from '../util/logger'
@@ -155,5 +155,64 @@ describe('createWorkflowBatch — order (plan 313 §4.4)', () => {
     // does not shuffle — the exact bug `createWorkflowBatch`'s own comment
     // records having had once.
     expect(orders.size).toBeGreaterThan(1)
+  })
+})
+
+/**
+ * Plan 316 — the owner's warm-up model through the real pacer: sub-groups one after another, then the next phase,
+ * with members ordered by device number.
+ */
+describe('sequential sub-groups and phases (plan 316)', () => {
+  const runsOf = (db: Db, batchId: string) =>
+    db
+      .select({ deviceId: jobs.deviceId, batchSeq: jobs.batchSeq, repeat: jobRuns.batchRepeat, wave: jobRuns.batchWave, held: jobRuns.held, status: jobRuns.status, id: jobRuns.id })
+      .from(jobRuns)
+      .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+      .where(eq(jobs.batchId, batchId))
+      .all()
+
+  test('order "number" puts members in device-number order, unnumbered devices last', () => {
+    const { db, deps } = setUp(['d1', 'd2', 'd3'])
+    db.insert(deviceNumbers).values({ stableId: 'stable-d3', number: 1, assignedAt: NOW }).run()
+    db.insert(deviceNumbers).values({ stableId: 'stable-d1', number: 2, assignedAt: NOW }).run()
+    const { jobs: members } = createWorkflowBatch(deps, baseInput({ order: 'number' }))
+    expect(members.map((j) => j.deviceId)).toEqual(['d3', 'd1', 'd2'])
+  })
+
+  test('sub-groups are released in turn, and the next phase starts only after the whole phase has settled', () => {
+    const { db, deps, pacer } = setUp(['d1', 'd2', 'd3'])
+    const { batch } = createWorkflowBatch(
+      deps,
+      baseInput({ pacing: { count: 2, intervalMs: [0, 0], deviceIntervalMs: 0, waveSize: 1, sequential: true } }),
+    )
+    const settle = (deviceId: string, repeat: number) => {
+      const run = runsOf(db, batch.id).find((r) => r.deviceId === deviceId && r.repeat === repeat)
+      db.update(jobRuns).set({ status: 'success', finishedAt: NOW }).where(eq(jobRuns.id, run?.id ?? '')).run()
+      pacer.advance(batch.id)
+    }
+    const held = () => runsOf(db, batch.id).filter((r) => r.status === 'queued' && r.held).map((r) => `${r.deviceId}@${r.repeat}`).sort()
+
+    // Phase 1: only sub-group 1 may start.
+    expect(held()).toEqual(['d2@0', 'd3@0'])
+    pacer.advance(batch.id)
+    expect(held()).toEqual(['d2@0', 'd3@0'])
+
+    settle('d1', 0)
+    expect(held()).toEqual(['d3@0'])
+    settle('d2', 0)
+    expect(held()).toEqual([])
+    // No second phase while the last sub-group of the first is still going.
+    expect(runsOf(db, batch.id).filter((r) => r.repeat === 1)).toHaveLength(0)
+
+    settle('d3', 0)
+    const phaseTwo = runsOf(db, batch.id).filter((r) => r.repeat === 1)
+    expect(phaseTwo.map((r) => `${r.deviceId}:${r.wave}:${r.held ? 'held' : 'go'}`).sort()).toEqual(['d1:0:go', 'd2:1:held', 'd3:2:held'])
+
+    settle('d1', 1)
+    settle('d2', 1)
+    settle('d3', 1)
+    // Two phases asked for, two phases run — never a third.
+    expect(runsOf(db, batch.id).filter((r) => r.repeat === 2)).toHaveLength(0)
+    expect(held()).toEqual([])
   })
 })
