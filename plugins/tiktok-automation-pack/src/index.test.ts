@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ActionSpec, PluginSurface, Selector } from '@enkaku/protocol'
 import { PluginSurfaceSchema, validatePluginSurface } from '@enkaku/protocol'
 import type { z } from 'zod'
+import { toJSONSchema } from 'zod'
 import plugin, { autoScrollScript, matches, scoreContent } from './index'
 import { makeRng, pickWatchMs, pngSize } from './human'
 import { ACK_SELECTORS, DENY_SELECTORS, nextDialogAction } from './dialogs'
@@ -21,8 +22,30 @@ import notificationActivity from './notification-activity'
 describe('tiktok-automation-pack manifest', () => {
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('1.36.0')
+    expect(plugin.version).toBe('1.36.1')
     expect(plugin.version).toBe(pkg.version)
+  })
+})
+
+/**
+ * The farm refuses a plugin whose param descriptions run past 300 characters (`verify-child-entry.ts`,
+ * `E_PARAMS_SCHEMA_INVALID`). 1.36.0 shipped a 347-character `clearDrafts` description and failed to install;
+ * this is the check that would have caught it before a farm did.
+ */
+describe('every member param description fits the farm\'s 300-character limit', () => {
+  test('no param description is longer than 300 characters', () => {
+    const tooLong: string[] = []
+    const walk = (node: unknown, path: string): void => {
+      if (node === null || typeof node !== 'object') return
+      const o = node as Record<string, unknown>
+      if (typeof o.description === 'string' && o.description.length > 300) tooLong.push(`${path}: ${o.description.length}`)
+      for (const [k, v] of Object.entries(o)) if (v !== null && typeof v === 'object') walk(v, `${path}.${k}`)
+    }
+    for (const member of plugin.scripts) {
+      const params = (member as { params?: z.ZodType }).params
+      if (params) walk(toJSONSchema(params, { io: 'input', unrepresentable: 'any' }), member.id)
+    }
+    expect(tooLong).toEqual([])
   })
 })
 

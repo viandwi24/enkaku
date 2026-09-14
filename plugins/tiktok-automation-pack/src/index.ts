@@ -829,6 +829,10 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.36.1 — the clearDrafts description fits the farm's 300-character limit. 1.36.0's was 347 characters,
+  // and the farm refused to install the pack (E_PARAMS_SCHEMA_INVALID) — so nothing of 1.36.0 ever ran. A
+  // test now checks every member's param descriptions against that limit.
+  //
   // 1.36.0 — post-video clears the account's drafts before it posts, and stops failing on the resume-edit banner.
   //   The owner's decision (2026-09-15): the farm deletes ALL TikTok drafts on the account before posting.
   //   Deleting a draft is PERMANENT — TikTok keeps no bin for drafts — so the new `clearDrafts` param (default
@@ -1027,7 +1031,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.36.0',
+  version: '1.36.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

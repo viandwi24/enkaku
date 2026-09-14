@@ -1863,7 +1863,7 @@ const params = z.object({
     .boolean()
     .default(true)
     .describe(
-      'Before posting, delete ALL TikTok drafts on this account (Profil → Draf → Pilih semua → Hapus). Deleting drafts is permanent: they cannot be recovered. An unfinished post TikTok offers to resume is saved as a draft first and deleted with the rest. A dry run deletes nothing — it opens the Drafts folder and reports how many drafts it would delete.',
+      'Before posting, delete ALL TikTok drafts on this account (Profil → Draf → Pilih semua → Hapus). Permanent: deleted drafts cannot be recovered. An unfinished post TikTok offers to resume is deleted with them. A dry run deletes nothing and reports how many it would delete.',
     )
     .meta(ui({ title: 'Clear drafts first', group: 'Post' })),
 })
