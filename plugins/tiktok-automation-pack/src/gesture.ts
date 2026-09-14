@@ -110,7 +110,7 @@ const READY_TIMEOUT_MS = 25_000
  * still gets its run, and the caller's own `waitForAnchor` reports what it
  * actually found, which is a better error than one invented here.
  */
-export async function relaunch(ctx: ScriptContext<unknown>): Promise<void> {
+export async function relaunch(ctx: ScriptContext<unknown>): Promise<boolean> {
   await answerPermissionsBeforeLaunch(ctx)
   await ctx.device.app.forceStop(TIKTOK_PACKAGE)
   await ctx.device.app.launch(TIKTOK_PACKAGE)
@@ -121,13 +121,16 @@ export async function relaunch(ctx: ScriptContext<unknown>): Promise<void> {
     for (const sel of HOME_TAB) {
       try {
         await ctx.device.waitFor(sel, { timeout: 2_000 })
-        return
+        return true
       } catch {
         // Not this label, or not yet — try the other, then go round again.
       }
     }
   }
   ctx.log.warn(`the feed did not appear within ${READY_TIMEOUT_MS / 1000}s of launching — continuing, and the next anchor will say where the device is`)
+  // `false` (1.34.1) so a caller can save what the screen held instead: every member ignores it and
+  // carries on exactly as before, and `post-video` saves the tree and a screenshot.
+  return false
 }
 
 /**

@@ -69,6 +69,16 @@ describe('the add-phone-number sheet', () => {
     expect(closeNear(tree, found!.anchor)).toBeNull()
   })
 
+  test('a sheet kept in the tree off to the side is not on screen (1.34.1)', () => {
+    const tree = phoneSheet('id', 'desc')
+    const shift = (n: UiNode): void => {
+      n.bounds = { ...n.bounds, left: n.bounds.left - 1440, right: n.bounds.right - 1440 }
+      for (const c of n.children) shift(c)
+    }
+    shift(tree.children[0]!.children[2]!)
+    expect(findInterruption(tree)).toBeNull()
+  })
+
   test('no screen this pack walks is mistaken for it', () => {
     const dir = join(import.meta.dir, '__fixtures__')
     const names = readdirSync(dir).filter((f) => f.endsWith('.json'))

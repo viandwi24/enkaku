@@ -338,7 +338,21 @@ function selectorMatchesNode(node: UiNode, sel: Selector): boolean {
  */
 export function matchModals(root: UiNode, register: ModalEntry[] = TIKTOK_MODALS): ModalEntry[] {
   const nodes = flatten(root)
-  return register.filter((entry) => nodes.some((n) => matchesIdentity(n, entry.match)))
+  return register.filter((entry) => nodes.some((n) => matchesIdentity(n, entry.match) && (!entry.closeNearIdentity || drawnOnScreen(n, root))))
+}
+
+/**
+ * A node with a real size, inside the screen the root spans (1.34.1). Required of the identity of every
+ * `closeNearIdentity` entry: that answer taps whichever close sits NEAR the identifying text, so an
+ * identity kept in the tree off to the side — TikTok keeps pages mounted there — would aim at some
+ * other close that happens to be near where the sheet is not. The root's own width is used only when it
+ * has one; a root reported as 0,0,0,0 has been seen in this pack's fixtures.
+ */
+function drawnOnScreen(node: UiNode, root: UiNode): boolean {
+  const b = node.bounds
+  if (b.right <= b.left || b.bottom <= b.top || b.left < 0 || b.top < 0) return false
+  const width = root.bounds.right
+  return width <= 0 || b.left < width
 }
 
 /**
@@ -355,8 +369,8 @@ export function matchModals(root: UiNode, register: ModalEntry[] = TIKTOK_MODALS
  */
 function resolveActionTarget(nodes: UiNode[], entry: ModalEntry, policy: 'allow' | 'deny' | 'ack'): UiNode | null {
   if (entry.closeNearIdentity && policy === 'deny') {
-    const anchor = nodes.find((n) => matchesIdentity(n, entry.match))
     const root = nodes[0]
+    const anchor = root ? nodes.find((n) => matchesIdentity(n, entry.match) && drawnOnScreen(n, root)) : undefined
     if (anchor && root) return closeNear(root, anchor)
   }
   const sel = entry.actions[policy]

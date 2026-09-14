@@ -829,6 +829,24 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.34.1 — post-video leaves evidence, and closes a sheet over the feed before it reads or taps the feed. A
+  // production run on the SM-A065F/SM-A075F fleet (2026-09-14) failed "expected the camera screen but the dump reads
+  // unknown (cleared: tt.phone-prompt)" with an ordinary feed in its only screenshot, and no tree to read.
+  //   1. Every failure path saves the tree (`post-video-<label>` JSON) beside its screenshot, and so do a feed that
+  //      never appeared after launch (`feed-not-ready`), a Profil tab that could not be found (`profil-tab-missing`)
+  //      and a profile that did not open (`profile-not-open`).
+  //   2. Known modals are swept over the feed before the profile is read and before "+" is tapped. The "add phone
+  //      number" sheet covers the bottom nav, so the Profil tab was not found and the blind "+" tap landed on the
+  //      sheet; the camera's own sweep then closed it and left the feed, which the classifier calls "unknown". When
+  //      that sweep closes a sheet and the feed's nav is back on screen, "+" is now tapped once more, and a camera
+  //      failure after the phone sheet was closed says the account may need a phone number.
+  //   3. "+" is tapped where the tree draws it when an on-screen "Buat"/"Create" sits in the middle of the bottom nav
+  //      (labels unverified on hardware); otherwise the measured blind point, as before.
+  //   4. Readings are more tolerant: a tab matches its label followed by more ("Profil, 2 notifikasi"), or a text that
+  //      is exactly the label; a node one or two pixels past the frame edge is rounding, not a page off to the side.
+  //   5. `tt.phone-prompt` is identified and answered only from nodes drawn on screen, so a copy kept in the tree
+  //      off to the side can no longer have some other close tapped for it.
+  //
   // 1.34.0 — post-video reports to the Social Media Manager only what it saw. An audit of the post path found
   // six ways to say the wrong thing, fixed together (the Instagram pack's 0.4.x readings carried over):
   //   1. No false `posted` from an unloaded grid. The profile grid was read once, 1.5 s after the header, and an
@@ -956,7 +974,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.34.0',
+  version: '1.34.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

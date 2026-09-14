@@ -274,6 +274,34 @@ describe('sweepModals — the looping sweep over a fake ctx (plan 113 §4.2)', (
       expect(screenshots).toEqual(['modal-tt.security-check'])
     }
   })
+
+  /*
+    1.34.1: `tt.phone-prompt` taps whichever close sits NEAR its title, so it is identified only from a
+    title drawn on screen — a copy kept in the tree off to the side must never aim at some other close.
+  */
+  test('the add-phone sheet is closed with its own close when on screen, and left alone when only in the tree off to the side', async () => {
+    const sheet = (dx: number): UiNode =>
+      mkNode({
+        bounds: { left: dx, top: 800, right: dx + 720, bottom: 1640 },
+        children: [
+          mkNode({ desc: 'Tutup', clickable: true, bounds: { left: dx + 620, top: 830, right: dx + 690, bottom: 900 } }),
+          mkNode({ text: 'Tambah nomor telepon', bounds: { left: dx + 120, top: 920, right: dx + 600, bottom: 990 } }),
+        ],
+      })
+    // An on-screen close of something else, near enough to the sheet's title to be chosen for it.
+    const decoy = mkNode({ desc: 'Tutup', clickable: true, bounds: { left: 20, top: 700, right: 90, bottom: 770 } })
+    const screen = (dx: number): UiNode => mkNode({ bounds: { left: 0, top: 0, right: 720, bottom: 1640 }, children: [decoy, sheet(dx)] })
+    const empty = mkNode({ bounds: { left: 0, top: 0, right: 720, bottom: 1640 } })
+
+    const onScreen = fakeCtx([screen(0), empty])
+    expect((await sweepModals(onScreen.ctx, UPLOAD_MODAL_POLICIES)).cleared).toEqual(['tt.phone-prompt'])
+    expect(onScreen.taps).toEqual([{ point: { x: 655, y: 865 } }])
+
+    expect(matchModals(screen(-1440)).map((e) => e.id)).not.toContain('tt.phone-prompt')
+    const offScreen = fakeCtx([screen(-1440)])
+    expect((await sweepModals(offScreen.ctx, UPLOAD_MODAL_POLICIES)).cleared).toEqual([])
+    expect(offScreen.taps).toEqual([])
+  })
 })
 
 /** A checked-in dump with its caption field (the only EditText) holding `caption` — a copy, the fixture is untouched. */

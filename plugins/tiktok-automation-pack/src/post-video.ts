@@ -52,6 +52,24 @@ import { TIKTOK_PACKAGE, PROFIL_TAB, MENU_PROFIL } from './sheet'
 const ARTIFACT_PREFIX = 'post-video'
 
 /**
+ * Saves a screenshot AND the tree under one label, `post-video-<label>` (1.34.1) — the Instagram and
+ * YouTube packs' `capture`. A production run on the Samsung fleet (2026-09-14) failed "the dump reads
+ * unknown" with only a screenshot saved, and that screenshot showed an ordinary feed: the one thing
+ * that could say what the classifier actually read was never kept. Never throws — this runs on the way
+ * to an error, and a failed dump (the feed may not dump at all, E3) must not replace that error.
+ */
+async function capture(ctx: ScriptContext<unknown>, label: string, tree?: UiNode | null): Promise<void> {
+  const name = `${ARTIFACT_PREFIX}-${label}`
+  await ctx.artifact.screenshot(name).catch((err: unknown) => ctx.log.warn(`could not save the ${name} screenshot`, { error: String(err) }))
+  try {
+    const read = tree ?? (await ctx.device.dump())
+    await ctx.artifact.file(name, JSON.stringify(read, null, 2), { ext: 'json' })
+  } catch (err) {
+    ctx.log.warn(`could not save the ${name} tree`, { error: String(err) })
+  }
+}
+
+/**
  * The picker's sort-order label when newest-first (E11) — confirmed against the checked-in
  * `__fixtures__/screen-picker.json`: `tv_title` reads "Terbaru" on this pack's reference device and
  * locale (id-ID). If a future device or locale reads something else, the picker check below fails
@@ -297,8 +315,15 @@ function isPostButton(n: UiNode): boolean {
  */
 export function insideFrame(n: Pick<UiNode, 'bounds'>, frameWidth: number): boolean {
   const b = n.bounds
-  return b.left >= 0 && b.right <= frameWidth && b.right > b.left && b.bottom > b.top
+  return b.left >= -FRAME_SLACK_PX && b.right <= frameWidth + FRAME_SLACK_PX && b.right > b.left && b.bottom > b.top
 }
+
+/**
+ * How far past an edge a node may reach and still be on screen (1.34.1). A page kept off to the side is
+ * off by a whole screen width (x=-1398 in the Instagram case); a node flush with the edge that reports
+ * one pixel more than the device record's width is rounding, and must not hide a tab from a reading.
+ */
+const FRAME_SLACK_PX = 2
 
 /**
  * A caption compared the way a person reads it: runs of whitespace (and the zero-width characters an
@@ -448,7 +473,14 @@ async function enterScreen(
      * screen check is what makes the retry safe (it only fires while the OLD screen is still there,
      * so it cannot double-tap the new one).
      */
-    retapWhen?: Array<{ screen: ScreenId; tap: (tree: UiNode | null) => Promise<void> }>
+    retapWhen?: Array<{
+      screen: ScreenId
+      tap: (tree: UiNode | null) => Promise<void>
+      /** A further condition on the tree just read, and the modals cleared so far, for a retap that is only safe on some trees of that screen (1.34.1). */
+      when?: (tree: UiNode, cleared: readonly string[]) => boolean
+      /** At most this many retaps from this entry. Absent: one per round, as before. */
+      max?: number
+    }>
     /**
      * How many settle rounds to spend. Default five; the POST screen gets more, because it is the
      * slowest transition in the flow — TikTok processes the video before drawing it, and a run that
@@ -486,17 +518,23 @@ async function enterScreen(
   // now takes ~10s to fail instead of ~4.5s, which is the right trade: a slow transition reported as
   // a wrong screen is a false failure, and a false failure on a posting run is the expensive kind.
   const rounds = opts?.rounds ?? 5
+  const retaps = new Map<number, number>()
   for (let round = 0; round < rounds; round += 1) {
     if (round > 0) await sleep(2_000)
     const swept = await sweepModals(ctx, policies)
     for (const id of swept.cleared) if (!cleared.includes(id)) cleared.push(id)
-    tree = await ctx.device.dump()
-    screen = detectScreen(tree)
-    if (screen === expected) return { tree, cleared }
-    const stuck = opts?.retapWhen?.find((r) => r.screen === screen)
+    const read = await ctx.device.dump()
+    tree = read
+    screen = detectScreen(read)
+    if (screen === expected) return { tree: read, cleared }
+    const at = (opts?.retapWhen ?? []).findIndex(
+      (r, i) => r.screen === screen && (r.max === undefined || (retaps.get(i) ?? 0) < r.max) && (r.when === undefined || r.when(read, cleared)),
+    )
+    const stuck = at >= 0 ? opts?.retapWhen?.[at] : undefined
     if (stuck && round < rounds - 1) {
-      ctx.log.warn(`still on the "${screen}" screen — re-tapping, because a blind tap onto a video screen can be swallowed`, { round })
-      await stuck.tap(tree)
+      retaps.set(at, (retaps.get(at) ?? 0) + 1)
+      ctx.log.warn(`still on the "${screen}" screen — re-tapping, because the tap that should have left it did not take`, { round })
+      await stuck.tap(read)
     }
   }
 
@@ -519,7 +557,7 @@ async function enterScreen(
     return { tree: null, cleared }
   }
 
-  await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-unexpected-screen-${screen}`)
+  await capture(ctx, `unexpected-screen-${screen}`, tree)
 
   /*
     Before blaming the screen we were looking for, say whether the app could
@@ -543,8 +581,13 @@ async function enterScreen(
     )
   }
 
+  // The "add phone number" sheet closes back onto whatever it covered — the feed, which this classifier
+  // never names — so a run that closed it and then read "unknown" says so, rather than blaming the screen.
+  const phoneHint = cleared.includes('tt.phone-prompt')
+    ? ` — TikTok's "add phone number" sheet was on screen and was closed; if it returns every time "+" is tapped, this account may need a phone number before TikTok lets it post`
+    : ''
   throw Object.assign(
-    new Error(`expected the "${expected}" screen but the dump reads "${screen}" after ${rounds} settle rounds${cleared.length > 0 ? ` (cleared: ${cleared.join(', ')})` : ' (no modal matched)'}`),
+    new Error(`expected the "${expected}" screen but the dump reads "${screen}" after ${rounds} settle rounds${cleared.length > 0 ? ` (cleared: ${cleared.join(', ')})` : ' (no modal matched)'}${phoneHint}`),
     { code: 'E_UNEXPECTED_SCREEN' },
   )
 }
@@ -746,9 +789,79 @@ function descOf(sel: Selector): string {
  * tree order, visible or not (1.34.0).
  */
 export function descNodeOnScreen(tree: UiNode, descs: string[], frameWidth: number): UiNode | null {
-  const wanted = descs.filter((d) => d !== '').map((d) => d.toLowerCase())
-  const hits = all(tree, (n) => wanted.includes(n.desc.trim().toLowerCase()) && insideFrame(n, frameWidth))
+  const wanted = descs.filter((d) => d.trim() !== '')
+  const hits = all(
+    tree,
+    (n) =>
+      insideFrame(n, frameWidth) &&
+      (wanted.some((d) => labelMatches(n.desc, d)) || wanted.some((d) => n.text.trim().toLowerCase() === d.trim().toLowerCase())),
+  )
   return hits.sort((a, b) => b.bounds.bottom - a.bounds.bottom)[0] ?? null
+}
+
+/**
+ * `value` reads as `label` (1.34.1): the same words, case-insensitive, or those words followed by
+ * something that is not a letter or digit — "Profil, 2 notifikasi", "Home tab". Only the moto g06's
+ * build has been dumped, where a tab's desc is exactly its label; another build may append its badge
+ * or position to the same desc, and an exact match then reads a tab that is on screen as missing.
+ * "Profil" still never matches "Profile": a letter straight after the label is a different word.
+ */
+export function labelMatches(value: string, label: string): boolean {
+  const v = value.trim().toLowerCase()
+  const l = label.trim().toLowerCase()
+  if (l === '' || !v.startsWith(l)) return false
+  return v.length === l.length || !/[\p{L}\p{N}]/u.test(v.charAt(l.length))
+}
+
+/**
+ * The create ("+") button's labels — UNVERIFIED (1.34.1): no dump of TikTok's feed or profile exists in
+ * this pack (E3), so these are the app's own word for Create in id-ID and en, offered because a wrong
+ * candidate never matches while a right one turns a blind tap into an aimed one.
+ */
+const CREATE_BUTTON_LABELS = ['Buat', 'Create']
+
+/**
+ * The on-screen "+" in the bottom nav, or null (1.34.1). Only a node in the lower fifth of the frame and
+ * near its middle counts, so a "Create" anywhere else on a page is never tapped for it; the caller falls
+ * back to the measured blind point.
+ */
+export function createButtonOnScreen(tree: UiNode, frame: { width: number; height: number }): UiNode | null {
+  const hit = descNodeOnScreen(tree, CREATE_BUTTON_LABELS, frame.width)
+  if (!hit) return null
+  const c = centreOf(hit)
+  return c.y >= frame.height * 0.8 && Math.abs(c.x - frame.width / 2) <= frame.width * 0.15 ? hit : null
+}
+
+/** The feed's (or profile's) own bottom nav is on screen: its Home tab AND its Profil tab (1.34.1). */
+export function feedNavOnScreen(tree: UiNode, frameWidth: number): boolean {
+  return descNodeOnScreen(tree, HOME_TAB_DESCS, frameWidth) !== null && descNodeOnScreen(tree, [descOf(PROFIL_TAB), 'Profile'], frameWidth) !== null
+}
+
+/**
+ * Closes a known modal over the feed BEFORE the feed is read or tapped (1.34.1).
+ *
+ * The production SM-A065F run (2026-09-14): the "add phone number" sheet was over the feed from launch.
+ * It covers the bottom nav, so the Profil tab was "not on screen" and the blind "+" tap landed on the
+ * sheet; the first sweep that met the sheet was the camera screen's, which closed it and left the feed —
+ * "the dump reads unknown" five rounds running. Sweeping here is the register's own answer, earlier.
+ *
+ * A security check or an unhandled modal still stops the run by its own code, as it would have one
+ * screen later. A dump that fails over an autoplaying feed (E3) is not a reason to stop: the run
+ * continues and the next screen's own sweep looks again.
+ */
+async function clearOverFeed(ctx: ScriptContext<unknown>, before: string): Promise<void> {
+  try {
+    const swept = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
+    recordCleared(swept.cleared)
+    if (swept.cleared.length > 0) {
+      ctx.log.info(`cleared a modal over the feed before ${before}`, { cleared: swept.cleared.join(', ') })
+      await sleep(1_000)
+    }
+  } catch (err) {
+    const code = (err as { code?: string }).code
+    if (code === 'E_SECURITY_CHECK' || code === 'E_MODAL_UNHANDLED' || code === 'E_MODAL_STUCK') throw err
+    ctx.log.warn(`could not sweep the feed for modals before ${before} — continuing`, { error: String(err) })
+  }
 }
 
 async function waitForOnScreen(ctx: ScriptContext<unknown>, frameWidth: number, descs: string[], timeoutMs: number): Promise<UiNode | null> {
@@ -790,10 +903,16 @@ async function readOwnGrid(ctx: ScriptContext<unknown>, frameWidth: number, opts
       }
     }
     const profilNode = await waitForOnScreen(ctx, frameWidth, [descOf(PROFIL_TAB), 'Profile'], 10_000)
-    if (!profilNode) throw new Error('the Profil tab is not on screen')
+    if (!profilNode) {
+      await capture(ctx, 'profil-tab-missing')
+      throw new Error('the Profil tab is not on screen')
+    }
     await ctx.device.tap({ point: centreOf(profilNode) })
     const menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 10_000)
-    if (!menuNode) throw new Error('the own profile did not open (no on-screen "Menu profil")')
+    if (!menuNode) {
+      await capture(ctx, 'profile-not-open')
+      throw new Error('the own profile did not open (no on-screen "Menu profil")')
+    }
     // Swept AFTER arriving: `tt.contacts` is raised BY the profile screen (observed 2026-08-18).
     try {
       await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
@@ -884,7 +1003,7 @@ async function confirmPosted(
   for (let round = 0; round < attempts; round++) {
     // Checked before the sweep, so the security check is reported by name and screenshotted here.
     if (await securityCheckShowing(ctx)) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-security-check`)
+      await capture(ctx, 'security-check')
       return { confirmed: false, detail: SECURITY_CHECK_DETAIL, securityCheck: true }
     }
     try {
@@ -914,7 +1033,7 @@ async function confirmPosted(
     if (round < attempts - 1) await sleep(intervalMs)
   }
 
-  await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-unverified`)
+  await capture(ctx, 'unverified')
   const waited = Math.round((Date.now() - startedAt) / 1000)
   const saw =
     lastSeen.kind === 'uploading'
@@ -953,14 +1072,14 @@ async function readPostScreen(ctx: ScriptContext<unknown>, step: string): Promis
     const screen = detectScreen(tree)
     if (screen === 'post') return tree
     if (screen !== 'unknown') {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-left-post-screen`)
+      await capture(ctx, 'left-post-screen', tree)
       throw Object.assign(new Error(`${step} left the post screen (TikTok is now on "${screen}") — nothing was posted`), { code: 'E_LEFT_POST_SCREEN' })
     }
     ctx.log.warn(`after ${step} the screen reads "unknown" — sweeping modals and reading again`, { round })
     const swept = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
     recordCleared(swept.cleared)
   }
-  await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-post-screen-unreadable`)
+  await capture(ctx, 'post-screen-unreadable')
   throw Object.assign(
     new Error(`after ${step} the post screen could not be read three times running (no caption field in the tree) — Post was not tapped, so nothing was posted. See the post-screen-unreadable screenshot.`),
     { code: 'E_POST_SCREEN_UNREADABLE' },
@@ -1004,7 +1123,7 @@ async function enterCaption(ctx: ScriptContext<unknown>, frame: { width: number;
     if (now && captionLanded(now, caption)) return captionTextToClear(now)
     const holds = now ? captionTextToClear(now) : '(no caption field on screen)'
     if (round === 2) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-caption-mismatch`)
+      await capture(ctx, 'caption-mismatch', tree)
       throw Object.assign(
         new Error(
           `the caption field holds "${holds.slice(0, 120)}" but the caption to post is "${caption.slice(0, 120)}", after typing it twice (via ${via}) — Post was not tapped, so nothing was posted. A character the typing path cannot carry (an emoji, an accent) or an app suggestion that replaced a word is the usual cause; check the caption, then re-run.`,
@@ -1049,7 +1168,7 @@ async function postButtonClear(ctx: ScriptContext<unknown>, frame: { width: numb
     }
     const field = onScreenCaptionField(tree, frame.width)
     if (!field || !captionLanded(field, caption)) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-caption-mismatch`)
+      await capture(ctx, 'caption-mismatch', tree)
       throw Object.assign(
         new Error(`putting the keyboard away changed the caption field (it now holds "${(field ? captionTextToClear(field) : '(no caption field on screen)').slice(0, 120)}") — Post was not tapped, so nothing was posted`),
         { code: 'E_CAPTION_MISMATCH' },
@@ -1057,7 +1176,7 @@ async function postButtonClear(ctx: ScriptContext<unknown>, frame: { width: numb
     }
     post = postButtonOnScreen(tree, frame.width)
     if (post && postCoveredByKeyboard(tree, post, frame)) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-keyboard-over-post`)
+      await capture(ctx, 'keyboard-over-post', tree)
       throw Object.assign(
         new Error('the keyboard would not close and still covers the Post button (tried a tap above it, then BACK) — Post was not tapped, so nothing was posted'),
         { code: 'E_KEYBOARD_OVER_POST' },
@@ -1065,7 +1184,7 @@ async function postButtonClear(ctx: ScriptContext<unknown>, frame: { width: numb
     }
   }
   if (!post) {
-    await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-missing-post-button`)
+    await capture(ctx, 'missing-post-button', tree)
     throw Object.assign(new Error(`the post screen's Post button is not on screen — Post was not tapped, so nothing was posted`), { code: 'E_ANCHOR_NOT_FOUND' })
   }
   return post
@@ -1393,7 +1512,9 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       autoplaying video churns the tree. The bottom nav `relaunch` waits on is
       the stable chrome around it.
     */
-    await relaunch(ctx)
+    // A feed that never showed its nav is saved as it stood (1.34.1): the next anchor's failure is
+    // usually minutes and several screens away, and by then what covered the feed is gone.
+    if (!(await relaunch(ctx))) await capture(ctx, 'feed-not-ready')
   },
 
   async run(ctx) {
@@ -1468,6 +1589,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     // The baseline `judgeGrid` compares against after Post — read now, before anything is posted.
     // The profile carries the same bottom nav as the feed, so the "Buat" tap below lands the same
     // from either. A dry run posts nothing and has nothing to confirm, so it skips the detour.
+    await clearOverFeed(ctx, 'reading the profile')
     const gridBefore = ctx.params.dryRun ? null : await readOwnGrid(ctx, frame.width)
     if (!ctx.params.dryRun) {
       ctx.log.info('read the own-profile grid before posting', { cells: gridBefore === null ? 'unreadable' : String(gridBefore.length) })
@@ -1475,7 +1597,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
         ctx.log.warn('no baseline grid before posting (unreadable, or no videos) — a new post cannot be proved against it, so this run can at best report "unverified"')
       }
       if (await securityCheckShowing(ctx)) {
-        await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-security-check`)
+        await capture(ctx, 'security-check')
         throw Object.assign(
           new Error('TikTok is asking this account for a security check ("pemeriksaan keamanan"). Nothing was posted. Complete it on the phone, then re-run.'),
           { code: 'E_SECURITY_CHECK' },
@@ -1483,17 +1605,32 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       }
     }
 
-    await ctx.device.tap({ point: { x: Math.round(frame.width * 0.5), y: Math.round(frame.height * 0.922) } })
+    await clearOverFeed(ctx, 'tapping "+"')
+    // Aimed where the tree draws "+" when it can be read, blind at the measured nav position otherwise (1.34.1).
+    const tapCreate = async (tree: UiNode | null): Promise<void> => {
+      const node = tree ? createButtonOnScreen(tree, frame) : null
+      const point = node ? centreOf(node) : { x: Math.round(frame.width * 0.5), y: Math.round(frame.height * 0.922) }
+      ctx.log.info(node ? 'tapping "+" where the tree draws it' : 'tapping "+" blind, at its measured place in the bottom nav', point)
+      await ctx.device.tap({ point })
+    }
+    await tapCreate(await ctx.device.dump().catch(() => null))
     attempt.screens.push('feed')
     await sleep(700)
 
     // Screen 2: camera (§4.3 row 2). sys.camera/sys.microphone fire here, queued (E5) — sweepModals
     // (inside enterScreen) clears both before the dump this screen's own act reads.
-    const camera = await enterScreen(ctx, UPLOAD_MODAL_POLICIES, 'camera')
+    //
+    // One retap of "+" (1.34.1), for a sheet that took the first tap and was then closed by this
+    // screen's own sweep, leaving the feed. Only after a modal was cleared, only while the feed's own
+    // nav is on screen, and only once — so a camera still arriving can never take a second tap on its
+    // record button.
+    const camera = await enterScreen(ctx, UPLOAD_MODAL_POLICIES, 'camera', {
+      retapWhen: [{ screen: 'unknown', when: (tree, cleared) => cleared.length > 0 && feedNavOnScreen(tree, frame.width), max: 1, tap: tapCreate }],
+    })
     recordCleared(camera.cleared)
     const uploadButton = findNode(requireTree(camera, 'camera'), (n) => hasShortId(n, 'upload_hot_area'))
     if (!uploadButton) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-missing-upload-hot-area`)
+      await capture(ctx, 'missing-upload-hot-area', camera.tree)
       throw Object.assign(new Error(`the camera screen's "upload_hot_area" (gallery) button was not found in the dump`), { code: 'E_ANCHOR_NOT_FOUND' })
     }
     await ctx.device.tap({ point: centreOf(uploadButton) })
@@ -1509,7 +1646,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     const pickerTree = requireTree(picker, 'picker')
     const sortLabel = pickerSortLabel(pickerTree)
     if (!sortLabel || !labelIs(sortLabel, PICKER_SORT_NEWEST_FIRST_LABELS)) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-picker-sort-unexpected`)
+      await capture(ctx, 'picker-sort-unexpected', pickerTree)
       throw Object.assign(
         new Error(`the picker's sort order reads "${sortLabel ?? '(none)'}" — expected "newest-first" (newest first). Tapping the first cell is only safe when it is the newest video, so this run refuses to guess.`),
         { code: 'E_PICKER_SORT_UNEXPECTED' },
@@ -1517,11 +1654,11 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     }
     const firstCell = pickerCells(pickerTree)[0]
     if (!firstCell) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-picker-empty`)
+      await capture(ctx, 'picker-empty', pickerTree)
       throw Object.assign(new Error('the picker grid has no cells — the pushed video may not have appeared in the gallery yet'), { code: 'E_PICKER_EMPTY' })
     }
     if (!firstCell.durationText) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-picker-no-duration`)
+      await capture(ctx, 'picker-no-duration', pickerTree)
       throw Object.assign(new Error(`the picker's first cell has no readable duration — refusing to tap a cell this run cannot identify (§8: "a wrong video is posted")`), { code: 'E_PICKER_DURATION_UNREADABLE' })
     }
     ctx.log.warn(
@@ -1574,7 +1711,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     const postTree0 = requireTree(post, 'post')
     const field = onScreenCaptionField(postTree0, frame.width) ?? captionField(postTree0)
     if (!field) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-missing-caption-field`)
+      await capture(ctx, 'missing-caption-field', postTree0)
       throw Object.assign(new Error(`the post screen's caption field (the only EditText) was not found`), { code: 'E_ANCHOR_NOT_FOUND' })
     }
     const capped = capHashtags(resolved.caption, ctx.params.maxHashtags)
@@ -1638,7 +1775,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
         tapState = 'unreadable'
       }
       if (tapState === 'still-there') {
-        await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-post-tap-not-taken`)
+        await capture(ctx, 'post-tap-not-taken')
         throw Object.assign(
           new Error(
             `Post was tapped twice, but TikTok stayed on the post screen with the caption both times — the tap was not taken, so nothing was posted. See the post-tap-not-taken screenshot for what covered the button; re-running is safe.`,
@@ -1763,7 +1900,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
    */
   async finish(ctx) {
     if (ctx.error) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-failed`).catch(() => {})
+      await capture(ctx, 'failed')
 
       if (attempt.queueClaim) {
         try {

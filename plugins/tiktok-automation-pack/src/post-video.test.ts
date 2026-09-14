@@ -5,10 +5,14 @@ import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
 import {
   captionLanded,
   captionTextToClear,
+  createButtonOnScreen,
   descNodeOnScreen,
   endsInTagToken,
+  feedNavOnScreen,
   gridEmptyState,
+  insideFrame,
   judgeGrid,
+  labelMatches,
   keyboardDismissPoint,
   keyboardShowing,
   normaliseCaption,
@@ -168,6 +172,64 @@ describe('descNodeOnScreen — the Profil tab that is actually drawn', () => {
     const tree = node({ bounds: { left: 0, top: 0, right: W, bottom: 1640 }, children: [hidden, avatar, tab] })
     expect(descNodeOnScreen(tree, ['Profil'], W)).toBe(tab)
     expect(descNodeOnScreen(node({ bounds: { left: 0, top: 0, right: W, bottom: 1640 }, children: [hidden] }), ['Profil'], W)).toBeNull()
+  })
+})
+
+/*
+  1.34.1 — the production SM-A065F run read "the Profil tab is not on screen" over a feed whose screenshot
+  showed it. No tree was saved, so these readings are made tolerant where a wrong match cannot follow.
+*/
+describe('labelMatches and descNodeOnScreen — a tab whose label carries more (1.34.1)', () => {
+  const screen = (children: UiNode[]): UiNode => node({ bounds: { left: 0, top: 0, right: W, bottom: 1640 }, children })
+
+  test('the label alone, or followed by something that is not a letter; never a longer word', () => {
+    expect(labelMatches('Profil', 'Profil')).toBe(true)
+    expect(labelMatches(' profil ', 'Profil')).toBe(true)
+    expect(labelMatches('Profil, 2 notifikasi', 'Profil')).toBe(true)
+    expect(labelMatches('Profile', 'Profil')).toBe(false)
+    expect(labelMatches('Menu profil', 'Profil')).toBe(false)
+    expect(labelMatches('', 'Profil')).toBe(false)
+    expect(labelMatches('Profil', '')).toBe(false)
+  })
+
+  test('a badged desc, or a text that is exactly the label, reads as the tab; a caption that starts with it does not', () => {
+    const badged = node({ desc: 'Profil, 2 notifikasi', clickable: true, bounds: { left: 576, top: 1470, right: 720, bottom: 1556 } })
+    expect(descNodeOnScreen(screen([badged]), ['Profil'], W)).toBe(badged)
+    const label = node({ text: 'Profil', bounds: { left: 600, top: 1520, right: 700, bottom: 1550 } })
+    expect(descNodeOnScreen(screen([label]), ['Profil'], W)).toBe(label)
+    const caption = node({ text: 'Profil saya', bounds: { left: 20, top: 1300, right: 400, bottom: 1340 } })
+    expect(descNodeOnScreen(screen([caption]), ['Profil'], W)).toBeNull()
+  })
+})
+
+describe('insideFrame — rounding at the edge is not a page off to the side (1.34.1)', () => {
+  test('a pixel past the edge still counts; a page a screen away does not', () => {
+    expect(insideFrame({ bounds: { left: 576, top: 1470, right: 721, bottom: 1556 } }, W)).toBe(true)
+    expect(insideFrame({ bounds: { left: -1440, top: 1470, right: -1296, bottom: 1556 } }, W)).toBe(false)
+    expect(insideFrame({ bounds: { left: 700, top: 1470, right: 1440, bottom: 1556 } }, W)).toBe(false)
+    expect(insideFrame({ bounds: { left: 10, top: 10, right: 10, bottom: 50 } }, W)).toBe(false)
+  })
+})
+
+describe('createButtonOnScreen and feedNavOnScreen (1.34.1)', () => {
+  const FRAME_1600 = { width: 720, height: 1600 }
+  const screen = (children: UiNode[]): UiNode => node({ bounds: { left: 0, top: 0, right: W, bottom: 1600 }, children })
+  const tab = (left: number, desc: string): UiNode => node({ desc, clickable: true, bounds: { left, top: 1420, right: left + 144, bottom: 1506 } })
+
+  test('"+" is the create node in the middle of the bottom nav, and only there', () => {
+    const plus = tab(288, 'Buat')
+    expect(createButtonOnScreen(screen([plus]), FRAME_1600)).toBe(plus)
+    expect(createButtonOnScreen(screen([tab(288, 'Create')]), FRAME_1600)).not.toBeNull()
+    expect(createButtonOnScreen(screen([node({ desc: 'Create', clickable: true, bounds: { left: 20, top: 200, right: 200, bottom: 260 } })]), FRAME_1600)).toBeNull()
+    expect(createButtonOnScreen(screen([tab(576, 'Buat')]), FRAME_1600)).toBeNull()
+    expect(createButtonOnScreen(screen([]), FRAME_1600)).toBeNull()
+  })
+
+  test('the nav is on screen only with both its Home and Profil tabs', () => {
+    expect(feedNavOnScreen(screen([tab(0, 'Beranda'), tab(576, 'Profil')]), W)).toBe(true)
+    expect(feedNavOnScreen(screen([tab(0, 'Home'), tab(576, 'Profile')]), W)).toBe(true)
+    expect(feedNavOnScreen(screen([tab(0, 'Beranda')]), W)).toBe(false)
+    expect(feedNavOnScreen(screen([tab(-1440, 'Beranda'), tab(576, 'Profil')]), W)).toBe(false)
   })
 })
 

@@ -47,8 +47,13 @@ function words(node: UiNode): string[] {
   return [node.text.trim(), node.desc.trim()].filter((w) => w !== '')
 }
 
+/**
+ * Drawn on screen: a real size, and not placed left of or above it (1.34.1). TikTok keeps pages mounted
+ * off to the side, and a sheet there is not on screen — nor is a close there one a tap can reach.
+ */
 function visible(node: UiNode): boolean {
-  return node.bounds.right > node.bounds.left && node.bounds.bottom > node.bounds.top
+  const b = node.bounds
+  return b.right > b.left && b.bottom > b.top && b.left >= 0 && b.top >= 0
 }
 
 /** The first interruption on screen, with the node that identified it. */
