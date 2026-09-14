@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ScrcpySession } from '@enkaku/scrcpy'
 import type { Transport } from '@enkaku/protocol'
 import { androidMetaState } from '@enkaku/protocol'
-import { AdbInput } from './adb-input'
+import { AdbInput, TEXT_CHUNK, chunkText } from './adb-input'
 import { MIN_TAP_HOLD_MS, sampleHoldMs, ScrcpySdkInput, ScrcpyUhidInput } from './scrcpy-input'
 import { withAdbKeyFallback } from './adb-key-fallback'
 import { buildGesturePath } from './gesture'
@@ -83,6 +83,28 @@ describe('typeText — per-character delivery with a delay in the configured ran
     // 3 characters at up to 10ms each (rng pinned to the high end) — a loose
     // bound, just enough to prove the delays actually ran rather than being a no-op.
     expect(elapsed).toBeGreaterThanOrEqual(15)
+  })
+
+  test('AdbInput.text sends long text in pieces of TEXT_CHUNK characters, in order, and refuses bad text before sending any', async () => {
+    const cmds: string[] = []
+    const transport = { exec: async (cmd: string) => { cmds.push(cmd); return '' }, execOut: async () => new Uint8Array() } as unknown as Transport
+    const input = new AdbInput(transport)
+    const title = 'Pernah kena SL dulu, baru habis itu harga jalan sesuai analisa lu? Bisa jadi bukan arah market yang'
+    await input.text(title)
+    const pieces = cmds.map((c) => c.slice('input text \''.length, -1).replaceAll('%s', ' '))
+    expect(pieces.length).toBeGreaterThan(1)
+    expect(pieces.join('')).toBe(title)
+    for (const piece of pieces) expect(piece.length).toBeLessThanOrEqual(TEXT_CHUNK)
+    // Cut after a space, never inside a word — a keyboard composing a half-typed word across two commands is what mangles text.
+    for (const piece of pieces.slice(0, -1)) expect(piece.endsWith(' ')).toBe(true)
+    expect(chunkText('#belajartradingindonesia2026 ok', 20)).toEqual(['#belajartradingindon', 'esia2026 ok'])
+    cmds.length = 0
+    await input.text('short')
+    expect(cmds).toEqual(["input text 'short'"])
+    cmds.length = 0
+    await expect(input.text('emoji 👀')).rejects.toThrow()
+    await expect(input.text('')).rejects.toThrow()
+    expect(cmds).toEqual([])
   })
 })
 

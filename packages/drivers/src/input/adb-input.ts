@@ -1,6 +1,31 @@
 import type { InputSink, Point, Transport } from '@enkaku/protocol'
 import { escapeInputText } from './escape'
 
+/** Characters per `input text` command in `AdbInput.text`. */
+export const TEXT_CHUNK = 20
+
+/**
+ * Split `s` into pieces of at most `max` characters, each ending just after a
+ * space where there is one to cut at — so no piece ends inside a word a
+ * keyboard might still be composing. A single word longer than `max` is cut
+ * where it has to be. Joining the pieces gives `s` back exactly.
+ */
+export function chunkText(s: string, max: number): string[] {
+  const chars = [...s]
+  const pieces: string[] = []
+  let start = 0
+  while (start < chars.length) {
+    let end = Math.min(start + max, chars.length)
+    if (end < chars.length) {
+      const lastSpace = chars.lastIndexOf(' ', end - 1)
+      if (lastSpace >= start) end = lastSpace + 1
+    }
+    pieces.push(chars.slice(start, end).join(''))
+    start = end
+  }
+  return pieces
+}
+
 /**
  * InputSink `adb-input` — mode 'sdk' (spec §9.1: inject via InputManager,
  * detectable as non-hardware; the crude fallback of spec §7.1). Slow
@@ -42,8 +67,19 @@ export class AdbInput implements InputSink {
     await this.transport.exec(`input keyevent ${code}`, { profile: 'input' })
   }
 
+  /**
+   * Sent in pieces of `TEXT_CHUNK` characters. `input text` injects one key
+   * event per character, and a 100-character YouTube title took longer than the
+   * whole `input` budget on the owner's moto g06 (2026-09-14: "exceeded 5000ms",
+   * title half typed). Each piece is a short command that fits the budget, and
+   * the text still arrives in order with nothing between the pieces.
+   */
   async text(s: string): Promise<void> {
-    await this.transport.exec(`input text ${escapeInputText(s)}`, { profile: 'input' })
+    // The whole text is validated first, so a refused text sends no piece at all.
+    escapeInputText(s)
+    for (const piece of chunkText(s, TEXT_CHUNK)) {
+      await this.transport.exec(`input text ${escapeInputText(piece)}`, { profile: 'input' })
+    }
   }
 
   /**
