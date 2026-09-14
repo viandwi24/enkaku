@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { normalizeHashtags } from './hashtags'
 import { PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, platformById, type PlatformId } from './platforms'
 
 /**
@@ -349,7 +350,13 @@ export const PostSchema = z
      * video itself. Storing a caption-less post would therefore produce a row
      * that looks fine, dispatches, and fails on every phone.
      */
-    caption: z.string().min(1).max(2_200),
+    // Empty is allowed since 0.19.0 — a video with no speech gets no auto caption. The router holds a row whose caption
+    // AND hashtags are empty (`NO_CAPTION_YET`), because the direct upload path still refuses an empty text.
+    caption: z.string().max(2_200),
+    /** The video's OWN hashtags, normalised `#tag`s (0.19.0). The session's fixed ones and its picked line are added when it posts. */
+    hashtags: z.array(z.string().min(2).max(100)).max(30).default([]),
+    /** Which of the session's hashtag lines this video was given, picked once when the session was made; null for none. */
+    hashtagLine: z.number().int().nonnegative().nullable().default(null),
     /** Which platforms this video is for. Empty is legal and simply never dispatches. */
     platforms: z.array(PlatformIdSchema),
     /**
@@ -770,6 +777,8 @@ export function newPost(input: { videoArtifactId: string; caption: string; platf
     maxDevices: null,
     assignedDeviceId: null,
     lastNote: null,
+    hashtags: [],
+    hashtagLine: null,
   }
 }
 
@@ -841,7 +850,12 @@ export interface PostEdit {
   assignedDeviceId?: string
   platforms?: PlatformId[]
   caption?: string
+  /** The video's own hashtags; normalised on the way in. */
+  hashtags?: string[]
 }
+
+/** The start of the note on a row held for having nothing to post. The session page matches on it, so it is exported. */
+export const NO_CAPTION_YET = 'No caption yet'
 
 export type PostEditOutcome = { ok: true; post: Post; changed: string[]; warnings: string[] } | { ok: false; code: 'E_PARAMS_INVALID'; message: string }
 
@@ -889,7 +903,7 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
         (row.assignedDeviceId === wanted || row.platforms.some((id) => (row.dispatch[id]?.attempts ?? []).some((a) => a.deviceId === wanted && a.state !== 'failed'))),
     )
     if (owner) {
-      const label = owner.caption.length > 40 ? `${owner.caption.slice(0, 40)}…` : owner.caption
+      const label = owner.caption === '' ? owner.videoArtifactId.slice(0, 8) : owner.caption.length > 40 ? `${owner.caption.slice(0, 40)}…` : owner.caption
       warnings.push(`That phone already has another video of this session ("${label}"). Both videos will post from it.`)
     }
     next = { ...next, assignedDeviceId: wanted }
@@ -907,9 +921,23 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
     }
   }
 
+  if (edit.hashtags !== undefined) {
+    const hashtags = normalizeHashtags(edit.hashtags).slice(0, 30)
+    if (hashtags.join(' ') !== post.hashtags.join(' ')) {
+      next = { ...next, hashtags }
+      changed.push('hashtags')
+    }
+  }
+
   if (edit.caption !== undefined) {
     const caption = edit.caption.trim()
-    if (caption.length === 0 || caption.length > 2_200) return { ok: false, code: 'E_PARAMS_INVALID', message: 'A caption must be between 1 and 2200 characters.' }
+    if (caption.length > 2_200) return { ok: false, code: 'E_PARAMS_INVALID', message: 'A caption can be at most 2200 characters.' }
+    // Allowed, with a warning (the owner's rule for edits: warn, never refuse). The session's own hashtags may still
+    // give the video something to post; if nothing does, the router holds the row (`NO_CAPTION_YET`) rather than send an
+    // empty text the direct upload path refuses.
+    if (caption.length === 0 && next.hashtags.length === 0) {
+      warnings.push('This video now has no caption and no hashtags of its own. It posts with the session\'s hashtags if the session has any; otherwise it waits until you write one.')
+    }
     if (caption !== post.caption) {
       next = { ...next, caption }
       changed.push('caption')

@@ -24,7 +24,8 @@ const params = z.object({
     .describe('The phone this video posts from. A phone another video of the session has is allowed, with a warning.')
     .meta(ui({ title: 'Phone' })),
   platforms: z.array(z.enum(PLATFORM_IDS)).min(1).optional().describe('Where this video posts.').meta(ui({ title: 'Platforms' })),
-  caption: z.string().min(1).max(2_200).optional().describe('The caption for the next attempt.').meta(ui({ title: 'Caption' })),
+  caption: z.string().max(2_200).optional().describe('The caption for the next attempt. Empty is allowed while the video keeps hashtags.').meta(ui({ title: 'Caption' })),
+  hashtags: z.array(z.string().max(100)).max(30).optional().describe('The video\'s own hashtags (the session\'s fixed ones and its picked line are added when it posts).').meta(ui({ title: 'Hashtags' })),
 })
 
 const result = z.object({
@@ -67,6 +68,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       ...(ctx.params.assignedDeviceId !== undefined ? { assignedDeviceId: ctx.params.assignedDeviceId } : {}),
       ...(ctx.params.platforms !== undefined ? { platforms: ctx.params.platforms } : {}),
       ...(ctx.params.caption !== undefined ? { caption: ctx.params.caption } : {}),
+      ...(ctx.params.hashtags !== undefined ? { hashtags: ctx.params.hashtags } : {}),
     }
     const outcome = applyPostEdit({ post, edit, sessionRows })
     if (!outcome.ok) throw Object.assign(new Error(outcome.message), { code: outcome.code })

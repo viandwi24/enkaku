@@ -21,6 +21,7 @@ describe('the stored shape', () => {
       assignment: 'one-per-phone' as const,
       pacing: PACING,
       videoArtifactIds: VIDEOS,
+      hashtags: { fixed: [], lines: [], randomLine: false },
       progress: null,
       summary: null,
     }

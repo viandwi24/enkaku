@@ -120,6 +120,13 @@ export const GroupSchema = z.object({
     gapSec: z.tuple([z.number(), z.number()]),
   }),
   videoArtifactIds: z.array(z.string()),
+  /**
+   * The session's hashtags: `fixed` go on every video; `lines` are candidate sets (`#trading #gold`), and with
+   * `randomLine` each video was given one of them at creation (its `hashtagLine`). Older rows carry none.
+   */
+  hashtags: z
+    .object({ fixed: z.array(z.string()).default([]), lines: z.array(z.string()).default([]), randomLine: z.boolean().default(false) })
+    .default({ fixed: [], lines: [], randomLine: false }),
   progress: GroupProgressSchema.nullable().default(null),
   summary: z.string().nullable().default(null),
 })
@@ -142,7 +149,12 @@ export const AttemptSchema = z.object({
 export const PostSchema = z.object({
   version: z.literal(1),
   videoArtifactId: z.string(),
-  caption: z.string(),
+  /** May be empty: a video with no speech has no caption until someone writes one (the router holds a row with neither caption nor hashtags). */
+  caption: z.string().max(2200),
+  /** The video's OWN hashtags, each `#tag` — AI-written or typed. Older rows carry none. */
+  hashtags: z.array(z.string()).default([]),
+  /** Which of the session's hashtag lines this video was given, when the session picks one at random. */
+  hashtagLine: z.number().nullable().default(null),
   platforms: z.array(z.string()),
   groupId: z.string().nullable().default(null),
   notBeforeAt: z.number().nullable().default(null),
@@ -307,6 +319,11 @@ export function pickHost(devices: readonly Device[]): Device | null {
  * is a screen an operator cannot tell from a hung one.
  */
 export function uploadVideo(file: File, onProgress: (fraction: number) => void): Promise<string> {
+  return uploadArtifact(file, onProgress)
+}
+
+/** The same multipart upload for any file — the auto-caption pipeline stores its speech WAV through it. */
+export function uploadArtifact(file: File, onProgress: (fraction: number) => void = () => {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const form = new FormData()
     form.append('file', file)
@@ -360,4 +377,63 @@ export function captionFromName(label: string | null): string {
   const base = (label ?? '').replace(/\.[^.]+$/, '')
   const words = base.replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim()
   return words === '' ? (label ?? 'video') : words
+}
+
+// ---------------------------------------------------------------------------
+// Hashtags — the service's own normalisation, repeated so a preview matches what is posted
+// ---------------------------------------------------------------------------
+
+/** The limit the upload flows enforce on the whole posted text. */
+export const POST_TEXT_MAX = 2200
+
+/** `trading`, `#Gold,` → `#trading`, `#Gold`: no spaces, one `#`, duplicates (ignoring case) dropped. */
+export function normaliseHashtags(tokens: readonly string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of tokens) {
+    const bare = raw.trim().replace(/^#+/, '').replace(/[\s,;#]+/g, '')
+    if (bare === '') continue
+    const key = bare.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(`#${bare}`)
+  }
+  return out
+}
+
+/** Hashtags typed as free text — spaces, commas or new lines between them, `#` optional. */
+export function parseHashtags(text: string): string[] {
+  return normaliseHashtags(text.split(/[\s,;]+/))
+}
+
+export function hashtagText(tags: readonly string[]): string {
+  return tags.join(' ')
+}
+
+/** The session line this video was given, as tags — empty when the session picks none or the index is stale. */
+export function lineTagsOf(group: Group | null, post: Post): string[] {
+  if (group === null || post.hashtagLine === null) return []
+  const line = group.hashtags.lines[post.hashtagLine]
+  return line === undefined ? [] : parseHashtags(line)
+}
+
+/** Every hashtag a video posts with: the session's fixed ones, its picked line, then its own — deduplicated. */
+export function composedHashtags(fixed: readonly string[], line: readonly string[], own: readonly string[]): string[] {
+  return normaliseHashtags([...fixed, ...line, ...own])
+}
+
+/**
+ * What is actually typed into the platform: the caption, a blank line, the hashtags. Past the limit, hashtags are
+ * dropped from the END — the caption is the operator's words and is never the thing cut.
+ */
+export function postedText(caption: string, tags: readonly string[]): string {
+  const body = caption.trim()
+  const kept = [...tags]
+  const join = (): string => (kept.length === 0 ? body : body === '' ? kept.join(' ') : `${body}\n\n${kept.join(' ')}`)
+  let text = join()
+  while (text.length > POST_TEXT_MAX && kept.length > 0) {
+    kept.pop()
+    text = join()
+  }
+  return text
 }

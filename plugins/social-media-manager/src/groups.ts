@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { HashtagRuleSchema, NO_HASHTAG_RULE } from './hashtags'
 import { PlatformIdSchema } from './platforms'
 
 /**
@@ -70,6 +71,8 @@ export const GroupSchema = z.object({
   pacing: PacingSchema,
   /** The videos this group was created from, in the order they were chosen. */
   videoArtifactIds: z.array(z.string().min(1)),
+  /** The session's hashtag rule (0.19.0) — fixed ones on every video, and lines one of which each video may be given. */
+  hashtags: HashtagRuleSchema.default(NO_HASHTAG_RULE),
   /**
    * How far the batch has got, as of the router's last look.
    *

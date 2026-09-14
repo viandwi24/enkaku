@@ -73,13 +73,12 @@ describe('the stored shape', () => {
     expect(postKeyFor('vid-1')).toBe('post:vid-1')
   })
 
-  test('a caption is REQUIRED — the post flow refuses an empty one, so a row without it could never send', () => {
-    // Not this plugin's preference: `tiktok/post-video` with `source: 'direct'`
-    // throws `E_PARAMS_INVALID` on an empty caption, because its captions-file
-    // fallback belongs to the queue and folder sources. A stored caption-less
-    // post would dispatch and fail on every phone it reached.
+  test('an EMPTY caption is stored (0.19.0) — a video without speech gets none — but it is never sent empty', () => {
+    // `tiktok/post-video` with `source: 'direct'` still refuses an empty text, so the ROUTER holds a row whose caption
+    // and hashtags are both empty (`NO_CAPTION_YET`) instead of sending it; storing it is what lets the operator see
+    // and fill the gap. A caption that is not a string at all is still refused.
     const fresh = newPost({ videoArtifactId: 'v', caption: 'c', platforms: [], now: NOW })
-    expect(PostSchema.safeParse({ ...fresh, caption: '' }).success).toBe(false)
+    expect(PostSchema.safeParse({ ...fresh, caption: '' }).success).toBe(true)
     expect(PostSchema.safeParse({ ...fresh, caption: null }).success).toBe(false)
   })
 })
@@ -624,9 +623,12 @@ describe('applyPostEdit', () => {
     expect(out.ok && out.post.dispatch.tiktok?.state).toBe('succeeded')
   })
 
-  test('a platform list that empties the video, or an empty caption, is refused', () => {
+  test('a platform list that empties the video, or a caption over the limit, is refused; an empty caption only warns (0.19.0)', () => {
     expect(applyPostEdit({ post: inSession(), edit: { platforms: [] }, sessionRows: [] }).ok).toBe(false)
-    expect(applyPostEdit({ post: inSession(), edit: { caption: '   ' }, sessionRows: [] }).ok).toBe(false)
+    expect(applyPostEdit({ post: inSession(), edit: { caption: 'x'.repeat(2_201) }, sessionRows: [] }).ok).toBe(false)
+    const emptied = applyPostEdit({ post: inSession(), edit: { caption: '   ' }, sessionRows: [] })
+    expect(emptied.ok).toBe(true)
+    expect(emptied.ok && emptied.warnings.some((w) => w.includes('no caption and no hashtags'))).toBe(true)
   })
 
   test('an ungrouped post has no phone of its own to change', () => {

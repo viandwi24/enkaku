@@ -1,4 +1,5 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
+import { HashtagRuleSchema, NO_HASHTAG_RULE, normalizeHashtags, pickHashtagLine } from './hashtags'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { ASSIGNMENTS, GroupSchema, groupKeyFor, maxDevicesFor, newGroupId, shuffled } from './groups'
@@ -54,8 +55,22 @@ const params = z.object({
     .string()
     .min(1)
     .max(2_200 * 60)
-    .describe('One caption per line. A single line is used for every video; otherwise exactly one line per video.')
+    .optional()
+    .describe('One caption per line. A single line is used for every video; otherwise exactly one line per video. Ignored for a video `videoCaptions` names.')
     .meta(ui({ title: 'Captions', group: 'Group' })),
+  videoCaptions: z
+    .record(z.string(), z.string().max(2_200))
+    .optional()
+    .describe('A caption per video id — what the page sends. An empty caption is allowed (a video with no speech); a row with no caption and no hashtags is held until one is written.')
+    .meta(ui({ title: 'Caption per video', group: 'Group' })),
+  videoHashtags: z
+    .record(z.string(), z.array(z.string().max(100)).max(30))
+    .optional()
+    .describe('Each video\'s own hashtags, by video id.')
+    .meta(ui({ title: 'Hashtags per video', group: 'Group' })),
+  hashtags: HashtagRuleSchema.optional()
+    .describe('The session\'s hashtags: fixed ones on every video, and lines one of which each video is given at random.')
+    .meta(ui({ title: 'Session hashtags', group: 'Group' })),
   platforms: z
     .array(z.enum(PLATFORM_IDS))
     .min(1)
@@ -128,22 +143,23 @@ const script: PluginMemberScript<typeof params, typeof result> = {
   timeout: 180_000,
 
   async run(ctx: ScriptContext<z.infer<typeof params>>) {
-    const { title, videoArtifactIds, captions, platforms, assignment, order, concurrency, gapMinSec, gapMaxSec, deviceIds } = ctx.params
+    const { title, videoArtifactIds, captions, videoCaptions, videoHashtags, platforms, assignment, order, concurrency, gapMinSec, gapMaxSec, deviceIds } = ctx.params
+    const hashtagRule = ctx.params.hashtags ?? NO_HASHTAG_RULE
 
     // Deduplicated BEFORE the caption count is checked, so "40 videos, 40 captions"
     // is not silently satisfied by a list holding one video twice.
     const videos = [...new Set(videoArtifactIds)]
-    const lines = captions
+    const lines = (captions ?? '')
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l !== '')
 
-    if (lines.length === 0) {
+    if (videoCaptions === undefined && lines.length === 0) {
       throw Object.assign(new Error('No caption was given. Every post needs one — the upload flow refuses an empty caption on the device.'), {
         code: 'E_PARAMS_INVALID',
       })
     }
-    if (lines.length !== 1 && lines.length !== videos.length) {
+    if (videoCaptions === undefined && lines.length !== 1 && lines.length !== videos.length) {
       throw Object.assign(
         new Error(
           `${videos.length} video${videos.length === 1 ? '' : 's'} but ${lines.length} caption lines. Give one line (used for every video) or exactly one line per video — reusing a few captions across many videos would put the same text on several accounts.`,
@@ -163,6 +179,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       assignment,
       pacing: { order, concurrency, gapSec: [Math.min(gapMinSec, gapMaxSec), Math.max(gapMinSec, gapMaxSec)] },
       videoArtifactIds: videos,
+      hashtags: hashtagRule,
     })
 
     const keys: string[] = []
@@ -183,7 +200,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     const pairing = assignment === 'one-per-phone' && deviceIds && deviceIds.length > 0 ? shuffled([...new Set(deviceIds)], Math.random) : []
 
     for (const [index, videoArtifactId] of videos.entries()) {
-      const caption = lines.length === 1 ? (lines[0] as string) : (lines[index] as string)
+      const caption = (videoCaptions?.[videoArtifactId] ?? (lines.length === 1 ? lines[0] : lines[index]) ?? '').trim()
       const key = postKeyFor(videoArtifactId)
 
       // Read through the schema, which THROWS on a shape this build does not
@@ -196,6 +213,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       next.notBeforeAt = null
       next.maxDevices = maxDevicesFor(assignment)
       next.assignedDeviceId = pairing[index] ?? null
+      next.hashtags = normalizeHashtags(videoHashtags?.[videoArtifactId] ?? [])
+      // Picked once, here, so every attempt and every retry of this video posts the same line.
+      next.hashtagLine = pickHashtagLine(hashtagRule)
 
       if (existing) {
         for (const id of next.platforms) {

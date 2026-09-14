@@ -8,6 +8,7 @@ import startGroup from './start-group'
 import retryGroup from './retry-group'
 import updatePost from './update-post'
 import { warmupRotation } from './workflows/warmup-rotation'
+import { NO_HASHTAG_RULE, composePostText, hashtagsFor } from './hashtags'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
 import retryFailed from './retry-failed'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
@@ -25,6 +26,7 @@ import {
   stateFor,
   unassignedNote,
   withSummary,
+  NO_CAPTION_YET,
   type Attempt,
   type Post,
   type RouterDevice,
@@ -64,6 +66,23 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.19.0 — auto captions, and hashtags kept apart from the caption.** The
+ *   owner (2026-09-14): 73 videos with meaningless file names need captions, and
+ *   hashtags are partly a session decision ("always #fyp", or one of these lines
+ *   at random) and partly the video's own. Each video now has a caption and its
+ *   own hashtags; a session has fixed hashtags and lines, one line picked per
+ *   video when the session is made (`hashtags.ts`). They are joined only when a
+ *   post is sent — caption, blank line, hashtags, trimmed from the end to 2200 —
+ *   by the router and by Retry failed alike. A caption may be empty (a video
+ *   with no speech); a row with nothing at all to post is held with a
+ *   "No caption yet" note instead of being sent. Auto caption (per video and in
+ *   bulk, on the New session page and in a session's table) extracts the audio
+ *   in the browser, transcribes it on the farm (`media.transcribe`, Whisper) and
+ *   has the farm's AI connector write the caption and hashtags (`ai.generate`);
+ *   the style (language, tone, niche, hashtag count, length) is saved in the
+ *   plugin. Needs a core with plan 317; without it the buttons say why they are
+ *   off. Old rows and sessions read as having no hashtags.
  *
  * - **0.18.0 — a tidier page, sessions as a table, captions edited in place.**
  *   The owner (2026-09-14): the tab strip sat under a doubled top margin, the
@@ -800,6 +819,31 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     }
 
     /*
+      What the phone types (0.19.0): the caption, then the session's fixed hashtags, the line this video was given and
+      its own hashtags — joined here, at the moment of sending, so the three stay separate everywhere else. A row with
+      nothing to post is held with a note rather than sent, because the direct upload path refuses an empty text on the
+      phone and the operator is expected to write one (auto caption leaves a video without speech empty on purpose).
+    */
+    const rule = post.groupId !== null ? (groups.get(post.groupId)?.hashtags ?? NO_HASHTAG_RULE) : NO_HASHTAG_RULE
+    const postText = composePostText(post.caption, hashtagsFor({ rule, line: post.hashtagLine, own: post.hashtags }))
+    if (postText === '') {
+      const note = `${NO_CAPTION_YET} — write a caption or hashtags for this video on its session's page`
+      const dispatch: Post['dispatch'] = { ...post.dispatch }
+      let changed = false
+      for (const id of post.platforms) {
+        const state = stateFor(post, id)
+        if (state.state !== 'pending' || state.note === note) continue
+        dispatch[id] = withSummary({ ...state, note })
+        changed = true
+      }
+      if (changed) {
+        const written = await ctx.storage.global.setIfVersion(entry.key, { ...post, dispatch }, entry.version)
+        if (written) entry.version += 1
+      }
+      continue
+    }
+
+    /*
       A group row waits for two things before it may send: its own turn
       (`notBeforeAt`, stamped by Start) and room under the group's "how many
       at once". Both are skips, not states — a row whose turn has not come is
@@ -838,7 +882,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     const attempts: Record<string, Attempt[]> = {}
     for (const dispatch of plan.dispatches) {
       try {
-        const params = { source: 'direct', videoArtifactId: post.videoArtifactId, caption: post.caption }
+        const params = { source: 'direct', videoArtifactId: post.videoArtifactId, caption: postText }
         const job = await ctx.farm.call('job.run', { scriptRef: dispatch.script, deviceId: dispatch.deviceId, params }, JobRunOutput)
         claimed.add(dispatch.deviceId)
         sent.push(dispatch.platform)
@@ -949,7 +993,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.18.0',
+  version: '0.19.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

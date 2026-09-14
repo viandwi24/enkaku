@@ -2,7 +2,24 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { platformById } from './platforms'
-import { PostSchema, failedDevices, nextRound, postKeyFor, rollUp, stateFor, withRetired, withSummary, type Attempt } from './posts'
+import { PostSchema, failedDevices, nextRound, postKeyFor, rollUp, stateFor, withRetired, withSummary, type Attempt, type Post } from './posts'
+import { GroupSchema, groupKeyFor, type Group } from './groups'
+import { NO_HASHTAG_RULE, composePostText, hashtagsFor } from './hashtags'
+
+/**
+ * The text a retry sends — the same the router sends (0.19.0): the caption and the session's fixed hashtags, the line
+ * this video was given, and its own. The session row is read once per call and shared through `cache`.
+ */
+async function postTextFor(ctx: ScriptContext<unknown>, post: Post, cache: Map<string, Group | null>): Promise<string> {
+  let group: Group | null = null
+  if (post.groupId !== null) {
+    if (!cache.has(post.groupId)) cache.set(post.groupId, await ctx.storage.global.get(groupKeyFor(post.groupId), GroupSchema).catch(() => null))
+    group = cache.get(post.groupId) ?? null
+  }
+  return composePostText(post.caption, hashtagsFor({ rule: group?.hashtags ?? NO_HASHTAG_RULE, line: post.hashtagLine, own: post.hashtags }))
+}
+
+const groupCache = new Map<string, Group | null>()
 
 /**
  * Re-run the phones whose upload failed — and only those.
@@ -115,6 +132,11 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         router refreshes it on its next pass either way.
       */
       const namedBefore = new Map(state.attempts.map((a) => [a.deviceId, a.deviceName]))
+      const postText = await postTextFor(ctx, post, groupCache)
+      if (postText === '') {
+        skipped.push(`${platformId}: this video has no caption or hashtags yet — write one before retrying`)
+        continue
+      }
       for (const deviceId of failed) {
         try {
           const job = await ctx.farm.call(
@@ -122,7 +144,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
             {
               scriptRef: platform.script,
               deviceId,
-              params: { source: 'direct', videoArtifactId: post.videoArtifactId, caption: post.caption },
+              params: { source: 'direct', videoArtifactId: post.videoArtifactId, caption: postText },
             },
             JobRunOutput,
           )

@@ -6,6 +6,7 @@ import {
   Card,
   CardContent,
   Checkbox,
+  ConfirmDialog,
   EmptyState,
   ErrorState,
   Input,
@@ -15,26 +16,44 @@ import {
   SelectTrigger,
   SelectValue,
   Spinner,
+  Switch,
   Textarea,
   cn,
   fileSize,
   useAction,
 } from '@enkaku/ui'
+import { autoCaption } from '../autocaption'
 import {
   PLATFORMS,
+  POST_TEXT_MAX,
   captionFromName,
+  composedHashtags,
   defaultSessionTitle,
   deviceName,
+  hashtagText,
   listDevices,
   listVideos,
+  parseHashtags,
   pickHost,
   platformLabel,
+  postedText,
   runMember,
   uploadVideo,
   type Artifact,
   type Device,
   type PlatformId,
 } from '../shared'
+import {
+  AutoStatus,
+  BulkProgress,
+  CaptionStylePanel,
+  ReadinessNote,
+  isWorking,
+  stateOf,
+  useAutoCaptionSetup,
+  useBulkRun,
+  type AutoState,
+} from './autocaption-ui'
 
 /**
  * The top half of the one screen: everything that happens BEFORE a session
@@ -206,6 +225,19 @@ type PhoneMode = 'labelled' | 'labels' | 'devices'
 const EMPTY_DEVICES: Device[] = []
 const EMPTY_VIDEOS: Artifact[] = []
 
+/**
+ * Where a video's caption came from, which decides what a bulk auto caption may replace: the file name and an
+ * earlier auto caption are fair game; words the operator TYPED are replaced only by "Auto caption all", confirmed.
+ */
+type CaptionSource = 'name' | 'typed' | 'auto' | 'no-speech'
+
+interface VideoDraft {
+  caption: string
+  /** As typed — normalised with `parseHashtags` when sent. */
+  hashtags: string
+  source: CaptionSource
+}
+
 export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null) => void }): React.ReactElement {
   // --- the farm's two lists -------------------------------------------------
   const videosLoad = useCallback(() => listVideos(), [])
@@ -244,6 +276,17 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
   const [ownCaptions, setOwnCaptions] = useState(false)
   const [captionText, setCaptionText] = useState('')
   const [title, setTitle] = useState(() => defaultSessionTitle())
+
+  // --- per-video captions and hashtags, and auto captions --------------------
+  /** Only videos someone (or the AI) has touched; the rest read their caption from the file name. */
+  const [drafts, setDrafts] = useState<ReadonlyMap<string, VideoDraft>>(() => new Map())
+  const [autoStates, setAutoStates] = useState<ReadonlyMap<string, AutoState>>(() => new Map())
+  const [confirmAll, setConfirmAll] = useState(false)
+  const [fixedText, setFixedText] = useState('')
+  const [linesText, setLinesText] = useState('')
+  const [randomLine, setRandomLine] = useState(false)
+  const setup = useAutoCaptionSetup()
+  const bulk = useBulkRun()
 
   const { run, isPending } = useAction()
   const submitting = isPending('create') || isPending('create-and-start')
@@ -369,22 +412,103 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
   const chosenIds = useMemo(() => chosenVideos.map((v) => v.id), [chosenVideos])
 
   /**
-   * The captions, in the SAME order as `chosenIds`.
+   * Each chosen video with its caption and hashtags, keyed by the video itself.
    *
-   * `add-group` pairs `lines[index]` with `videos[index]`, so these two arrays
-   * are one data structure split in half and must never be built from
-   * different orderings of the same set.
+   * Sent as `videoCaptions`/`videoHashtags` — records keyed by artifact id — so a caption can be empty (a video
+   * with no speech) or run over several lines without shifting every video after it, which the old
+   * one-line-per-video `captions` string could not survive. "Write my own" still sends that string.
    */
-  const autoCaptions = useMemo(() => chosenVideos.map((v) => captionFromName(v.label)), [chosenVideos])
-  const captionsToSend = ownCaptions ? captionText : autoCaptions.join('\n')
+  const draftOf = useCallback(
+    (video: Artifact): VideoDraft => drafts.get(video.id) ?? { caption: captionFromName(video.label), hashtags: '', source: 'name' },
+    [drafts],
+  )
+  const perVideo = useMemo(() => chosenVideos.map((video) => ({ video, draft: draftOf(video) })), [chosenVideos, draftOf])
   const captionLines = useMemo(
     () =>
-      captionsToSend
+      captionText
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => l !== ''),
-    [captionsToSend],
+    [captionText],
   )
+
+  const fixedTags = useMemo(() => parseHashtags(fixedText), [fixedText])
+  const hashtagLines = useMemo(
+    () =>
+      linesText
+        .split('\n')
+        .map((line) => hashtagText(parseHashtags(line)))
+        .filter((line) => line !== ''),
+    [linesText],
+  )
+  const linePicked = randomLine && hashtagLines.length > 0
+
+  /** Videos that would post nothing at all: no caption, no hashtag of their own, none from the session. */
+  const bareVideos = useMemo(
+    () =>
+      ownCaptions || fixedTags.length > 0 || linePicked
+        ? 0
+        : perVideo.filter(({ draft }) => draft.caption.trim() === '' && parseHashtags(draft.hashtags).length === 0).length,
+    [ownCaptions, fixedTags.length, linePicked, perVideo],
+  )
+  const tooLong = useMemo(() => (ownCaptions ? 0 : perVideo.filter(({ draft }) => draft.caption.length > POST_TEXT_MAX).length), [ownCaptions, perVideo])
+  const autoBusy = bulk.running || [...autoStates.values()].some(isWorking)
+
+  const setDraft = useCallback((id: string, draft: VideoDraft) => {
+    setDrafts((prev) => new Map(prev).set(id, draft))
+  }, [])
+  const setAuto = useCallback((id: string, state: AutoState | null) => {
+    setAutoStates((prev) => {
+      const next = new Map(prev)
+      if (state === null) next.delete(id)
+      else next.set(id, state)
+      return next
+    })
+  }, [])
+
+  /** One video through the pipeline. Its fields are locked while it runs, so a result never lands on top of typing. */
+  const autoOne = useCallback(
+    async (video: Artifact, signal: AbortSignal): Promise<void> => {
+      setAuto(video.id, { phase: 'extracting' })
+      const outcome = await autoCaption({
+        videoArtifactId: video.id,
+        name: video.label ?? video.id,
+        style: setup.style,
+        fixedHashtags: fixedTags,
+        signal,
+        onStage: (phase) => setAuto(video.id, { phase }),
+      })
+      if (outcome.status === 'done') setDraft(video.id, { caption: outcome.caption, hashtags: hashtagText(outcome.hashtags), source: 'auto' })
+      else if (outcome.status === 'no-speech') setDraft(video.id, { caption: '', hashtags: '', source: 'no-speech' })
+      setAuto(video.id, stateOf(outcome))
+    },
+    [setup.style, fixedTags, setAuto, setDraft],
+  )
+
+  const runBulk = useCallback(
+    async (targets: readonly Artifact[]): Promise<void> => {
+      setAutoStates((prev) => {
+        const next = new Map(prev)
+        for (const video of targets) next.set(video.id, { phase: 'queued' })
+        return next
+      })
+      await bulk.start(targets, (video, signal) => autoOne(video, signal))
+      // A Stop leaves the untouched ones queued; they go back to having no status.
+      setAutoStates((prev) => {
+        const next = new Map(prev)
+        for (const [id, state] of next) if (state.phase === 'queued') next.delete(id)
+        return next
+      })
+    },
+    [bulk.start, autoOne],
+  )
+
+  /** "Only empty captions": still the file name, or emptied — but not a video already found to have no speech. */
+  const emptyTargets = useMemo(
+    () => perVideo.filter(({ draft }) => draft.source === 'name' || (draft.source !== 'no-speech' && draft.caption.trim() === '')).map(({ video }) => video),
+    [perVideo],
+  )
+  const typedCount = useMemo(() => perVideo.filter(({ draft }) => draft.source === 'typed' && draft.caption.trim() !== '').length, [perVideo])
 
   const gapLo = Math.min(gapMin, gapMax)
   const gapHi = Math.max(gapMin, gapMax)
@@ -406,7 +530,12 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     if (phoneMode === 'devices' && chosenDevices.size === 0) {
       out.push('“Only these phones” is chosen and no phone is ticked — an empty choice would quietly mean every labelled phone, which is not what it says.')
     }
-    if (captionLines.length === 0) {
+    if (!ownCaptions) {
+      if (tooLong > 0) {
+        out.push(`${tooLong} caption${tooLong === 1 ? ' is' : 's are'} longer than ${POST_TEXT_MAX} characters, the most a platform accepts. Shorten ${tooLong === 1 ? 'it' : 'them'}.`)
+      }
+      if (autoBusy) out.push('Auto captions are still being written. Create the session once they finish, or press Stop.')
+    } else if (captionLines.length === 0) {
       out.push('There is no caption. Every post needs one — the upload flow refuses an empty caption on the device.')
     } else if (captionLines.length !== 1 && captionLines.length !== chosenIds.length) {
       out.push(
@@ -431,7 +560,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
       out.push('No phone is online. The farm runs this session’s bookkeeping as a job on a phone, so one has to be reachable — nothing is posted by that job.')
     }
     return out
-  }, [uploading, chosenIds.length, chosenPlatforms, title, phoneMode, chosenLabels.size, chosenDevices.size, captionLines.length, host, resolved.length])
+  }, [uploading, chosenIds.length, chosenPlatforms, title, phoneMode, chosenLabels.size, chosenDevices.size, ownCaptions, tooLong, autoBusy, captionLines.length, host, resolved.length])
 
   // --- what is worth saying without stopping anything ----------------------
   const warnings = useMemo(() => {
@@ -447,8 +576,17 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
         `${chosenIds.length} videos but ${resolved.length} phone${resolved.length === 1 ? '' : 's'}: each phone gets exactly one video, so ${extra} video${extra === 1 ? ' gets' : 's get'} no phone and will not be sent. Add phones or pick fewer videos.`,
       )
     }
+    /*
+      A warning, not a refusal: a video with no speech legitimately has no caption yet, and the rest of the batch
+      should not wait for it. The router holds such a row and sends nothing until it is given words.
+    */
+    if (bareVideos > 0) {
+      out.push(
+        `${bareVideos} video${bareVideos === 1 ? ' has' : 's have'} no caption and no hashtag. ${bareVideos === 1 ? 'It is' : 'They are'} held (“No caption yet — write one”) and never sent until given one — here, or later in the session’s table.`,
+      )
+    }
     return out
-  }, [concurrency, chosenPlatforms.length, resolved.length, assignment, chosenIds.length])
+  }, [concurrency, chosenPlatforms.length, resolved.length, assignment, chosenIds.length, bareVideos])
 
   const canSubmit = refusals.length === 0 && !busy
 
@@ -476,7 +614,13 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
               {
                 title: wanted,
                 videoArtifactIds: chosenIds,
-                captions: captionsToSend,
+                ...(ownCaptions
+                  ? { captions: captionText }
+                  : {
+                      videoCaptions: Object.fromEntries(perVideo.map(({ video, draft }) => [video.id, draft.caption.trim()])),
+                      videoHashtags: Object.fromEntries(perVideo.map(({ video, draft }) => [video.id, parseHashtags(draft.hashtags)])),
+                    }),
+                hashtags: { fixed: fixedTags, lines: hashtagLines, randomLine },
                 platforms: chosenPlatforms,
                 assignment,
                 order,
@@ -524,13 +668,36 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
             setUploads([])
             setCaptionText('')
             setOwnCaptions(false)
+            // The session's hashtags stay: they describe the account, not this folder, and the next batch usually wants them again.
+            setDrafts(new Map())
+            setAutoStates(new Map())
             setTitle(defaultSessionTitle())
             videos.reload()
           },
         },
       )
     },
-    [host, title, chosenIds, captionsToSend, chosenPlatforms, assignment, order, concurrency, gapLo, gapHi, deviceIds, run, onCreated, videos],
+    [
+      host,
+      title,
+      chosenIds,
+      ownCaptions,
+      captionText,
+      perVideo,
+      fixedTags,
+      hashtagLines,
+      randomLine,
+      chosenPlatforms,
+      assignment,
+      order,
+      concurrency,
+      gapLo,
+      gapHi,
+      deviceIds,
+      run,
+      onCreated,
+      videos,
+    ],
   )
 
   return (
@@ -914,28 +1081,94 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
                 {chosenIds.length === 1 ? '' : 's'}.
               </p>
             </>
-          ) : autoCaptions.length === 0 ? (
+          ) : perVideo.length === 0 ? (
             <p className="text-[11.5px] text-dim">Pick a video and its caption appears here.</p>
           ) : (
-            <div className="rounded-inner border border-border bg-panel-2 px-2 py-1.5">
-              <ul className="space-y-0.5 text-[11.5px] text-dim">
-                {autoCaptions.slice(0, 3).map((caption, index) => (
-                  // The list is derived from an ordered selection and has no
-                  // stable key of its own; the video's id is the key that
-                  // belongs to the row this caption came from.
-                  <li key={chosenIds[index] ?? index} className="wrap-anywhere">
-                    {caption}
-                  </li>
+            <>
+              <CaptionStylePanel setup={setup} />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!setup.readiness?.ready || bulk.running || busy}
+                  title="Transcribe every picked video and write its caption and hashtags"
+                  onClick={() => (typedCount > 0 ? setConfirmAll(true) : void runBulk(chosenVideos))}
+                >
+                  Auto caption all
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!setup.readiness?.ready || bulk.running || busy || emptyTargets.length === 0}
+                  title="Videos whose caption is empty or still the file name"
+                  onClick={() => void runBulk(emptyTargets)}
+                >
+                  Only empty captions ({emptyTargets.length})
+                </Button>
+                <BulkProgress bulk={bulk} noun="captioned" />
+              </div>
+              <ReadinessNote setup={setup} />
+              <ul className="max-h-[36rem] space-y-1.5 overflow-y-auto rounded-inner border border-border p-1.5">
+                {perVideo.map(({ video, draft }) => (
+                  <VideoCaptionRow
+                    key={video.id}
+                    video={video}
+                    draft={draft}
+                    state={autoStates.get(video.id)}
+                    fixedTags={fixedTags}
+                    linePicked={linePicked}
+                    disabled={busy}
+                    autoDisabled={!setup.readiness?.ready || bulk.running || busy}
+                    onChange={(next) => setDraft(video.id, next)}
+                    onAuto={() => void autoOne(video, bulk.signal())}
+                  />
                 ))}
               </ul>
-              {autoCaptions.length > 3 ? (
-                <p className="mt-1 text-[11px] text-faint">…and {autoCaptions.length - 3} more, one per file name.</p>
-              ) : null}
-            </div>
+              <ConfirmDialog
+                trigger={<span className="hidden" />}
+                open={confirmAll}
+                onOpenChange={setConfirmAll}
+                title="Replace the captions you typed?"
+                description={`${typedCount} of the ${perVideo.length} picked videos have a caption you typed yourself. Auto caption all rewrites every one of them, and the typed words are lost. To keep them, use “Only empty captions” instead.`}
+                confirmLabel="Replace them"
+                destructive={false}
+                onConfirm={() => {
+                  void runBulk(chosenVideos)
+                }}
+              />
+            </>
           )}
         </Step>
 
-        <Step n={7} title="Name this session" hint="It is how you will find it on the Sessions tab.">
+        <Step n={7} title="Hashtags" hint="Added after each caption, on a line of their own.">
+          <div className="grid gap-3 @md:grid-cols-2">
+            <Field label="Always add">
+              <Input value={fixedText} placeholder="#fyp #viral" onChange={(e) => setFixedText(e.target.value)} />
+              {fixedTags.length > 0 ? <p className="text-[11px] text-faint wrap-anywhere">{hashtagText(fixedTags)}</p> : null}
+            </Field>
+            <Field label="Hashtag lines — one set per line">
+              <Textarea
+                className="min-h-16 text-[12px]"
+                value={linesText}
+                placeholder={'#trading #gold\n#forex #xauusd'}
+                onChange={(e) => setLinesText(e.target.value)}
+              />
+            </Field>
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-[12px]">
+            <Switch checked={randomLine} onCheckedChange={setRandomLine} />
+            <span>Pick one line at random per video</span>
+          </label>
+          <p className="text-[11.5px] text-dim">
+            {hashtagLines.length === 0
+              ? 'No line written: each video posts with the hashtags above plus its own.'
+              : randomLine
+                ? `${hashtagLines.length} line${hashtagLines.length === 1 ? '' : 's'}: each video is given one of them at random when the session is created.`
+                : `${hashtagLines.length} line${hashtagLines.length === 1 ? '' : 's'} written — a video is given one only while “Pick one line at random per video” is on.`}
+          </p>
+        </Step>
+
+        <Step n={8} title="Name this session" hint="It is how you will find it on the Sessions tab.">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={defaultSessionTitle()} />
         </Step>
 
@@ -970,6 +1203,74 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+/** One picked video's caption and hashtags, with its own Auto caption button and status. */
+function VideoCaptionRow({
+  video,
+  draft,
+  state,
+  fixedTags,
+  linePicked,
+  disabled,
+  autoDisabled,
+  onChange,
+  onAuto,
+}: {
+  video: Artifact
+  draft: VideoDraft
+  state: AutoState | undefined
+  fixedTags: readonly string[]
+  linePicked: boolean
+  disabled: boolean
+  autoDisabled: boolean
+  onChange: (draft: VideoDraft) => void
+  onAuto: () => void
+}): React.ReactElement {
+  const name = video.label ?? video.id
+  const working = isWorking(state)
+  const tags = composedHashtags(fixedTags, [], parseHashtags(draft.hashtags))
+  const noSpeech = draft.source === 'no-speech' && draft.caption.trim() === ''
+  const length = postedText(draft.caption, tags).length
+  return (
+    <li className="space-y-1.5 rounded-small border border-border px-2 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 grow truncate text-[12px] font-medium" title={name}>
+          {name}
+        </span>
+        <AutoStatus state={state} noSpeech="No speech found — caption left empty" />
+        <Button variant="outline" size="sm" disabled={autoDisabled || working} onClick={onAuto}>
+          {working ? <Spinner className="size-3" /> : null}
+          Auto caption
+        </Button>
+      </div>
+      <Textarea
+        rows={2}
+        className={cn('min-h-12 text-[12px]', noSpeech && 'border-warn/60')}
+        value={draft.caption}
+        disabled={disabled || working}
+        placeholder={noSpeech ? 'No speech found — write this one' : 'Caption'}
+        aria-label={`Caption for ${name}`}
+        onChange={(e) => onChange({ ...draft, caption: e.target.value, source: 'typed' })}
+      />
+      {noSpeech ? <p className="text-[11px] text-warn">No speech found — write this one.</p> : null}
+      <Input
+        className="h-7 text-[12px]"
+        value={draft.hashtags}
+        disabled={disabled || working}
+        placeholder="#hashtags for this video"
+        aria-label={`Hashtags for ${name}`}
+        onChange={(e) => onChange({ ...draft, hashtags: e.target.value })}
+      />
+      <p className="text-[11px] text-faint wrap-anywhere">
+        {tags.length === 0 && !linePicked ? 'Posts with no hashtag' : `Posts with ${[hashtagText(tags), linePicked ? '+ one random line' : ''].filter((s) => s !== '').join(' ')}`}
+        {' · '}
+        <span className={cn('readout tabular-nums', draft.caption.length > POST_TEXT_MAX && 'text-danger')}>
+          {length} / {POST_TEXT_MAX}
+        </span>
+      </p>
+    </li>
   )
 }
 

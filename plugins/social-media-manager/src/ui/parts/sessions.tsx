@@ -11,6 +11,7 @@ import {
   EmptyState,
   ErrorState,
   FilmStripIcon,
+  Input,
   LoadingRows,
   PencilSimpleIcon,
   PlayIcon,
@@ -31,20 +32,28 @@ import {
   z,
   type ComboboxOption,
 } from '@enkaku/ui'
+import { autoCaption } from '../autocaption'
 import {
   CORE,
   PLATFORMS,
+  POST_TEXT_MAX,
+  composedHashtags,
   deviceName,
+  hashtagText,
+  lineTagsOf,
   listDevices,
   listGroups,
   listPosts,
   listVideos,
+  parseHashtags,
   pickHost,
+  postedText,
   runMember,
   type Device,
   type Group,
   type Post,
 } from '../shared'
+import { AutoStatus, BulkProgress, ReadinessNote, isWorking, stateOf, useAutoCaptionSetup, useBulkRun, type AutoState } from './autocaption-ui'
 
 /**
  * The watching half of the screen, in two places: the **Sessions** tab (every
@@ -140,6 +149,8 @@ interface PostChanges {
   assignedDeviceId?: string
   platforms?: string[]
   caption?: string
+  /** The video's OWN hashtags, replacing the ones it had. */
+  hashtags?: string[]
 }
 
 type SaveEdit = (post: Post, changes: PostChanges, name: string, onDone: (warnings: string[]) => void) => void
@@ -1048,7 +1059,75 @@ function SessionTable({
   const toggle = useCallback((id: string) => setOpen((prev) => flip(prev, id)), [])
   const toggleEdit = useCallback((id: string) => setEditing((prev) => flip(prev, id)), [])
 
-  const columns = 6 + platforms.length
+  // --- auto captions ---------------------------------------------------------
+  const setup = useAutoCaptionSetup()
+  const bulk = useBulkRun()
+  const [autoStates, setAutoStates] = useState<ReadonlyMap<string, AutoState>>(() => new Map())
+  const setAuto = useCallback((id: string, state: AutoState | null) => {
+    setAutoStates((prev) => {
+      const next = new Map(prev)
+      if (state === null) next.delete(id)
+      else next.set(id, state)
+      return next
+    })
+  }, [])
+
+  /**
+   * One row through the pipeline, saved through the same `smm/update-post` path a typed edit takes. No speech leaves
+   * the row exactly as it was and says so; hashtags are sent only when the AI gave some, so a video's typed hashtags
+   * are not wiped by a style that asks for none.
+   */
+  const runAuto = useCallback(
+    async (post: Post, signal: AbortSignal): Promise<void> => {
+      const id = post.videoArtifactId
+      const name = videos.get(id) ?? shortId(id)
+      setAuto(id, { phase: 'extracting' })
+      const outcome = await autoCaption({
+        videoArtifactId: id,
+        name,
+        style: setup.style,
+        fixedHashtags: group.hashtags.fixed,
+        signal,
+        onStage: (phase) => setAuto(id, { phase }),
+      })
+      if (outcome.status === 'done') {
+        onSave(post, { caption: outcome.caption, ...(outcome.hashtags.length > 0 ? { hashtags: outcome.hashtags } : {}) }, name, (list) => keepWarnings(id, list))
+      }
+      setAuto(id, stateOf(outcome))
+    },
+    [videos, setup.style, group.hashtags.fixed, setAuto, onSave, keepWarnings],
+  )
+
+  const emptyPosts = useMemo(() => posts.filter((p) => p.caption.trim() === '' && !isWorking(autoStates.get(p.videoArtifactId))), [posts, autoStates])
+
+  const runEmpty = useCallback(async (): Promise<void> => {
+    const targets = emptyPosts
+    setAutoStates((prev) => {
+      const next = new Map(prev)
+      for (const post of targets) next.set(post.videoArtifactId, { phase: 'queued' })
+      return next
+    })
+    await bulk.start(targets, runAuto)
+    setAutoStates((prev) => {
+      const next = new Map(prev)
+      for (const [id, state] of next) if (state.phase === 'queued') next.delete(id)
+      return next
+    })
+  }, [emptyPosts, bulk.start, runAuto])
+
+  /** Why Auto is off, as a sentence for the button's tooltip — the full reasons sit above the table. */
+  const autoBlocked =
+    setup.readiness === null
+      ? 'Checking whether this farm can transcribe and write captions…'
+      : !setup.readiness.ready
+        ? setup.readiness.blockers.join(' ')
+        : bulk.running
+          ? 'An auto caption run is going — wait for it or press Stop.'
+          : null
+  const signalOf = bulk.signal
+  const autoRow = useCallback((post: Post) => void runAuto(post, signalOf()), [runAuto, signalOf])
+
+  const columns = 7 + platforms.length
 
   return (
     <div className="space-y-2">
@@ -1071,7 +1150,22 @@ function SessionTable({
             />
           ))}
         </div>
+        <div className="grow" />
+        <BulkProgress bulk={bulk} noun="captioned" />
+        {bulk.running ? null : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={autoBlocked !== null || emptyPosts.length === 0}
+            title={autoBlocked ?? 'Transcribe each video whose caption is empty, then write its caption and hashtags'}
+            onClick={() => void runEmpty()}
+          >
+            Auto caption empty captions ({emptyPosts.length})
+          </Button>
+        )}
       </div>
+
+      {setup.readiness !== null && !setup.readiness.ready ? <ReadinessNote setup={setup} /> : null}
 
       {filter !== 'all' ? (
         <p className="text-[11.5px] text-dim">
@@ -1099,6 +1193,7 @@ function SessionTable({
                 <TableHead className="w-12">#</TableHead>
                 <TableHead>Video</TableHead>
                 <TableHead>Caption</TableHead>
+                <TableHead>Hashtags</TableHead>
                 <TableHead className="hidden w-28 @xl:table-cell">Turn</TableHead>
                 <TableHead className="w-64">Phone</TableHead>
                 {platforms.map((p) => (
@@ -1133,6 +1228,9 @@ function SessionTable({
                   saving={saving(post)}
                   warnings={warnings.get(post.videoArtifactId) ?? NO_WARNINGS}
                   onWarnings={keepWarnings}
+                  auto={autoStates.get(post.videoArtifactId)}
+                  autoBlocked={autoBlocked}
+                  onAuto={autoRow}
                 />
               ))}
             </TableBody>
@@ -1350,17 +1448,33 @@ function CaptionCell({
   saving,
   onSave,
   onWarnings,
+  hasTags,
+  auto,
+  autoBlocked,
+  onAuto,
 }: {
   post: Post
   name: string
   saving: boolean
   onSave: SaveEdit
   onWarnings: (videoArtifactId: string, list: readonly string[]) => void
+  /** Whether the video posts with any hashtag — its own or the session's. Only then may its caption be empty. */
+  hasTags: boolean
+  auto: AutoState | undefined
+  /** Why Auto cannot run right now, or `null` when it can. */
+  autoBlocked: string | null
+  onAuto: (post: Post) => void
 }): ReactElement {
   const [draft, setDraft] = useState<string | null>(null)
   const editing = draft !== null
   const problem =
-    draft === null ? null : draft.trim().length === 0 ? 'The caption cannot be empty.' : draft.length > CAPTION_MAX ? `The caption is ${draft.length} characters; the limit is ${CAPTION_MAX}.` : null
+    draft === null
+      ? null
+      : draft.trim().length === 0 && !hasTags
+        ? 'The caption cannot be empty while this video has no hashtags.'
+        : draft.length > CAPTION_MAX
+          ? `The caption is ${draft.length} characters; the limit is ${CAPTION_MAX}.`
+          : null
   const dirty = draft !== null && draft !== post.caption
   const save = (): void => {
     if (draft === null || !dirty || problem !== null || saving) return
@@ -1371,20 +1485,37 @@ function CaptionCell({
   }
 
   if (!editing) {
+    const working = isWorking(auto)
     return (
-      <button
-        type="button"
-        data-row-action
-        onClick={() => setDraft(post.caption)}
-        title={post.caption ? `${post.caption}\n\nClick to edit` : 'Click to write a caption'}
-        className="block w-full min-w-[10rem] max-w-[20rem] rounded-inner px-1 py-0.5 text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent"
-      >
-        {post.caption ? (
-          <span className="line-clamp-2 text-[11.5px] leading-snug text-text-2">{post.caption}</span>
-        ) : (
-          <span className="text-[11.5px] text-faint">No caption — click to write one</span>
-        )}
-      </button>
+      <div className="space-y-0.5">
+        <button
+          type="button"
+          data-row-action
+          onClick={() => setDraft(post.caption)}
+          title={post.caption ? `${post.caption}\n\nClick to edit` : 'Click to write a caption'}
+          className="block w-full min-w-[10rem] max-w-[20rem] rounded-inner px-1 py-0.5 text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          {post.caption ? (
+            <span className="line-clamp-2 text-[11.5px] leading-snug text-text-2">{post.caption}</span>
+          ) : (
+            <span className="text-[11.5px] text-faint">No caption — click to write one</span>
+          )}
+        </button>
+        <div data-row-action className="flex max-w-[20rem] flex-wrap items-center gap-x-2 gap-y-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={autoBlocked !== null || working || saving}
+            title={autoBlocked ?? 'Transcribe this video, then write its caption and hashtags'}
+            onClick={() => onAuto(post)}
+          >
+            {working ? <Spinner className="size-3" /> : null}
+            Auto
+          </Button>
+          <AutoStatus state={auto} noSpeech="No speech found — caption left as it was" />
+        </div>
+      </div>
     )
   }
 
@@ -1413,6 +1544,110 @@ function CaptionCell({
         </Button>
         <span className={cn('readout ml-auto text-[11px] tabular-nums', draft.length > CAPTION_MAX ? 'text-danger' : 'text-faint')}>
           {draft.length} / {CAPTION_MAX}
+        </span>
+      </div>
+      {problem !== null ? <p className="text-[11px] text-danger">{problem}</p> : null}
+    </div>
+  )
+}
+
+/**
+ * A video's hashtags, edited in place the way its caption is.
+ *
+ * Read-only it shows the video's OWN hashtags and, dimmed, what the session adds (its fixed hashtags and the line
+ * this video was given), so the cell reads as what will be posted. Editing changes only the video's own; the
+ * preview underneath is the whole posted text, cut the way the service cuts it.
+ */
+function HashtagsCell({
+  post,
+  group,
+  name,
+  saving,
+  onSave,
+  onWarnings,
+}: {
+  post: Post
+  group: Group
+  name: string
+  saving: boolean
+  onSave: SaveEdit
+  onWarnings: (videoArtifactId: string, list: readonly string[]) => void
+}): ReactElement {
+  const [draft, setDraft] = useState<string | null>(null)
+  const inherited = composedHashtags(group.hashtags.fixed, lineTagsOf(group, post), [])
+  const own = post.hashtags
+
+  if (draft === null) {
+    const ownKeys = new Set(own.map((t) => t.toLowerCase()))
+    const extra = inherited.filter((t) => !ownKeys.has(t.toLowerCase()))
+    return (
+      <button
+        type="button"
+        data-row-action
+        onClick={() => setDraft(hashtagText(own))}
+        title={[own.length > 0 ? `This video: ${hashtagText(own)}` : null, extra.length > 0 ? `From the session: ${hashtagText(extra)}` : null, 'Click to edit']
+          .filter((s) => s !== null)
+          .join('\n')}
+        className="block w-full min-w-[8rem] max-w-[16rem] rounded-inner px-1 py-0.5 text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        {own.length === 0 && extra.length === 0 ? (
+          <span className="text-[11.5px] text-faint">No hashtags — click to add</span>
+        ) : (
+          <span className="line-clamp-3 text-[11.5px] leading-snug wrap-anywhere">
+            {own.length > 0 ? <span className="text-text-2">{hashtagText(own)}</span> : null}
+            {own.length > 0 && extra.length > 0 ? ' ' : null}
+            {extra.length > 0 ? <span className="text-faint">{hashtagText(extra)}</span> : null}
+          </span>
+        )}
+      </button>
+    )
+  }
+
+  const parsed = parseHashtags(draft)
+  const all = composedHashtags(group.hashtags.fixed, lineTagsOf(group, post), parsed)
+  const posted = postedText(post.caption, all)
+  const dirty = hashtagText(parsed) !== hashtagText(own)
+  const problem = post.caption.trim() === '' && all.length === 0 ? 'This video has no caption, so it needs at least one hashtag.' : null
+  const save = (): void => {
+    if (!dirty || problem !== null || saving) return
+    onSave(post, { hashtags: parsed }, name, (list) => {
+      onWarnings(post.videoArtifactId, list)
+      setDraft(null)
+    })
+  }
+
+  return (
+    <div data-row-action className="w-[16rem] max-w-full space-y-1.5">
+      <Input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setDraft(null)
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            save()
+          }
+        }}
+        autoFocus
+        disabled={saving}
+        placeholder="#tag #another"
+        aria-label={`Hashtags for ${name}`}
+        className="h-7 text-[12px]"
+      />
+      {inherited.length > 0 ? <p className="text-[11px] text-faint wrap-anywhere">Also from the session: {hashtagText(inherited)}</p> : null}
+      <p className="line-clamp-4 text-[11px] whitespace-pre-line text-dim wrap-anywhere" title={posted}>
+        Posts as: {posted === '' ? '—' : posted}
+      </p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button type="button" size="sm" disabled={!dirty || problem !== null || saving} onClick={save}>
+          {saving ? <Spinner className="size-3.5" /> : null}
+          Save
+        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={() => setDraft(null)}>
+          Cancel
+        </Button>
+        <span className="readout ml-auto text-[11px] text-faint tabular-nums">
+          {posted.length} / {POST_TEXT_MAX}
         </span>
       </div>
       {problem !== null ? <p className="text-[11px] text-danger">{problem}</p> : null}
@@ -1453,6 +1688,9 @@ function VideoRows({
   saving,
   warnings,
   onWarnings,
+  auto,
+  autoBlocked,
+  onAuto,
 }: {
   post: Post
   turn: number
@@ -1474,9 +1712,13 @@ function VideoRows({
   saving: boolean
   warnings: readonly string[]
   onWarnings: (videoArtifactId: string, list: readonly string[]) => void
+  auto: AutoState | undefined
+  autoBlocked: string | null
+  onAuto: (post: Post) => void
 }): ReactElement {
   const name = videos.get(post.videoArtifactId) ?? shortId(post.videoArtifactId)
   const detailId = `smm-video-${post.videoArtifactId}`
+  const hasTags = composedHashtags(group.hashtags.fixed, lineTagsOf(group, post), post.hashtags).length > 0
 
   function onRowClick(e: MouseEvent<HTMLTableRowElement>): void {
     const target = e.target as HTMLElement
@@ -1512,7 +1754,20 @@ function VideoRows({
         </TableCell>
         {/* The caption on the row itself, and edited there (owner, 2026-09-14) — two lines at most until clicked. */}
         <TableCell className="align-top">
-          <CaptionCell post={post} name={name} saving={saving} onSave={onSave} onWarnings={onWarnings} />
+          <CaptionCell
+            post={post}
+            name={name}
+            saving={saving}
+            onSave={onSave}
+            onWarnings={onWarnings}
+            hasTags={hasTags}
+            auto={auto}
+            autoBlocked={autoBlocked}
+            onAuto={onAuto}
+          />
+        </TableCell>
+        <TableCell className="align-top">
+          <HashtagsCell post={post} group={group} name={name} saving={saving} onSave={onSave} onWarnings={onWarnings} />
         </TableCell>
         <TableCell
           className="readout hidden align-top text-[11.5px] whitespace-nowrap text-dim @xl:table-cell"
@@ -1594,6 +1849,7 @@ function VideoRows({
                 devices={devices}
                 fleet={fleet}
                 owners={owners}
+                hasTags={hasTags}
                 saving={saving}
                 onSave={onSave}
                 onSaved={(list) => {
@@ -1827,6 +2083,7 @@ function EditPostForm({
   devices,
   fleet,
   owners,
+  hasTags,
   saving,
   onSave,
   onSaved,
@@ -1837,6 +2094,8 @@ function EditPostForm({
   devices: ReadonlyMap<string, string>
   fleet: readonly Device[]
   owners: ReadonlyMap<string, readonly Owner[]>
+  /** Whether the video posts with any hashtag; only then may the caption be empty. */
+  hasTags: boolean
   saving: boolean
   onSave: SaveEdit
   onSaved: (warnings: string[]) => void
@@ -1867,8 +2126,8 @@ function EditPostForm({
 
   const platformProblem = postable.some((p) => chosen.has(p.id)) ? null : 'Choose at least one platform.'
   const captionProblem =
-    caption.trim().length === 0
-      ? 'The caption cannot be empty.'
+    caption.trim().length === 0 && !hasTags
+      ? 'The caption cannot be empty while this video has no hashtags.'
       : caption.length > CAPTION_MAX
         ? `The caption is ${caption.length} characters; the limit is ${CAPTION_MAX}.`
         : null
