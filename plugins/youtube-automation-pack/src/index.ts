@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.31.0',
+  version: '0.31.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,17 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.31.1 — the real exit sheet, and a dry run that leaves no draft.**
+   * Measured on the owner's moto g06 (2026-09-14, YouTube id-ID): BACK from the
+   * details screen returns to the editor, and BACK there raises a sheet with
+   * `close_bottom_sheet_reshoot` "Hapus hasil edit", `close_bottom_sheet_exit`
+   * "Simpan sebagai draf" and `close_bottom_sheet_cancel` "Batal". 0.31.0's
+   * exact-label discard ("Buang", "Hapus", …) never matched "Hapus hasil edit",
+   * so a failed run would still have left a draft. `discardButton` now takes
+   * that id or label, and tapping it on the moto returned to the Shorts camera
+   * with nothing kept. A dry run now leaves the same way instead of stopping on
+   * the details screen, where YouTube kept every dry run as a draft.
    *
    * **0.31.0 — the production Samsung flow, from its exported runs.** Twenty
    * SM-A075F/SM-A065F runs of `post-video` (2026-09-13/14) and their ui trees.

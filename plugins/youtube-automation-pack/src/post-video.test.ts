@@ -461,6 +461,15 @@ describe('discardButton — only a discard control named exactly (0.31.0)', () =
     expect(discardButton(tree)?.text).toBe('Buang')
   })
 
+  test('the measured exit sheet (moto g06, 2026-09-14): "Hapus hasil edit" is the discard, never "Simpan sebagai draf" or "Batal"', async () => {
+    const tree = await withNodes('screen-details-hidden-1600.json', [
+      node({ clickable: true, desc: 'Hapus hasil edit', resourceId: 'com.google.android.youtube:id/close_bottom_sheet_reshoot', bounds: { left: 0, top: 1260, right: 720, bottom: 1358 } }),
+      node({ clickable: true, desc: 'Simpan sebagai draf', resourceId: 'com.google.android.youtube:id/close_bottom_sheet_exit', bounds: { left: 0, top: 1358, right: 720, bottom: 1456 } }),
+      node({ clickable: true, desc: 'Batal', resourceId: 'com.google.android.youtube:id/close_bottom_sheet_cancel', bounds: { left: 0, top: 1458, right: 720, bottom: 1556 } }),
+    ])
+    expect(discardButton(tree)?.resourceId).toBe('com.google.android.youtube:id/close_bottom_sheet_reshoot')
+  })
+
   test('"Simpan draf" and anything not named exactly are never tapped', async () => {
     const tree = await withNodes('screen-details-hidden-1600.json', [
       node({ clickable: true, text: 'Simpan draf', bounds: { left: 23, top: 1413, right: 347, bottom: 1487 } }),

@@ -893,7 +893,14 @@ async function watchUploadTap(ctx: ScriptContext<unknown>, reference: Uint8Array
 }
 
 /** Labels a discard control may carry — the only labels `finish` taps (0.31.0). Exact matches only. */
-export const DISCARD_LABELS: readonly string[] = ['Buang', 'Hapus', 'Discard', 'Delete']
+export const DISCARD_LABELS: readonly string[] = ['Hapus hasil edit', 'Discard edits', 'Buang', 'Hapus', 'Discard', 'Delete']
+
+/**
+ * The creation flow's exit sheet, MEASURED on the owner's moto g06 (2026-09-14, YouTube id-ID): BACK from the details
+ * screen returns to the editor; BACK there raises a sheet with `close_bottom_sheet_reshoot` "Hapus hasil edit" (discard),
+ * `close_bottom_sheet_exit` "Simpan sebagai draf" (keeps a draft) and `close_bottom_sheet_cancel` "Batal" (0.31.1).
+ */
+const DISCARD_ID = 'close_bottom_sheet_reshoot'
 
 /** Words a tapped discard control must never contain: keeping the draft, or going on with the post. */
 const NEVER_DISCARD = ['simpan', 'save', 'draf', 'draft', 'lanjut', 'continue', 'upload', 'posting', 'berikutnya', 'next'] as const
@@ -906,7 +913,14 @@ const NEVER_DISCARD = ['simpan', 'save', 'draf', 'draft', 'lanjut', 'continue', 
 export function discardButton(tree: UiNode): UiNode | null {
   const visible = onScreenIn(tree)
   return (
-    all(tree, (n) => fromYouTube(n) && n.clickable && visible(n) && (DISCARD_LABELS.includes(n.text.trim()) || DISCARD_LABELS.includes(n.desc.trim()))).filter(
+    all(
+      tree,
+      (n) =>
+        fromYouTube(n) &&
+        n.clickable &&
+        visible(n) &&
+        (n.resourceId.endsWith(`:id/${DISCARD_ID}`) || DISCARD_LABELS.includes(n.text.trim()) || DISCARD_LABELS.includes(n.desc.trim())),
+    ).filter(
       (n) => !NEVER_DISCARD.some((w) => `${n.text} ${n.desc}`.toLowerCase().includes(w)),
     )[0] ?? null
   )
@@ -1228,13 +1242,15 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await putKeyboardAway(ctx, untouchedDetails, geometry)
 
     if (ctx.params.dryRun) {
+      // A dry run leaves nothing on the channel (0.31.1): it used to stop here and YouTube kept the Short as a draft.
+      await backOutWithoutDraft(ctx)
       return {
         outcome: 'unverified' as const,
         videoArtifactId: ctx.params.videoArtifactId,
         title,
         remotePath,
         screens,
-        reason: 'dry run: the title was entered and the run stopped before Upload. YouTube keeps it as a draft on the channel.',
+        reason: 'dry run: the title was entered, then the run left without Upload and discarded the edit ("Hapus hasil edit").',
       }
     }
 
