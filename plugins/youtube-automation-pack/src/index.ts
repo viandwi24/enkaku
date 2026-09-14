@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.30.0',
+  version: '0.30.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,14 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.30.1 — a landscape YouTube gets one relaunch before
+   * `E_SCREEN_LANDSCAPE`.** Most of the production Samsung fleet (SM-A075F,
+   * SM-A065F) stopped at the home screen on 2026-09-14 with YouTube lying on
+   * its side. `post-video` now relaunches once — the launch re-asserts the
+   * farm's rotation lock, from the device's stored setting on a core of this
+   * release — saves `yt-01-home-relaunched`, and fails by name only if the
+   * screen is still landscape.
    *
    * **0.30.0 — `posted` means this title, and no "failed" once Upload was
    * pressed.** An audit of `post-video` against the Social Media Manager's

@@ -729,13 +729,27 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       title = title.slice(0, TITLE_MAX).trim()
     }
 
-    const home = await capture(ctx, 'yt-01-home')
+    let home = await capture(ctx, 'yt-01-home')
     // The details screen is driven by taps measured in PORTRAIT. On landscape
     // those points land on other controls — "Simpan draf" among them — so a
     // landscape screen stops the run before anything is touched. Observed on
     // the owner's moto (2026-09-11): lying on its side, the system re-enabled
     // auto-rotate on every YouTube launch, over the farm's own portrait lock.
-    const homeFrame = frameOf(home)
+    let homeFrame = frameOf(home)
+    if (homeFrame.width > homeFrame.height) {
+      /*
+        One relaunch before giving up (0.30.1). Most of the production SM-A075F/SM-A065F fleet stopped
+        here on 2026-09-14. `app.launch` re-asserts the farm's rotation lock, and since this release it
+        does so from the device's STORED setting rather than the mode the always-on session was built
+        with — so a lock that was not in force when YouTube first opened (a setting saved while a job
+        held the phone, or a lock a closing session handed back) is written again and YouTube reopens
+        under it. Still landscape after that is the named failure below, with both screens saved.
+      */
+      ctx.log.warn('YouTube opened in landscape — relaunching once, which re-asserts the rotation lock', { width: homeFrame.width, height: homeFrame.height })
+      await relaunch(ctx)
+      home = await capture(ctx, 'yt-01-home-relaunched')
+      homeFrame = frameOf(home)
+    }
     if (homeFrame.width > homeFrame.height) {
       fail(
         'E_SCREEN_LANDSCAPE',
