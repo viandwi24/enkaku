@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { YOUTUBE_PACKAGE, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { flatten } from './tree'
 import { advanceFeedVerified, browseComments, frameOf, makeRng, between, pickWatchMs, pressLike, keywordBoost, readableStrings } from './behavior'
+import { dismissPopups } from './popups'
 
 /** How long to wait for the Shorts rail after tapping its tab. */
 const SHORTS_ENTER_TIMEOUT_MS = 20_000
@@ -134,7 +135,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     let keywordMatches = 0
 
     // --- enter Shorts from the bottom nav -----------------------------------
-    let tree = await ctx.device.dump()
+    let tree = (await dismissPopups(ctx, await ctx.device.dump())).tree
     const tab = shortsTabOf(tree)
     if (!tab) throw new Error('the Shorts tab was not on the bottom navigation — see the first artifact')
     await tapNode(ctx, tab)
@@ -159,7 +160,8 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       ctx.progress({ video: i + 1, of: ctx.params.videos, steps })
 
       // The Short's own words — caption, channel, counts — feed the keyword tilt.
-      const text = readableStrings(await ctx.device.dump()).join(' ')
+      // A popup mid-feed is closed before the Short's words are read, so the keyword tilt never reads the offer.
+      const text = readableStrings((await dismissPopups(ctx, await ctx.device.dump())).tree).join(' ')
       if (ctx.params.keywords.some((k) => k.trim() !== '' && text.toLowerCase().includes(k.toLowerCase()))) keywordMatches += 1
       const likeP = keywordBoost(text, ctx.params.keywords, ctx.params.likeProbability, ctx.params.keywordBoostFactor)
       const comP = keywordBoost(text, ctx.params.keywords, ctx.params.commentProbability, ctx.params.keywordBoostFactor)

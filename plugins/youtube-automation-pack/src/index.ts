@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.28.0',
+  version: '0.29.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.29.0 — the Premium offer is closed, not waited behind.** A full-screen
+   * "Coba paket keluarga YouTube Premium" sheet appeared over the app on the
+   * owner's production farm (2026-09-14), and every step waiting for its own
+   * anchor behind it failed naming that anchor. `popups.ts` recognises the offer
+   * by name (a "YouTube Premium" mention, a "Coba…/Try…" action and a close
+   * control) and closes it with its "Tutup" button — BACK if that is not
+   * readable — on every poll of `waitForTree` and while `relaunch` settles. It
+   * only ever taps close labels, and a test proves none of them subscribes,
+   * buys or starts a trial; no other dialog is touched.
    *
    * **0.28.0 — the new gallery, and no "failed" after Upload.** Three runs on
    * the owner's production SM-A075F fleet (2026-09-14) failed "the gallery did

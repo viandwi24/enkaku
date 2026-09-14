@@ -1,5 +1,6 @@
 import type { ScriptContext } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
+import { dismissPopups } from './popups'
 import { all, flatten } from './tree'
 
 export const YOUTUBE_PACKAGE = 'com.google.android.youtube'
@@ -234,7 +235,7 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   let previous = -1
   const deadline = Date.now() + SETTLE_TIMEOUT_MS
   while (Date.now() < deadline) {
-    const size = countNodes(await ctx.device.dump())
+    const size = countNodes((await dismissPopups(ctx, await ctx.device.dump())).tree)
     if (size === previous) {
       ctx.log.info(`youtube settled at ${size} nodes, ${Math.round((Date.now() - (deadline - SETTLE_TIMEOUT_MS)) / 1000)}s after its navigation appeared`)
       return
@@ -265,11 +266,13 @@ export async function waitForTree(
 ): Promise<{ tree: UiNode; ok: boolean; waitedMs: number }> {
   const interval = opts.intervalMs ?? 1_000
   const started = Date.now()
-  let tree = await ctx.device.dump()
+  // Every poll closes a known popup first (`popups.ts`) — a Premium offer over the app would otherwise
+  // hide the anchor this wait is for, and the run would fail naming the anchor instead of the offer.
+  let tree = (await dismissPopups(ctx, await ctx.device.dump())).tree
   while (!ready(tree)) {
     if (Date.now() - started >= opts.budgetMs) return { tree, ok: false, waitedMs: Date.now() - started }
     await sleep(interval)
-    tree = await ctx.device.dump()
+    tree = (await dismissPopups(ctx, await ctx.device.dump())).tree
   }
   return { tree, ok: true, waitedMs: Date.now() - started }
 }

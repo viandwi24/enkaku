@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { YOUTUBE_PACKAGE, capture, hasId, isVisible, relaunch, sleep, tapNode } from './youtube'
 import { flatten } from './tree'
 import { between, bytesEqual, makeRng, pick, snackbarText } from './behavior'
+import { dismissPopups } from './popups'
 
 /**
  * `download-home` — download videos offered by the home feed's own menu.
@@ -111,7 +112,8 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
 
     for (let round = 0; round < ctx.params.videos; round++) {
       ctx.progress({ round: round + 1, of: ctx.params.videos, steps })
-      let tree = await ctx.device.dump()
+      // A Premium offer can come up between rounds; closed here so the row below is read off the feed, not the sheet.
+      let tree = (await dismissPopups(ctx, await ctx.device.dump())).tree
 
       // A row that is a real video (not a sponsored install card), with its overflow on screen.
       const row = flatten(tree).find((n) => isHomeVideoRow(n) && !isSponsoredRow(n))
