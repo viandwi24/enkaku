@@ -65,6 +65,11 @@ import {
  *
  * ## Changelog
  *
+ * - **0.17.0 — Instagram can be chosen under "Where it posts".** The router
+ *   has sent posts to Instagram since 0.13.0, but the page's own platform list
+ *   still marked it not postable, so the New session form and the Edit form
+ *   never offered it (owner, 2026-09-14). UI only.
+ *
  * - **0.16.0 — the warm-up runs in phases, at the operator's pace.** The owner's
  *   model (2026-09-14): one daily run, platform groups split into sub-groups
  *   that run in turn, then the groups swap, so every phone warms up every
@@ -933,7 +938,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.16.0',
+  version: '0.17.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

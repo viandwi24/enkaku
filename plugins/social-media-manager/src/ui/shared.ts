@@ -88,7 +88,8 @@ export function deviceName(d: Device): string {
 export const PLATFORMS = [
   { id: 'tiktok', title: 'TikTok', postable: true },
   { id: 'youtube', title: 'YouTube', postable: true },
-  { id: 'instagram', title: 'Instagram', postable: false },
+  // Postable since 0.13.0 on the service side (`platforms.ts` routes it to `instagram/post-video`); this flag was left behind until 0.17.0.
+  { id: 'instagram', title: 'Instagram', postable: true },
 ] as const
 export type PlatformId = (typeof PLATFORMS)[number]['id']
 
