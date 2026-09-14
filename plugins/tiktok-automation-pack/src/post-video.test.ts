@@ -1,6 +1,25 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
-import type { UiNode } from '@enkaku/protocol'
-import { captionTextToClear, endsInTagToken, judgeGrid, parseViews, readGrid, readNewestCell } from './post-video'
+import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
+import {
+  captionLanded,
+  captionTextToClear,
+  descNodeOnScreen,
+  endsInTagToken,
+  gridEmptyState,
+  judgeGrid,
+  keyboardDismissPoint,
+  keyboardShowing,
+  normaliseCaption,
+  onScreenCaptionField,
+  parseViews,
+  postButtonOnScreen,
+  postCoveredByKeyboard,
+  postScreenStillShowing,
+  readGrid,
+  readNewestCell,
+} from './post-video'
 
 /**
  * `readNewestCell` — what the own-profile grid says about THIS post.
@@ -118,6 +137,158 @@ describe('readGrid', () => {
     const tree = profile([cell(1, 0, '0'), pinned, cell(2, 0, '1.559'), cell(0, 1, '118,6 rb')])
     expect(readGrid(tree, MENU_BOTTOM, W)).toEqual(['0', '1.559', '118,6 rb'])
   })
+
+  /* 1.34.0: a profile page kept in the tree off to the side still carries its old grid. */
+  test('cells outside the frame are not read', () => {
+    const offLeft = cell(0, 0, '0')
+    offLeft.bounds = { left: -720, top: 546, right: -481, bottom: 866 }
+    const offRight = cell(0, 0, '9')
+    offRight.bounds = { left: 720, top: 546, right: 959, bottom: 866 }
+    const tree = profile([offLeft, offRight, cell(0, 0, '1.559'), cell(1, 0, '118,6 rb')])
+    expect(readGrid(tree, MENU_BOTTOM, W)).toEqual(['1.559', '118,6 rb'])
+  })
+})
+
+describe('gridEmptyState', () => {
+  test('a "no videos" line below the profile header, on screen and not typed into', () => {
+    const says = (over: Partial<UiNode>) => profile([node({ text: 'Belum ada video', bounds: { left: 200, top: 700, right: 520, bottom: 740 }, ...over })])
+    expect(gridEmptyState(says({}), MENU_BOTTOM, W)).toBe(true)
+    expect(gridEmptyState(says({ bounds: { left: 200, top: 300, right: 520, bottom: 340 } }), MENU_BOTTOM, W)).toBe(false)
+    expect(gridEmptyState(says({ bounds: { left: -900, top: 700, right: -600, bottom: 740 } }), MENU_BOTTOM, W)).toBe(false)
+    expect(gridEmptyState(says({ className: 'android.widget.EditText' }), MENU_BOTTOM, W)).toBe(false)
+    expect(gridEmptyState(profile([cell(0, 0, '1.559')]), MENU_BOTTOM, W)).toBe(false)
+  })
+})
+
+describe('descNodeOnScreen — the Profil tab that is actually drawn', () => {
+  test('a hidden copy first in tree order is skipped, and the lowest on-screen one wins', () => {
+    const hidden = node({ desc: 'Profil', clickable: true, bounds: { left: -1440, top: 1470, right: -1296, bottom: 1556 } })
+    const avatar = node({ desc: 'Profil', clickable: true, bounds: { left: 600, top: 300, right: 700, bottom: 400 } })
+    const tab = node({ desc: 'Profil', clickable: true, bounds: { left: 576, top: 1470, right: 720, bottom: 1556 } })
+    const tree = node({ bounds: { left: 0, top: 0, right: W, bottom: 1640 }, children: [hidden, avatar, tab] })
+    expect(descNodeOnScreen(tree, ['Profil'], W)).toBe(tab)
+    expect(descNodeOnScreen(node({ bounds: { left: 0, top: 0, right: W, bottom: 1640 }, children: [hidden] }), ['Profil'], W)).toBeNull()
+  })
+})
+
+const FIXTURES_DIR = join(import.meta.dir, '__fixtures__')
+
+function loadFixture(name: string): UiNode {
+  const raw = JSON.parse(readFileSync(join(FIXTURES_DIR, name), 'utf8')) as { node: unknown }
+  return UiNodeSchema.parse(raw.node)
+}
+
+const FRAME = { width: 720, height: 1640 }
+
+/** A copy of `tree` with `fn` applied to every node. */
+function edited(tree: UiNode, fn: (n: UiNode) => void): UiNode {
+  const copy = structuredClone(tree)
+  const visit = (n: UiNode): void => {
+    fn(n)
+    for (const c of n.children) visit(c)
+  }
+  visit(copy)
+  return copy
+}
+
+const withCaption = (tree: UiNode, caption: string): UiNode =>
+  edited(tree, (n) => {
+    if (n.className === 'android.widget.EditText') n.text = caption
+  })
+
+/** A Gboard window over the bottom of the screen from `top` down — synthetic: no TikTok dump with the keyboard up is checked in. */
+function withKeyboard(tree: UiNode, top: number): UiNode {
+  const copy = structuredClone(tree)
+  const pkg = 'com.google.android.inputmethod.latin'
+  const key = (left: number, row: number): UiNode =>
+    node({ packageName: pkg, clickable: true, desc: 'q', bounds: { left, top: top + 20 + row * 120, right: left + 70, bottom: top + 130 + row * 120 } })
+  const keys = [0, 1, 2].flatMap((row) => Array.from({ length: 10 }, (_, i) => key(i * 72, row)))
+  copy.children.push(node({ packageName: pkg, bounds: { left: 0, top, right: 720, bottom: 1640 }, children: keys }))
+  return copy
+}
+
+describe('the post screen (screen-post.json) — caption, Post button, keyboard (1.34.0)', () => {
+  const post = loadFixture('screen-post.json')
+
+  test('the on-screen Post button is the "Posting" button', () => {
+    expect(postButtonOnScreen(post, FRAME.width)?.bounds).toEqual({ left: 367, top: 1451, right: 699, bottom: 1535 })
+  })
+
+  test('a stale "Posting" off to the side, first in tree order, is not the button', () => {
+    const stale = structuredClone(post)
+    stale.children.unshift(node({ text: 'Posting', clickable: true, className: 'android.widget.Button', bounds: { left: -1053, top: 1451, right: -721, bottom: 1535 } }))
+    expect(postButtonOnScreen(stale, FRAME.width)?.bounds.left).toBe(367)
+  })
+
+  test('a caption reading "Post" is not the Post button', () => {
+    const onlyField = node({ bounds: { left: 0, top: 0, right: 720, bottom: 1640 }, children: [node({ className: 'android.widget.EditText', text: 'Post', clickable: true, bounds: { left: 28, top: 162, right: 449, bottom: 433 } })] })
+    expect(postButtonOnScreen(onlyField, FRAME.width)).toBeNull()
+  })
+
+  test('no keyboard on the checked-in screen: nothing to put away', () => {
+    expect(keyboardShowing(post, FRAME)).toBe(false)
+    expect(keyboardDismissPoint(post, FRAME)).toBeNull()
+  })
+
+  test('a keyboard over Post is seen, and the dismiss tap lands on plain page above it — clear of every control and the caption', () => {
+    const typing = withKeyboard(post, 1000)
+    expect(keyboardShowing(typing, FRAME)).toBe(true)
+    const button = postButtonOnScreen(typing, FRAME.width)
+    expect(button).not.toBeNull()
+    expect(postCoveredByKeyboard(typing, button as UiNode, FRAME)).toBe(true)
+
+    const spot = keyboardDismissPoint(typing, FRAME)
+    expect(spot).not.toBeNull()
+    const { x, y } = spot as { x: number; y: number }
+    expect(y).toBeLessThanOrEqual(1000 - 24)
+    const hit = (n: UiNode): boolean => n.bounds.left - 24 <= x && x <= n.bounds.right + 24 && n.bounds.top - 24 <= y && y <= n.bounds.bottom + 24
+    const small = (n: UiNode): boolean => (n.bounds.right - n.bounds.left) * (n.bounds.bottom - n.bounds.top) < FRAME.width * FRAME.height * 0.4
+    const flat: UiNode[] = []
+    const visit = (n: UiNode): void => {
+      flat.push(n)
+      for (const c of n.children) visit(c)
+    }
+    visit(typing)
+    expect(flat.filter((n) => (n.clickable && small(n)) || n.className === 'android.widget.EditText').filter(hit)).toEqual([])
+  })
+
+  test('Post moved above the keyboard (E13) is not covered by it', () => {
+    const moved = edited(withKeyboard(post, 1000), (n) => {
+      if (n.text === 'Posting') n.bounds = { left: 560, top: 70, right: 700, bottom: 147 }
+    })
+    expect(postCoveredByKeyboard(moved, postButtonOnScreen(moved, FRAME.width) as UiNode, FRAME)).toBe(false)
+  })
+
+  test('still showing THIS caption with Post on screen is a tap not taken; anything else is not', () => {
+    const typed = withCaption(post, 'Oke banget #fyp')
+    expect(postScreenStillShowing(typed, FRAME.width, 'Oke  banget #fyp ')).toBe(true)
+    expect(postScreenStillShowing(typed, FRAME.width, 'Oke banget fyp')).toBe(false)
+    expect(postScreenStillShowing(post, FRAME.width, 'Oke banget #fyp')).toBe(false)
+    const shifted = edited(typed, (n) => {
+      n.bounds = { ...n.bounds, left: n.bounds.left - 2000, right: n.bounds.right - 2000 }
+    })
+    expect(onScreenCaptionField(shifted, FRAME.width)).toBeNull()
+    expect(postScreenStillShowing(shifted, FRAME.width, 'Oke banget #fyp')).toBe(false)
+  })
+})
+
+describe('captionLanded — the whole caption, # and @ included (1.34.0)', () => {
+  test('whitespace collapses, nothing else is forgiven', () => {
+    expect(captionLanded({ text: 'Oke banget\n\n#fyp  @enkaku ' }, 'Oke banget #fyp @enkaku')).toBe(true)
+    expect(captionLanded({ text: 'Oke banget fyp @enkaku' }, 'Oke banget #fyp @enkaku')).toBe(false)
+    expect(captionLanded({ text: 'Oke banget #fyp enkaku' }, 'Oke banget #fyp @enkaku')).toBe(false)
+    expect(captionLanded({ text: 'Oke banget #fy' }, 'Oke banget #fyp')).toBe(false)
+    expect(captionLanded({ text: 'oke banget #fyp' }, 'Oke banget #fyp')).toBe(false)
+  })
+
+  test('a field showing only its placeholder holds nothing', () => {
+    expect(captionLanded({ text: 'Tambah deskripsi...' }, 'Oke banget #fyp')).toBe(false)
+    expect(captionLanded({ text: 'Tambah deskripsi...' }, '')).toBe(true)
+  })
+
+  test('normaliseCaption treats zero-width characters as the whitespace they sit in', () => {
+    expect(normaliseCaption('a\u200b b\n\n#c ')).toBe('a b #c')
+  })
 })
 
 /*
@@ -145,17 +316,24 @@ describe('judgeGrid — a new post pushes every earlier cell one place along', (
     expect(judgeGrid(['12', '1.559'], ['0', '12'])).toEqual({ kind: 'new' })
   })
 
-  test('an empty profile that now has one video is new', () => {
-    expect(judgeGrid([], ['0'])).toEqual({ kind: 'new' })
+  /*
+    1.34.0: an empty "before" is no baseline. A grid read before its labels arrived is also empty, and
+    reading that as "the profile had no videos" turned any later cell into a false `posted`.
+  */
+  test('an empty baseline is no baseline — one video after it is never new', () => {
+    expect(judgeGrid([], ['0'])).toEqual({ kind: 'no-baseline', views: '0' })
+    expect(judgeGrid([], ['1.559', '118,6 rb'])).toEqual({ kind: 'no-baseline', views: '1.559' })
   })
 
   test('an upload in flight is uploading, whatever the baseline', () => {
     expect(judgeGrid(before, ['4%', ...before])).toEqual({ kind: 'uploading', percent: '4%' })
+    expect(judgeGrid(null, ['4%'])).toEqual({ kind: 'uploading', percent: '4%' })
   })
 
-  test('with no baseline it falls back to the newest-cell reading', () => {
-    expect(judgeGrid(null, ['0', '1.559'])).toEqual({ kind: 'new' })
-    expect(judgeGrid(null, ['1.559'])).toEqual({ kind: 'old', views: '1.559' })
+  test('an unreadable baseline never confirms, not even a newest cell at 0 views', () => {
+    expect(judgeGrid(null, ['0', '1.559'])).toEqual({ kind: 'no-baseline', views: '0' })
+    expect(judgeGrid(null, ['1.559'])).toEqual({ kind: 'no-baseline', views: '1.559' })
+    expect(judgeGrid(null, [])).toEqual({ kind: 'none' })
   })
 
   test('every cell at 0 before and after is not enough to call it posted', () => {

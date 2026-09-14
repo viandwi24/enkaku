@@ -1,11 +1,11 @@
 import { ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
-import type { UiNode } from '@enkaku/protocol'
+import type { Selector, UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { sleep } from './human'
 import { relaunch } from './gesture'
 import { all } from './tree'
 import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, type ScreenId } from './screens'
-import { matchModals, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
+import { isEditableNode, matchModals, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
 import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
 import { resolveVideoFromFolder, recordVideoPosted } from './folder'
@@ -288,6 +288,144 @@ function isPostButton(n: UiNode): boolean {
 }
 
 /**
+ * A node TikTok actually drew inside the frame (1.34.0): not a page kept in the tree off to the side,
+ * whose bounds run past the left or right edge, and not a zero-size placeholder. The Instagram pack
+ * met exactly that on 2026-09-14 — a hidden feed's "+" tapped at x=-1398, a stale profile's post
+ * count read eight times — and every reading in this file that picks a node to tap or to believe now
+ * goes through this. Width only: the frame's height comes from the farm's device record, which a
+ * phone's navigation bar can disagree with, while a stale page is always off to the SIDE.
+ */
+export function insideFrame(n: Pick<UiNode, 'bounds'>, frameWidth: number): boolean {
+  const b = n.bounds
+  return b.left >= 0 && b.right <= frameWidth && b.right > b.left && b.bottom > b.top
+}
+
+/**
+ * A caption compared the way a person reads it: runs of whitespace (and the zero-width characters an
+ * editor can leave between words) collapse to one space, the ends are trimmed, and NOTHING else is
+ * forgiven — `#` and `@` are significant, because "#fyp" that landed as "fyp" is not the caption that
+ * was asked for (the Instagram pack's "#liquidity tradingindonesia", 2026-09-14).
+ */
+export function normaliseCaption(text: string): string {
+  return text.replace(/[\s\u200b-\u200d\u2060\ufeff]+/gu, ' ').trim()
+}
+
+/** True when the caption field holds exactly `intended`, by `normaliseCaption`. A field showing only its placeholder holds nothing. */
+export function captionLanded(field: Pick<UiNode, 'text'>, intended: string): boolean {
+  return normaliseCaption(captionTextToClear(field)) === normaliseCaption(intended)
+}
+
+/** The post screen's caption field, only when it is on screen. */
+export function onScreenCaptionField(tree: UiNode, frameWidth: number): UiNode | null {
+  return all(tree, (n) => n.className === 'android.widget.EditText' && insideFrame(n, frameWidth))[0] ?? null
+}
+
+/**
+ * The Post button that is actually on screen (1.34.0). `findNode(isPostButton)` took the first
+ * "Posting" in tree order, visible or not; a stale copy off to the side would be tapped at a point
+ * where nothing is. A clickable node is preferred over a bare label, and an editable node never
+ * counts — a caption reading "Post" is not a button.
+ */
+export function postButtonOnScreen(tree: UiNode, frameWidth: number): UiNode | null {
+  const hits = all(tree, (n) => isPostButton(n) && !isEditableNode(n) && insideFrame(n, frameWidth))
+  return hits.find((n) => n.clickable) ?? hits[0] ?? null
+}
+
+/** The soft keyboards this farm's phones carry: Gboard (moto), Samsung's honeyboard, SwiftKey, and anything else that says "keyboard". */
+const KEYBOARD_PACKAGE = /inputmethod|honeyboard|swiftkey|keyboard/i
+
+/**
+ * Where the soft keyboard starts, or `null` when none is showing. The keyboard is its own window
+ * drawn over the bottom of the screen, and the farm's dump carries it beside the app's nodes (the
+ * Instagram pack's `screen-share-keyboard-open.json`). Its keys are what mark its top: a keyboard
+ * window can report a root taller than the keys themselves.
+ */
+export function keyboardTop(tree: UiNode, frame: { width: number; height: number }): number | null {
+  const nodes = all(tree, (n) => KEYBOARD_PACKAGE.test(n.packageName) && insideFrame(n, frame.width))
+  if (nodes.length === 0) return null
+  const keys = nodes.filter((n) => n.clickable)
+  const basis = keys.length > 0 ? keys : nodes.filter((n) => n.bounds.bottom - n.bounds.top < frame.height * 0.7)
+  if (basis.length === 0) return null
+  return Math.min(...basis.map((n) => n.bounds.top))
+}
+
+export function keyboardShowing(tree: UiNode, frame: { width: number; height: number }): boolean {
+  return keyboardTop(tree, frame) !== null
+}
+
+/** True when a showing keyboard covers `post`'s centre — a tap there lands on a key, and nothing is posted. */
+export function postCoveredByKeyboard(tree: UiNode, post: UiNode, frame: { width: number; height: number }): boolean {
+  const top = keyboardTop(tree, frame)
+  return top !== null && centreOf(post).y >= top - 4
+}
+
+/** How far a dismiss tap stays from anything tappable, and from the keyboard — about a fingertip. */
+const DISMISS_CLEARANCE_PX = 24
+
+function boxArea(n: UiNode): number {
+  return (n.bounds.right - n.bounds.left) * (n.bounds.bottom - n.bounds.top)
+}
+
+function containsPoint(n: UiNode, x: number, y: number): boolean {
+  return n.bounds.left <= x && x <= n.bounds.right && n.bounds.top <= y && y <= n.bounds.bottom
+}
+
+function distanceToBox(n: UiNode, x: number, y: number): number {
+  const dx = Math.max(n.bounds.left - x, 0, x - n.bounds.right)
+  const dy = Math.max(n.bounds.top - y, 0, y - n.bounds.bottom)
+  return Math.hypot(dx, dy)
+}
+
+/**
+ * Where a person taps to put the keyboard away: plain page above it (1.34.0, the Instagram pack's
+ * `keyboardDismissPoint` rule). BACK is not what someone who has just finished typing does, and on
+ * this screen it is worse than unnatural — BACK without a keyboard up LEFT THE POST SCREEN and
+ * discarded the caption (2026-08-18).
+ *
+ * Instagram's version picks a plain LABEL. TikTok's post screen has almost none: every label sits
+ * inside a clickable row (`screen-post.json`). So this looks for plain PAGE instead — a point inside
+ * the app's content, above the keyboard, that is at least a fingertip away from every tappable node
+ * smaller than a page-sized container and from the caption field itself. The point with the most
+ * room wins (lowest, then most central, on a tie). `null` when there is no such spot; the caller
+ * then falls back to BACK, pressed only while the keyboard is seen.
+ */
+export function keyboardDismissPoint(tree: UiNode, frame: { width: number; height: number }): { x: number; y: number } | null {
+  const top = keyboardTop(tree, frame)
+  if (top === null) return null
+  const frameArea = frame.width * frame.height
+  const content = all(tree, (n) => !KEYBOARD_PACKAGE.test(n.packageName) && n.packageName !== 'com.android.systemui' && insideFrame(n, frame.width))
+  const obstacles = content.filter((n) => isEditableNode(n) || (n.clickable && boxArea(n) < frameArea * 0.4))
+  const minY = Math.round(frame.height * 0.12)
+  const midX = frame.width / 2
+  let best: { x: number; y: number; clearance: number } | null = null
+  for (let y = minY; y <= top - DISMISS_CLEARANCE_PX; y += 8) {
+    for (let x = 16; x <= frame.width - 16; x += 16) {
+      if (!content.some((n) => containsPoint(n, x, y))) continue
+      let clearance = top - y
+      for (const o of obstacles) clearance = Math.min(clearance, distanceToBox(o, x, y))
+      if (clearance < DISMISS_CLEARANCE_PX) continue
+      const better =
+        best === null ||
+        clearance > best.clearance ||
+        (clearance === best.clearance && (y > best.y || (y === best.y && Math.abs(x - midX) < Math.abs(best.x - midX))))
+      if (better) best = { x, y, clearance }
+    }
+  }
+  return best ? { x: best.x, y: best.y } : null
+}
+
+/**
+ * The post screen, still showing THIS caption with a Post button on screen — how a Post tap that was
+ * not taken looks (1.34.0). TikTok leaves the post screen the moment it accepts an upload, so this
+ * reading after a tap means the tap went nowhere: under the keyboard, under a suggestion panel, or
+ * into a frame that dropped it.
+ */
+export function postScreenStillShowing(tree: UiNode, frameWidth: number, caption: string): boolean {
+  const field = onScreenCaptionField(tree, frameWidth)
+  return field !== null && captionLanded(field, caption) && postButtonOnScreen(tree, frameWidth) !== null
+}
+
+/**
  * Sweeps modals, then takes the ONE dump this screen transition spends (§3.5) — used for every
  * screen after the feed. When the tree does not read as `expected`, that is reported loudly with a
  * screenshot rather than acted on blindly: this member's whole design is dump-and-walk BECAUSE
@@ -450,6 +588,8 @@ export type NewestCell =
   | { kind: 'old'; views: string }
   | { kind: 'same' }
   | { kind: 'none' }
+  /** The grid was not readable (or was empty) before Post, so nothing on it can be proved new — at most `unverified`. */
+  | { kind: 'no-baseline'; views: string }
 
 /** Labels TikTok draws on a pinned cell. A pinned video sits first regardless of age, so it says nothing about what is newest. */
 const PINNED_LABELS = ['Disematkan', 'Pinned']
@@ -461,7 +601,8 @@ const PINNED_LABELS = ['Disematkan', 'Pinned']
  * A cell is recognised by carrying a view-count or percent label, not by its
  * shape alone — the shape test also matched the bottom nav, whose tabs are
  * labelled "Beranda" and "Toko". Pinned cells are left out: they lead the grid
- * whatever their age.
+ * whatever their age. Only cells inside the frame count (1.34.0): a profile page
+ * TikTok keeps in the tree off to the side still carries its old grid.
  */
 export function readGrid(tree: UiNode, belowY: number, frameWidth: number): string[] {
   const labelOf = (n: UiNode): string | null => {
@@ -473,10 +614,9 @@ export function readGrid(tree: UiNode, belowY: number, frameWidth: number): stri
   }
   const pinned = (n: UiNode): boolean => all(n, (m) => PINNED_LABELS.includes((m.text || m.desc).trim())).length > 0
   const cells = all(tree, (n) => {
-    if (!n.clickable || n.bounds.top < belowY) return false
+    if (!n.clickable || n.bounds.top < belowY || !insideFrame(n, frameWidth)) return false
     const w = n.bounds.right - n.bounds.left
     const h = n.bounds.bottom - n.bounds.top
-    if (w <= 0 || h <= 0) return false
     const widthFraction = w / frameWidth
     return widthFraction >= 0.18 && widthFraction <= 0.5 && h / w > 0.5 && h / w < 2.5 && labelOf(n) !== null && !pinned(n)
   })
@@ -486,8 +626,9 @@ export function readGrid(tree: UiNode, belowY: number, frameWidth: number): stri
 }
 
 /**
- * What the NEWEST cell says, with no earlier reading to compare against — the
- * fallback when the pre-post baseline could not be read.
+ * What the NEWEST cell says, with no earlier reading to compare against. Not used
+ * to confirm a post since 1.34.0 — with no baseline `judgeGrid` answers
+ * `no-baseline` and the run reports `unverified` — kept as the plain reading.
  *
  * `0` views reads as new, a percentage as still uploading, any other count as
  * an older video. The weakness is stated rather than hidden: an account whose
@@ -548,16 +689,20 @@ function sameCell(before: string, after: string): boolean {
  * - anything else → the newest label, worded as an older video; the caller
  *   reports `unverified`, never `posted`.
  *
- * `before === null` means the baseline could not be read; the newest-cell
- * reading is used and its weakness is the caller's to word.
+ * `before === null` (unreadable) and `before` empty are both NO BASELINE
+ * (1.34.0), and with no baseline nothing is ever `new`: the answer is
+ * `no-baseline`, which the caller reports as `unverified`. Before 1.34.0 an
+ * empty `before` read as "the profile had no videos" and any cell after it as
+ * new — but a grid read 1.5 s after the header, before its labels arrived, is
+ * also empty, and that turned an unloaded grid into a false `posted`. And a
+ * missing baseline let any newest cell at 0 views count, which is exactly the
+ * old test post the 2026-09-11 run fell for.
  */
 export function judgeGrid(before: string[] | null, after: string[]): NewestCell {
   const newest = after[0]
   if (newest === undefined) return { kind: 'none' }
   if (UPLOAD_PERCENT.test(newest)) return { kind: 'uploading', percent: newest }
-  if (before === null) return newest === '0' ? { kind: 'new' } : { kind: 'old', views: newest }
-  // The profile had no videos, and now it has one.
-  if (before.length === 0) return { kind: 'new' }
+  if (before === null || before.length === 0) return { kind: 'no-baseline', views: newest }
   if (newest === '0' && before[0] !== '0') return { kind: 'new' }
 
   const inPlace = Math.min(before.length, after.length)
@@ -570,24 +715,124 @@ export function judgeGrid(before: string[] | null, after: string[]): NewestCell 
 }
 
 /**
+ * TikTok's own words for a profile with no videos. UNVERIFIED — no empty own profile has been dumped on
+ * this farm. A wrong candidate costs nothing that matters: an empty reading is NO BASELINE, exactly like
+ * an unreadable one, so recognising the state only saves the wait for a grid that will never draw.
+ */
+const EMPTY_GRID_TEXTS = ['belum ada video', 'tidak ada video', 'bagikan video pertama', 'unggah video pertama', 'no videos yet', 'share your first video', 'upload your first video']
+
+/** True when the profile below `belowY` says it has no videos (see `EMPTY_GRID_TEXTS`). */
+export function gridEmptyState(tree: UiNode, belowY: number, frameWidth: number): boolean {
+  return all(tree, (n) => {
+    if (isEditableNode(n) || n.bounds.top < belowY || !insideFrame(n, frameWidth)) return false
+    const label = (n.text || n.desc).trim().toLowerCase()
+    return label !== '' && EMPTY_GRID_TEXTS.some((t) => label.includes(t))
+  }).length > 0
+}
+
+/** The bottom nav's Home tab, in both languages (the same pair `gesture.ts`'s readiness wait uses). */
+const HOME_TAB_DESCS = ['Beranda', 'Home']
+
+/** How long the own-profile grid gets to draw its first labelled cell before the reading is given up. */
+const GRID_LOAD_MS = 12_000
+
+function descOf(sel: Selector): string {
+  return 'desc' in sel ? sel.desc : ''
+}
+
+/**
+ * The on-screen node whose `desc` is one of `descs` — the lowest one, since the bottom nav is where
+ * these tabs live. Replaces `waitFor(PROFIL_TAB)`/`waitFor(MENU_PROFIL)`, which took the first match in
+ * tree order, visible or not (1.34.0).
+ */
+export function descNodeOnScreen(tree: UiNode, descs: string[], frameWidth: number): UiNode | null {
+  const wanted = descs.filter((d) => d !== '').map((d) => d.toLowerCase())
+  const hits = all(tree, (n) => wanted.includes(n.desc.trim().toLowerCase()) && insideFrame(n, frameWidth))
+  return hits.sort((a, b) => b.bounds.bottom - a.bounds.bottom)[0] ?? null
+}
+
+async function waitForOnScreen(ctx: ScriptContext<unknown>, frameWidth: number, descs: string[], timeoutMs: number): Promise<UiNode | null> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      const hit = descNodeOnScreen(await ctx.device.dump(), descs, frameWidth)
+      if (hit) return hit
+    } catch {
+      // A dump that fails over an autoplaying feed is a miss, not an answer — go round again.
+    }
+    if (Date.now() >= deadline) return null
+    await sleep(1_000)
+  }
+}
+
+/**
  * Open the own profile and read its grid. Used twice: before the upload walk,
  * for the baseline `judgeGrid` compares against, and after Post, to confirm.
  * Returns `null` when the profile could not be reached or read — never throws,
  * because a failed reading is not evidence about the post either way.
+ *
+ * Polls (1.34.0). It used to sleep 1.5 s and read once, and a grid whose labels
+ * had not arrived yet read as `[]` — "no videos" — which `judgeGrid` then took
+ * as a baseline any later cell beat. It now waits until the grid shows a
+ * labelled cell or a clear "no videos" state, and reports `null` when neither
+ * arrives. `reopen` goes Home first, so a confirmation round reads a freshly
+ * drawn profile rather than the page the previous round left open.
  */
-async function readOwnGrid(ctx: ScriptContext<unknown>, frameWidth: number): Promise<string[] | null> {
+async function readOwnGrid(ctx: ScriptContext<unknown>, frameWidth: number, opts: { reopen?: boolean } = {}): Promise<string[] | null> {
   try {
-    const profilNode = await ctx.device.waitFor(PROFIL_TAB, { timeout: 10_000 })
+    if (opts.reopen) {
+      const home = await waitForOnScreen(ctx, frameWidth, HOME_TAB_DESCS, 6_000)
+      if (home) {
+        await ctx.device.tap({ point: centreOf(home) })
+        await sleep(1_500)
+      } else {
+        ctx.log.warn('could not find the Home tab to re-open the profile — reading the profile from wherever TikTok is')
+      }
+    }
+    const profilNode = await waitForOnScreen(ctx, frameWidth, [descOf(PROFIL_TAB), 'Profile'], 10_000)
+    if (!profilNode) throw new Error('the Profil tab is not on screen')
     await ctx.device.tap({ point: centreOf(profilNode) })
-    const menuNode = await ctx.device.waitFor(MENU_PROFIL, { timeout: 10_000 })
+    const menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 10_000)
+    if (!menuNode) throw new Error('the own profile did not open (no on-screen "Menu profil")')
     // Swept AFTER arriving: `tt.contacts` is raised BY the profile screen (observed 2026-08-18).
     try {
       await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
     } catch {
-      // Reported by the caller's own sweep if it matters; a reading is still worth attempting.
+      // Reported by the caller's own check if it matters; a reading is still worth attempting.
     }
-    await sleep(1_500) // the grid's labels arrive after the header
-    return readGrid(await ctx.device.dump(), menuNode.bounds.bottom, frameWidth)
+
+    const deadline = Date.now() + GRID_LOAD_MS
+    for (;;) {
+      let tree: UiNode | null = null
+      try {
+        tree = await ctx.device.dump()
+      } catch {
+        tree = null
+      }
+      if (tree) {
+        const belowY = (descNodeOnScreen(tree, [descOf(MENU_PROFIL), 'Profile menu'], frameWidth) ?? menuNode).bounds.bottom
+        const cells = readGrid(tree, belowY, frameWidth)
+        if (cells.length > 0) {
+          // Labels arrive cell by cell; one more look catches a grid still filling in.
+          await sleep(1_000)
+          try {
+            const again = readGrid(await ctx.device.dump(), belowY, frameWidth)
+            if (again.length > cells.length) return again
+          } catch {
+            // The first reading stands.
+          }
+          return cells
+        }
+        if (gridEmptyState(tree, belowY, frameWidth)) {
+          ctx.log.info('the own profile says it has no videos')
+          return []
+        }
+      }
+      if (Date.now() >= deadline) break
+      await sleep(1_500)
+    }
+    ctx.log.warn(`the own-profile grid showed no labelled cell and no "no videos" state within ${GRID_LOAD_MS / 1000}s — no reading`)
+    return null
   } catch (err) {
     ctx.log.warn('could not read the own-profile grid', { error: String(err) })
     return null
@@ -630,42 +875,47 @@ async function confirmPosted(
   ctx: ScriptContext<unknown>,
   frameWidth: number,
   before: string[] | null,
-): Promise<{ confirmed: boolean; detail: string }> {
+): Promise<{ confirmed: boolean; detail: string; securityCheck: boolean }> {
   const attempts = 6
   const intervalMs = 5_000
+  const startedAt = Date.now()
 
   let lastSeen: NewestCell = { kind: 'none' }
   for (let round = 0; round < attempts; round++) {
-    // Checked before the sweep, because the sweep's `abort` would only say "unhandled".
+    // Checked before the sweep, so the security check is reported by name and screenshotted here.
     if (await securityCheckShowing(ctx)) {
       await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-security-check`)
-      return { confirmed: false, detail: SECURITY_CHECK_DETAIL }
+      return { confirmed: false, detail: SECURITY_CHECK_DETAIL, securityCheck: true }
     }
     try {
       await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
     } catch (err) {
+      if ((err as { code?: string }).code === 'E_SECURITY_CHECK') return { confirmed: false, detail: SECURITY_CHECK_DETAIL, securityCheck: true }
       ctx.log.warn('confirmPosted: modal sweep did not settle this attempt', { round, error: String(err) })
     }
-    const after = await readOwnGrid(ctx, frameWidth)
+    // Every round after the first goes Home and back to the profile (1.34.0): tapping Profil on a
+    // profile that is already open can leave the grid exactly as the previous round read it, and a
+    // stale page is not evidence. Not a relaunch — force-stopping TikTok could kill an upload in flight.
+    const after = await readOwnGrid(ctx, frameWidth, { reopen: round > 0 })
     if (after !== null) {
       const judged = judgeGrid(before, after)
       if (judged.kind === 'new') {
         return {
           confirmed: true,
-          detail:
-            before === null
-              ? 'the newest cell on the own-profile grid shows 0 views (no pre-post reading was available to compare against)'
-              : 'a new cell appeared at the head of the own-profile grid, pushing every earlier video one place along',
+          detail: 'a new cell appeared at the head of the own-profile grid, pushing every earlier video one place along',
+          securityCheck: false,
         }
       }
       lastSeen = judged
+      // With no baseline no later reading can prove anything; an upload still in flight is the one reading worth waiting on.
+      if (judged.kind === 'no-baseline') break
       ctx.log.warn(`confirmPosted: the grid does not show this post yet (attempt ${round + 1}/${attempts})`, { judged: JSON.stringify(judged) })
     }
     if (round < attempts - 1) await sleep(intervalMs)
   }
 
   await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-unverified`)
-  const waited = Math.round((attempts * intervalMs) / 1000)
+  const waited = Math.round((Date.now() - startedAt) / 1000)
   const saw =
     lastSeen.kind === 'uploading'
       ? `it was still uploading (${lastSeen.percent}) — submitted, not yet live. A phone whose network cannot carry the upload stays here.`
@@ -673,8 +923,178 @@ async function confirmPosted(
         ? 'the profile grid was exactly as it was before Post was tapped, so this post had not appeared.'
         : lastSeen.kind === 'old'
           ? `the newest video on the profile was an older one (${lastSeen.views} views), so this post had not appeared.`
-          : 'no readable video grid was found.'
-  return { confirmed: false, detail: `Post was tapped, but after ${waited}s ${saw} Reporting "unverified" rather than assuming the tap succeeded (§3.6).` }
+          : lastSeen.kind === 'no-baseline'
+            ? `the newest video on the profile shows ${lastSeen.views} views${lastSeen.views === '0' ? ', which may be this post' : ''}, but the grid could not be read (or was empty) before Post was tapped, so there is nothing to compare it against.`
+            : 'no readable video grid was found.'
+  return {
+    confirmed: false,
+    detail: `Post was tapped, but after ${waited}s ${saw} Reporting "unverified" rather than assuming the tap succeeded (§3.6).`,
+    securityCheck: false,
+  }
+}
+
+/**
+ * Reads the post screen after a step that sends keystrokes or taps at it, and says plainly when it is
+ * gone (1.34.0). A known other screen is `E_LEFT_POST_SCREEN` — kept from 1.31.0. `unknown` is no longer
+ * waved through: a dialog, or TikTok's tag-suggestion list standing in for the post screen, gets a
+ * modal sweep and another read, and after three reads with no post screen the run stops with
+ * `E_POST_SCREEN_UNREADABLE`. Everything here happens BEFORE Post, so nothing was posted.
+ */
+async function readPostScreen(ctx: ScriptContext<unknown>, step: string): Promise<UiNode> {
+  for (let round = 0; round < 3; round++) {
+    if (round > 0) await sleep(1_000)
+    let tree: UiNode
+    try {
+      tree = await ctx.device.dump()
+    } catch (err) {
+      ctx.log.warn(`after ${step} the screen could not be dumped — reading again`, { round, error: String(err) })
+      continue
+    }
+    const screen = detectScreen(tree)
+    if (screen === 'post') return tree
+    if (screen !== 'unknown') {
+      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-left-post-screen`)
+      throw Object.assign(new Error(`${step} left the post screen (TikTok is now on "${screen}") — nothing was posted`), { code: 'E_LEFT_POST_SCREEN' })
+    }
+    ctx.log.warn(`after ${step} the screen reads "unknown" — sweeping modals and reading again`, { round })
+    const swept = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
+    recordCleared(swept.cleared)
+  }
+  await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-post-screen-unreadable`)
+  throw Object.assign(
+    new Error(`after ${step} the post screen could not be read three times running (no caption field in the tree) — Post was not tapped, so nothing was posted. See the post-screen-unreadable screenshot.`),
+    { code: 'E_POST_SCREEN_UNREADABLE' },
+  )
+}
+
+/** Types the caption, then one space when it ends in `#tag`/`@name` — see the comment at the call site. Returns the typing rung that ran. */
+async function typeCaption(ctx: ScriptContext<unknown>, caption: string): Promise<string> {
+  const typed = await ctx.device.type(caption)
+  if (endsInTagToken(caption)) {
+    // A caption ending in `#tag` or `@name` leaves TikTok's suggestion list open, and that list
+    // REPLACES the post screen — no Post button anywhere in the tree (observed 2026-09-11 with
+    // "… #test": `E_ANCHOR_NOT_FOUND`, nothing posted). One space ends the token and closes the
+    // list, which is what a person does; TikTok trims trailing whitespace from the caption.
+    await ctx.device.type(' ')
+    ctx.log.info('closed the tag suggestions with a trailing space')
+  }
+  return typed.via
+}
+
+/**
+ * Types the caption and PROVES it landed (1.34.0). Before this nothing read the field back, so a
+ * caption the typing path mangled — a lost `#`, an app suggestion that swallowed a word, a character
+ * the rung could not carry — was posted as it came out. The field is re-read and compared by
+ * `captionLanded` (whitespace collapsed, `#` and `@` significant); on a mismatch it is cleared and
+ * typed once more; a second mismatch is `E_CAPTION_MISMATCH` before Post. Returns the text that
+ * actually landed, which is what the run's result reports.
+ */
+async function enterCaption(ctx: ScriptContext<unknown>, frame: { width: number; height: number }, field: UiNode, caption: string): Promise<string> {
+  let target = field
+  for (let round = 1; round <= 2; round++) {
+    await ctx.device.tap({ point: centreOf(target) })
+    await clearCaptionField(ctx, target)
+    const via = await typeCaption(ctx, caption)
+    ctx.log.info('typed the caption', { via, attempt: round, hashtags: (caption.match(/#[^\s#]+/g) ?? []).length })
+    await sleep(800)
+    // Clearing and typing are keystrokes, and a keystroke the field does not take goes to TikTok — which,
+    // on the production fleet, backed out to the camera (1.31.0). `readPostScreen` says so by name.
+    const tree = await readPostScreen(ctx, round === 1 ? 'typing the caption' : 'retyping the caption')
+    const now = onScreenCaptionField(tree, frame.width)
+    if (now && captionLanded(now, caption)) return captionTextToClear(now)
+    const holds = now ? captionTextToClear(now) : '(no caption field on screen)'
+    if (round === 2) {
+      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-caption-mismatch`)
+      throw Object.assign(
+        new Error(
+          `the caption field holds "${holds.slice(0, 120)}" but the caption to post is "${caption.slice(0, 120)}", after typing it twice (via ${via}) — Post was not tapped, so nothing was posted. A character the typing path cannot carry (an emoji, an accent) or an app suggestion that replaced a word is the usual cause; check the caption, then re-run.`,
+        ),
+        { code: 'E_CAPTION_MISMATCH' },
+      )
+    }
+    ctx.log.warn('the caption field does not hold the caption that was typed — clearing it and typing once more', { holds: holds.slice(0, 80) })
+    target = now ?? captionField(tree) ?? target
+  }
+  throw new Error('unreachable')
+}
+
+/**
+ * The on-screen Post button, with nothing over it (1.34.0). When a keyboard is showing over Post, it
+ * is put away first the way a person does it — a tap on plain page above the keys
+ * (`keyboardDismissPoint`) — with BACK only as the fallback, and pressed only while a keyboard is
+ * actually seen: with the keyboard up Android hands BACK to the keyboard, while on the bare post screen
+ * BACK leaves it (2026-08-18). The caption is checked again afterwards, because a tap that missed plain
+ * page could have changed it. Every failure here is before Post, so nothing was posted.
+ */
+async function postButtonClear(ctx: ScriptContext<unknown>, frame: { width: number; height: number }, caption: string): Promise<UiNode> {
+  let tree = await readPostScreen(ctx, 'reaching the Post button')
+  let post = postButtonOnScreen(tree, frame.width)
+  if (post && postCoveredByKeyboard(tree, post, frame)) {
+    const spot = keyboardDismissPoint(tree, frame)
+    if (spot) {
+      ctx.log.info('the keyboard is up over Post — tapping plain page above it, as a person would', spot)
+      await sleep(400 + Math.round(Math.random() * 500))
+      await ctx.device.tap({ point: spot })
+      for (let i = 0; i < 3; i++) {
+        await sleep(1_000)
+        tree = await readPostScreen(ctx, 'tapping the page to put the keyboard away')
+        if (!keyboardShowing(tree, frame)) break
+      }
+    }
+    if (keyboardShowing(tree, frame)) {
+      ctx.log.info(spot ? 'the keyboard stayed up after the tap — closing it with BACK' : 'no plain page above the keyboard — closing it with BACK')
+      await ctx.device.key('BACK')
+      await sleep(1_200)
+      tree = await readPostScreen(ctx, 'closing the keyboard with BACK')
+    }
+    const field = onScreenCaptionField(tree, frame.width)
+    if (!field || !captionLanded(field, caption)) {
+      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-caption-mismatch`)
+      throw Object.assign(
+        new Error(`putting the keyboard away changed the caption field (it now holds "${(field ? captionTextToClear(field) : '(no caption field on screen)').slice(0, 120)}") — Post was not tapped, so nothing was posted`),
+        { code: 'E_CAPTION_MISMATCH' },
+      )
+    }
+    post = postButtonOnScreen(tree, frame.width)
+    if (post && postCoveredByKeyboard(tree, post, frame)) {
+      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-keyboard-over-post`)
+      throw Object.assign(
+        new Error('the keyboard would not close and still covers the Post button (tried a tap above it, then BACK) — Post was not tapped, so nothing was posted'),
+        { code: 'E_KEYBOARD_OVER_POST' },
+      )
+    }
+  }
+  if (!post) {
+    await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-missing-post-button`)
+    throw Object.assign(new Error(`the post screen's Post button is not on screen — Post was not tapped, so nothing was posted`), { code: 'E_ANCHOR_NOT_FOUND' })
+  }
+  return post
+}
+
+/** How long a Post tap gets to take the post screen away before it counts as not taken. */
+const POST_TAP_SETTLE_MS = 8_000
+
+/**
+ * Did the Post tap take? (1.34.0.) `taken` — a readable screen that is no longer the post screen with
+ * this caption. `still-there` — every read showed the post screen, this caption, and a Post button on
+ * screen. `unreadable` — no read succeeded, so the tap's effect is unknown. Never throws: Post has been
+ * pressed.
+ */
+async function watchPostTap(ctx: ScriptContext<unknown>, frameWidth: number, caption: string): Promise<'taken' | 'still-there' | 'unreadable'> {
+  const deadline = Date.now() + POST_TAP_SETTLE_MS
+  let sawPost = false
+  for (;;) {
+    await sleep(1_500)
+    try {
+      const tree = await ctx.device.dump()
+      if (!postScreenStillShowing(tree, frameWidth, caption)) return 'taken'
+      sawPost = true
+    } catch (err) {
+      ctx.log.warn('could not read the screen after the Post tap — trying again', { error: String(err) })
+    }
+    if (Date.now() >= deadline) break
+  }
+  return sawPost ? 'still-there' : 'unreadable'
 }
 
 /**
@@ -798,10 +1218,12 @@ interface AttemptState {
    * carried from `resolveFromFolder` to the post-Post `recordVideoPosted` call (§3.8) the same way
    * the queue claim is carried to `settle` for the queue source. */
   folderVideo: { hash: string; path: string } | null
+  /** Set when TikTok's security check was seen after Post: `finish` then leaves TikTok open on it instead of force-stopping. */
+  leaveOnScreen: boolean
 }
 
 function freshAttemptState(): AttemptState {
-  return { videoArtifactId: null, caption: null, queueClaim: null, remotePath: null, screens: [], modalsHandled: [], folderVideo: null }
+  return { videoArtifactId: null, caption: null, queueClaim: null, remotePath: null, screens: [], modalsHandled: [], folderVideo: null, leaveOnScreen: false }
 }
 
 /**
@@ -1049,6 +1471,9 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     const gridBefore = ctx.params.dryRun ? null : await readOwnGrid(ctx, frame.width)
     if (!ctx.params.dryRun) {
       ctx.log.info('read the own-profile grid before posting', { cells: gridBefore === null ? 'unreadable' : String(gridBefore.length) })
+      if (gridBefore === null || gridBefore.length === 0) {
+        ctx.log.warn('no baseline grid before posting (unreadable, or no videos) — a new post cannot be proved against it, so this run can at best report "unverified"')
+      }
       if (await securityCheckShowing(ctx)) {
         await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-security-check`)
         throw Object.assign(
@@ -1146,58 +1571,31 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       rounds: 10,
     })
     recordCleared(post.cleared)
-    const field = captionField(requireTree(post, 'post'))
+    const postTree0 = requireTree(post, 'post')
+    const field = onScreenCaptionField(postTree0, frame.width) ?? captionField(postTree0)
     if (!field) {
       await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-missing-caption-field`)
       throw Object.assign(new Error(`the post screen's caption field (the only EditText) was not found`), { code: 'E_ANCHOR_NOT_FOUND' })
     }
-    await ctx.device.tap({ point: centreOf(field) })
-    await clearCaptionField(ctx, field)
     const capped = capHashtags(resolved.caption, ctx.params.maxHashtags)
     if (capped.dropped.length > 0) {
       ctx.log.warn(`caption carried more than ${ctx.params.maxHashtags} hashtags — the extras were dropped, not posted`, { dropped: capped.dropped.join(' ') })
     }
     attempt.caption = capped.caption
-    const typed = await ctx.device.type(capped.caption)
-    ctx.log.info('typed the caption', { via: typed.via, hashtags: (capped.caption.match(/#[^\s#]+/g) ?? []).length })
-    if (endsInTagToken(capped.caption)) {
-      // A caption ending in `#tag` or `@name` leaves TikTok's suggestion list open, and that list
-      // REPLACES the post screen — no Post button anywhere in the tree (observed 2026-09-11 with
-      // "… #test": `E_ANCHOR_NOT_FOUND`, nothing posted). One space ends the token and closes the
-      // list, which is what a person does; TikTok trims trailing whitespace from the caption.
-      await ctx.device.type(' ')
-      ctx.log.info('closed the tag suggestions with a trailing space')
-    }
+    // Tap, clear, type, then read the field back — `enterCaption` throws before Post when it did not land.
+    const landed = await enterCaption(ctx, frame, field, capped.caption)
+    attempt.caption = landed
 
-    /*
-      Still on the post screen? Checked BEFORE anything is tapped (1.31.0). Clearing and typing are
-      keystrokes, and a keystroke the field does not take goes to TikTok — which, on the production
-      fleet, backed out to the camera. Leaving here is a failure a retry may safely repeat: nothing
-      was posted. Saying so beats "the Post button was not found" on a screen that is not the post
-      screen at all.
-    */
-    const stillOnPost = detectScreen(await ctx.device.dump())
-    if (stillOnPost !== 'post' && stillOnPost !== 'unknown') {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-left-post-screen`)
-      throw Object.assign(new Error(`typing the caption left the post screen (TikTok is now on "${stillOnPost}") — nothing was posted`), { code: 'E_LEFT_POST_SCREEN' })
-    }
-
-    // NO `BACK` here, and that is a correction the hardware forced. Typing a hashtag opens TikTok's
-    // own tag-suggestion panel, which covers the bottom bar — and `BACK`, which was supposed to
-    // close the IME, instead LEFT THE POST SCREEN ENTIRELY and discarded the typed caption (observed
-    // 2026-08-18). The Post button does not need the keyboard closed: with the IME open it simply
-    // moves to the top right and stays in the tree (E13), so the dump below finds it wherever it is.
+    // No BACK to close the keyboard as a matter of course, and that is a correction the hardware
+    // forced: `BACK` on this screen once LEFT THE POST SCREEN ENTIRELY and discarded the typed caption
+    // (observed 2026-08-18). With the IME open Post usually moves to the top right and stays tappable
+    // (E13); only a keyboard actually covering Post is put away, by `postButtonClear`.
     await sleep(1_000)
     attempt.screens.push('post')
 
     const postSweep = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
     recordCleared(postSweep.cleared)
-    const postTree = await ctx.device.dump()
-    const postButton = findNode(postTree, isPostButton)
-    if (!postButton) {
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-missing-post-button`)
-      throw Object.assign(new Error(`the post screen's Post button was not found after closing the keyboard`), { code: 'E_ANCHOR_NOT_FOUND' })
-    }
+    const postButton = await postButtonClear(ctx, frame, capped.caption)
 
     if (ctx.params.dryRun) {
       return {
@@ -1214,7 +1612,42 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     }
 
     await ctx.device.tap({ point: centreOf(postButton) })
-    ctx.log.info('tapped Post — confirming rather than trusting the tap (§3.6)')
+    ctx.log.info('tapped Post — checking the tap took the post screen away, then confirming on the grid (§3.6)')
+
+    /*
+      Did the tap take? (1.34.0.) A Post under the keyboard or the suggestion panel posts nothing,
+      and the run used to say `unverified`, mark the queue entry done and remember the folder video as
+      posted all the same. TikTok leaves the post screen the moment it accepts an upload, so a post
+      screen still showing THIS caption after the settle means the tap went nowhere: it is tapped once
+      more, and if the screen is STILL there, nothing was posted and the run says so by name.
+      Only that positive reading throws. Anything this cannot read is `unreadable`, never "not taken".
+    */
+    let tapState = await watchPostTap(ctx, frame.width, capped.caption)
+    if (tapState === 'still-there') {
+      ctx.log.warn('the post screen is still showing this caption after the Post tap — tapping Post once more')
+      try {
+        recordCleared((await sweepModals(ctx, UPLOAD_MODAL_POLICIES)).cleared)
+        const again = await postButtonClear(ctx, frame, capped.caption)
+        await ctx.device.tap({ point: centreOf(again) })
+        tapState = await watchPostTap(ctx, frame.width, capped.caption)
+      } catch (err) {
+        // The screen changed under the second attempt (it left, a dialog arrived): the first tap may
+        // have landed late, so from here on this is unknown, never "not taken".
+        if ((err as { code?: string }).code === 'E_SECURITY_CHECK') attempt.leaveOnScreen = true
+        ctx.log.warn('could not make the second Post tap cleanly — treating the tap as unreadable, never as not taken', { error: err instanceof Error ? err.message : String(err) })
+        tapState = 'unreadable'
+      }
+      if (tapState === 'still-there') {
+        await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-post-tap-not-taken`)
+        throw Object.assign(
+          new Error(
+            `Post was tapped twice, but TikTok stayed on the post screen with the caption both times — the tap was not taken, so nothing was posted. See the post-tap-not-taken screenshot for what covered the button; re-running is safe.`,
+          ),
+          { code: 'E_POST_TAP_NOT_TAKEN' },
+        )
+      }
+    }
+    ctx.log.info('the Post tap', { state: tapState })
 
     // The POST-post modals, and they are their own discovery. Accepting an upload puts TikTok back
     // on the feed and immediately offers a home-screen widget (`tt.widget-prompt`); opening the
@@ -1241,34 +1674,54 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       recordCleared(postedSweep.cleared)
     } catch (err) {
       afterPostError = err instanceof Error ? err.message : String(err)
+      if ((err as { code?: string }).code === 'E_SECURITY_CHECK') attempt.leaveOnScreen = true
       ctx.log.warn('a modal after Post could not be answered — confirming on the grid anyway, never reporting failed', { error: afterPostError })
     }
 
-    let confirmation: { confirmed: boolean; detail: string }
+    let confirmation: { confirmed: boolean; detail: string; securityCheck: boolean }
     try {
       confirmation = await confirmPosted(ctx, frame.width, gridBefore)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       ctx.log.warn('confirming the post failed after Post was tapped — reporting unverified, never failed', { error: message })
-      confirmation = { confirmed: false, detail: `Post was tapped, but confirming it failed (${message.slice(0, 160)}). Reporting "unverified" — it may well have posted.` }
+      confirmation = { confirmed: false, detail: `Post was tapped, but confirming it failed (${message.slice(0, 160)}). Reporting "unverified" — it may well have posted.`, securityCheck: false }
     }
+    if (confirmation.securityCheck) attempt.leaveOnScreen = true
     if (!confirmation.confirmed && afterPostError !== null) {
-      confirmation = { confirmed: false, detail: `${confirmation.detail} After Post, TikTok showed something this run could not answer: ${afterPostError.slice(0, 160)}` }
+      confirmation = { ...confirmation, detail: `${confirmation.detail} After Post, TikTok showed something this run could not answer: ${afterPostError.slice(0, 160)}` }
     }
+    if (!confirmation.confirmed && tapState === 'unreadable') {
+      confirmation = { ...confirmation, detail: `Whether TikTok took the Post tap could not be read. ${confirmation.detail}` }
+    }
+
+    /*
+      Bookkeeping only for a tap that is known to have been taken (1.34.0): the post screen went away,
+      or the grid proved the post. A tap whose effect could not be read is NOT recorded as posted — the
+      folder memory is left alone, and a queue entry is settled `failed` with a note to check the
+      profile first. `failed` rather than left claimed: the queue never re-claims a failed entry by
+      itself, while a claim left open is re-claimed after it goes stale, which could post the video twice.
+    */
+    const tapKnownTaken = tapState === 'taken' || confirmation.confirmed
     try {
-    if (attempt.queueClaim) {
-      // Post was tapped either way — settle the queue as done regardless of confirmation
-      // strength. The queue envelope has no 'unverified' state, and re-claiming an item whose Post
-      // button was already tapped risks a DUPLICATE submission, which is worse than an optimistic
-      // mark; the run's own `outcome` is where the unverified nuance survives.
-      await tiktokQueue(ctx).settle(attempt.queueClaim, { status: 'done' })
-    }
-    if (attempt.folderVideo) {
-      // §3.8's memory, recorded the moment Post was tapped — same "either way" reasoning as the
-      // queue settle above: this run genuinely acted on the file, confirmed or not, and the next
-      // `videoPick: 'random'` run should prefer a different one over reposting it immediately.
-      await recordVideoPosted(ctx, attempt.folderVideo.hash, attempt.folderVideo.path)
-    }
+      if (tapKnownTaken) {
+        if (attempt.queueClaim) {
+          // The queue envelope has no 'unverified' state; a taken tap is settled done, and the run's own
+          // `outcome` is where the unverified nuance survives — re-claiming it would risk a duplicate.
+          await tiktokQueue(ctx).settle(attempt.queueClaim, { status: 'done' })
+        }
+        if (attempt.folderVideo) {
+          // §3.8's memory: the next `videoPick: 'random'` run should prefer a different video.
+          await recordVideoPosted(ctx, attempt.folderVideo.hash, attempt.folderVideo.path)
+        }
+      } else {
+        if (attempt.queueClaim) {
+          await tiktokQueue(ctx).settle(attempt.queueClaim, {
+            status: 'failed',
+            error: 'Post was tapped, but whether TikTok took it could not be read and the profile did not confirm it. Check the profile before putting this back in the queue.',
+          })
+        }
+        ctx.log.warn('the Post tap could not be confirmed — not recording this video as posted', { queueKey: attempt.queueClaim?.key ?? null, videoPath: attempt.folderVideo?.path ?? null })
+      }
     } catch (err) {
       // Bookkeeping about a Post that already happened; its failure is not the post's.
       ctx.log.warn('could not record the post in the queue or folder memory — the outcome below still stands', { error: err instanceof Error ? err.message : String(err) })
@@ -1329,6 +1782,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       // operator to complete by hand. BACK would dismiss it and a force-stop would hide it — and the
       // register's whole stance on `tt.security-check` is that a run never answers it.
       if (ctx.error.code !== 'E_SECURITY_CHECK') {
+        let securityCheck = false
         try {
           for (let i = 0; i < 3; i++) {
             await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
@@ -1337,10 +1791,13 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
           }
           await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
         } catch (err) {
-          ctx.log.warn('abandon walk did not fully settle — force-stopping anyway', { error: String(err) })
+          // The register raises the security check by its own code wherever it appears — the abandon
+          // walk included — and it is left on screen here too.
+          securityCheck = (err as { code?: string }).code === 'E_SECURITY_CHECK'
+          ctx.log.warn(securityCheck ? 'a security check appeared while backing out — leaving TikTok open on it' : 'abandon walk did not fully settle — force-stopping anyway', { error: String(err) })
         }
 
-        await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
+        if (!securityCheck) await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
       }
 
       const failed = {
@@ -1358,7 +1815,11 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       return failed
     }
 
-    await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
+    if (attempt.leaveOnScreen) {
+      ctx.log.warn('TikTok raised its security check after Post — leaving the app open on it for the operator')
+    } else {
+      await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
+    }
     attempt = freshAttemptState()
   },
 }

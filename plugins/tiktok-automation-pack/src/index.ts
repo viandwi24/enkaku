@@ -829,6 +829,32 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.34.0 — post-video reports to the Social Media Manager only what it saw. An audit of the post path found
+  // six ways to say the wrong thing, fixed together (the Instagram pack's 0.4.x readings carried over):
+  //   1. No false `posted` from an unloaded grid. The profile grid was read once, 1.5 s after the header, and an
+  //      unloaded grid read as "no videos" — a baseline any later cell beat. It is now polled until a labelled
+  //      cell or a "no videos" state shows, and an unreadable OR empty baseline can never confirm: at most
+  //      `unverified` (`judgeGrid` answers `no-baseline`).
+  //   2. A caption containing "OK", "Oke", "Skip", "Lewati", "Got it" or "Not now" no longer blocks the run.
+  //      `tt.notice` matched by substring, the caption field included, so "Oke banget #fyp" was tapped as a
+  //      notice and the run failed `E_MODAL_STUCK`. Notice labels now match exactly, and no register entry ever
+  //      matches or taps an editable field.
+  //   3. The caption is read back after typing (whitespace collapsed, `#` and `@` significant), retyped once on
+  //      a mismatch, and a second mismatch is `E_CAPTION_MISMATCH` before Post. The result's `caption` is what
+  //      actually landed.
+  //   4. Readings take only nodes inside the frame: the grid's cells, the Profil tab and the profile menu (a
+  //      page kept in the tree off to the side is not the screen), and confirmation rounds go Home and back to
+  //      the profile rather than re-reading the page the last round left.
+  //   5. The Post tap is checked. The on-screen Post is picked; a keyboard covering it is put away by a tap on
+  //      plain page above it, BACK only as the fallback while a keyboard is seen (`E_KEYBOARD_OVER_POST` if it
+  //      will not go). After the tap the post screen must go away; still there with the caption, Post is tapped
+  //      once more, and still there after that is `E_POST_TAP_NOT_TAKEN` — nothing was posted, re-running is
+  //      safe. Only a tap known to be taken (or a post the grid proved) marks the queue entry done and the
+  //      folder video posted; an unreadable one settles the queue entry `failed` with "check the profile
+  //      first". An unreadable post screen before Post is `E_POST_SCREEN_UNREADABLE`, no longer waved through.
+  //   6. TikTok's security check raises `E_SECURITY_CHECK` wherever `sweepModals` meets it, so `finish` leaves
+  //      it on screen instead of pressing BACK and force-stopping; seen after Post, the app is left open on it.
+  //
   // 1.33.0 — a feed that never moves fails the run. auto-scroll used to give up after three unmoved swipes and a
   // restart by BREAKING out of its loop and returning success, so the owner found phones left on the For You feed
   // behind green jobs (2026-09-14). It now throws E_FEED_STALLED with a `stalled` screenshot; `finish` still closes
@@ -930,7 +956,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.33.0',
+  version: '1.34.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

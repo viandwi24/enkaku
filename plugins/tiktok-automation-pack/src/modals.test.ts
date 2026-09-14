@@ -245,6 +245,61 @@ describe('sweepModals — the looping sweep over a fake ctx (plan 113 §4.2)', (
     expect((caught as { code?: string } | undefined)?.code).toBe('E_MODAL_UNHANDLED')
     expect(screenshots).toEqual(['modal-unhandled-sys.camera'])
   })
+
+  /*
+    1.34.0: "Oke banget #fyp" in the caption field CONTAINED "Oke", so `tt.notice` matched the field,
+    tapped its EditText as the notice's button, and the post screen failed with E_MODAL_STUCK before Post.
+  */
+  test('the real post screen with the caption "Oke banget #fyp" is not a notice — nothing is tapped', async () => {
+    const post = withCaption(loadFixture('screen-post.json'), 'Oke banget #fyp')
+    expect(matchModals(post).map((e) => e.id)).not.toContain('tt.notice')
+    const { ctx, taps } = fakeCtx([post])
+    const result = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
+    expect(result.cleared).not.toContain('tt.notice')
+    expect(taps).toEqual([])
+  })
+
+  test('a security check raises E_SECURITY_CHECK whatever the policy map says, and taps nothing', async () => {
+    const sheet = mkNode({ children: [mkNode({ text: 'Mari kita lakukan pemeriksaan keamanan dengan cepat' }), mkNode({ text: 'Lanjut', clickable: true })] })
+    for (const policies of [UPLOAD_MODAL_POLICIES, {}, { 'tt.security-check': 'ignore' as const }]) {
+      const { ctx, taps, screenshots } = fakeCtx([sheet])
+      let caught: unknown
+      try {
+        await sweepModals(ctx, policies)
+      } catch (err) {
+        caught = err
+      }
+      expect((caught as { code?: string } | undefined)?.code).toBe('E_SECURITY_CHECK')
+      expect(taps).toEqual([])
+      expect(screenshots).toEqual(['modal-tt.security-check'])
+    }
+  })
+})
+
+/** A checked-in dump with its caption field (the only EditText) holding `caption` — a copy, the fixture is untouched. */
+function withCaption(tree: UiNode, caption: string): UiNode {
+  const copy = structuredClone(tree)
+  const visit = (n: UiNode): void => {
+    if (n.className === 'android.widget.EditText') n.text = caption
+    for (const c of n.children) visit(c)
+  }
+  visit(copy)
+  return copy
+}
+
+describe('notice labels match exactly, and an editable field is never a modal (1.34.0)', () => {
+  test('a button reading exactly "Oke" is a notice; a label that only contains it is not', () => {
+    expect(matchModals(mkNode({ text: 'Oke', clickable: true })).map((e) => e.id)).toContain('tt.notice')
+    expect(matchModals(mkNode({ text: ' got it ' })).map((e) => e.id)).toContain('tt.notice')
+    expect(matchModals(mkNode({ text: 'Oke banget #fyp' })).map((e) => e.id)).not.toContain('tt.notice')
+    expect(matchModals(mkNode({ text: 'Skip leg day #gym' })).map((e) => e.id)).not.toContain('tt.notice')
+  })
+
+  test('a caption field holding a notice label or a register phrase matches nothing', () => {
+    for (const text of ['Oke', 'Lewati', 'Not now', 'pemeriksaan keamanan', 'Kamera TikTok hari ini']) {
+      expect(matchModals(mkNode({ className: 'android.widget.EditText', text, clickable: true }))).toEqual([])
+    }
+  })
 })
 
 /**

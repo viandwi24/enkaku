@@ -40,7 +40,24 @@ export interface ModalEntry {
    * `tt.discard-draft` more tightly but cannot express `tt.notice` at all, and `tt.notice` is the
    * entry this design exists to cover — see the note on `actions` below.
    */
-  match: { id?: string; textIncludes?: string[] }
+  match: {
+    id?: string
+    textIncludes?: string[]
+    /**
+     * The node's whole label (trimmed, case-insensitive) is one of these — for an entry whose
+     * identity IS a short button label (`tt.notice`). A substring match on "OK" or "Skip" matched
+     * any text on screen that contained it, the caption being typed included (1.34.0).
+     */
+    textEquals?: string[]
+  }
+  /**
+   * When set, a match is never answered and `sweepModals` throws THIS code, whatever the caller's
+   * policy — for a sheet an operator must see and act on by hand (`tt.security-check`), so `finish`
+   * can recognise it and leave it on screen instead of a generic `E_MODAL_UNHANDLED`.
+   */
+  abortCode?: string
+  /** The operator-facing sentence thrown with `abortCode`. */
+  abortMessage?: string
   /**
    * What each policy taps. A policy absent here cannot be chosen for this entry — `sys.media` has
    * no `deny` key at all, so a caller that mistakenly asked for one gets `E_MODAL_UNHANDLED` from
@@ -174,8 +191,15 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     // unattended run's; and quietly closing a platform's security check on every phone of a farm is
     // exactly the kind of evasion this register must not automate. The upload policy is `abort`, so
     // a run that meets it stops and says so by name, and the operator handles that account by hand.
+    //
+    // `abortCode` (1.34.0): met mid-walk, this used to surface as a generic `E_MODAL_UNHANDLED`, and
+    // `finish` then pressed BACK and force-stopped TikTok — dismissing the very sheet the operator
+    // needed to see. It now always raises `E_SECURITY_CHECK`, which `finish` leaves on screen.
     match: { textIncludes: ['pemeriksaan keamanan', 'security check'] },
     actions: {},
+    abortCode: 'E_SECURITY_CHECK',
+    abortMessage:
+      'TikTok is asking this account for a security check ("pemeriksaan keamanan"). The run did not touch it and left it on screen. Complete it on the phone, check the profile for the video, then re-run.',
     seen: { device: 'moto g06 power (ZP2222RMBS)', app: 'com.ss.android.ugc.trill', locale: 'id-ID', at: '2026-09-11' },
   },
   {
@@ -223,8 +247,13 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     // real screen this flow walks, and — with `UPLOAD_MODAL_POLICIES['tt.notice'] === 'ack'` and no
     // "Mengerti" node present to prefer — `resolveActionTarget`'s fallback would have tapped that
     // close icon on a screen with no notice showing at all.
+    //
+    // `textEquals`, not `textIncludes` (1.34.0): a caption such as "Oke banget #fyp" CONTAINS "Oke",
+    // so the caption field itself read as a notice, its EditText was tapped as the "button", and the
+    // post screen failed with `E_MODAL_STUCK` before Post. A notice's button carries the label and
+    // nothing else.
     match: {
-      textIncludes: ACK_SELECTORS.filter((s): s is { text: string } => 'text' in s)
+      textEquals: ACK_SELECTORS.filter((s): s is { text: string } => 'text' in s)
         .map((s) => s.text)
         .filter((t) => !GENERIC_CLOSE_LABELS.includes(t)),
     },
@@ -268,12 +297,27 @@ function nodeText(node: UiNode): string {
   return node.text || node.desc
 }
 
+/**
+ * A text field — what the run is typing into, never a dialog. Its text is whatever the operator's
+ * caption says, so it must never identify a modal or be tapped as one's button (1.34.0). The farm's
+ * tree carries no `editable` flag, so the class is the signal.
+ */
+export function isEditableNode(node: Pick<UiNode, 'className'>): boolean {
+  return /EditText|AutoCompleteTextView/.test(node.className)
+}
+
 function matchesIdentity(node: UiNode, match: ModalEntry['match']): boolean {
-  if (match.id === undefined && match.textIncludes === undefined) return false
+  if (match.id === undefined && match.textIncludes === undefined && match.textEquals === undefined) return false
   if (match.id !== undefined && !nodeMatchesId(node, match.id)) return false
-  if (match.textIncludes !== undefined) {
+  if (match.textIncludes !== undefined || match.textEquals !== undefined) {
+    if (isEditableNode(node)) return false
     const t = nodeText(node)
-    if (!t || !match.textIncludes.some((s) => t.includes(s))) return false
+    if (!t) return false
+    if (match.textIncludes !== undefined && !match.textIncludes.some((s) => t.includes(s))) return false
+    if (match.textEquals !== undefined) {
+      const label = t.trim().toLowerCase()
+      if (!match.textEquals.some((s) => label === s.trim().toLowerCase())) return false
+    }
   }
   return true
 }
@@ -331,11 +375,11 @@ function resolveActionTarget(nodes: UiNode[], entry: ModalEntry, policy: 'allow'
   // widens the locale coverage without widening what this file is allowed to tap.
   const localeFallback = policy === 'deny' ? DENY_SELECTORS : policy === 'ack' ? ACK_SELECTORS : []
   for (const candidate of localeFallback) {
-    const hit = nodes.find((n) => n.clickable && selectorMatchesNode(n, candidate))
+    const hit = nodes.find((n) => n.clickable && !isEditableNode(n) && selectorMatchesNode(n, candidate))
     if (hit) return hit
   }
 
-  if (entry.match.textIncludes) {
+  if (entry.match.textIncludes || entry.match.textEquals) {
     const fallback = nodes.find((n) => n.clickable && matchesIdentity(n, entry.match))
     if (fallback) return fallback
   }
@@ -436,6 +480,14 @@ export async function sweepModals(
     const nodes = flatten(tree)
     const matched = matchModals(tree) // one source of truth for identity — see matchModals above
     if (matched.length === 0) return { cleared }
+
+    // An entry the operator must handle by hand is raised by its own code before anything else in
+    // this round — never tapped, never folded into a generic "unhandled" (1.34.0).
+    const handOff = matched.find((e) => e.abortCode !== undefined)
+    if (handOff) {
+      await ctx.artifact.screenshot(`modal-${handOff.id}`)
+      throw Object.assign(new Error(handOff.abortMessage ?? `"${handOff.id}" is on screen and is never answered by a run`), { code: handOff.abortCode })
+    }
 
     const actionable: { entry: ModalEntry; policy: 'allow' | 'deny' | 'ack' }[] = []
     for (const entry of matched) {
