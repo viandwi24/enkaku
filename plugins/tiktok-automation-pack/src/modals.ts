@@ -3,6 +3,7 @@ import type { Selector, UiNode } from '@enkaku/protocol'
 import { sleep } from './human'
 import { centerOf, flatten } from './tree'
 import { ACK_SELECTORS, DENY_SELECTORS } from './dialogs'
+import { TIKTOK_INTERRUPTIONS, closeNear } from './interruptions'
 
 /**
  * The modal REGISTER (plan 113 §3.4, §4.2) — what replaces `dialogs.ts`'s two closed allow-lists
@@ -51,6 +52,8 @@ export interface ModalEntry {
   actions: Partial<Record<'allow' | 'deny' | 'ack', Selector>>
   /** Where this was confirmed, so a future reader knows what it is worth. */
   seen: { device: string; app: string; locale: string; at: string }
+  /** The action target is the close control NEAREST the identifying text (`interruptions.ts` `closeNear`), for a sheet whose close carries a generic label. */
+  closeNearIdentity?: boolean
 }
 
 const SEEN_POST = { device: 'moto g06 power (ZP2222RMBS)', app: 'com.ss.android.ugc.trill', locale: 'id-ID', at: '2026-08-18' }
@@ -176,6 +179,17 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     seen: { device: 'moto g06 power (ZP2222RMBS)', app: 'com.ss.android.ugc.trill', locale: 'id-ID', at: '2026-09-11' },
   },
   {
+    id: 'tt.phone-prompt',
+    // Observed 2026-09-14 on the production SM-A075F fleet, over the For You feed, in id-ID and en: the "Tambah nomor
+    // telepon" / "Add phone" sheet. Identity is `interruptions.ts`'s, so the warm-ups and this register cannot
+    // disagree about what the sheet is. `deny` closes it with the sheet's own close — never "Lanjutkan", never a
+    // number typed.
+    match: { textIncludes: [...(TIKTOK_INTERRUPTIONS.find((i) => i.id === 'tt.phone-prompt')?.identity ?? [])] },
+    actions: { deny: { desc: 'Tutup' } },
+    closeNearIdentity: true,
+    seen: { device: 'Samsung SM-A075F', app: 'com.ss.android.ugc.trill', locale: 'id-ID, en', at: '2026-09-14' },
+  },
+  {
     id: 'tt.discard-draft',
     // E14: raised when leaving the editor. Two buttons, always shown together, no id (E10) — a
     // "text pair" per §4.2. `deny` maps to "Buang" (abandon the draft, a refusal to keep it) and
@@ -239,6 +253,7 @@ export const UPLOAD_MODAL_POLICIES: Record<string, ModalPolicy> = {
   // would have stalled on the very first screen it reached after succeeding.
   'tt.widget-prompt': 'deny',
   'tt.contacts': 'deny',
+  'tt.phone-prompt': 'deny',
   // Never answered by a run — see the entry. `abort` is what turns it into a named stop.
   'tt.security-check': 'abort',
 }
@@ -295,6 +310,11 @@ export function matchModals(root: UiNode, register: ModalEntry[] = TIKTOK_MODALS
  * ACK_SELECTORS' several labels is showing varies by notice.
  */
 function resolveActionTarget(nodes: UiNode[], entry: ModalEntry, policy: 'allow' | 'deny' | 'ack'): UiNode | null {
+  if (entry.closeNearIdentity && policy === 'deny') {
+    const anchor = nodes.find((n) => matchesIdentity(n, entry.match))
+    const root = nodes[0]
+    if (anchor && root) return closeNear(root, anchor)
+  }
   const sel = entry.actions[policy]
   if (sel) {
     const direct = nodes.find((n) => selectorMatchesNode(n, sel))
@@ -335,7 +355,7 @@ const GRANT_TERMS = ['izinkan', 'allow']
  * that follows, buys, subscribes, or accepts terms, negated or not. Lifted from `dialogs.ts`'s own
  * `ACK_SELECTORS` comment, plus the English equivalents that comment names but does not enumerate.
  */
-const OTHER_NEVER_TERMS = ['ikuti', 'follow', 'beli', 'berlangganan', 'setuju', 'agree', 'subscribe', 'buy']
+const OTHER_NEVER_TERMS = ['ikuti', 'follow', 'beli', 'berlangganan', 'setuju', 'agree', 'subscribe', 'buy', 'lanjut', 'continue']
 
 /** `{id}` resolves through `KNOWN_ID_LABELS`; `{text}`/`{desc}` carry their own label; `{point}` has none to judge. */
 function resolveLabel(sel: Selector): string | null {

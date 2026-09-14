@@ -3,6 +3,7 @@ import type { Selector } from '@enkaku/protocol'
 import { z } from 'zod'
 import { between, makeRng, pickWatchMs, pngSize, sleep } from './human'
 import { clearBlockingDialog, nextDialogAction } from './dialogs'
+import { dismissInterruptions } from './interruptions'
 import switchAccount from './switch-account'
 import searchFollow from './search-follow'
 import listAccounts from './list-accounts'
@@ -546,6 +547,10 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
             await sleep(Math.round(between(rng, 1_500, 5_000)))
           }
 
+          // The add-phone sheet (and any other known interruption) covers only the bottom half, so neither the blind-read
+          // detector above nor the identical-frame check below ever sees it — look for it by name before every swipe.
+          await dismissInterruptions(ctx).catch(() => undefined)
+
           await advanceFeed(ctx, frame, rng)
 
           // A burst of two quick skips — the "not interested, not interested" pattern.
@@ -820,6 +825,15 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.32.0 — the "add phone number" sheet is closed, not swiped into. On the production SM-A075F fleet
+  // (2026-09-14, id-ID and en) TikTok raised "Tambah nomor telepon" / "Add phone" over the For You feed. It
+  // covers only the bottom half, so auto-scroll's blind-read and identical-frame detectors never fired and the
+  // run kept swiping into it; notification-activity could not find Kotak Masuk under it. `interruptions.ts`
+  // recognises it by name and taps the sheet's OWN close (never the reward badge's, never "Lanjutkan"/"Continue",
+  // nothing typed), BACK if that close is unreadable — before every auto-scroll swipe, in searchFor, before the
+  // inbox tap, in keyword-videos' player, and first in clearBlockingDialog. The upload register gains
+  // `tt.phone-prompt` (deny), and "lanjut"/"continue" join the never-tap terms.
+  //
   // 1.31.0 — nothing after Post is ever "failed", and the caption placeholder is not content. The
   // owner's production farm (2026-09-14) reported uploads that landed while the run said failed:
   // `tt.widget-prompt` — a prompt TikTok shows only AFTER accepting an upload — could not be
@@ -907,7 +921,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.31.0',
+  version: '1.32.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

@@ -1,6 +1,7 @@
 import type { ScriptContext, WaitForOptions } from '@enkaku/sdk'
 import type { Selector, UiNode } from '@enkaku/protocol'
 import { sleep } from './human'
+import { dismissInterruptions } from './interruptions'
 
 /**
  * Dialog resilience — lifted verbatim out of `index.ts` (plan 86 §3.1, §4.7, §5 step 1) so
@@ -108,6 +109,13 @@ export const ACK_SELECTORS: Selector[] = [
  */
 export async function clearBlockingDialog(ctx: ScriptContext<unknown>, opts?: { allowBack?: boolean }): Promise<void> {
   const allowBack = opts?.allowBack ?? true
+  // A known interruption first (1.32.0): it is closed by its own close control, which the closed lists below cannot
+  // tell apart from any other "Tutup" on screen.
+  try {
+    if ((await dismissInterruptions(ctx)).dismissed.length > 0) return
+  } catch {
+    // Inspector unavailable — the ladder below is the fallback it always was.
+  }
   for (const sel of ACK_SELECTORS) {
     try {
       if ((await ctx.device.find(sel)) === null) continue

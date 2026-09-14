@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { between, makeRng, sleep } from './human'
 import { all } from './tree'
 import { clearBlockingDialog } from './dialogs'
+import { dismissInterruptions } from './interruptions'
 import { bytesEqual, capture, frameOf, jitteredPoint, relaunch, snapshot, TIKTOK_PACKAGE, verifiedPageDown } from './gesture'
 
 /**
@@ -78,7 +79,8 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const steps: string[] = []
 
     // --- the nav: badge first, then the tap -------------------------------------------------
-    const home = await ctx.device.dump()
+    // The add-phone sheet covers the bottom nav — closed first, or Kotak Masuk is never found.
+    const home = (await dismissInterruptions(ctx)).tree
     const inbox = all(home, (n) => n.clickable && n.desc.trim() === 'Kotak Masuk' && n.bounds.top > 1_400)[0]
     if (!inbox) throw new Error('the Kotak Masuk tab was not on the bottom navigation — see the first artifact')
     const badge = all(home, (n) => /^\d+\+?$/.test(n.text.trim()) && n.bounds.top >= inbox.bounds.top && n.bounds.bottom <= inbox.bounds.bottom + 2 && n.bounds.left >= inbox.bounds.left - 2 && n.bounds.right <= inbox.bounds.right + 2)[0]?.text.trim() ?? ''

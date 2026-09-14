@@ -4,6 +4,7 @@ import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { between, makeRng, pickWatchMs, sleep } from './human'
 import { searchFor } from './search'
+import { dismissInterruptions } from './interruptions'
 import { all } from './tree'
 import { capture, frameOf, readGate, readableStrings, relaunch, TIKTOK_PACKAGE, verifiedSwipeUp } from './gesture'
 
@@ -124,7 +125,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       // like. `pickWatchMs`'s tilt shifts probability mass toward the long
       // buckets while keeping the distribution lumpy: a matched video is still
       // sometimes skipped in a second, because no person is that consistent.
-      const playerTree = await ctx.device.dump()
+      const playerTree = (await dismissInterruptions(ctx)).tree
       const text = readableStrings(playerTree).join(' ')
       const matched = ctx.params.keywords.some((k) => k.trim() !== '' && text.toLowerCase().includes(k.toLowerCase()))
       if (matched) keywordMatches += 1

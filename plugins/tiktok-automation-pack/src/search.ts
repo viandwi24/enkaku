@@ -3,6 +3,7 @@ import type { Selector, UiNode } from '@enkaku/protocol'
 import { sleep } from './human'
 import { bytesEqual, capture, snapshot } from './gesture'
 import { clearBlockingDialog, waitForAnchor } from './dialogs'
+import { dismissInterruptions } from './interruptions'
 import { all, centerOf } from './tree'
 
 /**
@@ -89,7 +90,7 @@ export interface SearchForResult {
  */
 export async function searchFor(ctx: ScriptContext<unknown>, query: string, tab: string): Promise<SearchForResult> {
   // 1. The search icon, by dump-and-walk with a bounds filter (§0.2) — never a bare `find({desc:'Cari'})`.
-  let feedTree = await ctx.device.dump()
+  let feedTree = (await dismissInterruptions(ctx)).tree
   let icon = findSearchIcon(feedTree)
   if (!icon) {
     ctx.log.warn('the search icon was not in the first dump — sweeping for a blocking dialog once')
