@@ -584,8 +584,12 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
               await relaunch(ctx, TIKTOK_PACKAGE)
               recoveries += 1
             } else {
+              // Fails the run instead of returning a success (1.33.0): the owner found phones left on the For You feed
+              // with the job reporting done. A run that could not move the feed for three swipes and a restart did not
+              // do its work, and a green job hides exactly the phone that needs a look. `finish` still closes TikTok.
               ctx.log.warn('giving up: three consecutive swipes changed nothing, and a restart did not help')
-              break
+              await ctx.artifact.screenshot('stalled')
+              throw Object.assign(new Error(`the feed did not move after ${stalled} swipes and a restart of TikTok (after ${watched.length} videos) — see the stalled screenshot`), { code: 'E_FEED_STALLED' })
             }
             before = (await snapshot(ctx)) ?? before
             continue
@@ -825,6 +829,11 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.33.0 — a feed that never moves fails the run. auto-scroll used to give up after three unmoved swipes and a
+  // restart by BREAKING out of its loop and returning success, so the owner found phones left on the For You feed
+  // behind green jobs (2026-09-14). It now throws E_FEED_STALLED with a `stalled` screenshot; `finish` still closes
+  // TikTok, and the warm-up workflow carries on with its next activity.
+  //
   // 1.32.0 — the "add phone number" sheet is closed, not swiped into. On the production SM-A075F fleet
   // (2026-09-14, id-ID and en) TikTok raised "Tambah nomor telepon" / "Add phone" over the For You feed. It
   // covers only the bottom half, so auto-scroll's blind-read and identical-frame detectors never fired and the
@@ -921,7 +930,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.32.0',
+  version: '1.33.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

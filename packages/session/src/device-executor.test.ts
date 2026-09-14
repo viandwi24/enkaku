@@ -53,7 +53,8 @@ describe('createDeviceExecutor — app.launch/app.forceStop quote every interpol
     const cmds: string[] = []
     const execute = createDeviceExecutor({ session: fakeSession(async (cmd) => { cmds.push(cmd); return '' }) })
     await execute(call('app.forceStop', { pkg: 'com.example.app' }))
-    expect(cmds).toEqual([`am force-stop 'com.example.app'`])
+    // Then read back once: `pidof` answering nothing (the fake) proves it stopped, so no second force-stop.
+    expect(cmds).toEqual([`am force-stop 'com.example.app'`, `pidof 'com.example.app'`])
   })
 
   test('a pkg containing a semicolon cannot run a second command via app.launch', async () => {
@@ -73,7 +74,7 @@ describe('createDeviceExecutor — app.launch/app.forceStop quote every interpol
     const execute = createDeviceExecutor({ session: fakeSession(async (cmd) => { cmds.push(cmd); return '' }) })
     const malicious = 'com.x$(touch /data/local/tmp/pwned)'
     await execute(call('app.forceStop', { pkg: malicious }))
-    expect(cmds).toEqual([`am force-stop 'com.x$(touch /data/local/tmp/pwned)'`])
+    expect(cmds).toEqual([`am force-stop 'com.x$(touch /data/local/tmp/pwned)'`, `pidof 'com.x$(touch /data/local/tmp/pwned)'`])
   })
 
   test('an activity containing backticks cannot execute via app.launch', async () => {

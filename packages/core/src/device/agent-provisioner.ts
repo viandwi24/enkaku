@@ -137,7 +137,11 @@ export interface AgentProvisionReport {
 
 export interface AgentProvisioner {
   /** Verify → install → repair once → degrade (F8). Idempotent; safe to call on every hook. Never throws for a device that exists — every failure is captured as `state: 'failed'`. */
-  ensure(deviceId: string, opts?: { force?: boolean; reinstall?: boolean }): Promise<AgentStatus>
+  /**
+   * `reconnect` (the device-online hook): the phone just came back, so an automatic budget exhausted while it was
+   * unreachable starts fresh — without it a phone that dropped off adb three times stayed `failed` for good.
+   */
+  ensure(deviceId: string, opts?: { force?: boolean; reinstall?: boolean; reconnect?: boolean }): Promise<AgentStatus>
   /** The persisted row, Zod-validated — never issues an adb call of its own. */
   status(deviceId: string): Promise<AgentStatus>
   /** Every device currently online (offline devices are unreachable by construction — nothing to verify), bounded by the install lane. Returns a per-device report. */
@@ -155,6 +159,17 @@ export interface AgentProvisioner {
    * one in the first place).
    */
   runningSince(deviceId: string): number | null
+}
+
+/**
+ * A failure that says the PHONE could not be reached at all — adb's own "device 'X' not found", an offline transport —
+ * rather than anything about the agent. Scored like `E_ADB_UNAVAILABLE`: deferred, never an attempt, because the
+ * device-online hook runs again the moment it is back (owner, 2026-09-14: three such failures in a row exhausted a
+ * phone's budget, and it never tried again once reachable).
+ */
+export function isDeviceUnreachableReason(reason: string): boolean {
+  // adb's own phrasing only — a sentence that merely MENTIONS an offline device is not adb saying it could not reach one.
+  return /device '[^']*' (not found|offline|is offline)|^(adb: |error: )?device (offline|not found)$|no devices\/emulators found/im.test(reason)
 }
 
 function nowSeconds(now: () => number): number {
@@ -406,6 +421,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       // into a STILL-`not_installed` reverify — is a named, non-fatal
       // `failed` reason. Never quarantines, blocks, or changes scheduling
       // (plan 90 §3.8's load-bearing decision).
+      if (isDeviceUnreachableReason(reason)) throw new EnkakuError('E_DEVICE_UNREACHABLE', reason)
       return { state: 'failed', appVersion: priorAppVersion, versionCode: null, androidSdkInt: row.apiLevel, capabilities: [], reason }
     }
 
@@ -475,13 +491,14 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       // Installed (verify says so) but not answering `hello()` — a genuine
       // reachability failure. `failed`, not `outdated`: the artifact itself
       // is not known to be wrong.
+      if (isDeviceUnreachableReason(reason)) throw new EnkakuError('E_DEVICE_UNREACHABLE', reason)
       return { state: 'failed', appVersion: priorAppVersion, versionCode, androidSdkInt: row.apiLevel, capabilities: [], reason }
     }
   }
 
   const inFlight = new Map<string, Promise<AgentStatus>>()
 
-  async function ensureImpl(deviceId: string, opts?: { force?: boolean; reinstall?: boolean }): Promise<AgentStatus> {
+  async function ensureImpl(deviceId: string, opts?: { force?: boolean; reinstall?: boolean; reconnect?: boolean }): Promise<AgentStatus> {
     const row = mustGet(deviceId)
     const prior = readCached(row, deps.log)
     const checkedAt = nowSeconds(now)
@@ -524,7 +541,8 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // A forced call (an explicit retry, or the fleet-wide action) always
     // bypasses this — that IS the "explicit retry" the bound exists to wait
     // for.
-    if (!opts?.force && prior.state === 'failed') {
+    // A reconnect is a fresh start for the budget too (see `ensure`'s own doc) — not for the provision mode above.
+    if (!opts?.force && !opts?.reconnect && prior.state === 'failed') {
       if (hasExhaustedRetryBudget(prior, retryBackoffS)) {
         deps.log.debug(`agent-provisioner: device ${row.id} has exhausted its ${retryBackoffS.length} automatic attempts — waiting for an explicit retry`)
         return prior
@@ -574,6 +592,10 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
         deps.log.debug(`agent-provisioner: deferring device ${row.id} — adb subsystem was not ready for this pass (not counted against its retry budget)`)
         return prior
       }
+      if (err instanceof EnkakuError && err.code === 'E_DEVICE_UNREACHABLE') {
+        deps.log.debug(`agent-provisioner: deferring device ${row.id} — the phone was not reachable (${err.message}); not counted against its retry budget, the device-online hook tries again`)
+        return prior
+      }
       throw err
     } finally {
       runningSinceMap.delete(row.id)
@@ -600,7 +622,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       priorAttempts: prior.attempts,
       checkedAt,
       retryBackoffS,
-      forced: !!opts?.force,
+      forced: !!opts?.force || !!opts?.reconnect,
     })
 
     // A pass that did not install keeps the stored fingerprint: only an

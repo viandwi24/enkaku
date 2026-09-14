@@ -810,6 +810,15 @@ export function createDeviceExecutor(deps: {
       }
       case 'app.forceStop': {
         await deps.session.transport.exec(`am force-stop ${shellQuote(call.args.pkg)}`, { profile: 'appLifecycle' })
+        // Read back, once (owner, 2026-09-14: phones left on TikTok's feed after a job that had called this). A package
+        // still holding a process after `force-stop` is stopped again; `pidof` answering nothing is the proof.
+        const still = await deps.session.transport
+          .exec(`pidof ${shellQuote(call.args.pkg)}`, { profile: 'appLifecycle' })
+          .then((r) => r.stdout.trim())
+          .catch(() => '')
+        if (still !== '') {
+          await deps.session.transport.exec(`am force-stop ${shellQuote(call.args.pkg)}`, { profile: 'appLifecycle' })
+        }
         if (call.args.clearRecents) {
           // One shell round trip, not one per task: read the switcher, keep only the lines naming
           // THIS package, pull each task id out of `Task{<hex> #<id>`, and remove those. `am stack

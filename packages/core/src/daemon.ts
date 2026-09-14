@@ -4943,7 +4943,7 @@ let blobGc: BlobGc | null = null
             // `onDeviceReady`, so a freshly admitted, currently-plugged-in
             // phone reaches the provisioner on its very first callback, with
             // no second, redundant call needed here.
-            void agentProvisionerRef?.ensure(deviceId).catch((err) =>
+            void agentProvisionerRef?.ensure(deviceId, { reconnect: true }).catch((err) =>
               log.warn(`agent-provisioner ensure() failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
             )
             // Plan 89 §3.7 point 1 — the SAME hook `restoreNetworkRoute` and

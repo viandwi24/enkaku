@@ -373,6 +373,51 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
       expect(calls).toBe(2)
     })
 
+    test("a phone adb cannot reach (\"device 'X' not found\") is deferred, never an attempt — its budget is intact when it is back", async () => {
+      let reachable = false
+      const { deps, db } = fakeDeps({
+        makeLauncher: fakeMakeLauncher({
+          ensureInstalled: async () => {
+            if (!reachable) throw new Error("adb: device 'R9RY905FPWB' not found")
+            return { versionCode: 5 }
+          },
+        }),
+        retryBackoffS: [0, 0, 0],
+      })
+      seedDevice(db)
+      const provisioner = createAgentProvisioner(deps)
+
+      for (let i = 0; i < 5; i++) {
+        const s = await provisioner.ensure('dev-1')
+        expect(s.state).not.toBe('failed')
+        expect(s.attempts).toBe(0)
+      }
+      reachable = true
+      expect((await provisioner.ensure('dev-1')).state).toBe('ready')
+    })
+
+    test('a reconnect clears an exhausted automatic budget, so a phone that failed three times is tried again once it is back', async () => {
+      let calls = 0
+      const { deps, db } = fakeDeps({
+        makeLauncher: fakeMakeLauncher({
+          ensureInstalled: async () => {
+            calls++
+            throw new Error('corrupt APK')
+          },
+        }),
+        retryBackoffS: [0, 0, 0],
+      })
+      seedDevice(db)
+      const provisioner = createAgentProvisioner(deps)
+      for (let i = 0; i < 3; i++) await provisioner.ensure('dev-1')
+      expect((await provisioner.ensure('dev-1')).attempts).toBe(3)
+      expect(calls).toBe(3)
+
+      const afterReconnect = await provisioner.ensure('dev-1', { reconnect: true })
+      expect(calls).toBe(4)
+      expect(afterReconnect.attempts).toBe(1)
+    })
+
     test("guestAgent.provision: 'off' is a no-op for automatic calls — no adb work at all (acceptance criterion 8)", async () => {
       const { deps, db, hostAdbCalls, execCalls } = fakeDeps({ provision: () => 'off' })
       seedDevice(db)
