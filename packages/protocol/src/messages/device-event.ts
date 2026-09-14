@@ -71,7 +71,10 @@ export const MAIN_EVENT_KINDS = [
    * A screen-rotation lock (`DeviceSettings.prep.rotation`, plan 85 §3.7) was
    * asked for and the device did not end up in it — carries { mode, applied:
    * false, reason, quality? }, plus { from, to, state } when the trigger was an
-   * operator changing the setting rather than a session opening.
+   * operator changing the setting rather than a session opening. Also recorded,
+   * with { applied: true, drifted: true, trigger }, when a re-check (device
+   * online, job finished, the periodic sweep) found the device OFF its lock and
+   * locked it again: something other than the farm changed the phone.
    *
    * Deliberately only recorded for outcomes that are NOT a plain success. A
    * lock is applied on every session build of every wall tile; recording each

@@ -1,8 +1,9 @@
 import type { AdbClient } from '@enkaku/adb'
-import type { FrameMeta, Quality, RotationMode, SessionPhase } from '@enkaku/protocol'
+import { AdbTcpTransport, AdbUsbTransport } from '@enkaku/drivers'
+import type { FrameMeta, Quality, RotationMode, SessionPhase, Transport } from '@enkaku/protocol'
 import { SessionError } from './errors'
 import type { Logger } from './logger'
-import type { RotationOutcome } from './orientation'
+import { assertRotationLock, ensureRotationLock, isLockMode, releaseRotationLock, type RotationOutcome } from './orientation'
 import { createSession, type CreateSessionDeps, type DeviceSession } from './session'
 import type { DeviceSnapshotSource } from './types'
 import { createVideoLatencyTracker, type VideoLatencySnapshot, type VideoLatencyTracker } from './video-latency'
@@ -42,6 +43,9 @@ export interface ViewerAttach {
 }
 
 export type SessionState = 'none' | 'building' | 'ready'
+
+/** What prompted a check-first rotation re-assert (`SessionManager.ensureRotation`). */
+export type RotationEnsureEvent = 'device-online' | 'job-finished' | 'sweep'
 
 export interface EncoderState {
   engine: 'scrcpy' | 'screencap-loop'
@@ -163,7 +167,26 @@ export interface SessionManager {
   closeDevice(deviceId: string): Promise<void>
   closeAll(reason?: string): Promise<number>
   restartAt?(deviceId: string, quality: Quality, detail?: string): Promise<void>
+  /**
+   * An operator changed `prep.rotation` (plan 85 §3.7): a lock mode is asserted, `'device'` hands
+   * rotation back. Through the open session's handle when there is one, otherwise through a fresh
+   * transport — a lock must reach a phone whether or not anything is streaming it. `null` only when
+   * the device is unknown or offline (it is then written when the device comes online).
+   */
   setRotation?(deviceId: string, mode: RotationMode): Promise<RotationOutcome | null>
+  /**
+   * Re-assert the device's STORED lock, check-first (one read, a write only on drift). Called when
+   * the device comes online, when a job on it finishes, and by the daemon's slow sweep. Also
+   * performs a release `deferRotationRelease` parked while a job held the device. `null` when there
+   * was nothing to do (a `'device'` mode with no parked release, or an unknown/offline device).
+   */
+  ensureRotation?(deviceId: string, event?: RotationEnsureEvent): Promise<RotationOutcome | null>
+  /**
+   * Park a switch to `'device'` saved while a job holds the device: handing rotation back mid-job
+   * would turn the screen under the script, so `ensureRotation` performs it once the job ends — and
+   * drops it if the setting has moved back to a lock by then.
+   */
+  deferRotationRelease?(deviceId: string): void
   reprofile?(reason: string): Promise<{ restarted: string[]; skippedBusy: string[]; unchanged: number }>
   activeDeviceIds?(): string[]
   /** Encoder states per device, for `GET /api/video/sessions` and `/api/adb/stats`. */
@@ -470,6 +493,92 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     return entry
   }
 
+  /** Hand-backs to `'device'` saved while a job held the device (`deferRotationRelease`). */
+  const pendingRotationReleases = new Set<string>()
+  /** One re-assert per device at a time: device-online, job-finished and the sweep can overlap. */
+  const rotationInFlight = new Map<string, Promise<RotationOutcome | null>>()
+
+  /** The lock handle of the device's open session — the entry that ran device prep first. */
+  function rotationLockOf(deviceId: string): { entry: Entry; lock: NonNullable<DeviceSession['rotation']> } | null {
+    const open = [...entries.values()].filter((e) => e.deviceId === deviceId)
+    const entry = open.find((e) => e.ownsDevicePrep) ?? open[0]
+    const lock = entry?.session.rotation
+    return entry && lock ? { entry, lock } : null
+  }
+
+  /**
+   * A transport for a device with NO open session. A lock is a device state, not a session one, so a
+   * phone whose session build failed, or that is between sessions, must still be reachable by it.
+   * Null for an unknown or offline device — it is written when the device comes online.
+   */
+  function sessionlessTransport(deviceId: string): Transport | null {
+    const row = deps.devices.get(deviceId)
+    if (!row || row.status === 'offline') return null
+    const opts = { client: deps.client, serial: row.serial, stableId: row.stableId }
+    return row.transport === 'adb-tcp' ? new AdbTcpTransport(opts) : new AdbUsbTransport(opts)
+  }
+
+  /** A lock that did not take, or a device that had drifted off its lock, earns a row in the device's log. */
+  function reportRotation(deviceId: string, outcome: RotationOutcome, extra: Record<string, unknown>): void {
+    if (outcome.applied && !outcome.drifted) return
+    deps.onEvent?.(deviceId, 'device.rotation', {
+      mode: outcome.mode,
+      applied: outcome.applied,
+      ...(outcome.drifted ? { drifted: true } : {}),
+      reason: outcome.reason ?? (outcome.applied ? 'the device had drifted off the rotation lock and was locked again' : 'the device did not accept the rotation lock'),
+      ...extra,
+    })
+  }
+
+  async function writeRotation(deviceId: string, mode: RotationMode): Promise<RotationOutcome | null> {
+    const held = rotationLockOf(deviceId)
+    if (held) {
+      const outcome = await held.lock.set(mode)
+      reportRotation(deviceId, outcome, { quality: held.entry.quality })
+      return outcome
+    }
+    const transport = sessionlessTransport(deviceId)
+    if (!transport) return null
+    const outcome = isLockMode(mode) ? await assertRotationLock(transport, mode, deps.log) : await releaseRotationLock(transport, deps.log)
+    reportRotation(deviceId, outcome, {})
+    return outcome
+  }
+
+  function ensureStoredRotation(deviceId: string, event: RotationEnsureEvent): Promise<RotationOutcome | null> {
+    const running = rotationInFlight.get(deviceId)
+    if (running) return running
+    const run = (async (): Promise<RotationOutcome | null> => {
+      const row = deps.devices.get(deviceId)
+      if (!row || row.status === 'offline') return null
+      const mode = row.rotation ?? 'device'
+      if (!isLockMode(mode)) {
+        // `'device'` is left alone, except for a hand-back parked while a job held the device.
+        if (!pendingRotationReleases.has(deviceId)) return null
+        if (event !== 'job-finished' && deps.hasRunningJob?.(deviceId)) return null
+        pendingRotationReleases.delete(deviceId)
+        return writeRotation(deviceId, 'device')
+      }
+      pendingRotationReleases.delete(deviceId)
+      const held = rotationLockOf(deviceId)
+      if (held) {
+        const outcome = await held.lock.ensure(mode)
+        reportRotation(deviceId, outcome, { quality: held.entry.quality, trigger: event })
+        return outcome
+      }
+      const transport = sessionlessTransport(deviceId)
+      if (!transport) return null
+      const outcome = await ensureRotationLock(transport, mode, deps.log)
+      reportRotation(deviceId, outcome, { trigger: event })
+      return outcome
+    })().catch((err: unknown) => {
+      deps.log.warn(`rotation re-assert failed for ${deviceId} (${event}), tolerated: ${String(err)}`)
+      return null
+    })
+    rotationInFlight.set(deviceId, run)
+    void run.finally(() => rotationInFlight.delete(deviceId))
+    return run
+  }
+
   function state(deviceId: string): SessionState {
     const key = entryKey(deviceId, 'wall')
     if (entries.has(key)) return 'ready'
@@ -672,20 +781,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     restartAt,
 
     async setRotation(deviceId, mode) {
-      const open = [...entries.values()].filter((e) => e.deviceId === deviceId)
-      const entry = open.find((e) => e.ownsDevicePrep) ?? open[0]
-      const lock = entry?.session.rotation
-      if (!entry || !lock) return null
-      const outcome = await lock.set(mode)
-      if (!outcome.applied) {
-        deps.onEvent?.(deviceId, 'device.rotation', {
-          mode,
-          applied: false,
-          reason: outcome.reason ?? 'the device did not accept the rotation lock',
-          quality: entry.quality,
-        })
-      }
-      return outcome
+      // An explicit operator change supersedes any hand-back parked earlier.
+      pendingRotationReleases.delete(deviceId)
+      return writeRotation(deviceId, mode)
+    },
+
+    ensureRotation(deviceId, event = 'sweep') {
+      return ensureStoredRotation(deviceId, event)
+    },
+
+    deferRotationRelease(deviceId) {
+      pendingRotationReleases.add(deviceId)
     },
 
     async reprofile(reason) {

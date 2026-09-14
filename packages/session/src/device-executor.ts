@@ -786,8 +786,10 @@ export function createDeviceExecutor(deps: {
           should happen still happens.
         */
         // The STORED setting wins over the session's own mode when the host can read it (see
-        // `deps.rotation`). Only a lock is applied here: a setting changed back to 'device' is left
-        // to the session's close, since handing rotation back mid-job would turn the screen under it.
+        // `deps.rotation`). Only a lock is applied here. A setting changed back to 'device' is handed
+        // back by the settings save itself (or when the job holding the device finishes) — never at a
+        // launch, since handing rotation back mid-job would turn the screen under it. Nothing is ever
+        // reverted on a session close any more (`orientation.ts`'s `rotationActionFor`).
         const lock = deps.session.rotation
         const wanted = deps.rotation?.() ?? lock?.mode ?? 'device'
         if (lock && wanted !== 'device') await lock.set(wanted).catch(() => undefined)

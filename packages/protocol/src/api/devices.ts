@@ -18,19 +18,20 @@ import { pageSchema } from './pagination'
  * genuinely different things that can now happen, and the UI must word them
  * differently:
  *
- * - `applied`    — the session that is streaming right now re-locked, and the
- *                  device confirmed both settings on read-back.
- * - `no-session` — nothing is streaming, so there was nothing to change live.
- *                  The stored setting still applies to the next session. Not
- *                  a failure.
- * - `busy`       — a job is running on this device. Video keeps running while
- *                  a device is busy (spec §10.1) and a settings save must not
- *                  be the thing that rotates a screen out from under a
- *                  running script, so the change waits for the next session —
- *                  the same rule `PATCH`'s video reprofile already follows.
- * - `failed`     — it was attempted on a live session and the device did not
- *                  end up in the requested orientation. `reason` says what
- *                  read back instead.
+ * - `applied`    — the device was written (through its open session, or
+ *                  directly when nothing is streaming) and confirmed the
+ *                  settings on read-back.
+ * - `no-session` — the device is offline or unknown, so nothing could be
+ *                  written. A lock is written when it comes online. Not a
+ *                  failure.
+ * - `busy`       — only for a hand-back to `'device'` while a job runs:
+ *                  auto-rotate coming back on would turn the screen under the
+ *                  script (spec §10.1), so it is parked until the job
+ *                  finishes. A LOCK is never `busy` — it is a persistent
+ *                  device state and is written even while a job runs
+ *                  (2026-09-14).
+ * - `failed`     — it was attempted and the device did not end up in the
+ *                  requested state. `reason` says what read back instead.
  */
 export const RotationApplyResultSchema = z.object({
   mode: RotationModeSchema,

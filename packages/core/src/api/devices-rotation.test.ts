@@ -91,7 +91,7 @@ function withAdmin(inner: Hono<AuthEnv>): Hono<AuthEnv> {
   return wrapper
 }
 
-type SessionsStub = Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get' | 'setRotation'> & {
+type SessionsStub = Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get' | 'setRotation' | 'deferRotationRelease'> & {
   applied: Array<{ deviceId: string; mode: RotationMode }>
 }
 
@@ -214,20 +214,38 @@ describe('PATCH /api/devices/:id applies prep.rotation to a LIVE session (plan 8
     expect(events.filter((e) => e.kind === 'device.rotation')).toEqual([])
   })
 
-  // Spec §10.1 — the same rule the video reprofile beside this one follows: a
-  // settings save must never be the thing that rotates a screen out from
-  // under a running script.
-  test('a device running a job is never re-locked live; the save still succeeds and says why it waited', async () => {
+  // 2026-09-14: a lock is a standing device state, so a save writes it even
+  // while a job runs — a job on an unlocked phone is the broken case, not the
+  // lock that fixes it.
+  test('a device running a job IS locked live — a lock is a persistent device state', async () => {
     const sessions = fakeSessions(applied('lock-portrait', '0'))
     const { db, app } = makeApp({ sessions, runningJobDeviceIds: new Set(['a']) })
     seedDevice(db, 'a')
 
     const res = await app.request('/a', patchReq({ settings: { prep: { rotation: 'lock-portrait' } } }))
     expect(res.status).toBe(200)
+    expect(sessions.applied).toEqual([{ deviceId: 'a', mode: 'lock-portrait' }])
+    expect((await bodyOf(res)).rotation).toEqual({ mode: 'lock-portrait', state: 'applied' })
+  })
+
+  // Spec §10.1 still holds for the hand-back: auto-rotate coming back on would
+  // turn the screen under a running script, so it is parked until the job ends.
+  test('handing rotation back to "device" while a job runs waits for the job, and says so', async () => {
+    const sessions = fakeSessions({ mode: 'device', target: null, applied: true })
+    const deferred: string[] = []
+    const { db, app } = makeApp({ sessions: { ...sessions, deferRotationRelease: (id) => void deferred.push(id) }, runningJobDeviceIds: new Set(['a']) })
+    seedDevice(db, 'a')
+    db.update(devices)
+      .set({ settings: { ...defaultDeviceSettings(), prep: { ...defaultDeviceSettings().prep, rotation: 'lock-portrait' } } })
+      .run()
+
+    const res = await app.request('/a', patchReq({ settings: { prep: { rotation: 'device' } } }))
+    expect(res.status).toBe(200)
     expect(sessions.applied).toEqual([])
+    expect(deferred).toEqual(['a'])
     const body = await bodyOf(res)
     expect(body.rotation?.state).toBe('busy')
-    expect(body.rotation?.reason).toContain('job is running')
+    expect(body.rotation?.reason).toContain('job finishes')
   })
 
   // `changedKeys` is a TOP-LEVEL diff, so `prep` reads as changed whenever any

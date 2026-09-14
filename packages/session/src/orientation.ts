@@ -14,128 +14,176 @@ const FIXED_TARGET: Record<'lock-portrait' | 'lock-landscape', string> = {
 
 const VALID_USER_ROTATION = new Set(['0', '1', '2', '3'])
 
-/** What `wm fixed-to-user-rotation` prints and accepts. */
-const FIXED_TO_USER_ROTATION_VALUES = new Set(['default', 'enabled', 'disabled'])
-
 /** `mCurrentRotation=ROTATION_<deg>` → the `user_rotation` value that means the same thing. */
 const DEGREES_TO_USER_ROTATION: Record<string, string> = { '0': '0', '90': '1', '180': '2', '270': '3' }
 
 /**
- * What `applyRotation`/`RotationLock.set` actually achieved, read back from
- * the device rather than assumed from a write's exit code.
+ * A rotation lock is a PERSISTENT device state, not a loan a session takes out and pays back
+ * (owner, 2026-09-14).
  *
- * `applied` is the field that exists because the original implementation had
- * no equivalent: every `settings put` failure was swallowed into `log.debug`,
- * so an operator who asked for a portrait lock and did not get one saw
- * nothing at all — not in the UI, not in the device log, not even at `warn`.
- * "The thing you asked for did not occur" is not debug-level information.
+ * The lock used to capture `accelerometer_rotation`/`user_rotation`/the display pin when a session
+ * opened and write them back when it closed. On a farm that is exactly backwards: every phone was
+ * on auto-rotate before it was ever admitted, so every session close — a video reprofile, a stream
+ * death, a device blip, a clean core shutdown, a Device Control linger — handed a `lock-portrait`
+ * phone back to its sensor, and a phone lying on its side opened the next app in landscape. Worse,
+ * a capture that ran while another session's revert was half-way through recorded a mixed state
+ * (auto-rotate ON with the display pin still `enabled`) as "what the device had", and every later
+ * session faithfully restored it. That is the state read off the owner's moto g06 with no job
+ * running: `accelerometer_rotation=1`, `mUserRotationMode=USER_ROTATION_FREE`,
+ * `mFixedToUserRotation=true`. Nothing but a revert ever writes `accelerometer_rotation 1`.
+ *
+ * So the rule is now one pure function, and a test holds it:
+ *   - a lock mode is (re-)asserted on every event that can reach the device, and NEVER undone by
+ *     one — a session closing is not a reason to change what the phone's operator configured;
+ *   - `'device'` writes nothing, EXCEPT when an operator switches a device to it — that one
+ *     explicit change hands rotation back (auto-rotate on, pins cleared). It is a release, not a
+ *     restore: there is no captured "prior" state any more, because a farm phone's prior state is
+ *     simply whatever the farm last wrote.
+ */
+export type RotationEvent =
+  | 'session-build'
+  | 'session-close'
+  | 'app-launch'
+  | 'setting-change'
+  | 'device-online'
+  | 'job-finished'
+  | 'sweep'
+
+export type RotationAction = 'lock' | 'release' | 'none'
+
+export function rotationActionFor(mode: RotationMode, event: RotationEvent): RotationAction {
+  if (event === 'session-close') return 'none'
+  if (mode !== 'device') return 'lock'
+  return event === 'setting-change' ? 'release' : 'none'
+}
+
+/** Whether `mode` is one of the lock modes — the only modes the farm writes on its own. */
+export function isLockMode(mode: RotationMode): mode is Exclude<RotationMode, 'device'> {
+  return mode !== 'device'
+}
+
+/**
+ * The writes that put a lock in force, in order.
+ *
+ *   1. `wm user-rotation lock <rot>` — `IWindowManager.freezeDisplayRotation`, the call the Quick
+ *      Settings tile itself makes (Android 12+). It sets `mUserRotationMode=LOCKED` inside
+ *      WindowManager directly and writes both settings for the default display, so it is the most
+ *      authoritative of the three, and on Samsung it is the path One UI's own tile takes.
+ *   2. `settings put system accelerometer_rotation 0` and `user_rotation <rot>` — the same state
+ *      through the settings provider, for builds older than (1) or an OEM that removed it.
+ *      Redundant on a build where (1) worked; two cheap writes of identical values.
+ *   3. `wm fixed-to-user-rotation enabled` (Android 10+) — makes the display follow `user_rotation`
+ *      even for an activity that requests its own (sensor) orientation. YouTube opened in
+ *      landscape (1600x720) on the production SM-A075F fleet with the settings lock alone.
+ *
+ * (1) and (3) are best effort: a build without them still holds the settings lock, which is what
+ * `applied` has always meant.
+ */
+export function lockCommands(target: string): { display: string; settings: string[]; pin: string } {
+  return {
+    display: `wm user-rotation lock ${target}`,
+    settings: ['settings put system accelerometer_rotation 0', `settings put system user_rotation ${target}`],
+    pin: 'wm fixed-to-user-rotation enabled',
+  }
+}
+
+/**
+ * The writes that hand rotation back to the device's sensor — issued ONLY when an operator switches
+ * a device to `'device'` (see `rotationActionFor`). `user_rotation` is left alone: with auto-rotate
+ * on it is not consulted, and a made-up value would be a guess.
+ */
+export const RELEASE_COMMANDS: readonly string[] = [
+  'wm user-rotation free',
+  'settings put system accelerometer_rotation 1',
+  'wm fixed-to-user-rotation default',
+]
+
+/** One shell round trip for both settings, one value per line. */
+export const READBACK_COMMAND = 'settings get system accelerometer_rotation; settings get system user_rotation'
+
+export interface RotationReadback {
+  /** `''` when the line was missing or unreadable. */
+  accel: string
+  user: string
+}
+
+export function parseReadback(stdout: string): RotationReadback {
+  const lines = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+  return { accel: lines[0] ?? '', user: lines[1] ?? '' }
+}
+
+/**
+ * Whether a read-back shows the lock in force. `target` null means `'lock-current'`, which has no
+ * fixed orientation to compare against: auto-rotate being off is the whole of its promise.
+ */
+export function lockInForce(readback: RotationReadback, target: string | null): boolean {
+  if (readback.accel !== '0') return false
+  return target === null || readback.user === target
+}
+
+/**
+ * What an apply actually achieved, read back from the device rather than assumed from a write's
+ * exit code.
+ *
+ * `applied` is the field that exists because the original implementation had no equivalent: every
+ * `settings put` failure was swallowed into `log.debug`, so an operator who asked for a portrait
+ * lock and did not get one saw nothing at all. "The thing you asked for did not occur" is not
+ * debug-level information.
  */
 export interface RotationOutcome {
   mode: RotationMode
-  /** The `user_rotation` value written. `null` for `'device'`, which writes nothing. */
+  /** The `user_rotation` value written. `null` for `'device'`, which locks nothing. */
   target: string | null
   /**
-   * Both settings read back as the values this lock wrote. Always `true` for
-   * `'device'` — there is nothing to apply, so there is nothing that can have
-   * failed.
+   * The settings read back as the values this lock wrote (for `'device'`, as auto-rotate on after an
+   * explicit release; `true` when nothing was written at all).
    */
   applied: boolean
   /** Set only when `applied` is false: which write did not take, in words an operator can act on. */
   reason?: string
+  /**
+   * Set by `ensureRotationLock` only: the device had drifted off the lock (auto-rotate back on, or
+   * another orientation) and the lock was written again. The one outcome worth a log row even when
+   * it succeeds, because something other than the farm changed the phone.
+   */
+  drifted?: boolean
 }
 
 /**
- * A live handle on one session's rotation lock (plan 85 §3.7, replacing the
- * bare revert thunk this function used to return).
- *
- * The thunk was apply-once by construction: `createSession` called
- * `applyRotation` and kept only the closure that undoes it, so changing
- * `DeviceSettings.prep.rotation` while a session was open did nothing at all
- * and said nothing about it — the setting was live in the schema, live in the
- * UI, and inert on screen. `set()` is what makes a mid-session change real.
+ * A live handle on a session's view of the lock (plan 85 §3.7). It owns nothing on the device and
+ * has nothing to undo: closing the session that holds it changes nothing on the phone.
  */
 export interface RotationLock {
-  /** The mode currently in force on this session. */
+  /** The mode this session last asserted. */
   readonly mode: RotationMode
   /** The result of the most recent apply. */
   readonly outcome: RotationOutcome
   /**
-   * Change the lock on a session that is already running. Re-issues the
-   * writes for `mode` (or, for `'device'`, hands rotation back by reverting)
-   * WITHOUT re-capturing what the device had before this session started:
-   * the capture happens exactly once, whenever the first write of this
-   * session's life happens, and every later `set()` reuses it. That is what
-   * keeps `revert()` honest — a second apply must not be able to record the
-   * FIRST apply's own values as "what the device had before Enkaku touched it".
+   * Re-assert `mode` now — every write, every time. For `'device'` this is the explicit release
+   * (auto-rotate back on); call it with `'device'` only for an operator's change of the setting.
    */
   set(mode: RotationMode): Promise<RotationOutcome>
-  /**
-   * Put back exactly what was captured. Deliberately dumb: it always
-   * re-issues the same writes, no matter how many times it is called and no
-   * matter what `set()` did in between, so it is idempotent (a second call
-   * writes the identical values the first one did — a no-op on the device)
-   * and consults no mutable "have I already reverted" flag. A no-op when
-   * nothing was ever captured, which is the `'device'`-throughout case: this
-   * session never wrote anything, so it has nothing to put back.
-   */
-  revert(): Promise<void>
-}
-
-/** What the device had before this session wrote anything. Captured at most once (see `RotationLock.set`). */
-interface CapturedRotation {
-  /**
-   * `wm fixed-to-user-rotation` before this session wrote it — `default`, `enabled` or `disabled`
-   * — or `null` when the build has no such command or its answer could not be read.
-   */
-  fixed: string | null
-  /**
-   * Android's own default is auto-rotate ON. An unreadable value (an adb
-   * hiccup, a very early boot) restores to that default rather than to
-   * "locked" — the read failing is not a reason to leave the device stuck.
-   */
-  accel: string
-  /**
-   * `null` when the prior value could not be read. Unlike `accel` above there
-   * is no safe guessed value: writing a made-up fixed orientation would
-   * actively rotate the device to something its owner never chose. So the
-   * revert simply leaves `user_rotation` untouched — `accelerometer_rotation`
-   * still gets restored (handing rotation back to auto), which is the honest
-   * partial recovery rather than a confident wrong one.
-   */
-  user: string | null
+  /** Check first, and write only on drift (`ensureRotationLock`). A no-op for `'device'`. */
+  ensure(mode: RotationMode): Promise<RotationOutcome>
 }
 
 /**
- * The device's LIVE rotation, as a `user_rotation` value — what
- * `'lock-current'` needs, and deliberately NOT `settings get system
- * user_rotation`, which only reflects the last time the device was manually
- * locked and says nothing while auto-rotate is on (the common case, since
- * `'device'` is today's default).
+ * The device's LIVE rotation, as a `user_rotation` value — what `'lock-current'` needs, and
+ * deliberately NOT `settings get system user_rotation`, which only reflects the last time the
+ * device was manually locked and says nothing while auto-rotate is on.
  *
- * A ladder, because the single probe this used to be does not exist anymore.
- * `dumpsys input | grep SurfaceOrientation` was the original (and only)
- * source; on 2026-08-18 it was checked against all five reachable phones in
- * the reference farm — a Samsung SM-A075F and SM-F711B on Android 16/13, two
- * Motorola moto g06, an OPPO CPH2819 and CPH2173 — and printed NOTHING on any
- * of them. `lock-current` therefore never resolved a real orientation on any
- * of this farm's hardware: it fell through to the UNRATIFIED asleep
- * substitution below on every single call, on wide-awake devices, silently
- * behaving as `lock-portrait` while claiming to lock what was on screen.
+ * A ladder, because the single probe this used to be (`dumpsys input | grep SurfaceOrientation`)
+ * printed nothing on all five phones of the reference farm on 2026-08-18 (a Samsung SM-A075F and
+ * SM-F711B, two moto g06, an OPPO CPH2819 and CPH2173). Rungs, first answer wins:
+ *   1. `mCurrentRotation=ROTATION_<deg>` from `dumpsys window displays`;
+ *   2. `Viewport INTERNAL: … orientation=<0..3>` from `dumpsys input`;
+ *   3. the legacy `SurfaceOrientation` line.
  *
- * Rungs, first answer wins:
- *   1. `mCurrentRotation=ROTATION_<deg>` from `dumpsys window displays` — the
- *      default display's own rotation, the exact quantity `user_rotation`
- *      pins. Present on all five phones tested.
- *   2. `Viewport INTERNAL: … orientation=<0..3>` from `dumpsys input` — the
- *      same number by another route; also present on all five.
- *   3. The legacy `SurfaceOrientation` line, kept because it costs one grep
- *      and older builds than anything in this farm may still print it.
- *
- * `grep -m1` is deliberately not used: it closes the pipe on the first match
- * and dumpsys dies of SIGPIPE ("Failed to write while dumping service" —
- * observed on every device tested), which can surface as a non-zero exit and
- * turn a perfectly good read into a caught failure. The first match is picked
- * here instead, where nothing can be lost by it.
+ * `grep -m1` is deliberately not used: it closes the pipe on the first match and dumpsys dies of
+ * SIGPIPE, which can surface as a non-zero exit and turn a good read into a caught failure.
  */
 async function readLiveRotation(transport: Transport): Promise<string> {
   const run = (cmd: string): Promise<string> =>
@@ -163,174 +211,138 @@ async function readLiveRotation(transport: Transport): Promise<string> {
 /**
  * `'lock-current'` locks whatever orientation is on screen right now.
  *
- * A device asleep at session start has no live surface to read, so every rung
- * of `readLiveRotation` comes back empty — plan 85 §9 Q4 flags this as a case
- * with no inherently correct answer. The substitution below (fall back to
- * `lock-portrait`, log it) is the plan's proposal, **still UNRATIFIED**; it is
- * kept in this one function so changing the answer later is a one-line edit.
- * Fixing the probe above did not ratify it — it only stopped this branch from
- * firing on awake devices, which is where it was doing real damage.
+ * A device asleep has no live surface to read — plan 85 §9 Q4 flags this as a case with no
+ * inherently correct answer. The substitution below (fall back to `lock-portrait`, log it) is the
+ * plan's proposal, **still UNRATIFIED**; it is kept in this one function so changing the answer
+ * later is a one-line edit.
  */
 async function resolveCurrentTarget(transport: Transport, log: Logger): Promise<string> {
   const reported = await readLiveRotation(transport)
   if (VALID_USER_ROTATION.has(reported)) return reported
-  // UNRATIFIED (plan 85 §9 Q4): treating "no current orientation" as
-  // lock-portrait is the plan's own proposal, not a product decision anyone
-  // has signed off on. Logged at `warn` so the substitution is visible, not
-  // a silent guess.
   log.warn('rotation "lock-current" requested but the device reports no current orientation (likely asleep) — locking to portrait instead')
   return FIXED_TARGET['lock-portrait']
 }
 
+/** `wm <args>`, never throwing: `ok` is a zero exit with no `Unknown command`/error/usage text. */
+async function wm(transport: Transport, args: string): Promise<{ ok: boolean; output: string }> {
+  try {
+    const r = await transport.exec(`wm ${args}`, { profile: 'probe' })
+    const output = `${r.stdout}${r.stderr}`.trim()
+    const ok = (r.exitCode === null || r.exitCode === 0) && !/unknown|error|exception|usage:/i.test(output)
+    return { ok, output }
+  } catch (err) {
+    return { ok: false, output: String(err) }
+  }
+}
+
+/** A write, with its failure REPORTED rather than swallowed: `null` on success, a reason otherwise. */
+async function put(transport: Transport, cmd: string): Promise<string | null> {
+  try {
+    const r = await transport.exec(cmd, { profile: 'probe' })
+    if (r.exitCode !== null && r.exitCode !== 0) return r.stderr.trim() || `exited ${r.exitCode}`
+    return null
+  } catch (err) {
+    return String(err)
+  }
+}
+
+async function readback(transport: Transport): Promise<RotationReadback | null> {
+  try {
+    const r = await transport.exec(READBACK_COMMAND, { profile: 'probe' })
+    return parseReadback(r.stdout)
+  } catch {
+    return null
+  }
+}
+
 /**
- * Screen rotation lock (plan 85 §3.7, §4.1, §5 step 85.8, acceptance #16).
- * Mirrors `wakeDevice`'s shape: read what the device already has, apply the
- * requested lock, and hand back something that can put it back.
- * `createSession` calls this next to `wakeDevice`; `session.ts`'s `close()`
- * calls `revert()`.
+ * Write a lock mode and CONFIRM it by reading both settings back. A `settings put` the platform
+ * declined is not reliably a non-zero exit — some builds accept the command and drop the write — so
+ * the exit code alone can never be the evidence that a lock is in force.
  *
- * `'device'` is today's behaviour, unchanged: nothing is read, nothing is
- * written, and `revert()` is a no-op — there is nothing to put back.
- *
- * Both `accelerometer_rotation` AND `user_rotation` are captured before
- * anything is written, and both are restored. §3.7's prose only mentions the
- * former, but a device already manually locked to landscape
- * (`accelerometer_rotation=0`, `user_rotation=1`) before the session started
- * needs its `user_rotation` put back too — restoring only the auto-rotate
- * flag would leave it locked to whatever THIS session's lock used instead of
- * what its owner had chosen, forever (nothing else ever writes it again).
- * Acceptance #16 ("restores the device's prior setting on close") is the
- * stricter, authoritative statement of intent here.
- *
- * `owned` (default true) is the fast-path control build's flag (plan 100
- * §4.2): a `control` session opened beside an already-open `wall` entry for
- * the same device re-asserts the lock but does NOT capture, and its
- * `revert()` stays a no-op — the wall entry captured the device's true
- * pre-farm state and remains the one that restores it, when IT closes. The
- * re-assert is not redundant with what the wall entry already did: the wall
- * entry may have opened before the setting changed, or its own write may have
- * failed. Writing the same two values twice costs two shell calls and cannot
- * be wrong; skipping them can be, and was.
+ * Idempotent and stateless: it captures nothing, so calling it on every session build, app launch,
+ * device-online and sweep can never record the farm's own lock as something to put back.
  */
-export async function applyRotation(
-  transport: Transport,
-  opts: { rotation: RotationMode; log: Logger; owned?: boolean },
-): Promise<RotationLock> {
+export async function assertRotationLock(transport: Transport, mode: Exclude<RotationMode, 'device'>, log: Logger): Promise<RotationOutcome> {
+  const target = mode === 'lock-current' ? await resolveCurrentTarget(transport, log) : FIXED_TARGET[mode]
+  const cmds = lockCommands(target)
+  const problems: string[] = []
+  // Unsupported before Android 12 (and possibly on an OEM build) — the settings writes below are the
+  // floor, so this is debug-level, not a failure.
+  const display = await wm(transport, cmds.display.slice('wm '.length))
+  if (!display.ok) log.debug(`rotation: \`${cmds.display}\` not accepted (${display.output || 'no answer'}) — relying on the settings lock`)
+  const [accelCmd, userCmd] = cmds.settings as [string, string]
+  const accelErr = await put(transport, accelCmd)
+  if (accelErr) problems.push(`could not turn auto-rotate off (${accelErr})`)
+  const userErr = await put(transport, userCmd)
+  if (userErr) problems.push(`could not set the orientation (${userErr})`)
+  const pin = await wm(transport, cmds.pin.slice('wm '.length))
+  if (!pin.ok) log.warn(`rotation: could not pin the display to the lock (${pin.output || 'no answer'}) — an app that requests its own orientation may still rotate`)
+  const observed = await readback(transport)
+  if (observed === null) problems.push('the settings could not be read back')
+  else {
+    if (observed.accel !== '0') problems.push(`accelerometer_rotation reads back "${observed.accel || 'nothing'}", not "0"`)
+    if (observed.user !== target) problems.push(`user_rotation reads back "${observed.user || 'nothing'}", not "${target}"`)
+  }
+  if (problems.length === 0) return { mode, target, applied: true }
+  const reason = problems.join('; ')
+  log.warn(`rotation lock "${mode}" did not take on this device — ${reason}`)
+  return { mode, target, applied: false, reason }
+}
+
+/**
+ * Hand rotation back to the device's sensor. Issued ONLY for an operator's explicit switch to
+ * `'device'` (`rotationActionFor(..., 'setting-change')`) — never on a session close.
+ */
+export async function releaseRotationLock(transport: Transport, log: Logger): Promise<RotationOutcome> {
+  const [freeCmd, accelCmd, unpinCmd] = RELEASE_COMMANDS as [string, string, string]
+  const free = await wm(transport, freeCmd.slice('wm '.length))
+  if (!free.ok) log.debug(`rotation: \`${freeCmd}\` not accepted (${free.output || 'no answer'})`)
+  const problems: string[] = []
+  const accelErr = await put(transport, accelCmd)
+  if (accelErr) problems.push(`could not turn auto-rotate on (${accelErr})`)
+  const unpin = await wm(transport, unpinCmd.slice('wm '.length))
+  if (!unpin.ok) log.warn(`rotation: could not clear the display pin (${unpin.output || 'no answer'}) — the display may stay fixed to its last orientation`)
+  const observed = await readback(transport)
+  if (observed === null) problems.push('the settings could not be read back')
+  else if (observed.accel !== '1') problems.push(`accelerometer_rotation reads back "${observed.accel || 'nothing'}", not "1"`)
+  if (problems.length === 0) return { mode: 'device', target: null, applied: true }
+  const reason = problems.join('; ')
+  log.warn(`rotation release did not take on this device — ${reason}`)
+  return { mode: 'device', target: null, applied: false, reason }
+}
+
+/**
+ * The cheap re-assert: one read, and the full write only when the device has drifted off the lock.
+ * What device-online, job-finished and the periodic sweep use — a phone already locked costs one
+ * shell round trip. A no-op for `'device'`.
+ *
+ * A failed read counts as drift: the write path reports its own outcome, and "could not tell" must
+ * never be reported as "in force".
+ */
+export async function ensureRotationLock(transport: Transport, mode: RotationMode, log: Logger): Promise<RotationOutcome> {
+  if (!isLockMode(mode)) return { mode, target: null, applied: true }
+  const target = mode === 'lock-current' ? null : FIXED_TARGET[mode]
+  const observed = await readback(transport)
+  if (observed !== null && lockInForce(observed, target)) return { mode, target: target ?? observed.user, applied: true }
+  log.info(
+    `rotation: device drifted off "${mode}" (accelerometer_rotation=${observed?.accel || '?'}, user_rotation=${observed?.user || '?'}) — locking again`,
+  )
+  return { ...(await assertRotationLock(transport, mode, log)), drifted: true }
+}
+
+/**
+ * Screen rotation lock at session build (plan 85 §3.7, §4.1, step 85.8). Called by `createSession`
+ * for EVERY build — wall and fast-path control alike: the device may have drifted since the last
+ * write, and writing the same values again costs a few shell calls and cannot be wrong.
+ *
+ * `'device'` writes nothing at build — the device's own behaviour is left alone. There is no
+ * `revert`: see `rotationActionFor`.
+ */
+export async function applyRotation(transport: Transport, opts: { rotation: RotationMode; log: Logger }): Promise<RotationLock> {
   const { log } = opts
-  const owned = opts.owned ?? true
-  let captured: CapturedRotation | null = null
-
-  const get = (key: string): Promise<string> =>
-    transport
-      .exec(`settings get system ${key}`, { profile: 'probe' })
-      .then((r) => r.stdout.trim())
-      .catch(() => '')
-
-  /** `wm <args>`, never throwing: `ok` is a zero exit with no `Unknown command`/error text. */
-  async function wm(args: string): Promise<{ ok: boolean; output: string }> {
-    try {
-      const r = await transport.exec(`wm ${args}`, { profile: 'probe' })
-      const output = `${r.stdout}${r.stderr}`.trim()
-      const ok = (r.exitCode === null || r.exitCode === 0) && !/unknown|error|exception|usage:/i.test(output)
-      return { ok, output }
-    } catch (err) {
-      return { ok: false, output: String(err) }
-    }
-  }
-
-  /** The write, with its failure REPORTED rather than swallowed: `null` on success, a reason otherwise. */
-  async function put(key: string, value: string): Promise<string | null> {
-    try {
-      const r = await transport.exec(`settings put system ${key} ${value}`, { profile: 'probe' })
-      if (r.exitCode !== null && r.exitCode !== 0) return r.stderr.trim() || `exited ${r.exitCode}`
-      return null
-    } catch (err) {
-      return String(err)
-    }
-  }
-
-  /**
-   * At most once per session, and never before the first write — see
-   * `RotationLock.set`'s doc comment for why a second capture would corrupt
-   * the revert. Deliberately NOT gated on `owned`: a fast-path session that
-   * is handed a LIVE rotation change (its wall entry having closed in the
-   * meantime, so nobody else holds a capture) takes ownership of the restore
-   * rather than leaving the device locked with nothing to undo it.
-   */
-  async function capture(): Promise<void> {
-    if (captured !== null) return
-    const previousAccel = await get('accelerometer_rotation')
-    const previousUser = await get('user_rotation')
-    const user = VALID_USER_ROTATION.has(previousUser) ? previousUser : null
-    if (user === null) {
-      log.warn(
-        'rotation: the prior user_rotation could not be read — accelerometer_rotation will be restored on close, but a fixed orientation the device was locked to before this session will not be written back',
-      )
-    }
-    const previousFixed = (await wm('fixed-to-user-rotation')).output
-    const fixed = FIXED_TO_USER_ROTATION_VALUES.has(previousFixed) ? previousFixed : null
-    captured = { accel: previousAccel === '0' || previousAccel === '1' ? previousAccel : '1', user, fixed }
-  }
-
-  /**
-   * Write the lock and CONFIRM it, by reading both settings back. A
-   * `settings put` that the platform declined is not reliably a non-zero
-   * exit — some builds accept the command and drop the write — so the exit
-   * code alone can never be the evidence that a lock is in force.
-   */
-  async function assertLock(mode: RotationMode): Promise<RotationOutcome> {
-    if (mode === 'device') return { mode, target: null, applied: true }
-    const target = mode === 'lock-current' ? await resolveCurrentTarget(transport, log) : FIXED_TARGET[mode]
-    const problems: string[] = []
-    const accelErr = await put('accelerometer_rotation', '0')
-    if (accelErr) problems.push(`could not turn auto-rotate off (${accelErr})`)
-    const userErr = await put('user_rotation', target)
-    if (userErr) problems.push(`could not set the orientation (${userErr})`)
-    /*
-      Pin the display to that rotation, so an app's OWN orientation request cannot override it.
-
-      `user_rotation` with auto-rotate off is honoured only by apps that follow the user's
-      rotation; an activity that asks for a sensor-driven orientation still turns with the phone.
-      That is what the farm met: YouTube opened in landscape (1600x720) on the owner's production
-      SM-A075F fleet, lying on its side, with `accelerometer_rotation=0` — and on their moto
-      before that. `wm fixed-to-user-rotation enabled` (Android 10+) makes the display follow
-      `user_rotation` regardless of what the app asks for. Best effort, and deliberately not part
-      of `applied`: on a build without the command the settings lock above still holds for every
-      app that respects it, which is what `applied` has always meant.
-    */
-    const pin = await wm('fixed-to-user-rotation enabled')
-    if (!pin.ok) log.warn(`rotation: could not pin the display to the lock (${pin.output || 'no answer'}) — an app that requests its own orientation may still rotate`)
-    const observedAccel = await get('accelerometer_rotation')
-    const observedUser = await get('user_rotation')
-    if (observedAccel !== '0') problems.push(`accelerometer_rotation reads back "${observedAccel || 'nothing'}", not "0"`)
-    if (observedUser !== target) problems.push(`user_rotation reads back "${observedUser || 'nothing'}", not "${target}"`)
-    if (problems.length === 0) return { mode, target, applied: true }
-    const reason = problems.join('; ')
-    // `warn`, not `debug`. The device declined something the operator asked
-    // for; the whole point of surfacing this is that a lock that did not
-    // happen must not look like one that did.
-    log.warn(`rotation lock "${mode}" did not take on this device — ${reason}`)
-    return { mode, target, applied: false, reason }
-  }
-
-  async function revert(): Promise<void> {
-    const previous = captured
-    if (previous === null) return
-    const accelErr = await put('accelerometer_rotation', previous.accel)
-    if (accelErr) log.warn(`rotation: could not restore accelerometer_rotation on close (${accelErr})`)
-    if (previous.user !== null) {
-      const userErr = await put('user_rotation', previous.user)
-      if (userErr) log.warn(`rotation: could not restore user_rotation on close (${userErr})`)
-    }
-    // `default` when the prior value could not be read: it is what every build ships with, and
-    // leaving the pin `enabled` after the farm lets go would keep the phone locked forever.
-    const unpin = await wm(`fixed-to-user-rotation ${previous.fixed ?? 'default'}`)
-    if (!unpin.ok) log.warn(`rotation: could not restore fixed-to-user-rotation on close (${unpin.output || 'no answer'})`)
-  }
-
   let mode: RotationMode = opts.rotation
-  if (mode !== 'device' && owned) await capture()
-  let outcome: RotationOutcome = mode === 'device' ? { mode, target: null, applied: true } : await assertLock(mode)
+  let outcome: RotationOutcome = isLockMode(mode) ? await assertRotationLock(transport, mode, log) : { mode, target: null, applied: true }
 
   return {
     get mode() {
@@ -340,20 +352,15 @@ export async function applyRotation(
       return outcome
     },
     async set(next) {
-      if (next === 'device') {
-        // Handing rotation back mid-session IS the revert: `'device'` means
-        // "leave the device's own behaviour alone", and the device's own
-        // behaviour is whatever it had before this session touched it.
-        await revert()
-        mode = 'device'
-        outcome = { mode: 'device', target: null, applied: true }
-        return outcome
-      }
-      await capture()
       mode = next
-      outcome = await assertLock(next)
+      outcome = isLockMode(next) ? await assertRotationLock(transport, next, log) : await releaseRotationLock(transport, log)
       return outcome
     },
-    revert,
+    async ensure(next) {
+      if (!isLockMode(next)) return { mode: next, target: null, applied: true }
+      mode = next
+      outcome = await ensureRotationLock(transport, next, log)
+      return outcome
+    },
   }
 }

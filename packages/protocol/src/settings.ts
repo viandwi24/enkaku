@@ -41,8 +41,14 @@ function normaliseLegacyPrep(raw: unknown): unknown {
 
 /**
  * Screen rotation control (plan 85 §3.7, §4.1) — `'device'` leaves the
- * device's own auto-rotate behaviour untouched; the lock modes pin
- * `user_rotation` while a session is open and revert on close.
+ * device's own auto-rotate behaviour untouched; the lock modes are a
+ * PERSISTENT device state: auto-rotate off, `user_rotation` pinned and the
+ * display fixed to it, written when the device comes online, when the
+ * setting is saved (even while a job runs), at every session build and app
+ * launch, after a job, and re-checked by a slow sweep. A lock is never
+ * reverted when a session closes or the core stops. The only write that
+ * hands rotation back is an operator switching a device to `'device'`
+ * (`packages/session/src/orientation.ts`, `rotationActionFor`).
  */
 export const RotationModeSchema = z.enum(['device', 'lock-portrait', 'lock-landscape', 'lock-current'])
 export type RotationMode = z.infer<typeof RotationModeSchema>
@@ -704,7 +710,7 @@ export const DeviceSettingsSchema = z.object({
           is handed back to its sensor, per device.
         */
         rotation: RotationModeSchema.default('lock-portrait')
-          .describe('Whether the device rotates freely or is pinned while a session is open')
+          .describe('Whether the device rotates freely or is kept pinned while it is connected to the farm')
           .meta({ title: 'Screen rotation' }),
         textInput: TextInputModeSchema.default('auto')
           .describe('Use the guest agent keyboard while a session is open, so non-ASCII text can be typed.')

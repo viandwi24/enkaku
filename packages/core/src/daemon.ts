@@ -37,6 +37,7 @@ import {
   ADB_TIMEOUT_STORM_RATE,
   AUDIT_RETENTION_DAYS,
   BATTERY_POLL_INTERVAL_SEC,
+  ROTATION_REASSERT_INTERVAL_SEC,
   BLOB_ORPHAN_GRACE_HOURS,
   CONTROL_IDLE_SEC,
   CRASH_WATCH,
@@ -725,6 +726,8 @@ let blobGc: BlobGc | null = null
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null
   /** The preparation retry sweep (`PreparationRunner.sweepDue`) — cleared in `stop()` like every other periodic timer here. */
   let preparationSweepInterval: ReturnType<typeof setInterval> | null = null
+  /** The rotation-lock re-check (`SessionManager.ensureRotation`, `ROTATION_REASSERT_INTERVAL_SEC`) — cleared in `stop()` like every other periodic timer here. */
+  let rotationSweepInterval: ReturnType<typeof setInterval> | null = null
   /**
    * The debounced `reprofile` pass (plan 92 §3.8 rule 2, §5 step 92.2) —
    * cleared in `stop()` like every other timer here, so a settings save made
@@ -1831,6 +1834,10 @@ let blobGc: BlobGc | null = null
           recorder?.record({ deviceId, stream: 'main', kind: 'job.finished', actor: `job:${jobId}`, meta: { jobId, status, durationMs } })
           // The crash policy's target-package set does not outlive the job (plan 37 §4.4).
           targetPackagesByJob.delete(jobId)
+          // A job can leave a phone off its rotation lock (a script, or an app that turned it): re-check
+          // the lock the moment the job ends, and perform a hand-back to 'device' parked while it ran.
+          // Check-first — one read on a phone that is still locked.
+          void sessions?.ensureRotation?.(deviceId, 'job-finished')
           // Nor do the retained log lines: from here the `job.log` artifact is
           // the record, and `GET /api/jobs/:id/logs` falls through to it.
           jobLogBuffer.release(jobId)
@@ -4026,6 +4033,36 @@ let blobGc: BlobGc | null = null
         void preparationRunnerRef?.sweepDue().catch((err) => log.debug(`preparation sweep failed, tolerated: ${String(err)}`))
       }, PREPARATION_SWEEP_MS)
 
+      /*
+        The rotation-lock re-check (2026-09-14).
+
+        A lock is a standing device state, and the event hooks (device online, job finished, every
+        session build and app launch) cover every write the farm itself makes. This is the net for
+        what nothing announces: someone flipping auto-rotate in Quick Settings on a rack phone, or an
+        OEM service turning it back on. One `settings get` per online device per interval, devices
+        one after another so a hundred-phone farm never bursts the adb server, and a write only for
+        a phone that actually drifted (recorded as `device.rotation` with `drifted: true`). A pass
+        still running when the next tick fires is skipped, never stacked.
+      */
+      if (ROTATION_REASSERT_INTERVAL_SEC > 0) {
+        let rotationSweepRunning = false
+        rotationSweepInterval = setInterval(() => {
+          if (rotationSweepRunning || !sessions?.ensureRotation) return
+          rotationSweepRunning = true
+          void (async () => {
+            const rows = db.select({ id: devices.id, status: devices.status }).from(devices).all()
+            for (const row of rows) {
+              if (stopped || row.status === 'offline') continue
+              await sessions?.ensureRotation?.(row.id, 'sweep')
+            }
+          })()
+            .catch((err) => log.debug(`rotation sweep failed, tolerated: ${String(err)}`))
+            .finally(() => {
+              rotationSweepRunning = false
+            })
+        }, ROTATION_REASSERT_INTERVAL_SEC * 1000)
+      }
+
       // The plugin packs carried inside a compiled binary (staged, not
       // activated). Deliberately after `listen` and deliberately not awaited:
       // it spawns a verify child per pack, and nothing about serving requests
@@ -4936,6 +4973,12 @@ let blobGc: BlobGc | null = null
             // (`registry.start()` below) enqueues one build per device with
             // no browser ever involved.
             alwaysOn?.deviceOnline(deviceId)
+            // The rotation lock is a standing device state (2026-09-14): re-checked the moment a
+            // device comes online (admission, reconnect, and every device on a core restart), not
+            // only when its session builds — a build can fail or wait its turn in the ramp, and a
+            // phone left on auto-rotate meanwhile opens its next app sideways. Check-first: a phone
+            // already locked costs one read.
+            void sessions?.ensureRotation?.(deviceId, 'device-online')
             scheduler?.kick()
             recomputeAdbConcurrency()
             // The device just came online — restore any persisted `vpn-helper`
@@ -5197,6 +5240,8 @@ let blobGc: BlobGc | null = null
       heartbeatInterval = null
       if (preparationSweepInterval) clearInterval(preparationSweepInterval)
       preparationSweepInterval = null
+      if (rotationSweepInterval) clearInterval(rotationSweepInterval)
+      rotationSweepInterval = null
       if (reprofileDebounceTimer) clearTimeout(reprofileDebounceTimer)
       reprofileDebounceTimer = null
       server?.stop(true)

@@ -975,7 +975,7 @@ describe('createSession — requireScrcpy applies to every build, not only the f
     return { client, calls }
   }
 
-  test('requireScrcpy without skipDevicePrep throws E_SCRCPY_UNAVAILABLE and reverts stayon/rotation/tag', async () => {
+  test('requireScrcpy without skipDevicePrep throws E_SCRCPY_UNAVAILABLE and reverts stayon/tag (a rotation lock is persistent and stays)', async () => {
     const { client, calls } = recordingClient()
     await expect(
       createSession(

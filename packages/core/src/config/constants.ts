@@ -125,6 +125,8 @@ export const DEVICE_AUTO_QUARANTINE = bool('ENKAKU_DEVICE_AUTO_QUARANTINE', true
 /** After an operator's `unquarantine`, how long neither auto-quarantine path may pull the device back (`device/quarantine-grace.ts`). 0 turns the window off. */
 export const DEVICE_UNQUARANTINE_GRACE_SEC = num('ENKAKU_DEVICE_UNQUARANTINE_GRACE_SEC', 600, z.number().int().min(0).max(86_400))
 export const BATTERY_POLL_INTERVAL_SEC = num('ENKAKU_BATTERY_POLL_INTERVAL_SEC', 60, z.number().int().min(10))
+/** How often every online device's stored rotation lock is re-checked (one `settings get` per device; a write only on drift). 0 turns the sweep off. */
+export const ROTATION_REASSERT_INTERVAL_SEC = num('ENKAKU_ROTATION_REASSERT_INTERVAL_SEC', 300, z.number().int().min(0).max(86_400))
 export const DEVICE_LABEL_SURFACE = pick('ENKAKU_DEVICE_LABEL_SURFACE', 'lock-screen', ['lock-screen', 'wallpaper'] as const)
 export const LABEL_WRITE_CONCURRENCY = num('ENKAKU_LABEL_WRITE_CONCURRENCY', 2, z.number().int().min(1).max(16))
 export const CONTROL_IDLE_SEC = num('ENKAKU_CONTROL_IDLE_SEC', 30, z.number().int().min(5).max(600))

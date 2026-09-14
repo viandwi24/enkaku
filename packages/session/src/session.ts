@@ -397,7 +397,7 @@ export interface CreateSessionOpts {
   keepAwake?: KeepAwakeMode
   /** DeviceSettings.prep.standbyScreenOff — dark panel, mirroring stays alive (Plan 17 §3.5). */
   standbyScreenOff?: boolean
-  /** DeviceSettings.prep.rotation — screen orientation lock, reverted on close (Plan 85 §3.7, §4.1). */
+  /** DeviceSettings.prep.rotation — screen orientation lock, asserted at build and NEVER reverted on close (Plan 85 §3.7; `orientation.ts`'s `rotationActionFor`). */
   rotation?: RotationMode
   /** DeviceSettings.prep.textInput — which keyboard types during this session, reverted on close (Plan 90 §3.2, §4.4, §5 step 90.5). */
   textInput?: TextInputMode
@@ -709,28 +709,23 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
   if (!skipWake) await wakeDevice(transport, { keepAwake, log })
 
   /**
-   * Rotation lock (Plan 85 §3.7, §4.1, step 85.8): the identical shape to
-   * `wakeDevice` right above — a device-scoped preference applied here and
-   * reverted in `close()` below. `applyRotation` reads the device's current
-   * `accelerometer_rotation` before touching anything, so the revert it
-   * returns can put it back exactly rather than to a hardcoded value.
-   * `'device'` (the default) touches nothing and the revert is a no-op.
+   * Rotation lock (Plan 85 §3.7, §4.1, step 85.8) — asserted here and NEVER
+   * reverted in `close()` (2026-09-14). A lock mode is a persistent device
+   * state the farm keeps, not a loan this session pays back: reverting it on
+   * close handed every `lock-portrait` phone back to auto-rotate each time a
+   * session was rebuilt, reprofiled, lost to a blip or shut down, and a capture
+   * racing another session's revert recorded "auto-rotate on, display pinned"
+   * as the device's own state and restored it forever after
+   * (`orientation.ts`'s `rotationActionFor` holds the rule).
+   * `'device'` (the default) touches nothing.
    *
    * Rotation is the ONE member of the fast path's skip list (§4.2:
-   * "skips wake/rotate/text-input/farm-tag") that this call does NOT skip,
-   * and the asymmetry is deliberate. Waking a device that is already awake is
-   * genuinely redundant — the wall entry holding the screen on is proof of the
-   * fact it would re-derive. A rotation lock is not the same kind of
-   * redundant: the wall entry may have been opened BEFORE the operator changed
-   * the setting, or with a different value, or its own write may have been
-   * declined by the device. So a fast-path build re-asserts the lock
-   * (`owned: false`) — it writes, but it captures nothing and reverts nothing,
-   * leaving the still-open wall entry as the sole owner of the device's true
-   * pre-farm state. Two extra shell calls; no way for them to be wrong.
+   * "skips wake/rotate/text-input/farm-tag") that this call does NOT skip:
+   * the device may have drifted since the wall entry wrote it, or the setting
+   * may have changed. Writing the same values again cannot be wrong.
    */
   const rotation: RotationMode = opts.rotation ?? 'device'
-  const rotationLock = await applyRotation(transport, { rotation, log, owned: !skipDevicePrep })
-  const revertRotation = () => rotationLock.revert()
+  const rotationLock = await applyRotation(transport, { rotation, log })
 
   /**
    * Text-input keyboard (plan 90 §3.2, §3.3, §4.5, §5 step 90.5) — **no longer on the critical
@@ -875,7 +870,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // under whoever IS holding it (the readiness manager, or the open wall
     // entry). Same rule, same reason, as `close()`'s own release below.
     if (keepAwake !== 'off' && !skipWake) await applyStayOn(transport, 'off', null, log).catch(() => undefined)
-    await revertRotation()
+    // No rotation revert: a lock mode is a persistent device state (`orientation.ts`).
     await revertTextInput()
     await revertFarmTag()
     await transport.disconnect().catch(() => undefined)
@@ -1152,14 +1147,13 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // means "we did not look" — the write always goes out, which is what
       // this line always did.
       if (keepAwake !== 'off' && !skipWake) await applyStayOn(transport, 'off', null, log).catch(() => undefined)
-      // Hand rotation back the same way — stateless and idempotent (see
-      // `orientation.ts`): `close()` can run more than once (a timeout kill
-      // followed by a normal close, for instance), and calling this twice
-      // must be safe. It always re-issues the exact command it captured at
-      // apply time, so a second call is a no-op on the device, not a fresh
-      // mutation of some remembered "already reverted" flag.
-      await revertRotation()
-      // Same idempotent-thunk contract as rotation right above — safe to
+      // Rotation is deliberately NOT handed back here (2026-09-14). A lock mode
+      // is a persistent device state the farm keeps across sessions, reconnects
+      // and core restarts; reverting it on close is what left `lock-portrait`
+      // phones on auto-rotate after every rebuild, reprofile, blip and shutdown.
+      // See `orientation.ts`'s `rotationActionFor`.
+      //
+      // The text-input revert is a stateless, idempotent thunk — safe to
       // call more than once, including after a `SIGKILL` mid-session: the
       // next process's own `close()` (or the next session's `applyTextInput`
       // read-first step) re-issues the exact restore command captured at

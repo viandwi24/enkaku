@@ -715,6 +715,123 @@ describe('SessionManager.closeAll(reason) / activeDeviceIds() (plan 88 §3.10, �
   })
 })
 
+/**
+ * The owner's report (2026-09-14): `lock-portrait` phones found on auto-rotate. A lock is a
+ * persistent device state — never handed back by a session close, and reachable with no session.
+ */
+describe('SessionManager — rotation is a persistent device state', () => {
+  const READBACK = 'settings get system accelerometer_rotation; settings get system user_rotation'
+
+  /** A client that stores the two rotation settings and records every command. */
+  function rotationClient(initial: { accel: string; user: string }) {
+    const store = { ...initial }
+    const calls: string[] = []
+    const client = {
+      exec: async (_serial: string, cmd: string) => {
+        calls.push(cmd)
+        let stdout = ''
+        if (cmd === READBACK) stdout = `${store.accel}\n${store.user}\n`
+        const put = /^settings put system (accelerometer_rotation|user_rotation) (\d)$/.exec(cmd)
+        if (put) {
+          if (put[1] === 'accelerometer_rotation') store.accel = put[2] as string
+          else store.user = put[2] as string
+        }
+        const lock = /^wm user-rotation lock (\d)$/.exec(cmd)
+        if (lock) {
+          store.accel = '0'
+          store.user = lock[1] as string
+        }
+        if (cmd === 'wm user-rotation free') store.accel = '1'
+        return { stdout, stderr: '', exitCode: 0 }
+      },
+      execOut: async () => new Uint8Array(),
+      listDevices: async () => [],
+    } as unknown as AdbClient
+    return { client, calls, store }
+  }
+
+  function source(state: { rotation: NonNullable<DeviceSnapshot['rotation']>; status?: DeviceSnapshot['status'] }): DeviceSnapshotSource {
+    return { get: (id) => (id === DEVICE_ID ? { ...snapshot, rotation: state.rotation, status: state.status ?? 'online' } : null) }
+  }
+
+  test('closing a session never hands a lock back — no auto-rotate write, no unpin', async () => {
+    const { client, calls, store } = rotationClient({ accel: '1', user: '0' })
+    const manager = createSessionManager({ client, devices: source({ rotation: 'lock-portrait' }), log: silentLog(), makeScrcpy: async () => fakeScrcpy() })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    expect(store.accel).toBe('0')
+    calls.length = 0
+    await manager.closeAll()
+    expect(calls).not.toContain('settings put system accelerometer_rotation 1')
+    expect(calls).not.toContain('wm user-rotation free')
+    expect(calls).not.toContain('wm fixed-to-user-rotation default')
+    expect(store).toEqual({ accel: '0', user: '0' })
+  })
+
+  test('setRotation reaches a device with NO open session, through a fresh transport', async () => {
+    const { client, store } = rotationClient({ accel: '1', user: '0' })
+    const manager = createSessionManager({ client, devices: source({ rotation: 'lock-portrait' }), log: silentLog() })
+    expect(await manager.setRotation?.(DEVICE_ID, 'lock-portrait')).toEqual({ mode: 'lock-portrait', target: '0', applied: true })
+    expect(store.accel).toBe('0')
+  })
+
+  test('setRotation on an offline device writes nothing and is null — it is written when the device comes online', async () => {
+    const { client, calls } = rotationClient({ accel: '1', user: '0' })
+    const manager = createSessionManager({ client, devices: source({ rotation: 'lock-portrait', status: 'offline' }), log: silentLog() })
+    expect(await manager.setRotation?.(DEVICE_ID, 'lock-portrait')).toBeNull()
+    expect(calls).toEqual([])
+  })
+
+  test('ensureRotation: one read on a locked device; a drifted one is locked again and logged as drift', async () => {
+    const { client, calls, store } = rotationClient({ accel: '0', user: '0' })
+    const events: { kind: string; meta: Record<string, unknown> }[] = []
+    const manager = createSessionManager({
+      client,
+      devices: source({ rotation: 'lock-portrait' }),
+      log: silentLog(),
+      onEvent: (_id, kind, meta) => events.push({ kind, meta }),
+    })
+    expect(await manager.ensureRotation?.(DEVICE_ID, 'sweep')).toEqual({ mode: 'lock-portrait', target: '0', applied: true })
+    expect(calls).toEqual([READBACK])
+    expect(events).toEqual([])
+
+    store.accel = '1'
+    const outcome = await manager.ensureRotation?.(DEVICE_ID, 'device-online')
+    expect(outcome).toMatchObject({ applied: true, drifted: true })
+    expect(store.accel).toBe('0')
+    expect(events).toEqual([{ kind: 'device.rotation', meta: expect.objectContaining({ mode: 'lock-portrait', applied: true, drifted: true, trigger: 'device-online' }) }])
+  })
+
+  test('ensureRotation leaves a "device" phone alone', async () => {
+    const { client, calls } = rotationClient({ accel: '0', user: '1' })
+    const manager = createSessionManager({ client, devices: source({ rotation: 'device' }), log: silentLog() })
+    expect(await manager.ensureRotation?.(DEVICE_ID, 'sweep')).toBeNull()
+    expect(calls).toEqual([])
+  })
+
+  test('a hand-back parked while a job ran happens when the job finishes — not in a sweep while it still runs', async () => {
+    const { client, store } = rotationClient({ accel: '0', user: '0' })
+    const manager = createSessionManager({ client, devices: source({ rotation: 'device' }), log: silentLog(), hasRunningJob: () => true })
+    manager.deferRotationRelease?.(DEVICE_ID)
+    expect(await manager.ensureRotation?.(DEVICE_ID, 'sweep')).toBeNull()
+    expect(store.accel).toBe('0')
+    expect(await manager.ensureRotation?.(DEVICE_ID, 'job-finished')).toMatchObject({ mode: 'device', applied: true })
+    expect(store.accel).toBe('1')
+  })
+
+  test('a parked hand-back is dropped when the setting moves back to a lock before the job ends', async () => {
+    const { client, store } = rotationClient({ accel: '0', user: '0' })
+    const state: { rotation: NonNullable<DeviceSnapshot['rotation']> } = { rotation: 'device' }
+    const devicesLive: DeviceSnapshotSource = { get: (id) => (id === DEVICE_ID ? { ...snapshot, rotation: state.rotation } : null) }
+    const manager = createSessionManager({ client, devices: devicesLive, log: silentLog() })
+    manager.deferRotationRelease?.(DEVICE_ID)
+    state.rotation = 'lock-portrait'
+    await manager.ensureRotation?.(DEVICE_ID, 'sweep')
+    state.rotation = 'device'
+    expect(await manager.ensureRotation?.(DEVICE_ID, 'job-finished')).toBeNull()
+    expect(store.accel).toBe('0')
+  })
+})
+
 describe('SessionManager — resolveProfile threads a resolved video profile into makeScrcpy (plan 92 §3.5, §4.2, §4.3)', () => {
   test('a custom resolveProfile reaches makeScrcpy verbatim — e.g. video.wallMaxFps: 3 spawns scrcpy with max_fps 3', async () => {
     const received: VideoProfile[] = []

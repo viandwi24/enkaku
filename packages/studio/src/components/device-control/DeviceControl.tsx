@@ -213,10 +213,10 @@ export function DeviceControl({
       const res = await api(`/api/devices/${deviceId}`, DeviceResponseSchema, { method: 'PATCH', json: { settings: nextSettings } })
       const outcome = res.rotation
       if (!outcome || outcome.state === 'applied') return
-      // `no-session` is the common one and is not an error: the setting is
-      // saved and takes effect the moment a session opens. It still has to be
-      // said, or the screen not moving reads as a broken button.
-      if (outcome.state === 'no-session') toast.info(`${ROTATION_LABEL[mode]} saved — it applies when a session is open.`)
+      // `no-session` means the device is offline, and is not an error: the
+      // setting is saved and written the moment the device comes online. It
+      // still has to be said, or the screen not moving reads as a broken button.
+      if (outcome.state === 'no-session') toast.info(`${ROTATION_LABEL[mode]} saved — it applies when the device comes online.`)
       else if (outcome.state === 'busy') toast.info(`${ROTATION_LABEL[mode]}: ${outcome.reason ?? 'the device was busy; it will settle shortly'}`)
       else {
         setPendingRotation(null)

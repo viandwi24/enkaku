@@ -62,7 +62,7 @@ export async function applySettings(
     db: Db
     record?: (e: { deviceId: string; stream: 'main'; kind: string; actor: string | null; meta: Record<string, unknown> }) => void
     runningJobOf: (deviceId: string) => boolean
-    sessions: () => Pick<SessionManager, 'get' | 'restartAt' | 'setRotation'> | null
+    sessions: () => Pick<SessionManager, 'get' | 'restartAt' | 'setRotation' | 'deferRotationRelease'> | null
   },
   deviceId: string,
   rawPatch: Record<string, unknown>,
@@ -97,8 +97,11 @@ export async function applySettings(
   let rotation: RotationApplyResult | null = null
   if (rawPatch.prep && typeof rawPatch.prep === 'object' && 'rotation' in (rawPatch.prep as Record<string, unknown>)) {
     const mode = next.prep.rotation
-    if (deps.runningJobOf(deviceId)) {
-      rotation = { mode, state: 'busy', reason: 'a job is running on this device — the new rotation applies the next time a job opens an app on it, or to its next session' }
+    // Same rule as `PATCH /api/devices/:id`: only a hand-back to 'device' waits for the job; a lock
+    // is written now (see `api/devices.ts` for why that is safe).
+    if (mode === 'device' && deps.runningJobOf(deviceId)) {
+      deps.sessions()?.deferRotationRelease?.(deviceId)
+      rotation = { mode, state: 'busy', reason: 'a job is running on this device — rotation is handed back to the device when the job finishes' }
     } else {
       const outcome = (await deps.sessions()?.setRotation?.(deviceId, mode)) ?? null
       if (!outcome) rotation = { mode, state: 'no-session' }

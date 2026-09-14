@@ -85,7 +85,7 @@ export interface ActionsDeps {
   shellPortFor: (deviceId: string) => ShellPort
   readiness: Pick<ReadinessManager, 'set'> | null
   reconnector: () => DeviceReconnector | null
-  sessions: () => Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get' | 'setRotation'> | null
+  sessions: () => Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get' | 'setRotation' | 'deferRotationRelease'> | null
   cutover: () => CutoverManager | null
   lifecycle: DeviceLifecycle
   battery: () => Pick<BatteryMonitor, 'unquarantine'> | null

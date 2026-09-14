@@ -249,11 +249,13 @@ export function createDeviceRoutes(deps: {
      * same reason one step further: `prep.rotation` reached a device only at
      * session creation, so an operator changing it on a device that was
      * already streaming got a success toast and an unchanged screen. Unlike
-     * `video` this needs no restart — the lock is two `settings put`s on the
-     * session already open — so `PATCH /:id` awaits it and reports what the
-     * device actually did.
+     * `video` this needs no restart — the lock is a few shell writes, through
+     * the open session or a fresh transport when there is none — so `PATCH /:id`
+     * awaits it and reports what the device actually did.
+     * `deferRotationRelease` parks a hand-back to `'device'` saved while a job
+     * holds the device.
      */
-    sessions: () => Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get' | 'setRotation'> | null
+    sessions: () => Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get' | 'setRotation' | 'deferRotationRelease'> | null
   }
   /**
    * The address book (plan 88 §3.2, §4.3) — `declare` is `PATCH
@@ -1027,8 +1029,15 @@ export function createDeviceRoutes(deps: {
     let rotationResult: RotationApplyResult | undefined
     if (rotationChange) {
       const mode = rotationChange.to
-      if (deps.runningJobOf(row.id)) {
-        rotationResult = { mode, state: 'busy', reason: 'a job is running on this device — the new rotation applies the next time a job opens an app on it, or to its next session' }
+      // Only a hand-back waits for a running job: auto-rotate coming back on would turn the screen
+      // under the script. A LOCK is written even while busy — the owner's rule (2026-09-14) is that
+      // the lock is a standing device state, and every flow on this farm is measured in the
+      // orientation its lock names, so a job on an unlocked phone is already the broken case. It
+      // can turn the screen only on a phone that is not in that orientation right now, which is
+      // exactly the phone whose job would fail (`E_SCREEN_LANDSCAPE`) without it.
+      if (mode === 'device' && deps.runningJobOf(row.id)) {
+        deps.connection?.sessions?.()?.deferRotationRelease?.(row.id)
+        rotationResult = { mode, state: 'busy', reason: 'a job is running on this device — rotation is handed back to the device when the job finishes' }
       } else {
         const outcome = (await deps.connection?.sessions?.()?.setRotation?.(row.id, mode)) ?? null
         if (!outcome) rotationResult = { mode, state: 'no-session' }

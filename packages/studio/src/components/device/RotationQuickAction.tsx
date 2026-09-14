@@ -41,22 +41,23 @@ const SHORT_LABEL: Record<RotationMode, string> = {
  */
 function describeOutcome(result: RotationApplyResult | undefined, mode: RotationMode): { ok: boolean; message: string; description?: string } {
   if (mode === 'device') {
+    if (result?.state === 'busy') return { ok: true, message: 'Auto-rotate — saved', description: result.reason ?? 'A job is running; rotation is handed back when it finishes.' }
     return {
       ok: true,
       message: 'Rotation handed back to the device',
-      description: result?.state === 'applied' ? 'The live screen is back on the device’s own auto-rotate setting.' : undefined,
+      description: result?.state === 'applied' ? 'The device is back on its own auto-rotate setting.' : undefined,
     }
   }
   switch (result?.state) {
     case 'applied':
-      return { ok: true, message: `${SHORT_LABEL[mode]} — applied to the live screen` }
+      return { ok: true, message: `${SHORT_LABEL[mode]} — applied to the device` }
     case 'busy':
-      return { ok: true, message: `${SHORT_LABEL[mode]} — saved`, description: result.reason ?? 'A job is running; it applies to the next session.' }
+      return { ok: true, message: `${SHORT_LABEL[mode]} — saved`, description: result.reason }
     case 'failed':
       return { ok: false, message: `${SHORT_LABEL[mode]} — the device did not accept it`, description: result.reason }
     default:
-      // `no-session`, and any core too old to send this field at all.
-      return { ok: true, message: `${SHORT_LABEL[mode]} — saved`, description: 'Applies the next time this device streams.' }
+      // `no-session` (the device is offline), and any core too old to send this field at all.
+      return { ok: true, message: `${SHORT_LABEL[mode]} — saved`, description: 'Applies when this device comes online.' }
   }
 }
 
